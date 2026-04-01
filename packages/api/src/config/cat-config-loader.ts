@@ -735,7 +735,7 @@ export function getCatEffort(catId: string, config?: CatCafeConfig): CliEffortLe
     const defaultValue = DEFAULT_EFFORT_BY_PROVIDER[provider] ?? 'max';
     log.warn(
       `Invalid effort "${configuredEffort}" for provider "${provider}" (cat: ${catId}). ` +
-        `Valid values: ${validValues?.join('|') ?? 'unknown'}. Mapped to "${defaultValue}".`
+        `Valid values: ${validValues?.join('|') ?? 'unknown'}. Mapped to "${defaultValue}".`,
     );
     return defaultValue;
   }

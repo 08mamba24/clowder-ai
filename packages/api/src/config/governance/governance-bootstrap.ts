@@ -10,9 +10,9 @@ import { existsSync } from 'node:fs';
 import { lstat, mkdir, readFile, readlink, symlink, writeFile } from 'node:fs/promises';
 import { dirname, relative, resolve, sep } from 'node:path';
 import type { BootstrapAction, BootstrapReport } from '@cat-cafe/shared';
+import { pathsEqual } from '../../utils/project-path.js';
 import { bootstrapCatCatalog } from '../cat-catalog-store.js';
 import { migrateProviderProfilesToAccounts } from '../migrate-provider-profiles.js';
-import { pathsEqual } from '../../utils/project-path.js';
 import type { Provider } from './governance-pack.js';
 import {
   computePackChecksum,
@@ -120,10 +120,7 @@ export class GovernanceBootstrapService {
     return report;
   }
 
-  private bootstrapRuntimeCatalogAndAccounts(
-    targetProject: string,
-    dryRun: boolean,
-  ): BootstrapAction[] {
+  private bootstrapRuntimeCatalogAndAccounts(targetProject: string, dryRun: boolean): BootstrapAction[] {
     const templatePath = resolve(this.catCafeRoot, 'cat-template.json');
     const catalogRelPath = '.cat-cafe/cat-catalog.json';
     const migrationRelPath = '.cat-cafe/accounts-migration';
@@ -143,9 +140,7 @@ export class GovernanceBootstrapService {
     const catalogAction: BootstrapAction = {
       file: catalogRelPath,
       action: catalogExists ? 'skipped' : 'created',
-      reason: catalogExists
-        ? 'runtime catalog already exists'
-        : 'runtime catalog bootstrapped from cat-template.json',
+      reason: catalogExists ? 'runtime catalog already exists' : 'runtime catalog bootstrapped from cat-template.json',
     };
 
     if (dryRun) {
