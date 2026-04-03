@@ -254,8 +254,8 @@ export function WorkspacePanel() {
   const [htmlPreview, setHtmlPreview] = useState(false);
   const [jsxPreview, setJsxPreview] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  // F063: vertical resize — treeBasis as percentage (20-80), persisted
-  const [treeBasis, setTreeBasis, resetTreeBasis] = usePersistedState('cat-cafe:treeBasis', 40);
+  // F063: vertical resize — treeBasis as percentage (0-80), persisted
+  const [treeBasis, setTreeBasis] = usePersistedState('cat-cafe:treeBasis', 40);
   const panelRef = useRef<HTMLElement>(null);
   const handleVerticalResize = useCallback(
     (delta: number) => {
@@ -263,7 +263,7 @@ export function WorkspacePanel() {
       const totalHeight = panelRef.current.offsetHeight;
       if (totalHeight === 0) return;
       const pct = (delta / totalHeight) * 100;
-      setTreeBasis((prev) => Math.min(80, Math.max(20, prev + pct)));
+      setTreeBasis((prev) => Math.min(80, Math.max(0, prev + pct)));
     },
     [setTreeBasis],
   );
@@ -897,7 +897,11 @@ export function WorkspacePanel() {
               {/* Vertical resize handle + File viewer */}
               {(file || openTabs.length > 0) && (
                 <>
-                  <ResizeHandle direction="vertical" onResize={handleVerticalResize} onDoubleClick={resetTreeBasis} />
+                  <ResizeHandle
+                    direction="vertical"
+                    onResize={handleVerticalResize}
+                    onDoubleClick={() => setTreeBasis((prev) => (prev <= 5 ? 40 : 0))}
+                  />
                   <div className="flex-1 flex flex-col min-h-0 animate-fade-in">
                     {/* Tab bar */}
                     {openTabs.length > 0 && (

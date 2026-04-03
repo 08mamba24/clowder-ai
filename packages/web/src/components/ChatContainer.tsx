@@ -133,8 +133,8 @@ export function ChatContainer({ threadId }: ChatContainerProps) {
       cancelled = true;
     };
   }, []);
-  // F063: resizable split pane — chatBasis as percentage (20-80), persisted
-  const [chatBasis, setChatBasis, resetChatBasis] = usePersistedState('cat-cafe:chatBasis', 50);
+  // F063: resizable split pane — chatBasis as percentage (0-80), persisted
+  const [chatBasis, setChatBasis] = usePersistedState('cat-cafe:chatBasis', 50);
   // clowder-ai#28: right status panel width in px, persisted
   const STATUS_PANEL_DEFAULT = 288; // w-72
   const [statusPanelWidth, setStatusPanelWidth, resetStatusPanelWidth] = usePersistedState(
@@ -154,7 +154,7 @@ export function ChatContainer({ threadId }: ChatContainerProps) {
       const totalWidth = containerRef.current.offsetWidth;
       if (totalWidth === 0) return;
       const pct = (delta / totalWidth) * 100;
-      setChatBasis((prev) => Math.min(80, Math.max(20, prev + pct)));
+      setChatBasis((prev) => Math.min(80, Math.max(0, prev + pct)));
     },
     [setChatBasis],
   );
@@ -732,7 +732,11 @@ export function ChatContainer({ threadId }: ChatContainerProps) {
       )}
       {statusPanelOpen && rightPanelMode === 'workspace' && (
         <>
-          <ResizeHandle direction="horizontal" onResize={handleHorizontalResize} onDoubleClick={resetChatBasis} />
+          <ResizeHandle
+            direction="horizontal"
+            onResize={handleHorizontalResize}
+            onDoubleClick={() => setChatBasis((prev) => (prev <= 5 ? 50 : 0))}
+          />
           <WorkspacePanel />
         </>
       )}
