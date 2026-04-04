@@ -21,6 +21,7 @@ import { LinkedRootRemoveButton, LinkedRootsManager } from './workspace/LinkedRo
 import { ResizeHandle } from './workspace/ResizeHandle';
 import { SchedulePanel } from './workspace/SchedulePanel';
 import { TerminalTab } from './workspace/TerminalTab';
+import { WorkspacePreviewOnly } from './workspace/WorkspacePreviewOnly';
 import { WorkspaceTree } from './workspace/WorkspaceTree';
 
 /** Find a node in a tree by path (DFS) */
@@ -175,6 +176,7 @@ export function WorkspacePanel() {
   const setWorkspaceMode = useChatStore((s) => s.setWorkspaceMode);
   const [previewPort, setPreviewPort] = useState<number | undefined>();
   const [previewPath, setPreviewPath] = useState<string>('/');
+  const [previewOnly, setPreviewOnly] = useState(false);
 
   // F120: Consume pending auto-open from always-mounted listener (ChatContainer)
   useEffect(() => {
@@ -186,6 +188,12 @@ export function WorkspacePanel() {
       setViewMode('browser');
     }
   }, [pendingPreviewAutoOpen, consumePreviewAutoOpen]);
+
+  useEffect(() => {
+    if (previewOnly && (workspaceMode !== 'dev' || viewMode !== 'browser')) {
+      setPreviewOnly(false);
+    }
+  }, [previewOnly, workspaceMode, viewMode]);
   const [portDiscoveryToast, setPortDiscoveryToast] = useState<{ port: number; framework?: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMode, setSearchMode] = useState<'content' | 'filename' | 'all'>('all');
@@ -563,6 +571,14 @@ export function WorkspacePanel() {
       ref={panelRef}
       className="hidden lg:flex flex-1 min-w-0 border-l border-cocreator-light bg-cafe-white/95 flex-col overflow-hidden animate-slide-in-right"
     >
+      {previewOnly && workspaceMode === 'dev' && viewMode === 'browser' ? (
+        <WorkspacePreviewOnly
+          initialPort={previewPort}
+          initialPath={previewPath}
+          onExit={() => setPreviewOnly(false)}
+        />
+      ) : (
+        <>
       {/* Header */}
       <div className="px-3 py-2.5 border-b border-cocreator-light flex items-center justify-between bg-cocreator-bg/50">
         <div className="flex items-center gap-2 min-w-0">
@@ -779,7 +795,20 @@ export function WorkspacePanel() {
           )}
 
           {viewMode === 'browser' ? (
-            <BrowserPanel initialPort={previewPort} initialPath={previewPath} />
+            <div className="flex flex-1 min-h-0 flex-col">
+              <div className="flex items-center justify-end px-3 py-2 border-b border-cocreator-light/40 bg-cafe-surface/50">
+                <button
+                  type="button"
+                  onClick={() => setPreviewOnly(true)}
+                  className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-cocreator-primary/10 text-cocreator-primary border border-cocreator-primary/20 hover:bg-cocreator-primary/15 transition-colors"
+                >
+                  专注预览
+                </button>
+              </div>
+              <div className="flex-1 min-h-0">
+                <BrowserPanel initialPort={previewPort} initialPath={previewPath} />
+              </div>
+            </div>
           ) : viewMode === 'terminal' ? (
             worktreeId ? (
               <TerminalTab worktreeId={worktreeId} />
@@ -1173,6 +1202,8 @@ export function WorkspacePanel() {
               )}
             </> /* end viewMode=files */
           )}
+        </>
+      )}
         </>
       )}
     </aside>
