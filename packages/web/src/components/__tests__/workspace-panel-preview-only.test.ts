@@ -245,6 +245,10 @@ describe('WorkspacePanel preview-only mode', () => {
     });
 
     expect(container.textContent).not.toContain('Workspace');
+    const shell = container.querySelector('[data-testid="workspace-focus-shell"]');
+    const viewport = container.querySelector('[data-testid="workspace-focus-shell-viewport"]');
+    expect(shell).not.toBeNull();
+    expect(viewport).not.toBeNull();
     expect(container.querySelector('[data-testid="markdown"]')).not.toBeNull();
 
     const exitFocus = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes('退出专注'));
