@@ -22,7 +22,7 @@ export function WorkspaceFocusShell({ children, onExit }: WorkspaceFocusShellPro
   }, [onExit]);
 
   return (
-    <div data-testid="workspace-focus-shell" className="relative h-full min-h-0 min-w-0 flex flex-col overflow-hidden">
+    <div data-testid="workspace-focus-shell" className="relative h-full min-h-0 min-w-0 flex flex-col overflow-auto">
       <div className="absolute top-2 right-2 z-20">
         <button
           type="button"
@@ -32,7 +32,7 @@ export function WorkspaceFocusShell({ children, onExit }: WorkspaceFocusShellPro
           退出专注
         </button>
       </div>
-      <div data-testid="workspace-focus-shell-viewport" className="flex-1 min-h-0 min-w-0 overflow-hidden">
+      <div data-testid="workspace-focus-shell-viewport" className="flex-1 min-h-0 min-w-0 overflow-auto">
         {children}
       </div>
     </div>
