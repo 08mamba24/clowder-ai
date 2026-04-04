@@ -32,9 +32,15 @@ vi.mock('@/hooks/usePersistedState', () => ({
 vi.mock('@/components/MarkdownContent', () => ({
   MarkdownContent: () => React.createElement('div', { 'data-testid': 'markdown' }),
 }));
-vi.mock('@/components/workspace/ChangesPanel', () => ({ ChangesPanel: () => null }));
-vi.mock('@/components/workspace/GitPanel', () => ({ GitPanel: () => null }));
-vi.mock('@/components/workspace/TerminalTab', () => ({ TerminalTab: () => null }));
+vi.mock('@/components/workspace/ChangesPanel', () => ({
+  ChangesPanel: () => React.createElement('div', { 'data-testid': 'changes-panel' }),
+}));
+vi.mock('@/components/workspace/GitPanel', () => ({
+  GitPanel: () => React.createElement('div', { 'data-testid': 'git-panel' }),
+}));
+vi.mock('@/components/workspace/TerminalTab', () => ({
+  TerminalTab: () => React.createElement('div', { 'data-testid': 'terminal-panel' }),
+}));
 vi.mock('@/components/workspace/JsxPreview', () => ({ JsxPreview: () => null }));
 vi.mock('@/components/workspace/LinkedRootsManager', () => ({
   LinkedRootsManager: () => null,
@@ -62,12 +68,25 @@ vi.mock('@/components/workspace/BrowserPanel', () => ({
     }),
 }));
 
-function setupMocks() {
+function setupMocks(options?: { file?: Record<string, unknown> | null }) {
+  const file =
+    options?.file === null
+      ? null
+      : {
+          path: 'docs/guide.md',
+          content: '# Preview\nhello',
+          sha256: 'sha-file',
+          size: 12,
+          mime: 'text/markdown',
+          truncated: false,
+          binary: false,
+          ...(options?.file ?? {}),
+        };
   mocks.useWorkspace.mockReturnValue({
     worktrees: [{ id: 'wt-main', branch: 'main', head: 'abc123', root: '/tmp/repo' }],
     worktreeId: 'wt-main',
     tree: [],
-    file: null,
+    file,
     searchResults: [],
     loading: false,
     searchLoading: false,
@@ -90,9 +109,9 @@ function setupMocks() {
   storeState = {
     setWorkspaceWorktreeId: vi.fn(),
     setWorkspaceOpenFile: vi.fn(),
-    workspaceOpenTabs: [],
+    workspaceOpenTabs: file ? [String(file.path)] : [],
     closeWorkspaceTab: vi.fn(),
-    workspaceOpenFilePath: null,
+    workspaceOpenFilePath: file ? String(file.path) : null,
     workspaceOpenFileLine: null,
     setRightPanelMode: vi.fn(),
     setPendingChatInsert: vi.fn(),
@@ -205,5 +224,60 @@ describe('WorkspacePanel preview-only mode', () => {
     expect(container.textContent).toContain('Workspace');
     expect(container.querySelector('[data-testid="knowledge-feed"]')).not.toBeNull();
     expect(container.querySelector('button')?.textContent ?? '').not.toContain('退出专注');
+  });
+
+  it('can enter file focus mode from files view and exit back to workspace chrome', async () => {
+    setupMocks();
+    const { WorkspacePanel } = await import('@/components/WorkspacePanel');
+    await act(async () => {
+      root.render(React.createElement(WorkspacePanel));
+    });
+
+    expect(container.textContent).toContain('Workspace');
+    expect(container.querySelector('[data-testid="markdown"]')).not.toBeNull();
+
+    const enterFocus = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('专注预览'),
+    );
+    expect(enterFocus).toBeTruthy();
+    await act(async () => {
+      enterFocus?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(container.textContent).not.toContain('Workspace');
+    expect(container.querySelector('[data-testid="markdown"]')).not.toBeNull();
+
+    const exitFocus = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes('退出专注'));
+    expect(exitFocus).toBeTruthy();
+    await act(async () => {
+      exitFocus?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain('Workspace');
+  });
+
+  it('can enter focus mode for terminal tab using the shared focus shell', async () => {
+    setupMocks({ file: null });
+    const { WorkspacePanel } = await import('@/components/WorkspacePanel');
+    await act(async () => {
+      root.render(React.createElement(WorkspacePanel));
+    });
+
+    const terminalTab = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes('Term'));
+    expect(terminalTab).toBeTruthy();
+    await act(async () => {
+      terminalTab?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const enterFocus = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('专注模式'),
+    );
+    expect(enterFocus).toBeTruthy();
+    await act(async () => {
+      enterFocus?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(container.textContent).not.toContain('Workspace');
+    expect(container.querySelector('[data-testid="terminal-panel"]')).not.toBeNull();
   });
 });
