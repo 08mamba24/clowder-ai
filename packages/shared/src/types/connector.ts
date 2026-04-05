@@ -160,10 +160,11 @@ const CONNECTOR_DEFINITIONS: readonly ConnectorDefinition[] = [
     color: { primary: '#059669', secondary: '#ECFDF5' },
     description: '多猫 @mention 聚合结果',
     tailwindTheme: {
-      avatar: 'bg-emerald-100 ring-2 ring-emerald-200',
-      label: 'text-emerald-700',
-      labelLink: 'text-emerald-700 hover:text-emerald-900',
-      bubble: 'border border-emerald-200 bg-emerald-50',
+      avatar: 'bg-emerald-100 ring-2 ring-emerald-200 dark:bg-emerald-500/15 dark:ring-emerald-400/30',
+      label: 'text-emerald-700 dark:text-emerald-200',
+      labelLink: 'text-emerald-700 hover:text-emerald-900 dark:text-emerald-200 dark:hover:text-emerald-100',
+      bubble:
+        'border border-emerald-200 bg-emerald-50 dark:border-emerald-700/60 dark:bg-emerald-950/35 dark:text-emerald-100',
     },
   },
   {
