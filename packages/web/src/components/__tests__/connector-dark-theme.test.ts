@@ -1,7 +1,15 @@
 import { getConnectorDefinition } from '@cat-cafe/shared';
 import { describe, expect, it } from 'vitest';
 
+import tailwindConfig from '../../../tailwind.config';
+
 describe('connector dark mode themes', () => {
+  it('Tailwind darkMode selector matches ThemeProvider data-theme attribute', () => {
+    // ThemeProvider uses attribute="data-theme" (next-themes)
+    // Tailwind must use matching selector so dark: classes follow in-app theme, not OS preference
+    expect(tailwindConfig.darkMode).toEqual(['selector', '[data-theme="dark"]']);
+  });
+
   it('multi-mention-result includes dark: variants for all slots', () => {
     const def = getConnectorDefinition('multi-mention-result');
     expect(def).toBeDefined();
