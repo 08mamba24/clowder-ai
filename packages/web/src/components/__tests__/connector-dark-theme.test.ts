@@ -24,10 +24,7 @@ describe('connector dark mode themes', () => {
 
       // No raw Tailwind bg/text/border colors (e.g., bg-blue-100, text-slate-700)
       for (const slot of allSlots) {
-        expect(
-          slot,
-          `${def.id} should not have hardcoded dark: variants`,
-        ).not.toMatch(/\bdark:/);
+        expect(slot, `${def.id} should not have hardcoded dark: variants`).not.toMatch(/\bdark:/);
       }
     }
   });
@@ -37,16 +34,26 @@ describe('connector dark mode themes', () => {
     expect(connColors).toBeDefined();
 
     const colorGroups = [
-      'slate', 'gray', 'amber', 'purple', 'emerald', 'blue',
-      'sky', 'cyan', 'red', 'indigo', 'violet', 'green',
+      'slate',
+      'gray',
+      'amber',
+      'purple',
+      'emerald',
+      'blue',
+      'sky',
+      'cyan',
+      'red',
+      'indigo',
+      'violet',
+      'green',
     ];
     const suffixes = ['bg', 'ring', 'text', 'hover', 'bubble-bg', 'bubble-border'];
 
     for (const group of colorGroups) {
       for (const suffix of suffixes) {
         const key = `${group}-${suffix}`;
-        expect(connColors![key], `conn.${key} should be registered`).toBeDefined();
-        expect(connColors![key], `conn.${key} should reference CSS variable`).toMatch(/^var\(--/);
+        expect(connColors?.[key], `conn.${key} should be registered`).toBeDefined();
+        expect(connColors?.[key], `conn.${key} should reference CSS variable`).toMatch(/^var\(--/);
       }
     }
   });
