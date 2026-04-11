@@ -510,10 +510,10 @@ async function main(): Promise<void> {
   // Thread index repair: rebuild ZSet indexes from thread detail hashes if sparse.
   // Prevents "all threads disappeared" after unclean shutdown.
   // Must run BEFORE evidence index rebuild — threadListFn reads ZSet indexes.
-  if (redis && typeof threadStore.repairIndex === 'function') {
+  if (redis && threadStore.repairIndex) {
     const startMs = Date.now();
     try {
-      const result = await (threadStore as { repairIndex: () => Promise<{ repaired: number }> }).repairIndex();
+      const result = await threadStore.repairIndex();
       if (result.repaired > 0) {
         app.log.info(`[api] Thread index repair: ${result.repaired} user indexes rebuilt (${Date.now() - startMs}ms)`);
       }

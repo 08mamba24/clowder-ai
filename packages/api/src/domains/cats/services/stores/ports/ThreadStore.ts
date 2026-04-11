@@ -278,6 +278,8 @@ export interface IThreadStore {
   restore(threadId: string): boolean | Promise<boolean>;
   /** F095 Phase D: List soft-deleted threads (trash bin). */
   listDeleted(userId: string): Thread[] | Promise<Thread[]>;
+  /** Startup repair: rebuild sparse ZSet indexes from thread detail hashes. */
+  repairIndex?(): Promise<{ repaired: number }>;
 }
 
 const MAX_THREADS = 100;
