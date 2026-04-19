@@ -2,7 +2,6 @@
 
 import { useMemo } from 'react';
 import { formatCatName, useCatData } from '@/hooks/useCatData';
-import { useChatStore } from '@/stores/chatStore';
 import { CatTokenUsage } from './CatTokenUsage';
 import type { RightStatusPanelProps } from './RightStatusPanel';
 import {
@@ -36,7 +35,6 @@ export function MobileStatusSheet({
   messageSummary,
 }: MobileStatusSheetProps) {
   const { getCatById } = useCatData();
-  const activeInvocations = useChatStore((s) => s.activeInvocations);
 
   const activeCats = useMemo(() => {
     const snapshotCats = collectSnapshotActiveCats(catInvocations);

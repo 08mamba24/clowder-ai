@@ -341,14 +341,28 @@ describe('useAgentMessages loading lifecycle', () => {
     mockGetThreadState.mockImplementation(((tid?: string) => {
       if (tid === 'thread-2') {
         return {
-          messages: [] as Array<{ id: string; type: string; catId?: string; content: string; isStreaming?: boolean; timestamp: number }>,
+          messages: [] as Array<{
+            id: string;
+            type: string;
+            catId?: string;
+            content: string;
+            isStreaming?: boolean;
+            timestamp: number;
+          }>,
           activeInvocations: {
             'inv-bg': { catId: 'dare', mode: 'execute' },
           },
         };
       }
       return {
-        messages: [] as Array<{ id: string; type: string; catId?: string; content: string; isStreaming?: boolean; timestamp: number }>,
+        messages: [] as Array<{
+          id: string;
+          type: string;
+          catId?: string;
+          content: string;
+          isStreaming?: boolean;
+          timestamp: number;
+        }>,
         activeInvocations: {
           'inv-active': { catId: 'codex', mode: 'execute' },
         },

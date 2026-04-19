@@ -336,7 +336,6 @@ export function RightStatusPanel({
   messageSummary,
   width,
 }: RightStatusPanelProps) {
-  const activeInvocations = useChatStore((s) => s.activeInvocations);
   // F26: Split into active (working now) vs history (appeared before)
   const { activeCats, historyCats } = useMemo(() => {
     const snapshotCats = collectSnapshotActiveCats(catInvocations);

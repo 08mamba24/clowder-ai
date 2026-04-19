@@ -3,7 +3,14 @@
  */
 
 export type IntentMode = 'execute' | 'ideate' | null;
-export type CatStatus = 'spawning' | 'pending' | 'streaming' | 'done' | 'error' | 'alive_but_silent' | 'suspected_stall';
+export type CatStatus =
+  | 'spawning'
+  | 'pending'
+  | 'streaming'
+  | 'done'
+  | 'error'
+  | 'alive_but_silent'
+  | 'suspected_stall';
 export type ActiveInvocationSlot = { catId: string; mode?: string; startedAt?: number };
 export type TaskProgressSnapshot = {
   tasks?: unknown[];
