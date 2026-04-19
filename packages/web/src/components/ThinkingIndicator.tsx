@@ -70,7 +70,7 @@ function SquareIcon({ className }: { className?: string }) {
 }
 
 interface ThinkingIndicatorProps {
-  onCancel?: (threadId: string) => void;
+  onCancel?: (threadId: string, catId?: string) => void;
 }
 
 /**
@@ -82,11 +82,18 @@ export function ThinkingIndicator({ onCancel }: ThinkingIndicatorProps = {}) {
   const targetCats = useChatStore((s) => s.targetCats);
   const catStatuses = useChatStore((s) => s.catStatuses);
   const catInvocations = useChatStore((s) => s.catInvocations);
+  const activeInvocations = useChatStore((s) => s.activeInvocations);
   const currentThreadId = useChatStore((s) => s.currentThreadId);
   const { getCatById } = useCatData();
 
   if (targetCats.length !== 1) return null;
-  const catId = targetCats[0];
+  // Derive display+cancel target from the same truth source (activeInvocations)
+  // to avoid "显示 A、取消 B" when targetCats is stale.
+  const catId = (() => {
+    const slots = Object.values(activeInvocations ?? {});
+    if (slots.length === 1) return slots[0]?.catId ?? targetCats[0];
+    return targetCats[0];
+  })();
   const status: CatStatusType = catStatuses[catId] ?? 'pending';
   if (status === 'done') return null;
 
@@ -160,7 +167,7 @@ export function ThinkingIndicator({ onCancel }: ThinkingIndicatorProps = {}) {
           {onCancel && currentThreadId && (
             <button
               data-testid="cancel-btn"
-              onClick={() => onCancel(currentThreadId)}
+              onClick={() => onCancel(currentThreadId, catId)}
               className="flex items-center gap-1.5 px-4 py-2 rounded-[10px] text-[13px] font-semibold text-white flex-shrink-0 transition-opacity hover:opacity-90"
               style={{ backgroundColor: '#D08068' }}
             >
