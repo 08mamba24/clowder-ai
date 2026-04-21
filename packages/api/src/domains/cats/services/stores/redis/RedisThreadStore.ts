@@ -201,18 +201,7 @@ export class RedisThreadStore implements IThreadStore {
   }
 
   async list(userId: string): Promise<Thread[]> {
-    let ids = await this.redis.zrevrange(ThreadKeys.userList(userId), 0, -1);
-
-    // Self-heal: if per-user index is unexpectedly sparse (common after TTL/crash),
-    // rebuild it from authoritative thread detail hashes so old threads remain discoverable.
-    if (this.canAttemptListRepair(userId, ids.length)) {
-      const repaired = await this.rebuildUserIndexFromThreadDetails(userId);
-      if (repaired > 0) {
-        // Mark cooldown only after successful rebuild
-        this.lastListRepairAt.set(userId, Date.now());
-        ids = await this.redis.zrevrange(ThreadKeys.userList(userId), 0, -1);
-      }
-    }
+    const ids = await this.loadUserThreadIds(userId);
 
     // Ensure default thread is included
     const hasDefault = ids.includes(DEFAULT_THREAD_ID);
@@ -530,7 +519,7 @@ export class RedisThreadStore implements IThreadStore {
 
   /** F095 Phase D: List soft-deleted threads (trash bin). */
   async listDeleted(userId: string): Promise<Thread[]> {
-    const ids = await this.redis.zrevrange(ThreadKeys.userList(userId), 0, -1);
+    const ids = await this.loadUserThreadIds(userId);
     const threads: Thread[] = [];
     for (const id of ids) {
       const thread = await this.get(id);
@@ -572,8 +561,61 @@ export class RedisThreadStore implements IThreadStore {
    * Single-pass: collects all data in Phase 1, reuses it directly in Phase 2
    * without calling rebuildUserIndexFromThreadDetails() (which would re-scan).
    */
-  async repairIndex(): Promise<{ repaired: number }> {
-    // Phase 1: Single-pass scan — aggregate userId → Map<threadId, lastActiveAt>
+  async repairIndex(userId?: string): Promise<{ repairedUsers: number; repairedMembers: number }> {
+    const userThreadData = await this.collectIndexedThreadsFromDetails(userId);
+    let repairedUsers = 0;
+    let repairedMembers = 0;
+
+    for (const [ownerId, hashData] of userThreadData) {
+      const zsetKey = ThreadKeys.userList(ownerId);
+      const indexedIds = await this.redis.zrange(zsetKey, 0, -1);
+      const indexedSet = new Set(indexedIds);
+      const missing = [...hashData.entries()].filter(([id]) => !indexedSet.has(id));
+
+      if (missing.length > 0) {
+        const zaddArgs: string[] = [];
+        for (const [id, score] of missing) {
+          zaddArgs.push(String(score), id);
+        }
+        const pipeline = this.redis.multi();
+        pipeline.zadd(zsetKey, ...zaddArgs);
+        if (this.ttlSeconds !== null) {
+          pipeline.expire(zsetKey, this.ttlSeconds);
+        }
+        await pipeline.exec();
+        repairedUsers += 1;
+        repairedMembers += missing.length;
+      }
+    }
+
+    return { repairedUsers, repairedMembers };
+  }
+
+  private canAttemptListRepair(userId: string, indexedCount: number): boolean {
+    if (indexedCount > 1) return false;
+    const now = Date.now();
+    const last = this.lastListRepairAt.get(userId) ?? 0;
+    if (now - last < RedisThreadStore.LIST_REPAIR_COOLDOWN_MS) return false;
+    return true;
+  }
+
+  private async loadUserThreadIds(userId: string): Promise<string[]> {
+    let ids = await this.redis.zrevrange(ThreadKeys.userList(userId), 0, -1);
+    if (!this.canAttemptListRepair(userId, ids.length)) {
+      return ids;
+    }
+
+    this.lastListRepairAt.set(userId, Date.now());
+    const repaired = await this.repairIndex(userId);
+    if (repaired.repairedMembers === 0) {
+      return ids;
+    }
+
+    ids = await this.redis.zrevrange(ThreadKeys.userList(userId), 0, -1);
+    return ids;
+  }
+
+  private async collectIndexedThreadsFromDetails(userId?: string): Promise<Map<string, Map<string, number>>> {
     const scanPattern = `${this.keyPrefix}${ThreadKeys.detail('thread_*')}`;
     let cursor = '0';
     const userThreadData = new Map<string, Map<string, number>>();
@@ -585,99 +627,35 @@ export class RedisThreadStore implements IThreadStore {
       ];
       cursor = nextCursor;
 
-      for (const rawKey of rawKeys) {
-        const key = this.stripKeyPrefix(rawKey);
-        if (!/^thread:thread_[^:]+$/.test(key)) continue;
+      const detailKeys = rawKeys
+        .map((rawKey) => this.stripKeyPrefix(rawKey))
+        .filter((key) => /^thread:thread_[^:]+$/.test(key));
+      if (detailKeys.length === 0) continue;
 
-        const data = await this.redis.hgetall(key);
-        if (!data?.id || !data.createdBy || data.createdBy === 'system') continue;
+      const pipeline = this.redis.multi();
+      for (const key of detailKeys) {
+        pipeline.hgetall(key);
+      }
+      const results = await pipeline.exec();
 
-        let threadMap = userThreadData.get(data.createdBy);
+      for (let i = 0; i < detailKeys.length; i += 1) {
+        const data = results?.[i]?.[1];
+        if (!data || typeof data !== 'object') continue;
+        const hash = data as Record<string, string>;
+        if (!hash.id || !hash.createdBy || hash.createdBy === 'system') continue;
+        if (userId && hash.createdBy !== userId) continue;
+
+        const lastActiveAt = Number.parseInt(hash.lastActiveAt ?? '0', 10);
+        let threadMap = userThreadData.get(hash.createdBy);
         if (!threadMap) {
           threadMap = new Map<string, number>();
-          userThreadData.set(data.createdBy, threadMap);
+          userThreadData.set(hash.createdBy, threadMap);
         }
-        const lastActiveAt = Number.parseInt(data.lastActiveAt ?? '0', 10);
-        threadMap.set(data.id, Number.isFinite(lastActiveAt) ? lastActiveAt : 0);
+        threadMap.set(hash.id, Number.isFinite(lastActiveAt) ? lastActiveAt : 0);
       }
     } while (cursor !== '0');
 
-    // Phase 2: For each user, check member diff and write missing entries directly
-    let totalRepaired = 0;
-    for (const [userId, hashData] of userThreadData) {
-      const zsetKey = ThreadKeys.userList(userId);
-      const indexedIds = await this.redis.zrange(zsetKey, 0, -1);
-      const indexedSet = new Set(indexedIds);
-      const missing = [...hashData.entries()].filter(([id]) => !indexedSet.has(id));
-
-      if (missing.length > 0) {
-        // Directly write missing entries from Phase 1 data — no re-scan needed
-        const zaddArgs: string[] = [];
-        for (const [id, score] of missing) {
-          zaddArgs.push(String(score), id);
-        }
-        const pipeline = this.redis.multi();
-        pipeline.zadd(zsetKey, ...zaddArgs);
-        if (this.ttlSeconds !== null) {
-          pipeline.expire(zsetKey, this.ttlSeconds);
-        }
-        await pipeline.exec();
-        totalRepaired++;
-      }
-    }
-
-    return { repaired: totalRepaired };
-  }
-
-  private canAttemptListRepair(userId: string, indexedCount: number): boolean {
-    if (indexedCount > 1) return false;
-    const now = Date.now();
-    const last = this.lastListRepairAt.get(userId) ?? 0;
-    if (now - last < RedisThreadStore.LIST_REPAIR_COOLDOWN_MS) return false;
-    // Note: cooldown is written AFTER successful rebuild in list()
-    return true;
-  }
-
-  private async rebuildUserIndexFromThreadDetails(userId: string): Promise<number> {
-    const scanPattern = `${this.keyPrefix}${ThreadKeys.detail('thread_*')}`;
-    let cursor = '0';
-    const members = new Map<string, number>();
-
-    do {
-      const [nextCursor, rawKeys] = (await this.redis.scan(cursor, 'MATCH', scanPattern, 'COUNT', 200)) as [
-        string,
-        string[],
-      ];
-      cursor = nextCursor;
-
-      for (const rawKey of rawKeys) {
-        const key = this.stripKeyPrefix(rawKey);
-        // detail keys only; skip participants/activity/etc.
-        if (!/^thread:thread_[^:]+$/.test(key)) continue;
-
-        const data = await this.redis.hgetall(key);
-        // Include threads owned by this user OR created by system (default thread)
-        if (!data?.id || (data.createdBy !== userId && data.createdBy !== 'system')) continue;
-        const lastActiveAt = Number.parseInt(data.lastActiveAt ?? '0', 10);
-        members.set(data.id, Number.isFinite(lastActiveAt) ? lastActiveAt : 0);
-      }
-    } while (cursor !== '0');
-
-    if (members.size === 0) return 0;
-
-    const zsetKey = ThreadKeys.userList(userId);
-    const zaddArgs: string[] = [];
-    for (const [id, score] of members) {
-      zaddArgs.push(String(score), id);
-    }
-
-    const pipeline = this.redis.multi();
-    pipeline.zadd(zsetKey, ...zaddArgs);
-    if (this.ttlSeconds !== null) {
-      pipeline.expire(zsetKey, this.ttlSeconds);
-    }
-    await pipeline.exec();
-    return members.size;
+    return userThreadData;
   }
 
   private async createDefaultThread(): Promise<Thread> {

@@ -509,8 +509,8 @@ describe('RedisThreadStore', { skip: redisIsolationSkipReason(REDIS_URL) }, () =
 
     // Run repairIndex
     const result = await store.repairIndex();
-    // At least one user index should be repaired (repair-user)
-    assert.ok(result.repaired >= 1, `Expected at least 1 repair, got ${result.repaired}`);
+    assert.equal(result.repairedUsers, 1);
+    assert.equal(result.repairedMembers, 2);
 
     // Verify the ZSet is restored
     const ids = await redis.zrange('threads:user:repair-user', 0, -1);
@@ -532,7 +532,8 @@ describe('RedisThreadStore', { skip: redisIsolationSkipReason(REDIS_URL) }, () =
 
     // repairIndex should detect the missing member and rebuild
     const result = await store.repairIndex();
-    assert.ok(result.repaired >= 1, `Expected at least 1 repair, got ${result.repaired}`);
+    assert.equal(result.repairedUsers, 1);
+    assert.equal(result.repairedMembers, 1);
 
     // Verify t2 is back in the ZSet
     const idsAfter = await redis.zrange('threads:user:partial-user', 0, -1);
