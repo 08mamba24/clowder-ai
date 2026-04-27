@@ -56,11 +56,7 @@ export function isPureThinkingAssistantTurn(entry) {
   return (
     entry.message.content.length > 0 &&
     entry.message.content.every(
-      (item) =>
-        item &&
-        typeof item === 'object' &&
-        item.type === 'thinking' &&
-        typeof item.signature === 'string',
+      (item) => item && typeof item === 'object' && item.type === 'thinking' && typeof item.signature === 'string',
     )
   );
 }
