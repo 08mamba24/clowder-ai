@@ -134,7 +134,7 @@ probe_port_with_ss() {
 
 probe_port_with_nc() {
   local port="$1"
-  timeout 1 nc -z 127.0.0.1 "$port" >/dev/null 2>&1 || timeout 1 nc -z 127.0.0.1 "$port" >/dev/null 2>&1
+  timeout 1 nc -z 127.0.0.1 "$port" >/dev/null 2>&1
 }
 
 probe_port_with_dev_tcp() {
