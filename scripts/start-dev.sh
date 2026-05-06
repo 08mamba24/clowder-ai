@@ -186,7 +186,7 @@ apply_worktree_port_offset() {
     # 派生值压过 .env.local 任何残留（LL-015 防回归）
     # 只 eval stdout，stderr 已分离（防命令注入）
     eval "$derive_stdout"
-    export REDIS_URL="redis://localhost:${REDIS_PORT}"
+    export REDIS_URL="redis://127.0.0.1:${REDIS_PORT}"
 
     # 圣域防御（defense-in-depth — derive-worktree-ports.mjs 已挡）
     if [ "$REDIS_PORT" = "6399" ]; then
@@ -238,8 +238,8 @@ normalize_raw_dev_redis_defaults() {
 
     REDIS_PORT="6398"
     case "${REDIS_URL:-}" in
-        ""|"redis://localhost:6399"|"redis://127.0.0.1:6399")
-            REDIS_URL="redis://localhost:6398"
+        ""|"redis://127.0.0.1:6399")
+            REDIS_URL="redis://127.0.0.1:6398"
             ;;
     esac
 }
@@ -1108,7 +1108,7 @@ setup_storage() {
     # 默认: 尝试 Redis 持久化 (专属端口，避免与系统 Redis 冲突)
     if redis-cli -p "$REDIS_PORT" ping &> /dev/null; then
         echo -e "${GREEN}  ✓ Redis 已运行 (端口 $REDIS_PORT)${NC}"
-        export REDIS_URL="redis://localhost:$REDIS_PORT"
+        export REDIS_URL="redis://127.0.0.1:$REDIS_PORT"
         print_redis_runtime_info
         return
     fi
@@ -1132,7 +1132,7 @@ setup_storage() {
         sleep 1
         if redis-cli -p "$REDIS_PORT" ping &> /dev/null; then
             echo -e "${GREEN}  ✓ Redis 已启动 (端口 $REDIS_PORT)${NC}"
-            export REDIS_URL="redis://localhost:$REDIS_PORT"
+            export REDIS_URL="redis://127.0.0.1:$REDIS_PORT"
             STARTED_REDIS=true
             print_redis_runtime_info
         else
