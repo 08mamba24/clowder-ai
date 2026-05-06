@@ -140,7 +140,10 @@ probe_port_with_nc() {
 probe_port_with_dev_tcp() {
   local port="$1"
   # Bash-only: requires net redirections support (enabled in most mainstream builds).
-  (exec 3<>"/dev/tcp/127.0.0.1/$port") >/dev/null 2>&1 || (exec 3<>"/dev/tcp/localhost/$port") >/dev/null 2>&1
+  # timeout prevents WSL hangs on closed ports (no built-in /dev/tcp timeout).
+  # Positional param avoids interpolating $port into bash -c command string.
+  timeout 1 bash -c 'exec 3<>/dev/tcp/127.0.0.1/$1' probe "$port" >/dev/null 2>&1 \
+    || timeout 1 bash -c 'exec 3<>/dev/tcp/localhost/$1' probe "$port" >/dev/null 2>&1
 }
 
 port_is_listening() {

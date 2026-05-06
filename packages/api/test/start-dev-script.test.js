@@ -333,7 +333,7 @@ test('direct command mode can prefer current .env ports over ambient shell ports
   }
 });
 
-test('raw dev entry remaps setup-style Redis 6399 defaults to dev Redis 6398', () => {
+test('raw dev entry remaps setup-style Redis 6399 defaults to dev Redis 6398 (IPv4 normalization)', () => {
   const scriptPath = resolve(process.cwd(), '../../scripts/start-dev.sh');
   const tempRoot = mkdtempSync(join(tmpdir(), 'cat-cafe-start-dev-redis-dev-default-'));
   const tempScriptPath = join(tempRoot, 'scripts', 'start-dev.sh');
@@ -359,7 +359,7 @@ test('raw dev entry remaps setup-style Redis 6399 defaults to dev Redis 6398', (
     );
 
     assert.equal(result.status, 0, `snippet failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-    assert.equal(result.stdout.trim(), '6398|redis://localhost:6398');
+    assert.equal(result.stdout.trim(), '6398|redis://127.0.0.1:6398');
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }
