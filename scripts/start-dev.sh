@@ -980,11 +980,11 @@ archive_redis_snapshot() {
     local dir=""
     local dbfile=""
 
-    if redis-cli -p "$REDIS_PORT" ping &> /dev/null; then
-        redis-cli -p "$REDIS_PORT" bgsave &> /dev/null || true
+    if timeout 2 redis-cli -p "$REDIS_PORT" ping &> /dev/null; then
+        timeout 2 redis-cli -p "$REDIS_PORT" bgsave &> /dev/null || true
         sleep 0.2
-        dir=$(redis-cli -p "$REDIS_PORT" config get dir 2>/dev/null | sed -n '2p' || true)
-        dbfile=$(redis-cli -p "$REDIS_PORT" config get dbfilename 2>/dev/null | sed -n '2p' || true)
+        dir=$(timeout 2 redis-cli -p "$REDIS_PORT" config get dir 2>/dev/null | sed -n '2p' || true)
+        dbfile=$(timeout 2 redis-cli -p "$REDIS_PORT" config get dbfilename 2>/dev/null | sed -n '2p' || true)
         if [ -n "$dir" ] && [ -n "$dbfile" ]; then
             source="$dir/$dbfile"
         fi
@@ -1012,10 +1012,10 @@ archive_redis_snapshot() {
 
 print_redis_runtime_info() {
     local dir dbfile appendonly dbsize
-    dir=$(redis-cli -p "$REDIS_PORT" config get dir 2>/dev/null | sed -n '2p' || true)
-    dbfile=$(redis-cli -p "$REDIS_PORT" config get dbfilename 2>/dev/null | sed -n '2p' || true)
-    appendonly=$(redis-cli -p "$REDIS_PORT" config get appendonly 2>/dev/null | sed -n '2p' || true)
-    dbsize=$(redis-cli -p "$REDIS_PORT" dbsize 2>/dev/null || echo "?")
+    dir=$(timeout 2 redis-cli -p "$REDIS_PORT" config get dir 2>/dev/null | sed -n '2p' || true)
+    dbfile=$(timeout 2 redis-cli -p "$REDIS_PORT" config get dbfilename 2>/dev/null | sed -n '2p' || true)
+    appendonly=$(timeout 2 redis-cli -p "$REDIS_PORT" config get appendonly 2>/dev/null | sed -n '2p' || true)
+    dbsize=$(timeout 2 redis-cli -p "$REDIS_PORT" dbsize 2>/dev/null || echo "?")
     echo "  Redis 配置:"
     echo "    - profile:   $REDIS_PROFILE"
     echo "    - port:      $REDIS_PORT"
@@ -1106,7 +1106,7 @@ setup_storage() {
     archive_redis_snapshot "pre-start"
 
     # 默认: 尝试 Redis 持久化 (专属端口，避免与系统 Redis 冲突)
-    if redis-cli -p "$REDIS_PORT" ping &> /dev/null; then
+    if timeout 2 redis-cli -p "$REDIS_PORT" ping &> /dev/null; then
         echo -e "${GREEN}  ✓ Redis 已运行 (端口 $REDIS_PORT)${NC}"
         export REDIS_URL="redis://127.0.0.1:$REDIS_PORT"
         print_redis_runtime_info
@@ -1130,7 +1130,7 @@ setup_storage() {
             --logfile "$REDIS_LOGFILE" \
             >/dev/null 2>&1 || true
         sleep 1
-        if redis-cli -p "$REDIS_PORT" ping &> /dev/null; then
+        if timeout 2 redis-cli -p "$REDIS_PORT" ping &> /dev/null; then
             echo -e "${GREEN}  ✓ Redis 已启动 (端口 $REDIS_PORT)${NC}"
             export REDIS_URL="redis://127.0.0.1:$REDIS_PORT"
             STARTED_REDIS=true
@@ -1164,9 +1164,9 @@ cleanup() {
     terminate_managed_pids
 
     # 关闭我们启动的专属 Redis (不影响其他 Redis 实例)
-    if [ "$USE_REDIS" = true ] && [ "$STARTED_REDIS" = true ] && redis-cli -p "$REDIS_PORT" ping &> /dev/null 2>&1; then
+    if [ "$USE_REDIS" = true ] && [ "$STARTED_REDIS" = true ] && timeout 2 redis-cli -p "$REDIS_PORT" ping &> /dev/null 2>&1; then
         archive_redis_snapshot "pre-stop"
-        redis-cli -p "$REDIS_PORT" shutdown save &> /dev/null || true
+        timeout 2 redis-cli -p "$REDIS_PORT" shutdown save &> /dev/null || true
         echo "  Redis (端口 $REDIS_PORT) 已关闭"
     fi
     wait 2>/dev/null || true
