@@ -461,8 +461,13 @@ probe_port_with_dev_tcp() {
     # Bash-only: requires net redirections support (enabled in most mainstream builds).
     # timeout prevents WSL hangs on closed ports (no built-in /dev/tcp timeout).
     # Positional param avoids interpolating $port into bash -c command string.
-    timeout 1 bash -c 'exec 3<>/dev/tcp/127.0.0.1/$1' probe "$port" >/dev/null 2>&1 \
-        || timeout 1 bash -c 'exec 3<>/dev/tcp/localhost/$1' probe "$port" >/dev/null 2>&1
+    # When timeout is unavailable (stock macOS, minimal images), fall back to bare /dev/tcp.
+    local timeout_cmd=""
+    if command -v timeout >/dev/null 2>&1; then
+        timeout_cmd="timeout 1"
+    fi
+    ${timeout_cmd} bash -c 'exec 3<>/dev/tcp/127.0.0.1/$1' probe "$port" >/dev/null 2>&1 \
+        || ${timeout_cmd} bash -c 'exec 3<>/dev/tcp/localhost/$1' probe "$port" >/dev/null 2>&1
 }
 
 port_listen_pids() {
