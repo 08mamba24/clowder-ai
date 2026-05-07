@@ -464,6 +464,8 @@ start_runtime_worktree() {
   exec env CAT_CAFE_STRICT_PROFILE_DEFAULTS=1 ./scripts/start-dev.sh --prod-web --profile=opensource ${START_ARGS[@]+"${START_ARGS[@]}"}
 }
 
+[[ "${1:-}" == "--source-only" ]] && { return 0 2>/dev/null; exit 0; }
+
 COMMAND="${1:-status}"
 shift || true
 
