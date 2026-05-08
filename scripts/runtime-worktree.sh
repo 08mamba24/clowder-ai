@@ -413,6 +413,8 @@ status_runtime_worktree() {
 }
 
 start_runtime_worktree() {
+  info "preparing runtime worktree (checking ports, syncing origin/main…)"
+
   if ! is_git_repo; then
     RUNTIME_DIR="$PROJECT_DIR"
     ensure_restart_authorized
