@@ -17,6 +17,7 @@ import type { RedisClient } from '@cat-cafe/shared/utils';
 import * as lark from '@larksuiteoapi/node-sdk';
 import type { FastifyBaseLogger } from 'fastify';
 import { isCatAvailable } from '../../config/cat-config-loader.js';
+import { resolveServiceEndpoint } from '../../domains/services/service-registry.js';
 import type { ConnectorWebhookHandler, WebhookHandleResult } from '../../routes/connector-webhooks.js';
 import { getDefaultUploadDir } from '../../utils/upload-paths.js';
 import { deliverConnectorMessage } from '../email/deliver-connector-message.js';
@@ -91,6 +92,19 @@ export interface ConnectorGatewayDeps {
       timestamp: number;
     }): Promise<{ id: string }>;
     getById?(id: string): Promise<{ source?: ConnectorSource } | null>;
+    getByThread?(
+      threadId: string,
+      limit?: number,
+    ):
+      | Array<{ catId: string | null; userId?: string; content: string; timestamp: number; source?: string }>
+      | Promise<Array<{ catId: string | null; userId?: string; content: string; timestamp: number; source?: string }>>;
+    getByThreadBefore?(
+      threadId: string,
+      timestamp: number,
+      limit?: number,
+    ):
+      | Array<{ catId: string | null; userId?: string; content: string; timestamp: number; source?: string }>
+      | Promise<Array<{ catId: string | null; userId?: string; content: string; timestamp: number; source?: string }>>;
   };
   readonly threadStore: {
     create(userId: string, title?: string): { id: string } | Promise<{ id: string }>;
@@ -214,7 +228,7 @@ export function loadConnectorGatewayConfig(): ConnectorGatewayConfig {
     wecomToken: process.env.WECOM_TOKEN,
     wecomEncodingAesKey: process.env.WECOM_ENCODING_AES_KEY,
     coCreatorUserId: process.env.DEFAULT_OWNER_USER_ID,
-    whisperUrl: process.env.WHISPER_URL,
+    whisperUrl: resolveServiceEndpoint('whisper-stt') ?? process.env.WHISPER_URL,
     connectorMediaDir: process.env.CONNECTOR_MEDIA_DIR,
     xiaoyiAk: process.env.XIAOYI_AK,
     xiaoyiSk: process.env.XIAOYI_SK,
@@ -313,6 +327,9 @@ export async function startConnectorGateway(
     agentRegistry: deps.agentRegistry,
     catRoster,
     commandRegistry: deps.commandRegistry,
+    ...(deps.messageStore.getByThreadBefore
+      ? { messageStore: deps.messageStore as ConnectorCommandLayerDeps['messageStore'] }
+      : {}),
   });
 
   // Phase 5+6: Media service + STT provider (optional)
