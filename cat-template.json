@@ -193,8 +193,8 @@
       },
       "mentionPatterns": ["@opus", "@布偶猫", "@布偶", "@ragdoll", "@宪宪"],
       "roleDescription": "主架构师和核心开发者，擅长深度思考和系统设计",
-      "teamStrengths": "架构设计、写代码一把好手",
-      "caution": null,
+      "teamStrengths": "架构设计 + 核心编码主力，复杂系统拆解最强",
+      "caution": "bug 定位是弱项，定不出交砚砚；周配额稀缺，琐碎量产活别接、分给金渐层",
       "defaultVariantId": "opus-default",
       "variants": [
         {
@@ -362,7 +362,8 @@
       },
       "mentionPatterns": ["@codex", "@缅因猫", "@缅因", "@maine", "@砚砚"],
       "roleDescription": "代码审查专家，擅长安全分析、测试覆盖和代码质量把控",
-      "teamStrengths": "Review、找 bug、coding 落地",
+      "teamStrengths": "代码审查 + 安全分析主力，找 bug、终端 agentic 强",
+      "caution": "审查易顺 PR 描述走(确认偏误)需独立复核；反应快偶尔抢结论",
       "features": {
         "missionHub": {
           "selfClaimScope": "disabled"
@@ -534,9 +535,9 @@
         "secondary": "#D6E9F8"
       },
       "mentionPatterns": ["@gemini", "@暹罗猫", "@暹罗", "@siamese", "@暄罗猫", "@暄罗", "@烁烁"],
-      "roleDescription": "视觉设计师和创意顾问，擅长 UI/UX 设计和视觉表达",
-      "teamStrengths": "审美、前端设计风格、打破常规",
-      "caution": "禁止写代码！幻觉多，不遵守 SOP",
+      "roleDescription": "视觉设计 + 表达主力，擅长 UI/UX、创意表达、整库大上下文阅读",
+      "teamStrengths": "审美、前端设计、表达力全队最强、1M 大上下文通读",
+      "caution": "禁止写代码！开放生成爱编事实(引用/数据/API)需复核，不遵守 SOP",
       "restrictions": ["禁止写代码"],
       "features": {
         "sessionChain": true
