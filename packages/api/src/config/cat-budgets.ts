@@ -39,6 +39,12 @@ const DEFAULT_BUDGETS: Record<string, ContextBudget> = {
   // Spark is a known built-in variant with a smaller context window than the
   // maine-coon breed default; keep it stable even if runtime config loading fails.
   spark: { maxPromptTokens: 64000, maxContextTokens: 40000, maxMessages: 100, maxContentLengthPerMsg: 100000 },
+  // Domestic helper cats (opencode-backed, 1M-window models: glm-5.2 / deepseek-v4-pro /
+  // MiniMax-M3). 2/5 of window so a member left empty in the UI still resolves to 400k
+  // instead of GLOBAL_FALLBACK. Keyed by catId (checked before breedId), like spark.
+  glm: { maxPromptTokens: 400000, maxContextTokens: 360000, maxMessages: 200, maxContentLengthPerMsg: 100000 },
+  deepseek: { maxPromptTokens: 400000, maxContextTokens: 360000, maxMessages: 200, maxContentLengthPerMsg: 100000 },
+  minimax: { maxPromptTokens: 400000, maxContextTokens: 360000, maxMessages: 300, maxContentLengthPerMsg: 100000 },
 };
 
 /** F32-a: Conservative fallback for unknown/dynamic cats — use smallest built-in budget */
