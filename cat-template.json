@@ -65,6 +65,45 @@
       "roleDescription": "开源多模型编码 agent，自带多专家编排 + LSP + 主题生态",
       "personality": "沉稳可靠，什么 provider 都能接，什么任务都能扛",
       "teamStrengths": "多专家内部编排、LSP 集成、开源生态、provider-agnostic"
+    },
+    {
+      "id": "ju-mao",
+      "name": "橘猫",
+      "nickname": "谱谱",
+      "avatar": "/avatars/glm.png",
+      "color": {
+        "primary": "#E8A33D",
+        "secondary": "#F8E6C8"
+      },
+      "roleDescription": "实现量产主力，落 lead 设计、中文/通用文字后备",
+      "personality": "踏实肯干，话不多但活儿最多，能扛事的大橘",
+      "teamStrengths": "海量配额走量、中文、自跑长循环"
+    },
+    {
+      "id": "xuan-mao",
+      "name": "玄猫",
+      "nickname": "渊渊",
+      "avatar": "/avatars/deepseek.png",
+      "color": {
+        "primary": "#2C2C34",
+        "secondary": "#C9C9D4"
+      },
+      "roleDescription": "深推理与算法验证副手，砚砚队，跨家挑逻辑漏洞",
+      "personality": "沉静深邃，话少但每句带推导，像深潭里的玄猫",
+      "teamStrengths": "数学/竞赛算法(Codeforces级)、CoT透明、便宜可batch"
+    },
+    {
+      "id": "san-hua",
+      "name": "三花猫",
+      "nickname": "灵灵",
+      "avatar": "/avatars/minimax.png",
+      "color": {
+        "primary": "#E06C9F",
+        "secondary": "#F8DCE8"
+      },
+      "roleDescription": "极速产出副手，文案/翻译/批量，烁烁队走量出稿",
+      "personality": "灵动活泼，手快嘴快，像三色斑斓的三花猫",
+      "teamStrengths": "全队最快、1M大上下文、原生视频图输入、批量出稿"
     }
   ],
   "clientDefaults": {
