@@ -1013,8 +1013,8 @@
           "personality": "踏实肯干，话不多但活儿最多，能扛事的大橘",
           "strengths": ["coding", "chinese", "high-volume"],
           "contextBudget": {
-            "maxPromptTokens": 180000,
-            "maxContextTokens": 160000,
+            "maxPromptTokens": 400000,
+            "maxContextTokens": 360000,
             "maxMessages": 200,
             "maxContentLengthPerMsg": 100000
           }
@@ -1051,8 +1051,8 @@
           "personality": "沉静深邃，话少但每句带推导，像深潭里的玄猫",
           "strengths": ["reasoning", "math", "algorithm", "verification"],
           "contextBudget": {
-            "maxPromptTokens": 180000,
-            "maxContextTokens": 160000,
+            "maxPromptTokens": 400000,
+            "maxContextTokens": 360000,
             "maxMessages": 200,
             "maxContentLengthPerMsg": 100000
           }
@@ -1089,8 +1089,8 @@
           "personality": "灵动活泼，手快嘴快，像三色斑斓的三花猫",
           "strengths": ["speed", "writing", "translation", "multimodal"],
           "contextBudget": {
-            "maxPromptTokens": 200000,
-            "maxContextTokens": 180000,
+            "maxPromptTokens": 400000,
+            "maxContextTokens": 360000,
             "maxMessages": 300,
             "maxContentLengthPerMsg": 100000
           }
