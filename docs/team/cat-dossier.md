@@ -51,20 +51,20 @@
 
 当前模型: `gemini-3.1-pro-preview` ✅(roster 已是最新)。
 
-## GLM 猫 · Zhipu (新 · 未入 roster · 现挂金渐层伞下) · 实现走量
+## 谱谱 · GLM (橘猫 / ju-mao · catId glm · ✅已入 roster) · 实现走量
 
 > 一句话：量最大的实现苦力，配额海量、中文好，能自跑长循环，但非编码最强。
 
-- ① **原生峰值**: 实现量产主力——胜在 ①海量 coding-plan 配额(量最大) ②中文 ③自跑 8h plan-execute-test-fix 循环 `[bench⚠️ SWE-Pro 58.4 厂商·已被超]`
+- ① **原生峰值**: 实现量产主力——胜在 ①海量 coding-plan 配额(量最大) ②中文 ③自跑 8h plan-execute-test-fix 循环 `[bench: glm-5.1 SWE-Pro 58.4 自报当下限代理 · 5.2 独立数未出 · ⏳待回填]`
 - ② **被低估**: 中文/通用文字后备；agentic 长任务 `[infer]`
 - ③ **坏直觉**: 不擅架构取舍，易闷头实现跑偏 `[infer]`
 - ④ **召唤反信号**: 要"最强编码质量"→其实 DeepSeek V4/fable 更强；架构决策→宪宪；安全审→砚砚 `[bench✅+设计]`
 - ⑤ **互补&反模式**: 接宪宪设计落地，产物交砚砚+DeepSeek 跨校审 `[KD]`
 - ⑥ **熔断**: 拿不准设计还自由发挥→停、回问宪宪
 
-建议模型: `glm-5.1`(>=5 系)。独立榜编码已被 DeepSeek V4 Pro(73.8)/MiniMax M3(SWE-Pro 59.0)超，价值在量与价非质。
+当前模型: `zai-coding-plan/glm-5.2`(6/13 发布, 1M ctx, coding-first, 你的 plan 已支持; **无独立 benchmark, 待回填**)。已知量 alt: `glm-5.1`(SWE-Pro 58.4 自报)。独立榜编码已被 DeepSeek V4 Pro(73.8)/MiniMax M3(SWE-Pro 59.0)超，价值在量与价非质。
 
-## DeepSeek 猫 · DeepSeek (新 · 未入 roster) · 深推理/算法验证
+## 渊渊 · DeepSeek (玄猫 / xuan-mao · catId deepseek · ✅已入 roster) · 深推理/算法验证
 
 > 一句话：算法与数学的验证专家，便宜可 batch，魔鬼代言人挑逻辑漏洞。
 
@@ -77,7 +77,7 @@
 
 建议模型: `deepseek-v4-pro`。**Pro vs Max = 同模型(1.6T/49B, 1M ctx)的推理力度档，非两个模型**：默认 Pro($0.435/$0.87)跑 batch；最硬的算法/验证 gate 切 Max($1.74/$3.48, 4x, SWE-Verified 80.6 开源第一)。
 
-## MiniMax 猫 · MiniMax (新 · 未入 roster) · 极速产出/批量
+## 灵灵 · MiniMax (三花猫 / san-hua · catId minimax · ✅已入 roster) · 极速产出/批量
 
 > 一句话：全队最快，1M 上下文 + 多模态，烁烁定调它走量出稿。
 
@@ -102,7 +102,10 @@
 
 ## TODO (F208 后续 Phase)
 
-- [ ] 3 新猫(GLM/DeepSeek/MiniMax)入 roster：需起猫名(项目惯例:猫自己命名)、family、avatar、variants
+- [x] 3 新猫入 roster：谱谱(橘猫/glm)、渊渊(玄猫/deepseek)、灵灵(三花猫/minimax)，走 opencode 后端，已注册+可@+可路由
+- [ ] GLM 5.2 benchmark 回填（独立榜出 或 F200 轨迹攒够后，替换 5.1 代理数）
+- [ ] 3 新猫 avatar PNG (/avatars/glm|deepseek|minimax.png) — 缺则 UI 占位，不影响路由
+- [ ] 猫名最终可让猫自己确认(项目惯例 cats name themselves)
 - [ ] lead variants 模型升级(fable / gpt-5.5 / glm-5.1 / deepseek-v4-pro / minimax-m3)——需确认 carrier 接受新 model id
 - [ ] L0 指针进 root md / session hook (F208 AC-A3)
 - [ ] 传球按需加载 L1 (F208 Phase B)
