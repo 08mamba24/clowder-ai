@@ -8,9 +8,7 @@ const {
   readExactMcpEnvironmentReference,
   renderMcpServerEnvReferences,
   resolveMcpServerEnvReferences,
-} = await import(
-  '../dist/config/capabilities/mcp-env-reference.js'
-);
+} = await import('../dist/config/capabilities/mcp-env-reference.js');
 
 describe('resolveMcpServerEnvReferences', () => {
   it('resolves full and embedded environment references without mutating the descriptor', () => {

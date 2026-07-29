@@ -17,13 +17,13 @@ import {
   resolveServersForCat,
 } from '../../../../../config/capabilities/capability-orchestrator.js';
 import {
-  MissingMcpEnvironmentVariableError,
-  renderMcpServerEnvReferences,
-} from '../../../../../config/capabilities/mcp-env-reference.js';
-import {
   toOpenCodeMcpEntry,
   toOpenCodeRemoteMcpEntry,
 } from '../../../../../config/capabilities/mcp-config-adapters.js';
+import {
+  MissingMcpEnvironmentVariableError,
+  renderMcpServerEnvReferences,
+} from '../../../../../config/capabilities/mcp-env-reference.js';
 
 /** MCP entry type derived from toOpenCodeMcpEntry return type. */
 type OpenCodeMcpEntry = ReturnType<typeof toOpenCodeMcpEntry> | ReturnType<typeof toOpenCodeRemoteMcpEntry>;

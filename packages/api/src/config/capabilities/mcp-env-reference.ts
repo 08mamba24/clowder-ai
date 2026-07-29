@@ -20,11 +20,7 @@ export class MissingMcpEnvironmentVariableError extends Error {
   }
 }
 
-function resolveValue(
-  value: string,
-  env: Readonly<Record<string, string | undefined>>,
-  missing: string[],
-): string {
+function resolveValue(value: string, env: Readonly<Record<string, string | undefined>>, missing: string[]): string {
   return value.replace(ENV_REFERENCE_PATTERN, (placeholder, name: string) => {
     const resolved = env[name];
     if (resolved === undefined || resolved === '') {

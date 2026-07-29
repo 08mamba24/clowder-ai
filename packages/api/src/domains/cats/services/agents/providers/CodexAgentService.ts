@@ -27,15 +27,15 @@ import {
   resolveServersForCat,
 } from '../../../../../config/capabilities/capability-orchestrator.js';
 import {
-  MissingMcpEnvironmentVariableError,
-  readExactMcpEnvironmentReference,
-  resolveMcpServerEnvReferences,
-} from '../../../../../config/capabilities/mcp-env-reference.js';
-import {
   CAT_CAFE_SPLIT_ENTRYPOINTS,
   MCP_CALLBACK_ENV_KEYS,
   resolveCatCafeNodeCommand,
 } from '../../../../../config/capabilities/mcp-constants.js';
+import {
+  MissingMcpEnvironmentVariableError,
+  readExactMcpEnvironmentReference,
+  resolveMcpServerEnvReferences,
+} from '../../../../../config/capabilities/mcp-env-reference.js';
 import { getCatContextWindowConfig, getCatEffort } from '../../../../../config/cat-config-loader.js';
 import { getCatModel } from '../../../../../config/cat-models.js';
 import { getCodexApprovalPolicy, getCodexSandboxMode } from '../../../../../config/codex-cli.js';
@@ -533,10 +533,7 @@ async function buildCatCafeMcpArgs(
               // Validation fails closed, but the token never enters argv or a
               // generated wrapper file.
               resolveMcpServerEnvReferences(s, process.env);
-              args.push(
-                '--config',
-                `mcp_servers.${tomlName}.bearer_token_env_var=${toTomlString(referencedBearer)}`,
-              );
+              args.push('--config', `mcp_servers.${tomlName}.bearer_token_env_var=${toTomlString(referencedBearer)}`);
             } else {
               const resolvedServer = resolveMcpServerEnvReferences(s, process.env);
               const authHeader = resolvedServer.headers
@@ -627,10 +624,7 @@ async function buildCatCafeMcpArgs(
           `mcp_servers.${tomlName}.enabled=true`,
         );
         if (forwardedEnvVars.length > 0) {
-          args.push(
-            '--config',
-            `mcp_servers.${tomlName}.env_vars=[${forwardedEnvVars.map(toTomlString).join(', ')}]`,
-          );
+          args.push('--config', `mcp_servers.${tomlName}.env_vars=[${forwardedEnvVars.map(toTomlString).join(', ')}]`);
         }
         if (isCatCafe) {
           args.push('--config', `mcp_servers.${tomlName}.default_tools_approval_mode="approve"`);

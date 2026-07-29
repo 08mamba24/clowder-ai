@@ -1258,12 +1258,13 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
 
           const bearerArg = args.find((a) => a.includes('bearer_token_env_var'));
           assert.ok(bearerArg, 'env-backed header must still map to bearer_token_env_var');
-          assert.match(bearerArg, new RegExp(`${envKey}[\"']?$`));
+          assert.match(bearerArg, new RegExp(`${envKey}["']?$`));
           assert.doesNotMatch(args.join('\n'), /resolved-secret-token-456/);
           assert.equal(spawnOpts.env[envKey], 'resolved-secret-token-456');
           assert.equal(
             Object.entries(spawnOpts.env).some(
-              ([key, value]) => key !== envKey && key.startsWith('CLOWDER_MCP_BEARER_') && value === process.env[envKey],
+              ([key, value]) =>
+                key !== envKey && key.startsWith('CLOWDER_MCP_BEARER_') && value === process.env[envKey],
             ),
             false,
             'native environment reference should not duplicate this token into a generated variable',
