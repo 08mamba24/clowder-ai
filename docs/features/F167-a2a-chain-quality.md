@@ -660,6 +660,16 @@ operator experience："简直了你和Maine Coon是没头脑（Maine Coon听不�
 | 纠正轮次 | 2（"少了痛点解决"误读为去解 EMF → "你理解错了！不是让你解决这个 case"才拉回 meta） |
 | 元心智哪条没执行 | Q3 坐标变换——没把"痛点"从 case 坐标系（EMF 技术）变换到 meta 坐标系（泛化能力 + harness），锚定在最显眼的技术名词上 |
 
+### Case E7: 把本地文件路径误包装成浏览器 URL（2026-08-03，Maine Coon）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | Markdown 中的绝对本地路径链接会被 Hub 识别为 Workspace 文件入口，并保留行号定位能力 |
+| 实际要求 | 本地文件应通过 `workspace-navigator` 的 typed MCP，以相对路径和行号在 Workspace 面板打开；工具不可用时应明确说明，不能给出会被重写成 `localhost:3003/...` 的伪可点击链接 |
+| 偏差根因 | 上下文盲视 + 通道混淆——机械套用通用 Markdown 文件链接格式，没有验证 Hub renderer 的实际重写行为，也没有把“文件导航”和“浏览器 URL”分成两条能力路径 |
+| 纠正轮次 | 1（operator 展示实际被重写的 URL，并追问该地址是否可能打开） |
+| 元心智哪条没执行 | Q2 信息验证（未验证渲染后的目标）+ Q3 坐标变换（没有从网页链接坐标系切换到 Workspace 导航坐标系） |
+
 ## Review Gate
 
 - Phase 0: **多猫协作审视**（所有猫参与各自 prompt 审视）+ 现有 system-prompt-builder 测试全绿
