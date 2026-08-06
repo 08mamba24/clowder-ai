@@ -5,23 +5,16 @@
  * Override: CAT_CAFE_GLOBAL_CONFIG_ROOT env → uses that root instead.
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { CredentialEntry } from '@cat-cafe/shared';
+import { resolveAccountStoreRoot } from './account-store-root.js';
 import { assertSafeTestConfigRoot } from './test-config-write-guard.js';
 
 const CONFIG_SUBDIR = '.cat-cafe';
 const CREDENTIALS_FILENAME = 'credentials.json';
 
-function resolveGlobalRoot(projectRoot?: string): string {
-  const envRoot = process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
-  if (envRoot) return resolve(envRoot);
-  if (projectRoot) return resolve(projectRoot);
-  return homedir();
-}
-
 export function resolveCredentialsPath(projectRoot?: string): string {
-  return resolve(resolveGlobalRoot(projectRoot), CONFIG_SUBDIR, CREDENTIALS_FILENAME);
+  return resolve(resolveAccountStoreRoot({ projectRoot }), CONFIG_SUBDIR, CREDENTIALS_FILENAME);
 }
 
 function writeFileAtomic(filePath: string, content: string): void {
@@ -65,7 +58,7 @@ export function assertCredentialsReadable(projectRoot?: string): void {
 
 function writeAll(creds: Record<string, CredentialEntry>, projectRoot?: string): void {
   const credPath = resolveCredentialsPath(projectRoot);
-  mkdirSync(resolve(resolveGlobalRoot(projectRoot), CONFIG_SUBDIR), { recursive: true });
+  mkdirSync(resolve(resolveAccountStoreRoot({ projectRoot }), CONFIG_SUBDIR), { recursive: true });
   writeFileAtomic(credPath, `${JSON.stringify(creds, null, 2)}\n`);
   chmodSync(credPath, 0o600);
 }
@@ -79,14 +72,14 @@ export function readCredential(ref: string, projectRoot?: string): CredentialEnt
 }
 
 export function writeCredential(ref: string, entry: CredentialEntry, projectRoot?: string): void {
-  assertSafeTestConfigRoot(resolveGlobalRoot(projectRoot), 'credentials.writeCredential');
+  assertSafeTestConfigRoot(resolveAccountStoreRoot({ projectRoot }), 'credentials.writeCredential');
   const creds = readAll(projectRoot);
   creds[ref] = entry;
   writeAll(creds, projectRoot);
 }
 
 export function deleteCredential(ref: string, projectRoot?: string): void {
-  assertSafeTestConfigRoot(resolveGlobalRoot(projectRoot), 'credentials.deleteCredential');
+  assertSafeTestConfigRoot(resolveAccountStoreRoot({ projectRoot }), 'credentials.deleteCredential');
   const creds = readAll(projectRoot);
   if (!(ref in creds)) return;
   delete creds[ref];

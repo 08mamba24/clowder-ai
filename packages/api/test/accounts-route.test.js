@@ -1,7 +1,7 @@
 // @ts-check
 import './helpers/setup-cat-registry.js';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -788,6 +788,77 @@ describe('accounts routes', () => {
         restoreGlobalRoot();
         await rm(globalRoot, { recursive: true, force: true });
         await rm(projectDir, { recursive: true, force: true });
+        await app.close();
+      }
+    },
+  );
+
+  it(
+    'DELETE /api/accounts audits the runtime catalog, not the workspace store root (AC-4/INV-3)',
+    { skip: skipRoots ? 'PROJECT_ALLOWED_ROOTS restricts temp dir access' : false },
+    async () => {
+      const { resetMigrationState, writeCatalogAccount } = await import('../dist/config/catalog-accounts.js');
+      const Fastify = (await import('fastify')).default;
+      const { accountsRoutes } = await import('../dist/routes/accounts.js');
+      const app = Fastify();
+      await app.register(accountsRoutes);
+      await app.ready();
+
+      const runtimeRoot = await makeTmpDir('audit-runtime');
+      const workspaceRoot = await makeTmpDir('audit-workspace');
+      const saved = {
+        runtimeRoot: process.env.CAT_CAFE_RUNTIME_ROOT,
+        workspaceRoot: process.env.CAT_CAFE_WORKSPACE_ROOT,
+        templatePath: process.env.CAT_TEMPLATE_PATH,
+        globalRoot: process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT,
+        home: process.env.HOME,
+      };
+      // Split-root: account store lives in the workspace, bindings live in the runtime catalog.
+      process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
+      process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceRoot;
+      delete process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
+      // Route default projectPath resolves via resolveActiveProjectRoot → runtime root.
+      mkdirSync(join(runtimeRoot, '.cat-cafe'), { recursive: true });
+      writeFileSync(join(runtimeRoot, 'cat-template.json'), JSON.stringify({ breeds: [] }));
+      process.env.CAT_TEMPLATE_PATH = join(runtimeRoot, 'cat-template.json');
+      process.env.HOME = workspaceRoot;
+      resetMigrationState();
+      try {
+        // Account metadata is durable-workspace state...
+        writeCatalogAccount(workspaceRoot, 'audit-bound', {
+          authType: 'api_key',
+          displayName: 'Audit Bound',
+        });
+        resetMigrationState();
+        // ...but a cat in the RUNTIME catalog binds it.
+        writeBoundCatalog(runtimeRoot, 'audit-bound');
+
+        const res = await app.inject({
+          method: 'DELETE',
+          url: '/api/accounts/audit-bound',
+          headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+          payload: JSON.stringify({}),
+        });
+        assert.equal(res.statusCode, 409, 'bound account must be protected even though binding is in runtime catalog');
+        assert.match(res.json().error, /audit-bound/);
+        assert.ok(
+          readFileSync(join(workspaceRoot, '.cat-cafe', 'accounts.json')).includes('audit-bound'),
+          'account must remain',
+        );
+      } finally {
+        if (saved.runtimeRoot === undefined) delete process.env.CAT_CAFE_RUNTIME_ROOT;
+        else process.env.CAT_CAFE_RUNTIME_ROOT = saved.runtimeRoot;
+        if (saved.workspaceRoot === undefined) delete process.env.CAT_CAFE_WORKSPACE_ROOT;
+        else process.env.CAT_CAFE_WORKSPACE_ROOT = saved.workspaceRoot;
+        if (saved.templatePath === undefined) delete process.env.CAT_TEMPLATE_PATH;
+        else process.env.CAT_TEMPLATE_PATH = saved.templatePath;
+        if (saved.globalRoot === undefined) delete process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
+        else process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = saved.globalRoot;
+        if (saved.home === undefined) delete process.env.HOME;
+        else process.env.HOME = saved.home;
+        resetMigrationState();
+        await rm(runtimeRoot, { recursive: true, force: true });
+        await rm(workspaceRoot, { recursive: true, force: true });
         await app.close();
       }
     },

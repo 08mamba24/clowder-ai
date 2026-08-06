@@ -5,11 +5,11 @@
  */
 import { existsSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { relative, resolve, win32 } from 'node:path';
 import type { AccountConfig } from '@cat-cafe/shared';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
+import { resolveAccountStoreRoot } from '../config/account-store-root.js';
 import { resolveCatCatalogPath } from '../config/cat-catalog-store.js';
 import { loadCatConfig, toAllCatConfigs } from '../config/cat-config-loader.js';
 import { deleteCatalogAccount, readCatalogAccounts, writeCatalogAccount } from '../config/catalog-accounts.js';
@@ -79,20 +79,21 @@ function deriveAccountId(displayName: string, existingIds: Set<string>): string 
   return `${seed}-${counter}`;
 }
 
-function resolveGlobalConfigRoot(projectRoot?: string): string {
-  const envRoot = process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT?.trim();
-  if (envRoot) return resolve(envRoot);
-  if (projectRoot) return resolve(projectRoot);
-  return resolve(homedir());
-}
-
 function isProjectScopedGlobalStore(projectRoot: string): boolean {
-  return resolve(projectRoot) === resolveGlobalConfigRoot(projectRoot);
+  return resolve(projectRoot) === resolveAccountStoreRoot({ projectRoot });
 }
 
-/** Scan the runtime catalog for variant→account bindings. Returns Error on parse failure. */
-function findBoundCatIds(projectRoot: string, accountRef: string): string[] | Error {
-  const catalogPath = resolveCatCatalogPath(projectRoot);
+/**
+ * Scan a catalog for variant→account bindings. Returns Error on parse failure.
+ *
+ * AC-4 / INV-3: the cat catalog coordinate stays on the *runtime* checkout while
+ * account metadata/credentials use the durable account-store coordinate. In split
+ * runtime/workspace mode the account store is remapped to the workspace, so the
+ * deletion audit must scan the runtime catalog (where live bindings live), not the
+ * workspace-mapped store root — otherwise a bound account could be deleted.
+ */
+function findBoundCatIds(catalogRoot: string, accountRef: string): string[] | Error {
+  const catalogPath = resolveCatCatalogPath(catalogRoot);
   const sources: Array<{ path: string; exists: boolean }> = [{ path: catalogPath, exists: existsSync(catalogPath) }];
   const bound = new Set<string>();
   for (const src of sources) {
@@ -443,8 +444,10 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
 
       // Check the runtime catalog for dangling references. Template is bootstrap-only
       // and is not part of runtime binding truth after catalog creation.
+      // AC-4/INV-3: bindings live in the runtime catalog, not the workspace-remapped store root.
       if (!parsed.data.force && accountExists) {
-        const boundCatIds = findBoundCatIds(projectRoot, params.profileId);
+        const catalogRoot = parsed.data.projectPath ? projectRoot : resolveActiveProjectRoot();
+        const boundCatIds = findBoundCatIds(catalogRoot, params.profileId);
         if (boundCatIds instanceof Error) {
           reply.status(500);
           return {
@@ -462,7 +465,7 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
           reply.status(409);
           return {
             error:
-              `Account "${params.profileId}" lives in shared global store ${resolveGlobalConfigRoot(projectRoot)} ` +
+              `Account "${params.profileId}" lives in shared global store ${resolveAccountStoreRoot({ projectRoot })} ` +
               `and non-force deletion cannot verify bindings in other projects. Audit all project catalogs or pass { "force": true }.`,
           };
         }

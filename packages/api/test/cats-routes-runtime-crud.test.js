@@ -1382,7 +1382,87 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
     });
     assert.equal(patchRes.statusCode, 400);
     const patchBody = JSON.parse(patchRes.body);
-    assert.match(patchBody.error, /provider "claude-oauth" not found/i);
+    // INV-11: unresolved account bindings report account, not provider.
+    assert.match(patchBody.error, /account "claude-oauth" not found/i);
+  });
+
+  it('AC-1: account created via POST /api/accounts can be bound via PATCH /api/cats/:id', async () => {
+    const projectRoot = createProjectRoot();
+    process.env.CAT_TEMPLATE_PATH = join(projectRoot, 'cat-template.json');
+
+    const Fastify = (await import('fastify')).default;
+    const { catsRoutes } = await import('../dist/routes/cats.js');
+    const { accountsRoutes } = await import('../dist/routes/accounts.js');
+
+    const app = Fastify();
+    await app.register(catsRoutes);
+    await app.register(accountsRoutes);
+    await app.ready();
+
+    // Create a custom account through the accounts API (AC-1 left side).
+    const createAccountRes = await app.inject({
+      method: 'POST',
+      url: '/api/accounts',
+      headers: {
+        'content-type': 'application/json',
+        'x-cat-cafe-user': 'codex',
+      },
+      body: JSON.stringify({
+        displayName: 'AC1 Custom Key',
+        clientId: 'anthropic',
+        authType: 'api_key',
+        baseUrl: 'https://api.anthropic.com',
+        apiKey: 'sk-ac1-test',
+        projectPath: projectRoot,
+      }),
+    });
+    assert.equal(createAccountRes.statusCode, 200, `account create failed: ${createAccountRes.body}`);
+    const accountBody = JSON.parse(createAccountRes.body);
+    const accountRef = accountBody.profile.id;
+
+    // Create the cat bound to the freshly created account (AC-1 right side).
+    const createCatRes = await app.inject({
+      method: 'POST',
+      url: '/api/cats',
+      headers: {
+        'content-type': 'application/json',
+        'x-cat-cafe-user': 'codex',
+      },
+      body: JSON.stringify({
+        catId: 'runtime-ac1',
+        name: 'AC1猫',
+        displayName: 'AC1猫',
+        avatar: '/avatars/ac1.png',
+        color: { primary: '#6366f1', secondary: '#c7d2fe' },
+        mentionPatterns: ['@runtime-ac1'],
+        roleDescription: '链路验证',
+        clientId: 'anthropic',
+        accountRef,
+        defaultModel: 'claude-opus-4-6',
+      }),
+    });
+    assert.equal(createCatRes.statusCode, 201, `cat create failed: ${createCatRes.body}`);
+
+    // Re-bind the same accountRef via PATCH (AC-1 chain stays live).
+    const patchRes = await app.inject({
+      method: 'PATCH',
+      url: `/api/cats/runtime-ac1`,
+      headers: {
+        'content-type': 'application/json',
+        'x-cat-cafe-user': 'codex',
+      },
+      body: JSON.stringify({ accountRef }),
+    });
+    assert.equal(patchRes.statusCode, 200, `bind failed: ${patchRes.body}`);
+
+    // Resolution path sees the bound account (AC-1 finish line).
+    const { resolveByAccountRef } = await import('../dist/config/account-resolver.js');
+    const profile = resolveByAccountRef(projectRoot, accountRef);
+    assert.ok(profile, 'bound custom account must resolve');
+    assert.equal(profile.id, accountRef);
+    assert.equal(profile.apiKey, 'sk-ac1-test');
+
+    await app.close();
   });
 
   it('POST /api/cats allows api_key bindings with different protocol than client default', async () => {

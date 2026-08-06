@@ -272,14 +272,11 @@ seed_runtime_config_from_project() {
   [ "$RUNTIME_DIR" != "$PROJECT_DIR" ] || return 0
   [ -d "$source_config" ] || return 0
 
-  for file in cat-catalog.json accounts.json credentials.json; do
+  for file in cat-catalog.json; do
     [ -f "$source_config/$file" ] || continue
     [ ! -e "$target_config/$file" ] || continue
     mkdir -p "$target_config"
     cp "$source_config/$file" "$target_config/$file"
-    if [ "$file" = "credentials.json" ]; then
-      chmod 600 "$target_config/$file" || true
-    fi
     info "seeded runtime config: .cat-cafe/$file"
   done
 }
@@ -695,6 +692,11 @@ start_runtime_worktree() {
   # project (the main cat-cafe repo where they're editing code).
   export CAT_CAFE_RUNTIME_ROOT="$RUNTIME_DIR"
   export CAT_CAFE_WORKSPACE_ROOT="${CAT_CAFE_WORKSPACE_ROOT:-$PROJECT_DIR}"
+  # Account/credential stores must land in the persistent workspace, never the
+  # disposable runtime checkout. The store-root resolver maps runtime-root paths
+  # to the workspace (redirectRuntimePathLexical), so no explicit
+  # CAT_CAFE_GLOBAL_CONFIG_ROOT default is exported here — exporting it would
+  # suppress the runtime→workspace stale-store migration on first startup.
   export CAT_CAFE_PROVISION_GLOBAL_SIDECAR=1
   export CONNECTOR_GATEWAY_AUTOSTART="${CONNECTOR_GATEWAY_AUTOSTART:-1}"
   # Runtime contract: passive frozen — no tsx watch auto-restart on src changes.

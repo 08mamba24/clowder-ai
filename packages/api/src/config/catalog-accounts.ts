@@ -12,10 +12,12 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSy
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { AccountConfig } from '@cat-cafe/shared';
+import { resolveAccountStoreRoot } from './account-store-root.js';
 import { assertSafeTestConfigRoot } from './test-config-write-guard.js';
 
 const CONFIG_SUBDIR = '.cat-cafe';
 const ACCOUNTS_FILENAME = 'accounts.json';
+const CREDENTIALS_FILENAME = 'credentials.json';
 const BUILTIN_ACCOUNT_REFS = new Set([
   'claude',
   'codex',
@@ -40,19 +42,12 @@ const INSTALLER_ACCOUNT_REFS = new Set([
   'installer-managed',
 ]);
 
-function resolveGlobalRoot(projectRoot?: string): string {
-  const envRoot = process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
-  if (envRoot) return resolve(envRoot);
-  if (projectRoot) return resolve(projectRoot);
-  return homedir();
-}
-
 function assertSafeCatalogWrite(projectRoot: string | undefined, source: string): void {
-  assertSafeTestConfigRoot(resolveGlobalRoot(projectRoot), source);
+  assertSafeTestConfigRoot(resolveAccountStoreRoot({ projectRoot }), source);
 }
 
 export function resolveAccountsPath(projectRoot?: string): string {
-  return resolve(resolveGlobalRoot(projectRoot), CONFIG_SUBDIR, ACCOUNTS_FILENAME);
+  return resolve(resolveAccountStoreRoot({ projectRoot }), CONFIG_SUBDIR, ACCOUNTS_FILENAME);
 }
 
 function writeFileAtomic(filePath: string, content: string, mode?: number): void {
@@ -95,7 +90,7 @@ function readAllGlobal(projectRoot?: string): Record<string, AccountConfig> {
 function writeAllGlobal(accounts: Record<string, AccountConfig>, projectRoot?: string): void {
   assertSafeCatalogWrite(projectRoot, 'catalog-accounts.writeAllGlobal');
   const accountsPath = resolveAccountsPath(projectRoot);
-  mkdirSync(resolve(resolveGlobalRoot(projectRoot), CONFIG_SUBDIR), { recursive: true });
+  mkdirSync(resolve(resolveAccountStoreRoot({ projectRoot }), CONFIG_SUBDIR), { recursive: true });
   writeFileAtomic(accountsPath, `${JSON.stringify(accounts, null, 2)}\n`);
 }
 
@@ -345,7 +340,7 @@ function migrateLegacyFrom(
       }
     }
   }
-  const globalRoot = resolveGlobalRoot(projectRoot);
+  const globalRoot = resolveAccountStoreRoot({ projectRoot });
   const credPath = resolve(globalRoot, CONFIG_SUBDIR, 'credentials.json');
   const existing = existsSync(credPath)
     ? (() => {
@@ -388,7 +383,7 @@ let legacyMigrationDone = false;
 function migrateLegacyProviderProfiles(projectRoot?: string): void {
   if (legacyMigrationDone) return;
   try {
-    migrateLegacyFrom(resolveGlobalRoot(projectRoot), projectRoot);
+    migrateLegacyFrom(resolveAccountStoreRoot({ projectRoot }), projectRoot);
     legacyMigrationDone = true;
   } catch (err) {
     console.error('[catalog-accounts] legacy→global migration failed:', err);
@@ -454,7 +449,7 @@ function projectScopedMigrationKey(resolvedTarget: string, projectRoot?: string)
 }
 
 function migrateHomedirLegacyProviderProfiles(projectRoot?: string): void {
-  const globalRoot = resolveGlobalRoot(projectRoot);
+  const globalRoot = resolveAccountStoreRoot({ projectRoot });
   const resolvedTarget = resolve(globalRoot);
   const migrationKey = projectScopedMigrationKey(resolvedTarget, projectRoot);
   if (migratedHomedirLegacy.has(migrationKey)) return;
@@ -487,7 +482,7 @@ function migrateHomedirLegacyProviderProfiles(projectRoot?: string): void {
 const migratedHomedirCredentials = new Set<string>();
 
 function migrateHomedirCredentials(projectRoot?: string): void {
-  const globalRoot = resolveGlobalRoot(projectRoot);
+  const globalRoot = resolveAccountStoreRoot({ projectRoot });
   const resolvedTarget = resolve(globalRoot);
   const migrationKey = projectScopedMigrationKey(resolvedTarget, projectRoot);
   if (migratedHomedirCredentials.has(migrationKey)) return;
@@ -569,6 +564,144 @@ function ensureMigrated(projectRoot: string): void {
     migrateHomedirLegacyProviderProfiles(projectRoot);
   }
   migrateProjectAccountsToGlobal(projectRoot);
+  migrateRuntimeStaleAccountsToWorkspace();
+}
+
+// ── Runtime stale store → persistent workspace migration ──
+//
+// PR #1149 moved account/credential writes to the persistent workspace root,
+// but pre-#1149 deployments may still hold accounts/credentials seeded inside the
+// disposable runtime checkout. The store-root redirect (resolveAccountStoreRoot) makes
+// readers/writers ignore that stale runtime store entirely — migrate it once so
+// users do not lose accounts that predate the redirect.
+
+const migratedRuntimeStale = new Set<string>();
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function credEntriesEquivalent(a: unknown, b: unknown): boolean {
+  return canonicalJson(a) === canonicalJson(b);
+}
+
+function readRuntimeJsonStrict(path: string, what: string): Record<string, unknown> {
+  // Strict parse: malformed source must fail migration before any write (P1-3).
+  const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`Invalid runtime ${what} JSON at ${path}: expected object`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/** Merge stale runtime-checkout accounts/credentials into the workspace store. */
+function migrateRuntimeStaleAccountsToWorkspace(): void {
+  // INV-2: explicit store override wins — no runtime redirect, no stale import.
+  if (process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT) return;
+  const runtimeRootRaw = process.env.CAT_CAFE_RUNTIME_ROOT;
+  const workspaceRootRaw = process.env.CAT_CAFE_WORKSPACE_ROOT;
+  if (!runtimeRootRaw || !workspaceRootRaw) return;
+  const runtimeRoot = resolve(runtimeRootRaw);
+  const workspaceRoot = resolve(workspaceRootRaw);
+  if (runtimeRoot === workspaceRoot) return;
+  const key = runtimeRoot;
+  if (migratedRuntimeStale.has(key)) return;
+
+  const runtimeAccountsPath = resolve(runtimeRoot, CONFIG_SUBDIR, ACCOUNTS_FILENAME);
+  const runtimeCredPath = resolve(runtimeRoot, CONFIG_SUBDIR, CREDENTIALS_FILENAME);
+  const hasRuntimeAccounts = existsSync(runtimeAccountsPath);
+  const hasRuntimeCreds = existsSync(runtimeCredPath);
+  // INV-4 / P1-4: a credential-only runtime source is still migrated; only a
+  // fully absent source short-circuits.
+  if (!hasRuntimeAccounts && !hasRuntimeCreds) {
+    migratedRuntimeStale.add(key);
+    return;
+  }
+
+  // ── Preflight: read + parse ALL sources and targets BEFORE any write (P1-3) ──
+  const runtimeAccounts: Record<string, AccountConfig> = hasRuntimeAccounts
+    ? (readRuntimeJsonStrict(runtimeAccountsPath, 'accounts') as Record<string, AccountConfig>)
+    : {};
+  const runtimeCreds = hasRuntimeCreds ? readRuntimeJsonStrict(runtimeCredPath, 'credentials') : {};
+
+  const workspaceAccounts = readAllGlobal(workspaceRoot);
+  const workspaceCredPath = resolve(workspaceRoot, CONFIG_SUBDIR, CREDENTIALS_FILENAME);
+  let workspaceCreds: Record<string, unknown> = {};
+  if (existsSync(workspaceCredPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(workspaceCredPath, 'utf-8'));
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        workspaceCreds = parsed;
+      }
+    } catch {
+      workspaceCreds = {};
+    }
+  }
+
+  // Detect EVERY conflict before modifying anything (INV-5, AC-3).
+  const accountsToMerge: Array<[string, AccountConfig]> = [];
+  for (const [ref, account] of Object.entries(runtimeAccounts)) {
+    if (ref in workspaceAccounts) {
+      if (!accountsEquivalent(workspaceAccounts[ref], account)) {
+        throw new Error(
+          `Runtime→workspace account migration conflict for "${ref}" ` +
+            `(${runtimeAccountsPath} vs ${resolveAccountsPath(workspaceRoot)}): ` +
+            describeAccountConflict(workspaceAccounts[ref], account),
+        );
+      }
+      // Equivalent duplicate → already present; nothing to merge.
+    } else {
+      accountsToMerge.push([ref, account]);
+    }
+  }
+
+  const credsToMerge: Array<[string, unknown]> = [];
+  for (const [ref, entry] of Object.entries(runtimeCreds)) {
+    if (ref in workspaceCreds) {
+      if (!credEntriesEquivalent(workspaceCreds[ref], entry)) {
+        // INV-6: never print credential values in errors.
+        throw new Error(
+          `Runtime→workspace credential migration conflict for "${ref}" ` +
+            `(${runtimeCredPath} vs ${workspaceCredPath}); resolve manually. ` +
+            `Credential values are not shown.`,
+        );
+      }
+      // Equivalent → already present.
+    } else {
+      credsToMerge.push([ref, entry]);
+    }
+  }
+
+  // ── Write phase: atomic per file, only after full preflight passed (INV-7) ──
+  if (accountsToMerge.length > 0) {
+    const next = { ...workspaceAccounts };
+    for (const [ref, account] of accountsToMerge) next[ref] = account;
+    writeAllGlobal(next, workspaceRoot);
+    console.error(
+      `[catalog-accounts] migrated ${accountsToMerge.length} stale runtime account(s) into workspace store`,
+    );
+  }
+  if (credsToMerge.length > 0) {
+    const next = { ...workspaceCreds };
+    for (const [ref, entry] of credsToMerge) next[ref] = entry;
+    assertSafeCatalogWrite(workspaceRoot, 'catalog-accounts.migrateRuntimeStaleAccounts.credentials');
+    mkdirSync(resolve(resolveAccountStoreRoot({ projectRoot: workspaceRoot }), CONFIG_SUBDIR), { recursive: true });
+    writeFileAtomic(workspaceCredPath, `${JSON.stringify(next, null, 2)}\n`, 0o600);
+    console.error(
+      `[catalog-accounts] migrated ${credsToMerge.length} stale runtime credential(s) into workspace store`,
+    );
+  }
+
+  // INV-7: completion evidence only after BOTH target writes succeeded. Any
+  // throw above leaves the source unretired → next startup retries idempotently.
+  migratedRuntimeStale.add(key);
 }
 
 /** Reset migration state (for tests). */
@@ -578,6 +711,7 @@ export function resetMigrationState(): void {
   migratedHomedirCredentials.clear();
   migratedProjects.clear();
   migratedProjectLegacy.clear();
+  migratedRuntimeStale.clear();
 }
 
 // ── Public API (signatures kept backward-compatible, projectRoot used for migration) ──
@@ -604,6 +738,7 @@ export function deleteCatalogAccount(projectRoot: string, ref: string): void {
 
 /** Check if legacy provider-profiles.json exists in any known location. */
 export function hasLegacyProviderProfiles(projectRoot: string): boolean {
-  if (existsSync(resolve(resolveGlobalRoot(projectRoot), CONFIG_SUBDIR, 'provider-profiles.json'))) return true;
+  if (existsSync(resolve(resolveAccountStoreRoot({ projectRoot }), CONFIG_SUBDIR, 'provider-profiles.json')))
+    return true;
   return existsSync(resolve(projectRoot, CONFIG_SUBDIR, 'provider-profiles.json'));
 }
