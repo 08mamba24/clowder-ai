@@ -484,6 +484,70 @@ describe('global accounts (clowder-ai#340)', () => {
     }
   });
 
+  /**
+   * The other half of the alias contract, and the one the upstream integration
+   * could silently break.
+   *
+   * canonicalizeAccount() carries unknown persisted fields through a rest-spread
+   * so no future field can quietly sit outside the equivalence check. Left in
+   * that rest-spread, modelAliases would be compared RAW — and a legacy source
+   * that spells the same mapping with padding or a different key order would
+   * read as a genuine conflict, so its credential would be skipped. Naming
+   * modelAliases explicitly is what keeps upstream's normalisation in force.
+   */
+  it('treats a padding/key-order-only alias difference as equivalent, not a conflict', async () => {
+    const { readCatalogAccounts, resetMigrationState, writeCatalogAccount } = await import(
+      '../dist/config/catalog-accounts.js'
+    );
+    resetMigrationState();
+
+    // The PADDING lives on the stored side on purpose. writeCatalogAccount() and
+    // the accounts route both persist modelAliases verbatim, while the legacy
+    // parser already runs normalizeModelAliases() on its own input — so the only
+    // side that can still carry un-normalised aliases into the comparison is the
+    // one already in the store.
+    writeCatalogAccount(projectRoot, 'shared', {
+      authType: 'api_key',
+      baseUrl: 'https://proxy.example/v1',
+      models: ['a/x', 'b/y'],
+      modelAliases: { 'b/y': ' up-y ', 'a/x': ' up-x ' },
+    });
+    resetMigrationState();
+
+    // Same mapping, different spelling: reversed key order and padded values.
+    await writeFile(
+      join(projectRoot, '.cat-cafe', 'provider-profiles.json'),
+      JSON.stringify({
+        version: 2,
+        providers: [
+          {
+            id: 'shared',
+            authType: 'api_key',
+            baseUrl: 'https://proxy.example/v1',
+            models: ['a/x', 'b/y'],
+            modelAliases: { 'a/x': 'up-x', 'b/y': 'up-y' },
+          },
+        ],
+      }),
+      'utf-8',
+    );
+    await writeFile(
+      join(projectRoot, '.cat-cafe', 'provider-profiles.secrets.local.json'),
+      JSON.stringify({ profiles: { shared: { apiKey: 'sk-equivalent-source' } } }),
+      'utf-8',
+    );
+
+    const result = readCatalogAccounts(projectRoot);
+    // Equivalence is decided on the NORMALISED view; the stored value itself is
+    // returned verbatim, because global still wins on a merge.
+    assert.deepEqual(result.shared.modelAliases, { 'b/y': ' up-y ', 'a/x': ' up-x ' });
+    // Not a conflict, so the legacy source's secret is imported. That import is
+    // the observable proof — a conflict would skip it, as the sibling test above
+    // asserts for a genuinely different alias.
+    const credentials = JSON.parse(await readFile(join(globalRoot, '.cat-cafe', 'credentials.json'), 'utf-8'));
+    assert.ok(credentials.shared, 'a padding-only alias difference must not be treated as a conflict');
+  });
+
   it('skips legacy secret when colliding with pre-existing global OAuth account', async () => {
     const { readCatalogAccounts, resetMigrationState, writeCatalogAccount } = await import(
       '../dist/config/catalog-accounts.js'
