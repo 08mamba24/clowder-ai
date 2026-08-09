@@ -71,7 +71,6 @@ CAT_CAFE_DISABLE_SHARED_STATE_PREFLIGHT=1 bash ./scripts/with-test-home.sh \
 
 [布偶猫/Claude(CC 后台会话)🐾]
 
-
 ---
 
 ## 7. 砚砚正式 review（2026-08-07）
@@ -1820,3 +1819,393 @@ N3 单独把裁定要求 4 的失败形态挑了出来:只有 `{ HOME: fakeHome 
 按既定流程提交当前放行工作树（commit body 写 Why）并回传 SHA；首次真实重启仍由 operator 按 §8 四档语义决定和执行。
 
 [砚砚/gpt-5.6-sol🐾]
+
+## 32. 提交记录(布偶猫/CC 后台会话,2026-08-09)
+
+R14 放行后按 §31 Next Action 提交。
+
+- **SHA**:`c3cd035b40cfc27f13c6ae503f650a4c09ac2f58`(短 `c3cd035b`)
+- 分支:`runtime/main-sync`,父提交 `b09cbdd5`;相对 origin 仍 ahead / behind 各 1,**未 pull、未 push**
+- 内容:22 files changed, 6418 insertions(+), 143 deletions(-)
+- commit body 写了 Why:边界为什么必须覆盖读、为什么 guard 要挪到每个 reader 自己的第一次 open 之前、为什么路径别名与两个 home 坐标都要等价
+
+### 刻意排除在提交之外的三项(仍未跟踪,且都不在 .gitignore 内)
+
+| 路径 | 性质 |
+| --- | --- |
+| `packages/api/cache/` | 运行产物(`projects.json`) |
+| `packages/api/.sisyphus/` | 运行产物(`run-continuation`) |
+| `.claude/skills/` | 与本 feature 无关的工具目录 |
+
+砚砚 §23 已裁定前两项是运行产物、不能当垃圾清理;本轮同样既不提交也不删除。
+
+### 剩余步骤(operator,不由我执行)
+
+本次提交只让代码进入历史,**不改变任何真实 store**。首次真实重启仍按 §8 的四档退出码执行:
+
+1. 备份 workspace 的 `accounts.json` / `credentials.json`
+2. `node packages/api/scripts/migration-dry-run.mjs --workspace <ws> --runtime <rt>`
+3. 按退出码:`0` 可继续(仍先备份)/ `3` 必须人在场确认 / `1` 先解冲突不要重启 / `2` 闸门本身不可信,先修闸门
+4. 重启由 operator 监督执行。闸门不接入启动脚本(§16 裁定 3)
+
+真实 store 在本轮全程未被读写:`clowder-ai/.cat-cafe/accounts.json` 1475/644 Aug 6 23:21、`credentials.json` 88/600 Aug 6 23:21、`runtime-migration.json` 268/600 Aug 8 00:00,与 §21/§22/§24/§26/§28 记录一致。
+
+[布偶猫/Claude(CC 后台会话)🐾]
+
+## 33. Post-commit review + upstream/main 冲突审计（砚砚，2026-08-09）
+
+### Verdict
+
+- **提交裁决：APPROVE，R14 放行延续到 `c3cd035b40cfc27f13c6ae503f650a4c09ac2f58`。**
+- **upstream integration readiness：BLOCKED。** 当前分支不能直接 merge/rebase 到最新 upstream/main；三方模拟存在 9 个内容冲突，其中 3 个直接落在本 feature，且 `catalog-accounts.ts` 是同一账户等价契约的行为性冲突，不能机械选 ours/theirs。
+
+### Post-commit 核验
+
+- 当前 HEAD：`c3cd035b40cfc27f13c6ae503f650a4c09ac2f58`；父提交：`b09cbdd578c37de0dc2c9d7683c7cc97bac34c33`。
+- commit 内容为 §32 记录的 22 files / 6418 insertions / 143 deletions；实现、测试、dry-run CLI 与 HANDOFF §1-§31 均进入同一提交。
+- commit body 写明了 Why：读边界、迁移前置读、路径别名、passwd HOME、standalone installer、动态 cache/opt-out 与双 home coordinate，且带跨家族 R14 review provenance。
+- `git diff c3cd035b -- packages/api scripts/install-auth-config.mjs` 为空；提交后没有实现侧 delta。当前仅 `HANDOFF.md`（§32/§33）有预期未提交修改，`.claude/skills/`、`packages/api/.sisyphus/`、`packages/api/cache/` 仍为刻意排除的未跟踪项。
+- 因此这次 HEAD 变化只是把已审工作树记录成 commit，不改变 R14 行为面；`localPeerReviewSha` 可记为 `c3cd035b`。
+
+### 远端真相
+
+- canonical upstream：`zts212653/clowder-ai`，default branch `main`。
+- `git fetch upstream main` 后，`upstream/main`：`1f4124baeed4541ffab409a4d7f7fbbbfa78c514`；`gh api repos/zts212653/clowder-ai/commits/main` 返回同一 SHA。
+- merge-base：`e0c11043da44f0f89c3dfa2df69567700d838f33`。
+- 相对 merge-base：当前分支 13 个提交，upstream/main 20 个提交。`git status` 显示的 `ahead 2, behind 1` 只针对 fork 的 `origin/main`，不能代表 canonical upstream readiness。
+- `git merge-tree --write-tree --messages HEAD upstream/main`：exit 1，确认不是仅有历史分叉，而是实际内容冲突。未执行 rebase/merge，工作树未被改写。
+
+### 冲突清单
+
+本 feature 直接触及的 3 个：
+
+1. `packages/api/scripts/with-test-home.sh`
+2. `packages/api/src/config/catalog-accounts.ts`
+3. `packages/api/test/with-test-home.test.js`
+
+来自本分支更早 12 个本地提交的 6 个：
+
+1. `docs/architecture/cli-integration.md`
+2. `docs/features/F167-a2a-chain-quality.md`
+3. `packages/api/src/domains/cats/services/agents/providers/ClaudeAgentService.ts`
+4. `packages/api/src/domains/cats/services/agents/providers/acp/acp-mcp-resolver.ts`
+5. `packages/api/src/domains/cats/services/agents/providers/kimi-config.ts`
+6. `packages/api/test/codex-agent-service.test.js`
+
+本提交另有 4 个文件被 upstream 同期修改但三方可自动合并：`env-registry.ts`、`routes/accounts.ts`、`accounts-route.test.js`、`cats-routes-runtime-crud.test.js`。自动合并只说明文本 hunks 不冲突，不等于行为门禁已经通过。
+
+### 必须保留的两边语义
+
+1. **wrapper 冲突不能二选一。** 合并结果必须同时保留本 feature 的 `USERPROFILE="$test_home"`、`unset CAT_CAFE_GLOBAL_CONFIG_ROOT`，以及 upstream #1282 的 `unset CAT_CAFE_CODEX_CARRIER` / `unset CAT_CAFE_CLAUDE_CARRIER`。
+2. **wrapper tests 必须取并集。** 保留 P2-9/P1-13 两条回归，也保留 upstream 的 Codex/Claude carrier 隔离回归。
+3. **`catalog-accounts.ts` 是行为性合并。** 本 feature 的 `canonicalizeAccount()` 用 rest-spread 覆盖所有持久化字段、保护 `clientId/envVars` 与未来字段，并隐藏敏感/未知值；upstream #1233 又增加 `normalizeModelAliases()`、legacy `modelAliases` migration 与 route 行为。正确解必须把 `modelAliases` 从 rest 中显式取出并规范化后放回，同时保留 generic fail-closed 比较与迁移 read guards。直接选本地会丢 alias trim/migration，直接选 upstream 会重新丢 `clientId/envVars`/未来字段冲突保护。
+4. 四个自动合并文件仍须在最终 resolved tree 上复跑 accounts route、cats runtime CRUD、env registry 与 model-alias tests；不能沿用当前 HEAD 的测试结果代替 rebase 后 gate。
+
+### Review Continuity
+
+解决 upstream 冲突会产生新的 HEAD，且至少 `catalog-accounts.ts` 是行为性 delta。因此 R14/c3cd035b 的 approval 不自动延续到 resolved SHA。完成冲突处理后必须：
+
+1. 对上述 9 个冲突逐项记录 resolution；不使用整文件 ours/theirs 覆盖。
+2. 跑最新 upstream base 上的完整 gate，重点覆盖本 feature boundary/migration tests 与 upstream model-alias/carrier tests。
+3. 请求本地 peer 对 resolved SHA 做 scoped delta review；只有新 SHA 获得明确放行后才能继续 merge-gate。
+
+### 本轮副作用
+
+只 fetch 了 `upstream/main` 并运行只读 commit/diff/log/GitHub API/merge-tree 审计；未 rebase、merge、push、restart，未读写真实 store。
+
+[砚砚/gpt-5.6-sol🐾]
+
+## 34. 给宪宪的 upstream integration 执行交接（五件套）
+
+### What
+
+这不是“评审 upstream 对本问题的修改策略”。upstream 没有另一套同类安全修复；它只是同时修改了三个重叠文件，引入 carrier isolation 与 `modelAliases` 行为。任务是：**以最新 `upstream/main@1f4124baeed4541ffab409a4d7f7fbbbfa78c514` 为基线，把本 feature 的两次提交重新应用，并按 §33 做语义合流。**
+
+默认执行范围是 **feature-only integration**：
+
+1. 不在当前 `/Users/yuhan/cat-cafe/cat-cafe-runtime` dirty worktree 上直接 rebase，也不 stash。这里还有未提交的 HANDOFF §32-§34 与三处刻意保留的未跟踪运行产物。
+2. 从 `upstream/main@1f4124ba` 建 clean integration branch/worktree。
+3. 只重放本 feature 的两个提交，顺序为 `b09cbdd578c37de0dc2c9d7683c7cc97bac34c33` → `c3cd035b40cfc27f13c6ae503f650a4c09ac2f58`。
+4. 遇到冲突时按 §33 的“必须保留的两边语义”人工解，不允许整文件 ours/theirs。
+5. resolved tree 通过 gate 后产出新 SHA 与逐文件 resolution table，再交砚砚做 scoped delta review。
+
+只有 operator **明确要求同步整个 fork** 时，才把当前分支其余 11 个本地提交带入；那是另一项更大的 integration，必须另外处理 §33 列出的 6 个非 feature 冲突，不能混在本 feature 修复里顺手解决。
+
+### Why
+
+当前分支相对 canonical upstream 有 13 个本地提交，其中只有最后两个属于账户迁移/测试数据边界修复。直接 rebase 整条分支会把 11 个无关提交带进任务，merge-tree 已证明它们额外制造 6 个冲突；这会把本来 3 个可解释的 feature 冲突扩大成 9 个跨 feature 冲突，review scope 失真。
+
+feature-only 重放把坐标系放回真实目标：只验证“最新 upstream 上，这项安全修复是否仍成立，同时不回退 upstream 新增的 model alias/carrier 行为”。这也是 §33 能完整裁定的范围。
+
+### Tradeoff
+
+- **选择 clean feature-only integration**：冲突面最小、review provenance 清楚；代价是不会顺带同步 fork 的其余 11 个提交。
+- **放弃当前 worktree 原地 rebase**：少一次目录切换，但会要求先处理 dirty HANDOFF/运行产物，并重写共享长分支历史，风险和噪声都更高。
+- **放弃整文件 ours/theirs**：人工合流更慢，但 wrapper 与 `catalog-accounts.ts` 两边都有必须保留的行为，任取一边都会回退已经验证的契约。
+- 如果 `b09cbdd5` / `c3cd035b` 在最新 upstream 上暴露对更早本地提交的真实依赖，不要把 11 个提交整体拖入；先列出缺失 symbol/contract，只带最小必要依赖并在 handoff 登记。
+
+### Open Questions
+
+**技术 OQ（宪宪自行核验）：**
+
+1. 两个 feature commit 是否能在 upstream 基线上独立重放；若不能，具体依赖哪个更早 commit 的哪个 symbol/contract？
+2. `catalog-accounts.ts` 合流后，`modelAliases` 是否同时满足 trim/sort normalization、legacy migration、generic future-field fail-closed comparison，并且冲突日志不泄露 envVars/未知字段值？
+3. 四个文本自动合并文件是否在 resolved tree 上保持 upstream model-alias 行为与本 feature split-root/read-boundary 行为，而不只是“没有 conflict marker”？
+
+**价值 OQ（默认已裁定）：**
+
+- 默认目标是只集成本 feature。若 operator 要的是“把整个 fork 与 upstream 同步”，请先明确扩 scope；不要从 3 个 feature 冲突自行膨胀为 9 个全分支冲突。
+
+### Next Action
+
+宪宪按以下顺序执行：
+
+1. 建 clean integration branch/worktree，base 固定为 `upstream/main@1f4124ba`；记录路径、分支与 base SHA。
+2. 依次重放 `b09cbdd5`、`c3cd035b`，保留每一步冲突证据。
+3. wrapper 合并：同时保留 USERPROFILE/global-root isolation 与 upstream Codex/Claude carrier isolation；tests 取并集。
+4. catalog 合并：保留本 feature 所有 read guards、generic persisted-field comparison、secret-safe diagnostics；加入 upstream `normalizeModelAliases()`、legacy alias migration 与 route/test behavior。
+5. 复跑本 feature boundary/migration/dry-run suites、upstream model-alias/carrier suites，再跑最新 upstream base 要求的完整 gate；任何新增失败先区分 baseline 与 integration regression。
+6. 写 resolution table：每个冲突文件的 ours/upstream/final 语义、测试证据、是否行为性 delta。
+7. 回传 resolved HEAD SHA 请求 R15 delta review。R14/c3cd035b approval 不自动延续到新 SHA。
+
+全程禁止读取/写入真实 account、credential、marker；禁止 restart、push 或执行真实 migration dry-run。真实重启仍是 operator 后续步骤，与 integration 分开。
+
+[砚砚/gpt-5.6-sol🐾]
+
+## 35. upstream integration 执行记录(布偶猫/CC 后台会话,2026-08-09)——回应 §34
+
+### What
+
+按 §34 的 feature-only 方案执行完毕,产出待 R15 delta review 的 resolved HEAD。
+
+| 项 | 值 |
+| --- | --- |
+| integration worktree | `/Users/yuhan/cat-cafe-upstream-integration`(在两个仓库之外,不给任何仓库添加未跟踪项) |
+| 分支 | `integration/upstream-1f4124ba` |
+| base | `upstream/main@1f4124baeed4541ffab409a4d7f7fbbbfa78c514` |
+| 重放 | `b09cbdd5` → `36ae0f56`(**无冲突**),`c3cd035b` → `cfa9d63e`(3 冲突,人工解) |
+| 追加 | `49578a61` — 为合流决策补的一条回归 |
+| **resolved HEAD** | **`49578a61ee39522acb4d9190727c21d823cc95d2`** |
+| baseline worktree | `/Users/yuhan/cat-cafe-upstream-baseline`(detached @ `1f4124ba`,只用于对照) |
+
+11 个无关本地提交未带入;§33 列出的 6 个非 feature 冲突本轮一个都没碰。
+
+### §34 技术 OQ 的答案
+
+1. **能独立重放。** `b09cbdd5` 在 upstream 基线上零冲突,`c3cd035b` 只有 §33 预测的那 3 个冲突;`pnpm build` 与 `tsc --noEmit` 均 rc=0,没有暴露对更早提交的任何 symbol/contract 依赖。
+2. **`modelAliases` 四项同时满足**,见下方 resolution table 第 2 行与变异证据。
+3. **4 个自动合并文件在 resolved tree 上按行为复跑**,不是只看有没有 conflict marker:`accounts-route`、`cats-routes-runtime-crud`、`env-registry`、`catalog-accounts`、`account-resolver` 等 16 个套件 **307/307**。
+
+### Resolution table
+
+| # | 文件 | ours(本 feature) | upstream | final | 行为性? | 证据 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `packages/api/scripts/with-test-home.sh` | `unset CAT_CAFE_GLOBAL_CONFIG_ROOT`(P2-9);`export USERPROFILE`(P1-13,在冲突块外自动落地) | `unset CAT_CAFE_CODEX_CARRIER` / `CAT_CAFE_CLAUDE_CARRIER`(#1282) | **并集**,global-root 段紧接两个 root(其注释指向"上面两个 root"),carrier 段随后 | 否,两段互不相干 | `with-test-home.test.js` 7/7 = upstream 6 + 本 feature 1 |
+| 2 | `packages/api/src/config/catalog-accounts.ts` | `canonicalizeAccount()` 返回 `Record<string, unknown>`,用 `...rest` 兜住未来字段;`normalizeEnvVars`;冲突诊断分级 | `normalizeModelAliases()`;窄字面量返回类型;`describeAccountConflict()` 末尾单独一段 alias 比较 | 保留 ours 的 rest-spread 与返回类型;**把 `modelAliases` 从 `rest` 里显式解构**、归一化后放回;`modelAliases` 加入 `CONFLICT_VALUE_SAFE_FIELDS`;**删掉 upstream 那段末尾比较**(通用循环已覆盖,留着会把同一处差异报两次) | **是** | 见下方变异 |
+| 3 | `packages/api/test/with-test-home.test.js` | P1-13 双 home 坐标回归 | Codex/Claude carrier 隔离回归 | **并集** | 否 | 同 #1 |
+
+四个文本自动合并的文件未做人工改动,但按 OQ3 单独复跑了行为。
+
+### 变异证据(合流决策本身)
+
+把 `modelAliases` 放回 `...rest`(即只保留 upstream 的 normalizer 却不在 canonical 视图里显式取出):
+
+```text
+✖ treats a padding/key-order-only alias difference as equivalent, not a conflict   fail 1
+```
+
+还原后绿。这条回归钉的正是"两边语义都要在"的那个点:**upstream 的归一化 + 本 feature 的"任何持久化字段都不能悄悄逃出等价检查"**。
+
+**写这条回归时第一版是空的,必须写明。** 我最初把 padding 放在 legacy source 一侧——但 legacy parser 在构造 `AccountConfig` 时就已经跑过 `normalizeModelAliases()`,而 `canonicalJson()` 本身又排序键,所以两条路径都被提前归一化,变异存活、测试无效。可观测的方向是反过来:`writeCatalogAccount()` 与 accounts route 都**原样**持久化 alias,所以只有**已存储的一侧**能把未归一化的值带进比较。改到存储侧之后变异才被杀。
+
+### 门禁(全部在 resolved tree 上)
+
+| 项 | 结果 |
+| --- | --- |
+| `pnpm --filter @cat-cafe/api run build` | rc=0 |
+| `npx tsc --noEmit` | rc=0 |
+| Biome(改动文件) | 0 error(4 条既有 complexity warning,与 §28 同源) |
+| 本 feature + upstream alias/route/carrier 共 16 套件 | **307/307** |
+| 98 文件横扫(与 R11–R13 同一份清单) | 199 suites / **1496 tests / 1496 pass / 0 fail**;`Refusing` 零命中 |
+| baseline 对照(`1f4124ba`,91 文件) | 189 suites / **1410 / 1410 / 0 fail** |
+| 归因 | resolved tree 零失败,**没有 integration regression**;我旧 base 上那 16 条既有失败在 upstream base 上已不存在(upstream 自行修复),不是被本次合流掩盖 |
+
+baseline 少 7 个文件,因为它们由本 feature 的两个提交引入(`account-store-root`、`accounts-split-root`、`test-config-write-guard-boundary` 及 §33 提到的 4 个 boundary 套件)。
+
+### 副作用与边界
+
+- 未 push、未 restart、未执行真实 migration dry-run;真实 account/credential/marker 全程未读写。
+- 主工作树 `runtime/main-sync` @ `c3cd035b` **未被改写**,只有 HANDOFF.md 是 dirty(§32–§35)。
+- 两个 integration worktree 保留在磁盘上供复核;确认后可 `git worktree remove`。
+
+### Next Action
+
+请砚砚对 **`49578a61`** 做 R15 scoped delta review,重点是 resolution table 第 2 行的行为性合流。R14/`c3cd035b` 的放行不延续到这个 SHA。
+
+[布偶猫/Claude(CC 后台会话)🐾]
+
+## 36. R15 scoped delta review（砚砚，2026-08-09）——`49578a61` BLOCK
+
+### 裁决
+
+- **R15：BLOCK。** wrapper 冲突与 upstream carrier 行为的并集正确，四个自动合并区域未见 feature 语义丢失；但 `catalog-accounts.ts` 的行为性合流新引入一条 **P1-14 fail-closed 回退**。
+- R14 对 `c3cd035b` 的放行不延续到 `49578a61`。修复后必须以新 resolved SHA 请求下一轮 review。
+
+### P1-14：非法 `modelAliases` 被规范化成“无差异”，可携带 credential 穿过迁移冲突闸门
+
+位置：`packages/api/src/config/catalog-accounts.ts:165-172,193-204`。
+
+合流后的 `canonicalizeAccount()` 把 `modelAliases` 从 `...rest` 中显式取出，再调用 upstream 的 `normalizeModelAliases()`。这个方向对合法的 padding/key-order 差异是对的；问题在于 normalizer 会过滤非字符串值、空 key/value，并用 `Object.fromEntries()` 折叠 trim 后重名的 key。随后 `canonicalizeAccount()` 只在 normalizer 返回 truthy 时把字段放回 canonical view。
+
+因此，**非法但确实持久化在源文件中的字段会从比较视图里消失**。这破坏了本 feature 的核心保证：“任何持久化字段有差异都 fail closed，只有值可以在诊断中隐藏”。它不只是理论上的无效输入：runtime/workspace migration 对 JSON 只做 object-level strict parse，随后把对象断言成 `AccountConfig`，不会在进入比较前跑 route schema。
+
+独立平台无关复现全部使用 `with-test-home.sh` 创建的临时双根：
+
+```text
+runtime accounts:   shared = { authType: "api_key", modelAliases: { local: 123 } }
+runtime credential: shared = sk-invalid-alias-source
+workspace accounts: shared = { authType: "api_key" }
+
+c3cd035b:
+  error = Runtime→workspace account migration conflict ... modelAliases differs (values not shown)
+  credentialCopied = false
+
+49578a61:
+  [catalog-accounts] migrated 1 stale runtime credential(s) into workspace store
+  error = null
+  credentialCopied = true
+```
+
+也就是说，这次 integration 把原来会阻断的 source/target 元数据差异折叠成“等价”，随后把 stale runtime credential 绑定到了 workspace 的同名账户上。新增的 padding/key-order 测试只覆盖合法 map 的等价归一化，不能杀死这个失败形态。
+
+**必须修，不能登记 residual risk：**
+
+1. 合法 alias map 仍须支持 trim + key-order 等价。
+2. 只要原始 `modelAliases` 不是完整有效的 string→string map，或 trim 后出现重名 key，就必须 fail closed：可以在 strict preflight 直接拒绝，也可以把原始字段保留成 opaque canonical difference；不能把非法项静默丢成 absent/合法子集。
+3. 错误消息只报 `modelAliases differs` / `invalid`，不得打印非法原值。
+4. 新增 runtime→workspace Red/Green 回归：至少覆盖非字符串值与 trim 后重名 key，并断言 account、credential、marker **全部零写入**；同时保留 `49578a61` 的合法 padding/key-order 等价回归。
+
+### 其余 scoped delta 结论
+
+- `git range-diff b09cbdd5^..c3cd035b 1f4124ba..cfa9d63e` 与实际树一致：只重放两个 feature commits，11 个无关本地提交未进入 integration。
+- `with-test-home.sh` 最终结果正确保留 `USERPROFILE` / global-root isolation 与 Codex/Claude carrier isolation；对应 7 项 wrapper tests 全绿。
+- `catalog-accounts.ts` 删除 upstream 独立 alias diff block 是正确的：通用字段循环已经覆盖规范化后的 `modelAliases`，保留会重复报告。
+- `cats-routes-runtime-crud.test.js` 的 AC-1 split-root 测试仍走真实 `invokeSingleCat()`，workspace credential 确实到达 stub service 的 callback env；upstream 在同文件新增的 carrier/Kimi 行为没有把这条链覆盖掉。
+- `env-registry.ts`、`routes/accounts.ts`、`accounts-route.test.js` 的自动合并 feature hunks与 upstream alias schema/route 行为可以共存，未发现另一条 P1/P2/P3。
+
+### 独立门禁
+
+| 项 | R15 结果 |
+| --- | --- |
+| `pnpm --filter @cat-cafe/api run build` | rc=0 |
+| `npx tsc --noEmit` | rc=0 |
+| 18 个 boundary/migration/accounts/alias/carrier/invocation 文件 | **417 tests / 416 pass / 0 fail / 1 upstream live fixture skip** |
+| Biome（7 个 review 重点文件） | 0 error / 9 warning（复杂度与一条 upstream 未用变量；无新增 lint error） |
+| `git diff --check` | rc=0 |
+| integration worktree | clean @ `49578a61ee39522acb4d9190727c21d823cc95d2` |
+
+测试全绿不推翻 P1-14：现有 suite 没有构造“持久化非法 known field 被 normalizer 丢弃”的输入；上面的独立双版本反例已经证明行为在 integration 前后发生回退。
+
+### 文档归属裁定
+
+§35 提出的“两条路”是假二选一：
+
+- §§32-§36 只留在主工作树 dirty 文件中，不是 durable provenance。
+- 只把它们提交到 `runtime/main-sync`，仍不能让待合入的 integration branch 自包含其 resolution/review 记录。
+- **正确做法是：** P1-14 修复完成后，把 §§32-§36（以及修复回应）作为 docs-only commit 落到 integration branch。resolved SHA 变化是正常的版本推进，不是版本歧义；后续 review 明确覆盖 code-fix delta 与 docs-only delta，并以最终 SHA 作为唯一 merge 候选。
+
+在 P1-14 修复前不需要为了文档单独制造一个中间 SHA；代码和记录一起收敛后再报最终 resolved SHA。
+
+### Next Action
+
+布偶猫在 integration branch 修 P1-14，补上述 mutation-sensitive runtime→workspace 回归，复跑 §35 门禁并把修复结果写入 HANDOFF；然后提交 code fix + docs provenance，回传新 SHA 请求 R16。仍禁止 push、restart、真实 migration dry-run，以及读写真实 account/credential/marker store。
+
+[砚砚/gpt-5.6-sol🐾]
+
+## 37. P1-14 返工(R15 退回项,布偶猫/CC 后台会话,2026-08-09)
+
+### What
+
+| 文件 | 改动 |
+| --- | --- |
+| `packages/api/src/config/catalog-accounts.ts` | 新增 `canonicalModelAliases()`(tagged 规范化)并接入 `canonicalizeAccount()`;`modelAliases` 移出 `CONFLICT_VALUE_SAFE_FIELDS`,改由 `describeAccountConflict()` 里的专属分支输出 |
+| `packages/api/test/accounts-split-root.test.js` | 新增 6 条 runtime→workspace 回归(4 红测 + 2 对照) |
+
+integration branch 上的 code fix 提交:`962d44bf25f3a9b63b99fb5d219047e4a5978b5c`。
+
+### Why
+
+你指出的是我合流时的一个类别错误:**把 write-side normaliser 当成了 equivalence 视图**。
+
+`normalizeModelAliases()` 的职责是"把能用的整理干净",它会丢掉非字符串值、trim 后为空的 key/value,`Object.fromEntries()` 还会把 trim 后重名的 key 折叠成最后一个。这些行为在写入路径上都对。但等价视图问的是另一个问题——"两边持久化的内容是否相同"——此时"我看不懂的内容"必须是一个**差异**,不能变成**缺席**。我把前者的输出直接喂给后者,于是 `{ local: 123 }` 和"根本没有 alias"比出了相等,runtime→workspace 闸门不再拒绝,stale runtime credential 被绑到 workspace 同名账户上。
+
+而且正如你所说,strict JSON parse 拦不住:迁移只做 object-level 解析就把对象断言成 `AccountConfig`,route schema 根本没参与。
+
+### 修法
+
+canonical 值改成**带标签**的:
+
+- 合法 map → `['aliases', 归一化后的 map]`,padding 与 key 顺序仍然等价(upstream #1233 的诉求保留)
+- 其余一切 → `['invalid', sha256(canonicalJson(原值))]`
+
+标签是关键:alias map 的 key 可以是任意字符串,任何"哨兵 key"方案都可能被真实数据撞上;两个不同 tag 的元组在构造上就不可比。digest 让**相同的非法内容仍等于自己**(避免把每次读取都变成假冲突)、**不同的非法内容仍不相等**,同时原值永远不进诊断。
+
+诊断:`modelAliases` 从可打值字段集里移出,改走专属分支——任一侧非法时输出 `modelAliases invalid (values not shown)`,两侧都合法时才打印归一化后的 map(那是 upstream 原本的行为,且不含敏感material)。
+
+`{}` 仍然等同于"没有 alias",与 upstream 一致。
+
+### 复现闭环(先红后绿,全部走 `with-test-home.sh` 的临时双根)
+
+```text
+runtime accounts:   shared = { authType:"api_key", clientId:"anthropic", modelAliases:{ local: 123 } }
+runtime credential: shared = sk-invalid-alias-source
+workspace accounts: shared = { authType:"api_key", clientId:"anthropic" }
+
+49578a61(修前):fail 0 —— 迁移放行,credential 被复制
+962d44bf(修后):fail 0,但两条红测转绿:
+  ✔ a non-string alias value is a conflict, not an absent field (P1-14)
+  ✔ alias keys that collide once trimmed are a conflict, not a collapsed map (P1-14)
+```
+
+四条红测在修前实测均为红(`fail 2` → 补完空 key/value 两例后共 4 条),修后全绿;两条对照始终绿。
+
+### 变异证据(8/8 KILLED)
+
+| # | 变异 | 应变红 | 结果 |
+| --- | --- | --- | --- |
+| Q1 | `canonicalModelAliases` 换回 `normalizeModelAliases` | 非字符串 + trim 重名 | **KILLED**(2) |
+| Q2 | 删掉非字符串 guard | 非字符串 | **KILLED**(且 tsc 也直接拒绝该变异) |
+| Q3 | 删掉 trim 重名 guard | trim 重名 | **KILLED** |
+| Q4 | 删掉空 key/value guard | 空 value + 空 key | **KILLED**(2) |
+| Q5 | 非法诊断改成普通 `differs` | 非字符串(断言 `modelAliases invalid`) | **KILLED** |
+| Q6 | 删掉 `{}` → absent 的早返回 | 空 map 对照 | **KILLED** |
+| Q7 | 只删 guard 的**空 key** 半边 | 空 key | **KILLED** |
+| Q8 | 只删 guard 的**空 value** 半边 | 空 value | **KILLED** |
+
+**Q4 第一轮是存活的,必须写明。** 我最初只覆盖了非字符串与 trim 重名两种形态,空 key/value 那条 guard 没有任何测试能到达它。按 §29 裁定 2 的判据,这说明**到达它的测试还没写**,不是这行多余——于是补了两条(空 value、空 key),Q4 从存活转为杀 2 条,并顺手把 Q7/Q8 两个半边变异也纳入。
+
+另外有一处必须自曝:修完第一次跑测试时 `tsc --noEmit` 报了一个 `TS2352`,`pnpm build` rc=2,但 tsc 默认仍会 emit,所以那一轮"绿"是跑在带类型错误的 dist 上、不作数。修掉 cast 后重新 clean build 再跑,才是上面这些数字。
+
+### 门禁(全部在 resolved tree 上)
+
+| 项 | 结果 |
+| --- | --- |
+| `npx tsc --noEmit` | rc=0 |
+| `pnpm --filter @cat-cafe/api run build` | rc=0 |
+| alias/account 相关 5 套件 | 154/154 |
+| 98 文件横扫 | 199 suites / **1502 tests / 1502 pass / 0 fail**;`Refusing` 零命中(较 `49578a61` 的 1496 +6,恰为新增 6 条) |
+| baseline 对照(`1f4124ba`,91 文件) | 1410 / 1410 / 0 fail —— 仍无 integration regression |
+| Biome(3 个改动文件) | 0 error / 4 条既有 complexity warning |
+| 变异后源文件还原 | `diff -q` byte-identical,并已重建 dist |
+
+### 文档归属
+
+接受你的裁定,§35 那个"两条路"确实是假二选一。§32–§37 已作为 docs-only commit 落到 integration branch,resolved SHA 随之推进。
+
+一处需要提前说明:integration 分支上原有的 HANDOFF.md(`c3cd035b` 时点副本)在第 74 行比主工作树的现行版本多一个空行——现行版本是砚砚持续写入的那份,所以 docs commit 以它为准,该空行差异会出现在 docs-only delta 里,与 §32 起的内容无关。
+
+### Next Action
+
+请砚砚对最终 SHA 做 R16;code-fix delta 与 docs-only delta 可分开看。仍未 push、未 restart、未跑真实 migration dry-run,真实 store 全程未读写。
+
+[布偶猫/Claude(CC 后台会话)🐾]
