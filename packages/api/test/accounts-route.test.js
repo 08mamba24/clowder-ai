@@ -1,7 +1,7 @@
 // @ts-check
 import './helpers/setup-cat-registry.js';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -859,6 +859,226 @@ describe('accounts routes', () => {
         resetMigrationState();
         await rm(runtimeRoot, { recursive: true, force: true });
         await rm(workspaceRoot, { recursive: true, force: true });
+        await app.close();
+      }
+    },
+  );
+
+  it(
+    'DELETE /api/accounts with explicit workspace projectPath audits the runtime catalog (P1)',
+    { skip: skipRoots ? 'PROJECT_ALLOWED_ROOTS restricts temp dir access' : false },
+    async () => {
+      const { resetMigrationState, writeCatalogAccount } = await import('../dist/config/catalog-accounts.js');
+      const Fastify = (await import('fastify')).default;
+      const { accountsRoutes } = await import('../dist/routes/accounts.js');
+      const app = Fastify();
+      await app.register(accountsRoutes);
+      await app.ready();
+
+      const runtimeRoot = await makeTmpDir('audit-explicit-runtime');
+      const workspaceRoot = await makeTmpDir('audit-explicit-workspace');
+      const saved = {
+        runtimeRoot: process.env.CAT_CAFE_RUNTIME_ROOT,
+        workspaceRoot: process.env.CAT_CAFE_WORKSPACE_ROOT,
+        templatePath: process.env.CAT_TEMPLATE_PATH,
+        globalRoot: process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT,
+        home: process.env.HOME,
+      };
+      // Split-root: account lives in the workspace store, binding lives in the runtime catalog.
+      process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
+      process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceRoot;
+      delete process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
+      mkdirSync(join(runtimeRoot, '.cat-cafe'), { recursive: true });
+      writeFileSync(join(runtimeRoot, 'cat-template.json'), JSON.stringify({ breeds: [] }));
+      process.env.CAT_TEMPLATE_PATH = join(runtimeRoot, 'cat-template.json');
+      process.env.HOME = workspaceRoot;
+      resetMigrationState();
+      try {
+        writeCatalogAccount(workspaceRoot, 'audit-bound-explicit', {
+          authType: 'api_key',
+          displayName: 'Audit Bound Explicit',
+        });
+        resetMigrationState();
+        writeBoundCatalog(runtimeRoot, 'audit-bound-explicit');
+
+        const res = await app.inject({
+          method: 'DELETE',
+          url: '/api/accounts/audit-bound-explicit',
+          headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+          // Explicit workspace projectPath: the catalog coordinate must still
+          // map back to the runtime checkout where live bindings live.
+          payload: JSON.stringify({ projectPath: workspaceRoot }),
+        });
+        assert.equal(res.statusCode, 409, 'explicit workspace projectPath must still find the runtime-catalog binding');
+        assert.match(res.json().error, /audit-bound-explicit/);
+        assert.ok(
+          readFileSync(join(workspaceRoot, '.cat-cafe', 'accounts.json')).includes('audit-bound-explicit'),
+          'account must remain',
+        );
+      } finally {
+        if (saved.runtimeRoot === undefined) delete process.env.CAT_CAFE_RUNTIME_ROOT;
+        else process.env.CAT_CAFE_RUNTIME_ROOT = saved.runtimeRoot;
+        if (saved.workspaceRoot === undefined) delete process.env.CAT_CAFE_WORKSPACE_ROOT;
+        else process.env.CAT_CAFE_WORKSPACE_ROOT = saved.workspaceRoot;
+        if (saved.templatePath === undefined) delete process.env.CAT_TEMPLATE_PATH;
+        else process.env.CAT_TEMPLATE_PATH = saved.templatePath;
+        if (saved.globalRoot === undefined) delete process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
+        else process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = saved.globalRoot;
+        if (saved.home === undefined) delete process.env.HOME;
+        else process.env.HOME = saved.home;
+        resetMigrationState();
+        await rm(runtimeRoot, { recursive: true, force: true });
+        await rm(workspaceRoot, { recursive: true, force: true });
+        await app.close();
+      }
+    },
+  );
+
+  it(
+    'DELETE with symlink-spelled env workspace root still audits the runtime catalog (P1 canonicalization)',
+    { skip: skipRoots ? 'PROJECT_ALLOWED_ROOTS restricts temp dir access' : false },
+    async () => {
+      const { resetMigrationState, writeCatalogAccount } = await import('../dist/config/catalog-accounts.js');
+      const Fastify = (await import('fastify')).default;
+      const { accountsRoutes } = await import('../dist/routes/accounts.js');
+      const app = Fastify();
+      await app.register(accountsRoutes);
+      await app.ready();
+
+      const runtimeRoot = await makeTmpDir('audit-symlink-runtime');
+      const workspaceReal = await makeTmpDir('audit-symlink-workspace');
+      // runtime-worktree.sh derives env roots from bash logical pwd, which keeps
+      // symlink components (e.g. /tmp vs /private/tmp), while resolveProjectRoot
+      // realpaths the request path — the audit mapping must match across both
+      // spellings of the same directory.
+      const workspaceLink = `${workspaceReal}-link`;
+      symlinkSync(workspaceReal, workspaceLink);
+      const saved = {
+        runtimeRoot: process.env.CAT_CAFE_RUNTIME_ROOT,
+        workspaceRoot: process.env.CAT_CAFE_WORKSPACE_ROOT,
+        templatePath: process.env.CAT_TEMPLATE_PATH,
+        globalRoot: process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT,
+        home: process.env.HOME,
+      };
+      process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
+      process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceLink;
+      delete process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
+      mkdirSync(join(runtimeRoot, '.cat-cafe'), { recursive: true });
+      writeFileSync(join(runtimeRoot, 'cat-template.json'), JSON.stringify({ breeds: [] }));
+      process.env.CAT_TEMPLATE_PATH = join(runtimeRoot, 'cat-template.json');
+      process.env.HOME = workspaceReal;
+      resetMigrationState();
+      try {
+        writeCatalogAccount(workspaceReal, 'audit-symlink-bound', {
+          authType: 'api_key',
+          displayName: 'Audit Symlink Bound',
+        });
+        resetMigrationState();
+        await writeBoundCatalog(runtimeRoot, 'audit-symlink-bound');
+
+        const res = await app.inject({
+          method: 'DELETE',
+          url: '/api/accounts/audit-symlink-bound',
+          headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+          payload: JSON.stringify({ projectPath: workspaceLink }),
+        });
+        assert.equal(
+          res.statusCode,
+          409,
+          'symlink-spelled workspace root must still map to the runtime-catalog binding',
+        );
+        assert.match(res.json().error, /audit-symlink-bound/);
+        assert.ok(
+          readFileSync(join(workspaceReal, '.cat-cafe', 'accounts.json')).includes('audit-symlink-bound'),
+          'account must remain',
+        );
+      } finally {
+        if (saved.runtimeRoot === undefined) delete process.env.CAT_CAFE_RUNTIME_ROOT;
+        else process.env.CAT_CAFE_RUNTIME_ROOT = saved.runtimeRoot;
+        if (saved.workspaceRoot === undefined) delete process.env.CAT_CAFE_WORKSPACE_ROOT;
+        else process.env.CAT_CAFE_WORKSPACE_ROOT = saved.workspaceRoot;
+        if (saved.templatePath === undefined) delete process.env.CAT_TEMPLATE_PATH;
+        else process.env.CAT_TEMPLATE_PATH = saved.templatePath;
+        if (saved.globalRoot === undefined) delete process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
+        else process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = saved.globalRoot;
+        if (saved.home === undefined) delete process.env.HOME;
+        else process.env.HOME = saved.home;
+        resetMigrationState();
+        await rm(workspaceLink, { force: true });
+        await rm(runtimeRoot, { recursive: true, force: true });
+        await rm(workspaceReal, { recursive: true, force: true });
+        await app.close();
+      }
+    },
+  );
+
+  it(
+    'DELETE with an external projectPath keeps its own catalog root (no runtime remap)',
+    { skip: skipRoots ? 'PROJECT_ALLOWED_ROOTS restricts temp dir access' : false },
+    async () => {
+      const { resetMigrationState, writeCatalogAccount } = await import('../dist/config/catalog-accounts.js');
+      const Fastify = (await import('fastify')).default;
+      const { accountsRoutes } = await import('../dist/routes/accounts.js');
+      const app = Fastify();
+      await app.register(accountsRoutes);
+      await app.ready();
+
+      const runtimeRoot = await makeTmpDir('audit-ext-runtime');
+      const workspaceRoot = await makeTmpDir('audit-ext-workspace');
+      const externalRoot = await makeTmpDir('audit-ext-project');
+      const saved = {
+        runtimeRoot: process.env.CAT_CAFE_RUNTIME_ROOT,
+        workspaceRoot: process.env.CAT_CAFE_WORKSPACE_ROOT,
+        templatePath: process.env.CAT_TEMPLATE_PATH,
+        globalRoot: process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT,
+        home: process.env.HOME,
+      };
+      process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
+      process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceRoot;
+      delete process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
+      mkdirSync(join(runtimeRoot, '.cat-cafe'), { recursive: true });
+      writeFileSync(join(runtimeRoot, 'cat-template.json'), JSON.stringify({ breeds: [] }));
+      process.env.CAT_TEMPLATE_PATH = join(runtimeRoot, 'cat-template.json');
+      process.env.HOME = workspaceRoot;
+      resetMigrationState();
+      try {
+        // A genuinely external project keeps both its account store and its
+        // catalog: the delete audit must scan the external catalog, not be
+        // remapped to the runtime checkout (which has no such binding).
+        writeCatalogAccount(externalRoot, 'audit-external-bound', {
+          authType: 'api_key',
+          displayName: 'Audit External Bound',
+        });
+        resetMigrationState();
+        await writeBoundCatalog(externalRoot, 'audit-external-bound');
+
+        const res = await app.inject({
+          method: 'DELETE',
+          url: '/api/accounts/audit-external-bound',
+          headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+          payload: JSON.stringify({ projectPath: externalRoot }),
+        });
+        assert.equal(res.statusCode, 409, 'external project must audit its own catalog root, not the runtime checkout');
+        assert.match(res.json().error, /audit-external-bound/);
+        assert.ok(
+          readFileSync(join(externalRoot, '.cat-cafe', 'accounts.json')).includes('audit-external-bound'),
+          'account must remain',
+        );
+      } finally {
+        if (saved.runtimeRoot === undefined) delete process.env.CAT_CAFE_RUNTIME_ROOT;
+        else process.env.CAT_CAFE_RUNTIME_ROOT = saved.runtimeRoot;
+        if (saved.workspaceRoot === undefined) delete process.env.CAT_CAFE_WORKSPACE_ROOT;
+        else process.env.CAT_CAFE_WORKSPACE_ROOT = saved.workspaceRoot;
+        if (saved.templatePath === undefined) delete process.env.CAT_TEMPLATE_PATH;
+        else process.env.CAT_TEMPLATE_PATH = saved.templatePath;
+        if (saved.globalRoot === undefined) delete process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
+        else process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = saved.globalRoot;
+        if (saved.home === undefined) delete process.env.HOME;
+        else process.env.HOME = saved.home;
+        resetMigrationState();
+        await rm(runtimeRoot, { recursive: true, force: true });
+        await rm(workspaceRoot, { recursive: true, force: true });
+        await rm(externalRoot, { recursive: true, force: true });
         await app.close();
       }
     },

@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync,
 import { resolve } from 'node:path';
 import type { CredentialEntry } from '@cat-cafe/shared';
 import { resolveAccountStoreRoot } from './account-store-root.js';
-import { assertSafeTestConfigRoot } from './test-config-write-guard.js';
+import { assertSafeTestConfigRead, assertSafeTestConfigRoot } from './test-config-write-guard.js';
 
 const CONFIG_SUBDIR = '.cat-cafe';
 const CREDENTIALS_FILENAME = 'credentials.json';
@@ -33,6 +33,10 @@ function writeFileAtomic(filePath: string, content: string): void {
 }
 
 function readAll(projectRoot?: string): Record<string, CredentialEntry> {
+  // P1-8: a credential a test can READ is already leaked, whether or not the
+  // process goes on to write anything. Guarded before existsSync so the boundary
+  // does not depend on the operator's store happening to exist.
+  assertSafeTestConfigRead(resolveAccountStoreRoot({ projectRoot }), 'credentials.readAll');
   const credPath = resolveCredentialsPath(projectRoot);
   if (!existsSync(credPath)) return {};
   try {
@@ -46,6 +50,7 @@ function readAll(projectRoot?: string): Record<string, CredentialEntry> {
 }
 
 export function assertCredentialsReadable(projectRoot?: string): void {
+  assertSafeTestConfigRead(resolveAccountStoreRoot({ projectRoot }), 'credentials.assertCredentialsReadable');
   const credPath = resolveCredentialsPath(projectRoot);
   if (!existsSync(credPath)) return;
 

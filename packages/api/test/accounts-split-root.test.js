@@ -22,6 +22,10 @@ const ENV_KEYS = [
   'CAT_CAFE_WORKSPACE_ROOT',
   'CAT_CAFE_GLOBAL_CONFIG_ROOT',
   'HOME',
+  // R12 ruling 3: os.homedir() prefers USERPROFILE on Windows, so pointing only
+  // HOME at a fixture would put the fall-back-to-the-real-home hole straight
+  // back on the other first-class platform.
+  'USERPROFILE',
   'CAT_CAFE_TEST_SANDBOX',
 ];
 const savedEnv = {};
@@ -29,6 +33,7 @@ const savedEnv = {};
 describe('accounts split-root regression (runtime checkout vs persistent workspace)', () => {
   let runtimeRoot;
   let workspaceRoot;
+  let fakeHome;
 
   beforeEach(async () => {
     for (const key of ENV_KEYS) {
@@ -37,6 +42,15 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
     }
     runtimeRoot = await mkdtemp(join(tmpdir(), 'split-root-runtime-'));
     workspaceRoot = await mkdtemp(join(tmpdir(), 'split-root-workspace-'));
+    // HOME must be POINTED somewhere, not deleted. os.homedir() falls back to
+    // the passwd entry when $HOME is unset, so "isolating" it by deletion did
+    // the opposite: ensureMigrated() runs the homedir migrations first, and
+    // every test below was reading — and would have imported from — the
+    // operator's real ~/.cat-cafe. Every other suite in this repo already
+    // points HOME at a fixture; this one was the exception (P1-9).
+    fakeHome = await mkdtemp(join(tmpdir(), 'split-root-home-'));
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
     await mkdir(join(runtimeRoot, '.cat-cafe'), { recursive: true });
     await mkdir(join(workspaceRoot, '.cat-cafe'), { recursive: true });
     resetMigrationState();
@@ -50,6 +64,7 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
     resetMigrationState();
     await rm(runtimeRoot, { recursive: true, force: true });
     await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(fakeHome, { recursive: true, force: true });
   });
 
   function setSplitEnv() {
@@ -320,5 +335,359 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
     assert.ok(existsSync(wsCredPath), 'credential must be written into the workspace store');
     const wsCreds = JSON.parse(readFileSync(wsCredPath, 'utf-8'));
     assert.equal(wsCreds['my-claude-20x'].apiKey, 'sk-new');
+  });
+
+  // ── P1: cross-process completion evidence ──
+  // The in-process `migratedRuntimeStale` Set dies with the process. After a
+  // successful migration the runtime source stays in place as backup, so the
+  // next process must recognize "already migrated" WITHOUT re-preflighting —
+  // otherwise a user's legitimate same-id target update becomes a "conflict".
+
+  it('target update after migration does not conflict on next start (durable completion evidence)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      'max20x-2': { authType: 'oauth', clientId: 'anthropic', displayName: 'max20x/2' },
+    });
+
+    // First start: migration completes.
+    let accounts = readCatalogAccounts(runtimeRoot);
+    assert.ok('max20x-2' in accounts, 'first migration must merge the stale runtime account');
+
+    // User legitimately renames the same-id account in the workspace.
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({
+        'max20x-2': { authType: 'oauth', clientId: 'anthropic', displayName: 'user-renamed' },
+      }),
+      'utf-8',
+    );
+
+    // Simulated restart: in-process migration state is gone.
+    resetMigrationState();
+    // The durable source fingerprint must short-circuit re-preflight, so the
+    // workspace update is NOT misread as a migration conflict.
+    accounts = readCatalogAccounts(runtimeRoot);
+    assert.equal(accounts['max20x-2'].displayName, 'user-renamed', 'user update must survive restart');
+  });
+
+  it('rollback-modified runtime source re-preflights and conflicts against updated target', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      'max20x-2': { authType: 'oauth', clientId: 'anthropic', displayName: 'max20x/2' },
+    });
+    readCatalogAccounts(runtimeRoot); // first migration completes
+
+    // User updates the workspace target.
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({
+        'max20x-2': { authType: 'oauth', clientId: 'anthropic', displayName: 'user-renamed' },
+      }),
+      'utf-8',
+    );
+
+    // Rollback replaces the runtime source with DIFFERENT content → fingerprint
+    // changes → re-preflight runs and must fail closed against the updated target.
+    await writeRuntimeAccounts({
+      'max20x-2': { authType: 'oauth', clientId: 'anthropic', displayName: 'rollback-name' },
+    });
+    resetMigrationState();
+
+    assert.throws(
+      () => readCatalogAccounts(runtimeRoot),
+      /migration conflict for "max20x-2"/,
+      'changed source must re-run preflight and conflict, not silently skip',
+    );
+  });
+
+  // ── P1: target-side preflight must be strict, never "backup then treat as empty" ──
+
+  it('malformed workspace accounts fail closed, never treated as empty (target preflight)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      'max20x-2': { authType: 'oauth', clientId: 'anthropic', displayName: 'max20x/2' },
+    });
+    await writeFile(join(workspaceRoot, '.cat-cafe', 'accounts.json'), '{ not-json', 'utf-8');
+
+    assert.throws(
+      () => readCatalogAccounts(runtimeRoot),
+      SyntaxError,
+      'malformed target accounts must fail closed, not be overwritten',
+    );
+    const { readFileSync } = await import('node:fs');
+    assert.equal(
+      readFileSync(join(workspaceRoot, '.cat-cafe', 'accounts.json'), 'utf-8'),
+      '{ not-json',
+      'malformed target must remain untouched',
+    );
+  });
+
+  it('malformed workspace credentials fail closed, never overwritten (target preflight)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      'max20x-2': { authType: 'api_key', clientId: 'anthropic', displayName: 'max20x/2' },
+    });
+    await writeFile(
+      join(runtimeRoot, '.cat-cafe', 'credentials.json'),
+      JSON.stringify({ 'max20x-2': { apiKey: 'sk-old' } }),
+      'utf-8',
+    );
+    // Same-id account metadata already present in workspace → accounts merge is
+    // a no-op, but the credentials merge WOULD overwrite this malformed file.
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({
+        'max20x-2': { authType: 'api_key', clientId: 'anthropic', displayName: 'max20x/2' },
+      }),
+      'utf-8',
+    );
+    await writeFile(join(workspaceRoot, '.cat-cafe', 'credentials.json'), '{ not-json', 'utf-8');
+
+    assert.throws(
+      () => readCatalogAccounts(runtimeRoot),
+      SyntaxError,
+      'malformed target credentials must fail closed, not be overwritten',
+    );
+    const { readFileSync } = await import('node:fs');
+    assert.equal(
+      readFileSync(join(workspaceRoot, '.cat-cafe', 'credentials.json'), 'utf-8'),
+      '{ not-json',
+      'malformed target credentials must remain untouched',
+    );
+  });
+
+  it('migration marker is written 0600 — it carries a credential-derived verifier (R3 P1-1)', async (t) => {
+    if (process.platform === 'win32') return t.skip('POSIX file modes only');
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      'max20x-2': { authType: 'api_key', clientId: 'anthropic', displayName: 'max20x/2' },
+    });
+    await writeFile(
+      join(runtimeRoot, '.cat-cafe', 'credentials.json'),
+      JSON.stringify({ 'max20x-2': { apiKey: 'sk-secret' } }),
+      'utf-8',
+    );
+
+    readCatalogAccounts(runtimeRoot);
+
+    const { stat } = await import('node:fs/promises');
+    const markerStat = await stat(join(workspaceRoot, '.cat-cafe', 'runtime-migration.json'));
+    assert.equal(
+      // eslint-disable-next-line no-bitwise
+      (markerStat.mode & 0o777).toString(8),
+      '600',
+      'marker holds the sha256 of credentials.json — it must not be world-readable',
+    );
+  });
+
+  it('conflicting same-id clientId fails closed instead of silently skipping (R3 P1-2)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      'max20x-2': { authType: 'api_key', clientId: 'openai', displayName: 'max20x/2' },
+    });
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({
+        'max20x-2': { authType: 'api_key', clientId: 'anthropic', displayName: 'max20x/2' },
+      }),
+      'utf-8',
+    );
+
+    assert.throws(
+      () => readCatalogAccounts(runtimeRoot),
+      /migration conflict for "max20x-2".*clientId/s,
+      'clientId divergence is a real conflict and must fail closed',
+    );
+  });
+
+  it('conflicting same-id envVars fails closed without printing values (R3 P1-2)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      'max20x-2': {
+        authType: 'api_key',
+        clientId: 'anthropic',
+        displayName: 'max20x/2',
+        envVars: { MY_PROXY_TOKEN: 'runtime-secret-value' },
+      },
+    });
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({
+        'max20x-2': {
+          authType: 'api_key',
+          clientId: 'anthropic',
+          displayName: 'max20x/2',
+          envVars: { MY_PROXY_TOKEN: 'workspace-secret-value' },
+        },
+      }),
+      'utf-8',
+    );
+
+    let thrown;
+    assert.throws(() => {
+      try {
+        readCatalogAccounts(runtimeRoot);
+      } catch (err) {
+        thrown = err;
+        throw err;
+      }
+    }, /migration conflict for "max20x-2".*envVars/s);
+    assert.ok(!String(thrown?.message).includes('runtime-secret-value'), 'must not print runtime envVar value');
+    assert.ok(!String(thrown?.message).includes('workspace-secret-value'), 'must not print workspace envVar value');
+    assert.match(String(thrown?.message), /MY_PROXY_TOKEN/, 'differing key NAME is safe and aids diagnosis');
+  });
+
+  it('format-only source rewrite is not misread as rollback (R3 P2-1)', async () => {
+    setSplitEnv();
+    // Pretty-printed source with one key order.
+    await writeFile(
+      join(runtimeRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({ 'max20x-2': { authType: 'oauth', clientId: 'anthropic', displayName: 'max20x/2' } }, null, 2),
+      'utf-8',
+    );
+    readCatalogAccounts(runtimeRoot); // first migration completes, marker written
+
+    // User legitimately updates the workspace target.
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({
+        'max20x-2': { authType: 'oauth', clientId: 'anthropic', displayName: 'user-renamed' },
+      }),
+      'utf-8',
+    );
+
+    // Source rewritten compact with different key order — same semantics.
+    await writeFile(
+      join(runtimeRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({ 'max20x-2': { displayName: 'max20x/2', clientId: 'anthropic', authType: 'oauth' } }),
+      'utf-8',
+    );
+
+    resetMigrationState();
+    const accounts = readCatalogAccounts(runtimeRoot);
+    assert.equal(
+      accounts['max20x-2'].displayName,
+      'user-renamed',
+      'formatting-only source change must not trigger a rollback conflict against the updated target',
+    );
+  });
+
+  it('forged v1 marker with sentinel fingerprint cannot bypass strict source preflight (R4 P1-4)', async () => {
+    setSplitEnv();
+    // Malformed runtime source: strict preflight MUST throw.
+    await writeFile(join(runtimeRoot, '.cat-cafe', 'accounts.json'), '{ not-json', 'utf-8');
+    // Forged/corrupt marker claiming the malformed source was already migrated,
+    // using the internal sentinel value as a fingerprint.
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'runtime-migration.json'),
+      JSON.stringify({
+        v: 1,
+        migratedAt: '2026-08-07T00:00:00.000Z',
+        sourceFingerprints: { 'accounts.json': 'unparseable', 'credentials.json': 'absent' },
+      }),
+      'utf-8',
+    );
+
+    assert.throws(
+      () => readCatalogAccounts(runtimeRoot),
+      SyntaxError,
+      'a marker must never let a malformed source skip strict preflight',
+    );
+  });
+
+  it('marker with out-of-domain fingerprint values is rejected (R4 P1-4)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      'max20x-2': { authType: 'oauth', clientId: 'anthropic', displayName: 'max20x/2' },
+    });
+    // Target CONFLICTS with the source: only a trusted marker could skip the
+    // conflict. Fingerprints that are not a 64-hex digest / 'absent' must be
+    // rejected as evidence → full preflight → fail closed.
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({
+        'max20x-2': { authType: 'oauth', clientId: 'openai', displayName: 'max20x/2' },
+      }),
+      'utf-8',
+    );
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'runtime-migration.json'),
+      JSON.stringify({
+        v: 1,
+        migratedAt: '2026-08-07T00:00:00.000Z',
+        sourceFingerprints: { 'accounts.json': 'not-a-digest', 'credentials.json': 'absent' },
+      }),
+      'utf-8',
+    );
+
+    assert.throws(
+      () => readCatalogAccounts(runtimeRoot),
+      /migration conflict for "max20x-2"/,
+      'malformed fingerprint values must not be accepted as completion evidence',
+    );
+  });
+
+  it('marker missing a required fingerprint key is rejected (R4 P1-4)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      'max20x-2': { authType: 'oauth', clientId: 'anthropic', displayName: 'max20x/2' },
+    });
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({
+        'max20x-2': { authType: 'oauth', clientId: 'openai', displayName: 'max20x/2' },
+      }),
+      'utf-8',
+    );
+    // credentials.json key absent entirely → incomplete evidence.
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'runtime-migration.json'),
+      JSON.stringify({
+        v: 1,
+        migratedAt: '2026-08-07T00:00:00.000Z',
+        sourceFingerprints: { 'accounts.json': 'absent' },
+      }),
+      'utf-8',
+    );
+
+    assert.throws(
+      () => readCatalogAccounts(runtimeRoot),
+      /migration conflict for "max20x-2"/,
+      'incomplete marker must not be accepted as completion evidence',
+    );
+  });
+
+  it('marker with unknown schema version is ignored, not trusted (R3 P2-1)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      'max20x-2': { authType: 'oauth', clientId: 'anthropic', displayName: 'max20x/2' },
+    });
+    // Workspace target already equivalent → first migration completes and
+    // writes a valid v1 marker with fingerprints matching the source.
+    readCatalogAccounts(runtimeRoot);
+
+    // Target now CONFLICTS with the source. A valid marker would legitimately
+    // skip preflight (target is the user's domain after migration) — but a
+    // marker with an unknown version must NOT be trusted as completion
+    // evidence, so preflight re-runs and fails closed.
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({
+        'max20x-2': { authType: 'oauth', clientId: 'openai', displayName: 'max20x/2' },
+      }),
+      'utf-8',
+    );
+    const { readFileSync } = await import('node:fs');
+    const markerPath = join(workspaceRoot, '.cat-cafe', 'runtime-migration.json');
+    const marker = JSON.parse(readFileSync(markerPath, 'utf-8'));
+    marker.v = 999;
+    await writeFile(markerPath, JSON.stringify(marker, null, 2), 'utf-8');
+
+    resetMigrationState();
+    assert.throws(
+      () => readCatalogAccounts(runtimeRoot),
+      /migration conflict for "max20x-2"/,
+      'unknown marker version must fall back to full preflight, which fails closed here',
+    );
   });
 });

@@ -3,7 +3,7 @@
  *
  * Reads/writes via global ~/.cat-cafe/accounts.json + credentials.json.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { relative, resolve, win32 } from 'node:path';
 import type { AccountConfig } from '@cat-cafe/shared';
@@ -19,6 +19,7 @@ import { deleteCredential, hasCredential, writeCredential } from '../config/cred
 import { resolveActiveProjectRoot } from '../utils/active-project-root.js';
 import { findMonorepoRoot } from '../utils/monorepo-root.js';
 import { redirectRuntimeProjectPath, resolvePersistentProjectPathDetailed } from '../utils/persistent-project-path.js';
+import { isPathUnderRoots, pathsEqual } from '../utils/project-path.js';
 import { resolveUserId } from '../utils/request-identity.js';
 
 // clowder-ai#340: Derive client identity from well-known account IDs, not stored protocol.
@@ -77,6 +78,43 @@ function deriveAccountId(displayName: string, existingIds: Set<string>): string 
   let counter = 2;
   while (existingIds.has(`${seed}-${counter}`)) counter += 1;
   return `${seed}-${counter}`;
+}
+
+/**
+ * Map a delete-audit catalog coordinate back to the runtime checkout (P1).
+ *
+ * In split runtime/workspace mode the account store lives in the persistent
+ * workspace (resolveAccountStoreRoot redirects runtime → workspace), while
+ * live cat→account bindings live in the runtime checkout catalog. The DELETE
+ * audit must therefore scan the runtime twin of any workspace path — otherwise
+ * an explicit workspace projectPath would scan the workspace catalog, miss the
+ * runtime binding, and allow deleting a bound account. Truly external projects
+ * keep their own catalog root.
+ */
+function canonicalizeSync(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+function resolveDeleteCatalogRoot(projectRoot: string): string {
+  const runtimeRootRaw = process.env.CAT_CAFE_RUNTIME_ROOT;
+  const workspaceRootRaw = process.env.CAT_CAFE_WORKSPACE_ROOT;
+  if (!runtimeRootRaw || !workspaceRootRaw) return projectRoot;
+  const runtimeRoot = resolve(runtimeRootRaw);
+  const workspaceRoot = resolve(workspaceRootRaw);
+  if (pathsEqual(canonicalizeSync(runtimeRoot), canonicalizeSync(workspaceRoot))) return projectRoot;
+  // resolveProjectRoot returns realpath'd coordinates, while the env roots keep
+  // the launcher's spelling (bash logical pwd preserves symlink components, e.g.
+  // /tmp vs /private/tmp), so the workspace root must match under both spellings.
+  for (const candidate of new Set([workspaceRoot, canonicalizeSync(workspaceRoot)])) {
+    if (isPathUnderRoots(projectRoot, [candidate])) {
+      return resolve(runtimeRoot, relative(candidate, projectRoot));
+    }
+  }
+  return projectRoot;
 }
 
 function isProjectScopedGlobalStore(projectRoot: string): boolean {
@@ -444,9 +482,14 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
 
       // Check the runtime catalog for dangling references. Template is bootstrap-only
       // and is not part of runtime binding truth after catalog creation.
-      // AC-4/INV-3: bindings live in the runtime catalog, not the workspace-remapped store root.
+      // AC-4/INV-3 + P1: bindings live in the runtime catalog; the workspace twin
+      // of an explicitly-passed projectPath maps back to it for the audit, while
+      // the default coordinate is the active runtime root itself — no need to
+      // round-trip it through the workspace remap and back.
       if (!parsed.data.force && accountExists) {
-        const catalogRoot = parsed.data.projectPath ? projectRoot : resolveActiveProjectRoot();
+        const catalogRoot = parsed.data.projectPath
+          ? resolveDeleteCatalogRoot(projectRoot)
+          : resolveActiveProjectRoot();
         const boundCatIds = findBoundCatIds(catalogRoot, params.profileId);
         if (boundCatIds instanceof Error) {
           reply.status(500);

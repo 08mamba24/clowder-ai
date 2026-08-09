@@ -349,6 +349,15 @@ export const ENV_VARS: EnvDefinition[] = [
     runtimeEditable: false,
   },
   {
+    name: 'CAT_CAFE_TEST_SANDBOX_ROOT',
+    defaultValue: '(未设置)',
+    description: '测试自报的沙盒根目录；standalone installer 只写这里，未声明则拒写（仅测试使用）',
+    category: 'server',
+    sensitive: false,
+    hubVisible: false,
+    runtimeEditable: false,
+  },
+  {
     name: 'CAT_CAFE_TEST_REAL_HOME',
     defaultValue: '(未设置)',
     description: '测试真实 HOME 路径快照（用于阻止测试写回宿主 HOME）',

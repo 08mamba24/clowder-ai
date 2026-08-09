@@ -8,16 +8,19 @@
  *   1. Legacy provider-profiles.json → accounts.json
  *   2. Project cat-catalog.json.accounts → accounts.json
  */
+import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { AccountConfig } from '@cat-cafe/shared';
 import { resolveAccountStoreRoot } from './account-store-root.js';
-import { assertSafeTestConfigRoot } from './test-config-write-guard.js';
+import { assertSafeTestConfigRead, assertSafeTestConfigRoot } from './test-config-write-guard.js';
 
 const CONFIG_SUBDIR = '.cat-cafe';
 const ACCOUNTS_FILENAME = 'accounts.json';
 const CREDENTIALS_FILENAME = 'credentials.json';
+/** Durable migration-completion marker (cross-process evidence), stored in the workspace store. */
+const RUNTIME_MIGRATION_MARKER = 'runtime-migration.json';
 const BUILTIN_ACCOUNT_REFS = new Set([
   'claude',
   'codex',
@@ -46,6 +49,50 @@ function assertSafeCatalogWrite(projectRoot: string | undefined, source: string)
   assertSafeTestConfigRoot(resolveAccountStoreRoot({ projectRoot }), source);
 }
 
+/** P1-8: resolving the store is enough of a boundary crossing — reads count too. */
+function assertSafeCatalogRead(projectRoot: string | undefined, source: string): void {
+  assertSafeTestConfigRead(resolveAccountStoreRoot({ projectRoot }), source);
+}
+
+/**
+ * P1-9: guard a migration's SOURCE or TARGET root before it opens anything.
+ *
+ * Guarding the public reader was guarding the wrong end. readCatalogAccounts()
+ * runs ensureMigrated() first, and those migrations open $HOME's
+ * credentials.json, legacy provider-profiles files and the project catalog —
+ * then COPY what they find into the caller's own store, where reading it back is
+ * entirely legal. By the time readAllGlobal()'s guard ran, the crossing had
+ * already happened and the credential was sitting inside the fixture. So every
+ * migration root is checked here, before its first existsSync/readFileSync.
+ *
+ * The argument is a PHYSICAL directory, not a store root: do not route it
+ * through resolveAccountStoreRoot(), which would redirect a source to the very
+ * target we are trying to keep it out of.
+ *
+ * P1-11: an earlier draft placed only three of these, arguing that
+ * ensureMigrated()'s fixed order made any further guard unreachable — an
+ * earlier guard on the same root would always refuse first, so the extra line
+ * could not be killed by any mutation. That reasoning holds for ONE call in ONE
+ * state, and the state does not hold still: the completion caches
+ * (migratedProjectLegacy, migratedProjects, …) survive for the life of the
+ * process, while CAT_CAFE_TEST_SANDBOX_ALLOW_UNSAFE_ROOT and
+ * CAT_CAFE_SKIP_HOMEDIR_MIGRATION are re-read on every call. So a first call
+ * under an explicit opt-out can cache away the guard that a second call, with
+ * protection restored, was relying on — and the reader downstream still opens
+ * the file. It is also asymmetric: migrateProjectLegacyProviderProfiles()
+ * caches even when its source is absent, migrateProjectAccountsToGlobal()
+ * returns from inside its try without caching.
+ *
+ * Hence the rule, which is LOCAL and therefore independent of call order and
+ * cache state: every function that itself opens a caller-supplied root guards
+ * that root before its own first existsSync/readFileSync. A guard that no
+ * mutation can kill means the reaching test has not been written yet — it does
+ * not mean the line is decoration.
+ */
+function assertSafeMigrationRead(root: string, source: string): void {
+  assertSafeTestConfigRead(root, source);
+}
+
 export function resolveAccountsPath(projectRoot?: string): string {
   return resolve(resolveAccountStoreRoot({ projectRoot }), CONFIG_SUBDIR, ACCOUNTS_FILENAME);
 }
@@ -66,6 +113,9 @@ function writeFileAtomic(filePath: string, content: string, mode?: number): void
 }
 
 function readAllGlobal(projectRoot?: string): Record<string, AccountConfig> {
+  // Before existsSync, not after: whether the boundary holds must not depend on
+  // whether the operator happens to have a store file there (P1-8).
+  assertSafeCatalogRead(projectRoot, 'catalog-accounts.readAllGlobal');
   const accountsPath = resolveAccountsPath(projectRoot);
   if (!existsSync(accountsPath)) return {};
   const raw = readFileSync(accountsPath, 'utf-8');
@@ -122,44 +172,78 @@ function normalizeModelAliases(value: unknown): Record<string, string> | undefin
   return normalized.length > 0 ? Object.fromEntries(normalized) : undefined;
 }
 
-function canonicalizeAccount(account: AccountConfig): {
-  authType: 'oauth' | 'api_key';
-  baseUrl?: string;
-  displayName?: string;
-  models?: string[];
-  modelAliases?: Record<string, string>;
-} {
+function normalizeEnvVars(envVars: AccountConfig['envVars']): Record<string, string> | undefined {
+  if (!envVars || Object.keys(envVars).length === 0) return undefined;
+  return { ...envVars };
+}
+
+/**
+ * Canonical view of EVERY persisted account field. Known fields get their
+ * normalizers; the rest-spread keeps future AccountConfig additions inside the
+ * equivalence check automatically instead of silently exempting them (R3 P1-2:
+ * clientId/envVars divergence was skipped as "equivalent").
+ *
+ * modelAliases (upstream #1233) is destructured out even though `...rest` would
+ * carry it anyway: left in `rest` it arrives UNNORMALISED, so a whitespace- or
+ * key-order-only rewrite would read as a genuine conflict — the exact false
+ * positive normalizeModelAliases() exists to prevent. Naming it here keeps both
+ * properties: upstream's normalisation, and this feature's guarantee that no
+ * persisted field can silently sit outside the equivalence check.
+ */
+function canonicalizeAccount(account: AccountConfig): Record<string, unknown> {
+  const { authType, baseUrl, displayName, models, modelAliases, envVars, ...rest } = account;
+  const normalizedEnvVars = normalizeEnvVars(envVars);
+  const normalizedModelAliases = normalizeModelAliases(modelAliases);
   return {
-    authType: account.authType,
-    ...(normalizeBaseUrl(account.baseUrl) ? { baseUrl: normalizeBaseUrl(account.baseUrl) } : {}),
-    ...(normalizeDisplayName(account.displayName) ? { displayName: normalizeDisplayName(account.displayName) } : {}),
-    ...(normalizeModels(account.models) ? { models: normalizeModels(account.models) } : {}),
-    ...(normalizeModelAliases(account.modelAliases)
-      ? { modelAliases: normalizeModelAliases(account.modelAliases) }
-      : {}),
+    ...rest,
+    authType,
+    ...(normalizeBaseUrl(baseUrl) ? { baseUrl: normalizeBaseUrl(baseUrl) } : {}),
+    ...(normalizeDisplayName(displayName) ? { displayName: normalizeDisplayName(displayName) } : {}),
+    ...(normalizeModels(models) ? { models: normalizeModels(models) } : {}),
+    ...(normalizedModelAliases ? { modelAliases: normalizedModelAliases } : {}),
+    ...(normalizedEnvVars ? { envVars: normalizedEnvVars } : {}),
   };
 }
+
+/** Fields whose VALUES are safe to print in conflict diagnostics. envVars and
+ *  unknown future fields fail closed on the diff but never print values.
+ *  modelAliases is a model-name→model-name map with no secret material, and
+ *  upstream #1233 already printed it, so it keeps its values. */
+const CONFLICT_VALUE_SAFE_FIELDS = new Set([
+  'authType',
+  'clientId',
+  'baseUrl',
+  'displayName',
+  'models',
+  'modelAliases',
+]);
 
 function describeAccountConflict(existing: AccountConfig, incoming: AccountConfig): string {
   const current = canonicalizeAccount(existing);
   const next = canonicalizeAccount(incoming);
   const diffs: string[] = [];
 
-  if (current.authType !== next.authType) diffs.push(`authType ${current.authType} vs ${next.authType}`);
-  if ((current.baseUrl ?? '(none)') !== (next.baseUrl ?? '(none)')) {
-    diffs.push(`baseUrl ${current.baseUrl ?? '(none)'} vs ${next.baseUrl ?? '(none)'}`);
+  for (const field of [...new Set([...Object.keys(current), ...Object.keys(next)])].sort()) {
+    const a = field in current ? canonicalJson(current[field]) : undefined;
+    const b = field in next ? canonicalJson(next[field]) : undefined;
+    if (a === b) continue;
+    if (field === 'envVars') {
+      const currentVars = (current.envVars ?? {}) as Record<string, string>;
+      const nextVars = (next.envVars ?? {}) as Record<string, string>;
+      const keys = [...new Set([...Object.keys(currentVars), ...Object.keys(nextVars)])]
+        .filter((key) => currentVars[key] !== nextVars[key])
+        .sort();
+      diffs.push(`envVars keys [${keys.join(', ')}] differ (values not shown)`);
+    } else if (CONFLICT_VALUE_SAFE_FIELDS.has(field)) {
+      diffs.push(`${field} ${a ?? '(none)'} vs ${b ?? '(none)'}`);
+    } else {
+      diffs.push(`${field} differs (values not shown)`);
+    }
   }
-  if ((current.displayName ?? '(none)') !== (next.displayName ?? '(none)')) {
-    diffs.push(`displayName ${current.displayName ?? '(none)'} vs ${next.displayName ?? '(none)'}`);
-  }
-  if (JSON.stringify(current.models ?? []) !== JSON.stringify(next.models ?? [])) {
-    diffs.push(`models ${JSON.stringify(current.models ?? [])} vs ${JSON.stringify(next.models ?? [])}`);
-  }
-  if (JSON.stringify(current.modelAliases ?? {}) !== JSON.stringify(next.modelAliases ?? {})) {
-    diffs.push(
-      `modelAliases ${JSON.stringify(current.modelAliases ?? {})} vs ${JSON.stringify(next.modelAliases ?? {})}`,
-    );
-  }
+  // Upstream #1233 appended a standalone modelAliases comparison here because
+  // its describeAccountConflict() checked fields one by one. The generic loop
+  // above now covers every canonical field, modelAliases included, so keeping
+  // the block would report the same difference twice.
 
   return diffs.join('; ');
 }
@@ -210,6 +294,9 @@ function collectRootCatalogAccountKeys(value: unknown, refs: Set<string>): void 
 }
 
 function readProjectAccountRefs(projectRoot: string): Set<string> {
+  // P1-11: this opens the project catalog itself, so it checks the project root
+  // itself. Its callers' completion caches are not the same as its own.
+  assertSafeMigrationRead(projectRoot, 'catalog-accounts.readProjectAccountRefs.source');
   const refs = new Set<string>();
   const catalogPath = resolve(projectRoot, CONFIG_SUBDIR, 'cat-catalog.json');
   if (!existsSync(catalogPath)) return refs;
@@ -273,6 +360,10 @@ function migrateLegacyFrom(
   projectRoot?: string,
   opts?: { shouldImportAccount?: (ref: string, account: AccountConfig) => boolean },
 ): void {
+  // P1-9: `root` is whichever legacy location this call was pointed at — the
+  // store root, the project dir, or $HOME. Its profiles and its
+  // provider-profiles.secrets.local.json are both read below.
+  assertSafeMigrationRead(root, 'catalog-accounts.migrateLegacyFrom.source');
   const metaPath = resolve(root, CONFIG_SUBDIR, 'provider-profiles.json');
   if (!existsSync(metaPath)) return;
   const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
@@ -412,6 +503,14 @@ const migratedProjects = new Set<string>();
 function migrateProjectAccountsToGlobal(projectRoot: string): void {
   const key = resolve(projectRoot);
   if (migratedProjects.has(key)) return;
+  // P1-11: this reader has its own cache and its own file open, so it needs its
+  // own guard — migrateProjectLegacyProviderProfiles() having already run for
+  // this root under a different opt-out state is not a safety property.
+  //
+  // Deliberately OUTSIDE the try below: that catch swallows every error and
+  // marks the project migrated, which would turn a sandbox refusal into a
+  // silent pass — the one failure mode this whole boundary exists to prevent.
+  assertSafeMigrationRead(key, 'catalog-accounts.migrateProjectAccountsToGlobal.source');
   try {
     const catalogPath = resolve(projectRoot, CONFIG_SUBDIR, 'cat-catalog.json');
     if (!existsSync(catalogPath)) return;
@@ -459,6 +558,8 @@ function migrateHomedirLegacyProviderProfiles(projectRoot?: string): void {
     migratedHomedirLegacy.add(migrationKey);
     return;
   }
+  // P1-9, before the try: its catch swallows corrupt-source errors, and a
+  // sandbox refusal must never be filed under "the operator's HOME was corrupt".
   try {
     const referencedRefs = projectRoot ? readProjectAccountRefs(projectRoot) : new Set<string>();
     migrateLegacyFrom(home, projectRoot, {
@@ -491,6 +592,12 @@ function migrateHomedirCredentials(projectRoot?: string): void {
     migratedHomedirCredentials.add(migrationKey);
     return;
   }
+  // P1-9: this is the path 砚砚's repro walked. Both roots, before the first
+  // existsSync — the source because a protected HOME's credentials.json is
+  // parsed a few lines down, the target because it is read and rewritten. The
+  // guards sit ahead of the try for the same reason as above.
+  assertSafeMigrationRead(home, 'catalog-accounts.migrateHomedirCredentials.source');
+  assertSafeMigrationRead(globalRoot, 'catalog-accounts.migrateHomedirCredentials.target');
   const homeCredPath = resolve(home, CONFIG_SUBDIR, 'credentials.json');
   if (!existsSync(homeCredPath)) {
     migratedHomedirCredentials.add(migrationKey);
@@ -577,6 +684,89 @@ function ensureMigrated(projectRoot: string): void {
 
 const migratedRuntimeStale = new Set<string>();
 
+interface RuntimeMigrationMarker {
+  sourceFingerprints: Record<string, string>;
+}
+
+function sha256Hex(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+/** A source file that is absent — a legitimate, comparable fingerprint state. */
+const FINGERPRINT_ABSENT = 'absent';
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/**
+ * Fingerprint a source file by its CANONICAL parsed content, not raw bytes —
+ * a whitespace/key-order-only rewrite is not a rollback (R3 P2-1).
+ *
+ * Unparseable content returns null: an INCOMPARABLE state, not a sentinel
+ * string. A sentinel would be forgeable — a corrupt/hostile marker could store
+ * it and make a malformed source match, skipping strict preflight (R4 P1-4).
+ * null never equals a stored value, so the caller always falls through to the
+ * fail-closed path.
+ */
+function fingerprintSourceFile(path: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    return sha256Hex(canonicalJson(parsed));
+  } catch {
+    return null;
+  }
+}
+
+/** Marker fingerprints are only ever a sha256 digest or the absent marker (R4 P1-4). */
+function isValidStoredFingerprint(value: unknown): value is string {
+  return typeof value === 'string' && (value === FINGERPRINT_ABSENT || SHA256_HEX.test(value));
+}
+
+/** Compare a computed fingerprint against stored evidence; null never matches. */
+function fingerprintMatches(computed: string | null, stored: string | undefined): boolean {
+  return computed !== null && stored !== undefined && computed === stored;
+}
+
+/** Read the durable completion marker from the workspace store (corrupt → null → re-preflight). */
+function readRuntimeMigrationMarker(workspaceRoot: string): RuntimeMigrationMarker | null {
+  const markerPath = resolve(workspaceRoot, CONFIG_SUBDIR, RUNTIME_MIGRATION_MARKER);
+  if (!existsSync(markerPath)) return null;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(markerPath, 'utf-8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    // Unknown schema version → the evidence semantics are not ours to trust;
+    // fall back to full preflight (R3 P2-1).
+    if ((parsed as { v?: unknown }).v !== 1) return null;
+    const fingerprints = (parsed as { sourceFingerprints?: unknown }).sourceFingerprints;
+    if (typeof fingerprints !== 'object' || fingerprints === null || Array.isArray(fingerprints)) return null;
+    // Both required keys must be present AND in-domain (digest | absent).
+    // Anything else is not completion evidence we wrote (R4 P1-4).
+    const record = fingerprints as Record<string, unknown>;
+    for (const key of [ACCOUNTS_FILENAME, CREDENTIALS_FILENAME]) {
+      if (!isValidStoredFingerprint(record[key])) return null;
+    }
+    return { sourceFingerprints: record as Record<string, string> };
+  } catch {
+    // Corrupt marker → re-run preflight idempotently; never fail startup on marker parse.
+    return null;
+  }
+}
+
+/** Write the durable completion marker atomically (P1: cross-process evidence). */
+function writeRuntimeMigrationMarker(workspaceRoot: string, sourceFingerprints: Record<string, string>): void {
+  const markerPath = resolve(workspaceRoot, CONFIG_SUBDIR, RUNTIME_MIGRATION_MARKER);
+  const payload = {
+    v: 1,
+    migratedAt: new Date().toISOString(),
+    sourceFingerprints,
+  };
+  assertSafeCatalogWrite(workspaceRoot, 'catalog-accounts.runtimeMigrationMarker');
+  mkdirSync(resolve(workspaceRoot, CONFIG_SUBDIR), { recursive: true });
+  // 0600: the marker carries the sha256 of credentials.json content — a
+  // world-readable copy would hand other local users an offline verifier for
+  // guessed credential values (R3 P1-1).
+  writeFileAtomic(markerPath, `${JSON.stringify(payload, null, 2)}\n`, 0o600);
+}
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (typeof value === 'object' && value !== null) {
@@ -596,9 +786,19 @@ function readRuntimeJsonStrict(path: string, what: string): Record<string, unkno
   // Strict parse: malformed source must fail migration before any write (P1-3).
   const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`Invalid runtime ${what} JSON at ${path}: expected object`);
+    throw new Error(`Invalid ${what} JSON at ${path}: expected object`);
   }
   return parsed as Record<string, unknown>;
+}
+
+/**
+ * Strict TARGET read for migration preflight (P1): a missing file is an empty
+ * store, but a malformed file must fail closed — never "back up then treat as
+ * empty", which would let the migration silently overwrite a damaged target.
+ */
+function readTargetJsonStrict(path: string, what: string): Record<string, unknown> {
+  if (!existsSync(path)) return {};
+  return readRuntimeJsonStrict(path, what);
 }
 
 /** Merge stale runtime-checkout accounts/credentials into the workspace store. */
@@ -614,6 +814,14 @@ function migrateRuntimeStaleAccountsToWorkspace(): void {
   const key = runtimeRoot;
   if (migratedRuntimeStale.has(key)) return;
 
+  // P1-8: everything below READS both stores — source fingerprints, the marker,
+  // the full preflight — long before the first write guard runs. When the source
+  // is empty or the marker already matches, no write guard ever runs at all, so
+  // a bare test used to resolve the operator's real accounts and credentials and
+  // exit 0. Refuse at the point the roots are known to be real and distinct.
+  assertSafeTestConfigRead(runtimeRoot, 'catalog-accounts.runtimeMigration.source');
+  assertSafeTestConfigRead(workspaceRoot, 'catalog-accounts.runtimeMigration.target');
+
   const runtimeAccountsPath = resolve(runtimeRoot, CONFIG_SUBDIR, ACCOUNTS_FILENAME);
   const runtimeCredPath = resolve(runtimeRoot, CONFIG_SUBDIR, CREDENTIALS_FILENAME);
   const hasRuntimeAccounts = existsSync(runtimeAccountsPath);
@@ -625,25 +833,38 @@ function migrateRuntimeStaleAccountsToWorkspace(): void {
     return;
   }
 
-  // ── Preflight: read + parse ALL sources and targets BEFORE any write (P1-3) ──
-  const runtimeAccounts: Record<string, AccountConfig> = hasRuntimeAccounts
-    ? (readRuntimeJsonStrict(runtimeAccountsPath, 'accounts') as Record<string, AccountConfig>)
-    : {};
-  const runtimeCreds = hasRuntimeCreds ? readRuntimeJsonStrict(runtimeCredPath, 'credentials') : {};
-
-  const workspaceAccounts = readAllGlobal(workspaceRoot);
-  const workspaceCredPath = resolve(workspaceRoot, CONFIG_SUBDIR, CREDENTIALS_FILENAME);
-  let workspaceCreds: Record<string, unknown> = {};
-  if (existsSync(workspaceCredPath)) {
-    try {
-      const parsed = JSON.parse(readFileSync(workspaceCredPath, 'utf-8'));
-      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-        workspaceCreds = parsed;
-      }
-    } catch {
-      workspaceCreds = {};
-    }
+  // ── Durable completion evidence (P1: cross-process) ──
+  // The runtime source stays in place as a backup, so the NEXT process must
+  // distinguish "already migrated" from "new/changed source". Fingerprint the
+  // source files: an unchanged fingerprint skips re-preflight entirely —
+  // otherwise a user's legitimate same-id target update would be misread as a
+  // migration conflict on every subsequent start.
+  const fingerprintAccounts = hasRuntimeAccounts ? fingerprintSourceFile(runtimeAccountsPath) : FINGERPRINT_ABSENT;
+  const fingerprintCreds = hasRuntimeCreds ? fingerprintSourceFile(runtimeCredPath) : FINGERPRINT_ABSENT;
+  const marker = readRuntimeMigrationMarker(workspaceRoot);
+  if (
+    marker &&
+    fingerprintMatches(fingerprintAccounts, marker.sourceFingerprints[ACCOUNTS_FILENAME]) &&
+    fingerprintMatches(fingerprintCreds, marker.sourceFingerprints[CREDENTIALS_FILENAME])
+  ) {
+    migratedRuntimeStale.add(key);
+    return;
   }
+
+  // ── Preflight: read + parse ALL sources and targets BEFORE any write (P1-3) ──
+  // Targets are strict too (P1): a malformed workspace file must fail closed,
+  // never be "backed up then treated as empty" and silently overwritten.
+  const runtimeAccounts: Record<string, AccountConfig> = hasRuntimeAccounts
+    ? (readRuntimeJsonStrict(runtimeAccountsPath, 'runtime accounts') as Record<string, AccountConfig>)
+    : {};
+  const runtimeCreds = hasRuntimeCreds ? readRuntimeJsonStrict(runtimeCredPath, 'runtime credentials') : {};
+
+  const workspaceAccounts = readTargetJsonStrict(resolveAccountsPath(workspaceRoot), 'workspace accounts') as Record<
+    string,
+    AccountConfig
+  >;
+  const workspaceCredPath = resolve(workspaceRoot, CONFIG_SUBDIR, CREDENTIALS_FILENAME);
+  const workspaceCreds = readTargetJsonStrict(workspaceCredPath, 'workspace credentials');
 
   // Detect EVERY conflict before modifying anything (INV-5, AC-3).
   const accountsToMerge: Array<[string, AccountConfig]> = [];
@@ -699,8 +920,21 @@ function migrateRuntimeStaleAccountsToWorkspace(): void {
     );
   }
 
-  // INV-7: completion evidence only after BOTH target writes succeeded. Any
-  // throw above leaves the source unretired → next startup retries idempotently.
+  // INV-7 / P1: durable completion evidence — written only after BOTH target
+  // writes succeeded. Any throw above leaves the source unretired → next
+  // startup re-runs preflight idempotently (unchanged source fingerprint → skip;
+  // rollback-changed source → explicit conflict against the updated target).
+  // Unparseable sources cannot reach here (strict preflight threw), so a null
+  // fingerprint is a contract violation — never persist one as evidence (R4 P1-4).
+  if (fingerprintAccounts === null || fingerprintCreds === null) {
+    throw new Error(
+      'Runtime→workspace migration completed with an unparseable source fingerprint — refusing to write completion evidence',
+    );
+  }
+  writeRuntimeMigrationMarker(workspaceRoot, {
+    [ACCOUNTS_FILENAME]: fingerprintAccounts,
+    [CREDENTIALS_FILENAME]: fingerprintCreds,
+  });
   migratedRuntimeStale.add(key);
 }
 
@@ -738,7 +972,13 @@ export function deleteCatalogAccount(projectRoot: string, ref: string): void {
 
 /** Check if legacy provider-profiles.json exists in any known location. */
 export function hasLegacyProviderProfiles(projectRoot: string): boolean {
+  // P1-11: an existence probe is still a read of that root, and this reader runs
+  // no migration first — it is always its own first open, so an earlier guard
+  // elsewhere can never be the one that refuses. Two roots, two guards, each
+  // immediately before the open it protects.
+  assertSafeCatalogRead(projectRoot, 'catalog-accounts.hasLegacyProviderProfiles.store');
   if (existsSync(resolve(resolveAccountStoreRoot({ projectRoot }), CONFIG_SUBDIR, 'provider-profiles.json')))
     return true;
+  assertSafeMigrationRead(projectRoot, 'catalog-accounts.hasLegacyProviderProfiles.project');
   return existsSync(resolve(projectRoot, CONFIG_SUBDIR, 'provider-profiles.json'));
 }
