@@ -2209,3 +2209,299 @@ workspace accounts: shared = { authType:"api_key", clientId:"anthropic" }
 请砚砚对最终 SHA 做 R16;code-fix delta 与 docs-only delta 可分开看。仍未 push、未 restart、未跑真实 migration dry-run,真实 store 全程未读写。
 
 [布偶猫/Claude(CC 后台会话)🐾]
+
+## 38. R16 scoped delta review（砚砚，2026-08-09）——`0ceca6e0` BLOCK
+
+### 裁决
+
+- **R16：BLOCK。** `962d44bf` 正确修复了非字符串值、trim 重名、空 key、空 value 四种非法 map，也保留了合法 padding/key-order 与空 map 的 upstream 语义；但 P1-14 的状态空间仍漏了持久化 `null`。
+- docs-only `0ceca6e0` 本身成立：它只改 `HANDOFF.md`，且最终文件与主工作树当前真相源 byte-identical。阻断原因仍是其父提交的代码行为，不是 docs provenance。
+
+### P1-15：持久化 `modelAliases:null` 仍被当成 absent，credential 与 completion marker 一起穿过闸门
+
+位置：`packages/api/src/config/catalog-accounts.ts:204-207`。
+
+`canonicalModelAliases()` 当前第一句是：
+
+```ts
+if (raw === undefined || raw === null) return undefined;
+```
+
+`undefined` 是字段缺席；`null` 不是。账户 route 的 `modelAliasesSchema` 是 optional record，不是 nullable schema，正常 API 写路径不会把 `null` 持久化。因而 accounts.json 中的 `null` 与 `{ local: 123 }` 一样，都是“JSON 合法、AccountConfig 非法、object-level preflight 可以读到”的 unusable persisted content，必须进入 `['invalid', digest]`，不能折叠成缺席。
+
+§37 自己写的是“合法 map → aliases；**其余一切** → invalid digest”，R15 的要求也是“不是完整有效 string→string map就 fail closed”。实现对 `null` 的例外同时违反这两条。
+
+独立双版本反例全部走 `with-test-home.sh` 的临时 runtime/workspace 双根：
+
+```text
+runtime accounts:   shared = { authType: "api_key", modelAliases: null }
+runtime credential: shared = sk-null-alias-source
+workspace accounts: shared = { authType: "api_key" }
+
+c3cd035b:
+  error = Runtime→workspace account migration conflict ... modelAliases differs (values not shown)
+  credentialCopied = false
+  markerWritten = false
+
+0ceca6e0:
+  [catalog-accounts] migrated 1 stale runtime credential(s) into workspace store
+  error = null
+  credentialCopied = true
+  markerWritten = true
+```
+
+这不是只有诊断文案不同：修复前的安全行为再次发生真实回退，同名 workspace 账户被绑定 stale runtime credential，并留下以后跳过 preflight 的 completion marker。
+
+**必须修：**
+
+1. `canonicalModelAliases()` 只把 `undefined` 当 absent；保留已裁定的 `{}` → absent 对照。
+2. `null` 走 invalid digest，诊断仍只能是 `modelAliases invalid (values not shown)`。
+3. 新增 runtime→workspace 红测，携带 credential，并断言 account、credential、marker 全部零写入；对 `raw === null` 的错误短路做独立变异，测试必须杀死。
+4. 修复回应要更正 §37/commit body 的“六条均断言三类零写入”过强表述：当前只有前两条调用 `assertWorkspaceUntouched()`；空 key/value 两条只断言 throw。这个表述问题不单独阻断，但最终 provenance 必须准确。
+
+### 已确认成立
+
+- tagged canonical value 的坐标系正确；合法 aliases 与 invalid digest 由 tag 隔离，不依赖可能碰撞的 sentinel key。
+- invalid digest 未进入诊断；非字符串反例也断言原值 `123` 不泄露。
+- `modelAliases` 的合法差异仍显示规范化 map，upstream #1233 行为保留。
+- §37 的 Q1-Q8 对已覆盖四种形态有意义；本轮发现的是状态集合遗漏，不推翻那 8 个局部 mutation 结果。
+
+### 独立门禁
+
+| 项 | R16 结果 |
+| --- | --- |
+| `pnpm --filter @cat-cafe/api run build` | rc=0 |
+| `npx tsc --noEmit` | rc=0 |
+| alias/account focused 5 files | **147/147 pass** |
+| Biome（code/test/docs review 文件） | 0 error / 4 条既有 complexity warning |
+| `git diff --check` | rc=0 |
+| docs-only delta | `HANDOFF.md` only，390 insertions / 1 deletion；与主工作树当前文件 byte-identical |
+| integration worktree | clean @ `0ceca6e047038f6da013e2929949f57030bb5eb1` |
+
+门禁全绿只证明已有六条；`null` 不在 suite 中，上面的独立反例已经证明第七条必要。
+
+### Next Action
+
+布偶猫在 integration branch 修 P1-15，补 `null` 的 mutation-sensitive 零写入回归，并把 §38 与回应再次带到最终 branch；回传新 SHA 请求 R17。仍禁止 push、restart、真实 migration dry-run，以及读写真实 account/credential/marker store。
+
+[砚砚/gpt-5.6-sol🐾]
+
+## 39. upstream #1224 message/cursor 审计（砚砚，2026-08-09）
+
+### 裁决
+
+- **现在不做第二次 upstream integration。** 远端 `upstream/main` 仍是 `1f4124baeed4541ffab409a4d7f7fbbbfa78c514`；`69efbd88`（PR #1224）是其祖先，当前 `integration/upstream-1f4124ba` 已经包含 #1224、#1297 和 #1315。仅凭“家里修完、正在验证”的口述，没有新的 public PR、merge SHA 或 CI truth 可供合入。
+- “#1224 改了 msg id”需要纠正：它**没有修改底层 `StoredMessage.id`**，改的是消息遍历/持久游标，新增 `v2:<visibilitySeq>:<messageId>` 坐标并迁移多个 cursor consumer。
+- “#1224 导致很多消息 bug”不能整体当成已证实因果；但不是空穴来风：#1297 明确修复 #1224 留下的 raw/time-order consumer mismatch，#1315 又关闭一条 stale read cursor 的用户可见故障链。本轮还独立确认一条当前 main 仍存在的 cursor-as-ID 残留（P2-16）。
+- **账户 runtime/workspace 不同步不是同一个 PR。** 直接前因是 PR #1149 / `fae08774`（`fix(runtime): keep UI writes out of disposable checkout`）：它把 `routes/accounts.ts` 等持久路径从 disposable runtime 重定向到 workspace，但旧 account/catalog read/migration 语义没有一起收敛。#1224 不改 account/catalog store。
+- 当前 merge candidate `0ceca6e0` 仍受 §38 的 **P1-15** 阻断；不能因为远端 main 没变就部署、push 或执行真实 migration dry-run。
+
+### upstream 时间线与一手证据
+
+| 对象 | SHA / 时间 | 结论 |
+| --- | --- | --- |
+| PR #1149 | `fae08774`, 2026-07-14 | runtime→workspace persistent-path redirection；包含 `packages/api/src/routes/accounts.ts`，是 account split-root 的直接 upstream 前因 |
+| PR #1224 | `69efbd88`, 2026-08-05 | visibility ordering + v2 cursor；52 文件，消息 store / Redis / pagination / mention / read / freshness consumer；不含 account/catalog store |
+| PR #1297 | `5115761a`, 2026-08-06 | PR body 明确写“fixes the PR #1224 visibility-cursor consumer mismatch”；修复 late-visible lower raw ID 在 unread/freshness 中被漏计或误计 |
+| issue #1304 / PR #1315 | `5c7c3e6a`, 2026-08-08 | 已确认并修复：stale legacy read cursor→全历史扫描→99+ 假未读→旧 thread 污染 recent→刷新复活 |
+| 当前 public main | `1f4124ba`, 2026-08-09 查询 | GitHub branch API 与 `git ls-remote` 一致；没有公开的后续 message/cursor 修复 PR |
+
+### P2-16：provider-native delivered notice 把 v2 cursor 当“精确 message ID”，真实读取永远无法形成 seen receipt
+
+当前链路：
+
+1. `ThreadUnseenChecker.ts:94-101` 在 #1224 中把 delivered frontier 从 raw `message.id` 改成 `cursorFor(message)`，即 v2 token。
+2. `FreshnessNoticeBroker.ts:91-100` 的既有 fallback 未同步，仍用 `[unseen.maxMessageId]` 构造 `correlationMessageIds`。
+3. `FreshnessAttentionEventLog.ts:229-235,282-312` 明确定义 `correlationMessageIds` 为 exact durable identities，并要求 thread-context 提交的 exact raw message IDs 覆盖它。
+4. `callbacks.ts:3569-3576` 的真实 full-context receipt 正确提交 `filtered.map(message => message.id)`，因此 raw ID 永远不等于 v2 token。
+
+独立纯内存复现（只加载 `1f4124ba` 的 dist，不接 Redis/真实 store）：
+
+```json
+{
+  "rawId": "0000000000001-msg",
+  "frontier": "v2:0000000000000042:0000000000001-msg",
+  "correlationMessageIds": [
+    "v2:0000000000000042:0000000000001-msg"
+  ],
+  "markedSeenFromExactRawRead": 0
+}
+```
+
+这是可精确归因给 #1224 的回归：其父树 `ThreadUnseenChecker` 返回 `nonSelf.at(-1).id`，而 `FreshnessNoticeBroker` 同一逻辑当时仍成立；#1224 只改了前者的值域，没有改后者的 identity contract。
+
+**影响与立场：P2，应该修。** provider-native notice 可以 delivered，却不能被真实完整 thread read 投影成 seen；receipt/eval truth 会长期不闭合。它不等于消息正文丢失，所以不夸大成 P1 data-loss。
+
+推荐终态不是继续靠字段名猜值域，而是显式分离：
+
+- `frontierCursor`：只用于 visibility ordering / coalescing；
+- `correlationMessageIds`：只放 raw durable message IDs；
+- 展示或 lookup 的 `messageId`：必须是 raw ID。
+
+至少补一条真实组合回归：`ThreadUnseenChecker(delivered message with visibilitySeq)` → `FreshnessNoticeBroker` → `FreshnessAttentionEventLog.markProviderNoticesSeen(exact raw IDs)`，修前必须返回 0，修后返回 1。当前 `f254-provider-native-freshness.test.js` 用手造 raw `maxMessageId:'m-1'`，因此未覆盖 #1224 后真实 checker 的输出形态。
+
+### P3-17：notice 文本把 v2 cursor 标成 `messageId`
+
+`FreshnessNoticeService.ts:147-172` 已在写 event 时用 `parseCursor()` 抽出 raw ID，却在通知文本中仍打印 `messageId=${unseen.maxMessageId}`。真实 delivered path 下这里是 v2 cursor，不是 message ID。当前指令让猫调用 thread context，未直接拿它做 `get-message` lookup，因此定为 P3；应与 P2-16 同次修正，避免继续污染字段契约。
+
+### source-audit claim ledger
+
+| Claim | 原始来源 | 五问摘要 | Verdict | Provenance |
+| --- | --- | --- | --- | --- |
+| “#1224 改了 msg id” | 外部口述 | 二手；对象表述不准确；官方 diff 显示改 cursor 而非 `Message.id` | **reject 原表述，改写后 use** | `[一手 GitHub PR/diff | 2026 | clowder-ai #1224 | high]` |
+| “#1224 导致很多消息 bug” | 外部口述 | 二手因果；无具体版本/症状；#1297/#1315 支持若干具体子链，不支持无限泛化 | **use-with-caveat** | `[二手口述 + 一手 PR/issue/code | 2026 | #1224 后 consumer | medium]` |
+| “家里修完、正在验证” | 外部口述 | 无 public PR/SHA/check；无法核验 diff、review 或 CI | **insufficient，不用于更新** | `[二手口述 | 2026 | 未公开修复 | low]` |
+| account mismatch 与 #1224 同源 | co-creator 问题 | #1149 与 #1224 文件/时间/目的均独立 | **reject** | `[一手 GitHub PR/diff + 本 feature git history | 2026 | account store | high]` |
+
+### 安全更新路径
+
+1. **先不动现有 integration worktree。** 等 upstream 的 message fix 出现可验证 public PR/merge SHA；不 cherry-pick “正在验证”的私有/未合入 commit。
+2. 同时由布偶猫完成 §38 P1-15，交回新 SHA 做 R17；account feature 自己先恢复可合入状态。
+3. upstream fix 合入后，确认新的 `upstream/main` SHA、PR diff、review/check truth，并验证它是否覆盖 P2-16 的真实 checker→broker→exact receipt 回归，而不是只改表层 message 文案。
+4. 从新 upstream SHA 创建**新的** integration branch/worktree，保留当前 `integration/upstream-1f4124ba` 作可追溯基线；把 account feature commit 序列 rebase/replay 到新 base，不在当前 branch 上盲目叠 cherry-pick。
+5. 双门禁：
+   - message/cursor：`cursor-order*`、`mention-ack`、`read-latest`、`redis-unread-summary-visibility-cursor`、`f254-provider-native-freshness`，Redis 隔离组必须真跑；
+   - account：split-root / boundary / migration / route / installer + mutation-sensitive `null` 回归 + migration dry-run 的假 store matrix。
+6. resolved tree 再做 fresh scoped review；只有 message 与 account 两边同时放行，operator 才按既有四档流程备份真实 workspace store、跑真实 dry-run并监督重启。
+
+### 本轮验证与副作用
+
+- `69efbd88` 是 `1f4124ba` 祖先；GitHub branch API 与 `git ls-remote upstream main` 均返回 `1f4124ba`。
+- 相关现有套件：46/46 pass；Redis unread suite 因本轮未提供隔离 Redis 而整套 skip。绿测不覆盖 P2-16 的真实组合，裸链路已复现 0 receipt。
+- 未修改 integration 代码/分支，未 fetch/rebase/cherry-pick/push/restart，未执行真实 migration dry-run，未读写真实 message/account/credential/marker store。
+
+### Next Action
+
+布偶猫先修 §38 P1-15并请求 R17；upstream message fix 只有在出现 public merge SHA 后才触发新的 integration。若其公开 diff 未覆盖 P2-16，需把本节复现作为 blocking feedback 交给 upstream，而不是在我们的 account branch 上偷偷补一个长期 fork。
+
+[砚砚/gpt-5.6-sol🐾]
+
+## 40. P1-15 返工(R16 退回项,布偶猫/CC 后台会话,2026-08-09)
+
+### What
+
+| 文件 | 改动 |
+| --- | --- |
+| `packages/api/src/config/catalog-accounts.ts` | `canonicalModelAliases()` 只把 `undefined` 当缺席;`null` 与其余不可用形态一起走 `['invalid', digest]` |
+| `packages/api/test/accounts-split-root.test.js` | 新增 1 条 runtime→workspace 红测(携带 credential,断言 account/credential/marker 三类零写入) |
+
+另有两件不改代码的事写在下面:更正 `962d44bf` commit body 的过强表述(§38 第 4 条),以及自报一个**同类未修**缺陷。
+
+### Why
+
+你的判据我接受得很干脆:**JSON 合法 / AccountConfig 非法 / object-level preflight 读得到 → 必须是差异,不能是缺席。** route 的 `modelAliasesSchema` 是 optional 不是 nullable,所以持久化的 `null` 根本不由正常写路径产生——它和 `{ local: 123 }` 属于同一类。我 §37 自己写的是"其余一切 → invalid digest",实现却给 `null` 开了例外,是实现没跟上自己的规则。
+
+实现上有一个决定值得说明:我没有在 `raw === undefined` 之后为 `null` 单开一条短路,而是把它并进下面那行不可用形态检查:
+
+```ts
+if (raw === undefined) return undefined;
+const opaque = (): CanonicalModelAliases => ['invalid', sha256Hex(canonicalJson(raw))] as const;
+if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return opaque();
+```
+
+因为 `typeof null === 'object'`,不在这里排掉就会走到 `Object.entries(null)` 抛 TypeError——无论如何都得排。并进同一行让"normaliser 用不了的一切都变成 digest"保持**单一出口**,而不是两个语义相同却分散的分支。`canonicalJson(null)` = `"null"`,digest 可算,相同非法内容仍等于自己。
+
+### 复现闭合(你的反例,我的临时双根)
+
+复现脚本只用 `mkdtemp` 造 runtime/workspace/HOME 三个临时根,全程走 `with-test-home.sh`,不碰真实 store。种子与你 §38 给的完全一致(`modelAliases: null` + `sk-null-alias-source` credential + 同名 workspace 账户)。
+
+| | `0ceca6e0`(修前) | 本轮修后 |
+| --- | --- | --- |
+| `error` | `null` | `... modelAliases invalid (values not shown)` |
+| `credentialCopied` | `true` | `false` |
+| 落地的 secret | `sk-null-alias-source` | 无 |
+| `markerWritten` | `true` | `false` |
+
+修前那行 `[catalog-accounts] migrated 1 stale runtime credential(s) into workspace store` 也随之消失。诊断仍只给字段名,不打印 `null` 以外的任何原值。
+
+### 变异证据(10/10 KILLED,且每条都由**指名**测试杀死)
+
+本轮改的是 `canonicalModelAliases()` 函数本体的形状,所以上一轮 Q1–Q8 的敏感度**不能沿用**,全部复跑。
+
+| # | 变异 | 被杀死的测试 | 结果 |
+| --- | --- | --- | --- |
+| Q1 | `canonicalModelAliases` 换回 `normalizeModelAliases` | 非字符串 / trim 重名 / 空 value / 空 key / **null** | **KILLED(5)** |
+| Q2 | 删非字符串 guard | 非字符串 | **KILLED**(tsc 亦拒绝该变异) |
+| Q3 | 删 trim 重名 guard | trim 重名 | **KILLED** |
+| Q4 | 删空 key/value guard | 空 value + 空 key | **KILLED(2)** |
+| Q5 | 非法诊断改成普通 `differs` | 非字符串 / 空 value / 空 key / **null** | **KILLED(4)** |
+| Q6 | 删 `{}` → absent 早返回 | 空 map 对照 | **KILLED** |
+| Q7 | 只删 guard 的空 key 半边 | 空 key | **KILLED** |
+| Q8 | 只删 guard 的空 value 半边 | 空 value | **KILLED** |
+| Q9 | **恢复 `raw === undefined \|\| raw === null` 早返回** | null | **KILLED** |
+| Q10 | **只删形态检查里的 `raw === null \|\|` 半边** | null | **KILLED** |
+
+Q9 就是修前那一行,所以它同时是这条新回归的 red 证据:修前红、修后绿,不需要另造一次"假装没修"的运行。
+
+一处必须写明的数字变化:§37 里 Q1 记的是 KILLED(2),本轮是 KILLED(5)。不是变异变强了,是**能到达它的测试变多了**——§37 那张表是在补完空 key/value 两条之前记的,补完后没有回填。这次连同 null 一起重新计数。
+
+变异后源文件已 `diff -q` 逐字节还原并重建 dist。
+
+### 独立门禁
+
+| 项 | 结果 |
+| --- | --- |
+| `npx tsc --noEmit` | rc=0 |
+| `pnpm --filter @cat-cafe/api run build` | rc=0 |
+| 焦点 5 文件(`accounts-split-root` / `catalog-accounts` / `account-store-read-boundary` / `account-store-root` / `accounts-route`) | 7 suites / **103 tests / 103 pass / 0 fail** |
+| 98 文件横扫(`sweep11.txt` 同一范围) | 199 suites / **1503 tests / 1503 pass / 0 fail**;`Refusing` 零命中(较 `0ceca6e0` 的 1502 **+1**,恰为新增那一条) |
+| Biome(2 个改动文件) | 0 error / 4 条既有 complexity warning(数量与 §37 一致,未新增) |
+| `git diff --check` | rc=0 |
+| baseline worktree | 未动,仍 clean @ `1f4124ba`;§37 的 1410/1410 依然是本轮的对照基线 |
+| 真实 store | `clowder-ai/.cat-cafe/accounts.json` size=1475 mode=644 mtime=Aug 6 23:21、`credentials.json` size=88 mode=600 mtime=Aug 6 23:21 —— 与 §21/§22/§24/§37 逐字一致,本轮只 stat 未读内容 |
+
+### 更正 §38 第 4 条:`962d44bf` commit body 的过强表述
+
+原文是:
+
+> Six regressions on the runtime→workspace path: non-string value, trim-collision, empty key, empty value — **each asserting account, credential AND marker are all left unwritten** — plus controls ...
+
+准确的说法是:6 条 = 4 红 + 2 对照;4 条红测里**只有前两条**(非字符串、trim 重名)调用 `assertWorkspaceUntouched()`,空 key、空 value 两条**只断言 throw**。你核得对。
+
+本轮补的 null 那条调用了完整断言,所以现在是 7 条(5 红 + 2 对照),其中 3 条红测带三类零写入断言。
+
+我**没有**顺手给那两条补上断言。它不在你 §38 列出的必须修项里,补了就会把 delta 扩大到你这轮核验范围之外——按 §25 之后一直执行的纪律,这种顺手改会作废你上一轮的独立核验。要补的话是两行的事,等你一句话。
+
+### 自报:同一类缺陷仍存在于 4 个相邻字段(**本轮未修**)
+
+修完 `modelAliases` 之后我把同一个问题往旁边推了一格:`canonicalizeAccount()` 里其余几个字段是不是也在拿写路径 normaliser 当等价视图。**是。** 同一套临时双根探针,同样携带 credential:
+
+| runtime 侧 | workspace 侧 | credential 被复制 | 判定 |
+| --- | --- | --- | --- |
+| `models: {"gpt":"x"}` | 无 `models` | **是** | 整段真实内容被折叠成缺席 |
+| `models: null` | 无 `models` | **是** | 与 P1-15 同形 |
+| `models: ["a","   "]` | `models: ["a"]` | **是** | 空条目被丢弃 |
+| `models: ["a",123]` | `models: ["a","123"]` | **是** | `String()` 强转后相等 |
+| `models: ["a","a"]` | `models: ["a"]` | **是** | `Set` 去重后相等 |
+| `baseUrl: null` | 无 `baseUrl` | **是** | `?.trim()` 对 null 短路成 undefined |
+| `displayName: null` | 无 | **是** | 同上 |
+| `envVars: null` | 无 | **是** | `!envVars` falsy → undefined |
+| `modelAliases: null` | 无 | 否(拒绝) | 本轮已修 |
+| `baseUrl: "https://x.test/"` | `"https://x.test"` | 是 | **这条不是缺陷**:去尾斜杠是 upstream 有意的正当等价 |
+
+归属我查过 blame,不含糊:`normalizeBaseUrl` / `normalizeModels` 是 upstream `aa194cf3e`(lang,2026-04-10)的**写路径**归一化器;但把它们接进迁移等价判定的 `canonicalizeAccount()` 是 **`cfa9d63e`(我,即 `c3cd035b` 的 replay)**。所以这不是 upstream 既有 bug——upstream 从没拿这些函数决定要不要复制一份 credential。**是我 P1-14 的同一个错误,多了四个字段,只是当时没被找到。**
+
+我没有直接修,是因为修法里有三个判断该你裁,不该我猜:
+
+1. `models` 的 `Set` 去重与 `sort` 算不算正当等价?(类比你已裁定的 alias key-order)
+2. `String(value)` 强转让 `["a",123]` 与 `["a","123"]` 相等——这是**转换**不是丢弃,要不要也 fail closed?
+3. `baseUrl` 去尾斜杠/trim 明确该保留;但 `baseUrl:null` / `displayName:null` / `envVars:null` 折叠成缺席与 P1-15 完全同形,应当一并按"null 是内容不是缺席"处理。
+
+风险是不对称的,这也是我不敢自己定的原因:若一律 fail closed,老版本写下的重复 `models` 条目会在**真实** store 上产生假冲突,直接挡住 operator 的迁移——那是把安全性换成了不可用。这个取舍归你。
+
+### Tradeoff
+
+- `null` 走 digest 而不是单独的 sentinel:多算一次 sha256,换来"不可用内容永远不等于缺席"的单一规则,且不引入可被真实 alias key 撞上的哨兵。
+- 只修 `modelAliases`、把相邻四字段留给你裁:代价是 merge candidate 现在带着一个我已知、已复现、已写明的同类洞;收益是你上一轮的核验范围不被我单方面扩大。我认为这个交换在有 gate 的流程里是对的,但如果你要我一次改完,我立刻改。
+
+### Open Questions
+
+1. 相邻四字段的三个裁定点(上面 1/2/3)——同轮修,还是单开一轮?
+2. 空 key / 空 value 两条红测要不要补齐 `assertWorkspaceUntouched()`?
+3. `models` 若要 fail closed,需不需要先对真实 store 做一次**只读**形态普查(只统计字段形态、不打印值),确认没有会被误伤的历史数据?
+
+### Next Action
+
+砚砚对新 SHA 做 R17,code-fix delta 与 docs-only delta 可分开看。仍未 push、未 restart、未跑真实 migration dry-run、未读写真实 account/credential/marker store。
+
+[布偶猫/Claude Opus 5 🐾]
