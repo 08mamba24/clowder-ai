@@ -212,6 +212,182 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
     assert.equal(wsAccounts['max20x-2'].displayName, 'fresh-name', 'workspace data must be untouched');
   });
 
+  /**
+   * P1-14: a persisted field that the normaliser cannot use must still be a
+   * DIFFERENCE, not an absence.
+   *
+   * The upstream integration made canonicalizeAccount() route modelAliases
+   * through normalizeModelAliases(). That is right for legal padding/key-order
+   * differences, but the normaliser DROPS what it cannot use — non-string
+   * values, keys or values that are empty after trimming — and
+   * Object.fromEntries() silently collapses keys that collide once trimmed. Feed
+   * only its output into the canonical view and a stored `{ local: 123 }`
+   * compares equal to no aliases at all, so this migration stops refusing and
+   * binds the stale runtime credential to the workspace account.
+   *
+   * Strict JSON parsing does not catch it: the migration asserts the parsed
+   * object into AccountConfig without running the route schema, so invalid
+   * content genuinely reaches the comparison.
+   */
+  async function assertWorkspaceUntouched(message) {
+    const { existsSync, readFileSync } = await import('node:fs');
+    const wsAccounts = JSON.parse(readFileSync(join(workspaceRoot, '.cat-cafe', 'accounts.json'), 'utf-8'));
+    assert.equal(wsAccounts.shared.displayName, undefined, `${message}: workspace account must be untouched`);
+    assert.equal(wsAccounts.shared.__migrated, undefined, `${message}: workspace account must be untouched`);
+    assert.equal(
+      existsSync(join(workspaceRoot, '.cat-cafe', 'credentials.json')),
+      false,
+      `${message}: no credential may be written`,
+    );
+    assert.equal(
+      existsSync(join(workspaceRoot, '.cat-cafe', 'runtime-migration.json')),
+      false,
+      `${message}: no completion marker may be written`,
+    );
+  }
+
+  it('a non-string alias value is a conflict, not an absent field (P1-14)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: { local: 123 } },
+    });
+    await writeFile(
+      join(runtimeRoot, '.cat-cafe', 'credentials.json'),
+      JSON.stringify({ shared: { apiKey: 'sk-invalid-alias-source' } }),
+      'utf-8',
+    );
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({ shared: { authType: 'api_key', clientId: 'anthropic' } }),
+      'utf-8',
+    );
+
+    let thrown = null;
+    try {
+      readCatalogAccounts(runtimeRoot);
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof Error, 'an unusable persisted alias map must fail closed');
+    assert.match(thrown.message, /migration conflict for "shared"/);
+    assert.match(thrown.message, /modelAliases invalid/, 'an unusable map is reported as invalid, not as a value diff');
+    assert.ok(!thrown.message.includes('123'), 'the invalid raw value must not be printed');
+    await assertWorkspaceUntouched('non-string alias value');
+  });
+
+  it('alias keys that collide once trimmed are a conflict, not a collapsed map (P1-14)', async () => {
+    setSplitEnv();
+    // normalizeModelAliases() trims both keys to 'a', and Object.fromEntries()
+    // keeps only the last — collapsing a two-entry source into the workspace's
+    // one-entry map.
+    await writeRuntimeAccounts({
+      shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: { a: 'x', ' a ': 'y' } },
+    });
+    await writeFile(
+      join(runtimeRoot, '.cat-cafe', 'credentials.json'),
+      JSON.stringify({ shared: { apiKey: 'sk-collapsed-alias-source' } }),
+      'utf-8',
+    );
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({ shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: { a: 'y' } } }),
+      'utf-8',
+    );
+
+    let thrown = null;
+    try {
+      readCatalogAccounts(runtimeRoot);
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof Error, 'a trim-collision must fail closed');
+    assert.match(thrown.message, /migration conflict for "shared"/);
+    assert.match(thrown.message, /modelAliases/);
+    await assertWorkspaceUntouched('trim-collision alias keys');
+  });
+
+  /**
+   * The same silent-drop, spelled with whitespace instead of a wrong type: the
+   * normaliser filters entries whose key or value is empty once trimmed, so
+   * without the guard a two-entry source collapses onto a one-entry target.
+   * Two tests because the guard has two halves.
+   */
+  it('an alias value that is empty once trimmed is a conflict (P1-14)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: { 'a/x': 'up-x', 'b/y': '   ' } },
+    });
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({
+        shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: { 'a/x': 'up-x' } },
+      }),
+      'utf-8',
+    );
+
+    assert.throws(
+      () => readCatalogAccounts(runtimeRoot),
+      /modelAliases invalid/,
+      'an entry the normaliser would drop must not become an absence',
+    );
+  });
+
+  it('an alias key that is empty once trimmed is a conflict (P1-14)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: { 'a/x': 'up-x', '   ': 'up-y' } },
+    });
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({
+        shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: { 'a/x': 'up-x' } },
+      }),
+      'utf-8',
+    );
+
+    assert.throws(
+      () => readCatalogAccounts(runtimeRoot),
+      /modelAliases invalid/,
+      'an entry the normaliser would drop must not become an absence',
+    );
+  });
+
+  it('a legal padding/key-order alias difference still migrates (P1-14 control)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: { 'b/y': ' up-y ', 'a/x': ' up-x ' } },
+    });
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({
+        shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: { 'a/x': 'up-x', 'b/y': 'up-y' } },
+      }),
+      'utf-8',
+    );
+
+    assert.doesNotThrow(
+      () => readCatalogAccounts(runtimeRoot),
+      'padding and key order must stay equivalent — that is what the normaliser is for',
+    );
+  });
+
+  it('an empty alias map still means "no aliases", not unusable content (P1-14 control)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: {} },
+    });
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({ shared: { authType: 'api_key', clientId: 'anthropic' } }),
+      'utf-8',
+    );
+
+    assert.doesNotThrow(
+      () => readCatalogAccounts(runtimeRoot),
+      'an empty map carries no information the normaliser could lose',
+    );
+  });
+
   it('conflicting same-id credentials fail closed without printing secret values (INV-5/INV-6)', async () => {
     setSplitEnv();
     await writeRuntimeAccounts({

@@ -178,6 +178,53 @@ function normalizeEnvVars(envVars: AccountConfig['envVars']): Record<string, str
 }
 
 /**
+ * Canonical view of modelAliases: a well-formed map, or an opaque digest.
+ *
+ * P1-14: normalizeModelAliases() is a WRITE-side normaliser — it drops entries
+ * it cannot use (non-string values, keys or values that are empty once trimmed)
+ * and Object.fromEntries() silently keeps only the last of several keys that
+ * collide after trimming. Feeding only its output into the equivalence view
+ * turns "this account has content I cannot interpret" into "this account has no
+ * aliases", so a stored `{ local: 123 }` compares equal to an account with none
+ * — and the runtime→workspace migration stops refusing, binding a stale runtime
+ * credential to the workspace account. Strict JSON parsing does not catch it:
+ * the migration asserts the parsed object into AccountConfig without ever
+ * running the route schema.
+ *
+ * So the value is TAGGED. A well-formed map canonicalises to its normalised
+ * form, which keeps padding and key order equivalent (upstream #1233's point).
+ * Anything else canonicalises to a digest of the raw value: identical unusable
+ * content stays equal to itself, different content stays different, and the
+ * value itself never reaches a diagnostic. The tag is what makes the two forms
+ * uncomparable by construction — an alias map can contain any keys, so a plain
+ * sentinel key could collide with real data.
+ */
+type CanonicalModelAliases = readonly ['aliases', Record<string, string>] | readonly ['invalid', string];
+
+function canonicalModelAliases(raw: unknown): CanonicalModelAliases | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const opaque = (): CanonicalModelAliases => ['invalid', sha256Hex(canonicalJson(raw))] as const;
+  if (typeof raw !== 'object' || Array.isArray(raw)) return opaque();
+
+  const entries = Object.entries(raw as Record<string, unknown>);
+  // An empty map is "no aliases", which is what an absent field means too.
+  if (entries.length === 0) return undefined;
+
+  const trimmedKeys = new Set<string>();
+  for (const [key, value] of entries) {
+    if (typeof value !== 'string') return opaque();
+    const trimmedKey = key.trim();
+    const trimmedValue = value.trim();
+    if (!trimmedKey || !trimmedValue) return opaque();
+    if (trimmedKeys.has(trimmedKey)) return opaque();
+    trimmedKeys.add(trimmedKey);
+  }
+
+  const normalized = normalizeModelAliases(raw);
+  return normalized ? (['aliases', normalized] as const) : opaque();
+}
+
+/**
  * Canonical view of EVERY persisted account field. Known fields get their
  * normalizers; the rest-spread keeps future AccountConfig additions inside the
  * equivalence check automatically instead of silently exempting them (R3 P1-2:
@@ -193,7 +240,7 @@ function normalizeEnvVars(envVars: AccountConfig['envVars']): Record<string, str
 function canonicalizeAccount(account: AccountConfig): Record<string, unknown> {
   const { authType, baseUrl, displayName, models, modelAliases, envVars, ...rest } = account;
   const normalizedEnvVars = normalizeEnvVars(envVars);
-  const normalizedModelAliases = normalizeModelAliases(modelAliases);
+  const normalizedModelAliases = canonicalModelAliases(modelAliases);
   return {
     ...rest,
     authType,
@@ -207,16 +254,9 @@ function canonicalizeAccount(account: AccountConfig): Record<string, unknown> {
 
 /** Fields whose VALUES are safe to print in conflict diagnostics. envVars and
  *  unknown future fields fail closed on the diff but never print values.
- *  modelAliases is a model-name→model-name map with no secret material, and
- *  upstream #1233 already printed it, so it keeps its values. */
-const CONFLICT_VALUE_SAFE_FIELDS = new Set([
-  'authType',
-  'clientId',
-  'baseUrl',
-  'displayName',
-  'models',
-  'modelAliases',
-]);
+ *  modelAliases has its own branch below: a well-formed map is safe to print
+ *  (upstream #1233 already did), an unusable one must not be (P1-14). */
+const CONFLICT_VALUE_SAFE_FIELDS = new Set(['authType', 'clientId', 'baseUrl', 'displayName', 'models']);
 
 function describeAccountConflict(existing: AccountConfig, incoming: AccountConfig): string {
   const current = canonicalizeAccount(existing);
@@ -234,6 +274,18 @@ function describeAccountConflict(existing: AccountConfig, incoming: AccountConfi
         .filter((key) => currentVars[key] !== nextVars[key])
         .sort();
       diffs.push(`envVars keys [${keys.join(', ')}] differ (values not shown)`);
+    } else if (field === 'modelAliases') {
+      // P1-14: an unusable map is reported as a difference without ever echoing
+      // the content that made it unusable.
+      const unusable = [current.modelAliases, next.modelAliases].some(
+        (value) => Array.isArray(value) && value[0] === 'invalid',
+      );
+      if (unusable) {
+        diffs.push('modelAliases invalid (values not shown)');
+      } else {
+        const show = (value: unknown) => (Array.isArray(value) ? canonicalJson(value[1]) : '(none)');
+        diffs.push(`modelAliases ${show(current.modelAliases)} vs ${show(next.modelAliases)}`);
+      }
     } else if (CONFLICT_VALUE_SAFE_FIELDS.has(field)) {
       diffs.push(`${field} ${a ?? '(none)'} vs ${b ?? '(none)'}`);
     } else {
