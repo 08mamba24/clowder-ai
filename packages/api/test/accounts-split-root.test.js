@@ -352,6 +352,44 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
     );
   });
 
+  /**
+   * P1-15: `undefined` is an absent field; `null` is persisted content.
+   *
+   * The route's modelAliasesSchema is optional, not nullable, so no normal write
+   * path produces a stored null — which makes it the same JSON-legal /
+   * AccountConfig-illegal class as { local: 123 }, reaching the comparison
+   * unvalidated. Treating it as absent let this exact migration copy the stale
+   * runtime credential and leave a completion marker that skips the preflight
+   * for good.
+   */
+  it('a persisted null alias field is unusable content, not an absent field (P1-15)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: null },
+    });
+    await writeFile(
+      join(runtimeRoot, '.cat-cafe', 'credentials.json'),
+      JSON.stringify({ shared: { apiKey: 'sk-null-alias-source' } }),
+      'utf-8',
+    );
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({ shared: { authType: 'api_key', clientId: 'anthropic' } }),
+      'utf-8',
+    );
+
+    let thrown = null;
+    try {
+      readCatalogAccounts(runtimeRoot);
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof Error, 'a persisted null alias field must fail closed');
+    assert.match(thrown.message, /migration conflict for "shared"/);
+    assert.match(thrown.message, /modelAliases invalid/, 'a null map is reported as invalid, not as a value diff');
+    await assertWorkspaceUntouched('null alias field');
+  });
+
   it('a legal padding/key-order alias difference still migrates (P1-14 control)', async () => {
     setSplitEnv();
     await writeRuntimeAccounts({

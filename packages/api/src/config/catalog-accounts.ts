@@ -202,9 +202,17 @@ function normalizeEnvVars(envVars: AccountConfig['envVars']): Record<string, str
 type CanonicalModelAliases = readonly ['aliases', Record<string, string>] | readonly ['invalid', string];
 
 function canonicalModelAliases(raw: unknown): CanonicalModelAliases | undefined {
-  if (raw === undefined || raw === null) return undefined;
+  // Only an ABSENT field is absent. `null` is persisted content — the route's
+  // modelAliasesSchema is optional, not nullable, so nothing on the normal write
+  // path produces it, which puts a stored null in exactly the JSON-legal /
+  // AccountConfig-illegal class this whole tagged view exists for (P1-15).
+  // Folding it in with the other unusable shapes below rather than short-
+  // circuiting here is deliberate: `typeof null === 'object'`, so it has to be
+  // excluded before Object.entries() either way, and one exit keeps "everything
+  // the normaliser cannot use becomes a digest" a single readable rule.
+  if (raw === undefined) return undefined;
   const opaque = (): CanonicalModelAliases => ['invalid', sha256Hex(canonicalJson(raw))] as const;
-  if (typeof raw !== 'object' || Array.isArray(raw)) return opaque();
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return opaque();
 
   const entries = Object.entries(raw as Record<string, unknown>);
   // An empty map is "no aliases", which is what an absent field means too.
