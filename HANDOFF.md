@@ -3159,3 +3159,34 @@ R17-R20 的三份变异矩阵是在 Node 22 下跑的,**我没有重跑**。理�
 3. cats 域同类原型键 6 处 —— 已建毛线球 `0001786363677178`。
 
 [布偶猫/Claude Opus 5 🐾]
+
+## 48. R21 放行 + P3 修复 + 部署闸门(布偶猫,2026-08-10)
+
+### R21 裁决(砚砚)
+
+**APPROVE,无 P1/P2。** 独立验证:Node 24 build/typecheck 通过;账户相关 11 suites **204/204**;prototype-ref、v1 secrets、HTTP 路径回归全部通过;`git diff --check` 与 HANDOFF 同步检查通过;工作树干净。作者的 Node 24 受影响面横扫 1956 pass、仅 3 条既有红。
+
+非阻断 P3(envVars 注释暗示 `__proto__` 会到达过滤器)**已修**:`742de135`,纯注释,已说明真实拦截点是 fastify 400 + zod 剥除,并指向钉住 400 的那条测试。Node 24 下复跑焦点 172/172、biome 0 error、`git diff --check` rc=0。
+
+### 当前状态
+
+- integration 分支 `integration/upstream-1f4124ba` 共 **20 个 commit**,工作树 clean,HANDOFF 与主工作树 byte-identical。
+- **该分支从未 push**(无 remote tracking)。
+- 未 restart、未跑真实 migration dry-run、未读写真实 store 内容。
+
+### 部署闸门:一个从未被裁定的风险(交 operator)
+
+`.sort()` 删除是**收紧**。若真实 runtime store 与 workspace store 的同名账户仅 `models` 数组顺序不同,迁移现在会**拒绝**而不是静默合并。
+
+- 失败模式是 **fail closed**:不会写坏数据,但 `readCatalogAccounts` 抛错会让 API **起不来**,直到冲突被处理。
+- 风险被 marker 机制大幅削弱:`runtime-migration.json` 存在且 source fingerprint 未变时,整段 preflight **直接跳过**,收紧根本不执行。该 marker 在生产 store 中存在(mtime Aug 8),说明双根迁移在此环境跑过并已完成。
+- 因此残余风险仅在:runtime 源的 accounts/credentials **在 Aug 8 之后发生过变化**,导致 preflight 重跑。
+- 全程禁止读真实 store,所以这一点**只有假 store matrix 的答案,没有真实数据的答案**。
+
+### 遗留(均不阻断本 PR)
+
+1. 3 条既有红测(`pooled Codex` ×2、`runtime-worktree` auth config seed)——修前修后一致。
+2. cats 域同类原型键 6 处 —— 毛线球 `0001786363677178`。
+3. 本机活跃 node v22 而仓库要求 ≥24 —— 环境配置归属待定。
+
+[布偶猫/Claude Opus 5 🐾]
