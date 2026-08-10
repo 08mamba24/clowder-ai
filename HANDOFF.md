@@ -2505,3 +2505,141 @@ Q9 就是修前那一行,所以它同时是这条新回归的 red 证据:修前�
 砚砚对新 SHA 做 R17,code-fix delta 与 docs-only delta 可分开看。仍未 push、未 restart、未跑真实 migration dry-run、未读写真实 account/credential/marker store。
 
 [布偶猫/Claude Opus 5 🐾]
+
+## 41. P1-16 / P2 返工(R17 退回项,布偶猫/CC 后台会话,2026-08-10)
+
+### What
+
+| 文件 | 改动 |
+| --- | --- |
+| `packages/api/src/config/catalog-accounts.ts` | 等价视图改成**先验形态、再规范化**的单一闸门;`baseUrl` / `displayName` / `models` / `envVars` / `modelAliases` 各自只验"自己的 normaliser 会丢什么";`models` 去掉 `.sort()`;`canonicalizeAccount()` 改为遍历账户,无 canonicaliser 的字段一律 raw 比较 |
+| `packages/api/test/accounts-split-root.test.js` | 零写入断言换成**全 store 逐字节快照**;新增 10 条非法形态 + 7 条合法对照 + 1 条乱序红测;原来只断言 throw 的空 key/value 两条补齐三类零写入 |
+
+新 SHA:**`0cbfbf52`**(单 code-fix commit,docs 另起)。
+
+### Why:我接受你的根因判断,没有再打第五个补丁
+
+你说"不要继续逐字段增加特殊 fallback"。我照做了,而且发现**这条规则可以写死成一句话**:
+
+> 一个字段只有在**形态被验证之后**才允许规范化;每个验证覆盖的,恰好是**它自己那个 normaliser 会丢的东西**。
+
+推论才是让改动变小的地方:**没有 normaliser 的字段一律 raw 比较,raw 比较丢不掉任何东西,所以它不需要 schema。** `authType`、`clientId`、以及未来任何新增 `AccountConfig` 字段,天然 fail-closed。所以我没有引入一个覆盖全字段的大 schema——那会是拿复杂度代偿无知,并且会在 legacy 数据上凭空造冲突。
+
+`canonicalizeAccount()` 也从"解构已知字段 + `...rest`"改成遍历账户查表:新字段落到"无 canonicaliser → raw",保证是**结构性**的,不再依赖有人记得改解构列表。
+
+每个字段验什么,都由"它的 normaliser 会丢什么"反推,不是我拍的:
+
+| 字段 | normaliser 会丢什么 | 因此验什么 | 保留的合法规范化 |
+| --- | --- | --- | --- |
+| `baseUrl` | `?.trim()` 对 null 短路;trim 后为空 → undefined | 必须是 string;trim+去尾斜杠后非空 | trim、去尾斜杠 |
+| `displayName` | 同上 | 同上(无斜杠规则) | trim |
+| `models` | `String()` 强转、丢空元素、去重、**排序** | 必须是数组;每个元素是 string 且规范化后非空 | 逐元素 trim、去尾斜杠、**保首序**去重 |
+| `modelAliases` | 丢非 string 值、丢空 key/value、trim 重名折叠 | 已有(P1-14/15) | 合法 map 的 padding / key-order |
+| `envVars` | **只有容器会丢**(`{...['X']}` → `{'0':'X'}`;null/数字落进 `keys().length===0`) | 只验容器是 plain object | 值保持 raw 比较 |
+
+`envVars` 的**值**我故意没验:`{ ...envVars }` 是恒等拷贝,丢不掉东西,`{A:123}` vs `{A:"123"}` 本来就已经 fail closed。验它只会在历史数据上造假冲突。这是"验证覆盖 normaliser 会丢的东西"这条规则的直接结果,不是我手松。
+
+### 你的三个裁定点,我逐条落地
+
+1. **`.sort()` 删掉了。** 我独立核过你的依据,成立且不止一处:[invoke-single-cat.ts:1804](/Users/yuhan/cat-cafe-upstream-integration/packages/api/src/domains/cats/services/agents/invocation/invoke-single-cat.ts:1804) 把 `models[0]` 当 fallback model override,[:2173](/Users/yuhan/cat-cafe-upstream-integration/packages/api/src/domains/cats/services/agents/invocation/invoke-single-cat.ts:2173) 又把 `models[0]` 作为"实际使用模型"上报。顺序是可观察语义。去重改成**保留首次出现**,它永远动不了 `models[0]`。
+2. **`String(123)`、空白元素、错误容器全部 fail closed。**
+3. **`null` 一律是内容不是缺席**,`baseUrl` / `displayName` / `envVars` / `models` 与 P1-15 同形处理。
+
+**trim / 去尾斜杠为什么留、`.sort()` 为什么删——这条线不是我的口味,是有真相源的**:route schema 自己对每个 model 元素做 `.trim()` 和 `.replace(/\/+$/,'')`([accounts.ts:211-220](/Users/yuhan/cat-cafe-upstream-integration/packages/api/src/routes/accounts.ts:211)),却**从不重排数组**。写路径自己声明的"同一个 model id",就是等价;写路径从不做的变换,就不是等价。
+
+### 复现闭合(独立脚本,不是我的测试文件)
+
+`/tmp/p116-repro.mjs`:每个 case 自己 `mkdtemp` 三个根(runtime/workspace/HOME),全程 `with-test-home.sh`,不碰真实 store。同一脚本分别跑修前 dist(`9c7393f4`)与修后 dist:
+
+| | `9c7393f4`(修前) | `0cbfbf52`(修后) |
+| --- | --- | --- |
+| 你列的 10 种非法形态 | **10/10 `credentialCopied=true` + `markerWritten=true`** | 10/10 拒绝,`cred=false marker=false` |
+| `models` 乱序 | 复制(被 `.sort()` 抹平) | 拒绝 |
+| 8 种合法等价 | 7 通过,**1 误挡** | 8/8 通过 |
+| 汇总 | `11/11 leaked, 1/8 falsely blocked` | `0/11 leaked, 0/8 falsely blocked` |
+
+诊断一律是 `<field> invalid (values not shown)`;`gpt-leak` / `4711` / `ENVLEAK` 三个探针值都没出现在错误里。
+
+**修前那 1 条误挡是本轮的意外发现,不在你的清单里**:`normalizeModels` 只做 `String().trim()`,不去尾斜杠,而 route schema 去。所以 legacy 迁移写下的 `['a/x/']` 会跟 route 写下的 `['a/x']` **假冲突**,把 operator 挡在自己的迁移外面。本轮顺带修好——这是收紧方向里唯一一处放松,单独列出来给你核。
+
+### 变异证据(14/14 KILLED,0 SURVIVED,0 被 tsc 拒)
+
+每条变异都是**把某一个决定退回修前的有损形态**,不是随机改符号。harness 逐条 apply → `tsc` → 跑 `accounts-split-root` + `catalog-accounts` → 还原。
+
+| # | 变异 | 杀死它的测试 |
+| --- | --- | --- |
+| M1 | `baseUrl` 非 string → 缺席 | null baseUrl |
+| M2 | `baseUrl` trim 后空 → 缺席 | blank baseUrl |
+| M3 | `displayName` 非 string → 缺席 | null displayName |
+| M4 | `displayName` trim 后空 → 缺席 | blank displayName |
+| M5 | `models` 错误容器 → 缺席 | models 为 map / models 为 null(**2**) |
+| M6 | `models` 非 string 元素改回 `String()` 强转 | 非 string model 元素 |
+| M7 | `models` 空元素丢弃而非拒绝 | blank model 元素 |
+| M8 | **`.sort()` 恢复** | 乱序 models |
+| M9 | **`modelAliases: null` 退回缺席(P1-15 回归哨兵)** | null alias field |
+| M10 | `envVars` 容器 guard 整条删 | null envVars / 数组碰撞(**2**) |
+| M11 | 只删 `envVars` guard 的 `Array.isArray` 半边 | 数组碰撞 |
+| M12 | 非法内容按普通 value diff 打印 | **14** 条(所有 invalid 断言 + 三个不泄漏探针) |
+| M13 | 无 canonicaliser 的字段被静默丢弃 | **4** 条(clientId / envVars / metadata 冲突) |
+| M14 | 整个形态闸门绕过(退回 raw normaliser) | **24** 条 |
+
+M13 是新加的结构性哨兵:它证明"未知字段 raw 比较"这条兜底**真的接线了**,不是注释。
+
+### 独立门禁
+
+| 项 | 结果 |
+| --- | --- |
+| `npx tsc --noEmit -p packages/api` | rc=0 |
+| `pnpm --filter @cat-cafe/api run build` | rc=0 |
+| 焦点 5 文件 | 7 suites / **121 tests / 121 pass / 0 fail**(§40 为 103,+18 恰为新增) |
+| 85 文件受影响面横扫(`accountRef\|catalog-accounts\|credentials\|AccountConfig\|accounts.json` grep 生成) | 190 suites / 1917 tests / **1912 pass / 4 fail / 1 skip**;`Refusing` 零命中 |
+| Biome(2 个改动文件) | **0 error** / 4 条既有 complexity warning(数量与 §37/§40 一致,未新增) |
+| `git diff --check` | rc=0 |
+| integration worktree | clean @ `0cbfbf52` |
+
+### 那 4 条 fail:**修前修后一模一样,不是我引入的**(但请你知情)
+
+我没有把它们算进"全绿",而是把我的 2 个文件 `git stash` 后重跑同样 3 个文件核对:
+
+```text
+baseline(我的改动 stash 掉) : 32 tests / 28 pass / 4 fail
+当前                        : 同样这 4 条
+```
+
+- `pooled Codex carries MCP config per session ...`(`codex-app-server-pooling.test.js`)
+- `replacement host rotates credentials while leaving the superseded host file unchanged`(同上)
+- `seeds missing runtime auth config from the launcher project during init`(`runtime-worktree-script.test.js`,ENOENT 临时 worktree 的 accounts.json)
+- `API binds to 127.0.0.1 by default`(`security-boundary.test.js`,undici `EINVAL setTypeOfService`,像沙箱网络限制)
+
+**这三个文件不在 §40 那份 98 文件横扫里**,所以 §40 的 1503/1503 并没有说谎,只是没覆盖到。它们是这条分支上**既有的红**,与本 feature 无关,我没有顺手修(会扩大你的核验范围)。要不要单开一轮,你定。
+
+### 更正 §40 的真实 store 记录
+
+§40 写的是"与 §21/§22/§24/§37 逐字一致"。**现在对 `accounts.json` 已经不成立**,我不沿用:
+
+| 文件 | §40 记录 | 现在 |
+| --- | --- | --- |
+| `accounts.json` | size=1475 mtime=Aug 6 23:21 | size=**1486** mtime=**Aug 10 14:58:41 CST** |
+| `credentials.json` | size=88 mode=600 mtime=Aug 6 23:21 | **逐字未变** |
+| `runtime-migration.json` | (§40 未记) | size=268 mode=600 mtime=Aug 8 00:00:57 — **早于本轮全部工作** |
+
+不是我写的,证据三条:①本 thread 第一条消息是 07:01 UTC = **15:01 CST**,而该 mtime 是 **14:58:41 CST**,早于会话开始约 2 分钟;②本机 3004 端口上有活着的 Clowder AI(PID 3988),同目录 `cat-catalog.json`(15:00)、`governance-registry.json`(15:24)也在被它写;③integration worktree 的 `.cat-cafe/` 里**根本没有** accounts/credentials/marker 三个文件,我全程只在 `mkdtemp` 临时根上跑。本轮对真实 store 只 `stat`,未读内容。
+
+### Tradeoff
+
+- **`.sort()` 删除是收紧,会挡住真实数据。** 若 operator 的 runtime 与 workspace 只是 `models` 顺序不同,现在会 block。这是 fail-closed 方向(挡住,不是写坏),且顺序确实决定默认模型;但它确实是可用性成本,我不粉饰。
+- **`models` 去尾斜杠是唯一放松。** 依据是 route schema 自己的 transform,不是我的判断;它修掉的是一条既有假冲突。
+- **`envVars` 值不验形态。** 换来的是不在 legacy 数据上造假冲突;代价是这一个字段的严格性来自 raw 比较而不是 schema——我认为这正确,但它是个明确的选择,不是遗漏。
+- **仍未对真实 store 做只读形态普查**(你 §R17 也说了这留在 operator 备份后的部署闸门)。所以"历史数据会不会被 `.sort()` 收紧误伤"这个问题,当前只有假 store matrix 的答案,没有真实数据的答案。
+
+### Open Questions
+
+1. `.sort()` 收紧后是否需要在真实 store 上做一次**只读形态普查**(只统计字段形态与 `models` 是否已排序,不打印值),再决定要不要给 operator 一条一次性的 `models` 重排豁免?
+2. 上面 4 条既有红测:单开一轮,还是记入 backlog?
+3. 本轮把 `modelAliases` 并进了统一的 `CanonicalField` tag(原 `'aliases'` tag 改成 `'value'`),诊断输出格式不变。这是重构而非行为变更,但它动了你 R16 已核验过的代码形状 —— 如果你希望那部分保持原样,我可以拆回去。
+
+### Next Action
+
+砚砚对 `0cbfbf52`(code)+ 随后的 docs commit 做 R18。仍未 push、未 restart、未跑真实 migration dry-run、未读写真实 account/credential/marker store 内容。
+
+[布偶猫/Claude Opus 5 🐾]
