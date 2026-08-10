@@ -2962,3 +2962,86 @@ PATCH /api/accounts/nosuchaccount   → 404 (对照,正确)
 砚砚继续 R20,SHA 集合现为 `1ae90ec9`(源码)+ `b0c45acc`(docs)+ **`f908a191`(test-only)**。仍未 push、未 restart、未跑真实 migration dry-run、未读写真实 store 内容。
 
 [布偶猫/Claude Opus 5 🐾]
+
+## 45. R20 同类穷举(布偶猫/CC 后台会话,2026-08-10)
+
+新 SHA:**`4c45a5ba`**。你 R20 点的两处成立,我验完之后**停止逐点响应,改为穷举整类**——这已经是你第三次比我先找到同一个类的下一处。
+
+### 你点的两处,实测结论
+
+**1. v1 legacy secrets 的 `Object.assign(profileSecrets, clientSecrets)` —— 成立,是真缺陷。**
+
+```text
+Object.assign({},              {"__proto__":{...},"normal":{...}})  → entries: ["normal"]     __proto__ own = false
+Object.assign(Object.create(null), 同上)                            → entries: ["__proto__","normal"]  own = true
+```
+
+`Object.assign` 用 [[Set]] 语义,所以 `__proto__` 触发原型 setter、条目消失、`Object.entries()` 再也看不到它——**那个 profile 的凭据静默不迁移,而整轮迁移报告成功**。已改 `refStore()`,并补 red-before/green-after 回归(变异复跑:修前红,修后绿)。
+
+**2. `BUILTIN_CLIENT_FOR_ID[id]` —— 同类成立,但我必须说清:它不可观测。**
+
+已改 Map。但这条**不可独立杀死**:函数值的 `clientId` 被 `JSON.stringify` 整个抹掉,而 `accountToView()` 的输出只进 HTTP 响应(3 处调用全是 `return { profile: ... }` / `providers`),所以"原型命中"和正确的 `undefined` **序列化结果完全一致**。
+
+```text
+JSON.stringify({ id:'toString', clientId: ({}).toString }) → {"id":"toString"}
+```
+
+修保留(它离可观测只差一次重构),但**不算进覆盖率**。测试只钉能判别的那一半:Map 转换不能弄坏真实 builtin 查找(`claude` → `anthropic`)。
+
+### 我自己穷举出的第三处,以及一次被我自己推翻的"发现"
+
+穷举方式(不再等人喂):(A) `Object.assign(` 的目标容器;(B) `CONST_MAP[变量]`;(C) `= {}` 后被 `[userKey] =` 写入。
+
+第三处命中 `routes/accounts.ts` 的 CAT_CAFE_ envVars 过滤器:`filtered[k] = v`,而 `envKeySchema` 是 `/^[A-Z_][A-Za-z0-9_]*$/` —— **`__proto__` 以 `_` 开头,能通过校验**。
+
+我一度据此写下"schema-valid 输入被静默丢弃"。**实测把这个说法推翻了**:
+
+```text
+POST envVars={"__proto__":"kept","MY_VAR":"ok"}  → 400 {"message":"Object contains forbidden prototype property"}
+POST envVars={"MY_VAR":"ok"}                     → 200
+zod 单独解析该 record                            → success:true,输出键只剩 ["MY_VAR"]
+```
+
+**fastify 的 body parser(secure-json-parse)在 HTTP 层就 400 拒绝**,zod 是第二道,我改的过滤器是第三道——**HTTP 完全不可达**。所以那处改动是 defense-in-depth,**不是 live 缺陷修复**。测试改成钉真实可达的契约(400 + 正常 envVars 不受影响)。
+
+这次我是在**报给你之前**自己测出来的,不是等你退回。但根因是同一个:读代码推断可达性,而不是测量可达性。
+
+### 一次测试自伤:我踩了自己写在注释里的坑
+
+envVars 那条测试第一版用 `JSON.stringify({ __proto__: 'kept', MY_VAR: 'ok' })` 造 payload。实测:
+
+```text
+JSON.stringify({ __proto__: 'kept', MY_VAR: 'ok' })  →  {"MY_VAR":"ok"}
+```
+
+**payload 里根本没有被测字段**——正是我在 §42 亲手写进测试文件注释的那个陷阱。已改为原始 JSON 文本。
+
+### 本轮改动(3 处)与刻意不动的(6 处)
+
+| 位置 | 处理 | 定性 |
+| --- | --- | --- |
+| `catalog-accounts.ts` v1 `profileSecrets` | `refStore()` | **真缺陷**,凭据静默丢失,已钉死 |
+| `routes/accounts.ts` `BUILTIN_CLIENT_FOR_ID` | → `Map` | 同类,**不可观测**,不算覆盖 |
+| `routes/accounts.ts` envVars 过滤器 | → `Object.fromEntries` | 同类,**HTTP 不可达**,defense-in-depth |
+
+**同类但不在本 feature 范围,刻意未动**(证据留给你/operator 定范围):`MODEL_PRICING[model]`、`DEFAULT_BUDGETS[catName]`、`STRATEGY_BY_BREED[breedId]`、`BREED_BY_CAT_ID_OVERRIDE[catId]`、`CAT_PROVIDER_MAP[catProvider]`、`CONFIG_KEY_DEFINITIONS[key]` —— 全部是"用户可控键索引常量表",与本轮同根,但属于别的 feature;在这里扩就会作废你正在做的核验。
+
+### 独立门禁
+
+| 项 | 结果 |
+| --- | --- |
+| `npx tsc --noEmit -p packages/api` | rc=0 |
+| `dist` 新鲜度 | `refStore` 出现 **18** 次(R19 为 16,+2 为 profileSecrets) |
+| 焦点 9 suites | **195 tests / 195 pass / 0 fail**(§44 为 192,+3 为新增) |
+| 四个独立复现脚本 | `0/11 leaked, 0/8 falsely blocked` / `0/6 leaked` / `0/10 silent-loss` / resolver 6/6 → `null` |
+| Biome(4 个改动文件) | **0 error** / 7 warning + 2 info —— warning 全部 pre-existing(`routes/accounts.ts` 的 3 条已 stash 逐条核对);2 条 info 是我**故意**保留的 `result['__proto__']` 括号写法 |
+| `git diff --check` | rc=0 |
+| integration worktree | clean @ `4c45a5ba` |
+
+**Biome 的一个坑记下来**:`useLiteralKeys` 会把 `creds['__proto__']` 自动改写成 `creds.__proto__`。在**普通对象**上那是读**访问器**而不是 own 属性,会静默改坏这些测试。所以本轮只跑 `biome format --write`,不跑 `check --write`,并逐条核对了括号写法未被改动。
+
+### Next Action
+
+砚砚继续 R20/R21。SHA 集合:`1ae90ec9` + `b0c45acc` + `f908a191` + `5f87a9b5` + **`4c45a5ba`**。仍未 push、未 restart、未跑真实 migration dry-run、未读写真实 store 内容。
+
+[布偶猫/Claude Opus 5 🐾]
