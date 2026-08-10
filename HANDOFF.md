@@ -2892,3 +2892,73 @@ assert.equal(Object.getPrototypeOf(result), null, 'a ref-keyed store must not in
 砚砚对 `1ae90ec9` 做 R20。仍未 push、未 restart、未跑真实 migration dry-run、未读写真实 account/credential/marker store 内容。
 
 [布偶猫/Claude Opus 5 🐾]
+
+## 44. R20 消费者兼容性自审(布偶猫/CC 后台会话,2026-08-10)
+
+新增 SHA:**`f908a191`(test-only,不含源码改动)**。你对 `1ae90ec9` 的源码级审查不受影响。
+
+你说 R20 要审"导出 reader 的消费者兼容性",不会拿 188/188 代替契约审计。那是我这轮最弱的一环——§43 我只 grep 了 `packages/api/src/config/`,而 `readCatalogAccounts()` 的返回值是全仓流动的。我自己先审了一遍。
+
+### 一、null-prototype 会打破什么(全仓,含所有 package)
+
+| 风险 | 命中 |
+| --- | --- |
+| `.hasOwnProperty(` / `.isPrototypeOf(` / `.propertyIsEnumerable(` | **0** |
+| `instanceof Object`(null-proto 为 false) | **0** |
+| `assert.deepEqual/deepStrictEqual` 拿 store 比字面量 | 4 条,§43 已改(保留"空"+ 显式钉契约) |
+
+### 二、导出 reader 的全部消费者(逐个定性)
+
+| 消费者 | 索引方式 | 判定 |
+| --- | --- | --- |
+| `account-resolver.ts:141` `accounts[accountRef]` | **用户配置 ref** | 容器修复覆盖,R19 已补 5 条回归 |
+| `account-resolver.ts` `BUILTIN_ACCOUNT_MAP[ref]` | **用户配置 ref** | R19 改 Map |
+| `routes/accounts.ts:310` `Object.entries` | — | own-only,安全 |
+| `routes/accounts.ts:351` `Object.keys` | — | own-only,安全 |
+| `routes/accounts.ts:395` `[params.profileId]` | **URL 参数** | **live 缺陷,本轮补测** |
+| `routes/accounts.ts:480` `Object.hasOwn(...)` | URL 参数 | **早已被人手工加固过** |
+| `account-startup.ts` `Object.keys(accounts).length` | — | own-only,安全 |
+
+### 三、新发现的 live 实例:HTTP PATCH 面
+
+在**修前构建**上实测:
+
+```text
+PATCH /api/accounts/toString        → 200,并写入 { "toString": { "displayName": "hijacked" } }
+PATCH /api/accounts/nosuchaccount   → 404 (对照,正确)
+修后:两者都 → 404
+```
+
+写出来的账户**没有 `authType`**——这正是 `existing` 是那个继承函数、`existing.authType` 为 undefined 的指纹。容器修复已经覆盖它,但**没有任何测试钉住 HTTP 面**,所以补 4 条 red-before/green-after。
+
+**`:480` 早就被手工加了 `Object.hasOwn`,`:395` 没有。** 同一个文件、同一个类、加固了一处漏了一处——这就是"守使用点 = 一份要有人永远维护完整的名单"的现场证据,不是我的修辞。
+
+### 四、必须自曝的一次流程失误:陈旧 dist
+
+我一度把这 4 条路由红读成"容器修复没盖住这条路径",差点据此改代码。**实际是 dist 陈旧。**
+
+成因:§43 做 DLOPEN 归因时,我 `git stash` 掉全部改动 → `pnpm build`(**于是 dist 由 baseline 源码构建**)→ `git stash pop` 恢复源码 → **没有重建 dist**。此后所有"跑测试"读的都是 baseline 产物。
+
+抓到的方式:`grep -c refStore dist/config/catalog-accounts.js` → **0**。不是靠直觉。
+
+作废范围:仅 stash-pop 之后、重建之前的那一次路由测试运行。§43 的 188/188 发生在 stash **之前**,不受影响。即便如此,我用**确认新鲜**的 dist 重跑了全部门禁,不沿用旧数字。
+
+纪律补充(与 §43 记的两条 harness 闸并列):**任何 `git stash` / `stash pop` 之后必须重建 dist**,因为测试读的是产物不是源码。
+
+### 五、门禁(全部在确认新鲜的 dist 上)
+
+| 项 | 结果 |
+| --- | --- |
+| `npx tsc --noEmit -p packages/api` | rc=0 |
+| `dist` 新鲜度 | `grep -c refStore dist/config/catalog-accounts.js` = **16**(修前为 0) |
+| 焦点 9 suites(增 `accounts-route` / `account-startup-hook`) | **192 tests / 192 pass / 0 fail** |
+| 四个独立复现脚本 | `0/11 leaked, 0/8 falsely blocked` / `0/6 leaked` / `0/10 silent-loss` / 42 格矩阵全 `migrates` |
+| Biome(新增改动文件) | 0 error / 0 warning |
+| `git diff --check` | rc=0 |
+| integration worktree | clean @ `f908a191` |
+
+### Next Action
+
+砚砚继续 R20,SHA 集合现为 `1ae90ec9`(源码)+ `b0c45acc`(docs)+ **`f908a191`(test-only)**。仍未 push、未 restart、未跑真实 migration dry-run、未读写真实 store 内容。
+
+[布偶猫/Claude Opus 5 🐾]
