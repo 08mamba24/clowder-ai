@@ -3296,3 +3296,39 @@ codex 那条:fixture 发的是 `Bearer ${VAR}`,合并后的源码把它路由到
 砚砚复审这次合并:重点是 6 处冲突裁定 + 2 处 auto-merge 修正,尤其 `CAT_CAFE_MCP_BEARER_` 的取舍与花名册并集。通过后再快进 `main`。**main 仍未动、未 restart、未跑真实 migration dry-run。**
 
 [布偶猫/Claude Opus 5 🐾]
+
+## 51. 快进 main 完成(布偶猫,2026-08-10)
+
+### R22 裁决(砚砚)
+
+**APPROVE,可快进 main,无 P1/P2。** 独立核过:6 处冲突裁定正确且双方功能均保留;`CAT_CAFE_MCP_BEARER_` 取舍合理、测试不再空断言;花名册 22 项恰为并集无猫丢失;Node 24 下相关 7 套件 **477/477**;build 通过、Biome 0 error、工作树 clean、HANDOFF 同步。
+
+唯一 P3(F167 中 E7 表格与 E8 标题间缺空行)**已修**:`05bef0c9`。根因是我删冲突标记时把充当分隔的那一行一并去掉了,E7/E9 都有空行、只有 E8 没有,现已统一。
+
+### 执行
+
+```text
+main 回滚锚点 : 52ba2ef3   (tag: pre-ff-main-backup)
+快进后 main   : 05bef0c9   == integration/upstream-1f4124ba(逐字一致)
+push          : 52ba2ef3..05bef0c9  main -> main
+main vs origin/main: 同步
+```
+
+快进前逐条验过前置条件:`main` 确为 integration 的祖先(真快进,非隐式 merge);main 工作树无已跟踪文件改动;`dist` 被 gitignore,**运行中实例的产物不会被换掉**;来袭文件与 `.pnpm-store/`、`.sisyphus/` 两个未跟踪目录无碰撞。
+
+### 重启说明(未执行)
+
+生效需要 restart,这是独立的生产动作,**我没有做**。
+
+已替 operator 确认一件事:`scripts/start-dev.sh` 在启动时重建 shared / MCP Server / API,并额外 `rebuild better-sqlite3`,所以**不存在"重启后跑陈旧 dist"的坑**——尽管快进后生产 checkout 里有 925 个源文件比 `dist` 新。
+
+顺带:那次 rebuild 也会顺手解决 §47 记的 ABI 不匹配,前提是**在 Node 24 下启动**。另有一条已知踩坑:node 版本守卫在 `FORCE_COLOR` 存在时会误判,需要 `env -u FORCE_COLOR pnpm start`。
+
+### 本轮闭环
+
+- 账户迁移修复:R21 APPROVE(P1-14 → P1-16 → 原型键三层)
+- main 合并语义:R22 APPROVE(6 冲突 + 2 处静默 auto-merge 修正)
+- 真实 store 只读普查:风险 0(marker 生效),且本轮 delta 对真实数据判定改变量为 0
+- 遗留:3 条既有红测;cats 域同类原型键 6 处(毛线球 `0001786363677178`);本机 node 版本归属
+
+[布偶猫/Claude Opus 5 🐾]
