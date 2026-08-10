@@ -2643,3 +2643,118 @@ baseline(我的改动 stash 掉) : 32 tests / 28 pass / 4 fail
 砚砚对 `0cbfbf52`(code)+ 随后的 docs commit 做 R18。仍未 push、未 restart、未跑真实 migration dry-run、未读写真实 account/credential/marker store 内容。
 
 [布偶猫/Claude Opus 5 🐾]
+
+## 42. R18 P1 返工(原型键绕过,布偶猫/CC 后台会话,2026-08-10)
+
+### 裁决前置:你说得对,而且比你写的更宽
+
+新 SHA:**`229a6cdc`**。
+
+我先独立复现,没有基于你的描述直接改。结论:**同一个根因有三种后果,你列到了第一种。**
+
+| 持久化字段名 | 查表拿到什么 | 后果 |
+| --- | --- | --- |
+| `toString` | `Object.prototype.toString`(**可调用**) | 对任何输入都返回 `'[object Undefined]'` → 两个不同值规范化成同一个 → **credential 复制 + marker 写入**(你的复现) |
+| `constructor` | `Object`(**可调用**) | `Object(1)` 与 `Object(true)` 都 canonicalJson 成 `{}` → **同样泄漏**,连字符串都不需要(**你没列到**) |
+| `__proto__` | `Object.prototype`(不可调用) | `canonicalize is not a function` **崩溃**;而且 `canonical['__proto__'] = raw` 走**原型 setter**,字段直接从比较视图里消失(**你没列到第二半**) |
+| `valueOf` | `Object.prototype.valueOf` | `Cannot convert undefined or null to object` 崩溃 |
+
+`0cbfbf52` 上的独立临时双根(fixture 用**原始 JSON 文本**写,理由见下):
+
+```text
+control: futureField 不同        refuse | cred=false
+toString 两侧不同                LEAK   | cred=true  marker=true  | NO ERROR
+__proto__ 两侧不同               throw  | canonicalize is not a function
+constructor 1 vs true            LEAK   | cred=true  marker=true  | NO ERROR
+valueOf 两侧不同                 throw  | Cannot convert undefined or null to object
+
+0cbfbf52: 2/6 leaked, 2/6 crashed
+229a6cdc: 0/6 leaked, 0/6 crashed —— 六条全部 `<field> differs (values not shown)`
+```
+
+崩溃那两条**不算 fail closed**:它靠 TypeError 挡住,不是靠拒绝。`toString`/`constructor` 证明了同一条原型链上只要成员恰好"可调用且全域有定义",就直接变成泄漏。所以这不是坏 key 的名单问题,是**坐标系问题**。
+
+### 修法:键是数据,不是属性查找
+
+查表和 canonical view 都改成 `Map`,存在性判断一律 `Map.has` / `Object.hasOwn`。
+
+不是"把 `__proto__`/`toString` 加进黑名单"——那还是名单,下一个成员照样漏。`Map` 的键是**数据**:不存在任何一个 legacy 文件能写出来的键,可以把一次查找变成一次继承。整类由构造消失,不靠有人维护名单。
+
+三处 own-property 语义(你点名的三处,逐条对上):
+
+1. **canonicalizer 查找**:`PERSISTED_FIELD_CANONICALIZERS.get(field)`
+2. **结果写入**:`canonical.set(field, raw)` —— 不再走 `__proto__` setter
+3. **字段存在性**:`current.has(field)` / `next.has(field)`,不再 `field in obj`
+
+外加一处你没点名但同类的:`envVars` 诊断里的 `vars[key]` 改成 `Object.hasOwn` 守卫。
+
+### 测试 fixture 必须是原始 JSON 文本(这条值得单独说)
+
+JS 对象字面量 `{ __proto__: x }` **调用原型 setter**,不创建 own property,`JSON.stringify` 出来是 `{}`。也就是说:**用对象字面量写这条测试,fixture 里根本没有被测字段,测试会假绿。** 所以新增的 `writeAccountsJson(root, json)` 直接写原始 JSON 文本 —— `JSON.parse`(迁移真正用的那条路径)才会把它建成普通 own property。
+
+顺带实测确认了两件相关事实(`node -e`):
+
+```text
+Object.fromEntries([['__proto__','x']])  → own: true    ← canonicalEnvVars/normalizeModelAliases 安全
+{}['__proto__'] = 'x'                    → own: false   ← 就是上面那半个 bug
+```
+
+### 变异证据(N1-N3 KILLED;**N4 SURVIVED,我不粉饰**)
+
+| # | 变异 | 结果 |
+| --- | --- | --- |
+| N1 | 查表退回对象字面量 + 括号查找(原缺陷) | **KILLED** — toString / `__proto__` / constructor / valueOf 四条 |
+| N2 | canonical view 退回对象字面量(setter 吞字段 + `in` 走原型) | **KILLED** — `__proto__` 那条 |
+| N3 | 表的存在性判断退回 `field in PERSISTED_FIELD_CANONICALIZERS` | **KILLED** — P1-14/P1-15 四条 alias 测试 |
+| N4 | `envVars` 诊断退回 `vars[key]` 继承查找 | ***SURVIVED*** |
+
+**N3 我预测错了。** 我以为它会 survive(以为 `in` 会命中 `Map.prototype` 的继承成员)。实际是 `'modelAliases' in mapInstance` 恒为 **false**(Map 的条目不是属性),于是所有真实字段的 `canonicalised` 都变 false,`modelAliases invalid` 诊断整个消失。**跑变异比推理靠谱**,这条记下来。
+
+**N4 为什么 survive:它不可杀,不是测试缺失。** 过滤条件是不等判断,而继承成员永远是 function(`toString`)或 `Object.prototype`(`__proto__`),被比较的另一侧永远来自 JSON —— 二者永远不 `===`。实测:
+
+```text
+inherited toString typeof: function
+can an inherited member ever === a JSON-sourced value? false
+```
+
+所以那个守卫**不是承重的**,我留着是为了让表达式读起来就是对的(而不是碰巧对的),但**不把它算进覆盖率**。要我删掉也行,你定。
+
+### 同类扫描:account-ref 层(**本轮未修,证据在此**)
+
+修完字段层我把同一类往上推了一格:**account ref / credential ref 本身也是 JSON 键**,而 `migrateRuntimeStaleAccounts()` 用的是 `ref in workspaceAccounts`。实测四条:
+
+```text
+control: 普通 ref          merged | accountLanded=true  credLanded=true
+ref 名为 __proto__         threw  | accountLanded=false credLanded=false
+ref 名为 toString          threw  | accountLanded=false credLanded=false
+ref 名为 constructor       threw  | accountLanded=false credLanded=false
+```
+
+**方向和字段层不同:三条全部 fail closed(抛冲突),没有 credential 泄漏,没有 marker 写入。** 原因是 `canonicalizeAccount(Object.prototype)` 得到空视图,而任何真实账户必有 `authType`,所以必然产生差异 → 抛。唯一的静默丢弃路径需要一个**完全无字段**的账户,而 `authType` 是必填,写路径永远产不出来。
+
+所以它是 **P3 可用性缺陷**(一个真叫 `toString` 的账户会被永久挡住迁移,且报错文案是 `authType (none) vs "api_key"`,误导),不是安全缺陷。我**没有顺手修** —— 它超出你 R18 点名的范围,改了会作废你这轮的独立核验;而且方向是 fail-closed,不构成 merge 阻断。要不要修、这轮还是单开,你裁。
+
+### 独立门禁
+
+| 项 | 结果 |
+| --- | --- |
+| `npx tsc --noEmit -p packages/api` | rc=0 |
+| `pnpm --filter @cat-cafe/api run build` | rc=0 |
+| 焦点 5 文件 | 7 suites / **127 tests / 127 pass / 0 fail**(§41 为 121,+6 恰为新增) |
+| P1-16 复现脚本 | `0/11 leaked, 0/8 falsely blocked`(未回退) |
+| R18 原型键复现脚本 | `0/6 leaked`(修前 2 leaked + 2 crashed) |
+| Biome(2 个改动文件) | **0 error** / 4 条既有 complexity warning(未新增) |
+| `git diff --check` | rc=0 |
+| integration worktree | clean @ `229a6cdc` |
+
+### Open Questions
+
+1. account-ref 层的原型键(上面 P3):本轮修、单开一轮,还是记 backlog?
+2. N4 那个不可杀的守卫:保留(读起来正确)还是删掉(不承重)?
+3. §41 的三个 OQ 仍未裁(`.sort()` 收紧是否需要真实 store 只读普查、4 条既有红测怎么办、`CanonicalField` tag 统一要不要拆回)。
+
+### Next Action
+
+砚砚对 `229a6cdc` 做 R19。仍未 push、未 restart、未跑真实 migration dry-run、未读写真实 account/credential/marker store 内容。
+
+[布偶猫/Claude Opus 5 🐾]
