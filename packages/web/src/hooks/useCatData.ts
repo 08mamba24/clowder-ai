@@ -59,12 +59,24 @@ export interface CatData {
       idleTtlMs?: number;
     };
   };
-  contextBudget?: {
-    maxPromptTokens: number;
-    maxContextTokens: number;
-    maxMessages: number;
-    maxContentLengthPerMsg: number;
-  };
+  /** clowder-ai#1208: explicit context window cap. undefined=Auto, positive int=Manual. */
+  contextWindow?: number;
+  /** clowder-ai#1208 Items 4+6: resolved context capacity for Hub display. */
+  resolvedContext?: {
+    windowTokens?: number;
+    inputCeilingTokens?: number;
+    source?: string;
+    provenance?: string;
+    actionable?: boolean;
+    /** #1208 Item 6: client context capability reason for Hub display. */
+    capabilityReason?: string;
+    reportsRuntimeWindow?: boolean;
+    authoritativeUsage?: boolean;
+    usageTelemetry?: 'available' | 'conditional' | 'unavailable';
+    nativeWindowControl?: boolean;
+    nativeCompressionControl?: boolean;
+    observesCompression?: boolean;
+  } | null;
   avatar: string;
   roleDescription: string;
   personality: string;

@@ -7,9 +7,9 @@
 import { resolve } from 'node:path';
 import {
   type CatConfig,
+  type CatId,
   type CliConfig,
   type ClientId,
-  type ContextBudget,
   catRegistry,
   getCliEffortOptionsForProvider,
   getDefaultCliEffortForProvider,
@@ -33,33 +33,28 @@ import {
 import { resolveBoundAccountRefForCat } from '../config/cat-account-binding.js';
 import { bootstrapCatCatalog } from '../config/cat-catalog-store.js';
 import {
-  assertValidCliContextWindowTuple,
-  deriveAutoCompactTokenLimit,
   getAcpConfig,
   getRoster,
   loadCatConfig,
   loadResolvedCatConfig,
   toAllCatConfigs,
 } from '../config/cat-config-loader.js';
+import { getCatModel } from '../config/cat-models.js';
 import { resolveCodexCarrierTruth } from '../config/codex-cli.js';
 import { configEventBus, createChangeSetId } from '../config/config-event-bus.js';
+import { getConfiguredMemberWindowSetting, resolveContextCapacity } from '../config/context-capacity.js';
+import { inferOpenCodeProviderFromModelName } from '../config/opencode-model.js';
 import { resolveProjectTemplatePath } from '../config/project-template-path.js';
 import { getResolvedCats } from '../config/resolved-cats.js';
 import { createRuntimeCat, deleteRuntimeCat, updateRuntimeCat } from '../config/runtime-cat-catalog.js';
 import { deleteRuntimeOverride, getRuntimeOverride, setRuntimeOverride } from '../config/session-strategy-overrides.js';
+import type { InvocationCapacitySnapshot } from '../domains/cats/services/agents/invocation/invocation-capacity-snapshot.js';
 import { resolveActiveProjectRoot } from '../utils/active-project-root.js';
 import { resolveHeaderUserId } from '../utils/request-identity.js';
 
 const colorSchema = z.object({
   primary: z.string().min(1),
   secondary: z.string().min(1),
-});
-
-const contextBudgetSchema = z.object({
-  maxPromptTokens: z.number().int().positive(),
-  maxContextTokens: z.number().int().positive(),
-  maxMessages: z.number().int().positive(),
-  maxContentLengthPerMsg: z.number().int().positive(),
 });
 
 const cliEffortSchema = z.string().trim().min(1);
@@ -70,8 +65,6 @@ const cliSchema = z.object({
   effort: cliEffortSchema.nullable().optional(),
   /** F291: null clears the member default and restores Codex user-config inheritance. */
   serviceTier: z.enum(['standard', 'fast']).nullable().optional(),
-  contextWindow: z.number().int().positive().optional(),
-  autoCompactTokenLimit: z.number().int().positive().optional(),
   /** F254 D2: Codex carrier override (openai only). null clears the per-cat override. */
   carrier: z.enum(['exec_json', 'app_server']).nullable().optional(),
 });
@@ -158,7 +151,9 @@ const baseCatSchema = z.object({
   color: colorSchema,
   mentionPatterns: z.array(z.string().min(1)).min(1),
   accountRef: z.string().min(1).optional(),
-  contextBudget: contextBudgetSchema.optional(),
+  /** clowder-ai#1208: explicit context window cap. undefined=Auto, positive int=Manual.
+   *  Old contextBudget (4-field) is no longer accepted — parse tolerance in catalog only. */
+  contextWindow: z.number().int().positive().optional(),
   roleDescription: z.string().min(1),
   personality: z.string().optional(),
   teamStrengths: z.string().optional(),
@@ -217,7 +212,7 @@ const updateCatSchema = z.object({
   color: colorSchema.optional(),
   mentionPatterns: z.array(z.string().min(1)).min(1).optional(),
   accountRef: z.string().min(1).nullable().optional(),
-  contextBudget: contextBudgetSchema.nullable().optional(),
+  contextWindow: z.number().int().positive().nullable().optional(),
   roleDescription: z.string().min(1).optional(),
   personality: z.string().optional(),
   teamStrengths: z.string().optional(),
@@ -238,15 +233,6 @@ const updateCatSchema = z.object({
 });
 
 type UpdateCatRequestBody = z.infer<typeof updateCatSchema>;
-
-function resolveOperator(raw: unknown): string | null {
-  if (typeof raw === 'string' && raw.trim().length > 0) return raw.trim();
-  if (Array.isArray(raw)) {
-    const first = raw.find((value) => typeof value === 'string' && value.trim().length > 0);
-    if (typeof first === 'string') return first.trim();
-  }
-  return null;
-}
 
 function resolveProjectRoot(): string {
   return resolveActiveProjectRoot();
@@ -292,27 +278,23 @@ function defaultCliForClient(client: ClientId): { command: string; outputFormat:
 
 type CliPatch = z.infer<typeof cliSchema>;
 
-function resolveContextWindowFields(
-  baseCli: CliConfig,
-  patch?: CliPatch,
-): Pick<CliConfig, 'contextWindow' | 'autoCompactTokenLimit'> {
-  const contextWindowTouched = patch ? Object.hasOwn(patch, 'contextWindow') : false;
-  const autoCompactTokenLimitTouched = patch ? Object.hasOwn(patch, 'autoCompactTokenLimit') : false;
-  const contextWindow = contextWindowTouched ? patch?.contextWindow : baseCli.contextWindow;
-  const autoCompactTokenLimit = autoCompactTokenLimitTouched
-    ? patch?.autoCompactTokenLimit
-    : contextWindowTouched && contextWindow !== undefined
-      ? deriveAutoCompactTokenLimit(contextWindow)
-      : baseCli.autoCompactTokenLimit;
-
-  if (contextWindowTouched || autoCompactTokenLimitTouched) {
-    assertValidCliContextWindowTuple(contextWindow, autoCompactTokenLimit);
+/**
+ * #1208 canonical migration: on any save, promote legacy `cli.contextWindow`
+ * to top-level `contextWindow` and strip both `cli.contextWindow` and
+ * `cli.autoCompactTokenLimit` from the CLI config (they're derived at runtime).
+ */
+function canonicalizeContextWindow(
+  currentCat: CatConfig,
+  bodyContextWindow: number | null | undefined,
+): number | null | undefined {
+  // Explicit body.contextWindow takes precedence (user set/cleared it).
+  if (bodyContextWindow !== undefined) return bodyContextWindow;
+  // No body.contextWindow but legacy cli.contextWindow exists → promote.
+  const legacyCli = (currentCat.cli as { contextWindow?: number } | undefined)?.contextWindow;
+  if (legacyCli != null && legacyCli > 0 && currentCat.contextWindow == null) {
+    return legacyCli;
   }
-
-  return {
-    ...(contextWindow !== undefined ? { contextWindow } : {}),
-    ...(autoCompactTokenLimit !== undefined ? { autoCompactTokenLimit } : {}),
-  };
+  return undefined; // no change
 }
 
 function buildResolvedCliConfig(
@@ -345,8 +327,8 @@ function buildResolvedCliConfig(
   const serviceTierTouched = patch ? Object.hasOwn(patch, 'serviceTier') : false;
   const nextServiceTier = serviceTierTouched ? patch?.serviceTier : baseCli.serviceTier;
 
-  const contextWindowFields = resolveContextWindowFields(baseCli, patch);
-
+  // #1208: contextWindow and autoCompactTokenLimit are no longer stored in cli.
+  // They are derived at runtime from the top-level contextWindow.
   return {
     command: patch?.command ?? baseCli.command,
     outputFormat: patch?.outputFormat ?? baseCli.outputFormat,
@@ -354,8 +336,19 @@ function buildResolvedCliConfig(
     ...(nextEffort !== undefined && nextEffort !== null ? { effort: nextEffort } : {}),
     ...(nextCarrier !== undefined && nextCarrier !== null ? { carrier: nextCarrier } : {}),
     ...(nextServiceTier !== undefined && nextServiceTier !== null ? { serviceTier: nextServiceTier } : {}),
-    ...contextWindowFields,
   };
+}
+
+function stripCliTransportExtensions(cli: CliConfig): CliConfig {
+  const raw = cli as unknown as Record<string, unknown>;
+  const {
+    effort: _effort,
+    carrier: _carrier,
+    contextWindow: _contextWindow,
+    autoCompactTokenLimit: _autoCompactTokenLimit,
+    ...base
+  } = raw;
+  return base as unknown as CliConfig;
 }
 
 function buildCliForModelSwitch(client: ClientId, defaultModel: string, currentCli: CliConfig): CliConfig {
@@ -443,26 +436,8 @@ function resolveNextCli(params: {
   return undefined;
 }
 
-/**
- * Infer OpenCode provider from a bare model name.
- * Returns a known provider string or undefined (triggers validation error).
- */
-function inferProviderFromModelName(model: string): string | undefined {
-  const m = model.trim().toLowerCase();
-  if (/^(gpt-|o[134]-|o[134]p|davinci|text-|chatgpt)/.test(m)) return 'openai';
-  if (/^claude/.test(m)) return 'anthropic';
-  if (/^gemini/.test(m)) return 'google';
-  if (/^(moonshot|kimi)/.test(m)) return 'kimi';
-  if (/^deepseek/.test(m)) return 'deepseek';
-  if (/^(glm|chatglm)/.test(m)) return 'zhipu';
-  if (/^(qwen|tongyi)/.test(m)) return 'dashscope';
-  if (/^minimax/.test(m)) return 'minimax';
-  return undefined;
-}
-
 function buildEffectiveAccountRefResolver() {
-  return async (cat: CatConfig & { contextBudget?: ContextBudget }): Promise<string | undefined> =>
-    resolveBoundAccountRefForCat('', cat.id, cat);
+  return async (cat: CatConfig): Promise<string | undefined> => resolveBoundAccountRefForCat('', cat.id, cat);
 }
 
 async function validateAccountBindingOrThrow(
@@ -528,12 +503,16 @@ function validateServiceTierMutationOrThrow(
 }
 
 async function toCatResponse(
-  cat: CatConfig & { contextBudget?: ContextBudget },
+  cat: CatConfig,
   projectRoot: string,
   metadata: CatResponseMetadata,
-  resolveEffectiveAccountRef: (cat: CatConfig & { contextBudget?: ContextBudget }) => Promise<string | undefined>,
+  resolveEffectiveAccountRef: (cat: CatConfig) => Promise<string | undefined>,
+  resolveContextCapacitySnapshot?: (catId: CatId) => InvocationCapacitySnapshot | undefined,
 ) {
   const acpConfig = getAcpConfig(cat.id as string, projectRoot);
+  const contextSnapshot = resolveContextCapacitySnapshot?.(cat.id);
+  const contextCapability = contextSnapshot?.capability;
+  const effectiveAccountRef = await resolveEffectiveAccountRef(cat);
   return {
     id: cat.id,
     name: cat.name,
@@ -542,7 +521,7 @@ async function toCatResponse(
     color: cat.color,
     mentionPatterns: cat.mentionPatterns,
     breedId: cat.breedId,
-    accountRef: await resolveEffectiveAccountRef(cat),
+    accountRef: effectiveAccountRef,
     clientId: cat.clientId,
     defaultModel: cat.defaultModel,
     cli: cat.cli,
@@ -553,7 +532,36 @@ async function toCatResponse(
     ...(cat.clientId === 'openai' && !acpConfig && cat.cli != null
       ? { codexCarrier: resolveCodexCarrierTruth(cat.cli.carrier) }
       : {}),
-    contextBudget: cat.contextBudget,
+    contextWindow: getConfiguredMemberWindowSetting(cat),
+    // #1208 Items 4+6: resolved context window info + client capability for Hub display.
+    resolvedContext: (() => {
+      const capacity =
+        contextSnapshot?.capacity ??
+        resolveContextCapacity({
+          catId: cat.id as string,
+          memberWindowTokens: getConfiguredMemberWindowSetting(cat),
+          model: getCatModel(cat.id as string, cat.defaultModel),
+        });
+      const capabilityInfo = {
+        capabilityReason: contextCapability?.reason ?? 'Concrete carrier capability unavailable',
+        reportsRuntimeWindow: contextCapability?.reportsRuntimeWindow ?? false,
+        authoritativeUsage: contextCapability?.authoritativeUsage ?? false,
+        usageTelemetry: contextCapability?.usageTelemetry ?? 'unavailable',
+        nativeWindowControl: contextCapability?.nativeWindowControl ?? false,
+        nativeCompressionControl: contextCapability?.nativeCompressionControl ?? false,
+        observesCompression: contextCapability?.observesCompression ?? false,
+      };
+      return capacity.source !== 'unresolved'
+        ? {
+            windowTokens: capacity.windowTokens,
+            inputCeilingTokens: capacity.inputCeilingTokens,
+            source: capacity.source,
+            provenance: capacity.provenance,
+            actionable: capacity.actionable,
+            ...capabilityInfo,
+          }
+        : capabilityInfo;
+    })(),
     avatar: cat.avatar,
     roleDescription: cat.roleDescription,
     personality: cat.personality,
@@ -663,6 +671,7 @@ async function cleanupBlockedMcpForAllProjects(projectRoot: string, deletedCatId
 
 interface CatsRoutesOptions {
   onCatalogChanged?: (cats: Record<string, CatConfig>) => Promise<void> | void;
+  resolveContextCapacitySnapshot?: (catId: CatId) => InvocationCapacitySnapshot | undefined;
 }
 
 export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opts) => {
@@ -718,7 +727,13 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
     return {
       cats: await Promise.all(
         Object.values(getResolvedCats(projectRoot)).map((cat) =>
-          toCatResponse(cat, projectRoot, resolveMetadata(cat.id), resolveEffectiveAccountRef),
+          toCatResponse(
+            cat,
+            projectRoot,
+            resolveMetadata(cat.id),
+            resolveEffectiveAccountRef,
+            opts.resolveContextCapacitySnapshot,
+          ),
         ),
       ),
     };
@@ -765,7 +780,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
       const providerNameForValidation =
         explicitProvider ??
         (body.clientId === 'opencode' && body.defaultModel && !body.defaultModel.includes('/')
-          ? inferProviderFromModelName(body.defaultModel)
+          ? inferOpenCodeProviderFromModelName(body.defaultModel)
           : undefined);
       await validateAccountBindingOrThrow(
         projectRoot,
@@ -794,7 +809,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
           color: body.color,
           mentionPatterns: body.mentionPatterns,
           ...(accountRef !== undefined ? { accountRef: accountRef ?? undefined } : {}),
-          contextBudget: body.contextBudget,
+          contextWindow: body.contextWindow,
           roleDescription: body.roleDescription,
           personality: body.personality,
           teamStrengths: body.teamStrengths,
@@ -823,7 +838,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
           color: body.color,
           mentionPatterns: body.mentionPatterns,
           ...(accountRef !== undefined ? { accountRef: accountRef ?? undefined } : {}),
-          contextBudget: body.contextBudget,
+          contextWindow: body.contextWindow,
           roleDescription: body.roleDescription,
           personality: body.personality,
           teamStrengths: body.teamStrengths,
@@ -843,9 +858,18 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         // Caller signals cloud-only via provider="openai-chatgpt-pro" (future: more cloud markers).
         const explicitProviderForCloud = 'provider' in body ? body.provider : undefined;
         const isCloudOnlyProvider = explicitProviderForCloud === 'openai-chatgpt-pro';
+        const usesAcpTransport = body.acp != null;
         const resolvedCli = isCloudOnlyProvider
           ? undefined
-          : buildResolvedCliConfig(body.clientId, body.defaultModel, defaultCliForClient(body.clientId), body.cli);
+          : (() => {
+              const cli = buildResolvedCliConfig(
+                body.clientId,
+                body.defaultModel,
+                defaultCliForClient(body.clientId),
+                body.cli,
+              );
+              return usesAcpTransport ? stripCliTransportExtensions(cli) : cli;
+            })();
         createRuntimeCat(projectRoot, {
           catId: body.catId,
           name: body.name,
@@ -856,7 +880,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
           color: body.color,
           mentionPatterns: body.mentionPatterns,
           ...(accountRef !== undefined ? { accountRef: accountRef ?? undefined } : {}),
-          contextBudget: body.contextBudget,
+          contextWindow: body.contextWindow,
           roleDescription: body.roleDescription,
           personality: body.personality,
           teamStrengths: body.teamStrengths,
@@ -874,7 +898,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
               body.clientId === 'opencode'),
           // F247 KD-17: cli omitted when cloud-only (Remote MCP) provider.
           ...(resolvedCli ? { cli: resolvedCli } : {}),
-          ...(body.cliConfigArgs ? { cliConfigArgs: body.cliConfigArgs } : {}),
+          ...(!usesAcpTransport && body.cliConfigArgs ? { cliConfigArgs: body.cliConfigArgs } : {}),
           ...(body.provider || providerNameForValidation
             ? { provider: body.provider ?? providerNameForValidation }
             : {}),
@@ -907,7 +931,13 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
     const resolveEffectiveAccountRef = buildEffectiveAccountRefResolver();
     reply.status(201);
     return {
-      cat: await toCatResponse(cat, projectRoot, metadata(cat.id), resolveEffectiveAccountRef),
+      cat: await toCatResponse(
+        cat,
+        projectRoot,
+        metadata(cat.id),
+        resolveEffectiveAccountRef,
+        opts.resolveContextCapacitySnapshot,
+      ),
       updatedBy: operator,
     };
   });
@@ -1039,6 +1069,9 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
 
     const shouldClearAcpOnClientSwitch =
       isClientSwitch && effectiveClient !== 'acp' && body.acp === undefined && currentAcpConfig !== undefined;
+    const effectiveAcpConfig =
+      body.acp !== undefined ? body.acp : shouldClearAcpOnClientSwitch ? null : currentAcpConfig;
+    const usesAcpTransport = effectiveClient === 'acp' || effectiveAcpConfig != null;
 
     const managedIdsBefore = getManagedCatalogIds(projectRoot);
     try {
@@ -1056,6 +1089,28 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         effectiveClient === 'acp'
           ? resolveGenericAcpMcpSupportForPatch(body.mcpSupport, body.acp, isClientSwitch)
           : body.mcpSupport;
+      // #1208 P2: canonicalize legacy cli.contextWindow to top-level on every save.
+      const canonicalContextWindow = canonicalizeContextWindow(currentCat, body.contextWindow);
+
+      // #1208 Item 5 fix: force-strip legacy cli.contextWindow / cli.autoCompactTokenLimit
+      // on every save. When nextCli is undefined (no cli patch), the old cli object persists
+      // with its legacy fields. This breaks clear-to-Auto: user sends {contextWindow:null}
+      // but the old cli.contextWindow survives and the compat-read picks it up.
+      const effectiveCli = (() => {
+        if (nextCli === null) return null;
+        const cli = nextCli ?? currentCat.cli;
+        if (!cli) return undefined; // no cli to strip
+        const raw = cli as unknown as Record<string, unknown>;
+        const hasLegacyWindowFields = raw.contextWindow != null || raw.autoCompactTokenLimit != null;
+        const hasCliOnlyFields = usesAcpTransport && (raw.effort != null || raw.carrier != null);
+        if (nextCli === undefined && !hasLegacyWindowFields && !hasCliOnlyFields) {
+          return undefined; // nothing to strip
+        }
+        if (usesAcpTransport) return stripCliTransportExtensions(cli);
+        const { contextWindow: _cw, autoCompactTokenLimit: _acl, ...base } = raw;
+        return base as unknown as CliConfig;
+      })();
+
       updateRuntimeCat(projectRoot, request.params.id, {
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),
@@ -1065,7 +1120,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         ...(body.color !== undefined ? { color: body.color } : {}),
         ...(body.mentionPatterns !== undefined ? { mentionPatterns: body.mentionPatterns } : {}),
         ...(targetAccountRef !== undefined ? { accountRef: targetAccountRef } : {}),
-        ...(body.contextBudget !== undefined ? { contextBudget: body.contextBudget } : {}),
+        ...(canonicalContextWindow !== undefined ? { contextWindow: canonicalContextWindow } : {}),
         ...(body.roleDescription !== undefined ? { roleDescription: body.roleDescription } : {}),
         ...(body.personality !== undefined ? { personality: body.personality } : {}),
         ...(body.teamStrengths !== undefined ? { teamStrengths: body.teamStrengths } : {}),
@@ -1080,9 +1135,15 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
               commandArgs: body.commandArgs,
             }
           : {}),
-        ...(nextCli !== undefined ? { cli: nextCli } : {}),
+        ...(effectiveCli !== undefined ? { cli: effectiveCli } : {}),
         ...(body.available !== undefined ? { available: body.available } : {}),
-        ...(body.cliConfigArgs !== undefined ? { cliConfigArgs: body.cliConfigArgs } : {}),
+        ...(usesAcpTransport
+          ? currentCat.cliConfigArgs?.length || body.cliConfigArgs?.length
+            ? { cliConfigArgs: [] }
+            : {}
+          : body.cliConfigArgs !== undefined
+            ? { cliConfigArgs: body.cliConfigArgs }
+            : {}),
         // F161 AC-A5 / KD-1: generic ACP never carries provider — clear any stale value and
         // ignore incoming provider; other clients keep the explicit set/clear semantics.
         ...(effectiveClient === 'acp'
@@ -1118,7 +1179,13 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
       const cat = resolved[request.params.id];
       const metadata = buildCatResponseMetadataResolver(projectRoot);
       return {
-        cat: await toCatResponse(cat, projectRoot, metadata(cat.id), resolveEffectiveAccountRef),
+        cat: await toCatResponse(
+          cat,
+          projectRoot,
+          metadata(cat.id),
+          resolveEffectiveAccountRef,
+          opts.resolveContextCapacitySnapshot,
+        ),
         updatedBy: operator,
       };
     } catch (err) {

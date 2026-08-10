@@ -50,10 +50,8 @@ export interface HubCatEditorFormState {
   acpIdleTtlMinutes: string;
   mcpSupport: boolean;
   sessionChain: SessionChainValue;
-  maxPromptTokens: string;
-  maxContextTokens: string;
-  maxMessages: string;
-  maxContentLengthPerMsg: string;
+  /** clowder-ai#1208: single context window cap; empty = Auto. */
+  contextWindow: string;
   voiceVoice: string;
   voiceLangCode: string;
   voiceSpeed: string;
@@ -139,6 +137,18 @@ export function getCliEffortOptionsForClient(
   defaultModel?: string | null,
 ): readonly CliEffortPreset[] | null {
   return getCliEffortOptionsForProvider(client, defaultModel);
+}
+
+/** True only for transports that persist the generic CLI extension fields. */
+export function usesCliTransport(form: Pick<HubCatEditorFormState, 'clientId' | 'acpEnabled'>): boolean {
+  return (
+    !form.acpEnabled &&
+    (form.clientId === 'anthropic' ||
+      form.clientId === 'openai' ||
+      form.clientId === 'google' ||
+      form.clientId === 'kimi' ||
+      form.clientId === 'opencode')
+  );
 }
 
 export function splitMentionPatterns(raw: string): string[] {
@@ -383,10 +393,7 @@ export function initialState(cat?: CatData | null, draft?: HubCatEditorDraft | n
       cat?.mcpSupport ??
       defaultMcpSupportForClient((cat?.clientId as ClientId | undefined) ?? createDraft?.clientId ?? 'anthropic'),
     sessionChain: String(cat?.sessionChain ?? true) as SessionChainValue,
-    maxPromptTokens: cat?.contextBudget ? String(cat.contextBudget.maxPromptTokens) : '',
-    maxContextTokens: cat?.contextBudget ? String(cat.contextBudget.maxContextTokens) : '',
-    maxMessages: cat?.contextBudget ? String(cat.contextBudget.maxMessages) : '',
-    maxContentLengthPerMsg: cat?.contextBudget ? String(cat.contextBudget.maxContentLengthPerMsg) : '',
+    contextWindow: cat?.contextWindow ? String(cat.contextWindow) : '',
     voiceVoice: voiceStr(voiceConfig?.voice),
     voiceLangCode: voiceStr(voiceConfig?.langCode),
     voiceSpeed: voiceStr(voiceConfig?.speed),
@@ -446,7 +453,6 @@ export {
 export {
   buildCatPatchPayload,
   buildCatPayload,
-  buildContextBudget,
   hintModelFormatForClient,
   validateModelFormatForClient,
 } from './hub-cat-editor.payload';

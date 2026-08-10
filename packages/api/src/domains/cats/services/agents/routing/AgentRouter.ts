@@ -48,6 +48,10 @@ import type { IWorkflowSopStore } from '../../stores/ports/WorkflowSopStore.js';
 import { getTimelineOrderTime, SYSTEM_USER_IDS } from '../../stores/visibility.js';
 import type { AgentMessage, AgentService } from '../../types.js';
 import type { InvocationRegistry } from '../invocation/InvocationRegistry.js';
+import {
+  type InvocationCapacitySnapshot,
+  resolveInvocationCapacitySnapshot,
+} from '../invocation/invocation-capacity-snapshot.js';
 import type { TaskProgressStore } from '../invocation/TaskProgressStore.js';
 import type { AgentRegistry } from '../registry/AgentRegistry.js';
 import type {
@@ -842,6 +846,29 @@ export class AgentRouter {
         deliverySemantics: 'undeclared',
       }
     );
+  }
+
+  /** #1208: exact context capability of the concrete service/carrier. */
+  contextCapability(catId: CatId): import('../../types.js').AgentContextCapability {
+    return (
+      this.services[catId]?.contextCapability?.() ?? {
+        provider: 'unknown',
+        carrier: 'unknown',
+        reportsRuntimeWindow: false,
+        authoritativeUsage: false,
+        usageTelemetry: 'unavailable',
+        nativeWindowControl: false,
+        nativeCompressionControl: false,
+        observesCompression: false,
+        reason: 'No concrete context capability is registered for this member',
+      }
+    );
+  }
+
+  /** #1208: Hub projection from the same concrete service snapshot used by invocations. */
+  contextCapacitySnapshot(catId: CatId): InvocationCapacitySnapshot | undefined {
+    const service = this.services[catId];
+    return service ? resolveInvocationCapacitySnapshot({ catId, service }) : undefined;
   }
 
   private isRoutableCat(catId: string | null | undefined): catId is CatId {

@@ -40,6 +40,28 @@ async function collect(iterable) {
   return msgs;
 }
 
+function makeUnresolvedCapacitySnapshot(member, client = 'unknown') {
+  return {
+    capacity: {
+      windowTokens: 0,
+      inputCeilingTokens: 0,
+      source: 'unresolved',
+      provenance: `test fixture: ${member}/${client} has no trusted discovery source`,
+      actionable: false,
+    },
+    capability: {
+      provider: 'unknown',
+      carrier: 'test_stream',
+      reportsRuntimeWindow: false,
+      authoritativeUsage: true,
+      nativeWindowControl: false,
+      nativeCompressionControl: false,
+      observesCompression: false,
+      reason: 'test fixture: usage is authoritative but capacity is unresolved',
+    },
+  };
+}
+
 // Bun/npm child processes can briefly keep cache directories busy on macOS.
 async function rmWithRetry(path, attempts = 5) {
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -163,7 +185,40 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     process.env.AUDIT_LOG_DIR = tempDir;
     // Dynamic import AFTER env is set — singleton will use this dir
     const mod = await import('../dist/domains/cats/services/agents/invocation/invoke-single-cat.js');
-    invokeSingleCat = mod.invokeSingleCat;
+    const { resolveInvocationCapacitySnapshot } = await import(
+      '../dist/domains/cats/services/agents/invocation/invocation-capacity-snapshot.js'
+    );
+    const invokeSingleCatRaw = mod.invokeSingleCat;
+    // Production routes resolve one concrete-carrier snapshot before calling
+    // invokeSingleCat. Plain test doubles declare that boundary here so this
+    // file exercises the same call contract instead of relying on hidden lookup.
+    invokeSingleCat = (deps, params) =>
+      (async function* () {
+        const service = params.service.contextCapability
+          ? params.service
+          : {
+              ...params.service,
+              contextCapability: () => ({
+                provider: 'test',
+                carrier: 'test_stream',
+                reportsRuntimeWindow: true,
+                authoritativeUsage: true,
+                nativeWindowControl: false,
+                nativeCompressionControl: false,
+                observesCompression: false,
+                reason: 'invoke-single-cat test double',
+              }),
+            };
+        const capacitySnapshot =
+          params.capacitySnapshot ??
+          (await resolveInvocationCapacitySnapshot({
+            catId: params.catId,
+            threadId: params.threadId,
+            service,
+            sessionChainStore: deps.sessionChainStore,
+          }));
+        yield* invokeSingleCatRaw(deps, { ...params, service, capacitySnapshot });
+      })();
   });
 
   /** Save/restore CAT_CAFE_GLOBAL_CONFIG_ROOT to prevent test profiles leaking to ~/.cat-cafe/ */
@@ -497,7 +552,11 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     assert.equal(optionsSeen[0]?.reasoningEffortOverride, undefined);
     const warning = messages.find((message) => {
       if (message.type !== 'system_info' || !message.content) return false;
-      return JSON.parse(message.content).type === 'thread_effort_override_read_failed';
+      try {
+        return JSON.parse(message.content).type === 'thread_effort_override_read_failed';
+      } catch {
+        return false;
+      }
     });
     assert.ok(warning, 'read failure should be visible as system_info');
   });
@@ -2050,6 +2109,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
             model: 'claude-opus-4-6',
             usage: {
               inputTokens: 50000,
+              lastTurnInputTokens: 50000,
               outputTokens: 2000,
               contextWindowSize: 200000,
             },
@@ -2178,6 +2238,101 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     assert.equal(agentLoopVisible.length, 0, 'agent_loop must stay telemetry-only — no user-visible output');
   });
 
+  it('issue #1208: ACP usage evidence promotes the captured catalog binding without a window-size report', async () => {
+    const { SessionChainStore } = await import('../dist/domains/cats/services/stores/ports/SessionChainStore.js');
+    const sessionChainStore = new SessionChainStore();
+    let usageObserved = false;
+    const conditionalCapability = {
+      provider: 'opencode',
+      carrier: 'acp',
+      reportsRuntimeWindow: false,
+      authoritativeUsage: true,
+      usageTelemetry: 'conditional',
+      nativeWindowControl: true,
+      nativeCompressionControl: false,
+      observesCompression: false,
+      reason: 'waiting for ACP usage_update',
+    };
+    const service = {
+      contextCapability() {
+        return usageObserved
+          ? { ...conditionalCapability, usageTelemetry: 'available', reason: 'ACP usage_update observed' }
+          : conditionalCapability;
+      },
+      async *invoke() {
+        yield { type: 'session_init', catId: 'opus', sessionId: 'cli-acp-promote', timestamp: Date.now() };
+        usageObserved = true;
+        yield {
+          type: 'agent_loop',
+          catId: 'opus',
+          timestamp: Date.now(),
+          metadata: {
+            provider: 'opencode',
+            model: 'claude-opus-4-6',
+            usage: {
+              inputTokens: 900_000,
+              lastTurnInputTokens: 900_000,
+              outputTokens: 32,
+              totalTokens: 900_032,
+            },
+          },
+        };
+        yield { type: 'done', catId: 'opus', timestamp: Date.now() };
+      },
+    };
+    const capacitySnapshot = {
+      capacity: {
+        windowTokens: 1_000_000,
+        inputCeilingTokens: 984_000,
+        source: 'catalog',
+        provenance: 'Model catalog (claude-opus-4-6) → 1,000,000 tokens',
+        actionable: false,
+      },
+      capability: conditionalCapability,
+      binding: {
+        model: 'claude-opus-4-6',
+        windowTokens: 1_000_000,
+        source: 'service_spawn',
+      },
+      memberWindowTokens: null,
+      model: 'claude-opus-4-6',
+    };
+
+    const messages = await collect(
+      invokeSingleCat(
+        { ...makeDeps(), sessionChainStore },
+        {
+          catId: 'opus',
+          service,
+          capacitySnapshot,
+          prompt: 'test ACP telemetry promotion',
+          userId: 'user-acp-promote',
+          threadId: 'thread-acp-promote',
+          isLastCat: true,
+        },
+      ),
+    );
+
+    const health = messages
+      .filter((message) => message.type === 'system_info')
+      .map((message) => {
+        try {
+          return JSON.parse(message.content);
+        } catch {
+          return null;
+        }
+      })
+      .find((payload) => payload?.type === 'context_health');
+    assert.ok(health, 'usage_update-derived evidence must still produce context health without a size field');
+    assert.equal(health.health.source, 'exact', 'same-invocation usage evidence must promote the bound catalog window');
+    assert.equal(health.health.windowTokens, 1_000_000);
+    assert.equal(
+      sessionChainStore.getActive('opus', 'thread-acp-promote')?.contextHealth?.source,
+      'exact',
+      'the promoted health must persist for the next invocation preflight',
+    );
+  });
+
   it('clowder#915 R4 cloud P1 #3: agent_loop above seal threshold DEFERS seal to done (transcript continuity)', async () => {
     // Cloud's failing scenario: an opencode tool loop with step_finish.reason='tool-calls'
     // crosses the seal threshold mid-stream. If we fire requestSeal inline, the active
@@ -2302,14 +2457,10 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     assert.equal(postThresholdText.length, 1, 'post-threshold text must reach outputs (transcript continuity)');
   });
 
-  it('clowder#915 R5 cloud P2: 3-tier window resolution — known opencode model uses fallback table (NOT clobbered by default)', async () => {
-    // Cloud's R5 regression catch: R4's unconditional 128k attach in the
-    // transformer would prevent claude-opus-4-6 (default opencode breed
-    // model per cat-template.json) from resolving to its true 200k via the
-    // fallback table. This test pins the 3-tier chain:
-    //   1) usage.contextWindowSize (none here)
-    //   2) getContextWindowFallback('claude-opus-4-6') = 200_000 ← THIS WINS
-    //   3) opencode last-resort default (128_000) — should NOT be used here
+  it('clowder#915 R5 cloud P2 / issue #1208 P1: opencode known models use the catalog', async () => {
+    // clowder-ai#1208 resolver: model catalog wins for known models even through
+    // OpenCode. Users with a different supported window should set contextWindow
+    // explicitly. Unknown models remain unresolved; there is no provider-wide default.
     const { SessionChainStore } = await import('../dist/domains/cats/services/stores/ports/SessionChainStore.js');
     const sessionChainStore = new SessionChainStore();
 
@@ -2323,13 +2474,13 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
           timestamp: Date.now(),
           metadata: {
             provider: 'opencode',
-            model: 'claude-opus-4-6', // KNOWN to fallback table (200k)
+            model: 'claude-opus-4-6', // KNOWN to direct-provider fallback table (1M)
             usage: {
-              inputTokens: 150_000,
-              lastTurnInputTokens: 150_000,
+              inputTokens: 90_000,
+              lastTurnInputTokens: 90_000,
               outputTokens: 50,
-              totalTokens: 150_050,
-              // NO contextWindowSize from transformer — forces tier 2+3
+              totalTokens: 90_050,
+              // NO contextWindowSize from transformer — the member snapshot supplies the catalog value
             },
           },
         };
@@ -2360,21 +2511,21 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
       })
       .filter((p) => p && p.type === 'context_health');
     assert.equal(healthInfos.length, 1, 'must emit context_health');
-    // CRITICAL: windowTokens MUST be 200_000 (from fallback table) NOT 128_000
-    // (the opencode last-resort default — which would wrongly cap claude-opus-4-6).
+    // Known model (opus) resolves via catalog to 1M, even through OpenCode.
+    // Users whose OpenCode binding supports 128K should set contextWindow: 128000.
     assert.equal(
       healthInfos[0].health.windowTokens,
-      200_000,
-      'claude-opus-4-6 must resolve to its precise 200k via fallback table — NOT clobbered by opencode last-resort default',
+      1_000_000,
+      'opencode with known model must use catalog value (1M for opus)',
     );
-    // Sanity: 150k of 200k = 0.75 fillRatio (would be 1.17 if window were clobbered to 128k)
-    assert.ok(healthInfos[0].health.fillRatio < 0.8, 'fillRatio must reflect true 200k window');
+    // 90k of 1M = 0.09 fillRatio, well below seal threshold.
+    assert.ok(healthInfos[0].health.fillRatio < 0.15, 'fillRatio must reflect 1M catalog window');
   });
 
   it('opencode GLM-5.2 resolves to 1M context window and does not false-seal at 140k', async () => {
     // Production regression: GLM-5.2 opencode invocations do not report
     // contextWindowSize. Without an explicit table entry, invoke-single-cat
-    // falls through to OPENCODE_DEFAULT_CONTEXT_WINDOW=128k and seals a healthy
+    // used to inherit a fabricated 128k provider default and seal a healthy
     // 140k/1M turn as budget_exhausted.
     const { SessionChainStore } = await import('../dist/domains/cats/services/stores/ports/SessionChainStore.js');
     const sessionChainStore = new SessionChainStore();
@@ -2392,10 +2543,10 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     const service = {
       l0CompilerFn: dummyL0CompilerFn,
       async *invoke() {
-        yield { type: 'session_init', catId: 'glm', sessionId: 'cli-glm-52', timestamp: Date.now() };
+        yield { type: 'session_init', catId: 'glm52', sessionId: 'cli-glm-52', timestamp: Date.now() };
         yield {
           type: 'agent_loop',
-          catId: 'glm',
+          catId: 'glm52',
           timestamp: Date.now(),
           metadata: {
             provider: 'opencode',
@@ -2409,14 +2560,14 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
             },
           },
         };
-        yield { type: 'done', catId: 'glm', timestamp: Date.now() };
+        yield { type: 'done', catId: 'glm52', timestamp: Date.now() };
       },
     };
 
     const deps = { ...makeDeps(), sessionChainStore, sessionSealer };
     const msgs = await collect(
       invokeSingleCat(deps, {
-        catId: 'glm',
+        catId: 'glm52',
         service,
         prompt: 'test',
         userId: 'user1',
@@ -2448,11 +2599,9 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     assert.equal(sealCalls.length, 0, 'sessionSealer must not be called for healthy GLM-5.2 context usage');
   });
 
-  it('clowder#915 R5 cloud P2: 3-tier window resolution — unknown opencode model falls back to default', async () => {
-    // Counterpart to the known-model test: when the model is NOT in the
-    // fallback table (GLM-5.1, openrouter customs — the actual breed
-    // clowder#915 targets), the opencode last-resort default (128_000)
-    // kicks in so handoff still fires. This is tier 3 of the chain.
+  it('issue #1208: unresolved OpenCode binding does not invent a fallback window', async () => {
+    // Unknown/Auto without a trusted discovery source must remain unresolved.
+    // Lifecycle health must not silently substitute the retired 128K default.
     const { SessionChainStore } = await import('../dist/domains/cats/services/stores/ports/SessionChainStore.js');
     const sessionChainStore = new SessionChainStore();
 
@@ -2488,6 +2637,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
         userId: 'user1',
         threadId: 'thread-915-r5-unknown-model',
         isLastCat: true,
+        capacitySnapshot: makeUnresolvedCapacitySnapshot('opus', 'opencode'),
       }),
     );
 
@@ -2501,18 +2651,15 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
         }
       })
       .filter((p) => p && p.type === 'context_health');
-    assert.equal(healthInfos.length, 1, 'unknown opencode model must still emit context_health (last-resort fallback)');
-    assert.equal(healthInfos[0].health.windowTokens, 128_000, 'unknown opencode model resolves to last-resort 128k');
+    assert.equal(healthInfos.length, 0, 'unresolved OpenCode binding must not emit fabricated context health');
   });
 
-  it('clowder#915 R2 cloud P1: agent_loop with provider-prefixed model (account-routing path) triggers context_health', async () => {
+  it('clowder#915 R2 cloud P1 / issue #1208 P1: opencode provider-prefixed model resolves via catalog', async () => {
     // Production opencode invocation path: invoke-single-cat.ts:1459 sets
     // callbackEnv.CAT_CAFE_ANTHROPIC_MODEL_OVERRIDE to `safeProvider/safeModel`
     // form. OpenCodeAgentService.ts:139 then propagates that as effectiveModel.
-    // Transformer doesn't set contextWindowSize, so we fall back to
-    // getContextWindowFallback. Before the R2 cloud P1 fix, the prefixed
-    // string missed the lookup table → no windowSize → context_health silently
-    // skipped → handoff bypassed. This test pins the production scenario.
+    // clowder-ai#1208: model catalog wins for known models — even through OpenCode.
+    // Users whose gateway supports 128K should set contextWindow explicitly.
     const { SessionChainStore } = await import('../dist/domains/cats/services/stores/ports/SessionChainStore.js');
     const sessionChainStore = new SessionChainStore();
 
@@ -2535,7 +2682,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
               lastTurnInputTokens: 36928,
               outputTokens: 9,
               totalTokens: 36937,
-              // NO contextWindowSize — forces fallback through model lookup
+              // NO contextWindowSize — the member snapshot supplies the catalog value
             },
           },
         };
@@ -2569,9 +2716,13 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
       'prefixed-model agent_loop with usage MUST emit context_health (clowder#915 R2 P1)',
     );
     const payload = JSON.parse(healthInfos[0].content);
-    assert.equal(payload.health.windowTokens, 200_000, 'fallback must resolve anthropic/claude-opus-4-6 → 200k');
+    assert.equal(
+      payload.health.windowTokens,
+      1_000_000,
+      'opencode anthropic/claude-opus-4-6 resolves via catalog to 1M',
+    );
     assert.equal(payload.health.usedTokens, 36928);
-    assert.equal(payload.health.source, 'approx', 'fallback (no contextWindowSize on usage) → approx');
+    assert.equal(payload.health.source, 'approx', 'catalog resolution (no contextWindowSize on usage) → approx');
   });
 
   it('F24: uses fallback window size for models without contextWindowSize', async () => {
@@ -2591,6 +2742,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
             model: 'claude-opus-4-6',
             usage: {
               inputTokens: 100000,
+              lastTurnInputTokens: 100000,
               outputTokens: 1000,
               // no contextWindowSize — should use fallback
             },
@@ -2622,7 +2774,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
 
     assert.equal(healthInfos.length, 1, 'should yield context_health with fallback window');
     const payload = JSON.parse(healthInfos[0].content);
-    assert.equal(payload.health.windowTokens, 200000, 'should use fallback 200k for claude-opus-4-6');
+    assert.equal(payload.health.windowTokens, 1_000_000, 'should use fallback 1M for claude-opus-4-6');
     assert.equal(payload.health.source, 'approx', 'should mark as approx when using fallback');
   });
 
@@ -2688,6 +2840,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
             model: 'claude-opus-4-6',
             usage: {
               inputTokens: 140000,
+              lastTurnInputTokens: 140000,
               outputTokens: 3000,
               contextWindowSize: 200000,
             },
@@ -2713,7 +2866,14 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     assert.ok(active.contextHealth, 'session record should have contextHealth');
     assert.equal(active.contextHealth.usedTokens, 140000);
     assert.equal(active.contextHealth.windowTokens, 200000);
-    assert.equal(active.contextHealth.fillRatio, 0.7);
+    // #1208 denominator fix: fillRatio = usedTokens / inputCeiling (not windowTokens)
+    // inputCeiling = 200000 - 16000 (output reserve) = 184000
+    // fillRatio = 140000 / 184000 ≈ 0.7609
+    const expectedRatio = 140000 / (200000 - 16000);
+    assert.ok(
+      Math.abs(active.contextHealth.fillRatio - expectedRatio) < 0.001,
+      `fillRatio should be ~${expectedRatio.toFixed(4)}, got ${active.contextHealth.fillRatio}`,
+    );
     assert.equal(active.contextHealth.source, 'exact');
   });
 
@@ -2774,15 +2934,17 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     );
     assert.equal(payload.health.usedFrom, 'last_turn');
     assert.equal(payload.health.windowTokens, 200000);
-    // fillRatio should be 44000/200000 = 0.22, not 192000/200000 = 0.96
-    const expectedRatio = 44000 / 200000;
+    // #1208 denominator fix: fillRatio = lastTurnInputTokens / inputCeiling
+    // inputCeiling = 200000 - 16000 (output reserve) = 184000
+    // fillRatio = 44000 / 184000 ≈ 0.2391, not 192000/200000 = 0.96
+    const expectedRatio = 44000 / (200000 - 16000);
     assert.ok(
       Math.abs(payload.health.fillRatio - expectedRatio) < 0.001,
-      `fillRatio should be ~${expectedRatio} (22%), got ${payload.health.fillRatio}`,
+      `fillRatio should be ~${expectedRatio.toFixed(4)} (24%), got ${payload.health.fillRatio}`,
     );
   });
 
-  it('F24-fix: falls back to inputTokens when lastTurnInputTokens is absent', async () => {
+  it('issue #1208: aggregate inputTokens alone is not context-health authority', async () => {
     const service = {
       l0CompilerFn: dummyL0CompilerFn,
       async *invoke() {
@@ -2824,20 +2986,10 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
       }
     });
 
-    assert.equal(healthInfos.length, 1);
-    const payload = JSON.parse(healthInfos[0].content);
-    // Falls back to inputTokens since lastTurnInputTokens is absent
-    assert.equal(
-      payload.health.usedTokens,
-      50000,
-      'should fall back to inputTokens when lastTurnInputTokens is absent',
-    );
-    assert.equal(payload.health.usedFrom, 'input');
+    assert.equal(healthInfos.length, 0, 'aggregate inputTokens must not drive lifecycle context health');
   });
 
-  it('F24: falls back to totalTokens when inputTokens are unavailable (totalTokens-only provider)', async () => {
-    // Use codex to test totalTokens fallback path.
-    // (F053: gemini now also has sessionChain=true, either cat would work here.)
+  it('issue #1208: totalTokens-only provider does not emit context health', async () => {
     const service = {
       l0CompilerFn: dummyL0CompilerFn,
       async *invoke() {
@@ -2878,15 +3030,10 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
       }
     });
 
-    assert.equal(healthInfos.length, 1, 'should emit context_health from totalTokens fallback');
-    const payload = JSON.parse(healthInfos[0].content);
-    assert.equal(payload.catId, 'codex');
-    assert.equal(payload.health.usedTokens, 4200);
-    assert.equal(payload.health.source, 'approx');
+    assert.equal(healthInfos.length, 0, 'aggregate totalTokens must not drive lifecycle context health');
   });
 
-  it('F24: marks source as approx when usedTokens falls back to totalTokens despite exact window', async () => {
-    // Use codex (sessionChain enabled) to test approx source detection.
+  it('issue #1208: exact window does not make aggregate totalTokens authoritative', async () => {
     const service = {
       l0CompilerFn: dummyL0CompilerFn,
       async *invoke() {
@@ -2927,11 +3074,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
       }
     });
 
-    assert.equal(healthInfos.length, 1);
-    const payload = JSON.parse(healthInfos[0].content);
-    assert.equal(payload.health.usedTokens, 3000);
-    assert.equal(payload.health.windowTokens, 1_000_000);
-    assert.equal(payload.health.source, 'approx');
+    assert.equal(healthInfos.length, 0, 'a trustworthy denominator cannot repair a non-authoritative numerator');
   });
 
   it('resume failure classification: maps missing session / cli exit / auth / invalid thinking signature / unknown', async () => {
@@ -3374,6 +3517,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
             model: 'gpt-5.5',
             usage: {
               inputTokens: 90000,
+              lastTurnInputTokens: 90000,
               outputTokens: 100,
               contextWindowSize: 100000,
             },
@@ -4023,6 +4167,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
             model: 'claude-opus-4-6',
             usage: {
               inputTokens: 182000,
+              lastTurnInputTokens: 182000,
               outputTokens: 2000,
               contextWindowSize: 200000,
             },
@@ -4084,6 +4229,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
             model: 'claude-opus-4-6',
             usage: {
               inputTokens: invokeCount === 1 ? 182000 : 5000,
+              lastTurnInputTokens: invokeCount === 1 ? 182000 : 5000,
               outputTokens: 1000,
               contextWindowSize: 200000,
             },
@@ -4180,6 +4326,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
             model: 'claude-opus-4-6',
             usage: {
               inputTokens: invokeCount === 1 ? 182000 : 5000,
+              lastTurnInputTokens: invokeCount === 1 ? 182000 : 5000,
               outputTokens: 1000,
               contextWindowSize: 200000,
             },
@@ -4298,6 +4445,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
         userId: 'u1',
         threadId: 'thread-chain-fail',
         isLastCat: true,
+        capacitySnapshot: makeUnresolvedCapacitySnapshot('opus', 'anthropic'),
       }),
     );
 
@@ -4446,7 +4594,12 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
           catId: 'gemini',
           timestamp: Date.now(),
           metadata: {
-            usage: { totalTokens: 500000, contextWindowSize: 1000000 },
+            usage: {
+              contextUsedTokens: 500000,
+              lastTurnInputTokens: 500000,
+              totalTokens: 500000,
+              contextWindowSize: 1000000,
+            },
             model: 'gemini-3-pro',
           },
         };
@@ -4891,6 +5044,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
             model: 'gpt-5.3-codex',
             usage: {
               inputTokens: callNum === 1 ? 60000 : 15000,
+              lastTurnInputTokens: callNum === 1 ? 60000 : 15000,
               outputTokens: 1000,
               contextWindowSize: 128000,
             },
@@ -6689,6 +6843,136 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     }
   });
 
+  it('#1208: bare OpenCode native subscription binds the catalog window before launch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'context-binding-native-oc-'));
+    const apiDir = join(root, 'packages', 'api');
+    await mkdir(apiDir, { recursive: true });
+    await writeFile(join(root, 'pnpm-workspace.yaml'), 'packages:\n  - "packages/*"\n', 'utf-8');
+
+    const registrySnapshot = catRegistry.getAllConfigs();
+    const originalConfig = catRegistry.tryGet('opencode')?.config;
+    assert.ok(originalConfig);
+    const boundCatId = 'opencode-native-capacity-test';
+    catRegistry.register(boundCatId, {
+      ...originalConfig,
+      id: boundCatId,
+      mentionPatterns: [`@${boundCatId}`],
+      clientId: 'opencode',
+      provider: undefined,
+      accountRef: undefined,
+      defaultModel: 'claude-opus-4-6',
+      contextWindow: undefined,
+    });
+
+    const optionsSeen = [];
+    const callOrder = [];
+    let seenPrompt;
+    const { SessionChainStore } = await import('../dist/domains/cats/services/stores/ports/SessionChainStore.js');
+    const sessionChainStore = new SessionChainStore();
+    const active = sessionChainStore.create({
+      cliSessionId: 'cli-native-capacity-old',
+      threadId: 'thread-native-capacity',
+      catId: boundCatId,
+      userId: 'user-native-capacity',
+    });
+    sessionChainStore.update(active.id, {
+      contextHealth: {
+        usedTokens: 900_000,
+        windowTokens: 1_000_000,
+        fillRatio: 0.9,
+        source: 'exact',
+        usedFrom: 'last_turn',
+        measuredAt: Date.now(),
+      },
+    });
+    const sessionSealer = {
+      async reconcileStuck() {
+        return 0;
+      },
+      async requestSeal({ sessionId, reason }) {
+        callOrder.push(['requestSeal', reason]);
+        sessionChainStore.update(sessionId, { status: 'sealing', sealReason: reason });
+        return { accepted: true, status: 'sealing', sessionId };
+      },
+      async finalize({ sessionId }) {
+        callOrder.push(['finalize']);
+        sessionChainStore.update(sessionId, { status: 'sealed' });
+      },
+    };
+    let seenRuntimeConfig;
+    const service = {
+      l0CompilerFn: dummyL0CompilerFn,
+      contextCapability() {
+        return {
+          provider: 'opencode',
+          carrier: 'run_json',
+          reportsRuntimeWindow: false,
+          authoritativeUsage: true,
+          usageTelemetry: 'available',
+          nativeWindowControl: true,
+          nativeCompressionControl: true,
+          observesCompression: false,
+          reason: 'OpenCode test carrier',
+        };
+      },
+      async *invoke(prompt, options) {
+        callOrder.push(['invoke']);
+        seenPrompt = prompt;
+        optionsSeen.push(options ?? {});
+        const configPath = options?.callbackEnv?.OPENCODE_CONFIG;
+        if (configPath) seenRuntimeConfig = JSON.parse(await readFile(configPath, 'utf-8'));
+        yield { type: 'done', catId: boundCatId, timestamp: Date.now() };
+      },
+    };
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(apiDir);
+      const deps = makeDeps();
+      deps.sessionManager.get = async () => 'cli-native-capacity-old';
+      deps.sessionManager.delete = async () => {
+        callOrder.push(['clearProviderSession']);
+      };
+      await collect(
+        invokeSingleCat(
+          { ...deps, sessionChainStore, sessionSealer },
+          {
+            catId: boundCatId,
+            service,
+            prompt: 'resume-only current delta',
+            rebuildPromptAfterSessionSeal: async () => {
+              callOrder.push(['rebuildPrompt']);
+              return '[Previous Session Summary]\nactive-session history\n\nresume-only current delta';
+            },
+            userId: 'user-native-capacity',
+            threadId: 'thread-native-capacity',
+            isLastCat: true,
+          },
+        ),
+      );
+
+      assert.ok(seenRuntimeConfig, 'provider must observe a per-invocation runtime config');
+      assert.equal(seenRuntimeConfig.model, 'anthropic/claude-opus-4-6');
+      assert.equal(seenRuntimeConfig.provider?.anthropic?.models?.['claude-opus-4-6']?.limit?.context, 1_000_000);
+      assert.equal(optionsSeen[0]?.contextCapacity?.windowTokens, 1_000_000);
+      assert.equal(optionsSeen[0]?.contextCapacity?.inputCeilingTokens, 984_000);
+      assert.equal(optionsSeen[0]?.contextCapacity?.actionable, true);
+      assert.match(seenPrompt, /active-session history/);
+      assert.deepEqual(callOrder, [
+        ['requestSeal', 'threshold'],
+        ['clearProviderSession'],
+        ['finalize'],
+        ['rebuildPrompt'],
+        ['invoke'],
+      ]);
+    } finally {
+      process.chdir(previousCwd);
+      catRegistry.reset();
+      for (const [id, config] of Object.entries(registrySnapshot)) catRegistry.register(id, config);
+      await rmWithRetry(root);
+    }
+  });
+
   // F203 Phase I: compile fail-closed — throwing l0CompilerFn aborts invocation
   it('F203-I: OpenCode compile failure → fail-closed, service.invoke never called', async () => {
     const { createProviderProfile } = await import('./helpers/create-test-account.js');
@@ -6773,7 +7057,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     }
   });
 
-  it('fix(#280): known legacy model without provider skips runtime config', async () => {
+  it('issue #1208: known native OpenCode model still receives the invocation context limit', async () => {
     const mod = await import('../dist/domains/cats/services/agents/invocation/invoke-single-cat.js');
     mod._resetOpenCodeKnownModels(new Set(['anthropic/claude-opus-4-6']));
     const { createProviderProfile } = await import('./helpers/create-test-account.js');
@@ -6805,21 +7089,18 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
       clientId: 'opencode',
       accountRef: anthropicProfile.id,
       defaultModel: 'anthropic/claude-opus-4-6',
+      contextWindow: 256_000,
     });
 
     const optionsSeen = [];
+    let seenRuntimeConfig;
     const service = {
       l0CompilerFn: dummyL0CompilerFn,
       async *invoke(_prompt, options) {
         optionsSeen.push(options ?? {});
-        // F203 Phase I: known legacy model without provider STILL gets OPENCODE_CONFIG
-        // for L0 instructions (instructions-only fallback path). Before F203 this was undefined.
-        assert.ok(
-          options?.callbackEnv?.OPENCODE_CONFIG,
-          'F203: known legacy model must get instructions-only config for L0',
-        );
-        // Verify it's an instructions-only config (no provider auth clearing)
-        assert.equal(options?.callbackEnv?.CAT_CAFE_OC_INSTRUCTIONS_ONLY, '1');
+        const configPath = options?.callbackEnv?.OPENCODE_CONFIG;
+        assert.ok(configPath, 'known native model must receive an invocation-scoped runtime config');
+        seenRuntimeConfig = JSON.parse(await readFile(configPath, 'utf-8'));
         yield { type: 'done', catId: 'opencode', timestamp: Date.now() };
       },
     };
@@ -6853,11 +7134,13 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     }
 
     const callbackEnv = optionsSeen[0]?.callbackEnv ?? {};
-    // F203 Phase I: known legacy model now gets instructions-only config for L0.
-    // Before F203 this was undefined; now it always has a config path.
-    assert.ok(callbackEnv.OPENCODE_CONFIG, 'F203: must get instructions-only config');
-    assert.equal(callbackEnv.CAT_CAFE_OC_INSTRUCTIONS_ONLY, '1', 'must signal instructions-only');
-    assert.equal(callbackEnv.CAT_CAFE_ANTHROPIC_MODEL_OVERRIDE, undefined);
+    assert.ok(callbackEnv.OPENCODE_CONFIG);
+    assert.equal(callbackEnv.CAT_CAFE_OC_INSTRUCTIONS_ONLY, undefined);
+    assert.equal(
+      seenRuntimeConfig?.provider?.anthropic?.models?.['claude-opus-4-6']?.limit?.context,
+      256_000,
+      'the provider-native compaction limit must match the invocation snapshot',
+    );
   });
 
   it('clowder-ai#223-P1: provider takes priority over parseOpenCodeModel for namespaced models', async () => {
@@ -7081,6 +7364,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
               // Simulate non-standard gateway semantics where this value is
               // not a trustworthy "current context fill" signal.
               inputTokens: 195000,
+              lastTurnInputTokens: 195000,
               outputTokens: 10,
               // Intentionally omit contextWindowSize so source becomes approx.
             },
@@ -7142,7 +7426,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     }
   });
 
-  it('F062-fix: skips auto-seal for api_key + compress strategy even when context health is exact', async () => {
+  it('issue #1208: fail-closes a stale unsupported api_key compress override to handoff', async () => {
     const { createProviderProfile } = await import('./helpers/create-test-account.js');
     const { _setTestStrategyOverride, _clearTestStrategyOverrides } = await import(
       '../dist/config/session-strategy.js'
@@ -7209,6 +7493,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
             usage: {
               // Simulate gateway telemetry that reports at/over window.
               inputTokens: 128211,
+              lastTurnInputTokens: 128211,
               outputTokens: 10,
               contextWindowSize: 128000,
             },
@@ -7260,8 +7545,8 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
           return false;
         }
       });
-      assert.equal(hasSealRequested, false, 'should not emit session_seal_requested in api_key mode');
-      assert.equal(sealRequests.length, 0, 'should not request seal in api_key mode');
+      assert.equal(hasSealRequested, true, 'unsupported compress must execute the safe handoff action');
+      assert.equal(sealRequests.length, 1, 'runtime must not honor a stale unsupported compress override');
     } finally {
       process.chdir(previousCwd);
       restoreGlobalRoot();
@@ -7338,6 +7623,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
             model: 'claude-opus-4-6',
             usage: {
               inputTokens: 128211,
+              lastTurnInputTokens: 128211,
               outputTokens: 10,
               contextWindowSize: 128000,
             },

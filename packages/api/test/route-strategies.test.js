@@ -7,6 +7,42 @@ import './helpers/setup-cat-registry.js';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
+import { catRegistry } from '@cat-cafe/shared';
+
+const SMALL_CONTEXT_OPUS = 'small-context-opus';
+const SMALL_CONTEXT_CODEX = 'small-context-codex';
+const UNKNOWN_AUTO_CONTEXT_CAT = 'unknown-auto-context-cat';
+
+for (const [id, baseId] of [
+  [SMALL_CONTEXT_OPUS, 'opus'],
+  [SMALL_CONTEXT_CODEX, 'codex'],
+]) {
+  if (!catRegistry.has(id)) {
+    const base = catRegistry.getOrThrow(baseId).config;
+    catRegistry.register(id, {
+      ...base,
+      id,
+      name: id,
+      displayName: id,
+      mentionPatterns: [`@${id}`],
+      contextWindow: 17_000,
+    });
+  }
+}
+
+if (!catRegistry.has(UNKNOWN_AUTO_CONTEXT_CAT)) {
+  const base = catRegistry.getOrThrow('opus').config;
+  catRegistry.register(UNKNOWN_AUTO_CONTEXT_CAT, {
+    ...base,
+    id: UNKNOWN_AUTO_CONTEXT_CAT,
+    name: UNKNOWN_AUTO_CONTEXT_CAT,
+    displayName: UNKNOWN_AUTO_CONTEXT_CAT,
+    mentionPatterns: [`@${UNKNOWN_AUTO_CONTEXT_CAT}`],
+    defaultModel: 'vendor/unknown-auto-model',
+    contextWindow: undefined,
+    cli: base.cli ? { ...base.cli, contextWindow: undefined, autoCompactTokenLimit: undefined } : base.cli,
+  });
+}
 
 // Create a mock agent service that yields text + done
 function createMockService(catId, text = 'hello') {
@@ -290,14 +326,127 @@ describe('bootcamp invocation context', () => {
       async updateParticipantActivity() {},
     });
 
-    for await (const _ of routeParallel(deps, ['opus'], '继续', 'user1', 'thread1')) {
+    const messages = [];
+    for await (const message of routeParallel(deps, ['opus'], '继续', 'user1', 'thread1')) {
+      messages.push(message);
     }
 
-    assert.match(captureService.calls[0], /members=1/, 'should derive team size from the active thread only');
+    assert.match(
+      captureService.calls[0],
+      /members=1/,
+      `should derive team size from the active thread only; events=${JSON.stringify(messages)}`,
+    );
   });
 });
 
 describe('routeParallel collaboration continuity', () => {
+  it('rebuilds a fresh-session prompt after a late native capacity seal', async () => {
+    const { routeParallel } = await import('../dist/domains/cats/services/agents/routing/route-parallel.js');
+    const { SessionChainStore } = await import('../dist/domains/cats/services/stores/ports/SessionChainStore.js');
+    const base = catRegistry.getOrThrow('opencode').config;
+    const catId = 'route-late-capacity-bootstrap';
+    if (!catRegistry.has(catId)) {
+      catRegistry.register(catId, {
+        ...base,
+        id: catId,
+        name: catId,
+        displayName: catId,
+        mentionPatterns: [`@${catId}`],
+        provider: 'anthropic',
+        clientId: 'opencode',
+        accountRef: undefined,
+        defaultModel: 'anthropic/claude-opus-4-6',
+        contextWindow: undefined,
+      });
+    }
+
+    const prompts = [];
+    const service = {
+      l0CompilerFn: async ({ catId: compiledCatId }) => `# Test L0 for ${compiledCatId}`,
+      contextCapability() {
+        return {
+          provider: 'opencode',
+          carrier: 'run_json',
+          reportsRuntimeWindow: false,
+          authoritativeUsage: true,
+          usageTelemetry: 'available',
+          nativeWindowControl: true,
+          nativeCompressionControl: true,
+          observesCompression: false,
+          reason: 'route late-binding test carrier',
+        };
+      },
+      async *invoke(prompt) {
+        prompts.push(prompt);
+        yield { type: 'done', catId, timestamp: Date.now() };
+      },
+    };
+    const deps = createMockDeps({ [catId]: service });
+    const sessionChainStore = new SessionChainStore();
+    const active = sessionChainStore.create({
+      cliSessionId: 'cli-route-late-capacity',
+      threadId: 'thread-route-late-capacity',
+      catId,
+      userId: 'user1',
+    });
+    sessionChainStore.update(active.id, {
+      contextHealth: {
+        usedTokens: 900_000,
+        windowTokens: 1_000_000,
+        fillRatio: 0.9,
+        source: 'exact',
+        usedFrom: 'last_turn',
+        measuredAt: Date.now(),
+      },
+    });
+    deps.invocationDeps.sessionManager.get = async () => 'cli-route-late-capacity';
+    deps.invocationDeps.sessionManager.delete = async () => {};
+    deps.invocationDeps.sessionChainStore = sessionChainStore;
+    deps.invocationDeps.sessionSealer = {
+      async requestSeal({ sessionId, reason }) {
+        sessionChainStore.update(sessionId, { status: 'sealing', sealReason: reason });
+        return { accepted: true, status: 'sealing', sessionId };
+      },
+      async finalize({ sessionId }) {
+        sessionChainStore.update(sessionId, { status: 'sealed' });
+      },
+      async reconcileStuck() {
+        return 0;
+      },
+    };
+    deps.invocationDeps.transcriptReader = {
+      async readDigest(sessionId) {
+        if (sessionId !== active.id) return null;
+        return {
+          v: 1,
+          sessionId,
+          threadId: 'thread-route-late-capacity',
+          catId,
+          seq: 0,
+          time: { createdAt: 1, sealedAt: 2 },
+          invocations: [],
+          filesTouched: [],
+          errors: [],
+          recentMessages: [{ role: 'assistant', content: 'prior active-session history' }],
+        };
+      },
+    };
+
+    for await (const _message of routeParallel(
+      deps,
+      [catId],
+      'current invocation delta',
+      'user1',
+      'thread-route-late-capacity',
+    )) {
+      // consume route output
+    }
+
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0], /prior active-session history/);
+    assert.match(prompts[0], /current invocation delta/);
+  });
+
   it('includes continuity capsule in threshold seal payload for parallel invocations', async () => {
     const { routeParallel } = await import('../dist/domains/cats/services/agents/routing/route-parallel.js');
     const activeRecord = {
@@ -310,6 +459,18 @@ describe('routeParallel collaboration continuity', () => {
       compressionCount: 0,
     };
     const service = {
+      contextCapability() {
+        return {
+          provider: 'openai',
+          carrier: 'exec_json',
+          reportsRuntimeWindow: true,
+          authoritativeUsage: true,
+          nativeWindowControl: true,
+          nativeCompressionControl: false,
+          observesCompression: false,
+          reason: 'test carrier mirrors Codex exec-json authority',
+        };
+      },
       async *invoke() {
         yield {
           type: 'done',
@@ -319,7 +480,8 @@ describe('routeParallel collaboration continuity', () => {
             provider: 'openai',
             model: 'gpt-5.5',
             usage: {
-              inputTokens: 90_000,
+              contextUsedTokens: 90_000,
+              lastTurnInputTokens: 90_000,
               outputTokens: 100,
               contextWindowSize: 100_000,
             },
@@ -2311,6 +2473,75 @@ describe('routeSerial A2A worklist', () => {
     );
   });
 
+  it('incremental mode: Auto with unresolved capacity preserves unseen history in both routes', async () => {
+    const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
+    const { routeParallel } = await import('../dist/domains/cats/services/agents/routing/route-parallel.js');
+
+    for (const [routeName, route] of [
+      ['serial', routeSerial],
+      ['parallel', routeParallel],
+    ]) {
+      const captureService = createCapturingService(UNKNOWN_AUTO_CONTEXT_CAT, 'ack');
+      const deps = createMockDeps({ [UNKNOWN_AUTO_CONTEXT_CAT]: captureService });
+      deps.deliveryCursorStore = {
+        getCursor: async () => undefined,
+        ackCursor: async () => {},
+        ackSeenCursor: async () => {},
+      };
+      deps.messageStore.getByThreadAfter = async () => [
+        {
+          id: '0000000000000001-000001-unknown1',
+          threadId: 'thread1',
+          userId: 'user1',
+          catId: null,
+          content: 'history must survive unresolved Auto capacity',
+          mentions: [],
+          timestamp: Date.now() - 1000,
+        },
+      ];
+
+      for await (const _ of route(deps, [UNKNOWN_AUTO_CONTEXT_CAT], 'CURRENT USER MESSAGE', 'user1', 'thread1', {
+        currentUserMessageId: 'missing-current-id',
+      })) {
+      }
+
+      assert.equal(captureService.calls.length, 1, routeName);
+      assert.ok(captureService.calls[0].includes('history must survive unresolved Auto capacity'), routeName);
+    }
+  });
+
+  it('legacy mode: Auto with unresolved capacity preserves history in both routes', async () => {
+    const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
+    const { routeParallel } = await import('../dist/domains/cats/services/agents/routing/route-parallel.js');
+    const history = [
+      {
+        id: 'history-unknown-auto',
+        threadId: 'thread1',
+        userId: 'user1',
+        catId: null,
+        content: 'legacy history must survive unresolved Auto capacity',
+        mentions: [],
+        timestamp: Date.now() - 1000,
+      },
+    ];
+
+    for (const [routeName, route] of [
+      ['serial', routeSerial],
+      ['parallel', routeParallel],
+    ]) {
+      const captureService = createCapturingService(UNKNOWN_AUTO_CONTEXT_CAT, 'ack');
+      const deps = createMockDeps({ [UNKNOWN_AUTO_CONTEXT_CAT]: captureService });
+
+      for await (const _ of route(deps, [UNKNOWN_AUTO_CONTEXT_CAT], 'CURRENT USER MESSAGE', 'user1', 'thread1', {
+        history,
+      })) {
+      }
+
+      assert.equal(captureService.calls.length, 1, routeName);
+      assert.ok(captureService.calls[0].includes('legacy history must survive unresolved Auto capacity'), routeName);
+    }
+  });
+
   it('incremental mode: does NOT inject whisper content for non-recipient cat (F35 privacy fix)', async () => {
     const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
     const codexService = createCapturingService('codex', 'ack');
@@ -3738,11 +3969,11 @@ describe('routeParallel per-cat budget', () => {
 });
 
 describe('routeSerial degradation notification', () => {
-  it('yields system_info when history exceeds budget maxMessages', async () => {
+  it('does not truncate purely because history exceeds the retired count cap', async () => {
     const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
     const deps = createMockDeps({ opus: createMockService('opus', 'response') });
 
-    // Generate 250 messages to exceed opus default maxMessages=200
+    // Candidate selection belongs to the route/Smart Window, not a hidden member count field.
     const history = Array.from({ length: 250 }, (_, i) => ({
       id: `m${i}`,
       threadId: 'thread1',
@@ -3759,15 +3990,14 @@ describe('routeSerial degradation notification', () => {
     }
 
     const sysInfos = degradationSystemInfos(messages);
-    assert.ok(sysInfos.length > 0, 'should yield degradation system_info');
-    assert.ok(sysInfos[0].content.includes('截断'), 'degradation message should mention truncation');
+    assert.equal(sysInfos.length, 0, 'message count alone must not trigger a retired budget policy');
   });
 
   it('does not yield system_info when history is within budget', async () => {
     const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
     const deps = createMockDeps({ opus: createMockService('opus', 'response') });
 
-    // 5 messages — well within opus maxMessages=200
+    // A short selected history remains within the invocation ceiling.
     const history = Array.from({ length: 5 }, (_, i) => ({
       id: `m${i}`,
       threadId: 'thread1',
@@ -3789,35 +4019,28 @@ describe('routeSerial degradation notification', () => {
 
   it('yields system_info when context is truncated by token budget (not count)', async () => {
     const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
-    const deps = createMockDeps({ opus: createMockService('opus', 'response') });
+    const deps = createMockDeps({
+      [SMALL_CONTEXT_OPUS]: createMockService(SMALL_CONTEXT_OPUS, 'response'),
+    });
 
-    // Override maxPromptTokens to a small value via env.
-    // budgetForContext = maxPromptTokens - systemTokens - promptTokens - 200
-    // With maxPromptTokens=500, budgetForContext ≈ 90 tokens → truncation.
-    // Count (20) is within maxMessages (200), but total tokens exceed context budget.
-    process.env.CAT_OPUS_MAX_PROMPT_TOKENS = '500';
-    try {
-      const history = Array.from({ length: 20 }, (_, i) => ({
-        id: `m${i}`,
-        threadId: 'thread1',
-        userId: 'user1',
-        catId: null,
-        content: `message ${i} with some padding text here`,
-        mentions: [],
-        timestamp: Date.now() - (20 - i) * 1000,
-      }));
+    const history = Array.from({ length: 20 }, (_, i) => ({
+      id: `m${i}`,
+      threadId: 'thread1',
+      userId: 'user1',
+      catId: null,
+      content: `message ${i} with some padding text here`,
+      mentions: [],
+      timestamp: Date.now() - (20 - i) * 1000,
+    }));
 
-      const messages = [];
-      for await (const msg of routeSerial(deps, ['opus'], 'test', 'user1', 'thread1', { history })) {
-        messages.push(msg);
-      }
-
-      const sysInfos = degradationSystemInfos(messages);
-      assert.ok(sysInfos.length > 0, 'should yield degradation when token budget truncates context');
-      assert.ok(sysInfos[0].content.includes('截断'), 'degradation message should mention truncation');
-    } finally {
-      delete process.env.CAT_OPUS_MAX_PROMPT_TOKENS;
+    const messages = [];
+    for await (const msg of routeSerial(deps, [SMALL_CONTEXT_OPUS], 'test', 'user1', 'thread1', { history })) {
+      messages.push(msg);
     }
+
+    const sysInfos = degradationSystemInfos(messages);
+    assert.ok(sysInfos.length > 0, 'should yield degradation when the invocation ceiling truncates context');
+    assert.ok(sysInfos[0].content.includes('截断'), 'degradation message should mention truncation');
   });
 });
 
@@ -3825,11 +4048,11 @@ describe('routeParallel degradation notification', () => {
   it('yields system_info for each degraded cat', async () => {
     const { routeParallel } = await import('../dist/domains/cats/services/agents/routing/route-parallel.js');
     const deps = createMockDeps({
-      opus: createMockService('opus', 'opus says'),
-      codex: createMockService('codex', 'codex says'),
+      [SMALL_CONTEXT_OPUS]: createMockService(SMALL_CONTEXT_OPUS, 'opus says'),
+      [SMALL_CONTEXT_CODEX]: createMockService(SMALL_CONTEXT_CODEX, 'codex says'),
     });
 
-    // 250 messages — exceeds both opus (200) and codex (200) limits
+    // Both cats share selected history but resolve independent member ceilings.
     const history = Array.from({ length: 250 }, (_, i) => ({
       id: `m${i}`,
       threadId: 'thread1',
@@ -3841,7 +4064,9 @@ describe('routeParallel degradation notification', () => {
     }));
 
     const messages = [];
-    for await (const msg of routeParallel(deps, ['opus', 'codex'], 'test', 'user1', 'thread1', { history })) {
+    for await (const msg of routeParallel(deps, [SMALL_CONTEXT_OPUS, SMALL_CONTEXT_CODEX], 'test', 'user1', 'thread1', {
+      history,
+    })) {
       messages.push(msg);
     }
 
@@ -3853,33 +4078,28 @@ describe('routeParallel degradation notification', () => {
     const { routeParallel } = await import('../dist/domains/cats/services/agents/routing/route-parallel.js');
     const deps = createMockDeps({
       opus: createMockService('opus', 'opus says'),
-      codex: createMockService('codex', 'codex says'),
+      [SMALL_CONTEXT_CODEX]: createMockService(SMALL_CONTEXT_CODEX, 'codex says'),
     });
 
-    // Count is within both cats' maxMessages (codex=200, opus=200), but token budget should force truncation.
-    // Override codex maxPromptTokens to a small value so assembleContext can't fit the full history.
-    process.env.CAT_CODEX_MAX_PROMPT_TOKENS = '500';
-    try {
-      const history = Array.from({ length: 50 }, (_, i) => ({
-        id: `m${i}`,
-        threadId: 'thread1',
-        userId: 'user1',
-        catId: null,
-        content: `message ${i} ${'y'.repeat(2100)}`,
-        mentions: [],
-        timestamp: Date.now() - (50 - i) * 1000,
-      }));
+    const history = Array.from({ length: 50 }, (_, i) => ({
+      id: `m${i}`,
+      threadId: 'thread1',
+      userId: 'user1',
+      catId: null,
+      content: `message ${i} ${'y'.repeat(2100)}`,
+      mentions: [],
+      timestamp: Date.now() - (50 - i) * 1000,
+    }));
 
-      const messages = [];
-      for await (const msg of routeParallel(deps, ['opus', 'codex'], 'test', 'user1', 'thread1', { history })) {
-        messages.push(msg);
-      }
-
-      const sysInfos = degradationSystemInfos(messages);
-      assert.ok(sysInfos.length > 0, 'should yield at least one degradation system_info');
-    } finally {
-      delete process.env.CAT_CODEX_MAX_PROMPT_TOKENS;
+    const messages = [];
+    for await (const msg of routeParallel(deps, ['opus', SMALL_CONTEXT_CODEX], 'test', 'user1', 'thread1', {
+      history,
+    })) {
+      messages.push(msg);
     }
+
+    const sysInfos = degradationSystemInfos(messages);
+    assert.ok(sysInfos.length > 0, 'should yield at least one degradation system_info');
   });
 });
 

@@ -121,7 +121,17 @@ function createEventWaitTaskStore(threadId) {
 function createMockDeps(
   service,
   appended,
-  { triggerMessage, taskStore, turnCustodyProjectionService, turnExecutionStore, metadataAugments } = {},
+  {
+    triggerMessage,
+    taskStore,
+    turnCustodyProjectionService,
+    turnExecutionStore,
+    metadataAugments,
+    sessionChainStore,
+    sessionSealer,
+    transcriptReader,
+    sessionManager,
+  } = {},
 ) {
   let sequence = 0;
   return {
@@ -134,12 +144,17 @@ function createMockDeps(
       sessionManager: {
         getOrCreate: async () => ({}),
         get: async () => null,
+        delete: async () => {},
         resolveWorkingDirectory: () => '/tmp/test',
+        ...sessionManager,
       },
       threadStore: null,
       apiUrl: 'http://127.0.0.1:3004',
       ...(taskStore ? { taskStore } : {}),
       ...(turnExecutionStore ? { turnExecutionStore } : {}),
+      ...(sessionChainStore ? { sessionChainStore } : {}),
+      ...(sessionSealer ? { sessionSealer } : {}),
+      ...(transcriptReader ? { transcriptReader } : {}),
     },
     messageStore: {
       append: async (message) => {
@@ -187,7 +202,18 @@ function createMockDeps(
 async function runRoute(
   service,
   threadId,
-  { projectionService, routeOptions = {}, taskStore, triggerMessage, turnExecutionStore } = {},
+  {
+    projectionService,
+    routeOptions = {},
+    taskStore,
+    triggerMessage,
+    turnExecutionStore,
+    beforeRoute,
+    sessionChainStore,
+    sessionSealer,
+    transcriptReader,
+    sessionManager,
+  } = {},
 ) {
   return withCatRegistryLock(async () => {
     const original = catRegistry.getAllConfigs();
@@ -197,6 +223,7 @@ async function runRoute(
     for (const [id, config] of Object.entries(toAllCatConfigs(loadCatConfig()))) {
       catRegistry.register(id, config);
     }
+    beforeRoute?.();
     const appended = [];
     const metadataAugments = [];
     try {
@@ -206,6 +233,10 @@ async function runRoute(
         triggerMessage,
         turnExecutionStore,
         metadataAugments,
+        sessionChainStore,
+        sessionSealer,
+        transcriptReader,
+        sessionManager,
       });
       const yielded = [];
       for await (const message of routeSerial(deps, ['codex'], 'custody gate test', 'user1', threadId, {
@@ -459,6 +490,149 @@ describe('F167 Phase T route custody stop gate', () => {
       appended.some((message) => message.source?.connector === 'routing-guard-failure'),
       false,
     );
+  });
+
+  test('the stop-gate remedial child reads a fresh member capacity snapshot', async () => {
+    const replaceCodexWindow = (contextWindow) => {
+      const configs = catRegistry.getAllConfigs();
+      catRegistry.reset();
+      for (const [id, config] of Object.entries(configs)) {
+        catRegistry.register(id, id === 'codex' ? { ...config, contextWindow } : config);
+      }
+    };
+    const calls = [];
+    const service = {
+      async *invoke(prompt, options) {
+        calls.push({ prompt, capacity: options?.contextCapacity });
+        if (calls.length === 1) replaceCodexWindow(256_000);
+        yield {
+          type: 'system_info',
+          catId: 'codex',
+          content: JSON.stringify({ type: 'invocation_created', invocationId: `codex-capacity-${calls.length}` }),
+          timestamp: Date.now(),
+        };
+        yield { type: 'text', catId: 'codex', content: 'No structured transition.', timestamp: Date.now() };
+        yield { type: 'done', catId: 'codex', timestamp: Date.now() };
+      },
+    };
+    const projection = createProjectionService({
+      state: 'covered_active',
+      closeDecisions: [
+        { shouldBlock: true, transitionObserved: false },
+        { shouldBlock: true, transitionObserved: false },
+      ],
+    });
+
+    await runRoute(service, 'thread-remedial-capacity', {
+      projectionService: projection,
+      beforeRoute: () => replaceCodexWindow(1_000_000),
+      routeOptions: {
+        turnCustodyWake: {
+          kind: 'action_successor',
+          leaseId: 'lease-remedial-capacity',
+          generation: 1,
+          holderCatId: 'codex',
+        },
+      },
+    });
+
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].capacity?.windowTokens, 1_000_000);
+    assert.equal(calls[1].capacity?.windowTokens, 256_000);
+  });
+
+  test('the stop-gate remedial child rebuilds its fixed prompt after a fresh capacity seal', async () => {
+    const { SessionChainStore } = await import('../dist/domains/cats/services/stores/ports/SessionChainStore.js');
+    const sessionChainStore = new SessionChainStore();
+    const threadId = 'thread-remedial-capacity-seal';
+    const active = sessionChainStore.create({
+      cliSessionId: 'cli-remedial-capacity-old',
+      threadId,
+      catId: 'codex',
+      userId: 'user1',
+    });
+    sessionChainStore.update(active.id, {
+      contextHealth: {
+        usedTokens: 240_000,
+        windowTokens: 2_000_000,
+        fillRatio: 0.12,
+        source: 'exact',
+        usedFrom: 'last_turn',
+        measuredAt: Date.now(),
+      },
+    });
+    const replaceCodexWindow = (contextWindow) => {
+      const configs = catRegistry.getAllConfigs();
+      catRegistry.reset();
+      for (const [id, config] of Object.entries(configs)) {
+        catRegistry.register(id, id === 'codex' ? { ...config, contextWindow } : config);
+      }
+    };
+    const prompts = [];
+    const service = {
+      contextCapability() {
+        return {
+          provider: 'openai',
+          carrier: 'test_stream',
+          reportsRuntimeWindow: false,
+          authoritativeUsage: true,
+          usageTelemetry: 'available',
+          nativeWindowControl: false,
+          nativeCompressionControl: false,
+          observesCompression: false,
+          reason: 'test carrier',
+        };
+      },
+      async *invoke(prompt) {
+        prompts.push(prompt);
+        if (prompts.length === 1) replaceCodexWindow(256_000);
+        yield {
+          type: 'system_info',
+          catId: 'codex',
+          content: JSON.stringify({ type: 'invocation_created', invocationId: `codex-seal-${prompts.length}` }),
+          timestamp: Date.now(),
+        };
+        yield { type: 'text', catId: 'codex', content: 'No structured transition.', timestamp: Date.now() };
+        yield { type: 'done', catId: 'codex', timestamp: Date.now() };
+      },
+    };
+    const sessionSealer = {
+      async requestSeal({ sessionId, reason }) {
+        sessionChainStore.update(sessionId, { status: 'sealing', sealReason: reason });
+        return { accepted: true, status: 'sealing', sessionId };
+      },
+      async finalize({ sessionId }) {
+        sessionChainStore.update(sessionId, { status: 'sealed' });
+      },
+    };
+    const projection = createProjectionService({
+      state: 'covered_active',
+      closeDecisions: [
+        { shouldBlock: true, transitionObserved: false },
+        { shouldBlock: true, transitionObserved: false },
+      ],
+    });
+
+    await runRoute(service, threadId, {
+      projectionService: projection,
+      beforeRoute: () => replaceCodexWindow(2_000_000),
+      sessionChainStore,
+      sessionSealer,
+      transcriptReader: { readDigest: async () => null },
+      sessionManager: { get: async () => 'cli-remedial-capacity-old' },
+      routeOptions: {
+        turnCustodyWake: {
+          kind: 'action_successor',
+          leaseId: 'lease-remedial-capacity-seal',
+          generation: 1,
+          holderCatId: 'codex',
+        },
+      },
+    });
+
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[1], /\[Session Continuity/);
+    assert.match(prompts[1], /F167 球权停止门/);
   });
 
   test('verified typed PR wait is a structured transition and suppresses the remedial child', async () => {

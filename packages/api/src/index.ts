@@ -24,7 +24,6 @@ import Fastify, { type FastifyReply } from 'fastify';
 import { resolveAnthropicRuntimeProfile, resolveForClient } from './config/account-resolver.js';
 import { regenerateStartupCliConfigs } from './config/capabilities/startup-cli-config.js';
 import { resolveBoundAccountRefForCat } from './config/cat-account-binding.js';
-import { getCatContextBudget } from './config/cat-budgets.js';
 import {
   bootstrapDefaultCatCatalog,
   getAcpConfig,
@@ -34,6 +33,7 @@ import {
   isCatAvailable,
   toAllCatConfigs,
 } from './config/cat-config-loader.js';
+import { getCatModel } from './config/cat-models.js';
 import { resolveCodexCarrierTruth } from './config/codex-cli.js';
 import { configEventBus } from './config/config-event-bus.js';
 import { resolveFrontendBaseUrl, resolveFrontendCorsOrigins } from './config/frontend-origin.js';
@@ -962,7 +962,6 @@ async function main(): Promise<void> {
     transcriptWriter,
     threadStore,
     transcriptReader,
-    (catId) => getCatContextBudget(catId).maxPromptTokens,
     handoffConfig,
     summaryStore,
   );
@@ -1728,6 +1727,7 @@ async function main(): Promise<void> {
           projectRoot,
           profileId: id,
           config,
+          effectiveModel: getCatModel(id),
           acpConfig,
           poolRegistry: acpPoolRegistry,
           log: app.log,
@@ -2695,7 +2695,9 @@ async function main(): Promise<void> {
       dismissTracker,
     });
   }
-  await app.register(catsRoutes);
+  await app.register(catsRoutes, {
+    resolveContextCapacitySnapshot: (catId) => router.contextCapacitySnapshot(catId),
+  });
 
   // F182 Phase D: disable-impact endpoint
   {
@@ -4692,7 +4694,9 @@ async function main(): Promise<void> {
       );
     }
   }
-  await app.register(sessionStrategyConfigRoutes);
+  await app.register(sessionStrategyConfigRoutes, {
+    resolveContextCapability: (catId) => router.contextCapability(catId as CatId),
+  });
 
   // Voting system (F079)
   const { voteRoutes } = await import('./routes/votes.js');

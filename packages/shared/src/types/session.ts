@@ -13,6 +13,21 @@ import type { CatHandoffNote } from './session-handoff-proposal.js';
 
 export type SessionStatus = 'active' | 'sealing' | 'sealed';
 
+/**
+ * Effective capacity owned by one active session.
+ *
+ * The pin deliberately stores only the resolved capacity — no provider/model
+ * fingerprint or reusable carrier proof. A later invocation may shrink this
+ * value, but only a new session may expand it.
+ */
+export interface SessionCapacityPin {
+  windowTokens: number;
+  inputCeilingTokens: number;
+  source: 'reported' | 'manual' | 'catalog' | 'unresolved';
+  provenance: string;
+  actionable: boolean;
+}
+
 export interface SessionRecord {
   readonly id: string;
   /** CLI-reported session ID (from session_init event) */
@@ -29,6 +44,8 @@ export interface SessionRecord {
   status: SessionStatus;
   /** Latest context health snapshot after last invocation */
   contextHealth?: ContextHealth;
+  /** #1208: active-session capacity is shrink-only until session rollover. */
+  capacityPin?: SessionCapacityPin;
   /** Latest token usage snapshot (persisted for frontend display after reload) */
   lastUsage?: SessionUsageSnapshot;
   messageCount: number;
@@ -78,14 +95,20 @@ export interface SessionUsageSnapshot {
 export interface ContextHealth {
   /** Tokens used for context health. Check usedFrom before interpreting source semantics. */
   usedTokens: number;
-  /** Total context window capacity */
+  /** Total context window capacity (including output reserve). */
   windowTokens: number;
-  /** usedTokens / windowTokens (0.0 ~ 1.0) */
+  /**
+   * usedTokens / inputCeilingTokens (0.0 ~ 1.0).
+   * #1208 denominator fix: denominator is the effective input ceiling
+   * (windowTokens - outputReserve), NOT the raw windowTokens.
+   * This is correct because usedTokens measures input tokens consumed,
+   * and the actionable budget for lifecycle decisions is the input ceiling.
+   */
   fillRatio: number;
-  /** exact = CLI reported; approx = hardcoded fallback */
+  /** exact = carrier-authoritative usage; approx is retained for legacy records. */
   source: 'exact' | 'approx';
   /** Usage field that fed usedTokens. Older records may omit it. */
-  usedFrom?: 'last_turn' | 'input' | 'total';
+  usedFrom?: 'context' | 'last_turn' | 'input' | 'total';
   measuredAt: number;
 }
 

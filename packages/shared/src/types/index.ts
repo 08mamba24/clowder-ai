@@ -240,7 +240,6 @@ export type {
   CliConfig,
   // F067: Co-Creator config for @ mention routing
   CoCreatorConfig,
-  ContextBudget,
   CredentialEntry,
   MissionHubSelfClaimScope,
   // F032: Roster types for collaboration rules
@@ -1161,6 +1160,7 @@ export type {
   ContextManagementHint,
   SealReason,
   SealResult,
+  SessionCapacityPin,
   SessionRecord,
   SessionStatus,
   SessionStrategy,

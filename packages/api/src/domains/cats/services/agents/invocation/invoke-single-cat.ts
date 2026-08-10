@@ -35,7 +35,7 @@ import { resolveBoundAccountRefForCat } from '../../../../../config/cat-account-
 import { isSessionChainEnabled } from '../../../../../config/cat-config-loader.js';
 import { buildCatGitIdentityEnv } from '../../../../../config/cat-git-identity.js';
 import { getCatModel } from '../../../../../config/cat-models.js';
-import { OPENCODE_DEFAULT_CONTEXT_WINDOW, resolveContextWindow } from '../../../../../config/context-window-sizes.js';
+import { parseOpenCodeModel, resolveEffectiveOpenCodeModel } from '../../../../../config/opencode-model.js';
 import { getSessionStrategy, shouldTakeAction } from '../../../../../config/session-strategy.js';
 import { assertSafeTestConfigRoot } from '../../../../../config/test-config-write-guard.js';
 import { capturePromptIfEnabled } from '../../../../../infrastructure/debug/prompt-capture-bridge.js';
@@ -91,6 +91,7 @@ import { createPromptDigest } from '../../context/prompt-digest.js';
 // (next to F225 contextHintPrefix) so it lands every turn including resumes.
 import { buildStagingPrepend } from '../../context/StagingContent.js';
 import { AuditEventTypes, getEventAuditLog } from '../../orchestration/EventAuditLog.js';
+import { resolveContextLifecycleSupport } from '../context-lifecycle-capability.js';
 import { resolveDefaultClaudeMcpServerPath } from '../providers/ClaudeAgentService.js';
 import { extractUserEnvTemplates, hasSupportedEnvTemplate, resolveEnvMap } from '../providers/env-map.js';
 import { compileL0ViaSubprocess } from '../providers/l0-compiler.js';
@@ -99,7 +100,6 @@ import {
   deriveOpenCodeApiType,
   OC_API_KEY_ENV,
   OC_BASE_URL_ENV,
-  parseOpenCodeModel,
   safeProviderName,
   summarizeOpenCodeRuntimeConfigForDebug,
 } from '../providers/opencode-config-template.js';
@@ -109,6 +109,14 @@ import {
 } from '../providers/opencode-config-writer.js';
 import { appendTranscriptPathHints } from '../providers/transcript-path-hints.js';
 import { buildContextManagementHint, queueContextHint, takeContextHintPrefix } from './context-management-hint.js';
+import {
+  applyActiveSessionCapacityPin,
+  applyContextBindingToInvocationSnapshot,
+  applyUsageEvidenceToInvocationSnapshot,
+  type InvocationCapacitySnapshot,
+  resolveAuthoritativeContextUsage,
+  sealBeforeInvocationIfNeeded,
+} from './invocation-capacity-snapshot.js';
 import { resolveManagedWorkInvocationBinding } from './managed-work-invocation-binding.js';
 
 const log = createModuleLogger('invoke');
@@ -663,8 +671,12 @@ export interface InvocationDeps {
 export interface InvocationParams {
   readonly catId: CatId;
   readonly service: AgentService;
+  /** #1208: one pre-provider capacity owner shared by all invocation consumers. */
+  readonly capacitySnapshot?: InvocationCapacitySnapshot;
   /** The fully-orchestrated prompt (dynamic context + chain context already prepended by caller) */
   readonly prompt: string;
+  /** Rebuild route-owned context when a late native binding turns a resume into a fresh session. */
+  readonly rebuildPromptAfterSessionSeal?: () => Promise<string>;
   readonly userId: string;
   /** Strict owner authentication is a separate fact from the tenant-scoped userId. */
   readonly ownerAuthProvenance: import('./owner-auth-provenance.js').OwnerAuthProvenance;
@@ -747,12 +759,14 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
   const { registry, sessionManager, threadStore, apiUrl } = deps;
   const { catId, service, userId, threadId, isLastCat, signal: callerSignal } = params;
   let prompt = params.prompt;
+  const invocationPromptAdditions: string[] = [];
   assertToolExecutionPolicySupported(service, params.toolExecutionPolicy);
   const freshnessCarrierCapability = service.freshnessCarrierCapability?.() ?? {
     provider: 'other' as const,
     carrier: 'other' as const,
     deliverySemantics: 'undeclared' as const,
   };
+  let invocationCapacitySnapshot = params.capacitySnapshot;
 
   // F247 KD-17: cloud-only cats (Remote MCP) skip local CLI dispatch.
   // The mention is already persisted in the thread; the cloud cat reads it via
@@ -973,7 +987,7 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
         serverScope,
         now: Date.now(),
       });
-      if (cueResolution.promptSegment) prompt = `${prompt}\n${cueResolution.promptSegment}`;
+      if (cueResolution.promptSegment) invocationPromptAdditions.push(cueResolution.promptSegment);
       if (params.memoryCueLegacyFallbacks?.length) {
         const admitted = new Set(cueResolution.admittedOpportunityIds);
         const fallback = params.memoryCueLegacyFallbacks
@@ -981,7 +995,7 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
           .map((item) => item.promptContext)
           .filter(Boolean)
           .join('\n');
-        if (fallback) prompt = `${prompt}\n${fallback}`;
+        if (fallback) invocationPromptAdditions.push(fallback);
       }
     } catch (err) {
       log.warn({ err, invocationId, threadId, catId }, '[F287] memory cue prompt resolution failed closed');
@@ -989,12 +1003,12 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
         ?.map((item) => item.promptContext)
         .filter(Boolean)
         .join('\n');
-      if (fallback) prompt = `${prompt}\n${fallback}`;
+      if (fallback) invocationPromptAdditions.push(fallback);
     }
   }
 
   const auditLog = getEventAuditLog();
-  const promptDigest = createPromptDigest(prompt);
+  const promptDigest = createPromptDigest([prompt, ...invocationPromptAdditions].filter(Boolean).join('\n'));
   const startTime = executionStartedAt;
 
   let threadCreatedAt: number | undefined;
@@ -1682,7 +1696,10 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
     // F127 account injection:
     // Members bind to a concrete accountRef (builtin oauth account or generic api_key account).
     const builtinClient = provider ? resolveBuiltinClientForProvider(provider) : null;
-    const defaultModel = catConfig?.defaultModel?.trim() || undefined;
+    // #1208: the route-owned snapshot captures the concrete service model.
+    // Every downstream account/config/provider decision consumes that same
+    // value instead of re-reading a potentially stale catalog default.
+    const defaultModel = invocationCapacitySnapshot?.model?.trim() || catConfig?.defaultModel?.trim() || undefined;
     // Account resolution, proxy registration, and runtime config always use the
     // runtime root (process.cwd()), NOT thread.projectPath.  catRegistry loads
     // from the runtime root at startup — reading a divergent catalog (e.g. the
@@ -1883,29 +1900,10 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
     const modelProviderName = catConfig?.provider?.trim() || undefined;
     const parsedOpenCodeModel =
       provider === 'opencode' && trimmedDefaultModel ? parseOpenCodeModel(trimmedDefaultModel) : null;
-    // clowder-ai#223 intake: determine effective provider + model.
-    // Three cases for defaultModel shape:
-    //   1. Canonical "provider/model" where parsed provider === modelProviderName → use as-is
-    //   2. Namespaced "ns/model" where parsed prefix ≠ modelProviderName → prefix with modelProviderName
-    //   3. Bare "model" → prefix with modelProviderName if available
-    // When modelProviderName is absent, parseOpenCodeModel is the sole source.
-    let effectiveProviderName: string | undefined;
-    let effectiveModel: string | undefined;
-    if (parsedOpenCodeModel) {
-      if (modelProviderName && parsedOpenCodeModel.providerName !== modelProviderName) {
-        // Namespace case: model's "/" is a namespace separator, not provider prefix
-        effectiveProviderName = modelProviderName;
-        effectiveModel = `${modelProviderName}/${trimmedDefaultModel}`;
-      } else {
-        // Canonical provider/model (with or without matching modelProviderName)
-        effectiveProviderName = modelProviderName || parsedOpenCodeModel.providerName;
-        effectiveModel = trimmedDefaultModel!;
-      }
-    } else if (modelProviderName && trimmedDefaultModel) {
-      // Bare model + modelProviderName fallback
-      effectiveProviderName = modelProviderName;
-      effectiveModel = `${modelProviderName}/${trimmedDefaultModel}`;
-    }
+    const resolvedOpenCodeModel =
+      provider === 'opencode' ? resolveEffectiveOpenCodeModel(modelProviderName, trimmedDefaultModel) : null;
+    const effectiveProviderName = resolvedOpenCodeModel?.providerName;
+    const effectiveModel = resolvedOpenCodeModel?.model;
 
     if (provider === 'opencode') {
       log.debug(
@@ -2008,12 +2006,18 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
     // authType is either 'api_key' or 'oauth' — both need runtime config (MCP +
     // L0 + model routing). The only difference is credential injection below.
     const isApiKey = resolvedAccount?.authType === 'api_key';
+    const hasResolvedInvocationCapacity =
+      invocationCapacitySnapshot != null && invocationCapacitySnapshot.capacity.source !== 'unresolved';
+    let capacityBecameActionableAfterNativeBinding = false;
     if (
       provider === 'opencode' &&
       resolvedAccount != null &&
       effectiveModel &&
       effectiveProviderName &&
-      (hasExplicitOcProvider || !getOpenCodeKnownModels().has(effectiveModel) || mcpServerPath)
+      (hasExplicitOcProvider ||
+        !getOpenCodeKnownModels().has(effectiveModel) ||
+        mcpServerPath ||
+        hasResolvedInvocationCapacity)
     ) {
       // Remap model prefix when provider name collides with OpenCode builtins
       // (e.g. 'openai/gpt-4o' → 'openai-compat/gpt-4o') so the CLI -m arg
@@ -2033,6 +2037,9 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
         models: rawModels,
         ...(resolvedAccount.modelAliases ? { modelAliases: resolvedAccount.modelAliases } : {}),
         defaultModel: effectiveModel,
+        ...(invocationCapacitySnapshot?.capacity.windowTokens
+          ? { contextWindowTokens: invocationCapacitySnapshot.capacity.windowTokens }
+          : {}),
         apiType,
         hasBaseUrl: Boolean(resolvedAccount.baseUrl),
         omitProviderAuth: !isApiKey,
@@ -2054,6 +2061,18 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
         workingDirectory,
       );
       callbackEnv.OPENCODE_CONFIG = openCodeRuntimeConfigPath;
+      if (invocationCapacitySnapshot && effectiveModel && invocationCapacitySnapshot.capacity.windowTokens > 0) {
+        const wasActionable = invocationCapacitySnapshot.capacity.actionable;
+        invocationCapacitySnapshot = applyContextBindingToInvocationSnapshot({
+          snapshot: invocationCapacitySnapshot,
+          binding: {
+            model: effectiveModel,
+            windowTokens: invocationCapacitySnapshot.capacity.windowTokens,
+            source: 'invocation_config',
+          },
+        });
+        capacityBecameActionableAfterNativeBinding = !wasActionable && invocationCapacitySnapshot.capacity.actionable;
+      }
       // Credentials: only for api_key auth.
       // OAuth users authenticate through OpenCode's native flow; their runtime
       // config omits provider auth placeholders and signals buildEnv to preserve
@@ -2105,6 +2124,25 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
       );
     }
 
+    if (capacityBecameActionableAfterNativeBinding && sessionChainActive && invocationCapacitySnapshot) {
+      const sealed = await sealBeforeInvocationIfNeeded({
+        snapshot: invocationCapacitySnapshot,
+        catId,
+        threadId,
+        sessionChainStore: deps.sessionChainStore,
+        sessionSealer: deps.sessionSealer,
+        clearProviderSession: () => sessionManager.delete(userId, catId, threadId),
+      });
+      if (sealed) {
+        sessionId = undefined;
+        activeSessionRecordForResume = null;
+        if (!params.rebuildPromptAfterSessionSeal) {
+          throw new Error('late_capacity_seal_requires_prompt_rebuild');
+        }
+        prompt = await params.rebuildPromptAfterSessionSeal();
+      }
+    }
+
     // F-BLOAT: Only inject staticIdentity (systemPrompt) on new sessions for cats
     // that support persistent sessions (sessionChain=true).
     // Cats with sessionChain=false always need it — each turn is effectively new.
@@ -2138,7 +2176,10 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
 
     // Prepend staticIdentity to prompt when injection is needed
     // F070-P2: missionPrefix (dispatch context) is prepended for external projects
-    const promptWithMission = missionPrefix ? `${missionPrefix}\n\n${prompt}` : prompt;
+    const promptWithInvocationAdditions = [prompt, ...invocationPromptAdditions].filter(Boolean).join('\n');
+    const promptWithMission = missionPrefix
+      ? `${missionPrefix}\n\n${promptWithInvocationAdditions}`
+      : promptWithInvocationAdditions;
 
     let effectivePrompt =
       injectSystemPrompt && params.systemPrompt
@@ -2178,7 +2219,7 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
       model: resolvedAccount?.models?.[0] ?? 'unknown',
       systemPrompt: params.systemPrompt ?? '',
       missionPrefix: missionPrefix ?? undefined,
-      userPrompt: prompt,
+      userPrompt: promptWithInvocationAdditions,
       effectivePrompt,
       injectionDecision: { isResume, canSkipOnResume, forceReinjection, injected: injectSystemPrompt },
       // AC-G10 (Phase G native L0 closure / KD-44): if this provider injects
@@ -2284,6 +2325,7 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
 
     const baseOptions: AgentServiceOptions = {
       callbackEnv,
+      ...(invocationCapacitySnapshot ? { contextCapacity: invocationCapacitySnapshot.capacity } : {}),
       ...(reasoningEffortOverride ? { reasoningEffortOverride } : {}),
       ...(requestedServiceTier ? { requestedServiceTier } : {}),
       ...(accountEnv ? { accountEnv } : {}),
@@ -2448,68 +2490,54 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
 
         // F24: Compute and emit context health (only when session chain is enabled)
         if (sessionChainActive) {
-          // #679: Gemini CLI token stats are cumulative across all turns — not usable
-          // for context fill. Skip entire context_health block (raw usage still in
-          // invocation_usage above). Guard auto-disables when lastTurnInputTokens exists.
-          const isCumulativeOnly =
-            msg.metadata.usage.isCumulativeUsage === true && msg.metadata.usage.lastTurnInputTokens == null;
-          // Use lastTurnInputTokens (per-API-call) for accurate context fill,
-          // then fallback to aggregated inputTokens, and finally totalTokens
-          // for providers (Gemini CLI) that only expose a total count.
-          // clowder#915 R5 cloud P2: 3-tier window resolution.
-          // 1) Explicit `usage.contextWindowSize` (CLI-reported — Claude's exact value)
-          // 2) Fallback table by bare model name (handles prefix-strip for
-          //    account-routing path's `provider/model` form per R2 P1 #2)
-          // 3) opencode-only last-resort default for unknown/custom-provider
-          //    models (GLM-5.1, openrouter customs — the breed clowder#915
-          //    actually targets). Crucially this is LAST so known opencode
-          //    models like the default claude-opus-4-6 get their precise 200k
-          //    from the table, NOT the 128k conservative default.
-          // F24 known-min floor: tiers 1-2 are additionally raised to
-          // max(value, known floor) inside resolveContextWindow — a stale
-          // CLI (≤2.1.177) reports 200K for claude-fable-5 (native 1M),
-          // and tier 1 outranking tier 2 meant the wrong value always won:
-          // sessions sealed budget_exhausted with 80% of the window unused.
-          const windowSize =
-            resolveContextWindow(msg.metadata.usage.contextWindowSize, msg.metadata.model ?? '') ??
-            (msg.metadata.provider === 'opencode' ? OPENCODE_DEFAULT_CONTEXT_WINDOW : undefined);
-          const usedFrom =
-            msg.metadata.usage.lastTurnInputTokens != null
-              ? 'last_turn'
-              : msg.metadata.usage.inputTokens != null
-                ? 'input'
-                : msg.metadata.usage.totalTokens != null
-                  ? 'total'
-                  : undefined;
-          const usedTokens =
-            usedFrom === 'last_turn'
-              ? msg.metadata.usage.lastTurnInputTokens!
-              : usedFrom === 'input'
-                ? msg.metadata.usage.inputTokens!
-                : usedFrom === 'total'
-                  ? msg.metadata.usage.totalTokens!
-                  : 0;
-          if (windowSize && usedTokens > 0 && isCumulativeOnly) {
+          if (invocationCapacitySnapshot) {
+            try {
+              invocationCapacitySnapshot = applyUsageEvidenceToInvocationSnapshot({
+                snapshot: invocationCapacitySnapshot,
+                catId,
+                capability: service.contextCapability?.() ?? invocationCapacitySnapshot.capability,
+                reportedWindowSize: msg.metadata.usage.contextWindowSize,
+              });
+              invocationCapacitySnapshot = await applyActiveSessionCapacityPin({
+                snapshot: invocationCapacitySnapshot,
+                catId,
+                threadId,
+                sessionChainStore: deps.sessionChainStore,
+              });
+            } catch {
+              /* keep the pre-provider snapshot; never rediscover config/model inputs here */
+            }
+          }
+          const capacity = invocationCapacitySnapshot?.capacity;
+          const authoritativeUsage = invocationCapacitySnapshot
+            ? resolveAuthoritativeContextUsage(msg.metadata.usage, invocationCapacitySnapshot.capability)
+            : undefined;
+          const windowSize = capacity && capacity.source !== 'unresolved' ? capacity.windowTokens : undefined;
+          if (windowSize && !authoritativeUsage && msg.metadata.usage.isCumulativeUsage === true) {
             log.warn(
               {
                 catId,
                 threadId,
                 invocationId,
-                cumulativeUsedTokens: usedTokens,
                 windowSize,
-                usedFrom,
               },
-              'Gemini cumulative-only usage observed; skipping context_health and auto-seal',
+              'non-authoritative cumulative usage observed; skipping context_health and lifecycle actions',
             );
             geminiContextFallback.add(1, { [AGENT_ID]: catId, [TRIGGER]: 'no_per_turn_signal' });
           }
-          if (windowSize && usedTokens > 0 && !isCumulativeOnly) {
-            const source: ContextHealth['source'] =
-              msg.metadata.usage.contextWindowSize != null && usedFrom !== 'total' ? 'exact' : 'approx';
+          if (capacity && windowSize && authoritativeUsage) {
+            const { usedTokens, usedFrom } = authoritativeUsage;
+            const source: ContextHealth['source'] = capacity.actionable ? 'exact' : 'approx';
+            // #1208 denominator fix: fillRatio denominator is inputCeilingTokens
+            // (effective input budget = window - output reserve), not the raw window.
+            // This is the correct denominator because usedTokens measures INPUT tokens
+            // consumed, and the actionable ceiling for lifecycle decisions is the input
+            // ceiling, not the total window that includes output reserve.
+            const inputCeiling = capacity.inputCeilingTokens;
             const health: ContextHealth = {
               usedTokens,
               windowTokens: windowSize,
-              fillRatio: Math.min(usedTokens / windowSize, 1.0),
+              fillRatio: inputCeiling > 0 ? Math.min(usedTokens / inputCeiling, 1.0) : 0,
               source,
               usedFrom,
               measuredAt: Date.now(),
@@ -2552,26 +2580,54 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
             });
 
             // F33: Strategy-driven seal decision (replaces F24 Phase B shouldSeal)
-            if (deps.sessionSealer && deps.sessionChainStore) {
+            // #1208: lifecycle actions require actionable capacity and an actual
+            // carrier-authoritative usage signal; static client ids are not evidence.
+            if (
+              deps.sessionSealer &&
+              deps.sessionChainStore &&
+              capacity.actionable &&
+              invocationCapacitySnapshot?.capability.authoritativeUsage
+            ) {
               try {
-                // F062-fix:
-                // 1) api_key + approx health can be noisy on third-party gateways
-                // 2) api_key + compress strategy should not be force-sealed here
-                // Keep context_health observability in both cases.
+                // F062-fix: api_key + approx health can be noisy on third-party
+                // gateways. Keep context_health observability but do not act on it.
+                // A supported native compress strategy also remains non-sealing;
+                // an unsupported stored override is fail-closed to handoff below.
                 const provider = catRegistry.tryGet(catId as string)?.config.clientId;
                 const profileMode = callbackEnv[ANTHROPIC_PROFILE_MODE_KEY];
                 const strategy = getSessionStrategy(catId as string);
+                const strategySupport = resolveContextLifecycleSupport(
+                  {
+                    ...invocationCapacitySnapshot.capability,
+                    // Reaching this branch means the active stream just supplied
+                    // a usable authoritative numerator, which proves conditional
+                    // transports such as ACP for this lifecycle decision.
+                    usageTelemetry: 'available',
+                  },
+                  strategy.strategy,
+                );
+                const effectiveStrategy = strategySupport.supported
+                  ? strategy
+                  : { ...strategy, strategy: 'handoff' as const };
+                if (!strategySupport.supported) {
+                  log.warn(
+                    { catId, threadId, strategy: strategy.strategy, reason: strategySupport.reason },
+                    'unsupported context lifecycle strategy degraded to handoff',
+                  );
+                }
                 const isAnthropicApiKey = provider === 'anthropic' && profileMode === ANTHROPIC_PROFILE_MODE_API_KEY;
                 const skipAutoSealForApproxApiKey = isAnthropicApiKey && health.source === 'approx';
-                const skipAutoSealForApiKeyCompress = isAnthropicApiKey && strategy.strategy === 'compress';
+                const skipAutoSealForApiKeyCompress = isAnthropicApiKey && effectiveStrategy.strategy === 'compress';
                 if (!skipAutoSealForApproxApiKey && !skipAutoSealForApiKeyCompress) {
                   const activeRecord = await deps.sessionChainStore.getActive(catId, threadId);
+                  // #1208 denominator fix: pass inputCeiling (not raw windowTokens)
+                  // to shouldTakeAction — remaining budget is inputCeiling - usedTokens.
                   const action = shouldTakeAction(
                     health.fillRatio,
-                    health.windowTokens,
+                    inputCeiling,
                     health.usedTokens,
                     activeRecord?.compressionCount ?? 0,
-                    strategy,
+                    effectiveStrategy,
                   );
 
                   switch (action.type) {
@@ -2904,6 +2960,19 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
             }
           } catch {
             // Best-effort — don't break the invocation chain
+          }
+        }
+
+        if (invocationCapacitySnapshot && deps.sessionChainStore && sessionChainActive) {
+          try {
+            invocationCapacitySnapshot = await applyActiveSessionCapacityPin({
+              snapshot: invocationCapacitySnapshot,
+              catId,
+              threadId,
+              sessionChainStore: deps.sessionChainStore,
+            });
+          } catch {
+            /* best-effort persistence; the current invocation already owns its snapshot */
           }
         }
 

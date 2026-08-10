@@ -22,32 +22,20 @@ export function isCommandInvocation(input: string, command: string): boolean {
 function formatConfigForDisplay(config: ConfigSnapshot): string {
   const lines: string[] = ['[配置] Clowder AI 运行配置', ''];
 
-  // Per-cat budgets first (the actual limits used)
-  if (config.perCatBudgets) {
-    lines.push('Per-Cat 上下文预算');
-    for (const [catId, budget] of Object.entries(config.perCatBudgets)) {
-      const b = budget as {
-        maxPromptTokens: number;
-        maxContextTokens: number;
-        maxMessages: number;
-        maxContentLengthPerMsg: number;
+  // Per-cat capacity truth (#1208: no independent prompt-policy knobs)
+  if (config.perCatCapacities) {
+    lines.push('Per-Cat Context Capacity');
+    for (const [catId, entry] of Object.entries(config.perCatCapacities)) {
+      const e = entry as {
+        windowTokens: number;
+        inputCeilingTokens: number;
+        source: string;
+        actionable: boolean;
       };
-      lines.push(
-        `  ${catId}: prompt ${(b.maxPromptTokens / 1000).toFixed(0)}k, context ${(b.maxContextTokens / 1000).toFixed(0)}k, ${b.maxMessages} msgs, ${b.maxContentLengthPerMsg}/msg`,
-      );
-    }
-    lines.push('');
-  }
-
-  // Legacy context section (deprecated)
-  if (config.context) {
-    lines.push('上下文默认值 (deprecated, see per-cat)');
-    lines.push(`  历史条数: ${config.context.maxMessages}`);
-    lines.push(`  每条截断: ${config.context.maxContentLength} 字符`);
-    lines.push(`  总上下文: ${config.context.maxTotalChars} 字符`);
-    lines.push(`  总 prompt: ${config.context.maxPromptTokens} 字符`);
-    if (config.context.note) {
-      lines.push(`  注: ${config.context.note}`);
+      const window = (e.windowTokens / 1000).toFixed(0);
+      const ceil = (e.inputCeilingTokens / 1000).toFixed(0);
+      const tag = e.source === 'unresolved' ? ' [unresolved]' : e.actionable ? '' : ` [${e.source}]`;
+      lines.push(`  ${catId}: window ${window}k, input ceiling ${ceil}k${tag}`);
     }
     lines.push('');
   }

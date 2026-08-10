@@ -30,6 +30,7 @@ import type {
   MessageMetadata,
   ToolExecutionPolicy,
 } from '../../types.js';
+import { resolveCurrentContextUsage } from '../../types.js';
 import type { RawArchiveSink } from '../providers/codex-audit-hooks.js';
 import { sanitizeRawEvent } from '../providers/codex-audit-hooks.js';
 import {
@@ -201,6 +202,20 @@ export class OpenCodeAgentService implements L0InjectableAgentService {
     return policy.mode === 'read_only';
   }
 
+  contextCapability(): import('../../types.js').AgentContextCapability {
+    return {
+      provider: 'opencode',
+      carrier: 'run_json',
+      reportsRuntimeWindow: false,
+      authoritativeUsage: true,
+      usageTelemetry: 'available',
+      nativeWindowControl: true,
+      nativeCompressionControl: true,
+      observesCompression: false,
+      reason: 'OpenCode reports current turn input; runtime config controls the bound model window',
+    };
+  }
+
   async *invoke(prompt: string, options?: AgentServiceOptions): AsyncIterable<AgentMessage> {
     const readOnly = options?.toolExecutionPolicy?.mode === 'read_only';
     // P1-2: runtime model override takes precedence over constructor model
@@ -310,6 +325,10 @@ export class OpenCodeAgentService implements L0InjectableAgentService {
       // completions per F215 AC-B3. When the assistant emitted a tool_use event the work
       // happened via tools — silent_completion would mislabel a legitimate path.
       let toolUseEmitted = false;
+      // Issue #1208: CodeAgent 3.0 → OpenCode facade may drop token usage in the
+      // translate script. Track whether any event carried usage so we can surface a
+      // persistent visible alert when auto-handoff cannot be guaranteed.
+      let usageTelemetryReceived = false;
 
       for await (const event of events) {
         eventCount++;
@@ -446,6 +465,9 @@ export class OpenCodeAgentService implements L0InjectableAgentService {
           // invoke-single-cat's F8 token block + F24 contextHealth path can fire.
           const mergedMetadata: MessageMetadata =
             result.metadata?.usage != null ? { ...yieldMetadata, usage: result.metadata.usage } : yieldMetadata;
+          if (result.metadata?.usage != null && resolveCurrentContextUsage(result.metadata.usage) != null) {
+            usageTelemetryReceived = true;
+          }
           yield { ...result, metadata: mergedMetadata };
           if (terminateAfterYield) {
             log.warn(
@@ -493,6 +515,29 @@ export class OpenCodeAgentService implements L0InjectableAgentService {
             detail: 'OpenCode CLI 完成但无文字输出（见 cliDiagnostics 详情）',
           }),
           metadata: { ...metadata, cliDiagnostics: silentDiag },
+          timestamp: Date.now(),
+        };
+      }
+
+      // Issue #1208: CodeAgent 3.0 → OpenCode facade translate script may drop
+      // token usage. Without usage, invoke-single-cat's F24 context_health path
+      // cannot compute fillRatio and auto-handoff silently fails. Surface a
+      // persistent visible alert so the user knows automatic handoff is unavailable.
+      // Use type='warning' because it is already in system-info-visible.ts and
+      // route-helpers.ts USER_FACING_SYSTEM_INFO_TYPES, so it formats and persists.
+      if (!usageTelemetryReceived && !errorAlreadyYielded) {
+        log.warn(
+          { catId: this.catId, totalEvents: eventCount, eventTypes: Array.from(uniqueEventTypes) },
+          'OpenCode CLI completed without token usage telemetry — auto-handoff cannot be guaranteed',
+        );
+        yield {
+          type: 'system_info' as const,
+          catId: this.catId,
+          content: JSON.stringify({
+            type: 'warning',
+            message: '当前 opencode/CodeAgent 适配器未返回 token 用量，自动 handoff 无法按上下文比例触发。',
+          }),
+          metadata,
           timestamp: Date.now(),
         };
       }

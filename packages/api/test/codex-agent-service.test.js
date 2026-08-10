@@ -2056,7 +2056,7 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     );
   });
 
-  test('passes persisted GPT-5.6 ultra effort to new Codex invocations', async () => {
+  test('passes persisted GPT-5.6 ultra effort and invocation-owned capacity to new Codex invocations', async () => {
     const projectRoot = makeTempDir('codex-ultra-effort-');
     const previousTemplatePath = process.env.CAT_TEMPLATE_PATH;
     const templatePath = writeCodexEffortTemplate(projectRoot, 'ultra', {
@@ -2077,7 +2077,11 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
         model: 'gpt-5.6-sol',
       });
 
-      const promise = collect(service.invoke('hello'));
+      const promise = collect(
+        service.invoke('hello', {
+          contextCapacity: { windowTokens: 372000, inputCeilingTokens: 356000, actionable: true },
+        }),
+      );
       emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-effort-ultra' }]);
       await promise;
 
@@ -2087,7 +2091,7 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
         `expected persisted ultra effort, got argv: ${JSON.stringify(args)}`,
       );
       assert.ok(args.includes('model_context_window=372000'));
-      assert.ok(args.includes('model_auto_compact_token_limit=340000'));
+      assert.ok(args.includes('model_auto_compact_token_limit=327360'));
     } finally {
       if (previousTemplatePath === undefined) delete process.env.CAT_TEMPLATE_PATH;
       else process.env.CAT_TEMPLATE_PATH = previousTemplatePath;
@@ -2096,7 +2100,7 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     }
   });
 
-  test('keeps persisted context overrides for equivalent bare and provider-prefixed model slugs', async () => {
+  test('keeps invocation-owned context controls for equivalent bare and provider-prefixed model slugs', async () => {
     for (const { persistedModel, effectiveModel } of [
       { persistedModel: 'gpt-5.6-sol', effectiveModel: 'openai/gpt-5.6-sol' },
       { persistedModel: 'openai/gpt-5.6-sol', effectiveModel: 'gpt-5.6-sol' },
@@ -2129,6 +2133,7 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
         const promise = collect(
           service.invoke('hello', {
             callbackEnv: { CAT_CAFE_OPENAI_MODEL_OVERRIDE: effectiveModel },
+            contextCapacity: { windowTokens: 372000, inputCeilingTokens: 356000, actionable: true },
           }),
         );
         emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-equivalent-model-context' }]);
@@ -2141,8 +2146,8 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
           `equivalent model slug ${effectiveModel} must keep the persisted context window`,
         );
         assert.ok(
-          args.includes('model_auto_compact_token_limit=340000'),
-          `equivalent model slug ${effectiveModel} must keep the persisted compaction limit`,
+          args.includes('model_auto_compact_token_limit=327360'),
+          `equivalent model slug ${effectiveModel} must derive compaction from the invocation capacity`,
         );
       } finally {
         if (previousTemplatePath === undefined) delete process.env.CAT_TEMPLATE_PATH;
@@ -2150,6 +2155,100 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
         _resetCachedConfig();
         rmSync(projectRoot, { recursive: true, force: true });
       }
+    }
+  });
+
+  test('keeps binding-owned context controls ahead of free-form cliConfigArgs', async () => {
+    const proc = createMockProcess();
+    const spawnFn = createMockSpawnFn(proc);
+    const service = new CodexAgentService({
+      l0CompilerFn: fakeL0Compiler,
+      spawnFn,
+      catId: 'runtime-sol',
+      model: 'gpt-5.6-sol',
+    });
+
+    const promise = collect(
+      service.invoke('hello', {
+        contextCapacity: { windowTokens: 372000, inputCeilingTokens: 356000, actionable: true },
+        cliConfigArgs: [
+          '--config model_context_window=111000',
+          '--config=model_auto_compact_token_limit=95000',
+          '-c=model_context_window=222000',
+          '-cmodel_auto_compact_token_limit=96000',
+          '--config model_reasoning_effort="low"',
+          '--config model_provider="custom"',
+        ],
+      }),
+    );
+    emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-binding-owned-context' }]);
+    await promise;
+
+    const args = spawnFn.mock.calls[0].arguments[1];
+    assert.ok(
+      args.includes('model_context_window=372000'),
+      `binding window missing from argv: ${JSON.stringify(args)}`,
+    );
+    assert.ok(
+      args.includes('model_auto_compact_token_limit=327360'),
+      `binding-derived compaction limit missing from argv: ${JSON.stringify(args)}`,
+    );
+    assert.equal(
+      args.some((arg) => /model_context_window=(111000|222000)/.test(arg)),
+      false,
+      'free-form args must not replace the invocation-owned context window',
+    );
+    assert.equal(
+      args.some((arg) => /model_auto_compact_token_limit=(95000|96000)/.test(arg)),
+      false,
+      'free-form args must not replace the invocation-owned compaction limit',
+    );
+    assert.ok(
+      args.includes('model_reasoning_effort="low"'),
+      'ordinary user-configurable Codex preferences must retain their existing precedence',
+    );
+    assert.ok(
+      args.includes('model_provider="custom"'),
+      'provider selection is not part of the capacity binding and must retain its existing precedence',
+    );
+  });
+
+  test('keeps binding-owned model identity ahead of free-form cliConfigArgs', async () => {
+    for (const rawOverride of [
+      '--model gpt-4o',
+      '--model=gpt-4o',
+      '-m gpt-4o',
+      '-m=gpt-4o',
+      '-mgpt-4o',
+      '--config model="gpt-4o"',
+    ]) {
+      const proc = createMockProcess();
+      const spawnFn = createMockSpawnFn(proc);
+      const service = new CodexAgentService({
+        l0CompilerFn: fakeL0Compiler,
+        spawnFn,
+        catId: 'runtime-sol',
+        model: 'gpt-5.6-sol',
+      });
+
+      const promise = collect(
+        service.invoke('hello', {
+          contextCapacity: { windowTokens: 372000, inputCeilingTokens: 356000, actionable: true },
+          cliConfigArgs: [rawOverride],
+        }),
+      );
+      emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-binding-owned-model' }]);
+      await promise;
+
+      const args = spawnFn.mock.calls[0].arguments[1];
+      const modelIndex = args.indexOf('--model');
+      assert.ok(modelIndex >= 0, `binding model flag missing for ${rawOverride}: ${JSON.stringify(args)}`);
+      assert.equal(args[modelIndex + 1], 'gpt-5.6-sol', `free-form model override survived: ${rawOverride}`);
+      assert.equal(
+        args.some((arg) => arg.includes('gpt-4o')),
+        false,
+        `free-form model identity override survived: ${rawOverride}`,
+      );
     }
   });
 
