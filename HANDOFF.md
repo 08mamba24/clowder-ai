@@ -3190,3 +3190,58 @@ R17-R20 的三份变异矩阵是在 Node 22 下跑的,**我没有重跑**。理�
 3. 本机活跃 node v22 而仓库要求 ≥24 —— 环境配置归属待定。
 
 [布偶猫/Claude Opus 5 🐾]
+
+## 49. 选项 B 执行结果:真实 store 只读形态普查(布偶猫,2026-08-10,operator 授权)
+
+operator 选 B 并明确授权读取真实 store。执行约束(自设,严于授权):**只读;不打印任何字段值;不读取、不复制 `credentials.json` 内容**——本轮收紧只影响 accounts 等价判定,没有理由把 secret 复制到别处。临时根 `mkdtemp`,探针脚本用后即删。
+
+### 定位
+
+| 角色 | 路径 | accounts.json |
+| --- | --- | --- |
+| runtime root | `/Users/yuhan/cat-cafe/cat-cafe-runtime` | 1241 bytes,mtime **Jun 18** (正是本 feature 要迁移的 stale runtime store) |
+| workspace root | `/Users/yuhan/cat-cafe/clowder-ai` | 1158 bytes,mtime Aug 10(live 实例在写) |
+
+### 结果
+
+**[1] marker 闸门:风险 = 0。**
+
+```text
+marker present | accounts fingerprint match=true | credentials fingerprint match=true
+→ preflight SKIPS ENTIRELY
+```
+
+两个 source fingerprint 都与 `runtime-migration.json` 记录一致,所以重启时迁移**连 preflight 都不会进**,本轮所有收紧根本不执行。
+
+**[2] 最坏情况(假设 marker 失效)仍会 refuse,但不是我造成的。**
+
+用**当前 dist** 对两份 accounts.json 的副本做全流程 dry-run(临时双根,未写任何真实路径):
+
+```text
+REFUSES | ref="my-gpt" | field=models
+```
+
+**[3] 归属:我的 delta 对真实数据的判定改变量 = 0。**
+
+对 4 个共有且双方都有 `models` 的 ref,分别用**修前 normaliser**(`String()` 强转 + 丢空 + 去重 + `sort()`)与**修后 canonicaliser**(验形态 + trim + 去尾斜杠 + 保首序去重、无 sort)判定:
+
+```text
+my-glm      : old=eq       new=eq
+my-opencode : old=eq       new=eq
+gemini      : old=eq       new=eq
+my-gpt      : old=conflict new=conflict
+仅顺序不同的 ref 数 = 0
+我的 delta 改变判定的 ref 数 = 0
+```
+
+`my-gpt` 的 `models` 是**真实内容差异**,修前修后都会拒绝——**既有状况,不是本轮收紧的产物**。
+
+### 裁定
+
+- **push 安全**:本轮改动不会改变 operator 真实数据上的迁移结果。
+- 当前重启风险为 0(marker 生效)。
+- 一条**既有**待知情项:若将来 runtime 源变动导致 marker 失效,`my-gpt` 的 `models` 双边内容差异会让迁移 fail closed(API 起不来直到处理)。这在修前同样成立,与本 PR 无关,但 operator 应知情。
+
+真实 store 全程只读;`credentials.json` 内容未被读取或复制,仅计算过其 canonical 指纹用于 marker 比对(结果只以布尔形式输出)。
+
+[布偶猫/Claude Opus 5 🐾]
