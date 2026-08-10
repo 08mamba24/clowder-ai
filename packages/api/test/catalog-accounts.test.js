@@ -316,6 +316,46 @@ describe('global accounts (clowder-ai#340)', () => {
     assert.equal(result.shared.displayName, 'Global Shared');
   });
 
+  /**
+   * R20: the v1 branch merges its per-client secret maps with
+   * Object.assign(profileSecrets, clientSecrets). Object.assign copies with
+   * [[Set]] semantics, so a legacy profile whose id is `__proto__` invoked the
+   * prototype setter on a plain {} target — the entry vanished, Object.entries()
+   * never saw it, and that profile's credential was silently not migrated while
+   * everything else reported success. Written as raw JSON: a JS object literal
+   * could not express the fixture.
+   */
+  it('a v1 legacy profile id of __proto__ still migrates its credential (R20)', async () => {
+    const { readCatalogAccounts, resetMigrationState } = await import('../dist/config/catalog-accounts.js');
+    resetMigrationState();
+
+    await writeFile(
+      join(projectRoot, '.cat-cafe', 'provider-profiles.json'),
+      '{"version":1,"providers":{"anthropic":{"profiles":[' +
+        '{"id":"__proto__","displayName":"Proto Profile","authType":"api_key"},' +
+        '{"id":"normal-profile","displayName":"Normal","authType":"api_key"}]}}}',
+      'utf-8',
+    );
+    await writeFile(
+      join(projectRoot, '.cat-cafe', 'provider-profiles.secrets.local.json'),
+      '{"version":1,"providers":{"anthropic":{' +
+        '"__proto__":{"apiKey":"sk-proto-secret"},' +
+        '"normal-profile":{"apiKey":"sk-normal-secret"}}}}',
+      'utf-8',
+    );
+
+    const result = readCatalogAccounts(projectRoot);
+    assert.ok(Object.hasOwn(result, '__proto__'), 'the __proto__ account must be migrated');
+    assert.equal(result['__proto__'].displayName, 'Proto Profile');
+
+    const creds = JSON.parse(await readFile(join(globalRoot, '.cat-cafe', 'credentials.json'), 'utf-8'));
+    assert.ok(Object.hasOwn(creds, '__proto__'), 'its credential must be migrated, not silently dropped');
+    assert.equal(creds['__proto__'].apiKey, 'sk-proto-secret');
+    // The sibling proves the migration reported success either way — which is
+    // exactly why the drop was silent.
+    assert.equal(creds['normal-profile'].apiKey, 'sk-normal-secret');
+  });
+
   it('migrates v1 nested providers.<client>.profiles[] into flat accounts', async () => {
     const { readCatalogAccounts, resetMigrationState } = await import('../dist/config/catalog-accounts.js');
     resetMigrationState();

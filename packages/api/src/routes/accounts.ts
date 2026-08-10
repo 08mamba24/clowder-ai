@@ -23,28 +23,33 @@ import { isPathUnderRoots, pathsEqual } from '../utils/project-path.js';
 import { resolveUserId } from '../utils/request-identity.js';
 
 // clowder-ai#340: Derive client identity from well-known account IDs, not stored protocol.
-const BUILTIN_CLIENT_FOR_ID: Record<string, string> = {
-  claude: 'anthropic',
-  codex: 'openai',
-  gemini: 'google',
-  kimi: 'kimi',
-  opencode: 'opencode',
-  // Canonical OAuth IDs (reachable via deriveAccountId slugging display names)
-  anthropic: 'anthropic',
-  openai: 'openai',
-  google: 'google',
-  // builtin_* prefixed (explicit reserved form):
-  builtin_anthropic: 'anthropic',
-  builtin_openai: 'openai',
-  builtin_google: 'google',
-  builtin_kimi: 'kimi',
-  builtin_opencode: 'opencode',
-};
+// R20: a Map, not an object literal. `id` below is a user account ref, and an
+// object literal answers every Object.prototype member — accountToView('toString')
+// picked up Object.prototype.toString as this account's client identity.
+const BUILTIN_CLIENT_FOR_ID = new Map<string, string>(
+  Object.entries({
+    claude: 'anthropic',
+    codex: 'openai',
+    gemini: 'google',
+    kimi: 'kimi',
+    opencode: 'opencode',
+    // Canonical OAuth IDs (reachable via deriveAccountId slugging display names)
+    anthropic: 'anthropic',
+    openai: 'openai',
+    google: 'google',
+    // builtin_* prefixed (explicit reserved form):
+    builtin_anthropic: 'anthropic',
+    builtin_openai: 'openai',
+    builtin_google: 'google',
+    builtin_kimi: 'kimi',
+    builtin_opencode: 'opencode',
+  }),
+);
 
 /** Synthesize a ProviderProfileView-compatible object from AccountConfig. */
 function accountToView(id: string, account: AccountConfig, apiKeyPresent: boolean) {
   const isBuiltin = account.authType === 'oauth';
-  const builtinClient = BUILTIN_CLIENT_FOR_ID[id];
+  const builtinClient = BUILTIN_CLIENT_FOR_ID.get(id);
   const clientId = account.clientId ?? (isBuiltin ? builtinClient : undefined);
   return {
     id,
@@ -158,10 +163,11 @@ const envVarsSchema = z
   .transform((vars) => {
     if (!vars) return vars;
     // Strip CAT_CAFE_ reserved keys server-side
-    const filtered: Record<string, string> = {};
-    for (const [k, v] of Object.entries(vars)) {
-      if (!k.startsWith('CAT_CAFE_')) filtered[k] = v;
-    }
+    // Object.fromEntries, not `filtered[k] = v`: envKeySchema accepts
+    // `__proto__` (it starts with `_`), and assigning that key to a plain object
+    // invokes the prototype setter, so a schema-VALID env var was accepted by
+    // validation and then silently discarded (R20).
+    const filtered = Object.fromEntries(Object.entries(vars).filter(([k]) => !k.startsWith('CAT_CAFE_')));
     return Object.keys(filtered).length > 0 ? filtered : undefined;
   });
 const modelAliasKeySchema = z.string().refine((key) => key.trim().length > 0, 'model alias key cannot be blank');

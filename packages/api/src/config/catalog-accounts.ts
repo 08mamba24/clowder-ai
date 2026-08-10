@@ -630,9 +630,15 @@ function migrateLegacyFrom(
   const secretsMeta = JSON.parse(readFileSync(secretsPath, 'utf-8'));
   // v2/v3: flat { profiles: { <id>: { apiKey } } }.
   // v1: nested { providers: { <client>: { <id>: { apiKey } } } }.
-  let profileSecrets: Record<string, Record<string, unknown>> = {};
+  // R20: keys here are legacy profile IDs out of a JSON file, so this is a
+  // ref-keyed store like any other. It matters most for the v1 branch below:
+  // Object.assign copies with [[Set]] semantics, so assigning a `__proto__`
+  // entry into a plain {} invokes the prototype setter — the entry vanishes,
+  // Object.entries() never sees it, and that profile's credential is silently
+  // not migrated. A null-prototype target has no setter to invoke.
+  let profileSecrets: Record<string, Record<string, unknown>> = refStore<Record<string, unknown>>();
   if (secretsMeta?.profiles && typeof secretsMeta.profiles === 'object') {
-    profileSecrets = secretsMeta.profiles;
+    profileSecrets = refStore<Record<string, unknown>>(secretsMeta.profiles);
   } else if (secretsMeta?.providers && typeof secretsMeta.providers === 'object') {
     for (const clientSecrets of Object.values(secretsMeta.providers as Record<string, unknown>)) {
       if (typeof clientSecrets === 'object' && clientSecrets !== null) {

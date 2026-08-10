@@ -135,6 +135,112 @@ describe('accounts routes', () => {
     });
   }
 
+  /**
+   * R20, display layer. accountToView() indexes BUILTIN_CLIENT_FOR_ID with the
+   * account's own id, which is user data, so as an object literal it answered
+   * every Object.prototype member — an oauth account named "toString" took
+   * Object.prototype.toString as its client identity. Converted to a Map.
+   *
+   * Measured honesty: that variant is NOT independently killable here. A
+   * function-valued clientId is erased by JSON.stringify, and accountToView's
+   * output only ever becomes an HTTP response, so the prototype hit and the
+   * correct `undefined` serialise identically. The fix is kept as hygiene — one
+   * refactor away from being observable — but it is not counted as covered.
+   *
+   * What this test does pin is the half that IS discriminating: the Map
+   * conversion must not have broken real builtin lookups.
+   */
+  it('builtin client identity survives the Map conversion, and a prototype-named id gets none (R20)', async () => {
+    const Fastify = (await import('fastify')).default;
+    const { accountsRoutes } = await import('../dist/routes/accounts.js');
+    const { writeCatalogAccount } = await import('../dist/config/catalog-accounts.js');
+    const app = Fastify();
+    await app.register(accountsRoutes);
+    await app.ready();
+
+    const projectDir = await makeTmpDir('proto-view');
+    setGlobalRoot(projectDir);
+    try {
+      writeCatalogAccount(projectDir, 'claude', { authType: 'oauth' });
+      writeCatalogAccount(projectDir, 'toString', { authType: 'oauth' });
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/accounts?projectPath=${encodeURIComponent(projectDir)}`,
+        headers: AUTH_HEADERS,
+      });
+      assert.equal(res.statusCode, 200);
+      const byId = Object.fromEntries(res.json().providers.map((p) => [p.id, p]));
+
+      assert.equal(byId.claude?.clientId, 'anthropic', 'a real builtin id must still resolve its client');
+      assert.ok(byId.toString, 'an account named toString must still be listed');
+      assert.equal(byId.toString.clientId, undefined, 'and must carry no client identity');
+    } finally {
+      restoreGlobalRoot();
+      await app.close();
+    }
+  });
+
+  /**
+   * R20, write path — pins where an env var named `__proto__` actually dies.
+   *
+   * Reading the code alone suggests our CAT_CAFE_ filter is the culprit:
+   * envKeySchema accepts `__proto__` (it starts with `_`), and the filter built
+   * its result with `filtered[k] = v`, which invokes the prototype setter for
+   * that key. Measured, it never gets that far — there are two guards in front:
+   *
+   *   1. fastify's JSON body parser (secure-json-parse) rejects the request
+   *      outright: 400 "Object contains forbidden prototype property".
+   *   2. zod's record parser drops the key as a pollution guard, had it passed.
+   *
+   * So the filter hazard is unreachable over HTTP and the change to
+   * Object.fromEntries is defence in depth for non-HTTP callers, NOT a live
+   * defect fix. This test pins the reachable contract — the 400 — and that a
+   * normal envVars POST is unaffected by the guard.
+   */
+  it('a request body carrying __proto__ is rejected at the HTTP boundary (R20)', async () => {
+    const Fastify = (await import('fastify')).default;
+    const { accountsRoutes } = await import('../dist/routes/accounts.js');
+    const { readCatalogAccounts } = await import('../dist/config/catalog-accounts.js');
+    const app = Fastify();
+    await app.register(accountsRoutes);
+    await app.ready();
+
+    const projectDir = await makeTmpDir('proto-envvars');
+    setGlobalRoot(projectDir);
+    try {
+      // Raw JSON text: `{ __proto__: 'kept' }` as a literal sets the prototype
+      // instead of creating the key, so the payload would not have carried the
+      // field under test at all.
+      const rejected = await app.inject({
+        method: 'POST',
+        url: '/api/accounts',
+        headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+        payload:
+          `{"projectPath":${JSON.stringify(projectDir)},"name":"proto-env","authType":"api_key",` +
+          '"envVars":{"__proto__":"kept","MY_VAR":"ok"}}',
+      });
+      assert.equal(rejected.statusCode, 400, 'a __proto__ key anywhere in the body must be refused');
+      assert.match(rejected.json().message, /forbidden prototype property/);
+
+      // The guard must not be a blanket envVars refusal.
+      const accepted = await app.inject({
+        method: 'POST',
+        url: '/api/accounts',
+        headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+        payload:
+          `{"projectPath":${JSON.stringify(projectDir)},"name":"plain-env","authType":"api_key",` +
+          '"envVars":{"MY_VAR":"ok","CAT_CAFE_RESERVED":"stripped"}}',
+      });
+      assert.equal(accepted.statusCode, 200);
+      const stored = readCatalogAccounts(projectDir)[accepted.json().profile.id];
+      assert.equal(stored.envVars.MY_VAR, 'ok');
+      assert.equal(Object.hasOwn(stored.envVars, 'CAT_CAFE_RESERVED'), false, 'reserved keys are still stripped');
+    } finally {
+      restoreGlobalRoot();
+      await app.close();
+    }
+  });
+
   it('create + list profile flow', async () => {
     const Fastify = (await import('fastify')).default;
     const { accountsRoutes } = await import('../dist/routes/accounts.js');
