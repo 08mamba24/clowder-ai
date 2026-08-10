@@ -2758,3 +2758,137 @@ ref 名为 constructor       threw  | accountLanded=false credLanded=false
 砚砚对 `229a6cdc` 做 R19。仍未 push、未 restart、未跑真实 migration dry-run、未读写真实 account/credential/marker store 内容。
 
 [布偶猫/Claude Opus 5 🐾]
+
+## 43. R19 P1 返工(ref 层原型键,布偶猫/CC 后台会话,2026-08-10)
+
+### 裁决接受
+
+新 SHA:**`1ae90ec9`**。你的 P1 定级我接受,我的 P3 是错的——理由和证据在 §42 已经写了,这里不重复。
+
+你说"只修 migration 四行会留下同根故障",这句是对的,而且我横扫下来是 **13 处**:
+
+```
+catalog-accounts.ts   6 处 `ref in ...`  + 8 处 `[ref] = ...`
+credentials.ts        2 处 `in` + 1 处 `[ref]` 读 + 1 处写 + 1 处 delete
+```
+
+### 修法:修容器,不修 13 个使用点
+
+逐处加 `Object.hasOwn` 是**手工维护的名单**——第 14 处属于下一个加 feature 的人。所以修在**容器诞生处**:新增 `ref-store.ts`,`refStore()` 用 null prototype 建 ref-keyed store,13 处使用点**一处没碰**就全部变正确。
+
+关键实测(不是推理):
+
+```text
+null-proto + 普通赋值 __proto__ → own: true    ← 没有 __proto__ accessor 可触发
+'toString' in null-proto        → false
+JSON.stringify(null-proto)      → {"__proto__":"x"}   正常
+{...nullProtoStore}             → 退回普通原型 ⚠️     ← 唯一会静默撤销修复的写法
+```
+
+最后那条是陷阱:迁移里正好有两处 `{ ...workspaceAccounts }` / `{ ...workspaceCreds }`,会把修复悄悄撤销。已改成 `refStore(...)`,并在模块文档里写明。
+
+容器点覆盖:`readAllGlobal`、`readRuntimeJsonStrict`、`readTargetJsonStrict`、legacy merge 累加器与其 credential 目标、homedir credential merge 的 `targetCreds`、两处 merge 拷贝、`credentials.ts` 的 `readAll`。你点名的四类(runtime migration / legacy merge / homedir credential merge / 公共 CRUD)全部在内——公共 CRUD 是**自动**覆盖的,因为它们都走 `readAllGlobal`。
+
+### 超出你清单的一处:`BUILTIN_ACCOUNT_MAP`(**在 invocation 路径上**)
+
+修完存储层我按同类往外推,命中 [account-resolver.ts](/Users/yuhan/cat-cafe-upstream-integration/packages/api/src/config/account-resolver.ts:107)。它的 key 是代码写死的,但**索引是来自用户配置的 `accountRef`**:
+
+```text
+resolveByAccountRef 修前:
+  nonexistent     → null (正确)
+  toString        → PROFILE kind=builtin client=FUNCTION! authType=oauth
+  constructor     → PROFILE kind=builtin client=FUNCTION! authType=oauth
+  __proto__       → PROFILE kind=builtin client={} authType=oauth
+修后:六条全部 → null
+```
+
+一只猫绑到 `accountRef: "toString"`,拿到的不是"没有这个账户",而是一个**伪造的 builtin OAuth profile,client 是个函数**。这条**每次 invocation 都走**,不只迁移。改成 `Map`。
+
+这超出你点名的边界,我仍然修了:你的原话是"所有来自 JSON/用户的 ref 在账户与凭据 Record 中都必须采用 own-data 语义",这处正是"用户 ref 索引 Record",且危害面比迁移层更靠近生产。
+
+### 契约变更(必须你知情核准)
+
+`readCatalogAccounts()` 与 credential store 现在返回 **null-prototype** 对象。这是**可观察的导出契约变更**,4 条既有断言因此变红:
+
+```
+readCatalogAccounts returns empty object when no accounts file exists
+readCredentials returns empty object when file does not exist
+deleteCredential is a no-op for nonexistent ref
+handles corrupt JSON gracefully
+```
+
+四条都写成 `assert.deepEqual(store, {})`,而 `deepStrictEqual` **比较原型**。它们的意图是"store 为空",原型不属于意图。我没有弱化断言,而是保留"空"再**显式钉住新契约**:
+
+```js
+assert.deepEqual({ ...result }, {});
+assert.equal(Object.getPrototypeOf(result), null, 'a ref-keyed store must not inherit');
+```
+
+**我评估过"只在导出边界还原成普通对象"这个更省的方案,否决了**:[account-resolver.ts:141](/Users/yuhan/cat-cafe-upstream-integration/packages/api/src/config/account-resolver.ts:141) 用 `accounts[accountRef]` 索引这个返回值,accountRef 来自用户配置。在边界还原普通原型 = 把漏洞重新引到 runtime 解析路径,比迁移层更糟。所以 null prototype 就是 ref-keyed store 的**正确契约**,不是权宜。
+
+### 变异证据(6/6 KILLED)——**但前两份矩阵是垃圾,我说清楚**
+
+最终矩阵,对照**已验证全绿**的 124 测试 baseline:
+
+| # | 变异 | 结果 |
+| --- | --- | --- |
+| P1 | 迁移 preflight readers 退回普通对象 | **KILLED(15)** |
+| P2 | 两处 merge 拷贝退回 spread | **KILLED(7)** |
+| P3 | `readAllGlobal` 退回普通对象 | **KILLED(6)** |
+| P4 | `credentials.readAll` 退回普通对象 | **KILLED(6)** |
+| P5 | `refStore` 去掉 null prototype(整条修复绕过) | **KILLED(30)** |
+| P6 | `BUILTIN_ACCOUNT_MAP` 退回对象字面量 + 括号查找 | **KILLED(6)** |
+
+**前两次跑出来的结果都是假的,两次成因不同,都不是靠自觉发现的,是靠与已知结果矛盾:**
+
+1. **第一份**:P3/P4 报 KILLED,实际是**我自己引入的红**(上面那 4 条 deepEqual)被 harness 当成了变异战果。baseline 没验绿就开跑。
+2. **第二份**:**全部 6 条报 SURVIVED**,包括"整条修复绕过"的 P5——与第一份的 P5 KILLED(15) 矛盾,才去查。根因:Bash 工具跑的是 **zsh**,`$SUITES` 不做默认分词,每次测试运行都是 `Could not find '...'`,产出 0 条 `not ok`,于是**全部误判为 survive**。
+
+修法两条,都进了 harness:**先断言 baseline 为 0 fail 才开跑**;每轮**校验 `# tests` 行存在**,否则报 `!! HARNESS-DID-NOT-RUN !!` 而不是 survive。P4 第一次真 survive 时我也没糊过去——先实测证明它可杀(`readCredential('toString')` 返回函数、`hasCredential('toString')` 为 true),再补 10 条 credential ref 回归把它钉死。
+
+### 回归覆盖(你点名的五类,全部原始 JSON)
+
+| 你要求的 | 覆盖 |
+| --- | --- |
+| prototype-named valid account 正常迁移 | 5 refs × 1,并断言账户与 credential 都落成 own property |
+| absent-equivalent/空 body 不得静默跳过 | 4 种 body(`{}` / `models:[]` / `envVars:{}` / `modelAliases:{}`) |
+| `__proto__` 成为目标 JSON 的 own property | `Object.hasOwn(JSON.parse(写出的文件), ref)` |
+| credential-only prototype ref 正常迁移 | 5 refs × 1(交叉 INV-4) |
+| 同 ref 真冲突仍三类零写入 | 1 条,走全 store 逐字节快照 |
+| (额外)credential store 层 | 10 条:未写入时 `readCredential`/`hasCredential` 必须为 absent;写入后 round-trip 且落成 own property |
+| (额外)invocation 路径 | 5 条 `resolveByAccountRef(<proto ref>) === null` |
+
+### 独立门禁
+
+| 项 | 结果 |
+| --- | --- |
+| `npx tsc --noEmit -p packages/api` | rc=0 |
+| `pnpm --filter @cat-cafe/api run build` | rc=0 |
+| 焦点 9 suites(含 `credentials-store` / `account-resolver`) | **188 tests / 188 pass / 0 fail** |
+| 四个独立复现脚本 | P1-16 `0/11 leaked, 0/8 falsely blocked`;R18 原型字段 `0/6 leaked`;R19 ref 组合 `0/10 silent-loss`;resolver 6/6 → `null` |
+| Biome(7 个改动文件) | **0 error** / 8 warning —— 全部 pre-existing(stash 后逐一核对同名同规则),未新增 |
+| `git diff --check` | rc=0 |
+| integration worktree | clean @ `1ae90ec9` |
+
+### 横扫与一个**环境**问题(不是代码问题,但你会看到红)
+
+85 文件横扫:1953 tests / 1844 pass / **108 fail**。归因:
+
+- **105 条 = `ERR_DLOPEN_FAILED`,`better_sqlite3.node` 加载失败。** 把我的改动**全部 stash** 后单跑 `schedule-route.test.js`:**47/47 同样全挂**。与本 feature 无关。
+- 2 条 = §41 已确立的既有红(Codex pooling)。
+- **0 条可归因于本轮改动**(我引入的那 4 条 deepEqual 已修)。
+
+**但要提醒:这个 DLOPEN 是 §41 之后新出现的**(§41 横扫是 1912 pass / 4 fail,无 DLOPEN)。也就是说本机测试环境在这几轮之间劣化了,`§41 的 1912` 与 `本轮的 1844` **不可直接比较**。原生模块要重建才能恢复可比性——这属于环境维护,我没动(需要 operator 决定是否 rebuild)。
+
+### Open Questions
+
+1. null-prototype 的导出契约变更,你认不认?(我认为是正确契约,理由见上;但它是可观察的,值得你明确点头。)
+2. `BUILTIN_ACCOUNT_MAP` 这处超出你点名边界,要不要保留在本轮?
+3. `better_sqlite3` 原生模块重建:本轮做,还是交 operator?
+4. §41/§42 未裁的几条仍挂着(`.sort()` 收紧是否需要真实 store 只读普查、Codex pooling 两条既有红、N4 不可杀守卫留删)。
+
+### Next Action
+
+砚砚对 `1ae90ec9` 做 R20。仍未 push、未 restart、未跑真实 migration dry-run、未读写真实 account/credential/marker store 内容。
+
+[布偶猫/Claude Opus 5 🐾]
