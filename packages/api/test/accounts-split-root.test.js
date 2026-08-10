@@ -76,6 +76,17 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
     await writeFile(join(runtimeRoot, '.cat-cafe', 'accounts.json'), JSON.stringify(accounts, null, 2), 'utf-8');
   }
 
+  /**
+   * R18 P1 fixtures must be RAW JSON TEXT. A JS object literal `{ __proto__: x }`
+   * invokes the prototype setter instead of creating the own property, and
+   * JSON.stringify() would then emit `{}` — the fixture would quietly not
+   * contain the field under test. JSON.parse, which is what the migration
+   * actually uses, does create it as an ordinary own property.
+   */
+  async function writeAccountsJson(root, json) {
+    await writeFile(join(root, '.cat-cafe', 'accounts.json'), json, 'utf-8');
+  }
+
   it('redirectRuntimePathLexical maps runtime-root paths to the workspace (synchronous, no IO)', () => {
     setSplitEnv();
     assert.equal(redirectRuntimePathLexical(runtimeRoot), resolve(workspaceRoot));
@@ -671,6 +682,108 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
       'a different default model is a different account, and models are safe to print',
     );
     await assertWorkspaceUntouched(before, 'reordered models list');
+  });
+
+  /**
+   * R18 P1: persisted field NAMES come from JSON, where TypeScript's field list
+   * does not apply and Object.prototype's members are perfectly legal keys.
+   *
+   * The canonicaliser table was an object literal looked up with `table[field]`,
+   * so a persisted `toString` field resolved to Object.prototype.toString —
+   * callable, and returning '[object Undefined]' for every input, which made two
+   * different persisted values canonicalise to the SAME value. That is the
+   * "unknown fields are compared raw" guarantee failing exactly where it was
+   * supposed to be strictest, and it copied the stale credential.
+   *
+   * Not one bad key but a class, with three distinct outcomes:
+   *   toString    → silently equal (credential copied, marker written)
+   *   constructor → Object(1) and Object(true) both canonicalise to {} — same
+   *   __proto__   → Object.prototype is not callable: died on a TypeError, and
+   *                 writing the result back invoked the prototype SETTER, so
+   *                 the field vanished from the comparison entirely
+   *
+   * Fixed by making the table and the canonical view Maps, whose keys are data.
+   */
+  const PROTOTYPE_KEY_SHAPES = [
+    {
+      title: 'a persisted toString field with different values',
+      field: 'toString',
+      runtime: '{"shared":{"authType":"api_key","toString":"runtime-value"}}',
+      workspace: '{"shared":{"authType":"api_key","toString":"workspace-value"}}',
+    },
+    {
+      title: 'a persisted toString field on the runtime side only',
+      field: 'toString',
+      runtime: '{"shared":{"authType":"api_key","toString":"runtime-only"}}',
+      workspace: '{"shared":{"authType":"api_key"}}',
+    },
+    {
+      title: 'a persisted __proto__ field with different values',
+      field: '__proto__',
+      runtime: '{"shared":{"authType":"api_key","__proto__":"runtime-value"}}',
+      workspace: '{"shared":{"authType":"api_key","__proto__":"workspace-value"}}',
+    },
+    {
+      // Object(1) and Object(true) both canonicalise to {} — a leak that needs
+      // no string values at all.
+      title: 'a persisted constructor field with different primitives',
+      field: 'constructor',
+      runtime: '{"shared":{"authType":"api_key","constructor":1}}',
+      workspace: '{"shared":{"authType":"api_key","constructor":true}}',
+    },
+    {
+      title: 'a persisted valueOf field with different values',
+      field: 'valueOf',
+      runtime: '{"shared":{"authType":"api_key","valueOf":"runtime-value"}}',
+      workspace: '{"shared":{"authType":"api_key","valueOf":"workspace-value"}}',
+    },
+  ];
+
+  for (const scenario of PROTOTYPE_KEY_SHAPES) {
+    it(`${scenario.title} is a difference, not an inherited lookup (R18 P1)`, async () => {
+      setSplitEnv();
+      await writeAccountsJson(runtimeRoot, scenario.runtime);
+      await writeFile(
+        join(runtimeRoot, '.cat-cafe', 'credentials.json'),
+        JSON.stringify({ shared: { apiKey: `sk-proto-${scenario.field}-source` } }),
+        'utf-8',
+      );
+      await writeAccountsJson(workspaceRoot, scenario.workspace);
+      const before = await snapshotWorkspaceStore();
+
+      let thrown = null;
+      try {
+        readCatalogAccounts(runtimeRoot);
+      } catch (err) {
+        thrown = err;
+      }
+      assert.ok(thrown instanceof Error, `${scenario.title}: must fail closed`);
+      assert.match(thrown.message, /migration conflict for "shared"/);
+      // A REFUSAL, not a TypeError from calling a prototype member.
+      assert.match(
+        thrown.message,
+        new RegExp(`${scenario.field.replace(/[_]/g, '_')} differs \\(values not shown\\)`),
+        `${scenario.title}: reported as an unknown-field difference, not a crash`,
+      );
+      assert.ok(
+        !/is not a function|Cannot convert/.test(thrown.message),
+        `${scenario.title}: must not fail closed by accident via a TypeError`,
+      );
+      await assertWorkspaceUntouched(before, scenario.title);
+    });
+  }
+
+  it('an identical prototype-named field is still an equivalent account (R18 P1 control)', async () => {
+    setSplitEnv();
+    // The fix must not turn every prototype-named key into a permanent conflict:
+    // identical persisted content is still identical.
+    await writeAccountsJson(runtimeRoot, '{"shared":{"authType":"api_key","toString":"same-value"}}');
+    await writeAccountsJson(workspaceRoot, '{"shared":{"authType":"api_key","toString":"same-value"}}');
+
+    assert.doesNotThrow(
+      () => readCatalogAccounts(runtimeRoot),
+      'a prototype-named field holding identical content is not a difference',
+    );
   });
 
   it('conflicting same-id credentials fail closed without printing secret values (INV-5/INV-6)', async () => {

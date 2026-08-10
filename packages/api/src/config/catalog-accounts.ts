@@ -324,14 +324,38 @@ function canonicalEnvVars(raw: unknown): CanonicalField | undefined {
 /**
  * The only fields that are normalised before comparison — i.e. the only fields
  * that need a shape gate. Everything else is compared raw (see CanonicalField).
+ *
+ * A Map, not an object literal, and the canonical view below is a Map too.
+ * Persisted field NAMES come from JSON, where TypeScript's field list does not
+ * apply and `Object.prototype`'s members are perfectly legal keys — so an
+ * object-keyed table turns a lookup into a prototype walk (R18 P1):
+ *
+ *   table['toString']    → Object.prototype.toString  — callable, and returns
+ *                          '[object Undefined]' for EVERY input, so two
+ *                          different persisted toString values canonicalise to
+ *                          the same string and the migration copies the stale
+ *                          credential.
+ *   table['constructor'] → Object — Object(1) and Object(true) both canonical-
+ *                          ise to {}. Same leak, different inherited member.
+ *   table['__proto__']   → Object.prototype — not callable, so the migration
+ *                          died on a TypeError instead of refusing.
+ *
+ * Writing the result into an object literal is the same hazard twice over:
+ * `canonical['__proto__'] = raw` invokes the prototype SETTER instead of
+ * creating an own property, so the field vanishes from the comparison, and
+ * `'toString' in canonical` is true for every account ever built.
+ *
+ * Map keys are data. There is no key an attacker or a legacy file can choose
+ * that turns a lookup into inheritance, so the whole class is gone by
+ * construction rather than by a deny-list someone has to maintain.
  */
-const PERSISTED_FIELD_CANONICALIZERS: Record<string, (raw: unknown) => CanonicalField | undefined> = {
-  baseUrl: canonicalBaseUrl,
-  displayName: canonicalDisplayName,
-  models: canonicalModels,
-  modelAliases: canonicalModelAliases,
-  envVars: canonicalEnvVars,
-};
+const PERSISTED_FIELD_CANONICALIZERS = new Map<string, (raw: unknown) => CanonicalField | undefined>([
+  ['baseUrl', canonicalBaseUrl],
+  ['displayName', canonicalDisplayName],
+  ['models', canonicalModels],
+  ['modelAliases', canonicalModelAliases],
+  ['envVars', canonicalEnvVars],
+]);
 
 /**
  * Canonical view of EVERY persisted account field.
@@ -341,17 +365,21 @@ const PERSISTED_FIELD_CANONICALIZERS: Record<string, (raw: unknown) => Canonical
  * canonicaliser and is therefore carried through RAW — the strictest possible
  * comparison — instead of silently sitting outside the equivalence check (R3
  * P1-2: clientId/envVars divergence was once skipped as "equivalent").
+ *
+ * Object.entries() is own-enumerable only, which is what makes it a safe way to
+ * read a JSON-parsed account: JSON.parse creates `__proto__` as an ordinary own
+ * property, so it arrives here as data and stays data.
  */
-function canonicalizeAccount(account: AccountConfig): Record<string, unknown> {
-  const canonical: Record<string, unknown> = {};
+function canonicalizeAccount(account: AccountConfig): Map<string, unknown> {
+  const canonical = new Map<string, unknown>();
   for (const [field, raw] of Object.entries(account) as Array<[string, unknown]>) {
-    const canonicalize = PERSISTED_FIELD_CANONICALIZERS[field];
+    const canonicalize = PERSISTED_FIELD_CANONICALIZERS.get(field);
     if (!canonicalize) {
-      canonical[field] = raw;
+      canonical.set(field, raw);
       continue;
     }
     const value = canonicalize(raw);
-    if (value !== undefined) canonical[field] = value;
+    if (value !== undefined) canonical.set(field, value);
   }
   return canonical;
 }
@@ -386,31 +414,36 @@ function describeAccountConflict(existing: AccountConfig, incoming: AccountConfi
   const next = canonicalizeAccount(incoming);
   const diffs: string[] = [];
 
-  for (const field of [...new Set([...Object.keys(current), ...Object.keys(next)])].sort()) {
-    const a = field in current ? canonicalJson(current[field]) : undefined;
-    const b = field in next ? canonicalJson(next[field]) : undefined;
+  // Map.has/get throughout: `field in obj` walks the prototype, so every
+  // account would have reported a `toString` it never had (R18 P1).
+  for (const field of [...new Set([...current.keys(), ...next.keys()])].sort()) {
+    const a = current.has(field) ? canonicalJson(current.get(field)) : undefined;
+    const b = next.has(field) ? canonicalJson(next.get(field)) : undefined;
     if (a === b) continue;
 
-    const canonicalised = field in PERSISTED_FIELD_CANONICALIZERS;
+    const canonicalised = PERSISTED_FIELD_CANONICALIZERS.has(field);
     // P1-14/P1-16: content that failed its shape gate is reported as a
     // difference without ever echoing what made it unusable.
-    if (canonicalised && (isInvalidCanonicalField(current[field]) || isInvalidCanonicalField(next[field]))) {
+    if (canonicalised && (isInvalidCanonicalField(current.get(field)) || isInvalidCanonicalField(next.get(field)))) {
       diffs.push(`${field} invalid (values not shown)`);
       continue;
     }
-    const currentValue = canonicalised ? untagCanonicalField(current[field]) : current[field];
-    const nextValue = canonicalised ? untagCanonicalField(next[field]) : next[field];
+    const currentValue = canonicalised ? untagCanonicalField(current.get(field)) : current.get(field);
+    const nextValue = canonicalised ? untagCanonicalField(next.get(field)) : next.get(field);
 
     if (field === 'envVars') {
       const currentVars = (currentValue ?? {}) as Record<string, string>;
       const nextVars = (nextValue ?? {}) as Record<string, string>;
+      // Own-property semantics here too: envVars keys are persisted JSON, so
+      // `nextVars.toString` would otherwise compare an inherited function.
+      const varOf = (vars: Record<string, string>, key: string) => (Object.hasOwn(vars, key) ? vars[key] : undefined);
       const keys = [...new Set([...Object.keys(currentVars), ...Object.keys(nextVars)])]
-        .filter((key) => currentVars[key] !== nextVars[key])
+        .filter((key) => varOf(currentVars, key) !== varOf(nextVars, key))
         .sort();
       diffs.push(`envVars keys [${keys.join(', ')}] differ (values not shown)`);
     } else if (CONFLICT_VALUE_SAFE_FIELDS.has(field)) {
       const show = (present: boolean, value: unknown) => (present ? canonicalJson(value) : '(none)');
-      diffs.push(`${field} ${show(field in current, currentValue)} vs ${show(field in next, nextValue)}`);
+      diffs.push(`${field} ${show(current.has(field), currentValue)} vs ${show(next.has(field), nextValue)}`);
     } else {
       diffs.push(`${field} differs (values not shown)`);
     }
