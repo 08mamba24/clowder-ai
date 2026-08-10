@@ -28,6 +28,10 @@ import {
   resolveServersForCat,
   summarizeMcpInjection,
 } from '../../../../../config/capabilities/capability-orchestrator.js';
+import {
+  assertMcpServerEnvReferencesAvailable,
+  MissingMcpEnvironmentVariableError,
+} from '../../../../../config/capabilities/mcp-env-reference.js';
 import { isRetiredGithubMcpConfigEntry } from '../../../../../config/capabilities/retired-github-mcp.js';
 import { getCatEffort } from '../../../../../config/cat-config-loader.js';
 import { getCatModel } from '../../../../../config/cat-models.js';
@@ -475,6 +479,10 @@ export class ClaudeAgentService implements AgentService {
           for (const s of resolveServersForCat(capConfig, catId, { accessScope })) {
             managedMcpServerNames.add(s.name);
             if (!s.enabled) continue;
+            // Claude Code expands `${VAR}` natively in env and headers. Validate
+            // first so a missing secret aborts the invocation, but keep the
+            // reference in --mcp-config rather than materializing it in argv.
+            assertMcpServerEnvReferencesAvailable(s, process.env);
             if (s.source === 'cat-cafe' && CAT_CAFE_SPLIT_ENTRYPOINTS.has(s.name)) {
               const ep = CAT_CAFE_SPLIT_ENTRYPOINTS.get(s.name)!;
               const epPath = join(distDir, ep);
@@ -501,7 +509,8 @@ export class ClaudeAgentService implements AgentService {
           }
           resolved = true;
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof MissingMcpEnvironmentVariableError) throw error;
         // best-effort fallback below
       }
       if (!resolved) {

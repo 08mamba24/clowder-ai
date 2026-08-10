@@ -1168,14 +1168,18 @@ describe('F32-b P4c: Sonnet variant in project config', () => {
     assert.deepEqual(fable.mentionPatterns, ['@fable5', '@fable-5', '@claude-fable-5', '@宪宪5', '@布偶猫5']);
   });
 
-  it('total cat count is 19 (opus + sonnet + opus-45 + opus-47 + fable-5 + codex + gpt52 + spark + codex-sol + gpt-pro + gemini + gemini25 + gemini35 + glm52 + kimi + antigravity + antig-opus + agy-opus + opencode)', () => {
+  it('total cat count is 22 (opus + sonnet + opus-45 + opus-47 + fable-5 + codex + gpt52 + spark + codex-sol + gpt-pro + gemini + gemini25 + gemini35 + glm52 + kimi + antigravity + antig-opus + agy-opus + opencode + glm + deepseek + minimax)', () => {
     // Use template directly to avoid catalog overlay pollution from earlier tests
     const templatePath =
       process.env.CAT_TEMPLATE_PATH ??
       resolve(dirname(fileURLToPath(import.meta.url)), '../../..', 'cat-template.json');
     const config = loadCatConfig(templatePath);
     const all = toAllCatConfigs(config);
-    assert.equal(Object.keys(all).length, 19);
+    // Upstream-integration merge: this roster is the UNION of both sides. The
+    // integration branch carried 19 cats and main carried its own three, and
+    // neither side's cats may be dropped by the merge, so the expected count is
+    // 19 + 3. The three below are main's.
+    assert.equal(Object.keys(all).length, 22);
     assert.ok(all.opus);
     assert.ok(all.sonnet);
     assert.ok(all['opus-45']);
@@ -1195,6 +1199,9 @@ describe('F32-b P4c: Sonnet variant in project config', () => {
     assert.ok(all['antig-opus']); // F061: Bengal cat Claude variant
     assert.ok(all['agy-opus']); // F210: Bengal cat AGY CLI Claude Opus variant
     assert.ok(all.opencode); // F105: OpenCode external agent
+    assert.ok(all.glm); // from main: GLM breed
+    assert.ok(all.deepseek); // from main: DeepSeek breed
+    assert.ok(all.minimax); // from main: MiniMax breed
   });
 
   it('registers GLM 5.2 as a Dragon Li cat in project config', () => {
