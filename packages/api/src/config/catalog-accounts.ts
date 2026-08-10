@@ -172,47 +172,117 @@ function normalizeModelAliases(value: unknown): Record<string, string> | undefin
   return normalized.length > 0 ? Object.fromEntries(normalized) : undefined;
 }
 
-function normalizeEnvVars(envVars: AccountConfig['envVars']): Record<string, string> | undefined {
-  if (!envVars || Object.keys(envVars).length === 0) return undefined;
-  return { ...envVars };
+/**
+ * Canonical view of one persisted field: a usable value, or an opaque digest of
+ * content that is not a legal persisted shape.
+ *
+ * P1-14, P1-15 and P1-16 are ONE bug with five spellings. Every function above
+ * is a WRITE-side normaliser — it exists to clean up what a caller hands in, so
+ * every one of them LOSES information: `?.trim()` short-circuits on null, a
+ * blank result becomes undefined, `String()` coerces, filters drop entries,
+ * Object.fromEntries() keeps only the last of several keys that collide after
+ * trimming, and `{ ...envVars }` turns an array into index keys. Feed that
+ * output straight into the equivalence view and "this account holds content I
+ * cannot interpret" becomes "this account holds nothing": a stored
+ * `models: null` compares equal to an account with no models, so the
+ * runtime→workspace migration stops refusing, binds a stale runtime credential
+ * to the workspace account, and writes the completion marker that skips the
+ * preflight from then on. Strict JSON parsing does not catch it — the migration
+ * asserts the parsed object into AccountConfig without ever running the route
+ * schema, so AccountConfig-illegal content genuinely reaches the comparison.
+ *
+ * The rule, stated once instead of patched per field:
+ *
+ *   A FIELD MAY BE NORMALISED ONLY AFTER ITS PERSISTED SHAPE IS VALIDATED,
+ *   and each validation covers exactly what that field's own normaliser can
+ *   lose. Anything outside the legal shape canonicalises to a digest of the raw
+ *   value: identical unusable content stays equal to itself, different content
+ *   stays different, and the value itself never reaches a diagnostic.
+ *
+ * Its corollary is why this stays small: a field with NO normaliser is compared
+ * RAW, which cannot lose anything and therefore needs no schema. authType,
+ * clientId and every future AccountConfig addition are already fail-closed.
+ *
+ * The value is TAGGED because that is what makes the two forms uncomparable by
+ * construction — an alias map may hold any key and a model list any string, so
+ * a plain sentinel could collide with real persisted data.
+ */
+type CanonicalField = readonly ['value', unknown] | readonly ['invalid', string];
+
+function usable(value: unknown): CanonicalField {
+  return ['value', value] as const;
+}
+
+/** Unusable content: compared by digest, so the raw value never reaches a diagnostic. */
+function opaque(raw: unknown): CanonicalField {
+  return ['invalid', sha256Hex(canonicalJson(raw))] as const;
 }
 
 /**
- * Canonical view of modelAliases: a well-formed map, or an opaque digest.
- *
- * P1-14: normalizeModelAliases() is a WRITE-side normaliser — it drops entries
- * it cannot use (non-string values, keys or values that are empty once trimmed)
- * and Object.fromEntries() silently keeps only the last of several keys that
- * collide after trimming. Feeding only its output into the equivalence view
- * turns "this account has content I cannot interpret" into "this account has no
- * aliases", so a stored `{ local: 123 }` compares equal to an account with none
- * — and the runtime→workspace migration stops refusing, binding a stale runtime
- * credential to the workspace account. Strict JSON parsing does not catch it:
- * the migration asserts the parsed object into AccountConfig without ever
- * running the route schema.
- *
- * So the value is TAGGED. A well-formed map canonicalises to its normalised
- * form, which keeps padding and key order equivalent (upstream #1233's point).
- * Anything else canonicalises to a digest of the raw value: identical unusable
- * content stays equal to itself, different content stays different, and the
- * value itself never reaches a diagnostic. The tag is what makes the two forms
- * uncomparable by construction — an alias map can contain any keys, so a plain
- * sentinel key could collide with real data.
+ * baseUrl — normalizeBaseUrl() trims and drops trailing slashes. Both are
+ * legitimate: the route persists the string unchanged, so padding and a
+ * trailing slash are the same endpoint. What it also does is turn `null` and
+ * every non-string into `undefined` (`?.` short-circuits), and collapse a
+ * blank-once-trimmed string into absence.
  */
-type CanonicalModelAliases = readonly ['aliases', Record<string, string>] | readonly ['invalid', string];
-
-function canonicalModelAliases(raw: unknown): CanonicalModelAliases | undefined {
-  // Only an ABSENT field is absent. `null` is persisted content — the route's
-  // modelAliasesSchema is optional, not nullable, so nothing on the normal write
-  // path produces it, which puts a stored null in exactly the JSON-legal /
-  // AccountConfig-illegal class this whole tagged view exists for (P1-15).
-  // Folding it in with the other unusable shapes below rather than short-
-  // circuiting here is deliberate: `typeof null === 'object'`, so it has to be
-  // excluded before Object.entries() either way, and one exit keeps "everything
-  // the normaliser cannot use becomes a digest" a single readable rule.
+function canonicalBaseUrl(raw: unknown): CanonicalField | undefined {
   if (raw === undefined) return undefined;
-  const opaque = (): CanonicalModelAliases => ['invalid', sha256Hex(canonicalJson(raw))] as const;
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return opaque();
+  if (typeof raw !== 'string') return opaque(raw);
+  const normalized = raw.trim().replace(/\/+$/, '');
+  return normalized ? usable(normalized) : opaque(raw);
+}
+
+/** displayName — same shape of loss as baseUrl, minus the slash rule. */
+function canonicalDisplayName(raw: unknown): CanonicalField | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string') return opaque(raw);
+  const trimmed = raw.trim();
+  return trimmed ? usable(trimmed) : opaque(raw);
+}
+
+/**
+ * models — normalizeModels() trims each entry and drops trailing slashes (both
+ * match the route schema's own transform, so both are legal), but it also
+ * String()-coerces non-strings, drops entries that are blank once trimmed,
+ * de-duplicates, and SORTS.
+ *
+ * Sorting is not order-preserving normalisation, it is a rewrite of observable
+ * semantics: invoke-single-cat.ts reads models[0] as the fallback model
+ * override and reports models[0] as the model in use, so ['b','a'] and ['a','b']
+ * name different default models and must stay a difference. De-duplication
+ * keeps the FIRST occurrence, which can never move models[0] and drops nothing
+ * a reader could observe.
+ */
+function canonicalModels(raw: unknown): CanonicalField | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) return opaque(raw);
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string') return opaque(raw);
+    const model = entry.trim().replace(/\/+$/, '');
+    if (!model) return opaque(raw);
+    if (seen.has(model)) continue;
+    seen.add(model);
+    normalized.push(model);
+  }
+  // An empty list carries nothing the normaliser could lose, and no reader can
+  // tell it from an absent field: accountToView() renders both as [], and every
+  // models[0]/models.length reader takes the same branch for both.
+  return normalized.length > 0 ? usable(normalized) : undefined;
+}
+
+/**
+ * modelAliases — a well-formed map keeps padding and key order equivalent
+ * (upstream #1233's point). `null` is content, not absence: the route's
+ * modelAliasesSchema is optional, not nullable, so no normal write path
+ * produces a stored null (P1-15). It is folded in with the other unusable
+ * shapes rather than short-circuited above because `typeof null === 'object'`
+ * has to be excluded before Object.entries() either way.
+ */
+function canonicalModelAliases(raw: unknown): CanonicalField | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return opaque(raw);
 
   const entries = Object.entries(raw as Record<string, unknown>);
   // An empty map is "no aliases", which is what an absent field means too.
@@ -220,51 +290,96 @@ function canonicalModelAliases(raw: unknown): CanonicalModelAliases | undefined 
 
   const trimmedKeys = new Set<string>();
   for (const [key, value] of entries) {
-    if (typeof value !== 'string') return opaque();
+    if (typeof value !== 'string') return opaque(raw);
     const trimmedKey = key.trim();
     const trimmedValue = value.trim();
-    if (!trimmedKey || !trimmedValue) return opaque();
-    if (trimmedKeys.has(trimmedKey)) return opaque();
+    if (!trimmedKey || !trimmedValue) return opaque(raw);
+    if (trimmedKeys.has(trimmedKey)) return opaque(raw);
     trimmedKeys.add(trimmedKey);
   }
 
   const normalized = normalizeModelAliases(raw);
-  return normalized ? (['aliases', normalized] as const) : opaque();
+  return normalized ? usable(normalized) : opaque(raw);
 }
 
 /**
- * Canonical view of EVERY persisted account field. Known fields get their
- * normalizers; the rest-spread keeps future AccountConfig additions inside the
- * equivalence check automatically instead of silently exempting them (R3 P1-2:
- * clientId/envVars divergence was skipped as "equivalent").
+ * envVars — the normaliser it replaces was an identity copy of a plain object
+ * (`{ ...envVars }`), so VALUES lose nothing and stay raw-compared; validating
+ * them here would only invent conflicts on legacy data. Only the CONTAINER can
+ * be lost:
+ * `{ ...['X'] }` becomes `{ '0': 'X' }` and collides with that literal object,
+ * `{ ...'ab' }` spreads a string into index keys, and null/numbers fall into
+ * the `Object.keys(x).length === 0` branch and vanish into absence.
+ */
+function canonicalEnvVars(raw: unknown): CanonicalField | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return opaque(raw);
+  const entries = Object.entries(raw as Record<string, unknown>);
+  // An empty map is "no env vars" — the same absence, and the route never
+  // persists one.
+  if (entries.length === 0) return undefined;
+  return usable(Object.fromEntries(entries));
+}
+
+/**
+ * The only fields that are normalised before comparison — i.e. the only fields
+ * that need a shape gate. Everything else is compared raw (see CanonicalField).
+ */
+const PERSISTED_FIELD_CANONICALIZERS: Record<string, (raw: unknown) => CanonicalField | undefined> = {
+  baseUrl: canonicalBaseUrl,
+  displayName: canonicalDisplayName,
+  models: canonicalModels,
+  modelAliases: canonicalModelAliases,
+  envVars: canonicalEnvVars,
+};
+
+/**
+ * Canonical view of EVERY persisted account field.
  *
- * modelAliases (upstream #1233) is destructured out even though `...rest` would
- * carry it anyway: left in `rest` it arrives UNNORMALISED, so a whitespace- or
- * key-order-only rewrite would read as a genuine conflict — the exact false
- * positive normalizeModelAliases() exists to prevent. Naming it here keeps both
- * properties: upstream's normalisation, and this feature's guarantee that no
- * persisted field can silently sit outside the equivalence check.
+ * Iterating the account rather than destructuring known names is what keeps the
+ * guarantee automatic: a future AccountConfig field arrives here with no
+ * canonicaliser and is therefore carried through RAW — the strictest possible
+ * comparison — instead of silently sitting outside the equivalence check (R3
+ * P1-2: clientId/envVars divergence was once skipped as "equivalent").
  */
 function canonicalizeAccount(account: AccountConfig): Record<string, unknown> {
-  const { authType, baseUrl, displayName, models, modelAliases, envVars, ...rest } = account;
-  const normalizedEnvVars = normalizeEnvVars(envVars);
-  const normalizedModelAliases = canonicalModelAliases(modelAliases);
-  return {
-    ...rest,
-    authType,
-    ...(normalizeBaseUrl(baseUrl) ? { baseUrl: normalizeBaseUrl(baseUrl) } : {}),
-    ...(normalizeDisplayName(displayName) ? { displayName: normalizeDisplayName(displayName) } : {}),
-    ...(normalizeModels(models) ? { models: normalizeModels(models) } : {}),
-    ...(normalizedModelAliases ? { modelAliases: normalizedModelAliases } : {}),
-    ...(normalizedEnvVars ? { envVars: normalizedEnvVars } : {}),
-  };
+  const canonical: Record<string, unknown> = {};
+  for (const [field, raw] of Object.entries(account) as Array<[string, unknown]>) {
+    const canonicalize = PERSISTED_FIELD_CANONICALIZERS[field];
+    if (!canonicalize) {
+      canonical[field] = raw;
+      continue;
+    }
+    const value = canonicalize(raw);
+    if (value !== undefined) canonical[field] = value;
+  }
+  return canonical;
 }
 
 /** Fields whose VALUES are safe to print in conflict diagnostics. envVars and
- *  unknown future fields fail closed on the diff but never print values.
- *  modelAliases has its own branch below: a well-formed map is safe to print
- *  (upstream #1233 already did), an unusable one must not be (P1-14). */
-const CONFLICT_VALUE_SAFE_FIELDS = new Set(['authType', 'clientId', 'baseUrl', 'displayName', 'models']);
+ *  unknown future fields fail closed on the diff but never print values. A
+ *  well-formed alias map is safe to print (upstream #1233 already did); an
+ *  UNUSABLE value of any field never is, which the invalid tag handles below
+ *  ahead of this set (P1-14/P1-16). */
+const CONFLICT_VALUE_SAFE_FIELDS = new Set([
+  'authType',
+  'clientId',
+  'baseUrl',
+  'displayName',
+  'models',
+  'modelAliases',
+]);
+
+/** Both of these are only ever called for CANONICALISED fields, so a raw field
+ *  that happens to be an array cannot be mistaken for a tag. */
+function isInvalidCanonicalField(value: unknown): boolean {
+  return Array.isArray(value) && value[0] === 'invalid';
+}
+
+/** Strip the CanonicalField tag for display. */
+function untagCanonicalField(value: unknown): unknown {
+  return Array.isArray(value) ? value[1] : undefined;
+}
 
 function describeAccountConflict(existing: AccountConfig, incoming: AccountConfig): string {
   const current = canonicalizeAccount(existing);
@@ -275,27 +390,27 @@ function describeAccountConflict(existing: AccountConfig, incoming: AccountConfi
     const a = field in current ? canonicalJson(current[field]) : undefined;
     const b = field in next ? canonicalJson(next[field]) : undefined;
     if (a === b) continue;
+
+    const canonicalised = field in PERSISTED_FIELD_CANONICALIZERS;
+    // P1-14/P1-16: content that failed its shape gate is reported as a
+    // difference without ever echoing what made it unusable.
+    if (canonicalised && (isInvalidCanonicalField(current[field]) || isInvalidCanonicalField(next[field]))) {
+      diffs.push(`${field} invalid (values not shown)`);
+      continue;
+    }
+    const currentValue = canonicalised ? untagCanonicalField(current[field]) : current[field];
+    const nextValue = canonicalised ? untagCanonicalField(next[field]) : next[field];
+
     if (field === 'envVars') {
-      const currentVars = (current.envVars ?? {}) as Record<string, string>;
-      const nextVars = (next.envVars ?? {}) as Record<string, string>;
+      const currentVars = (currentValue ?? {}) as Record<string, string>;
+      const nextVars = (nextValue ?? {}) as Record<string, string>;
       const keys = [...new Set([...Object.keys(currentVars), ...Object.keys(nextVars)])]
         .filter((key) => currentVars[key] !== nextVars[key])
         .sort();
       diffs.push(`envVars keys [${keys.join(', ')}] differ (values not shown)`);
-    } else if (field === 'modelAliases') {
-      // P1-14: an unusable map is reported as a difference without ever echoing
-      // the content that made it unusable.
-      const unusable = [current.modelAliases, next.modelAliases].some(
-        (value) => Array.isArray(value) && value[0] === 'invalid',
-      );
-      if (unusable) {
-        diffs.push('modelAliases invalid (values not shown)');
-      } else {
-        const show = (value: unknown) => (Array.isArray(value) ? canonicalJson(value[1]) : '(none)');
-        diffs.push(`modelAliases ${show(current.modelAliases)} vs ${show(next.modelAliases)}`);
-      }
     } else if (CONFLICT_VALUE_SAFE_FIELDS.has(field)) {
-      diffs.push(`${field} ${a ?? '(none)'} vs ${b ?? '(none)'}`);
+      const show = (present: boolean, value: unknown) => (present ? canonicalJson(value) : '(none)');
+      diffs.push(`${field} ${show(field in current, currentValue)} vs ${show(field in next, nextValue)}`);
     } else {
       diffs.push(`${field} differs (values not shown)`);
     }

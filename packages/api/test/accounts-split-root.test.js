@@ -229,21 +229,36 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
    * object into AccountConfig without running the route schema, so invalid
    * content genuinely reaches the comparison.
    */
-  async function assertWorkspaceUntouched(message) {
-    const { existsSync, readFileSync } = await import('node:fs');
-    const wsAccounts = JSON.parse(readFileSync(join(workspaceRoot, '.cat-cafe', 'accounts.json'), 'utf-8'));
-    assert.equal(wsAccounts.shared.displayName, undefined, `${message}: workspace account must be untouched`);
-    assert.equal(wsAccounts.shared.__migrated, undefined, `${message}: workspace account must be untouched`);
-    assert.equal(
-      existsSync(join(workspaceRoot, '.cat-cafe', 'credentials.json')),
-      false,
-      `${message}: no credential may be written`,
-    );
-    assert.equal(
-      existsSync(join(workspaceRoot, '.cat-cafe', 'runtime-migration.json')),
-      false,
-      `${message}: no completion marker may be written`,
-    );
+  /**
+   * R17 P2: zero-write has to be asserted over the WHOLE workspace store, not
+   * over a couple of fields that happened to be absent. Two named field checks
+   * pass just as happily when the migration rewrote the account, dropped a
+   * temp file, or wrote a marker under a name nobody thought to check. Snapshot
+   * every byte under .cat-cafe before the call and compare after: any write,
+   * to any file, by any path, fails — and names the file it happened to.
+   */
+  async function snapshotWorkspaceStore() {
+    const { existsSync, readdirSync, readFileSync } = await import('node:fs');
+    const dir = join(workspaceRoot, '.cat-cafe');
+    const snapshot = {};
+    if (!existsSync(dir)) return snapshot;
+    for (const name of readdirSync(dir).sort()) {
+      snapshot[name] = readFileSync(join(dir, name), 'utf-8');
+    }
+    return snapshot;
+  }
+
+  async function assertWorkspaceUntouched(before, message) {
+    const after = await snapshotWorkspaceStore();
+    for (const name of [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()) {
+      // undefined on either side = the file appeared or disappeared.
+      assert.equal(after[name], before[name], `${message}: workspace store file "${name}" must be byte-identical`);
+    }
+    // Named separately from the byte comparison because these two ARE the
+    // security property: a copied credential, and a marker that would skip the
+    // preflight for every later start.
+    assert.equal(after['credentials.json'], undefined, `${message}: no credential may be written`);
+    assert.equal(after['runtime-migration.json'], undefined, `${message}: no completion marker may be written`);
   }
 
   it('a non-string alias value is a conflict, not an absent field (P1-14)', async () => {
@@ -261,6 +276,7 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
       JSON.stringify({ shared: { authType: 'api_key', clientId: 'anthropic' } }),
       'utf-8',
     );
+    const before = await snapshotWorkspaceStore();
 
     let thrown = null;
     try {
@@ -272,7 +288,7 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
     assert.match(thrown.message, /migration conflict for "shared"/);
     assert.match(thrown.message, /modelAliases invalid/, 'an unusable map is reported as invalid, not as a value diff');
     assert.ok(!thrown.message.includes('123'), 'the invalid raw value must not be printed');
-    await assertWorkspaceUntouched('non-string alias value');
+    await assertWorkspaceUntouched(before, 'non-string alias value');
   });
 
   it('alias keys that collide once trimmed are a conflict, not a collapsed map (P1-14)', async () => {
@@ -293,6 +309,7 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
       JSON.stringify({ shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: { a: 'y' } } }),
       'utf-8',
     );
+    const before = await snapshotWorkspaceStore();
 
     let thrown = null;
     try {
@@ -303,7 +320,7 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
     assert.ok(thrown instanceof Error, 'a trim-collision must fail closed');
     assert.match(thrown.message, /migration conflict for "shared"/);
     assert.match(thrown.message, /modelAliases/);
-    await assertWorkspaceUntouched('trim-collision alias keys');
+    await assertWorkspaceUntouched(before, 'trim-collision alias keys');
   });
 
   /**
@@ -317,6 +334,13 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
     await writeRuntimeAccounts({
       shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: { 'a/x': 'up-x', 'b/y': '   ' } },
     });
+    // R17 P2: these two carried no credential and asserted only `throws`, so
+    // they could not tell "refused" from "refused after copying the secret".
+    await writeFile(
+      join(runtimeRoot, '.cat-cafe', 'credentials.json'),
+      JSON.stringify({ shared: { apiKey: 'sk-blank-alias-value-source' } }),
+      'utf-8',
+    );
     await writeFile(
       join(workspaceRoot, '.cat-cafe', 'accounts.json'),
       JSON.stringify({
@@ -324,12 +348,14 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
       }),
       'utf-8',
     );
+    const before = await snapshotWorkspaceStore();
 
     assert.throws(
       () => readCatalogAccounts(runtimeRoot),
       /modelAliases invalid/,
       'an entry the normaliser would drop must not become an absence',
     );
+    await assertWorkspaceUntouched(before, 'blank alias value');
   });
 
   it('an alias key that is empty once trimmed is a conflict (P1-14)', async () => {
@@ -338,18 +364,25 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
       shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: { 'a/x': 'up-x', '   ': 'up-y' } },
     });
     await writeFile(
+      join(runtimeRoot, '.cat-cafe', 'credentials.json'),
+      JSON.stringify({ shared: { apiKey: 'sk-blank-alias-key-source' } }),
+      'utf-8',
+    );
+    await writeFile(
       join(workspaceRoot, '.cat-cafe', 'accounts.json'),
       JSON.stringify({
         shared: { authType: 'api_key', clientId: 'anthropic', modelAliases: { 'a/x': 'up-x' } },
       }),
       'utf-8',
     );
+    const before = await snapshotWorkspaceStore();
 
     assert.throws(
       () => readCatalogAccounts(runtimeRoot),
       /modelAliases invalid/,
       'an entry the normaliser would drop must not become an absence',
     );
+    await assertWorkspaceUntouched(before, 'blank alias key');
   });
 
   /**
@@ -377,6 +410,7 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
       JSON.stringify({ shared: { authType: 'api_key', clientId: 'anthropic' } }),
       'utf-8',
     );
+    const before = await snapshotWorkspaceStore();
 
     let thrown = null;
     try {
@@ -387,7 +421,7 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
     assert.ok(thrown instanceof Error, 'a persisted null alias field must fail closed');
     assert.match(thrown.message, /migration conflict for "shared"/);
     assert.match(thrown.message, /modelAliases invalid/, 'a null map is reported as invalid, not as a value diff');
-    await assertWorkspaceUntouched('null alias field');
+    await assertWorkspaceUntouched(before, 'null alias field');
   });
 
   it('a legal padding/key-order alias difference still migrates (P1-14 control)', async () => {
@@ -424,6 +458,219 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
       () => readCatalogAccounts(runtimeRoot),
       'an empty map carries no information the normaliser could lose',
     );
+  });
+
+  /**
+   * R17 P1-16: the same bug as P1-14/P1-15, in every OTHER field that reaches
+   * the equivalence view through a write-side normaliser. modelAliases was
+   * fixed one field at a time; these are the four neighbours that were still
+   * folding unusable persisted content into a legal value or into absence, and
+   * therefore still copying a stale runtime credential into the workspace.
+   *
+   * One case per guard, so each row names the single line whose removal it
+   * kills. Every row carries a credential and asserts the whole workspace store
+   * is byte-identical afterwards — a refusal that copied the secret first is
+   * not a refusal.
+   */
+  const UNUSABLE_SHAPES = [
+    {
+      title: 'models holding a map instead of a list',
+      field: 'models',
+      secret: 'sk-models-object-source',
+      runtime: { models: { 'gpt-leak': 'x' } },
+      workspace: {},
+      mustNotPrint: 'gpt-leak',
+    },
+    {
+      title: 'a persisted null models field',
+      field: 'models',
+      secret: 'sk-models-null-source',
+      runtime: { models: null },
+      workspace: {},
+    },
+    {
+      title: 'a model entry that is blank once trimmed',
+      field: 'models',
+      secret: 'sk-models-blank-entry-source',
+      runtime: { models: ['a/x', '   '] },
+      workspace: { models: ['a/x'] },
+    },
+    {
+      title: 'a non-string model entry',
+      field: 'models',
+      secret: 'sk-models-coerced-entry-source',
+      runtime: { models: ['a/x', 4711] },
+      workspace: { models: ['a/x', '4711'] },
+      mustNotPrint: '4711',
+    },
+    {
+      title: 'a persisted null baseUrl',
+      field: 'baseUrl',
+      secret: 'sk-baseurl-null-source',
+      runtime: { baseUrl: null },
+      workspace: {},
+    },
+    {
+      title: 'a baseUrl that is blank once trimmed',
+      field: 'baseUrl',
+      secret: 'sk-baseurl-blank-source',
+      runtime: { baseUrl: '   ' },
+      workspace: {},
+    },
+    {
+      title: 'a persisted null displayName',
+      field: 'displayName',
+      secret: 'sk-displayname-null-source',
+      runtime: { displayName: null },
+      workspace: {},
+    },
+    {
+      title: 'a displayName that is blank once trimmed',
+      field: 'displayName',
+      secret: 'sk-displayname-blank-source',
+      runtime: { displayName: '   ' },
+      workspace: {},
+    },
+    {
+      title: 'a persisted null envVars field',
+      field: 'envVars',
+      secret: 'sk-envvars-null-source',
+      runtime: { envVars: null },
+      workspace: {},
+    },
+    {
+      // { ...['ENVLEAK'] } is { '0': 'ENVLEAK' } — a list and that literal map
+      // are different persisted content that the spread made indistinguishable.
+      title: 'an envVars list colliding with the map its spread produces',
+      field: 'envVars',
+      secret: 'sk-envvars-array-source',
+      runtime: { envVars: ['ENVLEAK'] },
+      workspace: { envVars: { 0: 'ENVLEAK' } },
+      mustNotPrint: 'ENVLEAK',
+    },
+  ];
+
+  for (const scenario of UNUSABLE_SHAPES) {
+    it(`${scenario.title} is unusable content, not an equivalent account (P1-16)`, async () => {
+      setSplitEnv();
+      await writeRuntimeAccounts({
+        shared: { authType: 'api_key', clientId: 'anthropic', ...scenario.runtime },
+      });
+      await writeFile(
+        join(runtimeRoot, '.cat-cafe', 'credentials.json'),
+        JSON.stringify({ shared: { apiKey: scenario.secret } }),
+        'utf-8',
+      );
+      await writeFile(
+        join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+        JSON.stringify({ shared: { authType: 'api_key', clientId: 'anthropic', ...scenario.workspace } }),
+        'utf-8',
+      );
+      const before = await snapshotWorkspaceStore();
+
+      let thrown = null;
+      try {
+        readCatalogAccounts(runtimeRoot);
+      } catch (err) {
+        thrown = err;
+      }
+      assert.ok(thrown instanceof Error, `${scenario.title}: unusable persisted content must fail closed`);
+      assert.match(thrown.message, /migration conflict for "shared"/);
+      assert.match(
+        thrown.message,
+        new RegExp(`${scenario.field} invalid \\(values not shown\\)`),
+        `${scenario.title}: reported as invalid, not as a value diff`,
+      );
+      if (scenario.mustNotPrint) {
+        assert.ok(
+          !thrown.message.includes(scenario.mustNotPrint),
+          `${scenario.title}: the unusable raw value must not be printed`,
+        );
+      }
+      await assertWorkspaceUntouched(before, scenario.title);
+    });
+  }
+
+  /**
+   * The other half of the ruling: normalisation that a reader genuinely cannot
+   * observe must STAY equivalent. Fail-closed everywhere would trade a security
+   * bug for an availability bug — an operator whose store differs only by
+   * padding would be blocked out of their own migration.
+   */
+  const EQUIVALENT_SHAPES = [
+    {
+      title: 'a trailing slash on baseUrl',
+      runtime: { baseUrl: 'https://x.test/' },
+      workspace: { baseUrl: 'https://x.test' },
+    },
+    {
+      title: 'padding around baseUrl',
+      runtime: { baseUrl: '  https://x.test  ' },
+      workspace: { baseUrl: 'https://x.test' },
+    },
+    { title: 'padding around displayName', runtime: { displayName: ' shared ' }, workspace: { displayName: 'shared' } },
+    {
+      title: 'padding and trailing slashes in models',
+      runtime: { models: [' a/x/ ', 'b'] },
+      workspace: { models: ['a/x', 'b'] },
+    },
+    // De-duplication keeps the first occurrence, so it can never move models[0].
+    { title: 'a repeated model entry', runtime: { models: ['a', 'b', 'a'] }, workspace: { models: ['a', 'b'] } },
+    { title: 'an empty models list', runtime: { models: [] }, workspace: {} },
+    { title: 'an empty envVars map', runtime: { envVars: {} }, workspace: {} },
+  ];
+
+  for (const scenario of EQUIVALENT_SHAPES) {
+    it(`${scenario.title} is still an equivalent account (P1-16 control)`, async () => {
+      setSplitEnv();
+      await writeRuntimeAccounts({
+        shared: { authType: 'api_key', clientId: 'anthropic', ...scenario.runtime },
+      });
+      await writeFile(
+        join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+        JSON.stringify({ shared: { authType: 'api_key', clientId: 'anthropic', ...scenario.workspace } }),
+        'utf-8',
+      );
+
+      assert.doesNotThrow(
+        () => readCatalogAccounts(runtimeRoot),
+        `${scenario.title}: a difference no reader can observe must not block the migration`,
+      );
+    });
+  }
+
+  /**
+   * The one normalisation that had to GO. normalizeModels() sorted, so ['b','a']
+   * and ['a','b'] compared equal — but invoke-single-cat.ts reads models[0] as
+   * the fallback model override and reports models[0] as the model in use, so
+   * those two accounts name different default models. Sorting was not
+   * normalisation, it was a rewrite of observable semantics.
+   */
+  it('a reordered models list is a conflict — models[0] is observable (P1-16)', async () => {
+    setSplitEnv();
+    await writeRuntimeAccounts({
+      shared: { authType: 'api_key', clientId: 'anthropic', models: ['b/second', 'a/first'] },
+    });
+    await writeFile(
+      join(runtimeRoot, '.cat-cafe', 'credentials.json'),
+      JSON.stringify({ shared: { apiKey: 'sk-models-reordered-source' } }),
+      'utf-8',
+    );
+    await writeFile(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({
+        shared: { authType: 'api_key', clientId: 'anthropic', models: ['a/first', 'b/second'] },
+      }),
+      'utf-8',
+    );
+    const before = await snapshotWorkspaceStore();
+
+    assert.throws(
+      () => readCatalogAccounts(runtimeRoot),
+      /models \["a\/first","b\/second"\] vs \["b\/second","a\/first"\]/,
+      'a different default model is a different account, and models are safe to print',
+    );
+    await assertWorkspaceUntouched(before, 'reordered models list');
   });
 
   it('conflicting same-id credentials fail closed without printing secret values (INV-5/INV-6)', async () => {
