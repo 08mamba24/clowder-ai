@@ -3245,3 +3245,54 @@ my-gpt      : old=conflict new=conflict
 真实 store 全程只读;`credentials.json` 内容未被读取或复制,仅计算过其 canonical 指纹用于 marker 比对(结果只以布尔形式输出)。
 
 [布偶猫/Claude Opus 5 🐾]
+
+## 50. main → integration 合并(选项 B,布偶猫,2026-08-10)
+
+operator 选 B:在隔离的 integration 工作树里把 `main` 合进来解冲突,门禁通过后交砚砚审那几处,再快进 main。**生产工作树全程未动。**
+
+合并 commit:**`48a2f6cf`**。回滚锚点:`git tag pre-main-merge-backup`(= `267b3ce9`)。
+
+### 为什么必须在隔离树里做
+
+`main` checkout 在 `/Users/yuhan/cat-cafe/clowder-ai`——正在跑的实例那棵树。半解状态的 merge 不该躺在那里。合并前 `git merge-tree` 做过非破坏性预演,确认 6 个冲突后才动手。
+
+分叉规模:integration 42 commit,main 12 commit,merge-base `e0c11043`。`main` 与 `origin/main` **完全同步**(两边独有各 0),所以不存在早先担心的"push 顺带带出本地 commit"。
+
+### 6 个文本冲突,无一落在 R21 已批准的账户 delta 内
+
+| 文件 | 两边在做什么 | 裁定 |
+| --- | --- | --- |
+| `ClaudeAgentService.ts` / `acp-mcp-resolver.ts` / `kimi-config.ts` | 同位置各加一条不同 import(`retired-github-mcp` vs `mcp-env-reference`) | 互不替代,**两条都留** |
+| `docs/architecture/cli-integration.md` | 改名 vs 更新的作者/日期 | 取**新名 + main 的新日期与作者** |
+| `docs/features/F167-a2a-chain-quality.md` | 两边各追加一个**不同**的 Case E7 | **都留**,按时间重编号:本分支 07-11 → E7,main 的 08-03/08-05 → E8/E9 |
+| `packages/api/test/codex-agent-service.test.js` | 唯一语义冲突 | 见下 |
+
+codex 那条:fixture 发的是 `Bearer ${VAR}`,合并后的源码把它路由到 main 的**原生引用**分支,所以本分支那套"抽取生成变量"的断言已经不描述这条路径了。取 main 的断言。
+
+### 两处 auto-merge **没报冲突却合错**的——这也是"读冲突不足以 review 一次 merge"的理由
+
+**1. 生成式 bearer 变量名被静默降级。** main 在自己的 #1074 里改名为 `CLOWDER_MCP_BEARER_`,upstream 的 #1074 保留 `CAT_CAFE_MCP_BEARER_`。git 把 main 的新分支逻辑和 upstream 的变量名拼在一起,**main 的改名消失**,而 main 的测试仍断言 `CLOWDER_` 前缀——全仓已无此标识符,该断言**恒真、什么都没测**。
+
+裁定:保留 `CAT_CAFE_MCP_BEARER_`。依据不是口味:main 上 `CAT_CAFE_*` 有 **92** 个不同标识符,`CLOWDER_*` 只有**这 1 个**——是孤例不是系统改名,且与 upstream 对齐可减少后续合并摩擦。同时把断言前缀改成源码真正铸造的那个,让它重新有效。
+
+**2. `cat-template.json` 干净合成了两边花名册的并集**——这是对的,任何一边的猫都不该被合掉——**但数量断言留在原地**。本分支 19 只 + main 的 `glm`/`deepseek`/`minimax` = **22**。测试已更新为 22,并补上这三只的存在性断言。
+
+### 门禁(全部 Node 24)
+
+| 项 | 结果 |
+| --- | --- |
+| `tsc --noEmit` / `pnpm build` | rc=0 |
+| 覆盖每处裁定的套件(codex/claude/kimi/acp/capability/opencode) | **370/370** |
+| 已批准的账户焦点 9 suites | **195/195** |
+| 四个独立复现探针 | `0/11 leaked, 0/8 falsely blocked` / `0/6` / `0/10 silent-loss` / resolver 全 `null` |
+| 受影响面横扫 | **1958/1962**,失败集合**恰为**本工作开始前就存在的那 3 条 |
+| Biome(改动文件) | 0 error / 11 warning + 4 info(pre-existing) |
+| integration worktree | clean @ `48a2f6cf` |
+
+合并前该横扫是 1957/1962 且**多一条** `F32-b P4c: total cat count is 19` ——即上面第 2 条,已修复。
+
+### Next Action
+
+砚砚复审这次合并:重点是 6 处冲突裁定 + 2 处 auto-merge 修正,尤其 `CAT_CAFE_MCP_BEARER_` 的取舍与花名册并集。通过后再快进 `main`。**main 仍未动、未 restart、未跑真实 migration dry-run。**
+
+[布偶猫/Claude Opus 5 🐾]
