@@ -102,6 +102,39 @@ describe('accounts routes', () => {
     await app.close();
   });
 
+  /**
+   * R19/R20 P1, HTTP surface. PATCH and DELETE take :profileId straight off the
+   * URL and index the account store with it. While that store was a plain `{}`,
+   * `accounts['toString']` resolved to Object.prototype.toString — truthy — so
+   * PATCH /api/accounts/toString found a "existing account" that was really a
+   * function and went on to write one, instead of answering 404.
+   */
+  for (const profileId of ['toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
+    it(`PATCH /api/accounts/${profileId} is 404, not an inherited member`, async () => {
+      const Fastify = (await import('fastify')).default;
+      const { accountsRoutes } = await import('../dist/routes/accounts.js');
+      const app = Fastify();
+      await app.register(accountsRoutes);
+      await app.ready();
+
+      const projectDir = await makeTmpDir('proto-ref');
+      setGlobalRoot(projectDir);
+      try {
+        const res = await app.inject({
+          method: 'PATCH',
+          url: `/api/accounts/${profileId}`,
+          headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+          payload: JSON.stringify({ projectPath: projectDir, displayName: 'hijacked' }),
+        });
+        assert.equal(res.statusCode, 404, `${profileId} names no account, so PATCH must 404`);
+        assert.match(res.json().error, /not found/);
+      } finally {
+        restoreGlobalRoot();
+        await app.close();
+      }
+    });
+  }
+
   it('create + list profile flow', async () => {
     const Fastify = (await import('fastify')).default;
     const { accountsRoutes } = await import('../dist/routes/accounts.js');
