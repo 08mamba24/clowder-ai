@@ -162,11 +162,19 @@ const envVarsSchema = z
   .optional()
   .transform((vars) => {
     if (!vars) return vars;
-    // Strip CAT_CAFE_ reserved keys server-side
-    // Object.fromEntries, not `filtered[k] = v`: envKeySchema accepts
-    // `__proto__` (it starts with `_`), and assigning that key to a plain object
-    // invokes the prototype setter, so a schema-VALID env var was accepted by
-    // validation and then silently discarded (R20).
+    // Strip CAT_CAFE_ reserved keys server-side.
+    //
+    // Object.fromEntries rather than `filtered[k] = v`, because assigning the
+    // key `__proto__` to a plain object invokes the prototype setter and drops
+    // the value — and envKeySchema above would accept that key, since it starts
+    // with `_`.
+    //
+    // That is DEFENCE IN DEPTH, not a reachable defect: over HTTP nothing with a
+    // `__proto__` key gets this far. Fastify's body parser refuses the request
+    // outright (400 "Object contains forbidden prototype property"), and zod's
+    // record parser would drop the key after that. This guard is for any future
+    // caller that reuses this transform without those two in front of it.
+    // Measured in R20; pinned by the 400 in accounts-route.test.js.
     const filtered = Object.fromEntries(Object.entries(vars).filter(([k]) => !k.startsWith('CAT_CAFE_')));
     return Object.keys(filtered).length > 0 ? filtered : undefined;
   });
