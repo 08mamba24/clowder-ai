@@ -84,7 +84,7 @@ export function resolveAnthropicRuntimeProfile(
   // Single deterministic ref — NOT the discovery chain.
   if (!preferredAccountRef) {
     const accounts = readCatalogAccounts(projectRoot);
-    const hasRealAnthropicBuiltin = Object.entries(BUILTIN_ACCOUNT_MAP).some(
+    const hasRealAnthropicBuiltin = [...BUILTIN_ACCOUNT_MAP].some(
       ([id, info]) => info === 'anthropic' && id in accounts,
     );
     if (!hasRealAnthropicBuiltin) {
@@ -104,18 +104,26 @@ export function resolveAnthropicRuntimeProfile(
 
 // Known builtin OAuth account refs — both legacy names and new naming convention.
 // clowder-ai#340: protocol is derived from client identity, no longer stored on accounts.
-const BUILTIN_ACCOUNT_MAP: Record<string, BuiltinAccountClient> = {
-  claude: 'anthropic',
-  builtin_anthropic: 'anthropic',
-  codex: 'openai',
-  builtin_openai: 'openai',
-  gemini: 'google',
-  builtin_google: 'google',
-  kimi: 'kimi',
-  builtin_kimi: 'kimi',
-  opencode: 'opencode',
-  builtin_opencode: 'opencode',
-};
+// R19 P1: a Map, not an object literal. The KEYS here are written by this file,
+// but the INDEX is an accountRef out of user config — and an object literal hands
+// every Object.prototype member to that index for free. A cat bound to
+// accountRef "toString" resolved BUILTIN_ACCOUNT_MAP['toString'] to
+// Object.prototype.toString, which is truthy, so an unknown ref returned a
+// fabricated builtin OAuth profile carrying a FUNCTION as its client instead of
+// the null that says "no such account". That is the same defect as the store
+// layer, on the invocation path rather than the migration path.
+const BUILTIN_ACCOUNT_MAP = new Map<string, BuiltinAccountClient>([
+  ['claude', 'anthropic'],
+  ['builtin_anthropic', 'anthropic'],
+  ['codex', 'openai'],
+  ['builtin_openai', 'openai'],
+  ['gemini', 'google'],
+  ['builtin_google', 'google'],
+  ['kimi', 'kimi'],
+  ['builtin_kimi', 'kimi'],
+  ['opencode', 'opencode'],
+  ['builtin_opencode', 'opencode'],
+]);
 
 const GOOGLE_OWNED_DOMAINS = ['generativelanguage.googleapis.com', 'googleapis.com'];
 
@@ -142,7 +150,7 @@ export function resolveByAccountRef(projectRoot: string, accountRef: string): Ru
   if (account) return accountToRuntimeProfile(accountRef, account, projectRoot);
 
   // Synthetic builtin profile for known OAuth refs
-  const builtinClient = BUILTIN_ACCOUNT_MAP[accountRef];
+  const builtinClient = BUILTIN_ACCOUNT_MAP.get(accountRef);
   const builtinProtocol = builtinClient ? protocolForClient(builtinClient) : null;
   if (builtinClient) {
     return {
@@ -176,7 +184,7 @@ export function resolveForClient(
     const preferred = accounts[preferredAccountRef];
     if (preferred) return accountToRuntimeProfile(preferredAccountRef, preferred, projectRoot);
     // Not in accounts — only allow synthetic builtin (fresh install with empty accounts).
-    const builtinClient = BUILTIN_ACCOUNT_MAP[preferredAccountRef];
+    const builtinClient = BUILTIN_ACCOUNT_MAP.get(preferredAccountRef);
     const builtinProtocol = builtinClient ? protocolForClient(builtinClient) : null;
     if (builtinClient) {
       return {
@@ -213,7 +221,7 @@ export function resolveForClient(
   // (fresh install, test env with empty accounts)
   if (normalizedClient) {
     const wellKnownRef = builtinAccountIdForClient(normalizedClient);
-    const builtinClient = wellKnownRef ? BUILTIN_ACCOUNT_MAP[wellKnownRef] : undefined;
+    const builtinClient = wellKnownRef ? BUILTIN_ACCOUNT_MAP.get(wellKnownRef) : undefined;
     const builtinProtocol = builtinClient ? protocolForClient(builtinClient) : null;
     if (builtinClient && wellKnownRef) {
       return {
@@ -251,7 +259,7 @@ function accountToRuntimeProfile(ref: string, account: AccountConfig, projectRoo
 
   // clowder-ai#340: Derive client and protocol solely from well-known account ID map.
   // account.protocol is retired — not read, not written.
-  const builtinClient = BUILTIN_ACCOUNT_MAP[ref];
+  const builtinClient = BUILTIN_ACCOUNT_MAP.get(ref);
   const builtinProtocol = builtinClient ? protocolForClient(builtinClient) : null;
   const isOAuth = account.authType === 'oauth';
   const isBuiltin = !!builtinClient && isOAuth;

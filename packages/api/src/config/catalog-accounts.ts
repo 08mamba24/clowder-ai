@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { AccountConfig } from '@cat-cafe/shared';
 import { resolveAccountStoreRoot } from './account-store-root.js';
+import { refStore } from './ref-store.js';
 import { assertSafeTestConfigRead, assertSafeTestConfigRoot } from './test-config-write-guard.js';
 
 const CONFIG_SUBDIR = '.cat-cafe';
@@ -117,12 +118,12 @@ function readAllGlobal(projectRoot?: string): Record<string, AccountConfig> {
   // whether the operator happens to have a store file there (P1-8).
   assertSafeCatalogRead(projectRoot, 'catalog-accounts.readAllGlobal');
   const accountsPath = resolveAccountsPath(projectRoot);
-  if (!existsSync(accountsPath)) return {};
+  if (!existsSync(accountsPath)) return refStore<AccountConfig>();
   const raw = readFileSync(accountsPath, 'utf-8');
   try {
     const parsed = JSON.parse(raw);
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
-    return parsed as Record<string, AccountConfig>;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return refStore<AccountConfig>();
+    return refStore(parsed as Record<string, AccountConfig>);
   } catch {
     // Fix P1-3: corrupt file → backup + warn, not silent swallow
     const backupPath = `${accountsPath}.bak`;
@@ -133,7 +134,7 @@ function readAllGlobal(projectRoot?: string): Record<string, AccountConfig> {
       /* best-effort backup */
     }
     console.error(`[catalog-accounts] corrupt ${accountsPath} — backed up to .bak, treating as empty`);
-    return {};
+    return refStore<AccountConfig>();
   }
 }
 
@@ -600,7 +601,7 @@ function migrateLegacyFrom(
   }
   if (providers.length === 0) return;
 
-  const accounts: Record<string, AccountConfig> = {};
+  const accounts: Record<string, AccountConfig> = refStore<AccountConfig>();
   for (const p of providers) {
     const id = String(p.id ?? '').trim();
     if (!id) continue;
@@ -641,15 +642,15 @@ function migrateLegacyFrom(
   }
   const globalRoot = resolveAccountStoreRoot({ projectRoot });
   const credPath = resolve(globalRoot, CONFIG_SUBDIR, 'credentials.json');
-  const existing = existsSync(credPath)
+  const existing: Record<string, unknown> = existsSync(credPath)
     ? (() => {
         try {
-          return JSON.parse(readFileSync(credPath, 'utf-8'));
+          return refStore<unknown>(JSON.parse(readFileSync(credPath, 'utf-8')));
         } catch {
-          return {};
+          return refStore<unknown>();
         }
       })()
-    : {};
+    : refStore<unknown>();
   let credCount = 0;
   for (const [id, secret] of Object.entries(profileSecrets)) {
     if (!(id in accounts) || id in existing || !secret?.apiKey) continue;
@@ -818,15 +819,15 @@ function migrateHomedirCredentials(projectRoot?: string): void {
       return;
     }
     const targetCredPath = resolve(globalRoot, CONFIG_SUBDIR, 'credentials.json');
-    let targetCreds: Record<string, unknown> = {};
+    let targetCreds: Record<string, unknown> = refStore<unknown>();
     if (existsSync(targetCredPath)) {
       try {
         const parsed = JSON.parse(readFileSync(targetCredPath, 'utf-8'));
         if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-          targetCreds = parsed;
+          targetCreds = refStore<unknown>(parsed);
         }
       } catch {
-        targetCreds = {};
+        targetCreds = refStore<unknown>();
       }
     }
     let imported = 0;
@@ -996,7 +997,7 @@ function readRuntimeJsonStrict(path: string, what: string): Record<string, unkno
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error(`Invalid ${what} JSON at ${path}: expected object`);
   }
-  return parsed as Record<string, unknown>;
+  return refStore(parsed as Record<string, unknown>);
 }
 
 /**
@@ -1005,7 +1006,7 @@ function readRuntimeJsonStrict(path: string, what: string): Record<string, unkno
  * empty", which would let the migration silently overwrite a damaged target.
  */
 function readTargetJsonStrict(path: string, what: string): Record<string, unknown> {
-  if (!existsSync(path)) return {};
+  if (!existsSync(path)) return refStore<unknown>();
   return readRuntimeJsonStrict(path, what);
 }
 
@@ -1110,7 +1111,7 @@ function migrateRuntimeStaleAccountsToWorkspace(): void {
 
   // ── Write phase: atomic per file, only after full preflight passed (INV-7) ──
   if (accountsToMerge.length > 0) {
-    const next = { ...workspaceAccounts };
+    const next = refStore(workspaceAccounts);
     for (const [ref, account] of accountsToMerge) next[ref] = account;
     writeAllGlobal(next, workspaceRoot);
     console.error(
@@ -1118,7 +1119,7 @@ function migrateRuntimeStaleAccountsToWorkspace(): void {
     );
   }
   if (credsToMerge.length > 0) {
-    const next = { ...workspaceCreds };
+    const next = refStore(workspaceCreds);
     for (const [ref, entry] of credsToMerge) next[ref] = entry;
     assertSafeCatalogWrite(workspaceRoot, 'catalog-accounts.migrateRuntimeStaleAccounts.credentials');
     mkdirSync(resolve(resolveAccountStoreRoot({ projectRoot: workspaceRoot }), CONFIG_SUBDIR), { recursive: true });

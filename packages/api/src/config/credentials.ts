@@ -8,6 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync,
 import { resolve } from 'node:path';
 import type { CredentialEntry } from '@cat-cafe/shared';
 import { resolveAccountStoreRoot } from './account-store-root.js';
+import { refStore } from './ref-store.js';
 import { assertSafeTestConfigRead, assertSafeTestConfigRoot } from './test-config-write-guard.js';
 
 const CONFIG_SUBDIR = '.cat-cafe';
@@ -38,14 +39,14 @@ function readAll(projectRoot?: string): Record<string, CredentialEntry> {
   // does not depend on the operator's store happening to exist.
   assertSafeTestConfigRead(resolveAccountStoreRoot({ projectRoot }), 'credentials.readAll');
   const credPath = resolveCredentialsPath(projectRoot);
-  if (!existsSync(credPath)) return {};
+  if (!existsSync(credPath)) return refStore<CredentialEntry>();
   try {
     const raw = readFileSync(credPath, 'utf-8');
     const parsed = JSON.parse(raw);
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
-    return parsed as Record<string, CredentialEntry>;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return refStore<CredentialEntry>();
+    return refStore(parsed as Record<string, CredentialEntry>);
   } catch {
-    return {};
+    return refStore<CredentialEntry>();
   }
 }
 

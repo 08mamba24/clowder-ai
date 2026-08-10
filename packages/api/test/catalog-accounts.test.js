@@ -36,7 +36,11 @@ describe('global accounts (clowder-ai#340)', () => {
     const { readCatalogAccounts, resetMigrationState } = await import('../dist/config/catalog-accounts.js');
     resetMigrationState();
     const result = readCatalogAccounts(projectRoot);
-    assert.deepEqual(result, {});
+    // R19 P1: ref-keyed stores have a NULL prototype, so a ref named toString
+    // or __proto__ is data rather than an inherited member. deepEqual compares
+    // prototypes, so assert emptiness on a copy and pin the contract explicitly.
+    assert.deepEqual({ ...result }, {});
+    assert.equal(Object.getPrototypeOf(result), null, 'a ref-keyed store must not inherit');
   });
 
   it('writeCatalogAccount creates global accounts.json', async () => {

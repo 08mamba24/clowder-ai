@@ -786,6 +786,141 @@ describe('accounts split-root regression (runtime checkout vs persistent workspa
     );
   });
 
+  /**
+   * R19 P1: the same class one level up — the account/credential REF itself.
+   *
+   * The stores are `Record<string, …>` parsed from JSON, so a plain `{}` handed
+   * every ref on Object.prototype to the migration for free, and each ordinary
+   * use of a record meant something else:
+   *
+   *   `ref in store`   → true for toString/constructor/__proto__/valueOf/… on a
+   *                      store that never held them, which the migration read as
+   *                      "already present" and skipped — WHILE STILL WRITING THE
+   *                      COMPLETION MARKER. A persisted account silently dropped,
+   *                      with durable evidence saying the migration was done, so
+   *                      the preflight never ran again. Permanent.
+   *   `store[ref] = v` → for `__proto__`, the prototype setter swallowed it.
+   *
+   * The trigger was wider than "an empty account body": any body whose canonical
+   * view is empty compares equal to the inherited value, which includes the
+   * absent-equivalent forms this feature deliberately adjudicated —
+   * `models: []`, `envVars: {}`, `modelAliases: {}`.
+   *
+   * Fixed at the container, not the use sites: ref-keyed stores are created with
+   * a null prototype (refStore), so there is no key JSON can hold that they
+   * inherit. These regressions pin the CONTRACT — a prototype-named ref is
+   * ordinary data — rather than any one of the thirteen call sites.
+   */
+  const PROTOTYPE_REFS = ['__proto__', 'toString', 'constructor', 'valueOf', 'hasOwnProperty'];
+  const CANONICALLY_EMPTY_BODIES = ['{}', '{"models":[]}', '{"envVars":{}}', '{"modelAliases":{}}'];
+
+  for (const ref of PROTOTYPE_REFS) {
+    it(`a valid account under the prototype-named ref "${ref}" migrates like any other (R19 P1)`, async () => {
+      setSplitEnv();
+      await writeAccountsJson(
+        runtimeRoot,
+        `{${JSON.stringify(ref)}:{"authType":"api_key","displayName":"proto-acct"}}`,
+      );
+      await writeFile(
+        join(runtimeRoot, '.cat-cafe', 'credentials.json'),
+        `{${JSON.stringify(ref)}:{"apiKey":"sk-ref-${ref.replace(/_/g, '')}"}}`,
+        'utf-8',
+      );
+      await writeAccountsJson(workspaceRoot, '{}');
+
+      assert.doesNotThrow(
+        () => readCatalogAccounts(runtimeRoot),
+        `a ref named ${ref} is data, not an inherited member — it must not conflict with a store that lacks it`,
+      );
+
+      // Parsed back the way the app reads it: the ref must be an OWN property of
+      // the written file, not swallowed by the __proto__ setter.
+      const { readFileSync } = await import('node:fs');
+      const written = JSON.parse(readFileSync(join(workspaceRoot, '.cat-cafe', 'accounts.json'), 'utf-8'));
+      assert.ok(Object.hasOwn(written, ref), `${ref} must land as an own property of the workspace accounts file`);
+      assert.equal(written[ref].displayName, 'proto-acct');
+      const writtenCreds = JSON.parse(readFileSync(join(workspaceRoot, '.cat-cafe', 'credentials.json'), 'utf-8'));
+      assert.ok(Object.hasOwn(writtenCreds, ref), `${ref}'s credential must land as an own property too`);
+    });
+
+    it(`a credential-only source under the prototype-named ref "${ref}" still migrates (R19 P1 + INV-4)`, async () => {
+      setSplitEnv();
+      // No runtime accounts.json at all — the credential-only path (INV-4/P1-4)
+      // crossed with a prototype-named ref.
+      await writeFile(
+        join(runtimeRoot, '.cat-cafe', 'credentials.json'),
+        `{${JSON.stringify(ref)}:{"apiKey":"sk-credonly-${ref.replace(/_/g, '')}"}}`,
+        'utf-8',
+      );
+      await writeAccountsJson(workspaceRoot, '{}');
+
+      assert.doesNotThrow(() => readCatalogAccounts(runtimeRoot), `credential-only ${ref} must migrate`);
+      const { readFileSync } = await import('node:fs');
+      const writtenCreds = JSON.parse(readFileSync(join(workspaceRoot, '.cat-cafe', 'credentials.json'), 'utf-8'));
+      assert.ok(Object.hasOwn(writtenCreds, ref), `credential-only ${ref} must land as an own property`);
+    });
+  }
+
+  for (const body of CANONICALLY_EMPTY_BODIES) {
+    it(`an account whose canonical view is empty (${body}) is not silently skipped under a prototype ref (R19 P1)`, async () => {
+      setSplitEnv();
+      // This body canonicalises to nothing, which is exactly what made it compare
+      // equal to the inherited prototype value and vanish.
+      await writeAccountsJson(runtimeRoot, `{"__proto__":${body}}`);
+      await writeAccountsJson(workspaceRoot, '{}');
+
+      assert.doesNotThrow(() => readCatalogAccounts(runtimeRoot), 'an absent-equivalent body is still an entry');
+      const { readFileSync } = await import('node:fs');
+      const written = JSON.parse(readFileSync(join(workspaceRoot, '.cat-cafe', 'accounts.json'), 'utf-8'));
+      assert.ok(
+        Object.hasOwn(written, '__proto__'),
+        `body ${body} under a prototype ref must be migrated, never dropped while the marker is written`,
+      );
+    });
+  }
+
+  /**
+   * R19 P1, invocation path. The same class in BUILTIN_ACCOUNT_MAP: its keys are
+   * written in code, but the INDEX is an accountRef out of user config. As an
+   * object literal it answered every Object.prototype member, so an unknown ref
+   * named toString/constructor/valueOf came back as a fabricated builtin OAuth
+   * profile carrying a FUNCTION as its client — instead of the null that means
+   * "no such account". This runs on every invocation, not just on migration.
+   */
+  for (const ref of ['toString', 'constructor', 'valueOf', '__proto__', 'hasOwnProperty']) {
+    it(`resolveByAccountRef("${ref}") is an unknown ref, not an inherited builtin (R19 P1)`, async () => {
+      setSplitEnv();
+      await writeAccountsJson(workspaceRoot, '{"real":{"authType":"api_key"}}');
+
+      assert.equal(
+        resolveByAccountRef(runtimeRoot, ref),
+        null,
+        `a ref named ${ref} names no account, so it must resolve to null — never a synthesised builtin`,
+      );
+    });
+  }
+
+  it('a real conflict under a prototype-named ref still fails closed with zero writes (R19 P1)', async () => {
+    setSplitEnv();
+    // The fix must not turn prototype refs into "always merge" either: a genuine
+    // same-ref difference is still a conflict, with the same triple zero-write.
+    await writeAccountsJson(runtimeRoot, '{"toString":{"authType":"api_key","displayName":"stale-name"}}');
+    await writeFile(
+      join(runtimeRoot, '.cat-cafe', 'credentials.json'),
+      '{"toString":{"apiKey":"sk-proto-ref-conflict"}}',
+      'utf-8',
+    );
+    await writeAccountsJson(workspaceRoot, '{"toString":{"authType":"api_key","displayName":"fresh-name"}}');
+    const before = await snapshotWorkspaceStore();
+
+    assert.throws(
+      () => readCatalogAccounts(runtimeRoot),
+      /migration conflict for "toString"/,
+      'a prototype-named ref is data, so a genuine difference under it is still a conflict',
+    );
+    await assertWorkspaceUntouched(before, 'prototype-named ref conflict');
+  });
+
   it('conflicting same-id credentials fail closed without printing secret values (INV-5/INV-6)', async () => {
     setSplitEnv();
     await writeRuntimeAccounts({
