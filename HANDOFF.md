@@ -3103,3 +3103,59 @@ routes/cats.ts / routes/first-run-quest.ts
 砚砚继续 R21。SHA 集合不变(本条为 docs-only 增量)。仍未 push、未 restart、未跑真实 migration dry-run、未读写真实 store 内容。
 
 [布偶猫/Claude Opus 5 🐾]
+
+## 47. 更正:§43/§44 的"环境劣化"判断是错的——真因是 Node 版本不对(布偶猫,2026-08-10)
+
+**docs-only,无代码改动。** `4c45a5ba` 的 delta 未动。
+
+### 我说错了什么
+
+§43 我写"本机测试环境在这几轮之间劣化了",§44 沿用。**这个判断是错的**,而且我当时的"归因"方法只做到一半:我 stash 掉改动重跑、确认 baseline 同样失败,就下结论说"与本 feature 无关"——**归因正确,定性错误**。我从没读过那条错误的正文。
+
+读了之后:
+
+```text
+The module '.../better_sqlite3.node' was compiled against a different Node.js version
+using NODE_MODULE_VERSION 137. This version of Node.js requires NODE_MODULE_VERSION 127.
+```
+
+ABI 137 = Node 24,ABI 127 = Node 22。
+
+| | 版本 |
+| --- | --- |
+| 仓库 `package.json` engines | **`"node": ">=24.0.0"`** |
+| 机器上已装(nvm) | v22.22.3、**v24.18.0** |
+| 活跃 `node`(`~/.local/bin/node`) | **v22.23.2** |
+| worktree 的 better-sqlite3 原生二进制 | 按 **Node 24** 编译 —— **它是对的** |
+
+所以**错的是我的运行器,不是那个模块**:我这一整轮的门禁全部跑在仓库不支持的 Node 22 上。
+
+顺带一个我自己的错误测法:我先前用 `require('better-sqlite3')` 判断"能不能加载",它返回 OK。**`require` 不 dlopen**——只有 `new Database()` 才触发 `bindings()`。正确探针是 `new (require('better-sqlite3'))(':memory:')`。又一次"读代码推断"代替"测量"。
+
+### 在正确 Node 下重跑
+
+```text
+Node 22(我这轮一直在用) : 1953 tests / 1844 pass / 108 fail / 105 × ERR_DLOPEN_FAILED
+Node 24(仓库要求)       : 1960 tests / 1956 pass /   3 fail /   0 × DLOPEN
+```
+
+- **0 条 DLOPEN**;之前那 105 条"失败"其实是**根本没执行**,现在真的跑了并且通过。
+- 剩下 3 条(`pooled Codex` ×2、`seeds missing runtime auth config`)全部落在 §41 已确立的既有红集合内。**零新增失败。**
+- §41 的 1912 与本轮的 1956 现在可比了:差额是之前被 ABI 挡住、从未执行的那批。
+- 焦点 9 suites 在 Node 22 与 Node 24 下**结果相同**:均 195/195。
+
+### 未重跑的部分,我说清楚
+
+R17-R20 的三份变异矩阵是在 Node 22 下跑的,**我没有重跑**。理由:被测语义(原型链、`Object.assign` 的 [[Set]]、`Map`、`Object.create(null)`)与 Node ABI 无关,且同一套焦点 suite 在两个版本下逐条一致(195/195)。如果你要求重跑,说一声我就跑,不自行判定这一步可省。
+
+### 给砚砚的即时提醒
+
+**你跑门禁前请先 `export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"`**,否则会撞上同样那 105 条幻影失败,还得花一轮归因。
+
+### 遗留(不阻断 #40,但需要归宿)
+
+1. 活跃 `node` 是 v22 而仓库要求 ≥24 —— 这是**本机环境配置**问题,不是本 feature 问题。谁来定 PATH 归属交 operator。
+2. 3 条既有红测(`pooled Codex` ×2、`runtime-worktree` 的 auth config seed)——修前修后一致,与本 feature 无关。
+3. cats 域同类原型键 6 处 —— 已建毛线球 `0001786363677178`。
+
+[布偶猫/Claude Opus 5 🐾]
