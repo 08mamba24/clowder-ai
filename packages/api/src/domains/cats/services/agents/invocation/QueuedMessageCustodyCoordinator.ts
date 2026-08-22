@@ -29,6 +29,18 @@ import { normalizeOwnerAuthProvenance } from './owner-auth-provenance.js';
 interface CoordinatorDeps {
   messageStore: IMessageStore;
   now?: () => number;
+  /** Injectable for tests; production uses a real setTimeout-based delay. */
+  delay?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Exponential backoff with full jitter for queue-custody CAS conflicts.
+ * Base 25ms, cap 400ms: 8 attempts worst-case wall clock stays well under 2s
+ * while giving concurrent fan-out siblings room to finish their transitions.
+ */
+export function casBackoffDelayMs(attempt: number): number {
+  const capped = Math.min(25 * 2 ** attempt, 400);
+  return Math.floor(Math.random() * capped);
 }
 
 function isManagedHoldWakeMessage(message: StoredMessage): boolean {
@@ -627,6 +639,78 @@ export function createInitialCrossThreadQueuedMessageCustody(
   };
 }
 
+/**
+ * Same-thread A2A fan-out: one trigger message dispatches one independent Queue
+ * entry per target. The lazy single-entry initialization
+ * (createInitialQueuedMessageCustody) cannot see sibling entries, so it would
+ * bind allTargetCats to the first attempted entry alone and reject every other
+ * sibling with a custody mismatch. This constructor binds each target to its
+ * exact carrier entry up front (mirroring the cross-thread constructor), so
+ * activeCustodyFromEntry's carrier branch projects each sibling independently.
+ */
+export function createInitialFanoutQueuedMessageCustody(
+  messageId: string,
+  entries: readonly QueueEntry[],
+): QueuedMessageCustody {
+  if (entries.length === 0) throw new Error('fan-out Queue custody requires at least one entry');
+  const intent = entries[0].intent;
+  const threadId = entries[0].threadId;
+  const userId = entries[0].userId;
+  const ownerAuthProvenance = normalizeOwnerAuthProvenance(entries[0].ownerAuthProvenance);
+  const carrierByTargetCatId: Record<string, QueueTargetCarrierBinding> = {};
+  const carrierTargetCats: CatId[] = [];
+  for (const entry of entries) {
+    if (
+      entry.intent !== intent ||
+      entry.threadId !== threadId ||
+      entry.userId !== userId ||
+      normalizeOwnerAuthProvenance(entry.ownerAuthProvenance) !== ownerAuthProvenance ||
+      entry.source !== 'agent' ||
+      entry.sourceCategory !== 'a2a'
+    ) {
+      throw new Error('fan-out Queue carriers must share one A2A message identity');
+    }
+    for (const targetCatId of entry.targetCats) {
+      if (carrierByTargetCatId[targetCatId]) {
+        throw new Error(`fan-out Queue target has multiple carriers: ${targetCatId}`);
+      }
+      carrierTargetCats.push(targetCatId as CatId);
+      carrierByTargetCatId[targetCatId] = {
+        entryId: entry.id,
+        source: 'agent',
+        sourceCategory: 'a2a',
+        ...(entry.callerCatId ? { callerCatId: entry.callerCatId } : {}),
+        ...(entry.a2aParentInvocationId ? { a2aParentInvocationId: entry.a2aParentInvocationId } : {}),
+        a2aTriggerMessageId: entry.a2aTriggerMessageId ?? messageId,
+        autoExecute: true,
+        createdAt: entry.createdAt,
+      };
+    }
+  }
+  const createdAt = Math.min(...entries.map((entry) => entry.createdAt));
+  if (!Number.isFinite(createdAt)) throw new Error('fan-out Queue custody requires a finite createdAt');
+  return {
+    version: 1,
+    entryId: `fanout:${messageId}`,
+    revision: 1,
+    ownerAuthProvenance,
+    carrierByTargetCatId,
+    intent,
+    status: 'queued',
+    allTargetCats: [...carrierTargetCats],
+    pendingTargetCats: [...carrierTargetCats],
+    notifiedByCatIds: [],
+    seenByCatIds: [],
+    seenInvocationIdByCatId: {},
+    failedByCatIds: [],
+    handledByCatIds: [],
+    targetAttempts: carrierTargetCats.map((catId) => initialTargetAttempt(`fanout:${messageId}`, catId, createdAt)),
+    priority: entries[0].priority,
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
 function activeCustodyFromEntry(entry: QueueEntry, current: QueuedMessageCustody, now: number): QueuedMessageCustody {
   if (normalizeOwnerAuthProvenance(current.ownerAuthProvenance) !== entry.ownerAuthProvenance) {
     throw new Error(`Queue entry ${entry.id} owner authentication provenance is immutable`);
@@ -947,9 +1031,12 @@ export class QueuedMessageCustodyCoordinator {
   private readonly now: () => number;
   private readonly entryLocks = new Map<string, Promise<void>>();
 
+  private readonly sleep: (ms: number) => Promise<void>;
+
   constructor(deps: CoordinatorDeps) {
     this.messageStore = deps.messageStore;
     this.now = deps.now ?? Date.now;
+    this.sleep = deps.delay ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   }
 
   async persistEntry(entry: QueueEntry): Promise<string[]> {
@@ -1448,7 +1535,14 @@ export class QueuedMessageCustodyCoordinator {
     deliveredAt?: number,
     allowTerminalCurrent = false,
   ): Promise<{ managed: boolean; changed: boolean }> {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    // Fan-out entries share one messageId's custody, so N concurrent
+    // invocations CAS the same revision counter. A tight retry loop loses to
+    // siblings deterministically under load (thread_mrqb0yfauece1tmm:
+    // "queue custody CAS retries exhausted" flipped healthy invocations to
+    // failed and rolled their entries back). Back off exponentially with
+    // jitter and allow enough rounds for the contention window to drain.
+    const CAS_ATTEMPTS = 8;
+    for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt += 1) {
       const message = await this.messageStore.getById(messageId);
       const current = message?.queueCustody;
       if (!current || (current.status === 'terminal' && !allowTerminalCurrent)) {
@@ -1465,6 +1559,9 @@ export class QueuedMessageCustodyCoordinator {
       });
       if (result.kind === 'updated') return { managed: true, changed: true };
       if (result.kind === 'not_found') return { managed: false, changed: false };
+      if (attempt < CAS_ATTEMPTS - 1) {
+        await this.sleep(casBackoffDelayMs(attempt));
+      }
     }
     throw new Error(`queue custody CAS retries exhausted for message ${messageId}`);
   }

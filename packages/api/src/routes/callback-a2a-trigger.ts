@@ -30,6 +30,7 @@ import { PerCatTerminalDispositionCollector } from '../domains/cats/services/age
 import {
   createCrossThreadQueueEntryFromCustody,
   createInitialCrossThreadQueuedMessageCustody,
+  createInitialFanoutQueuedMessageCustody,
 } from '../domains/cats/services/agents/invocation/QueuedMessageCustodyCoordinator.js';
 import { requireInvocationRecordUpdate } from '../domains/cats/services/agents/invocation/require-invocation-record-update.js';
 import { stampVisibleTurn } from '../domains/cats/services/agents/invocation/visible-turn.js';
@@ -111,12 +112,10 @@ export interface A2ATriggerDeps {
   log: FastifyBaseLogger;
 }
 
-function sameCrossThreadCustodyIdentity(
-  actual: QueuedMessageCustody | undefined,
-  expected: QueuedMessageCustody,
-): boolean {
+function sameQueueCustodyIdentity(actual: QueuedMessageCustody | undefined, expected: QueuedMessageCustody): boolean {
   return (
-    actual?.receiptScope === 'cross_thread_delivery' &&
+    !!actual &&
+    actual.receiptScope === expected.receiptScope &&
     actual.entryId === expected.entryId &&
     actual.intent === expected.intent &&
     normalizeOwnerAuthProvenance(actual.ownerAuthProvenance) ===
@@ -223,7 +222,7 @@ export async function enqueueA2ATargets(
     const restoredEntryByCatId = new Map<CatId, QueueEntry>();
     const newlyEnqueuedEntryIds: string[] = [];
     const coalescedEntryRollbacks = new Map<string, { before: QueueEntry; after: QueueEntry }>();
-    const rollbackCrossThreadAdmissions = (): void => {
+    const rollbackAdmissions = (): void => {
       for (const entryId of newlyEnqueuedEntryIds) {
         deps.invocationQueue?.rollbackEnqueue(threadId, opts.userId, entryId);
       }
@@ -232,7 +231,7 @@ export async function enqueueA2ATargets(
         if (!restored) {
           log.error(
             { threadId, entryId: before.id, triggerMessageId },
-            'cross-thread Queue coalesce rollback lost its exact compare-and-swap owner',
+            'A2A Queue coalesce rollback lost its exact compare-and-swap owner',
           );
         }
       }
@@ -331,7 +330,8 @@ export async function enqueueA2ATargets(
           ) ?? null);
       if (inFlight) {
         if (inFlight.status === 'queued') {
-          const beforeCoalesce = isCrossThread
+          const requiresAdmissionRollback = isCrossThread || targetCats.length > 1;
+          const beforeCoalesce = requiresAdmissionRollback
             ? deps.invocationQueue.getEntrySnapshot(threadId, inFlight.userId, inFlight.id)
             : null;
           // Not yet dispatched → merge content in place. The target sees both handoffs as one
@@ -346,18 +346,25 @@ export async function enqueueA2ATargets(
               callerCatId,
               opts.parentInvocationId,
               ownerAuthProvenance,
+              catId,
             ) ?? false;
           if (merged) {
-            if (isCrossThread) {
+            let acceptedEntry = inFlight;
+            if (requiresAdmissionRollback) {
               const afterCoalesce = deps.invocationQueue.getEntrySnapshot(threadId, inFlight.userId, inFlight.id);
               if (!beforeCoalesce || !afterCoalesce) {
                 throw new Error('coalesced A2A target lost its exact Queue snapshot');
               }
-              coalescedEntryRollbacks.set(inFlight.id, { before: beforeCoalesce, after: afterCoalesce });
+              const priorRollback = coalescedEntryRollbacks.get(inFlight.id);
+              coalescedEntryRollbacks.set(inFlight.id, {
+                before: priorRollback?.before ?? beforeCoalesce,
+                after: afterCoalesce,
+              });
+              acceptedEntry = afterCoalesce;
             }
             // Merged into an existing queued entry — handled but NOT a new route (see `coalesced` decl).
             coalesced.push(catId);
-            acceptedEntryByCatId.set(catId, inFlight);
+            acceptedEntryByCatId.set(catId, acceptedEntry);
             log.info(
               { threadId, triggerMessageId, catId, mergedInto: inFlight.id },
               '[F-coalesce] merged repeated same-turn handoff into queued agent entry',
@@ -482,13 +489,49 @@ export async function enqueueA2ATargets(
     // (merged into an existing queued entry), so its cursor must advance too, otherwise the
     // merged-away mention lingers as a phantom pending backlog.
     const handled = [...enqueued, ...coalesced];
+    // Same-thread fan-out must bind the complete accepted carrier set before
+    // auto-execution. Mixed/all-coalesced admissions are still fan-out: their
+    // existing Queue rows are the exact carriers for this trigger. Any missing
+    // or incompatible durable identity rolls every admission back instead of
+    // falling through to lazy single-entry custody.
+    if (!isCrossThread && opts.triggerMessage.deliveryStatus === 'queued' && handled.length > 1) {
+      const messageStore = deps.messageStore;
+      const acceptedEntries = handled
+        .map((catId) => acceptedEntryByCatId.get(catId))
+        .filter((entry): entry is QueueEntry => !!entry);
+      if (!messageStore || acceptedEntries.length !== handled.length) {
+        rollbackAdmissions();
+        throw new Error('same-thread fan-out accepted target is missing its exact Queue carrier');
+      }
+      let expectedCustody: QueuedMessageCustody;
+      let initialized: Awaited<ReturnType<IMessageStore['initializeQueueCustody']>>;
+      try {
+        expectedCustody = createInitialFanoutQueuedMessageCustody(triggerMessageId, acceptedEntries);
+        initialized = await messageStore.initializeQueueCustody(triggerMessageId, expectedCustody);
+      } catch (error) {
+        rollbackAdmissions();
+        throw error;
+      }
+      if (initialized.kind === 'not_found' || initialized.kind === 'not_queued') {
+        rollbackAdmissions();
+        throw new Error(`same-thread fan-out Queue custody initialization failed: ${initialized.kind}`);
+      }
+      if (
+        initialized.message.deliveryStatus !== 'queued' ||
+        initialized.message.queueCustody?.status === 'terminal' ||
+        !sameQueueCustodyIdentity(initialized.message.queueCustody, expectedCustody)
+      ) {
+        rollbackAdmissions();
+        throw new Error('same-thread fan-out Queue custody identity mismatch');
+      }
+    }
     if (isCrossThread && targetCats.length > 0) {
       const messageStore = deps.messageStore!;
       const acceptedEntries = handled
         .map((catId) => acceptedEntryByCatId.get(catId))
         .filter((entry): entry is NonNullable<typeof entry> => !!entry);
       if (acceptedEntries.length !== handled.length) {
-        rollbackCrossThreadAdmissions();
+        rollbackAdmissions();
         throw new Error('accepted A2A target is missing its exact Queue carrier');
       }
       let expectedCustody: QueuedMessageCustody;
@@ -500,19 +543,19 @@ export async function enqueueA2ATargets(
         });
         initialized = await messageStore.initializeQueueCustody(triggerMessageId, expectedCustody);
       } catch (error) {
-        rollbackCrossThreadAdmissions();
+        rollbackAdmissions();
         throw error;
       }
       if (initialized.kind === 'not_found' || initialized.kind === 'not_queued') {
-        rollbackCrossThreadAdmissions();
+        rollbackAdmissions();
         throw new Error(`cross-thread Queue custody initialization failed: ${initialized.kind}`);
       }
       if (
         initialized.message.deliveryStatus !== 'queued' ||
         (initialized.message.queueCustody?.status === 'terminal' && expectedCustody.status !== 'terminal') ||
-        !sameCrossThreadCustodyIdentity(initialized.message.queueCustody, expectedCustody)
+        !sameQueueCustodyIdentity(initialized.message.queueCustody, expectedCustody)
       ) {
-        rollbackCrossThreadAdmissions();
+        rollbackAdmissions();
         throw new Error('cross-thread Queue custody identity mismatch');
       }
       const queuedMessage = initialized.message;
