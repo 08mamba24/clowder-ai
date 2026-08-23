@@ -1,0 +1,139 @@
+// @ts-check
+
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, it } from 'node:test';
+
+const {
+  buildDshMcpClientPlugins,
+  dshOmitsAcpSessionMcp,
+  isDshHarnessCommand,
+  prepareDshAcpSpawnForProject,
+  resolveDshAcpStdioSpawn,
+  writeDshAcpOverlayConfig,
+} = await import('../../dist/domains/cats/services/agents/providers/acp/dsh-acp-bootstrap.js');
+
+function writeDshFixture(root) {
+  const binDir = join(root, 'packages', 'examples', 'acp-demo', 'lib');
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(join(binDir, 'bin.js'), '#!/usr/bin/env node\n');
+  const configDir = join(root, 'examples', 'acp-agent');
+  mkdirSync(configDir, { recursive: true });
+  const config = join(configDir, 'cordis.yml');
+  writeFileSync(config, "- id: acp-agent\n  name: '@deepseek-ai/dsh-acp-demo'\n");
+  return { bin: join(binDir, 'bin.js'), config };
+}
+
+describe('dsh ACP bootstrap', () => {
+  it('treats dsh and dsh-acp-demo as the same harness family', () => {
+    assert.equal(isDshHarnessCommand('dsh'), true);
+    assert.equal(isDshHarnessCommand('dsh-acp-demo'), true);
+    assert.equal(isDshHarnessCommand('/opt/dsh-acp-demo'), true);
+    assert.equal(isDshHarnessCommand('grok'), false);
+    assert.equal(dshOmitsAcpSessionMcp('dsh'), true);
+    assert.equal(dshOmitsAcpSessionMcp('grok'), false);
+  });
+
+  it('resolves catalog `dsh` to the official ACP demo when CAT_CAFE_DSH_ROOT is set', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-acp-root-'));
+    const { bin, config } = writeDshFixture(root);
+
+    const spawn = resolveDshAcpStdioSpawn({
+      command: 'dsh',
+      args: ['--profile', 'headless'],
+      env: { CAT_CAFE_DSH_ROOT: root, PATH: '/nonexistent' },
+    });
+
+    assert.equal(spawn.ok, true);
+    if (!spawn.ok) return;
+    assert.equal(spawn.command, process.execPath);
+    assert.deepEqual(spawn.args, [bin]);
+    assert.equal(spawn.baseConfigPath, config);
+    assert.equal(spawn.env.DSH_PERMISSION_MODE, 'danger-full-access');
+  });
+
+  it('fails closed when no ACP demo is installed instead of spawning bare dsh', () => {
+    const spawn = resolveDshAcpStdioSpawn({
+      command: 'dsh',
+      args: [],
+      env: { PATH: '/nonexistent' },
+    });
+    assert.equal(spawn.ok, false);
+    if (spawn.ok) return;
+    assert.match(spawn.error.message, /dsh-acp-demo/);
+    assert.match(spawn.error.message, /not `dsh --profile headless`/);
+  });
+
+  it('merges family MCP plugins including stdio env into the cordis overlay', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-overlay-'));
+    const { config } = writeDshFixture(root);
+    const outputPath = join(root, 'merged.cordis.yml');
+    writeDshAcpOverlayConfig({
+      baseConfigPath: config,
+      servers: [
+        {
+          name: 'cat-cafe-memory',
+          command: '/usr/bin/node',
+          args: ['packages/mcp-server/dist/memory.js'],
+          env: [{ name: 'CAT_CAFE_API_URL', value: 'http://127.0.0.1:9' }],
+        },
+      ],
+      outputPath,
+    });
+    const yaml = readFileSync(outputPath, 'utf-8');
+    assert.match(yaml, /id: acp-agent/);
+    assert.match(yaml, /name: '@deepseek-ai\/dsh-mcp-client'/);
+    assert.match(yaml, /serverName: 'cat-cafe-memory'/);
+    assert.match(yaml, /transport: stdio/);
+    assert.match(yaml, /command: '\/usr\/bin\/node'/);
+    assert.match(yaml, /CAT_CAFE_API_URL: 'http:\/\/127\.0\.0\.1:9'/);
+  });
+
+  it('prepareDshAcpSpawnForProject uses the official cordis.yml the demo can load', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-prepare-'));
+    const { bin, config } = writeDshFixture(root);
+    const bootstrapCwd = join(root, 'boot');
+    const projectRoot = mkdtempSync(join(tmpdir(), 'dsh-project-'));
+    const prepared = await prepareDshAcpSpawnForProject({
+      command: 'dsh',
+      args: [],
+      projectRoot,
+      bootstrapCwd,
+      mcpWhitelist: ['cat-cafe-memory'],
+      mcpSupport: true,
+      catId: 'dsh',
+      env: { CAT_CAFE_DSH_ROOT: root, PATH: '/nonexistent' },
+    });
+    assert.equal(prepared.ok, true);
+    if (!prepared.ok) return;
+    assert.equal(prepared.command, process.execPath);
+    assert.notEqual(prepared.command, 'dsh');
+    assert.equal(prepared.args[0], bin);
+    assert.equal(prepared.cwd, join(root, 'examples', 'acp-agent'));
+    const configIdx = prepared.args.indexOf('--config');
+    assert.ok(configIdx >= 0, 'spawn args must pass --config');
+    assert.equal(
+      prepared.args[configIdx + 1],
+      config,
+      'Hub must pass the official composition, not an extra-plugin overlay the demo cannot load',
+    );
+  });
+
+  it('renders dsh-mcp-client plugins from ACP stdio MCP servers', () => {
+    const yaml = buildDshMcpClientPlugins([
+      {
+        name: 'cat-cafe-memory',
+        command: '/usr/bin/node',
+        args: ['packages/mcp-server/dist/memory.js'],
+        env: [{ name: 'TOKEN', value: 'abc' }],
+      },
+    ]);
+    assert.match(yaml, /name: '@deepseek-ai\/dsh-mcp-client'/);
+    assert.match(yaml, /serverName: 'cat-cafe-memory'/);
+    assert.match(yaml, /transport: stdio/);
+    assert.match(yaml, /command: '\/usr\/bin\/node'/);
+    assert.match(yaml, /TOKEN: 'abc'/);
+  });
+});

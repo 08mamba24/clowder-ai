@@ -32,9 +32,11 @@ export function prepareAcpProcessEnv(options: PrepareAcpProcessEnvOptions): Reco
     }
     const userEnvTemplates = account.envVars ? extractUserEnvTemplates(account.envVars) : undefined;
     // F161 AC-A5 / KD-1: generic ACP (clientId='acp') is a transport, not a provider identity.
-    // It never selects a BUILTIN_ENV_MAPS[provider] template — env comes only from the account's
-    // envVars templates. Ignore any provider on generic ACP (stale / pack-catalog / direct-API).
-    const envMapProvider = options.clientId === 'acp' ? undefined : (options.provider ?? undefined);
+    // Stale pack/catalog providers (anthropic/openai/...) must not select BUILTIN_ENV_MAPS.
+    // Harness members (Grok Build / DeepSeek Harness) still need their native API-key env
+    // when the variant's declared provider is that harness family.
+    const envMapProvider =
+      options.clientId === 'acp' ? acpHarnessProviderEnv(options.provider) : (options.provider ?? undefined);
     Object.assign(
       resolved,
       resolveEnvMap(
@@ -56,6 +58,14 @@ export function prepareAcpProcessEnv(options: PrepareAcpProcessEnvOptions): Reco
   }
 
   return Object.keys(resolved).length > 0 ? resolved : undefined;
+}
+
+const ACP_HARNESS_PROVIDER_ENV = new Set(['xai', 'deepseek']);
+
+function acpHarnessProviderEnv(provider: string | null | undefined): string | undefined {
+  const trimmed = provider?.trim();
+  if (!trimmed) return undefined;
+  return ACP_HARNESS_PROVIDER_ENV.has(trimmed) ? trimmed : undefined;
 }
 
 export function tryPrepareAcpProcessEnv(options: PrepareAcpProcessEnvOptions): TryPrepareAcpProcessEnvResult {

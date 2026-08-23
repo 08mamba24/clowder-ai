@@ -20,6 +20,7 @@ import { resolveAcpBootstrapArgs, resolveAcpBootstrapCommand, resolveAcpBootstra
 // for invoke-time resolution (#712 P1-1).
 import { createAcpPoolSpawnSignature } from './acp-pool-signature.js';
 import { tryPrepareAcpProcessEnv } from './acp-spawn-env.js';
+import { dshOmitsAcpSessionMcp, isDshHarnessCommand, prepareDshAcpSpawnForProject } from './dsh-acp-bootstrap.js';
 
 export type AcpPoolRegistry = Map<string, AcpProcessPool>;
 
@@ -41,6 +42,7 @@ interface AcpBootstrapContext {
   cwd: string;
   model?: string;
   poolKey: PoolKey;
+  extraEnv?: Record<string, string>;
 }
 
 interface AcpAccountContext {
@@ -161,7 +163,11 @@ async function prepareAcpSpawnContext(
       'ACP registry sync skipped member due to invalid spawn env',
     );
   }
-  let acpSpawnEnv: Record<string, string> | undefined = acpEnvResult.env;
+  let acpSpawnEnv: Record<string, string> | undefined = {
+    ...(bootstrap.extraEnv ?? {}),
+    ...(acpEnvResult.env ?? {}),
+  };
+  if (Object.keys(acpSpawnEnv).length === 0) acpSpawnEnv = undefined;
 
   let openCodeAcpSpawnConfig: Awaited<ReturnType<typeof prepareOpenCodeAcpSpawnConfig>>;
   const contextPolicy = resolveAcpContextPolicy(config, input.effectiveModel);
@@ -286,7 +292,34 @@ export async function createAcpServiceForConfig(
     );
   }
 
-  const bootstrap = resolveAcpBootstrap(projectRoot, profileId, acpConfig, effectiveModel);
+  let bootstrap = resolveAcpBootstrap(projectRoot, profileId, acpConfig, effectiveModel);
+  if (isDshHarnessCommand(acpConfig.command)) {
+    const dshPrepared = await prepareDshAcpSpawnForProject({
+      command: acpConfig.command,
+      args: acpConfig.startupArgs,
+      projectRoot: bootstrap.projectRoot,
+      bootstrapCwd: bootstrap.cwd,
+      mcpWhitelist: acpConfig.mcpWhitelist ?? [],
+      mcpSupport: config.mcpSupport !== false,
+      catId,
+    });
+    if (!dshPrepared.ok) {
+      return skipAcpProfile(
+        input,
+        'dsh-acp-unavailable',
+        { err: dshPrepared.error, catId, profileId },
+        dshPrepared.error.message,
+      );
+    }
+    bootstrap = {
+      ...bootstrap,
+      command: dshPrepared.command,
+      args: dshPrepared.args,
+      extraEnv: dshPrepared.env,
+      // Resolve @deepseek-ai/* plugins from the harness composition, not the ACP tmp cwd.
+      cwd: dshPrepared.cwd,
+    };
+  }
   const accountContext = resolveAcpAccount(bootstrap.projectRoot, config);
   if (accountContext.accountRef && !accountContext.account) {
     return skipAcpProfile(
@@ -319,6 +352,7 @@ export async function createAcpServiceForConfig(
       source: 'service_spawn',
     },
     mcpSupport: config.mcpSupport,
+    omitSessionMcpServers: dshOmitsAcpSessionMcp(acpConfig.command),
     // #1186: Thread the member's configured idle TTL to AcpAgentService so
     // promptStream uses it as the authoritative no-event termination threshold.
     idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,

@@ -440,6 +440,79 @@ describe('cat-catalog-store', () => {
     assert.equal(runtimeCatalog.roster?.glm52?.family, 'dragon-li', 'glm52 roster entry should be persisted');
   });
 
+  it('backfills allowlisted grok-build and dsh breeds into a fresh runtime catalog', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-harness-'));
+    const templatePath = join(projectRoot, 'cat-template.json');
+    const template = makeF127BootstrapTemplate();
+    template.breeds.push(
+      {
+        id: 'grok-build',
+        catId: 'grok-build',
+        name: 'Grok Build',
+        displayName: 'Grok Build',
+        avatar: '/avatars/default.png',
+        color: { primary: '#111111', secondary: '#E8E8E8' },
+        mentionPatterns: ['@grok', '@grok-build'],
+        roleDescription: 'Grok Build harness',
+        defaultVariantId: 'grok-build-default',
+        variants: [
+          {
+            id: 'grok-build-default',
+            catId: 'grok-build',
+            clientId: 'acp',
+            defaultModel: 'grok-build',
+            mcpSupport: true,
+            acp: { command: 'grok', startupArgs: ['agent', '--always-approve', 'stdio'] },
+          },
+        ],
+      },
+      {
+        id: 'dsh',
+        catId: 'dsh',
+        name: 'DeepSeek Harness',
+        displayName: 'DeepSeek Harness',
+        avatar: '/avatars/default.png',
+        color: { primary: '#4D6BFE', secondary: '#D6DFFF' },
+        mentionPatterns: ['@dsh', '@deepseek-harness'],
+        roleDescription: 'DeepSeek Harness',
+        defaultVariantId: 'dsh-default',
+        variants: [
+          {
+            id: 'dsh-default',
+            catId: 'dsh',
+            clientId: 'acp',
+            defaultModel: 'deepseek-v4-pro',
+            mcpSupport: true,
+            acp: { command: 'dsh', startupArgs: [] },
+          },
+        ],
+      },
+    );
+    template.roster['grok-build'] = {
+      family: 'grok-build',
+      roles: ['coder'],
+      lead: false,
+      available: true,
+      evaluation: 'Grok Build',
+    };
+    template.roster.dsh = {
+      family: 'dsh',
+      roles: ['coder'],
+      lead: false,
+      available: true,
+      evaluation: 'DeepSeek Harness',
+    };
+    writeFileSync(templatePath, JSON.stringify(template, null, 2));
+
+    const catalogPath = bootstrapCatCatalog(projectRoot, templatePath);
+    const runtimeCatalog = JSON.parse(readFileSync(catalogPath, 'utf-8'));
+    const breedIds = runtimeCatalog.breeds.map((breed) => breed.id);
+    assert.ok(breedIds.includes('grok-build'), 'allowlisted grok-build breed should be persisted');
+    assert.ok(breedIds.includes('dsh'), 'allowlisted dsh breed should be persisted');
+    assert.equal(runtimeCatalog.roster?.['grok-build']?.family, 'grok-build');
+    assert.equal(runtimeCatalog.roster?.dsh?.family, 'dsh');
+  });
+
   it('does not re-add deleted glm52 allowlisted breed during bootstrap or resolved reads', async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-glm52-delete-'));
     const templatePath = join(projectRoot, 'cat-template.json');

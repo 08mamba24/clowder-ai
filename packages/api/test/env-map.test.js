@@ -62,6 +62,28 @@ describe('F161: env-map — resolveEnvMap', () => {
     });
   });
 
+  it('resolves xai built-in mapping for Grok Build', () => {
+    const result = resolveEnvMap('acp', 'xai', {
+      apiKey: 'xai-xxx',
+      baseUrl: 'https://api.x.ai',
+    });
+    assert.deepEqual(result, {
+      XAI_API_KEY: 'xai-xxx',
+      XAI_API_BASE_URL: 'https://api.x.ai',
+    });
+  });
+
+  it('resolves deepseek built-in mapping for DeepSeek Harness', () => {
+    const result = resolveEnvMap('acp', 'deepseek', {
+      apiKey: 'sk-ds-xxx',
+      baseUrl: 'https://api.deepseek.com',
+    });
+    assert.deepEqual(result, {
+      DEEPSEEK_API_KEY: 'sk-ds-xxx',
+      DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
+    });
+  });
+
   it('resolves opencode built-in mapping (native env vars)', () => {
     const result = resolveEnvMap('opencode', undefined, {
       apiKey: 'sk-oc-xxx',
@@ -280,7 +302,7 @@ describe('F161: env-map — extractUserEnvTemplates', () => {
 
 describe('F161: env-map — BUILTIN_ENV_MAPS coverage', () => {
   it('has mappings for all expected providers', () => {
-    const expected = ['anthropic', 'openai', 'google', 'openrouter', 'kimi', 'opencode'];
+    const expected = ['anthropic', 'openai', 'google', 'openrouter', 'kimi', 'opencode', 'xai', 'deepseek'];
     for (const provider of expected) {
       assert.ok(BUILTIN_ENV_MAPS[provider], `Missing built-in map for ${provider}`);
       assert.ok(Object.keys(BUILTIN_ENV_MAPS[provider]).length > 0, `Empty built-in map for ${provider}`);
