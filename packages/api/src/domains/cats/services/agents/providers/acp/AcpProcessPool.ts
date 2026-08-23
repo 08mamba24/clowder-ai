@@ -116,7 +116,7 @@ function resolveSupportsMultiplexing(variantConfig: unknown): boolean {
 export class AcpProcessPool {
   readonly spawnSignature?: string;
   private readonly config: AcpPoolConfig;
-  private readonly supportsMultiplexing: boolean;
+  readonly supportsMultiplexing: boolean;
   private readonly entries = new Map<string, PoolEntry[]>();
   private readonly sessionOwners = new Map<string, PoolEntry>();
   /** Persisted session ids that must never be loaded again after unacknowledged local termination. */

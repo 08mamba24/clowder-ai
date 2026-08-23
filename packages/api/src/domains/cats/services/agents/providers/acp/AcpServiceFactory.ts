@@ -29,6 +29,18 @@ import {
 
 export type AcpPoolRegistry = Map<string, AcpProcessPool>;
 
+/**
+ * DSH continuable background turns outlive a Hub lease. Multiplexing would
+ * reuse the spawn-frozen credential file across invocations. Catalog config
+ * cannot opt DSH back into multiplexing.
+ */
+export function resolveEffectiveAcpSupportsMultiplexing(
+  acpConfig: Pick<AcpVariantConfig, 'command' | 'supportsMultiplexing'>,
+): boolean {
+  if (isDshHarnessCommand(acpConfig.command)) return false;
+  return acpConfig.supportsMultiplexing === true;
+}
+
 export interface CreateAcpServiceForConfigInput {
   projectRoot: string;
   profileId: string;
@@ -233,6 +245,7 @@ async function ensureAcpPool(
   spawn: AcpSpawnContext,
 ): Promise<AcpProcessPool> {
   const { profileId, acpConfig, poolRegistry } = input;
+  const supportsMultiplexing = resolveEffectiveAcpSupportsMultiplexing(acpConfig);
   const spawnSignature = createAcpPoolSpawnSignature({
     command: bootstrap.command,
     args: bootstrap.args,
@@ -243,7 +256,7 @@ async function ensureAcpPool(
     maxLiveProcesses: acpConfig.pool?.maxLiveProcesses ?? 3,
     idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,
     transport: acpConfig.transport ?? 'stdio',
-    supportsMultiplexing: acpConfig.supportsMultiplexing,
+    supportsMultiplexing,
   });
 
   const existingPool = poolRegistry.get(profileId);
@@ -261,7 +274,7 @@ async function ensureAcpPool(
       idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,
       healthCheckIntervalMs: 30_000,
     },
-    acpConfig,
+    { ...acpConfig, supportsMultiplexing },
     () => {
       const retireAfterLease = isDshHarnessCommand(acpConfig.command);
       const env = { ...(spawn.env ?? {}) };
