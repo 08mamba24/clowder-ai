@@ -160,7 +160,7 @@ describe('F167 Phase J AC-J4~J6: cancelPendingHoldsForThread', () => {
     assert.equal(deps._removed.length, 0);
   });
 
-  test('keeps a queryable completion receipt when a user message supersedes an unconsumed wake', () => {
+  test('does not let unrelated user text retire a dispatch-pending typed wake', () => {
     const completed = makeTask({
       id: 'hold-ball-completion-pending',
       deliveryThreadId: 'thread-completion-pending',
@@ -189,17 +189,15 @@ describe('F167 Phase J AC-J4~J6: cancelPendingHoldsForThread', () => {
 
     const cancelled = cancelPendingHoldsForThread('thread-completion-pending', deps);
 
-    assert.deepEqual(
-      cancelled.map((task) => task.id),
-      ['hold-ball-completion-pending'],
-    );
-    assert.deepEqual(deps._removed, [], 'TTL=0 completion receipt must not be deleted by the user ping');
-    assert.equal(completed.enabled, false);
-    assert.equal(completed.params.holdLifecycle.status, 'cancelled_by_user');
+    assert.deepEqual(cancelled, [], 'ordinary prose is not an invocation-bound disposition');
+    assert.deepEqual(deps._unregistered, []);
+    assert.deepEqual(deps._removed, []);
+    assert.equal(completed.enabled, true);
+    assert.equal(completed.params.holdLifecycle.status, 'active');
     assert.equal(completed.params.holdLifecycle.managedCommand.messageId, 'completion-message-1');
   });
 
-  test('keeps a running managed command as a disabled tombstone until its terminal result arrives', () => {
+  test('does not let unrelated user text cancel a running managed command', () => {
     const running = makeTask({
       id: 'hold-ball-running-command',
       deliveryThreadId: 'thread-running-command',
@@ -224,16 +222,52 @@ describe('F167 Phase J AC-J4~J6: cancelPendingHoldsForThread', () => {
 
     const cancelled = cancelPendingHoldsForThread('thread-running-command', deps);
 
-    assert.deepEqual(
-      cancelled.map((task) => task.id),
-      ['hold-ball-running-command'],
-    );
-    assert.deepEqual(deps._removed, [], 'the runner callback still needs a durable task to record into');
-    assert.deepEqual(deps._unregistered, ['hold-ball-running-command']);
-    assert.equal(running.enabled, false);
-    assert.equal(running.params.holdLifecycle.status, 'cancelled_by_user');
+    assert.deepEqual(cancelled, [], 'ordinary prose is not an explicit command cancellation');
+    assert.deepEqual(deps._removed, []);
+    assert.deepEqual(deps._unregistered, []);
+    assert.equal(running.enabled, true);
+    assert.equal(running.params.holdLifecycle.status, 'active');
     assert.equal(running.params.holdLifecycle.managedCommand.state, 'command_running');
   });
+
+  for (const dispatchedState of ['condition_met', 'message_written', 'enqueued', 'dispatched']) {
+    test(`does not retire an accepted ${dispatchedState} wake before its invocation-bound disposition`, () => {
+      const accepted = makeTask({
+        id: `hold-ball-accepted-${dispatchedState}`,
+        deliveryThreadId: 'thread-accepted-wake',
+        params: {
+          message: 'wake carrier',
+          targetCatId: 'codex-sol',
+          triggerUserId: 'user1',
+          holdLifecycle: {
+            mode: 'wake_when',
+            status: 'active',
+            wakeAt: Date.now() + 60_000,
+            createdBy: 'hold-ball:codex-sol',
+            managedCommand: {
+              state: dispatchedState,
+              command: 'pnpm gate',
+              startedAt: Date.now() - 10_000,
+              conditionMetAt: Date.now() - 1_000,
+              wakeContent: 'gate finished',
+              result: { exitCode: 0, timedOut: false, durationMs: 9_000 },
+              messageId: 'completion-message-accepted',
+            },
+          },
+        },
+      });
+      const deps = makeStubDeps([accepted]);
+
+      const cancelled = cancelPendingHoldsForThread('thread-accepted-wake', deps);
+
+      assert.deepEqual(cancelled, [], 'an accepted wake has a live child invocation and is no longer cancelable');
+      assert.deepEqual(deps._unregistered, []);
+      assert.deepEqual(deps._removed, []);
+      assert.equal(accepted.enabled, true);
+      assert.equal(accepted.params.holdLifecycle.status, 'active');
+      assert.equal(accepted.params.holdLifecycle.managedCommand.state, dispatchedState);
+    });
+  }
 
   test('does not cancel tasks from other threads', () => {
     const sameThread = makeTask({ id: 'hold-ball-1-here', deliveryThreadId: 'thread-A' });

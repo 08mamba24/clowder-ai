@@ -51,6 +51,45 @@ function options(taskStore, router, overrides = {}) {
 }
 
 describe('review scheduler F280 adapter', () => {
+  test('finishes routing after a persisted cursor even when cancellation arrives at the commit boundary', async () => {
+    const taskStore = new TaskStore();
+    const task = await createTracked(taskStore);
+    const controller = new AbortController();
+    const events = [];
+    const spec = createReviewFeedbackTaskSpec(
+      options(taskStore, {
+        route: async () => {
+          events.push('routed');
+          return { kind: 'skipped', reason: 'test' };
+        },
+      }),
+    );
+
+    await spec.run
+      .execute(
+        {
+          repairedTask: task,
+          repoFullName: 'owner/repo',
+          prNumber: 7,
+          newComments: [],
+          newDecisions: [],
+          headSha: 'aaa',
+          inlineCommentCursor: 10,
+          conversationCommentCursor: 20,
+          decisionCursor: 31,
+          commitCursor: async () => {
+            events.push('cursor-persisted');
+            controller.abort(new Error('scheduler timeout'));
+          },
+        },
+        task.subjectKey,
+        { assignedCatId: null, signal: controller.signal },
+      )
+      .catch(() => {});
+
+    assert.deepEqual(events, ['cursor-persisted', 'routed']);
+  });
+
   test('current facts are evaluated even when no raw source body is deliverable', async () => {
     const taskStore = new TaskStore();
     await createTracked(taskStore);
@@ -127,5 +166,42 @@ describe('review scheduler F280 adapter', () => {
     await spec.run.execute(gate.workItems[0].signal, gate.workItems[0].subjectKey, {});
     assert.equal(calls.length, 0);
     assert.equal((await taskStore.get(task.id)).automationState.review.lastConversationCommentCursor, 21);
+  });
+
+  test('PR terminal truth is routed through the wait lifecycle even when CI collection is unavailable', async () => {
+    const taskStore = new TaskStore();
+    await createTracked(taskStore);
+    const routerCalls = [];
+    const triggerCalls = [];
+    const spec = createReviewFeedbackTaskSpec(
+      options(
+        taskStore,
+        {
+          route: async (signal) => {
+            routerCalls.push(signal);
+            return {
+              kind: 'notified',
+              threadId: 'thread_1',
+              catId: 'codex-sol',
+              messageId: 'terminal_msg',
+              content: 'compact terminal wait',
+            };
+          },
+        },
+        {
+          fetchPrMetadata: async () => ({ headSha: 'aaa', prState: 'merged' }),
+          invokeTrigger: { trigger: async (...args) => triggerCalls.push(args) },
+        },
+      ),
+    );
+
+    const gate = await spec.admission.gate();
+    assert.equal(gate.run, true);
+    assert.equal(gate.workItems.length, 1);
+    assert.equal(gate.workItems[0].signal.subjectState, 'merged');
+    await spec.run.execute(gate.workItems[0].signal, gate.workItems[0].subjectKey, {});
+    assert.equal(routerCalls.length, 1);
+    assert.equal(triggerCalls.length, 1);
+    assert.equal(triggerCalls[0][6].reason, 'github_pr_merged');
   });
 });

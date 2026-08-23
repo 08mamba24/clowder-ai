@@ -121,6 +121,24 @@ describe('F194 Phase Z9 hotfix — safeParseExtra preserves turnInvocationId', (
     assert.deepEqual(parsed?.stream, input.stream);
   });
 
+  it('F294: round-trip preserves the retained R21 cached stdout fallback shape', async () => {
+    const { serializeExtra, safeParseExtra } = await import(
+      '../dist/domains/cats/services/stores/redis/redis-message-parsers.js'
+    );
+    const input = {
+      stream: {
+        invocationId: 'cached-r21-parent',
+        turnInvocationId: 'cached-r21-turn',
+        cliStdout: '',
+        speechContent: 'CACHED_R21_SPEECH',
+      },
+    };
+
+    const parsed = safeParseExtra(serializeExtra(input));
+
+    assert.deepEqual(parsed?.stream, input.stream);
+  });
+
   it('ADR-042: round-trip preserves supplement reply provenance as a separate field', async () => {
     const { serializeExtra, safeParseExtra } = await import(
       '../dist/domains/cats/services/stores/redis/redis-message-parsers.js'
@@ -247,7 +265,12 @@ describe('F194 Phase Z9 hotfix — safeParseExtra preserves turnInvocationId', (
         sourceThreadId: 'thread-source',
         sourceInvocationId: 'inv-source',
       },
-      coordination: { id: 'coord-roundtrip', phase: 'terminal', hop: 4 },
+      coordination: {
+        id: 'coord-roundtrip',
+        phase: 'terminal',
+        hop: 4,
+        subjectRef: 'pr:owner/repo#3515',
+      },
     };
 
     const parsed = safeParseExtra(serializeExtra(input));
@@ -271,6 +294,24 @@ describe('F194 Phase Z9 hotfix — safeParseExtra preserves turnInvocationId', (
 
     assert.equal(parsed?.crossPost?.sourceThreadId, 'thread-source');
     assert.equal(parsed?.coordination, undefined);
+  });
+
+  it('F167 review affinity: drops an oversized persisted subject without dropping the legacy chain', async () => {
+    const { serializeExtra, safeParseExtra } = await import(
+      '../dist/domains/cats/services/stores/redis/redis-message-parsers.js'
+    );
+    const parsed = safeParseExtra(
+      serializeExtra({
+        coordination: {
+          id: 'coord-valid',
+          phase: 'active',
+          hop: 1,
+          subjectRef: `subject:task:${'x'.repeat(240)}`,
+        },
+      }),
+    );
+
+    assert.deepEqual(parsed?.coordination, { id: 'coord-valid', phase: 'active', hop: 1 });
   });
 
   it('F167 Phase R/S: round-trip preserves callback coordination dedup provenance', async () => {

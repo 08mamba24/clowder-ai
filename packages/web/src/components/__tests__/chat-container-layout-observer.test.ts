@@ -29,6 +29,7 @@ type StoreState = {
   currentProjectPath: string;
   clearUnread: ReturnType<typeof vi.fn>;
   confirmUnreadAck: ReturnType<typeof vi.fn>;
+  settleUnreadAck: ReturnType<typeof vi.fn>;
   armUnreadSuppression: ReturnType<typeof vi.fn>;
   splitPaneThreadIds: string[];
   setSplitPaneThreadIds: ReturnType<typeof vi.fn>;
@@ -72,6 +73,7 @@ const makeStoreState = (): StoreState => ({
   currentProjectPath: 'default',
   clearUnread: vi.fn(),
   confirmUnreadAck: vi.fn(),
+  settleUnreadAck: vi.fn(),
   armUnreadSuppression: vi.fn(),
   splitPaneThreadIds: [],
   setSplitPaneThreadIds: vi.fn(),
@@ -195,7 +197,6 @@ vi.mock('@/hooks/useCatData', () => ({
     refresh: async () => [],
   }),
 }));
-vi.mock('@/hooks/usePreviewAutoOpen', () => ({ usePreviewAutoOpen: vi.fn() }));
 vi.mock('@/hooks/useWorkspaceNavigate', () => ({ useWorkspaceNavigate: vi.fn() }));
 vi.mock('@/hooks/useGovernanceStatus', () => ({
   useGovernanceStatus: () => ({ status: null, refetch: vi.fn() }),
@@ -229,7 +230,6 @@ vi.mock('../MessageNavigator', () => ({ MessageNavigator: () => null }));
 vi.mock('../MessageActions', () => ({
   MessageActions: ({ children }: { children: React.ReactNode }) => children,
 }));
-vi.mock('../MobileStatusSheet', () => ({ MobileStatusSheet: () => null }));
 vi.mock('../QueuePanel', () => ({
   QueuePanel: () => React.createElement('div', { 'data-testid': 'queue-panel' }),
 }));

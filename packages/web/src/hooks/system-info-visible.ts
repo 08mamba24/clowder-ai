@@ -9,16 +9,19 @@ type ResolveCatName = (catId: string) => string;
 
 const identityCatName: ResolveCatName = (catId) => catId;
 
-const INTERNAL_SYSTEM_INFO_TELEMETRY_TYPES = new Set([
-  'mcp_server_status',
-  'resume_failure_stats',
-  'strategy_allow_compress',
-  'tool_activity',
-  'turn_duration', // F230 P2: PTY carrier terminal event — silently consumed, never shown as bubble
-]);
-
-export function isInternalSystemInfoTelemetry(parsed: Record<string, unknown>): boolean {
-  return typeof parsed?.type === 'string' && INTERNAL_SYSTEM_INFO_TELEMETRY_TYPES.has(parsed.type);
+/**
+ * Structured `system_info` is a protocol envelope, not display copy. Unknown envelopes
+ * must therefore fail closed: a producer adding a new internal event cannot make its
+ * JSON user-visible merely because this client has no projector yet. Plain-text
+ * `system_info` remains on the legacy visible-notice path.
+ */
+export function isSystemInfoProtocolPayload(parsed: unknown): parsed is Record<string, unknown> {
+  return (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    !Array.isArray(parsed) &&
+    typeof (parsed as Record<string, unknown>).type === 'string'
+  );
 }
 
 function formatPingpongTerminated(
@@ -31,6 +34,25 @@ function formatPingpongTerminated(
   const rounds = pairCount ? ` ${pairCount} 轮` : '';
   return {
     content: `🏓 ${resolveCatName(fromCatId)} ↔ ${resolveCatName(targetCatId)} 已连续互相 @${rounds}，链路已熔断。`,
+    variant: 'info',
+  };
+}
+
+/**
+ * F086/F216: "your N line-start @ were scheduled SERIALLY, here is the real order".
+ * Without this branch formatVisibleSystemInfo returns null and the UI prints the raw JSON payload —
+ * a notice nobody can read is not a notice (砚砚 R1 P1).
+ */
+function formatMultiTargetSerialized(
+  parsed: Record<string, unknown>,
+  resolveCatName: ResolveCatName,
+): VisibleSystemInfoResult {
+  const message = typeof parsed.message === 'string' ? parsed.message : '';
+  if (message) return { content: `🔀 ${message}`, variant: 'info' };
+  const order = Array.isArray(parsed.order) ? parsed.order.filter((c): c is string => typeof c === 'string') : [];
+  const legs = order.map((catId, i) => `第 ${i + 1} 棒 ${resolveCatName(catId)}`).join(' → ');
+  return {
+    content: `🔀 本回合 ${order.length} 个行首 @ 目标已按串行调度：${legs}。需要并行请用 cat_cafe_multi_mention(mode="parallel")。`,
     variant: 'info',
   };
 }
@@ -68,6 +90,13 @@ function formatWarning(parsed: Record<string, unknown>): VisibleSystemInfoResult
   };
 }
 
+function formatCloudBridgeStatus(parsed: Record<string, unknown>): VisibleSystemInfoResult | null {
+  if (parsed?.type !== 'cloud_bridge_status') return null;
+  const message = typeof parsed.message === 'string' ? parsed.message : '';
+  if (!message) return null;
+  return { content: message, variant: 'info' };
+}
+
 export function formatSessionSealRequested(
   parsed: Record<string, unknown>,
   resolveCatName: ResolveCatName = identityCatName,
@@ -76,6 +105,16 @@ export function formatSessionSealRequested(
 
   const catId = typeof parsed.catId === 'string' ? parsed.catId : 'unknown';
   const sessionSeq = typeof parsed.sessionSeq === 'number' ? parsed.sessionSeq : '?';
+  const continuityDiagnostics =
+    typeof parsed.continuityDiagnostics === 'object' && parsed.continuityDiagnostics !== null
+      ? (parsed.continuityDiagnostics as Record<string, unknown>)
+      : undefined;
+  if (continuityDiagnostics?.source === 'runtime_replacement') {
+    return {
+      content: `${resolveCatName(catId)} 的会话 #${sessionSeq} 已自动接力；新会话已在本轮继续运行`,
+      variant: 'info',
+    };
+  }
   const healthSnapshot =
     typeof parsed.healthSnapshot === 'object' && parsed.healthSnapshot !== null
       ? (parsed.healthSnapshot as Record<string, unknown>)
@@ -145,8 +184,10 @@ export function formatVisibleSystemInfo(
 ): VisibleSystemInfoResult | null {
   return (
     formatA2AFollowupAvailable(parsed, resolveCatName) ??
+    formatCloudBridgeStatus(parsed) ??
     formatWarning(parsed) ??
     (parsed?.type === 'a2a_pingpong_terminated' ? formatPingpongTerminated(parsed, resolveCatName) : null) ??
+    (parsed?.type === 'a2a_multi_target_serialized' ? formatMultiTargetSerialized(parsed, resolveCatName) : null) ??
     (parsed?.type === 'a2a_role_rejected' ? formatRoleRejected(parsed, resolveCatName) : null) ??
     formatModeSwitchProposal(parsed, resolveCatName) ??
     formatInvocationPreempted(parsed) ??

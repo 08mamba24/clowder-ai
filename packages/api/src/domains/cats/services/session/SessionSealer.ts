@@ -10,7 +10,7 @@
  * SessionSealer is responsible for the lifecycle state machine.
  */
 
-import type { CatId, SealResult, SessionStatus } from '@cat-cafe/shared';
+import type { CatId, SealResult } from '@cat-cafe/shared';
 import { createModuleLogger } from '../../../../infrastructure/logger.js';
 import { extractRecentArtifacts } from '../agents/routing/artifact-tracking.js';
 import { AuditEventTypes, getEventAuditLog } from '../orchestration/EventAuditLog.js';
@@ -29,6 +29,12 @@ const FINALIZE_TIMEOUT_MS = 30_000;
 
 export type SealReason = 'threshold' | 'manual' | 'error' | (string & {});
 
+/** The route needs to distinguish a complete seal from a terminal partial one. */
+export interface SealFinalizeResult {
+  sealed: boolean;
+  clean: boolean;
+}
+
 /**
  * F065 Phase C: Handoff digest configuration.
  * Injectable functions for testability and per-thread resolution.
@@ -44,14 +50,14 @@ export interface ISessionSealer {
    * Request seal of a session. Idempotent: returns accepted=false if already sealing/sealed.
    * Fast path: only changes status + clears active pointer.
    */
-  requestSeal(args: { sessionId: string; reason: SealReason }): Promise<SealResult>;
+  requestSeal(args: { sessionId: string; reason: SealReason; expectedPolicyRevision?: string }): Promise<SealResult>;
 
   /**
    * Finalize a sealing session: write transcript, generate digest, mark sealed.
    * Phase B stub: just transitions sealing → sealed.
    * Phase C will add transcript + digest logic.
    */
-  finalize(args: { sessionId: string }): Promise<void>;
+  finalize(args: { sessionId: string }): Promise<SealFinalizeResult>;
 
   /**
    * F118 Hardening: Reconcile sessions stuck in 'sealing' state for a specific cat/thread.
@@ -98,7 +104,6 @@ export class SessionSealer implements ISessionSealer {
     private readonly transcriptWriter?: TranscriptWriter,
     private readonly threadStore?: IThreadStore,
     private readonly transcriptReader?: TranscriptReader,
-    private readonly getMaxPromptTokens?: (catId: CatId) => number,
     private readonly handoffConfig?: HandoffConfig,
     private readonly summaryStore?: ISummaryStore,
   ) {}
@@ -111,46 +116,38 @@ export class SessionSealer implements ISessionSealer {
     this.postSealHooks.push(hook);
   }
 
-  async requestSeal(args: { sessionId: string; reason: SealReason }): Promise<SealResult> {
-    const record = await this.store.get(args.sessionId);
-    if (!record) {
-      return { accepted: false, status: 'sealed' };
-    }
-
-    // CAS: only active sessions can be sealed
-    // Snapshot status before mutation (memory store returns live reference)
-    const currentStatus: SessionStatus = record.status;
-    if (currentStatus !== 'active') {
-      return { accepted: false, status: currentStatus };
-    }
-
-    // Transition active → sealing
-    const now = Date.now();
-    const updated = await this.store.update(args.sessionId, {
-      status: 'sealing',
-      sealReason: args.reason,
-      updatedAt: now,
-    });
-
-    if (!updated || updated.status !== 'sealing') {
-      // Race condition: another caller got there first
-      return { accepted: false, status: updated?.status ?? 'sealed' };
+  async requestSeal(args: {
+    sessionId: string;
+    reason: SealReason;
+    expectedPolicyRevision?: string;
+  }): Promise<SealResult> {
+    const updated = await this.store.transitionToSealing(args.sessionId, args.reason, args.expectedPolicyRevision);
+    if (!updated) {
+      const current = await this.store.get(args.sessionId);
+      if (!current) return { accepted: false, status: 'sealed', rejectionReason: 'not_found' };
+      const revisionMismatch =
+        args.expectedPolicyRevision !== undefined && current.appliedPolicy?.revision !== args.expectedPolicyRevision;
+      return {
+        accepted: false,
+        status: current.status,
+        rejectionReason: revisionMismatch ? 'policy_revision_mismatch' : 'not_active',
+      };
     }
 
     log.info(
-      { sessionId: args.sessionId, catId: record.catId, threadId: record.threadId, reason: args.reason },
+      { sessionId: args.sessionId, catId: updated.catId, threadId: updated.threadId, reason: args.reason },
       'session seal requested',
     );
     getEventAuditLog()
       .append({
         type: AuditEventTypes.SEAL_REQUESTED,
-        threadId: record.threadId,
+        threadId: updated.threadId,
         data: {
           sessionId: args.sessionId,
-          catId: record.catId,
-          cliSessionId: record.cliSessionId,
+          catId: updated.catId,
+          cliSessionId: updated.cliSessionId,
           reason: args.reason,
-          seq: record.seq,
+          seq: updated.seq,
         },
       })
       .catch(() => {});
@@ -162,12 +159,12 @@ export class SessionSealer implements ISessionSealer {
     };
   }
 
-  async finalize(args: { sessionId: string }): Promise<void> {
+  async finalize(args: { sessionId: string }): Promise<SealFinalizeResult> {
     const record = await this.store.get(args.sessionId);
-    if (!record) return;
+    if (!record) return { sealed: false, clean: false };
 
     // Only finalize sessions in sealing state
-    if (record.status !== 'sealing') return;
+    if (record.status !== 'sealing') return { sealed: record.status === 'sealed', clean: false };
 
     const now = Date.now();
 
@@ -255,15 +252,22 @@ export class SessionSealer implements ISessionSealer {
         ownerUserId: record.userId,
         sealReason: record.sealReason ?? 'unknown',
       };
-      for (const hook of this.postSealHooks) {
-        try {
-          await hook(hookEvent);
-        } catch (err) {
-          log.warn(
-            { sessionId: args.sessionId, error: err instanceof Error ? err.message : String(err) },
-            'post-seal hook failed (best-effort, non-blocking)',
-          );
-        }
+      // Terminal persistence is the response boundary. Hooks are best-effort
+      // follow-up work and must not make a successful seal wait without bound.
+      void this.runPostSealHooks(hookEvent);
+    }
+    return { sealed: sealWriteSucceeded, clean: sealWriteSucceeded && finalizeClean };
+  }
+
+  private async runPostSealHooks(event: Parameters<PostSealHook>[0]): Promise<void> {
+    for (const hook of this.postSealHooks) {
+      try {
+        await hook(event);
+      } catch (err) {
+        log.warn(
+          { sessionId: event.sessionId, error: err instanceof Error ? err.message : String(err) },
+          'post-seal hook failed (best-effort, non-blocking)',
+        );
       }
     }
   }
@@ -366,10 +370,11 @@ export class SessionSealer implements ISessionSealer {
       id: string;
       threadId: string;
       catId: string;
-      cliSessionId: string;
+      cliSessionId?: string;
       seq: number;
       createdAt: number;
       sealReason?: string;
+      contextHealth?: import('@cat-cafe/shared').ContextHealth;
     },
     now: number,
   ): Promise<boolean> {
@@ -383,7 +388,7 @@ export class SessionSealer implements ISessionSealer {
             sessionId: record.id,
             threadId: record.threadId,
             catId: record.catId,
-            cliSessionId: record.cliSessionId,
+            ...(record.cliSessionId ? { cliSessionId: record.cliSessionId } : {}),
             seq: record.seq,
           },
           {
@@ -404,9 +409,13 @@ export class SessionSealer implements ISessionSealer {
         const digest = await this.transcriptReader.readDigest(record.id, record.threadId, record.catId);
         if (digest) {
           const existingMemory = await this.threadStore.getThreadMemory(record.threadId);
-          // KD-5 dynamic cap: min(3000, floor(maxPromptTokens * 0.03)), floor 1200
-          const maxPrompt = this.getMaxPromptTokens?.(record.catId as CatId) ?? 180000;
-          const maxTokens = Math.max(1200, Math.min(3000, Math.floor(maxPrompt * 0.03)));
+          // #1208: summary sizing consumes the invocation health snapshot that
+          // triggered the seal. A legacy record with no health gets the minimum
+          // allowance; sealing never performs an independent capacity lookup.
+          const inputCeiling = record.contextHealth
+            ? Math.max(0, record.contextHealth.windowTokens - 16_000)
+            : undefined;
+          const maxTokens = inputCeiling ? Math.max(1200, Math.min(3000, Math.floor(inputCeiling * 0.03))) : 1200;
 
           // VG-3: Extract decision signals from transcript + summary (best-effort)
           const signals = await this.extractSignals(record);
@@ -454,7 +463,9 @@ export class SessionSealer implements ISessionSealer {
                 ...(this.handoffConfig.fetchFn ? { fetchFn: this.handoffConfig.fetchFn } : {}),
               });
 
-              if (result) {
+              if (!result) {
+                clean = false;
+              } else {
                 const sessionDir = this.transcriptReader.getSessionDir(record.threadId, record.catId, record.id);
                 const { TranscriptWriter: TW } = await import('./TranscriptWriter.js');
                 await TW.writeHandoffDigest(

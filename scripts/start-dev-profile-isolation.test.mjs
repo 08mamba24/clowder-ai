@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { describe, it } from 'node:test';
+import ts from 'typescript';
 import { buildWindowsStatus, resolveWindowsStatusPorts } from './lib/platform-status.mjs';
 
 const ROOT = resolve(process.cwd());
 const localRequire = createRequire(import.meta.url);
+const BUILD_CHILD_ENV_INHERITED_CWD_EXCEPTIONS = [
+  // Antigravity never sets spawn.cwd, so its process and shell cwd intentionally inherit together.
+  'packages/api/src/domains/cats/services/agents/providers/GeminiAgentService.ts::buildChildEnv(options.callbackEnv)',
+];
 
 function resolvePackageBin(packageName) {
   const pkgPath = localRequire.resolve(`${packageName}/package.json`);
@@ -38,11 +43,61 @@ function createSandbox(envFile = '') {
   return dir;
 }
 
-function runSourceOnly({ sandboxDir, env = {}, extraArgs = [] }) {
-  const command = [
-    `source scripts/start-dev.sh --source-only ${extraArgs.join(' ')}`,
-    'printf "PROFILE=%s\\nASR=%s\\nPROXY=%s\\nTTS=%s\\nLLM=%s\\nEMBED=%s\\nTTL=%s\\nREDIS_PROFILE=%s\\n" "$PROFILE" "$ASR_ENABLED" "$ANTHROPIC_PROXY_ENABLED" "$TTS_ENABLED" "$LLM_POSTPROCESS_ENABLED" "${EMBED_ENABLED:-}" "$MESSAGE_TTL_SECONDS" "$REDIS_PROFILE"',
-  ].join('; ');
+function listTypeScriptFiles(root) {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(root, entry.name);
+    return entry.isDirectory() ? listTypeScriptFiles(path) : entry.isFile() && entry.name.endsWith('.ts') ? [path] : [];
+  });
+}
+
+function hasWorkingDirectoryOption(call) {
+  const options = call.arguments[1];
+  return (
+    options !== undefined &&
+    ts.isObjectLiteralExpression(options) &&
+    options.properties.some(
+      (property) =>
+        (ts.isShorthandPropertyAssignment(property) && property.name.text === 'workingDirectory') ||
+        (ts.isPropertyAssignment(property) &&
+          ((ts.isIdentifier(property.name) && property.name.text === 'workingDirectory') ||
+            (ts.isStringLiteral(property.name) && property.name.text === 'workingDirectory'))),
+    )
+  );
+}
+
+function collectBuildChildEnvCallsMissingWorkingDirectory() {
+  const sourceRoot = resolve(ROOT, 'packages/api/src');
+  const findings = [];
+
+  for (const path of listTypeScriptFiles(sourceRoot)) {
+    const source = readFileSync(path, 'utf8');
+    const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+
+    function visit(node) {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'buildChildEnv' &&
+        !hasWorkingDirectoryOption(node)
+      ) {
+        findings.push(`${relative(ROOT, path).replaceAll('\\', '/')}::${node.getText(sourceFile)}`);
+      }
+      ts.forEachChild(node, visit);
+    }
+
+    visit(sourceFile);
+  }
+
+  return findings.sort();
+}
+
+function runSourceOnly({ sandboxDir, env = {}, extraArgs = [], commands }) {
+  const command = (
+    commands ?? [
+      `source scripts/start-dev.sh --source-only ${extraArgs.join(' ')}`,
+      'printf "PROFILE=%s\\nASR=%s\\nPROXY=%s\\nTTS=%s\\nLLM=%s\\nEMBED=%s\\nTTL=%s\\nREDIS_PROFILE=%s\\n" "$PROFILE" "$ASR_ENABLED" "$ANTHROPIC_PROXY_ENABLED" "$TTS_ENABLED" "$LLM_POSTPROCESS_ENABLED" "${EMBED_ENABLED:-}" "$MESSAGE_TTL_SECONDS" "$REDIS_PROFILE"',
+    ]
+  ).join('; ');
 
   return spawnSync('bash', ['-lc', command], {
     cwd: sandboxDir,
@@ -359,12 +414,69 @@ describe('cross-platform pnpm-start profile propagation (#421)', () => {
 
   it('start-dev wires F247 cloud supporting services through optional helper stage', () => {
     const source = readFileSync(resolve(ROOT, 'scripts/start-dev.sh'), 'utf8');
+    const mainSource = source.slice(source.indexOf('\nmain() {'));
+    const apiReadyIndex = mainSource.indexOf(
+      'wait_for_port_or_exit "$API_PORT" "API Server" "$API_PID" "${API_WAIT_TIMEOUT:-120}"',
+    );
+    const cloudStartIndex = mainSource.indexOf('\n    maybe_start_f247_cloud_services');
 
     assert.match(source, /f247-cloud-services\.mjs/);
     assert.match(source, /start --optional/);
     assert.match(source, /CAT_CAFE_F247_CLOUD_AUTOSTART/);
     assert.match(source, /start --optional --owner-file=/);
     assert.match(source, /stop-owned --owner-file=/);
+    assert.ok(apiReadyIndex >= 0, 'API readiness wait must remain discoverable');
+    assert.ok(
+      cloudStartIndex > apiReadyIndex,
+      'F247 cloud autostart must run only after the API-dependent principal probe can reach a ready API',
+    );
+  });
+
+  it('contains an optional F247 helper process failure inside the cloud capability boundary', () => {
+    const sandboxDir = createSandbox();
+    writeFileSync(join(sandboxDir, 'scripts', 'f247-cloud-services.mjs'), '', 'utf8');
+    try {
+      const result = runSourceOnly({
+        sandboxDir,
+        commands: [
+          'source scripts/start-dev.sh --source-only',
+          'node() { return 17; }',
+          'maybe_start_f247_cloud_services',
+          'printf "CONTINUED=1\\nOWNER=%s\\n" "${F247_CLOUD_OWNER_FILE:-empty}"',
+        ],
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /CONTINUED=1/);
+      assert.match(result.stdout, /OWNER=empty/);
+      assert.match(result.stdout, /F247 cloud supporting services degraded/i);
+    } finally {
+      rmSync(sandboxDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports live F247 degradation without changing daemon status semantics', () => {
+    const sandboxDir = createSandbox();
+    writeFileSync(join(sandboxDir, 'scripts', 'f247-cloud-services.mjs'), '', 'utf8');
+    try {
+      const result = runSourceOnly({
+        sandboxDir,
+        commands: [
+          'source scripts/start-dev.sh --source-only',
+          'node() { printf "%s\\n" "$*" > node-args; return 1; }',
+          'print_f247_cloud_status_summary',
+          'printf "NODE_ARGS=%s\\n" "$(cat node-args)"',
+          'printf "RESULT=%s\\n" "$?"',
+        ],
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /F247 cloud: degraded/i);
+      assert.match(result.stdout, /NODE_ARGS=.*status --summary/);
+      assert.match(result.stdout, /RESULT=0/);
+    } finally {
+      rmSync(sandboxDir, { recursive: true, force: true });
+    }
   });
 
   it('official runtime launchers opt in to connector autostart without overriding explicit false', () => {
@@ -425,10 +537,18 @@ describe('cross-platform pnpm-start profile propagation (#421)', () => {
     );
     const tmuxGateway = readFileSync(resolve(ROOT, 'packages/api/src/domains/terminal/tmux-gateway.ts'), 'utf8');
 
-    assert.match(acpClient, /buildChildEnv\(this\.config\.env\)/);
-    assert.match(acpHttpClient, /buildChildEnv\(this\.config\.env\)/);
+    assert.match(acpClient, /buildChildEnv\(this\.config\.env, \{ workingDirectory: this\.config\.cwd \}\)/);
+    assert.match(acpHttpClient, /buildChildEnv\(this\.config\.env, \{ workingDirectory: this\.config\.cwd \}\)/);
     assert.match(tmuxGateway, /'CONNECTOR_GATEWAY_AUTOSTART'/);
     assert.match(tmuxGateway, /'CAT_CAFE_PROVISION_GLOBAL_SIDECAR'/);
+  });
+
+  it('requires every buildChildEnv caller to declare its intended working directory or a narrow exception', () => {
+    assert.deepEqual(
+      collectBuildChildEnvCallsMissingWorkingDirectory(),
+      BUILD_CHILD_ENV_INHERITED_CWD_EXCEPTIONS,
+      'new buildChildEnv callers must pass workingDirectory so child PWD/INIT_CWD cannot drift from spawn cwd',
+    );
   });
 
   it('Windows status succeeds only when required API and web PID files are running', () => {
@@ -843,6 +963,10 @@ describe('TTS sidecar startup guards', () => {
 
     assert.match(installScript, /POST_INSTALL_HOOK_ARM64=["']tts_install_arm64_warmup["']/);
     assert.match(installScript, /generate_audio/);
+    assert.match(installScript, /mlx-audio>=0\.4\.7/);
+    assert.match(installScript, /QWEN3_CLONE_DEFAULT_MODEL=/);
+    assert.match(installScript, /TTS_MODEL:-[\s\S]*qwen3-clone[\s\S]*TTS_MODEL="\$QWEN3_CLONE_DEFAULT_MODEL"/);
+    assert.match(apiScript, /MIN_MLX_AUDIO_VERSION/);
     assert.match(installScript, /zm_yunjian/);
     assert.match(installScript, /_CATCAFE_HF_PROXY_FOR_DOWNLOAD/);
     assert.match(serverScript, /HF_HUB_OFFLINE/);

@@ -13,26 +13,43 @@ import type { ITaskStore } from '../../domains/cats/services/stores/ports/TaskSt
 import type { ExecuteContext, TaskSpec_P1 } from '../scheduler/types.js';
 import type { CiCdRouter, CiPollResult, CiRouteResult } from './CiCdRouter.js';
 import type { ConnectorInvokeTrigger, ConnectorTriggerPolicy } from './ConnectorInvokeTrigger.js';
-import { fetchPrCiStatus } from './ci-status-fetcher.js';
+import { ciStatusTargetKey, fetchPrCiStatuses, type PrCiStatusTarget } from './ci-status-batch-fetcher.js';
 
 /** Signal carries the TaskItem so execute can access threadId/catId/userId */
 export interface CiCdCheckSignal {
   task: TaskItem;
   repoFullName: string;
   prNumber: number;
+  /** Tick-level batch snapshot; production reads it once in admission.gate. */
+  pollResult?: CiPollResult | null;
 }
 
 export interface CiCdCheckTaskSpecOptions {
   readonly taskStore: ITaskStore;
   readonly cicdRouter: CiCdRouter;
   readonly invokeTrigger?: ConnectorInvokeTrigger;
-  readonly fetchPrStatus?: (repoFullName: string, prNumber: number) => Promise<CiPollResult | null>;
+  readonly fetchPrStatus?: (
+    repoFullName: string,
+    prNumber: number,
+    signal?: AbortSignal,
+  ) => Promise<CiPollResult | null>;
+  /** F304 test seam for the production one-process-per-tick GraphQL reader. */
+  readonly fetchPrStatuses?: (
+    targets: readonly PrCiStatusTarget[],
+    signal?: AbortSignal,
+  ) => Promise<ReadonlyMap<string, CiPollResult | null>>;
   readonly log: {
     info: (...args: unknown[]) => void;
     error: (...args: unknown[]) => void;
     warn: (...args: unknown[]) => void;
   };
   readonly pollIntervalMs?: number;
+  /**
+   * F168 external-case collection outlives one F280 wait generation. A done
+   * wait remains collectable only when the canonical external-review policy
+   * says this PR still has an open maintainer-review lifecycle.
+   */
+  readonly continueDoneTracking?: (repoFullName: string, prNumber: number) => Promise<boolean>;
   /** F202-2B: Override task ID for plugin-scoped schedule instances */
   readonly id?: string;
   /**
@@ -47,18 +64,18 @@ export interface CiCdCheckTaskSpecOptions {
  * PR terminal state (merged/closed) consumes any active wait exactly once.
  * Fires exactly once in production: CiCdRouter persists ci.prState and the gate filters completed lifecycle tasks.
  */
-function triggerLifecycleWake(
+async function triggerLifecycleWake(
   opts: CiCdCheckTaskSpecOptions,
   invokeTrigger: ConnectorInvokeTrigger,
   signal: CiCdCheckSignal,
   routeResult: Extract<CiRouteResult, { kind: 'lifecycle' }>,
-): void {
+): Promise<void> {
   const policy: ConnectorTriggerPolicy = {
     priority: 'normal',
     reason: routeResult.prState === 'merged' ? 'github_pr_merged' : 'github_pr_closed',
     sourceCategory: 'ci',
   };
-  void invokeTrigger
+  await invokeTrigger
     .trigger(
       routeResult.threadId,
       routeResult.catId as CatId,
@@ -85,8 +102,28 @@ function needsCiLifecycleRecovery(task: TaskItem): boolean {
   );
 }
 
+async function shouldCollectTask(
+  opts: CiCdCheckTaskSpecOptions,
+  task: TaskItem,
+  repoFullName: string,
+  prNumber: number,
+  subjectKey: string,
+): Promise<boolean> {
+  if (task.automationState?.ci?.enabled === false) return false;
+  if (task.status !== 'done' || needsCiLifecycleRecovery(task)) return true;
+  if (!opts.continueDoneTracking) return false;
+  try {
+    return await opts.continueDoneTracking(repoFullName, prNumber);
+  } catch (error) {
+    opts.log.warn({ error, subjectKey }, '[F168] external-review CI continuation check failed; deferring collection');
+    return false;
+  }
+}
+
 export function createCiCdCheckTaskSpec(opts: CiCdCheckTaskSpecOptions): TaskSpec_P1<CiCdCheckSignal> {
-  const fetchPrStatus = opts.fetchPrStatus ?? ((repo: string, pr: number) => fetchPrCiStatus(repo, pr, opts.log));
+  const fetchPrStatuses =
+    opts.fetchPrStatuses ??
+    ((targets: readonly PrCiStatusTarget[], signal?: AbortSignal) => fetchPrCiStatuses(targets, opts.log, { signal }));
 
   return {
     id: opts.id ?? 'cicd-check',
@@ -98,20 +135,13 @@ export function createCiCdCheckTaskSpec(opts: CiCdCheckTaskSpecOptions): TaskSpe
         // Review feedback can observe terminal PR state first; keep those done tasks
         // reachable until CiCdRouter delivers/records the CI lifecycle marker.
         const allTasks = await opts.taskStore.listByKind('pr_tracking');
-        const active = allTasks.filter(
-          (t) => (t.status !== 'done' || needsCiLifecycleRecovery(t)) && t.automationState?.ci?.enabled !== false,
-        );
-
-        if (active.length === 0) {
-          return { run: false, reason: 'no active tracked PRs' };
-        }
-
         const workItems: { signal: CiCdCheckSignal; subjectKey: string }[] = [];
-        for (const task of active) {
+        for (const task of allTasks) {
           const subjectKey = task.subjectKey;
           if (!subjectKey) continue;
           const parsed = parsePrSubjectKey(subjectKey);
           if (!parsed) continue;
+          if (!(await shouldCollectTask(opts, task, parsed.repoFullName, parsed.prNumber, subjectKey))) continue;
           workItems.push({
             signal: { task, repoFullName: parsed.repoFullName, prNumber: parsed.prNumber },
             subjectKey,
@@ -122,14 +152,32 @@ export function createCiCdCheckTaskSpec(opts: CiCdCheckTaskSpecOptions): TaskSpe
           return { run: false, reason: 'no parseable PR tasks' };
         }
 
+        if (!opts.fetchPrStatus) {
+          // This is one tick-level read, not work owned by the first item. Per-item
+          // timeout signals must never cancel facts consumed by sibling work items.
+          const targets = workItems.map(({ signal }) => ({
+            repoFullName: signal.repoFullName,
+            prNumber: signal.prNumber,
+          }));
+          const results = await fetchPrStatuses(targets);
+          for (const workItem of workItems) {
+            workItem.signal.pollResult =
+              results.get(ciStatusTargetKey(workItem.signal.repoFullName, workItem.signal.prNumber)) ?? null;
+          }
+        }
+
         return { run: true, workItems };
       },
     },
     run: {
       overlap: 'skip',
       timeoutMs: 30_000,
-      async execute(signal: CiCdCheckSignal, _subjectKey: string, _ctx: ExecuteContext) {
-        const pollResult = await fetchPrStatus(signal.repoFullName, signal.prNumber);
+      async execute(signal: CiCdCheckSignal, _subjectKey: string, ctx: ExecuteContext) {
+        ctx.signal?.throwIfAborted();
+        const pollResult = opts.fetchPrStatus
+          ? await opts.fetchPrStatus(signal.repoFullName, signal.prNumber, ctx.signal)
+          : signal.pollResult;
+        ctx.signal?.throwIfAborted();
         if (!pollResult) return;
 
         const routeResult = await opts.cicdRouter.route(pollResult);
@@ -143,7 +191,7 @@ export function createCiCdCheckTaskSpec(opts: CiCdCheckTaskSpecOptions): TaskSpe
             opts.log.info(`[cicd-check] PR ${routeResult.prState} by self (${pollResult.mergedByLogin}) -> skip wake`);
             return;
           }
-          triggerLifecycleWake(opts, opts.invokeTrigger, signal, routeResult);
+          await triggerLifecycleWake(opts, opts.invokeTrigger, signal, routeResult);
           return;
         }
 
@@ -154,7 +202,7 @@ export function createCiCdCheckTaskSpec(opts: CiCdCheckTaskSpecOptions): TaskSpe
           reason: 'github_wait_satisfied',
           sourceCategory: 'ci',
         };
-        void opts.invokeTrigger
+        await opts.invokeTrigger
           .trigger(
             routeResult.threadId,
             routeResult.catId as CatId,

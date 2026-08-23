@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { beforeEach, describe, test } from 'node:test';
 import Fastify from 'fastify';
-import { cancelPendingHoldsForThread } from '../dist/routes/hold-ball-cancel.js';
+import { tryAutoCancelPendingHolds } from '../dist/routes/messages.js';
 
 describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
   let registry;
@@ -27,6 +27,7 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
   let commitManagedWakeCancellation;
   let releaseManagedWakeCancellation;
   let cancelManagedWakeIfTaskMatches;
+  let resolveHoldWaitOwnerFence;
 
   beforeEach(async () => {
     const { InvocationRegistry } = await import(
@@ -42,6 +43,7 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
     commitManagedWakeCancellation = routeModule.commitManagedWakeCancellation;
     releaseManagedWakeCancellation = routeModule.releaseManagedWakeCancellation;
     cancelManagedWakeIfTaskMatches = routeModule.cancelManagedWakeIfTaskMatches;
+    resolveHoldWaitOwnerFence = routeModule.resolveHoldWaitOwnerFence;
   });
 
   function makeStubDeps(overrides = {}) {
@@ -88,6 +90,12 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
         updateParams(id, params) {
           const task = insertedTasks.find((t) => t.id === id && !removedIds.includes(t.id));
           if (!task) return false;
+          task.params = params;
+          return true;
+        },
+        updateParamsIfCurrent(id, expected, params) {
+          const task = insertedTasks.find((t) => t.id === id && !removedIds.includes(t.id));
+          if (!task || task.params !== expected) return false;
           task.params = params;
           return true;
         },
@@ -165,6 +173,61 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
     cancelWakeWhenRunner('nonexistent-thread', 'nonexistent-cat');
   });
 
+  test('F280 Phase D: action-custodied waits reference the canonical action-successor lease', async () => {
+    assert.equal(typeof resolveHoldWaitOwnerFence, 'function');
+    const fence = await resolveHoldWaitOwnerFence(
+      {
+        invocationId: 'callback-invocation',
+        parentInvocationId: 'parent-invocation',
+        threadId: 'thread-action',
+        userId: 'user-action',
+        catId: 'codex',
+      },
+      {
+        async get(id) {
+          assert.equal(id, 'parent-invocation');
+          return {
+            threadId: 'thread-action',
+            userId: 'user-action',
+            targetCats: ['codex'],
+            actionLeaseCarrier: {
+              kind: 'action_successor',
+              leaseId: 'lease-action-7',
+              generation: 7,
+            },
+          };
+        },
+      },
+    );
+    assert.deepEqual(fence, { kind: 'action_successor', leaseId: 'lease-action-7', generation: 7 });
+    assert.deepEqual(Object.keys(fence).sort(), ['generation', 'kind', 'leaseId']);
+  });
+
+  test('F280 Phase D: a parent invocation outside callback scope cannot be downgraded to a task fence', async () => {
+    await assert.rejects(
+      resolveHoldWaitOwnerFence(
+        {
+          invocationId: 'callback-invocation',
+          parentInvocationId: 'foreign-parent',
+          threadId: 'thread-owner',
+          userId: 'user-owner',
+          catId: 'codex',
+        },
+        {
+          async get() {
+            return {
+              threadId: 'thread-foreign',
+              userId: 'user-owner',
+              targetCats: ['codex'],
+              actionLeaseCarrier: { kind: 'none' },
+            };
+          },
+        },
+      ),
+      /outside the authenticated hold owner scope/,
+    );
+  });
+
   // ─── T8: wakeWhen hold with cancel → runner is cancelled ────────────────
   test('T8: wakeWhen hold registers active runner, cancel removes it', async () => {
     const deps = makeStubDeps();
@@ -186,6 +249,29 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
     });
     assert.equal(r1.statusCode, 200);
 
+    const commandTask = deps._insertedTasks[0];
+    const commandAwait = commandTask.params.holdLifecycle.await;
+    assert.ok(commandAwait, 'wakeWhen hold must persist the unified wait shape');
+    assert.deepEqual(commandAwait, {
+      v: 1,
+      generation: 1,
+      subjectRef: `command:${commandTask.id}`,
+      ownerFence: { kind: 'containing_task', generation: 1 },
+      baseline: {
+        kind: 'managed_command',
+        capturedAt: commandAwait.createdAt,
+        deadlineAt: commandAwait.createdAt + 300_000,
+      },
+      continuation: {
+        when: [{ kind: 'managed_command_completed' }],
+        // biome-ignore lint/suspicious/noThenProperty: F280's frozen wait contract field.
+        then: 'check result',
+      },
+      expiresAt: commandTask.trigger.fireAt,
+      createdAt: commandAwait.createdAt,
+      provenance: 'explicit_registration',
+    });
+
     // Runner should be registered
     assert.ok(getActiveRunnerCount() >= 1, 'active runner should be registered');
 
@@ -201,13 +287,18 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
     assert.ok(getActiveRunnerCount() >= 0, 'runner should be cleaned up');
   });
 
-  test('T8-terminal: user-message cancellation preserves command terminal evidence without a stale wake', async () => {
+  test('T8-terminal: unrelated user mention cannot retire or wake an older managed hold', async () => {
     let triggerCount = 0;
     const deps = makeStubDeps({
       invokeTrigger: {
         async trigger() {
           triggerCount += 1;
           return 'dispatched';
+        },
+      },
+      invocationRecordStore: {
+        getByIdempotencyKey() {
+          return null;
         },
       },
     });
@@ -220,43 +311,56 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
       url: '/api/callbacks/hold-ball',
       headers: { 'x-invocation-id': invocationId, 'x-callback-token': callbackToken },
       payload: {
-        reason: 'long gate interrupted by a user message',
-        nextStep: 'inspect the cancelled terminal result',
-        wakeWhen: { command: 'printf "progress-before-cancel\\n"; sleep 999', timeoutMs: 300_000 },
+        reason: 'long gate outlives an ordinary user message',
+        nextStep: 'inspect the natural terminal result',
+        wakeWhen: {
+          command: 'printf "progress-before-user-message\\n"; sleep 0.5; printf "completed-after-user-message\\n"',
+          timeoutMs: 300_000,
+        },
       },
     });
     assert.equal(response.statusCode, 200);
     const { taskId } = JSON.parse(response.body);
 
     await new Promise((resolve) => setTimeout(resolve, 100));
-    const cancelled = cancelPendingHoldsForThread(thread.id, deps);
-    assert.deepEqual(
-      cancelled.map((task) => task.id),
-      [taskId],
-      'the user-message path must supersede the active hold',
-    );
-    cancelWakeWhenRunner(thread.id, 'codex');
+    // POST /api/messages calls this hook after routing any ordinary message;
+    // the hook deliberately receives no mention target. An @ to another cat or
+    // to this holder therefore has identical non-authority here.
+    tryAutoCancelPendingHolds(thread.id, deps);
+    let managedHold = deps.dynamicTaskStore.getById(taskId);
+    assert.ok(managedHold, 'the managed hold remains durable');
+    assert.equal(managedHold.enabled, true, 'ordinary mention cannot retire the hold');
+    assert.equal(managedHold.params.holdLifecycle.status, 'active');
+    assert.equal(triggerCount, 0, 'ordinary mention cannot dequeue or wake the older holder');
 
-    const deadline = Date.now() + 2_000;
-    let tombstone = deps.dynamicTaskStore.getById(taskId);
-    while (tombstone?.params.holdLifecycle?.managedCommand?.state !== 'cancelled' && Date.now() < deadline) {
+    const deadline = Date.now() + 3_000;
+    while (managedHold?.params.holdLifecycle?.managedCommand?.state !== 'dispatched' && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 20));
-      tombstone = deps.dynamicTaskStore.getById(taskId);
+      managedHold = deps.dynamicTaskStore.getById(taskId);
     }
     await app.close();
 
-    assert.ok(tombstone, 'the cancelled hold must remain queryable by taskId');
-    assert.equal(tombstone.enabled, false, 'user-message cancellation must retire scheduler execution');
-    assert.equal(tombstone.params.holdLifecycle.status, 'cancelled_by_user');
-    assert.equal(tombstone.params.holdLifecycle.managedCommand.state, 'cancelled');
-    assert.equal(tombstone.params.holdLifecycle.managedCommand.result.cancelled, true);
-    assert.match(tombstone.params.holdLifecycle.managedCommand.result.tailOutput, /progress-before-cancel/);
-    assert.equal(triggerCount, 0, 'a superseded hold must not dispatch a wake invocation');
+    assert.ok(managedHold, 'the typed wake remains queryable until invocation-bound disposition');
+    assert.equal(managedHold.enabled, true);
+    assert.equal(managedHold.params.holdLifecycle.status, 'active');
+    assert.equal(managedHold.params.holdLifecycle.managedCommand.state, 'dispatched');
     assert.equal(
-      deps._appendedMessages.some((message) => message.content?.includes('持球唤醒（命令完成）')),
+      managedHold.params.holdLifecycle.managedCommand.result.cancelled,
       false,
-      'a superseded hold must not publish a stale completion wake',
+      'ordinary user activity must not SIGTERM the independent command',
     );
+    assert.match(managedHold.params.holdLifecycle.managedCommand.result.tailOutput, /completed-after-user-message/);
+    assert.equal(triggerCount, 1, 'only typed command completion dispatches the older holder once');
+    const wakeReceipts = deps._appendedMessages.filter((message) => message.content?.includes('持球唤醒（命令完成）'));
+    assert.equal(wakeReceipts.length, 1, 'natural completion must publish one typed wake carrier');
+    assert.equal(
+      wakeReceipts[0].deliveryStatus,
+      'queued',
+      'the wake remains under Queue custody until invocation-bound disposition',
+    );
+    assert.equal(wakeReceipts[0].idempotencyKey, `hold-ball-completion:${taskId}`);
+    assert.equal(wakeReceipts[0].source?.meta?.taskId, taskId);
+    assert.match(wakeReceipts[0].content, /completed-after-user-message/);
   });
 
   test('T8a: a completed command waits behind cancellation reservation until release', async () => {

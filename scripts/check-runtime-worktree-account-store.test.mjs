@@ -44,6 +44,13 @@ describe('runtime-worktree.sh store-root default (P1-1)', () => {
     );
   });
 
+  it('exports CAT_CAFE_DEPLOYMENT_ID=runtime', () => {
+    assert.ok(
+      /export CAT_CAFE_DEPLOYMENT_ID=runtime/.test(script),
+      'script must export CAT_CAFE_DEPLOYMENT_ID=runtime',
+    );
+  });
+
   it('keeps CAT_CAFE_RUNTIME_ROOT and CAT_CAFE_WORKSPACE_ROOT exports', () => {
     assert.ok(/export CAT_CAFE_RUNTIME_ROOT=/.test(script), 'RUNTIME_ROOT export required');
     assert.ok(/export CAT_CAFE_WORKSPACE_ROOT=/.test(script), 'WORKSPACE_ROOT export required');

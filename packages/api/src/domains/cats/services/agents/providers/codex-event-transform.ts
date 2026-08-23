@@ -1,5 +1,24 @@
 import type { CatId } from '@cat-cafe/shared';
 import type { AgentMessage } from '../../types.js';
+
+export interface CodexReconnectNotice {
+  message: string;
+  attempt?: number;
+}
+
+export function parseCodexReconnectNotice(event: unknown): CodexReconnectNotice | null {
+  if (typeof event !== 'object' || event === null) return null;
+  const raw = event as Record<string, unknown>;
+  if (raw.type !== 'error' || typeof raw.message !== 'string') return null;
+  const message = raw.message.trim();
+  if (!message.startsWith('Reconnecting...')) return null;
+  const attemptMatch = message.match(/(?:Reconnecting\.\.\.\s*|attempt\s+)(\d+)/i);
+  return {
+    message,
+    ...(attemptMatch ? { attempt: Number(attemptMatch[1]) } : {}),
+  };
+}
+
 import { normalizeTaskStatus } from '../invocation/invoke-helpers.js';
 import { type CodexApprovalSurface, classifyCodexGithubAppApprovalFailure } from './codex-app-approval-routing.js';
 
@@ -298,6 +317,8 @@ export function transformCodexEvent(
         type: 'tool_use',
         catId,
         toolName: `mcp:${server}/${tool}`,
+        toolSource: 'mcp',
+        toolChannel: 'unknown',
         toolInput: args,
         timestamp: Date.now(),
       };
@@ -312,17 +333,33 @@ export function transformCodexEvent(
       type: 'tool_use',
       catId,
       toolName: 'command_execution',
+      toolSource: 'host_cli',
+      toolChannel: 'unknown',
       toolInput: { command },
+      ...(typeof item.id === 'string' ? { toolUseId: item.id } : {}),
       timestamp: Date.now(),
     };
   }
 
   if (e.type === 'error') {
-    const message = e.message;
-    if (typeof message !== 'string') return null;
-    const text = message.trim();
-    // Reconnecting… lines stream to UI as progress
-    if (text.startsWith('Reconnecting...')) return { type: 'system_info', catId, content: text, timestamp: Date.now() };
+    const reconnect = parseCodexReconnectNotice(e);
+    // Reconnecting is a transient provider lifecycle transition, not a
+    // permanent warning. The service later emits recovered/failed for the
+    // same invocation-scoped projection.
+    if (reconnect) {
+      return {
+        type: 'system_info',
+        catId,
+        content: JSON.stringify({
+          type: 'provider_recovery',
+          provider: 'codex',
+          phase: 'reconnecting',
+          ...(reconnect.attempt !== undefined ? { attempt: reconnect.attempt } : {}),
+          message: reconnect.message,
+        }),
+        timestamp: Date.now(),
+      };
+    }
     // Non-Reconnecting errors: return null — CodexAgentService collects them via
     // collectCodexStreamError() and surfaces them as diagnostics in the exit error.
     return null;
@@ -355,6 +392,16 @@ export function transformCodexEvent(
     const status = typeof item.status === 'string' ? item.status : 'completed';
     const exitCode = typeof item.exit_code === 'number' ? item.exit_code : null;
     const output = typeof item.aggregated_output === 'string' ? item.aggregated_output : '';
+    const toolResultStatus: 'ok' | 'error' | 'unknown' =
+      exitCode !== null
+        ? exitCode === 0
+          ? 'ok'
+          : 'error'
+        : status === 'failed' || status === 'error'
+          ? 'error'
+          : status === 'completed'
+            ? 'ok'
+            : 'unknown';
 
     const sections: string[] = [];
     if (command) sections.push(`command: ${command}`);
@@ -366,7 +413,12 @@ export function transformCodexEvent(
     return {
       type: 'tool_result',
       catId,
+      toolName: 'command_execution',
+      toolSource: 'host_cli',
+      toolChannel: 'unknown',
+      toolResultStatus,
       content: sections.join('\n'),
+      ...(typeof item.id === 'string' ? { toolUseId: item.id } : {}),
       timestamp: Date.now(),
     };
   }
@@ -378,6 +430,8 @@ export function transformCodexEvent(
       type: 'tool_use',
       catId,
       toolName: 'file_change',
+      toolSource: 'host_cli',
+      toolChannel: 'unknown',
       toolInput: { status, changes },
       timestamp: Date.now(),
     };
@@ -428,6 +482,8 @@ export function transformCodexEvent(
       catId,
       content: `${toolLabel} (${status})\n${visibleTextParts.join('\n')}`.trim(),
       toolName: toolLabel,
+      toolSource: 'mcp',
+      toolChannel: 'unknown',
       toolResultStatus,
       ...(approvalFailure ? { toolResultErrorCode: approvalFailure.reasonCode } : {}),
       timestamp: Date.now(),

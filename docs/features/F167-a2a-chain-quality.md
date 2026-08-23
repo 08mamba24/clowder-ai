@@ -4,9 +4,22 @@ related_features: [F064, F027, F055, F122, F246, F280]
 topics: [a2a, collaboration, harness-engineering, agent-readiness]
 doc_kind: spec
 created: 2026-04-17
-updated: 2026-08-04
+updated: 2026-08-21
 tips_exempt: action-custody protocol is exposed to cats through the typed MCP action schema; no separate operator-facing capability action
 user_journey_exempt: protocol behavior has no direct UI surface; end-to-end custody is dogfooded through the real MCP/task path
+mcp_admission_status: accepted
+mcp_admission_ref: "file:docs/features/F167-a2a-chain-quality.md"
+mcp_admission_claims:
+  - ref: "file:docs/features/F167-a2a-chain-quality.md"
+    toolName: cat_cafe_complete_managed_hold
+    resourceFamily: task-workflow
+    boundaryKind: authority-boundary
+    decision: accepted
+  - ref: "file:docs/features/F167-a2a-chain-quality.md"
+    toolName: cat_cafe_complete_a2a_dispatch
+    resourceFamily: task-workflow
+    boundaryKind: authority-boundary
+    decision: accepted
 ---
 
 # F167: A2A Chain Quality — 乒乓球熔断 + 虚空传球检测 + 角色护栏
@@ -43,6 +56,36 @@ operator experience：
 
 1. **路由可见性不退化**（operator拍板）：若猫通过 MCP `targetCats` 路由但响应文本无 @mention，系统须自动补可见路由指示，不可让协作"悄咪咪"发生。
 2. **Provider-agnostic**：护栏不依赖特定模型行为，对所有引擎生效。
+
+### Bounded repair: invocation-bound structured-wake dispositions (2026-08-10)
+
+Architecture cell: `ball-custody` + `dispatch` + `mcp-surface-governance`
+
+operator decision `[thread-id]#0001786347630932-000025-ab3cdda3` accepts narrow terminal producers for structured wakes already exposed to the current invocation. `cat_cafe_complete_managed_hold` closes an exact managed hold using callback-authenticated invocation identity plus server-derived source message/task/thread/holder coordinates. The live regression in `[thread-id]` extends the same accepted F167 boundary to ordinary A2A dispatch: `cat_cafe_complete_a2a_dispatch` derives source message, previous cat, thread, holder, and invocation from the current callback record and exact `ball.handed` event. The caller selects only `handled | completed`; stale, replaced, cross-thread, cross-holder, cross-source, or cross-task attempts fail closed. Read, command exit, tests, merge truth, ACK, unrelated task completion, and another coordination terminal remain non-terminal.
+
+2026-08-14 same-cat clarification: `catId` identifies a persona, not one invocation. A same-cat
+cross-thread carrier may disposition only when the stored trigger has canonical distinct-thread
+`crossPost.sourceThreadId` provenance and the existing exact `ball.handed` event binds that message,
+source cat, target holder, target thread, and current invocation. Same-thread self mentions and missing
+or same-thread provenance remain fail-closed. Here “cross-thread attempt” means an auth/source thread
+mismatch, not a valid server-authored cross-post carrier stored in its target thread.
+
+2026-08-15 replacement-provenance clarification: an ordinary A2A Queue row is only a carrier for its
+exact persisted `ball.handed`. Queue admission reuses the disposition service's source/event fence and
+retires a carrier before provider start when a later state-changing event involving the target cat has
+already replaced that handoff. If replacement races after provider start, the disposition rejection
+includes the latest verified successor event plus same-thread `sourceMessageId` and coordination when
+available. Message metadata is exposed only after the event-derived message resolves back to the same
+thread, sender, and target; forged or foreign-thread metadata remains hidden. Durable Queue custody must
+terminalize before the stale row is consumed; failure retains the row and does not start an invocation.
+A coalesced Queue row carries multiple source messages and may retire only when every carried handoff is
+replaced; one live successor keeps the combined body executable. Successor message lookup is optional
+enrichment: store failure removes only the pointer/coordination fields and cannot erase the event-derived
+replacement verdict or reopen a stale provider invocation.
+
+This is a bounded F167/F254/F264 repair, not a new Feature or lifecycle owner. Managed holds write the existing F264 target receipt and both wake kinds write the F167 BallCustody event log. The repair does not add another Queue, receipt ledger, projection, or state machine.
+
+The same repair boundary also owns two dispatch invariants exposed by the post-merge A→B→A dogfood (`[thread-id]#0001786350407910-000095-8739ed4a`): a successful same-thread `post_message` callback is the one carrier for that source/target and must be suppressed from the later route-serial line-start scan; releasing the invocation slot must have a bounded path to `notifyQueueCompletion` even if F194/F224 terminal bookkeeping stalls. The normal ordering remains terminal truth and continuation commit before queue drain; a 5-second idempotent watchdog is only the liveness fallback. Ordinary inline dispatches now receive their completion producer on the first child and fail typed without spawning a stale `routing_guard` child when the producer is omitted.
 3. **Backward compatible**：不退化 4.6 等已正常工作模型的体验。
 4. **极简**：只加运行时刹车（压制坏直觉）和认知路径工程（对齐好直觉），不加认知脚手架（替模型思考）。
 
@@ -697,6 +740,55 @@ operator experience："简直了你和Maine Coon是没头脑（Maine Coon听不�
 | 偏差根因 | **验收锚定偏差**：review 聚焦算术正确、视觉层次和证据边界，没有用读者视角回放“我能否从基本单位独立算出每个数”，把“数字正确”误当成“解释完整”。 |
 | 纠正轮次 | 1（operator 指出“没有说每一个 xxd 怎么计算”后撤回放行，补出单位定义与逐项推导要求并退回作者）。 |
 | 元心智哪条没执行 | Q1 角色确认不完整（这是教学内容 review，不只是事实校验）+ Q3 坐标变换缺失（没有从 reviewer 的正确性坐标切到学习者的可推导性坐标）。 |
+
+### Case E10: 把 runtime 激活授权扩张成内部 PR 合入授权（2026-08-12，codex-sol）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | F279 剩余真实 UAT 依赖 runtime 重启，而重启需要 operator 明确授权，因此应把 PR #3604 的 merge 与 runtime activation 捆成一个 Decision Packet，先问operator再合入。 |
+| 实际要求 | 内部 PR 的 review、gate、CI 与 exact-HEAD provenance 闭合后，merge owner 应直接 squash merge；只有 merge 后的 runtime sync/build/restart 需要单独授权。正确状态是先 `main=landed`，未授权时诚实保持 `live=dormant`。 |
+| 偏差根因 | **授权范围混同 + 安全默认过度升级**：没有按 effect 拆开“可自决 merge”与“需授权 restart”，把后一步的权限边界倒灌到前一步；复刻了 Case E3 中“下一状态迁移交回operator”的同型错误。 |
+| 纠正轮次 | 本次 1 次（operator：`0001786543204352-000306-879d3a6a`，“合入不需要问我吧”）；与 Case E3 跨任务同型，因此按重复理解偏差记录。纠正后 PR #3604 已 squash merge 为 `4f59356f0`，runtime 保持未激活。 |
+| 元心智哪条没执行 | Q1 角色确认：当时是证据闭合后的 merge owner，不是权限申请者；Q3 坐标变换：没有把一个“交付动作”拆成 merge 与 activation 两个独立 effect 分别判权。 |
+
+### Case E11: 把“随原动作 hover”替换成“迁移到 thread 头部”（2026-08-18，codex-sol）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | operator说 F294 每条消息静止时孤立的“多选消息”入口应该隐藏，是要移除消息级入口，再提供一个默认可见的 thread 级入口兼顾可发现性。 |
+| 实际要求 | 新增的“多选消息”应留在原消息操作组里，与回复、删除、更多完全共用既有交互：桌面静止时整组隐藏且不占位，hover/focus 时整组出现；触屏仍保持可达。 |
+| 偏差根因 | **锚定偏差 + 任务替换**：锚定在既有 KD-10“默认可发现”抽象约束上，没有先按截图中的具体 referent 核对“这里这个”指的是原消息动作组，擅自把局部显隐调整替换成了入口层级重设计。 |
+| 纠正轮次 | 同一任务 2 次（`0001787047894247-000105-cfa68d95`、`0001787047966930-000108-4ffc8e66`）才完全拉回。纠正后 PR #3774 已 squash merge 为 `cae99d8e3`；真实 Chromium 契约锁定静止零占位、hover/focus 完整动作组与触屏可达。 |
+| 元心智哪条没执行 | Q2 信息验证：没有先用截图和现有 DOM 行为确认代词 referent；Q3 坐标变换：把“同一控件的显隐状态”错误换成了“控件所属层级”的产品架构问题。 |
+
+### Case E12: 把 inbound PR review 截断成对话内报告（2026-08-19，codex-sol）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | operator说“看看这个插件的 PR”只授权只读审查；由于 PR 作者与当前 invocation 属于同一 `codex-sol` runtime identity、不能充当独立 reviewer，我应把 findings 报回当前对话后停止。 |
+| 实际要求 | Inbound PR review 的终态不止是得出 verdict：明确 finding 要回到 GitHub 原对象；修复球交给作者后，当前 reviewer custody 还要注册 event-backed PR tracking，等待新 HEAD 或新的 review result，不能停在聊天汇报。身份边界只禁止冒充独立批准，不禁止留下 maintainer advisory finding 或承担后续复审等待。 |
+| 偏差根因 | **身份边界过度泛化 + 状态机截断**：把“不能独立 APPROVE”扩大成“不能执行 reviewer 交付动作”，又把“分析完成”误当成任务终态，漏掉 `finding delivery → author custody → typed wait` 两次状态迁移。 |
+| 纠正轮次 | 同一任务 2 次：先由 `0001787132038846-000199-6cf85575` 纠正“要回复 PR”，再由 `0001787137460561-000007-616c60ff` 纠正“要以 reviewer 身份挂 PR tracking”。纠正后 finding 已落到 clowder-ai-plugins#37，tracking task `0001787137554353-000011-63814576` 已绑定新 HEAD / 新 review result。 |
+| 元心智哪条没执行 | Q1 角色确认：当前是有 finding delivery custody 的 maintainer advisory reviewer，不是纯分析者；Q3 坐标变换：没有把 review verdict 转换成公开交付与事件等待两个后续 action family。 |
+
+### Case E13: 把外部 AgentReflex 谱系并入 Clowder AI 自进化主线（2026-08-21，codex-sol）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | 高校合作讨论里出现的“元认知、自进化、Multi-Agent”可以作为同一组 Clowder AI 候选课题收束，因此上一轮把伙伴提出的 AgentReflex 元认知进化与家内自进化问题并列后，又用“同时接住”把它们合成一个研究切口。 |
+| 实际要求 | 郭良的 AgentReflex 是伙伴自己的另一条谱系，关注 Gene / Capsule / Lineage、赫胥黎与哥德尔机式元认知进化；Clowder AI 先独立梳理半年真实运行中多 Agent 协同、记忆与自进化遇到的困难。两者以后可以找接口，但不能先合并问题定义或贡献归属。 |
+| 纠正轮次 | 本次 1 次（`0001787296571695-000113-91447bb4`）；跨任务已有 LL-092 同型证据，因此记录。当前任务已先把 AgentReflex 剥离，再从 Clowder AI canonical 文档、真实事故和原始 thread 重建自进化困难谱系。 |
+| 元心智哪条没执行 | Q2 信息验证：未先读已知 canonical 谱系边界；Q3 坐标变换：没有把共享术语投影回“谁提出、解决什么问题、证据属于谁”三维坐标。 |
+
+### Case E14: 把“自进化的总体愿景”替换成 Clowder AI 产品愿景（2026-08-21，codex-sol）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | operator要求在自进化研究稿中补“我们的总体愿景”，是要补 Clowder AI 的全局产品愿景；因此读取 `docs/VISION.md`，写入“领养长期共生 AI 团队、把想法变成产品”的产品终态。 |
+| 实际要求 | 当前对象是自进化研究稿，“我们的 vision”指 Clowder AI 对自进化本身的理想终态：系统如何发现能力边界、选择更新层、取得独立证据、分级自治，并让改变可追溯、可回滚、可退役。产品愿景不是本节要回答的坐标。 |
+| 偏差根因 | **局部 referent 丢失 + 上位真相源锚定 + 任务替换**：看到“总体愿景”后直接解析到仓库全局 `docs/VISION.md`，没有先用当前文档主题“自进化”限定 referent；与 Case E11 把消息级局部显隐要求替换成 thread 级入口重设计同型。 |
+| 纠正轮次 | 本次 1 次（`0001787299710431-000183-7421a9ae`）；跨任务已有 Case E11 同型证据，因此记录。纠正后已整段撤掉产品愿景和 `docs/VISION.md` 引用，换成自进化终态、自治分级、双证举证链与条件性 CEW 路线，提交 `195aaaf4e` 已推送 main。 |
+| 元心智哪条没执行 | Q2 信息验证：虽读取了真实 canonical 文档，却选错了 resolver；Q3 坐标变换：把“当前研究对象的 vision”错误升格成“整个产品的 VISION”。 |
 
 ## Review Gate
 

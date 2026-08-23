@@ -17,6 +17,7 @@ co-creation docs → co-creation-docs → direct push | merge-gate(docs PR)
 | Skill | 触发场景 | SOP Step |
 |-------|----------|----------|
 | `feat-lifecycle` | 新功能立项/讨论/完成 | — |
+| `owner-friendly-plugin-development` | 设计有安装/授权/runtime/Host 路由的operator友好插件 | — |
 | `guide-authoring` | 编排场景引导 YAML / registry / 标签契约 | — |
 | `guide-interaction` | 判断是否需要交互引导，并按 Guide Matched/Pending/Active 等状态驱动回复 | — |
 | `collaborative-thinking` | brainstorm/多猫讨论/收敛 | — |
@@ -36,12 +37,12 @@ co-creation docs → co-creation-docs → direct push | merge-gate(docs PR)
 | `cross-cat-handoff` | 跨猫交接/传话（五件套） | — |
 | `deep-research` | 多源深度调研 | — |
 | `source-audit` | 外部数字/benchmark/因果/趋势等高风险 claim 的信源审计与 provenance | — |
-| `eval-design` | 指标出生证（五件套）+ 六公理设计自检 + 存量 eval 体检尺（摸鱼/划水/污染） | — |
+| `eval-design` | E0 资格门 + 指标出生证契约 + 七公理设计自检 + 五病体检尺（划水/污染/归因停滞/干预失证/摸鱼） | — |
 | `ttfund-skills` | 天天基金官方 Skills 网关：基金搜索/净值/持仓/经理/指数/黄金/债市/活期宝事实数据 | — |
 | `convention-graph-discovery` | 进入陌生 repo / F242 约定图工作：定义 domain、extractor、gap/freshness/provenance 报告 | — |
 | `knowledge-engineering` | 外部项目文档重构/冷启动知识注入 | — |
 | `memory-navigation` | 项目记忆三入口路由（graph / recent / search） | — |
-| `proactive-memory-judgment` | 单次 continuity-valued 人物线索的 F276 提案 / calibrated-abstention 判断 | — |
+| `proactive-memory-judgment` | 单次 continuity-valued 人物线索的 F276 即时提案 / known-person defer / calibrated-abstention 判断 | — |
 | `memory-search-best-practices` | 记忆系统多刀检索 + recall coverage 策略（8 类题型 recipe） | — |
 | `writing-skills` | 写新 skill | — |
 | `pencil-design` | 设计 UI / .pen 文件 | — |

@@ -1,6 +1,7 @@
 'use client';
 
-import type { CatStatusType, ThreadState } from '@/stores/chat-types';
+import type { CatStatusType } from '@/stores/chat-types';
+import type { SidebarPresence } from '@/stores/sidebarProjectionStore';
 import { PawIcon } from './icons/PawIcon';
 
 /**
@@ -8,34 +9,16 @@ import { PawIcon } from './icons/PawIcon';
  * Shows ᓚᘏᗢ with CSS animation + color based on aggregate thread state.
  */
 
-function aggregateStatus(ts: ThreadState): 'idle' | 'working' | 'done' | 'error' {
-  const statuses = Object.values(ts.catStatuses);
-  if (statuses.length === 0) return 'idle';
-  if (statuses.some((s) => s === 'error')) return 'error';
-  if (statuses.some((s) => s === 'streaming' || s === 'pending' || s === 'spawning')) return 'working';
-  if (statuses.some((s) => s === 'done')) return 'done';
-  return 'idle';
-}
-
-function getDaemonDetailTooltip(threadState: ThreadState, status: string): string {
-  if (status !== 'working') return status;
-  const workingCats = Object.entries(threadState.catStatuses)
-    .filter(([, s]) => s === 'streaming' || s === 'pending' || s === 'spawning')
-    .map(([catId]) => catId);
-  const details = workingCats.map((catId) => threadState.catStatusDetails?.[catId]).filter(Boolean);
-  return details.length > 0 ? (details[0] as string) : status;
-}
-
 export function ThreadCatStatus({
-  threadState,
+  presence,
   unreadCount,
   hasUserMention,
 }: {
-  threadState: ThreadState;
+  presence: SidebarPresence;
   unreadCount: number;
   hasUserMention?: boolean;
 }) {
-  const status = aggregateStatus(threadState);
+  const status = presence.status;
 
   if (status === 'idle' && unreadCount === 0 && !hasUserMention) return null;
 
@@ -46,7 +29,7 @@ export function ThreadCatStatus({
     error: 'text-conn-red-text animate-cat-shake',
   };
 
-  const tooltip = getDaemonDetailTooltip(threadState, status);
+  const tooltip = presence.cats?.length ? `${status}: ${presence.cats.join(', ')}` : status;
 
   return (
     <span className="inline-flex items-center gap-0.5 flex-shrink-0">
