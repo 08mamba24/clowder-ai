@@ -7,16 +7,23 @@
  * overlay next to `examples/acp-agent/cordis.yml` (config-dir baseUrl requires
  * that; a cat-cafe generated dir breaks initialize). Family MCP uses a
  * dot-relative path to `packages/mcp/mcp-client/lib/index.js`. Overlay MCP env
- * carries CAT_CAFE_CREDENTIAL_FILE; invoke rewrites that file.
+ * Overlay MCP env interpolates CAT_CAFE_CREDENTIAL_FILE from Hub spawn env
+ * (per-process nonce). Invoke rewrites that process file; the process is not reused.
  */
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join, relative } from 'node:path';
 import { formatCliNotFoundError, resolveCliCommandOrBare } from '../../../../../../utils/cli-resolve.js';
 import { resolveAcpMcpServers, resolveDisabledServerIds } from './acp-mcp-resolver.js';
-import { buildDshMcpClientInserts, buildDshMcpClientPlugins, writeDshAcpOverlayConfig } from './dsh-acp-overlay.js';
+import {
+  buildDshMcpClientInserts,
+  buildDshMcpClientPlugins,
+  DSH_ACP_CREDENTIAL_ENV_JS,
+  writeDshAcpOverlayConfig,
+} from './dsh-acp-overlay.js';
 import type { AcpMcpServer, AcpMcpServerStdio } from './types.js';
 
-export { buildDshMcpClientInserts, buildDshMcpClientPlugins, writeDshAcpOverlayConfig };
+export { buildDshMcpClientInserts, buildDshMcpClientPlugins, DSH_ACP_CREDENTIAL_ENV_JS, writeDshAcpOverlayConfig };
 
 const DSH_HARNESS_BASENAMES = new Set(['dsh', 'dsh-acp-demo']);
 const DSH_ACP_OVERLAY_FILENAME = 'cat-cafe-dsh-acp.cordis.yml';
@@ -62,8 +69,7 @@ export async function prepareDshAcpSpawnForProject(input: PrepareDshAcpSpawnInpu
   const compositionDir = dirname(binary.baseConfigPath);
   const overlayPath = join(compositionDir, DSH_ACP_OVERLAY_FILENAME);
   const pluginName = resolveDshMcpClientPluginName(compositionDir, env);
-  const credentialFile = resolveDshCredentialFile(input.projectRoot, input.catId, env);
-  const servers = await resolveDshOverlayServers(input, env, credentialFile);
+  const servers = await resolveDshOverlayServers(input, env);
   if (servers.length > 0 && isBareDshMcpClientPlugin(pluginName)) {
     return {
       ok: false,
@@ -93,7 +99,7 @@ export async function prepareDshAcpSpawnForProject(input: PrepareDshAcpSpawnInpu
     ok: true,
     command: binary.command,
     args: [...withoutConfigArgs(binary.args), '--config', overlayPath],
-    env: { ...binary.env, CAT_CAFE_CREDENTIAL_FILE: credentialFile },
+    env: binary.env,
     overlayPath,
     baseConfigPath: binary.baseConfigPath,
     cwd: compositionDir,
@@ -122,14 +128,15 @@ export function isBareDshMcpClientPlugin(name: string | undefined): boolean {
   return !name || name === BARE_DSH_MCP_CLIENT || name.startsWith(`${BARE_DSH_MCP_CLIENT}/`);
 }
 
-export function resolveDshCredentialFile(
+/** Per-spawn nonce path. Must not be reused across DSH processes. */
+export function mintDshCredentialFile(
   projectRoot: string,
   catId: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   const dir = env.CAT_CAFE_MCP_CREDS_DIR?.trim() || join(projectRoot, '.cat-cafe', 'mcp-creds');
   const safe = catId.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'dsh';
-  return join(dir, `dsh-${safe}.json`);
+  return join(dir, `dsh-${safe}-${randomUUID()}.json`);
 }
 
 function resolveDshAcpStdioBinary(
@@ -187,7 +194,6 @@ function resolveDshAcpDemoCommand(
 async function resolveDshOverlayServers(
   input: PrepareDshAcpSpawnInput,
   env: NodeJS.ProcessEnv,
-  credentialFile: string,
 ): Promise<AcpMcpServer[]> {
   if (input.mcpSupport === false) return [];
   const disabled = resolveDisabledServerIds(input.projectRoot, input.catId);
@@ -199,7 +205,7 @@ async function resolveDshOverlayServers(
   });
   const spawnEnv: Record<string, string> = {
     CAT_CAFE_API_URL: env.CAT_CAFE_API_URL?.trim() || 'http://localhost:3004',
-    CAT_CAFE_CREDENTIAL_FILE: credentialFile,
+    CAT_CAFE_CREDENTIAL_FILE: DSH_ACP_CREDENTIAL_ENV_JS,
     CAT_CAFE_CAT_ID: input.catId,
   };
   const agentKey = env.CAT_CAFE_AGENT_KEY_FILE?.trim();

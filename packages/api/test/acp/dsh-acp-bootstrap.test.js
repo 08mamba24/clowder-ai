@@ -13,7 +13,7 @@ const {
   isDshHarnessCommand,
   prepareDshAcpSpawnForProject,
   resolveDshAcpStdioSpawn,
-  resolveDshCredentialFile,
+  mintDshCredentialFile,
   resolveDshMcpClientPluginName,
   writeDshAcpOverlayConfig,
 } = await import('../../dist/domains/cats/services/agents/providers/acp/dsh-acp-bootstrap.js');
@@ -139,7 +139,7 @@ describe('dsh ACP bootstrap', () => {
     assert.match(yaml, /serverName: 'cat-cafe-memory'/);
     assert.match(yaml, /transport: stdio/);
     assert.match(yaml, /CAT_CAFE_API_URL: 'http:\/\/127\.0\.0\.1:9'/);
-    assert.match(yaml, /CAT_CAFE_CREDENTIAL_FILE:/);
+    assert.match(yaml, /CAT_CAFE_CREDENTIAL_FILE: !!js process\.env\.CAT_CAFE_CREDENTIAL_FILE/);
     assert.match(yaml, /CAT_CAFE_CAT_ID: 'dsh'/);
     assert.match(yaml, /failOnStartupError: true/);
     assert.doesNotMatch(yaml, /serverName: 'cat-cafe-limb'/);
@@ -147,7 +147,8 @@ describe('dsh ACP bootstrap', () => {
     assert.doesNotMatch(yaml, /serverName: 'cat-cafe-finance'/);
     assert.match(yaml, /name: '\.\.\/\.\.\/packages\/mcp\/mcp-client\/lib\/index\.js'/);
     assert.doesNotMatch(yaml, /name: '@deepseek-ai\/dsh-mcp-client'/);
-    assert.equal(prepared.env.CAT_CAFE_CREDENTIAL_FILE, resolveDshCredentialFile(projectRoot, 'dsh', {}));
+    assert.equal(prepared.env.CAT_CAFE_CREDENTIAL_FILE, undefined);
+    assert.notEqual(mintDshCredentialFile(projectRoot, 'dsh'), mintDshCredentialFile(projectRoot, 'dsh'));
     assert.equal(resolveDshMcpClientPluginName(prepared.cwd, { CAT_CAFE_DSH_ROOT: root }), RELATIVE_MCP_CLIENT);
     assert.equal(isBareDshMcpClientPlugin(RELATIVE_MCP_CLIENT), false);
     assert.equal(isBareDshMcpClientPlugin('@deepseek-ai/dsh-mcp-client'), true);

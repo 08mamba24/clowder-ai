@@ -129,6 +129,21 @@ describe('prepareSessionCredentialFile (unit)', () => {
     assert.equal(readCreds(frozenPath).invocationId, 'inv-2');
     assert.equal(readCreds(frozenPath).callbackToken, 'tok-2');
   });
+
+  it('two nonce credential files stay isolated after a later invocation', () => {
+    const olderPath = join(credsDir, 'dsh-old-nonce.json');
+    const newerPath = join(credsDir, 'dsh-new-nonce.json');
+    refreshFrozenCredentialFile(
+      makeCallbackEnv({ threadId: 'th-bg', catId: 'dsh', invocationId: 'inv-old', callbackToken: 'tok-old' }),
+      olderPath,
+    );
+    refreshFrozenCredentialFile(
+      makeCallbackEnv({ threadId: 'th-bg', catId: 'dsh', invocationId: 'inv-new', callbackToken: 'tok-new' }),
+      newerPath,
+    );
+    assert.equal(readCreds(olderPath).callbackToken, 'tok-old');
+    assert.equal(readCreds(newerPath).callbackToken, 'tok-new');
+  });
 });
 
 // ── Integration through AcpAgentService ──────────────────────

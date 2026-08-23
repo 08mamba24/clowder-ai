@@ -146,7 +146,7 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
         assert.match(overlayYaml, /serverName: 'cat-cafe-signals'/);
         assert.match(overlayYaml, /transport: stdio/);
         assert.match(overlayYaml, /CAT_CAFE_API_URL:/);
-        assert.match(overlayYaml, /CAT_CAFE_CREDENTIAL_FILE:/);
+        assert.match(overlayYaml, /CAT_CAFE_CREDENTIAL_FILE: !!js process\.env\.CAT_CAFE_CREDENTIAL_FILE/);
         assert.match(overlayYaml, /failOnStartupError: true/);
         assert.doesNotMatch(overlayYaml, /serverName: 'cat-cafe-limb'/);
         assert.doesNotMatch(overlayYaml, /serverName: 'cat-cafe-audio'/);

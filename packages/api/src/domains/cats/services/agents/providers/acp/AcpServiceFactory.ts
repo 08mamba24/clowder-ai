@@ -20,7 +20,12 @@ import { resolveAcpBootstrapArgs, resolveAcpBootstrapCommand, resolveAcpBootstra
 // for invoke-time resolution (#712 P1-1).
 import { createAcpPoolSpawnSignature } from './acp-pool-signature.js';
 import { tryPrepareAcpProcessEnv } from './acp-spawn-env.js';
-import { dshOmitsAcpSessionMcp, isDshHarnessCommand, prepareDshAcpSpawnForProject } from './dsh-acp-bootstrap.js';
+import {
+  dshOmitsAcpSessionMcp,
+  isDshHarnessCommand,
+  mintDshCredentialFile,
+  prepareDshAcpSpawnForProject,
+} from './dsh-acp-bootstrap.js';
 
 export type AcpPoolRegistry = Map<string, AcpProcessPool>;
 
@@ -258,11 +263,17 @@ async function ensureAcpPool(
     },
     acpConfig,
     () => {
+      const retireAfterLease = isDshHarnessCommand(acpConfig.command);
+      const env = { ...(spawn.env ?? {}) };
+      if (retireAfterLease) {
+        env.CAT_CAFE_CREDENTIAL_FILE = mintDshCredentialFile(input.projectRoot, input.config.id);
+      }
       const clientCfg = {
         command: bootstrap.command,
         args: bootstrap.args,
         cwd: bootstrap.cwd,
-        ...(spawn.env ? { env: spawn.env } : {}),
+        ...(Object.keys(env).length > 0 ? { env } : {}),
+        retireAfterLease,
       };
       return acpConfig.transport === 'httpstream' ? new AcpHttpStreamClient(clientCfg) : new AcpClient(clientCfg);
     },
@@ -353,9 +364,6 @@ export async function createAcpServiceForConfig(
     },
     mcpSupport: config.mcpSupport,
     omitSessionMcpServers: dshOmitsAcpSessionMcp(acpConfig.command),
-    frozenMcpCredentialFile: dshOmitsAcpSessionMcp(acpConfig.command)
-      ? bootstrap.extraEnv?.CAT_CAFE_CREDENTIAL_FILE
-      : undefined,
     // #1186: Thread the member's configured idle TTL to AcpAgentService so
     // promptStream uses it as the authoritative no-event termination threshold.
     idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,

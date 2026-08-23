@@ -54,6 +54,47 @@ describe('DSH family MCP callback credentials', () => {
     }
   });
 
+  it('old continuable turn cannot read the next invocation token', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-mcp-isolate-'));
+    const oldPath = join(dir, 'dsh-old.json');
+    const newPath = join(dir, 'dsh-new.json');
+    writeFileSync(oldPath, JSON.stringify({ invocationId: 'inv-old', callbackToken: 'tok-old', ts: 1 }));
+    writeFileSync(newPath, JSON.stringify({ invocationId: 'inv-new', callbackToken: 'tok-new', ts: 2 }));
+
+    const prev = {
+      CAT_CAFE_API_URL: process.env.CAT_CAFE_API_URL,
+      CAT_CAFE_CREDENTIAL_FILE: process.env.CAT_CAFE_CREDENTIAL_FILE,
+      CAT_CAFE_INVOCATION_ID: process.env.CAT_CAFE_INVOCATION_ID,
+      CAT_CAFE_CALLBACK_TOKEN: process.env.CAT_CAFE_CALLBACK_TOKEN,
+      CAT_CAFE_AGENT_KEY_FILE: process.env.CAT_CAFE_AGENT_KEY_FILE,
+      CAT_CAFE_AGENT_KEY_SECRET: process.env.CAT_CAFE_AGENT_KEY_SECRET,
+      CAT_CAFE_AGENT_KEY_FILES: process.env.CAT_CAFE_AGENT_KEY_FILES,
+    };
+    process.env.CAT_CAFE_API_URL = 'http://127.0.0.1:9';
+    delete process.env.CAT_CAFE_INVOCATION_ID;
+    delete process.env.CAT_CAFE_CALLBACK_TOKEN;
+    delete process.env.CAT_CAFE_AGENT_KEY_FILE;
+    delete process.env.CAT_CAFE_AGENT_KEY_SECRET;
+    delete process.env.CAT_CAFE_AGENT_KEY_FILES;
+    try {
+      process.env.CAT_CAFE_CREDENTIAL_FILE = oldPath;
+      const oldCfg = getCallbackConfig();
+      process.env.CAT_CAFE_CREDENTIAL_FILE = newPath;
+      const newCfg = getCallbackConfig();
+      process.env.CAT_CAFE_CREDENTIAL_FILE = oldPath;
+      const oldAfter = getCallbackConfig();
+      assert.equal(oldCfg?.invocationId, 'inv-old');
+      assert.equal(newCfg?.invocationId, 'inv-new');
+      assert.equal(oldAfter?.invocationId, 'inv-old');
+      assert.equal(oldAfter?.callbackToken, 'tok-old');
+    } finally {
+      for (const [key, value] of Object.entries(prev)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it('getCallbackConfig is null without credential file or agent key', () => {
     const prev = {
       CAT_CAFE_API_URL: process.env.CAT_CAFE_API_URL,

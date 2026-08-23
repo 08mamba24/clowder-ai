@@ -137,11 +137,6 @@ export interface AcpAgentServiceConfig {
    */
   omitSessionMcpServers?: boolean;
   /**
-   * Spawn-frozen CAT_CAFE_CREDENTIAL_FILE for harnesses that omit session MCP.
-   * Invoke rewrites this path; the MCP child re-reads it per callback.
-   */
-  frozenMcpCredentialFile?: string;
-  /**
    * #1186: Configured ACP Idle TTL from member's pool config (ms).
    * Used as the authoritative idle stall threshold for all "no events" termination
    * paths in promptStream (both tool and non-tool idle). Previously, hardcoded
@@ -175,7 +170,6 @@ export class AcpAgentService implements AgentService {
   private readonly appliedContextBinding?: import('../../../types.js').AgentContextBinding;
   private readonly mcpSupportEnabled: boolean;
   private readonly omitSessionMcpServers: boolean;
-  private readonly frozenMcpCredentialFile?: string;
   /**
    * #1186: Resolved ACP idle TTL — authoritative threshold for all no-event termination.
    * Always concrete: defaults to DEFAULT_ACP_IDLE_TTL_MS (30m) when config omits it,
@@ -200,7 +194,6 @@ export class AcpAgentService implements AgentService {
     this.appliedContextBinding = config.contextBinding;
     this.mcpSupportEnabled = config.mcpSupport !== false;
     this.omitSessionMcpServers = config.omitSessionMcpServers === true;
-    this.frozenMcpCredentialFile = config.frozenMcpCredentialFile?.trim() || undefined;
     this.idleTtlMs = config.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS;
     this.agentBusyRetryDelaysMs = config.agentBusyRetryDelaysMs ?? DEFAULT_AGENT_BUSY_RETRY_DELAYS_MS;
   }
@@ -444,8 +437,9 @@ export class AcpAgentService implements AgentService {
       // and resume rewrites the same file with fresh creds. A superseded process keeps
       // its own file, which stops updating — its late callbacks fail registry.isLatest().
       const prepareInvokeCredentials = (resumeSessionId?: string): PreparedCredentialEnv | null => {
-        if (this.omitSessionMcpServers && this.frozenMcpCredentialFile) {
-          return refreshFrozenCredentialFile(options?.callbackEnv, this.frozenMcpCredentialFile);
+        const processCredFile = this.omitSessionMcpServers ? lease.client.mcpCredentialFile?.trim() : undefined;
+        if (processCredFile) {
+          return refreshFrozenCredentialFile(options?.callbackEnv, processCredFile);
         }
         return resumeSessionId
           ? resolveSessionCredentialFile(options?.callbackEnv, resumeSessionId)

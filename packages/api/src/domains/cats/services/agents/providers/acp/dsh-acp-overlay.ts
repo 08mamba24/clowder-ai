@@ -8,6 +8,9 @@ import type { AcpMcpServer, AcpMcpServerHttp, AcpMcpServerStdio } from './types.
 
 const BARE_DSH_MCP_CLIENT = '@deepseek-ai/dsh-mcp-client';
 
+/** Cordis interpolates this at DSH process boot from Hub spawn env. */
+export const DSH_ACP_CREDENTIAL_ENV_JS = '!!js process.env.CAT_CAFE_CREDENTIAL_FILE';
+
 export function writeDshAcpOverlayConfig(input: {
   baseConfigPath: string;
   servers: readonly AcpMcpServer[];
@@ -93,6 +96,10 @@ function appendEnvLines(lines: string[], env: AcpMcpServerStdio['env']): void {
   if (!env || env.length === 0) return;
   lines.push('    env:');
   for (const entry of env) {
+    if (entry.value.startsWith('!!js ')) {
+      lines.push(`      ${entry.name}: ${entry.value}`);
+      continue;
+    }
     lines.push(`      ${entry.name}: ${yamlQuote(entry.value)}`);
   }
 }
