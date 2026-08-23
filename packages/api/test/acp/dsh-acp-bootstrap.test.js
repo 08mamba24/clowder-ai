@@ -1,7 +1,7 @@
 // @ts-check
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -13,6 +13,7 @@ const {
   isDshHarnessCommand,
   prepareDshAcpSpawnForProject,
   resolveDshAcpStdioSpawn,
+  resolveDshCredentialFile,
   resolveDshMcpClientPluginName,
   writeDshAcpOverlayConfig,
 } = await import('../../dist/domains/cats/services/agents/providers/acp/dsh-acp-bootstrap.js');
@@ -138,8 +139,15 @@ describe('dsh ACP bootstrap', () => {
     assert.match(yaml, /serverName: 'cat-cafe-memory'/);
     assert.match(yaml, /transport: stdio/);
     assert.match(yaml, /CAT_CAFE_API_URL: 'http:\/\/127\.0\.0\.1:9'/);
+    assert.match(yaml, /CAT_CAFE_CREDENTIAL_FILE:/);
+    assert.match(yaml, /CAT_CAFE_CAT_ID: 'dsh'/);
+    assert.match(yaml, /failOnStartupError: true/);
+    assert.doesNotMatch(yaml, /serverName: 'cat-cafe-limb'/);
+    assert.doesNotMatch(yaml, /serverName: 'cat-cafe-audio'/);
+    assert.doesNotMatch(yaml, /serverName: 'cat-cafe-finance'/);
     assert.match(yaml, /name: '\.\.\/\.\.\/packages\/mcp\/mcp-client\/lib\/index\.js'/);
     assert.doesNotMatch(yaml, /name: '@deepseek-ai\/dsh-mcp-client'/);
+    assert.equal(prepared.env.CAT_CAFE_CREDENTIAL_FILE, resolveDshCredentialFile(projectRoot, 'dsh', {}));
     assert.equal(resolveDshMcpClientPluginName(prepared.cwd, { CAT_CAFE_DSH_ROOT: root }), RELATIVE_MCP_CLIENT);
     assert.equal(isBareDshMcpClientPlugin(RELATIVE_MCP_CLIENT), false);
     assert.equal(isBareDshMcpClientPlugin('@deepseek-ai/dsh-mcp-client'), true);
@@ -187,5 +195,70 @@ describe('dsh ACP bootstrap', () => {
     assert.match(yaml, /transport: stdio/);
     assert.match(yaml, /command: '\/usr\/bin\/node'/);
     assert.match(yaml, /TOKEN: 'abc'/);
+    assert.match(yaml, /failOnStartupError: true/);
+  });
+
+  it('omits blockedCats family servers from the overlay', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-blocked-'));
+    const { overlay } = writeDshFixture(root);
+    const projectRoot = mkdtempSync(join(tmpdir(), 'dsh-project-blocked-'));
+    mkdirSync(join(projectRoot, '.cat-cafe'), { recursive: true });
+    writeFileSync(
+      join(projectRoot, '.cat-cafe', 'capabilities.json'),
+      JSON.stringify({
+        version: 2,
+        capabilities: [
+          {
+            id: 'cat-cafe-collab',
+            type: 'mcp',
+            enabled: true,
+            globalEnabled: true,
+            source: 'builtin',
+            blockedCats: ['dsh'],
+          },
+        ],
+      }),
+    );
+    const prepared = await prepareDshAcpSpawnForProject({
+      command: 'dsh',
+      args: [],
+      projectRoot,
+      bootstrapCwd: join(root, 'boot'),
+      mcpWhitelist: ['cat-cafe-memory', 'cat-cafe-collab', 'cat-cafe-signals'],
+      mcpSupport: true,
+      catId: 'dsh',
+      env: { CAT_CAFE_DSH_ROOT: root, PATH: '/nonexistent', CAT_CAFE_API_URL: 'http://127.0.0.1:9' },
+    });
+    assert.equal(prepared.ok, true);
+    if (!prepared.ok) return;
+    const yaml = readFileSync(overlay, 'utf-8');
+    assert.match(yaml, /serverName: 'cat-cafe-memory'/);
+    assert.match(yaml, /serverName: 'cat-cafe-signals'/);
+    assert.doesNotMatch(yaml, /serverName: 'cat-cafe-collab'/);
+  });
+
+  it('skips DSH when the composition dir is not writable', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-readonly-'));
+    const { overlay } = writeDshFixture(root);
+    const configDir = join(root, 'examples', 'acp-agent');
+    chmodSync(configDir, 0o555);
+    try {
+      const prepared = await prepareDshAcpSpawnForProject({
+        command: 'dsh',
+        args: [],
+        projectRoot: mkdtempSync(join(tmpdir(), 'dsh-project-ro-')),
+        bootstrapCwd: join(root, 'boot'),
+        mcpWhitelist: ['cat-cafe-memory'],
+        mcpSupport: true,
+        catId: 'dsh',
+        env: { CAT_CAFE_DSH_ROOT: root, PATH: '/nonexistent' },
+      });
+      assert.equal(prepared.ok, false);
+      if (prepared.ok) return;
+      assert.match(prepared.error.message, /overlay could not be written/);
+    } finally {
+      chmodSync(configDir, 0o755);
+    }
+    assert.equal(existsSync(overlay), false);
   });
 });

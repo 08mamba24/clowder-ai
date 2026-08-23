@@ -23,7 +23,7 @@ const { dshOmitsAcpSessionMcp } = await import(
   '../../dist/domains/cats/services/agents/providers/acp/dsh-acp-bootstrap.js'
 );
 
-const SLIM_MCP = ['cat-cafe', 'cat-cafe-memory', 'cat-cafe-collab', 'cat-cafe-signals'];
+const SLIM_MCP = ['cat-cafe-memory', 'cat-cafe-collab', 'cat-cafe-signals'];
 
 function isolateTemplate() {
   const projectRoot = mkdtempSync(join(tmpdir(), 'harness-member-'));
@@ -146,11 +146,13 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
         assert.match(overlayYaml, /serverName: 'cat-cafe-signals'/);
         assert.match(overlayYaml, /transport: stdio/);
         assert.match(overlayYaml, /CAT_CAFE_API_URL:/);
+        assert.match(overlayYaml, /CAT_CAFE_CREDENTIAL_FILE:/);
+        assert.match(overlayYaml, /failOnStartupError: true/);
+        assert.doesNotMatch(overlayYaml, /serverName: 'cat-cafe-limb'/);
+        assert.doesNotMatch(overlayYaml, /serverName: 'cat-cafe-audio'/);
+        assert.doesNotMatch(overlayYaml, /serverName: 'cat-cafe-finance'/);
         assert.match(overlayYaml, /name: '\.\.\/\.\.\/packages\/mcp\/mcp-client\/lib\/index\.js'/);
-        assert.ok(
-          overlayYaml.includes('mcp-client'),
-          'plugin name must be a path containing mcp-client',
-        );
+        assert.ok(overlayYaml.includes('mcp-client'), 'plugin name must be a path containing mcp-client');
         assert.doesNotMatch(overlayYaml, /name: '@deepseek-ai\/dsh-mcp-client'/);
       } finally {
         await Promise.all([...poolRegistry.values()].map((pool) => pool.closeAll?.()));

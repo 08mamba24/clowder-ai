@@ -1175,7 +1175,7 @@
           "acp": {
             "command": "grok",
             "startupArgs": ["--no-auto-update", "agent", "--always-approve", "stdio"],
-            "mcpWhitelist": ["cat-cafe", "cat-cafe-memory", "cat-cafe-collab", "cat-cafe-signals"]
+            "mcpWhitelist": ["cat-cafe-memory", "cat-cafe-collab", "cat-cafe-signals"]
           },
           "contextBudget": {
             "maxPromptTokens": 180000,
@@ -1200,7 +1200,7 @@
       "mentionPatterns": ["@dsh", "@deepseek-harness", "@衡衡"],
       "roleDescription": "官方 DeepSeek Harness ACP 自动化入口；与 OpenCode 渊渊分路，不替换 deepseek",
       "teamStrengths": "DeepSeek 官方 harness、ACP 自动化、插件化工具",
-      "caution": "官方 ACP demo 拒非空 session/new.mcpServers。Hub 在 examples/acp-agent 写 cat-cafe-dsh-acp.cordis.yml，用相对路径加载 mcp-client。不要 @deepseek（那是渊渊）",
+      "caution": "官方 ACP demo 拒非空 session/new.mcpServers。Hub 在 examples/acp-agent 写 overlay；MCP 凭据走 CAT_CAFE_CREDENTIAL_FILE。不要 @deepseek（那是渊渊）",
       "defaultVariantId": "dsh-default",
       "variants": [
         {
@@ -1220,7 +1220,8 @@
           "acp": {
             "command": "dsh",
             "startupArgs": [],
-            "mcpWhitelist": ["cat-cafe", "cat-cafe-memory", "cat-cafe-collab", "cat-cafe-signals"]
+            "mcpWhitelist": ["cat-cafe-memory", "cat-cafe-collab", "cat-cafe-signals"],
+            "pool": { "maxLiveProcesses": 1 }
           },
           "contextBudget": {
             "maxPromptTokens": 400000,

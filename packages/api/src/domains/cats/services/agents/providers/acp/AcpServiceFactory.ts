@@ -353,6 +353,9 @@ export async function createAcpServiceForConfig(
     },
     mcpSupport: config.mcpSupport,
     omitSessionMcpServers: dshOmitsAcpSessionMcp(acpConfig.command),
+    frozenMcpCredentialFile: dshOmitsAcpSessionMcp(acpConfig.command)
+      ? bootstrap.extraEnv?.CAT_CAFE_CREDENTIAL_FILE
+      : undefined,
     // #1186: Thread the member's configured idle TTL to AcpAgentService so
     // promptStream uses it as the authoritative no-event termination threshold.
     idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,
