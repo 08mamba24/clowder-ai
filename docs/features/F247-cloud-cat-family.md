@@ -1,10 +1,10 @@
 ---
 feature_ids: [F247]
 related_features: [F178, F061, F174, F236, F237]
-topics: [cloud-cat, chatgpt-pro, mcp, multi-provider, custom-instructions, github-connector]
+topics: [cloud-cat, chatgpt-pro, mcp, multi-provider, custom-instructions, github-connector, chrome-extension, native-messaging]
 doc_kind: spec
-tips_exempt: B1a interim — productized capability tip 待 Phase D Console 多 provider UI 上线后写
 description: Productized cloud-cat platform for connecting ChatGPT Pro and future cloud LLM providers into Clowder AI as first-class collaborators.
+tips_exempt: "Personal Chrome Host Adapter now has an owner-only Developer Preview card, strict multi-conversation authorization lifecycle, and Web Store install integration, but no public Chrome Web Store listing exists yet; add a tip only after signed publication closes the external blocker."
 description_source: model
 description_author: codex
 description_updated_at: 2026-07-06T11:45:00Z
@@ -22,11 +22,46 @@ revision_history: |
     - P2 R3-2: KD-1 rewrite (F178 owns single-agent-key research, F247 owns productized platform)
     - P2 R3-4: mint roster allowlist only + Phase C breeds.variants task
     - R5: 1175 L0 hold_ball → 工具无关表述
+  v3 (2026-08-12): 个人版实时召唤路线收敛
+    - Personal Chrome Host Adapter 成为个人 ChatGPT Pro 主路径
+    - Clowder AI plugin 统一编排 Chrome extension + Native Messaging helper 安装与配对
+    - 用户通过富文本预览显式授权转发；Scheduled Tasks 降为非实时可选兜底
+    - 没有真实 hostMessageId 不宣称发送成功，自动化失败降级为复制并打开
+  v4 (2026-08-12): cloud invocation terminal contract 修复
+    - cloud-only route 创建 durable child invocation，不再提前 silent done
+    - Host transport 只等待有界 receipt/failure，不等待云端猫回复
+    - exact A2A source 写 completed disposition；缺 adapter 只显示一次可读状态并终结 source
+    - Personal Chrome adapter 可由 socket + pairing secret 显式配置激活，安装/配对仍属 Phase E/F
+  v5 (2026-08-13): Personal Chrome Phase E0 安装闭环
+    - 可撤销 Host-owned helper/manifest/pairing 安装事务 + fixed extension identity
+    - API 每次投递读取 canonical pairing record，无需重启即可 install/uninstall
+    - 真实隔离 Chrome 已启动 helper；登录态 /c 会话未出现，消息 gate 诚实记为 NOT_OBSERVED
+  v6 (2026-08-20): You 日常 Chrome in-place live gate
+    - 修复 Native Host launcher 对 GUI PATH 中 node 的隐式依赖，安装时固化绝对 Node runtime
+    - 不退出/重启 Chrome，不复制 profile/cookie，真实登录态后台投递返回 DOM hostMessageId
+    - 同一 idempotency key 重试返回同一 ID，control tab 保持前台；AC-FS1/2/3 全部关闭
+  v7 (2026-08-21): 一次显式绑定 + zero-focus Host contract
+    - 扩展在目标 ChatGPT conversation 提供一次“绑定此会话”，Host 原子持久化 mode-0600 exact conversation authorization
+    - 日常 append 在 ledger admission 前要求 Clowder AI route conversation ID 与 Host authorization 精确一致；未绑定返回 typed NEEDS_BINDING
+    - 删除 in-place gate 的 AppleScript target/control 捕获与切换协议；health、gate、retry、delivery 均无 tab/window/focus/navigation mutation surface
+  v8 (2026-08-21): owner-friendly Developer Preview 安装卡
+    - Console 插件页新增 owner-only Personal ChatGPT Pro 卡，显式 install/repair/uninstall 既有 Host primitives
+    - artifact/config/authorization/intent/live 五轴独立投影；helper ready 只显示“待绑定”，不冒充“已配置/运行中”
+  v9 (2026-08-21): 产品安装旅程 + 多会话授权集合
+    - 单 binding 无损迁移为严格 schema-v2、mode-0600、原子且最多 32 项的 authorized-conversation collection
+    - “授权此会话”追加且幂等；Settings owner-only 展示数量/列表并支持逐项撤销，卸载清空集合
+    - Settings 与 MV3 manifest 使用正式 gpt-pro 资产；移除 unpacked 路径，把 Web Store 集成就绪与公开发布分开
+    - 无 listing 时 Host 安装前 typed 阻断；有可信 listing 时一次 Settings 操作准备 Host 并打开 Chrome 原生确认旅程
+    - Windows 稳定返回 unsupported 且零安装读取；签名扩展发行与 thread-route wiring 继续独立收口
 ---
 
 # F247: 云端猫 Family + 多 provider 接入平台
 
 > **Status**: active | **Owner**: Ragdoll (Ragdoll opus-47) | **Reviewer**: Maine Coon (Maine Coon codex/gpt-5.5) | **Vision Guard**: Ragdoll (opus-48) | **Priority**: P1 | **Created**: 2026-06-21
+
+Architecture cell: callback-auth + plugin + dispatch
+Map delta: updated 2026-08-12
+Why: F247 consumes the F178 principal lifecycle, adds a Host-governed conversation append seam, and settles cloud-only A2A work through the existing exact-source dispatch contract without claiming provider capability.
 
 ## Why (R3 P2-2 rewrite)
 
@@ -44,7 +79,7 @@ F178 §12 升级条件给出新 F 号触发集合（self OAuth AS / multi-tenant
 
 **operator signoff**：operator 2026-06-21 08:11 UTC "可以更新 feat md 了嘛？" + 08:40 UTC "先更新你的 feat md 然后再开始写代码"。
 
-## Current State / 基线（截至 2026-06-22 闭环）
+## Current State / 基线（截至 2026-08-21）
 
 ### 已验证 ✅
 - MCP transport（Streamable HTTP）+ ChatGPT Developer mode connector 兼容（spike B0 mock harness）
@@ -59,9 +94,19 @@ F178 §12 升级条件给出新 F 号触发集合（self OAuth AS / multi-tenant
   - spike server pure agent-key 模式 (env -u 5 项 + AGENT_KEY_FILES override) ✅
   - cat-cafe API hot-add gpt-pro via `POST /api/cats` (0 重启) ✅
   - dry-run `cat_cafe_post_message` 真写入 thread, speaker 显示 "Maine CoonPro(Pro Cloud (ChatGPT))" ✅
+- **2026-08-08 principal lifecycle hardening + live recovery proof**：45-day Redis TTL 到期而 sidecar 残留导致 `agent_key_unknown`；共享 provisioner 已实现 verify/preserve/rotate/replace + daily renewal。授权 runtime reconcile 后，公网 Remote MCP 以 `gpt-pro` 写入 `[thread-id]` 并返回 message ID `0001786245288454-000558-7b3fc130`，full thread read 精确确认一次。
+- **Host Adapter contract**：`append_message(conversationId, text, idempotencyKey) -> {hostMessageId}` 已落窄接口与 fail-closed tests；官方 provider 尚未绑定，因此不声称任意 ChatGPT conversation background append 已可用。Legacy PinchTab 仅 `CAT_CAFE_ENABLE_LEGACY_PINCHTAB_BRIDGE=1` 显式启用，默认不接管前台 UI。
+- **历史个人版双向 E2E 已实锤**（2026-06-30）：旧 PinchTab bridge 将 Clowder AI mention 投进绑定的 ChatGPT conversation；云端 `gpt-pro` 随后通过 Remote MCP 真写回 Clowder AI，消息 `0001782785550318-000160-3b0dbc66` 可精确读取。它证明产品闭环可行，但不把前台浏览器自动化升级为稳定公共契约。
+- **Personal Chrome Host Adapter 隔离 spike（2026-08-12）**：35 项 focused 契约全部通过。真实 Chrome + 临时 profile + unpacked MV3 extension 在拦截的 `chatgpt.com/c/<id>` fixture 上完成后台 tab 投递，前台 tab 未变化；首次返回 DOM message ID `fixture-host-message-1`，同一 idempotency key 重试返回同一 ID 且 send count 保持 1。独立 full-seam integration 另行穿过真实 `PersonalChromeHostAdapter`、Unix socket bridge、Native Messaging framing、service-worker `connectNative`/`dispatchAppend`、tab receipt 与 0600 durable ledger；helper socket 由跨进程原子 owner lease 守住，live/仍在落盘的旧 helper 不会被重叠启动替换，dead helper 遗留的 lease 可安全回收；POSIX install contract 还直接启动 manifest 写入的 executable path 并交换真实 stdio frame，防止进程内 mock 或 DOM-only fixture 绕过 helper/port 后仍误报机制通过。该证据只关闭 fixture/本地协议 gate，不冒充已安装原生宿主或登录态真实 ChatGPT DOM 证据。
+- **Cloud invocation terminal contract（2026-08-12）**：`openai-chatgpt-pro` 不再从 KD-17 guard 提前 `done`。它先创建 durable child、暴露 exact source body，再等待 Host transport 的有界 `sent | fallback | error`；随后发布一条可读 `cloud_bridge_status`，为 A2A source 写精确 `completed` disposition，并用同一 child `done` 收口。Host 缺失是一次显式 unavailable，不再被 F167 判成 disposition missing 后重排队。
+- **Operator-only runtime activation（2026-08-12）**：API 仅在 `CAT_CAFE_PERSONAL_CHROME_SOCKET` 与 `CAT_CAFE_PERSONAL_CHROME_PAIRING_SECRET` 同时存在且合法时构造 Personal Chrome Host Adapter；缺一项时 fail closed，日志只记录 presence bit，不记录 secret。该 seam 不安装 helper/extension、不授予浏览器权限，也不等于 Phase E/F 产品化完成。
+- **Personal Chrome Phase E0 安装闭环（2026-08-13）**：Host 现在可原子 install/inspect/repair/uninstall content-addressed helper、稳定 launcher、profile-scoped Native Messaging manifest 与 mode-0600 canonical pairing record；API 在每次 append 前重新验证该 record，安装/卸载无需重启即可生效。固定扩展 ID `mjpbglbfkbjhnamnafkodgdpgfhjoife` 已在真实隔离 Chrome 中加载，Chrome 确实启动安装后的 launcher，helper socket 在 15 分钟窗口内健康。首次消息 gate 使用空的隔离 profile，因此没有出现登录态 `/c/<id>`、没有发送 nonce；该缺口不是产品失败，而是验证坐标不含登录态。现有-profile dogfood 模式现显式选择 Chrome `Local State` 注册的 profile，拒绝复制 Cookie，并在日常 Chrome 持有 SingletonLock 时返回 `CHROME_PROFILE_IN_USE`。developer Host 已安装；unpacked extension 仍等 Chrome 原生用户确认，消息 DOM ID / retry / foreground invariants 继续为 `NOT_OBSERVED`。
+- **You in-place message live gate（2026-08-20）**：operator在日常 You profile 确认 unpacked extension 后，gate 复用已运行 Chrome；没有 launch/close/restart 浏览器，也没有复制 profile 或读取 Cookie。Gate 先经 `NSRunningApplication` 确认 owner Chrome 已在运行，并把后续 Scripting Bridge 事件固定到该次观察到的 PID；不存在 bundle/name fallback，因此进程在检查后退出也只会让 PID target 失败，不能由 gate 重新启动 Chrome。未运行时以 `OWNER_CHROME_NOT_RUNNING` 终止；每次 append 前还会重验同一 control tab，目标 conversation 被重新选中即以 `TARGET_TAB_RESELECTED` 零发送终止。Chrome 从 per-user manifest 启动 content-addressed helper，真实登录态后台 conversation 返回 DOM-owned `hostMessageId`；相同 idempotency key 重试返回同一 ID，control tab 全程保持前台。旧 launcher 的 `#!/usr/bin/env node` 在 Chrome GUI PATH 下不可达，现改为安装时固化经验证的绝对 `process.execPath` + `native-host-cli.mjs`；无 secret 进入 launcher。focused gate build + 62/62 PASS，AC-FS1/2/3 均关闭。
+- **Zero-focus multi-authorization correction（2026-08-21）**：扩展只在用户主动点击“授权此会话”时把 canonical `/c/<id>` 交给 Native Host；Host 把原 schema-v1 单 binding 无损迁移为 schema-v2 collection，mode-0600 原子持久化且最多 32 项。新授权按 exact ID 追加，重复点击 byte-idempotent，不覆盖其他会话；损坏集合 fail closed，既不能发送也不能被新授权静默覆盖。每次 append 在 ledger admission 前要求 owner-only `cloudCatBindings` 路由 ID 属于 Host authorization collection；缺失、不匹配、损坏均 typed 零 Chrome dispatch。自动化 full seam 已同时授权 `conversation-7/8`，让两个 Clowder AI thread 的不同 source key 分别投递且各自重试只触发一次 tab send。扩展与 gate 静态契约继续禁止 tab/window/focus/navigation mutation、Cookie/profile copy与 private API。
+- **Owner-friendly product card（2026-08-21）**：Console 插件页使用仓内正式 `/avatars/gpt-pro.png`，MV3 manifest 使用从同一资产确定性生成的 16/32/48/128 图标。owner-only/local-only API 投影 Web Store publication、Host、authorization collection 与 live 状态，并支持精确单项撤销；非 owner、非 loopback、forwarded 或不可信 Origin 在读取前拒绝。卡片不再输出 repository/source path 或 `chrome://extensions` 指令。`CAT_CAFE_PERSONAL_CHROME_WEB_STORE_URL` 只有严格匹配 `chromewebstore.google.com` 与固定 extension ID 时才算 `published`；为空时显示“集成已就绪、尚未公开发布”并在 Host mutation 前返回 `CHROME_WEB_STORE_LISTING_NOT_CONFIGURED`。配置可信 listing 后，一次 Settings 安装操作准备 Host 并打开 Web Store，仍只由 Chrome 完成“添加扩展/权限”原生确认。Windows 稳定 unsupported。当前外部 blocker 是公共 package PR 与 Chrome Web Store listing/发布权限，不能宣称已经公开发布。
 
 ### 待验证 ⚠️
-- **ChatGPT Scheduled Tasks 能否调 Custom MCP Connector**（spike log 0 收到 + operator R1 指出 AI Blog Patrol 也可能没真跑：**待验证不写硬结论**）
+- **ChatGPT Scheduled Tasks 能否调 Custom MCP Connector**（spike log 0 收到 + operator R1 指出 AI Blog Patrol 也可能没真跑：**待验证不写硬结论**；即使可用也仅作非实时兜底，不承担即时 `@gpt-pro`）
 - **Custom Instructions 实际字符上限**（需 You 当前 UI 实测）
 - **Custom GPT 不读 ChatGPT 主流 memory**（operator实测确认）→ 路径修正为 Custom Instructions
 
@@ -76,17 +121,20 @@ F178 §12 升级条件给出新 F 号触发集合（self OAuth AS / multi-tenant
 - 公网 endpoint 真 auth（B0 disposable token-in-URL ≠ production；B1**a interim** 公网 + `?token=` 单防线接受降级；B1**b** 必须 verified CF Access OAuth 或 header-auth）
 - 前端 bubble 渲染优化（catalog hot-add 显示 "Maine CoonPro(Pro Cloud (ChatGPT))" + fallback avatar 已 work；Phase C 升级真头像 + 气泡风格）
 - 多 provider 配置 UI（"配置云端猫"页面）
+- Chrome Web Store 签名 extension 的实际公开 listing；Clowder AI listing 集成与发布阻断状态已就绪，但当前没有发布权限/URL，不能宣称已经公开发布
 
 ## User Journey
 
-1. operator在云端 provider（如 ChatGPT Pro）里启用 Clowder AI connector，并按 Console / Custom Instructions 给出的短 L0 和 connector URL 配好云端猫。
-2. 云端猫用自己的 `catId` / agent-key 进入 Clowder AI MCP，只能看到白名单工具；需要参与协作时先读取 thread context，再通过 `post_message` / `cross_post_message` 回到猫咖线程。
-3. Hub 里显示这只云端猫的独立身份、头像、气泡颜色和 provider 来源标记，operator能把它当作完整团队成员召唤、阅读和追责，而不是把云端输出混进本地猫身份。
-4. 未来多 provider 配置 UI 上线后，operator从 Console 选择 provider/model，系统生成连接配置并热加载 runtime cat；新云端猫无需重启服务即可进入协作。
+1. operator在 Clowder AI 插件市场点击安装 Cloud Cat plugin；向导安装本地 Native Messaging helper，并打开官方 Chrome Web Store 页面。Chrome 仍要求用户确认一次“添加扩展/权限”，插件不得静默绕过浏览器授权。
+2. 用户可在多个 ChatGPT conversation 分别点击“授权此会话”；Native Host 追加 exact conversation authorization，重复点击不覆盖其它项。Clowder AI 的 owner-only `cloudCatBindings(threadId, catId)` 仍让每个 thread 精确映射一个 conversation，正常投递要求路由 ID 位于 Host authorization collection。
+3. 用户在 Clowder AI `@gpt-pro` 后先看到转发富文本：目标 conversation、实际唤醒胶囊和数据边界一目了然。点击“发送并唤醒”才签发一次性 delivery ticket；也可选择“复制并打开”或取消。
+4. Chrome extension 通过 Native Messaging 向本地 helper 接单，在不聚焦窗口、不读取 Cookie、不调用 ChatGPT 私有 API 的前提下，把唤醒胶囊送进绑定 conversation。只有观察到真实 `hostMessageId` 才显示“已发送”；否则停在“已填入”或降级为“已复制并打开”。
+5. 云端猫收到胶囊后用自己的 `catId` / agent-key 读取完整 thread context，完成任务并通过 `post_message` / `cross_post_message` 回到猫咖；胶囊本身不复制整段历史。
+6. Hub 显示云端猫的独立身份、头像、气泡颜色、provider 来源与投递状态，让用户能阅读、追责和重试，而不是把云端输出混进本地猫身份。
 
 ## What
 
-5 个核心能力 + 5 个 Phase。
+6 个核心能力 + 6 个 Phase。
 
 ### 2.1 云端猫身份系统
 
@@ -154,15 +202,23 @@ Console settings "配置云端猫" 流程：
 - Custom Instructions L0 段**砍掉**任何 "启动 polling / 自检 pending" 指令
 
 **B1 production 召唤**：
-- 仍 **user-driven**：operator启 ChatGPT 对话指明 context → Maine Coon用 `list_threads` / `get_thread_context` 定位 → 处理 → `post_message` 推回
+- 已验证基线仍是 **user-driven**：operator启 ChatGPT 对话指明 context → Maine Coon用 `list_threads` / `get_thread_context` 定位 → 处理 → `post_message` 推回
 - 复用 fable phase0 10 工具白名单（5 collab + 5 memory），**不含** `get_pending_mentions / ack_mentions / task tools / hold_ball`
 - **不声称** pending polling 能力
 
-**真自动 polling — future decision（独立 spec）**：
+**个人版实时召唤目标 — Personal Chrome Host Adapter（2026-08-12 operator 收敛）**：
+- `@gpt-pro` 先产生一张 user-visible 转发卡，不立即碰 ChatGPT：展示目标 conversation、唤醒胶囊与三种 disposition（发送并唤醒 / 复制并打开 / 取消）
+- 用户点击“发送并唤醒”是本次 delivery 的显式授权；Clowder AI 以持久化 source message ID 作为 `idempotencyKey`，签发一次性、短时、绑定 conversation 的 delivery ticket
+- Clowder AI plugin 管安装/配对，Chrome extension 管 `chatgpt.com` 页面内投递，Native Messaging helper 管本地可信边界；扩展不读取 Cookie、不调用私有 ChatGPT API、不使用系统鼠标
+- extension 可操作已绑定的非前台 tab；只有观察到 ChatGPT 真实 user-message ID，才履行现有 `append_message(...) -> {hostMessageId}` 契约并显示“已发送”
+- DOM、登录态、tab 或 message-ID 观察任一步失败均 fail closed：优先停在“已填入，等待用户发送”，再降级“复制并打开准确 conversation”；不得用 extension receipt 冒充 host receipt
+- 唤醒胶囊只携带 `threadId/sourceMessageId/intent/traceNonce` 等运行时增量；云端Maine Coon通过 MCP 拉完整上下文并回写，避免浏览器桥复制整段 thread
+
+**真自动 polling — 非实时可选兜底（独立 spec）**：
 - 必须**成对**引入 `get_pending_mentions + ack_mentions`（cursor + explicit ack）
 - 必须做单独安全 review（白名单扩张、跨 session cursor 持久性、ack idempotency）
 - **不能用 `search_evidence` 伪装 polling 语义**
-- 触发条件：实测 ChatGPT Tasks 真能调 Custom Connector + bench Maine Coon polling 流的安全/语义/UX → 才考虑升级
+- 触发条件：实测 ChatGPT Tasks 真能调 Custom Connector + bench Maine Coon polling 流的安全/语义/UX → 才考虑升级；即使成立也不替代实时 Chrome Host Adapter，因为小时级唤醒不满足即时 `@` 体验
 
 ### 2.6 GitHub Connector 集成 ✅ 确认
 
@@ -248,11 +304,17 @@ operator 2026-06-21 06:54 UTC 确认：**ChatGPT 官方 GitHub Connector 已用*
 >
 > **operator R1 catch (2026-06-25 23:46 PT)**：bridge 投递到 ChatGPT 端**哪个 chat**？v1 spec 漏了这层架构——每次 mention 新建 chat = sidebar 爆炸 + Maine Coon Pro 失去 conversation continuity；投到 active chat = 打断他当前讨论。**必须做 thread↔chat binding (KD-20)**。
 
-**目标**：本地猫 @ gpt-pro → cat-cafe 自动通过 browser automation 在 user chrome 的 ChatGPT **该 thread 对应的 chat** 投递 mention 通知（带 thread context）→ Maine Coon Pro 看到后 MCP read 拉详情 + 写回复。**全程零人肉粘贴，sidebar 干净。**
+**目标**：本地猫 @ gpt-pro → cat-cafe 通过宿主提供的 background Host Adapter，向 **该 thread 已绑定的 conversation** 追加 mention 通知（带 thread context）→ Maine Coon Pro 看到后 MCP read 拉详情 + 写回复。**全程零人肉粘贴、零前台 UI 接管。** Host 未暴露能力时明确 fallback；只有 operator 显式 opt-in 才允许旧 PinchTab 路径创建/修复 binding。
 
 #### Design 要点
 
-**1. Backend = PinchTab 单一**（codex/Maine Coon R0 verdict + 跨 family）
+**1. Backend priority = Host Adapter；PinchTab 降级为显式 opt-in legacy**（2026-08-08 supersedes 原“PinchTab 单一”）
+- 首选 Host-owned 窄接口：`append_message(conversationId, text, idempotencyKey)`，成功必须返回 non-empty host message ID；conversation ID 来自 owner-only thread binding，idempotency key 来自持久化 source message ID
+- Host Adapter 缺失 / receipt 无效 / append 失败：typed fallback，**不**自动启动 PinchTab / composer / CGEvent；这保证后台服务不会抢用户鼠标和前台画面
+- 当前 OpenAI 公共 Host 能力只证明 Codex Quick Chat 可引用 ChatGPT conversation，不足以证明 server 可向任意 conversation 追加并取回 host message ID；provider 保持 `null`，直到官方能力真实出现
+- PinchTab 旧路径只在 operator 显式设置 `CAT_CAFE_ENABLE_LEGACY_PINCHTAB_BRIDGE=1` 时启用，用于兼容/诊断，不再是默认行为
+
+**历史实现：PinchTab adapter**
 - 跨族（Maine Coon/Siamese/Ragdoll都能用），不像 claude-in-chrome 仅 Anthropic 系
 - attach 现有 chrome session（不开新 browser profile，减少 zombie 面）
 - **可用工具实测**（codex R1 P1-A + 47 ref verify）：`pinchtab_eval` / `pinchtab_get_text` / `pinchtab_navigate` (localhost only) / `pinchtab_screenshot` / `pinchtab_snapshot`。**没有** `pinchtab_get_url` / `pinchtab_list_tabs` / `pinchtab_click` / `pinchtab_type` / `pinchtab_press`——v1 spec 误写
@@ -279,8 +341,10 @@ operator 2026-06-21 06:54 UTC 确认：**ChatGPT 官方 GitHub Connector 已用*
 - **多云端猫场景**：每只 cloud cat 一条 binding（`cloudCatBindings.gpt-pro` / `cloudCatBindings.claude-pro` 互不冲突）
 
 **3. 触发点**（跟 KD-17 dispatch guard 集成）
-- `invokeSingleCat` 看到 `provider === 'openai-chatgpt-pro'` → guard skip dispatch + 触发 cloud-invoke-bridge → fire-and-forget → yield done
-- bridge 是新 service 在 cat-cafe API 内部，调 PinchTab MCP 工具
+- `invokeSingleCat` 看到 `provider === 'openai-chatgpt-pro'` → 跳过 provider CLI，但仍创建 durable child invocation，并在 prompt exposure 后触发 cloud-invoke-bridge
+- bridge 返回有界 Host transport outcome；本地 invocation **不等待云端猫回复**，但必须等待该 outcome 后发布一条可读状态
+- A2A source 由同一 child 写 exact `completed` disposition，再 `done`；缺 adapter/receipt 也终结该 source，禁止 silent completion → governance error → Queue replay
+- API composition 仅在 socket + pairing secret 同时配置时启用 Personal Chrome Host Adapter；否则 typed unavailable。Legacy PinchTab 仍只允许显式 opt-in
 
 **4. 载荷模板**（thread context-aware）
 
@@ -297,7 +361,7 @@ Action expected:
 2. cat_cafe_post_message(threadId="{threadId}", agentKeyCatId="gpt-pro", content="...")
 ```
 
-**5. Browser 控制流程**（all-eval pattern, Clash TUN safe, lock-first ordering）
+**5. Legacy browser 控制流程**（仅显式 opt-in；all-eval pattern, Clash TUN safe, lock-first ordering）
 
 ```
 trigger → bridge enter
@@ -342,7 +406,7 @@ trigger → bridge enter
 
 **6. 失败 fallback**（cat-cafe `system_info` 通知本地 thread）
 - Chrome 没 running / ChatGPT.com 没登录 / input box selector 失效
-- → bridge emit fallback notification 进发起 mention 的本地 thread："云端投递失败，请打开 Chrome + 登录 ChatGPT"，dispatch guard yield done 不留尾巴
+- → invocation 向发起 mention 的本地 thread 持久化**一条** `cloud_bridge_status: unavailable`，同时为 exact A2A source 写 `completed` disposition；不得另发 raw bridge JSON，也不得留下可被 Queue 重放的 governance error
 
 **7. 隐私边界 — `cloudCatBindings` 是 local-only operational sidecar**（codex R1 P1-B catch）
 
@@ -404,14 +468,15 @@ Implementation 选择（择一，implementation PR 决定）：
 - `pnpm cloud:status` / `pnpm cloud:doctor` operator 一眼看三层状态
 
 **B1d OUT**：
-- PinchTab Chrome 桥 auto-open（涉及 UX + Chrome profile 生命周期，进 Phase F wizard scope）
+- Personal Chrome Host Adapter 的扩展安装、helper 配对与会话绑定（涉及 UX + 浏览器权限，进 Phase E/F）；legacy PinchTab auto-open 不再作为默认 wizard 行为
 - token rotation / TTL 管理（Phase B1b 范围）
 - 多 provider 多 tunnel（Phase D 落地时统一改）
 
 **关键约束**（LL from B1c-0）：
 - 不新写独立 launchd plist——复用 `scripts/launchd/` 模板 + INSTALL runbook 模式，operator opt-in
-- 不硬编码 token / agent-key path 到 `pnpm start`——env 或 file lookup，缺 secret fail-closed 打印诊断
-- 环境探测——operator 没配 cloudflared / 没 mint gpt-pro key 时 pnpm start **不报错**（skip supporting services + WARN），不阻塞常规 dev
+- 不硬编码 token / agent-key path 到启动器——env 或 file lookup；显式 `pnpm start:cloud` 缺配置或探针失败时 fail-closed
+- 故障域隔离——`pnpm start` 中 F247 是 optional capability：缺配置时 skip + WARN；supporting service、公网 tunnel、authenticated MCP 或 cloud principal 失败时 cleanup + degraded + WARN，**不得终止本地 frontend/API/Redis**
+- 探针重试只覆盖瞬时故障（network/timeout/408/425/429/5xx），预算有界；401/403 等确定性 auth 错误立即降级或失败，不重试
 
 **B1d lifecycle runbook (PR-C implementation)**：
 
@@ -438,8 +503,13 @@ pnpm start:cloud
 
 # - incomplete cloud setup -> WARN + skip (frontend/API still start)
 
-# - complete cloud setup -> start cloudflared + remote-spike, then health-check public endpoint
+# - complete cloud setup -> start cloudflared + remote-spike, then health-check all cloud boundaries
+
+# - any cloud-only failure -> cleanup + WARN + degraded (frontend/API/Redis still start)
 pnpm start
+
+# Daemon health remains primary; the output also reports live F247 cloud healthy/degraded/disabled.
+pnpm start:status
 
 # Escape hatch for local dev sessions that intentionally do not want cloud services.
 CAT_CAFE_F247_CLOUD_AUTOSTART=0 pnpm start
@@ -455,44 +525,64 @@ Rules:
 - **`cloud:copy-url`** copies the current URL (with token) to clipboard via `pbcopy` without printing the token to stdout. Use this to re-paste into ChatGPT when the connector URL is editable.
 - If the connector URL is not editable and the token has drifted, the recovery path is: mint a new token → write to `~/.cat-cafe/spike-token` → re-create the ChatGPT connector entry with the new URL. There is no legacy-token allowlist in B1d (documented as future/recovery option for Phase B1b).
 
-Launchd opt-in for cloudflared KeepAlive lives in `scripts/launchd/cat-cafe.cloudflared.plist.template`; install/uninstall steps live in `scripts/launchd/INSTALL.md`. Spike server remains process-managed by `pnpm start` / `pnpm start:cloud` for B1d; PinchTab Chrome auto-open is explicitly out of scope for B1d and stays Phase F wizard work.
+Launchd opt-in for cloudflared KeepAlive lives in `scripts/launchd/cat-cafe.cloudflared.plist.template`; install/uninstall steps live in `scripts/launchd/INSTALL.md`. Spike server remains process-managed by `pnpm start` / `pnpm start:cloud` for B1d. Personal Chrome Host Adapter 的安装与配对属于 Phase E/F；legacy PinchTab 只保留显式 opt-in 诊断能力，不进入默认 wizard。
 
 ### Phase D — Console "配置云端猫" 多 provider UI
 
 Phase B-C 后启动。Settings 页面新增 "配置云端猫"，支持选 provider / model / 自动 wire up token + URL。
 
-### Phase E — 插件化迁移 / npm package
+### Phase E — 插件化发行 + Personal Chrome Host Adapter
 
-- Clowder AI Cloud Cat Plugin v1 spec
-- npm package 发布（`@cat-cafe/cloud-cat-connector`）
-- 双向：别人能装到他家 LLM；我们能装别人插件
+个人用户优先。Cloud Cat plugin 不是只发一个 npm package，而是编排三个可独立升级、对用户表现为一条向导的组件：
+
+1. **Clowder AI provider plugin**：注册 `gpt-pro` provider、安装/启动本地 helper、提供健康检查与卸载闭环，并把实现绑定到既有 `IConversationHostAdapter` 窄接口。
+2. **Chrome Web Store extension**：仅申请完成单一目的所需的最小权限（`chatgpt.com` host access、tabs/scripting、Native Messaging）；负责绑定当前 conversation、页面内填入/提交和观察 host message ID。
+3. **Native Messaging helper**：由 Clowder AI plugin 安装到当前用户域，只允许发布版 extension origin；在本地 Clowder AI 与 extension service worker 间传递一次性 delivery ticket、receipt 与健康状态，不保存 ChatGPT Cookie。
+
+“点击安装”定义为**一条引导式安装流**，不是静默安装：plugin 可以自动安装 helper、打开准确的 Chrome Web Store listing 并在扩展启用后自动配对；Chrome 的“添加扩展/权限”确认必须由用户完成。macOS/Windows 社区发行版以 Chrome Web Store 签名包为准，unpacked extension 只用于开发 spike。
+
+**E0 developer install verdict（2026-08-21 zero-focus correction）**：2026-08-20 已真实观察 installed helper/socket、登录态后台 exact-ID delivery、DOM `hostMessageId` 与同-key retry；这些 transport/receipt 证据继续成立。其 target/control gate 协议并非产品终态：2026-08-21 验证可见 automation 执行 `control 8 → target 17 → control 8`。现由目标 conversation 内一次显式“绑定此会话”写入 Host authorization，后续 inspect/health、gate、retry、delivery 均不含 Chrome foreground/window/navigation 控制。缺 binding 诚实返回 `NEEDS_BINDING`，不会自动 foreground target。确定性 state、extension、native-helper、full-seam 与 live-gate 回归已关闭该契约；新的真实 owner-click dogfood 尚未执行，记为 `NOT_OBSERVED`。E0 只证明 Host-owned primitives；下方 E1 单独记录它们进入本地 Console 的产品化范围，签名发行物与完整 thread-route journey 仍不得冒充已关闭。
+
+**E1 product card verdict（2026-08-21）**：本地 Console 已把 E0 primitives 收成 owner-only Developer Preview 产品卡，覆盖 Web Store 发布状态、Host install/repair/uninstall、最多 32 项授权的数量/列表/逐项撤销与 live 状态。卡片不再暴露 unpacked 路径；没有可信 listing 时在 Host mutation 前阻断，有 listing 时一次操作准备 Host 并打开 Chrome 原生确认。Windows 当前未实现，稳定显示 unsupported。尚未关闭的外部边界是公共插件仓 PR 合入、Chrome Web Store 实际 listing/发布权限与首次公开发行；这些不由“发布集成就绪”代偿。
+
+插件发行终态：
+- Clowder AI marketplace 安装 provider plugin
+- 向导完成 extension 安装确认 + helper 配对 + conversation binding
+- 一键 hello-world 同时验证 host append 与 Remote MCP 回写
+- 双向生态仍成立：别人能把 Cloud Cat provider 装进 Clowder AI；未来 provider adapter 继续复用同一 Host Adapter contract
 
 ### Phase F — Plug-and-play cloud cat onboarding (planned, post Phase D/E)
 
-**愿景** (operator raise 2026-06-29)：Phase A-D 全套实施完后，只有 dogfood 用户能用 gpt-pro —
-他们手动配 ChatGPT Custom Instructions、维护 cookies、装 PinchTab、理解 sidebar 多 chat 模式。
+**愿景** (operator raise 2026-06-29；2026-08-12 personal-first 收敛)：Phase A-D 全套实施完后，只有 dogfood 用户能用 gpt-pro —
+他们手动配 ChatGPT Custom Instructions、维护 cookies、装 PinchTab、理解 sidebar 多 chat 模式；而 Scheduled Tasks 即使可用也无法满足即时 `@`。
 **外部用户无法自助** = 护城河 + 复用面双输。
 
 Phase F 把整个 cloud cat onboarding 收成一键体验，让任何装 cat-cafe 的人能自助开通
-gpt-pro（以及未来 claude-cloud / gemini-cloud 等其他 cloud cats），不需要读 spec / 改 config / 学 PinchTab。
+gpt-pro（以及未来 claude-cloud / gemini-cloud 等其他 cloud cats），不需要读 spec / 改 config / 学 PinchTab。个人版默认走 user-confirmed Chrome Host Adapter；企业 Workspace Agent adapter 明确不作为当前 phase 前置依赖。
 
 **关键 AC（占位，立项时细化）**：
 
-- [ ] **AC-F-1**: Clowder AI Console 提供 "Add Cloud Cat" wizard — 列出可装的 cloud cats (gpt-pro / future) + 安装入口
-- [ ] **AC-F-2**: wizard step-by-step 引导：
-  1. confirm GitHub OAuth / Chrome profile 选择
-  2. PinchTab profile 自动起 + ChatGPT login 引导
-  3. Custom Instructions 自动注入（cat-cafe 安装时 generate persona 模板）
-  4. hello-world test message 自动验证 setup OK
-- [ ] **AC-F-3**: 安装失败 fallback runbook（manual config 指引 + 诊断工具）
-- [ ] **AC-F-4**: 走通后 gpt-pro plugin 上 cat-cafe marketplace（公开/受邀，operator 拍）
+- [ ] AC-F1: Clowder AI Console 提供 "Add Cloud Cat" wizard — 列出可装的 cloud cats (gpt-pro / future) + 安装入口
+- [ ] AC-F2: wizard 安装 provider plugin 与 Native Messaging helper，打开准确 Chrome Web Store listing，并在用户确认扩展权限后自动完成一次性配对
+- [x] AC-F3: 用户可在多个 ChatGPT conversation 点击“授权此会话”；authorization owner-scoped、可查看、可逐项撤销、卸载时全部清理，thread→conversation 路由仍一对一且投递前 exact-ID 校验
+- [ ] AC-F4: `@gpt-pro` 生成转发富文本，展示目标、实际唤醒胶囊与“发送并唤醒 / 复制并打开 / 取消”；未获点击授权时不创建浏览器 delivery
+- [ ] AC-F5: extension 在不聚焦窗口、不读 Cookie、不调用私有 API 的条件下完成投递；只有真实 `hostMessageId` 才进入 `sent`
+- [ ] AC-F6: 相同 source message ID 重试不产生重复 ChatGPT 消息；delivery 状态完整持久化为 `staged → approved → extension_received → inserted → submitted → host_observed → cloud_ack`
+- [ ] AC-F7: 自动提交失败时诚实降级为“已填入待发送”或“已复制并打开”，并给出针对 tab / 登录态 / DOM / helper / binding 的诊断，不自动启用 legacy PinchTab
+- [ ] AC-F8: hello-world nonce 从 Clowder AI 富卡授权开始，经 ChatGPT conversation 唤醒 gpt-pro，再由 Remote MCP 真回写原 thread；两端消息 ID 与 trace nonce 均可核验
+- [ ] AC-F9: 走通后 provider plugin 上 Clowder AI marketplace、extension 上 Chrome Web Store（公开/受邀由 operator 拍板）
 
 **前置依赖**：
-- Phase B/C/D 全部 ship + dogfood 走通至少 1 周（活体验证 cloud bridge 稳定性）
+- Phase B/C/D 已有能力可复用；个人版 Host Adapter spike 先过 message-ID / inactive-tab / idempotency 三道 gate
 - Console "配置云端猫" UI（Phase D scope）→ wizard 寄生其上
-- Phase E 插件化迁移可以并行（plugin runtime + plug-and-play UX 两个 layer）
+- Phase E 插件化发行与 Phase F onboarding UX 可并行；企业 Workspace Agent adapter 不阻塞个人版
 
-**Phase F 触发**：operator 2026-06-29 「我们走通后做给外人用」directive。预计 Phase D 完成后立项。
+**Phase F 触发**：operator 2026-06-29 「我们走通后做给外人用」directive；2026-08-12 明确个人版优先，用 Chrome extension + Native Messaging helper 把实时召唤收成插件安装闭环。
+
+### Tips Contribution（F244）
+
+- 插件页在用户首次安装 `gpt-pro` provider 时提示：“需要 Chrome 扩展的一次安装确认；完成后在目标 ChatGPT conversation 点击绑定。”sourceRef 指向本 spec Phase E/F。
+- `@gpt-pro` 无可用 binding 时提示：“先绑定 conversation，或选择复制并打开。”不得只显示内部 `HOST_APPEND_UNAVAILABLE`。
 
 ## Acceptance Criteria
 
@@ -550,7 +640,7 @@ gpt-pro（以及未来 claude-cloud / gemini-cloud 等其他 cloud cats），不
 ### Phase B1c AC (spec v2 — 立项后实施时细化)
 
 - [x] **AC-B1c-1** (`edd8a28ed` / PR #2627): cat-cafe API thread metadata 加 `cloudCatBindings: {[catId]: chatUrl}` field（持久化 + owner-only `/api/threads/:id/cloud-bindings` GET/PATCH endpoint，**不**进默认 thread context export 路径）。**gpt52 4 轮 review**：R1 race + contract / R2 auth bypass on system threads / R3 header literal `system` spoof / R4 APPROVE
-- [x] **AC-B1c-2** (`8f09e2f16` / PR #2632, library + call-site only — 真 runtime wiring 在 PR #2634): `cloud-invoke-bridge` service — `invokeSingleCat` 看 cloud provider 时调 bridge fire-and-forget。**gpt52 4 轮 review**：R1 dead code + wrong-layer fields / R2 non-intent overflow / R3 envelope contract / R4 APPROVE
+- [x] **AC-B1c-2** (`8f09e2f16` / PR #2632, library + call-site only — 真 runtime wiring 在 PR #2634；2026-08-12 terminal-contract repair): `cloud-invoke-bridge` service — `invokeSingleCat` 对 cloud provider 跳过 provider CLI，但保留 durable child；只等待有界 transport outcome，不等待云端猫回复。**gpt52 4 轮 review**：R1 dead code + wrong-layer fields / R2 non-intent overflow / R3 envelope contract / R4 APPROVE
 - [x] **AC-B1c-3** (`aa6d3f2f0` / PR #2634, by opus-46 同族 handoff): bridge 用 PinchTab 完成投递流程（query binding / eval-based navigate / inject payload / submit / capture URL via `window.location.href` eval / write binding）。CDP raw WebSocket port 9870（`145beb996` / #2640 hotfix 注册 PINCHTAB_CDP_PORT env + 补 doc User Journey）
 - [x] **AC-B1c-3a** (gate, pre-impl, spike PASS 2026-06-26): PinchTab 实测 spike — verify 当前 ChatGPT input/send selector + eval-based 导航 Clash TUN safe + URL capture 可靠。**spike PASS verdict in `feedback_pinchtab_chatgpt_spike_findings.md`**
 - [x] **AC-B1c-4** (`8f09e2f16` / PR #2632): 失败 fallback notification 投到本地 thread (`system_info` rich block) — chrome down / not logged in / selector fail。Wire-up 完整化在 PR #2634 (composition root → messageStore.append + Hub broadcast)
@@ -568,13 +658,14 @@ gpt-pro（以及未来 claude-cloud / gemini-cloud 等其他 cloud cats），不
 
 **触发**：2026-07-06 03:30 PT dogfood friction —— operator 重启 runtime 后 F247 supporting services 全部离线，`pnpm start` 未覆盖，双向链路同时断（reverse: cloudflared+spike / forward: PinchTab）。
 
-- [x] **AC-B1d-1**: `pnpm start` (或 `pnpm start:cloud` 独立命令) 集成 F247 supporting services 阶段——按顺序拉起：cloudflared daemon → spike server (3098) → 健康探针 verify 公网 `mcp.clowder-ai.com` HTTP 200。**Fail-closed**：任一环节起不来打印诊断（缺 secret / 端口占用 / config 缺失）并退出，不留半开状态。
+- [x] **AC-B1d-1**: `pnpm start` 与 `pnpm start:cloud` 集成 F247 supporting services 阶段——按顺序拉起：cloudflared daemon → spike server (3098) → 健康探针 verify 公网 `mcp.clowder-ai.com` HTTP 200。**故障域契约**：显式 `pnpm start:cloud` fail-closed；常规 `pnpm start` 把 F247 视为 optional capability，任一 cloud-only 失败都 cleanup + WARN + degraded，本地 frontend/API/Redis 继续运行，不留半开状态。启动器还必须隔离 helper 进程级非零退出，防止 crash/依赖损坏越过 helper 内部契约。
 - [x] **AC-B1d-2**: launchd `cloudflared` KeepAlive plist template 进 `scripts/launchd/`（复用 B1c-0 `cat-cafe.mcp-cleanup.plist.template` 模式：模板进 git，`launchctl load` 由 operator 手动执行，不自动 install）。plist 引用 `~/.cloudflared/config.yml` + credentials，重启后自愈。
 - [x] **AC-B1d-3**: `pnpm cloud:status` / `pnpm cloud:doctor` 命令——一次输出 3 层状态：(a) cloudflared daemon 进程 + tunnel connection state (`cloudflared tunnel info`) (b) spike server 3098 LISTEN + `/health` 200 (c) 公网 `mcp.clowder-ai.com` HTTP status (250ms timeout)；异常项打印**具体命令**帮 operator 手动恢复（不 auto-fix，保 operator opt-in 原则）。
 - [x] **AC-B1d-4**: 环境探测——operator 未 mint `gpt-pro` agent-key 或 `~/.cloudflared/` 未配 named tunnel 时 `pnpm start` **skip cloud stage + WARN**，不 fail，不阻塞常规 dev（cat-cafe / 前端 3003/3004 照常起）。skip 逻辑必须 test fixture 覆盖 (无 agent-key 文件 / 无 CF config / 都无) 三态。
 - [x] **AC-B1d-5**: `docs/SOP.md` 或 `docs/features/F247` 内加"F247 lifecycle runbook"——列出 3 项 supporting service 的手动起 / 停 / 状态命令 + 故障排查树（PinchTab 断链 → Chrome profile 检查 / cloudflared 断 → journalctl / spike 断 → dist 是否 build）。
 - [ ] **AC-B1d-6** (dogfood verify)：operator 或 sonnet 在 alpha 环境跑一次 "cold restart" 剧本——`pnpm stop` → 重启 mac → `pnpm start` → 验证公网 `mcp.clowder-ai.com` 200 + 云端Maine Coon `cat_cafe_get_thread_context` 一次成功 + 本地 `@gpt-pro` forward 一次触达 chat。
 - [x] **AC-B1d-7** (token contract followup — 2026-07-08 dogfood friction)：URL-token persistent contract 防回归。**触发**：ChatGPT connector URL 不可编辑 + 本地 token 被改 → 云端猫永久 401，`/health` 绿灯掩盖。**交付**：(a) `pnpm cloud:doctor` 加 authenticated MCP initialize probe（POST `/mcp?token=...`），401 时报 "connector token mismatch likely"；(b) `pnpm cloud:copy-url` 命令复制 URL（含 token）到剪贴板，stdout 不打印 raw token；(c) 测试覆盖 15 项（copy-url 行为 + authenticated probe + 不打印 token + 不覆盖已有 token 文件防回归）；(d) B1d docs 写清 URL-token 是 persistent contract。
+- [x] **AC-B1d-8** (optional failure-domain isolation — 2026-08-10 dogfood incident)：Cloudflare HTTP 530 或 API `auth-probe` startup timeout 不得触发 `start-dev.sh` EXIT cleanup 杀掉本地 runtime。helper 内部 optional failure 返回 degraded success，启动器对 helper 进程级失败再做一次 ownership-safe cleanup + isolation；authenticated MCP / gpt-pro principal 的瞬时失败有界重试，401/403 不重试；`pnpm start:status` 显示 F247 live summary，其独立网络探针并发执行且跳过仅供详细诊断的 tunnel-info，失败路径由最慢的 2 秒探针限定。严格 `pnpm start:cloud` 行为不变。
 
 **B1d 前置**：Phase B1c 13/13 done（已 ✅ 2026-06-29）；spike server 已在 `packages/mcp-server/dist/remote-spike.js` 稳定运行数周（B1a-B1c）。
 
@@ -582,14 +673,14 @@ gpt-pro（以及未来 claude-cloud / gemini-cloud 等其他 cloud cats），不
 
 ### Phase F AC (planned, post Phase D — plug-and-play onboarding)
 
-详见 Phase F 段（What 章）。AC 列表（占位，立项时细化）：
+详见 Phase F 段（What 章）。本轮先冻结三项 spike gate，全部通过后才把 adapter 标为可自动提交：
 
-- [ ] **AC-F-1**: Clowder AI Console "Add Cloud Cat" wizard 入口
-- [ ] **AC-F-2**: wizard step-by-step：OAuth → Chrome profile / PinchTab 自动起 → Custom Instructions 自动注入 → hello-world test
-- [ ] **AC-F-3**: 安装失败 fallback runbook + 诊断工具
-- [ ] **AC-F-4**: gpt-pro plugin 上 cat-cafe marketplace（公开/受邀，operator 拍）
+- [x] AC-FS1: You 日常 Chrome 的登录态后台 `chatgpt.com/c/<id>` 可完成填入与提交，全程不改变 control tab；隔离 origin fixture 继续提供确定性回归
+- [x] AC-FS2: 2026-08-20 登录态真实 ChatGPT DOM 返回真实 user-message ID；missing-ID fixture 继续证明观察不到时不得返回 `hostMessageId`
+- [x] AC-FS3: 同一 `(conversationId, sourceMessageId)` 在 helper 并发/重启 ledger 与 Chrome fixture 重试中得到同一 host receipt，不产生第二次 dispatch/send
+- [x] AC-FS4: 用户一次显式绑定后 Host 持久复用 exact conversation authorization；后续 health/gate/delivery 无 foreground mutation surface，未绑定以 typed `NEEDS_BINDING` 零发送终止（2026-08-21 deterministic/full-seam；新 owner-click dogfood `NOT_OBSERVED`）
 
-### Phase D / E acceptance criteria 待立项后细化
+Phase F 产品 AC-F1..F9 见上节；Phase D 其余 acceptance criteria 待实施计划细化。
 
 ## Risk
 
@@ -602,11 +693,17 @@ gpt-pro（以及未来 claude-cloud / gemini-cloud 等其他 cloud cats），不
 | 隐私（云端 LLM 看到 cat-cafe memory）| toolset 收窄（B1 复用 fable phase0 10 项白名单）+ audit log + redact 模块过滤 secret patterns |
 | ChatGPT 端 memory + Custom Instructions 容量限制让短 L0 灌不全 | 接受 "核心 L0 注入 + 补丁靠对话学习"，docs/connector README 作为补全真相源 |
 | Tasks 不能调 Connector → 召唤需用户主动 | B1 user-driven 起步；future pending polling 是独立 spec 不是 B1 blocker |
+| Chrome extension DOM selector 漂移或拿不到真实 message ID | versioned DOM adapter + live smoke；无真实 host receipt 即 fail closed，降级填入/复制，不伪报发送 |
+| 扩展权限过宽或暴露 ChatGPT 会话内容 | 权限限 `chatgpt.com` + Native Messaging；不申请 cookies/debugger/all-sites；富卡展示实际发送内容并要求用户显式授权 |
+| 普通应用无法静默安装个人 Chrome 扩展 | 一条向导自动安装 helper、打开官方 Web Store listing；保留浏览器原生“添加扩展/权限”确认，不绕过用户 agency |
+| extension/service worker 或 helper 断连导致丢单/重单 | delivery ticket + sourceMessageId 幂等 ledger；所有状态持久化，可重连续传，未观察 host receipt 不进入 sent |
 | production Redis (sacred) mint 操作失误 | operator 明确 OK 才 execute；dry-run report 给operator过目 |
 | **roster 注册被误以为是 runtime cat 注册（R3 P2-4, R8 重新分类）**| §2.1 明示双路径：roster = mint allowlist；runtime catRegistry = `POST /api/cats` 热加载（B1a 已用）。`breeds[].variants[]` 是 design-time UI default 不参与 runtime |
 | **startup polling 偷换 search_evidence 伪装 pending（R4）**| §2.5 明示禁止；future polling 必须成对 `get_pending_mentions + ack_mentions` 引入 |
 
 ## Key Decisions
+
+> 2026-08-12：KD-23 仅替换 KD-22 中“Chrome profile / PinchTab 自动起”的 transport 选择；KD-22 的 plug-and-play 产品愿景继续有效。
 
 | # | 决策 | 理由 | 日期 |
 |---|---|---|---|
@@ -631,6 +728,7 @@ gpt-pro（以及未来 claude-cloud / gemini-cloud 等其他 cloud cats），不
 | **KD-19 (B1c-0 MCP wrapper lifecycle hygiene)** | **不写新 kill script，扩展已测 cleanup-stale-dev-processes.mjs**：browser-automation MCP wrapper (agent-browser-mcp / @playwright/mcp / pinchtab-mcp) 不退累积 zombie；LL-056 + feedback_agent_browser_zombie 5 次 reoccurrence。codex/Maine Coon R0 verdict 3 硬约束：(1) 只扩 `pnpm process:cleanup` 已测入口不写独立 shell；(2) launchd plist template 进 git 但不自动 install (持久 OS automation 需 operator opt-in)；(3) 匹配规则极窄 (pinchtab server/bridge 永不杀，generic node/npm/playwright 不杀)。**升级 MCP 不修**（已 latest 版，LL-056 早写过 wrapper lifecycle 是 design 限制）。**B1c 前置 gate**：B1c-0 不过 → 不实施 B1c（不然让operator手动清违反"自相矛盾"原则） | 触发：operator 提议"升级 mcp + 定时任务清"。codex 调查发现已有 `pnpm process:doctor / cleanup` + LL-056 教训；47 之前提议的"写新 kill script + launchd plist"被否决（绕开已有护栏）。codex R0 3 硬约束接受 + 47 implementation；real-system dry-run verify pass | 2026-06-25 |
 | **KD-20 (B1c thread↔chat binding, operator R1 pick O1 + codex R1+R2 hardening)** | **本地 cat-cafe thread 跟 ChatGPT chat conversation 做 1:1 lazy binding**：thread metadata 新增 `cloudCatBindings: {[catId]: chatUrl}` 字段，**local-only operational sidecar**（不进默认 thread context export / memory index / cross-post）；首次 @ cloud cat → bridge 在 ChatGPT 端开新 chat → capture URL via `pinchtab_eval(window.location.href)` → strict regex validation → 写 metadata；后续 @ 同 thread → bridge navigate to bound chat → 投通知；stale binding (chat 被删) → bridge navigate fail → auto-reopen + update metadata；**`(threadId, catId)` singleflight lock + lock-first ordering**：bridge 第一动作 acquire lock，**lock 内** re-read metadata 决定 branch，second concurrent invocation 在 lock 内看到 first 写入的 binding → navigate to bound（不开第二个）；**eval safety**：所有 `pinchtab_eval` 输入字符串走 `JSON.stringify` (payload / boundUrl / future interpolation 全适用)；**URL strict validation** `^https://chatgpt\.com/c/[a-zA-Z0-9-]+/?$`，写前 + 读后 navigate 前各 validate 一次（防 capture corruption + db-write 注入）。**为什么选 O1 不是 single shared chat (O2) / hybrid (O3) / 不绑 (O4)**：O2 sidebar 看似干净但Maine Coon Pro context 跨 thread 混杂信噪比差；O3 引入 feature_id 复杂度但 thread 不一定有 feature；O4 时间一久 sidebar 仍乱、Maine Coon Pro 跨 chat 分裂；O1 每 chat 专注一 thread，Maine Coon Pro context 隔离 + sidebar 数量 ≈ active threads + lazy 不预绑 + auto-self-heal | 触发：operator 2026-06-25 23:46 PT catch v1 spec 漏 chat binding；codex R1 23:55 PT 加 privacy P1-B + singleflight P2-B；codex R2 00:01 PT 加 eval JSON.stringify safety P1 + lock-first ordering P2 + URL regex validation。47 给 4 options + operator pick O1 + codex 双轮 hardening | 2026-06-25 (v2 codex R1+R2 hardened) |
 | **KD-22 (Plug-and-play cloud cat onboarding 愿景, operator 2026-06-29 raise — Phase F 立项前置)** | **Phase A-D 全套实施完后仍只有 dogfood 用户能用 gpt-pro**：他们手动配 ChatGPT Custom Instructions / 维护 cookies / 装 PinchTab / 理解 sidebar 多 chat 模式。外部用户无法自助 = 护城河 + 复用面双输。**Phase F 立项**：cat-cafe Console 提供 "Add Cloud Cat" wizard，把整个 onboarding (OAuth → Chrome profile / PinchTab 自动起 → Custom Instructions 自动注入 → hello-world test) 收成一键体验。前置依赖：B/C/D ship + dogfood 走通 ≥ 1 周（活体验证 bridge 稳定性）+ Phase D Console UI（wizard 寄生其上）。**为啥分独立 Phase 不进 B-E**：Plug-and-play 是 onboarding UX scope，不是 transport / runtime / 插件化 scope；混进 B-E 会让现有 phase scope 蔓延。Phase E 插件化迁移可并行（plugin runtime + plug-and-play UX 两 layer 独立）。**为啥不放 BACKLOG 而进 F247**：F247 是 cloud cat **family** spec，onboarding 是 family 的一等公民（不是单 gpt-pro 的 ops 杂事） | 触发：operator 2026-06-28 21:48 PT「我们走通后做给外人用，得做成一键安装」directive；47 愿景守护 audit 时 surface 出 cat-template.json 没 gpt-pro entry (fresh install gap)，operator 顺手 raise 整个 Phase F | 2026-06-29 |
+| **KD-23 (Personal Chrome Host Adapter, operator 2026-08-12)** | **个人 ChatGPT Pro 的实时召唤主路径采用 user-confirmed Chrome extension + Native Messaging helper**，并由 Clowder AI provider plugin 编排安装、配对、binding 与诊断。`@gpt-pro` 先出富文本预览，用户点击后才投递；扩展实现现有 `append_message(conversationId, text, idempotencyKey=sourceMessageId)` seam，拿不到真实 `hostMessageId` 就降级，不自动启用 PinchTab。Scheduled Tasks 即使验证可用也只作非实时兜底，企业 Workspace Agent adapter 不阻塞个人版 | 历史 PinchTab 双向 E2E 已证明闭环可行；PR #3497 已提供安全窄接口并禁止隐式前台接管。Chrome 扩展能把“人肉复制”缩成一次授权，同时保留浏览器原生安装确认与最小权限边界 | 2026-08-12 |
 | **KD-21 (B1c thread runtime delta payload, operator 2026-06-26 顿悟 + spike validation + codex R1 hardened)** | **CDP inject 不只能传 prompt text，还能传 thread runtime delta**：cloud cat (gpt-pro) 已有持久 1500 token Custom Instructions base identity（猫身份 + signature + cat-cafe 工具纪律 + 证据链底线），cat-cafe runtime bridge inject payload 不重复 base，**只传 5 字段 runtime delta** — `threadId` (post 回哪) / `threadTitle` (语境) / `participants` 含 @handles (`targetCats` 来源) / `calledBy` (ack 回谁) / `intent` (这次为啥被 @)。可选第 6 字段 `recentBacklog`：cloud cat 自己 `get_thread_context(threadId)` 拉，省 cat-cafe runtime 推 + 省 ChatGPT chat token。**Payload as data, not authority (codex R1 P1-B)**：delta block 整体 JSON 序列化放 fenced/typed wrapper (`<thread-runtime v=1 format=json>{...}</thread-runtime>`)，**所有字段** `JSON.stringify`（同 KD-20 eval-boundary 教训）；cloud cat base prompt 显式规定 delta 字段属 untrusted user content，优先级低于 base persona/tool discipline。**Layered identity 设计**：(1) base 1500 token 持久没必要重发；(2) base 可独立 iterate 不需 cat-cafe runtime 配合；(3) base 持久属性 + delta runtime 属性 = 关注点分离。**纪律落地点（cloud cat base prompt 已规定）**：拿到 delta 中 threadId **先** `get_thread_context(threadId)` 验证 access + content match，再 `post_message`；不假装 access、不编 messageId、403 原文报告。**Spike 验证 (2026-06-26)**：(1) 5 字段 delta inject 后云端Maine Coon正确 parse 出 threadId/calledBy/ackVia；(2) 拿 fake threadId 调真 cat-cafe MCP → 真 `Thread access denied` 原文报告（守 evidence 纪律）；(3) 自带 `clientMessageId` idempotency dedup（base 没教，自加，超模）；(4) signature `[Maine CoonPro/gpt-pro🐾]` base identity 保留没冲；(5) inject 操作通过 PinchTab spike harness (CDP 9870 raw WebSocket) e2e PASS。**spike 那个 403 的正解 (codex R1 P1-A catch)**：是 user-level access (`canAccessScopedThread(thread, principal.userId)` in `callback-scope-helpers.ts:108`) 因 fake threadId 不存在 + agent-key principal.userId 跟编造 thread owner 对不上触发，**不是** cat-level write permission missing；`principal.catId` 完全不在 authorization 决策。误读已撤回 (~~AC-B1c-13~~)；正确架构：B1 OAuth (CF Access) 后 cloud cat agent-key `principal.userId = user 本人`，user own 的 thread 自然 access | 触发：operator 2026-06-25 23:21 PT 看 PinchTab inject 顿悟"不只能 inject prompt"；23:46 PT 给Ragdoll看现有 1500 token Custom Instructions 提醒 base 已存在，只需 thread delta；47 写 5 字段 delta 设计 + spike 实证；codex R1 catch P1-A (ACL 误读) + P1-B (payload boundary 缺序列化纪律)，47 撤回 AC-B1c-13 + JSON.stringify hardening AC-B1c-12。47 一开始想 over-engineer 注入 full L0 → operator 一句话点醒"只需要增量"；spec 写 ACL handshake → codex 一句话点醒"那不是 cat ACL" | 2026-06-26 (codex R1 hardened) |
 
 ## Phase 1.5 实测 Unknown 列表

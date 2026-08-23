@@ -1,14 +1,18 @@
 'use client';
 
 import { usePathname, useSearchParams } from 'next/navigation';
-import { Suspense, useLayoutEffect, useSyncExternalStore } from 'react';
+import { Suspense, useEffect, useLayoutEffect, useSyncExternalStore } from 'react';
 import { useIsDesktop } from '@/hooks/useIsDesktop';
 import { useWorkspaceNavigate } from '@/hooks/useWorkspaceNavigate';
+import { destroyPlaybackRuntime, getPlaybackManager } from '@/services/playbackRuntime';
 import { CallbackAuthSnapshotMount } from '@/stores/callbackAuthStore';
+import { useChatStore } from '@/stores/chatStore';
 import { initSidebarWidth, useSidebarStore } from '@/stores/sidebarStore';
 import { ActivityBar } from './ActivityBar';
 import { ConciergeHost } from './concierge/ConciergeHost';
 import { DesktopUpdatePrompt } from './DesktopUpdatePrompt';
+import { ListenModePlayer } from './listen-mode/ListenModePlayer';
+import { TheaterReplayHost } from './story-player/TheaterReplayHost';
 import { ThreadSidebar } from './ThreadSidebar';
 import {
   getBrowserThreadRoutePathname,
@@ -27,6 +31,11 @@ interface AppShellProps {
 }
 
 export function AppShell({ children }: AppShellProps) {
+  useEffect(() => {
+    getPlaybackManager();
+    return destroyPlaybackRuntime;
+  }, []);
+
   return (
     <>
       <Suspense fallback={children}>
@@ -44,6 +53,8 @@ function AppShellContent({ children }: AppShellProps) {
   const isExport = searchParams.get('export') === 'true';
   const { isOpen, width, close, handleResize, resetWidth } = useSidebarStore();
   const isDesktop = useIsDesktop();
+  const rightPanelMode = useChatStore((state) => state.rightPanelMode);
+  const workspaceMode = useChatStore((state) => state.workspaceMode);
   const routeThreadId = getThreadIdFromPathname(livePathname);
   const isChatRoute = livePathname === '/' || livePathname.startsWith('/thread/');
   const isChromeless = CHROMELESS_ROUTES.some((route) => pathname.startsWith(route));
@@ -62,6 +73,7 @@ function AppShellContent({ children }: AppShellProps) {
   }
 
   const showSidebar = isOpen && isDesktop && !SIDEBAR_HIDDEN_ROUTES.some((r) => pathname.startsWith(r));
+  const workspaceVisible = isChatRoute && rightPanelMode === 'workspace' && (isDesktop || workspaceMode !== 'approval');
 
   return (
     <div className="console-shell flex h-screen h-dvh overflow-hidden">
@@ -75,6 +87,8 @@ function AppShellContent({ children }: AppShellProps) {
           when navigating to settings without visiting chat first. Returns null;
           30s poll re-render is confined to this leaf. */}
       <CallbackAuthSnapshotMount />
+      {/* F252/F299: replay host is independent of the conditionally mounted sidebar. */}
+      <TheaterReplayHost />
       {showSidebar && (
         <div className="flex items-stretch flex-shrink-0">
           <div style={{ width }} className="flex-shrink-0">
@@ -91,6 +105,7 @@ function AppShellContent({ children }: AppShellProps) {
         </div>
       )}
       <div className="flex-1 min-w-0 overflow-y-auto">{children}</div>
+      <ListenModePlayer variant="mini" workspaceVisible={workspaceVisible} />
       {/* F226: presentation surface floating window — mounted at AppShell root (outside route
           children) so the float survives both workspace mode-tab switches AND full-page route
           changes (/memory, /settings, /mission-hub). KD-1. */}

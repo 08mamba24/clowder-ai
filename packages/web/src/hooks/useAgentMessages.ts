@@ -1,6 +1,11 @@
 'use client';
 
-import type { CliDiagnostics, FreshnessSupplementProjection, ReplyPreview } from '@cat-cafe/shared';
+import type {
+  A2ARoutingProjection,
+  CliDiagnostics,
+  FreshnessSupplementProjection,
+  ReplyPreview,
+} from '@cat-cafe/shared';
 import { useCallback, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { parseFreshnessCarrierCapability } from '@/components/message-disposition-presentation';
@@ -31,6 +36,11 @@ import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
 import { extractRecallMetaDetail, toolResultDetail } from '@/utils/toolPreview';
 import {
+  type InvocationTerminalPhase,
+  reconcileTimedOutInvocations,
+  terminalizeInvocationReconciliation,
+} from './invocation-timeout-reconciliation';
+import {
   clearReplacedInvocationsForThread,
   isInvocationReplaced,
   markReplacedInvocation,
@@ -40,7 +50,7 @@ import {
   formatAgyProgressDetail,
   formatSessionSealRequested,
   formatVisibleSystemInfo,
-  isInternalSystemInfoTelemetry,
+  isSystemInfoProtocolPayload,
 } from './system-info-visible';
 import {
   type ActiveSeedSource,
@@ -67,6 +77,7 @@ import {
   type TerminalDecision,
 } from './thread-runtime-ledger';
 import { getThreadRuntimeLedger } from './thread-runtime-singleton';
+import type { ExplicitStopIntent } from './useSocket-cancel-provenance';
 
 // F173 Phase E (KD-1 handler unification): handleAgentMessage is the single
 // socket dispatch entry. Background event business logic is now module-local in
@@ -293,12 +304,14 @@ interface AgentMsg {
   timestamp?: number;
   /** Machine-readable A2A target cat for handoff events. */
   targetCatId?: string;
+  /** F086/F216: structured serial-vs-parallel scheduling mode for handoff events. */
+  routing?: A2ARoutingProjection;
   /** F67: Whether this message @mentions the co-creator */
   mentionsUser?: boolean;
   /** F52: Cross-thread origin metadata */
   extra?: {
     crossPost?: { sourceThreadId: string; sourceInvocationId?: string };
-    a2aRouting?: { fromCatId?: string; targetCatId?: string; invocationId?: string };
+    a2aRouting?: { fromCatId?: string; targetCatId?: string; invocationId?: string; routing?: A2ARoutingProjection };
     /** #814: True when message originated from an explicit post_message callback */
     isExplicitPost?: boolean;
     /** F098-C1: Explicit target cats from post_message (direction pills) */
@@ -539,6 +552,8 @@ export interface BackgroundAgentMessage {
   invocationId?: string;
   /** Machine-readable A2A target cat for handoff events. */
   targetCatId?: string;
+  /** F086/F216: structured serial-vs-parallel scheduling mode for handoff events. */
+  routing?: A2ARoutingProjection;
   /** F194 Phase Z3 (砚砚 R P1-1): per-cat-turn invocation id for bubble identity stable key
    *  (prevents same-parent multi-turn-same-cat bubble merge). Backend `messages.ts` broadcastPayload
    *  sets this from inner invokeSingleCat invocation_created event. Frontend writes to
@@ -1192,6 +1207,70 @@ function findFreshnessSourceBubbleId(
   return undefined;
 }
 
+function projectProviderRecoveryMessage(
+  parsed: Record<string, unknown>,
+  context: {
+    catId: string;
+    invocationId?: string;
+    turnInvocationId?: string;
+    timestamp?: number;
+  },
+): ChatMessage | null {
+  if (parsed.type !== 'provider_recovery') return null;
+  if (parsed.phase !== 'reconnecting' && parsed.phase !== 'recovered' && parsed.phase !== 'failed') return null;
+
+  const provider = typeof parsed.provider === 'string' ? parsed.provider : 'provider';
+  const invocationId =
+    typeof parsed.invocationId === 'string' ? parsed.invocationId : (context.turnInvocationId ?? context.invocationId);
+  const attempt = typeof parsed.attempt === 'number' ? parsed.attempt : undefined;
+  const attempts = Array.isArray(parsed.attempts)
+    ? parsed.attempts.filter((item): item is string => typeof item === 'string')
+    : typeof parsed.message === 'string'
+      ? [parsed.message]
+      : [];
+  const evidence = typeof parsed.evidence === 'string' ? parsed.evidence : undefined;
+  const timestamp = context.timestamp ?? Date.now();
+  const identity = invocationId ?? 'legacy';
+  const content =
+    parsed.phase === 'reconnecting'
+      ? `Reconnecting to ${provider}${attempt !== undefined ? ` (attempt ${attempt})` : ''}…`
+      : parsed.phase === 'recovered'
+        ? 'Connection recovered.'
+        : 'Reconnect failed.';
+
+  return {
+    id: `provider-recovery:${context.catId}:${identity}`,
+    type: 'system',
+    variant: parsed.phase === 'failed' ? 'error' : 'info',
+    catId: context.catId,
+    content,
+    timestamp,
+    extra: {
+      providerRecovery: {
+        v: 1,
+        provider,
+        phase: parsed.phase,
+        ...(invocationId ? { invocationId } : {}),
+        ...(context.invocationId ? { parentInvocationId: context.invocationId } : {}),
+        ...(attempt !== undefined ? { attempt } : {}),
+        attempts,
+        ...(evidence ? { evidence } : {}),
+        updatedAt: timestamp,
+      },
+    },
+  };
+}
+
+function patchForProjectedSystemMessage(message: ChatMessage): ChatMessagePatch {
+  return {
+    variant: message.variant,
+    catId: message.catId,
+    content: message.content,
+    timestamp: message.timestamp,
+    extra: message.extra,
+  };
+}
+
 export function consumeBackgroundSystemInfo(
   msg: BackgroundAgentMessage,
   existingRef: BackgroundStreamRef | undefined,
@@ -1201,11 +1280,33 @@ export function consumeBackgroundSystemInfo(
   let sysVariant: 'info' | 'a2a_followup' = 'info';
   let consumed = false;
   let systemInfo: SystemInfoProjection | undefined;
+  let protocolPayload = false;
 
   try {
     const parsed = JSON.parse(sysContent);
-    const visible = formatVisibleSystemInfo(parsed, options.resolveCatName, msg.catId);
-    if (visible) {
+    protocolPayload = isSystemInfoProtocolPayload(parsed);
+    const providerRecovery = projectProviderRecoveryMessage(parsed, {
+      catId: msg.catId,
+      invocationId: msg.invocationId,
+      turnInvocationId: msg.turnInvocationId,
+      timestamp: msg.timestamp,
+    });
+    const visible = providerRecovery ? null : formatVisibleSystemInfo(parsed, options.resolveCatName, msg.catId);
+    if (providerRecovery) {
+      const exists = options.store
+        .getThreadState(msg.threadId)
+        .messages.some((message) => message.id === providerRecovery.id);
+      if (exists) {
+        options.store.patchThreadMessage(
+          msg.threadId,
+          providerRecovery.id,
+          patchForProjectedSystemMessage(providerRecovery),
+        );
+      } else {
+        options.store.addMessageToThread(msg.threadId, providerRecovery);
+      }
+      consumed = true;
+    } else if (visible) {
       sysContent = visible.content;
       sysVariant = visible.variant;
       systemInfo = retainSystemInfo(parsed, msg.catId);
@@ -1360,9 +1461,11 @@ export function consumeBackgroundSystemInfo(
       }
       consumed = true;
     } else if (parsed?.type === 'invocation_usage') {
-      options.store.setThreadCatInvocation(msg.threadId, msg.catId, {
-        usage: parsed.usage,
-      });
+      // Protocol telemetry is never user-facing. Mark it consumed before projection so
+      // a synchronous store/subscriber failure cannot reclassify valid JSON as a blue
+      // system bubble. Project the message footer first because it is the user-visible
+      // source of truth; the cat-level snapshot is secondary status-panel telemetry.
+      consumed = true;
       if (existingRef?.id) {
         // F230: write model/provider FIRST so setThreadMessageMetadata creates the
         // metadata object when absent (PTY text events carry no metadata).
@@ -1375,7 +1478,9 @@ export function consumeBackgroundSystemInfo(
         }
         options.store.setThreadMessageUsage(msg.threadId, existingRef.id, parsed.usage);
       }
-      consumed = true;
+      options.store.setThreadCatInvocation(msg.threadId, msg.catId, {
+        usage: parsed.usage,
+      });
     } else if (parsed?.type === 'context_briefing') {
       // F148: project the persisted typed card into the background timeline.
       // It remains non-routing when cats assemble incremental context.
@@ -1492,8 +1597,15 @@ export function consumeBackgroundSystemInfo(
         if (found) targetId = found.id;
       }
 
-      // Fallback: most recent callback message from this cat
-      if (!targetId) {
+      const richBlockHasExplicitInvocation = Boolean(
+        msg.invocationId ?? msg.turnInvocationId ?? parsed.invocationId ?? parsed.turnInvocationId,
+      );
+
+      // Legacy invocationless fallback: attach to the most recent callback message.
+      // Identity-bound blocks belong to the current provider stream. Since
+      // post_message callbacks became independent by default, routing those blocks to
+      // the preceding callback duplicates the card until history hydration repairs it.
+      if (!targetId && !richBlockHasExplicitInvocation) {
         const threadMessages = options.store.getThreadState(msg.threadId).messages;
         for (let i = threadMessages.length - 1; i >= 0; i--) {
           const m = threadMessages[i];
@@ -1510,9 +1622,6 @@ export function consumeBackgroundSystemInfo(
       if (!targetId) {
         targetId = existingRef?.id ?? recoverBackgroundStreamingMessage(msg, options);
       }
-      const richBlockHasExplicitInvocation = Boolean(
-        msg.invocationId ?? msg.turnInvocationId ?? parsed.invocationId ?? parsed.turnInvocationId,
-      );
       if (!targetId && !richBlockHasExplicitInvocation) {
         // F194 Phase Z6: rich/audio blocks can arrive just after `done` finalized the stream
         // bubble and cleared bgStreamRefs. Reuse the exact finalized stream bubble so live
@@ -1687,9 +1796,6 @@ export function consumeBackgroundSystemInfo(
         },
       });
       consumed = true;
-    } else if (isInternalSystemInfoTelemetry(parsed)) {
-      // Internal telemetry — suppress to avoid raw JSON bubbles in background threads
-      consumed = true;
     } else if (parsed?.type === 'session_seal_requested') {
       if (parsed.catId) {
         options.store.setThreadCatInvocation(msg.threadId, parsed.catId, {
@@ -1763,9 +1869,24 @@ export function consumeBackgroundSystemInfo(
       }
       consumed = true;
     }
-  } catch {
-    // Not JSON; keep original content as user-facing system info.
+  } catch (error) {
+    // A recognized protocol envelope stays non-visible even when its projector fails.
+    // The failure is diagnostic; it must never reclassify machine data as chat copy.
+    if (protocolPayload) consumed = true;
+    if (consumed) {
+      console.warn('[system_info] background internal projection failed; payload suppressed', {
+        catId: msg.catId,
+        threadId: msg.threadId,
+        error,
+      });
+    }
+    // Parse failures keep the original content as user-facing system info. Structured
+    // protocol envelopes fail closed regardless of whether their projector was known.
   }
+
+  // Explicit readable formatters retain `systemInfo`; handled internal projections set
+  // `consumed`. Everything else with a typed protocol envelope is internal by default.
+  if (protocolPayload && !systemInfo) consumed = true;
 
   return { consumed, content: sysContent, variant: sysVariant, systemInfo };
 }
@@ -2329,14 +2450,27 @@ function markThreadInvocationActive(msg: BackgroundAgentMessage, options: Handle
   // F108: slot-aware — register specific invocation if ID available
   if (msg.invocationId) {
     options.store.addThreadActiveInvocation(msg.threadId, msg.invocationId, msg.catId, 'execute');
-  } else if (!threadState.hasActiveInvocation) {
+  } else {
     options.store.setThreadHasActiveInvocation(msg.threadId, true);
   }
 }
 
-function markThreadInvocationComplete(msg: BackgroundAgentMessage, options: HandleBackgroundMessageOptions): void {
+function markThreadInvocationComplete(
+  msg: BackgroundAgentMessage,
+  options: HandleBackgroundMessageOptions,
+  phase: InvocationTerminalPhase,
+): void {
   options.store.setThreadLoading(msg.threadId, false);
-  options.store.setThreadCatInvocation(msg.threadId, msg.catId, { invocationId: undefined });
+  if (msg.invocationId) {
+    terminalizeInvocationReconciliation({
+      threadId: msg.threadId,
+      invocationId: msg.invocationId,
+      phase,
+      catId: msg.catId,
+      turnInvocationId: msg.turnInvocationId,
+      ...(msg.error ? { error: msg.error } : {}),
+    });
+  }
 
   // Snapshot slot count before removal to detect actual transition to zero.
   const stateBefore = options.store.getThreadState(msg.threadId);
@@ -2392,6 +2526,9 @@ export function handleBackgroundAgentMessage(
 
   if (msg.type === 'text' && msg.content) {
     const isCallbackText = msg.origin === 'callback';
+    if (!isCallbackText && shouldSuppressLateBackgroundStreamChunk(msg, streamKey, options)) {
+      return;
+    }
     if (!isCallbackText) {
       markThreadInvocationActive(msg, options);
     }
@@ -2589,9 +2726,6 @@ export function handleBackgroundAgentMessage(
         finalMsgId = cbId;
       }
     } else {
-      if (shouldSuppressLateBackgroundStreamChunk(msg, streamKey, options)) {
-        return;
-      }
       // F183 Phase B1.8 — bg stream chunk wire-up via reducer (single-writer)。
       // canonical invocationId 走 reducer 的 reduceStreamChunk — existing bubble
       // append/replace content；no existing 时 makePlaceholder 创建新 bubble (origin=
@@ -2789,7 +2923,7 @@ export function handleBackgroundAgentMessage(
         ? options.store.getThreadState(msg.threadId).messages.find((m) => m.id === finalMsgId)
         : undefined;
       const preview = finalMessage?.content ?? msg.content;
-      markThreadInvocationComplete(msg, options);
+      markThreadInvocationComplete(msg, options, 'succeeded');
       drainPendingBackgroundCallback(msg, options);
       options.addToast({
         type: 'success',
@@ -2878,7 +3012,7 @@ export function handleBackgroundAgentMessage(
     if (msg.isFinal) {
       // #80 fix-C: Clear timeout guard for error(isFinal) path
       options.clearDoneTimeout?.(msg.threadId);
-      markThreadInvocationComplete(msg, options);
+      markThreadInvocationComplete(msg, options, 'failed');
     }
     options.addToast({
       type: 'error',
@@ -2907,7 +3041,7 @@ export function handleBackgroundAgentMessage(
     if (msg.isFinal) {
       // #80 fix-C: Clear timeout guard so it doesn't fire a false "timed out" message
       options.clearDoneTimeout?.(msg.threadId);
-      markThreadInvocationComplete(msg, options);
+      markThreadInvocationComplete(msg, options, msg.errorCode ? 'failed' : 'succeeded');
     }
     return;
   }
@@ -3052,6 +3186,7 @@ export function handleBackgroundAgentMessage(
           fromCatId: msg.catId,
           targetCatId: msg.targetCatId,
           invocationId: msg.invocationId,
+          ...(msg.routing ? { routing: msg.routing } : {}),
         },
       });
       return;
@@ -3329,62 +3464,12 @@ export function useAgentMessages() {
     timeoutRef.current = setTimeout(() => {
       timeoutRef.current = null;
       timeoutThreadRef.current = null;
-      const store = useChatStore.getState();
-      const isActiveThreadTimeout = store.currentThreadId === timeoutThreadId;
-
-      if (!isActiveThreadTimeout) {
-        const threadState = store.getThreadState(timeoutThreadId);
-        for (const message of threadState.messages) {
-          if (message.type === 'assistant' && message.isStreaming) {
-            store.setThreadMessageStreaming(timeoutThreadId, message.id, false);
-          }
-        }
-        drainPendingCallbacksForThreadRef.current(timeoutThreadId);
-        store.resetThreadInvocationState(timeoutThreadId);
-        store.addMessageToThread(timeoutThreadId, {
-          id: `sysinfo-timeout-${Date.now()}`,
-          type: 'system',
-          variant: 'info',
-          content: '⏱ Response timed out. The operation may still be running in the background.',
-          timestamp: Date.now(),
-        });
-        if (timeoutThreadId) {
-          store.requestStreamCatchUp(timeoutThreadId);
-        }
-        return;
-      }
-
-      // Timeout fired — stop loading and show system message
-      setLoading(false);
-      clearAllActiveInvocations();
-      setIntentMode(null);
-      clearCatStatuses();
-      for (const ref of getAllActiveValues()) {
-        setStreaming(ref.id, false);
-      }
       drainPendingCallbacksForThreadRef.current(timeoutThreadId);
-      clearAllActive();
-      addMessage({
-        id: `sysinfo-timeout-${Date.now()}`,
-        type: 'system',
-        variant: 'info',
-        content: '⏱ Response timed out. The operation may still be running in the background.',
-        timestamp: Date.now(),
-      });
       if (timeoutThreadId) {
-        store.requestStreamCatchUp(timeoutThreadId);
+        void reconcileTimedOutInvocations(timeoutThreadId);
       }
     }, DONE_TIMEOUT_MS);
-  }, [
-    setLoading,
-    clearAllActiveInvocations,
-    setIntentMode,
-    clearCatStatuses,
-    getAllActiveValues,
-    setStreaming,
-    clearAllActive,
-    addMessage,
-  ]);
+  }, []);
 
   /** Clear the timeout (called on done with isFinal) */
   const clearDoneTimeout = useCallback((threadId?: string) => {
@@ -5307,32 +5392,19 @@ export function useAgentMessages() {
           if (!isStaleDone && msg.invocationId) {
             settlePendingActiveCallbackOnTerminal(msg.threadId, msg.catId, msg.invocationId, 'drain');
           }
-
-          // Bugfix: clear stale invocationId so findRecoverableAssistantMessage
-          // can't match this finalized message when the next invocation starts.
-          // Without this, a race (new text before invocation_created) appends to
-          // the old bubble, causing messages to visually merge until page refresh.
-          // Cloud review P2: Do NOT clear taskProgress here — lines 552-559 already
-          // transition it to 'completed'/'interrupted'. Wiping it would remove the
-          // cat from PlanBoardPanel and defeat clearCatStatuses' snapshot preservation.
-          setCatInvocation(msg.catId, { invocationId: undefined });
         }
-        // Stale-done direct cleanup (cloud R12 P1): even when the bubble-side
-        // processing was skipped as stale, we MUST still clear `catInvocations
-        // [msg.catId].invocationId` when it matches `msg.invocationId` —
-        // otherwise a stale `inv-1` survives in direct binding while
-        // `activeInvocations` already holds the fresh `inv-2` slot, and
-        // downstream `getCurrentInvocationStateForCat` (catInvocations-first)
-        // would return the stale `inv-1` and misbind inv-2's first stream
-        // bubble. Conditional on `direct === msg.invocationId` so we never
-        // clobber a newer direct value set by the new invocation_created.
-        if (
-          isStaleDone &&
-          msg.invocationId &&
-          (useChatStore.getState().catInvocations?.[msg.catId]?.invocationId === msg.invocationId ||
-            useChatStore.getState().catInvocations?.[msg.catId]?.turnInvocationId === msg.invocationId)
-        ) {
-          setCatInvocation(msg.catId, { invocationId: undefined, turnInvocationId: undefined });
+        // One identity-guarded writer owns direct cleanup and the optional
+        // timeout-notice terminal transition. Non-final done completes this cat
+        // only; final done may also terminalize the correlated parent notice.
+        if (msg.invocationId) {
+          terminalizeInvocationReconciliation({
+            threadId: msg.threadId ?? useChatStore.getState().currentThreadId,
+            invocationId: msg.invocationId,
+            phase: msg.errorCode ? 'failed' : 'succeeded',
+            catId: msg.catId,
+            turnInvocationId: msg.turnInvocationId,
+            projectNotice: msg.isFinal === true,
+          });
         }
         // Always remove the finishing cat's invocation slot, regardless of isFinal.
         // isFinal=false means "more cats coming" but THIS cat is done — its slot must go.
@@ -5424,7 +5496,14 @@ export function useAgentMessages() {
         const handoffInvocationId = msg.targetCatId
           ? resolveSequentialHandoffInvocationId(msg.catId, msg.invocationId)
           : undefined;
-        if (msg.targetCatId && handoffInvocationId) {
+        // F086/F216: a serial dispatch announces every queued leg up front, but only 第 1 棒
+        // actually starts. Migrating the sequential ownership slot on every announced leg made
+        // the UI show the LAST target as active while the runtime was still running the FIRST
+        // (#1291: two identical arrows, one invocation). Only the leg that starts now migrates;
+        // parallel fan-out has no single sequential successor, and legacy events (no `routing`)
+        // keep the previous behaviour.
+        const migratesOwnership = !msg.routing || (msg.routing.mode === 'serial' && msg.routing.index <= 1);
+        if (msg.targetCatId && handoffInvocationId && migratesOwnership) {
           maybeMigrateSequentialInvocationOwnership(msg.targetCatId, handoffInvocationId);
         }
         // F173 bug fix: use server timestamp + marker so chatStore inserts
@@ -5446,6 +5525,7 @@ export function useAgentMessages() {
               fromCatId: msg.catId,
               targetCatId: msg.targetCatId,
               invocationId: msg.invocationId,
+              ...(msg.routing ? { routing: msg.routing } : {}),
             },
           },
         });
@@ -5483,10 +5563,26 @@ export function useAgentMessages() {
         let sysVariant: 'info' | 'a2a_followup' = 'info';
         let consumed = false;
         let systemInfo: SystemInfoProjection | undefined;
+        let protocolPayload = false;
         try {
           const parsed = JSON.parse(sysContent);
-          const visible = formatVisibleSystemInfo(parsed, resolveCatName, msg.catId);
-          if (visible) {
+          protocolPayload = isSystemInfoProtocolPayload(parsed);
+          const providerRecovery = projectProviderRecoveryMessage(parsed, {
+            catId: msg.catId,
+            invocationId: msg.invocationId,
+            turnInvocationId: msg.turnInvocationId,
+            timestamp: msg.timestamp,
+          });
+          const visible = providerRecovery ? null : formatVisibleSystemInfo(parsed, resolveCatName, msg.catId);
+          if (providerRecovery) {
+            const exists = useChatStore.getState().messages.some((message) => message.id === providerRecovery.id);
+            if (exists) {
+              patchMessage(providerRecovery.id, patchForProjectedSystemMessage(providerRecovery));
+            } else {
+              addMessage(providerRecovery);
+            }
+            consumed = true;
+          } else if (visible) {
             sysContent = visible.content;
             sysVariant = visible.variant;
             systemInfo = retainSystemInfo(parsed, msg.catId);
@@ -5745,10 +5841,11 @@ export function useAgentMessages() {
             }
             consumed = true;
           } else if (parsed?.type === 'invocation_usage') {
-            // F8: Store token usage silently — don't show as system message
-            setCatInvocation(msg.catId, {
-              usage: parsed.usage,
-            });
+            // Protocol telemetry is never user-facing. Mark it consumed before projection
+            // so a synchronous store/subscriber failure cannot reclassify valid JSON as a
+            // blue system bubble. The footer is the user-visible source of truth, so write
+            // it before the secondary cat-level status snapshot.
+            consumed = true;
             // Also persist usage on the cat's last assistant message (message-scoped)
             const ref = getActive(msg.catId);
             if (ref) {
@@ -5764,7 +5861,9 @@ export function useAgentMessages() {
               }
               setMessageUsage(ref.id, parsed.usage);
             }
-            consumed = true;
+            setCatInvocation(msg.catId, {
+              usage: parsed.usage,
+            });
           } else if (parsed?.type === 'context_briefing') {
             // F148: project the persisted typed card into the active timeline.
             // It remains non-routing when cats assemble incremental context.
@@ -5991,9 +6090,6 @@ export function useAgentMessages() {
               },
             });
             consumed = true;
-          } else if (isInternalSystemInfoTelemetry(parsed)) {
-            // Internal telemetry — suppress to avoid raw JSON bubbles
-            consumed = true;
           } else if (parsed?.type === 'silent_completion') {
             // Bugfix: silent-exit — cat ran tools but produced no text response
             const detail = typeof parsed.detail === 'string' ? parsed.detail : '';
@@ -6018,9 +6114,13 @@ export function useAgentMessages() {
               if (found) targetId = found.id;
             }
 
-            // Bugfix: standalone create_rich_block (no messageId) — prefer most recent
-            // callback message from this cat over the active streaming message.
-            if (!targetId) {
+            const richBlockHasExplicitInvocation = Boolean(msg.turnInvocationId ?? effectiveInv);
+
+            // Legacy invocationless fallback: attach to the most recent callback message.
+            // Identity-bound blocks belong to the current provider stream. Since
+            // post_message callbacks became independent by default, routing those blocks to
+            // the preceding callback duplicates the card until history hydration repairs it.
+            if (!targetId && !richBlockHasExplicitInvocation) {
               const currentMessages = useChatStore.getState().messages;
               for (let i = currentMessages.length - 1; i >= 0; i--) {
                 const m = currentMessages[i];
@@ -6038,7 +6138,6 @@ export function useAgentMessages() {
               msg.catId,
               msg.turnInvocationId ?? effectiveInv,
             );
-            const richBlockHasExplicitInvocation = Boolean(msg.turnInvocationId ?? effectiveInv);
             if (!targetId && !suppressedLateRichBlock && !richBlockHasExplicitInvocation) {
               // F194 Phase Z6: invocationless rich/audio events may arrive after done.
               // `findInvocationlessStreamPlaceholder` includes the just-finalized stream
@@ -6075,9 +6174,22 @@ export function useAgentMessages() {
               systemInfo = retainSystemInfo(parsed, msg.catId);
             }
           }
-        } catch {
-          /* not JSON, use raw content */
+        } catch (error) {
+          // A projector failure cannot turn a protocol envelope into a visible raw
+          // fallback. Suppress first; report only bounded coordinates below.
+          if (protocolPayload) consumed = true;
+          if (consumed) {
+            console.warn('[system_info] active internal projection failed; payload suppressed', {
+              catId: msg.catId,
+              threadId: msg.threadId,
+              error,
+            });
+          }
+          /* Parse failures use raw content; structured protocol envelopes fail closed. */
         }
+        // Typed envelopes need either an explicit readable formatter (`systemInfo`) or
+        // an internal projector (`consumed`). Unknown future protocol is silent by default.
+        if (protocolPayload && !systemInfo) consumed = true;
         if (!consumed) {
           const sysCliDiag = msg.metadata?.cliDiagnostics;
           const extra =
@@ -6275,6 +6387,16 @@ export function useAgentMessages() {
         // loading, intentMode, streaming refs) must NOT fire for stale error —
         // it would wipe inv-2's state.
         if (msg.isFinal) {
+          if (msg.invocationId && !recoverableInFlightError) {
+            terminalizeInvocationReconciliation({
+              threadId: msg.threadId ?? useChatStore.getState().currentThreadId,
+              invocationId: msg.invocationId,
+              phase: 'failed',
+              catId: msg.catId,
+              turnInvocationId: msg.turnInvocationId,
+              ...(msg.error ? { error: msg.error } : {}),
+            });
+          }
           // F108: clear this cat's invocation slot on terminal error
           if (msg.invocationId) {
             // F869: Same multi-cat slot-aware cleanup as the done(isFinal) path.
@@ -6389,13 +6511,17 @@ export function useAgentMessages() {
   );
 
   const handleStop = useCallback(
-    (cancelFn: (threadId: string, catId?: string) => void, threadId: string) => {
+    (
+      cancelFn: (threadId: string, catId: string | undefined, intent: ExplicitStopIntent) => boolean,
+      threadId: string,
+      intent: ExplicitStopIntent,
+    ) => {
       const store = useChatStore.getState();
       // When exactly one cat is active, cancel only that cat to avoid
       // thread-level cancelAll accidentally killing other cats.
       const activeSlots = Object.values(store.getThreadState(threadId).activeInvocations ?? {});
       const singleCatId = activeSlots.length === 1 ? activeSlots[0]?.catId : undefined;
-      cancelFn(threadId, singleCatId);
+      if (!cancelFn(threadId, singleCatId, intent)) return;
       clearPendingCallbacksForThread(threadId);
       const isActiveThreadStop = threadId === store.currentThreadId;
 

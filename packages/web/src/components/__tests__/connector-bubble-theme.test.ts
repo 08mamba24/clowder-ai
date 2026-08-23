@@ -149,7 +149,7 @@ describe('ConnectorBubble theme', () => {
 
   it('falls back to standalone feedback when hold-ball task is already stale', async () => {
     mockApiFetch
-      .mockResolvedValueOnce(new Response('{}', { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'active', cancelable: true }), { status: 200 }))
       .mockResolvedValueOnce(new Response('{}', { status: 404 }))
       .mockResolvedValueOnce(new Response('{}', { status: 200 }));
     const message: ChatMessage = {
@@ -263,6 +263,32 @@ describe('ConnectorBubble theme', () => {
     const html = container.innerHTML;
     expect(html).toContain('--color-github-ci-surface');
     expect(html).toContain('<svg');
+  });
+
+  it.each([
+    { connector: 'github-wait', label: 'GitHub Wait', icon: 'github', themeToken: 'github-wait' },
+    { connector: 'frustration-auto-issue', label: '问题检测', icon: '🔍', themeToken: 'frustration-auto-issue' },
+    { connector: 'physical-limb.stackchan', label: 'StackChan', icon: 'robot', themeToken: 'physical-limb-stackchan' },
+  ] as const)('renders built-in $connector with its registered SVG and CSS-safe theme token instead of the fallback icon', ({
+    connector,
+    label,
+    icon,
+    themeToken,
+  }) => {
+    const message: ChatMessage = {
+      id: `m-${connector}`,
+      type: 'connector',
+      content: `${label} notification`,
+      timestamp: Date.now(),
+      source: { connector, label, icon },
+    };
+
+    act(() => root.render(React.createElement(ConnectorBubble, { message })));
+
+    const html = container.innerHTML;
+    expect(html).toContain(`--color-${themeToken}-surface`);
+    expect(html).toContain('<svg');
+    expect(html).not.toContain(`>${icon}<`);
   });
 
   it('renders issue comment connector with GitHub icon instead of raw fallback text', () => {

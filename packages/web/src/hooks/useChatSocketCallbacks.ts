@@ -5,7 +5,7 @@ import type { SocketCallbacks } from '@/hooks/useSocket';
 import { type Thread, useChatStore } from '@/stores/chatStore';
 import { useGameStore } from '@/stores/gameStore';
 import { type TaskItem, useTaskStore } from '@/stores/taskStore';
-import { apiFetch } from '@/utils/api-client';
+import { invalidateSidebarProjection } from '@/utils/sidebar-thread-snapshot';
 
 interface ExternalDeps {
   threadId: string;
@@ -109,13 +109,18 @@ export function useChatSocketCallbacks({
       onMessageRestored: (data: { messageId: string; threadId: string }) => {
         requestStreamCatchUp(data.threadId);
       },
+      onMessageRecalled: (data) => {
+        if (data.verdict === 'zero_exposure') {
+          removeThreadMessage(data.threadId, data.messageId);
+          return;
+        }
+        requestStreamCatchUp(data.threadId);
+      },
+      onMessageReceiptUpdated: (data) => {
+        requestStreamCatchUp(data.threadId);
+      },
       onThreadBranched: () => {
-        void apiFetch('/api/threads')
-          .then((res) => (res.ok ? res.json() : null))
-          .then((data) => {
-            if (data?.threads) useChatStore.getState().setThreads(data.threads);
-          })
-          .catch(() => {});
+        void invalidateSidebarProjection();
       },
       onAuthorizationRequest: handleAuthRequest,
       onAuthorizationResponse: handleAuthResponse,

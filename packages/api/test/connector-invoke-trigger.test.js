@@ -4,6 +4,7 @@ import assert from 'node:assert';
 import { beforeEach, describe, it } from 'node:test';
 import { InvocationQueue } from '../dist/domains/cats/services/agents/invocation/InvocationQueue.js';
 import { InvocationRecordStore } from '../dist/domains/cats/services/stores/ports/InvocationRecordStore.js';
+import { MessageStore } from '../dist/domains/cats/services/stores/ports/MessageStore.js';
 import { ConnectorInvokeTrigger } from '../dist/infrastructure/email/ConnectorInvokeTrigger.js';
 
 // ─── Mocks ───────────────────────────────────────────────────────
@@ -281,6 +282,7 @@ function mockInvocationTracker() {
   const tryStartThreadCalls = /** @type {Array<{threadId: string, catId: string}>} */ ([]);
   const completes = /** @type {Array<{threadId: string, catId: string}>} */ ([]);
   const slotCompletes = /** @type {Array<{threadId: string, catId: string, controller: AbortController}>} */ ([]);
+  const allCompletes = /** @type {Array<{threadId: string, catIds: string[], controller: AbortController}>} */ ([]);
   const cancelCalls = /** @type {Array<{threadId: string, catId: string, userId: (string|undefined)}>} */ ([]);
   let aborted = false;
   let cancelDenied = false;
@@ -292,6 +294,7 @@ function mockInvocationTracker() {
     tryStartThreadCalls,
     completes,
     slotCompletes,
+    allCompletes,
     cancelCalls,
     setAborted(val) {
       aborted = val;
@@ -323,6 +326,9 @@ function mockInvocationTracker() {
       },
       completeSlot(threadId, catId, controller) {
         slotCompletes.push({ threadId, catId, controller });
+      },
+      completeAll(threadId, catIds, controller) {
+        allCompletes.push({ threadId, catIds: [...catIds], controller });
       },
       trackExternalSlot() {
         return true;
@@ -392,6 +398,31 @@ describe('ConnectorInvokeTrigger', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
+  function waitConnectorMessage(messageId, outcomeId, generation = 3) {
+    return {
+      id: messageId,
+      threadId: 'thread-1',
+      userId: 'user-1',
+      catId: null,
+      content: `Wait outcome ${outcomeId}`,
+      mentions: ['opus'],
+      timestamp: Date.now(),
+      source: {
+        connector: 'github-wait',
+        label: 'GitHub Wait',
+        icon: 'github',
+        meta: {
+          waitContinuationCarrier: {
+            v: 1,
+            waitId: 'task-pr-7',
+            outcomeId,
+            ownerFence: { kind: 'containing_task', generation },
+          },
+        },
+      },
+    };
+  }
+
   it('creates InvocationRecord and calls routeExecution', async () => {
     const trigger = createTrigger();
     trigger.trigger('thread-1', /** @type {any} */ ('opus'), 'user-1', 'Review msg', 'msg-1');
@@ -410,6 +441,92 @@ describe('ConnectorInvokeTrigger', () => {
     assert.strictEqual(routerMock.calls[0].threadId, 'thread-1');
     assert.strictEqual(routerMock.calls[0].userMessageId, 'msg-1');
     assert.deepStrictEqual(routerMock.calls[0].targetCats, ['opus']);
+  });
+
+  it('copies the exact stored wait carrier into a direct Invocation and event-wait turn provenance', async () => {
+    const storedMessage = waitConnectorMessage('msg-wait-direct', 'wait:pr:owner/repo#7:g3:matched');
+    const trigger = createTrigger({
+      messageStore: { getById: async (id) => (id === storedMessage.id ? storedMessage : null) },
+    });
+
+    await trigger.trigger(
+      storedMessage.threadId,
+      /** @type {any} */ ('opus'),
+      storedMessage.userId,
+      storedMessage.content,
+      storedMessage.id,
+      undefined,
+      { sourceCategory: 'review' },
+    );
+    await waitForTrigger();
+
+    const expectedCarrier = storedMessage.source.meta.waitContinuationCarrier;
+    assert.deepStrictEqual(recordMock.creates[0].waitContinuationCarrier, expectedCarrier);
+    assert.deepStrictEqual(routerMock.calls[0].options.turnCustodyWake, {
+      kind: 'structured',
+      protocol: 'event_wait',
+      subjectKey: 'ball:thread:thread-1',
+      holderCatId: 'opus',
+      waitContinuationCarrier: expectedCarrier,
+    });
+  });
+
+  it('keeps an action-successor wait owner fence inside event-wait custody', async () => {
+    const storedMessage = waitConnectorMessage('msg-wait-action-owner', 'wait:pr:owner/repo#7:g4:matched', 4);
+    storedMessage.source.meta.waitContinuationCarrier.ownerFence = {
+      kind: 'action_successor',
+      leaseId: 'lease-wait-4',
+      generation: 4,
+    };
+    const trigger = createTrigger({
+      messageStore: { getById: async (id) => (id === storedMessage.id ? storedMessage : null) },
+    });
+
+    await trigger.trigger(
+      storedMessage.threadId,
+      /** @type {any} */ ('opus'),
+      storedMessage.userId,
+      storedMessage.content,
+      storedMessage.id,
+      undefined,
+      { sourceCategory: 'review' },
+    );
+    await waitForTrigger();
+
+    assert.deepStrictEqual(recordMock.creates[0].actionLeaseCarrier, { kind: 'none' });
+    assert.deepStrictEqual(
+      recordMock.creates[0].waitContinuationCarrier.ownerFence,
+      storedMessage.source.meta.waitContinuationCarrier.ownerFence,
+    );
+    assert.strictEqual(routerMock.calls[0].options.turnCustodyWake.protocol, 'event_wait');
+    assert.deepStrictEqual(
+      routerMock.calls[0].options.turnCustodyWake.waitContinuationCarrier,
+      storedMessage.source.meta.waitContinuationCarrier,
+    );
+  });
+
+  it('rejects malformed stored github-wait carriers before direct execution', async () => {
+    const storedMessage = waitConnectorMessage('msg-wait-malformed-direct', 'wait:pr:owner/repo#7:g4:matched', 4);
+    storedMessage.source.meta.waitContinuationCarrier.ownerFence.generation = 0;
+    const trigger = createTrigger({
+      messageStore: { getById: async (id) => (id === storedMessage.id ? storedMessage : null) },
+    });
+
+    await assert.rejects(
+      () =>
+        trigger.trigger(
+          storedMessage.threadId,
+          /** @type {any} */ ('opus'),
+          storedMessage.userId,
+          storedMessage.content,
+          storedMessage.id,
+          undefined,
+          { sourceCategory: 'review' },
+        ),
+      /missing a valid continuation carrier/,
+    );
+    assert.strictEqual(recordMock.creates.length, 0);
+    assert.strictEqual(routerMock.calls.length, 0);
   });
 
   it('passes a trusted GitHub delivery-decision carrier through the direct execution path', async () => {
@@ -479,7 +596,6 @@ describe('ConnectorInvokeTrigger', () => {
 
   it('passes an authoritative A2A slot claim and durable deferral into connector execution', async () => {
     trackerMock.tracker.trackExternalSlot = () => false;
-    trackerMock.tracker.completeSlot = () => {};
     const trigger = createTrigger();
 
     trigger.trigger('thread-a2a-admission', /** @type {any} */ ('opus'), 'user-1', 'Review msg', 'msg-review');
@@ -521,6 +637,7 @@ describe('ConnectorInvokeTrigger', () => {
         routeController = options.invocationController;
         assert.equal(options.trackA2ASlot(threadId, 'codex', 'user-1', routeController), true);
         yield { type: 'done', catId: 'codex', isFinal: true, timestamp: Date.now() };
+        options.completeA2ASlots(threadId, ['codex'], routeController);
       },
       async ackCollectedCursors() {},
     };
@@ -529,7 +646,7 @@ describe('ConnectorInvokeTrigger', () => {
     trigger.trigger('thread-connector-child', /** @type {any} */ ('opus'), 'user-1', 'Review msg', 'msg-child');
     await waitForTrigger();
 
-    const dynamicCompletions = trackerMock.slotCompletes.filter((call) => call.catId === 'codex');
+    const dynamicCompletions = trackerMock.allCompletes.filter((call) => call.catIds.includes('codex'));
     assert.equal(dynamicCompletions.length, 1);
     assert.equal(dynamicCompletions[0].threadId, 'thread-connector-child');
     assert.equal(dynamicCompletions[0].controller, routeController);
@@ -539,7 +656,14 @@ describe('ConnectorInvokeTrigger', () => {
     const trigger = createTrigger({
       messageStore: {
         getById: async (messageId) =>
-          messageId === 'msg-hold-complete' ? { source: { connector: 'hold-ball' } } : null,
+          messageId === 'msg-hold-complete'
+            ? {
+                source: {
+                  connector: 'hold-ball',
+                  meta: { taskId: 'task-hold-complete', threadId: 'thread-1', catId: 'opus', wakeWhen: true },
+                },
+              }
+            : null,
       },
     });
 
@@ -559,6 +683,8 @@ describe('ConnectorInvokeTrigger', () => {
       protocol: 'hold',
       subjectKey: 'ball:thread:thread-1',
       holderCatId: 'opus',
+      sourceMessageId: 'msg-hold-complete',
+      taskId: 'task-hold-complete',
     });
   });
 
@@ -2100,6 +2226,57 @@ describe('ConnectorInvokeTrigger', () => {
       assert.deepStrictEqual(entries[0].targetCats, ['opus']);
     });
 
+    it('projects the exact stored wait carrier into Queue while the thread is busy', async () => {
+      trackerMock.setActive('thread-1');
+      const storedMessage = waitConnectorMessage('msg-wait-queued', 'wait:pr:owner/repo#7:g3:matched');
+      const trigger = createTrigger({
+        messageStore: { getById: async (id) => (id === storedMessage.id ? storedMessage : null) },
+      });
+
+      await trigger.trigger(
+        storedMessage.threadId,
+        /** @type {any} */ ('opus'),
+        storedMessage.userId,
+        storedMessage.content,
+        storedMessage.id,
+        undefined,
+        { sourceCategory: 'review' },
+      );
+      await waitForTrigger();
+
+      assert.deepStrictEqual(
+        queue.list('thread-1', 'user-1')[0].waitContinuationCarrier,
+        storedMessage.source.meta.waitContinuationCarrier,
+      );
+      assert.strictEqual(recordMock.creates.length, 0);
+    });
+
+    it('rejects malformed stored github-wait carriers before Queue admission', async () => {
+      trackerMock.setActive('thread-1');
+      const storedMessage = waitConnectorMessage('msg-wait-malformed-queued', 'wait:pr:owner/repo#7:g4:matched', 4);
+      delete storedMessage.source.meta.waitContinuationCarrier.ownerFence;
+      const trigger = createTrigger({
+        messageStore: { getById: async (id) => (id === storedMessage.id ? storedMessage : null) },
+      });
+
+      await assert.rejects(
+        () =>
+          trigger.trigger(
+            storedMessage.threadId,
+            /** @type {any} */ ('opus'),
+            storedMessage.userId,
+            storedMessage.content,
+            storedMessage.id,
+            undefined,
+            { sourceCategory: 'review' },
+          ),
+        /missing a valid continuation carrier/,
+      );
+      assert.strictEqual(queue.list('thread-1', 'user-1').length, 0);
+      assert.strictEqual(recordMock.creates.length, 0);
+      assert.strictEqual(routerMock.calls.length, 0);
+    });
+
     it('urgent connector enqueues with priority instead of preempting (F175)', async () => {
       trackerMock.setActive('thread-1', 'user-1');
       const trigger = createTrigger();
@@ -2235,6 +2412,50 @@ describe('ConnectorInvokeTrigger', () => {
       assert.strictEqual(entries[0].content, 'First review', 'coalescing keeps first queued content as canonical');
       assert.strictEqual(entries[0].messageId, 'msg-1');
       assert.deepStrictEqual(entries[0].mergedMessageIds, ['msg-2']);
+    });
+
+    it('does not coalesce different wait generations under the same adapter key', async () => {
+      trackerMock.setActive('thread-1');
+      const first = waitConnectorMessage('msg-wait-g3', 'wait:pr:owner/repo#7:g3:matched', 3);
+      const second = waitConnectorMessage('msg-wait-g4', 'wait:pr:owner/repo#7:g4:matched', 4);
+      const messages = new Map([
+        [first.id, first],
+        [second.id, second],
+      ]);
+      const trigger = createTrigger({ messageStore: { getById: async (id) => messages.get(id) ?? null } });
+      const policy = {
+        priority: 'normal',
+        sourceCategory: 'review',
+        coalesceKey: 'pr:owner/repo#7:wait:opus',
+      };
+
+      await trigger.trigger(
+        'thread-1',
+        /** @type {any} */ ('opus'),
+        'user-1',
+        first.content,
+        first.id,
+        undefined,
+        policy,
+      );
+      await waitForTrigger();
+      await trigger.trigger(
+        'thread-1',
+        /** @type {any} */ ('opus'),
+        'user-1',
+        second.content,
+        second.id,
+        undefined,
+        policy,
+      );
+      await waitForTrigger();
+
+      const entries = queue.list('thread-1', 'user-1');
+      assert.strictEqual(entries.length, 2);
+      assert.deepStrictEqual(
+        entries.map((entry) => entry.waitContinuationCarrier?.ownerFence.generation),
+        [3, 4],
+      );
     });
 
     it('upgrades coalesced review feedback when a later event is urgent', async () => {
@@ -2550,6 +2771,57 @@ describe('ConnectorInvokeTrigger', () => {
   // ── F185: thread-level busy gate (AC-1/AC-2) ──
 
   describe('F185: thread-level busy gate', () => {
+    it('managed event forceQueue creates one F254/F264 carrier even while idle', async () => {
+      const messageStore = new MessageStore();
+      const source = messageStore.append({
+        userId: 'scheduler',
+        catId: null,
+        content: '[定时任务] managed command completed',
+        mentions: [],
+        timestamp: 2_100,
+        threadId: 'thread-managed-event',
+        deliveryStatus: 'queued',
+        source: {
+          connector: 'hold-ball',
+          label: '持球通知',
+          meta: {
+            taskId: 'task-managed-event',
+            threadId: 'thread-managed-event',
+            catId: 'opus',
+            wakeWhen: true,
+          },
+        },
+      });
+      const autoExecuteCalls = [];
+      const queueProcessor = /** @type {any} */ ({
+        async tryAutoExecute(threadId) {
+          autoExecuteCalls.push(threadId);
+        },
+      });
+      const trigger = createTrigger({ messageStore, queueProcessor });
+      const args = [
+        'thread-managed-event',
+        /** @type {any} */ ('opus'),
+        'user-1',
+        source.content,
+        source.id,
+        undefined,
+        { sourceCategory: 'scheduled', forceQueue: true },
+      ];
+
+      assert.equal(await trigger.trigger(...args), 'enqueued');
+      assert.equal(await trigger.trigger(...args), 'enqueued');
+
+      const entries = queue.list('thread-managed-event', 'user-1');
+      assert.equal(entries.length, 1, 'duplicate delivery must reuse the exact source carrier');
+      assert.equal(entries[0].messageId, source.id);
+      assert.equal(entries[0].sourceCategory, 'scheduled');
+      assert.equal(messageStore.getById(source.id).queueCustody.entryId, entries[0].id);
+      assert.equal(routerMock.calls.length, 0, 'forceQueue never forks into direct admission');
+      assert.equal(recordMock.creates.length, 0);
+      assert.deepEqual(autoExecuteCalls, ['thread-managed-event', 'thread-managed-event']);
+    });
+
     it('force-reset suppression queues a late connector wake before direct admission', async () => {
       let tryStartCalls = 0;
       trackerMock.tracker.tryStartThread = () => {

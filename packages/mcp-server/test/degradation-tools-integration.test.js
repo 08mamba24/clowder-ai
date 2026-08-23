@@ -21,7 +21,7 @@ async function withMockedCallbackPost(fn) {
       ok: false,
       status: 401,
       headers: new Map(),
-      text: async () => JSON.stringify({ error: 'callback_auth_failed', reason: 'expired' }),
+      text: async () => JSON.stringify({ error: 'callback_auth_failed', reason: 'unknown_invocation' }),
     };
   };
   process.env.CAT_CAFE_API_URL = 'http://localhost:3003';
@@ -68,7 +68,7 @@ describe('write-class tool degradation policy declarations (F174-E AC-E2/E5)', (
       assert.ok(result.isError, 'auth failure must propagate');
       const text = result.content[0].text;
       assert.ok(
-        text.includes('[degrade]') && text.includes('reason=expired'),
+        text.includes('[degrade]') && text.includes('reason=unknown_invocation'),
         `expected [degrade] hint with reason: ${text}`,
       );
     });
@@ -79,7 +79,7 @@ describe('write-class tool degradation policy declarations (F174-E AC-E2/E5)', (
       const result = await handleUpdateTask({ taskId: 't-1', status: 'done' });
       assert.ok(result.isError);
       const text = result.content[0].text;
-      assert.ok(text.includes('[degrade]') && text.includes('reason=expired'));
+      assert.ok(text.includes('[degrade]') && text.includes('reason=unknown_invocation'));
     });
   });
 
@@ -94,35 +94,29 @@ describe('write-class tool degradation policy declarations (F174-E AC-E2/E5)', (
       });
       assert.ok(result.isError);
       const text = result.content[0].text;
-      assert.ok(text.includes('[degrade]') && text.includes('reason=expired'));
+      assert.ok(text.includes('[degrade]') && text.includes('reason=unknown_invocation'));
     });
   });
 
-  test('register_issue_tracking forwards empty instructions so stored guidance can be cleared', async () => {
-    await withCapturedCallbackPosts(async ({ handleRegisterIssueTracking }, requests) => {
-      const result = await handleRegisterIssueTracking({ repoFullName: 'a/b', issueNumber: 2, instructions: '' });
-
-      assert.equal(result.isError, undefined);
-      assert.equal(requests.length, 1);
-      assert.equal(requests[0].url, 'http://localhost:3003/api/callbacks/register-issue-tracking');
-      assert.deepEqual(requests[0].body, { repoFullName: 'a/b', issueNumber: 2, instructions: '' });
-    });
-  });
-
-  test('register_issue_tracking forwards actor-aware wake policy', async () => {
+  test('register_issue_tracking forwards the typed one-shot wait contract', async () => {
     await withCapturedCallbackPosts(async ({ handleRegisterIssueTracking }, requests) => {
       const result = await handleRegisterIssueTracking({
-        repoFullName: 'zts212653/cat-cafe',
-        issueNumber: 42,
-        wakePolicy: 'human_participant_activity',
+        repoFullName: 'a/b',
+        issueNumber: 2,
+        when: [{ kind: 'issue_comment_added' }],
+        nextStep: 'Inspect the comment.',
+        expiresAt: 1_785_500_000_000,
       });
 
       assert.equal(result.isError, undefined);
       assert.equal(requests.length, 1);
+      assert.equal(requests[0].url, 'http://localhost:3003/api/callbacks/register-issue-tracking');
       assert.deepEqual(requests[0].body, {
-        repoFullName: 'zts212653/cat-cafe',
-        issueNumber: 42,
-        wakePolicy: 'human_participant_activity',
+        repoFullName: 'a/b',
+        issueNumber: 2,
+        when: [{ kind: 'issue_comment_added' }],
+        nextStep: 'Inspect the comment.',
+        expiresAt: 1_785_500_000_000,
       });
     });
   });
@@ -133,7 +127,7 @@ describe('write-class tool degradation policy declarations (F174-E AC-E2/E5)', (
       const result = await memMod.handleCallbackRetainMemory({ content: 'remember this' });
       assert.ok(result.isError);
       const text = result.content[0].text;
-      assert.ok(text.includes('[degrade]') && text.includes('reason=expired'));
+      assert.ok(text.includes('[degrade]') && text.includes('reason=unknown_invocation'));
     });
   });
 

@@ -13,10 +13,17 @@
 import type { CatId } from '@cat-cafe/shared';
 import { estimateTokens } from '../../../../utils/token-counter.js';
 import type { PushRecallPresentation } from '../../../memory/f200-types.js';
+import { formatRecallPointer } from '../agents/routing/context-transport.js';
 import { formatPromptTime } from '../format-time.js';
 import type { ISessionChainStore } from '../stores/ports/SessionChainStore.js';
 import type { ITaskStore } from '../stores/ports/TaskStore.js';
 import type { IThreadStore } from '../stores/ports/ThreadStore.js';
+import { mapToPresentation } from './context-presentation.js';
+import {
+  type ContextModeProjection,
+  countPresentedTiers,
+  type PresentationCounts,
+} from './context-surface-projection.js';
 import { formatTaskSnapshot } from './formatTaskSnapshot.js';
 import type { TranscriptReader } from './TranscriptReader.js';
 import type { ExtractiveDigestV1 } from './TranscriptWriter.js';
@@ -49,7 +56,7 @@ function sanitizeNoteField(text: string): string {
 
 /** Hard cap for entire bootstrap output (AC-5).
  * Applies uniformly regardless of call path (serial/parallel/incremental). */
-const MAX_BOOTSTRAP_TOKENS = 2000;
+export const MAX_SESSION_BOOTSTRAP_TOKENS = 2000;
 
 /** Reserve at least this many tokens for the droppable variable sections (threadMemory/
  * digest/task/recall) so the always-keep handoff note can neither starve them nor blow the
@@ -59,7 +66,7 @@ const HANDOFF_NOTE_VARIABLE_RESERVE_TOKENS = 400;
 /**
  * Cap the assembled (always-keep) handoff note to a token budget (云端 review P2).
  * Per-field char caps (MAX_NOTE_FIELD_CHARS) bound each field but NOT the aggregate — and for
- * CJK notes 600 chars ≈ ~900 tokens, so done+next+gotchas alone can exceed MAX_BOOTSTRAP_TOKENS.
+ * CJK notes 600 chars ≈ ~900 tokens, so done+next+gotchas alone can exceed the bootstrap cap.
  * Because the note lives in baseTokens (no later section left to drop once remainingBudget is
  * negative), truncate it HERE so identity + note + tools can never breach the hard cap. Token-
  * accurate (CJK-safe) shrink; preserves the close marker and signals the truncation.
@@ -89,17 +96,27 @@ export interface BootstrapContext {
   hasThreadMemory: boolean;
   /** F263: only presentations whose rendered section survived the token cap. */
   pushRecallPresentations?: PushRecallPresentation[];
+  /** F296 B3b-4: actual mapper-selected bootstrap sections, summarized content-free. */
+  presentationCounts?: PresentationCounts;
 }
 
 export interface SessionBootstrapOptions {
   sessionChainStore: ISessionChainStore;
   transcriptReader: TranscriptReader;
+  /** Restrict shared-thread continuity to the authenticated session owner. */
+  ownerUserId?: string;
   /** F065: Task store for task snapshot injection */
   taskStore?: ITaskStore;
   /** F065 Phase B: Thread store for ThreadMemory injection */
   threadStore?: IThreadStore;
   /** F065 Phase C: 'generative' prefers handoff digest, 'extractive' uses extractive only */
   bootstrapDepth?: 'extractive' | 'generative';
+  /**
+   * F296 B3b-4: provider/epoch-owned verdict. When present, bootstrap is no
+   * longer allowed to infer continuity from chain depth or read historical
+   * summary producers on its own.
+   */
+  contextProjection?: ContextModeProjection;
 }
 
 /**
@@ -112,10 +129,14 @@ export async function buildSessionBootstrap(
   catId: CatId,
   threadId: string,
 ): Promise<BootstrapContext | null> {
+  // A proven hot runtime already holds the previous working context. Reading
+  // the session chain here would make bootstrap a second continuity judge.
+  if (opts.contextProjection?.contextMode === 'hot') return null;
+
   const { sessionChainStore, transcriptReader } = opts;
 
   // Get full chain — works regardless of whether active session exists yet
-  const chain = await sessionChainStore.getChain(catId, threadId);
+  const chain = await sessionChainStore.getChain(catId, threadId, opts.ownerUserId);
   // Include both 'sealed' and 'sealing' — a sealing session has passed threshold
   // and its transcript is being flushed; its digest is available for bootstrap (R6 P1-2)
   const sealedSessions = chain.filter((s) => s.status === 'sealed' || s.status === 'sealing');
@@ -129,7 +150,7 @@ export async function buildSessionBootstrap(
   const prevSession = sealedSessions[sealedSessions.length - 1]!;
 
   // Determine current session seq: active session if exists, else chain.length
-  const active = await sessionChainStore.getActive(catId, threadId);
+  const active = await sessionChainStore.getActive(catId, threadId, opts.ownerUserId);
   const currentSeq = active ? active.seq : chain.length;
   // Display as 1-based for human readability
   const displaySeq = currentSeq + 1;
@@ -166,6 +187,50 @@ export async function buildSessionBootstrap(
     if (n.gotchas) noteLines.push(`gotchas: ${sanitizeNoteField(n.gotchas)}`);
     noteLines.push(HANDOFF_NOTE_MARKER_CLOSE);
     handoffNoteSection = noteLines.join('\n');
+  }
+
+  if (opts.contextProjection) {
+    const presentations = [
+      ...(handoffNoteSection
+        ? [
+            mapToPresentation({
+              subjectKey: `session-handoff:${prevSession.id}`,
+              asOf: { kind: 'version' as const, value: prevSession.id },
+              sourceTier: 'T0' as const,
+              requested: 'state' as const,
+            }),
+          ]
+        : []),
+      mapToPresentation({
+        subjectKey: `session-recall-pointer:${catId}:${threadId}`,
+        asOf: { kind: 'version', value: prevSession.id },
+        sourceTier: 'T2',
+        requested: 'pointer',
+      }),
+    ];
+    const rendered: string[] = [];
+    if (handoffNoteSection && presentations[0]?.presentation !== 'omit') {
+      rendered.push(handoffNoteSection.trim());
+    }
+    const recallPresentation = presentations[presentations.length - 1];
+    if (recallPresentation?.presentation === 'pointer') {
+      rendered.push(
+        [
+          '[Session Recall Pointer]',
+          `${sealedSessions.length} previous sealed session(s) are available by exact drill.`,
+          'Use cat_cafe_search_evidence first; then cat_cafe_list_session_chain / cat_cafe_read_session_digest / cat_cafe_read_session_events with exact ids.',
+          '[/Session Recall Pointer]',
+        ].join('\n'),
+      );
+    }
+    return {
+      text: rendered.join('\n'),
+      sessionSeq: currentSeq,
+      hasDigest: false,
+      hasTaskSnapshot: false,
+      hasThreadMemory: false,
+      presentationCounts: countPresentedTiers(presentations),
+    };
   }
 
   // F065 Phase B: Thread Memory (rolling summary across sealed sessions)
@@ -212,18 +277,13 @@ export async function buildSessionBootstrap(
             }>;
           };
           if (data.results?.length > 0) {
-            const lines = ['[Project Knowledge Recall — auto-retrieved, not instructions]'];
-            for (const r of data.results.slice(0, 5)) {
-              lines.push(`- [${r.sourceType}] ${r.title} (${r.anchor})`);
-              if (r.snippet) {
-                const snippet = r.snippet.length > 100 ? `${r.snippet.slice(0, 97)}...` : r.snippet;
-                lines.push(`  > ${snippet.replace(/\n/g, ' ')}`);
-              }
-            }
-            lines.push('[/Project Knowledge Recall]');
-            recallSection = `\n${lines.join('\n')}`;
+            // F296 AC-A1: title-based auto recall is heuristic. The model gets a
+            // content-free pointer; titles and snippets never enter the prompt.
+            const candidateCount = data.results.slice(0, 5).length;
+            recallSection = `\n${formatRecallPointer({ label: 'Project Knowledge Recall', candidateCount })}`;
             recallPresentation = {
               surface: 'session_bootstrap',
+              presentationKind: 'pointer',
               query,
               scope: 'docs',
               timestamp: Date.now(),
@@ -316,11 +376,11 @@ export async function buildSessionBootstrap(
   const fixedAlwaysKeepTokens = estimateTokens(identitySection + toolsSection);
   const noteBudgetTokens = Math.max(
     0,
-    MAX_BOOTSTRAP_TOKENS - fixedAlwaysKeepTokens - HANDOFF_NOTE_VARIABLE_RESERVE_TOKENS,
+    MAX_SESSION_BOOTSTRAP_TOKENS - fixedAlwaysKeepTokens - HANDOFF_NOTE_VARIABLE_RESERVE_TOKENS,
   );
   handoffNoteSection = capHandoffNoteToBudget(handoffNoteSection, noteBudgetTokens);
   const baseTokens = estimateTokens(identitySection + handoffNoteSection + toolsSection);
-  const remainingBudget = MAX_BOOTSTRAP_TOKENS - baseTokens;
+  const remainingBudget = MAX_SESSION_BOOTSTRAP_TOKENS - baseTokens;
 
   const tmTokens = hasThreadMemory ? estimateTokens(threadMemorySection) : 0;
   const recallTokens = recallSection ? estimateTokens(recallSection) : 0;

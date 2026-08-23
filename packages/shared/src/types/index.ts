@@ -43,7 +43,20 @@ export type {
   A2ATask,
   A2ATaskStatus,
 } from './a2a.js';
+// F086/F216: structured A2A scheduling mode (serial vs parallel) — never inferred from ordering
+export {
+  A2A_INLINE_MENTION_MODE,
+  type A2ARoutingMode,
+  type A2ARoutingProjection,
+  isRoutingProjectionStartingNow,
+} from './a2a-routing-mode.js';
 // F167 Phase S: action-scoped A2A successor single-flight contract
+export {
+  ACTION_SUBJECT_REF_DESCRIPTION,
+  ACTION_SUBJECT_REF_MAX_LENGTH,
+  ACTION_SUBJECT_REF_PATTERN,
+  actionSubjectRefSchema,
+} from './action-subject-ref.js';
 export {
   ACTION_SUCCESSOR_ACTION_FAMILIES,
   ACTION_SUCCESSOR_SLOTS,
@@ -66,6 +79,17 @@ export {
   type ReviewReentryReason,
   reviewReentrySchema,
 } from './action-successor.js';
+// F295 execution-scoped liveness and cancellation projection.
+export type {
+  ActiveExecutionCancelability,
+  ActiveExecutionCancelTarget,
+  ActiveExecutionKind,
+  ActiveExecutionListResponse,
+  ActiveExecutionNonCancelableReason,
+  ActiveExecutionProjection,
+  LiveInvocationCancelTarget,
+  ManagedCommandCancelTarget,
+} from './active-execution.js';
 // F178 Phase B: agent-key record + verify result
 export type { AgentKeyRecord, AgentKeyVerifyResult } from './agent-key.js';
 // F178 Phase B: agent-key reason taxonomy
@@ -240,7 +264,6 @@ export type {
   CliConfig,
   // F067: Co-Creator config for @ mention routing
   CoCreatorConfig,
-  ContextBudget,
   CredentialEntry,
   MissionHubSelfClaimScope,
   // F032: Roster types for collaboration rules
@@ -251,7 +274,7 @@ export type {
 // F182: Cat routing error types
 export type { CatAlternative, CatRoutingError } from './cat-routing.js';
 // F212: CLI error diagnostics (cross-package data contract; classifier/sanitizer impl stays in api)
-export type { CliDiagnostics, CliErrorReasonCode } from './cli-diagnostics.js';
+export type { CliActiveWriterRecoveryState, CliDiagnostics, CliErrorReasonCode } from './cli-diagnostics.js';
 export type { BuiltinAccountClient } from './client-routing.js';
 export {
   builtinAccountFamilyForClient,
@@ -283,6 +306,7 @@ export type {
   GitHubAuthorAssociation,
   IssueCommentSuppressionReason,
   IssueFixEvidence,
+  PendingExternalReviewVerdict,
   ReviewDeliveryOutcome,
 } from './community-event.js';
 export type {
@@ -398,11 +422,29 @@ export type {
 export {
   getAllConnectorDefinitions,
   getConnectorDefinition,
+  isSelectableManagedHoldConnectorSource,
   isStaticConnectorId,
   registerConnectorDefinition,
   SCHEDULER_TRIGGER_PREFIX,
   unregisterConnectorDefinition,
 } from './connector.js';
+export {
+  type CliOutputQuoteSource,
+  CONTEXT_ATTACHMENT_COMMENT_MAX_LENGTH,
+  CONTEXT_ATTACHMENT_MAX_COUNT,
+  CONTEXT_ATTACHMENT_PROMPT_MAX_CHARS,
+  CONTEXT_ATTACHMENT_QUOTE_MAX_LENGTH,
+  CONTEXT_ATTACHMENT_VERSION,
+  type ContextAttachment,
+  type ContextAttachmentContent,
+  type MessageQuoteSource,
+  type QuoteContextAttachment,
+  type QuoteContextSource,
+  serializeContextAttachmentsPrompt,
+  type ThreadContextAttachment,
+  type WorkspaceFileContextAttachment,
+  type WorkspaceFileQuoteSource,
+} from './context-attachment.js';
 export type {
   CrossThreadCoordination,
   CrossThreadCoordinationInput,
@@ -572,13 +614,25 @@ export {
 } from './game.js';
 export {
   type AwaitStateV1,
+  createWaitContinuationCarrier,
   GITHUB_WAIT_PREDICATE_KINDS,
   type GitHubCiBaselineBucket,
+  type GitHubIssueAwaitStateV1,
+  type GitHubIssueWaitBaseline,
+  type GitHubIssueWaitPredicate,
+  type GitHubPrAwaitStateV1,
+  type GitHubPrWaitBaseline,
+  type GitHubPrWaitPredicate,
   type GitHubReviewThreadBaseline,
   type GitHubWaitBaseline,
   type GitHubWaitMatchedDelta,
   type GitHubWaitPredicate,
   type GitHubWaitPredicateKind,
+  type GitHubWaitSubjectRef,
+  parseWaitContinuationCarrier,
+  parseWaitOwnerFence,
+  type UnifiedAwaitStateV1,
+  type WaitContinuationCarrierV1,
   type WaitOutcomeDelivery,
   type WaitOutcomeV1,
   type WaitOwnerFence,
@@ -672,6 +726,16 @@ export type {
   TriageIntentCardInput,
   TriageResult,
 } from './intent-card.js';
+// F299: invocation-first trajectory projection and typed source navigation.
+export type {
+  InvocationPromptInputProjection,
+  InvocationPromptMessageProjection,
+  InvocationTrajectoryListResponse,
+  InvocationTrajectoryStatus,
+  InvocationTrajectorySummary,
+  InvocationTrajectoryTokens,
+  TrajectoryOriginRef,
+} from './invocation-trajectory.js';
 // Leaderboard types (F075 排行榜)
 export type {
   Achievement,
@@ -704,6 +768,14 @@ export type {
   LimbNodeRecord,
   LimbNodeStatus,
 } from './limb.js';
+// F279: Workspace Listen Mode durable document/cache state.
+export type {
+  ListenDocumentIdentity,
+  ListenDocumentState,
+  ListenPlaybackRate,
+  ListenRetention,
+  ListenSentenceState,
+} from './listen-mode.js';
 // F275 Phase B: internal managed-work identity kernel
 export type {
   ManagedWorkBinding,
@@ -747,6 +819,20 @@ export type {
   MeetingContextProvenance,
 } from './meeting-context-block.js';
 export { createMeetingContextBlock } from './meeting-context-block.js';
+export {
+  type MeetingIntake,
+  type MeetingIntakeChoices,
+  type MeetingIntakeExecutionState,
+  type MeetingIntakeHealthState,
+  type MeetingIntakeIngress,
+  type MeetingIntakeJudgmentState,
+  type MeetingIntakeOutput,
+  type MeetingIntakeRepair,
+  type MeetingIntakeRepairAction,
+  type MeetingIntakeSignalOrigin,
+  type MeetingIntakeSourceState,
+  meetingIntakeNeedsAttention,
+} from './meeting-intake.js';
 // Memory types (F3-lite 显式记忆)
 export type {
   MemoryEntry,
@@ -777,10 +863,33 @@ export {
   type SubjectSeenOpportunityV1,
   subjectSeenOpportunityV1Schema,
 } from './memory-cue.js';
+export {
+  ASR_PERSON_MEMORY_REFLEX_ENTRY_V1,
+  type AsrPersonMemoryDynamicSceneEntryV1,
+  type AsrPersonMemoryWriteOpportunityV1,
+  type AsrTranscriptSourceCoordinateV1,
+  asrPersonMemoryDynamicSceneEntryV1Schema,
+  asrPersonMemoryWriteOpportunityV1Schema,
+  asrTranscriptSourceCoordinateV1Schema,
+  type DeliveredWriteOpportunityRecordV1,
+  deliveredWriteOpportunityRecordV1Schema,
+  MAX_WRITE_OPPORTUNITY_GENERATION,
+  projectDeliveredWriteOpportunityRecord,
+  WRITE_OPPORTUNITY_DISPOSITIONS,
+  WRITE_OPPORTUNITY_INVALIDATORS,
+  type WriteOpportunityDispositionV1,
+  type WriteOpportunityPresentationRetryCarrierV1,
+  type WriteOpportunityReentryCarrierV1,
+  writeOpportunityDispositionV1Schema,
+  writeOpportunityGenerationId,
+  writeOpportunityPresentationRetryCarrierV1Schema,
+  writeOpportunityReentryCarrierV1Schema,
+} from './memory-write-opportunity.js';
 // Message types
 export type {
   AgentStreamMessage,
   CodeContent,
+  FileContent,
   ImageContent,
   Message,
   MessageContent,
@@ -848,6 +957,7 @@ export {
   PAW_FEEL_DISPOSITION_STATES,
   PAW_FEEL_INBOX_SORTS,
   PAW_FEEL_NO_ACTION_REASONS,
+  PAW_FEEL_RESPONSIBILITY_STATES,
   PAW_FEEL_REVIEW_BUNDLE_BASES,
   type PawFeelCaptureAssessment,
   type PawFeelCaptureMethod,
@@ -864,10 +974,17 @@ export {
   type PawFeelInboxSort,
   type PawFeelNoActionReason,
   type PawFeelReconciliationCoverage,
+  type PawFeelResponsibilityBlocker,
+  type PawFeelResponsibilityCounts,
+  type PawFeelResponsibilityExitKind,
+  type PawFeelResponsibilityProjection,
+  type PawFeelResponsibilityState,
   type PawFeelReviewBundle,
   type PawFeelReviewBundleBasis,
   type PawFeelReviewBundleCounts,
   type PawFeelSignalId,
+  type PawFeelSignatureAction,
+  type PawFeelSignatureRequest,
   type PawFeelSourceRef,
   type PawFeelSourceResolution,
 } from './paw-feel-disposition.js';
@@ -974,6 +1091,25 @@ export type {
   PluginResourceStatus,
   PluginStatus,
 } from './plugin.js';
+export {
+  DEFERRED_PERSON_MEMORY_RECEIPT_STATES,
+  type DeferredPersonMemoryInput,
+  type DeferredPersonMemoryReceipt,
+  type DeferredPersonMemoryResolvedSource,
+  type DeferredPersonMemorySourceInput,
+  type DeferredWriteOpportunityReceiptV1,
+  deferredPersonMemoryInputSchema,
+  deferredPersonMemoryReceiptIdSchema,
+  deferredPersonMemoryReceiptSchema,
+  deferredPersonMemoryResolvedSourceSchema,
+  deferredPersonMemorySourceInputSchema,
+  deferredWriteOpportunityReceiptV1Schema,
+  deferredWriteOpportunitySourceRefV1Schema,
+  type WriteOpportunityLineageV1,
+  type WriteOpportunityRefV1,
+  writeOpportunityLineageV1Schema,
+  writeOpportunityRefV1Schema,
+} from './proactive-memory-deferred-receipt.js';
 // F282 Phase D: opaque opportunity episode and calibrated-abstention contract
 export {
   PROACTIVE_MEMORY_ABSTENTION_REASON_CODES,
@@ -1048,13 +1184,18 @@ export type {
   QueueAuthorIntentReceipt,
   QueueHandledDisposition,
   QueueLineageEvidenceRef,
+  QueueManagedHoldContinuationWitness,
   QueueMessageReceipt,
+  QueueMessageReceiptProjection,
   QueueReceiptTarget,
   QueueReceiptTargetState,
   QueueReminderAttempt,
   QueueReminderAttemptState,
   QueueReminderMissedReason,
   QueueSourceResponseConsumptionWitness,
+  QueueTargetAttempt,
+  QueueTargetAttemptState,
+  QueueTargetAttemptTerminalReason,
   QueueTargetOutcome,
   QueueTerminalConsumptionWitness,
   QueueTerminalSilentConsumptionWitness,
@@ -1102,13 +1243,27 @@ export type {
   ScheduleMutationTaskDefinition,
   ScheduleMutationTrigger,
 } from './schedule-mutation.js';
+export {
+  SCHEDULER_WAIT_PREDICATE_KINDS,
+  type SchedulerAwaitStateV1,
+  type SchedulerWaitBaseline,
+  type SchedulerWaitPredicate,
+  type SchedulerWaitPredicateKind,
+  type SchedulerWaitSubjectRef,
+} from './scheduler-wait.js';
 // Session chain types (F24 Session Chain + Context Health)
 export type {
   ContextHealth,
   ContextHealthConfig,
   ContextManagementHint,
+  HybridProgress,
   SealReason,
   SealResult,
+  SessionCapacityPin,
+  SessionExecutionReason,
+  SessionExecutionStatus,
+  SessionPolicySnapshot,
+  SessionPolicySource,
   SessionRecord,
   SessionStatus,
   SessionStrategy,
@@ -1122,6 +1277,12 @@ export type {
   HandoffProposalStatus,
   SessionHandoffProposal,
 } from './session-handoff-proposal.js';
+export type {
+  MeetingIntakeJudgmentField,
+  SignalRouteRecord,
+  SignalRouteState,
+  SignalRuntimeBinding,
+} from './signal-ingress.js';
 // Signals types (F21 Signal Hunter)
 export type {
   SignalArticle,
@@ -1155,6 +1316,8 @@ export type {
   SliceType,
   UpdateSliceInput,
 } from './slice.js';
+// Socket.IO room membership convergence contract shared by API and Web.
+export type { RoomJoinAck } from './socket-room.js';
 // SOP definition generated truth source (#748)
 export {
   DEVELOPMENT_SOP_DEFINITION,
@@ -1205,8 +1368,7 @@ export type {
   DispatchGateState,
   IssueAutomationState,
   IssuePendingWake,
-  IssueTrackingWakePolicy,
-  LegacyIssueAutomationState,
+  IssueWaitAutomationState,
   PrAutomationState,
   ReviewAutomationState,
   SuggestedCrossPostAction,
@@ -1243,6 +1405,12 @@ export type {
   ThreadMemberEffortPatch,
   ThreadMemberEffortRow,
 } from './thread-effort.js';
+// F291: thread-scoped Codex requested speed read/write contract
+export type {
+  ThreadMemberSpeedListResponse,
+  ThreadMemberSpeedPatch,
+  ThreadMemberSpeedRow,
+} from './thread-speed.js';
 // TTS types (F34 TTS Provider)
 export type {
   ITtsProvider,
@@ -1250,6 +1418,8 @@ export type {
   TtsStreamRequest,
   TtsSynthesizeRequest,
   TtsSynthesizeResult,
+  TtsSynthesizeStreamEvent,
+  TtsSynthesizeStreamOptions,
   VoiceChunkEvent,
   VoiceConfig,
   VoiceStreamEndEvent,

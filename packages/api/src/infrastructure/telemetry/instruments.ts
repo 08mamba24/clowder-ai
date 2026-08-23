@@ -152,6 +152,40 @@ export const pawFeelReconciliationUnavailable = lazy(() =>
   }),
 );
 
+// --- F296 B4b: continuity / final projection / delivery runtime health ---
+export const contextProjectionTransitionTotal = lazy(() =>
+  meter().createCounter('cat_cafe.context_projection.transition_total', {
+    description: 'Bounded continuity transitions observed at a final provider generation',
+  }),
+);
+
+export const contextProjectionTierCount = lazy(() =>
+  meter().createHistogram('cat_cafe.context_projection.tier_count', {
+    description: 'Mapper-selected final-generation projection count by bounded source tier',
+    unit: '{projection}',
+  }),
+);
+
+export const contextProjectionTierBytes = lazy(() =>
+  meter().createHistogram('cat_cafe.context_projection.tier_bytes', {
+    description: 'UTF-8 bytes of mapper-selected final-generation projections by bounded source tier',
+    unit: 'By',
+  }),
+);
+
+export const contextProjectionDeliveryLatency = lazy(() =>
+  meter().createHistogram('cat_cafe.context_projection.delivery_latency', {
+    description: 'Latency from final-generation construction to the provider receipt',
+    unit: 'ms',
+  }),
+);
+
+export const contextProjectionLedgerOutcomeTotal = lazy(() =>
+  meter().createCounter('cat_cafe.context_projection.ledger_outcome_total', {
+    description: 'Bounded terminal outcome after provider receipt or generation release',
+  }),
+);
+
 export const guideTransitions = lazy(() =>
   meter().createCounter('cat_cafe.guide.transitions', { description: 'Guide lifecycle state transitions' }),
 );
@@ -653,7 +687,8 @@ export const a2aDispatchCount = lazy(() =>
 /**
  * Counter: callback auth failures by reason / tool / cat.
  * Attributes (allowlist-filtered):
- *   - callback.reason: expired | invalid_token | unknown_invocation | missing_creds | stale_invocation
+ *   - callback.reason: invalid_token | unknown_invocation | missing_creds | stale_invocation |
+ *     completed | failed | interrupted | replaced | revoked | canceled
  *   - callback.tool: refresh-token | post-message | register-pr-tracking | retain-memory | ...
  *   - agent.id: cat that experienced the failure (omitted when unknown)
  */
@@ -909,6 +944,40 @@ export const codexAppServerLeaseActive = lazy(() =>
 export const codexAppServerHostEviction = lazy(() =>
   meter().createCounter('cat_cafe.codex_app_server.host.eviction', {
     description: 'Codex app-server hosts evicted from the warm pool, partitioned by bounded status reason',
+  }),
+);
+
+export const codexAppServerHostMigration = lazy(() =>
+  meter().createCounter('cat_cafe.codex_app_server.host.migration', {
+    description: 'Native-session host migration lifecycle, partitioned by bounded reason and status',
+  }),
+);
+
+export const codexAppServerHostMigrationDuration = lazy(() =>
+  meter().createHistogram('cat_cafe.codex_app_server.host.migration_duration', {
+    description: 'Time spent waiting for and retiring a source host before native-session migration',
+    unit: 's',
+  }),
+);
+
+/** Durable visibility mutation could not resolve a raw cursor to canonical position. */
+export const visibilityCursorUnresolvedMutation = lazy(() =>
+  meter().createCounter('cat_cafe.visibility_cursor.unresolved_mutation', {
+    description: 'Durable cursor mutations rejected because a raw cursor had no canonical visibility position',
+  }),
+);
+
+/** Newly accepted canonical evidence replaced an exact unresolvable durable value. */
+export const visibilityCursorUnresolvedRepair = lazy(() =>
+  meter().createCounter('cat_cafe.visibility_cursor.unresolved_repair', {
+    description: 'Unresolvable durable cursor values repaired by later accepted canonical evidence',
+  }),
+);
+
+/** A producer declined to put a non-canonical value into the deferred ACK slot. */
+export const visibilityCursorDeferredBoundaryRejected = lazy(() =>
+  meter().createCounter('cat_cafe.visibility_cursor.deferred_boundary_rejected', {
+    description: 'Non-canonical context boundaries omitted before deferred delivery aggregation',
   }),
 );
 
@@ -1251,6 +1320,7 @@ export function warmupCounters(): void {
   codexAppServerHostLive.add(0);
   codexAppServerLeaseActive.add(0);
   codexAppServerHostEviction.add(0);
+  codexAppServerHostMigration.add(0);
   freshnessGateHeld.add(0);
   freshnessGateForward.add(0);
   freshnessRelevanceSuppressed.add(0);
@@ -1275,4 +1345,6 @@ export function warmupCounters(): void {
   externalCaseNoisyWakeDuringCloudReview.add(0);
   externalCaseDuplicateReviewerWakePerHead.add(0);
   externalCaseUserNudgeRequired.add(0);
+  contextProjectionTransitionTotal.add(0);
+  contextProjectionLedgerOutcomeTotal.add(0);
 }

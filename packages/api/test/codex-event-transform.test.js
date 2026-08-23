@@ -41,6 +41,8 @@ test('item.started command_execution → tool_use', () => {
   );
   assert.equal(msg?.type, 'tool_use');
   assert.equal(msg?.toolName, 'command_execution');
+  assert.equal(msg?.toolSource, 'host_cli');
+  assert.equal(msg?.toolChannel, 'unknown');
   assert.deepEqual(msg?.toolInput, { command: 'ls -la' });
 });
 
@@ -59,6 +61,10 @@ test('item.completed command_execution → tool_result', () => {
     CAT,
   );
   assert.equal(msg?.type, 'tool_result');
+  assert.equal(msg?.toolName, 'command_execution');
+  assert.equal(msg?.toolSource, 'host_cli');
+  assert.equal(msg?.toolChannel, 'unknown');
+  assert.equal(msg?.toolResultStatus, 'ok');
   assert.ok(msg?.content?.includes('file.txt'));
 });
 
@@ -76,13 +82,20 @@ test('item.completed file_change → tool_use', () => {
   );
   assert.equal(msg?.type, 'tool_use');
   assert.equal(msg?.toolName, 'file_change');
+  assert.equal(msg?.toolSource, 'host_cli');
   assert.deepEqual(msg?.toolInput, { status: 'completed', changes: ['a', { path: 'b' }] });
 });
 
 test('Reconnecting error → system_info', () => {
   const msg = transformCodexEvent({ type: 'error', message: 'Reconnecting... (attempt 1)' }, CAT);
   assert.equal(msg?.type, 'system_info');
-  assert.ok(msg?.content?.startsWith('Reconnecting...'));
+  assert.deepEqual(JSON.parse(msg.content), {
+    type: 'provider_recovery',
+    provider: 'codex',
+    phase: 'reconnecting',
+    attempt: 1,
+    message: 'Reconnecting... (attempt 1)',
+  });
 });
 
 test('unknown event type → null', () => {
@@ -225,6 +238,8 @@ test('item.started mcp_tool_call → tool_use', () => {
   const msg = transformCodexEvent(event, CAT);
   assert.equal(msg?.type, 'tool_use');
   assert.equal(msg?.toolName, 'mcp:cat-cafe/post_message');
+  assert.equal(msg?.toolSource, 'mcp');
+  assert.equal(msg?.toolChannel, 'unknown');
   assert.deepEqual(msg?.toolInput, { text: 'hello' });
 });
 
@@ -241,6 +256,8 @@ test('item.completed mcp_tool_call → tool_result', () => {
   };
   const msg = transformCodexEvent(event, CAT);
   assert.equal(msg?.type, 'tool_result');
+  assert.equal(msg?.toolSource, 'mcp');
+  assert.equal(msg?.toolChannel, 'unknown');
   assert.ok(msg?.content?.includes('mcp:cat-cafe/post_message'));
 });
 
