@@ -1200,7 +1200,7 @@
       "mentionPatterns": ["@dsh", "@deepseek-harness", "@衡衡"],
       "roleDescription": "官方 DeepSeek Harness ACP 自动化入口；与 OpenCode 渊渊分路，不替换 deepseek",
       "teamStrengths": "DeepSeek 官方 harness、ACP 自动化、插件化工具",
-      "caution": "官方 ACP demo 拒非空 session/new.mcpServers，且其 plugin 图加载不了额外 dsh-mcp-client。Hub 走 examples/acp-agent/cordis.yml。不要 @deepseek（那是渊渊）",
+      "caution": "官方 ACP demo 拒非空 session/new.mcpServers。Hub 在 examples/acp-agent 写 cat-cafe-dsh-acp.cordis.yml，用相对路径加载 mcp-client。不要 @deepseek（那是渊渊）",
       "defaultVariantId": "dsh-default",
       "variants": [
         {

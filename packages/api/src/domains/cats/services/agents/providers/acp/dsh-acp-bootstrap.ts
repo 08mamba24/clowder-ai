@@ -3,16 +3,23 @@
  * server (`dsh-acp-demo`). Catalog identity stays `dsh`; spawn never talks
  * JSON-RPC to `dsh --profile headless`. Missing demo/composition → skip.
  *
- * Official ACP rejects non-empty session/new.mcpServers. Extra dsh-mcp-client
- * plugins are not in the ACP demo graph and fail initialize, so Hub `--config`
- * is the official `examples/acp-agent/cordis.yml`.
+ * Official ACP rejects non-empty session/new.mcpServers. Hub therefore writes
+ * a sibling overlay (`cat-cafe-dsh-acp.cordis.yml`) next to official
+ * `examples/acp-agent/cordis.yml` and loads family MCP via a **dot-relative**
+ * path to `packages/mcp/mcp-client/lib/index.js` (bare `@deepseek-ai/dsh-mcp-client`
+ * is not in the ACP demo graph; a directory import fails Node ESM).
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, delimiter, isAbsolute, join } from 'node:path';
+import { dirname, delimiter, isAbsolute, join, relative, resolve } from 'node:path';
 import { formatCliNotFoundError, resolveCliCommandOrBare } from '../../../../../../utils/cli-resolve.js';
+import { resolveAcpMcpServers } from './acp-mcp-resolver.js';
+import { materializeSessionMcpServers } from './acp-session-env.js';
 import type { AcpMcpServer, AcpMcpServerHttp, AcpMcpServerStdio } from './types.js';
 
 const DSH_HARNESS_BASENAMES = new Set(['dsh', 'dsh-acp-demo']);
+const DSH_ACP_OVERLAY_FILENAME = 'cat-cafe-dsh-acp.cordis.yml';
+const DSH_MCP_CLIENT_REL = join('packages', 'mcp', 'mcp-client');
+const BARE_DSH_MCP_CLIENT = '@deepseek-ai/dsh-mcp-client';
 
 export function isDshHarnessCommand(command: string): boolean {
   return DSH_HARNESS_BASENAMES.has(basenameCommand(command));
@@ -46,27 +53,42 @@ export interface PrepareDshAcpSpawnInput {
 }
 
 /**
- * Resolve the official ACP stdio binary and the composition the demo can load.
- *
- * The ACP demo's plugin graph cannot load extra `@deepseek-ai/dsh-mcp-client`
- * entries (pnpm-isolated; inserting them fails `cordis:include` at initialize).
- * Hub therefore passes the official `examples/acp-agent/cordis.yml` — the same
- * argv that handshake-succeeds. Family MCP stays on the catalog whitelist +
- * session omit (the protocol rejects non-empty session/new.mcpServers).
+ * Resolve the official ACP stdio binary and write the Hub overlay the demo
+ * can initialize: sibling of `cordis.yml`, relative mcp-client entry, family MCP.
  */
 export async function prepareDshAcpSpawnForProject(input: PrepareDshAcpSpawnInput): Promise<DshAcpStdioSpawnResult> {
   const env = input.env ?? process.env;
   const binary = resolveDshAcpStdioBinary(input.command, input.args, env);
   if (!binary.ok) return binary;
 
+  const compositionDir = dirname(binary.baseConfigPath);
+  const overlayPath = join(compositionDir, DSH_ACP_OVERLAY_FILENAME);
+  const pluginName = resolveDshMcpClientPluginName(compositionDir, env);
+  const servers = await resolveDshOverlayServers(input, env);
+  if (servers.length > 0 && isBareDshMcpClientPlugin(pluginName)) {
+    return {
+      ok: false,
+      error: new Error(
+        'DeepSeek Harness ACP family MCP needs a filesystem path to packages/mcp/mcp-client/lib/index.js. The ACP demo cannot load @deepseek-ai/dsh-mcp-client. Set CAT_CAFE_DSH_ROOT to a deepseek-harness checkout.',
+      ),
+    };
+  }
+
+  writeDshAcpOverlayConfig({
+    baseConfigPath: binary.baseConfigPath,
+    servers,
+    outputPath: overlayPath,
+    pluginName: pluginName ?? BARE_DSH_MCP_CLIENT,
+  });
+
   return {
     ok: true,
     command: binary.command,
-    args: [...withoutConfigArgs(binary.args), '--config', binary.baseConfigPath],
+    args: [...withoutConfigArgs(binary.args), '--config', overlayPath],
     env: binary.env,
-    overlayPath: binary.baseConfigPath,
+    overlayPath,
     baseConfigPath: binary.baseConfigPath,
-    cwd: dirname(binary.baseConfigPath),
+    cwd: compositionDir,
   };
 }
 
@@ -84,6 +106,9 @@ export function writeDshAcpOverlayConfig(input: {
   outputPath: string;
   pluginName?: string;
 }): string {
+  if (resolve(input.outputPath) === resolve(input.baseConfigPath)) {
+    throw new Error('DSH ACP overlay must be a sibling of the official cordis.yml, not overwrite it');
+  }
   const base = readFileSync(input.baseConfigPath, 'utf-8');
   const plugins = buildDshMcpClientPlugins(input.servers, input.pluginName);
   const merged = plugins ? `${base.replace(/\s*$/, '')}\n\n# cat-cafe family MCP via dsh-mcp-client\n${plugins}` : base;
@@ -96,7 +121,7 @@ export function writeDshAcpOverlayConfig(input: {
 }
 
 export function buildDshMcpClientPlugins(servers: readonly AcpMcpServer[], pluginName?: string): string {
-  const name = pluginName ?? '@deepseek-ai/dsh-mcp-client';
+  const name = pluginName ?? BARE_DSH_MCP_CLIENT;
   const lines: string[] = [];
   for (const server of servers) {
     if (isStdioMcpServer(server)) lines.push(...stdioPluginLines(server, name));
@@ -108,6 +133,20 @@ export function buildDshMcpClientPlugins(servers: readonly AcpMcpServer[], plugi
 /** @deprecated Use buildDshMcpClientPlugins — composition entries for --config merge. */
 export function buildDshMcpClientInserts(servers: readonly AcpMcpServer[]): string {
   return buildDshMcpClientPlugins(servers);
+}
+
+/**
+ * Dot-relative plugin `name` from the overlay directory to mcp-client's entry
+ * file. Returns undefined when the checkout has no loadable entry — callers
+ * must not fall back to the bare npm specifier for Hub spawn.
+ */
+export function resolveDshMcpClientPluginName(overlayDir: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const entry = resolveDshMcpClientEntry(overlayDir, env);
+  return entry ? toDotRelative(overlayDir, entry) : undefined;
+}
+
+export function isBareDshMcpClientPlugin(name: string | undefined): boolean {
+  return !name || name === BARE_DSH_MCP_CLIENT || name.startsWith(`${BARE_DSH_MCP_CLIENT}/`);
 }
 
 function resolveDshAcpStdioBinary(
@@ -160,13 +199,33 @@ function resolveDshAcpDemoCommand(
   return undefined;
 }
 
-function resolveDshMcpClientPluginName(env: NodeJS.ProcessEnv): string {
-  const root = env.CAT_CAFE_DSH_ROOT?.trim();
-  if (root) {
-    const local = join(root, 'packages', 'mcp', 'mcp-client');
-    if (existsSync(join(local, 'package.json'))) return local;
+async function resolveDshOverlayServers(input: PrepareDshAcpSpawnInput, env: NodeJS.ProcessEnv): Promise<AcpMcpServer[]> {
+  if (input.mcpSupport === false) return [];
+  const resolved = await resolveAcpMcpServers(input.projectRoot, input.mcpWhitelist, undefined, {
+    mcpSupport: true,
+    catId: input.catId,
+    env,
+  });
+  const apiUrl = env.CAT_CAFE_API_URL?.trim() || 'http://localhost:3004';
+  return materializeSessionMcpServers(resolved, { CAT_CAFE_API_URL: apiUrl });
+}
+
+function resolveDshMcpClientEntry(overlayDir: string, env: NodeJS.ProcessEnv): string | undefined {
+  const roots: string[] = [];
+  const fromEnv = env.CAT_CAFE_DSH_ROOT?.trim();
+  if (fromEnv) roots.push(fromEnv);
+  roots.push(join(overlayDir, '..', '..'));
+  for (const root of roots) {
+    const entry = join(root, DSH_MCP_CLIENT_REL, 'lib', 'index.js');
+    if (existsSync(entry)) return entry;
   }
-  return '@deepseek-ai/dsh-mcp-client';
+  return undefined;
+}
+
+function toDotRelative(fromDir: string, absoluteTarget: string): string {
+  const rel = relative(fromDir, absoluteTarget).split('\\').join('/');
+  if (!rel || rel === '.') return './index.js';
+  return rel.startsWith('.') ? rel : `./${rel}`;
 }
 
 function resolveDshAcpBaseConfig(env: NodeJS.ProcessEnv): string | undefined {
@@ -247,6 +306,7 @@ function stdioPluginLines(server: AcpMcpServerStdio, pluginName: string): string
     lines.push(`    args: [${server.args.map(yamlQuote).join(', ')}]`);
   }
   appendEnvLines(lines, server.env);
+  lines.push('    failOnStartupError: false');
   return lines;
 }
 
@@ -266,6 +326,7 @@ function httpPluginLines(server: AcpMcpServerHttp, pluginName: string): string[]
       lines.push(`      ${header.name}: ${yamlQuote(header.value)}`);
     }
   }
+  lines.push('    failOnStartupError: false');
   return lines;
 }
 

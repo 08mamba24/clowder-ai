@@ -316,7 +316,7 @@ export async function createAcpServiceForConfig(
       command: dshPrepared.command,
       args: dshPrepared.args,
       extraEnv: dshPrepared.env,
-      // Resolve @deepseek-ai/* plugins from the harness composition, not the ACP tmp cwd.
+      // Overlay + official plugins resolve from the composition dir, not ACP tmp cwd.
       cwd: dshPrepared.cwd,
     };
   }

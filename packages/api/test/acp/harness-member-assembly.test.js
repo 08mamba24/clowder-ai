@@ -1,7 +1,7 @@
 // @ts-check
 
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -38,10 +38,17 @@ function writeDshFixture() {
   mkdirSync(binDir, { recursive: true });
   const bin = join(binDir, 'bin.js');
   writeFileSync(bin, '#!/usr/bin/env node\n');
+  const mcpClientLib = join(root, 'packages', 'mcp', 'mcp-client', 'lib');
+  mkdirSync(mcpClientLib, { recursive: true });
+  writeFileSync(
+    join(root, 'packages', 'mcp', 'mcp-client', 'package.json'),
+    JSON.stringify({ name: '@deepseek-ai/dsh-mcp-client', type: 'module', main: 'lib/index.js' }),
+  );
+  writeFileSync(join(mcpClientLib, 'index.js'), 'export default {}\n');
   const configDir = join(root, 'examples', 'acp-agent');
   mkdirSync(configDir, { recursive: true });
   writeFileSync(join(configDir, 'cordis.yml'), "- id: acp-agent\n  name: '@deepseek-ai/dsh-acp-demo'\n");
-  return { root, bin };
+  return { root, bin, overlay: join(configDir, 'cat-cafe-dsh-acp.cordis.yml') };
 }
 
 function withDshRoot(root, fn) {
@@ -127,11 +134,24 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
         );
         const configIdx = dshSpawn.args.indexOf('--config');
         assert.ok(configIdx >= 0, `DSH spawn must pass --config, got ${JSON.stringify(dshSpawn.args)}`);
-        assert.equal(
+        assert.equal(dshSpawn.args[configIdx + 1], fixture.overlay);
+        assert.notEqual(
           dshSpawn.args[configIdx + 1],
           join(fixture.root, 'examples', 'acp-agent', 'cordis.yml'),
-          'Hub argv must be the official composition the ACP demo can initialize',
+          'Hub argv must be the sibling overlay, not official-only cordis.yml',
         );
+        const overlayYaml = readFileSync(fixture.overlay, 'utf-8');
+        assert.match(overlayYaml, /serverName: 'cat-cafe-memory'/);
+        assert.match(overlayYaml, /serverName: 'cat-cafe-collab'/);
+        assert.match(overlayYaml, /serverName: 'cat-cafe-signals'/);
+        assert.match(overlayYaml, /transport: stdio/);
+        assert.match(overlayYaml, /CAT_CAFE_API_URL:/);
+        assert.match(overlayYaml, /name: '\.\.\/\.\.\/packages\/mcp\/mcp-client\/lib\/index\.js'/);
+        assert.ok(
+          overlayYaml.includes('mcp-client'),
+          'plugin name must be a path containing mcp-client',
+        );
+        assert.doesNotMatch(overlayYaml, /name: '@deepseek-ai\/dsh-mcp-client'/);
       } finally {
         await Promise.all([...poolRegistry.values()].map((pool) => pool.closeAll?.()));
         _resetCachedConfig();
