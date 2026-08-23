@@ -14,37 +14,12 @@ export type CatCapacityProjection = Pick<
   'windowTokens' | 'inputCeilingTokens' | 'source' | 'actionable' | 'provenance'
 >;
 
-/**
- * Origin helper-cat empty-UI floor (2/5 of the 1M-class window).
- * Auto catalog/carrier still wins when it resolves; this only replaces
- * unresolved (the old GLOBAL_FALLBACK 100k path) for glm/deepseek/minimax.
- */
-const HELPER_CAT_EMPTY_UI_WINDOW_TOKENS: Record<string, number> = {
-  glm: 400_000,
-  deepseek: 400_000,
-  minimax: 400_000,
-};
-
-const HELPER_CAT_OUTPUT_RESERVE = 16_000;
-
 export function getCatCapacity(catName: string): CatCapacityProjection {
   const config = catRegistry.tryGet(catName)?.config;
-  const resolved = resolveContextCapacity({
+  return resolveContextCapacity({
     catId: catName,
     model: config ? getCatModel(catName) : undefined,
   });
-  if (resolved.source !== 'unresolved') return resolved;
-
-  const helperWindow = HELPER_CAT_EMPTY_UI_WINDOW_TOKENS[catName];
-  if (!helperWindow) return resolved;
-
-  return {
-    windowTokens: helperWindow,
-    inputCeilingTokens: Math.max(0, helperWindow - HELPER_CAT_OUTPUT_RESERVE),
-    source: 'catalog',
-    actionable: true,
-    provenance: `Helper-cat empty-UI default → ${helperWindow.toLocaleString()} tokens`,
-  };
 }
 
 export function getAllCatCapacities(): Record<string, CatCapacityProjection> {
