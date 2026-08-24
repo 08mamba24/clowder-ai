@@ -84,6 +84,20 @@ describe('F161: env-map — resolveEnvMap', () => {
     });
   });
 
+  it('resolves zcode built-in mapping for ZCode ADE', () => {
+    const result = resolveEnvMap('acp', 'zcode', {
+      apiKey: 'sk-zcode-xxx',
+      baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+      baseModel: 'GLM-5.2',
+    });
+    assert.deepEqual(result, {
+      ANTHROPIC_API_KEY: 'sk-zcode-xxx',
+      ZCODE_API_KEY: 'sk-zcode-xxx',
+      ANTHROPIC_BASE_URL: 'https://open.bigmodel.cn/api/anthropic',
+    });
+    assert.equal(result.ZCODE_BASE_URL, undefined);
+  });
+
   it('resolves opencode built-in mapping (native env vars)', () => {
     const result = resolveEnvMap('opencode', undefined, {
       apiKey: 'sk-oc-xxx',
@@ -302,7 +316,7 @@ describe('F161: env-map — extractUserEnvTemplates', () => {
 
 describe('F161: env-map — BUILTIN_ENV_MAPS coverage', () => {
   it('has mappings for all expected providers', () => {
-    const expected = ['anthropic', 'openai', 'google', 'openrouter', 'kimi', 'opencode', 'xai', 'deepseek'];
+    const expected = ['anthropic', 'openai', 'google', 'openrouter', 'kimi', 'opencode', 'xai', 'deepseek', 'zcode'];
     for (const provider of expected) {
       assert.ok(BUILTIN_ENV_MAPS[provider], `Missing built-in map for ${provider}`);
       assert.ok(Object.keys(BUILTIN_ENV_MAPS[provider]).length > 0, `Empty built-in map for ${provider}`);

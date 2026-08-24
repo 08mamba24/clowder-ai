@@ -1297,6 +1297,38 @@ describe('HubCatEditor', () => {
     expect(payload.provider).toBeNull();
   });
 
+  it('buildCatPatchPayload still clears catalog provider:zcode — generic ACP does not keep harness provider', () => {
+    const form = acpPayloadForm({
+      catId: 'zcode',
+      name: 'ZCode',
+      displayName: 'ZCode',
+      mentionPatterns: '@zcode',
+      accountRef: 'zcode-key',
+      defaultModel: 'GLM-5.2',
+      acpCommand: 'zcode',
+      acpStartupArgs: '',
+      mcpSupport: false,
+    });
+    const existingCat = {
+      id: 'zcode',
+      name: 'ZCode',
+      displayName: 'ZCode',
+      clientId: 'acp',
+      provider: 'zcode',
+      accountRef: 'zcode-key',
+      defaultModel: 'GLM-5.2',
+      acp: { command: 'zcode', startupArgs: [] },
+      color: { primary: '#3859FF', secondary: '#D9E1FF' },
+      mentionPatterns: ['@zcode'],
+      avatar: '/avatars/default.png',
+      roleDescription: 'ZCode ADE',
+      personality: '',
+    } as CatData;
+
+    const payload = buildCatPatchPayload(form, existingCat) as Record<string, unknown>;
+    expect(payload.provider).toBeNull();
+  });
+
   it('buildCatPatchPayload does not emit a redundant provider:null when a generic ACP member has no stale provider', () => {
     // F161 root-cause fix guard: a clean generic ACP member (no existing provider) must NOT
     // gain a noisy provider:null on every save. Clearing only applies when there is a stale

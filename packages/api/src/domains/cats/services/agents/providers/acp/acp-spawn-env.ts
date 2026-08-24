@@ -1,4 +1,6 @@
 import { extractUserEnvTemplates, hasSupportedEnvTemplate, resolveEnvMap } from '../env-map.js';
+import { isDshHarnessCommand } from './dsh-acp-bootstrap.js';
+import { isZcodeHarnessCommand } from './zcode-acp-bootstrap.js';
 
 export interface AcpProcessEnvAccount {
   id: string;
@@ -11,6 +13,8 @@ export interface AcpProcessEnvAccount {
 export interface PrepareAcpProcessEnvOptions {
   clientId: string;
   provider?: string | null;
+  /** Original ACP command (`acp.command`), not the rewritten spawn argv. */
+  command?: string | null;
   baseModel?: string;
   account?: AcpProcessEnvAccount | null;
 }
@@ -31,12 +35,11 @@ export function prepareAcpProcessEnv(options: PrepareAcpProcessEnvOptions): Reco
       );
     }
     const userEnvTemplates = account.envVars ? extractUserEnvTemplates(account.envVars) : undefined;
-    // F161 AC-A5 / KD-1: generic ACP (clientId='acp') is a transport, not a provider identity.
-    // Stale pack/catalog providers (anthropic/openai/...) must not select BUILTIN_ENV_MAPS.
-    // Harness members (Grok Build / DeepSeek Harness) still need their native API-key env
-    // when the variant's declared provider is that harness family.
+    // F161 AC-A5 / KD-1: generic ACP is a transport. Catalog `provider` is stripped on
+    // save, so harness env-maps must come from the ACP command identity (zcode/grok/dsh),
+    // never from a leftover provider field. Ordinary ACP commands stay envVars-only.
     const envMapProvider =
-      options.clientId === 'acp' ? acpHarnessProviderEnv(options.provider) : (options.provider ?? undefined);
+      options.clientId === 'acp' ? resolveAcpHarnessEnvMap(options.command) : (options.provider ?? undefined);
     Object.assign(
       resolved,
       resolveEnvMap(
@@ -60,12 +63,20 @@ export function prepareAcpProcessEnv(options: PrepareAcpProcessEnvOptions): Reco
   return Object.keys(resolved).length > 0 ? resolved : undefined;
 }
 
-const ACP_HARNESS_PROVIDER_ENV = new Set(['xai', 'deepseek']);
-
-function acpHarnessProviderEnv(provider: string | null | undefined): string | undefined {
-  const trimmed = provider?.trim();
+export function resolveAcpHarnessEnvMap(command: string | null | undefined): string | undefined {
+  const trimmed = command?.trim();
   if (!trimmed) return undefined;
-  return ACP_HARNESS_PROVIDER_ENV.has(trimmed) ? trimmed : undefined;
+  if (isZcodeHarnessCommand(trimmed)) return 'zcode';
+  if (isDshHarnessCommand(trimmed)) return 'deepseek';
+  if (isGrokHarnessCommand(trimmed)) return 'xai';
+  return undefined;
+}
+
+function isGrokHarnessCommand(command: string): boolean {
+  const trimmed = command.trim();
+  const slash = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  const base = (slash >= 0 ? trimmed.slice(slash + 1) : trimmed).replace(/\.(cjs|js|mjs|exe|cmd|bat)$/i, '');
+  return base === 'grok';
 }
 
 export function tryPrepareAcpProcessEnv(options: PrepareAcpProcessEnvOptions): TryPrepareAcpProcessEnvResult {

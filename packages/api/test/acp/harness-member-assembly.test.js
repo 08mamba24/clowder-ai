@@ -22,6 +22,9 @@ const { getAcpConfig, loadCatConfig, toAllCatConfigs, _resetCachedConfig } = awa
 const { dshOmitsAcpSessionMcp } = await import(
   '../../dist/domains/cats/services/agents/providers/acp/dsh-acp-bootstrap.js'
 );
+const { resolveZcodeAcpAdapterPath, zcodeOmitsAcpSessionMcp } = await import(
+  '../../dist/domains/cats/services/agents/providers/acp/zcode-acp-bootstrap.js'
+);
 
 const SLIM_MCP = ['cat-cafe-memory', 'cat-cafe-collab', 'cat-cafe-signals'];
 
@@ -76,25 +79,48 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
         const grok = all['grok-build'];
         const dsh = all.dsh;
         const deepseek = all.deepseek;
+        const zcode = all.zcode;
+        const glm = all.glm;
         assert.ok(grok, 'grok-build must exist in the template roster');
         assert.ok(dsh, 'dsh must exist in the template roster');
         assert.ok(deepseek, 'OpenCode 渊渊 must stay in the roster');
+        assert.ok(zcode, 'zcode must exist in the template roster');
+        assert.ok(glm, 'OpenCode 橘猫 must stay in the roster');
         assert.equal(grok.clientId, 'acp');
         assert.equal(dsh.clientId, 'acp');
+        assert.equal(zcode.clientId, 'acp');
         assert.equal(deepseek.clientId, 'opencode');
+        assert.equal(glm.clientId, 'opencode');
         assert.notEqual(dsh.id, deepseek.id);
+        assert.notEqual(zcode.id, glm.id);
 
         const grokAcp = getAcpConfig('grok-build', projectRoot);
         const dshAcp = getAcpConfig('dsh', projectRoot);
+        const zcodeAcp = getAcpConfig('zcode', projectRoot);
         assert.ok(grokAcp, 'grok-build must have an acp section');
         assert.ok(dshAcp, 'dsh must have an acp section');
+        assert.ok(zcodeAcp, 'zcode must have an acp section');
         assert.equal(grokAcp.command, 'grok');
         assert.equal(dshAcp.command, 'dsh');
+        assert.equal(zcodeAcp.command, 'zcode');
         assert.deepEqual(grokAcp.mcpWhitelist, SLIM_MCP);
         assert.deepEqual(dshAcp.mcpWhitelist, SLIM_MCP);
         assert.equal(dshOmitsAcpSessionMcp(dshAcp.command), true);
         assert.equal(dshOmitsAcpSessionMcp(grokAcp.command), false);
+        assert.equal(zcodeOmitsAcpSessionMcp(zcodeAcp.command), true);
+        assert.equal(zcode.mcpSupport, false);
+        assert.deepEqual(zcodeAcp.mcpWhitelist ?? [], []);
 
+        const zcodeBinDir = mkdtempSync(join(tmpdir(), 'zcode-bin-'));
+        const zcodeBin = join(zcodeBinDir, 'zcode.cjs');
+        writeFileSync(zcodeBin, '#!/usr/bin/env node\n');
+        const zcodeHome = join(zcodeBinDir, 'isolated-home');
+        const prevZcodeBin = process.env.CAT_CAFE_ZCODE_BIN;
+        const prevAnthropic = process.env.ANTHROPIC_API_KEY;
+        const prevZcodeHome = process.env.CAT_CAFE_ZCODE_HOME;
+        process.env.CAT_CAFE_ZCODE_BIN = zcodeBin;
+        process.env.ANTHROPIC_API_KEY = 'sk-test-zcode-assembly';
+        process.env.CAT_CAFE_ZCODE_HOME = zcodeHome;
         const grokService = await createAcpServiceForConfig({
           projectRoot,
           profileId: 'grok-build',
@@ -113,14 +139,36 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
           poolRegistry,
           log: { info() {}, warn() {} },
         });
+        const zcodeService = await createAcpServiceForConfig({
+          projectRoot,
+          profileId: 'zcode',
+          config: zcode,
+          effectiveModel: zcode.defaultModel,
+          acpConfig: zcodeAcp,
+          poolRegistry,
+          log: { info() {}, warn() {} },
+        });
+        if (prevZcodeBin === undefined) delete process.env.CAT_CAFE_ZCODE_BIN;
+        else process.env.CAT_CAFE_ZCODE_BIN = prevZcodeBin;
+        if (prevAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
+        else process.env.ANTHROPIC_API_KEY = prevAnthropic;
+        if (prevZcodeHome === undefined) delete process.env.CAT_CAFE_ZCODE_HOME;
+        else process.env.CAT_CAFE_ZCODE_HOME = prevZcodeHome;
+        rmSync(zcodeBinDir, { recursive: true, force: true });
 
         assert.ok(grokService, 'Grok Build AgentService must not be skipped');
         assert.ok(dshService, 'DeepSeek Harness AgentService must not be skipped when ACP demo is present');
+        assert.ok(zcodeService, 'ZCode AgentService must not be skipped when zcode.cjs is present');
         assert.equal(grokService.catId, 'grok-build');
         assert.equal(dshService.catId, 'dsh');
+        assert.equal(zcodeService.catId, 'zcode');
 
         const grokSpawn = JSON.parse(grokService.pool.spawnSignature);
         const dshSpawn = JSON.parse(dshService.pool.spawnSignature);
+        const zcodeSpawn = JSON.parse(zcodeService.pool.spawnSignature);
+        assert.notEqual(zcodeSpawn.cmd, 'zcode', 'must not send ACP frames to zcode app-server');
+        assert.equal(zcodeSpawn.cmd, process.execPath);
+        assert.equal(zcodeSpawn.args[0], resolveZcodeAcpAdapterPath());
         assert.equal(grokSpawn.cmd, 'grok');
         assert.ok(
           grokSpawn.args.includes('agent') && grokSpawn.args.includes('stdio'),

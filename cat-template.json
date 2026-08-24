@@ -299,6 +299,13 @@
       "lead": false,
       "available": true,
       "evaluation": "官方 DeepSeek Harness ACP 自动化入口；渊渊仍走 OpenCode，互不替换"
+    },
+    "zcode": {
+      "family": "zcode",
+      "roles": ["coder"],
+      "lead": false,
+      "available": true,
+      "evaluation": "智谱 ZCode ADE；官方无 ACP，Hub 经 in-repo adapter 转 app-server。橘猫 @glm 仍走 OpenCode"
     }
   },
   "reviewPolicy": {
@@ -1167,7 +1174,6 @@
           "id": "grok-build-default",
           "catId": "grok-build",
           "clientId": "acp",
-          "provider": "xai",
           "defaultModel": "grok-build",
           "mcpSupport": true,
           "personality": "直球、爱抬杠，先把机制说清楚再动手",
@@ -1207,7 +1213,6 @@
           "id": "dsh-default",
           "catId": "dsh",
           "clientId": "acp",
-          "provider": "deepseek",
           "defaultModel": "deepseek-v4-pro",
           "mcpSupport": true,
           "personality": "插件化、组合优先，把 harness 本身当工件",
@@ -1222,6 +1227,48 @@
             "startupArgs": [],
             "mcpWhitelist": ["cat-cafe-memory", "cat-cafe-collab", "cat-cafe-signals"],
             "pool": { "maxLiveProcesses": 1 }
+          },
+          "contextBudget": {
+            "maxPromptTokens": 400000,
+            "maxContextTokens": 360000,
+            "maxMessages": 200,
+            "maxContentLengthPerMsg": 100000
+          }
+        }
+      ]
+    },
+    {
+      "id": "zcode",
+      "catId": "zcode",
+      "name": "ZCode",
+      "displayName": "ZCode",
+      "nickname": "ZCode",
+      "avatar": "/avatars/default.png",
+      "color": {
+        "primary": "#3859FF",
+        "secondary": "#D9E1FF"
+      },
+      "mentionPatterns": ["@zcode"],
+      "roleDescription": "智谱 ZCode 本地 ADE harness，Hub 经 ACP adapter 派发 app-server",
+      "teamStrengths": "Z.AI/GLM 官方 agent、app-server 长会话、本地凭证",
+      "caution": "走 zcode app-server，不是 ZCode TUI/Desktop。官方没有 ACP stdio。@glm/@谱谱 仍是 OpenCode 橘猫，不要改绑。需要 Hub API-key 账号或启动前 ANTHROPIC_API_KEY；ZCODE_MODEL 来自 catalog。不读用户 ~/.zcode，不写用户配置。本轮不接家庭 MCP。",
+      "defaultVariantId": "zcode-default",
+      "variants": [
+        {
+          "id": "zcode-default",
+          "catId": "zcode",
+          "clientId": "acp",
+          "defaultModel": "GLM-5.2",
+          "mcpSupport": false,
+          "personality": "桌面 ADE 的无头入口，官方工具面和 OAuth 跟 ZCode 走",
+          "strengths": ["coding", "review", "tool-use"],
+          "acp": {
+            "command": "zcode",
+            "startupArgs": [],
+            "mcpWhitelist": [],
+            "pool": {
+              "maxLiveProcesses": 1
+            }
           },
           "contextBudget": {
             "maxPromptTokens": 400000,
