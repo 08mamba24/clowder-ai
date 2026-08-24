@@ -4,17 +4,25 @@ import {
   ensureZcodeIsolatedHome,
   type JsonRpc,
   resolveZcodeIsolatedHome,
-  sanitizeZcodeFailureText,
   zcodeAppServerEnv,
   zcodeLaunchPlan,
+  ZcodeStderrRedactor,
 } from './zcode-acp-protocol.js';
+
+type PendingWaiter = {
+  resolve: (msg: JsonRpc) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
 
 /** Private ZCode 0.16.3 app-server client. Frames never include `jsonrpc`. */
 export class NativeAppServer {
   private child: ChildProcess;
-  private pending = new Map<string, { resolve: (msg: JsonRpc) => void }>();
+  private pending = new Map<string, PendingWaiter>();
   private nextId = 1;
   private listeners: Array<(msg: JsonRpc) => void> = [];
+  private closeListeners: Array<(reason: string) => void> = [];
+  private closedReason: string | undefined;
+  private stderr = new ZcodeStderrRedactor();
   readonly isolatedHome: string;
 
   constructor(bin: string, env: NodeJS.ProcessEnv = process.env) {
@@ -30,17 +38,21 @@ export class NativeAppServer {
     const rl = createInterface({ input: this.child.stdout });
     rl.on('line', (line) => this.onLine(line));
     this.child.stderr?.on('data', (buf) => {
-      const text = sanitizeZcodeFailureText(buf.toString()).trim();
-      if (text) process.stderr.write(`[zcode-app-server] ${text}\n`);
+      for (const line of this.stderr.push(buf.toString())) {
+        process.stderr.write(`[zcode-app-server] ${line}\n`);
+      }
+    });
+    this.child.on('error', (err) => {
+      this.fail(`zcode app-server error: ${err instanceof Error ? err.message : 'spawn failed'}`);
     });
     this.child.on('exit', (code, signal) => {
-      for (const waiter of this.pending.values()) {
-        waiter.resolve({
-          error: { code: -32000, message: `zcode app-server exited code=${code} signal=${signal}` },
-        });
-      }
-      this.pending.clear();
+      this.flushStderr();
+      this.fail(`zcode app-server exited code=${code} signal=${signal}`);
     });
+  }
+
+  get closed(): boolean {
+    return this.closedReason !== undefined;
   }
 
   onEvent(listener: (msg: JsonRpc) => void): () => void {
@@ -51,20 +63,30 @@ export class NativeAppServer {
     };
   }
 
+  onClose(listener: (reason: string) => void): () => void {
+    if (this.closedReason) {
+      queueMicrotask(() => listener(this.closedReason as string));
+      return () => {};
+    }
+    this.closeListeners.push(listener);
+    return () => {
+      const index = this.closeListeners.indexOf(listener);
+      if (index >= 0) this.closeListeners.splice(index, 1);
+    };
+  }
+
   request(method: string, params: unknown, timeoutMs = 120_000): Promise<JsonRpc> {
+    if (this.closedReason) {
+      return Promise.resolve({ error: { code: -32000, message: this.closedReason } });
+    }
     const id = this.nextId++;
     this.writeNative({ id, method, params });
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(String(id));
-        reject(new Error(`timeout waiting for ${method}`));
+        resolve({ error: { code: -32000, message: `timeout waiting for ${method}` } });
       }, timeoutMs);
-      this.pending.set(String(id), {
-        resolve: (msg) => {
-          clearTimeout(timer);
-          resolve(msg);
-        },
-      });
+      this.pending.set(String(id), { resolve, timer });
     });
   }
 
@@ -73,6 +95,7 @@ export class NativeAppServer {
   }
 
   close(): void {
+    this.fail('zcode app-server closed');
     try {
       this.child.stdin?.end();
     } catch {
@@ -81,7 +104,34 @@ export class NativeAppServer {
     this.child.kill('SIGTERM');
   }
 
+  whenExited(): Promise<void> {
+    if (this.child.exitCode != null || this.child.signalCode) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.child.once('exit', () => resolve());
+    });
+  }
+
+  private fail(reason: string): void {
+    if (this.closedReason) return;
+    this.closedReason = reason;
+    const err: JsonRpc = { error: { code: -32000, message: reason } };
+    for (const waiter of this.pending.values()) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(err);
+    }
+    this.pending.clear();
+    const listeners = [...this.closeListeners];
+    this.closeListeners = [];
+    for (const listener of listeners) listener(reason);
+  }
+
+  private flushStderr(): void {
+    const leftover = this.stderr.flush();
+    if (leftover) process.stderr.write(`[zcode-app-server] ${leftover}\n`);
+  }
+
   private writeNative(payload: JsonRpc): void {
+    if (this.closedReason) return;
     this.child.stdin?.write(`${JSON.stringify(payload)}\n`);
   }
 
@@ -111,8 +161,12 @@ export class NativeAppServer {
       return;
     }
     if (msg.id != null && this.pending.has(String(msg.id))) {
-      this.pending.get(String(msg.id))?.resolve(msg);
+      const waiter = this.pending.get(String(msg.id));
       this.pending.delete(String(msg.id));
+      if (waiter) {
+        clearTimeout(waiter.timer);
+        waiter.resolve(msg);
+      }
       return;
     }
     for (const listener of this.listeners) listener(msg);

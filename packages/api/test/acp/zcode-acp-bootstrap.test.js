@@ -84,8 +84,8 @@ describe('ZCode ACP bootstrap', () => {
     if (!noKey.ok) assert.match(noKey.error.message, /ANTHROPIC_API_KEY/);
     const ready = diagnoseZcodeSpawnReady({ ZCODE_MODEL: 'GLM-5.2', ZCODE_API_KEY: 'sk-test' });
     assert.equal(ready.ok, true);
-    const unparseable = diagnoseZcodeSpawnReady({ ZCODE_MODEL: 'not-a-model', ZCODE_API_KEY: 'sk-test' });
-    assert.equal(unparseable.ok, false);
-    if (!unparseable.ok) assert.match(unparseable.error.message, /providerId/);
+    const slash = diagnoseZcodeSpawnReady({ ZCODE_MODEL: 'zai/glm-5.2', ZCODE_API_KEY: 'sk-test' });
+    assert.equal(slash.ok, false);
+    if (!slash.ok) assert.match(slash.error.message, /clean-home|GLM-5\.2|zai\/glm-5\.2/);
   });
 });

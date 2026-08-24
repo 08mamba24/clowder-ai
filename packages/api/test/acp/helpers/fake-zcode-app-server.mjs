@@ -2,15 +2,22 @@
 /**
  * Native ZCode 0.16.3-shaped app-server fake for adapter contract tests.
  * No jsonrpc field. session/stop is a request (requires id).
- * Events include eventId/seq/timestamp. Results are snapshots, not {ok:true}.
+ * Clean-home: omit native model; ZCODE_MODEL env is the source of truth.
  */
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import readline from 'node:readline';
+import {
+  AVAILABLE_MODELS,
+  isUnsupportedExplicitModel,
+  sendAccepted,
+  sessionSnapshot,
+} from './zcode-0.16.3-fixtures.mjs';
 
 const isolatedHome = process.env.HOME;
 const storePath = process.env.ZCODE_FAKE_STORE ?? join(isolatedHome ?? '', '.zcode', 'cli', 'sessions.json');
 const logPath = process.env.ZCODE_FAKE_LOG;
+const envModel = process.env.ZCODE_MODEL?.trim();
 const sessions = new Map();
 if (storePath) {
   try {
@@ -26,7 +33,8 @@ if (isolatedHome) {
   writeFileSync(join(isolatedHome, '.zcode', 'cli', 'hub-isolation-canary'), 'ok');
 }
 
-process.stderr.write('{"api_key":"stderr-secret-key"}\n');
+process.stderr.write('{"api_key":"split-');
+process.stderr.write('secret-value"}\n');
 
 function persist() {
   if (!storePath) return;
@@ -75,20 +83,7 @@ function historyText(rec) {
 }
 
 function readModel(params) {
-  const model = params?.model ?? params?.runtimeModel?.model;
-  if (!model || typeof model !== 'object') return undefined;
-  const providerId = typeof model.providerId === 'string' ? model.providerId.trim() : '';
-  const modelId = typeof model.modelId === 'string' ? model.modelId.trim() : '';
-  if (!providerId || !modelId) return undefined;
-  const variant = typeof model.variant === 'string' && model.variant.trim() ? model.variant.trim() : undefined;
-  return variant ? { providerId, modelId, variant } : { providerId, modelId };
-}
-
-function snapshot(sessionId) {
-  return {
-    session: { sessionId },
-    protocol: { name: 'zcode', version: '0.16.3' },
-  };
+  return params?.model ?? params?.runtimeModel?.model;
 }
 
 const inflight = new Map();
@@ -100,21 +95,41 @@ async function handle(msg) {
   const id = msg.id;
   const params = msg.params ?? {};
   if (method === 'session/create') {
-    const model = readModel(params);
-    if (!model) {
-      write({ id, error: { code: -32602, message: 'model must be {providerId,modelId}' } });
+    const explicit = readModel(params);
+    if (explicit) {
+      write({
+        id,
+        error: {
+          code: -32602,
+          message: `Unsupported model ${JSON.stringify(explicit)}. Available models: ${AVAILABLE_MODELS.join(', ')}`,
+        },
+      });
+      return;
+    }
+    if (!envModel || envModel.includes('/') || envModel.startsWith('{')) {
+      write({
+        id,
+        error: {
+          code: -32000,
+          message: 'Model config is missing. Create ~/.zcode/cli/config.json with an explicit model provider before running ZCode.',
+          data: { code: 'model_config_missing' },
+        },
+      });
       return;
     }
     const sessionId = `sess_${sessions.size + 1}`;
-    sessions.set(sessionId, {
+    const rec = {
       history: [],
       cwd: params.workspace?.workspacePath ?? '',
-      model,
+      envModel,
       seq: 0,
+      stateRevision: 0,
       events: [],
-    });
+      createdAt: Date.now(),
+    };
+    sessions.set(sessionId, rec);
     persist();
-    write({ id, result: snapshot(sessionId) });
+    write({ id, result: sessionSnapshot(sessionId, rec) });
     return;
   }
   if (method === 'session/resume') {
@@ -123,10 +138,18 @@ async function handle(msg) {
       write({ id, error: { code: -32004, message: `Session not found: ${params.sessionId}` } });
       return;
     }
-    const model = readModel(params);
-    if (model) rec.model = model;
+    if (readModel(params)) {
+      write({
+        id,
+        error: {
+          code: -32602,
+          message: `Unsupported model ${JSON.stringify(readModel(params))}. Available models: ${AVAILABLE_MODELS.join(', ')}`,
+        },
+      });
+      return;
+    }
     persist();
-    write({ id, result: snapshot(params.sessionId) });
+    write({ id, result: sessionSnapshot(params.sessionId, rec) });
     return;
   }
   if (method === 'session/setModel') {
@@ -135,14 +158,24 @@ async function handle(msg) {
       write({ id, error: { code: -32004, message: `Session not found: ${params.sessionId}` } });
       return;
     }
-    const model = readModel(params);
-    if (!model) {
-      write({ id, error: { code: -32602, message: 'model must be {providerId,modelId}' } });
+    if (isUnsupportedExplicitModel(params.model)) {
+      write({
+        id,
+        error: {
+          code: -32602,
+          message: `Unsupported model ${JSON.stringify(params.model)}. Available models: ${AVAILABLE_MODELS.join(', ')}`,
+        },
+      });
       return;
     }
-    rec.model = model;
-    persist();
-    write({ id, result: { sessionId: params.sessionId, changed: true } });
+    write({
+      id,
+      error: {
+        code: -32000,
+        message: 'Model config is missing for explicit session/setModel on a clean Hub home',
+        data: { code: 'model_config_missing' },
+      },
+    });
     return;
   }
   if (method === 'session/subscribe') {
@@ -174,8 +207,12 @@ async function handle(msg) {
       return;
     }
     rec.history.push({ role: 'user', text: content });
+    rec.stateRevision = (rec.stateRevision ?? 0) + 1;
     persist();
-    write({ id, result: snapshot(params.sessionId) });
+    write({ id, result: sendAccepted(params.sessionId, rec.stateRevision) });
+    if (content.includes('EXIT_AFTER_SEND')) {
+      process.exit(1);
+    }
     const ac = new AbortController();
     inflight.set(params.sessionId, ac);
     emit(params.sessionId, 'turn.started', {});

@@ -21,12 +21,6 @@ export type TurnEvent = {
   failure?: TurnFailure;
 };
 
-export type ZcodeNativeModel = {
-  providerId: string;
-  modelId: string;
-  variant?: string;
-};
-
 export function flattenAcpPrompt(prompt: unknown): string {
   if (typeof prompt === 'string') return prompt;
   if (!Array.isArray(prompt)) return '';
@@ -104,6 +98,38 @@ export function sanitizeZcodeFailureText(value: string): string {
   return out.slice(0, 400);
 }
 
+const STDERR_LINE_MAX = 4096;
+
+/** Line-buffered stderr redaction so credentials split across pipe chunks cannot leak. */
+export class ZcodeStderrRedactor {
+  private buf = '';
+
+  push(chunk: string): string[] {
+    this.buf += chunk;
+    const lines: string[] = [];
+    while (true) {
+      const nl = this.buf.indexOf('\n');
+      if (nl < 0) break;
+      lines.push(sanitizeZcodeFailureText(this.buf.slice(0, nl)));
+      this.buf = this.buf.slice(nl + 1);
+    }
+    if (this.buf.length > STDERR_LINE_MAX) {
+      this.buf = '';
+      lines.push('[redacted-truncated]');
+    }
+    return lines.filter((line) => line.trim());
+  }
+
+  flush(): string | undefined {
+    if (!this.buf) return undefined;
+    const leftover = this.buf;
+    this.buf = '';
+    if (leftover.length > STDERR_LINE_MAX) return '[redacted-truncated]';
+    const out = sanitizeZcodeFailureText(leftover).trim();
+    return out || undefined;
+  }
+}
+
 export function formatZcodeTurnFailure(failure: TurnFailure | undefined): string {
   const code = sanitizeZcodeFailureText(failure?.code?.trim() || 'turn.failed');
   const message = sanitizeZcodeFailureText(failure?.message?.trim() || 'ZCode turn failed');
@@ -124,73 +150,30 @@ export function extractZcodeFailure(error: unknown): TurnFailure {
   };
 }
 
-const KNOWN_MODEL_ALIASES: Readonly<Record<string, ZcodeNativeModel>> = {
-  'glm-5.2': { providerId: 'zai', modelId: 'glm-5.2' },
-  'glm-5.1': { providerId: 'zai', modelId: 'glm-5.1' },
-  'glm-5.3': { providerId: 'zai', modelId: 'glm-5.3' },
-};
-
-function trimmedNonEmpty(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-export function parseZcodeNativeModel(raw: string | undefined): ZcodeNativeModel | undefined {
+/**
+ * Clean-home 0.16.3 uses `ZCODE_MODEL` as an env token (e.g. GLM-5.2).
+ * Explicit `provider/model` or JSON `{providerId,modelId}` on session/create
+ * needs a persisted provider config that Hub-owned empty homes do not have.
+ */
+export function readZcodeEnvModel(raw: string | undefined): string | undefined {
   const trimmed = raw?.trim();
-  if (!trimmed) return undefined;
-  if (trimmed.startsWith('{')) {
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (!parsed || typeof parsed !== 'object') return undefined;
-      const rec = parsed as Record<string, unknown>;
-      const providerId = trimmedNonEmpty(rec.providerId);
-      const modelId = trimmedNonEmpty(rec.modelId);
-      const variant = trimmedNonEmpty(rec.variant);
-      if (!providerId || !modelId) return undefined;
-      return variant ? { providerId, modelId, variant } : { providerId, modelId };
-    } catch {
-      return undefined;
-    }
-  }
-  const slash = trimmed.indexOf('/');
-  if (slash > 0) {
-    const providerId = trimmed.slice(0, slash).trim();
-    const rest = trimmed.slice(slash + 1).trim();
-    if (!providerId || !rest) return undefined;
-    const colon = rest.indexOf(':');
-    const modelId = (colon > 0 ? rest.slice(0, colon) : rest).trim();
-    const variant = colon > 0 ? rest.slice(colon + 1).trim() : '';
-    if (!modelId) return undefined;
-    return variant ? { providerId, modelId, variant } : { providerId, modelId };
-  }
-  const alias = KNOWN_MODEL_ALIASES[trimmed.toLowerCase()];
-  return alias ? { ...alias } : undefined;
-}
-
-export function requireZcodeNativeModel(env: NodeJS.ProcessEnv): ZcodeNativeModel {
-  const model = parseZcodeNativeModel(env.ZCODE_MODEL);
-  if (!model) {
-    throw new Error(
-      'ZCODE_MODEL must be a 0.16.3 {providerId,modelId} ref such as zai/glm-5.2 or catalog GLM-5.2',
-    );
-  }
-  return model;
+  if (!trimmed || trimmed.startsWith('{') || trimmed.includes('/')) return undefined;
+  return trimmed;
 }
 
 export function hasZcodeProviderCredential(env: NodeJS.ProcessEnv): boolean {
   return Boolean(env.ANTHROPIC_API_KEY?.trim() || env.ZCODE_API_KEY?.trim());
 }
 
-export type ZcodeSpawnReadyResult = { ok: true; model: ZcodeNativeModel } | { ok: false; error: Error };
+export type ZcodeSpawnReadyResult = { ok: true; envModel: string } | { ok: false; error: Error };
 
 export function diagnoseZcodeSpawnReady(env: NodeJS.ProcessEnv): ZcodeSpawnReadyResult {
-  const model = parseZcodeNativeModel(env.ZCODE_MODEL);
-  if (!model) {
+  const envModel = readZcodeEnvModel(env.ZCODE_MODEL);
+  if (!envModel) {
     return {
       ok: false,
       error: new Error(
-        'ZCode ACP skipped: ZCODE_MODEL must map to 0.16.3 {providerId,modelId}. Use zai/glm-5.2 or catalog GLM-5.2.',
+        'ZCode ACP skipped: ZCODE_MODEL must be a clean-home env token such as GLM-5.2. Do not send native {providerId,modelId} on session/create; 0.16.3 rejects zai/glm-5.2 and needs persisted provider config for anthropic/GLM-5.2.',
       ),
     };
   }
@@ -202,7 +185,7 @@ export function diagnoseZcodeSpawnReady(env: NodeJS.ProcessEnv): ZcodeSpawnReady
       ),
     };
   }
-  return { ok: true, model };
+  return { ok: true, envModel };
 }
 
 export function resolveZcodeIsolatedHome(env: NodeJS.ProcessEnv = process.env): string {
