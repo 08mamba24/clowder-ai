@@ -292,13 +292,19 @@ async function handleSessionPrompt(
   });
   try {
     let sent = await native.request('session/send', { sessionId, content: flattenAcpPrompt(params.prompt) }, timeoutMs);
-    if (sent.error && isRuntimeModelUnavailable(sent.error) && !cancelledSinceStart()) {
-      if (await recoverRuntimeModel(native, sessionId, env, timeoutMs)) {
-        if (cancelledSinceStart()) {
-          acpResult(msg.id, { stopReason: 'cancelled' });
-          return;
-        }
+    if (sent.error && isRuntimeModelUnavailable(sent.error)) {
+      // A cancel that landed while the first send was in flight (or during
+      // recovery) settles as cancelled, never as a surfaced -32031 failure.
+      if (
+        !cancelledSinceStart() &&
+        (await recoverRuntimeModel(native, sessionId, env, timeoutMs)) &&
+        !cancelledSinceStart()
+      ) {
         sent = await native.request('session/send', { sessionId, content: flattenAcpPrompt(params.prompt) }, timeoutMs);
+      }
+      if (cancelledSinceStart()) {
+        acpResult(msg.id, { stopReason: 'cancelled' });
+        return;
       }
     }
     if (sent.error) {

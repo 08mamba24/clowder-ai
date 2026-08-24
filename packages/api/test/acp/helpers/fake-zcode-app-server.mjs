@@ -243,6 +243,10 @@ async function handle(msg) {
     if (content.includes('FAIL_MODEL_UNAVAILABLE') && !rec.modelRuntimeRecovered) {
       // Deterministic window for the adapter cancel-during-recovery race test.
       if (content.includes('DELAY_RECOVERY')) rec.delaySetModel = 600;
+      if (content.includes('DELAY_SEND_FAIL')) {
+        // Deterministic window for cancel-during-first-send: -32031 arrives late.
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      }
       write({
         id,
         error: {

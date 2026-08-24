@@ -131,6 +131,34 @@ describe('ZCode ACP adapter contract (fake app-server)', () => {
     }
   });
 
+  it('settles as cancelled (not -32031) when cancel lands while the first send is in flight', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-32031-cancel-send-'));
+    const acp = startAdapter(dir);
+    try {
+      await acp.request('initialize', { protocolVersion: 1 });
+      const created = await acp.request('session/new', { cwd: dir, mcpServers: [] });
+      const sessionId = created.result.sessionId;
+      const prompt = acp.request(
+        'session/prompt',
+        { sessionId, prompt: [{ type: 'text', text: 'FAIL_MODEL_UNAVAILABLE DELAY_SEND_FAIL' }] },
+        5000,
+      );
+      await new Promise((r) => setTimeout(r, 200));
+      acp.notify('session/cancel', { sessionId });
+      const outcome = await prompt;
+      assert.equal(outcome.result?.stopReason, 'cancelled', JSON.stringify(outcome.error));
+      assert.equal(acp.rpcLog().filter((row) => row.method === 'session/send').length, 1, 'exactly one send');
+      assert.equal(
+        acp.rpcLog().some((row) => row.method === 'session/setModel'),
+        false,
+        'no recovery attempt after cancel',
+      );
+    } finally {
+      acp.child.kill('SIGTERM');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('session/cancel becomes a native session/stop request with id', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-cancel-'));
     const acp = startAdapter(dir);
