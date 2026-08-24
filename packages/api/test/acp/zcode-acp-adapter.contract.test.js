@@ -326,6 +326,23 @@ describe('ZCode ACP adapter contract (fake app-server)', () => {
     assert.deepEqual(dropped, ['[redacted-truncated]']);
   });
 
+  it('drops the rest of an oversize stderr line until newline so split credentials cannot leak', () => {
+    const redactor = new ZcodeStderrRedactor();
+    const prefix = `${'a'.repeat(4090)}{"api_key":"split-`;
+    assert.deepEqual(redactor.push(prefix), ['[redacted-truncated]']);
+    const tail = redactor.push('secret-value"}\nsafe-line\n');
+    assert.deepEqual(tail, ['safe-line']);
+    assert.doesNotMatch(tail.join('\n'), /secret-value/);
+    assert.doesNotMatch(tail.join('\n'), /split-/);
+    const later = redactor.push('{"api_key":"after-drop"}\n');
+    assert.equal(later.length, 1);
+    assert.doesNotMatch(later[0], /after-drop/);
+    const dangling = new ZcodeStderrRedactor();
+    assert.deepEqual(dangling.push(prefix), ['[redacted-truncated]']);
+    assert.deepEqual(dangling.push('secret-value"}'), []);
+    assert.equal(dangling.flush(), undefined);
+  });
+
   it('settles the prompt waiter when the native child exits after send accepted', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-exit-'));
     const acp = startAdapter(dir);

@@ -98,33 +98,55 @@ export function sanitizeZcodeFailureText(value: string): string {
   return out.slice(0, 400);
 }
 
-const STDERR_LINE_MAX = 4096;
+export const ZCODE_STDERR_LINE_MAX = 4096;
 
 /** Line-buffered stderr redaction so credentials split across pipe chunks cannot leak. */
 export class ZcodeStderrRedactor {
   private buf = '';
+  /** After an oversize logical line, ignore remaining fragments until newline. */
+  private dropping = false;
 
   push(chunk: string): string[] {
-    this.buf += chunk;
     const lines: string[] = [];
-    while (true) {
-      const nl = this.buf.indexOf('\n');
-      if (nl < 0) break;
-      lines.push(sanitizeZcodeFailureText(this.buf.slice(0, nl)));
-      this.buf = this.buf.slice(nl + 1);
-    }
-    if (this.buf.length > STDERR_LINE_MAX) {
-      this.buf = '';
-      lines.push('[redacted-truncated]');
+    let data = this.buf + chunk;
+    this.buf = '';
+    let offset = 0;
+    while (offset < data.length) {
+      if (this.dropping) {
+        const nl = data.indexOf('\n', offset);
+        if (nl < 0) return lines.filter((line) => line.trim());
+        offset = nl + 1;
+        this.dropping = false;
+        continue;
+      }
+      const nl = data.indexOf('\n', offset);
+      if (nl >= 0) {
+        lines.push(sanitizeZcodeFailureText(data.slice(offset, nl)));
+        offset = nl + 1;
+        continue;
+      }
+      const tail = data.slice(offset);
+      if (tail.length > ZCODE_STDERR_LINE_MAX) {
+        lines.push('[redacted-truncated]');
+        this.dropping = true;
+      } else {
+        this.buf = tail;
+      }
+      break;
     }
     return lines.filter((line) => line.trim());
   }
 
   flush(): string | undefined {
+    if (this.dropping) {
+      this.dropping = false;
+      this.buf = '';
+      return undefined;
+    }
     if (!this.buf) return undefined;
     const leftover = this.buf;
     this.buf = '';
-    if (leftover.length > STDERR_LINE_MAX) return '[redacted-truncated]';
+    if (leftover.length > ZCODE_STDERR_LINE_MAX) return '[redacted-truncated]';
     const out = sanitizeZcodeFailureText(leftover).trim();
     return out || undefined;
   }
