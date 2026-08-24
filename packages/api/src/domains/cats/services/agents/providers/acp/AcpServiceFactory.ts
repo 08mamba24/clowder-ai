@@ -170,6 +170,7 @@ async function prepareAcpSpawnContext(
   const acpEnvResult = tryPrepareAcpProcessEnv({
     clientId: config.clientId,
     provider: config.provider,
+    command: input.acpConfig.command,
     baseModel: bootstrap.model,
     account: accountContext.account,
   });
