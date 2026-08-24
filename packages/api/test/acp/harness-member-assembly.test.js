@@ -99,6 +99,7 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
           projectRoot,
           profileId: 'grok-build',
           config: grok,
+          effectiveModel: grok.defaultModel,
           acpConfig: grokAcp,
           poolRegistry,
           log: { info() {}, warn() {} },
@@ -107,6 +108,7 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
           projectRoot,
           profileId: 'dsh',
           config: dsh,
+          effectiveModel: dsh.defaultModel,
           acpConfig: dshAcp,
           poolRegistry,
           log: { info() {}, warn() {} },
@@ -182,6 +184,7 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
         projectRoot,
         profileId: 'dsh',
         config: all.dsh,
+        effectiveModel: all.dsh.defaultModel,
         acpConfig: dshAcp,
         poolRegistry,
         log: {

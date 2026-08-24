@@ -310,6 +310,7 @@ describe('AcpServiceFactory', () => {
         projectRoot,
         profileId: 'mux-acp',
         config: catConfig('mux-acp'),
+        effectiveModel: 'test-model',
         acpConfig: { command: 'mock-acp', startupArgs: ['--acp'], supportsMultiplexing: true },
         poolRegistry,
         log: { info() {}, warn() {} },
@@ -333,6 +334,7 @@ describe('AcpServiceFactory', () => {
           projectRoot,
           profileId: 'dsh',
           config: catConfig('dsh'),
+          effectiveModel: 'test-model',
           acpConfig: {
             command: 'dsh',
             startupArgs: [],
