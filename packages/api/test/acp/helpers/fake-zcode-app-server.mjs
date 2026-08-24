@@ -54,6 +54,7 @@ function logRpc(msg) {
       id: msg.id ?? null,
       method: msg.method ?? null,
       model: msg.params?.model ?? msg.params?.runtimeModel?.model ?? null,
+      revision: msg.params?.runtimeModel?.revision ?? null,
       decision: msg.decision ?? null,
       home: isolatedHome ?? null,
     })}\n`,
@@ -182,7 +183,24 @@ async function handle(msg) {
       });
       return;
     }
-    if (params.runtimeModel?.model && params.runtimeModel?.provider) {
+    // Full 0.16.3 runtimeModel schema is enforced so a malformed adapter
+    // payload fails here instead of green-lighting against the real app-server.
+    const rt = params.runtimeModel;
+    const schemaOk =
+      rt &&
+      typeof rt === 'object' &&
+      typeof rt.revision === 'string' &&
+      Number.isFinite(rt.generatedAt) &&
+      rt.model?.providerId === params.model?.providerId &&
+      rt.model?.modelId === params.model?.modelId &&
+      rt.provider?.providerId === rt.model?.providerId &&
+      typeof rt.provider?.kind === 'string' &&
+      Array.isArray(rt.provider?.models) &&
+      rt.provider.models.some((m) => m?.modelId === rt.model?.modelId);
+    if (schemaOk) {
+      if (rec.delaySetModel) {
+        await new Promise((resolve) => setTimeout(resolve, rec.delaySetModel));
+      }
       rec.modelRuntimeRecovered = true;
       write({ id, result: { messages: [] } });
       return;
@@ -223,6 +241,8 @@ async function handle(msg) {
       return;
     }
     if (content.includes('FAIL_MODEL_UNAVAILABLE') && !rec.modelRuntimeRecovered) {
+      // Deterministic window for the adapter cancel-during-recovery race test.
+      if (content.includes('DELAY_RECOVERY')) rec.delaySetModel = 600;
       write({
         id,
         error: {

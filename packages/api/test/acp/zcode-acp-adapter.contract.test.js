@@ -75,6 +75,33 @@ describe('ZCode ACP adapter contract (fake app-server)', () => {
       assert.ok(setModel, 'adapter must attempt session/setModel recovery');
       assert.equal(setModel.model?.providerId, 'anthropic');
       assert.equal(setModel.model?.modelId, 'GLM-5.2');
+      assert.equal(setModel.revision, 'hub-env:GLM-5.2');
+    } finally {
+      acp.child.kill('SIGTERM');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not resend the prompt when cancel lands during the -32031 recovery window', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-32031-cancel-'));
+    const acp = startAdapter(dir);
+    try {
+      await acp.request('initialize', { protocolVersion: 1 });
+      const created = await acp.request('session/new', { cwd: dir, mcpServers: [] });
+      const sessionId = created.result.sessionId;
+      const prompt = acp.request(
+        'session/prompt',
+        { sessionId, prompt: [{ type: 'text', text: 'FAIL_MODEL_UNAVAILABLE DELAY_RECOVERY' }] },
+        5000,
+      );
+      // Let the first send fail with -32031 so the adapter enters the delayed
+      // setModel recovery window, then cancel before it can resend.
+      await new Promise((r) => setTimeout(r, 200));
+      acp.notify('session/cancel', { sessionId });
+      const outcome = await prompt;
+      assert.equal(outcome.result?.stopReason, 'cancelled');
+      const sends = acp.rpcLog().filter((row) => row.method === 'session/send');
+      assert.equal(sends.length, 1, 'cancel during recovery must prevent the resend');
     } finally {
       acp.child.kill('SIGTERM');
       rmSync(dir, { recursive: true, force: true });

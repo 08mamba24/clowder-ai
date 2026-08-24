@@ -47,6 +47,11 @@ export async function runZcodeAcpAdapter(env: NodeJS.ProcessEnv = process.env): 
   }
   const native = new NativeAppServer(bin, env);
   const sessions = new Map<string, string>();
+  // Bumped on every session/cancel. The -32031 recovery window (setModel await
+  // + resend) has no active native turn, so native session/stop is a no-op
+  // there; the generation check is the only guard against resending a prompt
+  // the client already cancelled.
+  const cancelGenerations = new Map<string, number>();
   const inflight = new Set<Promise<void>>();
   const timeoutMs = requestTimeoutMs(env);
   const shutdown = (): void => {
@@ -73,7 +78,7 @@ export async function runZcodeAcpAdapter(env: NodeJS.ProcessEnv = process.env): 
     } catch {
       continue;
     }
-    const task = handleAcp(native, sessions, env, msg, timeoutMs).catch((err) => {
+    const task = handleAcp(native, sessions, cancelGenerations, env, msg, timeoutMs).catch((err) => {
       acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(err)));
     });
     inflight.add(task);
@@ -88,6 +93,7 @@ export async function runZcodeAcpAdapter(env: NodeJS.ProcessEnv = process.env): 
 async function handleAcp(
   native: NativeAppServer,
   sessions: Map<string, string>,
+  cancelGenerations: Map<string, number>,
   env: NodeJS.ProcessEnv,
   msg: JsonRpc,
   timeoutMs: number,
@@ -111,10 +117,11 @@ async function handleAcp(
     case 'session/load':
       return handleSessionLoad(native, sessions, msg, timeoutMs);
     case 'session/prompt':
-      return handleSessionPrompt(native, sessions, env, msg, timeoutMs);
+      return handleSessionPrompt(native, sessions, cancelGenerations, env, msg, timeoutMs);
     case 'session/cancel': {
       const params = (msg.params ?? {}) as { sessionId?: string };
       if (params.sessionId) {
+        cancelGenerations.set(params.sessionId, (cancelGenerations.get(params.sessionId) ?? 0) + 1);
         await native.request('session/stop', { sessionId: params.sessionId }, timeoutMs);
       }
       return;
@@ -260,6 +267,7 @@ async function recoverRuntimeModel(
 async function handleSessionPrompt(
   native: NativeAppServer,
   sessions: Map<string, string>,
+  cancelGenerations: Map<string, number>,
   env: NodeJS.ProcessEnv,
   msg: JsonRpc,
   timeoutMs: number,
@@ -270,6 +278,8 @@ async function handleSessionPrompt(
     acpError(msg.id, -32602, 'unknown sessionId');
     return;
   }
+  const cancelGenerationAtStart = cancelGenerations.get(sessionId) ?? 0;
+  const cancelledSinceStart = (): boolean => (cancelGenerations.get(sessionId) ?? 0) !== cancelGenerationAtStart;
   const waiter = waitForTurn(native, sessionId, (delta) => {
     acpWrite({
       jsonrpc: '2.0',
@@ -281,18 +291,14 @@ async function handleSessionPrompt(
     });
   });
   try {
-    let sent = await native.request(
-      'session/send',
-      { sessionId, content: flattenAcpPrompt(params.prompt) },
-      timeoutMs,
-    );
-    if (sent.error && isRuntimeModelUnavailable(sent.error)) {
+    let sent = await native.request('session/send', { sessionId, content: flattenAcpPrompt(params.prompt) }, timeoutMs);
+    if (sent.error && isRuntimeModelUnavailable(sent.error) && !cancelledSinceStart()) {
       if (await recoverRuntimeModel(native, sessionId, env, timeoutMs)) {
-        sent = await native.request(
-          'session/send',
-          { sessionId, content: flattenAcpPrompt(params.prompt) },
-          timeoutMs,
-        );
+        if (cancelledSinceStart()) {
+          acpResult(msg.id, { stopReason: 'cancelled' });
+          return;
+        }
+        sent = await native.request('session/send', { sessionId, content: flattenAcpPrompt(params.prompt) }, timeoutMs);
       }
     }
     if (sent.error) {
