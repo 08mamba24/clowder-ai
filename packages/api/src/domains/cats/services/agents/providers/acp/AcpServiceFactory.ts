@@ -26,6 +26,7 @@ import {
   mintDshCredentialFile,
   prepareDshAcpSpawnForProject,
 } from './dsh-acp-bootstrap.js';
+import { applyZcodeHarnessSpawn, zcodeOmitsAcpSessionMcp, zcodeUnreadyMessage } from './zcode-acp-bootstrap.js';
 
 export type AcpPoolRegistry = Map<string, AcpProcessPool>;
 
@@ -344,6 +345,16 @@ export async function createAcpServiceForConfig(
       cwd: dshPrepared.cwd,
     };
   }
+  const zcodePrepared = applyZcodeHarnessSpawn(bootstrap, acpConfig.command);
+  if (!zcodePrepared.ok) {
+    return skipAcpProfile(
+      input,
+      'zcode-acp-unavailable',
+      { err: zcodePrepared.error, catId, profileId },
+      zcodePrepared.error.message,
+    );
+  }
+  bootstrap = zcodePrepared.bootstrap;
   const accountContext = resolveAcpAccount(bootstrap.projectRoot, config);
   if (accountContext.accountRef && !accountContext.account) {
     return skipAcpProfile(
@@ -355,6 +366,15 @@ export async function createAcpServiceForConfig(
   }
   const spawn = await prepareAcpSpawnContext(effectiveInput, bootstrap, accountContext);
   if (!spawn) return null;
+  const zcodeUnready = zcodeUnreadyMessage(acpConfig.command, { ...process.env, ...spawn.env });
+  if (zcodeUnready) {
+    return skipAcpProfile(
+      input,
+      'zcode-provider-unready',
+      { catId, profileId, accountRef: accountContext.accountRef },
+      zcodeUnready,
+    );
+  }
   const pool = await ensureAcpPool(effectiveInput, bootstrap, spawn);
 
   // #712 P1-1: pass whitelist — MCP resolution happens at invoke time in
@@ -376,7 +396,7 @@ export async function createAcpServiceForConfig(
       source: 'service_spawn',
     },
     mcpSupport: config.mcpSupport,
-    omitSessionMcpServers: dshOmitsAcpSessionMcp(acpConfig.command),
+    omitSessionMcpServers: dshOmitsAcpSessionMcp(acpConfig.command) || zcodeOmitsAcpSessionMcp(acpConfig.command),
     // #1186: Thread the member's configured idle TTL to AcpAgentService so
     // promptStream uses it as the authoritative no-event termination threshold.
     idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,

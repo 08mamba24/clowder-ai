@@ -56,6 +56,10 @@ const TEMPLATE_BREED_BACKFILL_ALLOWLIST = new Set([
     breedId: 'dsh',
     catId: 'dsh',
   }),
+  templateBreedKey({
+    breedId: 'zcode',
+    catId: 'zcode',
+  }),
 ]);
 
 export function isTemplateVariantBackfillAllowed(

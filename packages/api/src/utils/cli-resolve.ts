@@ -229,6 +229,7 @@ export function formatCliNotFoundError(command: string, platform: NodeJS.Platfor
     grok: 'curl -fsSL https://x.ai/cli/install.sh | bash',
     dsh: 'npm install -g @deepseek-ai/dsh',
     'dsh-acp-demo': 'npm install -g @deepseek-ai/dsh-acp-demo',
+    zcode: 'install ZCode Desktop and point CAT_CAFE_ZCODE_BIN at Contents/Resources/glm/zcode.cjs',
   };
   const hint = installHints[command] ?? `install the "${command}" CLI`;
   return `${command} CLI 未找到。请先运行 \`${hint}\` 安装，再重试。`;

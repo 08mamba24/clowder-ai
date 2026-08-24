@@ -71,6 +71,21 @@ describe('prepareAcpProcessEnv', () => {
       },
     });
     assert.equal(dshEnv?.DEEPSEEK_API_KEY, 'sk-ds-live');
+
+    const zcodeEnv = prepareAcpProcessEnv({
+      clientId: 'acp',
+      provider: 'zcode',
+      baseModel: 'GLM-5.2',
+      account: {
+        id: 'zcode-key',
+        authType: 'api_key',
+        apiKey: 'sk-zcode-live',
+        baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+      },
+    });
+    assert.equal(zcodeEnv?.ANTHROPIC_API_KEY, 'sk-zcode-live');
+    assert.equal(zcodeEnv?.ANTHROPIC_BASE_URL, 'https://open.bigmodel.cn/api/anthropic');
+    assert.equal(zcodeEnv?.ZCODE_BASE_URL, undefined, 'account baseUrl must not become ZCode control-plane origin');
   });
 
   it('still honors provider for opencode over ACP transport (clientId=opencode is a real carrier)', () => {

@@ -60,7 +60,7 @@ export function prepareAcpProcessEnv(options: PrepareAcpProcessEnvOptions): Reco
   return Object.keys(resolved).length > 0 ? resolved : undefined;
 }
 
-const ACP_HARNESS_PROVIDER_ENV = new Set(['xai', 'deepseek']);
+const ACP_HARNESS_PROVIDER_ENV = new Set(['xai', 'deepseek', 'zcode']);
 
 function acpHarnessProviderEnv(provider: string | null | undefined): string | undefined {
   const trimmed = provider?.trim();

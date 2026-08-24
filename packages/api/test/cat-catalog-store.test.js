@@ -440,7 +440,7 @@ describe('cat-catalog-store', () => {
     assert.equal(runtimeCatalog.roster?.glm52?.family, 'dragon-li', 'glm52 roster entry should be persisted');
   });
 
-  it('backfills allowlisted grok-build and dsh breeds into a fresh runtime catalog', () => {
+  it('backfills allowlisted grok-build, dsh, and zcode breeds into a fresh runtime catalog', () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-harness-'));
     const templatePath = join(projectRoot, 'cat-template.json');
     const template = makeF127BootstrapTemplate();
@@ -487,6 +487,27 @@ describe('cat-catalog-store', () => {
           },
         ],
       },
+      {
+        id: 'zcode',
+        catId: 'zcode',
+        name: 'ZCode',
+        displayName: 'ZCode',
+        avatar: '/avatars/default.png',
+        color: { primary: '#3859FF', secondary: '#D9E1FF' },
+        mentionPatterns: ['@zcode'],
+        roleDescription: 'ZCode ADE',
+        defaultVariantId: 'zcode-default',
+        variants: [
+          {
+            id: 'zcode-default',
+            catId: 'zcode',
+            clientId: 'acp',
+            defaultModel: 'GLM-5.2',
+            mcpSupport: false,
+            acp: { command: 'zcode', startupArgs: [] },
+          },
+        ],
+      },
     );
     template.roster['grok-build'] = {
       family: 'grok-build',
@@ -502,6 +523,13 @@ describe('cat-catalog-store', () => {
       available: true,
       evaluation: 'DeepSeek Harness',
     };
+    template.roster.zcode = {
+      family: 'zcode',
+      roles: ['coder'],
+      lead: false,
+      available: true,
+      evaluation: 'ZCode ADE',
+    };
     writeFileSync(templatePath, JSON.stringify(template, null, 2));
 
     const catalogPath = bootstrapCatCatalog(projectRoot, templatePath);
@@ -509,8 +537,10 @@ describe('cat-catalog-store', () => {
     const breedIds = runtimeCatalog.breeds.map((breed) => breed.id);
     assert.ok(breedIds.includes('grok-build'), 'allowlisted grok-build breed should be persisted');
     assert.ok(breedIds.includes('dsh'), 'allowlisted dsh breed should be persisted');
+    assert.ok(breedIds.includes('zcode'), 'allowlisted zcode breed should be persisted');
     assert.equal(runtimeCatalog.roster?.['grok-build']?.family, 'grok-build');
     assert.equal(runtimeCatalog.roster?.dsh?.family, 'dsh');
+    assert.equal(runtimeCatalog.roster?.zcode?.family, 'zcode');
   });
 
   it('does not re-add deleted glm52 allowlisted breed during bootstrap or resolved reads', async () => {
