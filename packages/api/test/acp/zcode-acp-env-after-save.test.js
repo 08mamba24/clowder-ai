@@ -34,10 +34,7 @@ function seedRepoCatalog(projectRoot) {
   const zcodeBreed = catalog.breeds.find((breed) => breed.id === 'zcode');
   assert.ok(zcodeBreed, 'template must contain the zcode breed');
   zcodeBreed.variants[0].provider = 'zcode';
-  writeFileSync(
-    join(projectRoot, '.cat-cafe', 'cat-catalog.json'),
-    `${JSON.stringify(catalog, null, 2)}\n`,
-  );
+  writeFileSync(join(projectRoot, '.cat-cafe', 'cat-catalog.json'), `${JSON.stringify(catalog, null, 2)}\n`);
   writeFileSync(join(projectRoot, 'pnpm-workspace.yaml'), 'packages:\n  - "packages/*"\n');
   return templatePath;
 }

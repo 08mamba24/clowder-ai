@@ -34,9 +34,7 @@ function parseZcodeCliVersion(output) {
 
 /** @param {NodeJS.ProcessEnv | Record<string, string | undefined>} [env] */
 function resolveZcodeLiveBin(env = process.env) {
-  return [env.CAT_CAFE_ZCODE_BIN, MAC_APP_ZCODE, LINUX_APP_ZCODE].find(
-    (path) => path && existsSync(path),
-  );
+  return [env.CAT_CAFE_ZCODE_BIN, MAC_APP_ZCODE, LINUX_APP_ZCODE].find((path) => path && existsSync(path));
 }
 
 /** @param {string} bin */
@@ -82,10 +80,7 @@ describe('ZCode ACP live-create gate', () => {
 describe('ZCode ACP live create (real 0.16.3, no prompt)', { skip: !isZcodeLiveCreateOptIn() }, () => {
   it('creates and reloads a session in an isolated home without sending a prompt', async () => {
     const bin = resolveZcodeLiveBin();
-    assert.ok(
-      bin,
-      'CAT_CAFE_ZCODE_LIVE=1 requires CAT_CAFE_ZCODE_BIN or a bundled ZCode.app 0.16.3 binary',
-    );
+    assert.ok(bin, 'CAT_CAFE_ZCODE_LIVE=1 requires CAT_CAFE_ZCODE_BIN or a bundled ZCode.app 0.16.3 binary');
     const version = readZcodeCliVersion(bin);
     assert.equal(
       version,

@@ -111,7 +111,8 @@ async function handle(msg) {
         id,
         error: {
           code: -32000,
-          message: 'Model config is missing. Create ~/.zcode/cli/config.json with an explicit model provider before running ZCode.',
+          message:
+            'Model config is missing. Create ~/.zcode/cli/config.json with an explicit model provider before running ZCode.',
           data: { code: 'model_config_missing' },
         },
       });

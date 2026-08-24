@@ -175,10 +175,7 @@ describe('ZCode ACP adapter contract (fake app-server)', () => {
     const slash = diagnoseZcodeSpawnReady({ ZCODE_MODEL: 'zai/glm-5.2', ANTHROPIC_API_KEY: 'sk-test' });
     assert.equal(slash.ok, false);
 
-    assert.equal(
-      normalizeZcodeAnthropicBaseUrl('https://api.z.ai/api/anthropic'),
-      'https://api.z.ai/api/anthropic/v1',
-    );
+    assert.equal(normalizeZcodeAnthropicBaseUrl('https://api.z.ai/api/anthropic'), 'https://api.z.ai/api/anthropic/v1');
     assert.equal(
       normalizeZcodeAnthropicBaseUrl('https://api.z.ai/api/anthropic/v1'),
       'https://api.z.ai/api/anthropic/v1',
