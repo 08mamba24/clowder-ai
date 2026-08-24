@@ -1322,6 +1322,7 @@ describe('HubCatEditor', () => {
       mentionPatterns: ['@zcode'],
       avatar: '/avatars/default.png',
       roleDescription: 'ZCode ADE',
+      personality: '',
     } as CatData;
 
     const payload = buildCatPatchPayload(form, existingCat) as Record<string, unknown>;
