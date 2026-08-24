@@ -57,6 +57,108 @@ describe('ZCode ACP adapter contract (fake app-server)', () => {
     }
   });
 
+  it('recovers from -32031 runtime model unavailability via session/setModel and retries the prompt', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-32031-'));
+    const acp = startAdapter(dir);
+    try {
+      await acp.request('initialize', { protocolVersion: 1 });
+      const created = await acp.request('session/new', { cwd: dir, mcpServers: [] });
+      const sessionId = created.result.sessionId;
+      const prompted = await acp.request('session/prompt', {
+        sessionId,
+        prompt: [{ type: 'text', text: 'FAIL_MODEL_UNAVAILABLE then PONG' }],
+      });
+      assert.equal(prompted.error, undefined, JSON.stringify(prompted.error));
+      assert.equal(prompted.result.stopReason, 'end_turn');
+      assert.match(assistantText(acp.updates, sessionId), /PONG/);
+      const setModel = acp.rpcLog().find((row) => row.method === 'session/setModel');
+      assert.ok(setModel, 'adapter must attempt session/setModel recovery');
+      assert.equal(setModel.model?.providerId, 'anthropic');
+      assert.equal(setModel.model?.modelId, 'GLM-5.2');
+      assert.equal(setModel.revision, 'hub-env:GLM-5.2');
+    } finally {
+      acp.child.kill('SIGTERM');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not resend the prompt when cancel lands during the -32031 recovery window', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-32031-cancel-'));
+    const acp = startAdapter(dir);
+    try {
+      await acp.request('initialize', { protocolVersion: 1 });
+      const created = await acp.request('session/new', { cwd: dir, mcpServers: [] });
+      const sessionId = created.result.sessionId;
+      const prompt = acp.request(
+        'session/prompt',
+        { sessionId, prompt: [{ type: 'text', text: 'FAIL_MODEL_UNAVAILABLE DELAY_RECOVERY' }] },
+        5000,
+      );
+      // Let the first send fail with -32031 so the adapter enters the delayed
+      // setModel recovery window, then cancel before it can resend.
+      await new Promise((r) => setTimeout(r, 200));
+      acp.notify('session/cancel', { sessionId });
+      const outcome = await prompt;
+      assert.equal(outcome.result?.stopReason, 'cancelled');
+      const sends = acp.rpcLog().filter((row) => row.method === 'session/send');
+      assert.equal(sends.length, 1, 'cancel during recovery must prevent the resend');
+    } finally {
+      acp.child.kill('SIGTERM');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('surfaces -32031 as an ACP error when session/setModel recovery is rejected', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-32031-norecover-'));
+    const acp = startAdapter(dir, { ZCODE_MODEL: 'REJECTED' });
+    try {
+      await acp.request('initialize', { protocolVersion: 1 });
+      const created = await acp.request('session/new', { cwd: dir, mcpServers: [] });
+      const prompted = await acp.request('session/prompt', {
+        sessionId: created.result.sessionId,
+        prompt: [{ type: 'text', text: 'FAIL_MODEL_UNAVAILABLE' }],
+      });
+      assert.ok(prompted.error, 'unrecoverable -32031 must surface to the ACP client');
+      assert.match(String(prompted.error.message), /32031|模型已不可用/);
+      assert.equal(
+        acp.rpcLog().some((row) => row.method === 'session/setModel'),
+        true,
+        'adapter must have attempted recovery before surfacing the error',
+      );
+    } finally {
+      acp.child.kill('SIGTERM');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('settles as cancelled (not -32031) when cancel lands while the first send is in flight', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-32031-cancel-send-'));
+    const acp = startAdapter(dir);
+    try {
+      await acp.request('initialize', { protocolVersion: 1 });
+      const created = await acp.request('session/new', { cwd: dir, mcpServers: [] });
+      const sessionId = created.result.sessionId;
+      const prompt = acp.request(
+        'session/prompt',
+        { sessionId, prompt: [{ type: 'text', text: 'FAIL_MODEL_UNAVAILABLE DELAY_SEND_FAIL' }] },
+        5000,
+      );
+      await new Promise((r) => setTimeout(r, 200));
+      acp.notify('session/cancel', { sessionId });
+      const outcome = await prompt;
+      assert.equal(outcome.result?.stopReason, 'cancelled', JSON.stringify(outcome.error));
+      assert.equal(acp.rpcLog().filter((row) => row.method === 'session/send').length, 1, 'exactly one send');
+      assert.equal(
+        acp.rpcLog().some((row) => row.method === 'session/setModel'),
+        false,
+        'no recovery attempt after cancel',
+      );
+    } finally {
+      acp.child.kill('SIGTERM');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('session/cancel becomes a native session/stop request with id', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-cancel-'));
     const acp = startAdapter(dir);

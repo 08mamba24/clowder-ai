@@ -54,6 +54,7 @@ function logRpc(msg) {
       id: msg.id ?? null,
       method: msg.method ?? null,
       model: msg.params?.model ?? msg.params?.runtimeModel?.model ?? null,
+      revision: msg.params?.runtimeModel?.revision ?? null,
       decision: msg.decision ?? null,
       home: isolatedHome ?? null,
     })}\n`,
@@ -169,6 +170,41 @@ async function handle(msg) {
       });
       return;
     }
+    // A runtimeModel registration from env (adapter -32031 recovery) is accepted
+    // and clears the deferred-adapter warning; bare explicit models are not.
+    if (params.runtimeModel?.model?.modelId === 'REJECTED') {
+      write({
+        id,
+        error: {
+          code: -32000,
+          message: 'Model config is missing for explicit session/setModel on a clean Hub home',
+          data: { code: 'model_config_missing' },
+        },
+      });
+      return;
+    }
+    // Full 0.16.3 runtimeModel schema is enforced so a malformed adapter
+    // payload fails here instead of green-lighting against the real app-server.
+    const rt = params.runtimeModel;
+    const schemaOk =
+      rt &&
+      typeof rt === 'object' &&
+      typeof rt.revision === 'string' &&
+      Number.isFinite(rt.generatedAt) &&
+      rt.model?.providerId === params.model?.providerId &&
+      rt.model?.modelId === params.model?.modelId &&
+      rt.provider?.providerId === rt.model?.providerId &&
+      typeof rt.provider?.kind === 'string' &&
+      Array.isArray(rt.provider?.models) &&
+      rt.provider.models.some((m) => m?.modelId === rt.model?.modelId);
+    if (schemaOk) {
+      if (rec.delaySetModel) {
+        await new Promise((resolve) => setTimeout(resolve, rec.delaySetModel));
+      }
+      rec.modelRuntimeRecovered = true;
+      write({ id, result: { messages: [] } });
+      return;
+    }
     write({
       id,
       error: {
@@ -202,6 +238,23 @@ async function handle(msg) {
     const content = String(params.content ?? '');
     if (content.includes('FAIL_SEND')) {
       write({ id, error: { code: -32010, message: 'send failed once' } });
+      return;
+    }
+    if (content.includes('FAIL_MODEL_UNAVAILABLE') && !rec.modelRuntimeRecovered) {
+      // Deterministic window for the adapter cancel-during-recovery race test.
+      if (content.includes('DELAY_RECOVERY')) rec.delaySetModel = 600;
+      if (content.includes('DELAY_SEND_FAIL')) {
+        // Deterministic window for cancel-during-first-send: -32031 arrives late.
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      }
+      write({
+        id,
+        error: {
+          code: -32031,
+          message: '历史任务使用的模型已不可用，请从当前模型列表中选择一个可用模型后继续。',
+          data: { code: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', sessionId: params.sessionId },
+        },
+      });
       return;
     }
     if (content.includes('HANG_SEND')) {
