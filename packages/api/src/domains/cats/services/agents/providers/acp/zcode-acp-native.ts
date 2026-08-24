@@ -4,9 +4,9 @@ import {
   ensureZcodeIsolatedHome,
   type JsonRpc,
   resolveZcodeIsolatedHome,
+  ZcodeStderrRedactor,
   zcodeAppServerEnv,
   zcodeLaunchPlan,
-  ZcodeStderrRedactor,
 } from './zcode-acp-protocol.js';
 
 type PendingWaiter = {

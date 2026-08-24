@@ -5,7 +5,10 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-export const adapterPath = join(__dirname, '../../../dist/domains/cats/services/agents/providers/acp/zcode-acp-adapter.js');
+export const adapterPath = join(
+  __dirname,
+  '../../../dist/domains/cats/services/agents/providers/acp/zcode-acp-adapter.js',
+);
 export const fakeBin = join(__dirname, 'fake-zcode-app-server.mjs');
 
 export function startAdapter(dir, extraEnv = {}) {
