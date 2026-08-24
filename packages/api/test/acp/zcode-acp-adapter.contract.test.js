@@ -2,8 +2,8 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { describe, it } from 'node:test';
@@ -18,10 +18,13 @@ const {
   extractZcodeFailure,
   formatZcodeTurnFailure,
   parseTurnEvent,
+  parseZcodeNativeModel,
   sanitizeZcodeFailureText,
 } = await import('../../dist/domains/cats/services/agents/providers/acp/zcode-acp-protocol.js');
 
-function startAdapter(dir) {
+function startAdapter(dir, extraEnv = {}) {
+  const isolatedHome = join(dir, 'isolated-home');
+  const stderrChunks = [];
   const child = spawn(process.execPath, [adapterPath], {
     cwd: dir,
     env: {
@@ -29,9 +32,15 @@ function startAdapter(dir) {
       ZCODE_BIN: fakeBin,
       ZCODE_FAKE_STORE: join(dir, 'store.json'),
       ZCODE_FAKE_LOG: join(dir, 'rpc.log'),
+      CAT_CAFE_ZCODE_HOME: isolatedHome,
+      ZCODE_MODEL: 'GLM-5.2',
       NO_COLOR: '1',
+      ...extraEnv,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  child.stderr?.on('data', (buf) => {
+    stderrChunks.push(buf.toString());
   });
   const pending = new Map();
   const updates = [];
@@ -80,7 +89,15 @@ function startAdapter(dir) {
       return [];
     }
   }
-  return { child, request, notify, updates, rpcLog };
+  return {
+    child,
+    request,
+    notify,
+    updates,
+    rpcLog,
+    isolatedHome,
+    stderr: () => stderrChunks.join(''),
+  };
 }
 
 function assistantText(updates, sessionId) {
@@ -107,6 +124,18 @@ describe('ZCode ACP adapter contract (fake app-server)', () => {
       assert.equal(prompted.error, undefined);
       assert.equal(prompted.result.stopReason, 'end_turn');
       assert.equal(assistantText(acp.updates, sessionId), 'PONG');
+      const create = acp.rpcLog().find((row) => row.method === 'session/create');
+      assert.deepEqual(create.model, { providerId: 'zai', modelId: 'glm-5.2' });
+      const store = JSON.parse(readFileSync(join(dir, 'store.json'), 'utf8'));
+      const rec = store[sessionId];
+      assert.ok(rec.events?.length > 0);
+      assert.match(rec.events[0].eventId, /^evt_/);
+      assert.equal(typeof rec.events[0].seq, 'number');
+      assert.equal(typeof rec.events[0].timestamp, 'number');
+      assert.doesNotMatch(acp.stderr(), /stderr-secret-key/);
+      assert.ok(existsSync(join(acp.isolatedHome, '.zcode', 'cli', 'hub-isolation-canary')));
+      assert.equal(existsSync(join(homedir(), '.zcode', 'cli', 'hub-isolation-canary')), false);
+      assert.equal(statSync(acp.isolatedHome).mode & 0o777, 0o700);
     } finally {
       acp.child.kill('SIGTERM');
       rmSync(dir, { recursive: true, force: true });
@@ -224,6 +253,18 @@ describe('ZCode ACP adapter contract (fake app-server)', () => {
 
     const ready = diagnoseZcodeSpawnReady({ ZCODE_MODEL: 'GLM-5.2', ANTHROPIC_API_KEY: 'sk-test' });
     assert.equal(ready.ok, true);
+    if (ready.ok) assert.deepEqual(ready.model, { providerId: 'zai', modelId: 'glm-5.2' });
+
+    assert.deepEqual(parseZcodeNativeModel('GLM-5.2'), { providerId: 'zai', modelId: 'glm-5.2' });
+    assert.deepEqual(parseZcodeNativeModel('zai/glm-5.2'), { providerId: 'zai', modelId: 'glm-5.2' });
+    assert.deepEqual(parseZcodeNativeModel('{"providerId":"zai","modelId":"glm-5.2","variant":"high"}'), {
+      providerId: 'zai',
+      modelId: 'glm-5.2',
+      variant: 'high',
+    });
+    assert.equal(parseZcodeNativeModel('not-a-model'), undefined);
+    const unparseable = diagnoseZcodeSpawnReady({ ZCODE_MODEL: 'not-a-model', ANTHROPIC_API_KEY: 'sk-test' });
+    assert.equal(unparseable.ok, false);
 
     const leaked = formatZcodeTurnFailure({
       code: 'MISSING_CREDENTIAL',
@@ -237,6 +278,8 @@ describe('ZCode ACP adapter contract (fake app-server)', () => {
     assert.doesNotMatch(sanitizeZcodeFailureText('{"ZCODE_API_KEY":"dummy-zcode-key"}'), /dummy-zcode-key/);
     assert.doesNotMatch(sanitizeZcodeFailureText('{"ANTHROPIC_API_KEY":"dummy-anthropic-key"}'), /dummy-anthropic-key/);
     assert.doesNotMatch(sanitizeZcodeFailureText('{"x-api-key":"dummy-x-api-key"}'), /dummy-x-api-key/);
+    assert.doesNotMatch(sanitizeZcodeFailureText('{"api_key":"secret\\"tail"}'), /secret/);
+    assert.doesNotMatch(sanitizeZcodeFailureText('{"api_key":"secret\\"tail"}'), /tail/);
     const unstructured = extractZcodeFailure({ api_key: 'dummy-short-secret', nested: true });
     assert.equal(unstructured.message, undefined);
     assert.doesNotMatch(formatZcodeTurnFailure(unstructured), /dummy-short-secret/);
@@ -288,5 +331,77 @@ describe('ZCode ACP adapter contract (fake app-server)', () => {
       sid,
     );
     assert.equal(invented, undefined);
+  });
+
+  it('replies to native permission with decision=allow', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-perm-'));
+    const acp = startAdapter(dir);
+    try {
+      await acp.request('initialize', { protocolVersion: 1 });
+      const created = await acp.request('session/new', { cwd: dir, mcpServers: [] });
+      const prompted = await acp.request('session/prompt', {
+        sessionId: created.result.sessionId,
+        prompt: [{ type: 'text', text: 'ASK_PERMISSION then PONG' }],
+      });
+      assert.equal(prompted.result.stopReason, 'end_turn');
+      const reply = acp.rpcLog().find((row) => row.method === 'interaction/requestPermission/reply');
+      assert.equal(reply?.decision, 'allow');
+    } finally {
+      acp.child.kill('SIGTERM');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('releases the turn listener when the first send fails so a retry can succeed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-retry-'));
+    const acp = startAdapter(dir);
+    try {
+      await acp.request('initialize', { protocolVersion: 1 });
+      const created = await acp.request('session/new', { cwd: dir, mcpServers: [] });
+      const sessionId = created.result.sessionId;
+      const failed = await acp.request('session/prompt', {
+        sessionId,
+        prompt: [{ type: 'text', text: 'FAIL_SEND' }],
+      });
+      assert.ok(failed.error);
+      const afterFail = acp.updates.length;
+      const prompted = await acp.request('session/prompt', {
+        sessionId,
+        prompt: [{ type: 'text', text: 'Reply PONG' }],
+      });
+      assert.equal(prompted.result.stopReason, 'end_turn');
+      assert.equal(assistantText(acp.updates.slice(afterFail), sessionId), 'PONG');
+    } finally {
+      acp.child.kill('SIGTERM');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('releases the turn listener when session/send times out so a retry can succeed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-timeout-'));
+    const acp = startAdapter(dir, { ZCODE_REQUEST_TIMEOUT_MS: '400' });
+    try {
+      await acp.request('initialize', { protocolVersion: 1 });
+      const created = await acp.request('session/new', { cwd: dir, mcpServers: [] });
+      const sessionId = created.result.sessionId;
+      const hung = await acp.request(
+        'session/prompt',
+        { sessionId, prompt: [{ type: 'text', text: 'HANG_SEND' }] },
+        2000,
+      );
+      assert.ok(hung.error);
+      assert.match(String(hung.error.message), /timeout/);
+      const afterHang = acp.updates.length;
+      const prompted = await acp.request('session/prompt', {
+        sessionId,
+        prompt: [{ type: 'text', text: 'Reply PONG' }],
+      });
+      assert.equal(prompted.error, undefined, JSON.stringify(prompted.error));
+      assert.equal(prompted.result.stopReason, 'end_turn');
+      assert.equal(assistantText(acp.updates.slice(afterHang), sessionId), 'PONG');
+    } finally {
+      acp.child.kill('SIGTERM');
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -11,7 +11,11 @@ import {
   formatZcodeTurnFailure,
   type JsonRpc,
   parseTurnEvent,
+  readZcodeSessionId,
+  requireZcodeNativeModel,
+  sanitizeZcodeFailureText,
   type TurnEvent,
+  type ZcodeNativeModel,
   zcodeLaunchPlan,
   zcodeWorkspace,
 } from './zcode-acp-protocol.js';
@@ -29,7 +33,12 @@ function acpResult(id: number | string | undefined, result: unknown): void {
 
 function acpError(id: number | string | undefined, code: number, message: string): void {
   if (id === undefined) return;
-  acpWrite({ jsonrpc: '2.0', id, error: { code, message } });
+  acpWrite({ jsonrpc: '2.0', id, error: { code, message: sanitizeZcodeFailureText(message) } });
+}
+
+function requestTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = Number(env.ZCODE_REQUEST_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 120_000;
 }
 
 export async function runZcodeAcpAdapter(env: NodeJS.ProcessEnv = process.env): Promise<void> {
@@ -37,9 +46,10 @@ export async function runZcodeAcpAdapter(env: NodeJS.ProcessEnv = process.env): 
   if (!bin) {
     throw new Error('ZCODE_BIN must point at zcode.cjs or the zcode CLI');
   }
-  const native = new NativeAppServer(bin);
+  const native = new NativeAppServer(bin, env);
   const sessions = new Map<string, string>();
   const inflight = new Set<Promise<void>>();
+  const timeoutMs = requestTimeoutMs(env);
 
   const rl = createInterface({ input: process.stdin });
   for await (const line of rl) {
@@ -51,8 +61,8 @@ export async function runZcodeAcpAdapter(env: NodeJS.ProcessEnv = process.env): 
     } catch {
       continue;
     }
-    const task = handleAcp(native, sessions, msg).catch((err) => {
-      acpError(msg.id, -32603, err instanceof Error ? err.message : String(err));
+    const task = handleAcp(native, sessions, msg, env, timeoutMs).catch((err) => {
+      acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(err)));
     });
     inflight.add(task);
     void task.finally(() => inflight.delete(task));
@@ -61,7 +71,13 @@ export async function runZcodeAcpAdapter(env: NodeJS.ProcessEnv = process.env): 
   native.close();
 }
 
-async function handleAcp(native: NativeAppServer, sessions: Map<string, string>, msg: JsonRpc): Promise<void> {
+async function handleAcp(
+  native: NativeAppServer,
+  sessions: Map<string, string>,
+  msg: JsonRpc,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<void> {
   switch (msg.method) {
     case undefined:
       return;
@@ -77,15 +93,15 @@ async function handleAcp(native: NativeAppServer, sessions: Map<string, string>,
       });
       return;
     case 'session/new':
-      return handleSessionNew(native, sessions, msg);
+      return handleSessionNew(native, sessions, msg, env, timeoutMs);
     case 'session/load':
-      return handleSessionLoad(native, sessions, msg);
+      return handleSessionLoad(native, sessions, msg, env, timeoutMs);
     case 'session/prompt':
-      return handleSessionPrompt(native, sessions, msg);
+      return handleSessionPrompt(native, sessions, msg, timeoutMs);
     case 'session/cancel': {
       const params = (msg.params ?? {}) as { sessionId?: string };
       if (params.sessionId) {
-        await native.request('session/stop', { sessionId: params.sessionId });
+        await native.request('session/stop', { sessionId: params.sessionId }, timeoutMs);
       }
       return;
     }
@@ -94,28 +110,47 @@ async function handleAcp(native: NativeAppServer, sessions: Map<string, string>,
   }
 }
 
-async function handleSessionNew(native: NativeAppServer, sessions: Map<string, string>, msg: JsonRpc): Promise<void> {
+async function handleSessionNew(
+  native: NativeAppServer,
+  sessions: Map<string, string>,
+  msg: JsonRpc,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<void> {
   const params = (msg.params ?? {}) as { cwd?: string };
   const cwd = params.cwd || process.cwd();
-  const created = await native.request('session/create', {
-    workspace: zcodeWorkspace(cwd),
-    mode: 'yolo',
-  });
+  const model = requireZcodeNativeModel(env);
+  const created = await native.request(
+    'session/create',
+    {
+      workspace: zcodeWorkspace(cwd),
+      mode: 'yolo',
+      model,
+      persistence: 'immediate',
+    },
+    timeoutMs,
+  );
   if (created.error) {
-    acpError(msg.id, -32603, stringifyNativeError(created.error));
+    acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(created.error)));
     return;
   }
-  const sessionId = (created.result as { session?: { sessionId?: string } } | undefined)?.session?.sessionId;
+  const sessionId = readZcodeSessionId(created.result);
   if (!sessionId) {
     acpError(msg.id, -32603, 'zcode session/create missing sessionId');
     return;
   }
-  if (!(await subscribeSession(native, sessionId, msg.id))) return;
+  if (!(await subscribeSession(native, sessionId, msg.id, timeoutMs))) return;
   sessions.set(sessionId, sessionId);
   acpResult(msg.id, { sessionId });
 }
 
-async function handleSessionLoad(native: NativeAppServer, sessions: Map<string, string>, msg: JsonRpc): Promise<void> {
+async function handleSessionLoad(
+  native: NativeAppServer,
+  sessions: Map<string, string>,
+  msg: JsonRpc,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<void> {
   const params = (msg.params ?? {}) as { sessionId?: string; cwd?: string };
   const sessionId = params.sessionId?.trim();
   if (!sessionId) {
@@ -123,32 +158,58 @@ async function handleSessionLoad(native: NativeAppServer, sessions: Map<string, 
     return;
   }
   const cwd = params.cwd || process.cwd();
-  const resumed = await native.request('session/resume', {
-    sessionId,
-    workspace: zcodeWorkspace(cwd),
-  });
+  const model = requireZcodeNativeModel(env);
+  const resumed = await native.request(
+    'session/resume',
+    {
+      sessionId,
+      workspace: zcodeWorkspace(cwd),
+    },
+    timeoutMs,
+  );
   if (resumed.error) {
-    acpError(msg.id, -32603, stringifyNativeError(resumed.error));
+    acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(resumed.error)));
     return;
   }
-  if (!(await subscribeSession(native, sessionId, msg.id))) return;
+  if (!(await applyResumeModel(native, sessionId, model, msg.id, timeoutMs))) return;
+  if (!(await subscribeSession(native, sessionId, msg.id, timeoutMs))) return;
   sessions.set(sessionId, sessionId);
   acpResult(msg.id, { sessionId });
+}
+
+async function applyResumeModel(
+  native: NativeAppServer,
+  sessionId: string,
+  model: ZcodeNativeModel,
+  acpId: number | string | undefined,
+  timeoutMs: number,
+): Promise<boolean> {
+  const setModel = await native.request('session/setModel', { sessionId, model }, timeoutMs);
+  if (setModel.error) {
+    acpError(acpId, -32603, formatZcodeTurnFailure(extractZcodeFailure(setModel.error)));
+    return false;
+  }
+  return true;
 }
 
 async function subscribeSession(
   native: NativeAppServer,
   sessionId: string,
   acpId: number | string | undefined,
+  timeoutMs: number,
 ): Promise<boolean> {
-  const sub = await native.request('session/subscribe', {
-    sessionId,
-    deliveryKind: 'desktop-continuous',
-    includeSnapshot: true,
-    afterSeq: 0,
-  });
+  const sub = await native.request(
+    'session/subscribe',
+    {
+      sessionId,
+      deliveryKind: 'desktop-continuous',
+      includeSnapshot: true,
+      afterSeq: 0,
+    },
+    timeoutMs,
+  );
   if (sub.error) {
-    acpError(acpId, -32603, stringifyNativeError(sub.error));
+    acpError(acpId, -32603, formatZcodeTurnFailure(extractZcodeFailure(sub.error)));
     return false;
   }
   return true;
@@ -158,6 +219,7 @@ async function handleSessionPrompt(
   native: NativeAppServer,
   sessions: Map<string, string>,
   msg: JsonRpc,
+  timeoutMs: number,
 ): Promise<void> {
   const params = (msg.params ?? {}) as { sessionId?: string; prompt?: unknown };
   const sessionId = params.sessionId;
@@ -165,7 +227,7 @@ async function handleSessionPrompt(
     acpError(msg.id, -32602, 'unknown sessionId');
     return;
   }
-  const stop = waitForTurn(native, sessionId, (delta) => {
+  const waiter = waitForTurn(native, sessionId, (delta) => {
     acpWrite({
       jsonrpc: '2.0',
       method: 'session/update',
@@ -175,41 +237,62 @@ async function handleSessionPrompt(
       },
     });
   });
-  const sent = await native.request('session/send', { sessionId, content: flattenAcpPrompt(params.prompt) });
-  if (sent.error) {
-    acpError(msg.id, -32603, stringifyNativeError(sent.error));
-    return;
+  try {
+    const sent = await native.request(
+      'session/send',
+      { sessionId, content: flattenAcpPrompt(params.prompt) },
+      timeoutMs,
+    );
+    if (sent.error) {
+      acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(sent.error)));
+      return;
+    }
+    const outcome = await waiter.promise;
+    if (outcome.terminal === 'failed') {
+      acpError(msg.id, -32603, formatZcodeTurnFailure(outcome.failure));
+      return;
+    }
+    acpResult(msg.id, { stopReason: outcome.terminal === 'cancelled' ? 'cancelled' : 'end_turn' });
+  } catch (err) {
+    acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(err)));
+  } finally {
+    waiter.dispose();
   }
-  const outcome = await stop;
-  if (outcome.terminal === 'failed') {
-    acpError(msg.id, -32603, formatZcodeTurnFailure(outcome.failure));
-    return;
-  }
-  acpResult(msg.id, { stopReason: outcome.terminal === 'cancelled' ? 'cancelled' : 'end_turn' });
 }
 
-function waitForTurn(native: NativeAppServer, sessionId: string, onDelta: (text: string) => void): Promise<TurnEvent> {
-  return new Promise((resolve) => {
-    const stop = native.onEvent((msg) => {
+function waitForTurn(
+  native: NativeAppServer,
+  sessionId: string,
+  onDelta: (text: string) => void,
+): { promise: Promise<TurnEvent>; dispose: () => void } {
+  let disposed = false;
+  let stop = (): void => {};
+  const promise = new Promise<TurnEvent>((resolve) => {
+    stop = native.onEvent((msg) => {
+      if (disposed) return;
       const event = parseTurnEvent(msg, sessionId);
       if (!event) return;
       if (event.delta) onDelta(event.delta);
       if (event.terminal) {
+        disposed = true;
         stop();
         resolve(event);
       }
     });
   });
-}
-
-function stringifyNativeError(error: unknown): string {
-  return formatZcodeTurnFailure(extractZcodeFailure(error));
+  return {
+    promise,
+    dispose: () => {
+      disposed = true;
+      stop();
+    },
+  };
 }
 
 const isMain = Boolean(process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href);
 if (isMain) {
   runZcodeAcpAdapter().catch((err) => {
-    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`${sanitizeZcodeFailureText(formatZcodeTurnFailure(extractZcodeFailure(err)))}\n`);
     process.exit(1);
   });
 }

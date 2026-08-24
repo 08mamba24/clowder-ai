@@ -1,8 +1,8 @@
 // @ts-check
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -41,9 +41,14 @@ describe('ZCode ACP bootstrap', () => {
     const bin = join(dir, 'zcode.cjs');
     writeFileSync(bin, '#!/usr/bin/env node\n');
     try {
+      const isolatedHome = join(dir, 'isolated-home');
       const spawn = prepareZcodeAcpSpawn({
         command: 'zcode',
-        env: { CAT_CAFE_ZCODE_BIN: bin, CAT_CAFE_ZCODE_IGNORE_BUNDLED: '1' },
+        env: {
+          CAT_CAFE_ZCODE_BIN: bin,
+          CAT_CAFE_ZCODE_IGNORE_BUNDLED: '1',
+          CAT_CAFE_ZCODE_HOME: isolatedHome,
+        },
       });
       assert.equal(spawn.ok, true);
       if (!spawn.ok) return;
@@ -51,6 +56,9 @@ describe('ZCode ACP bootstrap', () => {
       assert.equal(spawn.args[0], resolveZcodeAcpAdapterPath());
       assert.equal(spawn.env.ZCODE_BIN, bin);
       assert.equal(spawn.bin, bin);
+      assert.equal(spawn.env.CAT_CAFE_ZCODE_HOME, isolatedHome);
+      assert.notEqual(spawn.env.CAT_CAFE_ZCODE_HOME, homedir());
+      assert.equal(statSync(spawn.env.CAT_CAFE_ZCODE_HOME).mode & 0o777, 0o700);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -76,5 +84,8 @@ describe('ZCode ACP bootstrap', () => {
     if (!noKey.ok) assert.match(noKey.error.message, /ANTHROPIC_API_KEY/);
     const ready = diagnoseZcodeSpawnReady({ ZCODE_MODEL: 'GLM-5.2', ZCODE_API_KEY: 'sk-test' });
     assert.equal(ready.ok, true);
+    const unparseable = diagnoseZcodeSpawnReady({ ZCODE_MODEL: 'not-a-model', ZCODE_API_KEY: 'sk-test' });
+    assert.equal(unparseable.ok, false);
+    if (!unparseable.ok) assert.match(unparseable.error.message, /providerId/);
   });
 });

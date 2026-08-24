@@ -8,9 +8,13 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { formatCliNotFoundError, resolveCliCommand } from '../../../../../../utils/cli-resolve.js';
-import { diagnoseZcodeSpawnReady } from './zcode-acp-protocol.js';
+import {
+  diagnoseZcodeSpawnReady,
+  ensureZcodeIsolatedHome,
+  resolveZcodeIsolatedHome,
+} from './zcode-acp-protocol.js';
 
-export { diagnoseZcodeSpawnReady };
+export { diagnoseZcodeSpawnReady, ensureZcodeIsolatedHome, resolveZcodeIsolatedHome };
 
 const ZCODE_HARNESS_BASENAMES = new Set(['zcode']);
 const MAC_APP_ZCODE = '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs';
@@ -51,7 +55,10 @@ export function applyZcodeHarnessSpawn<
   T extends { command: string; args: string[]; extraEnv?: Record<string, string>; model?: string },
 >(bootstrap: T, command: string): { ok: true; bootstrap: T } | { ok: false; error: Error } {
   if (!isZcodeHarnessCommand(command)) return { ok: true, bootstrap };
-  const prepared = prepareZcodeAcpSpawn({ command });
+  const prepared = prepareZcodeAcpSpawn({
+    command,
+    env: { ...process.env, ...bootstrap.extraEnv },
+  });
   if (!prepared.ok) return prepared;
   return {
     ok: true,
@@ -97,11 +104,12 @@ export function prepareZcodeAcpSpawn(input: {
       error: new Error(`ZCode ACP adapter missing at ${adapterPath}. Build the API package first.`),
     };
   }
+  const isolatedHome = ensureZcodeIsolatedHome(resolveZcodeIsolatedHome(input.env ?? process.env));
   return {
     ok: true,
     command: process.execPath,
     args: [adapterPath],
-    env: { ZCODE_BIN: bin },
+    env: { ZCODE_BIN: bin, CAT_CAFE_ZCODE_HOME: isolatedHome },
     bin,
   };
 }

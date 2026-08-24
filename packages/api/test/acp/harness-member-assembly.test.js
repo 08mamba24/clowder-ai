@@ -114,10 +114,13 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
         const zcodeBinDir = mkdtempSync(join(tmpdir(), 'zcode-bin-'));
         const zcodeBin = join(zcodeBinDir, 'zcode.cjs');
         writeFileSync(zcodeBin, '#!/usr/bin/env node\n');
+        const zcodeHome = join(zcodeBinDir, 'isolated-home');
         const prevZcodeBin = process.env.CAT_CAFE_ZCODE_BIN;
         const prevAnthropic = process.env.ANTHROPIC_API_KEY;
+        const prevZcodeHome = process.env.CAT_CAFE_ZCODE_HOME;
         process.env.CAT_CAFE_ZCODE_BIN = zcodeBin;
         process.env.ANTHROPIC_API_KEY = 'sk-test-zcode-assembly';
+        process.env.CAT_CAFE_ZCODE_HOME = zcodeHome;
         const grokService = await createAcpServiceForConfig({
           projectRoot,
           profileId: 'grok-build',
@@ -149,6 +152,8 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
         else process.env.CAT_CAFE_ZCODE_BIN = prevZcodeBin;
         if (prevAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
         else process.env.ANTHROPIC_API_KEY = prevAnthropic;
+        if (prevZcodeHome === undefined) delete process.env.CAT_CAFE_ZCODE_HOME;
+        else process.env.CAT_CAFE_ZCODE_HOME = prevZcodeHome;
         rmSync(zcodeBinDir, { recursive: true, force: true });
 
         assert.ok(grokService, 'Grok Build AgentService must not be skipped');

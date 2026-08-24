@@ -1,7 +1,13 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import type { JsonRpc } from './zcode-acp-protocol.js';
-import { zcodeLaunchPlan } from './zcode-acp-protocol.js';
+import {
+  ensureZcodeIsolatedHome,
+  type JsonRpc,
+  resolveZcodeIsolatedHome,
+  sanitizeZcodeFailureText,
+  zcodeAppServerEnv,
+  zcodeLaunchPlan,
+} from './zcode-acp-protocol.js';
 
 /** Private ZCode 0.16.3 app-server client. Frames never include `jsonrpc`. */
 export class NativeAppServer {
@@ -9,12 +15,14 @@ export class NativeAppServer {
   private pending = new Map<string, { resolve: (msg: JsonRpc) => void }>();
   private nextId = 1;
   private listeners: Array<(msg: JsonRpc) => void> = [];
+  readonly isolatedHome: string;
 
-  constructor(bin: string) {
+  constructor(bin: string, env: NodeJS.ProcessEnv = process.env) {
     const plan = zcodeLaunchPlan(bin);
+    this.isolatedHome = ensureZcodeIsolatedHome(resolveZcodeIsolatedHome(env));
     this.child = spawn(plan.command, plan.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env,
+      env: zcodeAppServerEnv(env, this.isolatedHome),
     });
     if (!this.child.stdout || !this.child.stdin) {
       throw new Error('zcode app-server spawn missing stdio pipes');
@@ -22,8 +30,8 @@ export class NativeAppServer {
     const rl = createInterface({ input: this.child.stdout });
     rl.on('line', (line) => this.onLine(line));
     this.child.stderr?.on('data', (buf) => {
-      const text = buf.toString().trim();
-      if (text) process.stderr.write(`[zcode-app-server] ${text.slice(0, 400)}\n`);
+      const text = sanitizeZcodeFailureText(buf.toString()).trim();
+      if (text) process.stderr.write(`[zcode-app-server] ${text}\n`);
     });
     this.child.on('exit', (code, signal) => {
       for (const waiter of this.pending.values()) {
@@ -95,7 +103,7 @@ export class NativeAppServer {
       return;
     }
     if (msg.method === 'interaction/requestPermission' && msg.id != null) {
-      this.reply(msg.id, { action: 'allow' });
+      this.reply(msg.id, { decision: 'allow', reason: 'Hub yolo mode' });
       return;
     }
     if (msg.method && msg.id != null) {
