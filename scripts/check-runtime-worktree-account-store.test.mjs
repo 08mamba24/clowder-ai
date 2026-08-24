@@ -7,12 +7,14 @@
 // doing so suppresses the runtime→workspace stale-store migration.
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(SELF_DIR, '..');
 const SCRIPT_PATH = resolve(SELF_DIR, 'runtime-worktree.sh');
 const script = readFileSync(SCRIPT_PATH, 'utf-8');
 
@@ -54,5 +56,55 @@ describe('runtime-worktree.sh store-root default (P1-1)', () => {
   it('keeps CAT_CAFE_RUNTIME_ROOT and CAT_CAFE_WORKSPACE_ROOT exports', () => {
     assert.ok(/export CAT_CAFE_RUNTIME_ROOT=/.test(script), 'RUNTIME_ROOT export required');
     assert.ok(/export CAT_CAFE_WORKSPACE_ROOT=/.test(script), 'WORKSPACE_ROOT export required');
+  });
+});
+
+describe('runtime-worktree.sh self-root fail-closed boundary', () => {
+  function probe({ projectRoot, runtimeRoot, workspaceRoot }) {
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        [
+          'source "$1" --source-only',
+          'PROJECT_DIR="$2"',
+          'RUNTIME_DIR="$3"',
+          'if [ -n "$4" ]; then export CAT_CAFE_WORKSPACE_ROOT="$4"; else unset CAT_CAFE_WORKSPACE_ROOT; fi',
+          'ensure_runtime_workspace_boundary',
+        ].join('\n'),
+        '_',
+        SCRIPT_PATH,
+        projectRoot,
+        runtimeRoot,
+        workspaceRoot ?? '',
+      ],
+      { encoding: 'utf8' },
+    );
+    return result;
+  }
+
+  it('refuses to start when the disposable runtime checkout would also become the persistent workspace', () => {
+    const result = probe({ projectRoot: ROOT, runtimeRoot: ROOT });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /runtime checkout as the persistent workspace/);
+  });
+
+  it('allows a self-located script only with a distinct explicit persistent workspace', () => {
+    const result = probe({
+      projectRoot: ROOT,
+      runtimeRoot: ROOT,
+      workspaceRoot: '/tmp/persistent-workspace',
+    });
+    assert.equal(result.status, 0, result.stderr);
+  });
+
+  it('checks the workspace boundary before restart authorization can touch the live runtime', () => {
+    const startSection = script.match(/start_runtime_worktree\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    assert.ok(startSection.length > 0, 'start function must exist');
+    const boundary = startSection.indexOf('ensure_runtime_workspace_boundary');
+    const restart = startSection.indexOf('ensure_restart_authorized');
+    assert.ok(boundary >= 0, 'start must enforce the workspace boundary');
+    assert.ok(restart >= 0, 'start must retain restart authorization');
+    assert.ok(boundary < restart, 'workspace boundary must fail before restart authorization');
   });
 });

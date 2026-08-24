@@ -50,6 +50,9 @@ Runtime Contract (passive frozen):
 Safety:
   start refuses to kill an active API by default.
   To intentionally restart runtime, set CAT_CAFE_RUNTIME_RESTART_OK=1.
+  Invoke this script from the persistent workspace checkout, not from the
+  disposable runtime checkout. An explicit distinct CAT_CAFE_WORKSPACE_ROOT
+  may be used by deployment tooling.
 EOF
 }
 
@@ -364,6 +367,27 @@ ensure_restart_authorized() {
   fi
 
   die "API port appears active. Refusing to restart runtime by default (anti-self-TERM guard). If intentional, rerun with CAT_CAFE_RUNTIME_RESTART_OK=1."
+}
+
+ensure_runtime_workspace_boundary() {
+  local project_root runtime_root workspace_root
+
+  # Packaged/in-place deployments intentionally use one non-git directory for
+  # both code and state. The dangerous case is a disposable git worktree being
+  # mistaken for the persistent workspace merely because its own copy of this
+  # script was invoked.
+  is_git_repo || return 0
+
+  project_root="$(abs_path "$PROJECT_DIR")"
+  runtime_root="$(abs_path "$RUNTIME_DIR")"
+  [ "$project_root" = "$runtime_root" ] || return 0
+
+  workspace_root="${CAT_CAFE_WORKSPACE_ROOT:-}"
+  if [ -n "$workspace_root" ] && [ "$(abs_path "$workspace_root")" != "$runtime_root" ]; then
+    return 0
+  fi
+
+  die "Refusing to use the runtime checkout as the persistent workspace. Run scripts/runtime-worktree.sh from the primary workspace checkout, or set CAT_CAFE_WORKSPACE_ROOT to a distinct persistent workspace before starting."
 }
 
 ensure_runtime_clean() {
@@ -696,6 +720,10 @@ status_runtime_daemon() {
 
 start_runtime_worktree() {
   info "preparing runtime worktree (checking ports, syncing origin/main...)"
+
+  # Fail before restart authorization: an explicit restart may terminate the
+  # healthy process, so the durable config boundary must already be proven.
+  ensure_runtime_workspace_boundary
 
   if ! is_git_repo; then
     RUNTIME_DIR="$PROJECT_DIR"
