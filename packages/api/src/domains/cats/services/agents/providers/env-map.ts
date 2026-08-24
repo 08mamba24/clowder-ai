@@ -61,6 +61,14 @@ export const BUILTIN_ENV_MAPS: Record<string, Record<string, string>> = {
   kimi: {
     MOONSHOT_API_KEY: '${api_key}',
   },
+  xai: {
+    XAI_API_KEY: '${api_key}',
+    XAI_API_BASE_URL: '${base_url}',
+  },
+  deepseek: {
+    DEEPSEEK_API_KEY: '${api_key}',
+    DEEPSEEK_BASE_URL: '${base_url}',
+  },
 };
 
 export interface EnvMapAccount {

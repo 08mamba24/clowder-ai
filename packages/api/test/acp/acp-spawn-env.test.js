@@ -47,6 +47,32 @@ describe('prepareAcpProcessEnv', () => {
     assert.equal(env.ANTHROPIC_BASE_URL, undefined, 'stale provider must NOT inject anthropic base url');
   });
 
+  it('injects Grok/DeepSeek harness API keys on generic ACP via the declared provider map', () => {
+    const grokEnv = prepareAcpProcessEnv({
+      clientId: 'acp',
+      provider: 'xai',
+      baseModel: 'grok-build',
+      account: {
+        id: 'xai-key',
+        authType: 'api_key',
+        apiKey: 'xai-live',
+      },
+    });
+    assert.equal(grokEnv?.XAI_API_KEY, 'xai-live');
+
+    const dshEnv = prepareAcpProcessEnv({
+      clientId: 'acp',
+      provider: 'deepseek',
+      baseModel: 'deepseek-v4-pro',
+      account: {
+        id: 'deepseek-key',
+        authType: 'api_key',
+        apiKey: 'sk-ds-live',
+      },
+    });
+    assert.equal(dshEnv?.DEEPSEEK_API_KEY, 'sk-ds-live');
+  });
+
   it('still honors provider for opencode over ACP transport (clientId=opencode is a real carrier)', () => {
     // Guard the other side of the invariant: opencode IS a provider carrier (multi-provider
     // routing), even when running over the ACP transport. Narrowing must not break it.
