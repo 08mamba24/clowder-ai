@@ -11,6 +11,7 @@ import {
   formatZcodeTurnFailure,
   type JsonRpc,
   parseTurnEvent,
+  readZcodeEnvModel,
   readZcodeSessionId,
   sanitizeZcodeFailureText,
   type TurnEvent,
@@ -72,7 +73,7 @@ export async function runZcodeAcpAdapter(env: NodeJS.ProcessEnv = process.env): 
     } catch {
       continue;
     }
-    const task = handleAcp(native, sessions, msg, timeoutMs).catch((err) => {
+    const task = handleAcp(native, sessions, env, msg, timeoutMs).catch((err) => {
       acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(err)));
     });
     inflight.add(task);
@@ -87,6 +88,7 @@ export async function runZcodeAcpAdapter(env: NodeJS.ProcessEnv = process.env): 
 async function handleAcp(
   native: NativeAppServer,
   sessions: Map<string, string>,
+  env: NodeJS.ProcessEnv,
   msg: JsonRpc,
   timeoutMs: number,
 ): Promise<void> {
@@ -109,7 +111,7 @@ async function handleAcp(
     case 'session/load':
       return handleSessionLoad(native, sessions, msg, timeoutMs);
     case 'session/prompt':
-      return handleSessionPrompt(native, sessions, msg, timeoutMs);
+      return handleSessionPrompt(native, sessions, env, msg, timeoutMs);
     case 'session/cancel': {
       const params = (msg.params ?? {}) as { sessionId?: string };
       if (params.sessionId) {
@@ -206,9 +208,59 @@ async function subscribeSession(
   return true;
 }
 
+/**
+ * ZCode 0.16.3 cold-resumes sessions with a deferred model adapter; if the
+ * workspace provider registry has not (re)registered the session's model by
+ * the time the first prompt lands, session/send fails with -32031
+ * (ZCODE_RUNTIME_MODEL_UNAVAILABLE, "历史任务使用的模型已不可用"). Headless ACP
+ * clients cannot answer the interactive model-picker, so re-register the
+ * env-configured model via session/setModel and retry the send once.
+ */
+function isRuntimeModelUnavailable(error: unknown): boolean {
+  const failure = extractZcodeFailure(error);
+  const code = String(failure.code ?? '');
+  return code === '32031' || code === '-32031';
+}
+
+function zcodeEnvRuntimeModel(env: NodeJS.ProcessEnv) {
+  const modelId = readZcodeEnvModel(env.ZCODE_MODEL);
+  if (!modelId) return undefined;
+  const model = { providerId: 'anthropic', modelId };
+  return {
+    model,
+    runtimeModel: {
+      model,
+      revision: `hub-env:${modelId}`,
+      generatedAt: Date.now(),
+      provider: { providerId: 'anthropic', kind: 'anthropic', models: [{ modelId }] },
+    },
+  };
+}
+
+async function recoverRuntimeModel(
+  native: NativeAppServer,
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<boolean> {
+  const payload = zcodeEnvRuntimeModel(env);
+  if (!payload) return false;
+  const set = await native.request('session/setModel', { sessionId, ...payload }, timeoutMs);
+  if (set.error) {
+    process.stderr.write(
+      `[zcode-acp-adapter] -32031 recovery via session/setModel failed: ${sanitizeZcodeFailureText(
+        formatZcodeTurnFailure(extractZcodeFailure(set.error)),
+      )}\n`,
+    );
+    return false;
+  }
+  return true;
+}
+
 async function handleSessionPrompt(
   native: NativeAppServer,
   sessions: Map<string, string>,
+  env: NodeJS.ProcessEnv,
   msg: JsonRpc,
   timeoutMs: number,
 ): Promise<void> {
@@ -229,11 +281,20 @@ async function handleSessionPrompt(
     });
   });
   try {
-    const sent = await native.request(
+    let sent = await native.request(
       'session/send',
       { sessionId, content: flattenAcpPrompt(params.prompt) },
       timeoutMs,
     );
+    if (sent.error && isRuntimeModelUnavailable(sent.error)) {
+      if (await recoverRuntimeModel(native, sessionId, env, timeoutMs)) {
+        sent = await native.request(
+          'session/send',
+          { sessionId, content: flattenAcpPrompt(params.prompt) },
+          timeoutMs,
+        );
+      }
+    }
     if (sent.error) {
       acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(sent.error)));
       return;

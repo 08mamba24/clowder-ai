@@ -57,6 +57,53 @@ describe('ZCode ACP adapter contract (fake app-server)', () => {
     }
   });
 
+  it('recovers from -32031 runtime model unavailability via session/setModel and retries the prompt', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-32031-'));
+    const acp = startAdapter(dir);
+    try {
+      await acp.request('initialize', { protocolVersion: 1 });
+      const created = await acp.request('session/new', { cwd: dir, mcpServers: [] });
+      const sessionId = created.result.sessionId;
+      const prompted = await acp.request('session/prompt', {
+        sessionId,
+        prompt: [{ type: 'text', text: 'FAIL_MODEL_UNAVAILABLE then PONG' }],
+      });
+      assert.equal(prompted.error, undefined, JSON.stringify(prompted.error));
+      assert.equal(prompted.result.stopReason, 'end_turn');
+      assert.match(assistantText(acp.updates, sessionId), /PONG/);
+      const setModel = acp.rpcLog().find((row) => row.method === 'session/setModel');
+      assert.ok(setModel, 'adapter must attempt session/setModel recovery');
+      assert.equal(setModel.model?.providerId, 'anthropic');
+      assert.equal(setModel.model?.modelId, 'GLM-5.2');
+    } finally {
+      acp.child.kill('SIGTERM');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('surfaces -32031 as an ACP error when session/setModel recovery is rejected', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-32031-norecover-'));
+    const acp = startAdapter(dir, { ZCODE_MODEL: 'REJECTED' });
+    try {
+      await acp.request('initialize', { protocolVersion: 1 });
+      const created = await acp.request('session/new', { cwd: dir, mcpServers: [] });
+      const prompted = await acp.request('session/prompt', {
+        sessionId: created.result.sessionId,
+        prompt: [{ type: 'text', text: 'FAIL_MODEL_UNAVAILABLE' }],
+      });
+      assert.ok(prompted.error, 'unrecoverable -32031 must surface to the ACP client');
+      assert.match(String(prompted.error.message), /32031|模型已不可用/);
+      assert.equal(
+        acp.rpcLog().some((row) => row.method === 'session/setModel'),
+        true,
+        'adapter must have attempted recovery before surfacing the error',
+      );
+    } finally {
+      acp.child.kill('SIGTERM');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('session/cancel becomes a native session/stop request with id', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-cancel-'));
     const acp = startAdapter(dir);

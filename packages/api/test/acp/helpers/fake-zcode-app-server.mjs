@@ -169,6 +169,24 @@ async function handle(msg) {
       });
       return;
     }
+    // A runtimeModel registration from env (adapter -32031 recovery) is accepted
+    // and clears the deferred-adapter warning; bare explicit models are not.
+    if (params.runtimeModel?.model?.modelId === 'REJECTED') {
+      write({
+        id,
+        error: {
+          code: -32000,
+          message: 'Model config is missing for explicit session/setModel on a clean Hub home',
+          data: { code: 'model_config_missing' },
+        },
+      });
+      return;
+    }
+    if (params.runtimeModel?.model && params.runtimeModel?.provider) {
+      rec.modelRuntimeRecovered = true;
+      write({ id, result: { messages: [] } });
+      return;
+    }
     write({
       id,
       error: {
@@ -202,6 +220,17 @@ async function handle(msg) {
     const content = String(params.content ?? '');
     if (content.includes('FAIL_SEND')) {
       write({ id, error: { code: -32010, message: 'send failed once' } });
+      return;
+    }
+    if (content.includes('FAIL_MODEL_UNAVAILABLE') && !rec.modelRuntimeRecovered) {
+      write({
+        id,
+        error: {
+          code: -32031,
+          message: '历史任务使用的模型已不可用，请从当前模型列表中选择一个可用模型后继续。',
+          data: { code: 'ZCODE_RUNTIME_MODEL_UNAVAILABLE', sessionId: params.sessionId },
+        },
+      });
       return;
     }
     if (content.includes('HANG_SEND')) {
