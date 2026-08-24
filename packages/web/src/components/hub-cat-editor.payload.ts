@@ -94,10 +94,11 @@ function buildAcpTransportConfig(form: HubCatEditorFormState, cat?: CatData | nu
   const transport = form.acpTransport ?? 'stdio';
   const command = trimText(form.acpCommand) || defaultAcpCommandForClient(form.clientId);
   if (!command) throw new Error('ACP Command 不能为空');
+  // Empty is valid: API schema allows [], and command-only ACP (DSH/ZCode) uses it.
+  // Client defaults still apply when the field is blank (OpenCode/Gemini/Kimi).
   const startupArgs = splitCommandArgs(
     trimText(form.acpStartupArgs) || defaultAcpStartupArgsForClient(form.clientId, transport),
   );
-  if (startupArgs.length === 0) throw new Error('ACP Startup Args 不能为空');
   const maxLiveProcesses = optionalPositiveInteger(form.acpMaxLiveProcesses, 'ACP Max Processes');
   const idleTtlMinutes = optionalPositiveInteger(form.acpIdleTtlMinutes, 'ACP Idle TTL');
   const pool =
