@@ -56,6 +56,44 @@ const emptyAcpFields = {
   mcpSupport: true,
 };
 
+function acpPayloadForm(overrides: Partial<HubCatEditorFormState> = {}): HubCatEditorFormState {
+  return {
+    catId: 'dsh',
+    name: 'DeepSeek Harness',
+    displayName: 'DeepSeek Harness',
+    variantLabel: '',
+    nickname: '',
+    avatar: '/avatars/default.png',
+    colorPrimary: '#4D6BFE',
+    colorSecondary: '#D6DFFF',
+    mentionPatterns: '@dsh',
+    roleDescription: 'ACP agent',
+    personality: '',
+    teamStrengths: '',
+    caution: '',
+    strengths: '',
+    clientId: 'acp',
+    accountRef: 'deepseek-key',
+    defaultModel: 'deepseek-v4-pro',
+    commandArgs: '',
+    cliConfigArgs: [],
+    cliEffort: '',
+    codexCarrier: '',
+    provider: '',
+    sessionChain: 'true',
+    contextWindow: '',
+    ...emptyVoiceFields,
+    acpEnabled: true,
+    mcpSupport: true,
+    acpTransport: 'stdio',
+    acpCommand: 'dsh',
+    acpStartupArgs: '',
+    acpMaxLiveProcesses: '',
+    acpIdleTtlMinutes: '',
+    ...overrides,
+  };
+}
+
 const actionableContextProjection: NonNullable<CatData['resolvedContext']> = {
   windowTokens: 100_000,
   inputCeilingTokens: 84_000,
@@ -1048,6 +1086,94 @@ describe('HubCatEditor', () => {
       command: 'deepseek-cli',
       startupArgs: ['--acp'],
     });
+  });
+
+  it('buildCatPayload serializes empty DSH startup args as [] instead of rejecting', () => {
+    const payload = buildCatPayload(acpPayloadForm(), null) as Record<string, unknown>;
+    expect(payload.clientId).toBe('acp');
+    expect(payload.acp).toEqual({ command: 'dsh', startupArgs: [] });
+    expect((payload.acp as { startupArgs: unknown }).startupArgs).toEqual([]);
+  });
+
+  it('buildCatPayload allows empty ACP startup args for path-form commands, not only basename dsh', () => {
+    const payload = buildCatPayload(
+      acpPayloadForm({ acpCommand: '/opt/homebrew/bin/dsh', acpStartupArgs: '   ' }),
+      null,
+    ) as Record<string, unknown>;
+    expect(payload.acp).toEqual({ command: '/opt/homebrew/bin/dsh', startupArgs: [] });
+  });
+
+  it('buildCatPayload still seeds OpenCode/Gemini defaults and keeps Grok quoted args', () => {
+    const opencodePayload = buildCatPayload(
+      acpPayloadForm({
+        catId: 'opencode-acp',
+        clientId: 'opencode',
+        acpCommand: '',
+        acpStartupArgs: '',
+      }),
+      null,
+    ) as Record<string, unknown>;
+    expect(opencodePayload.acp).toEqual({ command: 'opencode', startupArgs: ['acp'] });
+
+    const geminiPayload = buildCatPayload(
+      acpPayloadForm({
+        catId: 'gemini-acp',
+        clientId: 'google',
+        acpCommand: '',
+        acpStartupArgs: '',
+      }),
+      null,
+    ) as Record<string, unknown>;
+    expect(geminiPayload.acp).toEqual({
+      command: 'gemini',
+      startupArgs: ['--acp', '--approval-mode', 'yolo'],
+    });
+
+    const grokPayload = buildCatPayload(
+      acpPayloadForm({
+        catId: 'grok-build',
+        acpCommand: 'grok',
+        acpStartupArgs: '--no-auto-update agent --always-approve stdio',
+      }),
+      null,
+    ) as Record<string, unknown>;
+    expect(grokPayload.acp).toEqual({
+      command: 'grok',
+      startupArgs: ['--no-auto-update', 'agent', '--always-approve', 'stdio'],
+    });
+
+    const quotedPayload = buildCatPayload(
+      acpPayloadForm({
+        acpCommand: 'custom-acp',
+        acpStartupArgs: '--config "/tmp/work tree" --flag\\ x',
+      }),
+      null,
+    ) as Record<string, unknown>;
+    expect(quotedPayload.acp).toEqual({
+      command: 'custom-acp',
+      startupArgs: ['--config', '/tmp/work tree', '--flag x'],
+    });
+  });
+
+  it('does not mark ACP Startup Args as HTML required so empty DSH args can submit', async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(AccountSection, {
+          form: acpPayloadForm(),
+          modelOptions: [],
+          availableProfiles: [],
+          loadingProfiles: false,
+          onChange: vi.fn(),
+        }),
+      );
+    });
+
+    const startupArgs = queryField<HTMLInputElement>(container, 'input[aria-label="ACP Startup Args"]');
+    const command = queryField<HTMLInputElement>(container, 'input[aria-label="ACP Command"]');
+    expect(startupArgs.required).toBe(false);
+    expect(startupArgs.value).toBe('');
+    expect(command.required).toBe(true);
+    expect(command.value).toBe('dsh');
   });
 
   it('buildCatPatchPayload clears stale provider for generic ACP — provider is opencode-only, not carried by acp', () => {
