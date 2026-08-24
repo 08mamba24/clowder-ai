@@ -12,9 +12,11 @@ const {
   diagnoseZcodeSpawnReady,
   extractZcodeFailure,
   formatZcodeTurnFailure,
+  normalizeZcodeAnthropicBaseUrl,
   parseTurnEvent,
   readZcodeEnvModel,
   sanitizeZcodeFailureText,
+  zcodeAppServerEnv,
   ZcodeStderrRedactor,
 } = await import('../../dist/domains/cats/services/agents/providers/acp/zcode-acp-protocol.js');
 
@@ -172,6 +174,25 @@ describe('ZCode ACP adapter contract (fake app-server)', () => {
     assert.equal(readZcodeEnvModel('{"providerId":"zai","modelId":"glm-5.2"}'), undefined);
     const slash = diagnoseZcodeSpawnReady({ ZCODE_MODEL: 'zai/glm-5.2', ANTHROPIC_API_KEY: 'sk-test' });
     assert.equal(slash.ok, false);
+
+    assert.equal(
+      normalizeZcodeAnthropicBaseUrl('https://api.z.ai/api/anthropic'),
+      'https://api.z.ai/api/anthropic/v1',
+    );
+    assert.equal(
+      normalizeZcodeAnthropicBaseUrl('https://api.z.ai/api/anthropic/v1'),
+      'https://api.z.ai/api/anthropic/v1',
+    );
+    assert.equal(
+      normalizeZcodeAnthropicBaseUrl('https://open.bigmodel.cn/api/anthropic/'),
+      'https://open.bigmodel.cn/api/anthropic/v1',
+    );
+    const spawned = zcodeAppServerEnv(
+      { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic', HOME: '/tmp/parent-home' },
+      '/tmp/zcode-isolated',
+    );
+    assert.equal(spawned.ANTHROPIC_BASE_URL, 'https://api.z.ai/api/anthropic/v1');
+    assert.equal(spawned.HOME, '/tmp/zcode-isolated');
 
     const leaked = formatZcodeTurnFailure({
       code: 'MISSING_CREDENTIAL',

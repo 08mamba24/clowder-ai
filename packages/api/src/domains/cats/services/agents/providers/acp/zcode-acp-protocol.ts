@@ -228,7 +228,21 @@ export function ensureZcodeIsolatedHome(home: string): string {
   return home;
 }
 
+/**
+ * ZCode's Anthropic SDK treats baseURL like `https://api.anthropic.com/v1`
+ * and appends `/messages`. Claude-Code-style docs omit `/v1`; that 404s here.
+ */
+export function normalizeZcodeAnthropicBaseUrl(raw: string | undefined): string | undefined {
+  const trimmed = raw?.trim();
+  if (!trimmed) return undefined;
+  const noSlash = trimmed.replace(/\/+$/, '');
+  if (/\/v1$/i.test(noSlash)) return noSlash;
+  if (/\/api\/anthropic$/i.test(noSlash)) return `${noSlash}/v1`;
+  return noSlash;
+}
+
 export function zcodeAppServerEnv(parent: NodeJS.ProcessEnv, isolatedHome: string): NodeJS.ProcessEnv {
+  const anthropicBaseUrl = normalizeZcodeAnthropicBaseUrl(parent.ANTHROPIC_BASE_URL);
   return {
     ...parent,
     HOME: isolatedHome,
@@ -237,6 +251,7 @@ export function zcodeAppServerEnv(parent: NodeJS.ProcessEnv, isolatedHome: strin
     XDG_DATA_HOME: join(isolatedHome, '.local', 'share'),
     XDG_STATE_HOME: join(isolatedHome, '.local', 'state'),
     XDG_CACHE_HOME: join(isolatedHome, '.cache'),
+    ...(anthropicBaseUrl ? { ANTHROPIC_BASE_URL: anthropicBaseUrl } : {}),
   };
 }
 
