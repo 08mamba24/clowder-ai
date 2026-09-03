@@ -11,6 +11,10 @@ status: handoff
 > 状态：**根因已由真实会话证据确认，尚未修改代码。** 这份文档供后续在
 > `deepseek-harness` 与 `clowder-ai` 两个仓库实施、评审和验收；HiFP4 只是问题触发现场，
 > 不是修复落点。
+>
+> 进度（2026-09-03，奶牛猫/衡衡）：PR A 已在本地 `deepseek-harness` checkout
+> 实现并红→绿，分支 `fix/acp-cold-start-mcp-readiness`，commit `d13f9b5`。
+> push 暂被本地环境阻塞（见 §7.1 进度块），PR 尚未在 GitHub 创建。
 
 ## 1. 结论先行
 
@@ -177,6 +181,35 @@ barrier，并让 ACP `initialize` 或最迟 `session/new` 等到整个 required 
 - MCP tool registry 在第一条 request header 中稳定可见。
 - transport disposal 顺序不破坏 session flush/persistence。
 - 普通不配置 MCP 的 ACP demo 不支付额外行为变化。
+
+#### 进度（2026-09-03）
+
+- 选型：采用 **application-ready barrier**（§10 开放问题 1 的第二个方案）。
+  `dsh-acp` 的 `initialize` 处理器在返回 agent 信息前，结构化读取
+  `ctx.get('loader')` 并 `await loader.await()`，等价于“整个 required plugin
+  tree 激活后才对外服务”。不在 Loader 树里的部署（`loader` 缺省）零行为变化。
+- 实现文件：`packages/acp/acp/src/index.ts`（+31 行，模块级 `LoaderReady`
+  结构类型 + initialize 门 + fail-closed 错误映射，诊断经 `errorChain` 保留
+  server name 与原始 cause）。
+- 红测：`packages/examples/acp-demo/tests/startup-readiness.e2e.ts`，真实 bin +
+  Loader + stdio；共享 fixture `packages/mcp/mcp-client/tests/fixture-server.ts`
+  增加 `STARTUP_RACE_LIST_TOOLS_DELAY_MS` 延迟、`ready_probe` 工具、stdin EOF 退出。
+  修复前红：首 `request/header` 仅含内置工具、缺 `mcp__fixture__ready_probe`
+  （与 §3.2 的 19/0 → 139/120 签名同源）；修复后绿：4 个场景全过
+  （单延迟 server、双 server 不同完成顺序、fail-closed、dispose during readiness）。
+- 单测：`packages/acp/acp/tests/bridge.spec.ts` + `harness.ts` 增加 readyGate
+  注入与三个确定性 gate 测试；`packages/acp/acp` 覆盖率为 100%。
+- 回归：dsh-acp 85、acp-demo 12、mcp-client 单测 + e2e 22、load-path e2e 1、
+  startup-readiness e2e 4 全绿；oxlint 0 错；`tsc -b packages/acp/acp` 干净。
+- 提交：`fix(acp): gate ACP initialize on the Loader tree settle`，
+  branch `fix/acp-cold-start-mcp-readiness`，commit `d13f9b5`（含 Why）。
+- **push 阻塞**：本机 git/环境代理 `127.0.0.1:7897`（Clash Verge）未在运行，
+  HTTPS 直连 github.com 超时；SSH 可达但 publickey 被拒；gh CLI token
+  （08mamba24）已失效。PR A 尚未推送/创建，等环境恢复后执行：
+  `git push -u origin fix/acp-cold-start-mcp-readiness` + `gh pr create`。
+- 待办：PR A 合入后按 §7.2 做 PR B；PR B 消费 initialize 的 tree-settle
+  语义即可，overlay 无需迁移 MCP entries 也能获得正确顺序（barrier 覆盖
+  sibling 形态）。
 
 ### 7.2 PR B — `08mamba24/clowder-ai` origin（集成与身份修复）
 
