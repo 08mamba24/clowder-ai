@@ -13,8 +13,12 @@ status: handoff
 > 不是修复落点。
 >
 > 进度（2026-09-03，奶牛猫/衡衡）：PR A 已在本地 `deepseek-harness` checkout
-> 实现并红→绿，分支 `fix/acp-cold-start-mcp-readiness`，commit `d13f9b5`。
-> push 暂被本地环境阻塞（见 §7.1 进度块），PR 尚未在 GitHub 创建。
+> 实现并红→绿，分支 `fix/acp-cold-start-mcp-readiness`，commit `d13f9b5`，
+> 已推送 fork `08mamba24/deepseek-harness`。**上游不接受外部 PR**
+> （CONTRIBUTING 明示 + `has_issues: false` + PR 列表为空），GitHub PR 通道
+> 对 `deepseek-ai/deepseek-harness` 不存在；官方替代通道是 Discussions。
+> 部署路径：Clowder 经 `CAT_CAFE_DSH_ROOT` 消费本地 checkout，合入/重建/重启
+> 决策归 PR B。
 
 ## 1. 结论先行
 
@@ -203,13 +207,18 @@ barrier，并让 ACP `initialize` 或最迟 `session/new` 等到整个 required 
   startup-readiness e2e 4 全绿；oxlint 0 错；`tsc -b packages/acp/acp` 干净。
 - 提交：`fix(acp): gate ACP initialize on the Loader tree settle`，
   branch `fix/acp-cold-start-mcp-readiness`，commit `d13f9b5`（含 Why）。
-- **push 阻塞**：本机 git/环境代理 `127.0.0.1:7897`（Clash Verge）未在运行，
-  HTTPS 直连 github.com 超时；SSH 可达但 publickey 被拒；gh CLI token
-  （08mamba24）已失效。PR A 尚未推送/创建，等环境恢复后执行：
-  `git push -u origin fix/acp-cold-start-mcp-readiness` + `gh pr create`。
-- 待办：PR A 合入后按 §7.2 做 PR B；PR B 消费 initialize 的 tree-settle
-  语义即可，overlay 无需迁移 MCP entries 也能获得正确顺序（barrier 覆盖
-  sibling 形态）。
+- **push/PR 状态**：环境代理（127.0.0.1:7897，Clash Verge 未运行）曾阻塞
+  push；剥掉代理变量后 HTTPS 直连可用（本机网络其实直连可达）。分支已推送
+  fork `08mamba24/deepseek-harness`。PR 无法创建：`deepseek-ai/deepseek-harness`
+  明确不接受外部 PR（CONTRIBUTING.md/zh；`has_issues: false`；pulls 为空），
+  fork 也继承 `has_issues: false`。**PR A 的评审载体改为 fork 分支 diff**
+  （branch `fix/acp-cold-start-mcp-readiness` @ `08mamba24/deepseek-harness`，
+  commit `d13f9b5`）。
+- 待办：① 决定部署合入路径（`CAT_CAFE_DSH_ROOT` checkout 的 master 合入 +
+  重建 dsh-acp 包 + 重启 ACP pool），并做真实 cold-start acceptance（§9）；
+  ② 是否发一份脱敏的 upstream Discussion（官方唯一外部通道，不含 cat-cafe
+  细节）由 operator 拍板；③ PR B 按 §7.2 继续（身份清理 + fail-fast 消费，
+  overlay 无需迁移，barrier 覆盖 sibling 形态）。
 
 ### 7.2 PR B — `08mamba24/clowder-ai` origin（集成与身份修复）
 
