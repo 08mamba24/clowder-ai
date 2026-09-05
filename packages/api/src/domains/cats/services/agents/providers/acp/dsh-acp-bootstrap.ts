@@ -7,8 +7,11 @@
  * overlay next to `examples/acp-agent/cordis.yml` (config-dir baseUrl requires
  * that; a cat-cafe generated dir breaks initialize). Family MCP uses a
  * dot-relative path to `packages/mcp/mcp-client/lib/index.js`. Overlay MCP env
- * Overlay MCP env interpolates CAT_CAFE_CREDENTIAL_FILE from Hub spawn env
- * (per-process nonce). Invoke rewrites that process file; the process is not reused.
+ * carries only the dsh identity: CAT_CAFE_CREDENTIAL_FILE interpolated from
+ * Hub spawn env (per-process nonce) and CAT_CAFE_CAT_ID. Ambient agent-key
+ * env (another cat's persistent identity) is deliberately not inherited; dsh
+ * authenticates solely through its per-invocation credential file.
+ * Invoke rewrites that process file; the process is not reused.
  */
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -208,8 +211,6 @@ async function resolveDshOverlayServers(
     CAT_CAFE_CREDENTIAL_FILE: DSH_ACP_CREDENTIAL_ENV_JS,
     CAT_CAFE_CAT_ID: input.catId,
   };
-  const agentKey = env.CAT_CAFE_AGENT_KEY_FILE?.trim();
-  if (agentKey) spawnEnv.CAT_CAFE_AGENT_KEY_FILE = agentKey;
   return resolved.map((server) => attachStdioSpawnEnv(server, spawnEnv));
 }
 
