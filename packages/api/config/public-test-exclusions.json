@@ -2,6 +2,15 @@
   "version": 1,
   "entries": [
     {
+      "id": "codex-agent-service",
+      "match": "codex-agent-service",
+      "category": "source_only",
+      "reason": "2026-09-06 re-audit: requires the real Codex CLI on PATH; without the binary 88/94 assertions fail (PATH-strip reproducer). Public runners do not install codex, so this stays source-only until the suite is hermetic.",
+      "owner": "@zts212653",
+      "introducedBy": "78f3bc57c",
+      "expiresOn": "2026-09-30"
+    },
+    {
       "id": "redis",
       "match": "redis-",
       "category": "source_only",

@@ -10,6 +10,7 @@ const registryPath = resolve(packageRoot, 'config/public-test-exclusions.json');
 const resolverModuleUrl = pathToFileURL(resolve(packageRoot, 'scripts/resolve-public-test-files.mjs')).href;
 
 const RECONCILED_EXCLUSIONS = [
+  'codex-agent-service',
   'redis-',
   'test/memory/',
   'antigravity-cdp-client\\.test',
