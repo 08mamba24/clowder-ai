@@ -5,370 +5,208 @@
       "id": "redis",
       "match": "redis-",
       "category": "source_only",
-      "reason": "Redis isolation and persistence tests are internal harness coverage, not part of the public gate.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Redis isolation and persistence tests are internal harness coverage, not part of the public gate.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "task-progress-store",
-      "match": "task-progress-store",
-      "category": "source_only",
-      "reason": "Task progress store behavior depends on internal persistence surfaces not exported to the public gate.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "session-strategy-phase3",
-      "match": "session-strategy-phase3",
-      "category": "source_only",
-      "reason": "Phase 3 session strategy assertions cover internal rollout behavior outside the public gate contract.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "signal-article-store",
-      "match": "signal-article-store",
-      "category": "source_only",
-      "reason": "Signal article store cases exercise source-only data plumbing not guaranteed in the public export.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "cursor-store-atomicity",
-      "match": "cursor-store-atomicity",
-      "category": "source_only",
-      "reason": "Atomic cursor store checks cover internal durability mechanics not enforced by the public gate.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "workflow-sop-store",
-      "match": "workflow-sop-store",
-      "category": "source_only",
-      "reason": "Workflow SOP store tests rely on internal governance persistence surfaces excluded from the public gate.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "codex-agent-service",
-      "match": "codex-agent-service",
-      "category": "source_only",
-      "reason": "Codex agent runtime service tests depend on internal carrier/harness wiring outside the public gate.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "kimi-agent-service",
-      "match": "kimi-agent-service",
-      "category": "source_only",
-      "reason": "Kimi agent service coverage is internal runtime behavior, not public gate contract.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "claude-settings-hooks",
-      "match": "claude-settings-hooks\\.test",
-      "category": "private_fixture",
-      "reason": "Claude settings hook assertions depend on private runtime fixtures unavailable in public export.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "game-store",
-      "match": "game-store\\.test",
-      "category": "private_fixture",
-      "reason": "Game store tests rely on non-exported local fixtures and are kept out of the public gate.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "memory-tests",
       "match": "test/memory/",
       "category": "source_only",
-      "reason": "Memory package tests cover internal recall/index behavior outside the public gate promise.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Memory package tests cover internal recall/index behavior outside the public gate promise.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "cross-cat-context",
-      "match": "cross-cat-context\\.test",
-      "category": "source_only",
-      "reason": "Cross-cat context routing is internal collaboration harness behavior, not public gate surface.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "thread-wiring",
-      "match": "thread-wiring\\.test",
-      "category": "source_only",
-      "reason": "Thread wiring assertions cover internal callback plumbing outside the public gate contract.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "integration-wiring",
-      "match": "integration/wiring\\.test",
-      "category": "source_only",
-      "reason": "Integration wiring checks depend on internal connection topology not exported to public gate.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "shared-state-wiring",
       "match": "shared-state-wiring\\.test",
       "category": "source_only",
-      "reason": "Shared-state wiring is internal runtime glue not part of the public gate guarantee.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Shared-state wiring is internal runtime glue not part of the public gate guarantee.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "signal-fetcher-launchd",
       "match": "signal-fetcher-launchd",
       "category": "private_fixture",
-      "reason": "launchd-specific signal fetcher coverage depends on private macOS fixtures and stays internal.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). launchd-specific signal fetcher coverage depends on private macOS fixtures and stays internal.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "reflection-capsule-m3",
       "match": "reflection-capsule-m3",
       "category": "source_only",
-      "reason": "Reflection capsule M3 tests cover internal memory/harness behavior outside the public gate.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Reflection capsule M3 tests cover internal memory/harness behavior outside the public gate.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "workspace-project-context",
-      "match": "workspace-project-context\\.test",
-      "category": "source_only",
-      "reason": "Workspace project context assertions depend on source-only repo structure and local project wiring.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "projects-setup",
-      "match": "projects-setup\\.test",
-      "category": "source_only",
-      "reason": "Project setup tests cover internal bootstrap flows not guaranteed in the public gate.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "projects-mkdir",
-      "match": "projects-mkdir\\.test",
-      "category": "source_only",
-      "reason": "Project directory creation coverage depends on source-only filesystem conventions.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "governance-status",
       "match": "governance-status\\.test",
       "category": "source_only",
-      "reason": "Governance status assertions are source-owned workflow coverage, not public gate behavior.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Governance status assertions are source-owned workflow coverage, not public gate behavior.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "governance-pack",
       "match": "governance-pack\\.test",
       "category": "source_only",
-      "reason": "Governance pack assertions validate source-only sync content and are intentionally excluded from public gate.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Governance pack assertions validate source-only sync content and are intentionally excluded from public gate.",
       "owner": "@zts212653",
       "introducedBy": "069d0f0fb",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "pack-integration",
       "match": "pack-integration\\.test",
       "category": "source_only",
-      "reason": "Pack integration coverage exercises internal source packaging rules outside the public gate.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Pack integration coverage exercises internal source packaging rules outside the public gate.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "project-setup-flow",
       "match": "project-setup-flow\\.test",
       "category": "source_only",
-      "reason": "Project setup flow behavior is internal bootstrap coverage, not public gate contract.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Project setup flow behavior is internal bootstrap coverage, not public gate contract.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "expedition-bootstrap",
-      "match": "expedition-bootstrap\\.test",
-      "category": "source_only",
-      "reason": "Expedition bootstrap coverage depends on source-owned harness flows not exported publicly.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "rules-route",
-      "match": "rules-route\\.test",
-      "category": "source_only",
-      "reason": "Rules route assertions depend on source-only rule artifacts stripped from public export.",
-      "owner": "@zts212653",
-      "introducedBy": "4243948da",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "root-md-slim",
       "match": "root-md-slim\\.test",
       "category": "source_only",
-      "reason": "Root markdown slim tests rely on source-specific Chinese anchors not preserved in public export.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Root markdown slim tests rely on source-specific Chinese anchors not preserved in public export.",
       "owner": "@zts212653",
       "introducedBy": "7a300704a",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "audit-cc-system-prompt",
       "match": "audit-cc-system-prompt\\.test",
       "category": "private_fixture",
-      "reason": "System prompt audit depends on internal L0 prompt assets not shipped in public export.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). System prompt audit depends on internal L0 prompt assets not shipped in public export.",
       "owner": "@zts212653",
       "introducedBy": "e9bb56052",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "f188-cold-start-fixtures",
       "match": "f188-cold-start-fixtures\\.test",
       "category": "private_fixture",
-      "reason": "F188 cold-start fixture coverage depends on internal fixture files absent from public export.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). F188 cold-start fixture coverage depends on internal fixture files absent from public export.",
       "owner": "@zts212653",
       "introducedBy": "e9bb56052",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "f188-harness-consistency",
       "match": "f188-harness-consistency\\.test",
       "category": "private_fixture",
-      "reason": "F188 harness consistency checks rely on internal fixtures and remain source-only.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). F188 harness consistency checks rely on internal fixtures and remain source-only.",
       "owner": "@zts212653",
       "introducedBy": "e9bb56052",
-      "expiresOn": "2026-08-31"
-    },
-    {
-      "id": "orphan-chrome-cleaner",
-      "match": "orphan-chrome-cleaner\\.test",
-      "category": "private_fixture",
-      "reason": "Orphan Chrome cleaner assertions are sensitive to local path sanitization and private fixtures.",
-      "owner": "@zts212653",
-      "introducedBy": "e9bb56052",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "f203-phase-i-opencode-l0",
       "match": "f203-phase-i-opencode-l0\\.test",
       "category": "source_only",
-      "reason": "F203 opencode L0 coverage depends on internal runtime files not exported publicly.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). F203 opencode L0 coverage depends on internal runtime files not exported publicly.",
       "owner": "@zts212653",
       "introducedBy": "9c4f26fde",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "f236-cc-anchor-hook",
       "match": "f236-cc-anchor-hook\\.test",
       "category": "source_only",
-      "reason": "F236 cc anchor hook coverage imports the source-only root .claude hook implementation that is not part of the public export.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). F236 cc anchor hook coverage imports the source-only root .claude hook implementation that is not part of the public export.",
       "owner": "@zts212653",
       "introducedBy": "68dd499d9",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "github-schedule-factories",
       "match": "github-schedule-factories\\.test",
       "category": "source_only",
-      "reason": "GitHub schedule factory assertions are source-owned public-sync governance coverage, not runtime gate behavior.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). GitHub schedule factory assertions are source-owned public-sync governance coverage, not runtime gate behavior.",
       "owner": "@zts212653",
       "introducedBy": "bd8823b99",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "harness-eval-hub-read-model",
       "match": "harness-eval/eval-hub-read-model\\.test",
       "category": "source_only",
-      "reason": "Eval hub read-model coverage exercises source-owned harness governance surfaces outside the public gate.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Eval hub read-model coverage exercises source-owned harness governance surfaces outside the public gate.",
       "owner": "@zts212653",
       "introducedBy": "bd8823b99",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "harness-eval-merge-gate-provenance-contract",
       "match": "harness-eval/merge-gate-provenance-contract\\.test",
       "category": "source_only",
-      "reason": "Merge-gate provenance contract tests are source-owned governance coverage, not public runtime behavior.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Merge-gate provenance contract tests are source-owned governance coverage, not public runtime behavior.",
       "owner": "@zts212653",
       "introducedBy": "bd8823b99",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "f254-private-evidence-contracts",
       "match": "f254-(?:freshness-instruction-private-evidence|freshness-replay-provider|manual-reminder-scope|provider-native-freshness)\\.test",
       "category": "private_fixture",
-      "reason": "F254 document evidence, replay, scope, and native-provider checks require home-only archives, owner provenance, or carrier credentials; public runtime behavior is covered independently.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). F254 document evidence, replay, scope, and native-provider checks require home-only archives, owner provenance, or carrier credentials; public runtime behavior is covered independently.",
       "owner": "@zts212653",
       "introducedBy": "bfa9e2c8f",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "harness-eval-private-registry",
       "match": "harness-eval/eval-hub-(?:lifecycle-summary-route|metric-glossary-coverage|read-model-f248-phase-b2|route)\\.test",
       "category": "private_fixture",
-      "reason": "These Eval Hub governance checks require the home-only measurement registry and historical evidence archive, not public product state.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). These Eval Hub governance checks require the home-only measurement registry and historical evidence archive, not public product state.",
       "owner": "@zts212653",
       "introducedBy": "bfa9e2c8f",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "harness-eval-private-measurement-evidence",
       "match": "harness-eval/(?:friction-measurement-bundle|measurement-bundle-census|measurement-independent-rejudge(?:-adjudication|-judgment)?)\\.test",
       "category": "private_fixture",
-      "reason": "Measurement census and rejudge checks consume private certificates, verdicts, and replay artifacts that are deliberately absent from the public export.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Measurement census and rejudge checks consume private certificates, verdicts, and replay artifacts that are deliberately absent from the public export.",
       "owner": "@zts212653",
       "introducedBy": "bfa9e2c8f",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "harness-eval-private-verdict-publication",
       "match": "harness-eval/publish-verdict-(?:capability-wakeup(?:-owner-scope)?|freshness|friction|measurement-validity-gate|memory|pipeline|task-outcome(?:-writeback-guard)?)\\.test",
       "category": "private_fixture",
-      "reason": "Verdict publication checks require home-owned task, memory, and measurement evidence stores; they are governance coverage rather than a public runtime contract.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Verdict publication checks require home-owned task, memory, and measurement evidence stores; they are governance coverage rather than a public runtime contract.",
       "owner": "@zts212653",
       "introducedBy": "bfa9e2c8f",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     },
     {
       "id": "harness-eval-private-legacy-reeval-cases",
       "match": "harness-eval/legacy-reeval-case-(?:hub|migration)\\.test",
       "category": "private_fixture",
-      "reason": "Legacy stable-case migration and Hub projection assertions consume the home-only historical verdict archive and migration manifest, which are deliberately absent from the public export.",
+      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Legacy stable-case migration and Hub projection assertions consume the home-only historical verdict archive and migration manifest, which are deliberately absent from the public export.",
       "owner": "@zts212653",
       "introducedBy": "7121c7dec",
-      "expiresOn": "2026-08-31"
+      "expiresOn": "2026-09-30"
     }
   ]
 }
