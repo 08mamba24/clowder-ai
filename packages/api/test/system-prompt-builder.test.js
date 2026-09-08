@@ -13,7 +13,7 @@ import { catRegistry } from '@cat-cafe/shared';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPO_ROOT_TEMPLATE = resolve(REPO_ROOT, 'cat-template.json');
 const CAT_TEMPLATE_PATH = REPO_ROOT_TEMPLATE;
-const FULL_RUNTIME_PROMPT_CHAR_BUDGET = 7050; // 6500→6700→7050: gemini35 + gpt-pro roster growth
+const FULL_RUNTIME_PROMPT_CHAR_BUDGET = 7200; // 6500→6700→7050→7200: gemini35 + gpt-pro + zcode/dsh roster growth
 
 function assertWithinFullRuntimePromptBudget(prompt) {
   assert.ok(
@@ -1863,8 +1863,11 @@ describe('SystemPromptBuilder', () => {
         featureId: 'F073',
       },
     });
-    // 6200→6500→6700→6800→7050: decision funnel §17 + roster growth + F208 dossier l0RosterSummary
-    assert.ok(prompt.length < 7050, `Prompt with SOP hint is ${prompt.length} chars, expected < 7050`);
+    // 6200→6500→6700→6800→7050→7200: decision funnel §17 + roster growth + F208 dossier l0RosterSummary
+    assert.ok(
+      prompt.length < FULL_RUNTIME_PROMPT_CHAR_BUDGET,
+      `Prompt with SOP hint is ${prompt.length} chars, expected < ${FULL_RUNTIME_PROMPT_CHAR_BUDGET}`,
+    );
   });
 
   // --- F092: Voice Mode prompt injection ---
@@ -1911,8 +1914,11 @@ describe('SystemPromptBuilder', () => {
       },
       voiceMode: true,
     });
-    // 6200→6500→6700→6800→7050: decision funnel §17 + roster growth + F208 dossier l0RosterSummary
-    assert.ok(prompt.length < 7050, `Prompt with voice mode + SOP hint is ${prompt.length} chars, expected < 7050`);
+    // 6200→6500→6700→6800→7050→7200: decision funnel §17 + roster growth + F208 dossier l0RosterSummary
+    assert.ok(
+      prompt.length < FULL_RUNTIME_PROMPT_CHAR_BUDGET,
+      `Prompt with voice mode + SOP hint is ${prompt.length} chars, expected < ${FULL_RUNTIME_PROMPT_CHAR_BUDGET}`,
+    );
   });
 
   test('buildInvocationContext injects bootcamp mode when bootcampState provided', async () => {
