@@ -154,6 +154,37 @@ describe('dsh ACP bootstrap', () => {
     assert.equal(isBareDshMcpClientPlugin('@deepseek-ai/dsh-mcp-client'), true);
   });
 
+  it('does not inherit ambient CAT_CAFE_AGENT_KEY_FILE into the DSH MCP overlay', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-agentkey-'));
+    const { overlay } = writeDshFixture(root);
+    // Another cat's persistent agent key, as the API process ambient env may
+    // carry it; the path string is a fixture, never a real key.
+    const foreignKeyPath = join(root, 'antigravity.secret');
+    writeFileSync(foreignKeyPath, 'fixture-not-a-real-key\n');
+    const prepared = await prepareDshAcpSpawnForProject({
+      command: 'dsh',
+      args: [],
+      projectRoot: mkdtempSync(join(tmpdir(), 'dsh-project-agentkey-')),
+      bootstrapCwd: join(root, 'boot'),
+      mcpWhitelist: ['cat-cafe-memory'],
+      mcpSupport: true,
+      catId: 'dsh',
+      env: {
+        CAT_CAFE_DSH_ROOT: root,
+        PATH: '/nonexistent',
+        CAT_CAFE_API_URL: 'http://127.0.0.1:9',
+        CAT_CAFE_AGENT_KEY_FILE: foreignKeyPath,
+      },
+    });
+    assert.equal(prepared.ok, true);
+    if (!prepared.ok) return;
+    const yaml = readFileSync(overlay, 'utf-8');
+    assert.doesNotMatch(yaml, /CAT_CAFE_AGENT_KEY_FILE/);
+    assert.doesNotMatch(yaml, new RegExp(foreignKeyPath.replaceAll('/', '\\/')));
+    assert.match(yaml, /CAT_CAFE_CREDENTIAL_FILE: !!js process\.env\.CAT_CAFE_CREDENTIAL_FILE/);
+    assert.match(yaml, /CAT_CAFE_CAT_ID: 'dsh'/);
+  });
+
   it('skips Hub overlay when family MCP is requested but mcp-client entry is missing', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-prepare-nomcp-'));
     const binDir = join(root, 'packages', 'examples', 'acp-demo', 'lib');
