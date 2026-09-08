@@ -1,9 +1,12 @@
 /**
  * Cordis overlay YAML for DeepSeek Harness ACP family MCP.
- * Overlay lives next to official cordis.yml; plugin names are filesystem paths.
+ * Content-addressed overlays live next to cordis.yml so plugin resolution keeps
+ * the official composition anchor. A later API/test boot cannot replace a
+ * configuration already referenced by another project's process pool.
  */
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { join } from 'node:path';
 import type { AcpMcpServer, AcpMcpServerHttp, AcpMcpServerStdio } from './types.js';
 
 const BARE_DSH_MCP_CLIENT = '@deepseek-ai/dsh-mcp-client';
@@ -14,21 +17,20 @@ export const DSH_ACP_CREDENTIAL_ENV_JS = '!!js process.env.CAT_CAFE_CREDENTIAL_F
 export function writeDshAcpOverlayConfig(input: {
   baseConfigPath: string;
   servers: readonly AcpMcpServer[];
-  outputPath: string;
+  outputDir: string;
   pluginName?: string;
 }): string {
-  if (resolve(input.outputPath) === resolve(input.baseConfigPath)) {
-    throw new Error('DSH ACP overlay must be a sibling of the official cordis.yml, not overwrite it');
-  }
   const base = readFileSync(input.baseConfigPath, 'utf-8');
   const plugins = buildDshMcpClientPlugins(input.servers, input.pluginName);
   const merged = plugins ? `${base.replace(/\s*$/, '')}\n\n# cat-cafe family MCP via dsh-mcp-client\n${plugins}` : base;
-  const dir = dirname(input.outputPath);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const tempPath = `${input.outputPath}.tmp-${process.pid}`;
-  writeFileSync(tempPath, merged.endsWith('\n') ? merged : `${merged}\n`, { encoding: 'utf-8', mode: 0o600 });
-  renameSync(tempPath, input.outputPath);
-  return input.outputPath;
+  const content = merged.endsWith('\n') ? merged : `${merged}\n`;
+  const digest = createHash('sha256').update(content).digest('hex');
+  const outputPath = join(input.outputDir, `cat-cafe-dsh-acp.${digest}.cordis.yml`);
+  mkdirSync(input.outputDir, { recursive: true, mode: 0o700 });
+  const tempPath = `${outputPath}.tmp-${randomUUID()}`;
+  writeFileSync(tempPath, content, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+  renameSync(tempPath, outputPath);
+  return outputPath;
 }
 
 export function buildDshMcpClientPlugins(servers: readonly AcpMcpServer[], pluginName?: string): string {

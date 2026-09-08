@@ -29,7 +29,6 @@ import type { AcpMcpServer, AcpMcpServerStdio } from './types.js';
 export { buildDshMcpClientInserts, buildDshMcpClientPlugins, DSH_ACP_CREDENTIAL_ENV_JS, writeDshAcpOverlayConfig };
 
 const DSH_HARNESS_BASENAMES = new Set(['dsh', 'dsh-acp-demo']);
-const DSH_ACP_OVERLAY_FILENAME = 'cat-cafe-dsh-acp.cordis.yml';
 const DSH_MCP_CLIENT_REL = join('packages', 'mcp', 'mcp-client');
 const BARE_DSH_MCP_CLIENT = '@deepseek-ai/dsh-mcp-client';
 
@@ -70,7 +69,6 @@ export async function prepareDshAcpSpawnForProject(input: PrepareDshAcpSpawnInpu
   if (!binary.ok) return binary;
 
   const compositionDir = dirname(binary.baseConfigPath);
-  const overlayPath = join(compositionDir, DSH_ACP_OVERLAY_FILENAME);
   const pluginName = resolveDshMcpClientPluginName(compositionDir, env);
   const servers = await resolveDshOverlayServers(input, env);
   if (servers.length > 0 && isBareDshMcpClientPlugin(pluginName)) {
@@ -82,11 +80,12 @@ export async function prepareDshAcpSpawnForProject(input: PrepareDshAcpSpawnInpu
     };
   }
 
+  let overlayPath: string;
   try {
-    writeDshAcpOverlayConfig({
+    overlayPath = writeDshAcpOverlayConfig({
       baseConfigPath: binary.baseConfigPath,
       servers,
-      outputPath: overlayPath,
+      outputDir: compositionDir,
       pluginName: pluginName ?? BARE_DSH_MCP_CLIENT,
     });
   } catch (err) {

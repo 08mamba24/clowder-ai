@@ -54,6 +54,12 @@ unset CAT_CAFE_GLOBAL_CONFIG_ROOT
 unset CAT_CAFE_CODEX_CARRIER
 unset CAT_CAFE_CLAUDE_CARRIER
 
+# An API child may prepare DSH during registry bootstrap, before any invocation.
+# Never let a test write its temporary project's MCP paths into the live DSH
+# installation/composition inherited from the parent runtime.
+unset CAT_CAFE_DSH_ROOT
+unset CAT_CAFE_DSH_ACP_CONFIG
+
 # API_SERVER_HOST is a runtime binding choice. LAN/dev invocations commonly set
 # it to 0.0.0.0, but capability write tests expect localhost-only defaults unless
 # an individual test explicitly sets the host under test.
