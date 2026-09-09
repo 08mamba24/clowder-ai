@@ -198,6 +198,7 @@ describe('dsh ACP bootstrap', () => {
       mcpServer: {
         transport: 'streamableHttp',
         url: `https://open.bigmodel.cn/api/mcp/${id}/mcp`,
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: MCP env reference fixture, not a JS template
         headers: { Authorization: 'Bearer ${Z_AI_API_KEY_TEST}' },
       },
     });
@@ -218,6 +219,7 @@ describe('dsh ACP bootstrap', () => {
               transport: 'stdio',
               command: 'npx',
               args: ['-y', '@z_ai/mcp-server'],
+              // biome-ignore lint/suspicious/noTemplateCurlyInString: MCP env reference fixture, not a JS template
               env: { Z_AI_API_KEY_TEST: '${Z_AI_API_KEY_TEST}' },
             },
           },
@@ -251,13 +253,109 @@ describe('dsh ACP bootstrap', () => {
     if (!prepared.ok) return;
     const yaml = readFileSync(prepared.overlayPath, 'utf-8');
     const serverNames = [...yaml.matchAll(/serverName: '([^']+)'/g)].map((m) => m[1]);
-    for (const name of ['cat-cafe-memory', 'cat-cafe-collab', 'cat-cafe-signals', 'zai-mcp-server', 'zread', 'web-search-prime', 'web-reader']) {
+    for (const name of [
+      'cat-cafe-memory',
+      'cat-cafe-collab',
+      'cat-cafe-signals',
+      'zai-mcp-server',
+      'zread',
+      'web-search-prime',
+      'web-reader',
+    ]) {
       assert.ok(serverNames.includes(name), `overlay must carry ${name}, got ${serverNames.join(',')}`);
     }
     // Secrets stay as boot-time Cordis interpolation, never as literal values.
     assert.doesNotMatch(yaml, /sk-live-secret-fixture/);
     assert.match(yaml, /Z_AI_API_KEY_TEST: !!js process\.env\.Z_AI_API_KEY_TEST/);
-    assert.match(yaml, /Authorization: !!js 'Bearer ' \+ process\.env\.Z_AI_API_KEY_TEST/);
+    // Partial-reference expressions are quoted as one scalar — see the schema test below.
+    assert.match(yaml, /Authorization: !!js '''Bearer '' \+ process\.env\.Z_AI_API_KEY_TEST'/);
+  });
+
+  it('emits overlays the DSH entry-list schema parses without error', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-zai-schema-'));
+    writeDshFixture(root);
+    const projectRoot = mkdtempSync(join(tmpdir(), 'dsh-project-zai-schema-'));
+    const capDir = join(projectRoot, '.cat-cafe');
+    mkdirSync(capDir, { recursive: true });
+    const bearer = (id) => ({
+      id,
+      type: 'mcp',
+      enabled: true,
+      globalEnabled: true,
+      mcpServer: {
+        transport: 'streamableHttp',
+        url: `https://open.bigmodel.cn/api/mcp/${id}/mcp`,
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: MCP env reference fixture, not a JS template
+        headers: { Authorization: 'Bearer ${Z_AI_API_KEY_TEST}' },
+      },
+    });
+    writeFileSync(
+      join(capDir, 'capabilities.json'),
+      JSON.stringify({
+        version: 2,
+        capabilities: [
+          bearer('zread'),
+          {
+            id: 'zai-mcp-server',
+            type: 'mcp',
+            enabled: true,
+            globalEnabled: true,
+            mcpServer: {
+              transport: 'stdio',
+              command: 'npx',
+              args: ['-y', '@z_ai/mcp-server'],
+              // biome-ignore lint/suspicious/noTemplateCurlyInString: MCP env reference fixture, not a JS template
+              env: { Z_AI_API_KEY_TEST: '${Z_AI_API_KEY_TEST}' },
+            },
+          },
+        ],
+      }),
+    );
+    const prepared = await prepareDshAcpSpawnForProject({
+      command: 'dsh',
+      args: [],
+      projectRoot,
+      bootstrapCwd: join(root, 'boot'),
+      mcpWhitelist: ['cat-cafe-memory', 'zai-mcp-server', 'zread'],
+      mcpSupport: true,
+      catId: 'dsh',
+      env: {
+        CAT_CAFE_DSH_ROOT: root,
+        PATH: '/nonexistent',
+        CAT_CAFE_API_URL: 'http://127.0.0.1:9',
+        Z_AI_API_KEY_TEST: 'sk-schema-secret',
+      },
+    });
+    assert.equal(prepared.ok, true);
+    if (!prepared.ok) return;
+    const yaml = readFileSync(prepared.overlayPath, 'utf-8');
+    // Mirror of the DSH vendored include dialect (vendor/include/lib/types:
+    // JSON_SCHEMA + a !!js scalar tag constructing {__jsExpr}). Replicated
+    // here so the regression runs without a deepseek-harness checkout.
+    const jsYaml = await import('js-yaml');
+    const schema = jsYaml.JSON_SCHEMA.extend(
+      new jsYaml.Type('tag:yaml.org,2002:js', {
+        kind: 'scalar',
+        resolve: (data) => typeof data === 'string',
+        construct: (data) => ({ __jsExpr: data }),
+      }),
+    );
+    const entries = jsYaml.load(yaml, { schema });
+    assert.ok(Array.isArray(entries));
+    const zread = entries.find((entry) => entry?.config?.serverName === 'zread');
+    assert.ok(zread, 'zread entry must survive schema parsing');
+    const authExpr = zread.config.headers.Authorization;
+    assert.equal(typeof authExpr, 'object');
+    // The Loader evaluates the expression against process env at activation.
+    process.env.Z_AI_API_KEY_TEST = 'sk-schema-secret';
+    try {
+      assert.equal(new Function(`return (${authExpr.__jsExpr});`)(), 'Bearer sk-schema-secret');
+      const zai = entries.find((entry) => entry?.config?.serverName === 'zai-mcp-server');
+      assert.equal(new Function(`return (${zai.config.env.Z_AI_API_KEY_TEST.__jsExpr});`)(), 'sk-schema-secret');
+    } finally {
+      delete process.env.Z_AI_API_KEY_TEST;
+    }
+    assert.equal(zread.config.url, 'https://open.bigmodel.cn/api/mcp/zread/mcp');
   });
 
   it('fails closed when the overlay references a missing secret env var', async () => {
@@ -279,6 +377,7 @@ describe('dsh ACP bootstrap', () => {
             mcpServer: {
               transport: 'streamableHttp',
               url: 'https://open.bigmodel.cn/api/mcp/zread/mcp',
+              // biome-ignore lint/suspicious/noTemplateCurlyInString: MCP env reference fixture, not a JS template
               headers: { Authorization: 'Bearer ${Z_AI_API_KEY_TEST}' },
             },
           },
