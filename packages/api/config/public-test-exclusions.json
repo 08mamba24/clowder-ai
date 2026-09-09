@@ -47,10 +47,10 @@
       "id": "workflow-sop-store",
       "match": "workflow-sop-store",
       "category": "source_only",
-      "reason": "The bounded public audit discovered no matching test file; retain only until the explicit inventory recheck completes.",
+      "reason": "The bounded public audit discovered no matching test file; retain only until the explicit inventory recheck completes. (2026-09-09 renew during origin↔upstream integration; still source_only.)",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-09-08",
+      "expiresOn": "2026-10-09",
       "audit": {
         "reviewedOn": "2026-09-01",
         "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
