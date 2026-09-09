@@ -26,7 +26,7 @@ const { resolveZcodeAcpAdapterPath, zcodeOmitsAcpSessionMcp } = await import(
   '../../dist/domains/cats/services/agents/providers/acp/zcode-acp-bootstrap.js'
 );
 
-const SLIM_MCP = ['cat-cafe-memory', 'cat-cafe-collab', 'cat-cafe-signals'];
+const SLIM_MCP = ['cat-cafe-memory', 'cat-cafe-collab', 'cat-cafe-signals', 'zai-mcp-server', 'zread', 'web-search-prime', 'web-reader'];
 
 function isolateTemplate() {
   const projectRoot = mkdtempSync(join(tmpdir(), 'harness-member-'));
