@@ -14,13 +14,16 @@ import {
   parseStoredCredential,
 } from './account-store-format.js';
 import { resolveAccountStoreTopology } from './account-store-topology.js';
+import { assertSafeTestConfigRead } from './test-config-write-guard.js';
 
 function readMap(path: string): Record<string, unknown> {
   let content: string;
   try {
     content = readFileSync(path, 'utf8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return Object.create(null) as Record<string, unknown>;
+    }
     return malformedAccountStore(path);
   }
   try {
@@ -37,6 +40,9 @@ interface StoreSnapshot {
 }
 
 function readStore(root: string): StoreSnapshot {
+  // P1-8: guard every physical topology root before the first open — primary and
+  // legacy alike. A readable credential/account from an inherited store is the leak.
+  assertSafeTestConfigRead(root, 'account-store-snapshot.readStore');
   const path = (name: string) => resolve(root, '.cat-cafe', name);
   const catalog = readMap(path('cat-catalog.json'));
   return {

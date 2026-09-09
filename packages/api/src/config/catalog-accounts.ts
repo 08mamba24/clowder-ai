@@ -20,7 +20,7 @@ import {
 } from './account-store-format.js';
 import { assertAccountWritable, readAccountCatalogSnapshot } from './account-store-snapshot.js';
 import { resolveAccountStoreTopology, resolveAccountWriteRoot } from './account-store-topology.js';
-import { assertSafeTestConfigRoot } from './test-config-write-guard.js';
+import { assertSafeTestConfigRead, assertSafeTestConfigRoot } from './test-config-write-guard.js';
 
 const CONFIG_SUBDIR = '.cat-cafe';
 const ACCOUNTS_FILENAME = 'accounts.json';
@@ -62,6 +62,7 @@ function writeFileAtomic(filePath: string, content: string, mode?: number): void
 
 function readAllGlobal(projectRoot?: string): Record<string, AccountConfig> {
   const empty = () => Object.create(null) as Record<string, AccountConfig>;
+  assertSafeTestConfigRead(resolveGlobalRoot(projectRoot), 'catalog-accounts.readAllGlobal');
   const accountsPath = resolveAccountsPath(projectRoot);
   if (!existsSync(accountsPath)) return empty();
   const raw = readFileSync(accountsPath, 'utf-8');
@@ -155,6 +156,7 @@ function collectRootCatalogAccountKeys(value: unknown, refs: Set<string>): void 
 }
 
 function readProjectAccountRefs(projectRoot: string): Set<string> {
+  assertSafeTestConfigRead(projectRoot, 'catalog-accounts.readProjectAccountRefs.source');
   const refs = new Set<string>();
   const catalogPath = resolve(projectRoot, CONFIG_SUBDIR, 'cat-catalog.json');
   if (!existsSync(catalogPath)) return refs;
@@ -218,6 +220,8 @@ function migrateLegacyFrom(
   projectRoot?: string,
   opts?: { shouldImportAccount?: (ref: string, account: AccountConfig) => boolean },
 ): void {
+  // Guard the migration source root before fingerprinting/opening any file.
+  assertSafeTestConfigRead(root, 'catalog-accounts.migrateLegacyFrom.source');
   const metaPath = resolve(root, CONFIG_SUBDIR, 'provider-profiles.json');
   if (!existsSync(metaPath)) return;
   const parsed = parseLegacyProviderProfiles(JSON.parse(readFileSync(metaPath, 'utf-8')));
@@ -330,6 +334,8 @@ function migrateProjectAccountsToGlobal(projectRoot: string): void {
   const key = resolve(projectRoot);
   if (migratedProjects.has(key)) return;
   try {
+    // Guard before existsSync/open so a cached earlier phase cannot bypass the reader.
+    assertSafeTestConfigRead(projectRoot, 'catalog-accounts.migrateProjectAccountsToGlobal.source');
     const catalogPath = resolve(projectRoot, CONFIG_SUBDIR, 'cat-catalog.json');
     if (!existsSync(catalogPath)) return;
     const raw = readFileSync(catalogPath, 'utf-8');
@@ -350,6 +356,8 @@ function migrateProjectAccountsToGlobal(projectRoot: string): void {
     }
     migratedProjects.add(key);
   } catch (err) {
+    // Never swallow test-sandbox refusals — they must fail the caller closed.
+    if (err instanceof Error && err.message.includes('[test sandbox] Refusing')) throw err;
     // Best-effort: log and mark done to avoid retry loops on persistent
     // errors (corrupt catalog JSON, permission issues, etc.).
     console.error(`[catalog-accounts] project→global migration failed for ${key}:`, err);
@@ -408,6 +416,9 @@ function migrateHomedirCredentials(projectRoot?: string): void {
     migratedHomedirCredentials.add(migrationKey);
     return;
   }
+  // Guard both physical roots before the first open (P1-8 / P1-9).
+  assertSafeTestConfigRead(home, 'catalog-accounts.migrateHomedirCredentials.source');
+  assertSafeTestConfigRead(globalRoot, 'catalog-accounts.migrateHomedirCredentials.target');
   const homeCredPath = resolve(home, CONFIG_SUBDIR, 'credentials.json');
   if (!existsSync(homeCredPath)) {
     migratedHomedirCredentials.add(migrationKey);
@@ -420,15 +431,22 @@ function migrateHomedirCredentials(projectRoot?: string): void {
       return;
     }
     const targetCredPath = resolve(globalRoot, CONFIG_SUBDIR, 'credentials.json');
-    let targetCreds: Record<string, unknown> = {};
+    let targetCreds: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     if (existsSync(targetCredPath)) {
       try {
         const parsed = JSON.parse(readFileSync(targetCredPath, 'utf-8'));
         if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-          targetCreds = parsed;
+          for (const [ref, entry] of Object.entries(parsed as Record<string, unknown>)) {
+            Object.defineProperty(targetCreds, ref, {
+              value: entry,
+              enumerable: true,
+              configurable: true,
+              writable: true,
+            });
+          }
         }
       } catch {
-        targetCreds = {};
+        targetCreds = Object.create(null) as Record<string, unknown>;
       }
     }
     let imported = 0;
@@ -438,10 +456,15 @@ function migrateHomedirCredentials(projectRoot?: string): void {
       if (
         typeof entry === 'object' &&
         entry !== null &&
-        !(ref in targetCreds) &&
-        (ref in targetAccounts || shouldImportCrossRootHomedirAccount(ref, referencedRefs))
+        !Object.hasOwn(targetCreds, ref) &&
+        (Object.hasOwn(targetAccounts, ref) || shouldImportCrossRootHomedirAccount(ref, referencedRefs))
       ) {
-        targetCreds[ref] = entry;
+        Object.defineProperty(targetCreds, ref, {
+          value: entry,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
         imported++;
       }
     }
@@ -498,6 +521,10 @@ export function resetMigrationState(): void {
 // ── Public API (signatures kept backward-compatible, projectRoot used for migration) ──
 
 export function readCatalogAccounts(projectRoot: string): Record<string, AccountConfig> {
+  // Keep migrate-on-read for CLI/tests/operator paths. Hub boot also calls
+  // accountStartupHook explicitly before the first syncAgentRegistry so
+  // fail-fast store adjudication still precedes ACP registration.
+  migrateCatalogAccounts(projectRoot);
   return readAccountCatalogSnapshot(projectRoot);
 }
 
@@ -520,6 +547,10 @@ export function deleteCatalogAccount(projectRoot: string, ref: string): void {
 
 /** Check if legacy provider-profiles.json exists in any known location. */
 export function hasLegacyProviderProfiles(projectRoot: string): boolean {
+  // P1-11: an existence probe is still a read of that root; this reader runs no
+  // migration first — it is always its own first open.
+  assertSafeTestConfigRead(resolveGlobalRoot(projectRoot), 'catalog-accounts.hasLegacyProviderProfiles.store');
   if (existsSync(resolve(resolveGlobalRoot(projectRoot), CONFIG_SUBDIR, 'provider-profiles.json'))) return true;
+  assertSafeTestConfigRead(projectRoot, 'catalog-accounts.hasLegacyProviderProfiles.project');
   return existsSync(resolve(projectRoot, CONFIG_SUBDIR, 'provider-profiles.json'));
 }

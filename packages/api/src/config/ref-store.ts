@@ -34,6 +34,17 @@
  */
 export function refStore<T>(source?: Record<string, T> | null): Record<string, T> {
   const store = Object.create(null) as Record<string, T>;
-  if (source) Object.assign(store, source);
+  if (source) {
+    // Object.assign uses [[Set]]; a source own-key "__proto__" would be swallowed
+    // even on a null-prototype target. defineProperty keeps ref keys as data.
+    for (const key of Object.keys(source)) {
+      Object.defineProperty(store, key, {
+        value: source[key as keyof typeof source],
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+  }
   return store;
 }

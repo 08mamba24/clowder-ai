@@ -2,15 +2,17 @@
 /**
  * Origin↔upstream integration boot smoke.
  *
- * Mirrors Hub cold-start order from packages/api/src/index.ts:
+ * Locks the Hub cold-start composition seam from packages/api/src/index.ts:
  *   1) accountStartupHook (migrate + inspect; unavailable accounts warn, do not abort)
- *   2) syncAgentRegistry ACP path (createAcpServiceForConfig per member)
+ *   2) first syncAgentRegistry ACP path (createAcpServiceForConfig per member)
  *
- * Goal: home ACP roster (dsh/grok/zcode) + upstream account topology can boot
- * together without throwing — rejected accounts skip, healthy ones register.
+ * Production previously ran registry sync before accountStartupHook; that order
+ * is inverted so fail-fast store adjudication precedes ACP registration.
+ * This test follows that locked order. Full Fastify boot / warmL0 remain out of
+ * scope — the seam under test is accountStartupHook → createAcpServiceForConfig.
  */
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -18,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_TEMPLATE_PATH = join(__dirname, '..', '..', '..', 'cat-template.json');
+const API_INDEX_SOURCE = join(__dirname, '..', 'src', 'index.ts');
 
 const { accountStartupHook } = await import('../dist/config/account-startup.js');
 const { resetMigrationState, writeCatalogAccount } = await import('../dist/config/catalog-accounts.js');
@@ -47,6 +50,18 @@ function writeDshFixture() {
 }
 
 describe('origin↔upstream Hub boot smoke', () => {
+  it('locks production composition: accountStartupHook before first syncAgentRegistry', () => {
+    const source = readFileSync(API_INDEX_SOURCE, 'utf8');
+    const accountHook = source.indexOf('accountStartupHook(findMonorepoRoot(process.cwd()))');
+    const firstSync = source.indexOf('await syncAgentRegistry(catRegistry.getAllConfigs())');
+    assert.ok(accountHook > 0, 'accountStartupHook call must exist in api index');
+    assert.ok(firstSync > 0, 'syncAgentRegistry call must exist in api index');
+    assert.ok(
+      accountHook < firstSync,
+      'accountStartupHook must precede the first syncAgentRegistry (fail-fast before ACP register)',
+    );
+  });
+
   /** @type {string} */
   let globalRoot;
   /** @type {string} */

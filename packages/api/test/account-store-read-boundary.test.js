@@ -172,48 +172,23 @@ describe('account store read boundary (P1-8)', () => {
   });
 
   /**
-   * The migration's OWN reads, with no write anywhere in reach. Once a marker
-   * matches the source fingerprints the migration short-circuits — but only
-   * after fingerprinting both outer source files and parsing the outer marker.
-   * That whole path ran before any write guard, so the old code read the
-   * operator's store and returned quietly. The marker here is produced by a
-   * real production-mode run against the same fixture, not hand-written.
-   *
-   * The child reads its OWN safe fixture root, so readAllGlobal's guard has
-   * nothing to refuse — only the migration's own read guard can fail this.
+   * Upstream replaced runtime→workspace marker migration with dual-root
+   * topology adjudication. Naming an inherited workspace as the explicit
+   * projectRoot must still refuse before accounts/credentials open.
    */
-  it('a bare `node --test` cannot re-enter the migration once its marker already matches', () => {
+  it('a bare `node --test` cannot read an inherited workspace named as projectRoot', () => {
     const fixture = buildFixture();
-    const ownRoot = makeTemp('p18-own-project-');
-    mkdirSync(join(fixture.runtimeRoot, '.cat-cafe'), { recursive: true });
-    writeFileSync(
-      join(fixture.runtimeRoot, '.cat-cafe', 'accounts.json'),
-      `${JSON.stringify({ probe: { authType: 'api_key', clientId: 'anthropic', displayName: 'probe' } }, null, 2)}\n`,
-    );
-
-    // Production run first: performs the migration and writes the marker.
-    const seed = spawnSync(
-      process.execPath,
-      [
-        '-e',
-        `import(${JSON.stringify(CATALOG_ACCOUNTS_DIST)}).then((m) => m.readCatalogAccounts(${JSON.stringify(
-          fixture.workspaceRoot,
-        )}));`,
-      ],
-      { encoding: 'utf-8', env: childEnv(fixture) },
-    );
-    assert.equal(seed.status, 0, `precondition: the production migration must succeed: ${seed.stdout}${seed.stderr}`);
-    assert.ok(
-      existsSync(join(fixture.workspaceRoot, '.cat-cafe', 'runtime-migration.json')),
-      'precondition: the marker must exist, otherwise this test is not exercising the short-circuit',
-    );
-
-    const innerTest = writeInnerTest(fixture, 'read-marker-hit', accountsReadSnippet(ownRoot));
+    const innerTest = writeInnerTest(fixture, 'read-inherited-workspace', accountsReadSnippet(fixture.workspaceRoot));
     const { status, out } = runBareChild(fixture, innerTest);
 
-    assert.notEqual(status, 0, `a marker hit must not become a silent read. Output:\n${out}`);
+    assert.notEqual(status, 0, `inherited workspace projectRoot must FAIL closed. Output:\n${out}`);
     assert.match(out, /\[test sandbox\] Refusing/);
-    assert.match(out, /runtimeMigration/, 'the refusal must come from the migration read, not a later guard');
+    assert.match(
+      out,
+      /account-store-snapshot\.readStore|catalog-accounts\.|inherited from the launching process/,
+      'the refusal must come from a store read guard before data returns',
+    );
+    assert.doesNotMatch(out, /READ_OUTER_ACCOUNT=true/);
   });
 
   /**
