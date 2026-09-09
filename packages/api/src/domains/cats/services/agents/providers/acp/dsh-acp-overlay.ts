@@ -87,6 +87,10 @@ function httpPluginLines(server: AcpMcpServerHttp, pluginName: string): string[]
   if (server.headers.length > 0) {
     lines.push('    headers:');
     for (const header of server.headers) {
+      if (header.value.startsWith('!!js ')) {
+        lines.push(`      ${header.name}: ${yamlJsScalar(header.value)}`);
+        continue;
+      }
       lines.push(`      ${header.name}: ${yamlQuote(header.value)}`);
     }
   }
@@ -99,11 +103,22 @@ function appendEnvLines(lines: string[], env: AcpMcpServerStdio['env']): void {
   lines.push('    env:');
   for (const entry of env) {
     if (entry.value.startsWith('!!js ')) {
-      lines.push(`      ${entry.name}: ${entry.value}`);
+      lines.push(`      ${entry.name}: ${yamlJsScalar(entry.value)}`);
       continue;
     }
     lines.push(`      ${entry.name}: ${yamlQuote(entry.value)}`);
   }
+}
+
+/**
+ * Emit a `!!js` scalar the DSH entry-list dialect can parse: the YAML tag
+ * applies to exactly one scalar, so any expression beyond a plain dotted
+ * identifier (e.g. `'Bearer ' + process.env.X`) must be quoted as a whole —
+ * unquoted, `+ process.env.X` is trailing content and js-yaml throws.
+ */
+function yamlJsScalar(value: string): string {
+  const expr = value.slice('!!js '.length);
+  return /^[A-Za-z0-9_$.]+$/.test(expr) ? value : `!!js ${yamlQuote(expr)}`;
 }
 
 function sanitizeYamlId(value: string): string {

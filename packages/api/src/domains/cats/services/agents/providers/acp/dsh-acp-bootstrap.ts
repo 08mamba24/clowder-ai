@@ -204,6 +204,11 @@ async function resolveDshOverlayServers(
     catId: input.catId,
     disabledServerIds: disabled,
     env,
+    // Secrets must never materialize into the on-disk overlay. References are
+    // validated here (fail-closed on missing) and rewritten to Cordis `!!js`
+    // values, interpolated from DSH process env at boot — same lane as the
+    // CAT_CAFE_CREDENTIAL_FILE entry below.
+    envReferenceValueRenderer: dshOverlayEnvReferenceValue,
   });
   const spawnEnv: Record<string, string> = {
     CAT_CAFE_API_URL: env.CAT_CAFE_API_URL?.trim() || 'http://localhost:3004',
@@ -211,6 +216,23 @@ async function resolveDshOverlayServers(
     CAT_CAFE_CAT_ID: input.catId,
   };
   return resolved.map((server) => attachStdioSpawnEnv(server, spawnEnv));
+}
+
+/**
+ * Rewrite an env/header value carrying `${VAR}` references into one Cordis
+ * `!!js` expression interpolated at DSH process boot (e.g.
+ * `Bearer ${TOKEN}` → `!!js 'Bearer ' + process.env.TOKEN`). Values without
+ * references pass through untouched.
+ */
+function dshOverlayEnvReferenceValue(value: string): string {
+  if (!value.includes('${')) return value;
+  const parts = value.split(/(\$\{[A-Za-z_][A-Za-z0-9_]*\})/g).filter(Boolean);
+  const segments = parts.map((part) => {
+    const ref = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(part);
+    if (ref) return `process.env.${ref[1]}`;
+    return `'${part.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  });
+  return `!!js ${segments.join(' + ')}`;
 }
 
 function attachStdioSpawnEnv(server: AcpMcpServer, spawnEnv: Record<string, string>): AcpMcpServer {

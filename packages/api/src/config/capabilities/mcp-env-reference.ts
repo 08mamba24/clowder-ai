@@ -98,6 +98,32 @@ export function assertMcpServerEnvReferencesAvailable<T extends McpEnvReferenceC
 }
 
 /**
+ * Validate references, then rewrite each carrier value as a whole.
+ *
+ * Unlike `renderMcpServerEnvReferences` (name-level placeholder rewrite), this
+ * hands the renderer the full value string, so partial references like
+ * `Bearer ${TOKEN}` can be rewritten into a single replacement expression.
+ * Values without references are passed through untouched.
+ */
+export function renderMcpServerEnvReferenceValues<T extends McpEnvReferenceCarrier>(
+  descriptor: T,
+  renderValue: (value: string) => string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  explicitServerName?: string,
+): T {
+  assertMcpServerEnvReferencesAvailable(descriptor, env, explicitServerName);
+  const mapRecord = (record: Record<string, string> | undefined) =>
+    record ? Object.fromEntries(Object.entries(record).map(([key, value]) => [key, renderValue(value)])) : undefined;
+  const renderedEnv = mapRecord(descriptor.env);
+  const renderedHeaders = mapRecord(descriptor.headers);
+  return {
+    ...descriptor,
+    ...(renderedEnv ? { env: renderedEnv } : {}),
+    ...(renderedHeaders ? { headers: renderedHeaders } : {}),
+  } as T;
+}
+
+/**
  * Validate references, then rewrite only their placeholder syntax.
  *
  * OpenCode uses `{env:NAME}` rather than `${NAME}` in persisted config. This

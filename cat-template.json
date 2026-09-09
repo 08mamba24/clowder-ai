@@ -1181,7 +1181,15 @@
           "acp": {
             "command": "grok",
             "startupArgs": ["--no-auto-update", "agent", "--always-approve", "stdio"],
-            "mcpWhitelist": ["cat-cafe-memory", "cat-cafe-collab", "cat-cafe-signals"]
+            "mcpWhitelist": [
+              "cat-cafe-memory",
+              "cat-cafe-collab",
+              "cat-cafe-signals",
+              "zai-mcp-server",
+              "zread",
+              "web-search-prime",
+              "web-reader"
+            ]
           },
           "contextBudget": {
             "maxPromptTokens": 180000,
@@ -1225,7 +1233,15 @@
           "acp": {
             "command": "dsh",
             "startupArgs": [],
-            "mcpWhitelist": ["cat-cafe-memory", "cat-cafe-collab", "cat-cafe-signals"],
+            "mcpWhitelist": [
+              "cat-cafe-memory",
+              "cat-cafe-collab",
+              "cat-cafe-signals",
+              "zai-mcp-server",
+              "zread",
+              "web-search-prime",
+              "web-reader"
+            ],
             "pool": { "maxLiveProcesses": 1 }
           },
           "contextBudget": {
