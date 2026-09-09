@@ -297,4 +297,44 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
       rmSync(projectRoot, { recursive: true, force: true });
     }
   });
+
+  it('upgrades a persisted catalog pinning the pre-zai slim whitelist and preserves customizations', () => {
+    const { projectRoot, templatePath } = isolateTemplate();
+    try {
+      const template = JSON.parse(readFileSync(templatePath, 'utf-8'));
+      const grok = structuredClone(template.breeds.find((breed) => breed.id === 'grok-build'));
+      const dsh = structuredClone(template.breeds.find((breed) => breed.id === 'dsh'));
+      const LEGACY_PIN = ['cat-cafe-memory', 'cat-cafe-collab', 'cat-cafe-signals'];
+      grok.variants[0].acp.mcpWhitelist = [...LEGACY_PIN];
+      // dsh carries a user-customized subset — must survive the migration untouched.
+      dsh.variants[0].acp.mcpWhitelist = ['cat-cafe-memory'];
+      const catalogPath = join(projectRoot, '.cat-cafe', 'cat-catalog.json');
+      mkdirSync(dirname(catalogPath), { recursive: true });
+      writeFileSync(catalogPath, JSON.stringify({ version: template.version, breeds: [grok, dsh] }));
+
+      // getAcpConfig resolves template + catalog from projectRoot and runs the
+      // read-time migration (with atomic write-back) on the catalog.
+      assert.deepEqual(
+        getAcpConfig('grok-build', projectRoot)?.mcpWhitelist,
+        SLIM_MCP,
+        'legacy default pin upgrades to the shipped 7',
+      );
+      assert.deepEqual(
+        getAcpConfig('dsh', projectRoot)?.mcpWhitelist,
+        ['cat-cafe-memory'],
+        'customized whitelist is the user decision and must not be touched',
+      );
+
+      // Migration persists to disk (atomic write-back) and is idempotent.
+      const persisted = JSON.parse(readFileSync(catalogPath, 'utf-8'));
+      const persistedGrok = persisted.breeds.find((breed) => breed.id === 'grok-build');
+      assert.deepEqual(persistedGrok.variants[0].acp.mcpWhitelist, SLIM_MCP);
+      // Reload from the already-upgraded catalog: idempotent, customization intact.
+      assert.deepEqual(getAcpConfig('grok-build', projectRoot)?.mcpWhitelist, SLIM_MCP);
+      assert.deepEqual(getAcpConfig('dsh', projectRoot)?.mcpWhitelist, ['cat-cafe-memory']);
+    } finally {
+      _resetCachedConfig();
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
 });
