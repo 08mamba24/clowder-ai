@@ -4,6 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
+// Load the read/write guard BEFORE beforeEach points CAT_CAFE_GLOBAL_CONFIG_ROOT
+// at a temp fixture. The guard freezes ambient roots at module load; importing
+// after beforeEach would treat the test's own root as an inherited store.
+await import('../dist/config/test-config-write-guard.js');
+
 describe('credentials store', () => {
   let globalRoot;
   let previousGlobalRoot;

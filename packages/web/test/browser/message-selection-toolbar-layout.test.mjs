@@ -6,6 +6,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
+import { createNextDevTestEnvironment } from './next-dev-test-environment.mjs';
 
 const WEB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const NEXT_BIN = path.resolve(WEB_ROOT, '../../node_modules/next/dist/bin/next');
@@ -127,15 +128,13 @@ test(
   async () => {
     const port = await findFreePort();
     const output = [];
+    const nextDev = await createNextDevTestEnvironment('selection-toolbar-layout', {
+      CAT_CAFE_WEB_BUILD_REVISION: OLD_WEB_REVISION,
+      CAT_CAFE_DEPLOYMENT_REVISION_REQUIRED: '1',
+    });
     const server = spawn(process.execPath, [NEXT_BIN, 'dev', '-H', '127.0.0.1', '-p', String(port)], {
       cwd: WEB_ROOT,
-      env: {
-        ...process.env,
-        NEXT_TELEMETRY_DISABLED: '1',
-        NODE_ENV: 'development',
-        CAT_CAFE_WEB_BUILD_REVISION: OLD_WEB_REVISION,
-        CAT_CAFE_DEPLOYMENT_REVISION_REQUIRED: '1',
-      },
+      env: nextDev.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     server.stdout.on('data', (chunk) => output.push(chunk.toString()));
@@ -328,6 +327,28 @@ test(
       assert.doesNotMatch(cliTargetText, /neighboring execution detail|neighboring secret/);
 
       await page.getByRole('dialog', { name: '转发到' }).getByRole('button', { name: '取消', exact: true }).click();
+
+      await page.mouse.move(350, 790);
+      const fileBlock = page.locator(
+        '[data-testid="f294-rich-file-source"] [data-rich-block-id="resource-request-file"]',
+      );
+      const fileForward = fileBlock.getByRole('button', {
+        name: '转发富块：昇腾算力资源申请-Agent自进化-单独转发这个富块-8-27B场景化后训练.docx',
+      });
+      await fileBlock.hover();
+      await fileForward.waitFor({ state: 'visible' });
+      const [fileForwardDockBox, fileCopyBox, fileDownloadBox] = await Promise.all([
+        fileBlock.getByTestId('rich-block-forward-action-dock').boundingBox(),
+        fileBlock.getByRole('button', { name: '复制完整文件名', exact: true }).boundingBox(),
+        fileBlock.getByRole('link', { name: '下载', exact: true }).boundingBox(),
+      ]);
+      assert.ok(fileForwardDockBox && fileCopyBox && fileDownloadBox, 'file Rich Block action geometry did not render');
+      for (const intrinsicActionBox of [fileCopyBox, fileDownloadBox]) {
+        assert.ok(
+          fileForwardDockBox.y >= intrinsicActionBox.y + intrinsicActionBox.height,
+          'file forwarding must render below, not inside, the file copy/download action row',
+        );
+      }
 
       await page.mouse.move(350, 790);
       const richGroup = page.locator('[data-testid="f294-rich-group-source"] [data-rich-block-group-id]');
@@ -570,6 +591,7 @@ test(
     } finally {
       await browser?.close();
       await stopServer(server);
+      await nextDev.cleanup();
     }
   },
 );

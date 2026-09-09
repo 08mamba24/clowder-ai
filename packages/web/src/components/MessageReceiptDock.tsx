@@ -13,6 +13,7 @@ import { resolveMessageElements } from '@/utils/scrollToMessage';
 import { CatAvatar } from './CatAvatar';
 import { authorIntentLabel, carrierCapabilityLabel, humanCarrierLabel } from './message-disposition-presentation';
 import { receiptFailureReason, receiptTargetStateLabel } from './queue-receipt-projection';
+import { latestRetryableQueueAttempt } from './queue-retry-action';
 
 const REMINDER_STATE_LABEL: Record<QueueReminderAttempt['state'], string> = {
   requested: '提醒已请求',
@@ -157,15 +158,6 @@ function attemptStatus(
   return 'pending';
 }
 
-function latestRetryableAttempt(target: QueueReceiptTarget): QueueTargetAttempt | undefined {
-  if (target.state !== 'failed' || target.retryable === false) return undefined;
-  const latest = target.attempts?.at(-1);
-  return latest?.state === 'failed' ||
-    (latest?.state === 'cancelled' && latest.terminalReason === 'invocation_cancelled')
-    ? latest
-    : undefined;
-}
-
 interface MessageReceiptDockProps {
   messageId?: string;
   receipt: QueueMessageReceipt;
@@ -232,7 +224,7 @@ export function MessageReceiptDock({
             ? collectInvocationLineageMessageIds(messages, evidence.invocationId).length > 0
             : false;
           const latestAttempt = target.attempts?.at(-1);
-          const retryableAttempt = latestRetryableAttempt(target);
+          const retryableAttempt = latestRetryableQueueAttempt(target);
           return (
             <div
               key={target.catId}
@@ -250,6 +242,7 @@ export function MessageReceiptDock({
                   target,
                   activeInvocationIds,
                   receipt.scope,
+                  loadedLineage,
                 )}`}</span>
                 {intentLabel && <span data-receipt-author-intent>{intentLabel}</span>}
                 {target.authorIntent?.carrierCapability && (
@@ -271,14 +264,13 @@ export function MessageReceiptDock({
                     {EXECUTION_KIND_LABEL[executionKind]}
                   </span>
                 )}
-                {evidence && (
+                {evidence && loadedLineage && (
                   <button
                     type="button"
                     data-receipt-lineage-link={evidence.invocationId}
-                    disabled={!loadedLineage}
                     onClick={() => focusInvocationLineage(messages, evidence.invocationId)}
-                    className="font-medium text-[var(--color-cocreator-primary)] hover:underline disabled:cursor-not-allowed disabled:opacity-60"
-                    title={loadedLineage ? '定位并高亮这一轮的全部回复与补充' : '这一轮的回复尚未加载到当前时间线'}
+                    className="font-medium text-[var(--color-cocreator-primary)] hover:underline"
+                    title="定位并高亮这一轮的全部回复与补充"
                     aria-label={`查看 ${getCatLabel(target.catId)} 的完整处理链路`}
                   >
                     {target.outcome?.disposition === 'responded' ? '查看回复 ↑' : '查看本轮 ↑'}

@@ -241,6 +241,63 @@ describe('AcpServiceFactory', () => {
     }
   });
 
+  it('keeps DSH bootstrap then skips when upstream rejects a torn account binding', async () => {
+    const dshRoot = writeDshFixture();
+    const projectRoot = mkdtempSync(join(tmpdir(), 'acp-dsh-rejected-account-'));
+    const globalRoot = mkdtempSync(join(tmpdir(), 'acp-dsh-rejected-global-'));
+    const previousGlobal = process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
+    const warnings = [];
+    mkdirSync(join(globalRoot, '.cat-cafe'), { recursive: true });
+    // Credential without account metadata → AccountStoreVerdictError (upstream isolation).
+    writeFileSync(
+      join(globalRoot, '.cat-cafe', 'credentials.json'),
+      JSON.stringify({ 'torn-dsh-account': { apiKey: 'sk-torn' } }),
+    );
+
+    try {
+      process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = globalRoot;
+      await withDshRoot(dshRoot, async () => {
+        const service = await createAcpServiceForConfig({
+          projectRoot,
+          profileId: 'dsh-torn',
+          effectiveModel: 'deepseek-chat',
+          config: {
+            ...catConfig('dsh-torn'),
+            clientId: 'anthropic',
+            provider: 'anthropic',
+            accountRef: 'torn-dsh-account',
+            defaultModel: 'deepseek-chat',
+          },
+          acpConfig: { command: 'dsh', startupArgs: ['--acp'], mcpWhitelist: [] },
+          poolRegistry: new Map(),
+          log: {
+            info() {},
+            warn(obj, msg) {
+              warnings.push({ obj, msg });
+            },
+          },
+        });
+
+        assert.equal(service, null, 'rejected account must skip ACP registration after DSH prep');
+        assert.ok(
+          warnings.some(
+            (entry) =>
+              entry.obj?.reason === 'rejected-account-binding' ||
+              String(entry.msg ?? '').includes('could not be adjudicated') ||
+              String(entry.obj?.err?.message ?? '').includes('torn credential'),
+          ),
+          `expected rejected-account-binding warning, got ${JSON.stringify(warnings)}`,
+        );
+      });
+    } finally {
+      if (previousGlobal === undefined) delete process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
+      else process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = previousGlobal;
+      rmSync(projectRoot, { recursive: true, force: true });
+      rmSync(globalRoot, { recursive: true, force: true });
+      rmSync(dshRoot, { recursive: true, force: true });
+    }
+  });
+
   it('skips registration and closes existing pools when bound accountRef is missing', async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'acp-service-missing-account-'));
     let closed = 0;

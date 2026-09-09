@@ -82,7 +82,7 @@ async function seedWindow(taskOutcomeDbPath = join(root, 'task-outcome-episodes.
       relatedHarness: ['F227'],
       confidence: 'high',
     },
-    'you',
+    'operator',
   );
   return { baseMs, episodeId: ep.episodeId, taskOutcomeDbPath };
 }
@@ -113,7 +113,7 @@ function buildPacket(overrides = {}) {
 function buildMockGitPublisher(isoName, commitSha, prNumber) {
   return {
     async publishOnIsolatedWorktree(opts) {
-      const iso = join(root, '..', isoName);
+      const iso = join(root, isoName);
       mkdirSync(join(iso, 'docs', 'harness-feedback', 'eval-domains'), { recursive: true });
       writeFileSync(
         join(iso, 'docs', 'harness-feedback', 'eval-domains', 'eval-task-outcome.yaml'),
@@ -147,7 +147,7 @@ describe('handlePublishVerdict end-to-end with task-outcome generator', () => {
         packet: buildPacket(),
         domain: 'eval:task-outcome',
         catId: 'opus-47',
-        ownerUserId: 'you',
+        ownerUserId: 'operator',
         sourceRefs: {
           kind: 'task-outcome-snapshot',
           windowStartMs: baseMs - 60_000,
@@ -180,7 +180,7 @@ describe('handlePublishVerdict end-to-end with task-outcome generator', () => {
         packet: buildPacket({ id: 'vhp-task-outcome-e2e-configured-db' }),
         domain: 'eval:task-outcome',
         catId: 'opus-47',
-        ownerUserId: 'you',
+        ownerUserId: 'operator',
         sourceRefs: {
           kind: 'task-outcome-snapshot',
           windowStartMs: baseMs - 60_000,
@@ -210,7 +210,7 @@ describe('handlePublishVerdict end-to-end with task-outcome generator', () => {
         packet: buildPacket({ id: 'vhp-task-outcome-e2e-writeback' }),
         domain: 'eval:task-outcome',
         catId: 'opus-47',
-        ownerUserId: 'you',
+        ownerUserId: 'operator',
         sourceRefs: {
           kind: 'task-outcome-snapshot',
           windowStartMs: seeded.baseMs - 60_000,
@@ -238,7 +238,7 @@ describe('handlePublishVerdict end-to-end with task-outcome generator', () => {
     const generator = createTaskOutcomeGeneratorAdapter();
     const failingGitPublisher = {
       async publishOnIsolatedWorktree(opts) {
-        const iso = join(root, '..', 'task-outcome-writeback-publish-fail-iso');
+        const iso = join(root, 'task-outcome-writeback-publish-fail-iso');
         mkdirSync(join(iso, 'docs', 'harness-feedback', 'eval-domains'), { recursive: true });
         writeFileSync(
           join(iso, 'docs', 'harness-feedback', 'eval-domains', 'eval-task-outcome.yaml'),
@@ -261,7 +261,7 @@ describe('handlePublishVerdict end-to-end with task-outcome generator', () => {
         packet: buildPacket({ id: 'vhp-task-outcome-e2e-writeback-publish-fail' }),
         domain: 'eval:task-outcome',
         catId: 'opus-47',
-        ownerUserId: 'you',
+        ownerUserId: 'operator',
         sourceRefs: {
           kind: 'task-outcome-snapshot',
           windowStartMs: seeded.baseMs - 60_000,
@@ -301,7 +301,7 @@ describe('handlePublishVerdict end-to-end with task-outcome generator', () => {
         packet: buildPacket({ id: invalidVerdictId }),
         domain: 'eval:task-outcome',
         catId: 'opus-47',
-        ownerUserId: 'you',
+        ownerUserId: 'operator',
         sourceRefs: {
           kind: 'task-outcome-snapshot',
           windowStartMs: seeded.baseMs - 60_000,
@@ -335,7 +335,7 @@ describe('handlePublishVerdict end-to-end with task-outcome generator', () => {
         packet: buildPacket({ id: invalidVerdictId }),
         domain: 'eval:task-outcome',
         catId: 'opus-47',
-        ownerUserId: 'you',
+        ownerUserId: 'operator',
         sourceRefs: {
           kind: 'task-outcome-snapshot',
           windowStartMs: seeded.baseMs - 120_000,

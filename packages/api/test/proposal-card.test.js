@@ -35,6 +35,11 @@ function modeField(card) {
   return card.fields?.find((/** @type {{label:string}} */ f) => f.label === '回报模式');
 }
 
+/** @param {any} card */
+function workModeField(card) {
+  return card.fields?.find((/** @type {{label:string}} */ f) => f.label === '协作方式');
+}
+
 describe('F128 proposal card — reportingMode visibility (Phase Y P1-2)', () => {
   // AC-AA1: default is now final-only (supersedes Phase Y default none/autonomous).
   it('default (no reportingMode) → card surfaces 回报模式 = final-only（默认）', () => {
@@ -67,22 +72,24 @@ describe('F128 proposal card — reportingMode visibility (Phase Y P1-2)', () =>
       `title keeps the readable label; got ${card.title}`,
     );
   });
+});
 
-  it('surfaces the formal external PR tracking transition on the approval card', () => {
-    const card = buildProposalCardBlock(
-      /** @type {any} */ (
-        baseProposal({
-          communityPrContext: {
-            repoFullName: 'zts212653/clowder-ai',
-            prNumber: 1210,
-            mode: 'formal_review',
-          },
-        })
-      ),
-    );
-    const field = card.fields?.find((/** @type {{label:string}} */ f) => f.label === '正式外部 PR Review');
-    assert.ok(field);
-    assert.match(field.value, /zts212653\/clowder-ai#1210/);
-    assert.match(field.value, /human-participant tracking/);
+describe('F277 proposal card — declaredWorkMode visibility', () => {
+  it('keeps legacy proposals visibly undeclared instead of inventing a birth role', () => {
+    const card = buildProposalCardBlock(/** @type {any} */ (baseProposal()));
+    assert.match(workModeField(card)?.value ?? '', /未声明/);
+  });
+
+  it('surfaces all four placement choices in owner-facing language', () => {
+    const expected = {
+      subtask: /子任务/,
+      parallel: /并行推进/,
+      investigation: /调查/,
+      standalone: /独立对话/,
+    };
+    for (const [mode, label] of Object.entries(expected)) {
+      const card = buildProposalCardBlock(/** @type {any} */ (baseProposal({ declaredWorkMode: mode })));
+      assert.match(workModeField(card)?.value ?? '', label);
+    }
   });
 });

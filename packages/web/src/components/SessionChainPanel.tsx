@@ -5,6 +5,7 @@ import { formatCatName, useCatData } from '@/hooks/useCatData';
 import type { CatInvocationInfo, ContextHealthData } from '@/stores/chat-types';
 import { apiFetch } from '@/utils/api-client';
 import { BindNewSessionSection } from './BindNewSessionSection';
+import { CloudConversationLink } from './CloudConversationLink';
 import { ContextHealthBar } from './ContextHealthBar';
 import { CriticalText } from './content-overflow';
 import { BindSessionInput, SessionIdTag } from './SessionChainInputs';
@@ -34,15 +35,6 @@ interface SessionSummary {
     outputTokens?: number;
     cacheReadTokens?: number;
     costUsd?: number;
-  };
-  appliedPolicy?: {
-    config: { strategy: 'handoff' | 'compress' | 'hybrid' };
-    source: string;
-    revision: string;
-    execution: {
-      status: 'active' | 'degraded' | 'unavailable';
-      missingCapabilities: string[];
-    };
   };
   runtimeSession?: RuntimeSessionSummary;
 }
@@ -75,6 +67,23 @@ interface SessionChainLoadError {
 }
 
 const sessionCache = new Map<string, SessionSummary[]>();
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isSessionSummary(value: unknown): value is SessionSummary {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const session = value as Record<string, unknown>;
+  return (
+    typeof session.id === 'string' &&
+    typeof session.catId === 'string' &&
+    isFiniteNumber(session.seq) &&
+    (session.status === 'active' || session.status === 'sealing' || session.status === 'sealed') &&
+    isFiniteNumber(session.messageCount) &&
+    isFiniteNumber(session.createdAt)
+  );
+}
 
 export function __resetSessionChainCacheForTest() {
   sessionCache.clear();
@@ -144,9 +153,6 @@ function sealedSessionDetails(session: SessionSummary): string | undefined {
         ? `${session.compressionCount} compress`
         : '0 compress observed',
     session.sealReason ? sealReasonLabel(session.sealReason) : null,
-    session.appliedPolicy
-      ? `${session.appliedPolicy.config.strategy} · ${session.appliedPolicy.execution.status}`
-      : null,
   ].filter(Boolean);
   return details.length > 0 ? details.join(' · ') : undefined;
 }
@@ -193,6 +199,7 @@ export function SessionChainPanel({
   const [refreshKey, setRefreshKey] = useState(0);
   const [restoringSessionId, setRestoringSessionId] = useState<string | null>(null);
   const [sealingSessionId, setSealingSessionId] = useState<string | null>(null);
+  const [compactingSessionId, setCompactingSessionId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [chainCollapsed, setChainCollapsed] = useState(false);
   const [sealedCollapsed, setSealedCollapsed] = useState(true);
@@ -252,10 +259,14 @@ export function SessionChainPanel({
           }
           return;
         }
-        const data = (await res.json()) as { sessions: SessionSummary[] };
+        const data = (await res.json()) as { sessions?: unknown };
+        if (!Array.isArray(data.sessions) || !data.sessions.every(isSessionSummary)) {
+          throw new Error('Session Chain response contained an invalid sessions collection');
+        }
+        const sessions = data.sessions;
         if (!cancelled) {
-          sessionCache.set(threadId, data.sessions);
-          setSessions(data.sessions);
+          sessionCache.set(threadId, sessions);
+          setSessions(sessions);
           setLoadedThreadId(threadId);
           setLoadError(null);
         }
@@ -379,6 +390,27 @@ export function SessionChainPanel({
     }
   };
 
+  const handleNativeCompact = async (session: SessionSummary) => {
+    if (compactingSessionId || !session.cliSessionId) return;
+    setActionError(null);
+    setCompactingSessionId(session.id);
+    try {
+      const response = await apiFetch(`/api/threads/${threadId}/sessions/${session.catId}/compact-native`, {
+        method: 'POST',
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as { error?: string };
+        setActionError(body.error ?? `原生压缩失败 (${response.status})`);
+        return;
+      }
+      setRefreshKey((key) => key + 1);
+    } catch {
+      setActionError('原生压缩请求失败');
+    } finally {
+      setCompactingSessionId(null);
+    }
+  };
+
   return (
     <section className={`${settingsResourceCardClass} p-2.5`}>
       <button
@@ -487,18 +519,6 @@ export function SessionChainPanel({
                   )}
                   {session.compressionCount === 0 && <span className="text-cafe-muted"> · 0 compress observed</span>}
                 </div>
-                {session.appliedPolicy && (
-                  <div
-                    data-testid="session-policy-state"
-                    className="mb-1.5 rounded bg-[var(--console-runtime-field-bg)] px-2 py-1 text-micro text-cafe-secondary"
-                  >
-                    <span className="font-semibold">policy {session.appliedPolicy.config.strategy}</span>
-                    <span> · {session.appliedPolicy.execution.status}</span>
-                    {session.appliedPolicy.execution.missingCapabilities.length > 0 && (
-                      <span> · missing {session.appliedPolicy.execution.missingCapabilities.join(', ')}</span>
-                    )}
-                  </div>
-                )}
                 {session.runtimeSession && (
                   <div
                     data-testid="runtime-session-summary"
@@ -551,6 +571,22 @@ export function SessionChainPanel({
                 {/* Context health bar (already shows % internally, no duplicate text) */}
                 {health && <ContextHealthBar catId={session.catId} health={health} />}
                 <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                  {session.cliSessionId && (
+                    <button
+                      type="button"
+                      data-testid={`compact-native-session-${session.id}`}
+                      onClick={() => void handleNativeCompact(session)}
+                      disabled={compactingSessionId !== null || isStale || invocationIsActive}
+                      title={
+                        invocationIsActive
+                          ? '请先停止该 Agent，再压缩原生上下文'
+                          : '请求 provider 原生压缩并保留 Clowder AI continuity'
+                      }
+                      className="rounded border border-cafe-subtle px-2 py-0.5 text-micro text-cafe-secondary hover:bg-cafe-surface-elevated disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {compactingSessionId === session.id ? '压缩中…' : '原生压缩'}
+                    </button>
+                  )}
                   <button
                     type="button"
                     data-testid={`seal-session-${session.id}`}
@@ -704,14 +740,17 @@ export function SessionChainPanel({
         </div>
       )}
 
-      {/* F33: Bind new external session (skip default thread — system-owned, bind returns 403) */}
-      {threadId !== 'default' && loadError?.kind !== 'access_denied' && (
-        <BindNewSessionSection
-          threadId={threadId}
-          activeCatIds={activeCatIds}
-          onBound={() => setRefreshKey((k) => k + 1)}
-          disabled={isStale}
-        />
+      {/* External conversation/session bindings (skip default thread — system-owned routes return 403). */}
+      {!chainCollapsed && threadId !== 'default' && loadError?.kind !== 'access_denied' && (
+        <>
+          <CloudConversationLink threadId={threadId} />
+          <BindNewSessionSection
+            threadId={threadId}
+            activeCatIds={activeCatIds}
+            onBound={() => setRefreshKey((k) => k + 1)}
+            disabled={isStale}
+          />
+        </>
       )}
 
       {loading && visibleSessions.length === 0 && (

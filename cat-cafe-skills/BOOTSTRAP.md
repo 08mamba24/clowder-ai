@@ -20,6 +20,7 @@ co-creation docs → co-creation-docs → direct push | merge-gate(docs PR)
 | `owner-friendly-plugin-development` | 设计有安装/授权/runtime/Host 路由的operator友好插件 | — |
 | `guide-authoring` | 编排场景引导 YAML / registry / 标签契约 | — |
 | `guide-interaction` | 判断是否需要交互引导，并按 Guide Matched/Pending/Active 等状态驱动回复 | — |
+| `custody-recognition` | 普通对话中的明确托付/隐式未来义务/原消息澄清重试分流 | — |
 | `collaborative-thinking` | brainstorm/多猫讨论/收敛 | — |
 | `expert-panel` | 专家辩论团/竞品分析/技术趋势/showcase | — |
 | `writing-plans` | 写实施计划 | ① impl |
@@ -34,10 +35,11 @@ co-creation docs → co-creation-docs → direct push | merge-gate(docs PR)
 | `receive-review` | 处理 review 反馈（Red→Green） | ③ |
 | `merge-gate` | 门禁→PR→remote review→merge→清理 | ④⑤⑥ |
 | `open-source-teardown` | 热门开源项目/竞品 agent/runtime 的源码拆解、算法剥皮、营销水分和 tradeoff 判断 | — |
+| `opensource-ops` | 外部 PR/issue grounding、作者/custody 与 adoption；deployment 可叠加 Issue/PR/Sync/Intake/Hotfix SOP | — |
 | `cross-cat-handoff` | 跨猫交接/传话（五件套） | — |
 | `deep-research` | 多源深度调研 | — |
 | `source-audit` | 外部数字/benchmark/因果/趋势等高风险 claim 的信源审计与 provenance | — |
-| `eval-design` | E0 资格门 + 指标出生证契约 + 七公理设计自检 + 五病体检尺（划水/污染/归因停滞/干预失证/摸鱼） | — |
+| `eval-design` | E0 资格门 + 指标出生证契约 + 纵向运行拓扑 + 七公理设计自检 + 五病体检尺（划水/污染/归因停滞/干预失证/摸鱼） | — |
 | `ttfund-skills` | 天天基金官方 Skills 网关：基金搜索/净值/持仓/经理/指数/黄金/债市/活期宝事实数据 | — |
 | `convention-graph-discovery` | 进入陌生 repo / F242 约定图工作：定义 domain、extractor、gap/freshness/provenance 报告 | — |
 | `knowledge-engineering` | 外部项目文档重构/冷启动知识注入 | — |
@@ -52,7 +54,8 @@ co-creation docs → co-creation-docs → direct push | merge-gate(docs PR)
 | `hyperfocus-brake` | operator健康提醒/三猫撒娇打断 | — |
 | `incident-response` | 闯祸了/不可挽回/人很难过 | — |
 | `image-generation` | 生成图片/画头像/AI 画图 | — |
-| `self-evolution` | scope 守护/流程改进/知识沉淀 | — |
+| `capability-evolution` | “我们来进化 X”/“能进化什么”的 F311 产品入口；信息问题只解释，具体目标才创建 canonical Evolution Program | — |
+| `self-evolution` | 复盘已发生的工作：scope 守护/重复流程改进/知识沉淀；不接能力进化产品入口 | — |
 | `vision-rescue` | 任务绝境/反复摆动/投降修辞/放弃愿景 | — |
 | `bootcamp-guide` | operator 新手训练营引导 | — |
 | `cross-thread-sync` | 跨 thread 协同/通知/争用协调 | — |
@@ -63,6 +66,7 @@ co-creation docs → co-creation-docs → direct push | merge-gate(docs PR)
 | `workspace-navigator` | operator说"打开日志/看代码/打开设计图"等模糊指令 → 猫猫自己找路径 → API 导航 | — |
 | `ppt-forge` | 做 PPT/演示文稿/视觉审查（三猫流水线） | — |
 | `concept-demo-design` | 把抽象理念变成可录屏、可讲解、可验证的交互概念演示 | — |
+| `agent-product-promo-director` | Agent/AI 产品宣传片的主角、信念变化、格式、故事、镜头、运动、声音与 provenance creative brief | — |
 | `video-forge` | 做视频/showcase/教程视频/视频审查 | — |
 | `anime-forge` | 做动画短剧/角色 IP 短片/图生视频管线（素材是生成的不是录的） | — |
 | `sprite-forge` | 做桌宠皮肤/atlas 状态动画行/角色小循环动态素材（母图→首帧→视频→截帧；禁 imagegen 逐帧直出） | — |

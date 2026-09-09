@@ -52,12 +52,17 @@ export async function resolveChromeExecutable({
 
 function appendRequest(requestId) {
   return {
-    v: 1,
-    kind: 'append_message',
+    v: 2,
+    kind: 'append_message_v2',
     requestId,
     conversationId: 'conversation-7',
     text: 'F247_BACKGROUND_TAB_NONCE',
     idempotencyKey: 'source-message-background-proof',
+    expectedRevisions: {
+      helper: 'isolated-spike-helper',
+      extension: '0.2.10',
+      pageAdapter: '2026-09-02.1',
+    },
   };
 }
 
@@ -99,12 +104,13 @@ export async function closeIsolatedBrowser(browser, { timeoutMs = 5_000 } = {}) 
   return 'forced';
 }
 
-export async function runPersonalChromeHostSpike({ chromePath } = {}) {
+export async function runPersonalChromeHostSpike({ chromePath, denyRuntimeModuleFetch = false } = {}) {
   const executablePath = chromePath ?? (await resolveChromeExecutable());
   await access(executablePath, fsConstants.X_OK);
   const fixtureHtml = await readFile(fixturePath, 'utf8');
   const userDataDir = await mkdtemp(join(tmpdir(), 'cat-cafe-f247-chrome-profile-'));
   let browser;
+  let runtimeModuleFetchCount = 0;
   try {
     browser = await puppeteer.launch({
       executablePath,
@@ -137,6 +143,13 @@ export async function runPersonalChromeHostSpike({ chromePath } = {}) {
         return;
       }
       if (request.url().startsWith('chrome-extension://')) {
+        if (request.url().endsWith('.mjs')) {
+          runtimeModuleFetchCount += 1;
+          if (denyRuntimeModuleFetch) {
+            void request.abort();
+            return;
+          }
+        }
         void request.continue();
         return;
       }
@@ -192,6 +205,7 @@ export async function runPersonalChromeHostSpike({ chromePath } = {}) {
       hostMessageId: first.hostMessageId,
       retryHostMessageId: retry.hostMessageId,
       sendCount,
+      runtimeModuleFetchCount,
     };
   } finally {
     await closeIsolatedBrowser(browser);
@@ -200,7 +214,7 @@ export async function runPersonalChromeHostSpike({ chromePath } = {}) {
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  runPersonalChromeHostSpike()
+  runPersonalChromeHostSpike({ denyRuntimeModuleFetch: true })
     .then((result) => process.stdout.write(`${JSON.stringify(result, null, 2)}\n`))
     .catch((error) => {
       process.stderr.write(

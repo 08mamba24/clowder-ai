@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ActionSuccessorClaimOrigin, ActionSuccessorMode, ReviewReentry } from '@cat-cafe/shared';
+import type { ActionSuccessorClaimOrigin, ActionSuccessorMode } from '@cat-cafe/shared';
 import {
   type CanonicalActionTerminalPredicate,
   isMachineCheckableCompletionEvidenceRef,
@@ -154,6 +154,7 @@ export type ContinueActionSuccessorFreshRevisionResult = {
 };
 
 export interface ContinueActionSuccessorFreshRevisionInput {
+  successorLeaseId: string;
   expectedGeneration: number;
   terminalPredicate: CanonicalActionTerminalPredicate;
   holderCatIds: string[];
@@ -164,13 +165,7 @@ export interface ContinueActionSuccessorFreshRevisionInput {
   dispatchId: string;
   issuerStandingEvidenceRef: string;
   evidenceRef: string;
-  reviewReentry?: ReviewReentry;
   now: number;
-}
-
-function reviewReentryEvidenceRefs(reviewReentry: ReviewReentry | undefined): string[] {
-  if (!reviewReentry) return [];
-  return [`review-reentry:${reviewReentry.reason}:${reviewReentry.evidenceRef}`];
 }
 
 function normalizeHolders(mode: ActionSuccessorMode, holderCatIds: string[], parallelIntent?: string): string[] {
@@ -224,6 +219,10 @@ export function continueActionSuccessorFreshRevision(
     return { outcome: 'freshness_unchanged', lease: current };
   }
   const holderCatIds = normalizeHolders(current.mode, input.holderCatIds, current.parallelIntent);
+  const successorLeaseId = requireNonEmpty(input.successorLeaseId, 'successorLeaseId');
+  if (successorLeaseId === current.leaseId) {
+    throw new Error('fresh subject revision requires a new action successor lease');
+  }
   const holderThreadId = requireNonEmpty(input.holderThreadId, 'holderThreadId');
   const evidenceRef = requireNonEmpty(input.evidenceRef, 'evidenceRef');
   const issuerStandingEvidenceRef = requireNonEmpty(input.issuerStandingEvidenceRef, 'issuerStandingEvidenceRef');
@@ -236,31 +235,31 @@ export function continueActionSuccessorFreshRevision(
   return {
     outcome: 'continued',
     lease: {
-      ...current,
+      key: current.key,
+      tenantScope: current.tenantScope,
+      subjectRef: current.subjectRef,
+      actionFamily: current.actionFamily,
+      successorSlot: current.successorSlot,
+      leaseId: successorLeaseId,
+      mode: current.mode,
       holderCatIds,
+      ...(current.parallelIntent ? { parallelIntent: current.parallelIntent } : {}),
       holderThreadId,
       claimOrigin: input.claimOrigin,
       predecessorCatId: predecessor.predecessorCatId,
       predecessorThreadId: predecessor.predecessorThreadId,
       issuerStandingEvidenceRef,
       dispatchId: input.dispatchId,
-      generation: current.generation + 1,
+      generation: 1,
       status: 'active',
       holderOutcomes: {},
       terminalPredicateState: { kind: 'predicate_backed' },
       terminalPredicate: input.terminalPredicate,
       completionCandidates: {},
-      evidenceRefs: [
-        ...new Set([
-          ...current.evidenceRefs,
-          issuerStandingEvidenceRef,
-          evidenceRef,
-          ...reviewReentryEvidenceRefs(input.reviewReentry),
-        ]),
-      ],
-      returnDeliveryState: undefined,
-      returnDeliveryEvidenceRef: undefined,
-      revision: current.revision + 1,
+      evidenceRefs: [...new Set([issuerStandingEvidenceRef, evidenceRef])],
+      returnTransitions: [],
+      revision: 1,
+      createdAt: input.now,
       updatedAt: input.now,
     },
   };

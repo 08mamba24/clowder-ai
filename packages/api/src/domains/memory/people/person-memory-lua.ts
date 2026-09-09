@@ -47,6 +47,7 @@ if receipt.ownerUserId ~= ARGV[1] or receipt.receiptId ~= ARGV[3] then return 'C
 if receipt.state ~= 'claimed' or receipt.claimId ~= ARGV[5] then return 'CONFLICT' end
 if tonumber(receipt.claimUntil or 0) <= tonumber(ARGV[7]) then return 'CONFLICT' end
 if receipt.dedupeHash ~= ARGV[6] then return 'CONFLICT' end
+if receipt.processorInvocationId ~= ARGV[11] then return 'CONFLICT' end
 if candidate.deferredReceiptClaimId == ARGV[5] then return 'REPLAYED' end
 if candidate.deferredReceiptClaimId ~= ARGV[4] then return 'CONFLICT' end
 if candidateRaw ~= ARGV[8] then return 'CONFLICT' end
@@ -87,6 +88,7 @@ if candidate.state ~= 'staged' then return 'CONFLICT' end
 if receipt.state ~= 'claimed' or receipt.claimId ~= ARGV[6] then return 'CONFLICT' end
 if tonumber(receipt.claimUntil or 0) <= tonumber(ARGV[2]) then return 'CONFLICT' end
 if receipt.receiptId ~= ARGV[5] or receipt.dedupeHash ~= ARGV[7] then return 'CONFLICT' end
+if receipt.processorInvocationId ~= ARGV[11] then return 'CONFLICT' end
 if redis.call('GET', KEYS[8]) ~= ARGV[8] then return 'CONFLICT' end
 if redis.call('SISMEMBER', KEYS[7], ARGV[5]) ~= 1 then return 'CONFLICT' end
 redis.call('SET', KEYS[1], ARGV[1])
@@ -210,7 +212,7 @@ return 'UPDATED'
  *
  * KEYS[1..3] = candidate, pending index, per-candidate suppression.
  * Remaining keys are subject memberships, optional personArtifacts, and
- * optional hard-forget fence. ARGV[7..10] carry their 1-based indexes.
+ * optional hard-forget fence and settled index. ARGV[7..12] carry their 1-based indexes and decision time.
  */
 export const REJECT_CANDIDATE_LUA = `
 local fenceKeyIndex = tonumber(ARGV[7]) or 0
@@ -246,9 +248,17 @@ if not current.publication or current.publication.state ~= 'anchored' then
   return 'CONFLICT'
 end
 
+local settledKeyIndex = tonumber(ARGV[11]) or 0
+local settledScore = tonumber(ARGV[12])
+if settledKeyIndex < 1 or settledKeyIndex > #KEYS then return 'INVALID_ARGUMENTS' end
+if not settledScore then return 'INVALID_ARGUMENTS' end
+local settledType = redis.call('TYPE', KEYS[settledKeyIndex]).ok
+if settledType ~= 'none' and settledType ~= 'zset' then return 'TYPE_CONFLICT' end
+
 redis.call('SET', KEYS[1], ARGV[2])
 redis.call('ZREM', KEYS[2], ARGV[3])
 redis.call('SET', KEYS[3], ARGV[4])
+redis.call('ZADD', KEYS[settledKeyIndex], settledScore, ARGV[3])
 
 local artifactKeyIndex = tonumber(ARGV[8]) or 0
 if artifactKeyIndex > 0 then

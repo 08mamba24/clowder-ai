@@ -1,4 +1,5 @@
 import {
+  memoryCueDrillFamilyForResolver,
   RECALL_OPPORTUNITY_CATALOG_VERSION,
   RECALL_RESOLVER_FAMILIES,
   type RecallResolverFamily,
@@ -19,6 +20,12 @@ export const MEMORY_CUE_INVALIDATION_REASONS = [
   'expired',
 ] as const;
 
+const LEGACY_UNBOUND_CONSUMER_CAT_ID = 'legacy-unbound';
+
+function boundConsumerCatId(consumerCatId: string | undefined): string {
+  return consumerCatId ?? LEGACY_UNBOUND_CONSUMER_CAT_ID;
+}
+
 const identifierSchema = z.string().trim().min(1).max(500);
 const eventBaseShape = {
   eventId: identifierSchema,
@@ -26,6 +33,7 @@ const eventBaseShape = {
   cueId: identifierSchema,
   opportunityId: identifierSchema,
   scope: recallScopeV1Schema,
+  consumerCatId: z.string().trim().min(1).max(120).optional(),
   resolverFamily: z.enum(RECALL_RESOLVER_FAMILIES),
   sourceAnchor: identifierSchema,
   sourceRevision: identifierSchema,
@@ -65,6 +73,7 @@ export interface MemoryCueEvent {
   cueId: string;
   opportunityId: string;
   scope: RecallScopeV1;
+  consumerCatId: string;
   resolverFamily: RecallResolverFamily;
   sourceAnchor: string;
   sourceRevision: string;
@@ -85,6 +94,7 @@ interface MemoryCueEventRow {
   owner_user_id: string;
   thread_id: string;
   invocation_id: string;
+  consumer_cat_id: string;
   resolver_family: RecallResolverFamily;
   source_anchor: string;
   source_revision: string;
@@ -129,6 +139,7 @@ function fromRow(row: MemoryCueEventRow): MemoryCueEvent {
       threadId: row.thread_id,
       invocationId: row.invocation_id,
     },
+    consumerCatId: row.consumer_cat_id,
     resolverFamily: row.resolver_family,
     sourceAnchor: row.source_anchor,
     sourceRevision: row.source_revision,
@@ -154,6 +165,7 @@ function expectedEvent(input: MemoryCueEventInput, createdAt: string): MemoryCue
     cueId: input.cueId,
     opportunityId: input.opportunityId,
     scope: input.scope,
+    consumerCatId: boundConsumerCatId(input.consumerCatId),
     resolverFamily: input.resolverFamily,
     sourceAnchor: input.sourceAnchor,
     sourceRevision: input.sourceRevision,
@@ -194,24 +206,88 @@ export class MemoryCueEpisodeStore {
     ).map(fromRow);
   }
 
-  findPresentedCoordinate(scope: RecallScopeV1, cueId: string, expiresAt: number): MemoryCueDrillCoordinate | null {
+  hasConsumptionOutcome(
+    scope: RecallScopeV1,
+    cueId: string,
+    outcome: MemoryCueConsumptionOutcome,
+    consumerCatId?: string,
+  ): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM memory_cue_events
+         WHERE owner_user_id = ? AND thread_id = ? AND invocation_id = ?
+           AND consumer_cat_id = ? AND cue_id = ? AND axis = 'consumption' AND consumption_outcome = ?
+         LIMIT 1`,
+      )
+      .get(scope.ownerUserId, scope.threadId, scope.invocationId, boundConsumerCatId(consumerCatId), cueId, outcome);
+    return row !== undefined;
+  }
+
+  hasExactConsumptionRequest(input: {
+    scope: RecallScopeV1;
+    cueId: string;
+    outcome: MemoryCueConsumptionOutcome;
+    idempotencyKey: string;
+    consumerCatId?: string;
+  }): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM memory_cue_events
+         WHERE owner_user_id = ? AND thread_id = ? AND invocation_id = ?
+           AND consumer_cat_id = ? AND cue_id = ?
+           AND axis = 'consumption' AND consumption_outcome = ? AND idempotency_key = ?
+         LIMIT 1`,
+      )
+      .get(
+        input.scope.ownerUserId,
+        input.scope.threadId,
+        input.scope.invocationId,
+        boundConsumerCatId(input.consumerCatId),
+        input.cueId,
+        input.outcome,
+        input.idempotencyKey,
+      );
+    return row !== undefined;
+  }
+
+  hasTerminalConsumptionForSource(input: {
+    ownerUserId: string;
+    resolverFamily: RecallResolverFamily;
+    sourceAnchor: string;
+    sourceRevision: string;
+  }): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM memory_cue_events
+         WHERE owner_user_id = ? AND resolver_family = ?
+           AND source_anchor = ? AND source_revision = ?
+           AND axis = 'consumption' AND consumption_outcome IN ('applied', 'dismissed')
+         LIMIT 1`,
+      )
+      .get(input.ownerUserId, input.resolverFamily, input.sourceAnchor, input.sourceRevision);
+    return row !== undefined;
+  }
+
+  findPresentedCoordinate(
+    scope: RecallScopeV1,
+    cueId: string,
+    expiresAt: number,
+    consumerCatId?: string,
+  ): MemoryCueDrillCoordinate | null {
     const row = this.db
       .prepare(
         `SELECT * FROM memory_cue_events
          WHERE owner_user_id = ? AND thread_id = ? AND invocation_id = ?
-           AND cue_id = ? AND axis = 'consumption' AND consumption_outcome = 'presented'
+           AND consumer_cat_id = ? AND cue_id = ?
+           AND axis = 'consumption' AND consumption_outcome = 'presented'
          ORDER BY occurred_at DESC, rowid DESC
          LIMIT 1`,
       )
-      .get(scope.ownerUserId, scope.threadId, scope.invocationId, cueId) as MemoryCueEventRow | undefined;
+      .get(scope.ownerUserId, scope.threadId, scope.invocationId, boundConsumerCatId(consumerCatId), cueId) as
+      | MemoryCueEventRow
+      | undefined;
     if (!row) return null;
-    const drillFamily = {
-      person_entity: 'person_memory' as const,
-      operational_precedent: 'evidence' as const,
-      taste: 'taste' as const,
-      profile: null,
-      project_knowledge: null,
-    }[row.resolver_family];
+    const drillFamily = memoryCueDrillFamilyForResolver(row.resolver_family);
     if (!drillFamily || row.catalog_version !== RECALL_OPPORTUNITY_CATALOG_VERSION) return null;
     return {
       cueId: row.cue_id,
@@ -227,6 +303,7 @@ export class MemoryCueEpisodeStore {
         threadId: row.thread_id,
         invocationId: row.invocation_id,
       },
+      ...(row.consumer_cat_id === LEGACY_UNBOUND_CONSUMER_CAT_ID ? {} : { consumerCatId: row.consumer_cat_id }),
       expiresAt,
     };
   }
@@ -245,13 +322,13 @@ export class MemoryCueEpisodeStore {
       .prepare(
         `INSERT OR IGNORE INTO memory_cue_events (
           event_id, idempotency_key, cue_id, opportunity_id,
-          owner_user_id, thread_id, invocation_id, resolver_family,
+          owner_user_id, thread_id, invocation_id, consumer_cat_id, resolver_family,
           source_anchor, source_revision, axis, consumption_outcome,
           invalidation_reason, catalog_version, resolver_version,
           occurred_at, created_at
         ) VALUES (
           @eventId, @idempotencyKey, @cueId, @opportunityId,
-          @ownerUserId, @threadId, @invocationId, @resolverFamily,
+          @ownerUserId, @threadId, @invocationId, @consumerCatId, @resolverFamily,
           @sourceAnchor, @sourceRevision, @axis, @consumptionOutcome,
           @invalidationReason, @catalogVersion, @resolverVersion,
           @occurredAt, @createdAt
@@ -265,6 +342,7 @@ export class MemoryCueEpisodeStore {
         ownerUserId: input.scope.ownerUserId,
         threadId: input.scope.threadId,
         invocationId: input.scope.invocationId,
+        consumerCatId: boundConsumerCatId(input.consumerCatId),
         resolverFamily: input.resolverFamily,
         sourceAnchor: input.sourceAnchor,
         sourceRevision: input.sourceRevision,
@@ -302,10 +380,17 @@ export class MemoryCueEpisodeStore {
       .prepare(
         `SELECT 1 FROM memory_cue_events
          WHERE owner_user_id = ? AND thread_id = ? AND invocation_id = ?
-           AND cue_id = ? AND axis = 'consumption' AND consumption_outcome = 'presented'
+           AND consumer_cat_id = ? AND cue_id = ?
+           AND axis = 'consumption' AND consumption_outcome = 'presented'
          LIMIT 1`,
       )
-      .get(input.scope.ownerUserId, input.scope.threadId, input.scope.invocationId, input.cueId);
+      .get(
+        input.scope.ownerUserId,
+        input.scope.threadId,
+        input.scope.invocationId,
+        boundConsumerCatId(input.consumerCatId),
+        input.cueId,
+      );
     return row !== undefined;
   }
 
@@ -314,10 +399,16 @@ export class MemoryCueEpisodeStore {
       .prepare(
         `SELECT 1 FROM memory_cue_events
          WHERE owner_user_id = ? AND thread_id = ? AND invocation_id = ?
-           AND cue_id = ? AND axis = 'invalidation'
+           AND consumer_cat_id = ? AND cue_id = ? AND axis = 'invalidation'
          LIMIT 1`,
       )
-      .get(input.scope.ownerUserId, input.scope.threadId, input.scope.invocationId, input.cueId);
+      .get(
+        input.scope.ownerUserId,
+        input.scope.threadId,
+        input.scope.invocationId,
+        boundConsumerCatId(input.consumerCatId),
+        input.cueId,
+      );
     return row !== undefined;
   }
 }

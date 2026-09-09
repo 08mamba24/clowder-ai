@@ -17,20 +17,28 @@ import {
 } from '@cat-cafe/shared';
 import type { FastifyBaseLogger } from 'fastify';
 import { getDefaultCatId } from '../../config/cat-config-loader.js';
+import type { ActionSuccessorLeaseStore } from '../../domains/ball-custody/ActionSuccessorLeaseStore.js';
+import {
+  hasManagedCommandWakeActionLeaseRef,
+  resolveManagedCommandWakeActionLeaseAdmission,
+} from '../../domains/ball-custody/managed-command-wake-action-lease-admission.js';
 import type { TurnCustodyWakeProvenance } from '../../domains/ball-custody/TurnCustodyProjectionService.js';
 import {
   resolveQueueTurnCustodyWake,
   retargetTurnCustodyWake,
 } from '../../domains/ball-custody/turn-custody-wake-provenance.js';
 import {
-  loadWaitContinuationCarrier,
   waitContinuationCarrierFromStoredMessage,
   waitContinuationCarriersMatch,
 } from '../../domains/ball-custody/wait-continuation-carrier.js';
 import type { InvocationQueue, QueueEntry } from '../../domains/cats/services/agents/invocation/InvocationQueue.js';
 import type { InvocationTracker } from '../../domains/cats/services/agents/invocation/InvocationTracker.js';
-import { PerCatTerminalDispositionCollector } from '../../domains/cats/services/agents/invocation/PerCatTerminalDispositionCollector.js';
 import {
+  isTerminalDispositionEvent,
+  PerCatTerminalDispositionCollector,
+} from '../../domains/cats/services/agents/invocation/PerCatTerminalDispositionCollector.js';
+import {
+  actionSuccessorCarrierKey,
   createInitialQueuedMessageCustody,
   type QueuedMessageCustodyCoordinator,
 } from '../../domains/cats/services/agents/invocation/QueuedMessageCustodyCoordinator.js';
@@ -44,6 +52,7 @@ import {
 } from '../../domains/cats/services/agents/routing/route-helpers.js';
 import type {
   IInvocationRecordStore,
+  InvocationActionLeaseCarrier,
   InvocationRecord,
   InvocationStatus,
 } from '../../domains/cats/services/stores/ports/InvocationRecordStore.js';
@@ -155,6 +164,8 @@ export interface ConnectorInvokeTriggerOptions {
   readonly deliverTimeoutMs?: number;
   /** #706: MessageStore for queue enrichment (messagePreview in queue_updated SSE). */
   readonly messageStore?: IMessageStore;
+  /** Canonical owner used to validate a managed-command wake's frozen action generation. */
+  readonly actionSuccessorLeaseStore?: Pick<ActionSuccessorLeaseStore, 'get'>;
   readonly log: FastifyBaseLogger;
 }
 
@@ -184,6 +195,14 @@ function isConnectorDeliverable(decision: OutputCommitDecision | undefined): boo
     decision.kind === 'committed_fresh' ||
     decision.kind === 'committed_degraded_unknown' ||
     decision.kind === 'published_with_unseen'
+  );
+}
+
+function actionLeaseCarriersMatch(left: InvocationActionLeaseCarrier, right: InvocationActionLeaseCarrier): boolean {
+  return (
+    left.kind === right.kind &&
+    (left.kind === 'none' ||
+      (right.kind === 'action_successor' && left.leaseId === right.leaseId && left.generation === right.generation))
   );
 }
 
@@ -377,6 +396,7 @@ export class ConnectorInvokeTrigger {
       userId: string;
       catId: CatId;
       messageId: string;
+      actionLeaseCarrier: InvocationActionLeaseCarrier;
       waitContinuationCarrier?: WaitContinuationCarrierV1;
     },
   ): record is InvocationRecord {
@@ -388,7 +408,7 @@ export class ConnectorInvokeTrigger {
       record.idempotencyKey === `connector-${expected.messageId}` &&
       record.targetCats.length === 1 &&
       record.targetCats[0] === expected.catId &&
-      record.actionLeaseCarrier.kind === 'none' &&
+      actionLeaseCarriersMatch(record.actionLeaseCarrier, expected.actionLeaseCarrier) &&
       waitContinuationCarriersMatch(record.waitContinuationCarrier, expected.waitContinuationCarrier)
     );
   }
@@ -399,7 +419,15 @@ export class ConnectorInvokeTrigger {
     userId: string,
     messageId: string,
   ): Promise<DirectInvocationAdmission> {
-    const waitContinuationCarrier = await loadWaitContinuationCarrier(this.opts.messageStore, messageId);
+    const sourceMessage = await this.opts.messageStore?.getById(messageId);
+    const waitContinuationCarrier = waitContinuationCarrierFromStoredMessage(sourceMessage);
+    const actionLeaseAdmission = hasManagedCommandWakeActionLeaseRef(sourceMessage)
+      ? await resolveManagedCommandWakeActionLeaseAdmission(
+          sourceMessage,
+          { threadId, catId, tenantScope: userId },
+          this.opts.actionSuccessorLeaseStore,
+        )
+      : ({ actionLeaseCarrier: { kind: 'none' } } as const);
     // Admission is not accepted until the idempotent record exists and exactly
     // one worker has claimed queued -> running in the shared store.
     const createResult = await this.opts.invocationRecordStore.create({
@@ -408,7 +436,7 @@ export class ConnectorInvokeTrigger {
       targetCats: [catId],
       intent: 'execute',
       idempotencyKey: `connector-${messageId}`,
-      actionLeaseCarrier: { kind: 'none' },
+      actionLeaseCarrier: actionLeaseAdmission.actionLeaseCarrier,
       ...(waitContinuationCarrier ? { waitContinuationCarrier } : {}),
     });
     const invocationId = createResult.invocationId;
@@ -422,6 +450,7 @@ export class ConnectorInvokeTrigger {
           userId,
           catId,
           messageId,
+          actionLeaseCarrier: actionLeaseAdmission.actionLeaseCarrier,
           ...(waitContinuationCarrier ? { waitContinuationCarrier } : {}),
         })
       ) {
@@ -548,6 +577,17 @@ export class ConnectorInvokeTrigger {
       return 'enqueued';
     }
 
+    const actionLeaseAdmission = hasManagedCommandWakeActionLeaseRef(sourceMessage)
+      ? await resolveManagedCommandWakeActionLeaseAdmission(
+          sourceMessage,
+          { threadId, catId, tenantScope: userId },
+          this.opts.actionSuccessorLeaseStore,
+        )
+      : ({ actionLeaseCarrier: { kind: 'none' } } as const);
+    const actionLeaseQueueKey = actionLeaseAdmission.actionSuccessorFence
+      ? actionSuccessorCarrierKey(actionLeaseAdmission.actionSuccessorFence, catId)
+      : undefined;
+
     const custodyOwner = sourceMessage?.queueCustody?.ownerAuthProvenance;
     const result = invocationQueue.enqueue({
       threadId,
@@ -558,16 +598,21 @@ export class ConnectorInvokeTrigger {
           : 'unknown',
       content: message,
       messageId,
-      ...(coalesceKey
+      ...(actionLeaseQueueKey
         ? {
-            idempotencyKey: `connector:${sourceCategory ?? 'generic'}:${coalesceKey}${
-              waitContinuationCarrier
-                ? `:wait:${waitContinuationCarrier.waitId}:${waitContinuationCarrier.outcomeId}`
-                : ''
-            }`,
-            dedupeProcessing: false,
+            idempotencyKey: actionLeaseQueueKey,
+            dedupeProcessing: true,
           }
-        : {}),
+        : coalesceKey
+          ? {
+              idempotencyKey: `connector:${sourceCategory ?? 'generic'}:${coalesceKey}${
+                waitContinuationCarrier
+                  ? `:wait:${waitContinuationCarrier.waitId}:${waitContinuationCarrier.outcomeId}`
+                  : ''
+              }`,
+              dedupeProcessing: false,
+            }
+          : {}),
       source: 'connector',
       targetCats: [catId],
       intent: 'execute',
@@ -579,6 +624,9 @@ export class ConnectorInvokeTrigger {
       ...(sender ? { senderMeta: sender } : {}),
       ...(suggestedSkill ? { suggestedSkill } : {}),
       ...(waitContinuationCarrier ? { waitContinuationCarrier } : {}),
+      ...(actionLeaseAdmission.actionSuccessorFence
+        ? { actionSuccessorFence: actionLeaseAdmission.actionSuccessorFence }
+        : {}),
     });
 
     if (result.outcome === 'full') {
@@ -833,6 +881,7 @@ export class ConnectorInvokeTrigger {
             messageId,
             expectedThreadId: threadId,
             expectedUserId: userId,
+            expectedTargetCatIds: targetCats,
             messageStore: this.opts.messageStore,
           });
         } catch (err) {
@@ -845,6 +894,7 @@ export class ConnectorInvokeTrigger {
               triggerMessage,
               ownerUserId: userId,
               threadId,
+              targetCatId: targetCats[0],
               messageStore: this.opts.messageStore,
             });
           }
@@ -923,7 +973,7 @@ export class ConnectorInvokeTrigger {
         // F39 bugfix: stop broadcasting after cancel (drain pipe buffer silently)
         if (controller?.signal.aborted) break;
         terminalDispositions.observe(msg);
-        if ((msg.type === 'done' || msg.type === 'error') && msg.catId) {
+        if (isTerminalDispositionEvent(msg) && msg.catId) {
           invocationTracker.completeSlot?.(threadId, msg.catId, controller);
         }
         if (msg.type === 'done' && msg.catId) {

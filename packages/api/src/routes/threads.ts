@@ -20,7 +20,7 @@ import {
   collectAllThreadMessages,
 } from '../domains/cats/services/agents/routing/thread-artifacts-aggregator.js';
 import { resolveBootcampWorkspaceRoot } from '../domains/cats/services/bootcamp/workspace-root.js';
-import { recordFreshnessClosureTransition } from '../domains/cats/services/freshness/freshness-closure-telemetry.js';
+import { recordFreshnessClosureTransition } from '../domains/cats/services/freshness/closure/freshness-closure-telemetry.js';
 import { projectFreshnessClosure } from '../domains/cats/services/freshness/glass-box/FreshnessOutputCommitCoordinator.js';
 import { projectFreshnessSupplementForHistory } from '../domains/cats/services/freshness/glass-box/freshness-supplement-history-projection.js';
 import { AuditEventTypes, getEventAuditLog } from '../domains/cats/services/orchestration/EventAuditLog.js';
@@ -51,6 +51,7 @@ import {
   passesManagedHoldViewerBoundary,
   SYSTEM_USER_IDS,
 } from '../domains/cats/services/stores/visibility.js';
+import { projectThreadRelations } from '../domains/thread-navigation/thread-relation-projection.js';
 import { createModuleLogger } from '../infrastructure/logger.js';
 import { visibilityCursorUnresolvedRepair } from '../infrastructure/telemetry/instruments.js';
 import type { SocketManager } from '../infrastructure/websocket/index.js';
@@ -63,6 +64,7 @@ import {
   type SidebarPresence,
   type SidebarPresenceSource,
 } from './sidebar-presence-projection.js';
+import { sendCanonicalSidebarSnapshot } from './sidebar-snapshot-http.js';
 
 const log = createModuleLogger('routes/threads');
 const WRITE_OPS = new Set(['edit', 'create', 'delete']);
@@ -385,7 +387,7 @@ export interface ThreadsRoutesOptions {
   /** Optional: cascade delete delivery cursors when thread is deleted */
   deliveryCursorStore?: DeliveryCursorStore;
   /** F254 Phase E: cascade persistent catch responsibility with thread deletion. */
-  freshnessClosureStore?: import('../domains/cats/services/freshness/FreshnessClosureStore.js').FreshnessClosureStore;
+  freshnessClosureStore?: import('../domains/cats/services/freshness/closure/FreshnessClosureStore.js').FreshnessClosureStore;
   /** F254 Phase E: explicit blocked-closure retry uses the unified queue. */
   invocationQueue?: InvocationQueue;
   queueProcessor?: QueueProcessor;
@@ -662,7 +664,18 @@ const updateThreadSchema = z
     bubbleCli: z.enum(['global', 'expanded', 'collapsed']).optional(),
     /** F168: Preferred workspace mode for auto-switch on thread open. null clears. */
     preferredWorkspaceMode: z
-      .enum(['dev', 'recall', 'schedule', 'tasks', 'community', 'artifacts', 'approval', 'trajectory', 'eval'])
+      .enum([
+        'dev',
+        'recall',
+        'product-schedule',
+        'schedule',
+        'tasks',
+        'community',
+        'artifacts',
+        'approval',
+        'trajectory',
+        'eval',
+      ])
       .nullable()
       .optional(),
     /** F187: Thread label IDs. */
@@ -779,6 +792,16 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
     const hasBacklogItemId = parseOptionalBooleanQuery(hasBacklogItemIdRaw);
     const showDeleted = parseOptionalBooleanQuery(deletedRaw);
     const includeConcierge = parseOptionalBooleanQuery(includeConciergeRaw);
+    const isCanonicalSidebarSnapshot =
+      view === 'sidebar' &&
+      projectPath === undefined &&
+      q === undefined &&
+      backlogItemIds === undefined &&
+      hasBacklogItemIdRaw === undefined &&
+      featureIds === undefined &&
+      deletedRaw === undefined &&
+      includeConciergeRaw === undefined;
+    const sidebarCompositionStartedAt = isCanonicalSidebarSnapshot ? performance.now() : null;
     const userId = resolveUserId(request, { defaultUserId: 'default-user' });
     if (!userId) return { threads: [] };
 
@@ -923,12 +946,28 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
         ? await composeSidebarPresence(threads, userId, opts.presenceSource)
         : undefined;
 
-    return {
+    const response = {
       threads: threads.map((thread) => projectThreadForListView(thread, view, presenceByThread?.get(thread.id))),
     };
+    if (sidebarCompositionStartedAt !== null) {
+      return sendCanonicalSidebarSnapshot(request, reply, response, sidebarCompositionStartedAt);
+    }
+    return response;
   });
 
   // GET /api/threads/:id - 获取对话详情
+  // F277: relation membership is a separate read model from F297 Sidebar rows.
+  // Keep this route before `/:id` so "relations" cannot be captured as a thread id.
+  app.get('/api/threads/relations', async (request, reply) => {
+    const userId = resolveUserId(request, { defaultUserId: 'default-user' });
+    if (!userId) {
+      reply.status(401);
+      return { error: 'Identity required (session cookie or X-Cat-Cafe-User header)' };
+    }
+    const threads = await threadStore.list(userId);
+    return projectThreadRelations(threads);
+  });
+
   app.get('/api/threads/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
     const thread = await threadStore.get(id);

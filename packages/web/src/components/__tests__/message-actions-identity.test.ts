@@ -134,4 +134,45 @@ describe('MessageActions identity source', () => {
 
     expect(body.userId).toBe('alice');
   });
+
+  it('does not expose a legacy review settlement action', async () => {
+    const { MessageActions } = await import('@/components/MessageActions');
+
+    await act(async () => {
+      root.render(
+        // eslint-disable-next-line react/no-children-prop -- createElement in test
+        React.createElement(MessageActions, {
+          message: {
+            id: 'legacy-terminal-1',
+            type: 'assistant',
+            catId: 'codex-terra',
+            content: 'Review 完成（旧消息没有 typed verdict）',
+            timestamp: Date.now(),
+            extra: {
+              crossPost: { sourceThreadId: 'thread-reviewer' },
+              coordination: {
+                id: 'coord-review-1',
+                phase: 'terminal',
+                hop: 1,
+                subjectRef: 'pr:owner/repo#4074',
+              },
+            },
+          },
+          threadId: 'thread-author',
+          // biome-ignore lint/correctness/noChildrenProp: createElement in test
+          children: React.createElement('div', null, 'review terminal'),
+        }),
+      );
+    });
+
+    const moreButton = container.querySelector('button[aria-label="更多消息操作"]') as HTMLButtonElement | null;
+    await act(async () => {
+      moreButton?.click();
+    });
+    const settleAction = document.querySelector<HTMLButtonElement>(
+      '[data-testid="legacy-local-review-disposition-action"]',
+    );
+    expect(settleAction).toBeNull();
+    expect(apiFetchMock).not.toHaveBeenCalled();
+  });
 });

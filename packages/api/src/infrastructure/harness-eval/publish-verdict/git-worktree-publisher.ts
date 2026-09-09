@@ -5,6 +5,17 @@ import { resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { withHiddenGhCliWindow } from '../../github/gh-cli-env.js';
 import { createGitVerdictPrRefresher } from './git-verdict-pr-refresher.js';
+import { createGitPublishedWorktreeResolver } from './publication/git-published-worktree-resolver.js';
+import { closeAutoVerdictPr, openAutoVerdictPr, withGitHubRepoScope } from './publication/git-verdict-pr.js';
+import {
+  type PublishVerdictCommitStatusesInput,
+  publishVerdictCommitStatuses,
+} from './publication/verdict-commit-status-publisher.js';
+import {
+  runVerdictPublishContract,
+  type VerdictPublishContractInput,
+  type VerdictPublishContractRunner,
+} from './publication/verdict-publish-contract-runner.js';
 import type { GitPublisher, PublishOnIsolatedWorktreeOpts } from './publish-verdict.js';
 
 const exec = promisify(execFile);
@@ -17,11 +28,22 @@ const ALLOWED_PATH_PREFIXES = [
   'generated/sop/',
 ];
 const ALLOWED_EXACT_PATHS = new Set(['docs/harness-feedback/registry/measurement-bundles.yaml']);
+const CAPABILITY_EVOLUTION_MEASUREMENT_PREFIXES = [
+  'docs/harness-feedback/certificates/',
+  'docs/harness-feedback/measurement-results/',
+  'docs/harness-feedback/decision-proofs/records/',
+  'docs/harness-feedback/decision-proofs/owner-objects/',
+  'docs/harness-feedback/measurement-roles/',
+];
 
 export function isAllowedVerdictStagePath(relativePath: string): boolean {
   return (
     ALLOWED_EXACT_PATHS.has(relativePath) || ALLOWED_PATH_PREFIXES.some((prefix) => relativePath.startsWith(prefix))
   );
+}
+
+export function isAllowedCapabilityEvolutionMeasurementStagePath(relativePath: string): boolean {
+  return CAPABILITY_EVOLUTION_MEASUREMENT_PREFIXES.some((prefix) => relativePath.startsWith(prefix));
 }
 
 /**
@@ -47,51 +69,26 @@ export interface GitWorktreePublisherDeps {
   expectedRepoFullName: string;
   /** Test seam for the shared executable publication contract. */
   contractRunner?: VerdictPublishContractRunner;
+  /** Test seam for the local-guard → exact-commit GitHub status projection. */
+  commitStatusPublisher?: (input: PublishVerdictCommitStatusesInput) => Promise<void>;
+  /** Select the exact immutable artifact family this publisher may stage; default remains verdict-only. */
+  stageScope?: 'verdict' | 'capability-evolution-measurement';
 }
 
-export interface VerdictPublishContractInput {
-  repoRoot: string;
-  expectedRepoFullName: string;
-  remoteName: string;
-  baseRef: string;
-  sourceRef: string;
-  identityOnly?: boolean;
-}
-
-export type VerdictPublishContractRunner = (input: VerdictPublishContractInput) => Promise<void>;
-
-export function withGitHubRepoScope(args: string[], expectedRepoFullName: string): string[] {
-  return [...args, '--repo', expectedRepoFullName];
-}
-
-async function runVerdictPublishContract(input: VerdictPublishContractInput): Promise<void> {
-  const scriptPath = resolve(input.repoRoot, 'scripts/check-verdict-publish-contract.mjs');
-  await exec(
-    process.execPath,
-    [
-      scriptPath,
-      '--repo-root',
-      input.repoRoot,
-      '--expected-repo',
-      input.expectedRepoFullName,
-      '--remote',
-      input.remoteName,
-      '--base-ref',
-      input.baseRef,
-      '--source-ref',
-      input.sourceRef,
-      ...(input.identityOnly ? ['--identity-only', 'true'] : []),
-    ],
-    { timeout: 60_000 },
-  );
-}
+export { withGitHubRepoScope } from './publication/git-verdict-pr.js';
+export type {
+  VerdictPublishContractInput,
+  VerdictPublishContractRunner,
+} from './publication/verdict-publish-contract-runner.js';
 
 export function createGitWorktreePublisher(deps: GitWorktreePublisherDeps): GitPublisher {
   const contractRunner = deps.contractRunner ?? runVerdictPublishContract;
+  const commitStatusPublisher = deps.commitStatusPublisher ?? publishVerdictCommitStatuses;
   return {
     async publishOnIsolatedWorktree(opts: PublishOnIsolatedWorktreeOpts) {
       const sourceContract = {
         repoRoot: deps.repoRoot,
+        implementationRoot: deps.repoRoot,
         expectedRepoFullName: deps.expectedRepoFullName,
         remoteName: 'origin',
         baseRef: opts.sourceBase,
@@ -139,29 +136,16 @@ export function createGitWorktreePublisher(deps: GitWorktreePublisherDeps): GitP
         );
 
         // 3. Run caller's stage callback (generator writes verdict artifacts)
-        const { paths, commitMessage, prTitle, prBody, labels, afterPublish } = await opts.stage(worktreePath);
+        const { paths, commitMessage, prTitle, prBody, labels, statusChecks, afterPublish } =
+          await opts.stage(worktreePath);
 
         if (paths.length === 0) {
           throw new Error('stage produced no paths to commit');
         }
 
-        // 4. Add + commit artifacts inside isolated worktree
-        // 砚砚 PR #2682 R2: normalize stage paths against the WORKTREE root (not
-        // process.cwd()) before any allowlist check, so traversal segments are
-        // collapsed BEFORE prefix comparison.
-        // R1 bug 砚砚 caught: `resolve(p)` resolves relative paths against process.cwd
-        // (likely the API server's cwd, not the worktree), and if the result didn't
-        // start with worktreePath, the old code fell through to the raw string `p`.
-        // A stage callback returning the literal string
-        //   `docs/harness-feedback/verdicts/../../../cat-config.json`
-        // would (a) fail the resolve(p).startsWith(worktreePath) check, (b) fall
-        // through to the raw string, (c) pass `startsWith('docs/harness-feedback/verdicts/')`
-        // by字面 match, and (d) be interpreted by `git -C <worktreePath> add` as a
-        // worktree-relative path → after collapsing `..`, write to `cat-config.json`
-        // at the worktree root. Trivial bypass of the allowlist.
-        // Fix: `resolve(worktreePath, p)` so relative paths normalize relative to the
-        // worktree, then explicitly reject anything that escapes the worktree root
-        // (e.g. p = `/etc/passwd` or `../../../../../../etc/passwd`).
+        // Normalize against the worktree before the allowlist. Resolving raw
+        // paths against process.cwd() once allowed traversal-shaped strings to
+        // masquerade under an approved prefix (PR #2682); escape fails closed.
         const relativePaths = paths.map((p) => {
           const absolute = resolve(worktreePath, p);
           // Escape detection: absolute must equal worktreePath (= the root itself, an
@@ -197,10 +181,14 @@ export function createGitWorktreePublisher(deps: GitWorktreePublisherDeps): GitP
         //                                                ← refreshed derived verdict counts
         // Any new generator adding a new path MUST extend this allowlist explicitly +
         // add a regression test below — defaulting to deny.
-        const outsideAllowlist = relativePaths.filter((rel) => !isAllowedVerdictStagePath(rel));
+        const allowStagePath =
+          deps.stageScope === 'capability-evolution-measurement'
+            ? isAllowedCapabilityEvolutionMeasurementStagePath
+            : isAllowedVerdictStagePath;
+        const outsideAllowlist = relativePaths.filter((rel) => !allowStagePath(rel));
         if (outsideAllowlist.length > 0) {
           throw new Error(
-            `staged_path_outside_allowlist: stage callback returned ${outsideAllowlist.length} path(s) outside the verdict allowlist: ${JSON.stringify(outsideAllowlist)}. Allowed prefixes: ${ALLOWED_PATH_PREFIXES.join(', ')}. Allowed exact paths: ${[...ALLOWED_EXACT_PATHS].join(', ')}. Verdict commits use --no-verify so the pre-commit guards (biome/brand/shared-state) cannot catch foreign paths; this allowlist is the only backstop.`,
+            `staged_path_outside_allowlist: stage callback returned ${outsideAllowlist.length} path(s) outside the ${deps.stageScope ?? 'verdict'} allowlist: ${JSON.stringify(outsideAllowlist)}. Machine artifact commits use --no-verify so this scope-specific allowlist is the final path backstop.`,
           );
         }
 
@@ -226,6 +214,7 @@ export function createGitWorktreePublisher(deps: GitWorktreePublisherDeps): GitP
         // census continuity, and same-domain/same-window collision checks.
         await contractRunner({
           repoRoot: worktreePath,
+          implementationRoot: deps.repoRoot,
           expectedRepoFullName: deps.expectedRepoFullName,
           remoteName: 'origin',
           baseRef: opts.sourceBase,
@@ -239,75 +228,22 @@ export function createGitWorktreePublisher(deps: GitWorktreePublisherDeps): GitP
         // 6. Get commit SHA (after commit, before PR)
         const shaResult = await exec('git', ['-C', worktreePath, 'rev-parse', 'HEAD'], { timeout: 10_000 });
         const commitSha = shaResult.stdout.trim();
+        await commitStatusPublisher({
+          repoFullName: deps.expectedRepoFullName,
+          headSha: commitSha,
+          statuses: statusChecks ?? [],
+        });
 
-        // 7. Open auto-PR via gh.
-        // 砚砚 R4 P1 cloud: `--repo .` is NOT valid gh syntax (fails with
-        // 'expected the "[HOST/]OWNER/REPO" format'). Rely on cwd inside the
-        // worktree — gh auto-detects owner/repo from the git remote.
-        //
-        // PR-3 (砚砚 R2): pass each label via separate `--label` flag (gh CLI accepts
-        // repeated --label X; not comma-separated). `computePublishPolicy` decides
-        // labels per packet/attribution.
-        //
-        // PR-3 R1 (砚砚 cloud): `gh pr create --label X` fails if label doesn't exist
-        // in repo. Ensure labels exist via `gh label create --force` (idempotent —
-        // creates if missing, updates if exists; either way safe). Errors swallowed:
-        // if label creation fails (network / permissions), we still try `gh pr create`
-        // — better to surface label error there than to block the publish entirely.
-        const standardLabelMeta: Record<string, { color: string; description: string }> = {
-          'evidence-only': {
-            color: '0E8A16',
-            description: 'F192 auto-verdict artifact PR — cat-owned merge per SOP, not operator',
-          },
-          'no-action-needed': {
-            color: 'C5DEF5',
-            description: 'F192 keep_observe + no actionable findings — interim per-run PR (rollup deferred)',
-          },
-        };
-        for (const label of labels ?? []) {
-          const meta = standardLabelMeta[label];
-          const args = ['label', 'create', label, '--force'];
-          if (meta) {
-            args.push('--color', meta.color, '--description', meta.description);
-          }
-          try {
-            await exec(
-              'gh',
-              withGitHubRepoScope(args, deps.expectedRepoFullName),
-              withHiddenGhCliWindow({ cwd: worktreePath, timeout: 15_000 }),
-            );
-          } catch (err) {
-            // Best-effort: surface error on gh pr create below if it actually breaks PR.
-            // (Swallowing here = avoid double-fail on label step; PR create will retry.)
-            void err;
-          }
-        }
-        const labelFlags = (labels ?? []).flatMap((label) => ['--label', label]);
-        const prResult = await exec(
-          'gh',
-          withGitHubRepoScope(
-            [
-              'pr',
-              'create',
-              '--base',
-              'main',
-              '--head',
-              opts.branchName,
-              '--title',
-              prTitle,
-              '--body',
-              prBody,
-              ...labelFlags,
-            ],
-            deps.expectedRepoFullName,
-          ),
-          withHiddenGhCliWindow({ cwd: worktreePath, timeout: 60_000 }),
-        );
-        prUrl =
-          prResult.stdout
-            .trim()
-            .split('\n')
-            .find((line) => line.startsWith('https://')) ?? prResult.stdout.trim();
+        // The status is written before the PR exists. If status publication
+        // fails, the finally path removes the pushed branch and no PR escapes.
+        prUrl = await openAutoVerdictPr({
+          expectedRepoFullName: deps.expectedRepoFullName,
+          worktreePath,
+          branchName: opts.branchName,
+          title: prTitle,
+          body: prBody,
+          labels,
+        });
         prOpened = true;
         await afterPublish?.();
 
@@ -315,21 +251,7 @@ export function createGitWorktreePublisher(deps: GitWorktreePublisherDeps): GitP
       } catch (err) {
         if (prOpened && prUrl) {
           try {
-            await exec(
-              'gh',
-              withGitHubRepoScope(
-                [
-                  'pr',
-                  'close',
-                  prUrl,
-                  '--delete-branch',
-                  '--comment',
-                  'Closing stale auto-verdict PR because post-publish writeback failed.',
-                ],
-                deps.expectedRepoFullName,
-              ),
-              withHiddenGhCliWindow({ cwd: worktreePath, timeout: 60_000 }),
-            );
+            await closeAutoVerdictPr({ expectedRepoFullName: deps.expectedRepoFullName, worktreePath, prUrl });
             prOpened = false;
           } catch (cleanupErr) {
             const originalMessage = err instanceof Error ? err.message : String(err);
@@ -411,9 +333,16 @@ export function createGitWorktreePublisher(deps: GitWorktreePublisherDeps): GitP
         }
       }
     },
+    resolvePublishedOnIsolatedWorktree: createGitPublishedWorktreeResolver({
+      repoRoot: deps.repoRoot,
+      expectedRepoFullName: deps.expectedRepoFullName,
+      contractRunner,
+    }),
     refreshPublishedVerdictPr: createGitVerdictPrRefresher({
       repoRoot: deps.repoRoot,
       expectedRepoFullName: deps.expectedRepoFullName,
+      contractRunner,
+      commitStatusPublisher,
     }),
   };
 }

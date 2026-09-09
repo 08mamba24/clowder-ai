@@ -103,6 +103,13 @@ describe('sidebarProjectionStore authority boundary', () => {
     expect(malformed.presence).toEqual({ status: 'working' });
   });
 
+  it('preserves the Memory Operations system-thread kind', () => {
+    const [memoryOperations] = parseSidebarSnapshotRows([{ ...row('thread-memory-ops'), systemKind: 'memory_ops' }]);
+
+    expect(memoryOperations.systemKind).toBe('memory_ops');
+    expect(memoryOperations.isHubThread).toBe(false);
+  });
+
   it('rejects an older HTTP generation after a newer snapshot was applied', () => {
     const store = useSidebarProjectionStore.getState();
 
@@ -142,6 +149,110 @@ describe('sidebarProjectionStore authority boundary', () => {
       pinned: false,
     });
     expect(useSidebarProjectionStore.getState().rows).toBe(canonicalBefore);
+  });
+
+  it.each([
+    'done',
+    'error',
+  ] as const)('projects terminal %s to idle as soon as the attention overlay is cleared', (status) => {
+    const store = useSidebarProjectionStore.getState();
+    store.applySidebarSnapshot(
+      [
+        row('thread-1', {
+          unreadCount: 1,
+          presence: { status, cats: ['codex-sol'] },
+        }),
+      ],
+      1,
+    );
+    const canonicalBefore = useSidebarProjectionStore.getState().rows;
+
+    store.beginSidebarCommand('thread-1', 'attention', {
+      unreadCount: 0,
+      hasUserMention: false,
+    });
+
+    expect(projectSidebarRows(useSidebarProjectionStore.getState())[0]).toMatchObject({
+      unreadCount: 0,
+      hasUserMention: false,
+      presence: { status: 'idle' },
+    });
+    expect(useSidebarProjectionStore.getState().rows).toBe(canonicalBefore);
+    expect(useSidebarProjectionStore.getState().rows[0]).toMatchObject({
+      unreadCount: 1,
+      presence: { status },
+    });
+  });
+
+  it('keeps working visible when the attention overlay is cleared', () => {
+    const store = useSidebarProjectionStore.getState();
+    store.applySidebarSnapshot(
+      [
+        row('thread-1', {
+          unreadCount: 1,
+          presence: { status: 'working', cats: ['codex-sol'], activeSince: 1234 },
+        }),
+      ],
+      1,
+    );
+
+    store.beginSidebarCommand('thread-1', 'attention', {
+      unreadCount: 0,
+      hasUserMention: false,
+    });
+
+    expect(projectSidebarRows(useSidebarProjectionStore.getState())[0]).toMatchObject({
+      unreadCount: 0,
+      hasUserMention: false,
+      presence: { status: 'working', cats: ['codex-sol'], activeSince: 1234 },
+    });
+  });
+
+  it('preserves attention reconcile semantics across failure, snapshot confirmation, and same-field concurrency', () => {
+    const store = useSidebarProjectionStore.getState();
+    store.applySidebarSnapshot(
+      [row('thread-1', { unreadCount: 1, presence: { status: 'done', cats: ['codex-sol'] } })],
+      1,
+    );
+
+    const cleared = store.beginSidebarCommand('thread-1', 'attention', {
+      unreadCount: 0,
+      hasUserMention: false,
+    });
+    store.applySidebarSnapshot(
+      [row('thread-1', { unreadCount: 2, presence: { status: 'done', cats: ['codex-sol'] } })],
+      2,
+    );
+    expect(projectSidebarRows(useSidebarProjectionStore.getState())[0]?.presence.status).toBe('idle');
+
+    store.failSidebarCommand(cleared);
+    expect(projectSidebarRows(useSidebarProjectionStore.getState())[0]).toMatchObject({
+      unreadCount: 2,
+      presence: { status: 'done' },
+    });
+
+    const older = store.beginSidebarCommand('thread-1', 'attention', {
+      unreadCount: 0,
+      hasUserMention: false,
+    });
+    store.beginSidebarCommand('thread-1', 'attention', {
+      unreadCount: 3,
+      hasUserMention: true,
+    });
+    store.failSidebarCommand(older);
+    expect(projectSidebarRows(useSidebarProjectionStore.getState())[0]).toMatchObject({
+      unreadCount: 3,
+      hasUserMention: true,
+      presence: { status: 'done' },
+    });
+
+    store.beginSidebarCommand('thread-1', 'attention', {
+      unreadCount: 0,
+      hasUserMention: false,
+    });
+    store.applySidebarSnapshot([row('thread-1')], 3);
+    expect(useSidebarProjectionStore.getState().pendingThreadCommands).toEqual({});
+    expect(projectSidebarRows(useSidebarProjectionStore.getState())[0]?.presence.status).toBe('idle');
   });
 
   it('retires a successful overlay only after a canonical snapshot observes its value', () => {

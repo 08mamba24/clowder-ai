@@ -6,8 +6,15 @@
  * Phase 3.3 可扩展 Redis 版本。
  */
 
-import type { CatId, CliEffortPreset, CodexSpeedValue, ThreadKind, ThreadPhase } from '@cat-cafe/shared';
-import { generateThreadId } from '@cat-cafe/shared';
+import type {
+  CatId,
+  CliEffortPreset,
+  CodexSpeedValue,
+  DeclaredWorkMode,
+  ThreadKind,
+  ThreadPhase,
+} from '@cat-cafe/shared';
+import { generateThreadId, normalizeThreadGoalObjective } from '@cat-cafe/shared';
 import type { StoreReadOptions } from './StoreReadOptions.js';
 import { throwIfStoreReadAborted } from './StoreReadOptions.js';
 
@@ -22,7 +29,7 @@ export function deriveAutoThreadTitle(content: string): string | null {
 }
 
 /** System-owned thread surfaces that stay distinct from ordinary user conversations. */
-export type ThreadSystemKind = 'connector_hub' | 'eval_domain' | 'cat_bedroom';
+export type ThreadSystemKind = 'connector_hub' | 'eval_domain' | 'cat_bedroom' | 'memory_ops';
 
 /**
  * F032 Phase C: Participant activity data for reviewer matching.
@@ -131,6 +138,62 @@ export interface ThreadMentionRoutingFeedback {
   items: ThreadMentionRoutingFeedbackItem[];
 }
 
+export type ThreadGoalStatus = 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete';
+export type ThreadGoalSyncState = 'syncing' | 'synced' | 'clearing' | 'unavailable';
+
+/** F306: durable Clowder AI goal intent plus an honest provider-sync projection. */
+export interface ThreadGoalStateV1 {
+  v: 1;
+  intent: 'set' | 'clear';
+  objective?: string;
+  status?: ThreadGoalStatus;
+  tokenBudget?: number | null;
+  revision: number;
+  updatedAt: number;
+  /** Durable provider-clear fence; prevents an older native update from resurrecting a cleared goal. */
+  clearedAt?: number;
+  sync: {
+    state: ThreadGoalSyncState;
+    source: 'cat_cafe' | 'codex_app_server';
+    catId?: string;
+    sessionId?: string;
+    observedAt?: number;
+    reason?: string;
+  };
+}
+
+const THREAD_GOAL_STATUSES = new Set<string>([
+  'active',
+  'paused',
+  'blocked',
+  'usageLimited',
+  'budgetLimited',
+  'complete',
+]);
+
+export function isThreadGoalStateV1(value: unknown): value is ThreadGoalStateV1 {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  const sync = candidate.sync as Record<string, unknown> | undefined;
+  return (
+    candidate.v === 1 &&
+    (candidate.intent === 'set' || candidate.intent === 'clear') &&
+    Number.isInteger(candidate.revision) &&
+    Number(candidate.revision) > 0 &&
+    typeof candidate.updatedAt === 'number' &&
+    Number.isFinite(candidate.updatedAt) &&
+    (candidate.clearedAt === undefined ||
+      (typeof candidate.clearedAt === 'number' && Number.isFinite(candidate.clearedAt))) &&
+    (candidate.intent === 'clear' ||
+      (normalizeThreadGoalObjective(candidate.objective) === candidate.objective &&
+        typeof candidate.status === 'string' &&
+        THREAD_GOAL_STATUSES.has(candidate.status))) &&
+    !!sync &&
+    ['syncing', 'synced', 'clearing', 'unavailable'].includes(String(sync.state)) &&
+    (sync.source === 'cat_cafe' || sync.source === 'codex_app_server')
+  );
+}
+
 /**
  * A conversation thread
  */
@@ -146,6 +209,8 @@ export interface Thread {
   pinnedAt?: number | null;
   favorited?: boolean;
   favoritedAt?: number | null;
+  /** F306: ThreadStore-owned goal intent and provider reconciliation state. */
+  goal?: ThreadGoalStateV1;
   /** Thinking visibility mode: play = cats can't see each other's thinking, debug = cats share thinking. Default: debug */
   thinkingMode?: 'debug' | 'play';
   /**
@@ -186,10 +251,19 @@ export interface Thread {
   approvedBy?: string;
   /** F128: Unix ms when the proposal was approved (audit metadata). */
   approvedAt?: number;
+  /** F277: exact invocation that proposed this thread. */
+  sourceInvocationId?: string;
+  /** F277: exact message that caused the proposal. */
+  sourceMessageId?: string;
+  /** F277: declared placement role; absent only on legacy threads. */
+  declaredWorkMode?: DeclaredWorkMode;
+  /** F277: immutable message-branch birth provenance. */
+  branchAudit?: ThreadBranchAudit;
   /** F171: First-Run Quest onboarding state. */
   firstRunQuestState?: FirstRunQuestStateV1;
   /** System thread kind — determines sidebar "系统" section visibility.
-   *  connector_hub = IM Hub, eval_domain = harness eval, cat_bedroom = F255 private bedroom. */
+   *  connector_hub = IM Hub, eval_domain = harness eval, cat_bedroom = F255 private bedroom,
+   *  memory_ops = owner-scoped background memory operations. */
   systemKind?: ThreadSystemKind;
   /** F088 Phase G: Connector Hub thread state — marks this thread as an IM Hub for command isolation. */
   connectorHubState?: ConnectorHubStateV1;
@@ -199,6 +273,7 @@ export interface Thread {
   preferredWorkspaceMode?:
     | 'dev'
     | 'recall'
+    | 'product-schedule'
     | 'schedule'
     | 'tasks'
     | 'community'
@@ -257,8 +332,18 @@ export interface PendingContinuationEntry {
 export interface ThreadProposalAudit {
   createdFromProposalId: string;
   sourceThreadId: string;
+  sourceInvocationId?: string;
+  sourceMessageId?: string;
+  declaredWorkMode?: DeclaredWorkMode;
   approvedBy: string;
   approvedAt: number;
+}
+
+/** F277: immutable birth audit for message-created branches. */
+export interface ThreadBranchAudit {
+  sourceThreadId: string;
+  sourceMessageId: string;
+  branchedAt: number;
 }
 
 /** F088 Phase G: Connector Hub thread state for IM command isolation. */
@@ -367,6 +452,15 @@ export interface ThreadMetadataV1 {
   features?: string[];
   /** Free-form stable KV for any thread type */
   notes?: Record<string, string>;
+  /** F277: owner-created Sidebar Group membership. Absent means the default ungrouped list. */
+  attentionGroup?: ThreadAttentionGroupMembershipV1;
+}
+
+/** F277: typed per-thread membership written only by an explicit owner organize action. */
+export interface ThreadAttentionGroupMembershipV1 {
+  v: 1;
+  groupId: string;
+  order: number;
 }
 
 /** #872: Dedupe key for PR/issue refs */
@@ -381,6 +475,8 @@ export type ThreadMetadataPatch = {
   issues?: Array<{ repo: string; number: number }>;
   features?: string[];
   notes?: Record<string, string | null>;
+  /** F277: set or clear this thread's explicit Group membership. */
+  attentionGroup?: ThreadAttentionGroupMembershipV1 | null;
   removeWorktrees?: string[];
   removePrs?: Array<{ repo: string; number: number }>;
   removeIssues?: Array<{ repo: string; number: number }>;
@@ -447,6 +543,11 @@ export function mergeThreadMetadata(
       }
     }
     base.notes = Object.keys(merged).length > 0 ? merged : undefined;
+  }
+
+  if (patch.attentionGroup !== undefined) {
+    if (patch.attentionGroup === null) delete base.attentionGroup;
+    else base.attentionGroup = { ...patch.attentionGroup };
   }
 
   return base;
@@ -528,6 +629,21 @@ export function parseThreadMetadataJson(raw: string): ThreadMetadataV1 | null {
       if (!parsed.notes || typeof parsed.notes !== 'object' || Array.isArray(parsed.notes)) return null;
       if (Object.values(parsed.notes).some((v: unknown) => typeof v !== 'string')) return null;
     }
+    if (parsed.attentionGroup !== undefined) {
+      const group = parsed.attentionGroup as Record<string, unknown> | null;
+      if (
+        !group ||
+        typeof group !== 'object' ||
+        Array.isArray(group) ||
+        group.v !== 1 ||
+        typeof group.groupId !== 'string' ||
+        !/^attention_[A-Za-z0-9_-]+$/.test(group.groupId) ||
+        !Number.isInteger(group.order) ||
+        Number(group.order) < 0
+      ) {
+        return null;
+      }
+    }
 
     return parsed as ThreadMetadataV1;
   } catch {
@@ -584,6 +700,7 @@ export interface IThreadStore {
     projectPath?: string,
     parentThreadId?: string,
     proposalAudit?: ThreadProposalAudit,
+    branchAudit?: ThreadBranchAudit,
   ): Thread | Promise<Thread>;
   get(threadId: string, options?: StoreReadOptions): Thread | null | Promise<Thread | null>;
   list(userId: string, options?: StoreReadOptions): Thread[] | Promise<Thread[]>;
@@ -614,6 +731,12 @@ export interface IThreadStore {
   updateThinkingMode(threadId: string, mode: 'debug' | 'play'): void | Promise<void>;
   updateMentionActionabilityMode(threadId: string, mode: MentionActionabilityMode): void | Promise<void>;
   updatePreferredCats(threadId: string, catIds: CatId[]): void | Promise<void>;
+  /** F306: exact-revision CAS; null means the field must be absent. */
+  compareAndSetGoal(
+    threadId: string,
+    expectedRevision: number | null,
+    next: ThreadGoalStateV1 | null,
+  ): boolean | Promise<boolean>;
   updatePhase(threadId: string, phase: ThreadPhase): void | Promise<void>;
   linkBacklogItem(threadId: string, backlogItemId: string): void | Promise<void>;
   /**
@@ -659,6 +782,7 @@ export interface IThreadStore {
     mode:
       | 'dev'
       | 'recall'
+      | 'product-schedule'
       | 'schedule'
       | 'tasks'
       | 'community'
@@ -824,6 +948,7 @@ export class ThreadStore implements IThreadStore {
     projectPath?: string,
     parentThreadId?: string,
     proposalAudit?: ThreadProposalAudit,
+    branchAudit?: ThreadBranchAudit,
   ): Thread {
     this.evictIfNeeded();
 
@@ -840,10 +965,14 @@ export class ThreadStore implements IThreadStore {
         ? {
             createdFromProposalId: proposalAudit.createdFromProposalId,
             sourceThreadId: proposalAudit.sourceThreadId,
+            ...(proposalAudit.sourceInvocationId ? { sourceInvocationId: proposalAudit.sourceInvocationId } : {}),
+            ...(proposalAudit.sourceMessageId ? { sourceMessageId: proposalAudit.sourceMessageId } : {}),
+            ...(proposalAudit.declaredWorkMode ? { declaredWorkMode: proposalAudit.declaredWorkMode } : {}),
             approvedBy: proposalAudit.approvedBy,
             approvedAt: proposalAudit.approvedAt,
           }
         : {}),
+      ...(branchAudit ? { branchAudit: { ...branchAudit } } : {}),
     };
 
     this.threads.set(thread.id, thread);
@@ -1065,6 +1194,16 @@ export class ThreadStore implements IThreadStore {
     }
   }
 
+  compareAndSetGoal(threadId: string, expectedRevision: number | null, next: ThreadGoalStateV1 | null): boolean {
+    const thread = this.get(threadId);
+    if (!thread || (next && !isThreadGoalStateV1(next)) || (thread.goal?.revision ?? null) !== expectedRevision) {
+      return false;
+    }
+    if (next) thread.goal = { ...next, sync: { ...next.sync } };
+    else delete thread.goal;
+    return true;
+  }
+
   updatePhase(threadId: string, phase: ThreadPhase): void {
     const thread = this.get(threadId);
     if (thread) thread.phase = phase;
@@ -1218,6 +1357,7 @@ export class ThreadStore implements IThreadStore {
     mode:
       | 'dev'
       | 'recall'
+      | 'product-schedule'
       | 'schedule'
       | 'tasks'
       | 'community'

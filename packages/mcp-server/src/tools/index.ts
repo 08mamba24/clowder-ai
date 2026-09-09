@@ -36,15 +36,18 @@ export {
 } from './callback-memory-tools.js';
 export {
   ackMentionsInputSchema,
+  admitEntrustedWorkInputSchema,
   callbackTools,
-  checkPermissionStatusInputSchema,
+  closeEntrustedWorkInputSchema,
   crossPostMessageInputSchema,
   featIndexInputSchema,
   getPendingMentionsInputSchema,
   getThreadCatsInputSchema,
   getThreadContextInputSchema,
+  getWorkflowSopInputSchema,
   handleAckMentions,
-  handleCheckPermissionStatus,
+  handleAdmitEntrustedWork,
+  handleCloseEntrustedWork,
   handleCompleteA2ADispatch,
   handleCompleteManagedHold,
   handleCrossPostMessage,
@@ -53,20 +56,48 @@ export {
   handleGetPendingMentions,
   handleGetThreadCats,
   handleGetThreadContext,
+  handleGetWorkflowSop,
   handleListTasks,
   handleListThreads,
+  handleOfferCustody,
   handlePostMessage,
   handleRecordMemoryCueOutcome,
   handleRegisterPrTracking,
-  handleRequestPermission,
+  handleRetryCustodyAdmission,
+  handleUpdateEntrustedWork,
   handleUpdateTask,
   listTasksInputSchema,
   listThreadsInputSchema,
+  offerCustodyInputSchema,
   postMessageInputSchema,
   registerPrTrackingInputSchema,
-  requestPermissionInputSchema,
+  retryCustodyAdmissionInputSchema,
+  updateEntrustedWorkInputSchema,
   updateTaskInputSchema,
 } from './callback-tools.js';
+export {
+  advanceEvolutionProgramChangeInputSchema,
+  capabilityEvolutionChangeTools,
+  handleAdvanceEvolutionProgramChange,
+} from './capability-evolution-change-tools.js';
+export {
+  capabilityEvolutionRoundTools,
+  constituteEvolutionProgramInputSchema,
+  handleConstituteEvolutionProgram,
+  handleOpenEvolutionRound,
+  handleRecordEvolutionEvaluation,
+  openEvolutionRoundInputSchema,
+  recordEvolutionEvaluationInputSchema,
+} from './capability-evolution-round-tools.js';
+export {
+  capabilityEvolutionTools,
+  getEvolutionProgramInputSchema,
+  handleGetEvolutionProgram,
+  handleStartEvolutionProgram,
+  handleUpdateEvolutionProgram,
+  startEvolutionProgramInputSchema,
+  updateEvolutionProgramInputSchema,
+} from './capability-evolution-tools.js';
 export {
   communityRouteAcceptanceInputSchema,
   communityRouteAcceptanceTools,
@@ -82,8 +113,15 @@ export {
   reviewDistillationInputSchema,
 } from './distillation-tools.js';
 export {
+  entrustedWorkReadTools,
+  handleReadEntrustedWork,
+  readEntrustedWorkInputSchema,
+} from './entrusted-work-read-tools.js';
+export {
   evalLifecycleTools,
+  handleProposeEvalRepair,
   handleRecordEvalLifecycle,
+  proposeEvalRepairInputSchema,
   recordEvalLifecycleInputSchema,
 } from './eval-lifecycle-tools.js';
 export {
@@ -169,12 +207,10 @@ export {
   limbTools,
 } from './limb-tools.js';
 export {
-  handleLocalReviewVerdict,
-  handleRecoverLocalReviewVerdict,
-  localReviewRecoveryInputSchema,
-  localReviewVerdictInputSchema,
-  localReviewVerdictTools,
-} from './local-review-verdict-tool.js';
+  handleReadMeetingArtifact,
+  meetingArtifactTools,
+  readMeetingArtifactInputSchema,
+} from './meeting-artifact-tools.js';
 export {
   createMemoryCueTools,
   drillMemoryCueInputSchema,
@@ -255,3 +291,13 @@ export {
   signalSummarizeInputSchema,
   signalsTools,
 } from './signals-tools.js';
+export {
+  createSkillConsumptionTools,
+  dismissSkillConsumptionInputSchema,
+  handleDismissSkillConsumption,
+  handleOpenWithWorkspaceNavigator,
+  handlePrepareSkillConsumption,
+  openWithWorkspaceNavigatorInputSchema,
+  prepareSkillConsumptionInputSchema,
+  skillConsumptionTools,
+} from './skill-consumption-tools.js';

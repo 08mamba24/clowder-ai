@@ -2,7 +2,16 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatContainer } from '@/components/ChatContainer';
+import { ThreadChatRuntimeProvider } from '@/components/thread-chat';
 import type { ChatMessage, ThreadState } from '@/stores/chat-types';
+
+function renderChatContainer(threadId: string) {
+  return React.createElement(
+    ThreadChatRuntimeProvider,
+    { routeThreadId: threadId },
+    React.createElement(ChatContainer, { threadId }),
+  );
+}
 
 const mockSetLoading = vi.fn();
 const mockSetHasActiveInvocation = vi.fn();
@@ -111,13 +120,8 @@ vi.mock('@/hooks/useSendMessage', () => ({
   useSendMessage: () => ({ handleSend: vi.fn() }),
 }));
 
-vi.mock('@/hooks/useAuthorization', () => ({
-  useAuthorization: () => ({ pending: [], respond: vi.fn(), handleAuthRequest: vi.fn(), handleAuthResponse: vi.fn() }),
-}));
-
 vi.mock('@/hooks/useSplitPaneKeys', () => ({ useSplitPaneKeys: vi.fn() }));
 
-vi.mock('../AuthorizationCard', () => ({ AuthorizationCard: () => null }));
 vi.mock('../BootcampListModal', () => ({ BootcampListModal: () => null }));
 vi.mock('../BootstrapOrchestrator', () => ({ BootstrapOrchestrator: () => null }));
 vi.mock('../ChatContainerHeader', () => ({ ChatContainerHeader: () => null }));
@@ -153,6 +157,7 @@ vi.mock('../RightStatusPanel', () => ({ RightStatusPanel: () => null }));
 vi.mock('../ScrollToBottomButton', () => ({ ScrollToBottomButton: () => null }));
 vi.mock('../SplitPaneView', () => ({
   SplitPaneView: ({ children }: { children?: React.ReactNode }) => children ?? null,
+  SplitPaneChatView: ({ children }: { children?: React.ReactNode }) => children ?? null,
 }));
 vi.mock('../ThinkingIndicator', () => ({
   ThinkingIndicator: (props: unknown) => mockThinkingIndicator(props),
@@ -205,7 +210,7 @@ describe('ChatContainer intent_mode loading lock', () => {
 
   it('locks input when current thread receives intent_mode', () => {
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     expect(capturedSocketCallbacks?.onIntentMode).toBeTruthy();
@@ -225,7 +230,7 @@ describe('ChatContainer intent_mode loading lock', () => {
 
   it('sets hasActiveInvocation when current thread receives intent_mode', () => {
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     act(() => {
@@ -248,7 +253,7 @@ describe('ChatContainer intent_mode loading lock', () => {
     storeState.targetCats = [];
 
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     expect(mockThinkingIndicator).toHaveBeenCalledTimes(1);
@@ -262,7 +267,7 @@ describe('ChatContainer intent_mode loading lock', () => {
     storeState.catStatuses = { codex: 'spawning' };
 
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     expect(mockThinkingIndicator).toHaveBeenCalledTimes(1);
@@ -287,7 +292,7 @@ describe('ChatContainer intent_mode loading lock', () => {
     storeState.catStatuses = { codex: 'spawning' };
 
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     const pending = container.querySelector('[data-testid="pending-member-bubble"]');
@@ -326,7 +331,7 @@ describe('ChatContainer intent_mode loading lock', () => {
     };
 
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     expect(container.querySelector('[data-testid="pending-member-bubble"]')).not.toBeNull();
@@ -365,7 +370,7 @@ describe('ChatContainer intent_mode loading lock', () => {
     };
 
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     expect(container.querySelector('[data-testid="pending-member-bubble"]')).not.toBeNull();
@@ -385,7 +390,7 @@ describe('ChatContainer intent_mode loading lock', () => {
     ];
 
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     expect(container.querySelector('[data-testid="pending-member-bubble"]')).toBeNull();
@@ -426,7 +431,7 @@ describe('ChatContainer intent_mode loading lock', () => {
     };
 
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     expect(container.querySelector('[data-testid="pending-member-bubble"]')).toBeNull();
@@ -467,7 +472,7 @@ describe('ChatContainer intent_mode loading lock', () => {
     };
 
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     const pending = container.querySelector('[data-testid="pending-member-bubble"]');
@@ -501,7 +506,7 @@ describe('ChatContainer intent_mode loading lock', () => {
     storeState.targetCats = ['codex'];
 
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     expect(container.querySelector('[data-testid="pending-member-bubble"]')).toBeNull();
@@ -534,7 +539,7 @@ describe('ChatContainer intent_mode loading lock', () => {
     };
 
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     expect(container.querySelector('[data-testid="pending-member-bubble"]')).toBeNull();
@@ -559,7 +564,7 @@ describe('ChatContainer intent_mode loading lock', () => {
     storeState.targetCats = ['codex'];
 
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     const pending = container.querySelector('[data-testid="pending-member-bubble"]');
@@ -610,7 +615,7 @@ describe('ChatContainer intent_mode loading lock', () => {
     storeState.targetCats = ['codex', 'opus'];
 
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     expect(container.querySelectorAll('[data-testid="pending-member-bubble"]')).toHaveLength(2);
@@ -622,7 +627,7 @@ describe('ChatContainer intent_mode loading lock', () => {
   // (since useSocket guarantees correctness).
   it('processes intent_mode unconditionally (guard is in useSocket, not here)', () => {
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-main' }));
+      root.render(renderChatContainer('thread-main'));
     });
 
     act(() => {
@@ -642,11 +647,11 @@ describe('ChatContainer intent_mode loading lock', () => {
 
   it('does not drop onMessage during thread switch suppression window', () => {
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-1' }));
+      root.render(renderChatContainer('thread-1'));
     });
 
     act(() => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-2' }));
+      root.render(renderChatContainer('thread-2'));
     });
 
     expect(capturedSocketCallbacks?.onMessage).toBeTruthy();

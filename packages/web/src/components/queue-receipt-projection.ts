@@ -94,7 +94,7 @@ export function queueEntryNeedsRecovery(
   const targetStates = queueTargetStateEntries(entry);
   if (targetStates.length > 0) {
     return targetStates.some(([catId, state]) => {
-      if (state === 'handled' || state === 'withdrawn') return false;
+      if (state === 'handled' || state === 'withdrawn' || state === 'failed') return false;
       if (state === 'seen' || state === 'awakened') {
         return !isExactSeenTargetLive(entry, catId, activeInvocationIds);
       }
@@ -109,6 +109,7 @@ export function receiptTargetStateLabel(
   target: QueueReceiptTarget,
   activeInvocationIds: ReadonlySet<string>,
   scope?: QueueMessageReceipt['scope'],
+  hasLoadedLineage = false,
 ): string {
   if (target.outcome?.consumption?.kind === 'terminal_silent') {
     return '已消费 · terminal 静默结束';
@@ -133,9 +134,14 @@ export function receiptTargetStateLabel(
     return target.invocationId ? '已唤醒 · 未收口，已回队列' : '未能唤醒 · 已回队列';
   }
   if (target.state === 'steering') return 'Steer 中';
-  if (target.state === 'withdrawn') return '已撤出待处理 · 历史保留';
+  if (target.state === 'withdrawn') {
+    return target.retryable === false ? '通知未送达 · 关联事项已结束' : '已撤出待处理 · 历史保留';
+  }
   if (target.outcome?.disposition === 'responded') return '已由回复明确处理';
   if (target.outcome?.disposition === 'completed_with_turn') {
+    if (target.outcome.evidenceRef.kind === 'turn_execution' && !hasLoadedLineage) {
+      return '本轮已结束，无可见回复';
+    }
     return completedWithTurnReceiptLabel(scope);
   }
   return '已处理 · 无可回溯证据';

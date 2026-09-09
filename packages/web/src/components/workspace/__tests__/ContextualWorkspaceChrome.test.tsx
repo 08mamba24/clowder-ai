@@ -31,7 +31,11 @@ describe('F284 ContextualWorkspaceChrome', () => {
   it('keeps one quiet shell header without duplicating the global Workspace fold control', async () => {
     await act(async () => {
       root.render(
-        <ContextualWorkspaceChrome mode="workspace" onFold={() => {}}>
+        <ContextualWorkspaceChrome
+          mode="workspace"
+          onFold={() => {}}
+          actions={<button data-testid="workspace-header-action">+</button>}
+        >
           <div data-testid="canonical-surface">canonical</div>
         </ContextualWorkspaceChrome>,
       );
@@ -42,6 +46,9 @@ describe('F284 ContextualWorkspaceChrome', () => {
       expect(container.querySelector(`[data-testid="workspace-host-${mode}"]`)).toBeNull();
     }
     expect(container.querySelectorAll('[data-workspace-chrome-layer]')).toHaveLength(1);
+    expect(
+      container.querySelector('[data-workspace-chrome-layer] [data-testid="workspace-header-action"]'),
+    ).not.toBeNull();
     expect(container.querySelector('[data-testid="workspace-shell-fold"]')).toBeNull();
     expect(container.textContent).not.toContain('工作动态伴随');
   });
@@ -62,6 +69,22 @@ describe('F284 ContextualWorkspaceChrome', () => {
     });
     expect(onFold).toHaveBeenCalledOnce();
     expect(container.textContent).toContain('状态与会话');
+  });
+
+  it('offers an explicit fold control for a fullscreen mobile Workspace host', async () => {
+    const onFold = vi.fn();
+    await act(async () => {
+      root.render(
+        <ContextualWorkspaceChrome mode="workspace" onFold={onFold} showFold>
+          content
+        </ContextualWorkspaceChrome>,
+      );
+    });
+
+    const fold = container.querySelector<HTMLButtonElement>('[data-testid="workspace-shell-fold"]');
+    expect(fold?.getAttribute('aria-label')).toBe('收起 Workspace');
+    await act(async () => fold?.click());
+    expect(onFold).toHaveBeenCalledOnce();
   });
 
   it('returns a nested status or meeting surface to the Workspace Launcher', async () => {

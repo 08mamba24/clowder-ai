@@ -1,37 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { lstat, readFile } from 'node:fs/promises';
-import { createConnection } from 'node:net';
 import { isAbsolute, resolve } from 'node:path';
 
 import type { HostAppendMessageReceipt, IConversationHostAdapter } from '../conversation-host-adapter.js';
+import type { PersonalChromeAssistantReturnCursor } from './assistant-return-cursor.js';
 import {
-  PERSONAL_CHROME_MAX_LOCAL_FRAME_BYTES,
-  PERSONAL_CHROME_PROTOCOL_VERSION,
-  type PersonalChromeAppendRequest,
-  type PersonalChromeAppendResult,
-  type PersonalChromeLocalEnvelope,
-  parsePersonalChromeAppendRequest,
-  parsePersonalChromeAppendResult,
-} from './protocol.js';
+  type IPersonalChromeAssistantReturnAdapter,
+  PersonalChromeHostAdapter,
+  type PersonalChromeHostAdapterOptions,
+  PersonalChromeHostError,
+} from './personal-chrome-host-transport.js';
 
-const DEFAULT_TIMEOUT_MS = 15_000;
-
-export class PersonalChromeHostError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'PersonalChromeHostError';
-  }
-}
-
-export interface PersonalChromeHostAdapterOptions {
-  readonly socketPath: string;
-  readonly pairingSecret: string;
-  readonly timeoutMs?: number;
-  readonly requestId?: () => string;
-}
+export type { PersonalChromeHostAdapterOptions } from './personal-chrome-host-transport.js';
+export { PersonalChromeHostAdapter, PersonalChromeHostError } from './personal-chrome-host-transport.js';
 
 interface PersonalChromeRuntimeLogger {
   info(context: object, message: string): void;
@@ -132,25 +113,34 @@ async function readPersistedAdapterOptions(pairingRecordPath: string): Promise<P
     );
   }
   const record = parsePersistedPairingRecord(parsed);
-  return { socketPath: record.socketPath, pairingSecret: record.pairingSecret };
+  return {
+    socketPath: record.socketPath,
+    pairingSecret: record.pairingSecret,
+    helperArtifactRevision: record.artifactDigest,
+  };
 }
 
 export function createPersonalChromeHostAdapterFromEnv(
   env: Readonly<Record<string, string | undefined>>,
   logger: PersonalChromeRuntimeLogger,
-): IConversationHostAdapter | null {
+): (IConversationHostAdapter & IPersonalChromeAssistantReturnAdapter) | null {
   const socketPath = env.CAT_CAFE_PERSONAL_CHROME_SOCKET;
   const pairingSecret = env.CAT_CAFE_PERSONAL_CHROME_PAIRING_SECRET;
-  if (!socketPath && !pairingSecret) return null;
-  if (!socketPath || !pairingSecret) {
+  const helperArtifactRevision = env.CAT_CAFE_PERSONAL_CHROME_HELPER_ARTIFACT_REVISION;
+  if (!socketPath && !pairingSecret && !helperArtifactRevision) return null;
+  if (!socketPath || !pairingSecret || !helperArtifactRevision) {
     logger.warn(
-      { hasSocketPath: Boolean(socketPath), hasPairingSecret: Boolean(pairingSecret) },
+      {
+        hasSocketPath: Boolean(socketPath),
+        hasPairingSecret: Boolean(pairingSecret),
+        hasHelperArtifactRevision: Boolean(helperArtifactRevision),
+      },
       'F247 personal Chrome Host Adapter configuration incomplete; background append disabled',
     );
     return null;
   }
   try {
-    const adapter = new PersonalChromeHostAdapter({ socketPath, pairingSecret });
+    const adapter = new PersonalChromeHostAdapter({ socketPath, pairingSecret, helperArtifactRevision });
     logger.info({ socketPath }, 'F247 personal Chrome Host Adapter configured for background append');
     return adapter;
   } catch (error) {
@@ -162,7 +152,9 @@ export function createPersonalChromeHostAdapterFromEnv(
   }
 }
 
-export class RefreshablePersonalChromeHostAdapter implements IConversationHostAdapter {
+export class RefreshablePersonalChromeHostAdapter
+  implements IConversationHostAdapter, IPersonalChromeAssistantReturnAdapter
+{
   private readonly requestId: () => string;
 
   constructor(private readonly options: RefreshablePersonalChromeHostAdapterOptions) {
@@ -175,14 +167,15 @@ export class RefreshablePersonalChromeHostAdapter implements IConversationHostAd
   private async resolveSnapshot(): Promise<PersonalChromeHostAdapterOptions> {
     const socketPath = this.options.env.CAT_CAFE_PERSONAL_CHROME_SOCKET;
     const pairingSecret = this.options.env.CAT_CAFE_PERSONAL_CHROME_PAIRING_SECRET;
-    if (socketPath || pairingSecret) {
-      if (!socketPath || !pairingSecret) {
+    const helperArtifactRevision = this.options.env.CAT_CAFE_PERSONAL_CHROME_HELPER_ARTIFACT_REVISION;
+    if (socketPath || pairingSecret || helperArtifactRevision) {
+      if (!socketPath || !pairingSecret || !helperArtifactRevision) {
         throw new PersonalChromeHostError(
           'INVALID_CONFIGURATION',
-          'personal Chrome operator override must provide socket and pairing secret together',
+          'personal Chrome operator override must provide socket, pairing secret, and helper revision together',
         );
       }
-      return { socketPath, pairingSecret };
+      return { socketPath, pairingSecret, helperArtifactRevision };
     }
     try {
       return await readPersistedAdapterOptions(this.options.pairingRecordPath);
@@ -198,18 +191,33 @@ export class RefreshablePersonalChromeHostAdapter implements IConversationHostAd
     }
   }
 
+  private async resolveAdapter(): Promise<PersonalChromeHostAdapter> {
+    return new PersonalChromeHostAdapter({
+      ...(await this.resolveSnapshot()),
+      timeoutMs: this.options.timeoutMs,
+      requestId: this.requestId,
+    });
+  }
+
   async append_message(
     conversationId: string,
     text: string,
     idempotencyKey: string,
   ): Promise<HostAppendMessageReceipt> {
-    const snapshot = await this.resolveSnapshot();
-    const adapter = new PersonalChromeHostAdapter({
-      ...snapshot,
-      timeoutMs: this.options.timeoutMs,
-      requestId: this.requestId,
-    });
+    const adapter = await this.resolveAdapter();
     return adapter.append_message(conversationId, text, idempotencyKey);
+  }
+
+  async list_assistant_returns(after?: PersonalChromeAssistantReturnCursor) {
+    return (await this.resolveAdapter()).list_assistant_returns(after);
+  }
+
+  async ack_assistant_return(
+    conversationId: string,
+    sourceMessageId: string,
+    assistantMessageId: string,
+  ): Promise<void> {
+    return (await this.resolveAdapter()).ack_assistant_return(conversationId, sourceMessageId, assistantMessageId);
   }
 }
 
@@ -217,7 +225,7 @@ export function createRefreshablePersonalChromeHostAdapter(args: {
   readonly projectRoot: string;
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly logger: PersonalChromeRuntimeLogger;
-}): IConversationHostAdapter {
+}): IConversationHostAdapter & IPersonalChromeAssistantReturnAdapter {
   const pairingRecordPath = resolvePersonalChromePairingRecordPath(args.projectRoot);
   args.logger.info(
     { pairingRecordPath, hasOperatorOverride: Boolean(args.env.CAT_CAFE_PERSONAL_CHROME_SOCKET) },
@@ -228,115 +236,4 @@ export function createRefreshablePersonalChromeHostAdapter(args: {
     env: args.env,
     logger: args.logger,
   });
-}
-
-function validateOptions(options: PersonalChromeHostAdapterOptions): void {
-  if (!options.socketPath || options.socketPath.trim() !== options.socketPath) {
-    throw new PersonalChromeHostError('INVALID_CONFIGURATION', 'socketPath must be a non-empty exact path');
-  }
-  if (options.pairingSecret.length < 32 || options.pairingSecret.length > 512) {
-    throw new PersonalChromeHostError('INVALID_CONFIGURATION', 'pairingSecret must contain 32-512 characters');
-  }
-  if (options.timeoutMs !== undefined && (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 10)) {
-    throw new PersonalChromeHostError('INVALID_CONFIGURATION', 'timeoutMs must be an integer of at least 10');
-  }
-}
-
-function exchangeLocalFrame(
-  options: PersonalChromeHostAdapterOptions,
-  envelope: PersonalChromeLocalEnvelope,
-): Promise<PersonalChromeAppendResult> {
-  const serialized = `${JSON.stringify(envelope)}\n`;
-  if (Buffer.byteLength(serialized, 'utf8') > PERSONAL_CHROME_MAX_LOCAL_FRAME_BYTES) {
-    return Promise.reject(new PersonalChromeHostError('REQUEST_TOO_LARGE', 'local append frame exceeds limit'));
-  }
-
-  return new Promise((resolve, reject) => {
-    const socket = createConnection(options.socketPath);
-    let settled = false;
-    let input = '';
-    const finish = (callback: () => void): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket.destroy();
-      callback();
-    };
-    const timer = setTimeout(() => {
-      finish(() => reject(new PersonalChromeHostError('HOST_TIMEOUT', 'personal Chrome host timed out')));
-    }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    timer.unref?.();
-
-    socket.setEncoding('utf8');
-    socket.once('connect', () => socket.write(serialized));
-    socket.once('error', (error) => {
-      finish(() =>
-        reject(new PersonalChromeHostError('HOST_UNAVAILABLE', `personal Chrome host unavailable: ${error.message}`)),
-      );
-    });
-    socket.on('data', (chunk) => {
-      input += chunk;
-      if (Buffer.byteLength(input, 'utf8') > PERSONAL_CHROME_MAX_LOCAL_FRAME_BYTES) {
-        finish(() => reject(new PersonalChromeHostError('INVALID_HOST_RECEIPT', 'host receipt exceeds limit')));
-        return;
-      }
-      const newline = input.indexOf('\n');
-      if (newline === -1) return;
-      try {
-        const result = parsePersonalChromeAppendResult(JSON.parse(input.slice(0, newline)));
-        finish(() => resolve(result));
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        finish(() => reject(new PersonalChromeHostError('INVALID_HOST_RECEIPT', detail)));
-      }
-    });
-    socket.once('end', () => {
-      if (!settled) {
-        finish(() => reject(new PersonalChromeHostError('INVALID_HOST_RECEIPT', 'host closed without a receipt')));
-      }
-    });
-  });
-}
-
-export class PersonalChromeHostAdapter implements IConversationHostAdapter {
-  private readonly requestId: () => string;
-
-  constructor(private readonly options: PersonalChromeHostAdapterOptions) {
-    validateOptions(options);
-    this.requestId = options.requestId ?? randomUUID;
-  }
-
-  async append_message(
-    conversationId: string,
-    text: string,
-    idempotencyKey: string,
-  ): Promise<HostAppendMessageReceipt> {
-    let request: PersonalChromeAppendRequest;
-    try {
-      request = parsePersonalChromeAppendRequest({
-        v: PERSONAL_CHROME_PROTOCOL_VERSION,
-        kind: 'append_message',
-        requestId: this.requestId(),
-        conversationId,
-        text,
-        idempotencyKey,
-      });
-    } catch (error) {
-      throw new PersonalChromeHostError('INVALID_REQUEST', error instanceof Error ? error.message : String(error));
-    }
-    const result = await exchangeLocalFrame(this.options, {
-      pairingSecret: this.options.pairingSecret,
-      request,
-    });
-    if (result.requestId !== request.requestId || result.idempotencyKey !== request.idempotencyKey) {
-      throw new PersonalChromeHostError('INVALID_HOST_RECEIPT', 'host receipt does not match the append request');
-    }
-    if (result.status === 'failed') {
-      throw new PersonalChromeHostError(result.errorCode, `personal Chrome host failed: ${result.errorCode}`);
-    }
-    if (!result.hostMessageId.trim()) {
-      throw new PersonalChromeHostError('INVALID_HOST_RECEIPT', 'hostMessageId must be non-empty');
-    }
-    return { hostMessageId: result.hostMessageId };
-  }
 }

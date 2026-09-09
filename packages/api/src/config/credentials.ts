@@ -3,19 +3,24 @@
  *
  * Pure read/write layer for {projectRoot}/.cat-cafe/credentials.json.
  * Override: CAT_CAFE_GLOBAL_CONFIG_ROOT env → uses that root instead.
+ * Topology: resolveAccountWriteRoot (workspace/runtime adjudication).
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { CredentialEntry } from '@cat-cafe/shared';
-import { resolveAccountStoreRoot } from './account-store-root.js';
+import { resolveAccountWriteRoot } from './account-store-topology.js';
 import { refStore } from './ref-store.js';
 import { assertSafeTestConfigRead, assertSafeTestConfigRoot } from './test-config-write-guard.js';
 
 const CONFIG_SUBDIR = '.cat-cafe';
 const CREDENTIALS_FILENAME = 'credentials.json';
 
+function resolveGlobalRoot(projectRoot?: string): string {
+  return resolveAccountWriteRoot(projectRoot);
+}
+
 export function resolveCredentialsPath(projectRoot?: string): string {
-  return resolve(resolveAccountStoreRoot({ projectRoot }), CONFIG_SUBDIR, CREDENTIALS_FILENAME);
+  return resolve(resolveGlobalRoot(projectRoot), CONFIG_SUBDIR, CREDENTIALS_FILENAME);
 }
 
 function writeFileAtomic(filePath: string, content: string): void {
@@ -37,7 +42,7 @@ function readAll(projectRoot?: string): Record<string, CredentialEntry> {
   // P1-8: a credential a test can READ is already leaked, whether or not the
   // process goes on to write anything. Guarded before existsSync so the boundary
   // does not depend on the operator's store happening to exist.
-  assertSafeTestConfigRead(resolveAccountStoreRoot({ projectRoot }), 'credentials.readAll');
+  assertSafeTestConfigRead(resolveGlobalRoot(projectRoot), 'credentials.readAll');
   const credPath = resolveCredentialsPath(projectRoot);
   if (!existsSync(credPath)) return refStore<CredentialEntry>();
   try {
@@ -51,7 +56,7 @@ function readAll(projectRoot?: string): Record<string, CredentialEntry> {
 }
 
 export function assertCredentialsReadable(projectRoot?: string): void {
-  assertSafeTestConfigRead(resolveAccountStoreRoot({ projectRoot }), 'credentials.assertCredentialsReadable');
+  assertSafeTestConfigRead(resolveGlobalRoot(projectRoot), 'credentials.assertCredentialsReadable');
   const credPath = resolveCredentialsPath(projectRoot);
   if (!existsSync(credPath)) return;
 
@@ -64,7 +69,7 @@ export function assertCredentialsReadable(projectRoot?: string): void {
 
 function writeAll(creds: Record<string, CredentialEntry>, projectRoot?: string): void {
   const credPath = resolveCredentialsPath(projectRoot);
-  mkdirSync(resolve(resolveAccountStoreRoot({ projectRoot }), CONFIG_SUBDIR), { recursive: true });
+  mkdirSync(resolve(resolveGlobalRoot(projectRoot), CONFIG_SUBDIR), { recursive: true });
   writeFileAtomic(credPath, `${JSON.stringify(creds, null, 2)}\n`);
   chmodSync(credPath, 0o600);
 }
@@ -74,24 +79,26 @@ export function readCredentials(projectRoot?: string): Record<string, Credential
 }
 
 export function readCredential(ref: string, projectRoot?: string): CredentialEntry | undefined {
-  return readAll(projectRoot)[ref];
+  const creds = readAll(projectRoot);
+  return Object.hasOwn(creds, ref) ? creds[ref] : undefined;
 }
 
 export function writeCredential(ref: string, entry: CredentialEntry, projectRoot?: string): void {
-  assertSafeTestConfigRoot(resolveAccountStoreRoot({ projectRoot }), 'credentials.writeCredential');
+  assertSafeTestConfigRoot(resolveGlobalRoot(projectRoot), 'credentials.writeCredential');
   const creds = readAll(projectRoot);
+  // Null-prototype store: plain assignment is safe even for ref === '__proto__'.
   creds[ref] = entry;
   writeAll(creds, projectRoot);
 }
 
 export function deleteCredential(ref: string, projectRoot?: string): void {
-  assertSafeTestConfigRoot(resolveAccountStoreRoot({ projectRoot }), 'credentials.deleteCredential');
+  assertSafeTestConfigRoot(resolveGlobalRoot(projectRoot), 'credentials.deleteCredential');
   const creds = readAll(projectRoot);
-  if (!(ref in creds)) return;
+  if (!Object.hasOwn(creds, ref)) return;
   delete creds[ref];
   writeAll(creds, projectRoot);
 }
 
 export function hasCredential(ref: string, projectRoot?: string): boolean {
-  return ref in readAll(projectRoot);
+  return Object.hasOwn(readAll(projectRoot), ref);
 }

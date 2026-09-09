@@ -28,6 +28,8 @@
       "!docs/features/assets",
       "!docs/harness-feedback/bundles",
       "!docs/videos",
+      "!site/tailwind.css",
+      "!docs/architecture/memory/memory-architecture-closure.generated.json",
       "!packages/mcp-server/governance/mcp-surface-baseline.json"
     ]
   },

@@ -19,6 +19,7 @@ import {
   continuityEvidenceFromVerdict,
 } from '../dist/domains/cats/services/agents/providers/CodexAppServerClient.js';
 import {
+  CodexAppServerCarrierReplacementRequiredError,
   isThreadNotResumableRejection,
   resolveCodexAppServerThread,
 } from '../dist/domains/cats/services/agents/providers/CodexAppServerThreadResolver.js';
@@ -323,6 +324,81 @@ test('a JSON-RPC rejection is answered with a fallback start', async () => {
   assert.equal(verdict.threadId, 'thread-b');
 });
 
+test('an exact oversized native rollout rejection carries typed provenance onto a fresh start', async () => {
+  const requests = [];
+  const replacement = {
+    cause: 'native_resume_rejected',
+    previousNativeThreadId: 'thread-oversized',
+    detectedAt: 1_787_642_000_000,
+    rejection: 'max_payload_size_exceeded',
+  };
+  await assert.rejects(
+    resolveCodexAppServerThread({
+      thread: { kind: 'resume', threadId: 'thread-oversized' },
+      params: { threadId: 'thread-oversized' },
+      startParams: {},
+      localLiveLease: false,
+      now: () => 1_787_642_000_000,
+      request: async (method) => {
+        requests.push(method);
+        throw new Error('Max payload size exceeded');
+      },
+    }),
+    (error) => {
+      assert.ok(error instanceof CodexAppServerCarrierReplacementRequiredError);
+      assert.deepEqual(error.replacement, replacement);
+      return true;
+    },
+  );
+  assert.deepEqual(requests, ['thread/resume'], 'the dead carrier must receive no fallback thread/start');
+
+  const verdict = await resolveCodexAppServerThread({
+    thread: { kind: 'start' },
+    params: {},
+    resumeReplacement: replacement,
+    localLiveLease: false,
+    now: () => 1_787_642_000_001,
+    request: async (method) => {
+      requests.push(method);
+      return { thread: { id: 'thread-cold-replacement' } };
+    },
+  });
+
+  assert.deepEqual(requests, ['thread/resume', 'thread/start']);
+  assert.deepEqual(verdict, {
+    kind: 'replaced',
+    requestedThreadId: 'thread-oversized',
+    threadId: 'thread-cold-replacement',
+    replacement,
+    raw: { thread: { id: 'thread-cold-replacement' } },
+  });
+});
+
+test('max-payload lookalikes remain loud failures instead of silently replacing continuity', async () => {
+  for (const message of [
+    'Max payload size exceeded while writing prompt',
+    'max payload size exceeded',
+    'Max payload size exceeded.',
+    'Invalid request: Max payload size exceeded',
+  ]) {
+    const requests = [];
+    await assert.rejects(
+      resolveCodexAppServerThread({
+        thread: { kind: 'resume', threadId: 'thread-a' },
+        params: { threadId: 'thread-a' },
+        localLiveLease: false,
+        now: () => 0,
+        request: async (method) => {
+          requests.push(method);
+          throw new Error(message);
+        },
+      }),
+      { message },
+    );
+    assert.deepEqual(requests, ['thread/resume']);
+  }
+});
+
 test('binding equality alone never produces resumed', () => {
   // The pre-provider handshake knows the id we intend to request. That is not
   // evidence, so it must stay unknown until the adapter speaks.
@@ -522,16 +598,44 @@ test('the checkpoint still normalizes and bounds a late-filled anchor', async ()
 // without ever reaching the provider, and the next invocation would project hot
 // context over a cold rebuild that nobody ever saw. That is the precise failure
 // this feature exists to prevent, reintroduced through the retry path.
-test('a capacity-recovery turn settles nothing, because it sends no prompt', async () => {
+test('a capacity-recovery turn settles no presentation but records its exact application context before launch', async () => {
   const wire = new PreflightWire({ knownThreadIds: ['thread-known'] });
   const client = new CodexAppServerClient({ wire });
   const record = { calls: [] };
+  const recordedRequests = [];
 
   await drain(
     client.run({
       prompt: preflightPrompt('BYTES-THAT-WOULD-BE-DISCARDED', record),
       thread: { kind: 'resume', threadId: 'thread-known' },
       recoveryInstruction: 'resend the last turn under a smaller window',
+      prepareRecoveryRequest: (instruction) => ({
+        v: 1,
+        boundaryReason: 'provider_fallback',
+        message: { body: '', sourceRefs: [] },
+        nativeInstructions: [
+          {
+            body: instruction,
+            injectionDecision: 'app_server_capacity_recovery_context',
+            sourceRefs: [{ owner: 'runtime_context', ref: 'capacity-recovery:inv-1' }],
+          },
+        ],
+        runtime: { provider: 'openai', carrier: 'app_server' },
+        tools: { finalSurface: 'unknown' },
+        providerNativeVisibility: 'unknown',
+      }),
+      beforeProviderLaunch: async (request) => {
+        assert.equal(
+          wire.writes.some((message) => message.method === 'turn/start'),
+          false,
+        );
+        recordedRequests.push(request);
+        return {
+          requestGenerationId: '00000000-0000-4000-8000-000000000001',
+          generationOrdinal: 2,
+          sessionId: 'session-1',
+        };
+      },
     }),
   );
 
@@ -544,6 +648,8 @@ test('a capacity-recovery turn settles nothing, because it sends no prompt', asy
     'settle must not run for a turn whose bytes are discarded — settling reserves a generation ' +
       'and consumes buffered compactions, so running it here marks work delivered that never left the process',
   );
+  assert.equal(recordedRequests.length, 1);
+  assert.equal(recordedRequests[0].nativeInstructions[0].body, 'resend the last turn under a smaller window');
 });
 
 test('a whitespace-only recovery instruction is a normal turn, consistently on both sides', async () => {

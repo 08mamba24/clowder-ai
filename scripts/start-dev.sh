@@ -51,6 +51,7 @@ print_start_dev_usage() {
         'Usage:' \
         '  ./scripts/start-dev.sh [--quick] [--memory|--no-redis] [--prod-web] [--debug]' \
         '                         [--profile=dev|production|opensource] [--daemon|-d]' \
+        '                         [--allow-account-regression] (accept new account unavailability)' \
         '                         [--] [--npm-registry=URL] [--pip-index-url=URL] [--hf-endpoint=URL]' \
         '  ./scripts/start-dev.sh --stop|stop' \
         '  ./scripts/start-dev.sh --status|status' \
@@ -91,6 +92,7 @@ PROD_WEB=false
 DEBUG_MODE=false
 PROFILE=""
 DAEMON_MODE=false
+ALLOW_ACCOUNT_REGRESSION=false
 for arg in "$@"; do
     case $arg in
         --quick|-q) QUICK_MODE=true ;;
@@ -99,6 +101,7 @@ for arg in "$@"; do
         --debug) DEBUG_MODE=true ;;
         --profile=*) PROFILE="${arg#*=}" ;;
         --daemon|-d) DAEMON_MODE=true ;;
+        --allow-account-regression) ALLOW_ACCOUNT_REGRESSION=true ;;
         --cat-cafe-daemon-token=*) ;;
         *)
             parse_manual_download_source_arg "$arg" || true
@@ -573,8 +576,10 @@ REDIS_PIDFILE="${REDIS_DATA_DIR}/redis-${REDIS_PORT}.pid"
 REDIS_LOGFILE="${REDIS_DATA_DIR}/redis-${REDIS_PORT}.log"
 STARTED_REDIS=false
 F247_CLOUD_OWNER_FILE=""
+REDIS_DEV_LEASE_FILE=""
 CLEANUP_RUNNING=false
 MANAGED_PIDS=()
+REDIS_LEASE_HELPER="$PROJECT_DIR/packages/api/scripts/redis-test-lease-cli.mjs"
 # The API shutdown path closes Fastify hooks, including active audio capture
 # finalization. One second was too short once Redis/telemetry cleanup preceded
 # app.close(), so managed children get a bounded graceful window before KILL.
@@ -649,6 +654,35 @@ redis_ping() {
     else
         redis-cli -p "$REDIS_PORT" ping &> /dev/null
     fi
+}
+
+register_redis_dev_lease() {
+    [ "$USE_REDIS" = true ] || return 0
+    case "$DAEMON_DEPLOYMENT_ID" in
+        runtime|alpha) return 0 ;;
+    esac
+    case "$REDIS_PORT" in
+        6099|6398|6399|6401) return 0 ;;
+    esac
+
+    local redis_pid
+    redis_pid="$(redis-cli -p "$REDIS_PORT" INFO server 2>/dev/null | tr -d '\r' | awk -F: '$1 == "process_id" { print $2; exit }')"
+    if [[ ! "$redis_pid" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}  ✗ 无法确认 Redis (端口 $REDIS_PORT) 的进程身份，拒绝留下无 owner 的 dev 实例${NC}" >&2
+        return 1
+    fi
+    if ! REDIS_DEV_LEASE_FILE="$(node "$REDIS_LEASE_HELPER" register-dev --port "$REDIS_PORT" --redis-pid "$redis_pid" --data-dir "$REDIS_DATA_DIR" --owner-pid "$$" --project-root "$PROJECT_DIR")"; then
+        REDIS_DEV_LEASE_FILE=""
+        echo -e "${RED}  ✗ 无法登记 Redis dev owner lease，拒绝继续启动${NC}" >&2
+        return 1
+    fi
+    echo "  ✓ Redis dev owner 已登记 (端口 $REDIS_PORT, pid $redis_pid)"
+}
+
+remove_redis_dev_lease() {
+    [ -n "$REDIS_DEV_LEASE_FILE" ] || return 0
+    node "$REDIS_LEASE_HELPER" remove-dev --lease-file "$REDIS_DEV_LEASE_FILE" 2>/dev/null || true
+    REDIS_DEV_LEASE_FILE=""
 }
 
 probe_port_with_dev_tcp() {
@@ -1394,6 +1428,7 @@ cleanup() {
         redis-cli -p "$REDIS_PORT" shutdown save &> /dev/null || true
         echo "  Redis (端口 $REDIS_PORT) 已关闭"
     fi
+    remove_redis_dev_lease
     wait 2>/dev/null || true
     # Only remove PID file if we are the daemon that wrote it (avoid orphaning a parallel daemon)
     if [ -f "$DAEMON_PID_FILE" ] && [ "$(cat "$DAEMON_PID_FILE" 2>/dev/null)" = "$$" ]; then
@@ -1482,10 +1517,44 @@ ensure_api_native_addons() {
     echo -e "${GREEN}  ✓ better-sqlite3 native 依赖已匹配当前 Node${NC}"
 }
 
+check_runtime_account_bindings() {
+    [ "${CAT_CAFE_DEPLOYMENT_ID:-}" = "runtime" ] || return 0
+    local checker="$PROJECT_DIR/packages/api/dist/scripts/runtime-account-preflight/cli.js"
+    local head package status=0
+    head=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || true)
+    for package in shared api; do
+        if [ -z "$head" ] || [ ! -f "$PROJECT_DIR/packages/$package/dist/index.js" ] || \
+           [ "$(cat "$PROJECT_DIR/packages/$package/dist/.build-commit" 2>/dev/null)" != "$head" ]; then
+            echo "[accounts] Preflight unknown: candidate $package build invariant missing/stale. Continuing without a replacement availability claim; use the runtime wrapper to rebuild." >&2
+            return 0
+        fi
+    done
+    if [ ! -f "$checker" ]; then
+        echo "[accounts] Preflight unknown: candidate account preflight is missing. Continuing without an availability claim." >&2
+        return 0
+    fi
+    # The wrapper built the candidate; dotenv/root ownership have resolved.
+    # The checker compares the live API with that candidate, not with an empty
+    # baseline: existing rejected accounts must not make runtime unrestartable.
+    local args=(--api-port "$API_PORT")
+    [ "$ALLOW_ACCOUNT_REGRESSION" != true ] || args+=(--allow-account-regression)
+    node "$checker" "${args[@]}" || status=$?
+    if [ "$status" -eq 2 ]; then
+        # No services are owned yet; leave the existing runtime untouched.
+        trap - EXIT INT TERM
+        return 2
+    fi
+    if [ "$status" -ne 0 ]; then
+        echo "[accounts] Preflight unknown: checker failed; continuing partial startup without an availability claim." >&2
+    fi
+    return 0
+}
+
 # 主函数
 main() {
     guard_main_branch_start
     guard_runtime_redis_sanctuary
+    check_runtime_account_bindings || return $?
 
     # 1. 杀掉残余进程
     echo ""
@@ -1518,6 +1587,7 @@ main() {
     echo ""
     echo -e "${CYAN}检查依赖...${NC}"
     setup_storage
+    register_redis_dev_lease
     configure_mcp_server_path
     echo "  数据保留 (秒): message=${MESSAGE_TTL_SECONDS} thread=${THREAD_TTL_SECONDS} task=${TASK_TTL_SECONDS} summary=${SUMMARY_TTL_SECONDS}"
     echo "  注: 0 表示永久保留（不自动过期）"
@@ -1657,6 +1727,9 @@ if [[ "${1:-}" == "--status" ]] || [[ "${1:-}" == "status" ]]; then
 fi
 
 if [ "$DAEMON_MODE" = true ]; then
+    # Report a known regression to the caller before preparing a daemon or
+    # claiming that it started. The child rechecks immediately before cleanup.
+    check_runtime_account_bindings || exit $?
     maybe_migrate_legacy_daemon_state
     daemon_state prepare
 

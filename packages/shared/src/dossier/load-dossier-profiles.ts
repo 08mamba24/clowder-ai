@@ -10,63 +10,65 @@
  *
  * Both must switch simultaneously (KD-12).
  *
- * Cache lifetime: process-scoped (no invalidation). Acceptable for Phase B because:
- * - compile-l0 is short-lived (script exits after compilation)
- * - API server restarts on deployment (new code → new process → fresh cache)
- * Phase C may add file-watcher or TTL invalidation if operator-driven hot-reload is needed.
+ * Parsed profiles are reused while the dossier content is unchanged. The file is
+ * reread on every access so an applied F208 revision becomes visible to routing
+ * on its next resolution without requiring a process restart.
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { DossierProfile } from './parse-dossier-profiles.js';
-import { parseDossierProfiles } from './parse-dossier-profiles.js';
+import type { DossierProfile, DossierProfileDiagnostic } from './parse-dossier-profiles.js';
+import { parseDossierProfilesWithDiagnostics } from './parse-dossier-profiles.js';
 
 const DOSSIER_RELATIVE_PATH = 'docs/team/cat-dossier.md';
 
-let _cachedProfiles: Map<string, DossierProfile> | null = null;
-let _cachedProjectRoot: string | null = null;
-/** Whether the dossier file was found and loaded (vs ENOENT / community scenario). */
-let _dossierFileFound = false;
+export type DossierSnapshot =
+  | { state: 'absent'; profiles: Map<string, DossierProfile> }
+  | { state: 'unreadable'; profiles: Map<string, DossierProfile>; errorCode: string }
+  | { state: 'loaded'; profiles: Map<string, DossierProfile>; diagnostics: DossierProfileDiagnostic[] };
+
+let cached: { projectRoot: string; content: string; snapshot: DossierSnapshot } | null = null;
 
 /**
  * Load dossier profiles from the project root.
- * Results are cached per projectRoot (reloaded if root changes).
+ * Parsed results are cached per projectRoot and exact source content.
  */
 export function loadDossierProfiles(projectRoot: string): Map<string, DossierProfile> {
-  if (_cachedProfiles && _cachedProjectRoot === projectRoot) {
-    return _cachedProfiles;
-  }
+  return loadDossierSnapshot(projectRoot).profiles;
+}
 
+/** Read bytes and their diagnostics together; absence is only an ENOENT result. */
+export function loadDossierSnapshot(projectRoot: string): DossierSnapshot {
   const dossierPath = resolve(projectRoot, DOSSIER_RELATIVE_PATH);
   try {
     const content = readFileSync(dossierPath, 'utf-8');
-    _cachedProfiles = parseDossierProfiles(content);
-    _dossierFileFound = true;
-  } catch (err: unknown) {
-    const isNotFound = (err as NodeJS.ErrnoException).code === 'ENOENT';
-    _cachedProfiles = new Map();
-    if (isNotFound) {
-      // Community scenario — no dossier file. Silent fallback OK per KD-9.
-      _dossierFileFound = false;
-    } else {
-      // KD-9: dossier exists but unreadable (permissions, corrupt, etc.) — drift signal.
-      // Mark as found so consumer-side warnings still fire for built-in cats.
-      _dossierFileFound = true;
-      console.warn(`[F208 KD-9] Dossier exists but failed to load: ${dossierPath}`);
+    if (cached?.projectRoot === projectRoot && cached.content === content) {
+      return cached.snapshot;
     }
+    const snapshot: DossierSnapshot = { state: 'loaded', ...parseDossierProfilesWithDiagnostics(content) };
+    cached = { projectRoot, content, snapshot };
+    if (snapshot.diagnostics.length > 0) {
+      console.warn(`[F208 KD-9] Dossier block diagnostics: ${JSON.stringify(snapshot.diagnostics)} (${dossierPath})`);
+    }
+    return snapshot;
+  } catch (err: unknown) {
+    cached = null;
+    const errorCode = (err as NodeJS.ErrnoException).code ?? 'unknown';
+    if (errorCode === 'ENOENT') {
+      // Community scenario — no dossier file. Silent fallback OK per KD-9.
+      return { state: 'absent', profiles: new Map() };
+    }
+    console.warn(`[F208 KD-9] Dossier exists but failed to load (${errorCode}): ${dossierPath}`);
+    return { state: 'unreadable', profiles: new Map(), errorCode };
   }
-  _cachedProjectRoot = projectRoot;
-  return _cachedProfiles;
 }
 
 /**
- * Whether the dossier file was found and successfully loaded for the given project root.
+ * Whether dossier absence was ruled out (read failures remain available for KD-9 diagnostics).
  * Used by consumers to distinguish "community has no dossier" (silent fallback OK)
  * from "built-in cat missing from existing dossier" (KD-9: must warn, not silent).
  */
 export function isDossierAvailable(projectRoot: string): boolean {
-  // Ensure cache is populated
-  loadDossierProfiles(projectRoot);
-  return _dossierFileFound;
+  return loadDossierSnapshot(projectRoot).state !== 'absent';
 }
 
 /**
@@ -121,7 +123,5 @@ export function hasDossierEntry(catId: string, projectRoot: string): boolean {
 
 /** Reset the cache (for testing). */
 export function _resetDossierCache(): void {
-  _cachedProfiles = null;
-  _cachedProjectRoot = null;
-  _dossierFileFound = false;
+  cached = null;
 }

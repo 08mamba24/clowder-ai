@@ -1,12 +1,21 @@
 import { resolve } from 'node:path';
+import type { RedisClient } from '@cat-cafe/shared/utils';
+import type { IMessageStore } from '../cats/services/stores/ports/MessageStore.js';
+import { createMessagingDomain, type MessagingService } from '../messaging/messaging-service.js';
 import type { MeetingIntakeStore } from '../signal-intake/MeetingIntakeStore.js';
 import type { SignalRouteStore } from '../signal-intake/SignalRouteStore.js';
+import {
+  CollectiveConnectorBuiltinRuntime,
+  type CollectiveConnectorBuiltinRuntimeOptions,
+} from './builtin-runtime/collective-connector-runtime.js';
+import { HybridPluginRuntimeSupervisor } from './builtin-runtime/hybrid-supervisor.js';
 import { ExternalPluginLifecycleService } from './external-plugin-lifecycle.js';
 import { FilesystemVerifiedPluginPackageLocator } from './external-runtime/filesystem-package-locator.js';
 import { ExternalPluginRuntimeSupervisor } from './external-runtime/supervisor.js';
 import type { ExternalPluginProcessAdapter, VerifiedPluginPackageLocator } from './external-runtime/types.js';
 import { HostBrokerControlPlane } from './host-broker/control-plane.js';
 import { createEventsPublishBrokerHandler } from './host-broker/events-publish-handler.js';
+import { createMessagingBrokerHandlers } from './host-broker/messaging-handler.js';
 import { FileHostBrokerStore } from './host-broker/stores.js';
 import { HostInventoryControlPlane } from './host-inventory/control-plane.js';
 import { FilePluginInventoryStore } from './host-inventory/stores.js';
@@ -22,9 +31,14 @@ export interface DormantPluginRuntimeCompositionOptions {
   readonly paths?: PluginRuntimePersistencePaths;
   readonly routes: SignalRouteStore;
   readonly intakes: MeetingIntakeStore;
+  readonly messageStore: IMessageStore;
+  readonly redis?: RedisClient;
   readonly processes?: ExternalPluginProcessAdapter;
   readonly packages?: VerifiedPluginPackageLocator;
   readonly now?: () => number;
+  readonly collectiveConnector?: Omit<CollectiveConnectorBuiltinRuntimeOptions, 'dataDirectory'> & {
+    readonly dataDirectory?: string;
+  };
 }
 
 export interface DormantPluginRuntimeRecovery {
@@ -39,7 +53,9 @@ export interface DormantPluginRuntimeComposition {
   readonly brokerStore: FileHostBrokerStore;
   readonly inventory: HostInventoryControlPlane;
   readonly broker: HostBrokerControlPlane;
-  readonly supervisor: ExternalPluginRuntimeSupervisor;
+  readonly supervisor: HybridPluginRuntimeSupervisor;
+  readonly collectiveConnectorRuntime?: CollectiveConnectorBuiltinRuntime;
+  readonly messaging: MessagingService;
   readonly lifecycle: ExternalPluginLifecycleService;
   readonly packages: VerifiedPluginPackageLocator;
   recoverAfterRestart(): Promise<DormantPluginRuntimeRecovery>;
@@ -80,6 +96,10 @@ export function createDormantPluginRuntimeComposition(
   const inventory = new HostInventoryControlPlane(inventoryStore, {
     ...(options.now === undefined ? {} : { now: options.now }),
   });
+  const messaging = createMessagingDomain({
+    messageStore: options.messageStore,
+    ...(options.redis === undefined ? {} : { redis: options.redis }),
+  });
   const broker = new HostBrokerControlPlane({
     inventory: inventoryStore,
     store: brokerStore,
@@ -91,17 +111,34 @@ export function createDormantPluginRuntimeComposition(
         intakes: options.intakes,
         ...(options.now === undefined ? {} : { now: options.now }),
       }),
+      ...createMessagingBrokerHandlers({ messaging }),
     ],
     preActiveTimeoutMs: EXTERNAL_PLUGIN_PRE_ACTIVE_TIMEOUT_MS,
     ...(options.now === undefined ? {} : { now: options.now }),
   });
   const packages = options.packages ?? new FilesystemVerifiedPluginPackageLocator(paths.packagesRoot);
-  const supervisor = new ExternalPluginRuntimeSupervisor({
+  const externalSupervisor = new ExternalPluginRuntimeSupervisor({
     inventory: inventoryStore,
     broker,
     packages,
     handshakeTimeoutMs: EXTERNAL_PLUGIN_PRE_ACTIVE_TIMEOUT_MS,
     ...(options.processes === undefined ? {} : { processes: options.processes }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  const collectiveConnectorRuntime = options.collectiveConnector
+    ? new CollectiveConnectorBuiltinRuntime({
+        ...options.collectiveConnector,
+        dataDirectory:
+          options.collectiveConnector.dataDirectory ??
+          resolve(options.projectRoot, '.cat-cafe', 'collective-connector'),
+      })
+    : undefined;
+  const supervisor = new HybridPluginRuntimeSupervisor({
+    inventory: inventoryStore,
+    external: externalSupervisor,
+    builtinRuntimes: new Map(
+      collectiveConnectorRuntime ? [['official.collective-connector', collectiveConnectorRuntime] as const] : [],
+    ),
     ...(options.now === undefined ? {} : { now: options.now }),
   });
   const lifecycle = new ExternalPluginLifecycleService({
@@ -117,6 +154,8 @@ export function createDormantPluginRuntimeComposition(
     inventory,
     broker,
     supervisor,
+    ...(collectiveConnectorRuntime === undefined ? {} : { collectiveConnectorRuntime }),
+    messaging,
     lifecycle,
     packages,
     async recoverAfterRestart() {

@@ -5,20 +5,22 @@
  * 有界数组实现，超过 MAX_MESSAGES 时丢弃最旧消息。
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   CatId,
   ConnectorSource,
   CrossThreadCoordination,
+  CustodyOfferV1,
   MessageBundleCarrierV1,
   MessageContent,
+  ProviderSemanticEvent,
   PublishedFreshnessAnnotation,
   QueueMessageReceipt,
   ReplyPreview,
   RichMessageExtra,
   SchedulerMessageExtra,
 } from '@cat-cafe/shared';
-import { isCrossThreadProvenance } from '@cat-cafe/shared';
+import { custodyOfferV1Schema, isCrossThreadProvenance } from '@cat-cafe/shared';
 import { normalizeJsonUnicode } from '../../../../../utils/json-unicode.js';
 import type { MessageMetadata } from '../../types.js';
 import { cursorFor, parseCursor } from '../cursor.js';
@@ -69,10 +71,23 @@ export { isTimelinePublished } from '../visibility.js';
 
 export type UnresolvedCursorPolicy = 'rescan' | 'empty';
 
+/** Ephemeral bounded pass over the existing raw timeline; never a durable work ledger. */
+export interface MessageScanCursor {
+  readonly offset: number;
+  readonly upperBound: number;
+}
+
+export interface MessageIdScanPage {
+  readonly messageIds: string[];
+  readonly nextCursor?: MessageScanCursor;
+}
+
+export const COORDINATION_TERMINAL_SCAN_PAGE_SIZE = 100;
+
 export interface ThreadMessageReadOptions {
   /** Include queued cat-authored speech that is already published to the timeline. */
   includeQueuedCatMessages?: boolean;
-  /** Include durable queued user work in the owner's browser timeline only. */
+  /** Include durable queued owner work (user or Host connector ingress) in the browser timeline only. */
   includeQueuedUserMessages?: boolean;
   /** Include queued user work whose body was durably exposed to this exact cat. */
   includeExposedQueuedUserMessagesForCatId?: CatId;
@@ -227,6 +242,8 @@ export interface StoredMessage {
   metadata?: MessageMetadata;
   /** F022+F052+F098-C1+F153-F: Extensible extra data (rich blocks, stream metadata, cross-post origin, explicit targets, tracing pointers) */
   extra?: {
+    /** F306 durable provider-neutral event; native wire vocabulary is never stored here. */
+    semanticEvent?: ProviderSemanticEvent;
     rich?: RichMessageExtra;
     /** #814/F224: explicit post_message callback bubble; history hydration must not merge it into stream output. */
     isExplicitPost?: boolean;
@@ -250,7 +267,10 @@ export interface StoredMessage {
     /** F287: server-written connector carrier; QueueProcessor still revalidates source + entry origin. */
     memoryCue?: {
       deliveryDecision?: import('@cat-cafe/shared').DeliveryDecisionCueCarrierV1;
+      catOwnedSeed?: import('@cat-cafe/shared').CatOwnedSeedCueCarrierV1;
     };
+    /** F310: source-owned custody offer/disposition. Generic extra patches cannot mutate this field. */
+    custodyOfferV1?: CustodyOfferV1;
     /** Durable child execution projection used to distinguish guard/supplement turns after F5. */
     turnExecution?: TurnExecutionMessageProjection;
     /** Child executions that affected this visible turn without owning/copying its body. */
@@ -258,6 +278,8 @@ export interface StoredMessage {
     crossPost?: {
       sourceThreadId: string;
       sourceInvocationId?: string;
+      /** #1387: exact source message id so the child can dereference the original trigger message */
+      sourceMessageId?: string;
       /** F246 Phase B: effect-class label carried for receiving-side constraints */
       effectClass?: 'fyi' | 'coordinate' | 'investigate' | 'assign_work';
     };
@@ -267,6 +289,14 @@ export interface StoredMessage {
     localReviewVerdict?: {
       verdict: 'approved' | 'changes_requested' | 'commented';
       clientMessageId: string;
+      /** Reviewer-authored exact HEAD fact; required for new durable review facts. */
+      reviewedHeadSha?: string;
+      /** Stable subject whose formal review history is counted independently. */
+      reviewSubjectRef?: string;
+      /** Reviewer-accepted feature doc or immutable source-message coordinate. */
+      acceptedSourceRef?: string;
+      /** Exact feature commit or immutable source message id accepted by the reviewer. */
+      acceptedRevision?: string;
     };
     /** Internal callback-dedup provenance; never used as routing authority. */
     callbackDedup?: {
@@ -279,6 +309,11 @@ export interface StoredMessage {
     meetingArtifact?: {
       intakeId: string;
       sourceHandle: string;
+      /** Versioned bounded reader identity. Legacy pre-reader carriers omit these fields. */
+      resourceRef?: string;
+      sourceRevision?: `sha256:${string}`;
+      byteLength?: number;
+      contentType?: 'text/plain';
       trust: 'untrusted_external';
       instructionPolicy: 'data_only';
     };
@@ -286,6 +321,8 @@ export interface StoredMessage {
     dynamicSceneEntries?: readonly import('@cat-cafe/shared').AsrPersonMemoryDynamicSceneEntryV1[];
     /** Server-written deferred-generation carrier; never accepted as owner-authored truth. */
     writeOpportunityReentry?: import('@cat-cafe/shared').WriteOpportunityReentryCarrierV1;
+    /** Server-written bounded batch of independent deferred-generation carriers. */
+    writeOpportunityReentries?: readonly import('@cat-cafe/shared').WriteOpportunityReentryCarrierV1[];
     /** Server-written same-generation presentation retry; contains refs only. */
     writeOpportunityPresentationRetry?: import('@cat-cafe/shared').WriteOpportunityPresentationRetryCarrierV1;
     freshness?:
@@ -374,6 +411,8 @@ export interface StoredMessage {
    * this message as user-authored work.
    */
   sourceParseFailure?: true;
+  /** Read-time fail-closed marker for malformed source-owned F310 custody state. */
+  custodyOfferParseFailure?: true;
   /** F098-D: Timestamp when a queued message was actually dequeued and processed by a cat */
   deliveredAt?: number;
   /** Stable timeline score when publication time differs from execution delivery time. */
@@ -417,6 +456,20 @@ export type MarkDeliveredResult = StoredMessage & { deliveryTransitioned: boolea
 /** Result of the atomic queued → canceled delivery transition. */
 export type MarkCanceledResult = StoredMessage & { deliveryTransitioned: boolean };
 
+export interface CustodyOfferTransitionInput {
+  expectedSourceMessageRevision: string;
+  expectedOffer: CustodyOfferV1 | null;
+  nextOffer: CustodyOfferV1;
+}
+
+export type CustodyOfferTransitionResult =
+  | { kind: 'updated'; message: StoredMessage }
+  | { kind: 'state_conflict'; currentOffer: CustodyOfferV1 | null }
+  | { kind: 'source_revision_mismatch' }
+  | { kind: 'invalid_state' }
+  | { kind: 'invalid_transition' }
+  | { kind: 'not_found' };
+
 export type QueueCustodyTransitionResult =
   | { kind: 'updated'; message: StoredMessage; deliveryTransitioned: boolean }
   | { kind: 'revision_mismatch'; actualRevision: number }
@@ -458,8 +511,8 @@ export interface BoundedThreadMessagePage {
 /** Canonical F288 payload stored independently from host-owned extra metadata. */
 export type StoredPluginMessage = NonNullable<NonNullable<StoredMessage['extra']>['pluginMessage']>;
 
-/** Host-owned metadata patch. Plugin payload revisions use updatePluginMessage(). */
-export type HostMessageExtra = Omit<NonNullable<StoredMessage['extra']>, 'pluginMessage'>;
+/** Host-owned metadata patch. Owner payload revisions use their dedicated transition methods. */
+export type HostMessageExtra = Omit<NonNullable<StoredMessage['extra']>, 'pluginMessage' | 'custodyOfferV1'>;
 
 /**
  * Input for appending a message. threadId is optional (defaults to 'default').
@@ -498,11 +551,121 @@ export function assertValidAppendDeliveryMetadata(msg: AppendMessageInput): void
 export function assertValidAppendMessageInput(msg: AppendMessageInput): void {
   assertValidAppendDeliveryMetadata(msg);
   assertValidStoredMessageTimestamp(msg.timestamp);
+  const custody = msg.extra?.custodyOfferV1;
+  if (custody) {
+    const parsed = custodyOfferV1Schema.safeParse(custody);
+    if (!parsed.success || parsed.data.sourceMessageRevision !== deriveGrowingSourceMessageRevision(msg)) {
+      throw new TypeError('append() custodyOfferV1 must match the canonical persisted source revision');
+    }
+  }
+}
+
+function canonicalGrowingSourceJson(value: unknown): string {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('source revision rejects non-finite numbers');
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return '[' + value.map(canonicalGrowingSourceJson).join(',') + ']';
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return (
+      '{' +
+      Object.keys(record)
+        .filter((key) => record[key] !== undefined)
+        .sort()
+        .map((key) => JSON.stringify(key) + ':' + canonicalGrowingSourceJson(record[key]))
+        .join(',') +
+      '}'
+    );
+  }
+  throw new TypeError('source revision rejects unsupported content');
+}
+
+/** Immutable revision of the exact persisted source body; mutable extra metadata is excluded. */
+export function deriveGrowingSourceMessageRevision(message: Pick<StoredMessage, 'content' | 'contentBlocks'>): string {
+  const projection = {
+    content: message.content,
+    contentBlocks: message.contentBlocks ?? null,
+  };
+  return 'sha256:' + createHash('sha256').update(canonicalGrowingSourceJson(projection), 'utf8').digest('hex');
+}
+
+function custodyOffersEqual(left: CustodyOfferV1 | null, right: CustodyOfferV1 | null): boolean {
+  if (left === null || right === null) return left === right;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function custodyOfferIdentityMatches(left: CustodyOfferV1, right: CustodyOfferV1): boolean {
+  return (
+    left.offerId === right.offerId &&
+    left.sourceMessageRevision === right.sourceMessageRevision &&
+    left.policyVersion === right.policyVersion &&
+    left.reasonCode === right.reasonCode
+  );
+}
+
+export function isValidCustodyOfferTransition(
+  expectedSourceMessageRevision: string,
+  expectedOffer: CustodyOfferV1 | null,
+  nextOffer: CustodyOfferV1,
+): boolean {
+  const next = custodyOfferV1Schema.safeParse(nextOffer);
+  const expected = expectedOffer === null ? null : custodyOfferV1Schema.safeParse(expectedOffer);
+  if (!next.success || (expected !== null && !expected.success)) return false;
+  if (next.data.sourceMessageRevision !== expectedSourceMessageRevision) return false;
+  if (expected === null) {
+    return (
+      next.data.disposition === 'pending' ||
+      (next.data.disposition === 'accepted' && next.data.admission.state === 'pending')
+    );
+  }
+  if (!custodyOfferIdentityMatches(expected.data, next.data)) return false;
+  if (expected.data.disposition === 'pending') {
+    return (
+      next.data.disposition === 'declined' ||
+      next.data.disposition === 'dismissed' ||
+      (next.data.disposition === 'accepted' && next.data.admission.state === 'pending')
+    );
+  }
+  if (
+    expected.data.disposition === 'accepted' &&
+    expected.data.admission.state === 'pending' &&
+    next.data.disposition === 'accepted' &&
+    next.data.admission.state === 'resulted'
+  ) {
+    return (
+      expected.data.actorRef === next.data.actorRef &&
+      expected.data.dispositionAt === next.data.dispositionAt &&
+      expected.data.admission.idempotencyKey === next.data.admission.idempotencyKey
+    );
+  }
+  if (
+    expected.data.disposition === 'accepted' &&
+    expected.data.admission.state === 'resulted' &&
+    expected.data.admission.result.result === 'needs_clarification' &&
+    next.data.disposition === 'accepted' &&
+    next.data.admission.state === 'resulted' &&
+    next.data.admission.result.result !== 'needs_clarification'
+  ) {
+    return (
+      expected.data.actorRef === next.data.actorRef &&
+      expected.data.dispositionAt === next.data.dispositionAt &&
+      expected.data.admission.idempotencyKey === next.data.admission.idempotencyKey
+    );
+  }
+  return false;
 }
 
 export type ThreadFrontierAppendResult =
   | { kind: 'committed'; message: StoredMessage }
   | { kind: 'frontier_advanced'; actualLatestMessageId: string | null };
+
+export interface IdempotentAppendResult {
+  message: StoredMessage;
+  /** True when another caller already won the durable idempotency key. */
+  idempotent: boolean;
+}
 
 export interface ThreadObservedAppendResult {
   kind: 'committed';
@@ -557,7 +720,8 @@ export function mergeMessageExtra(
   incoming: StoredMessage['extra'] | undefined,
 ): StoredMessage['extra'] | undefined {
   if (!existing && !incoming) return undefined;
-  const merged = { ...(existing ?? {}), ...(incoming ?? {}) };
+  const { pluginMessage: _stripPlugin, custodyOfferV1: _stripCustody, ...incomingHost } = incoming ?? {};
+  const merged = { ...(existing ?? {}), ...incomingHost };
   const rich = mergeRichExtra(existing?.rich, incoming?.rich);
   if (rich) merged.rich = rich;
   return Object.keys(merged).length > 0 ? merged : undefined;
@@ -610,6 +774,8 @@ export interface IMessageStore {
   /** F102 KD-34: Listener called after every successful append (fire-and-forget) */
   onAppend?: MessageAppendListener;
   append(msg: AppendMessageInput): StoredMessage | Promise<StoredMessage>;
+  /** Atomically append or return the durable idempotency winner with an explicit outcome. */
+  appendIdempotent(msg: AppendMessageInput): IdempotentAppendResult | Promise<IdempotentAppendResult>;
   /** Raw latest message identity, including queued/canceled entries, for output-commit linearization. */
   getLatestThreadMessageIdIncludingQueued(threadId: string): string | null | Promise<string | null>;
   /** Resolve an already-committed idempotent append without creating a claim. */
@@ -739,6 +905,11 @@ export interface IMessageStore {
   revealWhispers(threadId: string, userId: string): number | Promise<number>;
   /** F096: Update message extra data (for interactive block state persistence). Returns null if not found. */
   updateExtra(id: string, extra: HostMessageExtra): StoredMessage | null | Promise<StoredMessage | null>;
+  /** F310: atomically fence source body and prior custody state before changing the source-owned carrier. */
+  compareAndTransitionCustodyOffer(
+    id: string,
+    input: CustodyOfferTransitionInput,
+  ): CustodyOfferTransitionResult | Promise<CustodyOfferTransitionResult>;
   /** F288: replace only the canonical plugin payload, independently of host extra metadata. */
   updatePluginMessage(
     id: string,
@@ -791,6 +962,10 @@ export interface IMessageStore {
   /** #697: Find message IDs with a given deliveryStatus. Used by StartupReconciler
    *  to recover orphaned queued messages after process restart. */
   scanByDeliveryStatus?(status: NonNullable<StoredMessage['deliveryStatus']>): string[] | Promise<string[]>;
+  /** At most 100 raw timeline members per page, including queued and delivered sources.
+   * A pass has a fixed upper bound; mutations may revisit/skip members until the next
+   * idempotent pass. Callers must re-read each source's current consumption truth. */
+  scanCoordinationTerminalMessageIds?(cursor?: MessageScanCursor): MessageIdScanPage | Promise<MessageIdScanPage>;
   /**
    * #1200 §8.7: Get the latest visible cursor for a thread.
    *
@@ -910,6 +1085,19 @@ function isRecallableOwnerMessage(message: StoredMessage): boolean {
 
 export class MessageStore {
   private messages: StoredMessage[] = [];
+
+  scanCoordinationTerminalMessageIds(cursor?: MessageScanCursor): MessageIdScanPage {
+    const offset = cursor?.offset ?? 0;
+    const upperBound = cursor?.upperBound ?? this.messages.length;
+    const end = Math.min(offset + COORDINATION_TERMINAL_SCAN_PAGE_SIZE, upperBound);
+    return {
+      messageIds: this.messages
+        .slice(offset, end)
+        .filter((message) => message.extra?.coordination?.phase === 'terminal')
+        .map((message) => message.id),
+      ...(end < upperBound ? { nextCursor: { offset: end, upperBound } } : {}),
+    };
+  }
   private readonly maxMessages: number;
   private readonly idempotencyIndex = new Map<string, string>();
   /** Content-dedup claims: fingerprint key → expiry timestamp (ms). Bounds the callback exact-duplicate race. */
@@ -1028,6 +1216,17 @@ export class MessageStore {
     }
 
     return stored;
+  }
+
+  appendIdempotent(msg: AppendMessageInput): IdempotentAppendResult {
+    const normalizedMessage = normalizeJsonUnicode(msg);
+    assertValidAppendMessageInput(normalizedMessage);
+    const threadId = normalizedMessage.threadId ?? DEFAULT_THREAD_ID;
+    if (normalizedMessage.idempotencyKey) {
+      const existing = this.getByIdempotencyKey(normalizedMessage.userId, threadId, normalizedMessage.idempotencyKey);
+      if (existing) return { message: existing, idempotent: true };
+    }
+    return { message: this.append(normalizedMessage), idempotent: false };
   }
 
   getLatestThreadMessageIdIncludingQueued(threadId: string): string | null {
@@ -1719,9 +1918,38 @@ export class MessageStore {
     if (!msg || msg.recall || msg._tombstone) return null;
     // Strip pluginMessage to prevent bypassing updatePluginMessage()'s
     // revision check — matches Redis store behaviour (codex P2 fix).
-    const { pluginMessage: _strip, ...hostOnly } = extra as Record<string, unknown>;
+    const {
+      pluginMessage: _stripPlugin,
+      custodyOfferV1: _stripCustody,
+      ...hostOnly
+    } = extra as Record<string, unknown>;
     msg.extra = { ...msg.extra, ...hostOnly };
     return msg;
+  }
+
+  compareAndTransitionCustodyOffer(id: string, input: CustodyOfferTransitionInput): CustodyOfferTransitionResult {
+    const msg = this.messages.find((candidate) => candidate.id === id);
+    if (!msg) return { kind: 'not_found' };
+    if (msg.recall || msg._tombstone || msg.custodyOfferParseFailure) return { kind: 'invalid_state' };
+    const currentRaw = msg.extra?.custodyOfferV1;
+    const currentParsed = currentRaw === undefined ? null : custodyOfferV1Schema.safeParse(currentRaw);
+    if (currentParsed !== null && !currentParsed.success) return { kind: 'invalid_state' };
+    const currentOffer = currentParsed === null ? null : currentParsed.data;
+    if (deriveGrowingSourceMessageRevision(msg) !== input.expectedSourceMessageRevision) {
+      return { kind: 'source_revision_mismatch' };
+    }
+    if (currentOffer && currentOffer.sourceMessageRevision !== input.expectedSourceMessageRevision) {
+      return { kind: 'invalid_state' };
+    }
+    if (!custodyOffersEqual(currentOffer, input.expectedOffer)) {
+      return { kind: 'state_conflict', currentOffer };
+    }
+    if (!isValidCustodyOfferTransition(input.expectedSourceMessageRevision, input.expectedOffer, input.nextOffer)) {
+      return { kind: 'invalid_transition' };
+    }
+    const nextOffer = custodyOfferV1Schema.parse(input.nextOffer);
+    msg.extra = { ...msg.extra, custodyOfferV1: nextOffer };
+    return { kind: 'updated', message: msg };
   }
 
   updatePluginMessage(id: string, pluginMessage: StoredPluginMessage, expectedRevision: number): StoredMessage | null {

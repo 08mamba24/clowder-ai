@@ -3,15 +3,24 @@ const fs = require('node:fs');
 const Module = require('node:module');
 const path = require('node:path');
 const { describe, it } = require('node:test');
+const { pathToFileURL } = require('node:url');
 
 const configPath = path.resolve(__dirname, '../next.config.js');
 const packageJsonPath = path.resolve(__dirname, '../package.json');
+const browserTestPath = path.resolve(__dirname, 'browser');
+const nextDevTestEnvironmentPath = path.join(browserTestPath, 'next-dev-test-environment.mjs');
 const ENV_KEYS = [
   'NEXT_PUBLIC_API_URL',
   'API_SERVER_PORT',
   'FRONTEND_PORT',
   'CAT_CAFE_WEB_BUILD_REVISION',
   'CAT_CAFE_DEPLOYMENT_REVISION_REQUIRED',
+  'CAT_CAFE_DEPLOYMENT_ID',
+  'CAT_CAFE_F307_WORKBENCH_GATE_ACTIVATION',
+  'ENABLE_PWA_IN_DEV',
+  'CAT_CAFE_WEB_TEST_DIST_DIR',
+  'CAT_CAFE_WEB_TEST_TSCONFIG',
+  'NODE_ENV',
 ];
 
 function withEnv(overrides, run) {
@@ -105,6 +114,101 @@ describe('next.config rewrites', () => {
     withEnv({ CAT_CAFE_DEPLOYMENT_REVISION_REQUIRED: '1' }, (config) => {
       assert.equal(config.env?.NEXT_PUBLIC_CAT_CAFE_DEPLOYMENT_REVISION_REQUIRED, '1');
     });
+  });
+
+  it('marks ordinary development and Alpha clients as PWA-disabled', () => {
+    withEnv({ NODE_ENV: 'development', CAT_CAFE_DEPLOYMENT_ID: 'alpha' }, (config) => {
+      assert.equal(config.env?.NEXT_PUBLIC_CAT_CAFE_PWA_ENABLED, '0');
+    });
+  });
+
+  it('keeps the production PWA client enabled', () => {
+    withEnv({ NODE_ENV: 'production', CAT_CAFE_DEPLOYMENT_ID: 'runtime' }, (config) => {
+      assert.equal(config.env?.NEXT_PUBLIC_CAT_CAFE_PWA_ENABLED, '1');
+    });
+  });
+
+  it('keeps explicitly enabled development PWA semantics intact', () => {
+    withEnv({ NODE_ENV: 'development', ENABLE_PWA_IN_DEV: '1' }, (config) => {
+      assert.equal(config.env?.NEXT_PUBLIC_CAT_CAFE_PWA_ENABLED, '1');
+    });
+  });
+
+  it('does not expose an F307 build-time activation switch', () => {
+    for (const env of [
+      { NODE_ENV: 'production', CAT_CAFE_F307_WORKBENCH_GATE_ACTIVATION: '1' },
+      { NODE_ENV: 'development', CAT_CAFE_DEPLOYMENT_ID: 'runtime' },
+      { NODE_ENV: 'development', CAT_CAFE_DEPLOYMENT_ID: 'alpha' },
+    ]) {
+      withEnv(env, (config) => {
+        assert.equal(Object.hasOwn(config.env ?? {}, 'NEXT_PUBLIC_F307_WORKBENCH_GATE_ALLOWED'), false);
+      });
+    }
+  });
+
+  it('isolates a browser test dev server from production build artifacts', () => {
+    withEnv(
+      {
+        CAT_CAFE_WEB_TEST_DIST_DIR: '.next-test-f294-example',
+        CAT_CAFE_WEB_TEST_TSCONFIG: 'tsconfig.next-test-f294-example.json',
+      },
+      (config) => {
+        assert.equal(config.distDir, '.next-test-f294-example');
+        assert.equal(config.typescript?.tsconfigPath, 'tsconfig.next-test-f294-example.json');
+      },
+    );
+  });
+
+  it('rejects an unpaired or unsafe browser test build path', () => {
+    assert.throws(
+      () => withEnv({ CAT_CAFE_WEB_TEST_DIST_DIR: '../shared-next' }, () => {}),
+      /must name an isolated \.next-test-\* directory/,
+    );
+    assert.throws(
+      () => withEnv({ CAT_CAFE_WEB_TEST_DIST_DIR: '.next-test-f294-example' }, () => {}),
+      /must be provided together/,
+    );
+  });
+
+  it('keeps every browser-test Next dev server out of the production .next directory', () => {
+    const offenders = fs
+      .readdirSync(browserTestPath, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.mjs'))
+      .filter((entry) => {
+        const source = fs.readFileSync(path.join(browserTestPath, entry.name), 'utf8');
+        if (!source.includes("[NEXT_BIN, 'dev'")) return false;
+        const usesSharedIsolation =
+          source.includes("from './next-dev-test-environment.mjs'") && /env:\s*[A-Za-z_$][\w$]*\.env/.test(source);
+        const configuresIsolationDirectly =
+          source.includes('CAT_CAFE_WEB_TEST_DIST_DIR') && source.includes('CAT_CAFE_WEB_TEST_TSCONFIG');
+        return !usesSharedIsolation && !configuresIsolationDirectly;
+      })
+      .map((entry) => entry.name)
+      .sort();
+
+    assert.deepEqual(
+      offenders,
+      [],
+      `Next dev browser tests must isolate build artifacts from production .next: ${offenders.join(', ')}`,
+    );
+  });
+
+  it('creates and cleans a paired isolated Next dev artifact environment', async () => {
+    const { createNextDevTestEnvironment } = await import(pathToFileURL(nextDevTestEnvironmentPath));
+    const isolation = await createNextDevTestEnvironment('contract', { NEXT_PUBLIC_API_URL: 'http://fixture' });
+
+    try {
+      assert.match(isolation.env.CAT_CAFE_WEB_TEST_DIST_DIR, /^\.next-test-contract-/);
+      assert.match(isolation.env.CAT_CAFE_WEB_TEST_TSCONFIG, /^tsconfig\.next-test-contract-.*\.json$/);
+      assert.equal(isolation.env.NEXT_PUBLIC_API_URL, 'http://fixture');
+      assert.equal(fs.existsSync(isolation.distDirPath), true);
+      assert.equal(fs.existsSync(isolation.tsconfigPath), true);
+    } finally {
+      await isolation.cleanup();
+    }
+
+    assert.equal(fs.existsSync(isolation.distDirPath), false);
+    assert.equal(fs.existsSync(isolation.tsconfigPath), false);
   });
 
   it('keeps next-pwa in dependencies because next.config requires it at build time', () => {

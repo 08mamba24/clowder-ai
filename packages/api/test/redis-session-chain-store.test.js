@@ -350,6 +350,24 @@ describe('RedisSessionChainStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     assert.equal((await store.get(logical.id)).cliSessionId, undefined);
   });
 
+  it('native fork CAS binds only an unbound durable target and never overwrites a race winner', async () => {
+    const target = await store.getOrCreateActive({
+      threadId: 'thread-native-fork-target',
+      catId: 'codex',
+      userId: 'user-1',
+      compressionCount: null,
+    });
+
+    const first = await store.bindCliSessionIdIfUnbound(target.id, 'native-fork-winner');
+    assert.equal(first.cliSessionId, 'native-fork-winner');
+    assert.equal(await redis.ttl(`session:${target.id}`), -1);
+    assert.equal(await redis.ttl('session-cli:native-fork-winner'), -1);
+
+    assert.equal(await store.bindCliSessionIdIfUnbound(target.id, 'native-fork-loser'), null);
+    assert.equal((await store.get(target.id)).cliSessionId, 'native-fork-winner');
+    assert.equal(await store.getByCliSessionId('native-fork-loser'), null);
+  });
+
   it('#1329 keeps unknown lifetime telemetry separate from revision-local hybrid progress', async () => {
     const logical = await store.getOrCreateActive({
       threadId: 'thread-progress',
@@ -367,18 +385,56 @@ describe('RedisSessionChainStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     await store.applyPolicySnapshot(logical.id, snapshot);
 
     const [one, two] = await Promise.all([
-      store.recordCompressionEvent(logical.id, 'revision-a'),
-      store.recordCompressionEvent(logical.id, 'revision-a'),
+      store.recordCompressionEvent(logical.id, 'revision-a', 'inv-redis-one'),
+      store.recordCompressionEvent(logical.id, 'revision-a', 'inv-redis-two'),
     ]);
     assert.deepEqual([one.hybridProgress.observedCount, two.hybridProgress.observedCount].sort(), [1, 2]);
     const reread = await store.get(logical.id);
     assert.equal(reread.compressionCount, null);
     assert.equal(reread.hybridProgress.observedCount, 2);
+    assert.equal(reread.compressionObservation.invocationId, 'inv-redis-two');
+    assert.equal(reread.compressionObservation.sequence, 2);
 
     await store.applyPolicySnapshot(logical.id, { ...snapshot, revision: 'revision-b', changedAt: 20 });
     const reset = await store.get(logical.id);
     assert.equal(reset.hybridProgress.policyRevision, 'revision-b');
     assert.equal(reset.hybridProgress.observedCount, 0);
+  });
+
+  it('F296 atomically mints event-local sequences for legacy compress sessions with unknown lifetime totals', async (t) => {
+    if (connected === false) return t.skip('Redis not connected');
+    const logical = await store.getOrCreateActive({
+      threadId: 'thread-legacy-compress',
+      catId: 'opus',
+      userId: 'user-1',
+      compressionCount: null,
+    });
+    const snapshot = {
+      config: { strategy: 'compress', thresholds: { warn: 0.75, action: 0.85 } },
+      source: 'runtime_override',
+      revision: 'revision-legacy-compress',
+      changedAt: 10,
+      execution: { status: 'active', missingCapabilities: [] },
+    };
+    await store.applyPolicySnapshot(logical.id, snapshot);
+
+    await store.recordCompressionEvent(logical.id, snapshot.revision, 'inv-legacy-one');
+    const first = await store.get(logical.id);
+    assert.equal(first.compressionCount, null, 'unknown lifetime history must stay unknown');
+    assert.deepEqual(first.compressionObservation, {
+      invocationId: 'inv-legacy-one',
+      sequence: 1,
+      observedAt: first.updatedAt,
+    });
+
+    await store.recordCompressionEvent(logical.id, snapshot.revision, 'inv-legacy-two');
+    const second = await store.get(logical.id);
+    assert.equal(second.compressionCount, null);
+    assert.deepEqual(second.compressionObservation, {
+      invocationId: 'inv-legacy-two',
+      sequence: 2,
+      observedAt: second.updatedAt,
+    });
   });
 
   it('create() and update() preserve workspace binding metadata', async () => {

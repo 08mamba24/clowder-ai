@@ -4,7 +4,7 @@ import {
   asrPersonMemoryDynamicSceneEntryV1Schema,
   projectDeliveredWriteOpportunityRecord,
 } from '@cat-cafe/shared';
-import { supportsPreProviderContinuityHandshake } from '../../cats/services/agents/invocation/context-continuity.js';
+import { supportsWriteOpportunityPresentationHandshake } from '../../cats/services/agents/invocation/context-continuity.js';
 import type { ContextPresentationEnvelope } from '../../cats/services/session/context-presentation.js';
 import type { ContextContinuityHandshake } from '../../cats/services/types.js';
 import {
@@ -22,6 +22,8 @@ export interface BoundAsrPersonMemoryScene {
   readonly source: {
     readonly kind: 'message';
     readonly threadId: string;
+    /** Transport/presentation scope when a system clerk processes an owner source from another thread. */
+    readonly presentationThreadId?: string;
     readonly sourceMessageId: string;
     readonly authorUserId: string;
     readonly authorRole: 'owner';
@@ -33,6 +35,7 @@ export interface BoundAsrPersonMemoryScene {
 export interface AsrPersonMemoryPresentationReceipt {
   readonly opportunityId: string;
   readonly state: WriteOpportunityLifecycleState;
+  readonly source: BoundAsrPersonMemoryScene['source'];
 }
 
 export type AsrPersonMemoryPresentationEnvelope = ContextPresentationEnvelope<AsrPersonMemoryPresentationReceipt>;
@@ -74,7 +77,7 @@ function f296PresentationVerifier(candidate: unknown) {
   ) {
     return { status: 'invalid' } as const;
   }
-  if (value.outcome === 'delivered' && !supportsPreProviderContinuityHandshake(continuity)) {
+  if (value.outcome === 'delivered' && !supportsWriteOpportunityPresentationHandshake(continuity)) {
     return { status: 'invalid' } as const;
   }
   return {
@@ -152,7 +155,7 @@ export class AsrPersonMemoryOpportunityPromptService {
     const presentationReceipts: AsrPersonMemoryPresentationReceipt[] = [];
     const presentationEnvelopes: AsrPersonMemoryPresentationEnvelope[] = [];
     const segments: string[] = [];
-    const presentationSupported = supportsPreProviderContinuityHandshake(input.continuity);
+    const presentationSupported = supportsWriteOpportunityPresentationHandshake(input.continuity);
     const seenGenerationKeys = new Set(input.terminalGenerationKeys);
 
     for (const candidate of input.candidates) {
@@ -161,7 +164,7 @@ export class AsrPersonMemoryOpportunityPromptService {
         candidate.source.authorRole !== 'owner' ||
         candidate.source.visibility !== 'verified_live_owner_message' ||
         candidate.source.authorUserId !== input.serverScope.ownerUserId ||
-        candidate.source.threadId !== input.serverScope.threadId
+        (candidate.source.presentationThreadId ?? candidate.source.threadId) !== input.serverScope.threadId
       ) {
         continue;
       }
@@ -177,7 +180,7 @@ export class AsrPersonMemoryOpportunityPromptService {
       if (state.status !== 'eligible') continue;
       const opportunityId = state.scene.opportunity.opportunityId;
       seenGenerationKeys.add(`${state.scene.opportunity.dedupeLineage}:${state.scene.opportunity.generation}`);
-      const receipt = { opportunityId, state };
+      const receipt = { opportunityId, state, source: candidate.source };
       admittedOpportunityIds.push(opportunityId);
       presentationReceipts.push(receipt);
       if (!presentationSupported) {

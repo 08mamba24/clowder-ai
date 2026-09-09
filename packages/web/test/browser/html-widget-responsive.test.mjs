@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
+import { createNextDevTestEnvironment } from './next-dev-test-environment.mjs';
 
 await import('tsx/esm');
 const { ImageExporter } = await import('../../../api/src/services/ImageExporter.ts');
@@ -71,9 +72,10 @@ test(
   async (t) => {
     const port = await findFreePort();
     const output = [];
+    const nextDev = await createNextDevTestEnvironment('html-widget-responsive');
     const server = spawn(process.execPath, [NEXT_BIN, 'dev', '-H', '127.0.0.1', '-p', String(port)], {
       cwd: WEB_ROOT,
-      env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1', NODE_ENV: 'development' },
+      env: nextDev.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     server.stdout.on('data', (chunk) => output.push(chunk.toString()));
@@ -220,6 +222,30 @@ test(
       const magentaPixels = await countMagentaPixels(png);
       assert.ok(magentaPixels > 1_000, `exported PNG lost the bottom sentinel (${magentaPixels} magenta pixels)`);
 
+      await t.test('relaunches Chromium after the shared export browser disconnects', async () => {
+        const disconnectedBrowser = exporter.browser;
+        assert.ok(disconnectedBrowser?.isConnected(), 'the prior successful export must keep a live shared browser');
+        const browserProcess = disconnectedBrowser.process();
+        assert.ok(browserProcess, 'the shared browser must expose its owned Chromium process');
+
+        const disconnected = Promise.race([
+          once(disconnectedBrowser, 'disconnected'),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('timed out waiting for the shared browser to disconnect')), 5_000),
+          ),
+        ]);
+        assert.equal(browserProcess.kill(), true, 'the regression must terminate the shared Chromium process');
+        await disconnected;
+        assert.equal(disconnectedBrowser.isConnected(), false);
+
+        const recoveredPng = await exporter.capture(`${url}?fixture=short`, 'browser-test-user', {
+          selectionMessageIds: [FIXTURE_MESSAGE_ID],
+        });
+        assert.ok(recoveredPng.length > 0, 'the next export must succeed without restarting the API process');
+        assert.notEqual(exporter.browser, disconnectedBrowser, 'the stale browser handle must be replaced');
+        assert.equal(exporter.browser?.isConnected(), true, 'the replacement browser must remain connected');
+      });
+
       await t.test('async descendant geometry invalidates readiness before PNG capture', async () => {
         const asyncPng = await exporter.capture(`${url}?fixture=async-image`, 'browser-test-user', {
           selectionMessageIds: [FIXTURE_MESSAGE_ID],
@@ -328,7 +354,7 @@ test(
             exporter.capture(`${url}?fixture=short&unstable=1`, 'browser-test-user', {
               selectionMessageIds: [FIXTURE_MESSAGE_ID],
             }),
-          /Page height did not stabilize within maxWait/,
+          /HTML widget export operation deadline exceeded/,
           'an unstable export must fail instead of silently capturing a transient layout',
         );
         const pagesAfterFailure = (await exporterBrowser.pages()).length;
@@ -338,6 +364,7 @@ test(
       await exporter.close();
       if (browser) await browser.close();
       await stopServer(server);
+      await nextDev.cleanup();
     }
   },
 );

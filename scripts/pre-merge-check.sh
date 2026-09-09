@@ -1,8 +1,8 @@
 #!/bin/bash
 # scripts/pre-merge-check.sh — Latest-main 全量门禁
 #
-# merge-gate 的硬门禁脚本。在 squash merge 前，基于最新 origin/main
-# 跑全量 build + test + lint/check，确保合流后仍然全绿。
+# merge-gate 的硬门禁脚本。在 squash merge 前，先冻结一次 origin/main
+# 再跑全量 build + test + lint/check；长门禁期间不追逐继续移动的 main。
 #
 # Usage:
 #   pnpm gate          # 在 feature worktree 里执行
@@ -26,11 +26,34 @@ NC='\033[0m'
 NO_REBASE=false
 SKIP_INSTALL=false
 AUTO_FIX=false
+RISK_AXIS=""
 CAT_CAFE_GATE_TEST_MODE="${CAT_CAFE_GATE_TEST_MODE:-auto}"
+GATE_ORIGINAL_ARGS=("$@")
+GATE_ORIGINAL_ARG_COUNT=$#
+GATE_TERMINAL_ACTIVE=false
+GATE_TERMINAL_STATUS="failed"
+GATE_RUN_ID=""
+GATE_REQUIRED_STAGES=""
+GATE_FAILED_STAGE=""
+GATE_FAILURE_OUTPUT_FILE=""
+GATE_CONTROL_PLANE_DIR=""
+GATE_ROUTE_CLASSIFIER_SCRIPT=""
+GATE_TERMINAL_RECEIPT_SCRIPT=""
+GATE_ROUTE="full"
+GATE_ROUTE_JSON=""
+GATE_REEXEC_DEPTH="${CAT_CAFE_GATE_REEXEC_DEPTH:-0}"
+unset CAT_CAFE_GATE_REEXEC_DEPTH
+
+case "$GATE_REEXEC_DEPTH" in
+  ''|*[!0-9]*)
+    echo "Invalid CAT_CAFE_GATE_REEXEC_DEPTH: $GATE_REEXEC_DEPTH" >&2
+    exit 1
+    ;;
+esac
 
 usage() {
   cat <<'EOF'
-Usage: scripts/pre-merge-check.sh [--no-rebase] [--skip-install] [--auto-fix]
+Usage: scripts/pre-merge-check.sh [--no-rebase] [--skip-install] [--auto-fix] [--risk <axis>] [--]
 
 Default behavior:
   1. Fail if the worktree is dirty
@@ -42,6 +65,8 @@ Flags:
   --no-rebase    Skip fetch + rebase (local verification only)
   --skip-install Skip dependency refresh after rebase
   --auto-fix     Run allowlisted auto-fix (biome format) before gate, auto-commit changes as [qc-bot]
+  --risk <axis>  Elevate a machine-targeted route to full for behavior/data/security/contract/irreversible risk
+  --             pnpm passthrough separator (consumed; subsequent flags still parsed)
 EOF
 }
 
@@ -59,9 +84,21 @@ while [[ $# -gt 0 ]]; do
       AUTO_FIX=true
       shift
       ;;
+    --risk)
+      if [ $# -lt 2 ]; then
+        echo "Missing value for --risk" >&2
+        exit 1
+      fi
+      RISK_AXIS="$2"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
+      ;;
+    --)
+      # pnpm 9.x passes '--' as a literal arg; consume it and keep parsing
+      shift
       ;;
     *)
       echo "Unknown option: $1" >&2
@@ -128,6 +165,8 @@ echo -e "${GREEN}✓ 工作区干净${NC}"
 # 向上解析到兄弟目录的 node_modules，造成 web build 假红。
 # 规则来源：cat-cafe-skills/worktree/SKILL.md "禁止在项目内部创建"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+GATE_ROUTE_CLASSIFIER_SCRIPT="$REPO_ROOT/scripts/classify-gate-route.mjs"
+GATE_TERMINAL_RECEIPT_SCRIPT="$REPO_ROOT/scripts/gate-terminal-receipt.mjs"
 # Do not truncate the producer with `head`: under `set -o pipefail`, repositories
 # with enough worktrees make git receive SIGPIPE and abort the gate with exit 141.
 MAIN_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
@@ -151,17 +190,170 @@ if [ "$REPO_ROOT" != "$MAIN_WORKTREE" ]; then
 fi
 echo -e "${GREEN}✓ Worktree 位置合规${NC}"
 
+is_public_export() {
+  [ ! -f "$REPO_ROOT/.claude/settings.json" ] &&
+    [ -f "$REPO_ROOT/packages/api/package.json" ] &&
+    node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); process.exit(p.scripts && p.scripts["test:public"] ? 0 : 1);' "$REPO_ROOT/packages/api/package.json"
+}
+
+PUBLIC_EXPORT=false
+if is_public_export; then
+  PUBLIC_EXPORT=true
+fi
+
+resolve_test_mode() {
+  if [ "$CAT_CAFE_GATE_TEST_MODE" = "full" ] || [ "$CAT_CAFE_GATE_TEST_MODE" = "public" ]; then
+    printf '%s\n' "$CAT_CAFE_GATE_TEST_MODE"
+  elif [ "$PUBLIC_EXPORT" = "true" ]; then
+    printf '%s\n' "public"
+  else
+    printf '%s\n' "full"
+  fi
+}
+
+TEST_MODE="$(resolve_test_mode)"
+if [ "$TEST_MODE" = "public" ]; then
+  GATE_REQUIRED_STAGES="tsc,test-public,lint-web,check"
+else
+  GATE_REQUIRED_STAGES="tsc,test-non-browser,test-web-unit,test-web-browser,test-web-guards,lint-web,check"
+fi
+
+GATE_RESOURCE_RUNNER="$REPO_ROOT/scripts/run-with-gate-resource-permit.mjs"
+if [ "$PUBLIC_EXPORT" = "true" ]; then
+  # The public repository intentionally does not export Clowder AI's shared host
+  # scheduler. Keep pnpm gate as a complete public contract by running the same
+  # phases directly; the public gate still retains its exported singleflight and
+  # pressure guard below.
+  run_gate_resource_stage() {
+    shift 2
+    "$@"
+  }
+else
+  if [ ! -f "$GATE_RESOURCE_RUNNER" ]; then
+    echo -e "${RED}❌ Gate resource runner missing: $GATE_RESOURCE_RUNNER${NC}" >&2
+    exit 1
+  fi
+  run_gate_resource_stage() {
+    local mode="$1"
+    local stage="$2"
+    local heartbeat_status=0
+    shift 2
+    heartbeat_gate_receipt || heartbeat_status=$?
+    if [ "$heartbeat_status" -ne 0 ]; then
+      echo -e "${RED}❌ Gate receipt heartbeat failed before $stage${NC}" >&2
+      return "$heartbeat_status"
+    fi
+    node "$GATE_RESOURCE_RUNNER" --mode "$mode" --stage "$stage" -- "$@"
+  }
+fi
+
+heartbeat_gate_receipt() {
+  if [ "$GATE_TERMINAL_ACTIVE" = "true" ]; then
+    node "$GATE_TERMINAL_RECEIPT_SCRIPT" heartbeat --run-id "$GATE_RUN_ID" --owner-pid "$$"
+  fi
+}
+
+gate_stage_is_green() {
+  local stage="$1"
+  if [ "$GATE_TERMINAL_ACTIVE" != "true" ]; then
+    return 3
+  fi
+  node "$GATE_TERMINAL_RECEIPT_SCRIPT" stage-check --run-id "$GATE_RUN_ID" --stage "$stage"
+}
+
+mark_gate_stage_green() {
+  local stage="$1"
+  local duration_ms="$2"
+  if [ "$GATE_TERMINAL_ACTIVE" = "true" ]; then
+    node "$GATE_TERMINAL_RECEIPT_SCRIPT" stage-green --run-id "$GATE_RUN_ID" --stage "$stage" --owner-pid "$$" --duration-ms "$duration_ms" --route "$GATE_ROUTE"
+  fi
+}
+
+run_resumable_gate_stage() {
+  local mode="$1"
+  local stage="$2"
+  local stage_start=$SECONDS
+  local receipt_status=0
+  shift 2
+  gate_stage_is_green "$stage" || receipt_status=$?
+  case "$receipt_status" in
+    0)
+      echo -e "${GREEN}↻ Reused exact-tree green stage: $stage${NC}"
+      return 0
+      ;;
+    3)
+      ;;
+    *)
+      GATE_FAILED_STAGE="$stage"
+      echo -e "${RED}❌ Stage receipt integrity check failed before $stage${NC}" >&2
+      return "$receipt_status"
+      ;;
+  esac
+  receipt_status=0
+  : >"$GATE_FAILURE_OUTPUT_FILE"
+  if run_gate_resource_stage "$mode" "$stage" "$@" 2>&1 | tee "$GATE_FAILURE_OUTPUT_FILE"; then
+    mark_gate_stage_green "$stage" "$(( (SECONDS - stage_start) * 1000 ))" || receipt_status=$?
+    if [ "$receipt_status" -ne 0 ]; then
+      GATE_FAILED_STAGE="$stage"
+      echo -e "${RED}❌ Green stage receipt write failed for $stage${NC}" >&2
+      return "$receipt_status"
+    fi
+    return 0
+  fi
+  GATE_FAILED_STAGE="$stage"
+  return 1
+}
+
+settle_gate_receipt() {
+  local status="$1"
+  if [ "$GATE_TERMINAL_ACTIVE" != "true" ]; then
+    return 0
+  fi
+  local settle_args=(settle --run-id "$GATE_RUN_ID" --status "$status" --route-json "$GATE_ROUTE_JSON" --failure-output-file "$GATE_FAILURE_OUTPUT_FILE")
+  if [ -n "$GATE_FAILED_STAGE" ]; then
+    settle_args+=(--failed-stage "$GATE_FAILED_STAGE")
+  fi
+  if [ "$status" = "green" ]; then
+    settle_args+=(--required-stages "$GATE_REQUIRED_STAGES")
+  fi
+  node "$GATE_TERMINAL_RECEIPT_SCRIPT" "${settle_args[@]}"
+  GATE_TERMINAL_ACTIVE=false
+}
+
 GATE_GUARD_SCRIPT="$REPO_ROOT/scripts/pre-merge-gate-guard.mjs"
 GATE_LOCK_DIR="${CAT_CAFE_GATE_LOCK_DIR:-$REPO_ROOT/.cat-cafe/gate/pre-merge-check.lock}"
-node "$GATE_GUARD_SCRIPT" acquire --lock-dir "$GATE_LOCK_DIR" --holder-pid "$$"
+GATE_GUARD_ACTIVE=false
 release_gate_guard() {
-  node "$GATE_GUARD_SCRIPT" release --lock-dir "$GATE_LOCK_DIR" --holder-pid "$$" >/dev/null 2>&1 || true
+  if [ "$GATE_GUARD_ACTIVE" = "true" ]; then
+    node "$GATE_GUARD_SCRIPT" release --lock-dir "$GATE_LOCK_DIR" --holder-pid "$$" >/dev/null 2>&1 || true
+    GATE_GUARD_ACTIVE=false
+  fi
 }
-trap release_gate_guard EXIT
-trap 'release_gate_guard; exit 130' INT
-trap 'release_gate_guard; exit 143' TERM
-echo -e "${GREEN}✓ Gate singleflight + system-pressure preflight${NC}"
-echo ""
+gate_exit() {
+  local exit_code=$?
+  if [ "$exit_code" -eq 124 ]; then
+    GATE_TERMINAL_STATUS=timed_out
+  fi
+  settle_gate_receipt "$GATE_TERMINAL_STATUS" >/dev/null 2>&1 || true
+  release_gate_guard
+  if [ -n "$GATE_FAILURE_OUTPUT_FILE" ]; then
+    rm -f "$GATE_FAILURE_OUTPUT_FILE"
+  fi
+  if [ -n "$GATE_CONTROL_PLANE_DIR" ]; then
+    case "$GATE_CONTROL_PLANE_DIR" in
+      "${TMPDIR:-/tmp}"/cat-cafe-gate-control.*)
+        rm -rf "$GATE_CONTROL_PLANE_DIR"
+        ;;
+      *)
+        echo "refusing to remove unexpected gate control-plane path: $GATE_CONTROL_PLANE_DIR" >&2
+        ;;
+    esac
+  fi
+  return "$exit_code"
+}
+trap gate_exit EXIT
+trap 'GATE_TERMINAL_STATUS=cancelled; exit 130' INT
+trap 'GATE_TERMINAL_STATUS=cancelled; exit 143' TERM
 
 # ── Step 0.5: Auto-fix (--auto-fix only, F253) ──
 
@@ -203,10 +395,12 @@ fi
 # ── Step 1: Fetch + Rebase origin/main ──
 
 REBASE_SUMMARY="skipped (--no-rebase)"
+GATE_BASE_SHA=""
 STEP_START=$SECONDS
 if [ "$NO_REBASE" = "true" ]; then
   echo "── Step 1/6: 跳过 rebase（--no-rebase）──"
   echo -e "${YELLOW}⚠ 已跳过 origin/main rebase，仅用于本地验证${NC}"
+  GATE_BASE_SHA="$(git rev-parse origin/main)"
   record_step "rebase" "$STEP_START"
   echo ""
 else
@@ -230,8 +424,15 @@ else
   done
   echo -e "${GREEN}✓ fetch origin/main${NC}"
 
+  # Freeze the integration cut before rebasing. Other worktrees share the
+  # origin/main tracking ref and may fetch while this 30-minute gate is still
+  # running. Export this exact cut for base-aware child checkers; in particular,
+  # governance checks must not fetch and replace their comparison target midway.
+  GATE_BASE_SHA="$(git rev-parse origin/main)"
+  GATE_HEAD_BEFORE_REBASE="$(git rev-parse HEAD)"
+
   REBASE_RESULT=0
-  git rebase origin/main --quiet 2>&1 || REBASE_RESULT=$?
+  git rebase "$GATE_BASE_SHA" --quiet 2>&1 || REBASE_RESULT=$?
   if [ $REBASE_RESULT -ne 0 ]; then
     echo ""
     echo -e "${RED}❌ Rebase 有冲突！${NC}"
@@ -248,9 +449,140 @@ else
     echo "  git show :3:<path>   # THEIRS（main 上的改动）"
     exit 1
   fi
-  REBASE_SUMMARY="rebased onto origin/main"
-  echo -e "${GREEN}✓ rebase origin/main 成功${NC}"
+  REBASE_SUMMARY="rebased onto ${GATE_BASE_SHA:0:8} (frozen origin/main)"
+  echo -e "${GREEN}✓ rebase frozen origin/main ${GATE_BASE_SHA:0:8} 成功${NC}"
   record_step "rebase" "$STEP_START"
+  echo ""
+
+  # A rebase can replace this script or any gate-control dependency while the
+  # current Bash process still holds the pre-rebase function definitions. Do
+  # not mix that loaded shell with post-rebase CLIs. Re-exec the current tree
+  # before route classification, receipt creation, or any expensive stage.
+  GATE_HEAD_AFTER_REBASE="$(git rev-parse HEAD)"
+  if [ "$GATE_HEAD_AFTER_REBASE" != "$GATE_HEAD_BEFORE_REBASE" ]; then
+    if [ "$GATE_REEXEC_DEPTH" -ge 3 ]; then
+      echo -e "${RED}❌ Gate HEAD kept changing across 3 post-rebase restarts; refusing a mixed control plane${NC}" >&2
+      exit 1
+    fi
+    echo -e "${YELLOW}↻ Rebase changed HEAD; restarting gate from the rebased tree before post-rebase commands${NC}"
+    export CAT_CAFE_GATE_REEXEC_DEPTH="$((GATE_REEXEC_DEPTH + 1))"
+    if [ "$GATE_ORIGINAL_ARG_COUNT" -eq 0 ]; then
+      exec bash "$REPO_ROOT/scripts/pre-merge-check.sh"
+    else
+      exec bash "$REPO_ROOT/scripts/pre-merge-check.sh" "${GATE_ORIGINAL_ARGS[@]}"
+    fi
+  fi
+fi
+
+export CAT_CAFE_GATE_BASE_SHA="$GATE_BASE_SHA"
+echo -e "${GREEN}✓ Gate baseline frozen: ${GATE_BASE_SHA:0:8}${NC}"
+echo ""
+
+# Route from repository and receipt truth after the integration cut is frozen.
+# Public exports and --no-rebase probes retain the historical full contract.
+if [ "$NO_REBASE" = "false" ] && [ "$PUBLIC_EXPORT" = "false" ] && [ "$TEST_MODE" = "full" ]; then
+  GATE_CONTROL_REVISION="$(git rev-parse HEAD)"
+  GATE_CONTROL_PLANE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cat-cafe-gate-control.XXXXXX")"
+  node "$REPO_ROOT/scripts/snapshot-gate-control-plane.mjs" \
+    --repo-root "$REPO_ROOT" \
+    --revision "$GATE_CONTROL_REVISION" \
+    --destination "$GATE_CONTROL_PLANE_DIR" >/dev/null
+  if [ "$(git rev-parse HEAD)" != "$GATE_CONTROL_REVISION" ]; then
+    echo -e "${RED}❌ Gate HEAD changed while freezing its receipt control plane${NC}" >&2
+    exit 1
+  fi
+  GATE_ROUTE_CLASSIFIER_SCRIPT="$GATE_CONTROL_PLANE_DIR/scripts/classify-gate-route.mjs"
+  GATE_TERMINAL_RECEIPT_SCRIPT="$GATE_CONTROL_PLANE_DIR/scripts/gate-terminal-receipt.mjs"
+  GATE_DATABASE_PATH="${CAT_CAFE_FULL_GATE_RESOURCE_DB_PATH:-$(git rev-parse --path-format=absolute --git-common-dir)/cat-cafe-full-gate-resources.sqlite}"
+  GATE_ROUTE_ARGS=(--repo-root "$REPO_ROOT" --base-sha "$GATE_BASE_SHA" --database-path "$GATE_DATABASE_PATH")
+  if [ "$GATE_ORIGINAL_ARG_COUNT" -eq 0 ]; then
+    GATE_ORIGINAL_ARGS_JSON='[]'
+  else
+    GATE_ORIGINAL_ARGS_JSON="$(node -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' -- "${GATE_ORIGINAL_ARGS[@]}")"
+  fi
+  GATE_ROUTE_ARGS+=(--invocation-args-json "$GATE_ORIGINAL_ARGS_JSON")
+  if [ -n "$RISK_AXIS" ]; then
+    GATE_ROUTE_ARGS+=(--risk "$RISK_AXIS")
+  fi
+  GATE_ROUTE_JSON="$(node "$GATE_ROUTE_CLASSIFIER_SCRIPT" "${GATE_ROUTE_ARGS[@]}")"
+  GATE_ROUTE="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).route)' "$GATE_ROUTE_JSON")"
+  GATE_ROUTE_HEAD_SHA="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).headSha)' "$GATE_ROUTE_JSON")"
+  GATE_ROUTE_FINGERPRINT="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).fingerprint)' "$GATE_ROUTE_JSON")"
+  if [ "$GATE_ROUTE_HEAD_SHA" != "$GATE_CONTROL_REVISION" ]; then
+    echo -e "${RED}❌ Gate route tree no longer matches its control-plane snapshot${NC}" >&2
+    exit 1
+  fi
+  GATE_ROUTE_REASONS="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).reasons.join("; "))' "$GATE_ROUTE_JSON")"
+  echo -e "${GREEN}✓ Gate route=${GATE_ROUTE}: ${GATE_ROUTE_REASONS}${NC}"
+  echo ""
+  case "$GATE_ROUTE" in
+    targeted)
+      echo -e "${YELLOW}⚠ Full gate intentionally skipped; attach exact-HEAD risk-matched targeted evidence before merge.${NC}"
+      exit 0
+      ;;
+    reuse)
+      echo -e "${GREEN}✓ Reused canonical exact-tree terminal-green evidence${NC}"
+      bash "$(dirname "$0")/write-gate-last-run.sh" "$REPO_ROOT"
+      exit 0
+      ;;
+    full)
+      ;;
+    *)
+      echo -e "${RED}❌ Invalid gate route: ${GATE_ROUTE}${NC}" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+GATE_FAILURE_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/cat-cafe-gate-output.XXXXXX")"
+
+# Long full gates launched from a cat CLI must use the API-managed wakeWhen carrier.
+# Classification stays cheap and foreground-safe, so targeted routes never get
+# rejected merely because their caller is a cat process.
+if [ -n "${CAT_CAFE_PROCESS_OWNER_ID:-}" ] || [ "${CAT_CAFE_CLI_PROCESS_CONTEXT:-}" = "cat" ]; then
+  echo "⛔ 猫猫 CLI 不能前台运行 full gate。" >&2
+  echo "   请调用 cat_cafe_hold_ball({ wakeWhen: { command: \"pnpm gate\" } })。" >&2
+  echo "   Hub 会显示结构化运行状态，并在命令终态自动唤醒当前猫猫。" >&2
+  exit 2
+fi
+
+node "$GATE_GUARD_SCRIPT" acquire --lock-dir "$GATE_LOCK_DIR" --holder-pid "$$"
+GATE_GUARD_ACTIVE=true
+echo -e "${GREEN}✓ Gate singleflight + system-pressure preflight${NC}"
+echo ""
+
+# Canonical exact-tree singleflight starts only for the complete source-full
+# plan after its integration cut is frozen. Local, source-public, and exported
+# public runs remain non-reusable probes.
+if [ "$NO_REBASE" = "false" ] && [ "$PUBLIC_EXPORT" = "false" ] && [ "$TEST_MODE" = "full" ]; then
+  export CAT_CAFE_MANAGED_JOB_ID="${CAT_CAFE_MANAGED_JOB_ID:-full-gate-$(node -e 'console.log(crypto.randomUUID())')}"
+  if [ "$GATE_ORIGINAL_ARG_COUNT" -eq 0 ]; then
+    GATE_CLAIM_JSON="$(node "$GATE_TERMINAL_RECEIPT_SCRIPT" begin --owner-pid "$$" --expected-fingerprint "$GATE_ROUTE_FINGERPRINT" --)"
+  else
+    GATE_CLAIM_JSON="$(node "$GATE_TERMINAL_RECEIPT_SCRIPT" begin --owner-pid "$$" --expected-fingerprint "$GATE_ROUTE_FINGERPRINT" -- "${GATE_ORIGINAL_ARGS[@]}")"
+  fi
+  GATE_CLAIM_ROLE="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).role)' "$GATE_CLAIM_JSON")"
+  GATE_RUN_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).runId)' "$GATE_CLAIM_JSON")"
+  GATE_CLAIM_STATUS="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).terminalStatus ?? "")' "$GATE_CLAIM_JSON")"
+  case "$GATE_CLAIM_ROLE" in
+    producer)
+      GATE_TERMINAL_ACTIVE=true
+      echo -e "${GREEN}✓ Durable gate producer: ${GATE_RUN_ID}${NC}"
+      ;;
+    reused|consumed)
+      if [ "$GATE_CLAIM_STATUS" = "green" ]; then
+        echo -e "${GREEN}✓ Reused canonical exact-tree terminal-green receipt: ${GATE_RUN_ID}${NC}"
+        bash "$(dirname "$0")/write-gate-last-run.sh" "$REPO_ROOT"
+        exit 0
+      fi
+      echo -e "${RED}❌ Concurrent gate producer settled ${GATE_CLAIM_STATUS}; terminal evidence consumed without rerun${NC}" >&2
+      exit 1
+      ;;
+    *)
+      echo -e "${RED}❌ Invalid durable gate claim role: ${GATE_CLAIM_ROLE}${NC}" >&2
+      exit 1
+      ;;
+  esac
   echo ""
 fi
 
@@ -266,7 +598,7 @@ else
   # Gate build/test must install devDependencies even if the parent shell came in
   # with production env flags set. Otherwise a fresh worktree can falsely go red
   # on missing @types/* packages before we reach the real baseline verdict.
-  if ! env -u NODE_ENV -u npm_config_production -u NPM_CONFIG_PRODUCTION pnpm install --frozen-lockfile; then
+  if ! run_gate_resource_stage shared install env -u NODE_ENV -u npm_config_production -u NPM_CONFIG_PRODUCTION pnpm install --frozen-lockfile; then
     echo ""
     echo -e "${RED}❌ pnpm install --frozen-lockfile 失败${NC}"
     exit 1
@@ -284,12 +616,27 @@ record_step "install" "$STEP_START"
 # ── Step 3: Build ──
 STEP_START=$SECONDS
 echo "── Step 3/6: 全量 build ──"
-if ! pnpm -r --if-present run build; then
+# The root recursive build has a wider output closure than the package-local
+# prepared artifacts below. Always rebuild it; only later named stages resume.
+unset CAT_CAFE_GATE_PREPARED_ARTIFACTS
+if ! run_gate_resource_stage shared build pnpm -r --if-present run build; then
   echo ""
   echo -e "${RED}❌ Build 失败${NC}"
   exit 1
 fi
-echo -e "${GREEN}✓ build 通过${NC}"
+if [ "$PUBLIC_EXPORT" = "true" ]; then
+  unset CAT_CAFE_GATE_PREPARED_ARTIFACTS
+  echo -e "${GREEN}✓ build 通过（public direct lane）${NC}"
+else
+  if ! node "$REPO_ROOT/scripts/gate-prepared-artifacts.mjs" record; then
+    echo ""
+    echo -e "${RED}❌ Build 产物收据记录失败${NC}"
+    exit 1
+  fi
+  export CAT_CAFE_GATE_PREPARED_ARTIFACTS=1
+  echo -e "${GREEN}✓ build 通过${NC}"
+  echo -e "${GREEN}✓ 当前 HEAD build 产物已记录，后续 stage 可复用${NC}"
+fi
 record_step "build" "$STEP_START"
 echo ""
 
@@ -304,7 +651,7 @@ STEP_START=$SECONDS
 # 这一步对所有包（含测试文件）跑 tsc --noEmit，堵住盲区。
 
 echo "── Step 4/6: TypeScript 全量类型检查（含测试） ──"
-if ! pnpm -r exec bash -lc 'if command -v tsc >/dev/null 2>&1; then tsc --noEmit; fi'; then
+if ! run_resumable_gate_stage shared tsc pnpm -r exec bash -lc 'if command -v tsc >/dev/null 2>&1; then tsc --noEmit; fi'; then
   echo ""
   echo -e "${RED}❌ TypeScript 类型检查失败${NC}"
   echo "   测试文件的类型也必须通过 — 请同步更新 mock 对象"
@@ -315,27 +662,7 @@ record_step "tsc" "$STEP_START"
 echo ""
 
 # ── Step 5: Test（按仓库形态选择 full 或 public） ──
-resolve_test_mode() {
-  if [ "$CAT_CAFE_GATE_TEST_MODE" = "full" ] || [ "$CAT_CAFE_GATE_TEST_MODE" = "public" ]; then
-    printf '%s\n' "$CAT_CAFE_GATE_TEST_MODE"
-    return 0
-  fi
-
-  # Public sync targets intentionally omit source-only governance artifacts
-  # such as .claude/settings.json, while exposing the API public test suite
-  # used by GitHub CI. In that shape, running source full tests is a false red.
-  if [ ! -f "$REPO_ROOT/.claude/settings.json" ] && [ -f "$REPO_ROOT/packages/api/package.json" ]; then
-    if node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); process.exit(p.scripts && p.scripts["test:public"] ? 0 : 1);' "$REPO_ROOT/packages/api/package.json"; then
-      printf '%s\n' "public"
-      return 0
-    fi
-  fi
-
-  printf '%s\n' "full"
-}
-
 STEP_START=$SECONDS
-TEST_MODE="$(resolve_test_mode)"
 # 清除 REDIS_URL 以避免触发 Redis 隔离守卫。
 # Worktree 的 .env.local 设置了 REDIS_URL=6398（用于开发），
 # 但全量测试不应依赖 Redis——Redis 集成测试有专门的 test:redis 命令。
@@ -345,7 +672,7 @@ TEST_MODE="$(resolve_test_mode)"
 # 超过 30s 会被 node --test 标记为 FAIL 并继续。无需外部 watchdog。
 if [ "$TEST_MODE" = "public" ]; then
   echo "── Step 5/6: Public repo test suite ──"
-  if ! env -u REDIS_URL pnpm --filter @cat-cafe/api run test:public; then
+  if ! run_resumable_gate_stage shared test-public env -u REDIS_URL pnpm --filter @cat-cafe/api run test:public; then
     echo ""
     echo -e "${RED}❌ Public 测试未通过${NC}"
     echo "   请修复失败的测试后重新执行 pnpm gate"
@@ -354,7 +681,10 @@ if [ "$TEST_MODE" = "public" ]; then
   echo -e "${GREEN}✓ Public 测试通过${NC}"
 else
   echo "── Step 5/6: 全量测试 ──"
-  if ! env -u REDIS_URL pnpm test; then
+  if ! run_resumable_gate_stage shared test-non-browser env -u REDIS_URL pnpm -r --workspace-concurrency=1 --if-present --filter '!@cat-cafe/web' run test ||
+    ! run_resumable_gate_stage shared test-web-unit env -u REDIS_URL pnpm --filter @cat-cafe/web run test:unit ||
+    ! run_resumable_gate_stage exclusive test-web-browser env -u REDIS_URL pnpm --filter @cat-cafe/web run test:browser ||
+    ! run_resumable_gate_stage shared test-web-guards env -u REDIS_URL pnpm --filter @cat-cafe/web run test:guards; then
     echo ""
     echo -e "${RED}❌ 全量测试未通过${NC}"
     echo "   请修复失败的测试后重新执行 pnpm gate"
@@ -373,14 +703,14 @@ echo ""
 # Only web's "lint": "next lint" (ESLint) adds value here.
 STEP_START=$SECONDS
 echo "── Step 6/6: lint (web only — tsc deduped from Step 4) + check ──"
-if ! pnpm --filter @cat-cafe/web lint; then
+if ! run_resumable_gate_stage shared lint-web pnpm --filter @cat-cafe/web lint; then
   echo ""
   echo -e "${RED}❌ web lint 失败${NC}"
   exit 1
 fi
 echo -e "${GREEN}✓ web lint 通过（api/shared/mcp/ppt tsc 已在 Step 4 覆盖）${NC}"
 
-if ! pnpm check; then
+if ! run_resumable_gate_stage shared check pnpm check; then
   echo ""
   echo -e "${RED}❌ check 失败${NC}"
   exit 1
@@ -413,6 +743,15 @@ done
 printf "║    %-14s %3ds\n" "TOTAL" "$GATE_TOTAL"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
+
+OBSERVED_MAIN_SHA="$(git rev-parse origin/main 2>/dev/null || true)"
+if [ -n "$OBSERVED_MAIN_SHA" ] && [ "$OBSERVED_MAIN_SHA" != "$GATE_BASE_SHA" ]; then
+  echo -e "${YELLOW}⚠ origin/main advanced during this gate: ${GATE_BASE_SHA:0:8} → ${OBSERVED_MAIN_SHA:0:8}${NC}"
+  echo "  This completed full-gate evidence remains bound to the frozen base."
+  echo "  Rebase once, prove authored patch continuity + unrelated base delta, then run targeted continuity checks."
+  echo "  Do not rerun the full gate solely because main advanced."
+  echo ""
+fi
 # LL-082 hard layer: list dirty worktrees so each uncommitted diff has known provenance
 # before merge (H4 dogfood: an orphaned half-fix in a sibling worktree crossed the gate).
 echo "── LL-082 dirty-worktree ledger（merge 前确认所有 worktree 的 dirty diff 都有 PR/task/comment 归属）──"
@@ -423,3 +762,4 @@ echo "可以安全执行 merge-gate 的后续步骤了。"
 # F253 Phase C (AC-C1): Write gate-last-run sentinel for pre-push Layer 4
 # This timestamp lets check-gate-freshness.sh know gate passed recently.
 bash "$(dirname "$0")/write-gate-last-run.sh" "$REPO_ROOT"
+settle_gate_receipt green

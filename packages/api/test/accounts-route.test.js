@@ -222,14 +222,15 @@ describe('accounts routes', () => {
       assert.equal(rejected.statusCode, 400, 'a __proto__ key anywhere in the body must be refused');
       assert.match(rejected.json().message, /forbidden prototype property/);
 
-      // The guard must not be a blanket envVars refusal.
+      // The guard must not be a blanket envVars refusal. api_key accounts
+      // require clientId (same contract as the create+list flow below).
       const accepted = await app.inject({
         method: 'POST',
         url: '/api/accounts',
         headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
         payload:
           `{"projectPath":${JSON.stringify(projectDir)},"name":"plain-env","authType":"api_key",` +
-          '"envVars":{"MY_VAR":"ok","CAT_CAFE_RESERVED":"stripped"}}',
+          '"clientId":"anthropic","envVars":{"MY_VAR":"ok","CAT_CAFE_RESERVED":"stripped"}}',
       });
       assert.equal(accepted.statusCode, 200);
       const stored = readCatalogAccounts(projectDir)[accepted.json().profile.id];
@@ -259,6 +260,7 @@ describe('accounts routes', () => {
           projectPath: projectDir,
           provider: 'anthropic',
           displayName: 'sponsor-route',
+          clientId: 'anthropic',
           authType: 'api_key',
           baseUrl: 'https://api.route.dev',
           apiKey: 'sk-route',
@@ -314,6 +316,7 @@ describe('accounts routes', () => {
         payload: JSON.stringify({
           projectPath: projectDir,
           displayName: 'Aliased Models',
+          clientId: 'kimi',
           authType: 'api_key',
           modelAliases: { 'kimi-code/k3': 'kimi-k3' },
         }),
@@ -458,6 +461,7 @@ describe('accounts routes', () => {
           displayName: 'My Sponsor',
           authType: 'api_key',
           baseUrl: 'https://api.first.example',
+          clientId: 'anthropic',
           apiKey: 'sk-first',
         }),
       });
@@ -473,6 +477,7 @@ describe('accounts routes', () => {
           displayName: 'My Sponsor',
           authType: 'api_key',
           baseUrl: 'https://api.second.example',
+          clientId: 'anthropic',
           apiKey: 'sk-second',
         }),
       });
@@ -514,6 +519,7 @@ describe('accounts routes', () => {
         payload: JSON.stringify({
           projectPath: projectDir,
           displayName: 'Clearable',
+          clientId: 'anthropic',
           authType: 'api_key',
           apiKey: 'sk-to-clear',
         }),

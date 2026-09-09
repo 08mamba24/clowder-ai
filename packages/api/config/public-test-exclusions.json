@@ -1,15 +1,6 @@
 {
-  "version": 1,
+  "version": 2,
   "entries": [
-    {
-      "id": "codex-agent-service",
-      "match": "codex-agent-service",
-      "category": "source_only",
-      "reason": "2026-09-06 re-audit: requires the real Codex CLI on PATH; without the binary 88/94 assertions fail (PATH-strip reproducer). Public runners do not install codex, so this stays source-only until the suite is hermetic.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-09-30"
-    },
     {
       "id": "redis",
       "match": "redis-",
@@ -17,7 +8,91 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Redis isolation and persistence tests are internal harness coverage, not part of the public gate.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-05",
+        "sourceHead": "5aa0f7d5fe9f7b00ac7b564dbd41211354157133",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "resource_contract",
+        "matchedFileCount": 63,
+        "matchedFilesHash": "613776cced1400d311fd529f4b000a0c76c0306cd7e55fc9061b4115d8435a57"
+      },
+      "publicAudit": {
+        "reviewedOn": "2026-09-05",
+        "sourceHead": "c5633cf643447e040af125d361d2156e38fdb081",
+        "publicHead": "f3dba7a1abb9474a88764f21283297cbe9935e2b",
+        "status": "resource_contract",
+        "matchedFileCount": 64,
+        "matchedFilesHash": "5e21c0b349928349fbe2de8cb929538c801b354db1f1eedb07420658fbd508c6"
+      }
+    },
+    {
+      "id": "session-strategy-phase3",
+      "match": "session-strategy-phase3",
+      "category": "source_only",
+      "reason": "Phase 3 session strategy assertions cover internal rollout behavior outside the public gate contract.",
+      "owner": "@zts212653",
+      "introducedBy": "78f3bc57c",
+      "expiresOn": "2026-10-01",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "4127534522f418733c8f19179cb88aec40ce3fe4bcb1657842cd393bd5516d91"
+      }
+    },
+    {
+      "id": "workflow-sop-store",
+      "match": "workflow-sop-store",
+      "category": "source_only",
+      "reason": "The bounded public audit discovered no matching test file; retain only until the explicit inventory recheck completes. (2026-09-09 renew during origin↔upstream integration; still source_only.)",
+      "owner": "@zts212653",
+      "introducedBy": "78f3bc57c",
+      "expiresOn": "2026-10-09",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "pending_bounded_recheck",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "f2bb4b4bfdab922a8169ff8df9d041e0d694b636be18fa81ce58850ba264e0c8"
+      }
+    },
+    {
+      "id": "codex-agent-service",
+      "match": "codex-agent-service",
+      "category": "source_only",
+      "reason": "2026-09-06 re-audit: requires the real Codex CLI on PATH; without the binary 88/94 assertions fail (PATH-strip reproducer). Public runners do not install codex, so this stays source-only until the suite is hermetic.",
+      "owner": "@zts212653",
+      "introducedBy": "78f3bc57c",
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "pending_bounded_recheck",
+        "matchedFileCount": 2,
+        "matchedFilesHash": "bb6f15490d1f0a407ece89b4a005c9fbea371b0d2b57e3d3ce080c9b27f08113"
+      }
+    },
+    {
+      "id": "kimi-agent-service",
+      "match": "kimi-agent-service",
+      "category": "source_only",
+      "reason": "Kimi agent service coverage depends on internal runtime behavior outside the public gate contract.",
+      "owner": "@zts212653",
+      "introducedBy": "78f3bc57c",
+      "expiresOn": "2026-10-01",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "02431627c6e84d1a89123586fe6c450c068adb377918637e8eb8046fdd18d7b1"
+      }
     },
     {
       "id": "memory-tests",
@@ -26,7 +101,49 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Memory package tests cover internal recall/index behavior outside the public gate promise.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-04",
+        "sourceHead": "5a0b3a6bb96fa0ecefd4081ecd8cd739a991bd97",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 256,
+        "matchedFilesHash": "ce05e5d09e8db161d0cf131380ae0fcbb82e9838bbc2e14c2588a3f2341d538d"
+      }
+    },
+    {
+      "id": "thread-wiring",
+      "match": "thread-wiring\\.test",
+      "category": "source_only",
+      "reason": "Thread wiring assertions cover internal callback plumbing outside the public gate contract.",
+      "owner": "@zts212653",
+      "introducedBy": "78f3bc57c",
+      "expiresOn": "2026-10-01",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "1751f3af4a52c290eb6e669004d487bbf4b53a2325a42e50f7489b3f9a85b580"
+      }
+    },
+    {
+      "id": "integration-wiring",
+      "match": "integration/wiring\\.test",
+      "category": "source_only",
+      "reason": "Integration wiring checks depend on internal connection topology not exported to the public gate.",
+      "owner": "@zts212653",
+      "introducedBy": "78f3bc57c",
+      "expiresOn": "2026-10-01",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "7a1f58932ffd3615c1d498f55a647da6b1620fc35bcce76ef409817ec9bc2480"
+      }
     },
     {
       "id": "shared-state-wiring",
@@ -35,7 +152,74 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Shared-state wiring is internal runtime glue not part of the public gate guarantee.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "0df9171f74a61605fcb0ad7ec7c9a1246afe814ff04adb8015bdb763ae4a5b2d"
+      }
+    },
+    {
+      "id": "write-vignette-publication-hook",
+      "match": "write-vignette-publication-hook\\.test",
+      "category": "source_only",
+      "reason": "The tracked post-checkout hook enforces the Clowder AI primary-worktree policy and is intentionally not exported; its integration test therefore remains a source-only contract.",
+      "owner": "@zts212653",
+      "introducedBy": "c8575732e",
+      "expiresOn": "2026-10-01",
+      "audit": {
+        "reviewedOn": "2026-09-02",
+        "sourceHead": "499beb6c81315025524e92e4966ddce938126e4a",
+        "publicHead": "01c58feb40fab2a75016a9a8d290c87f6776d9a0",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "fc1e2052168010d8a8e26058ae6ce4137ffc7c389829b16dd6e069a4401de35d"
+      },
+      "publicAudit": {
+        "reviewedOn": "2026-09-02",
+        "sourceHead": "499beb6c81315025524e92e4966ddce938126e4a",
+        "publicHead": "01c58feb40fab2a75016a9a8d290c87f6776d9a0",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "fc1e2052168010d8a8e26058ae6ce4137ffc7c389829b16dd6e069a4401de35d"
+      }
+    },
+    {
+      "id": "capability-evolution-evaluation-owner-join",
+      "match": "capability-evolution-evaluation-owner-join\\.test",
+      "category": "source_only",
+      "reason": "The real F311-to-F267 owner-join integration reads private measurement-result and certificate artifacts that are intentionally absent from the public export.",
+      "owner": "@zts212653",
+      "introducedBy": "fee877947",
+      "expiresOn": "2026-10-01",
+      "audit": {
+        "reviewedOn": "2026-09-02",
+        "sourceHead": "68847c8e92d5bfa0ec0e7dfb0fba03e8812eb73c",
+        "publicHead": "01c58feb40fab2a75016a9a8d290c87f6776d9a0",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "cd7af3541334cb66d5e48e31052c71d6876cb91efa20f8d4f0bf4ddc3f01041e"
+      }
+    },
+    {
+      "id": "capability-evolution-private-owner-evidence",
+      "match": "(?:capability-evolution-e0-owner-inputs|f314-capability-evolution-owner-inputs|harness-eval/(?:capability-evolution-measurement-(?:issuer(?:-security)?|source-store)|f311-(?:capability-evolution-wakeup|e0-eval-repair-owner-provider)))\\.test",
+      "category": "private_fixture",
+      "reason": "These exact capability-evolution integration tests validate Clowder AI's canonical owner certificates, measurement sources, and intent fixtures, which are instance-owned evidence deliberately absent from the public export.",
+      "owner": "@zts212653",
+      "introducedBy": "da83ee2875",
+      "expiresOn": "2026-10-01",
+      "audit": {
+        "reviewedOn": "2026-09-04",
+        "sourceHead": "251d681e8fbd2ea20c5086ff73d3d47ca8d7f861",
+        "publicHead": "9f6ac206988f635feddd18d8b0ed517bb7ab2b1a",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 7,
+        "matchedFilesHash": "e2f0a28bfba90b3e3ed4bb219e79cde7edef8eb55bdd01360be757aa4e3013cd"
+      }
     },
     {
       "id": "signal-fetcher-launchd",
@@ -44,7 +228,15 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). launchd-specific signal fetcher coverage depends on private macOS fixtures and stays internal.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "2fa8886467effb9d39d17159a09d6598eab910e3a048def6455ab300f5b46636"
+      }
     },
     {
       "id": "reflection-capsule-m3",
@@ -53,25 +245,15 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Reflection capsule M3 tests cover internal memory/harness behavior outside the public gate.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-09-30"
-    },
-    {
-      "id": "governance-status",
-      "match": "governance-status\\.test",
-      "category": "source_only",
-      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Governance status assertions are source-owned workflow coverage, not public gate behavior.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-09-30"
-    },
-    {
-      "id": "governance-pack",
-      "match": "governance-pack\\.test",
-      "category": "source_only",
-      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Governance pack assertions validate source-only sync content and are intentionally excluded from public gate.",
-      "owner": "@zts212653",
-      "introducedBy": "069d0f0fb",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "24dbca913f9baef4c217077bf21014f6e0c8b9c3564b9f3ace72f1f16d830de1"
+      }
     },
     {
       "id": "pack-integration",
@@ -80,16 +262,15 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Pack integration coverage exercises internal source packaging rules outside the public gate.",
       "owner": "@zts212653",
       "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-09-30"
-    },
-    {
-      "id": "project-setup-flow",
-      "match": "project-setup-flow\\.test",
-      "category": "source_only",
-      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Project setup flow behavior is internal bootstrap coverage, not public gate contract.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "e863ecc16f456dc0e0ac9150ae1cc72a0953fc0c5d79a1f2b2449992c8652b4e"
+      }
     },
     {
       "id": "root-md-slim",
@@ -98,7 +279,15 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Root markdown slim tests rely on source-specific Chinese anchors not preserved in public export.",
       "owner": "@zts212653",
       "introducedBy": "7a300704a",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "b96b750f224f1d09b5eaa2225d325005e0bf56dbe9766d86dd8c9a05e0cbb496"
+      }
     },
     {
       "id": "audit-cc-system-prompt",
@@ -107,7 +296,15 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). System prompt audit depends on internal L0 prompt assets not shipped in public export.",
       "owner": "@zts212653",
       "introducedBy": "e9bb56052",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "4669091edc31419467913df55953f3bd2e734e9a4e313b4bef808ea128094332"
+      }
     },
     {
       "id": "f188-cold-start-fixtures",
@@ -116,7 +313,15 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). F188 cold-start fixture coverage depends on internal fixture files absent from public export.",
       "owner": "@zts212653",
       "introducedBy": "e9bb56052",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "647ec3b74409c18f828424d0e3a60b79f221797fefbc0d3265b3eb6de891a524"
+      }
     },
     {
       "id": "f188-harness-consistency",
@@ -125,16 +330,15 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). F188 harness consistency checks rely on internal fixtures and remain source-only.",
       "owner": "@zts212653",
       "introducedBy": "e9bb56052",
-      "expiresOn": "2026-09-30"
-    },
-    {
-      "id": "f203-phase-i-opencode-l0",
-      "match": "f203-phase-i-opencode-l0\\.test",
-      "category": "source_only",
-      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). F203 opencode L0 coverage depends on internal runtime files not exported publicly.",
-      "owner": "@zts212653",
-      "introducedBy": "9c4f26fde",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "73cee6542191fe3929a475b31b0eba71919b12e07d7c444244ea3a8819072a8e"
+      }
     },
     {
       "id": "f236-cc-anchor-hook",
@@ -143,16 +347,32 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). F236 cc anchor hook coverage imports the source-only root .claude hook implementation that is not part of the public export.",
       "owner": "@zts212653",
       "introducedBy": "68dd499d9",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "dbafee0ca7d55a3a08f1e9d72c479a1999128b08f6b29c729317d8280ff2cde0"
+      }
     },
     {
-      "id": "github-schedule-factories",
-      "match": "github-schedule-factories\\.test",
+      "id": "f296-source-hook-contracts",
+      "match": "f296-(?:b3b3-post-compact-hook|session-hook-source-auth)\\.test",
       "category": "source_only",
-      "reason": "2026-09-06 reconcile: still non-public (see original rationale below). GitHub schedule factory assertions are source-owned public-sync governance coverage, not runtime gate behavior.",
+      "reason": "F296 Claude hook byte and execution contracts require source-only root hook scripts that are deliberately absent from the public export; runtime callback composition and temp-fixture readiness remain publicly tested.",
       "owner": "@zts212653",
-      "introducedBy": "bd8823b99",
-      "expiresOn": "2026-09-30"
+      "introducedBy": "842656205e",
+      "expiresOn": "2026-10-01",
+      "audit": {
+        "reviewedOn": "2026-09-02",
+        "sourceHead": "c4c5f828ae79ef4221c14d2c37cd6f54e3c3f04b",
+        "publicHead": "01c58feb40fab2a75016a9a8d290c87f6776d9a0",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 2,
+        "matchedFilesHash": "0c4804c84ca718adb7ffd8b836ea737de5875f8daa1452d0f909e04b30e7eb46"
+      }
     },
     {
       "id": "harness-eval-hub-read-model",
@@ -161,7 +381,15 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Eval hub read-model coverage exercises source-owned harness governance surfaces outside the public gate.",
       "owner": "@zts212653",
       "introducedBy": "bd8823b99",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "826b543cdb5eb370ec6b80ee8d5ad7414b101a1881585a8bc76cfcc9b9fb7713"
+      }
     },
     {
       "id": "harness-eval-merge-gate-provenance-contract",
@@ -170,7 +398,32 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Merge-gate provenance contract tests are source-owned governance coverage, not public runtime behavior.",
       "owner": "@zts212653",
       "introducedBy": "bd8823b99",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "3e730c3767c5de435fa700a4a4926f3b75c3de1fc13d1b691c5fe62d488c9d0c"
+      }
+    },
+    {
+      "id": "harness-eval-design-gate-private-evidence",
+      "match": "harness-eval/design-gate-episode-source-provider-private-evidence\\.test",
+      "category": "private_fixture",
+      "reason": "The committed design-gate episode proof consumes home-only source maps and review provenance; its self-contained provider contract remains public.",
+      "owner": "@zts212653",
+      "introducedBy": "a21fd7682",
+      "expiresOn": "2026-10-01",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "8f27390a06280fe0cbd2d28692d66b847bab29fc45231a7817cb50a5f247de28"
+      }
     },
     {
       "id": "f254-private-evidence-contracts",
@@ -179,7 +432,15 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). F254 document evidence, replay, scope, and native-provider checks require home-only archives, owner provenance, or carrier credentials; public runtime behavior is covered independently.",
       "owner": "@zts212653",
       "introducedBy": "bfa9e2c8f",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 4,
+        "matchedFilesHash": "d1eb54b87cc4db5903184b69b5743cceef36b6c9d2a609594f1fcaadee0789c6"
+      }
     },
     {
       "id": "harness-eval-private-registry",
@@ -188,16 +449,49 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). These Eval Hub governance checks require the home-only measurement registry and historical evidence archive, not public product state.",
       "owner": "@zts212653",
       "introducedBy": "bfa9e2c8f",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 4,
+        "matchedFilesHash": "aa2cc08b3e4cd6befd518b8293d1e79fc2702cf996381efed852df876cd59d69"
+      }
     },
     {
       "id": "harness-eval-private-measurement-evidence",
-      "match": "harness-eval/(?:friction-measurement-bundle|measurement-bundle-census|measurement-independent-rejudge(?:-adjudication|-judgment)?)\\.test",
+      "match": "harness-eval/(?:friction-measurement-bundle|measurement-independent-rejudge(?:-adjudication|-judgment)?)\\.test",
       "category": "private_fixture",
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Measurement census and rejudge checks consume private certificates, verdicts, and replay artifacts that are deliberately absent from the public export.",
       "owner": "@zts212653",
       "introducedBy": "bfa9e2c8f",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 4,
+        "matchedFilesHash": "2fefb759ec45a303e710a01fc3475c061ee1977d4cefde21fedeb4394805fd60"
+      }
+    },
+    {
+      "id": "harness-eval-measurement-decision-proof",
+      "match": "harness-eval/measurement-decision-proof(?:-resolver)?\\.test",
+      "category": "private_fixture",
+      "reason": "F267 decision-proof behavior and its file-backed resolver fixtures read home-only measurement certificates and results that are deliberately absent from the public export; self-contained normalized proof contracts remain public.",
+      "owner": "@zts212653",
+      "introducedBy": "656bd3e287",
+      "expiresOn": "2026-10-01",
+      "audit": {
+        "reviewedOn": "2026-09-02",
+        "sourceHead": "d788a4e899b1f1f4da4851f29a19ea64e5488aaa",
+        "publicHead": "01c58feb40fab2a75016a9a8d290c87f6776d9a0",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 2,
+        "matchedFilesHash": "4ddee17849f53b58ddd90acdc081197de0e7c237174bd4709370be299bd2e132"
+      }
     },
     {
       "id": "harness-eval-private-verdict-publication",
@@ -206,7 +500,15 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Verdict publication checks require home-owned task, memory, and measurement evidence stores; they are governance coverage rather than a public runtime contract.",
       "owner": "@zts212653",
       "introducedBy": "bfa9e2c8f",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 9,
+        "matchedFilesHash": "0c0d80f3d4f94431a26b151478f8beed27527783d335186604a61627b7a9f4de"
+      }
     },
     {
       "id": "harness-eval-private-legacy-reeval-cases",
@@ -215,7 +517,15 @@
       "reason": "2026-09-06 reconcile: still non-public (see original rationale below). Legacy stable-case migration and Hub projection assertions consume the home-only historical verdict archive and migration manifest, which are deliberately absent from the public export.",
       "owner": "@zts212653",
       "introducedBy": "7121c7dec",
-      "expiresOn": "2026-09-30"
+      "expiresOn": "2026-09-30",
+      "audit": {
+        "reviewedOn": "2026-09-01",
+        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
+        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 2,
+        "matchedFilesHash": "5156289dd54012e2deb82e432e13df85d39af2bbdc967e4499a266a82a95547a"
+      }
     }
   ]
 }

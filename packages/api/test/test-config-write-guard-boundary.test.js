@@ -3,15 +3,13 @@
  *
  * A cat's shell is launched by the running API process, which exports
  * CAT_CAFE_RUNTIME_ROOT / CAT_CAFE_WORKSPACE_ROOT pointing at the live stores.
- * The runtime→workspace migration fires on the presence of those two variables
- * alone — it has nothing to do with a test's own project dir — so a bare
- * `node --test` used to copy accounts into the outer workspace and write a
- * completion marker, while still exiting 0. scripts/with-test-home.sh strips
- * those roots, but it is an OPTIONAL entrypoint, so safety depended on the
- * caller remembering it. That is not a boundary, it is a convention.
+ * scripts/with-test-home.sh strips those roots, but it is an OPTIONAL
+ * entrypoint — safety must not depend on remembering it.
  *
- * These tests spawn a child the unsafe way ON PURPOSE — bare `node --test`,
- * no wrapper, CAT_CAFE_TEST_SANDBOX explicitly unset — against fake temp roots.
+ * After dual-root adjudication, ordinary catalog reads are pure (no cutover
+ * writes). The boundary that remains: a bare `node --test` must refuse to READ
+ * or WRITE inherited outer store roots; explicit migrateCatalogAccounts stays
+ * under the same write guard.
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -36,17 +34,20 @@ after(() => {
 });
 
 /**
- * Fake outer stores + an inner test file that does nothing but read the catalog
- * — which is enough, because reading triggers the migration.
+ * Fake outer stores + an inner test whose project path sits UNDER the inherited
+ * runtime root. Dual-root topology only selects the workspace primary when the
+ * reader path is under RUNTIME_ROOT — that is the live-shell hazard P1-5 guards.
  */
 function buildFixture() {
   const runtimeRoot = makeTemp('p15-outer-runtime-');
   const workspaceRoot = makeTemp('p15-outer-workspace-');
   const fakeHome = makeTemp('p15-fake-home-');
+  const projectRoot = join(runtimeRoot, 'packages', 'api');
   const innerDir = makeTemp('p15-inner-test-');
 
   mkdirSync(join(runtimeRoot, '.cat-cafe'), { recursive: true });
   mkdirSync(join(workspaceRoot, '.cat-cafe'), { recursive: true });
+  mkdirSync(projectRoot, { recursive: true });
   writeFileSync(
     join(runtimeRoot, '.cat-cafe', 'accounts.json'),
     `${JSON.stringify({ outer: { authType: 'api_key', clientId: 'anthropic', displayName: 'outer' } }, null, 2)}\n`,
@@ -64,24 +65,19 @@ function buildFixture() {
       "import { test } from 'node:test';",
       `import { readCatalogAccounts } from ${JSON.stringify(CATALOG_ACCOUNTS_DIST)};`,
       "test('reading the catalog must not reach the inherited outer store', () => {",
-      `  readCatalogAccounts(${JSON.stringify(join(innerDir, 'project'))});`,
+      `  readCatalogAccounts(${JSON.stringify(projectRoot)});`,
       '});',
       '',
     ].join('\n'),
   );
 
-  return { runtimeRoot, workspaceRoot, fakeHome, innerTest };
+  return { runtimeRoot, workspaceRoot, fakeHome, innerTest, innerDir, projectRoot };
 }
 
 function runBareChild({ runtimeRoot, workspaceRoot, fakeHome, innerTest }, extraEnv = {}) {
   const env = { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome };
-  // These must be DELETED, not set to ''. This file itself runs under node:test,
-  // and node treats an inherited NODE_TEST_CONTEXT — even empty — as "already
-  // inside a run", silently skipping the child's file and exiting 0. That would
-  // make both assertions below pass or fail for the wrong reason.
   for (const key of [
     'NODE_TEST_CONTEXT',
-    // Explicitly NOT the sanctioned entrypoint: no wrapper, no opt-in flag.
     'CAT_CAFE_TEST_SANDBOX',
     'CAT_CAFE_TEST_REAL_HOME',
     'CAT_CAFE_GLOBAL_CONFIG_ROOT',
@@ -122,30 +118,59 @@ describe('test persistence boundary (P1-5)', () => {
   });
 
   /**
-   * Positive control. Without it, the test above could pass simply because the
-   * fixture never reaches the migration at all — proving nothing about the
-   * guard. With the documented escape hatch the SAME fixture must really write
-   * the outer store, which is what makes the refusal above meaningful.
+   * Positive control for the READ refusal above: with the escape hatch, the
+   * same ordinary read is allowed to open the inherited roots. Ordinary reads
+   * stay pure — still no cutover write / marker — which is what proves the
+   * refusal was the guard, not "migration somehow disabled".
    */
-  it('the same fixture really does write the outer store when the guard is opted out', () => {
+  it('the same fixture can read inherited roots when the guard is opted out, still without cutover writes', () => {
     const fixture = buildFixture();
-    const { out } = runBareChild(fixture, { CAT_CAFE_TEST_SANDBOX_ALLOW_UNSAFE_ROOT: '1' });
+    const { status, out } = runBareChild(fixture, { CAT_CAFE_TEST_SANDBOX_ALLOW_UNSAFE_ROOT: '1' });
 
-    const written = outerArtifacts(fixture.workspaceRoot);
+    assert.equal(status, 0, `escape hatch must allow the ordinary read. Output:\n${out}`);
     assert.deepEqual(
-      written,
-      { accounts: true, credentials: true, marker: true },
-      `the escape hatch must reproduce the original fail-open write. Child output:\n${out}`,
+      outerArtifacts(fixture.workspaceRoot),
+      { accounts: false, credentials: false, marker: false },
+      `ordinary read remains pure even when the guard is opted out. Child output:\n${out}`,
     );
   });
 
   /**
-   * Criterion 3: the boundary must not have been bought by disabling migration
-   * globally. A plain (non-test) node process — what production actually is —
-   * must still perform the runtime→workspace migration against the same roots
-   * that the test process above was refused.
+   * Explicit migrate stays guarded: without the escape hatch a bare test child
+   * that calls migrateCatalogAccounts against inherited roots must still refuse
+   * before writing.
    */
-  it('a production (non-test) process still migrates against the same roots', () => {
+  it('explicit migrateCatalogAccounts against inherited roots is still refused in a bare test child', () => {
+    const fixture = buildFixture();
+    const migrateTest = join(fixture.innerDir, 'migrate-inner.test.mjs');
+    writeFileSync(
+      migrateTest,
+      [
+        "import { test } from 'node:test';",
+        `import { migrateCatalogAccounts } from ${JSON.stringify(CATALOG_ACCOUNTS_DIST)};`,
+        "test('explicit migrate must hit the write guard', () => {",
+        `  migrateCatalogAccounts(${JSON.stringify(fixture.projectRoot)});`,
+        '});',
+        '',
+      ].join('\n'),
+    );
+
+    const { status, out } = runBareChild({ ...fixture, innerTest: migrateTest });
+    assert.notEqual(status, 0, `explicit migrate must FAIL closed. Output:\n${out}`);
+    assert.match(out, /\[test sandbox\] Refusing/);
+    assert.deepEqual(outerArtifacts(fixture.workspaceRoot), {
+      accounts: false,
+      credentials: false,
+      marker: false,
+    });
+  });
+
+  /**
+   * Production (non-test) ordinary read against the same roots stays pure —
+   * dual-root adjudication replaced cutover, so a plain node -e read must not
+   * create workspace accounts/credentials/marker as a side effect.
+   */
+  it('a production (non-test) ordinary read against the same roots stays pure (no cutover write)', () => {
     const fixture = buildFixture();
     const env = { ...process.env, HOME: fixture.fakeHome, USERPROFILE: fixture.fakeHome };
     for (const key of [
@@ -165,29 +190,20 @@ describe('test persistence boundary (P1-5)', () => {
       [
         '-e',
         `import(${JSON.stringify(CATALOG_ACCOUNTS_DIST)}).then((m) => m.readCatalogAccounts(${JSON.stringify(
-          join(dirname(fixture.innerTest), 'project'),
+          fixture.projectRoot,
         )}));`,
       ],
       { encoding: 'utf-8', env },
     );
 
-    assert.equal(res.status, 0, `production migration must still succeed: ${res.stdout}${res.stderr}`);
+    assert.equal(res.status, 0, `production ordinary read must succeed: ${res.stdout}${res.stderr}`);
     assert.deepEqual(
       outerArtifacts(fixture.workspaceRoot),
-      { accounts: true, credentials: true, marker: true },
-      'production behaviour must be unchanged — the guard is a TEST boundary, not a migration kill switch',
+      { accounts: false, credentials: false, marker: false },
+      'production ordinary read must not resurrect runtime→workspace cutover writes',
     );
   });
 
-  /**
-   * P1-7. CAT_CAFE_TEST_REAL_HOME used to REPLACE the passwd home in the
-   * protected set, so any child could un-protect the operator's real home by
-   * pointing it at a fake path — it is a hint about the caller's origin, not
-   * the escape hatch (that is CAT_CAFE_TEST_SANDBOX_ALLOW_UNSAFE_ROOT).
-   *
-   * Decision-only, by construction: assertSafeTestConfigRoot throws before its
-   * caller opens anything, so proving this costs no write to the real home.
-   */
   it('the passwd home stays protected when CAT_CAFE_TEST_REAL_HOME names a fake one (P1-7)', async () => {
     const { assertSafeTestConfigRoot } = await import('../dist/config/test-config-write-guard.js');
     const passwdHome = userInfo().homedir;
@@ -200,10 +216,7 @@ describe('test persistence boundary (P1-5)', () => {
         /\[test sandbox\] Refusing/,
         'the passwd home must stay in the protected set no matter what the env claims',
       );
-      // ...and the hint is additive, not ignored: its own path stays refused too.
       assert.throws(() => assertSafeTestConfigRoot(fakeRealHome, 'p17.probe'), /\[test sandbox\] Refusing/);
-      // Control: an unrelated temp root is still allowed, so the two throws
-      // above are not just "the guard refuses everything".
       assert.doesNotThrow(() => assertSafeTestConfigRoot(makeTemp('p17-neutral-'), 'p17.probe'));
     } finally {
       if (saved === undefined) delete process.env.CAT_CAFE_TEST_REAL_HOME;
@@ -213,8 +226,6 @@ describe('test persistence boundary (P1-5)', () => {
 
   it('the guard is active on NODE_TEST_CONTEXT alone, without the wrapper opt-in flag', async () => {
     const { assertSafeTestConfigRoot } = await import('../dist/config/test-config-write-guard.js');
-    // This process runs under node:test, so the guard must be live even though
-    // the assertion below never sets CAT_CAFE_TEST_SANDBOX itself.
     assert.ok(process.env.NODE_TEST_CONTEXT, 'precondition: running under the node test runner');
     const saved = process.env.CAT_CAFE_TEST_REAL_HOME;
     try {

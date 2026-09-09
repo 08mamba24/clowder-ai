@@ -1,13 +1,17 @@
 import { z } from 'zod';
+import { CURRENT_RELATIONSHIP_PROFILE_URI } from '../profile-contract.js';
 
-export const RECALL_OPPORTUNITY_CATALOG_VERSION = 1 as const;
+export const RECALL_OPPORTUNITY_CATALOG_VERSION = 5 as const;
 
 export const RECALL_RESOLVER_FAMILIES = [
   'person_entity',
   'operational_precedent',
   'taste',
   'profile',
+  'event',
+  'decision',
   'project_knowledge',
+  'cat_owned_seed',
 ] as const;
 
 export const MEMORY_CUE_INVALIDATORS = [
@@ -24,6 +28,30 @@ export const RECALL_OPPORTUNITY_V1_PAIRS = Object.freeze([
   Object.freeze({
     kind: 'judgment_surface_entered' as const,
     producer: 'workflow_sop' as const,
+  }),
+  Object.freeze({
+    kind: 'approved_taste_invoked' as const,
+    producer: 'owner_message' as const,
+  }),
+  Object.freeze({
+    kind: 'profile_revision_available' as const,
+    producer: 'profile_repository' as const,
+  }),
+  Object.freeze({
+    kind: 'recent_event_available' as const,
+    producer: 'event_memory' as const,
+  }),
+  Object.freeze({
+    kind: 'accepted_decision_required' as const,
+    producer: 'owner_message' as const,
+  }),
+  Object.freeze({
+    kind: 'project_source_required' as const,
+    producer: 'task_context' as const,
+  }),
+  Object.freeze({
+    kind: 'owned_seed_available' as const,
+    producer: 'present_loop' as const,
   }),
 ]);
 
@@ -56,6 +84,7 @@ export const subjectSeenOpportunityV1Schema = z
         entityId: boundedIdentifier(200),
         matchedAlias: boundedIdentifier(160),
         sourceMessageId: boundedIdentifier(200),
+        sourceRevision: boundedIdentifier(200),
       })
       .strict(),
   })
@@ -104,6 +133,20 @@ export const deliveryDecisionCueCarrierV1Schema = z
   })
   .strict();
 
+/** Server-private, content-free transport frame produced by one F255 Present Loop wake. */
+export const catOwnedSeedCueCarrierV1Schema = z
+  .object({
+    v: z.literal(1),
+    producer: z.literal('present_loop'),
+    producerProvenance: z.literal('server_scheduler'),
+    runId: boundedIdentifier(200),
+    producingCatId: boundedIdentifier(120),
+    seedId: boundedIdentifier(200),
+    sourceRevision: boundedIdentifier(200),
+    occurredAt: timestampSchema,
+  })
+  .strict();
+
 export const judgmentSurfaceEnteredOpportunityV1Schema = z
   .object({
     ...opportunityBaseShape,
@@ -120,10 +163,105 @@ export const judgmentSurfaceEnteredOpportunityV1Schema = z
   })
   .strict();
 
+export const approvedTasteInvokedOpportunityV1Schema = z
+  .object({
+    ...opportunityBaseShape,
+    kind: z.literal('approved_taste_invoked'),
+    producer: z.literal('owner_message'),
+    payload: z
+      .object({
+        triggerKey: z.literal('ELI5'),
+        sourceMessageId: boundedIdentifier(200),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const profileRevisionAvailableOpportunityV1Schema = z
+  .object({
+    ...opportunityBaseShape,
+    kind: z.literal('profile_revision_available'),
+    producer: z.literal('profile_repository'),
+    payload: z
+      .object({
+        profileUri: z.literal(CURRENT_RELATIONSHIP_PROFILE_URI),
+        sourceRevision: boundedIdentifier(200),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const recentEventAvailableOpportunityV1Schema = z
+  .object({
+    ...opportunityBaseShape,
+    kind: z.literal('recent_event_available'),
+    producer: z.literal('event_memory'),
+    payload: z
+      .object({
+        eventId: boundedIdentifier(200),
+        subjectThreadId: boundedIdentifier(160),
+        sourceRevision: boundedIdentifier(200),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const acceptedDecisionRequiredOpportunityV1Schema = z
+  .object({
+    ...opportunityBaseShape,
+    kind: z.literal('accepted_decision_required'),
+    producer: z.literal('owner_message'),
+    payload: z
+      .object({
+        decisionAnchor: z.string().regex(/^ADR-\d{3}$/),
+        sourceMessageId: boundedIdentifier(200),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const projectSourceRequiredOpportunityV1Schema = z
+  .object({
+    ...opportunityBaseShape,
+    kind: z.literal('project_source_required'),
+    producer: z.literal('task_context'),
+    payload: z
+      .object({
+        featureId: z.string().regex(/^F\d{3,}$/),
+        selectionSource: z.enum(['workflow_feature', 'explicit_owner_reference']),
+        sourceMessageId: boundedIdentifier(200),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const ownedSeedAvailableOpportunityV1Schema = z
+  .object({
+    ...opportunityBaseShape,
+    kind: z.literal('owned_seed_available'),
+    producer: z.literal('present_loop'),
+    payload: z
+      .object({
+        runId: boundedIdentifier(200),
+        producingCatId: boundedIdentifier(120),
+        seedId: boundedIdentifier(200),
+        sourceRevision: boundedIdentifier(200),
+        sourceMessageId: boundedIdentifier(200),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const recallOpportunityV1Schema = z.discriminatedUnion('kind', [
   subjectSeenOpportunityV1Schema,
   deliveryDecisionOpportunityV1Schema,
   judgmentSurfaceEnteredOpportunityV1Schema,
+  approvedTasteInvokedOpportunityV1Schema,
+  profileRevisionAvailableOpportunityV1Schema,
+  recentEventAvailableOpportunityV1Schema,
+  acceptedDecisionRequiredOpportunityV1Schema,
+  projectSourceRequiredOpportunityV1Schema,
+  ownedSeedAvailableOpportunityV1Schema,
 ]);
 
 const memoryCueInvalidatorsSchema = z.tuple([
@@ -155,7 +293,7 @@ export const cueEnvelopeV1Schema = z
       .strict(),
     drill: z
       .object({
-        family: z.enum(['person_memory', 'evidence', 'taste']),
+        family: z.enum(['person_memory', 'evidence', 'taste', 'profile', 'event', 'owned_seed']),
         handle: boundedIdentifier(2_000),
       })
       .strict(),
@@ -178,11 +316,35 @@ export type RecallScopeV1 = z.infer<typeof recallScopeV1Schema>;
 export type SubjectSeenOpportunityV1 = z.infer<typeof subjectSeenOpportunityV1Schema>;
 export type DeliveryDecisionOpportunityV1 = z.infer<typeof deliveryDecisionOpportunityV1Schema>;
 export type DeliveryDecisionCueCarrierV1 = z.infer<typeof deliveryDecisionCueCarrierV1Schema>;
+export type CatOwnedSeedCueCarrierV1 = z.infer<typeof catOwnedSeedCueCarrierV1Schema>;
 export type JudgmentSurfaceEnteredOpportunityV1 = z.infer<typeof judgmentSurfaceEnteredOpportunityV1Schema>;
+export type ApprovedTasteInvokedOpportunityV1 = z.infer<typeof approvedTasteInvokedOpportunityV1Schema>;
+export type ProfileRevisionAvailableOpportunityV1 = z.infer<typeof profileRevisionAvailableOpportunityV1Schema>;
+export type RecentEventAvailableOpportunityV1 = z.infer<typeof recentEventAvailableOpportunityV1Schema>;
+export type AcceptedDecisionRequiredOpportunityV1 = z.infer<typeof acceptedDecisionRequiredOpportunityV1Schema>;
+export type ProjectSourceRequiredOpportunityV1 = z.infer<typeof projectSourceRequiredOpportunityV1Schema>;
+export type OwnedSeedAvailableOpportunityV1 = z.infer<typeof ownedSeedAvailableOpportunityV1Schema>;
 export type RecallOpportunityV1 = z.infer<typeof recallOpportunityV1Schema>;
 export type CueEnvelopeV1 = z.infer<typeof cueEnvelopeV1Schema>;
 export type RecallResolverFamily = (typeof RECALL_RESOLVER_FAMILIES)[number];
 export type MemoryCueInvalidator = (typeof MEMORY_CUE_INVALIDATORS)[number];
+
+const MEMORY_CUE_DRILL_FAMILY_BY_RESOLVER = Object.freeze({
+  person_entity: 'person_memory' as const,
+  operational_precedent: 'evidence' as const,
+  taste: 'taste' as const,
+  profile: 'profile' as const,
+  event: 'event' as const,
+  decision: 'evidence' as const,
+  project_knowledge: 'evidence' as const,
+  cat_owned_seed: 'owned_seed' as const,
+});
+
+export function memoryCueDrillFamilyForResolver(
+  resolverFamily: RecallResolverFamily,
+): CueEnvelopeV1['drill']['family'] | null {
+  return MEMORY_CUE_DRILL_FAMILY_BY_RESOLVER[resolverFamily];
+}
 
 export function isRecallOpportunityV1(value: unknown): value is RecallOpportunityV1 {
   return recallOpportunityV1Schema.safeParse(value).success;

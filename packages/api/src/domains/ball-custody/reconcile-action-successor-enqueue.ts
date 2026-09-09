@@ -1,4 +1,5 @@
-import type { ActionSuccessorAdmissionService, ActionSuccessorFence } from './ActionSuccessorAdmissionService.js';
+import { type ActionSuccessorFence, actionSuccessorFencesMatch } from './ActionSuccessorAdmissionContract.js';
+import type { ActionSuccessorAdmissionService } from './ActionSuccessorAdmissionService.js';
 
 export type ActionSuccessorCarrierAdmissionOutcome =
   | 'claimed'
@@ -9,18 +10,7 @@ export type ActionSuccessorCarrierAdmissionOutcome =
   | 'continued';
 export type ActionSuccessorCarrierDisposition = 'successor_dispatch' | 'return';
 
-export function actionSuccessorFencesMatch(
-  candidate: ActionSuccessorFence | undefined,
-  expected: ActionSuccessorFence,
-): boolean {
-  return (
-    candidate?.leaseId === expected.leaseId &&
-    candidate.generation === expected.generation &&
-    candidate.dispatchId === expected.dispatchId &&
-    candidate.terminalPredicateDigest === expected.terminalPredicateDigest &&
-    candidate.invocationLineageRef === expected.invocationLineageRef
-  );
-}
+export { actionSuccessorFencesMatch };
 
 /**
  * Keep carrier bookkeeping behind one invariant boundary. A returned
@@ -31,6 +21,7 @@ export async function reconcileActionSuccessorEnqueue(input: {
   service: Pick<ActionSuccessorAdmissionService, 'markUnavailable' | 'markReturnedDelivered'> | null | undefined;
   fence: ActionSuccessorFence | undefined;
   disposition: ActionSuccessorCarrierDisposition | undefined;
+  admissionOutcome?: ActionSuccessorCarrierAdmissionOutcome;
   unavailableCatIds: readonly string[];
   now: number;
 }): Promise<void> {
@@ -47,7 +38,7 @@ export async function reconcileActionSuccessorEnqueue(input: {
     return;
   }
 
-  if (input.unavailableCatIds.length > 0) {
+  if (input.unavailableCatIds.length > 0 && input.admissionOutcome !== 'replayed') {
     await input.service.markUnavailable({
       fence: input.fence,
       holderCatIds: [...input.unavailableCatIds],

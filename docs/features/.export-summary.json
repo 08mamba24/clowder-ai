@@ -1,14 +1,13 @@
 {
-  "exportedAt": "2026-08-23T00:38:20.662Z",
+  "exportedAt": "2026-09-05T21:24:04.521Z",
   "minTier": "yellow",
-  "exported": 299,
+  "exported": 310,
   "skipped": 16,
   "errors": 0,
   "skippedFiles": [
     "F061-verification-2026-04-21.md",
     "F124-voice-comfort-callout.md",
     "F155-scene-catalog.md",
-    "F195-meeting-copilot-live-advisory.md",
     "F196-safety-guardian.md",
     "F229-petskin-contract.md",
     "F234-harness-sunset-cat-fishing.md",
@@ -19,6 +18,7 @@
     "F257-temporal-context-hardening.md",
     "F264-per-target-message-receipt.md",
     "F280-unified-wait-contract.md",
-    "F284-contextual-workspace-shell.md"
+    "F284-contextual-workspace-shell.md",
+    "F310-growing-real-delegation.md"
   ]
 }

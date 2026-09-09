@@ -21,6 +21,7 @@ import {
   type OutputCommitDecision,
   type QueueTerminalConsumptionWitness,
   type RichBlock,
+  type RoutingPreflightDecisionV1,
   resolveWorkflowSopSkill,
 } from '@cat-cafe/shared';
 import type { Span } from '@opentelemetry/api';
@@ -116,6 +117,7 @@ import { conciergeContextForCat, prepareConciergeContext } from '../../../../con
 import {
   buildConciergeActions,
   extractTriagePlanIdsFromActions,
+  projectConciergeStoredContent,
   stripTriagePlanMarkers,
   type TriagePlanExtractionDeps,
 } from '../../../../concierge/concierge-reply-validator.js';
@@ -131,7 +133,7 @@ import {
 } from '../../../../guides/GuideRoutingInterceptor.js';
 import type { MemoryCueOpportunitySeed } from '../../../../memory/cue/MemoryCueInvocationPromptService.js';
 // F260 AC-B8: Entity nudge — scan human input for already-registered entity references.
-import { EntityNudgeService } from '../../../../memory/EntityNudgeService.js';
+import { type EntityNudgeCandidateBatch, EntityNudgeService } from '../../../../memory/EntityNudgeService.js';
 import { sharedEventStore, sharedNudgeCooldown } from '../../../../memory/entity-nudge-state.js';
 import type { PushRecallPresentation } from '../../../../memory/f200-types.js';
 import type { PreparedProactiveMemoryNudge } from '../../../../memory/ProactiveMemoryNudgeService.js';
@@ -140,6 +142,10 @@ import { drainCapturedTraces } from '../../../../prompt-hooks/PipelinePromptBuil
 import { getTraceStore } from '../../../../prompt-hooks/trace-bootstrap.js';
 // F237: Injection trace (v0 — fire-and-forget observability)
 import { buildTraceDetail, buildTraceSummary, collectTrace } from '../../../../prompt-hooks/trace-collector.js';
+import {
+  preflightRoutingDispatch,
+  routingDispatchPreflightReceipt,
+} from '../../../../routing-context/RoutingDispatchPreflightPort.js';
 import { assembleContext } from '../../context/ContextAssembler.js';
 import {
   buildInvocationContext,
@@ -226,6 +232,7 @@ import {
   createIdempotentPendingProjectionQueue,
   createLeakedToolCallStreamStripper,
   detectContextDegradation,
+  explicitApprovedTasteCueSeeds,
   explicitPromptForIncrementalContext,
   getService,
   getThreadBootcampMemberCount,
@@ -234,6 +241,7 @@ import {
   isUserFacingSystemInfoContent,
   judgmentSurfaceCueSeeds,
   mergePersistedPromptMessages,
+  operationalKnowledgeCueSeeds,
   routeContentBlocksForCat,
   sanitizeInjectedContent,
   shouldPersistContextBriefing,
@@ -658,6 +666,25 @@ export async function* routeSerial(
   // F27: Track how many worklist entries have had a2a_handoff emitted
   let handoffEmitted = targetCats.length; // Original targets don't get handoff events
   const activeTrackedA2ASlots = new Set<CatId>();
+  const pendingRoutingPreflightNotices: AgentMessage[] = [];
+  const preflightA2ATarget = async (targetCatId: CatId): Promise<'allowed' | 'warned' | 'rejected'> => {
+    if (!deps.routingDispatchPreflight) return 'allowed';
+    const decision = await preflightRoutingDispatch(deps.routingDispatchPreflight, {
+      ownerId: userId,
+      targetCatIds: [targetCatId],
+      ...(options.routingContextIntent ? { intent: options.routingContextIntent } : {}),
+    });
+    const receipt = routingDispatchPreflightReceipt(decision, targetCatId);
+    if (receipt.target.disposition !== 'allowed') {
+      pendingRoutingPreflightNotices.push({
+        type: 'system_info',
+        catId: targetCatId,
+        content: JSON.stringify(receipt),
+        timestamp: Date.now(),
+      });
+    }
+    return receipt.target.disposition;
+  };
   const claimOrDeferA2ATarget = async (
     pendingCat: CatId,
     fromCat: CatId,
@@ -668,6 +695,7 @@ export async function* routeSerial(
     if (activeTrackedA2ASlots.has(pendingCat)) {
       return true;
     }
+    if ((await preflightA2ATarget(pendingCat)) === 'rejected') return false;
     if (!options.invocationController || !options.trackA2ASlot) {
       throw new Error('A2A slot admission unavailable: route bridge missing');
     }
@@ -849,14 +877,26 @@ export async function* routeSerial(
     seed: MemoryCueOpportunitySeed;
     promptContext: string;
   }> = [];
-  let entityNudgePromptContext = '';
+  let entityNudgePresentation:
+    | { service: EntityNudgeService; candidates: EntityNudgeCandidateBatch; sourceMessageId: string }
+    | undefined;
+  let entityNudgeCuePresentation:
+    | {
+        service: EntityNudgeService;
+        candidates: EntityNudgeCandidateBatch;
+        sourceMessageId: string;
+        seeds: readonly Extract<MemoryCueOpportunitySeed, { kind: 'subject_seen' }>[];
+      }
+    | undefined;
+  let entityNudgePromptTokenEstimate = 0;
+  let routeOwnedNudgePromptContext = '';
   let preparedProactiveMemoryNudge: PreparedProactiveMemoryNudge | null = null;
   if (deps.evidenceStore && options.frustrationAutoIssueEligible !== false) {
     try {
       const evidenceDb = (deps.evidenceStore as { getDb?: () => import('better-sqlite3').Database }).getDb?.();
       if (evidenceDb) {
         const nudgeService = new EntityNudgeService(evidenceDb, sharedNudgeCooldown(), sharedEventStore(evidenceDb));
-        const nudgeResult = nudgeService.processInput({
+        const nudgeResult = nudgeService.detectCandidates({
           text: message,
           threadId,
           ownerUserId: userId,
@@ -869,6 +909,19 @@ export async function* routeSerial(
             })
           : [];
         memoryCueOpportunitySeeds.push(...subjectCueSeeds);
+        const subjectCueEntityIds = new Set(subjectCueSeeds.map((seed) => seed.payload.entityId));
+        const subjectCueCandidates: EntityNudgeCandidateBatch = {
+          ...nudgeResult,
+          nudges: nudgeResult.nudges.filter((nudge) => nudge.entityId && subjectCueEntityIds.has(nudge.entityId)),
+        };
+        if (currentUserMessageId && subjectCueCandidates.nudges.length > 0) {
+          entityNudgeCuePresentation = {
+            service: nudgeService,
+            candidates: subjectCueCandidates,
+            sourceMessageId: currentUserMessageId,
+            seeds: subjectCueSeeds,
+          };
+        }
         for (const seed of subjectCueSeeds) {
           const nudge = nudgeResult.nudges.find(
             (candidate) =>
@@ -882,10 +935,18 @@ export async function* routeSerial(
           }
         }
         const cueEntityIds = new Set(subjectCueSeeds.map((seed) => seed.payload.entityId));
-        entityNudgePromptContext = EntityNudgeService.formatForPrompt({
+        const presentationCandidates: EntityNudgeCandidateBatch = {
           ...nudgeResult,
           nudges: nudgeResult.nudges.filter((nudge) => !nudge.entityId || !cueEntityIds.has(nudge.entityId)),
-        });
+        };
+        if (currentUserMessageId && presentationCandidates.nudges.length > 0) {
+          entityNudgePresentation = {
+            service: nudgeService,
+            candidates: presentationCandidates,
+            sourceMessageId: currentUserMessageId,
+          };
+          entityNudgePromptTokenEstimate = estimateTokens(EntityNudgeService.formatForPrompt(presentationCandidates));
+        }
       }
     } catch (nudgeErr) {
       log.warn({ err: nudgeErr, threadId }, '[F260] entity nudge hook failed — fail-open, no nudges this invocation');
@@ -896,7 +957,7 @@ export async function* routeSerial(
       ownerUserId: userId,
       currentUserMessageId,
     });
-    entityNudgePromptContext += preparedProactiveMemoryNudge.context;
+    routeOwnedNudgePromptContext += preparedProactiveMemoryNudge.context;
   }
   let humanDispositionFeedbackPromptContext = '';
   if (
@@ -914,14 +975,27 @@ export async function* routeSerial(
   }
   if (deps.invocationDeps.memoryCuePromptService) {
     memoryCueOpportunitySeeds.push(
+      ...explicitApprovedTasteCueSeeds({
+        message,
+        sourceMessageId: currentUserMessageId,
+        ownerOriginEligible: options.frustrationAutoIssueEligible !== false,
+        occurredAt: cueOccurredAt,
+      }),
       ...judgmentSurfaceCueSeeds({
         sopStageHint,
         promptTags: options.frustrationAutoIssueEligible !== false ? promptTags : undefined,
         occurredAt: cueOccurredAt,
       }),
+      ...operationalKnowledgeCueSeeds({
+        message,
+        sourceMessageId: currentUserMessageId,
+        ownerOriginEligible: options.frustrationAutoIssueEligible !== false,
+        sopStageHint,
+        occurredAt: cueOccurredAt,
+      }),
     );
   }
-  const routeLevelNudgePromptContext = entityNudgePromptContext + humanDispositionFeedbackPromptContext;
+  const routeLevelNudgePromptContext = routeOwnedNudgePromptContext + humanDispositionFeedbackPromptContext;
 
   const completedCatInvocationIds: Array<[string, string]> = [];
   const pushRecallPresentationsByInvocation = new Map<string, PushRecallPresentation[]>();
@@ -955,6 +1029,7 @@ export async function* routeSerial(
       const catId = worklist[index]!;
       let stopGateRemedialAttempted = false;
       let structuredDispositionMissingCode: string | undefined;
+      let routingDispatchPreflightDecision: RoutingPreflightDecisionV1 | undefined;
       // F-parallel-cancel: per-cat signal — canceling one cat skips ONLY that cat, not the
       // whole worklist. force-reset/cancelAll aborts every cat's controller, so all entries
       // skip = equivalent to stopping. Using the shared primaryController.signal made
@@ -963,6 +1038,26 @@ export async function* routeSerial(
       if (catSignal?.aborted) {
         index++;
         continue;
+      }
+      if (deps.routingDispatchPreflight) {
+        routingDispatchPreflightDecision = await preflightRoutingDispatch(deps.routingDispatchPreflight, {
+          ownerId: userId,
+          targetCatIds: [catId],
+          ...(options.routingContextIntent ? { intent: options.routingContextIntent } : {}),
+        });
+        const receipt = routingDispatchPreflightReceipt(routingDispatchPreflightDecision, catId);
+        if (receipt.target.disposition !== 'allowed') {
+          yield {
+            type: 'system_info',
+            catId,
+            content: JSON.stringify(receipt),
+            timestamp: Date.now(),
+          };
+        }
+        if (receipt.target.disposition === 'rejected') {
+          index++;
+          continue;
+        }
       }
       // F148 OQ-2: briefing→invocation link + context eval
       let briefingMessageId: string | undefined;
@@ -1494,7 +1589,9 @@ export async function* routeSerial(
           ) + (rebuildSessionBootstrap ? MAX_SESSION_BOOTSTRAP_TOKENS : estimateTokens(bootstrapContext));
         const incMessageTokens = estimateTokens([message, conciergeSearchContextForCat].filter(Boolean).join('\n'));
         // P1 R7 fix: use shared budget helper (serial/parallel × incremental/legacy unified)
-        const incNudgeTokens = routeLevelNudgePromptContext ? estimateTokens(routeLevelNudgePromptContext) : 0;
+        const incNudgeTokens =
+          (routeLevelNudgePromptContext ? estimateTokens(routeLevelNudgePromptContext) : 0) +
+          entityNudgePromptTokenEstimate;
         const effectiveContextBudget = computeContextBudget({
           inputCeilingTokens,
           historyTokenCeiling: deriveHistoryContextTokenCeiling(inputCeilingTokens),
@@ -1637,7 +1734,9 @@ export async function* routeSerial(
             ) + (rebuildSessionBootstrap ? MAX_SESSION_BOOTSTRAP_TOKENS : estimateTokens(bootstrapContext));
           const promptTokens = estimateTokens([prompt, conciergeSearchContextForCat].filter(Boolean).join('\n'));
           // P1 R7 fix: use shared budget helper (legacy path)
-          const legacyNudgeTokens = routeLevelNudgePromptContext ? estimateTokens(routeLevelNudgePromptContext) : 0;
+          const legacyNudgeTokens =
+            (routeLevelNudgePromptContext ? estimateTokens(routeLevelNudgePromptContext) : 0) +
+            entityNudgePromptTokenEstimate;
           const budgetForContext = computeContextBudget({
             inputCeilingTokens,
             historyTokenCeiling: deriveHistoryContextTokenCeiling(inputCeilingTokens),
@@ -1711,6 +1810,7 @@ export async function* routeSerial(
       const thinkingChunks: string[] = [];
       let firstMetadata: MessageMetadata | undefined;
       let doneMsg: AgentMessage | undefined;
+      let persistedDoneContent: string | undefined;
       let hadError = false;
       /** F155: tracks whether cat produced user-visible output (for guide completion ack). */
       let catProducedOutput = false;
@@ -2102,6 +2202,9 @@ export async function* routeSerial(
       // occurrence of the same cat in this parent chain.
       setWorklistCallerAdmissionOpen(worklistEntry, true);
       for await (const msg of invokeSingleCat(deps.invocationDeps, {
+        ...(options.routeIntent ? { routeIntent: options.routeIntent } : {}),
+        ...(options.routingContextIntent ? { routingContextIntent: options.routingContextIntent } : {}),
+        ...(routingDispatchPreflightDecision ? { routingDispatchPreflightDecision } : {}),
         catId,
         service,
         capacitySnapshot,
@@ -2121,13 +2224,24 @@ export async function* routeSerial(
         ...(options.parentInvocationId ? { parentInvocationId: options.parentInvocationId } : {}),
         continuityCapsule,
         ...(memoryCueOpportunitySeeds.length > 0 ? { memoryCueOpportunitySeeds } : {}),
+        ...(entityNudgePresentation ? { entityNudgePresentation } : {}),
+        ...(entityNudgeCuePresentation ? { entityNudgeCuePresentation } : {}),
         ...(options.asrPersonMemoryScenes?.length ? { asrPersonMemoryScenes: options.asrPersonMemoryScenes } : {}),
         ...(memoryCueLegacyFallbacks.length > 0 ? { memoryCueLegacyFallbacks } : {}),
         ...(options.toolExecutionPolicy ? { toolExecutionPolicy: options.toolExecutionPolicy } : {}),
         executionKind: initialExecutionKind,
         executionCausal: {
-          ...((streamReplyTo ?? currentUserMessageId ?? a2aTriggerMessageId)
-            ? { triggerMessageId: streamReplyTo ?? currentUserMessageId ?? a2aTriggerMessageId }
+          ...((options.cloudDispatchProvenance?.sourceMessageId ??
+          streamReplyTo ??
+          currentUserMessageId ??
+          a2aTriggerMessageId)
+            ? {
+                triggerMessageId:
+                  options.cloudDispatchProvenance?.sourceMessageId ??
+                  streamReplyTo ??
+                  currentUserMessageId ??
+                  a2aTriggerMessageId,
+              }
             : {}),
           ...(options.freshnessSupplementId ? { freshnessSupplementId: options.freshnessSupplementId } : {}),
         },
@@ -2145,8 +2259,16 @@ export async function* routeSerial(
         // - mentionContent: the raw user/cat message (NOT the orchestrated prompt with system context)
         // - mentioningCatId: A2A → the cat that @ mentioned; user-initiated → userId as fallback
         //   so the cloud cat knows "who called" (gpt52 R1 P1-2 contract: calledBy ≠ thread owner)
-        mentionContent: message,
-        mentioningCatId: (directMessageFrom ?? userId) as import('@cat-cafe/shared').CatId,
+        mentionContent: options.cloudDispatchProvenance?.intent ?? message,
+        mentioningCatId:
+          options.cloudDispatchProvenance?.calledByCatId ??
+          ((directMessageFrom ?? userId) as import('@cat-cafe/shared').CatId),
+        ...(isOriginalTarget && options.cloudDispatchProvenance
+          ? { cloudDispatchProvenance: options.cloudDispatchProvenance }
+          : {}),
+        ...(isOriginalTarget && options.requiresExactCloudDispatchProvenance
+          ? { requiresExactCloudDispatchProvenance: true }
+          : {}),
         // F121/F167: Keep stream threading and callback auth provenance on the same trigger.
         ...(streamReplyTo ? { a2aTriggerMessageId: streamReplyTo } : {}),
         ...((mentionParentSpan.get(index) ?? options.routeSpan)
@@ -2883,6 +3005,36 @@ export async function* routeSerial(
         hasLocalCoCreatorLineStartMention: boolean;
         streamEvents: AgentMessage[];
       }> => {
+        let remedialRoutingPreflightNotice: AgentMessage | undefined;
+        let remedialRoutingDispatchPreflightDecision: RoutingPreflightDecisionV1 | undefined;
+        if (deps.routingDispatchPreflight) {
+          remedialRoutingDispatchPreflightDecision = await preflightRoutingDispatch(deps.routingDispatchPreflight, {
+            ownerId: userId,
+            targetCatIds: [catId],
+            ...(options.routingContextIntent ? { intent: options.routingContextIntent } : {}),
+          });
+          const receipt = routingDispatchPreflightReceipt(remedialRoutingDispatchPreflightDecision, catId);
+          if (receipt.target.disposition !== 'allowed') {
+            remedialRoutingPreflightNotice = {
+              type: 'system_info',
+              catId,
+              content: JSON.stringify(receipt),
+              timestamp: Date.now(),
+            };
+          }
+          if (receipt.target.disposition === 'rejected') {
+            stopGateRemedialAttempted = true;
+            return {
+              storedContent: originalStoredContentBeforeRemedial,
+              routingContent: '',
+              allRichBlocks: originalRichBlocksBeforeRemedial,
+              a2aMentions: [],
+              hasCoCreatorLineStartMention: false,
+              hasLocalCoCreatorLineStartMention: false,
+              streamEvents: remedialRoutingPreflightNotice ? [remedialRoutingPreflightNotice] : [],
+            };
+          }
+        }
         stopGateRemedialAttempted = true;
         const originalVisibleInvocationIdBeforeRemedial = ownInvocationId;
         const originalDeferredVoiceInvocationIdBeforeRemedial = deferredVoiceInvocationId;
@@ -2912,7 +3064,9 @@ export async function* routeSerial(
         callbackFinalReplacement.reset();
         ownInvocationId = undefined;
 
-        const remedialStreamEvents: AgentMessage[] = [];
+        const remedialStreamEvents: AgentMessage[] = remedialRoutingPreflightNotice
+          ? [remedialRoutingPreflightNotice]
+          : [];
         const remedialStripper = createLeakedToolCallStreamStripper();
         const remedialService = getService(deps.services, catId);
         const resolvedRemedialCapacitySnapshot = await resolveInvocationCapacitySnapshot({
@@ -2973,6 +3127,11 @@ export async function* routeSerial(
           remedialPrompt = await rebuildRemedialPromptAfterSessionSeal();
         }
         for await (const remedialMsg of invokeSingleCat(deps.invocationDeps, {
+          ...(options.routeIntent ? { routeIntent: options.routeIntent } : {}),
+          ...(options.routingContextIntent ? { routingContextIntent: options.routingContextIntent } : {}),
+          ...(remedialRoutingDispatchPreflightDecision
+            ? { routingDispatchPreflightDecision: remedialRoutingDispatchPreflightDecision }
+            : {}),
           catId,
           service: remedialService,
           capacitySnapshot: remedialCapacitySnapshot,
@@ -3431,6 +3590,12 @@ export async function* routeSerial(
             : undefined;
         if (conciergeActionSourceContent) {
           storedContent = stripTriagePlanMarkers(storedContent);
+        }
+        const persistedContent = conciergeActionSourceContent
+          ? projectConciergeStoredContent(storedContent)
+          : storedContent;
+        if (conciergeActionSourceContent !== undefined) {
+          persistedDoneContent = persistedContent;
         }
 
         // A2A mention detection (缅因猫 P1-3: only after full text accumulated)
@@ -3915,7 +4080,7 @@ export async function* routeSerial(
             const streamMessageInput: AppendMessageInput = {
               userId,
               catId,
-              content: storedContent,
+              content: persistedContent,
               mentions: a2aMentions,
               origin: 'stream',
               timestamp: storedTimestamp,
@@ -4269,6 +4434,10 @@ export async function* routeSerial(
               storedMsgId,
               noteAcceptedTurnCustodyHandoff,
             );
+            while (pendingRoutingPreflightNotices.length > 0) {
+              const notice = pendingRoutingPreflightNotices.shift();
+              if (notice) yield notice;
+            }
             if (!claimed) {
               worklistEntry.a2aCount++;
               continue;
@@ -4346,6 +4515,12 @@ export async function* routeSerial(
                 );
                 continue;
               }
+              const routingDisposition = await preflightA2ATarget(nextCat);
+              while (pendingRoutingPreflightNotices.length > 0) {
+                const notice = pendingRoutingPreflightNotices.shift();
+                if (notice) yield notice;
+              }
+              if (routingDisposition === 'rejected') continue;
               deferA2AEnqueue({
                 threadId,
                 userId,
@@ -4442,6 +4617,12 @@ export async function* routeSerial(
               continue;
             }
             // decision.action === 'defer_queue'
+            const routingDisposition = await preflightA2ATarget(nextCat);
+            while (pendingRoutingPreflightNotices.length > 0) {
+              const notice = pendingRoutingPreflightNotices.shift();
+              if (notice) yield notice;
+            }
+            if (routingDisposition === 'rejected') continue;
             // F153 Phase I: create dispatch span on first real enqueue and capture its trace
             // context for cross-route causality.
             if (!deferredDispatchCtx) {
@@ -4526,6 +4707,10 @@ export async function* routeSerial(
               storedMsgId,
               noteAcceptedTurnCustodyHandoff,
             );
+            while (pendingRoutingPreflightNotices.length > 0) {
+              const notice = pendingRoutingPreflightNotices.shift();
+              if (notice) yield notice;
+            }
             if (!claimed) {
               worklist.splice(wi, 1);
               wi--;
@@ -4766,7 +4951,10 @@ export async function* routeSerial(
                 ...noTextBlocks,
               ];
             }
-            if (storedNoText) recordPersistedOutputMessageId(storedNoText.id);
+            if (storedNoText) {
+              turnStoredMessageId = storedNoText.id;
+              recordPersistedOutputMessageId(storedNoText.id);
+            }
             // #80/F254: retained means DraftStore is still the only recoverable copy.
             if (
               deps.draftStore &&
@@ -4845,7 +5033,7 @@ export async function* routeSerial(
             );
           } else {
             const executionProjections = await readTurnExecutionProjections(visibleTurnInvocationId);
-            await deps.messageStore.append({
+            const storedToolError = await deps.messageStore.append({
               userId,
               catId,
               content: '',
@@ -4878,6 +5066,8 @@ export async function* routeSerial(
                   }
                 : {}),
             });
+            turnStoredMessageId = storedToolError.id;
+            recordPersistedOutputMessageId(storedToolError.id);
           }
           // #80: Clean up draft only after successful append
           if (deps.draftStore && ownInvocationId) {
@@ -4928,6 +5118,8 @@ export async function* routeSerial(
         threadId,
         catId: catId as string,
         contents: userFacingSystemInfoContents,
+        ...(turnTriggerMessageId ? { expectedSourceMessageId: turnTriggerMessageId } : {}),
+        ...(ownInvocationId ? { expectedDispatchInvocationId: ownInvocationId } : {}),
         ...(options.persistenceContext ? { persistenceContext: options.persistenceContext } : {}),
       });
 
@@ -4953,6 +5145,10 @@ export async function* routeSerial(
             undefined,
             noteAcceptedTurnCustodyHandoff,
           );
+          while (pendingRoutingPreflightNotices.length > 0) {
+            const notice = pendingRoutingPreflightNotices.shift();
+            if (notice) yield notice;
+          }
           if (!claimed) {
             worklist.splice(wi, 1);
             wi--;
@@ -5079,37 +5275,7 @@ export async function* routeSerial(
             );
           }
 
-          // Signal 2: Cancel burst — query PendingRequestStore for recent denied
-          // permission requests. This is the precise "user actively cancelled" signal,
-          // distinct from generic tool execution errors. (R2 P1 fix: tool_result.status
-          // === 'error' was too broad — included MCP failures, stream interrupts, etc.)
-          if (deps.pendingRequestStore) {
-            const { CANCEL_WINDOW_MS } = await import('../../frustration/FrustrationDetector.js');
-            const recentDenied = await deps.pendingRequestStore.listRecentDenied(
-              threadId,
-              Date.now() - CANCEL_WINDOW_MS,
-            );
-            if (recentDenied.length >= 3) {
-              await evaluate(
-                {
-                  signal: {
-                    type: 'cancel_burst',
-                    recentDenials: recentDenied.map((r) => ({
-                      action: r.action,
-                      timestamp: r.respondedAt ?? r.createdAt,
-                    })),
-                  },
-                  threadId,
-                  userId,
-                  catId: catId as string,
-                  invocationId: ownInvocationId,
-                },
-                frustrationDeps,
-              );
-            }
-          }
-
-          // Signal 3: A2A timeout — cat invoked but produced no visible output AND
+          // Signal 2: A2A timeout — cat invoked but produced no visible output AND
           // elapsed > threshold. Spec AC-C1: "超过阈值（如 60s）未响应".
           // P1 fix: exclude instant crashes/parse errors — only genuine timeouts.
           const A2A_TIMEOUT_THRESHOLD_MS = 60_000;
@@ -5280,6 +5446,8 @@ export async function* routeSerial(
           ownInvocationId && !doneMsg.invocationId ? { ...doneMsg, invocationId: ownInvocationId } : doneMsg;
         yield projectLiveTurnExecution({
           ...ownStampedDone,
+          ...(persistedDoneContent !== undefined ? { content: persistedDoneContent } : {}),
+          ...(turnStoredMessageId ? { messageId: turnStoredMessageId } : {}),
           ...(mentionsUser ? { mentionsUser } : {}),
           ...(turnCustodyTerminalWitnesses[0] ? { turnCustodyTerminalWitness: turnCustodyTerminalWitnesses[0] } : {}),
           ...(turnCustodyTerminalWitnesses.length > 0 ? { turnCustodyTerminalWitnesses } : {}),

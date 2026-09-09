@@ -2,6 +2,15 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatContainer } from '@/components/ChatContainer';
+import { ThreadChatRuntimeProvider } from '@/components/thread-chat';
+
+function renderChatContainer(threadId: string) {
+  return React.createElement(
+    ThreadChatRuntimeProvider,
+    { routeThreadId: threadId },
+    React.createElement(ChatContainer, { threadId }),
+  );
+}
 
 type StoreState = {
   messages: [];
@@ -59,9 +68,6 @@ const mockGovRefetch = vi.fn();
 const mockUseAgentHookHealth = vi.fn();
 const mockAgentHookRefresh = vi.fn();
 let mockGovernanceStatus = {
-  ready: true,
-  needsBootstrap: false,
-  needsConfirmation: false,
   isEmptyDir: false,
   isGitRepo: true,
   gitAvailable: true,
@@ -220,10 +226,6 @@ vi.mock('@/hooks/useSendMessage', () => ({
   useSendMessage: () => ({ handleSend: vi.fn(), uploadStatus: null, uploadError: null }),
 }));
 
-vi.mock('@/hooks/useAuthorization', () => ({
-  useAuthorization: () => ({ pending: [], respond: vi.fn(), handleAuthRequest: vi.fn(), handleAuthResponse: vi.fn() }),
-}));
-
 vi.mock('@/hooks/useSplitPaneKeys', () => ({ useSplitPaneKeys: vi.fn() }));
 vi.mock('@/hooks/useChatSocketCallbacks', () => ({ useChatSocketCallbacks: () => ({}) }));
 vi.mock('@/hooks/useCatData', () => ({
@@ -277,8 +279,10 @@ vi.mock('../QueuePanel', () => ({ QueuePanel: () => null }));
 vi.mock('../ThreadExecutionBar', () => ({ ThreadExecutionBar: () => null }));
 vi.mock('../VoteActiveBar', () => ({ VoteActiveBar: () => null }));
 vi.mock('../ScrollToBottomButton', () => ({ ScrollToBottomButton: () => null }));
-vi.mock('../SplitPaneView', () => ({ SplitPaneView: () => null }));
-vi.mock('../AuthorizationCard', () => ({ AuthorizationCard: () => null }));
+vi.mock('../SplitPaneView', () => ({
+  SplitPaneView: () => null,
+  SplitPaneChatView: () => null,
+}));
 vi.mock('../WorkspacePanel', () => ({ WorkspacePanel: () => null }));
 vi.mock('../BootstrapOrchestrator', () => ({ BootstrapOrchestrator: () => null }));
 vi.mock('../BootcampListModal', () => ({ BootcampListModal: () => null }));
@@ -314,9 +318,6 @@ describe('ChatContainer governance refetch', () => {
     mockGovRefetch.mockReset();
     mockAgentHookRefresh.mockReset();
     mockGovernanceStatus = {
-      ready: true,
-      needsBootstrap: false,
-      needsConfirmation: false,
       isEmptyDir: false,
       isGitRepo: true,
       gitAvailable: true,
@@ -342,13 +343,13 @@ describe('ChatContainer governance refetch', () => {
 
   it('does not refetch governance status when switching threads within the same project', async () => {
     await act(async () => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-a' }));
+      root.render(renderChatContainer('thread-a'));
     });
 
     expect(mockGovRefetch).not.toHaveBeenCalled();
 
     await act(async () => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-b' }));
+      root.render(renderChatContainer('thread-b'));
     });
 
     expect(mockGovRefetch).not.toHaveBeenCalled();
@@ -367,7 +368,7 @@ describe('ChatContainer governance refetch', () => {
     });
 
     await act(async () => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-a' }));
+      root.render(renderChatContainer('thread-a'));
     });
 
     expect(mockUseAgentHookHealth).toHaveBeenCalledWith({ enabled: false, projectPath: 'default' });
@@ -376,16 +377,13 @@ describe('ChatContainer governance refetch', () => {
 
   it('refreshes governance and agent-hook health after project setup completes', async () => {
     mockGovernanceStatus = {
-      ready: false,
-      needsBootstrap: true,
-      needsConfirmation: false,
       isEmptyDir: true,
       isGitRepo: false,
       gitAvailable: true,
     };
 
     await act(async () => {
-      root.render(React.createElement(ChatContainer, { threadId: 'thread-a' }));
+      root.render(renderChatContainer('thread-a'));
     });
 
     const complete = container.querySelector<HTMLButtonElement>('[data-testid="project-setup-complete"]');

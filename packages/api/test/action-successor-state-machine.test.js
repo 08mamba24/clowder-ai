@@ -330,6 +330,7 @@ describe('F167 Phase S action successor state machine', () => {
     });
     const newPredicate = reviewPredicate('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
     const continued = continueActionSuccessorFreshRevision(completed, {
+      successorLeaseId: 'lease-fresh-head-b',
       expectedGeneration: 1,
       terminalPredicate: newPredicate,
       holderCatIds: ['codex-terra'],
@@ -340,28 +341,29 @@ describe('F167 Phase S action successor state machine', () => {
       dispatchId: 'dispatch-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       issuerStandingEvidenceRef: 'message:request-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       evidenceRef: 'community:pr:owner/repo#2868:head:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      reviewReentry: {
-        reason: 'behavioral_delta',
-        evidenceRef: 'git:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:authored-delta',
-      },
       now: 120,
     });
 
     assert.equal(continued.outcome, 'continued');
     assert.equal(continued.lease.key, completed.key);
-    assert.equal(continued.lease.generation, 2);
+    assert.equal(continued.lease.leaseId, 'lease-fresh-head-b');
+    assert.notEqual(continued.lease.leaseId, completed.leaseId);
+    assert.equal(continued.lease.generation, 1);
     assert.equal(continued.lease.status, 'active');
     assert.deepEqual(continued.lease.holderOutcomes, {});
     assert.deepEqual(continued.lease.completionCandidates, {});
     assert.equal(continued.lease.terminalPredicate.freshnessKey, 'head:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
-    assert.ok(
-      continued.lease.evidenceRefs.includes(
-        'review-reentry:behavioral_delta:git:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:authored-delta',
-      ),
-    );
-    assert.deepEqual(preflightActionSuccessor(continued.lease, { generation: 1, subjectTerminal: false }), {
+    assert.deepEqual(continued.lease.evidenceRefs, [
+      'message:request-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      'community:pr:owner/repo#2868:head:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    ]);
+    assert.deepEqual(preflightActionSuccessor(completed, { generation: 1, subjectTerminal: false }), {
       ok: false,
-      reason: 'stale_generation',
+      reason: 'lease_not_active',
+    });
+    assert.deepEqual(preflightActionSuccessor(continued.lease, { generation: 1, subjectTerminal: false }), {
+      ok: true,
+      reason: 'active',
     });
   });
 
@@ -385,6 +387,7 @@ describe('F167 Phase S action successor state machine', () => {
     const newPredicate = reviewPredicate('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
 
     const continued = continueActionSuccessorFreshRevision(completed, {
+      successorLeaseId: 'lease-fresh-head-legacy',
       expectedGeneration: 1,
       terminalPredicate: newPredicate,
       holderCatIds: ['codex-terra'],
@@ -399,7 +402,8 @@ describe('F167 Phase S action successor state machine', () => {
     });
 
     assert.equal(continued.outcome, 'continued');
-    assert.equal(continued.lease.generation, 2);
+    assert.equal(continued.lease.leaseId, 'lease-fresh-head-legacy');
+    assert.equal(continued.lease.generation, 1);
     assert.equal(continued.lease.status, 'active');
     assert.deepEqual(continued.lease.terminalPredicateState, { kind: 'predicate_backed' });
     assert.equal(continued.lease.terminalPredicate.digest, newPredicate.digest);
@@ -438,6 +442,7 @@ describe('F167 Phase S action successor state machine', () => {
       'codex-sol',
     );
     const transferred = continueActionSuccessorFreshRevision(selfClaimed, {
+      successorLeaseId: 'lease-transferred-fresh-head',
       expectedGeneration: 1,
       terminalPredicate: reviewPredicate('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),
       holderCatIds: ['codex-terra'],
@@ -458,6 +463,7 @@ describe('F167 Phase S action successor state machine', () => {
 
     const transferredClaim = complete({}, 'codex-terra');
     const selfContinued = continueActionSuccessorFreshRevision(transferredClaim, {
+      successorLeaseId: 'lease-self-fresh-head',
       expectedGeneration: 1,
       terminalPredicate: reviewPredicate('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),
       holderCatIds: ['codex-sol'],
@@ -760,7 +766,7 @@ describe('F167 Phase S action successor state machine', () => {
     const withCandidate = recordActionCompletionCandidate(returned, {
       generation: 2,
       catId: 'codex-sol',
-      evidenceRefs: ['local-review:message-1:g2:approved'],
+      evidenceRefs: ['git:commit:reviewed-output'],
       now: 125,
     });
     assert.equal(replaceActionSuccessor(withCandidate, replacement()).outcome, 'candidate_present');

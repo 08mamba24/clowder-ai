@@ -8,6 +8,8 @@ interface ContextualWorkspaceChromeProps {
   mode: WorkspaceHostMode;
   onFold: () => void;
   onNavigateHome?: () => void;
+  showFold?: boolean;
+  actions?: ReactNode;
   children: ReactNode;
 }
 
@@ -17,7 +19,14 @@ const HOST_LABELS: Record<WorkspaceHostMode, { label: string; dot: string }> = {
   transcript: { label: '会议伴随', dot: 'bg-[var(--semantic-success)]' },
 };
 
-export function ContextualWorkspaceChrome({ mode, onFold, onNavigateHome, children }: ContextualWorkspaceChromeProps) {
+export function ContextualWorkspaceChrome({
+  mode,
+  onFold,
+  onNavigateHome,
+  showFold = false,
+  actions,
+  children,
+}: ContextualWorkspaceChromeProps) {
   const host = HOST_LABELS[mode];
 
   return (
@@ -57,13 +66,19 @@ export function ContextualWorkspaceChrome({ mode, onFold, onNavigateHome, childr
           <span className="truncate text-xs font-semibold text-cafe-black">{host.label}</span>
         </div>
 
-        {mode !== 'workspace' && (
+        {actions && (
+          <div className="flex shrink-0 items-center gap-1" data-testid="workspace-shell-actions">
+            {actions}
+          </div>
+        )}
+
+        {(mode !== 'workspace' || showFold) && (
           <button
             type="button"
             onClick={onFold}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-cafe-secondary transition-colors hover:bg-cafe-surface-sunken hover:text-cafe-black"
-            title="收起侧栏"
-            aria-label="收起侧栏"
+            title={mode === 'workspace' ? '收起 Workspace' : '收起侧栏'}
+            aria-label={mode === 'workspace' ? '收起 Workspace' : '收起侧栏'}
             data-testid="workspace-shell-fold"
           >
             <svg

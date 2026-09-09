@@ -3,7 +3,23 @@ import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { TasteRepository } from '../../../taste/services/TasteRepository.js';
 import { TasteMemoryReader, type TasteMemoryReadResult } from '../../taste/TasteMemoryReader.js';
-import type { TasteDimensionMapSource } from '../resolvers/TasteCueResolver.js';
+import {
+  EXPLICIT_APPROVED_TASTE_SOURCE_ANCHOR_PREFIX,
+  getExplicitApprovedTasteTrigger,
+  getExplicitApprovedTasteTriggerBySourcePath,
+} from '../ExplicitApprovedTasteTriggerCatalog.js';
+import type { TasteDimensionMapSource, TasteTaskBundleProjection } from '../resolvers/TasteCueResolver.js';
+import {
+  findTasteTaskBundle,
+  parseTasteTaskBundleAnchor,
+  TASTE_TASK_BUNDLE_SOURCE_ANCHOR_PREFIX,
+} from '../TasteTaskBundleCatalog.js';
+
+export {
+  F315_WORKSPACE_READABILITY_TASTE_BUNDLE_V1,
+  TASTE_TASK_BUNDLE_SOURCE_ANCHOR_PREFIX,
+  tasteTaskBundleAnchor,
+} from '../TasteTaskBundleCatalog.js';
 
 const TASTE_MAP_VERSION = 1;
 const MAX_DRILL_PAYLOAD_CHARS = 32_768;
@@ -88,12 +104,72 @@ export class CanonicalTasteMemoryCueSource implements TasteDimensionMapSource {
       : null;
   }
 
+  async resolveTaskBundle(input: {
+    ownerUserId: string;
+    stage: 'quality_gate' | 'review';
+    selectedSkill: TasteSkill;
+    featureId: string;
+  }): Promise<TasteTaskBundleProjection | null> {
+    if (input.ownerUserId !== this.ownerUserId) return null;
+    const definition = findTasteTaskBundle(input);
+    if (!definition) return null;
+    const sources = definition.sourcePaths.flatMap((sourcePath) => {
+      const result = this.reader.read({ ownerUserId: input.ownerUserId, sourcePath });
+      return result?.visibility === 'public'
+        ? [{ sourcePath: result.sourcePath, revision: result.revision, visibility: 'owner_public' as const }]
+        : [];
+    });
+    if (sources.length !== definition.sourcePaths.length) return null;
+    return {
+      bundleId: definition.bundleId,
+      consumerTaskRef: definition.consumerTaskRef,
+      sources,
+    };
+  }
+
+  matchesTaskBundle(input: {
+    ownerUserId: string;
+    stage: 'quality_gate' | 'review';
+    selectedSkill: TasteSkill;
+    featureId: string;
+  }): boolean {
+    return input.ownerUserId === this.ownerUserId && findTasteTaskBundle(input) !== null;
+  }
+
+  async resolveExplicit(input: { ownerUserId: string; triggerKey: 'ELI5' }): Promise<{
+    triggerKey: 'ELI5';
+    sourcePath: string;
+    revision: string;
+    visibility: 'owner_public' | 'owner_private';
+  } | null> {
+    if (input.ownerUserId !== this.ownerUserId) return null;
+    const trigger = getExplicitApprovedTasteTrigger(input.triggerKey);
+    if (!trigger) return null;
+    const result = this.reader.read({ ownerUserId: input.ownerUserId, sourcePath: trigger.sourcePath });
+    if (!result || !trigger.requiredTags.every((tag) => result.payload.tags.includes(tag))) return null;
+    return {
+      triggerKey: trigger.triggerKey,
+      sourcePath: trigger.sourcePath,
+      revision: result.revision,
+      visibility: result.visibility === 'private' ? 'owner_private' : 'owner_public',
+    };
+  }
+
   async read(input: {
     ownerUserId: string;
     anchor: string;
     expectedRevision: string;
   }): Promise<TasteMemoryCueReadResult> {
-    if (input.ownerUserId !== this.ownerUserId || !input.anchor.startsWith('taste-dimensions:')) {
+    if (input.ownerUserId !== this.ownerUserId) {
+      return { status: 'not_available', invalidationReason: 'source_forgotten' };
+    }
+    if (input.anchor.startsWith(TASTE_TASK_BUNDLE_SOURCE_ANCHOR_PREFIX)) {
+      return this.readTaskBundleItem(input);
+    }
+    if (input.anchor.startsWith(EXPLICIT_APPROVED_TASTE_SOURCE_ANCHOR_PREFIX)) {
+      return this.readExplicit(input);
+    }
+    if (!input.anchor.startsWith('taste-dimensions:')) {
       return { status: 'not_available', invalidationReason: 'source_forgotten' };
     }
     const dimensions = [...new Set(input.anchor.slice('taste-dimensions:'.length).split(',').filter(Boolean))].sort();
@@ -111,6 +187,54 @@ export class CanonicalTasteMemoryCueSource implements TasteDimensionMapSource {
         dimensions: snapshot.dimensions,
         totalCount: snapshot.totalCount,
         vignettes: snapshot.results,
+      },
+    };
+  }
+
+  private readTaskBundleItem(input: {
+    ownerUserId: string;
+    anchor: string;
+    expectedRevision: string;
+  }): TasteMemoryCueReadResult {
+    const coordinate = parseTasteTaskBundleAnchor(input.anchor);
+    if (!coordinate) return { status: 'not_available', invalidationReason: 'source_forgotten' };
+    const current = this.reader.read({ ownerUserId: input.ownerUserId, sourcePath: coordinate.sourcePath });
+    if (!current) return { status: 'not_available', invalidationReason: 'source_forgotten' };
+    if (current.revision !== input.expectedRevision) {
+      return { status: 'not_available', invalidationReason: 'source_corrected' };
+    }
+    return {
+      status: 'ok',
+      payload: {
+        bundleId: coordinate.definition.bundleId,
+        consumerTaskRef: coordinate.definition.consumerTaskRef,
+        vignette: current,
+      },
+    };
+  }
+
+  private readExplicit(input: {
+    ownerUserId: string;
+    anchor: string;
+    expectedRevision: string;
+  }): TasteMemoryCueReadResult {
+    const sourcePath = input.anchor.slice(EXPLICIT_APPROVED_TASTE_SOURCE_ANCHOR_PREFIX.length);
+    const trigger = getExplicitApprovedTasteTriggerBySourcePath(sourcePath);
+    if (!trigger) return { status: 'not_available', invalidationReason: 'source_forgotten' };
+    const current = this.reader.read({ ownerUserId: input.ownerUserId, sourcePath });
+    if (!current) return { status: 'not_available', invalidationReason: 'source_forgotten' };
+    if (
+      current.revision !== input.expectedRevision ||
+      !trigger.requiredTags.every((tag) => current.payload.tags.includes(tag))
+    ) {
+      return { status: 'not_available', invalidationReason: 'source_corrected' };
+    }
+    return {
+      status: 'ok',
+      payload: {
+        triggerKey: trigger.triggerKey,
+        applicationContract: trigger.applicationContract,
+        vignette: current.payload,
       },
     };
   }

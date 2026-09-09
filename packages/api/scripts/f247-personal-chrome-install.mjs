@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-import { readFile } from 'node:fs/promises';
-import { connect } from 'node:net';
+import { lstat, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -16,7 +15,13 @@ import {
   uninstallNativeHost,
 } from '../src/plugins/cloud-cat-personal-host/native-host/install-host.mjs';
 import { resolvePersonalChromeHostPaths } from '../src/plugins/cloud-cat-personal-host/native-host/pairing-record.mjs';
+import { probeNativeHostHealth } from './f247-personal-chrome-health-probe.mjs';
+import {
+  assertPersonalChromeConversationOption,
+  parsePersonalChromeInstallArguments,
+} from './f247-personal-chrome-install-cli-options.mjs';
 import { extensionIdFromManifestKey } from './f247-personal-chrome-live-contract.mjs';
+import { projectPersonalChromeLiveState } from './f247-personal-chrome-state-health.mjs';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const apiRoot = resolve(scriptDirectory, '..');
@@ -34,26 +39,6 @@ function typedOperationError(code, message) {
   return error;
 }
 
-function probeNativeHostSocket(socketPath, timeoutMs = 500) {
-  return new Promise((resolveProbe, rejectProbe) => {
-    const socket = connect(socketPath);
-    let settled = false;
-    const finish = (error, connected) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      if (error) rejectProbe(error);
-      else resolveProbe(connected);
-    };
-    socket.once('connect', () => finish(undefined, true));
-    socket.once('error', (error) => {
-      if (error?.code === 'ENOENT' || error?.code === 'ECONNREFUSED') finish(undefined, false);
-      else finish(error);
-    });
-    socket.setTimeout(timeoutMs, () => finish(new Error('personal Chrome helper health probe timed out')));
-  });
-}
-
 async function resolveExtensionId(explicitExtensionId) {
   if (explicitExtensionId !== undefined) {
     if (typeof explicitExtensionId !== 'string' || !CHROME_EXTENSION_ID.test(explicitExtensionId)) {
@@ -63,6 +48,16 @@ async function resolveExtensionId(explicitExtensionId) {
   }
   const manifest = JSON.parse(await readFile(join(extensionRoot, 'manifest.json'), 'utf8'));
   return extensionIdFromManifestKey(manifest.key);
+}
+
+async function recordedInstallationExists(pairingRecordPath) {
+  try {
+    const metadata = await lstat(pairingRecordPath);
+    return metadata.isFile() && !metadata.isSymbolicLink();
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 export function resolveChromeWebStoreDistribution(webStoreListingUrl, extensionId) {
@@ -147,14 +142,51 @@ function projectAuthorizations(collection) {
   };
 }
 
+async function projectInstallationState({ state, platform, projectRoot, inspectInstallation }) {
+  try {
+    const installation = await inspectInstallation({ platform, projectRoot });
+    state.artifact.helper = 'ready';
+    state.config.status = 'ready';
+    return installation;
+  } catch (error) {
+    if (errorCode(error) === 'NATIVE_HOST_ARTIFACT_STALE' && error?.installation) {
+      state.artifact.helper = 'stale';
+      state.config.status = 'ready';
+      return error.installation;
+    }
+    if (errorCode(error) !== 'ENOENT') {
+      state.artifact.helper = 'invalid';
+      state.config.status = 'invalid';
+      state.live.status = 'degraded';
+    }
+    return undefined;
+  }
+}
+
+async function projectAuthorizationState({ state, path, readAuthorizations }) {
+  const migrateLegacy = state.artifact.helper !== 'stale';
+  try {
+    state.authorization = projectAuthorizations(await readAuthorizations(path, { migrateLegacy }));
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT' || errorCode(error) === 'NEEDS_AUTHORIZATION') return;
+    state.authorization = {
+      status: 'invalid',
+      count: 0,
+      limit: PERSONAL_CHROME_AUTHORIZATION_LIMIT,
+      conversations: [],
+    };
+  }
+}
+
 export async function inspectPersonalChromePluginState({
   platform = process.platform,
   projectRoot,
   extensionId,
+  conversationId,
   webStoreListingUrl = process.env.CAT_CAFE_PERSONAL_CHROME_WEB_STORE_URL,
   inspectInstallation = inspectNativeHostInstallation,
   readAuthorizations = readPersonalChromeConversationAuthorizations,
-  probeLive = probeNativeHostSocket,
+  probeLive = probeNativeHostHealth,
 } = {}) {
   const resolvedExtensionId = await resolveExtensionId(extensionId);
   const state = baseState({
@@ -165,38 +197,27 @@ export async function inspectPersonalChromePluginState({
 
   const resolvedProjectRoot = projectRoot ?? process.env.CAT_CAFE_CONFIG_ROOT?.trim() ?? monorepoRoot;
   const paths = resolvePersonalChromeHostPaths(resolvedProjectRoot, { platform });
-  let installation;
-  try {
-    installation = await inspectInstallation({ platform, projectRoot: resolvedProjectRoot });
-    state.artifact.helper = 'ready';
-    state.config.status = 'ready';
-  } catch (error) {
-    if (errorCode(error) !== 'ENOENT') {
-      state.artifact.helper = 'invalid';
-      state.config.status = 'invalid';
-      state.live.status = 'degraded';
-    }
+  const installation = await projectInstallationState({
+    state,
+    platform,
+    projectRoot: resolvedProjectRoot,
+    inspectInstallation,
+  });
+  await projectAuthorizationState({ state, path: paths.conversationBindingPath, readAuthorizations });
+  if (
+    conversationId !== undefined &&
+    !state.authorization.conversations.some((entry) => entry.conversationId === conversationId)
+  ) {
+    state.live = { status: 'degraded', errorCode: 'AUTHORIZATION_NOT_FOUND' };
+    return state;
   }
-
-  try {
-    state.authorization = projectAuthorizations(await readAuthorizations(paths.conversationBindingPath));
-  } catch (error) {
-    if (errorCode(error) !== 'ENOENT' && errorCode(error) !== 'NEEDS_AUTHORIZATION') {
-      state.authorization = {
-        status: 'invalid',
-        count: 0,
-        limit: PERSONAL_CHROME_AUTHORIZATION_LIMIT,
-        conversations: [],
-      };
-    }
-  }
-
-  if (!installation) return state;
-  try {
-    state.live.status = (await probeLive(installation.socketPath)) ? 'connected' : 'dormant';
-  } catch {
-    state.live.status = 'degraded';
-  }
+  await projectPersonalChromeLiveState({
+    state,
+    installation,
+    pairingRecordPath: paths.pairingRecordPath,
+    conversationId,
+    probeLive,
+  });
   return state;
 }
 
@@ -210,15 +231,17 @@ export function createPersonalChromePluginPort({
   inspectInstallation = inspectNativeHostInstallation,
   readAuthorizations = readPersonalChromeConversationAuthorizations,
   revokeAuthorization = revokePersonalChromeConversation,
-  probeLive = probeNativeHostSocket,
+  probeLive = probeNativeHostHealth,
+  hasRecordedInstallation = recordedInstallationExists,
   now = () => new Date(),
 } = {}) {
   const resolvedProjectRoot = projectRoot ?? process.env.CAT_CAFE_CONFIG_ROOT?.trim() ?? monorepoRoot;
-  const inspect = async () =>
+  const inspect = async ({ conversationId } = {}) =>
     inspectPersonalChromePluginState({
       platform,
       projectRoot: resolvedProjectRoot,
       extensionId,
+      conversationId,
       webStoreListingUrl,
       inspectInstallation,
       readAuthorizations,
@@ -229,7 +252,7 @@ export function createPersonalChromePluginPort({
       throw typedOperationError('UNSUPPORTED_PLATFORM', 'Windows Personal Chrome install is not implemented');
     }
   };
-  const installOrRepair = async () => {
+  const install = async () => {
     requireSupported();
     const resolvedExtensionId = await resolveExtensionId(extensionId);
     const distribution = resolveChromeWebStoreDistribution(webStoreListingUrl, resolvedExtensionId);
@@ -237,6 +260,27 @@ export function createPersonalChromePluginPort({
       throw typedOperationError(
         distribution.blockerCode,
         'a published Chrome Web Store listing is required before installation',
+      );
+    }
+    await installHost({ platform, projectRoot: resolvedProjectRoot, extensionId: resolvedExtensionId });
+    return inspect();
+  };
+  const repair = async () => {
+    requireSupported();
+    const resolvedExtensionId = await resolveExtensionId(extensionId);
+    const paths = resolvePersonalChromeHostPaths(resolvedProjectRoot, { platform });
+    let installed = false;
+    try {
+      await inspectInstallation({ platform, projectRoot: resolvedProjectRoot });
+      installed = true;
+    } catch (error) {
+      installed =
+        errorCode(error) === 'NATIVE_HOST_ARTIFACT_STALE' || (await hasRecordedInstallation(paths.pairingRecordPath));
+    }
+    if (!installed) {
+      throw typedOperationError(
+        'NATIVE_HOST_NOT_INSTALLED',
+        'repair requires an existing Personal Chrome Developer Preview installation',
       );
     }
     await installHost({ platform, projectRoot: resolvedProjectRoot, extensionId: resolvedExtensionId });
@@ -265,26 +309,33 @@ export function createPersonalChromePluginPort({
   };
   return {
     inspect,
-    install: installOrRepair,
-    repair: installOrRepair,
+    install,
+    repair,
     revoke,
     uninstall,
   };
 }
 
-export async function runPersonalChromeInstall({ action = 'install', projectRoot, env = process.env } = {}) {
+export async function runPersonalChromeInstall({
+  action = 'install',
+  projectRoot,
+  conversationId,
+  conversationIdOptionPresent = false,
+  env = process.env,
+} = {}) {
+  assertPersonalChromeConversationOption({ conversationId, optionPresent: conversationIdOptionPresent });
   const port = createPersonalChromePluginPort({
     projectRoot: projectRoot ?? env.CAT_CAFE_CONFIG_ROOT?.trim() ?? monorepoRoot,
     webStoreListingUrl: env.CAT_CAFE_PERSONAL_CHROME_WEB_STORE_URL,
   });
   if (action === 'install') return port.install();
-  if (action === 'inspect') return port.inspect();
+  if (action === 'inspect') return port.inspect({ conversationId });
   if (action === 'uninstall') return port.uninstall();
   throw new Error('action must be install, inspect, or uninstall');
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  runPersonalChromeInstall({ action: process.argv[2] ?? 'install' })
+  runPersonalChromeInstall(parsePersonalChromeInstallArguments(process.argv.slice(2)))
     .then((result) => process.stdout.write(`${JSON.stringify(result, null, 2)}\n`))
     .catch((error) => {
       process.stderr.write(

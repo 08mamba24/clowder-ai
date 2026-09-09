@@ -22,6 +22,7 @@ import type {
   IThreadStore,
   MentionActionabilityMode,
   Thread,
+  ThreadGoalStateV1,
   ThreadMemoryV1,
   ThreadMentionRoutingFeedback,
   ThreadMetadataPatch,
@@ -35,6 +36,7 @@ import {
   buildExternalRuntimeAnchorThreadId,
   DEFAULT_THREAD_ID,
   deriveAutoThreadTitle,
+  isThreadGoalStateV1,
   mergeThreadMetadata,
   parseThreadMetadataJson,
   validateMergedTotals,
@@ -85,6 +87,42 @@ if cur == ARGV[2] then
   return 1
 end
 return 0
+`;
+
+/** F306 exact-revision CAS for the durable thread goal field. */
+const CAS_THREAD_GOAL_LUA = `
+if redis.call('HEXISTS', KEYS[1], 'id') == 0 then
+  return 0
+end
+local raw = redis.call('HGET', KEYS[1], 'goal')
+if ARGV[3] == '1' then
+  if tonumber(ARGV[1]) ~= -1 or raw == false or raw ~= ARGV[4] then
+    return 0
+  end
+  if ARGV[2] == '' then
+    redis.call('HDEL', KEYS[1], 'goal')
+  else
+    redis.call('HSET', KEYS[1], 'goal', ARGV[2])
+  end
+  return 1
+end
+local currentRevision = -1
+if raw then
+  local ok, parsed = pcall(cjson.decode, raw)
+  if not ok or type(parsed) ~= 'table' or type(parsed.revision) ~= 'number' then
+    return 0
+  end
+  currentRevision = parsed.revision
+end
+if currentRevision ~= tonumber(ARGV[1]) then
+  return 0
+end
+if ARGV[2] == '' then
+  redis.call('HDEL', KEYS[1], 'goal')
+else
+  redis.call('HSET', KEYS[1], 'goal', ARGV[2])
+end
+return 1
 `;
 
 /**
@@ -206,6 +244,7 @@ export class RedisThreadStore implements IThreadStore {
     projectPath?: string,
     parentThreadId?: string,
     proposalAudit?: import('../ports/ThreadStore.js').ThreadProposalAudit,
+    branchAudit?: import('../ports/ThreadStore.js').ThreadBranchAudit,
   ): Promise<Thread> {
     const now = Date.now();
     const thread: Thread = {
@@ -221,10 +260,14 @@ export class RedisThreadStore implements IThreadStore {
         ? {
             createdFromProposalId: proposalAudit.createdFromProposalId,
             sourceThreadId: proposalAudit.sourceThreadId,
+            ...(proposalAudit.sourceInvocationId ? { sourceInvocationId: proposalAudit.sourceInvocationId } : {}),
+            ...(proposalAudit.sourceMessageId ? { sourceMessageId: proposalAudit.sourceMessageId } : {}),
+            ...(proposalAudit.declaredWorkMode ? { declaredWorkMode: proposalAudit.declaredWorkMode } : {}),
             approvedBy: proposalAudit.approvedBy,
             approvedAt: proposalAudit.approvedAt,
           }
         : {}),
+      ...(branchAudit ? { branchAudit: { ...branchAudit } } : {}),
     };
 
     const key = ThreadKeys.detail(thread.id);
@@ -576,6 +619,35 @@ export class RedisThreadStore implements IThreadStore {
     }
   }
 
+  async compareAndSetGoal(
+    threadId: string,
+    expectedRevision: number | null,
+    next: ThreadGoalStateV1 | null,
+  ): Promise<boolean> {
+    if (next && !isThreadGoalStateV1(next)) return false;
+    const key = ThreadKeys.detail(threadId);
+    const currentRaw = await this.redis.hget(key, 'goal');
+    let repairRaw: string | null = null;
+    if (currentRaw !== null) {
+      try {
+        if (!isThreadGoalStateV1(JSON.parse(currentRaw))) repairRaw = currentRaw;
+      } catch {
+        repairRaw = currentRaw;
+      }
+    }
+    const changed = (await this.redis.eval(
+      CAS_THREAD_GOAL_LUA,
+      1,
+      key,
+      String(expectedRevision ?? -1),
+      next ? JSON.stringify(next) : '',
+      repairRaw !== null ? '1' : '0',
+      repairRaw ?? '',
+    )) as number;
+    if (changed === 1) await this.applyKeyRetention([key]);
+    return changed === 1;
+  }
+
   async updatePhase(threadId: string, phase: ThreadPhase): Promise<void> {
     const key = ThreadKeys.detail(threadId);
     await this.setDetailFields(key, 'phase', phase);
@@ -717,6 +789,7 @@ export class RedisThreadStore implements IThreadStore {
     mode:
       | 'dev'
       | 'recall'
+      | 'product-schedule'
       | 'schedule'
       | 'tasks'
       | 'community'
@@ -1143,6 +1216,9 @@ export class RedisThreadStore implements IThreadStore {
     if (thread.phase) {
       result.phase = thread.phase;
     }
+    if (thread.goal) {
+      result.goal = JSON.stringify(thread.goal);
+    }
     if (thread.backlogItemId) {
       result.backlogItemId = thread.backlogItemId;
     }
@@ -1177,6 +1253,18 @@ export class RedisThreadStore implements IThreadStore {
     }
     if (thread.sourceThreadId) {
       result.sourceThreadId = thread.sourceThreadId;
+    }
+    if (thread.sourceInvocationId) {
+      result.sourceInvocationId = thread.sourceInvocationId;
+    }
+    if (thread.sourceMessageId) {
+      result.sourceMessageId = thread.sourceMessageId;
+    }
+    if (thread.declaredWorkMode) {
+      result.declaredWorkMode = thread.declaredWorkMode;
+    }
+    if (thread.branchAudit) {
+      result.branchAudit = JSON.stringify(thread.branchAudit);
     }
     if (thread.approvedBy) {
       result.approvedBy = thread.approvedBy;
@@ -1232,6 +1320,14 @@ export class RedisThreadStore implements IThreadStore {
     };
     if (data.mentionActionabilityMode === 'relaxed') {
       result.mentionActionabilityMode = 'relaxed';
+    }
+    if (data.goal) {
+      try {
+        const parsed = JSON.parse(data.goal);
+        if (isThreadGoalStateV1(parsed)) result.goal = parsed;
+      } catch {
+        /* ignore malformed goal state */
+      }
     }
     const phase = this.parsePhase(data.phase);
     if (phase) {
@@ -1301,6 +1397,38 @@ export class RedisThreadStore implements IThreadStore {
     if (data.sourceThreadId) {
       result.sourceThreadId = data.sourceThreadId;
     }
+    if (data.sourceInvocationId) {
+      result.sourceInvocationId = data.sourceInvocationId;
+    }
+    if (data.sourceMessageId) {
+      result.sourceMessageId = data.sourceMessageId;
+    }
+    if (
+      data.declaredWorkMode === 'subtask' ||
+      data.declaredWorkMode === 'parallel' ||
+      data.declaredWorkMode === 'investigation' ||
+      data.declaredWorkMode === 'standalone'
+    ) {
+      result.declaredWorkMode = data.declaredWorkMode;
+    }
+    if (data.branchAudit) {
+      try {
+        const parsed = JSON.parse(data.branchAudit) as Record<string, unknown>;
+        if (
+          typeof parsed.sourceThreadId === 'string' &&
+          typeof parsed.sourceMessageId === 'string' &&
+          typeof parsed.branchedAt === 'number'
+        ) {
+          result.branchAudit = {
+            sourceThreadId: parsed.sourceThreadId,
+            sourceMessageId: parsed.sourceMessageId,
+            branchedAt: parsed.branchedAt,
+          };
+        }
+      } catch {
+        /* ignore malformed immutable audit */
+      }
+    }
     if (data.approvedBy) {
       result.approvedBy = data.approvedBy;
     }
@@ -1320,7 +1448,10 @@ export class RedisThreadStore implements IThreadStore {
     }
     if (
       data.systemKind &&
-      (data.systemKind === 'connector_hub' || data.systemKind === 'eval_domain' || data.systemKind === 'cat_bedroom')
+      (data.systemKind === 'connector_hub' ||
+        data.systemKind === 'eval_domain' ||
+        data.systemKind === 'cat_bedroom' ||
+        data.systemKind === 'memory_ops')
     ) {
       result.systemKind = data.systemKind as ThreadSystemKind;
     }
@@ -1354,6 +1485,7 @@ export class RedisThreadStore implements IThreadStore {
     const validModes = new Set([
       'dev',
       'recall',
+      'product-schedule',
       'schedule',
       'tasks',
       'community',

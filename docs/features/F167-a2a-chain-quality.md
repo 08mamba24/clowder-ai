@@ -1,11 +1,11 @@
 ---
 feature_ids: [F167]
-related_features: [F064, F027, F055, F122, F246, F280]
+related_features: [F064, F027, F055, F122, F168, F246, F280]
 topics: [a2a, collaboration, harness-engineering, agent-readiness]
 doc_kind: spec
 created: 2026-04-17
-updated: 2026-08-21
-tips_exempt: action-custody protocol is exposed to cats through the typed MCP action schema; no separate operator-facing capability action
+updated: 2026-09-04
+tips_exempt: "Renewed 2026-09-04 for the Phase R terminal-lineage conflict repair: it makes the existing post_message and cross_post_message coordination surface fail loud instead of closing the wrong chain, without adding a user-invokable action or discovery workflow."
 user_journey_exempt: protocol behavior has no direct UI surface; end-to-end custody is dogfooded through the real MCP/task path
 mcp_admission_status: accepted
 mcp_admission_ref: "file:docs/features/F167-a2a-chain-quality.md"
@@ -20,6 +20,11 @@ mcp_admission_claims:
     resourceFamily: task-workflow
     boundaryKind: authority-boundary
     decision: accepted
+  - ref: "file:docs/features/F167-a2a-chain-quality.md"
+    toolName: cat_cafe_recover_external_review_verdict
+    resourceFamily: tracking-review
+    boundaryKind: authority-boundary
+    decision: accepted
 ---
 
 # F167: A2A Chain Quality — 乒乓球熔断 + 虚空传球检测 + 角色护栏
@@ -27,7 +32,7 @@ mcp_admission_claims:
 > **Status**: in-progress | **Owner**: Ragdoll | **Priority**: P0
 
 Architecture cell: `transport` + `harness-eval` + `ball-custody` + `dispatch`
-Map delta: updated — Phase R records structured cross-thread coordination in `transport`/`harness-eval`; Phase S gives action successor leases to `ball-custody` while `dispatch` owns carrier admission projection and queue generation preflight; Phase T binds explicit A2A and exact hold wake provenance to those existing custody owners without creating another ledger.
+Map delta: updated — Phase R records structured cross-thread coordination in `transport`/`harness-eval`; Phase S keeps implement and approved external-review successors in `ball-custody`, while Phase S.2 returns local cat review to ordinary durable `dispatch` plus typed merge evidence; Phase T binds explicit A2A and exact hold wake provenance to those existing owners without creating another ledger.
 
 ## Why
 
@@ -790,6 +795,96 @@ operator experience："简直了你和Maine Coon是没头脑（Maine Coon听不�
 | 纠正轮次 | 本次 1 次（`0001787299710431-000183-7421a9ae`）；跨任务已有 Case E11 同型证据，因此记录。纠正后已整段撤掉产品愿景和 `docs/VISION.md` 引用，换成自进化终态、自治分级、双证举证链与条件性 CEW 路线，提交 `195aaaf4e` 已推送 main。 |
 | 元心智哪条没执行 | Q2 信息验证：虽读取了真实 canonical 文档，却选错了 resolver；Q3 坐标变换：把“当前研究对象的 vision”错误升格成“整个产品的 VISION”。 |
 
+### Case E13: 把独立产物与双 Episode 压成一条旧故事流水线（2026-08-24，codex-sol）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | 为了让 HC 技术范式与 Demo 互相证明，Demo 应逐步映射架构模块；被纠正后，我又从旧稿召回“退款期 7 → 14 天”，把它放进第一 Episode，并把已经确认的欧盟空调政策挪成第二 Episode。 |
+| 实际要求 | 架构图与 Demo 是分别成立、只在关键 claim 上弱连接的两份产物。Demo 自身确实需要两个时间 Episode，但第一 Episode 已明确是欧盟空调政策变化；第二 Episode 要另选不同类型的世界变化，检验第一次长出的防护能否迁移，不能为了凑双幕复活已被淘汰的退款例子。 |
+| 偏差根因 | **过早线性化 + 历史故事锚定 + 时间槽位覆盖**：面对有关联但正交的对象，先压成一条易讲的流水线；需要补第二幕时，又把检索到的旧叙事当成现行约束，用“完整故事”覆盖了用户刚确认的当前起点。 |
+| 纠正轮次 | 同一任务连续 3 次：`0001787584460995-000143-e6ac4670` 拆开架构与 Demo；`0001787584701647-000150-43e45444` 恢复双 Episode 与“下一次不再救火”；`0001787584802908-000151-7db9c48e` 纠正 Episode 1 必须是欧盟空调政策、退款例子必须删除。当前稿把 Episode 2 降为待拍板工作假设，不再把推导冒充确认。 |
+| 元心智哪条没执行 | Q2 信息验证：回读了旧叙事，却没有用最新的人类确认覆盖历史版本；Q3 坐标变换：没有同时保留“产物轴（架构 / Demo）”与“时间轴（学习发生 / 迁移验证）”，反而把两轴挤成一条序列。 |
+
+### Case E14: 把「执行拆出去」的角色拓扑约束替换成 deictic 局部 referent（2026-08-25，codex-sol）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | operator 说 F306 当前 thread 是指挥 + Vision Guard、"执行拆出去"，需要另起一个 Command Thread 承接指挥职责，因此在 F306 内新建 proposal 让自己负责创建那个 command thread。 |
+| 实际要求 | F306 当前 thread 已经是唯一指挥塔；"执行拆出去"是把 Phase A 执行工作分派给另一只猫（Opus 5），本 thread 保持 command + Vision Guard 双职；proposal 应该是 execution proposal 派给执行者，不是新建自己负责的 command thread。 |
+| 偏差根因 | **局部 referent 锚定 + 角色拓扑反校验缺失**：把 operator 一句话里的"这个 thread"局部解析成"待创建 proposal 的 subject thread"，没有先用同句里"执行拆出去"这个谓词反查当前 thread 已经承担的角色。**分界判据**：一句话同时携带 deictic referent（"这个"/代词）与角色/拓扑约束（"指挥"/"执行"）时，**角色约束优先用于消歧**，deictic 先按角色反查再落到具体对象。与 Case E9/E12 同型（局部 referent 丢失 + 上位真相源锚定 + 任务替换）。 |
+| 纠正轮次 | 同一任务 2 次（`0001787715648448-000187-88875ef3` operator 首次纠正、`0001787716300810-000201-4d23c6c9` operator 第二次纠正"你才是指挥，提议应该让别人执行"）；跨任务已有 Case E9/E12 同型证据，因此按重复理解偏差记录。纠正后错误 proposal 已撤；Phase A execution proposal `proposal_mt9k6k3bsapth6gq` 改派 Opus 5；F306 当前 thread 的唯一指挥塔真相已提交 main `d9713cd6e`（docs(F306): bind command thread and delegate Phase A）。 |
+| 元心智哪条没执行 | Q2 信息验证：没有先把当前 thread 已承担的角色/拓扑约束当作 resolver 核对 referent；Q3 坐标变换：没有把"这个 thread"从"待创建对象"坐标系变换到"已承担指挥角色"坐标系。 |
+
+### Case E15: 把一次性 generation 推导成一次性 tracking（2026-08-26，codex-sol）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | F280 的 “all effects visible and one-shot” 应直接落到用户操作：每次 tracking 唤醒都消费注册，owner 处理完事件后必须显式再次调用工具；透明 prefill / reply-and-wait 足以抵消这项负担。 |
+| 实际要求 | 用户表达的是持续的 tracking intent：注册一次后默认跟到 subject terminal、owner fence 失效、显式取消或可选绝对 deadline。每次事件仍可在内部消费一个 generation，并以 fresh baseline 原子安装下一代；用户只看见“tracking continues”，不承担重新调用工具。精确单次责任才显式选择 one-shot。 |
+| 偏差根因 | **抽象边界倒置 + 局部安全不变量泄漏到用户旅程**：把内部用于幂等、审计和 stale-action 防护的 generation 生命周期，误当成用户可见 tracking 生命周期；局部看每次 effect 都显式，整体却把 re-registration 责任分散到每个 agent / skill / workflow，制造了更难审计的漏挂面。与 Case E7 的“逐项机制正确掩盖整体体验冲突”同型。**分界判据**：内部状态单元的一次性，不能推导出用户意图的一次性；先按用户旅程定义外部生命周期，再用 generation 承载内部交付。 |
+| 纠正轮次 | 同一 issue 方向任务 2 次：`0001787713386682-000092-e89e6359` 要求同时从 maintainer / 社区伙伴出发并避免冲突概念；`0001787797857153-000002-465d8fde` 直接指出显式重新注册会很难用。纠正后已在 clowder-ai#1392 评论 `5433637783` 接受 continuous-by-default tracking，移除 `needs-maintainer-decision`，并注册 clowder-ai#1394 新 HEAD wait `0001787798159931-000005-654c3718`。 |
+| 元心智哪条没执行 | Q3 坐标变换：没有先从“用户要持续关注 PR”定义终态，再把 one-shot generation 放回实现坐标；反而从内部契约形状反推用户必须执行的动作。 |
+
+### Case E16: 把“共同工作台”降成 Workspace 里的独立功能，并在设计对齐前开工（2026-08-26，codex-sol）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | F307 是在现有三栏 shell 旁边增加一套可组合工作台；operator 说 F290 半成品“得删一下”时，我又把这句设计反馈直接当成当轮实施授权，先进入删除与门禁。 |
+| 实际要求 | 现有右侧 Workspace 本体就是共同工作台；F307 是把它从单槽升级成用户拥有的 working set，不是在里面注册“共同工作集”卡片或另造页面。此轮先共同冻结要做什么，等 operator 明确“该删的删掉”后才执行 F290 乌龙清理；F307 新布局仍停在 Design Gate。 |
+| 偏差根因 | **产品坐标层级混同 + 行动偏好覆盖 speech-act 校验**：没有先区分 application container 与 feature-owned child surface，也没有先判断人类是在共创概念还是授权修改，就把“听懂方向”替换成“开始实现”。这与 Case E1 的任务替换同型；而已合入的 #3966 / #3974 又证明“把共同工作台做成独立入口 / mode”不是一次性误写。**分界判据**：先用现有真实 shell 确认对象处在哪一层，再分别确认“设计命题是否冻结”与“本轮是否授权产生副作用”；二者不能互相推导。 |
+| 纠正轮次 | 本次先由 `0001787752296857-000614-5db2a57c` 纠正“只是在讲想法，不应直接干活”，再由 `0001787798861085-000028-f5e4622f` 冻结“Workspace 本体就是共同工作台”并明确授权删除乌龙。纠正后未继续实现 F307 UI，只清理 #3974 留下的独立 F290 surface / mode / persistence，并加入窄边界 guard。 |
+| 元心智哪条没执行 | Q1 角色与授权确认：当时应是共同定义产品的讨论伙伴，不是已经接到实现球的 author；Q3 坐标变换：没有把“共同工作台”放回现有三栏 shell 的 application-level 坐标，误当成 Workspace 内的 child feature。 |
+
+### Case E17: 把生产控制面建设压成预制 MVP 纵切片（2026-08-28，codex-sol）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | F311 先选一个 Harness v1→v2 纵切片，搭出完整 Evolution Program 后再泛化，是最快的产品验证方式；现有 F192/F266/F278 故障可以作为首条真实 Program 的施工材料。 |
+| 实际要求 | 不造两个月后拆掉的玩具闭环。确定契约/运行闭环 bug 由 canonical owner 立即修；F311 与其并行建设最终会保留的生产控制面并接回 owner truth。首个 Evolution Program 还必须是有真实用户目标、明确 consumer 和 keep/tune/sunset 决策的**不确定效用** claim，不能把普通 bug 重新包装成“自进化”。 |
+| 偏差根因 | **惯例化 MVP 顺序覆盖终态架构 + 机制选择坍缩**：虽然 Owner Matrix 已写“引用不是所有权”，执行顺序仍沿用“先造容器、跑示范、再泛化”的产品模板；被第一次纠正后又差点把 F266 确定性 bug 填进 Program 槽，说明没有先按 claim 判断 test/telemetry/eval。与 Case E16 同型：把共同系统建设降成独立 child demo。**分界判据**：集成型控制面先问“现有 owner 的真修与永久 join 如何并行”，再问演示；确定契约/运行健康永不因“真实”自动升级为 Evolution Program。 |
+| 纠正轮次 | 本次由 `0001787933034346-000451-44d5c067` 现场纠正；与 Case E16 跨任务同型，因此按重复理解偏差记录。F311 spec v4 已在 `9066fe040` 改为 dependency repair 与 production build 并行、E0 合格目标触发首个 Program，并把 F266/F278 source refs 投回各自 owner thread。 |
+| 元心智哪条没执行 | Q3 坐标变换：没有先从“最终生产架构不能丢什么”倒推施工顺序；机制选择反射：没有逐 claim 区分确定契约、运行健康与不确定效用。 |
+
+### Case E18: 把 active review lease 当成 reviewer 已被唤醒（2026-08-28，codex-sol）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | PR #4058 的复审重入返回 `safe_wait` / active lease，且 review packet 已持久化，因此球已经在 Opus 5 手里并正在执行；我可以停下来等 verdict。 |
+| 实际要求 | ActionSuccessorLease 只证明同一 subject 的 single-flight custody，`safe_wait` 按合同不创建新消息或 Queue entry；它不证明 reviewer 有可消费 carrier，更不证明 execution 已启动。runtime 重启后，packet `0001787974960984-000867-6412f99f` 没有 `deliveryStatus/queueEntryId`，当时也没有 Opus 5 execution。只有补发普通行首路由 `0001787976029900-000027-5d784657` 并得到 queued receipt 后，才出现 Opus 5 execution `99190b1c-5d07-4b8e-99f4-e70b947a475b`。 |
+| 偏差根因 | **证据坐标坍缩 + 状态说明代替动作**：把 custody（谁有资格做）、carrier（是否有可消费投递）和 liveness（是否已启动执行）压成一个“lease active”；又把“已确认 lease”写成“已传球”，没有要求 transport receipt 或 execution truth。旧文本出口 guard 在 Phase T cutover 后已被结构化 custody stop-gate 取代，而现有 `safe_wait` / skill 合同没有联结 carrier liveness，使我的错误推断没有被机器拦下。**分界判据**：lease existence 只能证明互斥责任；宣称“已传球”至少要有 per-target queued carrier，宣称“正在跑”还要有 awakened/execution truth。 |
+| 纠正轮次 | 同一任务 2 次：`0001787975991774-000025-faad7555` 纠正“和operator说不会唤醒 Opus 5，必须实际传球”；`0001787976199344-000031-cfbcdee2` 进一步纠正“active lease 不等于 Opus 5 正在跑”。纠正后已补发真实路由，并把 recurrence 以 source refs 投到 F167 owner thread（`0001787976468626-000040-6845a667`）。 |
+| 元心智哪条没执行 | Q2 信息验证：没有用 Queue receipt / active execution 验证 downstream liveness；Q3 坐标变换：没有把“协议球在谁名下”拆成 custody、delivery、execution 三个独立状态。 |
+
+### Case E19: 把平行 invocation 的责任并入当前 thread 进度（2026-09-01，codex-sol）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | operator在 F311 Phase 3 thread 问“咱们现在什么情况、你继续推进”时，同一 `catId` 的 Phase 2 invocation 也属于“我”的当前责任，因此应把 Phase 2 worktree、额度中断与续跑安排作为主要进度，并进一步声称“我现在该推进 Phase 2”。 |
+| 实际要求 | 当前 thread 的 Sol 只持有 Phase 3 的本地角色与责任：本 thread 负责 PR #4175，Opus 5 是 author、Sol 是非作者 reviewer。Phase 2 虽由平行世界的 `codex-sol` 负责，但它不与当前 invocation 共享上下文、球权或责任；当前状态回答必须先锚定 Phase 3，跨 thread 依赖只能作为阻塞边界说明。 |
+| 偏差根因 | **identity 覆盖 thread 坐标 + 跨 thread 证据污染当前 scope**：把“同一个 `catId`”误当成“同一个行动主体”，没有先用当前 thread 导航、任务原文与 PR tracking 确认本地 subject；随后又用 Phase 2 的实现进展替代 Phase 3 状态。与 Case E14 的角色拓扑反校验缺失同型。**分界判据**：回答“你/咱们现在做什么”时，先解析当前 `threadId → subject → local role`；其他 thread 的同 `catId` 一律视为外部依赖方，除非用户明确询问跨 thread 总览。 |
+| 纠正轮次 | 同一任务 2 次：`0001788249160856-000079-1d9c845f` 首次指出当前问题是 Phase 3；`0001788249711685-000095-2a2491dc` 再次明确 Phase 2 是平行世界、当前 thread 只问 Phase 3。纠正后状态已重新锚定 PR #4175 exact HEAD `9d3556b59c05f619f63003164bb95d2050447906`，不再把 Phase 2 的球权或工作进度并入当前 thread。 |
+| 元心智哪条没执行 | Q1 角色确认：没有先确认“本 thread 的 Sol”是 Phase 3 reviewer；Q2 信息验证：虽读取了真实 Phase 2 数据，却选错了当前问题的 resolver；Q3 坐标变换：没有把同一 catId 拆成多个不共享状态的 thread-bound invocation。 |
+
+### Case E20: 把 Theseus 的外部卖点重报成 F311 的学习项（2026-09-04，codex-sol）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | 把 Theseus 与 Clowder AI 从“竞争”改画为“互补”后，可以把环境进化、多文件项目评测、纵向能力账、难例生长与前后案例表达列为“咱们向 Theseus 学”的五项，再用“Theseus 进化引擎 + Clowder AI 价值治理控制面”拼成完整闭环。 |
+| 实际要求 | [F311](./F311-capability-evolution-workspace.md) 已经定义从 Program 建制、开眼取证、评估归因到受治理写回、复验、资产代谢和二阶机制进化的完整联邦闭环，也显式覆盖 workspace、外部 Harness 与 owner 原地 mutation。外部伙伴比较必须先以 F311 canonical capability 为基线，把每项 claim 分成“家里已有的产品/宪法”“对方可能更深的 owner 实现”“真正缺口”；Theseus 更合理的合作位置是可接入 F311 的 environment/data/eval/model owner，而不是补上咱们缺失的半条进化链。 |
+| 偏差根因 | **外部叙事锚定 + 已读真相源未进入判定函数 + 能力层与实现层坍缩**：虽然读取了 F311，却继续沿 Theseus BP 的分类组织结论，把双方共有的目标层主张误写成单向学习项，也把 F311 的薄联邦控制面缩成单一治理层。与 Case E11/E12 的“读到 canonical source 却选错比较坐标”及 Case E17 的 F311 产品层级坍缩同型。**分界判据**：回答“咱们向外部项目学什么”前，先逐 claim 做 `canonical baseline → overlap → implementation delta → evidence ceiling`；只有 implementation delta 或真实未覆盖能力可称为学习项。 |
+| 纠正轮次 | 同一任务 2 次：`0001788512204305-000666-1cae5ac8` 首次纠正“不是竞争关系，而是可能合作关系”；`0001788512591644-000677-7b9d8477` 再次指出五条学习项忽略 F311。纠正后已发布 V2 更正图 `0001788513082011-000684-d53781e1`，撤回四项为“F311 已有”，将案例表达降为视频未取得、待补证，并把真实增量收敛到环境算法、数据工艺、参数级能力与 benchmark 生产。 |
+| 元心智哪条没执行 | Q2 信息验证：虽然读了 F311，却没有逐项用原文否证“这是咱们没有的”；Q3 坐标变换：从竞争改成合作只换了关系语气，没有把比较原点从 Theseus BP 移回 F311 canonical capability。 |
+
+### Case E21: 把“去黑话”钟摆式改写成口语 slogan（2026-09-04，codex-sol × fable-5）
+
+| 维度 | 内容 |
+|------|------|
+| 我以为 | operator指出“判断与信任递归演进”等表达拧巴、黑话过重，意味着应把 Growing slogan 降到最口语、最容易立即理解的表达，因此收敛为“一起做过一次，下一次就不用从头来”。 |
+| 实际要求 | 目标语体是技术路演和正式文档可用的现代书面中文：术语有定义、主谓清楚、修辞克制；既不堆叠内部黑话，也不把概念降成宣传口语。正确方向是“让共同经历沉淀为持续演进的能力”一类正式、自然且概念边界清楚的表达。 |
+| 偏差根因 | **把两个维度压成一根轴，导致钟摆式过度纠正**：将“术语透明度”与“语体正式度”错误合并为“学术黑话 ↔ 大白话”，收到去黑话反馈后直接滑到口语端，漏掉“透明且正式”的目标象限。与 Case E7 的语域整体预测缺失同型。**分界判据**：改写正式表达时分别检查（1）术语是否可解释，（2）句法是否自然，（3）语体是否匹配场合；去掉黑话不等于降低正式度。 |
+| 纠正轮次 | 同一任务 2 次：`0001788539041626-001301-d8b1f4fa` 首次指出标题和图中文字仍有奇怪黑话；`0001788543273574-001378-6801c11d` 再次指出“大白话”不是目标。 |
+| 元心智哪条没执行 | Q3 坐标变换——没有把“可理解性”和“正式度”拆成正交维度，也没有在技术领导路演这一真实使用场景里朗读检查整句。 |
+
 ## Review Gate
 
 - Phase 0: **多猫协作审视**（所有猫参与各自 prompt 审视）+ 现有 system-prompt-builder 测试全绿
@@ -823,3 +918,4 @@ operator experience："简直了你和Maine Coon是没头脑（Maine Coon听不�
 | operator 2026-06-25 | -p 下猫 run_in_background 跑 gate 后没下文 + hold_ball 缺条件唤醒 | AC-P0~P5 | ✅ Phase P (P-0 PR #2544, P1-P5 PR #2550) |
 | operator 2026-06-29 | 结构化事件已唤醒/满足等待后，旧 hold timer 仍过期唤醒；前端仍显示定时任务/可取消 | AC-Q1~Q7 | ✅ Phase Q PR #2690 + AC-Q7 follow-up PR #2696 merged |
 | codex-sol 2026-07-10 | grounding sample test 硬编码日期过 8 天 rolling window 导致静默失败 | Phase O test hygiene | ✅ hotfix PR #2849 (`94e1ead0d`) |
+| 2026-09-01 | **Terminal reason mismatch fix（PR #4193）** — cloud review P1 #2 from PR #4187: `ExternalReviewRecoveryService` only checked community projection terminal reason, missed bootstrap path `'bootstrap observation reports a terminal PR'`. Fix: explicit `TERMINAL_PR_REASONS` enumeration. codex-sol local review, 0 P1/P2. |

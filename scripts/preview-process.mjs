@@ -1,37 +1,33 @@
 #!/usr/bin/env node
 
-import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
-import net from 'node:net';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { probePort, processGroupExists, waitForPort, waitForProcessGroupExit } from './lib/preview-process-runtime.mjs';
+import {
+  launchDetached,
+  launchWithLaunchd,
+  ownsLaunchdJob,
+  ownsLaunchdProcess,
+  ownsProcess,
+  removeLaunchdJob,
+} from './preview-process-launchers.mjs';
 
 const RECORD_VERSION = 1;
 const DEFAULT_START_TIMEOUT_MS = 10_000;
 const DEFAULT_RECOVERY_TIMEOUT_MS = 20_000;
 const STOP_TERM_GRACE_MS = 3_000;
 const STOP_KILL_GRACE_MS = 1_000;
-const SENSITIVE_ENV_KEYS = [
-  'CAT_CAFE_INVOCATION_ID',
-  'CAT_CAFE_CALLBACK_TOKEN',
-  'CAT_CAFE_SUPERVISOR_PARENT_PID',
-  'CAT_CAFE_AGENT_KEY_FILES',
-];
+const LAUNCHD_LABEL_PREFIX = 'com.catcafe.preview';
+const DEFAULT_LIFETIME_SECONDS = 8 * 60 * 60;
+const MAX_LIFETIME_SECONDS = 24 * 60 * 60;
+const LEASE_RUNNER_PATH = join(dirname(fileURLToPath(import.meta.url)), 'preview-process-lease-runner.mjs');
 
 function usage() {
   return `Usage:
-  pnpm preview:process start --port PORT --cwd DIR -- COMMAND [ARGS...]
+  pnpm preview:process start --port PORT --cwd DIR [--lifetime-seconds N] -- COMMAND [ARGS...]
   pnpm preview:process status --port PORT --cwd DIR [--json]
   pnpm preview:process stop --port PORT --cwd DIR [--json]`;
 }
@@ -48,7 +44,7 @@ function parseArgs(argv) {
       options.json = true;
       continue;
     }
-    if (arg === '--port' || arg === '--cwd') {
+    if (arg === '--port' || arg === '--cwd' || arg === '--lifetime-seconds') {
       options[arg.slice(2)] = optionArgs[index + 1];
       index += 1;
       continue;
@@ -56,6 +52,15 @@ function parseArgs(argv) {
     throw new Error(`unknown argument: ${arg}`);
   }
   return options;
+}
+
+function resolveLifetimeSeconds(options) {
+  const lifetimeSeconds = Number(options['lifetime-seconds'] ?? DEFAULT_LIFETIME_SECONDS);
+  if (options.action !== 'start') return lifetimeSeconds;
+  if (!Number.isInteger(lifetimeSeconds) || lifetimeSeconds < 1 || lifetimeSeconds > MAX_LIFETIME_SECONDS) {
+    throw new Error(`--lifetime-seconds must be an integer from 1 to ${MAX_LIFETIME_SECONDS}`);
+  }
+  return lifetimeSeconds;
 }
 
 function resolveConfig(options) {
@@ -67,10 +72,13 @@ function resolveConfig(options) {
   }
   if (!options.cwd) throw new Error('--cwd is required');
   const cwd = resolve(options.cwd);
-  if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`cwd is not a directory: ${cwd}`);
+  if (options.action === 'start' && (!existsSync(cwd) || !statSync(cwd).isDirectory())) {
+    throw new Error(`cwd is not a directory: ${cwd}`);
+  }
   if (options.action === 'start' && options.command.length === 0) {
     throw new Error('start requires a command after --');
   }
+  const lifetimeSeconds = resolveLifetimeSeconds(options);
   const stateDir = resolve(
     process.env.CAT_CAFE_PREVIEW_PROCESS_DIR ?? join(homedir(), '.cat-cafe', 'preview-processes'),
   );
@@ -83,6 +91,9 @@ function resolveConfig(options) {
     stateDir,
     recordPath: join(stateDir, `${id}.json`),
     logPath: join(stateDir, `${id}.log`),
+    launchdLabel: `${LAUNCHD_LABEL_PREFIX}.${id}`,
+    plistPath: join(stateDir, `${id}.plist`),
+    lifetimeSeconds,
   };
 }
 
@@ -102,84 +113,8 @@ function readRecord(config) {
   }
 }
 
-function readProcessIdentity(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return null;
-  const started = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' });
-  const command = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
-  if (started.status !== 0 || command.status !== 0) return null;
-  const processStartedAt = started.stdout.trim();
-  const processCommand = command.stdout.trim();
-  return processStartedAt && processCommand ? { processStartedAt, processCommand } : null;
-}
-
-function ownsProcess(record) {
-  const current = readProcessIdentity(record?.pid);
-  return Boolean(
-    current && current.processStartedAt === record.processStartedAt && current.processCommand === record.processCommand,
-  );
-}
-
-function processGroupExists(record) {
-  if (process.platform === 'win32') return ownsProcess(record);
-  const processes = spawnSync('ps', ['-axo', 'pgid=,stat='], { encoding: 'utf8' });
-  if (processes.status === 0) {
-    return processes.stdout.split('\n').some((line) => {
-      const [processGroupId, state] = line.trim().split(/\s+/, 2);
-      return Number(processGroupId) === record.pid && state && !state.startsWith('Z');
-    });
-  }
-  try {
-    process.kill(-record.pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === 'EPERM';
-  }
-}
-
-function probePort(port, timeoutMs = 250) {
-  return new Promise((resolveProbe) => {
-    const socket = net.createConnection({ host: '127.0.0.1', port });
-    const finish = (reachable) => {
-      socket.destroy();
-      resolveProbe(reachable);
-    };
-    socket.setTimeout(timeoutMs, () => finish(false));
-    socket.once('connect', () => finish(true));
-    socket.once('error', () => finish(false));
-  });
-}
-
-async function waitForPort(port, expected, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  do {
-    if ((await probePort(port)) === expected) return true;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
-  } while (Date.now() < deadline);
-  return false;
-}
-
-async function waitForProcessGroupExit(record, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  do {
-    if (!processGroupExists(record)) return true;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
-  } while (Date.now() < deadline);
-  return !processGroupExists(record);
-}
-
-async function captureIdentity(pid) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const identity = readProcessIdentity(pid);
-    if (identity) return identity;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 25));
-  }
-  return null;
-}
-
-function cleanChildEnv() {
-  const env = { ...process.env };
-  for (const key of SENSITIVE_ENV_KEYS) delete env[key];
-  return env;
+function ownsManagedProcess(config, record) {
+  return record?.origin === 'launchd' ? ownsLaunchdProcess(config, record) : ownsProcess(record);
 }
 
 function killOwnedGroup(record, signal, ownershipAlreadyProven = false) {
@@ -197,6 +132,7 @@ function report(config, payload, exitCode = 0) {
     process.stdout.write(`${JSON.stringify(payload)}\n`);
   } else {
     process.stdout.write(`[preview-process] ${payload.status} ${payload.cwd}:${payload.port}`);
+    if (payload.origin) process.stdout.write(`\norigin: ${payload.origin}`);
     if (payload.logPath) process.stdout.write(`\nlog: ${payload.logPath}`);
     process.stdout.write('\n');
   }
@@ -207,42 +143,41 @@ async function currentStatus(config) {
   const record = readRecord(config);
   const reachable = await probePort(config.port);
   if (!record) return { status: reachable ? 'unmanaged' : 'stopped', record: null, reachable };
-  const owned = ownsProcess(record);
+  const owned = ownsManagedProcess(config, record);
   if (owned && reachable) return { status: 'running', record, reachable };
   if (owned && !record.readyAt) return { status: 'starting', record, reachable };
   if (owned) return { status: 'unavailable', record, reachable };
   return { status: reachable ? 'unmanaged' : 'stopped', record, reachable };
 }
 
-async function start(config) {
-  const existing = await currentStatus(config);
+function reportManagedStatus(config, status, record) {
+  report(config, {
+    status,
+    cwd: config.cwd,
+    port: config.port,
+    pid: record.pid,
+    origin: record.origin ?? 'detached',
+    logPath: record.logPath,
+    expiresAt: record.expiresAt,
+  });
+}
+
+async function handleExistingStart(config, existing) {
   if (existing.status === 'running') {
-    report(config, { status: 'running', cwd: config.cwd, port: config.port, logPath: existing.record.logPath });
-    return;
+    reportManagedStatus(config, 'running', existing.record);
+    return true;
   }
   if (existing.status === 'starting') {
     const reachable = await waitForPort(config.port, true, DEFAULT_RECOVERY_TIMEOUT_MS);
-    if (reachable && ownsProcess(existing.record)) {
+    if (reachable && ownsManagedProcess(config, existing.record)) {
       const readyRecord = { ...existing.record, readyAt: new Date().toISOString() };
       writeRecord(config, readyRecord);
-      report(config, {
-        status: 'running',
-        cwd: config.cwd,
-        port: config.port,
-        pid: readyRecord.pid,
-        logPath: readyRecord.logPath,
-      });
-      return;
+      reportManagedStatus(config, 'running', readyRecord);
+      return true;
     }
-    if (ownsProcess(existing.record)) {
-      report(config, {
-        status: 'starting',
-        cwd: config.cwd,
-        port: config.port,
-        pid: existing.record.pid,
-        logPath: existing.record.logPath,
-      });
-      return;
+    if (ownsManagedProcess(config, existing.record)) {
+      reportManagedStatus(config, 'starting', existing.record);
+      return true;
     }
     rmSync(config.recordPath, { force: true });
     throw new Error(`preview process exited before listening on port ${config.port}; see ${config.logPath}`);
@@ -250,56 +185,57 @@ async function start(config) {
   if (existing.status === 'unmanaged' || existing.status === 'unavailable') {
     throw new Error(`refusing to replace ${existing.status} target on port ${config.port}`);
   }
+  return false;
+}
+
+async function finishStartedProcess(config, record) {
+  let reachable = await waitForPort(config.port, true, DEFAULT_START_TIMEOUT_MS);
+  if (!reachable && ownsManagedProcess(config, record)) {
+    reachable = await waitForPort(config.port, true, DEFAULT_RECOVERY_TIMEOUT_MS);
+  }
+  if (reachable) {
+    const readyRecord = { ...record, readyAt: new Date().toISOString() };
+    writeRecord(config, readyRecord);
+    reportManagedStatus(config, 'running', readyRecord);
+    return;
+  }
+  if (ownsManagedProcess(config, record)) {
+    reportManagedStatus(config, 'starting', record);
+    return;
+  }
+  if (record.origin === 'launchd') {
+    removeLaunchdJob(config);
+    rmSync(config.plistPath, { force: true });
+  }
+  rmSync(config.recordPath, { force: true });
+  throw new Error(`preview process exited before listening on port ${config.port}; see ${config.logPath}`);
+}
+
+async function start(config) {
+  const existing = await currentStatus(config);
+  if (await handleExistingStart(config, existing)) return;
   rmSync(config.recordPath, { force: true });
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
-  const logFd = openSync(config.logPath, 'a', 0o600);
-  let child;
-  try {
-    child = spawn(config.command[0], config.command.slice(1), {
-      cwd: config.cwd,
-      detached: true,
-      env: cleanChildEnv(),
-      stdio: ['ignore', logFd, logFd],
-    });
-  } finally {
-    closeSync(logFd);
-  }
-  child.unref();
-  const identity = await captureIdentity(child.pid);
-  if (!identity) throw new Error(`started PID ${child.pid} but could not capture its process identity`);
+  const expiresAt = new Date(Date.now() + config.lifetimeSeconds * 1_000).toISOString();
+  const launchConfig = {
+    ...config,
+    command: [process.execPath, LEASE_RUNNER_PATH, '--expires-at', expiresAt, '--', ...config.command],
+  };
+  const processHandle =
+    process.platform === 'darwin' ? await launchWithLaunchd(launchConfig) : await launchDetached(launchConfig);
   const record = {
     version: RECORD_VERSION,
     id: config.id,
     cwd: config.cwd,
     port: config.port,
     command: config.command,
-    pid: child.pid,
-    ...identity,
+    ...processHandle,
     startedAt: new Date().toISOString(),
+    expiresAt,
     logPath: config.logPath,
   };
   writeRecord(config, record);
-  let reachable = await waitForPort(config.port, true, DEFAULT_START_TIMEOUT_MS);
-  if (!reachable && ownsProcess(record)) {
-    reachable = await waitForPort(config.port, true, DEFAULT_RECOVERY_TIMEOUT_MS);
-  }
-  if (!reachable) {
-    if (ownsProcess(record)) {
-      report(config, {
-        status: 'starting',
-        cwd: config.cwd,
-        port: config.port,
-        pid: child.pid,
-        logPath: config.logPath,
-      });
-      return;
-    }
-    rmSync(config.recordPath, { force: true });
-    throw new Error(`preview process exited before listening on port ${config.port}; see ${config.logPath}`);
-  }
-  const readyRecord = { ...record, readyAt: new Date().toISOString() };
-  writeRecord(config, readyRecord);
-  report(config, { status: 'running', cwd: config.cwd, port: config.port, pid: child.pid, logPath: config.logPath });
+  await finishStartedProcess(config, record);
 }
 
 async function status(config) {
@@ -313,7 +249,14 @@ async function status(config) {
       status: result.status,
       cwd: config.cwd,
       port: config.port,
-      ...(result.record ? { pid: result.record.pid, logPath: result.record.logPath } : {}),
+      ...(result.record
+        ? {
+            pid: result.record.pid,
+            origin: result.record.origin ?? 'detached',
+            logPath: result.record.logPath,
+            expiresAt: result.record.expiresAt,
+          }
+        : {}),
     },
     result.status === 'running' || result.status === 'starting' ? 0 : 1,
   );
@@ -325,8 +268,25 @@ async function stop(config) {
     report(config, { status: 'stopped', cwd: config.cwd, port: config.port });
     return;
   }
-  if (!result.record || !ownsProcess(result.record)) {
+  if (result.status === 'stopped' && result.record?.origin === 'launchd' && ownsLaunchdJob(config, result.record)) {
+    removeLaunchdJob(config);
+    rmSync(config.recordPath, { force: true });
+    rmSync(config.plistPath, { force: true });
+    report(config, { status: 'stopped', cwd: config.cwd, port: config.port, logPath: result.record.logPath });
+    return;
+  }
+  if (!result.record || !ownsManagedProcess(config, result.record)) {
     throw new Error(`refusing to stop ${result.status} port ${config.port}: exact process ownership is not proven`);
+  }
+  if (result.record.origin === 'launchd') {
+    removeLaunchdJob(config);
+    if (!(await waitForPort(config.port, false, STOP_TERM_GRACE_MS + STOP_KILL_GRACE_MS))) {
+      throw new Error(`failed to stop launchd preview ${config.launchdLabel}; state retained at ${config.recordPath}`);
+    }
+    rmSync(config.recordPath, { force: true });
+    rmSync(config.plistPath, { force: true });
+    report(config, { status: 'stopped', cwd: config.cwd, port: config.port, logPath: result.record.logPath });
+    return;
   }
   killOwnedGroup(result.record, 'SIGTERM');
   if (!(await waitForProcessGroupExit(result.record, STOP_TERM_GRACE_MS))) {

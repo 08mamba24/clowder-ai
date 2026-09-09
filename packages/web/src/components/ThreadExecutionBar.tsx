@@ -2,7 +2,6 @@
 
 import type { ActiveExecutionProjection } from '@cat-cafe/shared';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { cancelProjectedExecution } from '@/hooks/useActiveExecutionProjection';
 import { formatCatName, useCatData } from '@/hooks/useCatData';
 import { useExecutionRecoveryVerification } from '@/hooks/useExecutionRecoveryVerification';
 import { useThreadLiveness } from '@/hooks/useThreadScopedSelectors';
@@ -15,6 +14,7 @@ import { apiFetch } from '@/utils/api-client';
 import { isSilentActiveTurn, isStreamingTipSuppressed } from './capability-tip-placement';
 import { ExecutionCancelButton } from './ExecutionCancelButton';
 import { ForceResetDialog } from './ForceResetDialog';
+import { managedCommandActivityLabel } from './managed-command-activity-label';
 
 const APP_SERVER_STAGE_LABELS: Record<AppServerLifecycleStage, string> = {
   child_spawned: '启动子进程',
@@ -46,7 +46,6 @@ export function ThreadExecutionBar({ threadId }: ThreadExecutionBarProps) {
   const effectiveThreadId = threadId ?? currentThreadId;
   const { catInvocations, catStatuses } = useThreadLiveness(effectiveThreadId);
   const executionsByKey = useActiveExecutionStore((state) => state.executionsByKey);
-  const cancelPendingByKey = useActiveExecutionStore((state) => state.cancelPendingByKey);
   const executionHydration = useActiveExecutionStore((state) => state.hydration);
   const executionAnchorThreadId = useActiveExecutionStore((state) => state.anchorThreadId);
   const { getCatById } = useCatData();
@@ -87,25 +86,6 @@ export function ThreadExecutionBar({ threadId }: ThreadExecutionBarProps) {
     const interval = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(interval);
   }, [activeExecutions.length]);
-
-  const handleStopAll = useCallback(async () => {
-    const cancelableExecutions = activeExecutions.filter((execution) => execution.cancelability.state === 'cancelable');
-    const results = await Promise.allSettled(
-      cancelableExecutions.map((execution) => cancelProjectedExecution(execution)),
-    );
-    if (results.some((result) => result.status === 'rejected')) {
-      useToastStore.getState().addToast({
-        type: 'error',
-        title: '部分执行未能停止',
-        message: '运行状态已重新同步，请按仍显示的精确执行重试。',
-        duration: 5000,
-      });
-    }
-  }, [activeExecutions]);
-  const stopAllPending = activeExecutions.some(
-    (execution) => cancelPendingByKey[activeExecutionKey(execution)] === true,
-  );
-  const hasCancelableExecution = activeExecutions.some((execution) => execution.cancelability.state === 'cancelable');
 
   // F220 Phase 3: 升级态判定 — 任一活跃猫疑似卡死（liveness warning）→ 入口上浮变醒目。
   const stalled = activeExecutions.some((execution) => {
@@ -174,7 +154,7 @@ export function ThreadExecutionBar({ threadId }: ThreadExecutionBarProps) {
           };
           return (
             <CatStatusChip
-              key={`${execution.kind}:${execution.executionId}`}
+              key={activeExecutionKey(execution)}
               execution={execution}
               label={info.label}
               color={info.color}
@@ -184,16 +164,6 @@ export function ThreadExecutionBar({ threadId }: ThreadExecutionBarProps) {
             />
           );
         })}
-        {activeExecutions.length > 1 && (
-          <button
-            type="button"
-            onClick={handleStopAll}
-            disabled={stopAllPending || !hasCancelableExecution}
-            className="ml-auto text-xs text-cafe-muted hover:text-conn-red-text transition-colors shrink-0 disabled:cursor-wait disabled:opacity-50"
-          >
-            {stopAllPending ? '停止中…' : '全部停止'}
-          </button>
-        )}
       </div>
       <ForceResetEntry escalated={stalled} onClick={() => setResetDialogOpen(true)} />
       <ForceResetDialog
@@ -290,7 +260,8 @@ function CatStatusChip({
       <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: color }} />
       <span className="text-cafe-secondary font-medium">{label}</span>
       <span className="text-cafe-muted">
-        {execution.kind === 'managed_command' ? '托管命令' : '实时回合'} · {execution.threadTitle ?? execution.threadId}
+        {execution.kind === 'managed_command' ? managedCommandActivityLabel(execution.activity) : '实时回合'} ·{' '}
+        {execution.threadTitle ?? execution.threadId}
       </span>
       {lifecycle && (
         <span className={appServerStalled ? 'text-conn-amber-text' : 'text-cafe-muted'}>

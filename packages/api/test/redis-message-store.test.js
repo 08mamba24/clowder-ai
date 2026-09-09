@@ -443,6 +443,55 @@ describe('RedisMessageStore', { skip: redisIsolationSkipReason(REDIS_URL) }, () 
     assert.equal(msg.userId, 'user1');
   });
 
+  it('F167 rehydrates a typed local-review verdict from the real Redis hash', async () => {
+    const localReviewVerdict = {
+      verdict: 'changes_requested',
+      clientMessageId: 'local-review-verdict-redis-1',
+      reviewedHeadSha: 'a'.repeat(40),
+    };
+    const stored = await store.append({
+      userId: 'user-f167-reviewer',
+      catId: 'opus5',
+      content: 'REQUEST_CHANGES — typed verdict presentation',
+      mentions: ['codex-sol'],
+      timestamp: Date.now(),
+      threadId: 'thread-f167-local-review-verdict',
+      extra: { localReviewVerdict },
+    });
+
+    const hydrated = await store.getById(stored.id);
+
+    assert.deepEqual(hydrated?.extra?.localReviewVerdict, localReviewVerdict);
+  });
+
+  it('F167 rehydrates the managed-command action lease generation from the real Redis hash', async () => {
+    const actionLeaseRef = { leaseId: 'lease-managed-review-redis-1', generation: 7 };
+    const stored = await store.append({
+      userId: 'scheduler',
+      catId: null,
+      content: '[定时任务] review command completed',
+      mentions: [],
+      timestamp: Date.now(),
+      threadId: 'thread-managed-review-redis',
+      source: {
+        connector: 'hold-ball',
+        label: '持球通知',
+        icon: '🏓',
+        meta: {
+          taskId: 'hold-ball-managed-review-redis-1',
+          threadId: 'thread-managed-review-redis',
+          catId: 'codex-terra',
+          wakeWhen: true,
+          actionLeaseRef,
+        },
+      },
+    });
+
+    const hydrated = await store.getById(stored.id);
+
+    assert.deepEqual(hydrated?.source?.meta?.actionLeaseRef, actionLeaseRef);
+  });
+
   it('F287 rehydrates a strict delivery-decision carrier from the real Redis hash', async () => {
     const deliveryDecision = {
       v: 1,
@@ -1099,8 +1148,8 @@ describe('RedisMessageStore', { skip: redisIsolationSkipReason(REDIS_URL) }, () 
     assert.ok(ttl <= 60, `Expected TTL <= 60, got ${ttl}`);
   });
 
-  it('append() with same idempotencyKey returns existing message', async () => {
-    const first = await store.append({
+  it('appendIdempotent() reports and returns the persisted winner', async () => {
+    const firstResult = await store.appendIdempotent({
       userId: 'u1',
       catId: null,
       content: 'kickoff',
@@ -1109,8 +1158,9 @@ describe('RedisMessageStore', { skip: redisIsolationSkipReason(REDIS_URL) }, () 
       threadId: 'thread-idem',
       idempotencyKey: 'backlog:b1:attempt:a1',
     });
+    const first = firstResult.message;
 
-    const second = await store.append({
+    const secondResult = await store.appendIdempotent({
       userId: 'u1',
       catId: null,
       content: 'kickoff retried',
@@ -1119,7 +1169,10 @@ describe('RedisMessageStore', { skip: redisIsolationSkipReason(REDIS_URL) }, () 
       threadId: 'thread-idem',
       idempotencyKey: 'backlog:b1:attempt:a1',
     });
+    const second = secondResult.message;
 
+    assert.equal(firstResult.idempotent, false);
+    assert.equal(secondResult.idempotent, true);
     assert.equal(second.id, first.id);
     assert.equal(second.content, 'kickoff');
 
@@ -1132,8 +1185,8 @@ describe('RedisMessageStore', { skip: redisIsolationSkipReason(REDIS_URL) }, () 
     const threadId = 'thread-concurrent-idem';
     const timestamp = Date.now();
 
-    const [first, second] = await Promise.all([
-      store.append({
+    const [firstResult, secondResult] = await Promise.all([
+      store.appendIdempotent({
         userId: 'u1',
         catId: null,
         content: 'concurrent',
@@ -1142,7 +1195,7 @@ describe('RedisMessageStore', { skip: redisIsolationSkipReason(REDIS_URL) }, () 
         threadId,
         idempotencyKey: 'concurrent-idem',
       }),
-      store.append({
+      store.appendIdempotent({
         userId: 'u1',
         catId: null,
         content: 'concurrent',
@@ -1152,8 +1205,15 @@ describe('RedisMessageStore', { skip: redisIsolationSkipReason(REDIS_URL) }, () 
         idempotencyKey: 'concurrent-idem',
       }),
     ]);
+    const first = firstResult.message;
+    const second = secondResult.message;
 
     assert.equal(first.id, second.id, 'both callers must observe the same winner');
+    assert.deepEqual(
+      [firstResult.idempotent, secondResult.idempotent].sort(),
+      [false, true],
+      'one atomic caller creates the message and the loser reports the durable winner',
+    );
     assert.deepEqual(await redis.zrange(`msg:thread:${threadId}`, 0, -1), [first.id]);
   });
 

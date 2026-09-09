@@ -1,9 +1,9 @@
 ---
-feature_ids: [F042]
+feature_ids: [F042, F083, F303]
 topics: [sop]
 doc_kind: note
 created: 2026-02-26
-updated: 2026-07-27
+updated: 2026-08-23
 ---
 
 # Clowder AI 开发 SOP
@@ -44,14 +44,9 @@ Phase N merge → 碰头（不是"要不要继续"，是"方向对不对"）→ 
 
 ## Runtime 单实例保护（P0）
 
-`../cat-cafe-runtime` 是咱们的运行态单实例（通常占用 `3003/3004`），默认视为**在线服务**，不是随手重启的实验环境。
-
-硬规则：
-1. 在 runtime 会话里，禁止执行会触发重启的命令：`pnpm start`、`pnpm runtime:start`、`./scripts/start-dev.sh`
-2. 做截图/验收/排查前，先复用现有服务（先查 `curl -sf http://localhost:3004/health`）
-3. 确实要重启，必须先拿到operator明确同意，再显式设置 `CAT_CAFE_RUNTIME_RESTART_OK=1` 执行启动命令
-
-说明：`--force` 不是重启授权，不能替代第 3 条。
+运行态单实例、3003/3004、重启授权与未合入验证边界只由 L0 五条铁律和
+[`shared-rules.md` §12](../cat-cafe-skills/refs/shared-rules.md#12-runtime-单实例保护anti-self-term) 维护；
+本 SOP 不复制命令或授权条件。开发流程只需记住：未合入改动在 feature worktree 自测，已合入改动走下方 Alpha 验收；runtime 激活仍需显式授权。
 
 ## Alpha 验收通道
 
@@ -85,6 +80,44 @@ Phase N merge → 碰头（不是"要不要继续"，是"方向对不对"）→ 
 | 不可逆 | 删除、force push、合第三方 PR、close feat、圣域 | 先拿 operator 授权；机器门禁仍照常 |
 
 **元风险强制升档**：diff 触碰 `merge-gate`、风险 classifier、门禁脚本或 Harness Diet 公约自身时，直接进入 high-assurance，由非作者跨族 reviewer 覆盖最终实质内容（exact HEAD 或 continuityProof）。松绑机制不得静默松绑自己；在这条语义边界机器化前，如实标为 manual 守卫，不能由改门者自判 light。
+
+### Architecture / contract delta admission（F303）
+
+五轴入口遇到 canonical policy 被新 consumer 复用、owner/read path 被迁移，或 preservation
+claim 覆盖到了真实边界时，复用 F083 Design Gate 与 F191 三行，不新开 stage。
+
+F303 trigger set (three-item OR; no fourth trigger):
+
+- `consumer_delta`: 新增或搬动 route、surface、后台 job 或 caller，并复用既有 auth、policy、resolver、cursor 或 lifecycle 语义。
+- `authority_delta`: 重构、迁移或 single-writer 收敛改变 canonical owner、writer 或 read path。
+- `preservation_boundary_delta`: 出现“保持既有行为”“不改变鉴权”“Map delta: none”“只做 projection”等 preservation claim，且 diff 触及对应 consumer 或 authority boundary。
+
+重复事故 family 与 route-local 分叉只作为 admission 后的证据深度 prior，不是第四个
+trigger。普通增量仍只写 `Architecture cell / Map delta / Why`，不要求永久 consumer Matrix。
+
+命中任一 trigger 后，在 F191 三行后追加可被后续门禁和 reviewer 消费的 exact evidence：
+
+```markdown
+Canonical source: {repo-relative path#symbol | doc path#anchor}
+Consumer evidence: {rerunnable LSP/rg command + relevant output | explicit references + why automatic scan cannot express the boundary}
+Claim guard: {claim} → {test/lint/guard/self-check command or test name} → red when {input or condition}
+```
+
+代码符号用可重跑的 LSP find-references / `rg` census。只有 MCP tool、skill、workflow callback
+等约定面适用 F242；自动扫描无法表达语义边界时，列出显式 references 并解释原因。三项
+evidence 缺一，eligible change 停在 Design Gate，不把首次验证转嫁给 reviewer。
+
+重构、迁移或 single-writer eligible change 还必须提供：
+
+```markdown
+Characterization/contract test: {command or test name}
+Code-derived consumer census: {rerunnable command + relevant output}
+Migration/restart/rollback evidence: {only when persistence or runtime semantics migrate}
+```
+
+前两项缺一即停；只有持久化或运行语义迁移时才要求第三项。change-local evidence 不落永久
+Matrix，不注册新 runner/dashboard。F277 related-set / attention projection 也不能替代
+work、custody、completion 或 acceptance 的 canonical truth。
 
 五轴都未命中且改动可逆、无外部副作用 → 最小安全动作。信息不足不等于自动全套：先补查缺失事实，再按真实风险选车道。
 
@@ -207,7 +240,7 @@ cloud 不再是默认步骤，因此没有“先默认、再申请跳过”：
 7. **PR body 模式匹配**：body 含字符串 `Verdict published via cat_cafe_publish_verdict MCP tool` —— 防止被滥用为通用 cat-merge 绕道
 8. **作者 ≠ merger**：保留 cross-individual 原则（生成方猫 = 发起 publish 的 eval cat；merger = 任一非生成方猫）
 9. **`evidence-only` label 必须 present**（cloud R6 P2 — 锁住 policy 判断）：PR 必须有 `evidence-only` label。`computePublishPolicy` 只对 `keep_observe` verdict 应用该 label；`fix` / `build` / `delete_sunset` verdict policy 返回 `regular_pr`（无 evidence-only label） → 必须走 regular merge-gate（owner action required）。**关键**：title 含 `verdict(` 前缀和 body 含 `cat_cafe_publish_verdict` 字符串只能证明 PR 是 publish-verdict 自动生成的，**不能证明该 PR 不需要 owner action**。`evidence-only` label 是 policy 显式判断"这条 verdict 无 actionable 内容"的唯一信号；缺失 → 必须走 regular merge-gate（哪怕 PR 是自动生成的）。
-10. **Eval glossary check 必须成功**：GitHub check `Eval Metric Glossary Coverage` 必须为 `SUCCESS`。该 check 对 verdict / glossary 相关 PR 运行 `pnpm check:eval-metric-glossary`，保证最新 production verdict 的每个 `metricRef` 都有可读说明；check 缺失、pending 或失败都不能走 artifact-only merge。
+10. **Eval glossary check 必须成功**：GitHub check/status `Eval Metric Glossary Coverage` 必须为 `SUCCESS`。`cat_cafe_publish_verdict` 在任何 branch/commit/PR 副作用前验证 packet 的 glossary refs；candidate commit 生成后、push 前再运行全 production glossary 与 F267 measurement evidence contract，全部通过才推送 exact commit、写入该 GitHub status，随后创建 PR。check 缺失、pending 或失败都不能走 artifact-only merge。旧的 Actions workflow 因组织级 minutes 成本按 operator 决定退役，不再是此门禁的执行载体。
 
 #### 工作流
 
@@ -227,10 +260,10 @@ PR_NUMBER=N node scripts/check-hotfix-pattern.mjs N | jq -r '.hotfix'  # must be
 # fix/build/delete_sunset verdicts intentionally lack this label → must walk regular gate)
 gh pr view N --json labels --jq '.labels[].name' | rg -q '^evidence-only$' \
   || echo "FAIL #9: no evidence-only label — verdict has actionable verdict severity; walk regular merge-gate"
-# Condition #10: the targeted production glossary coverage check must pass.
+# Condition #10: the publisher's exact-commit glossary status must pass.
 gh pr checks N | rg -q '^Eval Metric Glossary Coverage.*pass' \
   || echo "FAIL #10: Eval Metric Glossary Coverage is missing, pending, or failing"
-# Local reproduction when the check is red:
+# Local reproduction when the status is red:
 pnpm check:eval-metric-glossary
 
 # 3. If all 10 pass: squash merge
@@ -326,42 +359,142 @@ PR-3 是 interim 方案 —— 仍开 per-run PR，只是 label + 猫自决 merg
 全量同步到 `clowder-ai` 时，**不能只看家里的 `pnpm gate` 绿不绿**。  
 `source gate green != target/public gate green`。
 
-硬规则：
-1. 先在 `cat-cafe` 导出同一份同步产物到 **temp target**
-2. 在 temp target 跑完整 public gate：`pnpm check`、`pnpm lint`、`build`、`pnpm --filter @cat-cafe/api run test:public`、startup acceptance
-3. **只有 temp target public gate 全绿，才允许碰真实 `clowder-ai`**
-4. 本机 README/macOS smoke 不属于 full sync 主路径；它必须是 sync 完成后的独立步骤，且必须显式隔离端口/Redis
+默认只走**稳定快车道**：
 
-一句话：**不要再把真实 `clowder-ai` 当第一轮验收场，更不能把 runtime 当验收靶子。**
+1. 先处理 Community Diff Guard / intake ledger，确认社区已合入内容不会被覆盖。
+2. 冻结同一班车的 `source SHA + public target HEAD + reconciliation artifact`；后续新进 `origin/main` 的提交默认排到下一班，不追着移动的 main 重跑。
+3. 对冻结切面反复运行无安装、无真实目标写入的 `--preflight`。它先做导出、安全扫描、导出闭包、capability-tip 增量引用、F251、Public Behavior Change Reporter；红灯只修对应问题并重跑这条便宜车道。
+4. preflight 绿后，对同一 source SHA 跑**一次**完整 source gate。
+5. 按 write authorization 二选一：已有真实写授权 → 直接运行 canonical writer，由 writer 内部完成唯一一轮 temp-target public gate 后再写；尚无写授权 → 只跑 durable no-write `validate` / write handoff，等待授权。当前 writer 不消费 validate receipt 来跳过自己的 gate，**不要两条路径连跑**。
+6. temp-target 完整 public gate 遇到首个硬失败立即终止；不再继续烧 `test:public` / startup acceptance 来收集一串次生红灯。**只有 source gate 与当前执行路径的 public gate 都绿，才允许碰真实 `clowder-ai`**。
+7. 本机 README/macOS smoke 不属于 full sync 主路径；它必须是 sync 完成后的独立步骤，且必须显式隔离端口/Redis。
+
+同一组参数贯穿 preflight 与选中的后续路径；reconciliation / migration notes 都必须存在于冻结 source commit：
+
+```bash
+SOURCE_SHA=<frozen-cat-cafe-sha>
+EXPECTED_TARGET_HEAD=<frozen-clowder-ai-sha>
+RECONCILIATION_FILE=docs/ops/<date>-full-sync-reconciliation.json
+MIGRATION_NOTES_FILE=docs/ops/<date>-full-sync-migration-notes.md
+
+pnpm sync:train -- launch --no-write --stage preflight \
+  --source-sha="$SOURCE_SHA" \
+  --public-head="$EXPECTED_TARGET_HEAD" \
+  --reconciliation-file="$RECONCILIATION_FILE" \
+  --migration-notes-file="$MIGRATION_NOTES_FILE" \
+  --target-dir="$CLOWDER_AI_DIR"
+
+test "$(git rev-parse HEAD)" = "$SOURCE_SHA" || exit 75
+env -u NODE_ENV -u npm_config_production -u NPM_CONFIG_PRODUCTION \
+  pnpm gate --no-rebase
+test "$(git rev-parse HEAD)" = "$SOURCE_SHA" || exit 75
+
+# A. 已有真实写授权：让 writer 的内建 temp-target gate 成为唯一 public 长门禁
+CLOWDER_AI_DIR="$CLOWDER_AI_DIR" bash scripts/sync-to-opensource.sh \
+  --yes \
+  --source-sha="$SOURCE_SHA" \
+  --expected-target-head="$EXPECTED_TARGET_HEAD" \
+  --reconciliation-file="$RECONCILIATION_FILE" \
+  --migration-notes-file="$MIGRATION_NOTES_FILE"
+
+# B. 尚无真实写授权：不要运行 A，只产 durable no-write validate receipt
+pnpm sync:train -- launch --no-write --stage validate \
+  --source-sha="$SOURCE_SHA" \
+  --public-head="$EXPECTED_TARGET_HEAD" \
+  --reconciliation-file="$RECONCILIATION_FILE" \
+  --migration-notes-file="$MIGRATION_NOTES_FILE" \
+  --target-dir="$CLOWDER_AI_DIR"
+```
+
+脚本会在 preflight、validate 与真实写入前 fetch public main，并要求 target HEAD、`origin/main`、expected public head 三者完全一致。若 public main 在班车期间前进，旧 stage receipt 会给出 typed `start_next_train`；重新冻结 public/reconciliation 切面并先跑便宜 preflight。只要 source SHA、manifest/exporter/wrapper/F251 blobs 与实际导出字节未变，单独的 exact source full-gate 证据不因 target 前进自动作废。`--fast-validate` 只是诊断选项，不能替代 preflight，也不能充当 release evidence；`--skip-validate` 是 operator override，不是性能开关。
+
+一句话：**先用便宜检查收敛冻结切面；source 长门禁只跑一次，public 长门禁由“已授权 writer”或“no-write validate”承载其一。不要重复跑，也不要把 runtime 当验收靶子。**
+
+### Durable train recovery（F308）
+
+当 source 已包含 `sync:train` 时，维护者用 receipt facade 启动/恢复同一 immutable cut 的
+preflight、validate 与 write-handoff stage；独立 source gate 和真实 writer 仍须从各自前台或
+command-managed execution 取得 terminal。默认 state root
+位于 source Git common directory 下，因此 worktree 或 carrier 重启不会抹掉 terminal truth。
+
+```bash
+# launch returns a run id. Preflight is always no-write.
+pnpm sync:train -- launch --no-write --stage preflight \
+  --source-sha="$SOURCE_SHA" \
+  --public-head="$EXPECTED_TARGET_HEAD" \
+  --reconciliation-file="$RECONCILIATION_FILE" \
+  --migration-notes-file="$MIGRATION_NOTES_FILE" \
+  --target-dir="$CLOWDER_AI_DIR"
+
+pnpm sync:train -- status --json
+pnpm sync:train -- resume --run-id=<returned-run-id>
+
+# Only when public write is not yet authorized: launch no-write validate.
+pnpm sync:train -- launch --no-write --stage validate \
+  --source-sha="$SOURCE_SHA" \
+  --public-head="$EXPECTED_TARGET_HEAD" \
+  --reconciliation-file="$RECONCILIATION_FILE" \
+  --migration-notes-file="$MIGRATION_NOTES_FILE" \
+  --target-dir="$CLOWDER_AI_DIR"
+```
+
+`resume` first consumes a matching terminal receipt; it must not repeat a completed stage. Source, public or
+reconciliation drift invalidates that receipt with a typed `start_next_train` action rather than silently borrowing
+evidence from an old cut. The optional `--stage write --write-handoff` only records a checked handoff for the
+existing authorized writer: it never authorizes or performs a public write itself. Review, merge truth and public
+write disposition remain separate terminals. Under the current writer contract, a validate receipt also does not
+skip the writer's internal public gate; if write was already authorized, run the writer path directly after the
+source gate instead of creating a duplicate validate receipt.
 
 ### Release Provenance（三点映射）
 
 公开 release 不要求 `cat-cafe` 和 `clowder-ai` 同 SHA；我们要求的是**可追溯映射**。
+Release 是独立工作流：给当前稳定 public main 发版，不要求新开 home PR、重跑 full sync 或制造新的 source snapshot。
+
+发布有两条一等 provenance lane，必须显式选择真实发生的那一条：
+
+- `source-sync`（默认）：本次 release 来自一班新的 release-intended full sync。
+- `public-main`：本次 release 冻结当前稳定 public main；没有发生新的 source export，也不得伪造 source snapshot。
 
 硬规则：
-1. release-intended full sync 必须从家里 source 侧显式传 `--release-tag=vX.Y.Z`
-2. `sync-to-opensource.sh` 在 temp target public gate 通过后，会自动打并 push `clowder-vX.Y.Z-source`
-3. `.sync-provenance.json` 必须记录：
-   - `source_commit_sha`
-   - `release_tag`
-   - `source_snapshot_tag`
-4. target 仓后续真正切 `vX.Y.Z` 时，必须通过：
+1. `source-sync` 必须从家里 source 侧显式传 `--release-tag=vX.Y.Z`；`sync-to-opensource.sh` 在 temp target public gate 通过后自动打并 push `clowder-vX.Y.Z-source`。
+2. `source-sync` 的 `.sync-provenance.json` 必须记录 `source_commit_sha`、`release_tag`、`source_snapshot_tag`。
+3. `public-main` 必须显式传 `--provenance-lane=public-main --target-sha=<exact current public main>`；脚本先要求该 SHA 等于刷新后的 `clowder-ai origin/main`。本地裸仓 fixture 以单一 ref transaction compare-and-create；GitHub 生产路径因 `updateRefs` 只接受 commit target，改用无 bypass actor、只匹配 `refs/heads/main`、且 `updateAllowsFetchAndMerge=false` 的临时 `UPDATE` ruleset 建立服务端临界区，在锁内再次 fetch/比较 exact main、创建并验证 annotated tag ref，再删除该锁。创建后或重试接管时都必须精确验证上述 ruleset 结构；只要 `main`、tag 或 release-lock state 漂移，发布必须拒绝。annotated target tag 记录 `release-lane`、exact target、最近 sync provenance/source anchor，以及 `new-source-snapshot-tag: none`。
+4. 两条 lane 都必须以最近一次 `.sync-provenance.json` 为历史来源锚点；`public-main` 只引用它，不把它改写成一次新的 release sync。
+5. target 仓真正切 `vX.Y.Z` 时，必须通过 canonical script：
 
 ```bash
 bash scripts/publish-release-tag.sh \
   --release-tag=vX.Y.Z \
+  --provenance-lane=source-sync \
   --target-sha <clowder_ai_release_commit_sha> \
   --reconciliation-report=docs/ops/reconciliation-vX.Y.Z.md \
+  --release-notes=release-notes-vX.Y.Z.md \
   --push
 ```
 
-5. `publish-release-tag.sh` 会强制校验两层门禁：
-   - `source snapshot tag → .sync-provenance.json → target release tag` 三点映射
-   - `reconciliation report` 必须存在；如果报告把 issue 记为 `closed`，GitHub 上也必须已经是 `CLOSED`
+当前稳定 public main lane 使用：
+
+```bash
+bash scripts/publish-release-tag.sh \
+  --release-tag=vX.Y.Z \
+  --provenance-lane=public-main \
+  --target-sha=<exact_current_clowder_ai_main_sha> \
+  --reconciliation-report=docs/ops/reconciliation-vX.Y.Z.md \
+  --release-notes=release-notes-vX.Y.Z.md \
+  --push
+```
+
+6. `publish-release-tag.sh` 会强制校验：
+   - `source-sync`：`source snapshot tag → .sync-provenance.json → target release tag` 三点映射。
+   - `public-main`：`latest sync provenance/source anchor → exact current public main → annotated target release tag` 三点映射；tag ref 可见性必须位于 GitHub 强制的 main read-only 临界区内（或本地裸仓的单一原子 transaction），且 annotation 明示没有新 source snapshot。
+   - 两条 lane 的 `reconciliation report` 都必须存在；如果报告把 issue 记为 `closed`，GitHub 上也必须已经是 `CLOSED`。
+7. `public-main` 的持久真相是远端 `main`、annotated tag 与 GitHub Release；本地 tag 只是可重建缓存。若进程在 GitHub main 锁建立后中断，新 checkout 只可接管名称与结构完全一致的 release lock；远端 tag 已存在时先 fetch 并校验其 raw object，再清除遗留锁并继续 Release，tag 尚不存在时则在锁内重新核对 main 后创建。不得合成带新 tagger timestamp 的本地 tag 来判定远端有效性，也不得遗留一个可绕过的 release lock。
+8. release assets 按本次 notes / distribution contract 的承诺验收：承诺 desktop installer 就必须等待并核对对应 assets；明确 source-package / notes-only 的 release 可以是 0 uploaded assets。不能把某次 installer 事故泛化成所有 release 的固定资产清单。
 
 release notes /后续 backport 也必须引用这些锚点，而不是口头约定。
 
-一句话：**以后对齐 release，不靠“记得当时是哪次 sync”，靠 `source snapshot tag → target release tag → backport commit` 三点映射。**
+一句话：**发生了新 sync 就证明 source snapshot；直接发布稳定 public main 就证明 exact public head，并诚实写明没有新 source export。**
 
 ### 规则
 

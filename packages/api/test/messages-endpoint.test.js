@@ -19,7 +19,7 @@ describe('GET /api/messages', () => {
     );
     const { messagesRoutes } = await import('../dist/routes/messages.js');
     const { InMemoryFreshnessClosureStore } = await import(
-      '../dist/domains/cats/services/freshness/FreshnessClosureStore.js'
+      '../dist/domains/cats/services/freshness/closure/FreshnessClosureStore.js'
     );
 
     messageStore = new MessageStore();
@@ -74,6 +74,114 @@ describe('GET /api/messages', () => {
     assert.equal(body.messages[1].type, 'assistant');
     assert.equal(body.messages[1].catId, 'opus');
     assert.equal(body.messages[1].content, 'hi there');
+  });
+
+  it('F306 hydrates the durable semantic event used by the shared projector', async () => {
+    const semanticEvent = {
+      v: 1,
+      id: 'native-review:review-1:result',
+      kind: 'review',
+      occurredAt: 2_000,
+      reviewId: 'review-1',
+      stage: 'result',
+      summary: 'Review complete',
+      provenance: { provider: 'openai_codex', carrier: 'app_server' },
+    };
+    messageStore.append({
+      userId: 'default-user',
+      catId: 'codex',
+      content: 'provider wire copy must not become hydration truth',
+      mentions: [],
+      timestamp: 2_000,
+      threadId: 'thread-semantic-hydration',
+      extra: { semanticEvent },
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/messages?threadId=thread-semantic-hydration' });
+
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.json().messages[0].extra.semanticEvent, semanticEvent);
+  });
+
+  it('F247 F5 hydrates a durable cloud outbound receipt from its exact source without copying the body', async () => {
+    const source = messageStore.append({
+      userId: 'default-user',
+      catId: 'codex-sol',
+      content: 'Please inspect the source-bound transport behavior',
+      mentions: ['gpt-pro'],
+      timestamp: 1_000,
+      threadId: 'thread-cloud-audit',
+    });
+    messageStore.append({
+      userId: 'system',
+      catId: null,
+      content: '已发送给 @gpt-pro，等待它从 ChatGPT 云端会话回写。',
+      mentions: [],
+      timestamp: 1_100,
+      threadId: 'thread-cloud-audit',
+      replyTo: source.id,
+      source: {
+        connector: 'cloud-bridge-status',
+        label: '云端猫投递',
+        icon: '☁️',
+        meta: {
+          presentation: 'system_notice',
+          noticeTone: 'info',
+          cloudBridgeOutboundReceipt: {
+            v: 1,
+            sourceMessageId: source.id,
+            sourceSender: { kind: 'cat', id: 'codex-sol', invocationId: 'inv-source-1' },
+            dispatchInvocationId: 'inv-cloud-1',
+            targetCatId: 'gpt-pro',
+            status: 'sent',
+            transport: 'host',
+            hostMessageId: 'host-message-1',
+            idempotency: { keyKind: 'source_message_id', disposition: 'fresh' },
+          },
+        },
+      },
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/messages?threadId=thread-cloud-audit' });
+    const body = JSON.parse(res.body);
+    const receipt = body.messages.find((message) => message.source?.connector === 'cloud-bridge-status');
+    assert.equal(receipt.replyTo, source.id);
+    assert.deepEqual(receipt.replyPreview, {
+      senderCatId: 'codex-sol',
+      content: 'Please inspect the source-bound transport behavior',
+    });
+    assert.equal(receipt.content.includes('Please inspect the source-bound transport behavior'), false);
+  });
+
+  it('F247 F5 never hydrates a reply preview from another thread even if a legacy receipt is malformed', async () => {
+    const privateSource = messageStore.append({
+      userId: 'default-user',
+      catId: 'codex-sol',
+      content: 'private thread body must never cross the preview boundary',
+      mentions: [],
+      timestamp: 1_000,
+      threadId: 'thread-private-source',
+    });
+    messageStore.append({
+      userId: 'system',
+      catId: null,
+      content: 'legacy malformed cloud receipt',
+      mentions: [],
+      timestamp: 1_100,
+      threadId: 'thread-public-receipt',
+      replyTo: privateSource.id,
+      source: {
+        connector: 'cloud-bridge-status',
+        label: '云端猫投递',
+        icon: '☁️',
+        meta: { presentation: 'system_notice', noticeTone: 'info' },
+      },
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/messages?threadId=thread-public-receipt' });
+    const receipt = res.json().messages.find((message) => message.source?.connector === 'cloud-bridge-status');
+    assert.equal(receipt.replyPreview, undefined);
+    assert.equal(JSON.stringify(receipt).includes('private thread body'), false);
   });
 
   it('renders an authored queued cat seed without exposing queued user or system work', async () => {
@@ -180,6 +288,95 @@ describe('GET /api/messages', () => {
     assert.equal(body.messages[0].id, queued.id);
     assert.equal(body.messages[0].deliveredAt, undefined);
     assert.deepEqual(body.messages[0].extra.queueReceipt.targets, [{ catId: 'opus', state: 'queued' }]);
+  });
+
+  it('publishes owner-bound queued connector intake before its cat turn completes and keeps authored order', async () => {
+    const intake = messageStore.append({
+      userId: 'default-user',
+      catId: null,
+      content: '[F292 Host-authored meeting-intake envelope]',
+      mentions: ['codex-sol'],
+      timestamp: 1_400,
+      threadId: 'thread-queued-connector-publication',
+      deliveryStatus: 'queued',
+      queueCustody: makeQueuedMessageCustody({
+        entryId: 'entry-queued-connector-publication',
+        allTargetCats: ['codex-sol'],
+        pendingTargetCats: ['codex-sol'],
+        createdAt: 1_400,
+        updatedAt: 1_400,
+      }),
+      source: {
+        connector: 'feishu',
+        label: '飞书会议入站 / 录音豆',
+        icon: 'feishu',
+      },
+    });
+    const reply = messageStore.append({
+      userId: 'default-user',
+      catId: 'codex-sol',
+      content: '猫已经开始处理',
+      mentions: [],
+      timestamp: 1_500,
+      threadId: 'thread-queued-connector-publication',
+    });
+
+    const queuedResponse = await app.inject({
+      method: 'GET',
+      url: '/api/messages?threadId=thread-queued-connector-publication',
+    });
+    const queuedBody = queuedResponse.json();
+
+    assert.deepEqual(
+      queuedBody.messages.map((message) => message.id),
+      [intake.id, reply.id],
+    );
+    assert.equal(queuedBody.messages[0].type, 'connector');
+    assert.equal(queuedBody.messages[0].source.label, '飞书会议入站 / 录音豆');
+    assert.deepEqual(queuedBody.messages[0].extra.queueReceipt.targets, [{ catId: 'codex-sol', state: 'queued' }]);
+
+    await messageStore.transitionQueueCustody(intake.id, {
+      expectedRevision: 1,
+      deliveredAt: 2_000,
+      next: {
+        ...intake.queueCustody,
+        revision: 2,
+        status: 'terminal',
+        pendingTargetCats: [],
+        seenByCatIds: ['codex-sol'],
+        bodyExposures: [
+          {
+            targetCatId: 'codex-sol',
+            invocationId: 'inv-queued-connector-publication',
+            seenAt: 1_450,
+          },
+        ],
+        handledByCatIds: ['codex-sol'],
+        targetOutcomeByCatId: {
+          'codex-sol': {
+            invocationId: 'inv-queued-connector-publication',
+            disposition: 'completed_with_turn',
+            evidenceRef: {
+              kind: 'invocation_lineage',
+              invocationId: 'inv-queued-connector-publication',
+            },
+            handledAt: 2_000,
+          },
+        },
+        updatedAt: 2_000,
+      },
+    });
+    const deliveredResponse = await app.inject({
+      method: 'GET',
+      url: '/api/messages?threadId=thread-queued-connector-publication',
+    });
+    const deliveredBody = deliveredResponse.json();
+    assert.deepEqual(
+      deliveredBody.messages.map((message) => message.id),
+      [intake.id, reply.id],
+    );
+    assert.equal(deliveredBody.messages[0].deliveredAt, 2_000);
+    assert.equal(deliveredBody.messages[0].timelineOrderAt, 1_400);
   });
 
   it('F264 keeps canceled queued user work out of browser history after F5', async () => {
@@ -1086,6 +1283,125 @@ describe('POST /api/messages/:messageId/queue-targets/:targetCatId/retry', () =>
 
   afterEach(async () => {
     if (app) await app.close();
+  });
+
+  it('projects the current owner-only retry fence for an inline recovery card', async () => {
+    const queued = messageStore.append({
+      userId: 'default-user',
+      catId: null,
+      content: '@gpt-pro hello',
+      mentions: ['gpt-pro'],
+      timestamp: 1_000,
+      threadId: 'thread-f247-recovery',
+      deliveryStatus: 'queued',
+      queueCustody: makeQueuedMessageCustody({
+        entryId: 'entry-recovery',
+        allTargetCats: ['gpt-pro'],
+        pendingTargetCats: ['gpt-pro'],
+        failedByCatIds: ['gpt-pro'],
+        targetAttempts: [
+          {
+            id: 'entry-recovery:gpt-pro:1',
+            targetCatId: 'gpt-pro',
+            sequence: 1,
+            state: 'failed',
+            createdAt: 1_000,
+            updatedAt: 1_100,
+            terminalReason: 'invocation_failed',
+          },
+        ],
+      }),
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/messages/${queued.id}/queue-targets/gpt-pro/retry-authority`,
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(JSON.parse(response.body), { attemptId: 'entry-recovery:gpt-pro:1' });
+    assert.equal(authorityCalls.length, 1);
+    assert.equal(authorityCalls[0].message.id, queued.id);
+    assert.equal(retryCalls.length, 0);
+  });
+
+  it('does not project a retry fence when current authority has gone stale', async () => {
+    const queued = messageStore.append({
+      userId: 'default-user',
+      catId: null,
+      content: '@gpt-pro hello',
+      mentions: ['gpt-pro'],
+      timestamp: 1_000,
+      threadId: 'thread-f247-stale',
+      deliveryStatus: 'queued',
+      queueCustody: makeQueuedMessageCustody({
+        entryId: 'entry-stale',
+        allTargetCats: ['gpt-pro'],
+        pendingTargetCats: ['gpt-pro'],
+        failedByCatIds: ['gpt-pro'],
+        targetAttempts: [
+          {
+            id: 'entry-stale:gpt-pro:1',
+            targetCatId: 'gpt-pro',
+            sequence: 1,
+            state: 'failed',
+            createdAt: 1_000,
+            updatedAt: 1_100,
+            terminalReason: 'invocation_failed',
+          },
+        ],
+      }),
+    });
+    authorityDecision = { ok: false, reason: 'authority_witness_changed' };
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/messages/${queued.id}/queue-targets/gpt-pro/retry-authority`,
+    });
+
+    assert.equal(response.statusCode, 409);
+    assert.equal(JSON.parse(response.body).code, 'QUEUE_RETRY_AUTHORITY_STALE');
+    assert.equal(retryCalls.length, 0);
+  });
+
+  it('does not disclose another owner retry fence', async () => {
+    const queued = messageStore.append({
+      userId: 'owner-user',
+      catId: null,
+      content: '@gpt-pro hello',
+      mentions: ['gpt-pro'],
+      timestamp: 1_000,
+      threadId: 'thread-f247-other-owner',
+      deliveryStatus: 'queued',
+      queueCustody: makeQueuedMessageCustody({
+        entryId: 'entry-other-owner',
+        allTargetCats: ['gpt-pro'],
+        pendingTargetCats: ['gpt-pro'],
+        failedByCatIds: ['gpt-pro'],
+        targetAttempts: [
+          {
+            id: 'entry-other-owner:gpt-pro:1',
+            targetCatId: 'gpt-pro',
+            sequence: 1,
+            state: 'failed',
+            createdAt: 1_000,
+            updatedAt: 1_100,
+            terminalReason: 'invocation_failed',
+          },
+        ],
+      }),
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/messages/${queued.id}/queue-targets/gpt-pro/retry-authority`,
+      headers: { 'x-cat-cafe-user': 'different-user' },
+    });
+
+    assert.equal(response.statusCode, 404);
+    assert.equal(JSON.parse(response.body).code, 'QUEUE_MESSAGE_NOT_FOUND');
+    assert.equal(authorityCalls.length, 0);
+    assert.equal(retryCalls.length, 0);
   });
 
   it('retries the immutable source message target through its failed attempt fence', async () => {
