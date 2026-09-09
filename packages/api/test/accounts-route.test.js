@@ -222,14 +222,15 @@ describe('accounts routes', () => {
       assert.equal(rejected.statusCode, 400, 'a __proto__ key anywhere in the body must be refused');
       assert.match(rejected.json().message, /forbidden prototype property/);
 
-      // The guard must not be a blanket envVars refusal.
+      // The guard must not be a blanket envVars refusal. api_key accounts
+      // require clientId (same contract as the create+list flow below).
       const accepted = await app.inject({
         method: 'POST',
         url: '/api/accounts',
         headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
         payload:
           `{"projectPath":${JSON.stringify(projectDir)},"name":"plain-env","authType":"api_key",` +
-          '"envVars":{"MY_VAR":"ok","CAT_CAFE_RESERVED":"stripped"}}',
+          '"clientId":"anthropic","envVars":{"MY_VAR":"ok","CAT_CAFE_RESERVED":"stripped"}}',
       });
       assert.equal(accepted.statusCode, 200);
       const stored = readCatalogAccounts(projectDir)[accepted.json().profile.id];
