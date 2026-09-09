@@ -62,6 +62,22 @@ describe('Thread API', () => {
     assert.deepEqual(body.participants, []);
   });
 
+  it('POST /api/threads atomically persists the preferred cat and pin for a new meeting destination', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/threads',
+      payload: { userId: 'alice', title: 'Meeting destination', preferredCats: ['codex-sol'], pinned: true },
+    });
+
+    assert.equal(res.statusCode, 201);
+    const body = JSON.parse(res.body);
+    assert.deepEqual(body.preferredCats, ['codex-sol']);
+    assert.equal(body.pinned, true);
+    const stored = await threadStore.get(body.id);
+    assert.deepEqual(stored.preferredCats, ['codex-sol']);
+    assert.equal(stored.pinned, true);
+  });
+
   it('POST /api/threads keeps omitted projectPath as default', async () => {
     const res = await app.inject({
       method: 'POST',
@@ -635,6 +651,21 @@ describe('Thread API', () => {
     assert.equal(body.title, 'New Title');
   });
 
+  it('PATCH /api/threads/:id persists the explicitly selected cat for retry delivery', async () => {
+    const thread = threadStore.create('default-user', 'Meeting destination without a cat');
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/threads/${thread.id}`,
+      payload: { preferredCats: ['codex-sol'] },
+    });
+
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.deepEqual(body.preferredCats, ['codex-sol']);
+    assert.deepEqual((await threadStore.get(thread.id)).preferredCats, ['codex-sol']);
+  });
+
   it('PATCH /api/threads/:id marks renamed threads dirty for evidence search', async () => {
     const { threadsRoutes } = await import('../dist/routes/threads.js');
     const calls = [];
@@ -948,6 +979,20 @@ describe('Thread API', () => {
 
     const fetched = await app.inject({ method: 'GET', url: `/api/threads/${thread.id}` });
     assert.equal(JSON.parse(fetched.body).preferredWorkspaceMode, 'community');
+  });
+
+  it('PATCH /api/threads/:id persists the distinct F310 product Schedule destination', async () => {
+    const thread = threadStore.create('alice', 'Entrusted work Schedule');
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/threads/${thread.id}`,
+      payload: { preferredWorkspaceMode: 'product-schedule' },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(JSON.parse(res.body).preferredWorkspaceMode, 'product-schedule');
+
+    const fetched = await app.inject({ method: 'GET', url: `/api/threads/${thread.id}` });
+    assert.equal(JSON.parse(fetched.body).preferredWorkspaceMode, 'product-schedule');
   });
 
   it('PATCH /api/threads/:id rejects invalid preferredWorkspaceMode', async () => {

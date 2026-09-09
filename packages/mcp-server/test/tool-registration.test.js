@@ -2,9 +2,7 @@
  * MCP Tool Registration Tests
  * 回归测试: 确认所有预期工具都注册到 MCP server
  *
- * 背景: request_permission / check_permission_status 的 handler 和 schema
- * 早就存在，但 createServer() 漏了 server.tool() 注册。
- * 本测试守住"注册层"，修复前会 Red，修复后 Green。
+ * 本测试守住 canonical registry 与 SDK 注册层的一致性。
  */
 
 import assert from 'node:assert/strict';
@@ -93,15 +91,11 @@ describe('MCP Server Tool Registration', () => {
     );
   });
 
-  test('permission tools have correct input schemas', async () => {
-    const { createServer } = await import('../dist/index.js');
-    const server = createServer();
-
-    const reqTool = server._registeredTools.cat_cafe_request_permission;
-    assert.ok(reqTool, 'request_permission tool should exist');
-
-    const checkTool = server._registeredTools.cat_cafe_check_permission_status;
-    assert.ok(checkTool, 'check_permission_status tool should exist');
+  test('legacy generic permission family is absent', () => {
+    assert.deepEqual(
+      CANONICAL_TOOL_REGISTRY.filter((definition) => definition.resourceFamily === 'permission'),
+      [],
+    );
   });
 
   test('get_thread_context description exposes bounded keyword completeness contract', async () => {
@@ -117,6 +111,12 @@ describe('MCP Server Tool Registration', () => {
     assert.match(threadContextTool.description, /best-effort over a bounded recent scan/);
     assert.match(threadContextTool.description, /scanCapped=true/);
     assert.match(threadContextTool.description, /older history may contain additional matches/);
+    assert.match(threadContextTool.description, /bounded aggregate envelope/);
+    assert.match(threadContextTool.description, /hasMore/);
+    assert.match(threadContextTool.description, /nextCursor/);
+    assert.match(threadContextTool.description, /single item larger/);
+    assert.match(threadContextTool.description, /oversized workflow SOP/);
+    assert.match(threadContextTool.description, /cat_cafe_get_workflow_sop/);
   });
 
   // F167 Phase P fix: hold_ball description must steer "等人" to @co-creator/@cat, NOT hold_ball,
@@ -181,6 +181,17 @@ describe('MCP Server Tool Registration', () => {
     assert.ok(contextTool.inputSchema._def.shape().agentKeyCatId.isOptional());
     assert.ok(Object.keys(listTool.inputSchema.shape).includes('agentKeyCatId'));
     assert.ok(listTool.inputSchema._def.shape().agentKeyCatId.isOptional());
+  });
+
+  test('workflow-SOP drill is callable with callback or agent-key thread identity', async () => {
+    const { createServer } = await import('../dist/index.js');
+    const tool = createServer()._registeredTools.cat_cafe_get_workflow_sop;
+    assert.ok(tool, 'get_workflow_sop tool should exist');
+    const shape = tool.inputSchema._def.shape();
+    assert.equal(shape.threadId.isOptional(), true);
+    assert.equal(shape.agentKeyCatId.isOptional(), true);
+    assert.match(tool.description, /cat_cafe_get_thread_context/);
+    assert.match(tool.description, /resume capsule/i);
   });
 
   test('thread-context description does not discourage the full contiguous freshness path', async () => {
@@ -260,8 +271,6 @@ describe('MCP Server Tool Registration', () => {
       'cat_cafe_create_task',
       'cat_cafe_create_rich_block',
       'cat_cafe_generate_document',
-      'cat_cafe_request_permission',
-      'cat_cafe_check_permission_status',
       'cat_cafe_register_pr_tracking',
       'cat_cafe_register_issue_tracking',
       'cat_cafe_community_await_external',
@@ -273,6 +282,7 @@ describe('MCP Server Tool Registration', () => {
       'cat_cafe_propose_session_handoff',
       'cat_cafe_propose_profile_update',
       'cat_cafe_propose_taste',
+      'cat_cafe_propose_eval_repair',
       'cat_cafe_update_bootcamp_state',
       'cat_cafe_bootcamp_env_check',
       'cat_cafe_update_guide_state',
@@ -294,10 +304,14 @@ describe('MCP Server Tool Registration', () => {
   test('agent-key collab allowlist is the route-principal-backed surface', async () => {
     const { AGENT_KEY_TOOLS } = await import('../dist/server-toolsets.js');
     const expected = [
+      'cat_cafe_advance_evolution_program_change',
       'cat_cafe_backfill_events',
       'cat_cafe_cross_post_message',
+      'cat_cafe_get_evolution_program',
       'cat_cafe_get_message',
       'cat_cafe_get_thread_context',
+      'cat_cafe_get_workflow_sop',
+      'cat_cafe_link_evolution_program_observation',
       'cat_cafe_list_events',
       'cat_cafe_list_labels',
       'cat_cafe_list_paw_feel_inbox',
@@ -305,22 +319,32 @@ describe('MCP Server Tool Registration', () => {
       'cat_cafe_list_threads',
       'cat_cafe_post_message',
       'cat_cafe_preview_open',
+      'cat_cafe_offer_custody',
       'cat_cafe_preview_scheduled_task',
       'cat_cafe_publish_verdict',
       'cat_cafe_record_eval_lifecycle',
       'cat_cafe_read_diary',
+      'cat_cafe_read_meeting_artifact',
       'cat_cafe_read_profile',
+      'cat_cafe_read_entrusted_work',
       'cat_cafe_list_diaries',
       'cat_cafe_get_person_memory_proposal_status',
+      'cat_cafe_issue_capability_evolution_measurement',
       'cat_cafe_recall_person_relationship',
       'cat_cafe_drill_person_memory',
       'cat_cafe_register_external_runtime_session',
       'cat_cafe_community_request_guardian',
       'cat_cafe_community_guardian_signoff',
+      'cat_cafe_constitute_evolution_program',
+      'cat_cafe_open_evolution_round',
+      'cat_cafe_record_evolution_evaluation',
       'cat_cafe_register_scheduled_task',
       'cat_cafe_remove_scheduled_task',
+      'cat_cafe_retry_custody_admission',
+      'cat_cafe_start_evolution_program',
       'cat_cafe_teleport',
       'cat_cafe_triage_paw_feel',
+      'cat_cafe_update_evolution_program',
       'cat_cafe_workspace_navigate',
     ];
 
@@ -343,6 +367,21 @@ describe('MCP Server Tool Registration', () => {
     }
 
     assert.deepEqual(offenders, []);
+  });
+
+  test('eval repair proposal is a canonical callback-only resource entry', async () => {
+    const { CANONICAL_TOOL_REGISTRY, AGENT_KEY_TOOLS } = await import('../dist/server-toolsets.js');
+    const definition = CANONICAL_TOOL_REGISTRY.find((candidate) => candidate.name === 'cat_cafe_propose_eval_repair');
+
+    assert.ok(definition);
+    assert.equal(definition.policy.activeState, 'canonical');
+    assert.deepEqual(definition.policy.runtimeProfiles, ['full']);
+    assert.deepEqual(definition.policy.standaloneReason, {
+      disposition: 'accepted-boundary',
+      kind: 'resource-entry',
+      admissionRef: 'file:docs/features/F313-analysis-to-outcome-closure-command.md',
+    });
+    assert.equal(AGENT_KEY_TOOLS.has(definition.name), false);
   });
 
   test('deprecated file tools are not registered', async () => {

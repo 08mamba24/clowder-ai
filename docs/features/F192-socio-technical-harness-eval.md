@@ -1,16 +1,16 @@
 ---
 feature_ids: [F192]
-related_features: [F167, F153, F086, F188, F200, F245, F266, F267, F275]
+related_features: [F167, F153, F086, F188, F200, F245, F266, F267, F275, F299]
 topics: [harness-engineering, eval, socio-technical, observability, cat-user-feedback]
 doc_kind: spec
 created: 2026-05-07
-tips_exempt: harness-internal eval infra — no user-visible capability change
+tips_exempt: Dual-trigger dispatch, F299 bounded transcript repair and handoff truth, and generic-permission sunset are harness-internal control-plane changes with no new user-visible capability
 user_journey_exempt: "Internal harness eval infrastructure — all surfaces are developer/cat-facing, no end-user journey"
 ---
 
 # F192: Socio-Technical Harness Eval — harness 共创评估体系
 
-> **Status**: in-progress (Phase F re-eval closure + Phase G `eval:task-outcome` closure) | **Owner**: Ragdoll | **Truth sync**: 2026-07-03
+> **Status**: in-progress (Phase F re-eval closure + Phase G `eval:task-outcome` closure + Phase I dual-trigger control plane) | **Owner**: Ragdoll | **Truth sync**: 2026-08-25
 
 ## Architecture Ownership
 
@@ -74,7 +74,7 @@ F192 现在已经不是“某个 feature 结束后写一篇 feedback”的文档
 
 如果链路里任何一环需要人手工补文件、手工抄 bundle、手工 commit，那就还不算接进 F192 control plane。
 
-### Current Domain Wire Status (2026-06-09 truth sync)
+### Selected Domain Wire Status (2026-08-25 truth sync)
 
 | Domain | Schedule | Publish path | Current truth |
 |--------|----------|--------------|---------------|
@@ -84,6 +84,7 @@ F192 现在已经不是“某个 feature 结束后写一篇 feedback”的文档
 | `eval:task-outcome` | daily live | wired (PR #2162, squash `c9aa0e16d`) | Publish path is live, but the current Episode estimator is thread/latest-in-progress based and has no managed-work eligibility. Until F275 + F267 migration gates pass, output is event/thread-level telemetry only; task-level success/latency/attempt conclusions are invalid. |
 | `eval:sop` | active (weekly) | wired (PR #2186) | Schema / predicate evaluator + SopTrace producer + file-writer + PUBLISH_VERDICT_INSTRUCTIONS all wired. Re-enabled 2026-06-10. |
 | `eval:anchor-first` | weekly | wired (F236 Track-2) | Preview↔drill open-rate rollup via in-memory event log. Generator adapter + live-verdict writer + provider wired. Eval design truth in F236. |
+| `eval:trajectory-inspector` | weekly live | wired (PR #3943, merge `098ed53cb`) | Registry/source/publish/system-thread onboarding reuses Phase I. F299 AC-E2 bounded-source repair landed in PR #4111; publication-integrity repair landed in PR #4135. The first trusted post-repair artifact, PR #4206, completed without OOM or retry and passed exact-SHA glossary status. It is `calibration_only / keep_observe` (8 eligible, degraded coverage/no baseline/review), so the same F266 lineage continues to the next valid window rather than claiming keep/tune/sunset. |
 
 ## Why
 
@@ -339,6 +340,8 @@ Phase E 将 F192 从单域试点提升为横切的 Harness Eval Control Plane：
 - [x] AC-G13: Cancel burst proxy signal——CancelBurstDetector（threshold=3, window=60s）+ index.ts authorization handler 接线，burst 触发时追加 proxy signal（8 tests green）
 - [x] AC-G11: 端到端验证——自动化 e2e 集成测试（PR #2167）：6 chain × 10 assertions，三条 production helper（appendPermissionCancelToEpisode / appendMagicWordRefToEpisode / checkAndAppendCancelBurst）从 index.ts 提取后 test + production 共用同一路径；含 reason normalization 边界测试。手动 runtime 验收待operator + Ragdoll一起看 eval hub
 
+> **2026-08-24 sunset disposition:** AC-G2/G6/G8/G9/G10/G11/G13 记录的是当时已交付的历史链路，不再表示当前 writer。operator 决定直接落日 generic permission lifecycle（source `[thread-id]#0001787632982035-000007-ecf7a681`）；F286 同步移除 authorization deny hook、manual task-outcome cancel route、permission-cancel builder/wiring 与 cancel-burst detector。`permission_cancel` / `cancel_burst` schema、read projection、adapter 和统计仍保留，仅用于读取既有 episode 数据；不得据此恢复新的写入入口。
+
 依赖：复用 F192 已有 Eval Domain Registry / Verdict Handoff / Re-eval Closure / Eval Hub 控制面。与 F222 Frustration Auto-Issue 的打通（confirmed issue → episode signal）标记为 v1。
 
 ### Phase H（Verdict Publishing Pipeline — OQ-21 v1.x 收口 / Maine Coon R0 Path B）✅ merged 2026-06-05 (PR #2109, squash `33ee6ae54`)
@@ -436,6 +439,54 @@ Phase E 将 F192 从单域试点提升为横切的 Harness Eval Control Plane：
 - task-outcome publish path 已在 PR #2162 (2026-06-09, squash `c9aa0e16d`) 接通；PR-D 补 episode verdict writeback（packet verdict 仍是 4-class，per-episode verdict 通过显式 7-class `episodeVerdicts` 写回）；独立 backlog 剩 **rollup mechanism**
 - AC-H6 real e2e (real git+gh round-trip)：当前 alpha 验已覆盖 happy path 表征，deferred 留待真正端到端测试需求出现时再补
 - **rollup mechanism**（PR-3 占位 futureMode `rollup_deferred`）：daily/weekly batch PR 聚合 N 个 no-action verdict，或 runtime evidence store + 周期 flush archive PR — 等 PR-3 体感数据后再 design
+
+### Phase I（Eval 双触发控制面：threshold crossing + time fallback）✅
+
+**Why**：当前 registry 的 `frequency` 只让 daily / weekly / every-Nd cron 唤醒 eval cat；domain adapter
+内部的样本成熟条件不会反向唤醒 scheduler。F303 已有 `eligibleEpisodes >= 20 || elapsed >= 4 weeks`
+成熟条件，但第 20 个 episode 到达时不会立即触发 eval，仍要等下一次 weekly cron。结果是“样本已足够”与
+“系统何时醒来”被误当成同一件事。
+
+**Architecture cell**: `harness-eval`; **Map delta**: none。Phase I 只扩展既有 registry、daily / weekly /
+N-day task 与 eval-cat invocation；不新增 scheduler、registry、Eval Hub、verdict pipeline 或 lifecycle store。
+
+纵向语义固定拆成四层：
+
+1. `sourceAdapter` 只负责 evidence ingestion / projection；
+2. `triggerPolicy` 只决定何时尝试 invocation；
+3. domain adapter / measurement contract 继续拥有 maturity predicate；
+4. verdict generator / F267 action gate 继续拥有 actionability / validity。
+
+Invocation 被触发不代表窗口成熟，更不代表允许 `fix / build / delete_sunset`。累计型 domain 只有在存在
+可靠、可重放的 evidence event 时才能声明 `threshold_or_time`；否则必须显式 `time_only`，并声明健康
+scheduler 下的最大检测延迟。F303 的可靠 event 是 cumulative source-map revision 被 runtime 观测后，由
+现有 design-gate source provider 回源得到的 `eligibleEpisodes` 前值/现值；原始 source map、PR、review、
+Alpha 与 validity 归属不变。
+
+**Architecture / contract integrity evidence**：
+
+- Canonical source: `packages/api/src/infrastructure/harness-eval/domain/eval-domain-registry.ts#evalDomainRegistryEntrySchema`
+- Consumer evidence: `rg -n 'createEvalDomain(Daily|Weekly|NDay)Spec|buildScheduledEvalInvocationMessage|eval-design-gate.yaml' packages/api/src packages/api/test docs/harness-feedback/eval-domains`
+- Claim guard: “event 与 cron 共用 window/dedupe，且 trigger 不越权判 maturity/actionability” → `node --test packages/api/test/harness-eval/eval-domain-trigger-*.test.js packages/api/test/harness-eval/design-gate-threshold-trigger.test.js` → 同窗口双通道产生第二次 accepted invocation、失败 replay 被永久吞掉或 trigger 文本宣称 actionable 时变红。
+
+**Acceptance Criteria**：
+
+- [x] AC-I1: Registry 将 invocation policy 与 `sourceAdapter` 分开；所有 first-party domain 显式声明 `time_only` 或 `threshold_or_time` 及 `maxDetectionDelayHours`，旧 community registry 缺字段时兼容迁移为按 `frequency` 推导的 `time_only`。
+- [x] AC-I2: `threshold_or_time` 只接受具名 counter、正整数 crossing threshold、可靠 event source、cooldown 与 daily/weekly fallback；F303 声明 `eligibleEpisodes` crossing 20 + weekly 最长 168h fallback，其他无可靠 event 的 domain 显式 `time_only`。
+- [x] AC-I3: threshold event 与 cron 经同一 dispatcher，使用相同 UTC cadence window / dedupe key；同窗口 event↔cron 任一先赢后，另一通道不再产生第二次 accepted invocation。
+- [x] AC-I4: durable trigger receipt 明确 `claimed → dispatched`；并发 overlap 跳过，跨窗口 cooldown 合并，失败 release / expired claim 可 replay，成功 event receipt 永久去重且不使用 TTL。
+- [x] AC-I5: F303 source provider 能从最新 cumulative source map 重建当前 eligible count，并从同一已解析 episode set 投影上一 revision 的 eligible count；runtime 启动先 replay 当前 revision，再监听 durable source-map YAML 变更；只有 `<20 → >=20` crossing 才走 event 通道，invalid / missing source 不触发。
+- [x] AC-I6: scheduled invocation 明示 trigger channel / window / dedupe，并写明 invocation 不等于 maturity 或 actionability；既有 publish prerequisite、legacy-task、evalCat override、thread ensure 与 N-day last-dispatch 语义保持兼容。
+- [x] AC-I7: RED→GREEN 覆盖 threshold crossing、event/cron race、cooldown、失败与 expired-claim replay、stale event replay、`time_only` 拒绝 event、Redis unavailable fail-closed event、legacy registry migration、F303 1→20 / 20→21 / invalid-source；targeted tests、API build 与风险匹配 gate 全绿。
+
+**完成证据（2026-08-24）**：PR #3920（squash `57cf27a0f`）合入；非作者 exact-HEAD
+review 结论为 APPROVED（`local-review:0001787580847720-000049-18ddf94e:g3:approved`）；full
+`pnpm gate`、52 项 focused tests、API build 与 Redis 6398 CAS 均通过。
+
+**Compatibility / migration**：registry parser 对缺 `triggerPolicy` 的社区 YAML 保持读兼容，并投影为与旧
+`frequency` 等价的 `time_only`；first-party YAML 一次性显式化。现有 cron task id、表达式、system thread、
+eval cat、publish/closure 路径均不改。Redis 只新增 TTL=0 的 invocation/event receipt，不迁移或重写既有
+消息、verdict、F266 lifecycle event；删除 Phase I 新键与 trigger policy 即可回滚到 cron-only。
 
 ## How To Add A New Eval Domain
 

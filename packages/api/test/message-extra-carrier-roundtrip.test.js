@@ -29,6 +29,105 @@ const MESSAGE_BUNDLE = {
 };
 
 describe('durable message extra carriers survive Redis round-trips', () => {
+  it('F167 preserves a typed local-review verdict as a durable review fact', async () => {
+    const { serializeExtra, safeParseExtra } = await import(
+      '../dist/domains/cats/services/stores/redis/redis-message-parsers.js'
+    );
+    for (const verdict of ['approved', 'changes_requested', 'commented']) {
+      const input = {
+        localReviewVerdict: {
+          verdict,
+          clientMessageId: `local-review-verdict-roundtrip-${verdict}`,
+          reviewedHeadSha: 'a'.repeat(40),
+          reviewSubjectRef: 'pr:zts212653/cat-cafe#4255',
+          acceptedSourceRef: 'docs/features/F314-development-episode-alignment-experiment.md',
+          acceptedRevision: 'b'.repeat(40),
+        },
+      };
+
+      assert.deepEqual(safeParseExtra(serializeExtra(input)), input);
+    }
+  });
+
+  it('preserves a legacy F167 local-review verdict without an accepted-source anchor', async () => {
+    const { serializeExtra, safeParseExtra } = await import(
+      '../dist/domains/cats/services/stores/redis/redis-message-parsers.js'
+    );
+    const input = {
+      localReviewVerdict: {
+        verdict: 'approved',
+        clientMessageId: 'legacy-local-review-verdict',
+        reviewedHeadSha: 'a'.repeat(40),
+      },
+    };
+    assert.deepEqual(safeParseExtra(serializeExtra(input)), input);
+  });
+
+  it('drops a partial accepted-source anchor without dropping valid sibling metadata', async () => {
+    const { serializeExtra, safeParseExtra } = await import(
+      '../dist/domains/cats/services/stores/redis/redis-message-parsers.js'
+    );
+    const parsed = safeParseExtra(
+      serializeExtra({
+        localReviewVerdict: {
+          verdict: 'approved',
+          clientMessageId: 'partial-anchor-local-review-verdict',
+          reviewedHeadSha: 'a'.repeat(40),
+          reviewSubjectRef: 'pr:zts212653/cat-cafe#4255',
+        },
+        targetCats: ['opus5'],
+      }),
+    );
+
+    assert.deepEqual(parsed?.targetCats, ['opus5']);
+    assert.equal(parsed?.localReviewVerdict, undefined);
+  });
+
+  it('drops a malformed accepted-source revision without dropping valid sibling metadata', async () => {
+    const { serializeExtra, safeParseExtra } = await import(
+      '../dist/domains/cats/services/stores/redis/redis-message-parsers.js'
+    );
+    const parsed = safeParseExtra(
+      serializeExtra({
+        localReviewVerdict: {
+          verdict: 'approved',
+          clientMessageId: 'malformed-anchor-local-review-verdict',
+          reviewedHeadSha: 'a'.repeat(40),
+          reviewSubjectRef: 'pr:zts212653/cat-cafe#4255',
+          acceptedSourceRef: 'docs/features/F314-development-episode-alignment-experiment.md',
+          acceptedRevision: 'not-a-git-oid',
+        },
+        targetCats: ['opus5'],
+      }),
+    );
+
+    assert.deepEqual(parsed?.targetCats, ['opus5']);
+    assert.equal(parsed?.localReviewVerdict, undefined);
+  });
+
+  it('F167 drops malformed local-review verdicts without dropping valid sibling metadata', async () => {
+    const { serializeExtra, safeParseExtra } = await import(
+      '../dist/domains/cats/services/stores/redis/redis-message-parsers.js'
+    );
+    for (const localReviewVerdict of [
+      { verdict: 'approve', clientMessageId: 'typed-verdict-1' },
+      { verdict: 'approved', clientMessageId: '' },
+      { verdict: 'approved', clientMessageId: 'x'.repeat(201) },
+      { verdict: 'approved', clientMessageId: 'typed-verdict-1', reviewedHeadSha: 'ABC1234' },
+      { verdict: 'approved', clientMessageId: 'typed-verdict-1', reviewedHeadSha: 'a'.repeat(39) },
+    ]) {
+      const parsed = safeParseExtra(
+        serializeExtra({
+          localReviewVerdict,
+          targetCats: ['opus5'],
+        }),
+      );
+
+      assert.deepEqual(parsed?.targetCats, ['opus5']);
+      assert.equal(parsed?.localReviewVerdict, undefined);
+    }
+  });
+
   it('F294 preserves a Message Bundle while tracing metadata is merged', async () => {
     const { serializeExtra, safeParseExtra } = await import(
       '../dist/domains/cats/services/stores/redis/redis-message-parsers.js'
@@ -60,7 +159,7 @@ describe('durable message extra carriers survive Redis round-trips', () => {
     assert.equal(parsed?.messageBundle, undefined);
   });
 
-  it('preserves the other typed durable carriers declared by StoredMessage.extra', async () => {
+  it('preserves the F272, F292, and write-opportunity carriers', async () => {
     const { serializeExtra, safeParseExtra } = await import(
       '../dist/domains/cats/services/stores/redis/redis-message-parsers.js'
     );
@@ -106,6 +205,10 @@ describe('durable message extra carriers survive Redis round-trips', () => {
       meetingArtifact: {
         intakeId: 'intake-1',
         sourceHandle: 'meeting://source-1',
+        resourceRef: `meeting-artifact://intakes/intake-1?revision=sha256:${'b'.repeat(64)}`,
+        sourceRevision: `sha256:${'b'.repeat(64)}`,
+        byteLength: 4,
+        contentType: 'text/plain',
         trust: 'untrusted_external',
         instructionPolicy: 'data_only',
       },
@@ -130,6 +233,7 @@ describe('durable message extra carriers survive Redis round-trips', () => {
         sourceOpportunityId: dynamicScene.opportunity.opportunityId,
       },
     };
+    input.writeOpportunityReentries = [input.writeOpportunityReentry];
 
     assert.deepEqual(safeParseExtra(serializeExtra(input)), input);
   });

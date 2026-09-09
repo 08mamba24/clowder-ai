@@ -65,6 +65,14 @@ export interface QueueLineageEvidenceRef {
   invocationId: string;
 }
 
+/** Durable terminal child truth without a persisted timeline lineage. */
+export interface QueueTurnExecutionEvidenceRef {
+  kind: 'turn_execution';
+  invocationId: string;
+}
+
+export type QueueTargetOutcomeEvidenceRef = QueueLineageEvidenceRef | QueueTurnExecutionEvidenceRef;
+
 export interface QueueTerminalSilentConsumptionWitness {
   kind: 'terminal_silent';
   projectionState: 'covered_empty';
@@ -108,7 +116,7 @@ export type QueueTerminalConsumptionWitness =
 export interface QueueTargetOutcome {
   invocationId: string;
   disposition: QueueHandledDisposition;
-  evidenceRef: QueueLineageEvidenceRef;
+  evidenceRef: QueueTargetOutcomeEvidenceRef;
   handledAt: number;
   consumption?: QueueTerminalConsumptionWitness;
 }
@@ -174,7 +182,7 @@ export interface QueueReceiptTarget {
   outcome?: QueueTargetOutcome;
   /** Append-only target-local delivery history. Missing only on legacy receipts. */
   attempts?: QueueTargetAttempt[];
-  /** False when cross-thread dispatch never created a durable carrier to retry. */
+  /** False when no durable retry is possible or the fenced business action is already terminal. */
   retryable?: boolean;
 }
 
@@ -192,3 +200,37 @@ export interface QueueMessageReceiptProjection {
   messageId: string;
   queueReceipt: QueueMessageReceipt;
 }
+
+/** One server-projected Queue escape hatch, including its exact executable request. */
+export interface QueueRecoveryRequest {
+  method: 'POST' | 'DELETE';
+  path: string;
+  body?: Readonly<Record<string, string>>;
+}
+
+export type QueueRecoveryAction =
+  | {
+      id: string;
+      entryId: string;
+      kind: 'steer';
+      request: QueueRecoveryRequest;
+    }
+  | {
+      id: string;
+      entryId: string;
+      kind: 'retry_target';
+      targetCatId: string;
+      request: QueueRecoveryRequest;
+    }
+  | {
+      id: string;
+      entryId: string;
+      kind: 'force_reset';
+      request: QueueRecoveryRequest;
+    }
+  | {
+      id: string;
+      entryId: string;
+      kind: 'withdraw';
+      request: QueueRecoveryRequest;
+    };

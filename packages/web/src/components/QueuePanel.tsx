@@ -1,6 +1,6 @@
 'use client';
 
-import type { FreshnessCarrierCapability } from '@cat-cafe/shared';
+import type { FreshnessCarrierCapability, QueueRecoveryAction } from '@cat-cafe/shared';
 import { type QueueReminderAttemptState, SCHEDULER_TRIGGER_PREFIX } from '@cat-cafe/shared';
 import { closestCenter, DndContext, type DragEndEvent, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { arrayMove, SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
@@ -12,6 +12,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
 import { apiFetch } from '@/utils/api-client';
 import { composerInsertFromRecall, requestTrueRecall, TrueRecallRequestError } from '@/utils/true-recall';
+import { ForceResetDialog } from './ForceResetDialog';
 import { SortableQueueEntryRow } from './QueueEntryRow';
 import {
   collectExactLiveInvocationIds,
@@ -20,6 +21,7 @@ import {
   queueTargetStateEntries,
 } from './queue-receipt-projection';
 import { SteerQueuedEntryModal } from './SteerQueuedEntryModal';
+import { useQueueActionConvergence } from './useQueueActionConvergence';
 
 const COLLAPSE_THRESHOLD = 4;
 
@@ -43,6 +45,24 @@ function reminderResultCopy(state: unknown) {
   return typeof state === 'string' && state in REMINDER_RESULT_COPY
     ? REMINDER_RESULT_COPY[state as QueueReminderAttemptState]
     : REMINDER_RESULT_COPY.requested;
+}
+
+function recoveryNoStartCopy(refreshed: boolean, error: unknown) {
+  if (typeof error === 'string') {
+    return { type: refreshed ? ('info' as const) : ('error' as const), title: '队列未启动', message: error };
+  }
+  if (refreshed) {
+    return {
+      type: 'info' as const,
+      title: '队列状态已刷新',
+      message: '系统没有启动新的处理；请按当前条目显示的可用操作继续。',
+    };
+  }
+  return {
+    type: 'error' as const,
+    title: '队列未启动',
+    message: '系统没有启动新的处理，刷新也未完成；请稍后重试。',
+  };
 }
 
 export function compareQueueEntries(
@@ -125,7 +145,20 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
   const setPendingChatInsert = useChatStore((s) => s.setPendingChatInsert);
   const addToast = useToastStore((s) => s.addToast);
 
-  const [steerEntryId, setSteerEntryId] = useState<string | null>(null);
+  const {
+    steerEntryId,
+    forceResetAction,
+    retryingAttemptIds,
+    resettingActionIds,
+    handleRetry,
+    refreshQueue,
+    handleSteerConfirm,
+    handleSteerOpen,
+    handleSteerCancel,
+    handleForceResetConfirm,
+    handleForceResetOpen,
+    handleForceResetCancel,
+  } = useQueueActionConvergence(threadId);
   const [remindingTargetKeys, setRemindingTargetKeys] = useState<Set<string>>(() => new Set());
   const [collapsed, setCollapsed] = useState<boolean | null>(null);
 
@@ -142,13 +175,20 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
   const visibleEntries = useMemo(
     () =>
       queue
-        .filter(
-          (e) => e.status === 'queued' && !(e.source === 'connector' && e.content.startsWith(SCHEDULER_TRIGGER_PREFIX)),
-        )
+        .filter((entry) => {
+          if (entry.source === 'connector' && entry.content.startsWith(SCHEDULER_TRIGGER_PREFIX)) return false;
+          if (entry.status === 'queued') return true;
+          const hasProjectedReset = entry.recoveryActions?.some((action) => action.kind === 'force_reset') ?? false;
+          const hasActiveTarget =
+            entry.targetCats.length === 0
+              ? activeInvocationIds.size > 0
+              : entry.targetCats.some((catId) => activeCatIds.has(catId));
+          return hasProjectedReset && !hasActiveTarget;
+        })
         .map((entry) => projectQueueEntryForActions(entry, activeInvocationIds))
         .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
         .sort(compareQueueEntries),
-    [activeInvocationIds, queue],
+    [activeCatIds, activeInvocationIds, queue],
   );
 
   // A2A queue visibility: explain WHY entries are queued (waiting behind the active turn) so the
@@ -157,20 +197,26 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
   // oldest active turn. Recomputed when activeInvocations/visibleEntries change; elapsed reflects
   // the last store update (acceptable for v1 — no per-second tick).
   const waitInfo = useMemo(() => {
-    const dispatchTargetCatIds = visibleEntries.flatMap((entry) => {
+    const waitingEntries = visibleEntries.filter((entry) => entry.status === 'queued');
+    const dispatchTargetCatIds = waitingEntries.flatMap((entry) => {
       const targetStates = queueTargetStateEntries(entry);
       return targetStates.length > 0
-        ? targetStates.filter(([, state]) => state !== 'seen' && state !== 'awakened').map(([catId]) => catId)
+        ? targetStates
+            .filter(([, state]) => state !== 'seen' && state !== 'awakened' && state !== 'failed')
+            .map(([catId]) => catId)
         : entry.targetCats;
     });
-    const hasBroadcastEntry = visibleEntries.some(
+    const hasBroadcastEntry = waitingEntries.some(
       (entry) => queueTargetStateEntries(entry).length === 0 && entry.targetCats.length === 0,
     );
     if (dispatchTargetCatIds.length === 0 && !hasBroadcastEntry) return null;
     return computeQueueWaitInfo(activeInvocations, dispatchTargetCatIds);
   }, [activeInvocations, visibleEntries]);
   const canRecoverOrphanedQueue =
-    !queuePaused && visibleEntries.some((entry) => queueEntryNeedsRecovery(entry, activeInvocationIds, activeCatIds));
+    !queuePaused &&
+    visibleEntries.some(
+      (entry) => entry.status === 'queued' && queueEntryNeedsRecovery(entry, activeInvocationIds, activeCatIds),
+    );
   const activeInvocationIdByCatId = useMemo(
     () =>
       Object.fromEntries(
@@ -190,14 +236,14 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
   );
 
   const handleRemove = useCallback(
-    async (entryId: string) => {
+    async (action: Extract<QueueRecoveryAction, { kind: 'withdraw' }>) => {
       const prevQueue = queue;
       setQueue(
         threadId,
-        prevQueue.filter((e) => e.id !== entryId),
+        prevQueue.filter((e) => e.id !== action.entryId),
       );
       try {
-        const res = await apiFetch(`/api/threads/${threadId}/queue/${entryId}`, { method: 'DELETE' });
+        const res = await apiFetch(action.request.path, { method: action.request.method });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           setQueue(threadId, prevQueue);
@@ -285,10 +331,10 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
       const res = await apiFetch(`/api/threads/${threadId}/queue/next`, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.started !== true) {
+        const refreshed = await refreshQueue();
+        const feedback = recoveryNoStartCopy(refreshed, data?.error);
         addToast({
-          type: 'error',
-          title: '队列尚未恢复',
-          message: '仍有运行占用，稍后重试或使用 Steer 立即接管这条消息。',
+          ...feedback,
           threadId,
           duration: 5000,
         });
@@ -302,7 +348,7 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
         duration: 5000,
       });
     }
-  }, [addToast, threadId]);
+  }, [addToast, refreshQueue, threadId]);
 
   const handleClear = useCallback(async () => {
     try {
@@ -336,12 +382,6 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
       });
     }
   }, [addToast, setQueue, threadId]);
-
-  const handleSteerOpen = useCallback((entryId: string) => {
-    setSteerEntryId(entryId);
-  }, []);
-
-  const handleSteerCancel = useCallback(() => setSteerEntryId(null), []);
 
   const handleRemind = useCallback(
     async (entryId: string, targetCatId: string) => {
@@ -381,25 +421,6 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
     },
     [addToast, threadId],
   );
-
-  const handleSteerConfirm = useCallback(async () => {
-    if (!steerEntryId) return;
-    try {
-      const res = await apiFetch(`/api/threads/${threadId}/queue/${steerEntryId}/steer`, {
-        method: 'POST',
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        const msg =
-          data?.code === 'ENTRY_PROCESSING' ? '该消息正在处理，无法 steer' : (data?.error ?? 'Steer 失败，请重试');
-        addToast({ type: 'error', title: 'Steer 失败', message: msg, threadId, duration: 5000 });
-        return;
-      }
-      setSteerEntryId(null);
-    } catch {
-      addToast({ type: 'error', title: 'Steer 失败', message: 'Steer 失败，请重试', threadId, duration: 5000 });
-    }
-  }, [addToast, steerEntryId, threadId]);
 
   const handleDragEnd = useCallback(
     async (event: DragEndEvent) => {
@@ -445,7 +466,7 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
 
   const isCollapsed = collapsed ?? visibleEntries.length >= COLLAPSE_THRESHOLD;
   const pauseLabel = queuePauseReason === 'canceled' ? '当前调用已取消' : '当前调用失败';
-  const entryIds = visibleEntries.map((e) => e.id);
+  const entryIds = visibleEntries.filter((entry) => entry.status === 'queued').map((entry) => entry.id);
 
   const selectedSteerEntry = steerEntryId ? (queue.find((e) => e.id === steerEntryId) ?? null) : null;
 
@@ -565,10 +586,14 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
                     onRemove={handleRemove}
                     onRecallEdit={handleRecallEdit}
                     onSteer={handleSteerOpen}
+                    onRetry={handleRetry}
+                    onForceReset={handleForceResetOpen}
                     onRemind={handleRemind}
                     activeInvocationIdByCatId={activeInvocationIdByCatId}
                     activeCarrierCapabilityByCatId={activeCarrierCapabilityByCatId}
                     remindingTargetKeys={remindingTargetKeys}
+                    retryingAttemptIds={retryingAttemptIds}
+                    resettingActionIds={resettingActionIds}
                   />
                 );
               })}
@@ -580,6 +605,12 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
       {selectedSteerEntry && selectedSteerEntry.status === 'queued' && (
         <SteerQueuedEntryModal onCancel={handleSteerCancel} onConfirm={handleSteerConfirm} />
       )}
+      <ForceResetDialog
+        open={forceResetAction !== null}
+        busy={forceResetAction !== null && resettingActionIds.has(forceResetAction.id)}
+        onCancel={handleForceResetCancel}
+        onConfirm={handleForceResetConfirm}
+      />
     </div>
   );
 }

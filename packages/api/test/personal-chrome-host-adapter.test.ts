@@ -11,9 +11,11 @@ import {
   PersonalChromeHostError,
   RefreshablePersonalChromeHostAdapter,
 } from '../src/domains/cats/services/cloud-bridge/personal-chrome-host/personal-chrome-host-adapter.js';
+import { parsePersonalChromeAssistantReturnRequest } from '../src/domains/cats/services/cloud-bridge/personal-chrome-host/protocol.js';
 
 const sockets = new Set<string>();
 const roots = new Set<string>();
+const helperArtifactRevision = `sha512:${'a'.repeat(128)}`;
 
 afterEach(async () => {
   await Promise.all([...sockets].map((path) => unlink(path).catch(() => undefined)));
@@ -70,6 +72,65 @@ async function startReplyServer(
 }
 
 describe('PersonalChromeHostAdapter', () => {
+  it('fails closed when a list cursor omits or corrupts one identity field', () => {
+    const request = {
+      v: 2,
+      kind: 'list_assistant_returns',
+      requestId: 'assistant-return-invalid-cursor',
+      afterSourceMessageId: 'source-message-9',
+      afterAssistantMessageId: 'conversation-turn-2',
+    };
+
+    assert.throws(() => parsePersonalChromeAssistantReturnRequest(request), /must contain conversation, source/);
+    assert.throws(
+      () =>
+        parsePersonalChromeAssistantReturnRequest({
+          ...request,
+          afterConversationId: 'conversation with spaces',
+        }),
+      /invalid identity token/,
+    );
+  });
+
+  it('requires an exact helper, extension, and page-adapter revision receipt', async () => {
+    const server = await startReplyServer((envelope) => {
+      const request = envelope.request as Record<string, unknown>;
+      return {
+        v: 2,
+        kind: 'append_result',
+        requestId: request.requestId,
+        idempotencyKey: request.idempotencyKey,
+        status: 'host_observed',
+        hostMessageId: 'chatgpt-user-message-stale',
+        observedRevisions: {
+          helper: `sha512:${'a'.repeat(128)}`,
+          extension: '0.2.10',
+          pageAdapter: '2026-08-22.1',
+        },
+      };
+    });
+    try {
+      const adapter = new PersonalChromeHostAdapter({
+        socketPath: server.socketPath,
+        pairingSecret: 's'.repeat(64),
+        helperArtifactRevision: `sha512:${'a'.repeat(128)}`,
+        requestId: () => 'request-stale-adapter',
+      });
+
+      await assert.rejects(
+        adapter.append_message('conversation-7', 'hello cloud cat', 'source-message-stale-adapter'),
+        (error: unknown) => error instanceof PersonalChromeHostError && error.code === 'STALE_ADAPTER',
+      );
+      assert.deepEqual((server.calls[0].request as Record<string, unknown>).expectedRevisions, {
+        helper: `sha512:${'a'.repeat(128)}`,
+        extension: '0.2.10',
+        pageAdapter: '2026-09-02.1',
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it('activates and deactivates from the canonical pairing record without an API restart', async () => {
     const root = await mkdtemp(join(tmpdir(), 'cat-cafe-f247-refreshable-'));
     roots.add(root);
@@ -78,12 +139,14 @@ describe('PersonalChromeHostAdapter', () => {
     const server = await startReplyServer((envelope) => {
       const request = envelope.request as Record<string, unknown>;
       return {
-        v: 1,
+        v: 2,
         kind: 'append_result',
         requestId: request.requestId,
         idempotencyKey: request.idempotencyKey,
         status: 'host_observed',
         hostMessageId: 'chatgpt-user-message-refreshable',
+        observedRevisions: request.expectedRevisions,
+        idempotentReplay: false,
       };
     });
     const events: Array<{ context: object; message: string }> = [];
@@ -106,6 +169,7 @@ describe('PersonalChromeHostAdapter', () => {
       await writePairingRecord(pairingRecordPath, server.socketPath, secret);
       assert.deepEqual(await adapter.append_message('conversation-7', 'hello', 'source-message-refreshable'), {
         hostMessageId: 'chatgpt-user-message-refreshable',
+        idempotentReplay: false,
       });
       assert.equal(server.calls[0].pairingSecret as string, secret);
 
@@ -144,6 +208,7 @@ describe('PersonalChromeHostAdapter', () => {
       {
         CAT_CAFE_PERSONAL_CHROME_SOCKET: '/tmp/cat-cafe-personal-host.sock',
         CAT_CAFE_PERSONAL_CHROME_PAIRING_SECRET: secret,
+        CAT_CAFE_PERSONAL_CHROME_HELPER_ARTIFACT_REVISION: helperArtifactRevision,
       },
       {
         info: (context, message) => events.push({ context, message }),
@@ -176,6 +241,7 @@ describe('PersonalChromeHostAdapter', () => {
         {
           CAT_CAFE_PERSONAL_CHROME_SOCKET: '/tmp/cat-cafe-personal-host.sock',
           CAT_CAFE_PERSONAL_CHROME_PAIRING_SECRET: 'too-short',
+          CAT_CAFE_PERSONAL_CHROME_HELPER_ARTIFACT_REVISION: helperArtifactRevision,
         },
         logger,
       ),
@@ -190,37 +256,131 @@ describe('PersonalChromeHostAdapter', () => {
     const server = await startReplyServer((envelope) => {
       const request = envelope.request as Record<string, unknown>;
       return {
-        v: 1,
+        v: 2,
         kind: 'append_result',
         requestId: request.requestId,
         idempotencyKey: request.idempotencyKey,
         status: 'host_observed',
         hostMessageId: 'chatgpt-user-message-42',
+        observedRevisions: request.expectedRevisions,
+        idempotentReplay: true,
       };
     });
     try {
       const adapter = new PersonalChromeHostAdapter({
         socketPath: server.socketPath,
         pairingSecret: 's'.repeat(64),
+        helperArtifactRevision,
         requestId: () => 'request-1',
       });
 
       const result = await adapter.append_message('conversation-7', 'hello cloud cat', 'source-message-9');
 
-      assert.deepEqual(result, { hostMessageId: 'chatgpt-user-message-42' });
+      assert.deepEqual(result, { hostMessageId: 'chatgpt-user-message-42', idempotentReplay: true });
       assert.deepEqual(server.calls, [
         {
           pairingSecret: 's'.repeat(64),
           request: {
-            v: 1,
+            v: 2,
             kind: 'append_message',
             requestId: 'request-1',
             conversationId: 'conversation-7',
             text: 'hello cloud cat',
             idempotencyKey: 'source-message-9',
+            expectedRevisions: {
+              helper: helperArtifactRevision,
+              extension: '0.2.10',
+              pageAdapter: '2026-09-02.1',
+            },
           },
         },
       ]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('lists and acknowledges one durable exact-source assistant return through the paired local socket', async () => {
+    const server = await startReplyServer((envelope) => {
+      const request = envelope.request as Record<string, unknown>;
+      if (request.kind === 'list_assistant_returns') {
+        return {
+          v: 2,
+          kind: 'assistant_returns',
+          requestId: request.requestId,
+          returns: [
+            {
+              conversationId: 'conversation-7',
+              sourceMessageId: 'source-message-9',
+              assistantMessageId: 'conversation-turn-43',
+              content: 'bounded assistant final',
+            },
+          ],
+        };
+      }
+      return {
+        v: 2,
+        kind: 'assistant_return_ack',
+        requestId: request.requestId,
+        status: 'acknowledged',
+      };
+    });
+    let requestNumber = 0;
+    try {
+      const adapter = new PersonalChromeHostAdapter({
+        socketPath: server.socketPath,
+        pairingSecret: 's'.repeat(64),
+        helperArtifactRevision,
+        requestId: () => `assistant-return-${++requestNumber}`,
+      });
+
+      assert.deepEqual(await adapter.list_assistant_returns(), [
+        {
+          conversationId: 'conversation-7',
+          sourceMessageId: 'source-message-9',
+          assistantMessageId: 'conversation-turn-43',
+          content: 'bounded assistant final',
+        },
+      ]);
+      assert.deepEqual(
+        await adapter.list_assistant_returns({
+          conversationId: 'conversation-6',
+          sourceMessageId: 'source-message-8',
+          assistantMessageId: 'conversation-turn-42',
+        }),
+        [
+          {
+            conversationId: 'conversation-7',
+            sourceMessageId: 'source-message-9',
+            assistantMessageId: 'conversation-turn-43',
+            content: 'bounded assistant final',
+          },
+        ],
+      );
+      await adapter.ack_assistant_return('conversation-7', 'source-message-9', 'conversation-turn-43');
+
+      assert.deepEqual(
+        server.calls.map((envelope) => envelope.request),
+        [
+          { v: 2, kind: 'list_assistant_returns', requestId: 'assistant-return-1' },
+          {
+            v: 2,
+            kind: 'list_assistant_returns',
+            requestId: 'assistant-return-2',
+            afterConversationId: 'conversation-6',
+            afterSourceMessageId: 'source-message-8',
+            afterAssistantMessageId: 'conversation-turn-42',
+          },
+          {
+            v: 2,
+            kind: 'ack_assistant_return',
+            requestId: 'assistant-return-3',
+            conversationId: 'conversation-7',
+            sourceMessageId: 'source-message-9',
+            assistantMessageId: 'conversation-turn-43',
+          },
+        ],
+      );
     } finally {
       await server.close();
     }
@@ -230,18 +390,20 @@ describe('PersonalChromeHostAdapter', () => {
     const server = await startReplyServer((envelope) => {
       const request = envelope.request as Record<string, unknown>;
       return {
-        v: 1,
+        v: 2,
         kind: 'append_result',
         requestId: request.requestId,
         idempotencyKey: request.idempotencyKey,
         status: 'host_observed',
         hostMessageId: '   ',
+        observedRevisions: request.expectedRevisions,
       };
     });
     try {
       const adapter = new PersonalChromeHostAdapter({
         socketPath: server.socketPath,
         pairingSecret: 's'.repeat(64),
+        helperArtifactRevision,
         requestId: () => 'request-2',
       });
       await assert.rejects(
@@ -253,22 +415,58 @@ describe('PersonalChromeHostAdapter', () => {
     }
   });
 
+  it('carries terminal failure replay truth on the typed Host error', async () => {
+    const server = await startReplyServer((envelope) => {
+      const request = envelope.request as Record<string, unknown>;
+      return {
+        v: 2,
+        kind: 'append_result',
+        requestId: request.requestId,
+        idempotencyKey: request.idempotencyKey,
+        status: 'failed',
+        errorCode: 'AMBIGUOUS_EFFECT',
+        observedRevisions: request.expectedRevisions,
+        idempotentReplay: true,
+      };
+    });
+    try {
+      const adapter = new PersonalChromeHostAdapter({
+        socketPath: server.socketPath,
+        pairingSecret: 's'.repeat(64),
+        helperArtifactRevision,
+        requestId: () => 'request-failed-replay',
+      });
+
+      await assert.rejects(
+        adapter.append_message('conversation-7', 'hello cloud cat', 'source-message-9'),
+        (error: unknown) =>
+          error instanceof PersonalChromeHostError &&
+          error.code === 'AMBIGUOUS_EFFECT' &&
+          error.idempotentReplay === true,
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
   it('preserves the helper error code instead of falling through to another browser transport', async () => {
     const server = await startReplyServer((envelope) => {
       const request = envelope.request as Record<string, unknown>;
       return {
-        v: 1,
+        v: 2,
         kind: 'append_result',
         requestId: request.requestId,
         idempotencyKey: request.idempotencyKey,
         status: 'failed',
         errorCode: 'PAIRING_REJECTED',
+        observedRevisions: request.expectedRevisions,
       };
     });
     try {
       const adapter = new PersonalChromeHostAdapter({
         socketPath: server.socketPath,
         pairingSecret: 'wrong'.repeat(16),
+        helperArtifactRevision,
         requestId: () => 'request-3',
       });
       await assert.rejects(

@@ -44,7 +44,10 @@ import { getThreadLiveInvocations } from '../domains/cats/services/agents/invoca
 import type { InvocationQueue } from '../domains/cats/services/agents/invocation/InvocationQueue.js';
 import type { InvocationRegistry } from '../domains/cats/services/agents/invocation/InvocationRegistry.js';
 import type { InvocationTracker } from '../domains/cats/services/agents/invocation/InvocationTracker.js';
-import { PerCatTerminalDispositionCollector } from '../domains/cats/services/agents/invocation/PerCatTerminalDispositionCollector.js';
+import {
+  isTerminalDispositionEvent,
+  PerCatTerminalDispositionCollector,
+} from '../domains/cats/services/agents/invocation/PerCatTerminalDispositionCollector.js';
 import { createInitialQueuedMessageCustody } from '../domains/cats/services/agents/invocation/QueuedMessageCustodyCoordinator.js';
 import type {
   QueueProcessor,
@@ -73,7 +76,7 @@ import {
   type MessageSelectionAdmissionResult,
   MessageSelectionResolver,
 } from '../domains/cats/services/context/MessageSelectionResolver.js';
-import type { FreshnessClosureStore } from '../domains/cats/services/freshness/FreshnessClosureStore.js';
+import type { FreshnessClosureStore } from '../domains/cats/services/freshness/closure/FreshnessClosureStore.js';
 import {
   isLeakedSupplementDecline,
   projectFreshnessSupplementForHistory,
@@ -101,6 +104,7 @@ import {
   getTimelineOrderTime,
   isInternalNonQuotableParent,
   isSystemUserMessage,
+  resolveVisibleReplyParent,
 } from '../domains/cats/services/stores/visibility.js';
 import { mergeTokenUsage, type TokenUsage } from '../domains/cats/services/types.js';
 import { buildThreadDeepLink } from '../infrastructure/connectors/connector-command-helpers.js';
@@ -179,6 +183,17 @@ import { parseMultipart } from './parse-multipart.js';
 const STREAM_START_TIMEOUT_MS = 5_000;
 const INVOCATION_STARTUP_WATCHDOG_MS = 180_000;
 const QUEUE_COMPLETION_WATCHDOG_MS = 5_000;
+
+function currentRetryableAttemptId(message: StoredMessage, targetCatId: string): string | undefined {
+  const target = message.queueCustody
+    ? projectQueueReceipt(message.queueCustody).targets.find((candidate) => candidate.catId === targetCatId)
+    : undefined;
+  const latest = target?.attempts?.at(-1);
+  if (target?.state !== 'failed' || target.retryable === false || !latest) return undefined;
+  return latest.state === 'failed' || (latest.state === 'cancelled' && latest.terminalReason === 'invocation_cancelled')
+    ? latest.id
+    : undefined;
+}
 
 type ResolvedBundleAdmission = Extract<MessageSelectionAdmissionResult, { status: 'resolved' }>;
 
@@ -480,6 +495,51 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
       gameAutoPlayer.stopAllLoops();
     });
   }
+
+  /**
+   * F247: hydrate the optimistic-concurrency fence after the connector notice
+   * arrives. The read is owner-scoped and runs the same transient authority
+   * preflight as the mutation; it never creates or advances Queue custody.
+   */
+  app.get<{ Params: { messageId: string; targetCatId: string } }>(
+    '/api/messages/:messageId/queue-targets/:targetCatId/retry-authority',
+    async (request, reply) => {
+      const userId = resolveUserId(request, { defaultUserId: 'default-user' });
+      if (!userId) {
+        reply.status(401);
+        return { error: 'Identity required (session cookie or X-Cat-Cafe-User header)' };
+      }
+      const retryAuthorityPreflight = opts.retryAuthorityPreflight;
+      if (!retryAuthorityPreflight) {
+        reply.status(503);
+        return { error: 'Queue retry is temporarily unavailable', code: 'QUEUE_RETRY_UNAVAILABLE' };
+      }
+      const message = await opts.messageStore.getById(request.params.messageId);
+      if (!message || message.userId !== userId || !message.queueCustody) {
+        reply.status(404);
+        return { error: 'Queued message was not found', code: 'QUEUE_MESSAGE_NOT_FOUND' };
+      }
+      const authority = await retryAuthorityPreflight.preflight({
+        message,
+        requestingUserId: userId,
+        targetCatId: request.params.targetCatId,
+      });
+      if (!authority.ok) {
+        reply.status(409);
+        return {
+          error: 'This target no longer has current retry authority',
+          code: 'QUEUE_RETRY_AUTHORITY_STALE',
+          reason: authority.reason,
+        };
+      }
+      const attemptId = currentRetryableAttemptId(message, request.params.targetCatId);
+      if (!attemptId) {
+        reply.status(409);
+        return { error: 'This target is no longer retryable', code: 'QUEUE_TARGET_NOT_RETRYABLE' };
+      }
+      return { attemptId };
+    },
+  );
 
   /**
    * F1308: retry one visible failed target without cloning or re-sending the
@@ -966,26 +1026,25 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
     // Whisper → check target cat's slot (side-dispatch to idle cat)
     // Broadcast with explicit @mention → any target busy = queue (P1 review fix)
     // Broadcast without @mention → thread-level check (any active → queue)
-    // #555: Cover the gap between one invocation ending (tracker cleared) and the
-    // next starting from queue (tracker not yet registered).
-    // Whisper / @mention use cat-specific isCatBusy; broadcast uses active execution,
-    // not queued leftovers, to avoid enqueue-only dead ends.
+    // #555: Cover the pre-start gap with QueueProcessor's live slot reservation.
+    // Queued leftovers are not an execution owner and cannot justify admitting
+    // another message behind a trigger that no longer exists.
     const hasActive = (() => {
       if (!opts.invocationTracker) {
         return opts.queueProcessor?.hasActiveExecution?.(resolvedThreadId) ?? false;
       }
       if (whisperVisibility === 'whisper' && primaryCat !== 'unknown') {
         return (
-          opts.invocationTracker.has(resolvedThreadId, primaryCat) ||
-          (opts.queueProcessor?.isCatBusy?.(resolvedThreadId, primaryCat) ?? false)
+          opts.queueProcessor?.hasActiveExecutionForCat?.(resolvedThreadId, primaryCat) ??
+          opts.invocationTracker.has(resolvedThreadId, primaryCat)
         );
       }
       if (hasMentions) {
         return targetCats.some(
           (cat) =>
             cat !== 'unknown' &&
-            (opts.invocationTracker!.has(resolvedThreadId, cat) ||
-              (opts.queueProcessor?.isCatBusy?.(resolvedThreadId, cat) ?? false)),
+            (opts.queueProcessor?.hasActiveExecutionForCat?.(resolvedThreadId, cat) ??
+              opts.invocationTracker!.has(resolvedThreadId, cat)),
         );
       }
       return (
@@ -1704,7 +1763,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
               governanceErrorCode = msg.errorCode;
             }
             terminalDispositions.observe(msg);
-            if ((msg.type === 'done' || msg.type === 'error') && msg.catId) {
+            if (isTerminalDispositionEvent(msg) && msg.catId) {
               opts.invocationTracker?.completeSlot?.(resolvedThreadId, msg.catId, controller);
             }
 
@@ -1795,6 +1854,8 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
                   ? 'canceled_by_user'
                   : 'canceled'
                 : 'succeeded';
+          const primaryTerminalError = terminalDispositions.getPrimaryTerminalError();
+          const successfulCatIds = terminalDispositions.getSuccessfulCatIds() as CatId[];
           if (aggFinalStatus === 'failed') {
             await markStartupTimeoutFailed();
           } else if (aggFinalStatus !== 'succeeded') {
@@ -1826,6 +1887,17 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
               await router.ackCollectedCursors(userId, resolvedThreadId, cursorBoundaries);
             }
             // P1 fix: finalize streaming session on abort so external placeholders are cleaned up
+            await cleanupStreamingOnFailure(resolvedThreadId, createResult.invocationId, streamStartPromise, opts, log);
+          } else if (primaryTerminalError && successfulCatIds.length === 0) {
+            finalStatus = 'failed';
+            routeChainTracker.fail(createResult.invocationId);
+            if (cursorBoundaries.size > 0) {
+              await router.ackCollectedCursors(userId, resolvedThreadId, cursorBoundaries);
+            }
+            await opts.invocationRecordStore?.update(createResult.invocationId, {
+              status: 'failed',
+              error: primaryTerminalError,
+            });
             await cleanupStreamingOnFailure(resolvedThreadId, createResult.invocationId, streamStartPromise, opts, log);
           } else if (persistenceContext.failed) {
             const errorDetail = persistenceContext.errors.map((e) => `${e.catId}: ${e.error}`).join('; ');
@@ -1875,7 +1947,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
               invocationId: createResult.invocationId,
               update: {
                 status: 'succeeded',
-                successfulCatIds: terminalDispositions.getSuccessfulCatIds() as CatId[],
+                successfulCatIds,
                 ...(collectedUsage.size > 0
                   ? {
                       usageByCat: Object.fromEntries(collectedUsage),
@@ -2206,7 +2278,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
               });
               intentModeBroadcast = true;
             }
-            if ((msg.type === 'done' || msg.type === 'error') && msg.catId) {
+            if (isTerminalDispositionEvent(msg) && msg.catId) {
               opts.invocationTracker?.completeSlot?.(resolvedThreadId, msg.catId, controller);
             }
             const legacyPayload = { ...msg };
@@ -2392,7 +2464,8 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
       ...(m.metadata ? { metadata: m.metadata } : {}),
       ...(m.origin ? { origin: m.origin } : {}),
       ...(m.thinking ? { thinking: m.thinking } : {}),
-      ...(m.extra?.rich ||
+      ...(m.extra?.semanticEvent ||
+      m.extra?.rich ||
       isCrossThreadProvenance(m.extra?.crossPost?.sourceThreadId, m.threadId) ||
       m.extra?.coordination ||
       m.extra?.isExplicitPost ||
@@ -2413,6 +2486,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
       m.extra?.recovery
         ? {
             extra: {
+              ...(m.extra?.semanticEvent ? { semanticEvent: m.extra.semanticEvent } : {}),
               ...(m.extra?.rich ? { rich: m.extra.rich } : {}),
               ...(isCrossThreadProvenance(m.extra?.crossPost?.sourceThreadId, m.threadId)
                 ? { crossPost: m.extra!.crossPost! }
@@ -2466,6 +2540,15 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
       const { hydrateReplyPreview } = await import('../domains/cats/services/stores/ports/MessageStore.js');
       await Promise.all(
         replyItems.map(async (item) => {
+          const source = item.source as { connector?: string } | undefined;
+          if (source?.connector === 'cloud-bridge-status') {
+            const parent = await resolveVisibleReplyParent(opts.messageStore, item.replyTo as string, {
+              threadId: resolvedThreadId,
+              viewer: { type: 'user' },
+              publicReply: true,
+            });
+            if (!parent) return;
+          }
           const preview = await hydrateReplyPreview(opts.messageStore, item.replyTo as string);
           if (preview) {
             item.replyPreview = preview;

@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { validateEventsPublishInput, validateEventsPublishResult } from '@clowder-ai/plugin-contract';
+import {
+  DEADLINE_EXPIRED_CODE,
+  DEADLINE_EXPIRED_MESSAGE,
+  validateEventsPublishInput,
+  validateEventsPublishResult,
+} from '@clowder-ai/plugin-contract';
 import { MAX_NDJSON_FRAME_BYTES } from '@clowder-ai/plugin-contract/conformance';
 import { ExternalPluginRuntimeSupervisor } from '../dist/domains/plugin/external-runtime/index.js';
 import { MemoryHostBrokerStore } from '../dist/domains/plugin/host-broker/index.js';
@@ -98,7 +103,24 @@ test('stdio hello/ready and events.publish use the existing Broker session and l
   await harness.supervisor.stop(EXTERNAL_INSTANCE_ID);
 });
 
-test('reserved rows receive the contract classifier response and never dispatch', async () => {
+test('expired call metadata rejects before Broker dispatch with the published deadline error', async () => {
+  const harness = await runningHarness();
+
+  sendFrame(harness.child, wireRequest('publish-expired', 'events.publish', externalPublishInput(), Date.now() - 1));
+  const response = await readFrame(harness.child);
+  assert.equal(response.id, 'publish-expired');
+  assert.equal(response.error.code, DEADLINE_EXPIRED_CODE);
+  assert.equal(response.error.message, DEADLINE_EXPIRED_MESSAGE);
+  assert.deepEqual(response.error.data, {});
+  assert.equal(harness.dispatches.length, 0, 'expired calls must have zero business effects');
+
+  const snapshot = await harness.brokerStore.snapshot();
+  assert.equal(snapshot.sessions[0].phase, 'active', 'deadline rejection does not destroy valid authority');
+  assert.equal(snapshot.calls.length, 0, 'deadline rejection must happen before the durable call ledger');
+  await harness.supervisor.stop(EXTERNAL_INSTANCE_ID);
+});
+
+test('malformed messaging rows receive the contract classifier response and never dispatch', async () => {
   const harness = await runningHarness();
   sendFrame(harness.child, wireRequest('reserved-1', 'messaging.send', {}));
   const response = await readFrame(harness.child);
@@ -154,6 +176,51 @@ test('unexpected child exit closes the Broker session and marks runtime crashed'
     signal: null,
     occurredAt: inventory.instances[0].updatedAt,
   });
+});
+
+test('one transient unavailable exit is replaced without an unbounded restart loop', async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'cat-cafe-k2d-transient-recovery-'));
+  const harness = await createExternalRuntimeHarness({ rootDir, methods: [eventsHandler([])] });
+  const processes = new FakePluginProcessAdapter();
+  const supervisor = new ExternalPluginRuntimeSupervisor({
+    inventory: harness.inventory,
+    broker: harness.broker,
+    packages: {
+      async resolveInstalledPackage() {
+        return {
+          rootDir,
+          manifest: externalManifest(),
+          verifyIntegrity: async () => undefined,
+          release: async () => undefined,
+        };
+      },
+    },
+    processes,
+    now: () => 5_000,
+  });
+  const firstStart = supervisor.start(EXTERNAL_INSTANCE_ID);
+  const firstChild = await processes.nextProcess();
+  await completeExternalHandshake(firstChild);
+  const firstHandle = await firstStart;
+
+  firstChild.exit({ code: 1, signal: null, diagnostic: { code: 'UNAVAILABLE' } });
+  await firstHandle.closed;
+  const replacement = await processes.waitForProcess(1);
+  await completeExternalHandshake(replacement);
+
+  let inventory = await harness.inventory.snapshot();
+  assert.equal(inventory.instances[0].activationState, 'enabled');
+  assert.equal(inventory.instances[0].runtimeState, 'healthy');
+  assert.equal(inventory.instances[0].lastRuntimeError, undefined);
+
+  replacement.exit({ code: 1, signal: null, diagnostic: { code: 'UNAVAILABLE' } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  inventory = await harness.inventory.snapshot();
+  assert.equal(processes.specs.length, 2, 'the replacement may not recursively hot-loop');
+  assert.equal(inventory.instances[0].activationState, 'error');
+  assert.equal(inventory.instances[0].runtimeState, 'crashed');
+  assert.equal(inventory.instances[0].lastRuntimeError.code, 'UNAVAILABLE');
 });
 
 test('Windows process exit codes remain durable when the runtime crashes', async () => {

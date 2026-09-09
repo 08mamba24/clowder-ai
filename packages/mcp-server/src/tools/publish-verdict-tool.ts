@@ -1,39 +1,24 @@
 import { z } from 'zod';
-import { defineMcpMigrationFactory } from '../tool-governance-migration.js';
+import { defineMcpCanonicalFactory } from '../tool-governance-migration.js';
 
 import { callbackPost } from './callback-tools.js';
 import { errorResult, type ToolResult } from './file-tools.js';
 import { freshnessReplaySourceRefsShape } from './publish-verdict-freshness-source-refs.js';
+import { frictionAnalysisFindingsShape } from './publish-verdict-friction-findings.js';
 import {
   handleRefreshVerdictAction,
   publishVerdictRefreshActionShape,
   validatePublishVerdictLifecycleInput,
 } from './publish-verdict-refresh-action.js';
 import { sopSourceRefsShape } from './publish-verdict-sop-source-refs.js';
+import { trajectoryInspectorSourceRefsShape } from './publish-verdict-trajectory-inspector-source-refs.js';
 
-const defineTool = defineMcpMigrationFactory('publish-verdict-tool.ts', undefined, {
+const defineTool = defineMcpCanonicalFactory('publish-verdict-tool.ts', undefined, {
   resourceFamily: 'eval-feedback',
   authority: 'eval-callback',
 });
 
 const PUBLISH_VERDICT_FETCH_TIMEOUT_MS = 120_000;
-
-/**
- * F192 Phase H AC-H4: cat_cafe_publish_verdict MCP tool.
- *
- * 砚砚 R3 P1 #1 cloud: previously DOMAIN_INSTRUCTIONS referenced this tool but
- * it wasn't registered anywhere — cats would loop. Now wired to
- * POST /api/eval-domains/:domainId/publish-verdict which calls
- * handlePublishVerdict (validates packet → resolves sourceRefs → invokes
- * isolated-worktree publisher → opens auto-PR).
- *
- * F192 Phase H 收尾 PR-2 (砚砚 R1 Q3): sourceRefs is now a discriminated union
- * supporting eval:a2a (snapshot/attribution YAML basenames),
- * eval:capability-wakeup (replayable window selector), eval:memory
- * (recall metrics selector), eval:sop (replayable SOP trace selector),
- * and eval:task-outcome (snapshot replay window). Tool routes to the same
- * API endpoint; per-domain generator dispatch happens in the route layer.
- */
 
 const verdictPacketShape = z
   .object({
@@ -252,6 +237,22 @@ const qcMetricsSourceRefsShape = z
   })
   .describe('eval:qc sourceRefs — replayable QC metrics rollup window selector.');
 
+/**
+ * F303 Phase D — server-owned canonical episode source map selector. The
+ * selector carries no review/gate/Alpha facts; the API adapter re-resolves the
+ * checked-in refs from their owning stores and fails closed on missing truth.
+ */
+const designGateSourceRefsShape = z
+  .object({
+    kind: z.literal('design-gate-episode-source-map'),
+    sourceMapId: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{0,99}$/)
+      .describe('Server-owned source map id under docs/harness-feedback/design-gate/source-maps/.'),
+  })
+  .strict()
+  .describe('eval:design-gate sourceRefs — canonical episode source-map selector.');
+
 const sourceRefsShape = z
   .union([
     a2aSourceRefsShape,
@@ -263,15 +264,18 @@ const sourceRefsShape = z
     anchorTelemetrySourceRefsShape,
     qcMetricsSourceRefsShape,
     freshnessReplaySourceRefsShape,
+    designGateSourceRefsShape,
+    trajectoryInspectorSourceRefsShape,
   ])
   .describe(
-    'Discriminated union by `kind` field. a2a kind is the backward-compatible default; replayable selectors are wired for capability wakeup, memory, task outcome, SOP, friction, anchor telemetry, QC metrics, and F254 freshness closures.',
+    'Discriminated union by `kind` field. a2a kind is the backward-compatible default; replayable selectors are wired for capability wakeup, memory, task outcome, SOP, friction, anchor telemetry, QC metrics, F254 freshness closures, F303 design-gate episodes, and F299 trajectory-inspector windows.',
   );
 
 export const publishVerdictInputSchema = {
   domainId: z.string().min(1).describe('Your assigned registered eval domain. Must match packet.domainId.'),
   packet: verdictPacketShape.optional(),
   sourceRefs: sourceRefsShape.optional(),
+  analysisFindings: frictionAnalysisFindingsShape,
   action: publishVerdictRefreshActionShape.optional(),
   // 砚砚 R4 P1 + cloud R4 P1: catId is NOT a cat-supplied field — server
   // derives it from the trusted callback principal (invocationId → registry).
@@ -301,6 +305,7 @@ export async function handlePublishVerdict(input: PublishVerdictToolInput): Prom
     {
       packet: input.packet,
       sourceRefs: input.sourceRefs,
+      analysisFindings: input.analysisFindings,
     },
     {
       agentKeyCatId: input.agentKeyCatId,
@@ -321,7 +326,7 @@ export const publishVerdictTools = [
       'NOT for: manually writing verdict files or running git add/commit/push; this tool owns that publish lifecycle. ' +
       'For initial publish, pass packet + sourceRefs. For an open auto-verdict PR whose base moved, pass action={kind:"refresh_pr", verdictId, expectedHeadSha}; do not replay packet/writeback. ' +
       'Output: validates the packet, generates evidence in an isolated worktree, pushes verdict/auto/<domain-slug>/<verdict-id>, opens an auto-PR, and returns { commitSha, prUrl }. ' +
-      'GOTCHA: wired domains include eval:a2a plus replayable capability-wakeup, memory, SOP, task-outcome, friction, anchor-first, freshness, and QC generators. Unregistered or runtime-unwired domains return 501. ' +
+      'GOTCHA: wired domains include eval:a2a plus replayable capability-wakeup, memory, SOP, task-outcome, friction, anchor-first, freshness, QC, and design-gate generators. Unregistered or runtime-unwired domains return 501. ' +
       'GOTCHA: catId must match the registered eval cat for the domain (or its OQ-20 Redis override); 403 not_allowed otherwise. ' +
       'GOTCHA: every evidencePacket.metricRefs entry must resolve against the selected domain glossary; unknown refs return 400 before any evidence branch or PR is created. ' +
       'GOTCHA: refresh_pr verifies exact HEAD, auto-verdict provenance, target-only diff scope, and only auto-resolves the derived measurement census conflict; any other conflict fails closed. ' +

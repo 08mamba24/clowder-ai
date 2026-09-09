@@ -47,6 +47,7 @@ import {
   DEFAULT_PROFILE_USER_ID,
   profileUserRelativePath,
   relationshipPrimerRelativePath,
+  renderUserCapsuleSection,
 } from '@cat-cafe/shared/profile-contract';
 import YAML from 'yaml';
 
@@ -364,7 +365,7 @@ function renderCvoRef() {
 // ─── F231: User profile capsule resolution ────────────────────────────────
 // Contract (F231 spec KD-7 + Phase A plan §三):
 //   profileDir is supplied by the canonical data-root repository; this compiler never guesses cwd.
-//   capsulePath = join(profileDir, 'landy-capsule.md')
+//   capsulePath = join(profileDir, 'operator-capsule.md')
 //   Three states:
 //     missing/unreadable → '' (empty string, no heading — backward compat)
 //     ≤300 Unicode chars  → '## 主人画像\n\n{body}' + optional primer pointer
@@ -372,65 +373,16 @@ function renderCvoRef() {
 //   Primer pointer: if relationship/{relationshipKey}-primer.md exists → append logical URI
 //   Pointer line does NOT count toward 300-char limit.
 
-const USER_CAPSULE_CHAR_LIMIT = 300;
-
-/**
- * Strip metadata (YAML frontmatter or markdown heading/blockquote metadata)
- * from capsule content. Returns the body after the metadata-terminating `---`.
- *
- * Handles both formats:
- *   YAML:     ---\nkey: val\n---\nbody   → body (after 2nd ---)
- *   Markdown: # Title\n> meta\n---\nbody → body (after 1st ---)
- *
- * If no `---` separator found, returns the entire content trimmed.
- *
- * IMPORTANT (gpt52 review P1): uses FIRST metadata-terminating `---`, NOT last.
- * "Last ---" would silently eat body content if the capsule contains `---`
- * horizontal rules (e.g. "Body one\n---\nBody two" → only "Body two").
- */
-function stripCapsuleMetadata(raw) {
-  const lines = raw.trim().split('\n');
-
-  // Case 1: YAML frontmatter — starts with `---` on line 0
-  if (lines[0].trim() === '---') {
-    // Find closing `---` (skip line 0, the opening fence)
-    for (let i = 1; i < lines.length; i++) {
-      if (lines[i].trim() === '---') {
-        return lines
-          .slice(i + 1)
-          .join('\n')
-          .trim();
-      }
-    }
-    // Unclosed YAML frontmatter → treat everything after line 0 as body
-    return lines.slice(1).join('\n').trim();
-  }
-
-  // Case 2: Heading/blockquote metadata (# Title / > meta / ---)
-  // Find FIRST `---` separator — that terminates the metadata block
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim() === '---') {
-      return lines
-        .slice(i + 1)
-        .join('\n')
-        .trim();
-    }
-  }
-
-  // No metadata separator found → return entire content
-  return raw.trim();
-}
-
 /**
  * Resolve user profile capsule for L0 injection.
  *
- * @param {string} profileDir - directory containing landy-capsule.md
+ * @param {string} profileDir - directory containing operator-capsule.md
  * @param {string} relationshipKey - stable persona key from CatConfig.relationshipKey
  * @returns {string} available capsule section and/or logical relationship-profile pointer
  * @throws {Error} if capsule exceeds 300 Unicode characters
  */
 export function resolveUserCapsule(profileDir, relationshipKey) {
-  const capsulePath = resolve(profileDir, 'landy-capsule.md');
+  const capsulePath = resolve(profileDir, 'operator-capsule.md');
   const primerPath = resolve(profileDir, relationshipPrimerRelativePath(relationshipKey));
   let primerEntry = '';
   try {
@@ -449,25 +401,11 @@ export function resolveUserCapsule(profileDir, relationshipKey) {
     return primerEntry;
   }
 
-  // Strip metadata (YAML frontmatter or markdown heading/blockquote metadata)
-  const body = stripCapsuleMetadata(raw);
-  if (!body) return primerEntry;
-
-  // Count visible characters (Chinese "字数" convention):
-  // Letters, CJK chars, punctuation count; whitespace does not.
-  // This matches spec intent: "300字" = 300 visible chars, not 300 code points.
-  const charCount = [...body.replace(/\s/g, '')].length;
-
-  // State 3: overlong → throw (compilation must fail loudly per KD-7)
-  if (charCount > USER_CAPSULE_CHAR_LIMIT) {
-    throw new Error(
-      `USER_CAPSULE exceeds ${USER_CAPSULE_CHAR_LIMIT}-character limit: ${charCount} characters in ${capsulePath}. ` +
-        `Capsule must be ≤${USER_CAPSULE_CHAR_LIMIT} chars (KD-7). Trim content or move overflow to primer.`,
-    );
-  }
-
-  // State 2: valid → build section with heading.
-  let section = `## 主人画像\n\n${body}`;
+  // The same pure transform is used by F299 when binding durable profile
+  // evidence, so the sourceRef describes these exact bytes rather than a
+  // later profile revision.
+  let section = renderUserCapsuleSection(raw);
+  if (!section) return primerEntry;
   if (primerEntry) section += `\n\n${primerEntry}`;
 
   return section;

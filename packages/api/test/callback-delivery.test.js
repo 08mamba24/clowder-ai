@@ -58,6 +58,37 @@ describe('callback delivery decision helper', () => {
     assert.equal(log.error.mock.calls.length, 0);
   });
 
+  it('preserves a rejected routing receipt through zero-target callback delivery', async () => {
+    const routingPreflight = {
+      v: 1,
+      ownerId: 'owner-1',
+      observedAt: 10,
+      resolverState: 'fresh',
+      snapshotRef: 'snapshot:1',
+      targets: [
+        {
+          targetCatId: 'opus',
+          disposition: 'rejected',
+          reasons: [{ code: 'unavailable', summary: '暂不可用', sourceRefs: ['signal:1'] }],
+          alternatives: [],
+        },
+      ],
+    };
+    const result = await MessageDeliveryService.resolveCallbackDeliveryDecision({
+      canEnqueueA2A: true,
+      willEnqueueToQueue: true,
+      messageId: 'm-routing',
+      threadId: 't1',
+      log: logger(),
+      enqueueA2A: mock.fn(async () => ({ enqueued: [], routingPreflight })),
+      zeroEnqueuedWarnMessage: 'routing blocked',
+      enqueueFailureMessage: 'fail',
+    });
+
+    assert.equal(result.shouldBroadcastNow, true);
+    assert.deepEqual(result.routingPreflight, routingPreflight);
+  });
+
   it('fails open to broadcast when enqueue throws', async () => {
     const log = logger();
     const markDelivered = mock.fn(async () => null);
@@ -81,6 +112,30 @@ describe('callback delivery decision helper', () => {
     assert.equal(result.enqueueFailed, true);
     assert.equal(markDelivered.mock.calls.length, 1);
     assert.equal(log.error.mock.calls.length, 1);
+  });
+
+  it('keeps a typed obligation queued for replay when enqueue fails', async () => {
+    const log = logger();
+    const markDelivered = mock.fn(async () => null);
+    const result = await MessageDeliveryService.resolveCallbackDeliveryDecision({
+      canEnqueueA2A: true,
+      willEnqueueToQueue: true,
+      messageId: 'typed-review-handback',
+      threadId: 't1',
+      log,
+      enqueueA2A: mock.fn(async () => {
+        throw new Error('temporary queue outage');
+      }),
+      markDelivered,
+      preserveQueuedOnEnqueueFailure: true,
+      zeroEnqueuedWarnMessage: 'zero',
+      enqueueFailureMessage: 'fail',
+    });
+
+    assert.equal(result.shouldBroadcastNow, false);
+    assert.equal(result.enqueueAttempted, true);
+    assert.equal(result.enqueueFailed, true);
+    assert.equal(markDelivered.mock.calls.length, 0, 'the durable typed obligation must remain queued for replay');
   });
 
   it('still broadcasts non-queued messages after enqueueing A2A targets', async () => {

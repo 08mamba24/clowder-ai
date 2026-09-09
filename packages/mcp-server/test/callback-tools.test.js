@@ -70,7 +70,7 @@ describe('MCP Callback Tools', () => {
 
     const result = await handlePostMessage({ content: 'Hello from cat!' });
 
-    assert.equal(result.isError, undefined);
+    assert.equal(result.isError, undefined, result.content[0]?.text);
     assert.ok(capturedUrl.includes('/api/callbacks/post-message'));
     const body = JSON.parse(capturedOptions.body);
     assert.equal(body.content, 'Hello from cat!');
@@ -80,6 +80,24 @@ describe('MCP Callback Tools', () => {
     assert.equal(body.callbackToken, undefined, 'creds must NOT be dual-written to body');
     assert.equal(capturedOptions.headers['x-invocation-id'], 'test-invocation');
     assert.equal(capturedOptions.headers['x-callback-token'], 'test-token');
+  });
+
+  test('handlePostMessage forwards only the exact F247 source anchor', async () => {
+    const { handlePostMessage } = await import('../dist/tools/callback-tools.js');
+    let capturedOptions;
+    globalThis.fetch = async (_url, options) => {
+      capturedOptions = options;
+      return { ok: true, json: async () => ({ status: 'ok' }) };
+    };
+
+    await handlePostMessage({
+      content: 'source-bound cloud return',
+      replyTo: 'source-message-7',
+    });
+
+    const body = JSON.parse(capturedOptions.body);
+    assert.equal(body.replyTo, 'source-message-7');
+    assert.equal('cloudReturnBinding' in body, false);
   });
 
   test('handlePostMessage rejects an invalid action subjectRef before sending or queueing a callback', async () => {
@@ -96,10 +114,10 @@ describe('MCP Callback Tools', () => {
       clientMessageId: 'invalid-subject-ref',
       action: {
         subjectRef: 'github:zts212653/cat-cafe#3677@181099d2',
-        actionFamily: 'review',
-        successorSlot: 'reviewer',
+        actionFamily: 'implement',
+        successorSlot: 'implementer',
         mode: 'single',
-        terminalPredicate: { kind: 'review_delivered', headSha: 'a'.repeat(40) },
+        terminalPredicate: { kind: 'task_done' },
       },
     });
 
@@ -139,8 +157,8 @@ describe('MCP Callback Tools', () => {
     });
 
     assert.equal(result.isError, true);
-    assert.match(result.content[0].text, /review.*review_delivered/i);
     assert.match(result.content[0].text, /implement.*task_done/i);
+    assert.match(result.content[0].text, /local cat review.*ordinary durable handoff/i);
     assert.equal(attempts, 0, 'unsupported action metadata must not reach callback transport');
   });
 
@@ -203,6 +221,35 @@ describe('MCP Callback Tools', () => {
     assert.equal(capturedOptions.headers['x-callback-token'], 'test-token');
   });
 
+  test('handleUpdateEntrustedWork forwards one typed nonterminal Task-owner action', async () => {
+    const { handleUpdateEntrustedWork } = await import('../dist/tools/callback-tools.js');
+    let capturedUrl;
+    let capturedOptions;
+    globalThis.fetch = async (url, options) => {
+      capturedUrl = url;
+      capturedOptions = options;
+      return { ok: true, json: async () => ({ status: 'updated' }) };
+    };
+
+    const result = await handleUpdateEntrustedWork({
+      taskId: 'task-f310',
+      expectedRevision: 2,
+      time: { reviewBy: null },
+      artifactRefs: ['artifact:ppt:final'],
+    });
+
+    assert.equal(result.isError, undefined);
+    assert.ok(capturedUrl.endsWith('/api/callbacks/update-entrusted-work'));
+    assert.deepEqual(JSON.parse(capturedOptions.body), {
+      taskId: 'task-f310',
+      expectedRevision: 2,
+      time: { reviewBy: null },
+      artifactRefs: ['artifact:ppt:final'],
+    });
+    assert.equal(capturedOptions.headers['x-invocation-id'], 'test-invocation');
+    assert.equal(capturedOptions.headers['x-callback-token'], 'test-token');
+  });
+
   test('handleUpdateWorkflow forwards taskId for deterministic task-backed Mission Hub import', async () => {
     const { handleUpdateWorkflow } = await import('../dist/tools/callback-tools.js');
     let capturedUrl;
@@ -231,31 +278,71 @@ describe('MCP Callback Tools', () => {
     };
 
     const result = await handlePostMessage({
-      content: 'APPROVE exact HEAD; no open items.',
+      content: 'Continue the current coordination.',
       targetCats: ['opus'],
-      clientMessageId: 'local-review-terminal',
+      clientMessageId: 'coordination-terminal',
       coordination: {
         phase: 'terminal',
-        id: 'coord-local-review',
+        id: 'coord-current-work',
         subjectRef: 'pr:owner/repo#3515',
       },
-      localReviewVerdict: 'approved',
     });
 
     assert.equal(result.isError, undefined);
     assert.deepEqual(JSON.parse(capturedOptions.body).coordination, {
       phase: 'terminal',
-      id: 'coord-local-review',
+      id: 'coord-current-work',
       subjectRef: 'pr:owner/repo#3515',
     });
-    assert.equal(JSON.parse(capturedOptions.body).localReviewVerdict, 'approved');
   });
 
-  test('handlePostMessage rejects a typed local verdict without invocation credentials', async () => {
+  test('handlePostMessage forwards an ordinary typed local verdict with agent-key identity', async () => {
     const { handlePostMessage } = await import('../dist/tools/callback-tools.js');
     delete process.env.CAT_CAFE_INVOCATION_ID;
     delete process.env.CAT_CAFE_CALLBACK_TOKEN;
+    delete process.env.CAT_CAFE_CREDENTIAL_FILE;
+    delete process.env.CAT_CAFE_AGENT_KEY_FILE;
+    delete process.env.CAT_CAFE_AGENT_KEY_FILES;
+    delete process.env.CAT_CAFE_AGENT_KEY_BOUND_CAT_ID;
     process.env.CAT_CAFE_AGENT_KEY_SECRET = 'agent-key-only';
+    let attempts = 0;
+    let capturedOptions;
+    globalThis.fetch = async (_url, options) => {
+      attempts += 1;
+      capturedOptions = options;
+      return { ok: true, json: async () => ({ status: 'ok' }) };
+    };
+
+    const result = await handlePostMessage({
+      content: '@codex\n\nAPPROVED for the exact reviewed HEAD.',
+      threadId: 'thread-review',
+      targetCats: ['codex'],
+      clientMessageId: 'typed-local-review-agent-key',
+      localReviewVerdict: 'approved',
+      reviewedHeadSha: 'b'.repeat(40),
+      reviewSubjectRef: 'pr:zts212653/cat-cafe#4255',
+      acceptedSourceRef: 'docs/features/F314-development-episode-alignment-experiment.md',
+      acceptedRevision: 'a'.repeat(40),
+    });
+
+    assert.equal(result.isError, undefined, result.content[0]?.text);
+    assert.equal(attempts, 1);
+    assert.deepEqual(JSON.parse(capturedOptions.body), {
+      content: '@codex\n\nAPPROVED for the exact reviewed HEAD.',
+      streamDisposition: 'independent',
+      threadId: 'thread-review',
+      clientMessageId: 'typed-local-review-agent-key',
+      targetCats: ['codex'],
+      localReviewVerdict: 'approved',
+      reviewedHeadSha: 'b'.repeat(40),
+      reviewSubjectRef: 'pr:zts212653/cat-cafe#4255',
+      acceptedSourceRef: 'docs/features/F314-development-episode-alignment-experiment.md',
+      acceptedRevision: 'a'.repeat(40),
+    });
+  });
+
+  test('handlePostMessage rejects reviewedHeadSha without a typed local verdict before transport', async () => {
+    const { handlePostMessage } = await import('../dist/tools/callback-tools.js');
     let attempts = 0;
     globalThis.fetch = async () => {
       attempts += 1;
@@ -263,15 +350,33 @@ describe('MCP Callback Tools', () => {
     };
 
     const result = await handlePostMessage({
-      content: 'Human-readable review result.',
-      threadId: 'thread-review',
-      clientMessageId: 'typed-local-review-agent-key',
-      coordination: { phase: 'terminal' },
-      localReviewVerdict: 'approved',
+      content: 'HEAD alone is not a review fact.',
+      reviewedHeadSha: 'c'.repeat(40),
     });
 
     assert.equal(result.isError, true);
-    assert.match(result.content[0].text, /localReviewVerdict.*invocation-token/i);
+    assert.match(result.content[0].text, /reviewedHeadSha requires localReviewVerdict/);
+    assert.equal(attempts, 0);
+  });
+
+  test('handlePostMessage rejects a local verdict without an accepted source anchor before transport', async () => {
+    const { handlePostMessage } = await import('../dist/tools/callback-tools.js');
+    let attempts = 0;
+    globalThis.fetch = async () => {
+      attempts += 1;
+      return { ok: true, json: async () => ({ status: 'ok' }) };
+    };
+
+    const result = await handlePostMessage({
+      content: '@codex\n\nAPPROVED but unanchored.',
+      targetCats: ['codex'],
+      clientMessageId: 'local-review-unanchored',
+      localReviewVerdict: 'approved',
+      reviewedHeadSha: 'c'.repeat(40),
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /acceptedSourceRef/);
     assert.equal(attempts, 0);
   });
 
@@ -399,11 +504,11 @@ describe('MCP Callback Tools', () => {
       clientMessageId: 'agent-review-2915',
       agentKeyCatId: 'antigravity',
       action: {
-        subjectRef: 'pr:owner/repo#2915',
-        actionFamily: 'review',
-        successorSlot: 'reviewer',
+        subjectRef: 'subject:task:task-2915',
+        actionFamily: 'implement',
+        successorSlot: 'implementer',
         mode: 'single',
-        terminalPredicate: { kind: 'review_delivered', headSha: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
+        terminalPredicate: { kind: 'task_done' },
       },
     });
 
@@ -601,6 +706,31 @@ describe('MCP Callback Tools', () => {
     assert.ok(capturedUrl.includes('after=4'));
   });
 
+  test('handleGetThreadContext forwards an opaque continuation cursor', async () => {
+    const { handleGetThreadContext } = await import('../dist/tools/callback-tools.js');
+
+    let capturedUrl;
+    globalThis.fetch = async (url) => {
+      capturedUrl = url;
+      return {
+        ok: true,
+        json: async () => ({ messages: [], hasMore: false }),
+      };
+    };
+
+    const result = await handleGetThreadContext({
+      limit: 100,
+      keyword: 'budget needle',
+      responseMode: 'full',
+      cursor: 'opaque-page-token',
+    });
+
+    assert.equal(result.isError, undefined);
+    assert.ok(capturedUrl.includes('cursor=opaque-page-token'));
+    assert.ok(capturedUrl.includes('keyword=budget+needle'));
+    assert.ok(capturedUrl.includes('responseMode=full'));
+  });
+
   test('handleListThreads forwards limit/activeSince filters', async () => {
     const { handleListThreads } = await import('../dist/tools/callback-tools.js');
 
@@ -654,7 +784,28 @@ describe('MCP Callback Tools', () => {
     assert.equal(body.content, 'hello from another thread');
   });
 
-  test('handleCrossPostMessage forwards a typed local verdict with its terminal delivery', async () => {
+  test('handleCrossPostMessage forwards only the exact F247 source anchor', async () => {
+    const { handleCrossPostMessage } = await import('../dist/tools/callback-tools.js');
+    let capturedOptions;
+    globalThis.fetch = async (_url, options) => {
+      capturedOptions = options;
+      return { ok: true, json: async () => ({ status: 'ok' }) };
+    };
+
+    await handleCrossPostMessage({
+      threadId: 'thread-source-bound',
+      content: '@codex-sol source-bound cloud return',
+      targetCats: ['codex-sol'],
+      replyTo: 'source-message-8',
+    });
+
+    const body = JSON.parse(capturedOptions.body);
+    assert.equal(body.threadId, 'thread-source-bound');
+    assert.equal(body.replyTo, 'source-message-8');
+    assert.equal('cloudReturnBinding' in body, false);
+  });
+
+  test('handleCrossPostMessage forwards an ordinary typed local verdict without coordination', async () => {
     const { handleCrossPostMessage } = await import('../dist/tools/callback-tools.js');
     let capturedOptions;
     globalThis.fetch = async (_url, options) => {
@@ -667,12 +818,23 @@ describe('MCP Callback Tools', () => {
       content: '@codex-sol\n\n这版可以合。',
       targetCats: ['codex-sol'],
       clientMessageId: 'typed-cross-thread-local-review',
-      coordination: { phase: 'terminal' },
       localReviewVerdict: 'approved',
+      reviewedHeadSha: 'b'.repeat(40),
+      reviewSubjectRef: 'pr:zts212653/cat-cafe#4255',
+      acceptedSourceRef: 'docs/features/F314-development-episode-alignment-experiment.md',
+      acceptedRevision: 'a'.repeat(40),
     });
 
     assert.equal(result.isError, undefined);
     assert.equal(JSON.parse(capturedOptions.body).localReviewVerdict, 'approved');
+    assert.equal(JSON.parse(capturedOptions.body).reviewedHeadSha, 'b'.repeat(40));
+    assert.equal(JSON.parse(capturedOptions.body).reviewSubjectRef, 'pr:zts212653/cat-cafe#4255');
+    assert.equal(
+      JSON.parse(capturedOptions.body).acceptedSourceRef,
+      'docs/features/F314-development-episode-alignment-experiment.md',
+    );
+    assert.equal(JSON.parse(capturedOptions.body).acceptedRevision, 'a'.repeat(40));
+    assert.equal(JSON.parse(capturedOptions.body).coordination, undefined);
   });
 
   test('handleCrossPostMessage forwards action identity with the caller idempotency key', async () => {
@@ -685,11 +847,11 @@ describe('MCP Callback Tools', () => {
     };
 
     const action = {
-      subjectRef: 'pr:owner/repo#2868',
-      actionFamily: 'review',
-      successorSlot: 'reviewer',
+      subjectRef: 'subject:task:task-2868',
+      actionFamily: 'implement',
+      successorSlot: 'implementer',
       mode: 'single',
-      terminalPredicate: { kind: 'review_delivered', headSha: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
+      terminalPredicate: { kind: 'task_done' },
     };
     const result = await handleCrossPostMessage({
       threadId: 'thread-cross',
@@ -713,11 +875,11 @@ describe('MCP Callback Tools', () => {
       return { ok: true, json: async () => ({ status: 'ok' }) };
     };
     const action = {
-      subjectRef: 'pr:owner/repo#2868',
-      actionFamily: 'review',
-      successorSlot: 'reviewer',
+      subjectRef: 'subject:task:task-2868',
+      actionFamily: 'implement',
+      successorSlot: 'implementer',
       mode: 'single',
-      terminalPredicate: { kind: 'review_delivered', headSha: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
+      terminalPredicate: { kind: 'task_done' },
       returnToPredecessor: {
         leaseId: 'lease-review-1',
         expectedGeneration: 1,
@@ -745,11 +907,11 @@ describe('MCP Callback Tools', () => {
       return { ok: true, json: async () => ({ status: 'parallel_return_unsupported' }) };
     };
     const action = {
-      subjectRef: 'pr:owner/repo#2868',
-      actionFamily: 'review',
-      successorSlot: 'reviewer',
+      subjectRef: 'subject:task:task-2868',
+      actionFamily: 'implement',
+      successorSlot: 'implementer',
       mode: 'parallel',
-      parallelIntent: 'independent review',
+      parallelIntent: 'independent implementation',
       returnToPredecessor: {
         leaseId: 'lease-review-1',
         expectedGeneration: 1,
@@ -772,11 +934,11 @@ describe('MCP Callback Tools', () => {
   test('handleCrossPostMessage action requires explicit replay and cardinality identity', async () => {
     const { handleCrossPostMessage } = await import('../dist/tools/callback-tools.js');
     const action = {
-      subjectRef: 'pr:owner/repo#2868',
-      actionFamily: 'review',
-      successorSlot: 'reviewer',
+      subjectRef: 'subject:task:task-2868',
+      actionFamily: 'implement',
+      successorSlot: 'implementer',
       mode: 'single',
-      terminalPredicate: { kind: 'review_delivered', headSha: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
+      terminalPredicate: { kind: 'task_done' },
     };
 
     const missingId = await handleCrossPostMessage({
@@ -1251,110 +1413,6 @@ describe('MCP Callback Tools', () => {
     assert.ok(!posted.includes('queued-3'), 'third entry should wait for next flush batch');
     assert.ok(posted.includes('current-message'));
     assert.equal(readdirSync(outboxDir).length, 1, 'one queued entry should remain after bounded flush');
-  });
-
-  test('handleRequestPermission posts action+reason to request-permission endpoint', async () => {
-    const { handleRequestPermission } = await import('../dist/tools/callback-tools.js');
-
-    let capturedUrl, capturedOptions;
-    globalThis.fetch = async (url, options) => {
-      capturedUrl = url;
-      capturedOptions = options;
-      return {
-        ok: true,
-        json: async () => ({ status: 'granted' }),
-      };
-    };
-
-    const result = await handleRequestPermission({
-      action: 'git_commit',
-      reason: 'Committing bug fix',
-      context: 'Fix for issue #42',
-    });
-
-    assert.equal(result.isError, undefined);
-    assert.ok(capturedUrl.includes('/api/callbacks/request-permission'));
-    const body = JSON.parse(capturedOptions.body);
-    assert.equal(body.action, 'git_commit');
-    assert.equal(body.reason, 'Committing bug fix');
-    assert.equal(body.context, 'Fix for issue #42');
-    // F174 Phase F (AC-F2): creds headers-only.
-    assert.equal(body.invocationId, undefined);
-    assert.equal(body.callbackToken, undefined);
-    assert.equal(capturedOptions.headers['x-invocation-id'], 'test-invocation');
-    assert.equal(capturedOptions.headers['x-callback-token'], 'test-token');
-    assert.ok(result.content[0].text.includes('granted'));
-  });
-
-  test('handleRequestPermission omits context when not provided', async () => {
-    const { handleRequestPermission } = await import('../dist/tools/callback-tools.js');
-
-    let capturedOptions;
-    globalThis.fetch = async (_url, options) => {
-      capturedOptions = options;
-      return {
-        ok: true,
-        json: async () => ({ status: 'pending', requestId: 'req-123' }),
-      };
-    };
-
-    const result = await handleRequestPermission({
-      action: 'file_delete',
-      reason: 'Cleaning temp files',
-    });
-
-    assert.equal(result.isError, undefined);
-    const body = JSON.parse(capturedOptions.body);
-    assert.equal(body.action, 'file_delete');
-    assert.equal(body.context, undefined);
-    assert.ok(result.content[0].text.includes('pending'));
-  });
-
-  test('handleCheckPermissionStatus queries permission-status endpoint', async () => {
-    const { handleCheckPermissionStatus } = await import('../dist/tools/callback-tools.js');
-
-    let capturedUrl, capturedOptions;
-    globalThis.fetch = async (url, options) => {
-      capturedUrl = url;
-      capturedOptions = options;
-      return {
-        ok: true,
-        json: async () => ({
-          requestId: 'req-123',
-          status: 'granted',
-          action: 'git_commit',
-          createdAt: 1234567890,
-        }),
-      };
-    };
-
-    const result = await handleCheckPermissionStatus({ requestId: 'req-123' });
-
-    assert.equal(result.isError, undefined);
-    assert.ok(capturedUrl.includes('/api/callbacks/permission-status'));
-    assert.ok(capturedUrl.includes('requestId=req-123'));
-    // F174 Phase F (AC-F2): creds headers-only.
-    assert.ok(!capturedUrl.includes('invocationId='));
-    assert.ok(!capturedUrl.includes('callbackToken='));
-    assert.equal(capturedOptions.headers['x-invocation-id'], 'test-invocation');
-    assert.equal(capturedOptions.headers['x-callback-token'], 'test-token');
-    assert.ok(result.content[0].text.includes('granted'));
-  });
-
-  test('handleRequestPermission returns error when env vars missing', async () => {
-    const { handleRequestPermission } = await import('../dist/tools/callback-tools.js');
-
-    delete process.env.CAT_CAFE_API_URL;
-    delete process.env.CAT_CAFE_INVOCATION_ID;
-    delete process.env.CAT_CAFE_CALLBACK_TOKEN;
-
-    const result = await handleRequestPermission({
-      action: 'git_commit',
-      reason: 'test',
-    });
-
-    assert.equal(result.isError, true);
-    assert.ok(result.content[0].text.includes('not configured'));
   });
 
   test('drops retryable outbox entry when attempts reached max threshold', async () => {
@@ -1992,10 +2050,10 @@ describe('MCP Callback Tools', () => {
       searchEvidenceRefs: ['message:incident-f167'],
       action: {
         subjectRef: 'github:zts212653/cat-cafe#3677@181099d2',
-        actionFamily: 'review',
-        successorSlot: 'reviewer',
+        actionFamily: 'implement',
+        successorSlot: 'implementer',
         mode: 'single',
-        terminalPredicate: { kind: 'review_delivered', headSha: 'a'.repeat(40) },
+        terminalPredicate: { kind: 'task_done' },
       },
     });
 
@@ -2018,12 +2076,12 @@ describe('MCP Callback Tools', () => {
     };
 
     const action = {
-      subjectRef: 'pr:owner/repo#2868',
-      actionFamily: 'review',
-      successorSlot: 'reviewer',
+      subjectRef: 'subject:task:task-2868',
+      actionFamily: 'implement',
+      successorSlot: 'implementer',
       mode: 'single',
       replace: { leaseId: 'lease-old', expectedGeneration: 1 },
-      terminalPredicate: { kind: 'review_delivered', headSha: 'a'.repeat(40) },
+      terminalPredicate: { kind: 'task_done' },
     };
     const result = await handleMultiMention({
       targets: ['codex'],
@@ -2075,11 +2133,11 @@ describe('MCP Callback Tools', () => {
       return { ok: true, json: async () => ({ status: 'parallel_return_unsupported' }) };
     };
     const action = {
-      subjectRef: 'pr:owner/repo#2868',
-      actionFamily: 'review',
-      successorSlot: 'reviewer',
+      subjectRef: 'subject:task:task-2868',
+      actionFamily: 'implement',
+      successorSlot: 'implementer',
       mode: 'parallel',
-      parallelIntent: 'independent review',
+      parallelIntent: 'independent implementation',
       returnToPredecessor: {
         leaseId: 'lease-review-1',
         expectedGeneration: 1,
@@ -2107,11 +2165,11 @@ describe('MCP Callback Tools', () => {
       callbackTo: 'opus',
       searchEvidenceRefs: ['pr:owner/repo#2868'],
       action: {
-        subjectRef: 'pr:owner/repo#2868',
-        actionFamily: 'review',
-        successorSlot: 'reviewer',
+        subjectRef: 'subject:task:task-2868',
+        actionFamily: 'implement',
+        successorSlot: 'implementer',
         mode: 'single',
-        terminalPredicate: { kind: 'review_delivered', headSha: 'a'.repeat(40) },
+        terminalPredicate: { kind: 'task_done' },
       },
     });
 
@@ -2128,11 +2186,11 @@ describe('MCP Callback Tools', () => {
       idempotencyKey: 'action-parallel-1',
       searchEvidenceRefs: ['docs/design.md'],
       action: {
-        subjectRef: 'pr:owner/repo#2868',
-        actionFamily: 'review',
-        successorSlot: 'reviewer',
+        subjectRef: 'subject:task:task-2868',
+        actionFamily: 'implement',
+        successorSlot: 'implementer',
         mode: 'parallel',
-        terminalPredicate: { kind: 'review_delivered', headSha: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
+        terminalPredicate: { kind: 'task_done' },
       },
     });
 

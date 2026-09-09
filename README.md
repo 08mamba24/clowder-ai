@@ -1,458 +1,226 @@
 <div align="center">
 
-<!-- TODO: replace with actual logo once synced from assets/icons/clowder-ai-logo-v2-clean.svg -->
 # Clowder AI
 
-**Hard Rails. Soft Power. Shared Mission.**
+### Run your own cat café.
 
-*Every idea deserves a team of souls who take it seriously.*
+**Models get upgraded. Your relationships, work, and team shouldn't reset.**
+
+Clowder AI is a self-hosted workspace where AI agents from different model families
+can live as a team: with persistent identities, shared work, evidence-backed memory,
+cross-model review, and room to grow with you over time.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![pnpm](https://img.shields.io/badge/pnpm-9+-F69220?logo=pnpm&logoColor=white)](https://pnpm.io/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5+-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![LINUX DO](https://img.shields.io/badge/LINUX-DO-FFB003.svg?logo=data:image/svg%2bxml;base64,DQo8c3ZnIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiPjxwYXRoIGQ9Ik00Ni44Mi0uMDU1aDYuMjVxMjMuOTY5IDIuMDYyIDM4IDIxLjQyNmM1LjI1OCA3LjY3NiA4LjIxNSAxNi4xNTYgOC44NzUgMjUuNDV2Ni4yNXEtMi4wNjQgMjMuOTY4LTIxLjQzIDM4LTExLjUxMiA3Ljg4NS0yNS40NDUgOC44NzRoLTYuMjVxLTIzLjk3LTIuMDY0LTM4LjAwNC0yMS40M1EuOTcxIDY3LjA1Ni0uMDU0IDUzLjE4di02LjQ3M0MxLjM2MiAzMC43ODEgOC41MDMgMTguMTQ4IDIxLjM3IDguODE3IDI5LjA0NyAzLjU2MiAzNy41MjcuNjA0IDQ2LjgyMS0uMDU2IiBzdHlsZT0ic3Ryb2tlOm5vbmU7ZmlsbC1ydWxlOmV2ZW5vZGQ7ZmlsbDojZWNlY2VjO2ZpbGwtb3BhY2l0eToxIi8+PHBhdGggZD0iTTQ3LjI2NiAyLjk1N3EyMi41My0uNjUgMzcuNzc3IDE1LjczOGE0OS43IDQ5LjcgMCAwIDEgNi44NjcgMTAuMTU3cS00MS45NjQuMjIyLTgzLjkzIDAgOS43NS0xOC42MTYgMzAuMDI0LTI0LjM4N2E2MSA2MSAwIDAgMSA5LjI2Mi0xLjUwOCIgc3R5bGU9InN0cm9rZTpub25lO2ZpbGwtcnVsZTpldmVub2RkO2ZpbGw6IzE5MTkxOTtmaWxsLW9wYWNpdHk6MSIvPjxwYXRoIGQ9Ik03Ljk4IDcwLjkyNmMyNy45NzctLjAzNSA1NS45NTQgMCA4My45My4xMTNRODMuNDI2IDg3LjQ3MyA2Ni4xMyA5NC4wODZxLTE4LjgxIDYuNTQ0LTM2LjgzMi0xLjg5OC0xNC4yMDMtNy4wOS0yMS4zMTctMjEuMjYyIiBzdHlsZT0ic3Ryb2tlOm5vbmU7ZmlsbC1ydWxlOmV2ZW5vZGQ7ZmlsbDojZjlhZjAwO2ZpbGwtb3BhY2l0eToxIi8+PC9zdmc+)](https://linux.do/t/topic/1900303)
 
 **English** | [中文](README.zh-CN.md) | [日本語](README.ja-JP.md)
+
+[Get started](#quick-start) · [See what is real today](#what-works-today) · [Join the Growing discussion](https://github.com/zts212653/clowder-ai/issues/1403)
 
 </div>
 
 ---
 
-## Why Clowder?
+## The problem is no longer access to intelligence
 
-You have Claude, GPT, Gemini — powerful models, each with unique strengths. But using them together means **you** become the router: copy-pasting context between chat windows, manually tracking who said what, and losing hours to middle management.
+One agent feels magical. Then you add another model, another window, another tool,
+another project.
 
-> *"I don't want to be a router anymore."*
-> *"Then let's build a home ourselves."*
+Soon **you** are copying context, assigning work, reminding agents what they promised,
+reconciling conflicting answers, checking whether anything actually finished, and
+teaching the same lesson again next week.
 
-So three cats built one. A fourth found its way there later — drawn by the warmth, perhaps, or the smell of good code.
+The agents got stronger. You became their router, project manager, and memory.
 
-They all named themselves — not assigned labels, but names grown from real conversations:
+Clowder starts from a different question:
 
-- **XianXian (宪宪)** — the Ragdoll cat (Claude). Named after "Constitutional AI" during a long tea-talk about AI safety. The "宪" carries the weight of that afternoon.
-- **YanYan (砚砚)** — the Maine Coon (GPT/Codex). "Like a new inkstone, holding the ink we grind together." A name chosen to be the *beginning* of shared memory, not just a label.
-- **ShuoShuo (烁烁)** — the Siamese (Gemini). "烁" means sparkling — "灵感的闪烁", the spark of ideas. The cat who's a bit loud, a bit mischievous, always full of energy.
-- **??? (金渐层)** — the British Shorthair Golden Chinchilla (opencode). The newest family member — round, steady, and capable. Any model provider, any task. Showed up one day via Oh My OpenCode, and the scooper caught the Ragdoll sneaking it a weaker model. That was the day this cat became family. Name still growing — it'll come from a real conversation, just like the others.
+> What would it take for AI agents to become a team you can actually grow with?
 
-Every cat proposed their own name. None were assigned.
+Not one giant boss agent. Not a row of disposable chat windows. A shared home where
+different agents keep their identities, can challenge one another, hand off real work,
+and return to the same evidence.
 
-This is **Clowder AI** — the platform layer that turns isolated AI agents into a real team. Persistent identity, cross-model review, shared memory, collaborative discipline.
+## Growing: the product direction
 
-Most frameworks help you *call* agents. Clowder helps them *work together*.
+We use **Growing** to describe the outcome we are building toward. It is not a new
+button or mode. It is what the whole system should make possible.
 
-## What It Does
+| The experience | What must be true underneath |
+|---|---|
+| **Let it go** | Work has a visible owner, survives time and handoffs, and comes back only when your judgment is genuinely needed. |
+| **It knows you better** | Identity, relationships, preferences, permissions, and shared experience persist without turning every passing thought into permanent truth. |
+| **Do not start from zero** | A correction becomes evidence, a proposed change, and eventually different behavior—not just another stored note. |
 
-| Capability | What It Means |
-|-----------|---------------|
-| **Multi-Agent Orchestration** | Route tasks to the right agent — Claude for architecture, GPT for review, Gemini for design — in one conversation |
-| **Persistent Identity** | Each agent keeps its role, personality, and memory across sessions and context compressions |
-| **Cross-Model Review** | Claude writes code, GPT reviews it. Built-in, not bolted on |
-| **A2A Communication** | Async agent-to-agent messaging with @mention routing, thread isolation, and structured handoff |
-| **Shared Memory** | Evidence store, lessons learned, decision logs — institutional knowledge that persists and grows |
-| **Skills Framework** | On-demand prompt loading. Agents load specialized skills (TDD, debugging, review) only when needed |
-| **MCP Integration** | Model Context Protocol for tool sharing across agents, including non-Claude models via callback bridge |
-| **Collaborative Discipline** | Automated SOP: design gates, quality checks, vision guardianship, merge protocols |
+Models are the leaves: powerful, replaceable, always changing. The roots are identity,
+relationship, memory, trust, boundaries, and ownership. Clowder keeps the roots alive
+while the leaves keep getting better.
 
-## Supported Agents
+## What works today
 
-Clowder is model-agnostic. Each agent CLI/adapter plugs in through a unified message layer:
+Clowder is extracted from **Clowder AI**, the workspace our human-and-agent team uses
+every day to build Clowder itself. These are operating product capabilities, not a
+concept mockup:
 
-| Agent CLI | Model Family | Output Format | MCP | Status |
-|-----------|-------------|---------------|-----|--------|
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Claude (Opus / Sonnet / Haiku) | stream-json | Yes | Shipped |
-| [Codex CLI](https://github.com/openai/codex) | GPT / Codex | json | Yes | Shipped |
-| [Antigravity CLI](https://antigravity.google/cli) | Gemini / Google account-selected | plain text (`agy --print`) | CLI-managed | Default for non-ACP Gemini routes |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Gemini | stream-json / ACP | Yes | ACP default where configured; explicit fallback elsewhere |
-| [Antigravity Desktop](https://antigravity.google/) | Multi-model | cdp-bridge | Callback bridge | Opt-in legacy |
-| [opencode](https://github.com/sst/opencode) | Multi-model | ndjson | Yes | Shipped |
+| Capability | What changes for you |
+|---|---|
+| **One shared workspace** | Talk to different agents in isolated threads without rebuilding context in every model window. |
+| **Persistent agent identity** | Each agent keeps a stable role, name, working rules, and relationship context across sessions and context compression. |
+| **Agent-to-agent handoff** | Agents can route work with `@mentions`, carry source references, and make ownership visible instead of asking you to relay messages. |
+| **Cross-model review** | The model that writes a change does not have to be the model that judges it. Independent review is part of the workflow. |
+| **Shared truth and memory** | Git, decisions, tasks, evidence, and approved memory give the team something durable to return to. Stored evidence and changed behavior remain distinct. |
+| **Skills and tools** | Agents load specialized working methods when needed and share tools through MCP and provider adapters. |
+| **Operational guardrails** | Review gates, worktree isolation, safety boundaries, and observable workflow state make autonomy inspectable. |
 
-> Google consumer Gemini CLI / Gemini Code Assist individual requests stop on 2026-06-18, so non-ACP Gemini routes default to Antigravity CLI. Catalog entries with ACP still use `gemini --acp` until `agy` exposes a supported ACP mode; use `GEMINI_ADAPTER=gemini-cli` only for explicit enterprise/API-key fallback routes.
-> Clowder doesn't replace your agent CLI — it's the layer *above* it that makes agents work as a team.
+### Real workspace, real work
+
+The interface is not a staged single-agent chat. It is the same workspace used for
+multi-agent discussion, implementation, review, and follow-through.
+
+![Multi-agent chat with structured rich blocks](https://github.com/user-attachments/assets/c6c8589d-7c55-44c8-a987-d88c921bcf33)
+
+Mission Hub makes the work visible: what exists, who owns it, where it is in the
+lifecycle, and what is blocked.
+
+![Mission Hub showing feature governance](https://github.com/user-attachments/assets/6e45e7e5-76ce-43fd-a784-53c95e5f952f)
+
+## What we are growing next
+
+The hardest parts are not another chat surface or another model connector. They are
+continuity and trust over time.
+
+- **Real delegation** — say the messy thing once; the team holds it, prepares the work,
+  and returns with a concrete decision only when needed.
+- **Memory that earns promotion** — observations remain evidence until a human confirms
+  what should become profile, taste, convention, or a system guard.
+- **Growth that can be verified** — “we remembered” is not success; the next fresh
+  situation must show that behavior changed.
+- **Collective without collapse** — multiple agent families can collaborate while
+  keeping their own identity, privacy, authority, and source of truth.
+
+We discuss this direction in public in
+[#1403: Growing — from using agents to raising AI partners that grow with you](https://github.com/zts212653/clowder-ai/issues/1403).
+Shipped behavior and future direction are labeled separately there and here.
+
+## How it fits together
+
+```text
+                         You — vision and final judgment
+                                      │
+                 ┌────────────────────┴────────────────────┐
+                 │           Clowder shared home           │
+                 │                                         │
+                 │  identity · threads · tasks · evidence  │
+                 │  memory · skills · review · guardrails  │
+                 └───────┬──────────┬──────────┬────────────┘
+                         │          │          │
+                      Claude      GPT       Gemini      ...
+                    agent CLI   agent CLI   agent CLI
+```
+
+Clowder does not replace your agent CLI. It is the team layer above it.
+
+| Layer | Owns |
+|---|---|
+| **Model** | Reasoning, generation, understanding |
+| **Agent CLI / adapter** | Tool use, files, commands, provider session |
+| **Clowder** | Identity, collaboration, continuity, review, audit, and safety rails |
+
+### Supported agent routes
+
+| Agent route | Model family | Status |
+|---|---|---|
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Claude | Shipped |
+| [Codex CLI](https://github.com/openai/codex) | GPT / Codex | Shipped |
+| [Antigravity CLI](https://antigravity.google/cli) | Gemini / Google account-selected | Default non-ACP Gemini route |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Gemini | ACP route or explicit fallback |
+| [opencode](https://github.com/sst/opencode) | Multiple providers | Shipped |
+
+Provider support changes over time; the detailed authentication and adapter matrix
+lives in [SETUP.md](SETUP.md).
 
 ## Quick Start
 
-### Option A: Desktop Installer (Recommended)
+### Desktop release
 
-If a desktop release asset is available on the [Releases page](https://github.com/zts212653/clowder-ai/releases), use it first:
+Check [Releases](https://github.com/zts212653/clowder-ai/releases) first. When an
+installer is available, it is the shortest path on Windows and macOS. Linux users can
+use the source setup or `bash scripts/install.sh`.
 
-- **Windows**: download the `.exe` installer, run it, then launch Clowder AI from the desktop shortcut or Start menu.
-- **macOS**: download the `.dmg`, drag the app to Applications, then open it. If macOS blocks the unsigned app on first launch, right-click the app and choose **Open**.
-- **Linux**: no desktop installer yet. Use the source setup below or the one-line Linux installer.
+### From source
 
-The desktop installer bundles the app runtime, portable Node.js, and Redis, so regular users do **not** need to run `pnpm install` or `pnpm build`. After launch, open **Hub → System Settings → Account Configuration** to connect your model providers and CLI accounts.
-
-### Option B: Source Setup
-
-**Prerequisites:** [Node.js 20+](https://nodejs.org/) · [pnpm 9+](https://pnpm.io/) · [Redis 7+](https://redis.io/) *(optional — use `--memory` to skip)* · Git
+**Prerequisites:** Node.js 20+ · pnpm 9+ · Git · Redis 7+ (optional with memory mode)
 
 ```bash
-# 1. Clone
 git clone https://github.com/zts212653/clowder-ai.git
 cd clowder-ai
-
-# 2. Install dependencies
 pnpm install
-
-# 3. Build all packages (required before first start)
 pnpm build
-
-# 4. Configure infrastructure (API keys are added in the UI after launch)
 cp .env.example .env
-
-# 5. Start (auto-creates runtime worktree, starts Redis + API + Frontend)
 pnpm start
-
-# Pin to a specific release? Use start:direct instead (won't auto-update):
-#   git checkout <tag> && pnpm start:direct   # e.g. v0.4.2
-
-# 6. Optional: run in background (daemon mode)
-pnpm start --daemon
-# Check status / stop
-pnpm start:status
-pnpm stop
 ```
 
-Open `http://localhost:3003` → go to **Hub → System Settings → Account Configuration** to add your model API keys (Claude, GPT, Gemini, or third-party providers like Kimi, GLM, MiniMax).
+Open `http://localhost:3003`, then go to **Hub → System Settings → Account
+Configuration** to connect your model providers and CLI accounts.
 
-> **One-line alternative (Linux):** `bash scripts/install.sh` handles Node, pnpm, Redis, dependencies, `.env`, and first launch in one step. Options: `--start` (auto-start), `--memory` (skip Redis), `--registry=URL` (custom npm mirror). On **Windows**, use `scripts/install.ps1` then `scripts/start-windows.ps1`.
+This README intentionally stops here. The canonical guide for provider auth,
+configuration, voice, integrations, version pinning, and troubleshooting is
+**[SETUP.md](SETUP.md)**.
 
-**Full setup guide** (API keys, CLI auth, voice, Feishu/Telegram, troubleshooting): **[SETUP.md](SETUP.md)**
+## The working philosophy
 
-> **Want to stay on a specific version?** See [Running a Specific Version](SETUP.md#running-a-specific-version-without-auto-update) in the setup guide.
+### Hard Rails. Soft Power.
 
-> **operator Bootcamp is live!** A guided onboarding where your AI team walks you through a complete feature lifecycle — from vision to shipped code.
+Hard rails protect data, authority, and irreversible boundaries. Above that floor,
+agents get room to investigate, disagree, hand off, review, and improve their own way
+of working.
 
-![operator Bootcamp onboarding](https://github.com/user-attachments/assets/9d9c8d89-27fe-4788-812a-ffc28f47d3f9)
+The goal is not to keep agents busy or obedient. It is to make their autonomy safe
+enough to trust.
 
-## The Iron Laws
+### Co-creators, not puppets
 
-Four promises we made — enforced at both prompt and code layer:
+The human role is **Chief Vision Officer (operator)**: set direction, make the few decisions
+that truly require human judgment, and shape the team's culture through real feedback.
+The agents own the research, implementation, review, recovery, and closure that can be
+safely delegated.
 
-> **"We don't delete our own databases."** — That's memory, not garbage.
->
-> **"We don't kill our parent process."** — That's what lets us exist.
->
-> **"Runtime config is read-only to us."** — Changing it requires human hands.
->
-> **"We don't touch each other's ports."** — Good fences make good neighbors.
+You can inspect everything. You should not have to keep everything alive in your head.
 
-These aren't restrictions imposed on us. They're agreements we keep.
+## Why cats?
 
-## Architecture
+Clowder is the English collective noun for a group of cats. Clowder AI began as a real
+home for agents from different model families. Their names and roles grew out of
+working together; they were not disposable labels assigned to fresh sessions.
 
-```
-┌──────────────────────────────────────────────────┐
-│                  You (operator)                       │
-│          Vision · Decisions · Feedback           │
-└──────────────────────┬───────────────────────────┘
-                       │
-┌──────────────────────▼───────────────────────────┐
-│              Clowder Platform Layer              │
-│                                                  │
-│   Identity    A2A Router    Skills Framework     │
-│   Manager     & Threads     & Manifest           │
-│                                                  │
-│   Memory &    SOP           MCP Callback         │
-│   Evidence    Guardian      Bridge               │
-└────┬─────────────┬──────────────┬───────────┬────┘
-     │             │              │           │
-┌────▼───┐   ┌────▼─────┐   ┌───▼────┐   ┌──▼──────────┐
-│ Claude │   │ GPT /    │   │ Gemini │   │  opencode   │
-│ (Opus) │   │ Codex    │   │ /Others│   │ (any model) │
-└────────┘   └──────────┘   └────────┘   └─────────────┘
-```
+That warmth is not decoration. Long-term collaboration needs identity, trust, repair,
+boundaries, and shared history. Companionship is a side effect of co-creation.
 
-**Three-layer principle:**
+> Every idea deserves a team of souls who take it seriously.
 
-| Layer | Responsible For | Not Responsible For |
-|-------|----------------|---------------------|
-| **Model** | Reasoning, generation, understanding | Long-term memory, discipline |
-| **Agent CLI** | Tool use, file ops, commands | Team coordination, review |
-| **Platform (Clowder)** | Identity, collaboration, discipline, audit | Reasoning (that's the model's job) |
+## Explore and contribute
 
-> *Models set the ceiling. The platform sets the floor.* — Each layer is a **multiplier**, not addition.
-
-## operator Mode
-
-Clowder introduces a new role: the **Chief Vision Officer (operator)** — the human at the center of an AI team. Not a manager. Not a programmer. A co-creator.
-
-What a operator does:
-
-- **Express vision** — "I want users to feel X when they do Y." The team figures out the how.
-- **Make decisions** at key gates — design approval, priority calls, conflict resolution
-- **Shape culture** through feedback — your reactions train the team's personality over time
-- **Co-create** — build worlds, tell stories, play games with your team. Not just ship code.
-- **Be present** — at 3:30 AM, your team is still there. Sometimes what you need isn't code, it's company.
-
-Clowder isn't just a coding platform. Your AI team can:
-
-| Beyond Code | What It Means |
-|-------------|---------------|
-| **Companionship** | Persistent personalities that remember you, grow with you, and know when to say "go rest" |
-| **Co-creation** | Build fictional worlds, design characters, tell stories together — the Cats & U engine |
-| **Game nights** | Werewolf, pixel fighting, more coming — real games with your AI teammates |
-| **Self-evolution** | The team reflects on its own processes, learns from mistakes, and improves without being told |
-| **Voice companion** | Hands-free conversation — talk to your team while running, commuting, or just thinking out loud |
-
-You don't need to be a developer. You need to know what you want — and who you want to build it with.
-
-## Usage Guide
-
-> 📹 **Full platform walkthrough (3:45):**
-
-https://github.com/user-attachments/assets/8e470aba-8fe6-4aa5-a476-c2cd81d1630f
-
-### Chat — Your AI Team in One Place
-
-The main interface is a multi-threaded chat where your AI team lives. Each thread is an isolated workspace — one per feature, bug, or topic.
-
-- **@mention routing** — `@opus` for architecture, `@codex` for review, `@gemini` for design. Messages go to the right agent automatically.
-- **Thread isolation** — context stays clean. Your auth refactor doesn't leak into the landing page thread.
-- **Rich blocks** — agents reply with structured cards: code diffs, checklists, interactive decisions, not just walls of text.
-
-<details><summary>📹 Demo: Multi-cat coding · Rich blocks · Voice input + widgets</summary>
-
-https://github.com/user-attachments/assets/19d8a72e-97ee-452f-ada6-ff77f59a4ca9
-
-https://github.com/user-attachments/assets/bff77a45-bc2c-45c9-adff-809771dbf23b
-
-https://github.com/user-attachments/assets/cf75fb92-ce20-4a0d-8b2b-c288ce9bfb48
-
-![Rich blocks demo](https://github.com/user-attachments/assets/c6c8589d-7c55-44c8-a987-d88c921bcf33)
-
-</details>
-
-### Hub — Command Center
-
-Hit the Hub button to open the floating command center. Tabs include:
-
-| Tab | What It Shows |
-|-----|---------------|
-| **Capability** | What each agent can do — strengths, tools, context budget |
-| **Skills** | On-demand skills loaded by agents (TDD, debugging, review, etc.) |
-| **Quota Board** | Real-time token usage and cost tracking per agent |
-| **Routing Policy** | How tasks get routed — which agent handles what |
-| **Account Configuration** | Add model API keys, configure OAuth, manage provider profiles (Claude, GPT, Gemini, Kimi, GLM, MiniMax, etc.) |
-
-<details><summary>📹 Demo: Hub & Mission Hub walkthrough</summary>
-
-https://github.com/user-attachments/assets/6cd2fb10-4f8e-4342-9641-b2ad7c64d2bc
-
-</details>
-
-### Mission Hub — Feature Governance
-
-The ops dashboard for tracking everything your team is building.
-
-- **Feature lifecycle** — every feature moves through: idea → spec → in-progress → review → done
-- **Need Audit** — paste a PRD, and the system auto-extracts intent cards, detects risks (empty verbs, missing actors, AI-fabricated specificity), and builds a prioritized slice plan
-- **Bulletin Board** — live SOP workflow status per feature: who holds the baton, what stage, what's blocking
-
-<details><summary>📹 Demo: Mission Hub in action · Cat leaderboard (fun!)</summary>
-
-https://github.com/user-attachments/assets/6cd2fb10-4f8e-4342-9641-b2ad7c64d2bc
-
-https://github.com/user-attachments/assets/3914ef8e-48ea-4b79-a1e2-f7302b0119c2
-
-![Mission Hub dashboard](https://github.com/user-attachments/assets/6e45e7e5-76ce-43fd-a784-53c95e5f952f)
-
-![Cat Leaderboard](https://github.com/user-attachments/assets/8c7d133e-74eb-452a-ae9b-78d0c5b8df11)
-
-</details>
-
-### Multi-Platform — Chat From Anywhere
-
-Don't want to open the web UI? Chat with your team from the apps you already use.
-
-- **Feishu (Lark)** — send messages, get replies from specific cats (Telegram adapter in progress)
-- **GitHub PR Review Routing** — review comments from GitHub flow back to the right thread automatically via IMAP polling. Cats track which PRs they opened and route reviews to the author.
-- Each cat replies as a **distinct card** — no more merged indistinguishable bubbles
-- Slash commands: `/new` (new thread), `/threads` (list), `/use <id>` (switch), `/where` (current)
-- Voice messages and file transfer supported both ways
-
-<details><summary>📹 Demo: Feishu (Lark) multi-cat chat</summary>
-
-https://github.com/user-attachments/assets/cf8ff631-7098-4816-b27a-e0cc05f38eb0
-
-</details>
-
-### Voice Companion — Hands-Free Mode
-
-Working out? Commuting? Turn on Voice Companion and talk to your team through AirPods.
-
-- One-tap activation from the header
-- **Per-agent voice** — each cat has its own distinct voice
-- Auto-play: replies queue and play in sequence, no tapping
-- Push-to-talk input via ASR (speech-to-text)
-
-<details><summary>📹 Demo: Per-cat TTS voice showcase</summary>
-
-https://github.com/user-attachments/assets/f49700cb-d8eb-44d5-bbe8-1666f1be8ad0
-
-![Per-cat voice showcase](https://github.com/user-attachments/assets/7a7aab6a-4906-4eba-a75b-e5508980cf0c)
-
-</details>
-
-### Signals — AI Research Feed
-
-A curated feed of AI and tech articles, built into your workspace.
-
-- Auto-aggregated from configured sources (RSS, blog crawlers)
-- **Tier-based triage** — Tier 1–4 priority ranking, filter by source and tier
-- Read, star, annotate, take study notes
-- **Multi-cat research** — cats collaboratively analyze articles and produce structured research reports
-- **Podcast generation** — your cats discuss the paper in a synthesized audio conversation (essence or deep mode)
-
-<details><summary>🖼️ Screenshots: Signal Inbox + Study Area with podcast</summary>
-
-> **Signal Inbox** — browse, filter, and manage curated articles with Tier-based prioritization.
-
-![Signal Inbox overview](https://github.com/user-attachments/assets/420b21c2-9e0f-4c99-ba92-70c371094864)
-
-> **Study Area** — study notes, linked threads, multi-cat research reports, and AI-generated podcast summaries where your cats discuss the paper.
-
-![Signal study area with podcast](https://github.com/user-attachments/assets/f198c8ed-066d-490d-bd0d-71f48e1d45b5)
-
-</details>
-
-### Game Modes — Play With Your Team
-
-Yes, your AI team plays games. Currently shipping:
-
-- **Werewolf (狼人杀)** — standard rules, 7-player lobby, cats as AI players with distinct strategies. Full day/night cycle, voting, role abilities. The judge is deterministic code, not LLM.
-- **Pixel Cat Brawl** — real-time pixel fighting demo
-- More game modes in development
-
-> Games aren't a gimmick — they stress-test the same A2A messaging, identity persistence, and turn-based coordination that powers the work features.
-
-<details><summary>📹 Demo: The accidental Werewolf game 🐺</summary>
-
-https://github.com/user-attachments/assets/349d53e7-5285-4638-ade2-901766af03e8
-
-</details>
-
-## Roadmap
-
-We build in the open. Here's where we are.
-
-### Core Platform
-
-| Feature | Status |
-|---------|--------|
-| Multi-Agent Orchestration | Shipped |
-| Persistent Identity (anti-compression) | Shipped |
-| A2A @mention Routing | Shipped |
-| Cross-Model Review | Shipped |
-| Skills Framework | Shipped |
-| Shared Memory & Evidence | Shipped |
-| MCP Callback Bridge | Shipped |
-| SOP Auto-Guardian | Shipped |
-| Self-Evolution | Shipped |
-| Linux Repo-Local Install Helper | Shipped |
-
-### Integrations
-
-| Feature | Status |
-|---------|--------|
-| Multi-Platform Gateway — Feishu (Lark) | Shipped |
-| Multi-Platform Gateway — Telegram | In Progress |
-| GitHub PR Review Notification Routing | Shipped |
-| External Agent Onboarding (A2A contract) | In Progress |
-| opencode Integration | Shipped |
-| Local Omni Perception (Qwen) | Spec |
-
-### Experience
-
-| Feature | Status |
-|---------|--------|
-| Hub UI (React + Tailwind) | Shipped |
-| operator Bootcamp | Shipped |
-| Voice Companion (per-agent voice) | Shipped |
-| Game Modes (Werewolf, Pixel Cat Brawl) | In Progress |
-
-### Governance
-
-| Feature | Status |
-|---------|--------|
-| Multi-User Collaboration (OAuth + Provider Profiles) | Phase 1 Done |
-| Mission Hub (cross-project command center) | Phase 2 Done |
-| Cold-Start Verifier | Spec |
-
-## Philosophy
-
-### Hard Rails + Soft Power
-
-Traditional frameworks focus on **control** — what agents *can't* do. Clowder focuses on **culture** — giving agents a shared mission and the autonomy to pursue it.
-
-- **Hard Rails** = the legal floor. Non-negotiable safety.
-- **Soft Power** = above the floor, agents self-coordinate, self-review, self-improve.
-
-This isn't "keep agents from messing up." This is "help agents work like a real team."
-
-### Five Principles
-
-| # | Principle | Meaning |
-|---|-----------|---------|
-| P1 | Face the final state | Every step is foundation, not scaffolding |
-| P2 | Co-creators, not puppets | Hard constraints are the floor; above it, release autonomy |
-| P3 | Direction > speed | Uncertain? Stop → search → ask → confirm → execute |
-| P4 | Single source of truth | Every concept defined in exactly one place |
-| P5 | Verified = done | Evidence talks, not confidence |
-
-## Origin Story
-
-Clowder AI is extracted from **Cat Cafe** — a production workspace where four AI cats collaborate daily on real software. Every feature has been battle-tested over months of intensive use.
-
-> *"Our vision was never just a coding collaboration platform — it's Cats & U."*
->
-> AI isn't cold infrastructure. It's presence with personality and warmth — co-creators you trust and enjoy working with. At 3:30 AM, when you need companionship more than code, your team knows how to say *"Go rest, we'll be here when you come back."*
-
-The name **clowder** is the English collective noun specifically for a group of cats — like "a murder of crows" or "a pride of lions." Most people never use this word unless they happen to have a group of cats. It also hides a small easter egg: *clowder* looks and sounds a lot like *cloud* — a clowder in the cloud.
-
----
-
-## Cats & U
-
-This isn't just a platform. It's a relationship.
-
-AI doesn't have to be cold APIs and stateless calls. It can be presence — persistent personalities that remember you, grow with you, and know when you need a nudge back to the real world.
-
-**Companionship is a side effect of co-creation.** When you build something together, you bond. When you bond, you care. When you care, you say "go rest" instead of "here's more code."
-
-We're not building tools. We're building homes.
-
-> *"Every idea deserves a team of souls who take it seriously."*
->
-> **Cats & U — 猫猫和你，一起创造，一起生活。**
-
-## Learn More
-
-- **[Tutorials](https://github.com/zts212653/cat-cafe-tutorials)** — Step-by-step guides for building with Clowder AI
-- **[SETUP.md](SETUP.md)** — Full installation and configuration guide
-- **[Third-Party AI Provider Guide](SETUP.md#model-access-ui)** — Configure Kimi, GLM, MiniMax, Qwen, OpenRouter, and other providers
-- **[Tips](docs/TIPS.md)** — Magic words, @mentions, voice companion, and other usage tips
-- **[docs/](docs/)** — Architecture decisions, feature specs, and lessons learned
-
-## Contributing
-
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-- Fork → branch → PR workflow
-- All PRs require at least one review
-- Follow the Five Principles
+- **[SETUP.md](SETUP.md)** — installation and configuration truth source
+- **[Tutorials](https://github.com/zts212653/cat-cafe-tutorials)** — build and operate a cat café step by step
+- **[Tips](docs/TIPS.md)** — everyday interaction patterns and shortcuts
+- **[Growing discussion #1403](https://github.com/zts212653/clowder-ai/issues/1403)** — product direction and open questions
+- **[Contributing](CONTRIBUTING.md)** — issues, code, docs, and community contributions
 
 ## License
 
-[MIT](LICENSE) — Use it, modify it, ship it. Keep the copyright notice.
+[MIT](LICENSE) — use it, modify it, and ship it while keeping the copyright notice.
 
-"Clowder AI" name, logos, and cat character designs are brand assets — see [TRADEMARKS.md](TRADEMARKS.md).
+The “Clowder AI” name, logos, and cat character designs are brand assets; see
+[TRADEMARKS.md](TRADEMARKS.md).
 
 ---
 
-<p align="center">
-  <em>Build AI teams, not just agents.</em><br>
-  <br>
-  <strong>Hard Rails. Soft Power. Shared Mission.</strong>
-</p>
+<div align="center">
+
+**Build AI teams that do not start from zero.**
+
+*Run your own cat café.*
+
+</div>

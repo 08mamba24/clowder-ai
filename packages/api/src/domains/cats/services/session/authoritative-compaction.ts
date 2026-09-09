@@ -17,8 +17,31 @@ export type AuthoritativeCompactionSupport =
   | { readonly status: 'supported'; readonly eventSource: AuthoritativeCompactionEventSource }
   | {
       readonly status: 'unsupported';
-      readonly reason: 'typed_event_unroutable' | 'carrier_event_delivery_unproven';
+      readonly reason:
+        | 'typed_event_unroutable'
+        | 'carrier_event_delivery_unproven'
+        | 'hook_authentication_unavailable'
+        | 'hook_carrier_unavailable'
+        | 'hook_invocation_attestation_unavailable';
     };
+
+function resolveClaudeHookSupport(input: {
+  eventSource: AuthoritativeCompactionEventSource;
+  hookAuthenticationReady: boolean;
+  hookCarrierReady: boolean;
+  hookInvocationAttested: boolean;
+}): AuthoritativeCompactionSupport {
+  if (!input.hookAuthenticationReady) {
+    return { status: 'unsupported', reason: 'hook_authentication_unavailable' };
+  }
+  if (!input.hookCarrierReady) {
+    return { status: 'unsupported', reason: 'hook_carrier_unavailable' };
+  }
+  if (!input.hookInvocationAttested) {
+    return { status: 'unsupported', reason: 'hook_invocation_attestation_unavailable' };
+  }
+  return { status: 'supported', eventSource: input.eventSource };
+}
 
 /**
  * A capability declaration is not an event route. A carrier earns epoch
@@ -31,10 +54,31 @@ export type AuthoritativeCompactionSupport =
 export function resolveAuthoritativeCompactionSupport(input: {
   readonly capability: AgentContextCapability;
   readonly eventSource: AuthoritativeCompactionEventSource;
+  /** Live readiness of the authenticated project hook that mints Claude's sequence. */
+  readonly hookAuthenticationReady?: boolean;
+  /** Project-local PreCompact carrier readiness for the active invocation workspace. */
+  readonly hookCarrierReady?: boolean;
+  /** This exact invocation has a fresh authenticated seal observation. */
+  readonly hookInvocationAttested?: boolean;
 }): AuthoritativeCompactionSupport {
-  const { capability, eventSource } = input;
-  if (capability.provider === 'anthropic' && capability.carrier === 'print_sdk') {
-    return { status: 'supported', eventSource };
+  const {
+    capability,
+    eventSource,
+    hookAuthenticationReady = false,
+    hookCarrierReady = false,
+    hookInvocationAttested = false,
+  } = input;
+  if (
+    capability.provider === 'anthropic' &&
+    capability.carrier === 'print_sdk' &&
+    (eventSource === 'claude_compact_boundary' || eventSource === 'claude_precompact_hook')
+  ) {
+    return resolveClaudeHookSupport({
+      eventSource,
+      hookAuthenticationReady,
+      hookCarrierReady,
+      hookInvocationAttested,
+    });
   }
   // The app-server source is bound to the app-server carrier. A Codex
   // exec_json invocation can never route this event, and no other event source
@@ -55,15 +99,42 @@ export function resolveAuthoritativeCompactionSupport(input: {
 }
 
 /**
+ * Return the sequence only when the latest authenticated hook observation was
+ * minted by this invocation and still describes the record's current sequence.
+ */
+export function authenticatedCompactionSequenceForInvocation(
+  record: Pick<SessionRecord, 'compressionCount' | 'hybridProgress' | 'compressionObservation'>,
+  invocationId: string,
+): number | null {
+  const sequence = authenticatedCompactionSequenceFromSession(record);
+  return sequence !== null && record.compressionObservation?.invocationId === invocationId ? sequence : null;
+}
+
+/** Validate that the persisted observation and current counter are one atomic fact. */
+export function authenticatedCompactionSequenceFromSession(
+  record: Pick<SessionRecord, 'compressionCount' | 'hybridProgress' | 'compressionObservation'>,
+): number | null {
+  const counterSequence = record.compressionCount ?? record.hybridProgress?.observedCount;
+  const observation = record.compressionObservation;
+  if (!observation || !Number.isSafeInteger(observation.sequence) || observation.sequence < 1) {
+    return null;
+  }
+  if (counterSequence !== undefined && observation.sequence !== counterSequence) {
+    return null;
+  }
+  return observation.sequence;
+}
+
+/**
  * The hook increments SessionRecord compression telemetry before the provider
  * emits `compact_boundary`, so both paths derive the same event id. That makes
  * hook + stream delivery a replay of one event rather than two epoch advances.
  */
 export function authoritativeCompactionEventFromSession(
-  record: Pick<SessionRecord, 'id' | 'cliSessionId' | 'compressionCount' | 'hybridProgress'>,
+  record: Pick<SessionRecord, 'id' | 'cliSessionId' | 'compressionCount' | 'hybridProgress' | 'compressionObservation'>,
   eventSource: AuthoritativeCompactionEventSource,
 ): AuthoritativeCompactionEvent {
-  const sequence = record.compressionCount ?? record.hybridProgress?.observedCount;
+  const sequence = authenticatedCompactionSequenceFromSession(record);
   if (typeof sequence !== 'number' || !Number.isSafeInteger(sequence) || sequence < 1) {
     throw new Error(`authoritative_compaction_sequence_unavailable:${record.id}`);
   }

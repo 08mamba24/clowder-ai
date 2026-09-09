@@ -14,7 +14,11 @@ import { randomUUID } from 'node:crypto';
 import type { QueueAuthorIntent, QueueTargetAttemptTerminalReason, WaitContinuationCarrierV1 } from '@cat-cafe/shared';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 import type { CallerTraceContext } from '../../../../../infrastructure/telemetry/genai-semconv.js';
-import type { ActionSuccessorFence } from '../../../../ball-custody/ActionSuccessorAdmissionService.js';
+import {
+  type ActionSuccessorFence,
+  actionSuccessorFencesMatch,
+} from '../../../../ball-custody/ActionSuccessorAdmissionContract.js';
+import type { CloudDispatchProvenance } from '../../cloud-bridge/types.js';
 import type { QueueBodyExposure, QueuePrestartRetirementIntent } from '../../stores/ports/queued-message-custody.js';
 import type { ToolExecutionPolicy } from '../../types.js';
 import type { OwnerAuthProvenance } from './owner-auth-provenance.js';
@@ -96,6 +100,10 @@ export interface QueueEntry {
   callerCatId?: string;
   /** Source invocation lineage. Parallel invocations of one cat must not coalesce with each other. */
   a2aParentInvocationId?: string;
+  /** Exact cloud child provenance; never reconstructed from Queue display content. */
+  cloudDispatchProvenance?: CloudDispatchProvenance;
+  /** Multi-mention child must fail visibly if its exact cloud provenance is unavailable. */
+  requiresExactCloudDispatchProvenance?: boolean;
   /** F134: sender identity for connector group chat messages (used for UI display) */
   senderMeta?: { id: string; name?: string };
   /** F175: queue-internal priority — urgent entries sort before normal in dequeue */
@@ -186,6 +194,13 @@ export interface QueuedHandledResult {
   entrySnapshot?: QueueEntry;
   queueIndex?: number;
   originalContent?: string;
+}
+
+export interface ActionSuccessorQueueRetirement {
+  entryId: string;
+  threadId: string;
+  userId: string;
+  messageIds: string[];
 }
 
 const MAX_QUEUE_DEPTH = 5;
@@ -404,6 +419,10 @@ export class InvocationQueue {
       queueCustodyAdmissionId: input.queueCustodyAdmissionId,
       callerCatId: input.callerCatId,
       a2aParentInvocationId: input.a2aParentInvocationId,
+      cloudDispatchProvenance: input.cloudDispatchProvenance
+        ? structuredClone(input.cloudDispatchProvenance)
+        : undefined,
+      requiresExactCloudDispatchProvenance: input.requiresExactCloudDispatchProvenance,
       senderMeta: input.senderMeta,
       priority,
       sourceCategory: input.sourceCategory,
@@ -519,6 +538,44 @@ export class InvocationQueue {
     this.originalContents.delete(entryId);
 
     return q.splice(idx, 1)[0] ?? null;
+  }
+
+  /** Retire every process-local carrier for one persisted action fence. */
+  retireActionSuccessorFence(fence: ActionSuccessorFence): ActionSuccessorQueueRetirement[] {
+    const retired: ActionSuccessorQueueRetirement[] = [];
+    for (const [scope, queue] of this.queues) {
+      for (let index = queue.length - 1; index >= 0; index -= 1) {
+        const entry = queue[index];
+        if (!entry || !actionSuccessorFencesMatch(entry.actionSuccessorFence, fence)) continue;
+        queue.splice(index, 1);
+        this.originalContents.delete(entry.id);
+        retired.push({
+          entryId: entry.id,
+          threadId: entry.threadId,
+          userId: entry.userId,
+          messageIds: exactA2ASourceMessageIds(entry),
+        });
+      }
+      if (queue.length === 0) this.queues.delete(scope);
+    }
+    return retired;
+  }
+
+  /** Read the exact process carriers before durable custody retirement. */
+  listActionSuccessorFence(fence: ActionSuccessorFence): ActionSuccessorQueueRetirement[] {
+    const matches: ActionSuccessorQueueRetirement[] = [];
+    for (const queue of this.queues.values()) {
+      for (const entry of queue) {
+        if (!actionSuccessorFencesMatch(entry.actionSuccessorFence, fence)) continue;
+        matches.push({
+          entryId: entry.id,
+          threadId: entry.threadId,
+          userId: entry.userId,
+          messageIds: exactA2ASourceMessageIds(entry),
+        });
+      }
+    }
+    return matches;
   }
 
   /** Shallow copy of all entries sorted by dequeue priority (comparator order). */
@@ -929,6 +986,7 @@ export class InvocationQueue {
     userId: string,
     entryId: string,
     catId: string,
+    attemptId?: string,
   ): { before: QueueEntry; after: QueueEntry } | null {
     const entry = this.findEntry(threadId, userId, entryId);
     if (
@@ -955,6 +1013,9 @@ export class InvocationQueue {
         entry.queuedAwakenedInvocationIdByCatId = undefined;
         entry.queuedAwakenedAtByCatId = undefined;
       }
+    }
+    if (attemptId) {
+      entry.queuedAttemptIdByCatId = { ...(entry.queuedAttemptIdByCatId ?? {}), [catId]: attemptId };
     }
     return { before, after: InvocationQueue.cloneEntry(entry) };
   }
@@ -1158,6 +1219,9 @@ export class InvocationQueue {
       targetCats: [...entry.targetCats],
       ...(entry.allTargetCats ? { allTargetCats: [...entry.allTargetCats] } : {}),
       ...(entry.authorIntentByCatId ? { authorIntentByCatId: structuredClone(entry.authorIntentByCatId) } : {}),
+      ...(entry.cloudDispatchProvenance
+        ? { cloudDispatchProvenance: structuredClone(entry.cloudDispatchProvenance) }
+        : {}),
       ...(entry.queuedNotifiedByCatIds ? { queuedNotifiedByCatIds: [...entry.queuedNotifiedByCatIds] } : {}),
       ...(entry.queuedAwakenedInvocationIdByCatId
         ? { queuedAwakenedInvocationIdByCatId: { ...entry.queuedAwakenedInvocationIdByCatId } }
@@ -1549,12 +1613,24 @@ export class InvocationQueue {
     return [...reservationIds].flatMap((reservationId) => this.releaseExactUserBatch(threadId, userId, reservationId));
   }
 
-  /** Drop rollback bookkeeping once no live Queue entry references the reservation. */
+  /** Release a consumed Steer target without restoring already-settled sibling snapshots. */
   pruneExactUserBatchReservation(reservationId: string): boolean {
-    const stillReferenced = [...this.queues.values()].some((q) =>
-      q.some((entry) => entry.exactSteerBatch?.reservationId === reservationId),
+    const referenced = [...this.queues.values()].flatMap((q) =>
+      q.filter((entry) => entry.exactSteerBatch?.reservationId === reservationId),
     );
-    if (stillReferenced) return false;
+    const reservation = this.exactSteerReservations.get(reservationId);
+    if (referenced.length > 0) {
+      if (
+        !reservation ||
+        reservation.phase !== 'activated' ||
+        referenced.some((entry) => entry.status !== 'queued' || entry.targetCats.includes(reservation.targetCatId))
+      )
+        return false;
+      for (const entry of referenced) {
+        entry.exactSteerBatch = undefined;
+        entry.position = reservation.entries.get(entry.id)?.position;
+      }
+    }
     return this.exactSteerReservations.delete(reservationId);
   }
 

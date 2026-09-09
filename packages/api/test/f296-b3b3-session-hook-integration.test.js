@@ -21,8 +21,33 @@ const { MessageStore } = await import('../dist/domains/cats/services/stores/port
 const { DeliveryCursorStore } = await import('../dist/domains/cats/services/stores/ports/DeliveryCursorStore.js');
 const { cursorFor } = await import('../dist/domains/cats/services/stores/cursor.js');
 
-const HOOK_TOKEN = 'f296-b3b3-hook-token';
 const SCOPE = { userId: 'user-1', catId: 'opus', threadId: 'thread-1' };
+const CALLBACK_AUTH = { invocationId: 'f296-b3b3-invocation', callbackToken: 'f296-b3b3-callback' };
+
+function callbackRegistry() {
+  return {
+    isStartupRecoveryComplete: () => true,
+    verify: async (invocationId, callbackToken) =>
+      invocationId === CALLBACK_AUTH.invocationId && callbackToken === CALLBACK_AUTH.callbackToken
+        ? {
+            ok: true,
+            record: {
+              ...CALLBACK_AUTH,
+              ...SCOPE,
+              ownerAuthProvenance: 'strict',
+              clientMessageIds: new Set(),
+              createdAt: 0,
+              expiresAt: null,
+              state: 'active',
+            },
+          }
+        : { ok: false, reason: 'invalid_token' },
+  };
+}
+
+function authHeaders() {
+  return { 'x-invocation-id': CALLBACK_AUTH.invocationId, 'x-callback-token': CALLBACK_AUTH.callbackToken };
+}
 
 function printCapability() {
   return {
@@ -39,7 +64,7 @@ function printCapability() {
 }
 
 describe('F296 B3b-3: authenticated PreCompact → epoch → post-compact packet', () => {
-  test('one event advances once, resets epoch-scoped dedupe, and GET returns the trusted cold packet', async () => {
+  test('a legacy unknown lifetime total still advances once without fabricating historical telemetry', async () => {
     const epochStore = new InMemoryContextEpochStore();
     const contextEpochOwner = new ContextEpochOwner(epochStore);
     const before = await contextEpochOwner.resolve({
@@ -96,7 +121,7 @@ describe('F296 B3b-3: authenticated PreCompact → epoch → post-compact packet
     const record = sessionChainStore.create({
       ...SCOPE,
       cliSessionId: 'claude-runtime-1',
-      compressionCount: 0,
+      compressionCount: null,
     });
     sessionChainStore.applyPolicySnapshot(record.id, {
       config: {
@@ -123,21 +148,28 @@ describe('F296 B3b-3: authenticated PreCompact → epoch → post-compact packet
         messageStore,
         deliveryCursorStore,
       }),
-      hookToken: HOOK_TOKEN,
+      callbackRegistry: callbackRegistry(),
     });
     await app.ready();
 
     const preCompact = await app.inject({
       method: 'POST',
       url: '/api/sessions/seal',
-      headers: { 'x-cat-cafe-hook-token': HOOK_TOKEN },
+      headers: authHeaders(),
       payload: { cliSessionId: 'claude-runtime-1', reason: 'claude-code-compact-auto' },
     });
     assert.equal(preCompact.statusCode, 200);
     const preBody = preCompact.json();
+    assert.equal(preBody.compressionCount, null);
     assert.equal(preBody.contextEpoch.status, 'observed');
     assert.equal(preBody.contextEpoch.decision.contextEpoch, before.contextEpoch + 1);
     assert.equal(preBody.contextEpoch.decision.contextMode, 'cold');
+    const observedSession = sessionChainStore.get(record.id);
+    assert.deepEqual(observedSession.compressionObservation, {
+      invocationId: CALLBACK_AUTH.invocationId,
+      sequence: 1,
+      observedAt: observedSession.updatedAt,
+    });
 
     const nextEpochReservation = await ledger.reserve(
       claim,
@@ -149,7 +181,7 @@ describe('F296 B3b-3: authenticated PreCompact → epoch → post-compact packet
     const postCompact = await app.inject({
       method: 'GET',
       url: '/api/sessions/latest-digest?cliSessionId=claude-runtime-1',
-      headers: { 'x-cat-cafe-hook-token': HOOK_TOKEN },
+      headers: authHeaders(),
     });
     assert.equal(postCompact.statusCode, 200);
     const postBody = postCompact.json();
@@ -191,14 +223,14 @@ describe('F296 B3b-3: authenticated PreCompact → epoch → post-compact packet
       transcriptReader: { readDigest: async () => null, readEvents: async () => ({ events: [], hasMore: false }) },
       contextEpochOwner: new ContextEpochOwner(new InMemoryContextEpochStore()),
       resolveContextCapability: () => ({ ...printCapability(), carrier: 'bg' }),
-      hookToken: HOOK_TOKEN,
+      callbackRegistry: callbackRegistry(),
     });
     await app.ready();
 
     const response = await app.inject({
       method: 'POST',
       url: '/api/sessions/seal',
-      headers: { 'x-cat-cafe-hook-token': HOOK_TOKEN },
+      headers: authHeaders(),
       payload: { cliSessionId: 'claude-bg-runtime', reason: 'claude-code-compact-auto' },
     });
     assert.equal(response.statusCode, 200);

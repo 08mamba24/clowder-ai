@@ -76,6 +76,22 @@ function liveExecution({
   };
 }
 
+function managedGateExecution(): ActiveExecutionProjection {
+  return {
+    executionId: 'hold-ball-gate',
+    threadId: 'thread-1',
+    threadTitle: 'Gate thread',
+    catId: 'codex',
+    kind: 'managed_command',
+    activity: 'full_gate',
+    startedAt: Date.now() - 5000,
+    cancelability: {
+      state: 'cancelable',
+      target: { kind: 'managed_command', taskId: 'hold-ball-gate' },
+    },
+  };
+}
+
 function seedExecutions(executions: ActiveExecutionProjection[], anchorThreadId = 'thread-1'): void {
   useChatStore.setState({ currentThreadId: anchorThreadId });
   useActiveExecutionStore.setState({
@@ -206,50 +222,35 @@ describe('ThreadExecutionBar (F122B AC-B8 + B8/B9 polish)', () => {
     expect(text).toContain('缅因猫');
   });
 
-  it('fences rapid repeated Stop All clicks before the first REST cancels settle', async () => {
-    let releaseCancel: ((response: Response) => void) | undefined;
-    const cancelResponse = new Promise<Response>((resolve) => {
-      releaseCancel = resolve;
-    });
-    const mockedApiFetch = vi.mocked(apiFetch);
-    mockedApiFetch.mockImplementation((url: string) => {
-      if (url === '/api/cats') {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ cats: [] }),
-        }) as Promise<Response>;
-      }
-      if (url.includes('/cancel')) return cancelResponse;
-      return Promise.resolve(
-        new Response(JSON.stringify({ projectPath: '/project/cafe', executions: [] }), { status: 200 }),
-      );
-    });
+  it('names a managed full gate without exposing the raw shell command', async () => {
+    seedExecutions([managedGateExecution()]);
+    await act(async () => root.render(React.createElement(ThreadExecutionBar)));
+
+    expect(container.textContent).toContain('全量门禁 · Gate thread');
+    expect(container.textContent).not.toContain('pnpm gate');
+  });
+
+  it('falls back to the generic managed label for a newer API activity value', async () => {
+    seedExecutions([
+      {
+        ...managedGateExecution(),
+        activity: 'future_activity' as unknown as ActiveExecutionProjection['activity'],
+      },
+    ]);
+    await act(async () => root.render(React.createElement(ThreadExecutionBar)));
+
+    expect(container.textContent).toContain('托管命令 · Gate thread');
+  });
+
+  it('keeps exact member controls without adding a second whole-thread Stop', async () => {
     seedExecutions([
       liveExecution({ executionId: 'inv-1', catId: 'opus' }),
       liveExecution({ executionId: 'inv-2', catId: 'codex' }),
     ]);
     await act(async () => root.render(React.createElement(ThreadExecutionBar)));
 
-    const stopAll = Array.from(container.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('全部停止'),
-    );
-    expect(stopAll).toBeTruthy();
-
-    await act(async () => {
-      stopAll?.click();
-      stopAll?.click();
-      await Promise.resolve();
-    });
-
-    const cancelCalls = mockedApiFetch.mock.calls.filter(([url]) => String(url).includes('/cancel'));
-    expect(cancelCalls).toHaveLength(2);
-    expect((stopAll as HTMLButtonElement).disabled).toBe(true);
-
-    releaseCancel?.(new Response('{}', { status: 200 }));
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    expect(container.querySelectorAll('[aria-label^="Stop "]')).toHaveLength(2);
+    expect(container.textContent).not.toContain('全部停止');
   });
 
   it('uses dynamic cat color from cat-config (not hardcoded)', async () => {

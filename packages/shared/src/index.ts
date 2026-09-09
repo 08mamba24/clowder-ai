@@ -34,6 +34,8 @@ export {
   PET_STATE_PROJECTION_V1,
   projectToPetState,
 } from './concierge/pet-skin-projection.js';
+// #1343: Context window catalog (API Auto-mode fallback + Web draft preview)
+export * from './context-window-catalog.js';
 export { CORE_COMMANDS } from './core-commands.js';
 // Export Eval Hub metric reference normalization (F248 B3)
 export * from './eval-metric-ref.js';
@@ -43,6 +45,8 @@ export * from './explicit-stop-intent.js';
 export * from './markdown-readable-text.js';
 // Browser Preview Gateway request identity shared by API and Web.
 export * from './preview-gateway.js';
+export * from './preview-visible-page-admission.js';
+export * from './provider-semantic-projection.js';
 // Export recall-result sidecar contract (producer → parser → persistence → UI)
 export * from './recall-outcome.js';
 // Dossier profile parser: import from '@cat-cafe/shared/dossier' (F208 KD-10)
@@ -61,6 +65,8 @@ export * from './types/auto-dream.js';
 export * from './types/executable-action-successor.js';
 // Export all types
 export * from './types/index.js';
+// F314: one accepted-source contract shared by API persistence and MCP producers.
+export * from './types/local-review.js';
 // F287 bounded opportunity/cue contract (kept explicit for API/MCP consumers).
 export * from './types/memory-cue.js';
 // Export subject key utilities (#320)

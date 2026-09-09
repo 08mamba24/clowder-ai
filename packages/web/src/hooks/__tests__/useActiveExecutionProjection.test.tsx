@@ -1,7 +1,8 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useActiveExecutionStore } from '@/stores/activeExecutionStore';
+import { activeExecutionKey, useActiveExecutionStore } from '@/stores/activeExecutionStore';
+import { type SidebarSnapshotRow, useSidebarProjectionStore } from '@/stores/sidebarProjectionStore';
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(async (path: string, init?: RequestInit) => {
@@ -35,6 +36,25 @@ function liveExecution(): ActiveExecutionProjection {
   };
 }
 
+function sidebarRow(id: string): SidebarSnapshotRow {
+  return {
+    id,
+    title: id,
+    participants: [],
+    pinned: false,
+    favorited: false,
+    labels: [],
+    preferredCats: [],
+    projectPath: '/project/cafe',
+    lastActiveAt: 1,
+    systemKind: null,
+    isHubThread: false,
+    unreadCount: 0,
+    hasUserMention: false,
+    presence: { status: 'idle' },
+  };
+}
+
 function Harness({ threadId, connected }: { threadId: string; connected: boolean | null }) {
   useActiveExecutionProjection(threadId, connected);
   return null;
@@ -53,6 +73,7 @@ describe('F295 canonical execution hydration', () => {
       return new Response(JSON.stringify({ projectPath: '/project/cafe', executions: [] }), { status: 200 });
     });
     useActiveExecutionStore.getState().reset();
+    useSidebarProjectionStore.setState({ rows: [sidebarRow('thread-a'), sidebarRow('thread-b')] });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -68,7 +89,7 @@ describe('F295 canonical execution hydration', () => {
     await act(async () => {
       root.render(<Harness threadId="thread-a" connected={false} />);
     });
-    expect(mocks.apiFetch).toHaveBeenLastCalledWith('/api/threads/thread-a/executions/active', {
+    expect(mocks.apiFetch).toHaveBeenLastCalledWith('/api/executions/active?projectPath=%2Fproject%2Fcafe', {
       signal: expect.any(AbortSignal),
     });
 
@@ -85,8 +106,73 @@ describe('F295 canonical execution hydration', () => {
     await act(async () => {
       root.render(<Harness threadId="thread-b" connected />);
     });
-    expect(mocks.apiFetch).toHaveBeenLastCalledWith('/api/threads/thread-b/executions/active', {
+    expect(mocks.apiFetch).toHaveBeenLastCalledWith('/api/executions/active?projectPath=%2Fproject%2Fcafe', {
       signal: expect.any(AbortSignal),
+    });
+  });
+
+  it('keeps one project resource identity across a slow same-project navigation and rejects the late generation', async () => {
+    let resolveThreadA!: (response: Response) => void;
+    let resolveThreadB!: (response: Response) => void;
+    mocks.apiFetch
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveThreadA = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveThreadB = resolve;
+          }),
+      );
+
+    await act(async () => {
+      root.render(<Harness threadId="thread-a" connected={false} />);
+    });
+    await act(async () => {
+      root.render(<Harness threadId="thread-b" connected={false} />);
+    });
+
+    const threadBExecution = {
+      ...liveExecution(),
+      executionId: 'inv-b',
+      threadId: 'thread-b',
+      threadTitle: 'Thread B',
+      cancelability: {
+        state: 'cancelable' as const,
+        target: {
+          kind: 'live_invocation' as const,
+          threadId: 'thread-b',
+          catId: 'codex-sol',
+          executionId: 'inv-b',
+        },
+      },
+    };
+    await act(async () => {
+      resolveThreadB(
+        new Response(JSON.stringify({ projectPath: '/project/cafe', executions: [threadBExecution] }), {
+          status: 200,
+        }),
+      );
+    });
+    await act(async () => {
+      resolveThreadA(
+        new Response(JSON.stringify({ projectPath: '/project/cafe', executions: [liveExecution()] }), {
+          status: 200,
+        }),
+      );
+    });
+
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(2);
+    expect(mocks.apiFetch.mock.calls.map(([url]) => url)).toEqual([
+      '/api/executions/active?projectPath=%2Fproject%2Fcafe',
+      '/api/executions/active?projectPath=%2Fproject%2Fcafe',
+    ]);
+    expect(useActiveExecutionStore.getState().anchorThreadId).toBe('thread-b');
+    expect(useActiveExecutionStore.getState().executionsByKey).toEqual({
+      [activeExecutionKey(threadBExecution)]: threadBExecution,
     });
   });
 
@@ -119,7 +205,7 @@ describe('F295 canonical execution hydration', () => {
     });
 
     expect(useActiveExecutionStore.getState().executionsByKey).toEqual({
-      'live_invocation:inv-scheduler-process': schedulerExecution,
+      [activeExecutionKey(schedulerExecution)]: schedulerExecution,
     });
   });
 
@@ -145,6 +231,38 @@ describe('F295 canonical execution hydration', () => {
     });
     expect(useActiveExecutionStore.getState().executionsByKey).toEqual({});
     expect(useActiveExecutionStore.getState().cancelPendingByKey).toEqual({});
+  });
+
+  it('sends both exact cancel targets when parallel cats share a parent execution', async () => {
+    const executions = ['codex-astra', 'fable5'].map(
+      (catId): ActiveExecutionProjection => ({
+        ...liveExecution(),
+        catId,
+        cancelability: {
+          state: 'cancelable',
+          target: { kind: 'live_invocation', threadId: 'thread-a', catId, executionId: 'inv-exact' },
+        },
+      }),
+    );
+    const store = useActiveExecutionStore.getState();
+    store.applySnapshot('thread-a', store.beginHydration('thread-a'), {
+      projectPath: '/project/cafe',
+      executions,
+    });
+
+    await Promise.all(executions.map(cancelProjectedExecution));
+
+    const cancels = mocks.apiFetch.mock.calls.filter(([, init]) => init?.method === 'POST');
+    expect(cancels).toEqual(
+      ['codex-astra', 'fable5'].map((catId) => [
+        '/api/threads/thread-a/executions/live/inv-exact/cancel',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ catId }),
+        },
+      ]),
+    );
   });
 });
 beforeAll(() => {

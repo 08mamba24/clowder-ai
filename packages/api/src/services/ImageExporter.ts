@@ -1,16 +1,18 @@
-import { execFileSync } from 'node:child_process';
-import fs from 'node:fs';
-import puppeteer, { type Browser } from 'puppeteer-core';
+import type { Page } from 'puppeteer-core';
 import sharp from 'sharp';
 import { createModuleLogger } from '../infrastructure/logger.js';
 import {
+  assertBeforeHtmlWidgetExportDeadline,
   assertFreshHtmlWidgetExportCapturePlan,
   type BrowserDocumentSnapshot,
   captureVerifiedImageExportCandidate,
+  createHtmlWidgetExportOperation,
+  type HtmlWidgetExportOperation,
   readHtmlWidgetExportLayoutSnapshot,
   readImageExportCaptureHeight,
   refreshHtmlWidgetExportLayoutProof,
 } from './html-widget-export-readiness.js';
+import { ImageExportBrowserSession } from './image-export-browser-session.js';
 
 export { resolveExportCaptureHeight } from './html-widget-export-readiness.js';
 
@@ -63,83 +65,17 @@ export async function stitchImageExportChunks(
     .toBuffer();
 }
 
-function resolveConfiguredChromePath(): string | null {
-  const envPath = process.env.CHROME_EXECUTABLE_PATH;
-  if (!envPath) return null;
-  if (fs.existsSync(envPath)) {
-    log.info({ path: envPath }, 'Using CHROME_EXECUTABLE_PATH from env');
-    return envPath;
-  }
-  log.warn({ path: envPath }, 'CHROME_EXECUTABLE_PATH set but file not found, falling back to auto-detect');
-  return null;
-}
-
-function findLinuxBrowserCandidates(): string[] {
-  const candidates: string[] = [];
-  for (const name of ['google-chrome', 'google-chrome-stable', 'microsoft-edge', 'chromium', 'chromium-browser']) {
-    try {
-      const resolved = execFileSync('which', [name], { encoding: 'utf8' }).trim();
-      if (resolved) candidates.push(resolved);
-    } catch {
-      // not found, continue
-    }
-  }
-  return candidates;
-}
-
-function browserCandidatesForPlatform(): string[] {
-  if (process.platform === 'darwin') {
-    return [
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-      '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    ];
-  }
-
-  if (process.platform === 'win32') {
-    return [
-      process.env.PROGRAMFILES ? `${process.env.PROGRAMFILES}\\Google\\Chrome\\Application\\chrome.exe` : null,
-      process.env['PROGRAMFILES(X86)']
-        ? `${process.env['PROGRAMFILES(X86)']}\\Google\\Chrome\\Application\\chrome.exe`
-        : null,
-      process.env.PROGRAMFILES ? `${process.env.PROGRAMFILES}\\Microsoft\\Edge\\Application\\msedge.exe` : null,
-    ].filter((candidate): candidate is string => Boolean(candidate));
-  }
-
-  if (process.platform === 'linux') return findLinuxBrowserCandidates();
-  return [];
-}
-
-/**
- * Detect a Chromium-based browser executable on the system.
- * Priority: CHROME_EXECUTABLE_PATH env > system Chrome > Edge > Chromium.
- * CDP (Chrome DevTools Protocol) requires a Chromium-based browser —
- * Firefox/Safari are not supported.
- */
-function detectChromePath(): string {
-  const configuredPath = resolveConfiguredChromePath();
-  if (configuredPath) return configuredPath;
-
-  const candidates = browserCandidatesForPlatform();
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      log.info({ path: candidate }, 'Detected Chromium-based browser');
-      return candidate;
-    }
-  }
-
-  throw new Error(
-    `No Chromium-based browser found. Set CHROME_EXECUTABLE_PATH or install Chrome/Edge/Chromium. Searched: ${candidates.join(', ')}`,
-  );
-}
-
 /**
  * ImageExporter service for capturing screenshots of web pages using Chrome headless.
  * Uses scroll-and-stitch with Sharp to handle pages of any height without
  * hitting Chrome's GPU texture limit (~16384px) which causes content duplication.
  */
 export class ImageExporter {
-  private browser: Browser | null = null;
+  private readonly browserSession = new ImageExportBrowserSession();
+
+  private get browser() {
+    return this.browserSession.browser;
+  }
 
   /**
    * Capture a screenshot of the given URL.
@@ -147,17 +83,9 @@ export class ImageExporter {
    * and stitches them together using Sharp.
    */
   async capture(url: string, userId: string, options?: ImageExportCaptureOptions): Promise<Buffer> {
-    let page: puppeteer.Page | null = null;
+    let page: Page | null = null;
     try {
-      if (!this.browser) {
-        this.browser = await puppeteer.launch({
-          executablePath: detectChromePath(),
-          headless: true,
-          args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-        });
-      }
-
-      page = await this.browser.newPage();
+      page = await this.browserSession.openPage();
       const capturePage = page;
 
       await page.setExtraHTTPHeaders({ 'X-Cat-Cafe-User': userId });
@@ -174,21 +102,24 @@ export class ImageExporter {
 
       // Next's development error indicator is outside the application export root.
       // It must never become part of a user document, even when dogfooding a dev build.
+      const htmlWidgetExportOperation = createHtmlWidgetExportOperation();
       await page.addStyleTag({ content: 'nextjs-portal { display: none !important; }' });
+      assertBeforeHtmlWidgetExportDeadline(htmlWidgetExportOperation, 'export preparation');
 
       // A sandbox iframe's internal document height is invisible to the parent page.
       // HtmlWidgetBlock bridges it explicitly and marks export expansion readiness.
       // Fail closed here instead of measuring the still-clipped iframe rectangle.
-      await this.waitForHtmlWidgets(page);
+      await this.waitForHtmlWidgets(page, htmlWidgetExportOperation);
 
       // Wait for React and responsive iframe reflow to finish changing the parent height.
-      await this.waitForStableHeight(page);
+      await this.waitForStableHeight(page, htmlWidgetExportOperation);
 
-      const pageHeight = await readImageExportCaptureHeight(page);
+      const pageHeight = await readImageExportCaptureHeight(page, htmlWidgetExportOperation);
       const messageCount = await page.evaluate(() => {
         const { document } = globalThis as unknown as { document: BrowserDocumentSnapshot };
         return document.querySelectorAll('[data-message-id]').length;
       });
+      assertBeforeHtmlWidgetExportDeadline(htmlWidgetExportOperation, 'message count read');
       if (options?.selectionMessageIds && messageCount !== options.selectionMessageIds.length) {
         throw new Error(
           `Selection DOM count mismatch: expected ${options.selectionMessageIds.length}, rendered ${messageCount}`,
@@ -202,12 +133,22 @@ export class ImageExporter {
       // Short page: single viewport screenshot (no stitching needed)
       if (pageHeight <= CHUNK_HEIGHT) {
         await page.setViewport({ width: VIEWPORT_WIDTH, height: pageHeight });
-        await this.waitForPaint(page);
+        assertBeforeHtmlWidgetExportDeadline(htmlWidgetExportOperation, 'single capture viewport');
+        await this.waitForPaint(page, htmlWidgetExportOperation);
         const screenshot = await captureVerifiedImageExportCandidate(
-          () => assertFreshHtmlWidgetExportCapturePlan(capturePage, pageHeight),
+          (operation) => assertFreshHtmlWidgetExportCapturePlan(capturePage, pageHeight, operation),
           () => capturePage.screenshot({ type: 'png' }),
+          htmlWidgetExportOperation,
         );
-        log.info({ bytes: screenshot.length }, 'Captured single screenshot');
+        log.info(
+          {
+            bytes: screenshot.length,
+            exportElapsedMs: Date.now() - htmlWidgetExportOperation.startedAt,
+            exportBudgetMs: htmlWidgetExportOperation.deadlineAt - htmlWidgetExportOperation.startedAt,
+            layoutProofs: htmlWidgetExportOperation.proofSequence,
+          },
+          'Captured single screenshot',
+        );
         return screenshot as Buffer;
       }
 
@@ -215,11 +156,13 @@ export class ImageExporter {
       const chunks: { buffer: Buffer; top: number; height: number }[] = [];
 
       await page.setViewport({ width: VIEWPORT_WIDTH, height: CHUNK_HEIGHT });
-      await this.waitForPaint(page);
+      assertBeforeHtmlWidgetExportDeadline(htmlWidgetExportOperation, 'chunk capture viewport');
+      await this.waitForPaint(page, htmlWidgetExportOperation);
 
       // Scroll to top first
       await page.evaluate(() => (globalThis as unknown as BrowserWindowSnapshot).scrollTo(0, 0));
-      await this.waitForPaint(page);
+      assertBeforeHtmlWidgetExportDeadline(htmlWidgetExportOperation, 'chunk capture scroll');
+      await this.waitForPaint(page, htmlWidgetExportOperation);
 
       for (let y = 0; y < pageHeight; y += CHUNK_HEIGHT) {
         const chunkH = Math.min(CHUNK_HEIGHT, pageHeight - y);
@@ -228,24 +171,28 @@ export class ImageExporter {
         await page.evaluate((scrollY: number) => {
           (globalThis as unknown as BrowserWindowSnapshot).scrollTo(0, scrollY);
         }, y);
-        await this.waitForPaint(page);
+        assertBeforeHtmlWidgetExportDeadline(htmlWidgetExportOperation, 'chunk capture scroll');
+        await this.waitForPaint(page, htmlWidgetExportOperation);
 
         // For the last chunk, resize viewport to exact remaining height
         if (chunkH < CHUNK_HEIGHT) {
           await page.setViewport({ width: VIEWPORT_WIDTH, height: chunkH });
-          await this.waitForPaint(page);
+          assertBeforeHtmlWidgetExportDeadline(htmlWidgetExportOperation, 'chunk capture viewport');
+          await this.waitForPaint(page, htmlWidgetExportOperation);
           // Re-scroll after resize: with the larger viewport, scrollTo(y) above was
           // clamped to maxScrollTop (= pageHeight - oldViewportHeight). After shrinking
           // the viewport, maxScrollTop increases, so we can now reach y.
           await page.evaluate((scrollY: number) => {
             (globalThis as unknown as BrowserWindowSnapshot).scrollTo(0, scrollY);
           }, y);
-          await this.waitForPaint(page);
+          assertBeforeHtmlWidgetExportDeadline(htmlWidgetExportOperation, 'chunk capture scroll');
+          await this.waitForPaint(page, htmlWidgetExportOperation);
         }
 
         const chunk = await captureVerifiedImageExportCandidate(
-          () => assertFreshHtmlWidgetExportCapturePlan(capturePage, pageHeight),
+          (operation) => assertFreshHtmlWidgetExportCapturePlan(capturePage, pageHeight, operation),
           async () => (await capturePage.screenshot({ type: 'png' })) as Buffer,
+          htmlWidgetExportOperation,
         );
         chunks.push({ buffer: chunk, top: y, height: chunkH });
       }
@@ -254,8 +201,17 @@ export class ImageExporter {
 
       // Stitch chunks vertically using Sharp
       const stitched = await stitchImageExportChunks(VIEWPORT_WIDTH, pageHeight, chunks);
+      assertBeforeHtmlWidgetExportDeadline(htmlWidgetExportOperation, 'stitched PNG commit');
 
-      log.info({ bytes: stitched.length }, 'Stitched image ready');
+      log.info(
+        {
+          bytes: stitched.length,
+          exportElapsedMs: Date.now() - htmlWidgetExportOperation.startedAt,
+          exportBudgetMs: htmlWidgetExportOperation.deadlineAt - htmlWidgetExportOperation.startedAt,
+          layoutProofs: htmlWidgetExportOperation.proofSequence,
+        },
+        'Stitched image ready',
+      );
       return stitched;
     } catch (error) {
       throw new Error(`Screenshot capture failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -272,17 +228,19 @@ export class ImageExporter {
    * Wait until document.scrollHeight stabilizes (no change for multiple consecutive checks).
    * Handles React rendering large message lists that may take many frames to commit.
    */
-  private async waitForStableHeight(page: puppeteer.Page, maxWait = 8000, interval = 300): Promise<void> {
+  private async waitForStableHeight(page: Page, operation: HtmlWidgetExportOperation, interval = 300): Promise<void> {
     const requiredStableChecks = 3;
     let lastHeight = 0;
     let stableChecks = 0;
     const start = Date.now();
 
-    while (Date.now() - start < maxWait) {
-      const { height } = await refreshHtmlWidgetExportLayoutProof(page);
+    while (true) {
+      assertBeforeHtmlWidgetExportDeadline(operation, 'height stability');
+      const { height } = await refreshHtmlWidgetExportLayoutProof(page, operation);
       if (height === lastHeight && height > 0) {
         stableChecks++;
         if (stableChecks >= requiredStableChecks) {
+          assertBeforeHtmlWidgetExportDeadline(operation, 'height stability');
           log.info({ height, elapsed: Date.now() - start }, 'Page height stabilized');
           return;
         }
@@ -290,47 +248,43 @@ export class ImageExporter {
         stableChecks = 0;
         lastHeight = height;
       }
-      await new Promise<void>((resolve) => setTimeout(resolve, interval));
+      const remainingWait = operation.deadlineAt - Date.now();
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(interval, remainingWait)));
     }
-    const elapsed = Date.now() - start;
-    throw new Error(`Page height did not stabilize within maxWait (${elapsed}ms, last height ${lastHeight}px)`);
   }
 
-  private async waitForHtmlWidgets(page: puppeteer.Page, maxWait = 10_000, interval = 100): Promise<void> {
+  private async waitForHtmlWidgets(page: Page, operation: HtmlWidgetExportOperation, interval = 100): Promise<void> {
     const start = Date.now();
-    let lastPending: string[] = [];
-
-    while (Date.now() - start < maxWait) {
+    while (true) {
+      assertBeforeHtmlWidgetExportDeadline(operation, 'widget readiness');
       const { readiness } = await readHtmlWidgetExportLayoutSnapshot(page);
+      assertBeforeHtmlWidgetExportDeadline(operation, 'widget readiness');
       if (readiness.status === 'ready') {
-        await refreshHtmlWidgetExportLayoutProof(page);
+        await refreshHtmlWidgetExportLayoutProof(page, operation);
+        assertBeforeHtmlWidgetExportDeadline(operation, 'widget readiness');
         log.info({ widgets: readiness.widgetIds.length, elapsed: Date.now() - start }, 'HTML widgets export-ready');
         return;
       }
       if (readiness.status === 'error') {
         throw new Error(`HTML widget layout failed: ${readiness.widgetIds.join(', ')}`);
       }
-      lastPending = readiness.widgetIds;
-      await new Promise<void>((resolve) => setTimeout(resolve, interval));
+      const remainingWait = operation.deadlineAt - Date.now();
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(interval, remainingWait)));
     }
-
-    throw new Error(`HTML widget layout did not become export-ready: ${lastPending.join(', ') || 'unknown'}`);
   }
 
   /** Wait for two animation frames (one paint cycle). */
-  private async waitForPaint(page: puppeteer.Page): Promise<void> {
+  private async waitForPaint(page: Page, operation: HtmlWidgetExportOperation): Promise<void> {
     await page.evaluate(() => {
       const browserWindow = globalThis as unknown as BrowserWindowSnapshot;
       return new Promise<void>((resolve) =>
         browserWindow.requestAnimationFrame(() => browserWindow.requestAnimationFrame(() => resolve())),
       );
     });
+    assertBeforeHtmlWidgetExportDeadline(operation, 'paint wait');
   }
 
-  async close() {
-    if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
-    }
+  async close(): Promise<void> {
+    await this.browserSession.close();
   }
 }

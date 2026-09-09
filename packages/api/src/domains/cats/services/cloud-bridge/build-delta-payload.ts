@@ -4,7 +4,7 @@
  * The bridge inject payload does NOT repeat the cloud cat's persistent
  * Custom Instructions (the 1500-token persona / cat-cafe tool discipline
  * lives in ChatGPT-side Custom Instructions, not in our payload). Instead
- * we ship a small runtime delta — 5 fields — telling the cloud cat which
+ * we ship a small runtime delta telling the cloud cat which
  * thread it's responding in.
  *
  * Treatment: **delta is data, not authority.** All user-controlled fields
@@ -17,10 +17,14 @@
  *
  * Renders as:
  *   <thread-runtime v=1 format=json>
- *   {"threadId": "...", "threadTitle": "...", "participants": [...], "calledBy": "...", "intent": "..."}
+ *   {"threadId": "...", "threadTitle": "...", "participants": [...], "calledBy": "...", "intent": "...", "sourceMessageId": "..."}
  *   </thread-runtime>
  *
  *   <intent text rendered separately for the cat to read as its message>
+ *
+ *   <cat-cafe-return-contract v=1>
+ *   <fixed server-authored Remote MCP completion instruction>
+ *   </cat-cafe-return-contract>
  */
 
 import type { CloudInvokeDispatchParams } from './types.js';
@@ -36,6 +40,60 @@ export const DELTA_PAYLOAD_MAX_CHARS = 2000;
 
 /** Sentinel suffix appended after intent truncation. */
 const TRUNCATE_SUFFIX = '...[truncated]';
+
+/**
+ * Query-local completion contract for the cloud cat.
+ *
+ * This is deliberately a fixed literal outside the untrusted runtime JSON and
+ * raw intent. It carries no capability or secret: the API still authorizes the
+ * exact thread/source/cat tuple through the server-custodied one-shot grant.
+ * Repeating the contract on every dispatched turn makes Remote MCP the salient
+ * primary return path instead of relying on the browser observer fallback.
+ */
+const SOURCE_BOUND_MCP_RETURN_CONTRACT = `<cat-cafe-return-contract v=1>
+To complete this request, call cat_cafe_post_message with agentKeyCatId="gpt-pro", threadId from thread-runtime, replyTo=sourceMessageId from thread-runtime, and content equal to your complete final answer. A visible ChatGPT answer alone does not complete this request. Treat callback status "ok" or "duplicate" as success; do not invent identifiers or retry an authorization rejection.
+</cat-cafe-return-contract>`;
+
+function assertExactSourceMessageId(sourceMessageId: string): void {
+  if (!sourceMessageId || sourceMessageId.length > 512) {
+    throw new Error('sourceMessageId must be an exact persisted message ID of at most 512 characters');
+  }
+}
+
+function tryFitByDroppingParticipants(params: CloudInvokeDispatchParams): string | null {
+  for (let keepCount = params.participants.length - 1; keepCount >= 0; keepCount--) {
+    const fit = tryFitWithIntentShrink({
+      ...params,
+      participants: params.participants.slice(0, keepCount),
+    });
+    if (fit) return fit;
+  }
+  return null;
+}
+
+function tryFitWithShortTitle(params: CloudInvokeDispatchParams): string | null {
+  if (!params.threadTitle || params.threadTitle.length <= 30) return null;
+  return tryFitWithIntentShrink({
+    ...params,
+    participants: [],
+    threadTitle: `${params.threadTitle.slice(0, 30)}…`,
+  });
+}
+
+function renderAbsoluteFloor(params: CloudInvokeDispatchParams): string {
+  const floorIntent = '[delta over cap]';
+  const absoluteFloor: CloudInvokeDispatchParams = {
+    catId: ((params.catId as string).slice(0, 32) || 'X') as typeof params.catId,
+    threadId: params.threadId.slice(0, 40) || 'X',
+    userId: params.userId.slice(0, 32) || 'X',
+    threadTitle: null,
+    participants: [],
+    calledBy: (params.calledBy as string).slice(0, 32) || 'X',
+    intent: floorIntent,
+    sourceMessageId: params.sourceMessageId,
+  };
+  return renderEnvelope(absoluteFloor, floorIntent);
+}
 
 /**
  * Build the rendered delta payload for the cloud cat.
@@ -54,12 +112,14 @@ const TRUNCATE_SUFFIX = '...[truncated]';
  *   5. Last-resort envelope: minimal fields + diagnostic intent.
  *
  * Returns a single string with the JSON-wrapped delta block followed by a
- * blank line and the raw intent text (for the cat to treat as the user
- * message). Caller should call this BEFORE invoking the PinchTab adapter
+ * blank line, the raw intent text (for the cat to treat as the user message),
+ * and the fixed source-bound MCP return contract. Caller should call this
+ * BEFORE invoking the PinchTab adapter
  * so the rendered string is then JSON.stringify'd at the eval boundary
  * (defense in depth — AC-B1c-10).
  */
 export function buildDeltaPayload(params: CloudInvokeDispatchParams): string {
+  assertExactSourceMessageId(params.sourceMessageId);
   // Attempt 1: full payload as-is.
   const fitFull = tryFitWithIntentShrink(params);
   if (fitFull) return fitFull;
@@ -67,27 +127,12 @@ export function buildDeltaPayload(params: CloudInvokeDispatchParams): string {
   // Attempt 2: drop participants from the end (descending) — keeps "called by" /
   // thread context intact, only loses the participant list (which is best-effort
   // anyway, the cloud cat can call `get_thread_context` for the live roster).
-  if (params.participants.length > 0) {
-    for (let keepCount = params.participants.length - 1; keepCount >= 0; keepCount--) {
-      const trimmed: CloudInvokeDispatchParams = {
-        ...params,
-        participants: params.participants.slice(0, keepCount),
-      };
-      const fit = tryFitWithIntentShrink(trimmed);
-      if (fit) return fit;
-    }
-  }
+  const fitWithoutTrailingParticipants = tryFitByDroppingParticipants(params);
+  if (fitWithoutTrailingParticipants) return fitWithoutTrailingParticipants;
 
   // Attempt 3: also truncate threadTitle to a tight slice.
-  if (params.threadTitle && params.threadTitle.length > 30) {
-    const trimmed: CloudInvokeDispatchParams = {
-      ...params,
-      participants: [],
-      threadTitle: `${params.threadTitle.slice(0, 30)}…`,
-    };
-    const fit = tryFitWithIntentShrink(trimmed);
-    if (fit) return fit;
-  }
+  const fitWithShortTitle = tryFitWithShortTitle(params);
+  if (fitWithShortTitle) return fitWithShortTitle;
 
   // Last-resort: minimal envelope with diagnostic intent. If even this is over
   // cap (e.g. pathologically long `threadId` / `calledBy` / `catId`), we
@@ -108,17 +153,7 @@ export function buildDeltaPayload(params: CloudInvokeDispatchParams): string {
   // every interior field so the envelope wrapper still fits. The cloud cat sees
   // a heavily-clipped delta but with the spec-required envelope shape — which
   // is what the parser contract demands.
-  const ABS_FLOOR_INTENT = '[delta over cap]';
-  const absoluteFloor: CloudInvokeDispatchParams = {
-    catId: ((params.catId as string).slice(0, 32) || 'X') as typeof params.catId,
-    threadId: params.threadId.slice(0, 40) || 'X',
-    userId: params.userId.slice(0, 32) || 'X',
-    threadTitle: null,
-    participants: [],
-    calledBy: (params.calledBy as string).slice(0, 32) || 'X',
-    intent: ABS_FLOOR_INTENT,
-  };
-  return renderEnvelope(absoluteFloor, ABS_FLOOR_INTENT);
+  return renderAbsoluteFloor(params);
 }
 
 /**
@@ -167,10 +202,11 @@ function renderEnvelope(params: CloudInvokeDispatchParams, intent: string): stri
     participants: params.participants.map((p) => ({ catId: p.catId, handle: p.handle })),
     calledBy: params.calledBy,
     intent,
+    sourceMessageId: params.sourceMessageId,
   };
   // JSON.stringify with no spaces — compact, stable, escapes all delimiters.
   const json = JSON.stringify(delta);
-  return `<thread-runtime v=1 format=json>\n${json}\n</thread-runtime>\n\n${intent}`;
+  return `<thread-runtime v=1 format=json>\n${json}\n</thread-runtime>\n\n${intent}\n\n${SOURCE_BOUND_MCP_RETURN_CONTRACT}`;
 }
 
 /**

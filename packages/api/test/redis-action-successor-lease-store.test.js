@@ -330,7 +330,7 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
     assert.equal(persisted.status, 'replaceable');
   });
 
-  it('atomically continues exactly one fresh subject revision on the same lease and key', async () => {
+  it('atomically continues exactly one fresh subject revision on a new lease under the same key', async () => {
     const claimed = await store.claim(
       claimInput({
         actionFamily: 'review',
@@ -352,6 +352,7 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
     assert.equal(completed.outcome, 'committed');
 
     const input = {
+      successorLeaseId: 'lease-fresh-head-b',
       expectedGeneration: 1,
       terminalPredicate: reviewPredicate('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),
       holderCatIds: ['codex-terra'],
@@ -369,12 +370,28 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
       store.continueFreshRevision(claimed.lease.leaseId, input),
     ]);
 
-    assert.deepEqual(new Set([a.outcome, b.outcome]), new Set(['continued', 'stale_generation']));
-    const persisted = await store.get(claimed.lease.leaseId);
+    assert.equal(a.outcome, 'continued');
+    assert.equal(b.outcome, 'continued');
+    assert.equal(a.lease.leaseId, 'lease-fresh-head-b');
+    assert.equal(b.lease.leaseId, 'lease-fresh-head-b');
+    const oldPersisted = await store.get(claimed.lease.leaseId);
+    assert.equal(oldPersisted.status, 'completed');
+    assert.equal(oldPersisted.generation, 1);
+    const persisted = await store.get('lease-fresh-head-b');
     assert.equal(persisted.key, claimed.lease.key);
-    assert.equal(persisted.generation, 2);
+    assert.equal(persisted.generation, 1);
     assert.equal(persisted.status, 'active');
-    assert.deepEqual(await store.preflight(persisted.leaseId, 1), { ok: false, reason: 'stale_generation' });
+    assert.equal((await store.getByIdentity(claimed.lease)).leaseId, 'lease-fresh-head-b');
+    assert.deepEqual(await store.preflight(oldPersisted.leaseId, 1), { ok: false, reason: 'lease_not_active' });
+
+    await assert.rejects(
+      store.continueFreshRevision(claimed.lease.leaseId, {
+        ...input,
+        successorLeaseId: 'lease-fresh-head-conflict',
+        holderCatIds: ['opus'],
+      }),
+      /fresh-revision replay mismatch/,
+    );
   });
 
   it('atomically upgrades a completed legacy generation to a predicate-backed revision', async () => {
@@ -406,6 +423,7 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
     assert.deepEqual(completed.lease.terminalPredicateState, { kind: 'legacy_predicate_absent' });
 
     const continued = await store.continueFreshRevision(legacyLease.leaseId, {
+      successorLeaseId: 'lease-fresh-head-legacy',
       expectedGeneration: 1,
       terminalPredicate: reviewPredicate('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),
       holderCatIds: ['codex-terra'],
@@ -420,7 +438,8 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
     });
 
     assert.equal(continued.outcome, 'continued');
-    assert.equal(continued.lease.generation, 2);
+    assert.equal(continued.lease.leaseId, 'lease-fresh-head-legacy');
+    assert.equal(continued.lease.generation, 1);
     assert.equal(continued.lease.status, 'active');
     assert.deepEqual(continued.lease.terminalPredicateState, { kind: 'predicate_backed' });
     assert.ok(continued.lease.terminalPredicate);
@@ -623,6 +642,7 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
     });
 
     const result = await store.continueFreshRevision(claimed.lease.leaseId, {
+      successorLeaseId: 'lease-fresh-head-existing-standing',
       expectedGeneration: 1,
       terminalPredicate: reviewPredicate('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),
       holderCatIds: ['codex-sol'],
@@ -635,7 +655,7 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
     });
 
     assert.equal(result.outcome, 'continued');
-    const persisted = await store.get(claimed.lease.leaseId);
+    const persisted = await store.get(result.lease.leaseId);
     assert.equal(persisted.claimOrigin, 'existing_standing');
     assert.equal(persisted.predecessorCatId, undefined);
     assert.equal(persisted.predecessorThreadId, undefined);
@@ -702,6 +722,7 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
     });
 
     const result = await store.continueFreshRevision(claimed.lease.leaseId, {
+      successorLeaseId: 'lease-fresh-head-terminal-subject',
       expectedGeneration: 1,
       terminalPredicate: reviewPredicate('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),
       holderCatIds: ['codex-terra'],
@@ -719,94 +740,6 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
     const persisted = await store.get(claimed.lease.leaseId);
     assert.equal(persisted.generation, 1);
     assert.equal(persisted.status, 'completed');
-  });
-
-  it('allows exactly one active stale local-review recovery CAS and returns every identical replay as recovered', async () => {
-    const claimed = await store.claim(
-      claimInput({
-        actionFamily: 'review',
-        terminalPredicate: reviewPredicate('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
-      }),
-    );
-    const recovery = (index) => ({
-      expectedGeneration: 1,
-      reviewerCatId: 'codex-terra',
-      predecessorCatId: 'codex-sol',
-      predecessorThreadId: 'thread-source',
-      tenantScope: 'user-1',
-      headSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      evidenceRef: 'local-review:message-stale-verdict:g1:changes_requested',
-      now: 120 + index,
-    });
-
-    const attempts = await Promise.all(
-      Array.from({ length: 12 }, (_, index) => store.recoverLocalReviewVerdict(claimed.lease.leaseId, recovery(index))),
-    );
-
-    assert.equal(attempts.filter((result) => result.outcome === 'recovered').length, 1);
-    assert.equal(attempts.filter((result) => result.outcome === 'replayed').length, 11);
-    assert.equal(attempts.filter((result) => result.outcome === 'lease_not_active').length, 0);
-    const persisted = await store.get(claimed.lease.leaseId);
-    assert.equal(persisted.status, 'completed');
-    assert.equal(persisted.holderOutcomes['codex-terra'].outcome, 'succeeded');
-    assert.ok(persisted.evidenceRefs.includes('local-review:message-stale-verdict:g1:changes_requested'));
-
-    const conflictingReplay = await store.recoverLocalReviewVerdict(claimed.lease.leaseId, {
-      ...recovery(12),
-      evidenceRef: 'local-review:another-message:g1:changes_requested',
-    });
-    assert.equal(conflictingReplay.outcome, 'lease_not_active');
-
-    const reentry = await store.continueFreshRevision(claimed.lease.leaseId, {
-      expectedGeneration: 1,
-      terminalPredicate: reviewPredicate('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),
-      holderCatIds: ['kimi'],
-      holderThreadId: 'thread-next-review',
-      claimOrigin: 'structured_transfer',
-      predecessorCatId: 'codex-sol',
-      predecessorThreadId: 'thread-source',
-      dispatchId: 'dispatch-fresh-review',
-      issuerStandingEvidenceRef: 'message:fresh-review-request',
-      evidenceRef: 'tracking:pr:owner/repo#2868:head:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      reviewReentry: { reason: 'stale_or_blocking', evidenceRef: 'message-stale-verdict' },
-      now: 150,
-    });
-    assert.equal(reentry.outcome, 'continued');
-    assert.equal(reentry.lease.generation, 2);
-    assert.deepEqual(reentry.lease.holderCatIds, ['kimi']);
-    assert.equal(reentry.lease.status, 'active');
-  });
-
-  it('does not overwrite a completion candidate that races historical local-review recovery', async () => {
-    const claimed = await store.claim(
-      claimInput({
-        actionFamily: 'review',
-        terminalPredicate: reviewPredicate('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
-      }),
-    );
-    await store.recordCompletionCandidate(claimed.lease.leaseId, {
-      generation: 1,
-      catId: 'codex-terra',
-      evidenceRefs: ['community:pr:owner/repo#2868:review:g1'],
-      now: 110,
-    });
-
-    const result = await store.recoverLocalReviewVerdict(claimed.lease.leaseId, {
-      expectedGeneration: 1,
-      reviewerCatId: 'codex-terra',
-      predecessorCatId: 'codex-sol',
-      predecessorThreadId: 'thread-source',
-      tenantScope: 'user-1',
-      headSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      evidenceRef: 'local-review:message-stale-verdict:g1:changes_requested',
-      now: 120,
-    });
-
-    assert.equal(result.outcome, 'candidate_present');
-    const persisted = await store.get(claimed.lease.leaseId);
-    assert.equal(persisted.status, 'active');
-    assert.ok(persisted.completionCandidates['codex-terra']);
-    assert.equal(persisted.holderOutcomes['codex-terra'], undefined);
   });
 
   it('allows exactly one concurrent return and keeps delivery state in the same lease', async () => {
@@ -865,6 +798,8 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
 
     const input = {
       expectedGeneration: 1,
+      expectedRevision: pending.revision,
+      expectedPredicateDigest: pending.terminalPredicate.digest,
       reason: 'carrier_source_conflict',
       evidenceRef: 'message:conflicting-approved-carrier',
       now: 120,
@@ -874,7 +809,7 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
       store.markDispatchFailed(claimed.lease.leaseId, { ...input, now: 121 }),
     ]);
 
-    assert.deepEqual(new Set(attempts.map((result) => result.outcome)), new Set(['failed', 'dispatch_not_pending']));
+    assert.deepEqual(new Set(attempts.map((result) => result.outcome)), new Set(['failed', 'stale_revision']));
     const persisted = await store.get(claimed.lease.leaseId);
     assert.equal(persisted.status, 'active', 'transport failure must not masquerade as handled work');
     assert.equal(persisted.dispatchDeliveryState, 'failed');
@@ -889,8 +824,263 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
       evidenceRef: 'message:another-carrier',
       now: 122,
     });
-    assert.equal(conflictingReplay.outcome, 'dispatch_not_pending');
+    assert.equal(conflictingReplay.outcome, 'stale_revision');
     assert.equal(conflictingReplay.lease.dispatchFailureReason, 'carrier_source_conflict');
+  });
+
+  it('atomically retires one stale pending dispatch with unavailable holder truth and keeps it replaceable', async () => {
+    const oldPredicate = reviewPredicate('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    const claimed = await store.claim(claimInput({ actionFamily: 'review', terminalPredicate: oldPredicate }));
+    const pending = {
+      ...claimed.lease,
+      dispatchDeliveryState: 'pending',
+      dispatchDeliveryAttemptCount: 0,
+    };
+    await redis.set(ActionSuccessorKeys.detail(pending.leaseId), JSON.stringify(pending));
+    const mismatch = {
+      expectedGeneration: pending.generation,
+      expectedRevision: pending.revision,
+      expectedPredicateDigest: oldPredicate.digest,
+      evidenceRef: `community:${pending.subjectRef}:head:${'b'.repeat(40)}`,
+      now: 120,
+    };
+
+    const results = await Promise.all([
+      store.retirePendingDispatchForFreshnessMismatch(pending.leaseId, mismatch),
+      store.retirePendingDispatchForFreshnessMismatch(pending.leaseId, { ...mismatch, now: 121 }),
+    ]);
+
+    assert.deepEqual(new Set(results.map((result) => result.outcome)), new Set(['retired', 'stale_revision']));
+    const persisted = await store.get(pending.leaseId);
+    assert.equal(persisted.dispatchDeliveryState, 'failed');
+    assert.equal(persisted.dispatchFailureReason, 'terminal_predicate_mismatch');
+    assert.equal(persisted.dispatchFailureEvidenceRef, mismatch.evidenceRef);
+    assert.equal(persisted.holderOutcomes['codex-terra'].outcome, 'unavailable');
+    assert.equal(persisted.holderOutcomes['codex-terra'].evidenceRef, mismatch.evidenceRef);
+    assert.equal(persisted.status, 'replaceable');
+    assert.equal(persisted.revision, pending.revision + 1, 'the mismatch retirement is one successful CAS');
+    assert.deepEqual(await store.listPendingDispatches(), []);
+
+    const replacement = await store.replace(persisted.leaseId, {
+      expectedGeneration: persisted.generation,
+      holderCatIds: ['codex-terra'],
+      holderThreadId: 'thread-target',
+      claimOrigin: 'structured_transfer',
+      predecessorCatId: 'codex-sol',
+      predecessorThreadId: 'thread-source',
+      dispatchId: 'dispatch-current-head',
+      issuerStandingEvidenceRef: 'message:current-head-request',
+      evidenceRef: 'message:current-head-request',
+      terminalPredicate: reviewPredicate('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),
+      now: 130,
+    });
+    assert.equal(replacement.outcome, 'replaced');
+    assert.equal(replacement.lease.generation, 2);
+  });
+
+  it('linearizes a verified attempt against a newer-head retirement on the exact lease revision', async () => {
+    const oldPredicate = reviewPredicate('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    const claimed = await store.claim(claimInput({ actionFamily: 'review', terminalPredicate: oldPredicate }));
+    const pending = {
+      ...claimed.lease,
+      dispatchDeliveryState: 'pending',
+      dispatchDeliveryAttemptCount: 0,
+    };
+    await redis.set(ActionSuccessorKeys.detail(pending.leaseId), JSON.stringify(pending));
+
+    const [verifiedAttempt, newerHead] = await Promise.all([
+      store.recordDispatchDeliveryAttempt(pending.leaseId, {
+        expectedGeneration: pending.generation,
+        expectedRevision: pending.revision,
+        expectedPredicateDigest: oldPredicate.digest,
+        freshnessEvidenceRef: `community:${pending.subjectRef}:head:${'a'.repeat(40)}`,
+        now: 120,
+      }),
+      store.retirePendingDispatchForFreshnessMismatch(pending.leaseId, {
+        expectedGeneration: pending.generation,
+        expectedRevision: pending.revision,
+        expectedPredicateDigest: oldPredicate.digest,
+        evidenceRef: `community:${pending.subjectRef}:head:${'b'.repeat(40)}`,
+        now: 121,
+      }),
+    ]);
+
+    const outcomes = [verifiedAttempt.outcome, newerHead.outcome];
+    assert.equal(outcomes.filter((outcome) => outcome === 'stale_revision').length, 1);
+    assert.equal(
+      outcomes.some((outcome) => outcome === 'recorded' || outcome === 'retired'),
+      true,
+      'one exact-revision transition must linearize',
+    );
+    const persisted = await store.get(pending.leaseId);
+    assert.equal(persisted.revision, pending.revision + 1);
+    if (newerHead.outcome === 'retired') {
+      assert.equal(persisted.status, 'replaceable');
+      assert.equal(persisted.dispatchFailureReason, 'terminal_predicate_mismatch');
+    } else {
+      assert.equal(verifiedAttempt.outcome, 'recorded');
+      assert.equal(persisted.status, 'active');
+      assert.equal(persisted.dispatchDeliveryAttemptCount, 1);
+    }
+  });
+
+  it('linearizes a post-attempt delivery reservation against newer-head retirement before carrier entry', async () => {
+    const oldPredicate = reviewPredicate('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    const claimed = await store.claim(claimInput({ actionFamily: 'review', terminalPredicate: oldPredicate }));
+    const pending = {
+      ...claimed.lease,
+      dispatchDeliveryState: 'pending',
+      dispatchDeliveryAttemptCount: 0,
+    };
+    await redis.set(ActionSuccessorKeys.detail(pending.leaseId), JSON.stringify(pending));
+    const freshnessEvidenceRef = `community:${pending.subjectRef}:head:${'a'.repeat(40)}`;
+    const attempt = await store.recordDispatchDeliveryAttempt(pending.leaseId, {
+      expectedGeneration: pending.generation,
+      expectedRevision: pending.revision,
+      expectedPredicateDigest: oldPredicate.digest,
+      freshnessEvidenceRef,
+      now: 120,
+    });
+    assert.equal(attempt.outcome, 'recorded');
+
+    const [reservation, newerHead] = await Promise.all([
+      store.reserveDispatchDelivery(pending.leaseId, {
+        expectedGeneration: pending.generation,
+        expectedRevision: attempt.lease.revision,
+        expectedPredicateDigest: oldPredicate.digest,
+        freshnessEvidenceRef,
+        now: 121,
+      }),
+      store.retirePendingDispatchForFreshnessMismatch(pending.leaseId, {
+        expectedGeneration: pending.generation,
+        expectedRevision: attempt.lease.revision,
+        expectedPredicateDigest: oldPredicate.digest,
+        evidenceRef: `community:${pending.subjectRef}:head:${'b'.repeat(40)}`,
+        now: 122,
+      }),
+    ]);
+
+    assert.equal([reservation.outcome, newerHead.outcome].filter((outcome) => outcome === 'stale_revision').length, 1);
+    const persisted = await store.get(pending.leaseId);
+    assert.equal(persisted.revision, attempt.lease.revision + 1);
+    if (reservation.outcome === 'reserved') {
+      assert.equal(persisted.status, 'active');
+      assert.equal(persisted.dispatchDeliveryReservation.freshnessEvidenceRef, freshnessEvidenceRef);
+      assert.equal(
+        (
+          await store.retirePendingDispatchForFreshnessMismatch(pending.leaseId, {
+            expectedGeneration: pending.generation,
+            expectedRevision: persisted.revision,
+            expectedPredicateDigest: oldPredicate.digest,
+            evidenceRef: `community:${pending.subjectRef}:head:${'b'.repeat(40)}`,
+            now: 123,
+          })
+        ).outcome,
+        'dispatch_reserved',
+      );
+    } else {
+      assert.equal(newerHead.outcome, 'retired');
+      assert.equal(persisted.status, 'replaceable');
+      assert.equal(persisted.dispatchFailureReason, 'terminal_predicate_mismatch');
+    }
+  });
+
+  it('does not retire delivered, terminal-holder, stale-generation, or subject-terminal dispatch truth', async () => {
+    const predicate = reviewPredicate('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    const claimed = await store.claim(claimInput({ actionFamily: 'review', terminalPredicate: predicate }));
+    const pending = {
+      ...claimed.lease,
+      dispatchDeliveryState: 'pending',
+      dispatchDeliveryAttemptCount: 0,
+    };
+    await redis.set(ActionSuccessorKeys.detail(pending.leaseId), JSON.stringify(pending));
+    const baseInput = {
+      expectedGeneration: pending.generation,
+      expectedRevision: pending.revision,
+      expectedPredicateDigest: predicate.digest,
+      evidenceRef: `community:${pending.subjectRef}:head:${'b'.repeat(40)}`,
+      now: 120,
+    };
+
+    assert.equal(
+      (
+        await store.retirePendingDispatchForFreshnessMismatch(pending.leaseId, {
+          ...baseInput,
+          expectedGeneration: 2,
+        })
+      ).outcome,
+      'stale_generation',
+    );
+    assert.equal(
+      (
+        await store.retirePendingDispatchForFreshnessMismatch(pending.leaseId, {
+          ...baseInput,
+          expectedPredicateDigest: 'wrong-predicate',
+        })
+      ).outcome,
+      'predicate_mismatch',
+    );
+
+    const delivered = {
+      ...pending,
+      dispatchDeliveryState: 'delivered',
+      dispatchDeliveredMessageId: 'message:already-delivered',
+      revision: pending.revision + 1,
+    };
+    await redis.set(ActionSuccessorKeys.detail(pending.leaseId), JSON.stringify(delivered));
+    assert.equal(
+      (
+        await store.retirePendingDispatchForFreshnessMismatch(pending.leaseId, {
+          ...baseInput,
+          expectedRevision: delivered.revision,
+        })
+      ).outcome,
+      'dispatch_not_pending',
+    );
+    assert.equal((await store.get(pending.leaseId)).dispatchDeliveredMessageId, 'message:already-delivered');
+
+    const terminalHolder = {
+      ...pending,
+      mode: 'parallel',
+      holderCatIds: ['codex-terra', 'codex-sol'],
+      holderOutcomes: {
+        'codex-terra': { outcome: 'succeeded', evidenceRef: 'review:delivered', at: 121 },
+      },
+      revision: pending.revision + 1,
+    };
+    await redis.set(ActionSuccessorKeys.detail(pending.leaseId), JSON.stringify(terminalHolder));
+    assert.equal(
+      (
+        await store.retirePendingDispatchForFreshnessMismatch(pending.leaseId, {
+          ...baseInput,
+          expectedRevision: terminalHolder.revision,
+        })
+      ).outcome,
+      'holder_terminal',
+    );
+    assert.equal((await store.get(pending.leaseId)).holderOutcomes['codex-terra'].outcome, 'succeeded');
+
+    await redis.set(ActionSuccessorKeys.detail(pending.leaseId), JSON.stringify(pending));
+
+    await store.markSubjectTerminal({
+      subjectRef: pending.subjectRef,
+      state: 'closed',
+      evidenceRef: 'github:pr:owner/repo#2868:closed',
+      now: 121,
+    });
+    assert.equal(
+      (
+        await store.retirePendingDispatchForFreshnessMismatch(pending.leaseId, {
+          ...baseInput,
+          now: 122,
+        })
+      ).outcome,
+      'subject_terminal',
+    );
+    const unchanged = await store.get(pending.leaseId);
+    assert.equal(unchanged.dispatchDeliveryState, 'pending');
+    assert.equal(unchanged.status, 'active');
+    assert.equal(unchanged.holderOutcomes['codex-terra'], undefined);
   });
 
   it('allows exactly one returned-holder reattach and fences every stale replay', async () => {
@@ -944,7 +1134,14 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
   });
 
   it('enumerates pending/overdue returns and persists one overdue transition with attempt history', async () => {
-    const claimed = await store.claim(claimInput());
+    const claimed = await store.claim(
+      claimInput({
+        subjectRef: 'subject:task:task-1',
+        actionFamily: 'implement',
+        successorSlot: 'implementer',
+        terminalPredicate: taskPredicate(),
+      }),
+    );
     const returned = await store.returnToPredecessor(claimed.lease.leaseId, {
       expectedGeneration: 1,
       rejectingCatId: 'codex-terra',
@@ -990,6 +1187,27 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
     });
     assert.equal(delivered.outcome, 'delivered');
     assert.deepEqual(await store.listPendingReturns(), []);
+  });
+
+  it('does not enumerate a pre-cutover direct local-review return for startup wake recovery', async () => {
+    const claimed = await store.claim(
+      claimInput({
+        actionFamily: 'review',
+        successorSlot: 'reviewer',
+        terminalPredicate: reviewPredicate('a'.repeat(40)),
+      }),
+    );
+    const returned = await store.returnToPredecessor(claimed.lease.leaseId, {
+      expectedGeneration: 1,
+      rejectingCatId: 'codex-terra',
+      rejectingThreadId: 'thread-target',
+      dispatchId: 'return-retired-local-review',
+      groundingEvidenceRef: 'grounding:retired-local-review',
+      now: 120,
+    });
+    assert.equal(returned.outcome, 'returned');
+    assert.equal(returned.lease.returnDeliveryState, 'pending', 'historical state remains readable');
+    assert.deepEqual(await store.listPendingReturns(), [], 'historical local review must remain inert');
   });
 
   it('does not return custody after durable subject terminal truth exists', async () => {

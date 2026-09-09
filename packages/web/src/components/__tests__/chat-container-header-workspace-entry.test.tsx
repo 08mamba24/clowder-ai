@@ -39,6 +39,7 @@ describe('F284 Workspace entry', () => {
     expect(button?.textContent).toBe('');
     expect(button?.querySelector('[data-testid="workspace-activity-badge"]')).not.toBeNull();
     expect(button?.className).not.toContain('hidden');
+    expect(button?.className).toContain('z-40');
     expect(button?.className).toContain('bg-transparent');
     expect(button?.className).not.toContain('border');
   });
@@ -50,7 +51,6 @@ describe('F284 Workspace entry', () => {
           sidebarOpen={false}
           onToggleSidebar={vi.fn()}
           threadId="thread-status"
-          authPendingCount={0}
           viewMode="single"
           onToggleViewMode={vi.fn()}
           statusPanelOpen={false}

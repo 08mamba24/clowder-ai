@@ -30,8 +30,16 @@ function createCapturingService(catId) {
       observesCompression: true,
       reason: 'fixture',
     }),
-    async *invoke(prompt) {
+    async *invoke(prompt, options) {
       prompts.push(prompt);
+      await options?.beforeProviderLaunch?.({
+        v: 1,
+        message: { body: prompt },
+        nativeInstructions: [],
+        runtime: {},
+        tools: { finalSurface: 'unknown' },
+        providerNativeVisibility: 'unknown',
+      });
       yield { type: 'text', catId, content: 'done', timestamp: Date.now() };
       yield { type: 'done', catId, timestamp: Date.now() };
     },
@@ -159,35 +167,46 @@ describe('F287 D1 Alden golden journey', { concurrency: false }, () => {
     );
     const { TasteCueResolver } = await import('../../dist/domains/memory/cue/resolvers/TasteCueResolver.js');
     const { ProfileCueResolver } = await import('../../dist/domains/memory/cue/resolvers/ProfileCueResolver.js');
+    const { EventCueResolver } = await import('../../dist/domains/memory/cue/resolvers/EventCueResolver.js');
+    const { DecisionCueResolver } = await import('../../dist/domains/memory/cue/resolvers/DecisionCueResolver.js');
+    const { CatOwnedSeedCueResolver } = await import(
+      '../../dist/domains/memory/cue/resolvers/CatOwnedSeedCueResolver.js'
+    );
     const { ProjectKnowledgeCueResolver } = await import(
       '../../dist/domains/memory/cue/resolvers/ProjectKnowledgeCueResolver.js'
     );
 
     const registry = new MemoryCueResolverRegistry([
-      new PersonEntityCueResolver({
-        async resolve(input) {
-          assert.deepEqual(input, {
-            ownerUserId: 'owner-1',
-            threadId: 'thread-current',
-            entityId: 'person:alden',
-            matchedAlias: 'Alden',
-            sourceMessageId: 'message-current',
-          });
-          return {
-            title: 'Alden',
-            summary: 'Relationship and interaction memory are available.',
-            anchor: 'person-memory:person-alden',
-            revision: 'sha256:alden-v1',
-            asOf: 1_785_600_000_000,
-            visibility: 'owner_private',
-            drillFamily: 'person_memory',
-          };
+      new PersonEntityCueResolver(
+        {
+          async resolve(input) {
+            assert.deepEqual(input, {
+              ownerUserId: 'owner-1',
+              threadId: 'thread-current',
+              entityId: 'person:alden',
+              matchedAlias: 'Alden',
+              sourceMessageId: 'message-current',
+            });
+            return {
+              title: 'Alden',
+              summary: 'Relationship and interaction memory are available.',
+              anchor: 'person-memory:person-alden',
+              revision: 'sha256:alden-v1',
+              asOf: 1_785_600_000_000,
+              visibility: 'owner_private',
+              drillFamily: 'person_memory',
+            };
+          },
         },
-      }),
+        { isCurrentVisibleRevision: () => true },
+      ),
       new OperationalPrecedentCueResolver({ resolve: async () => null }),
       new TasteCueResolver({ resolve: async () => null }),
       new ProfileCueResolver(),
-      new ProjectKnowledgeCueResolver(),
+      new EventCueResolver({ resolve: async () => null }),
+      new DecisionCueResolver({ resolve: async () => null }),
+      new ProjectKnowledgeCueResolver({ resolve: async () => null }),
+      new CatOwnedSeedCueResolver({ resolve: async () => null }),
     ]);
     const service = new MemoryCueInvocationPromptService({
       plane: new MemoryCuePlaneService(registry),
@@ -204,6 +223,7 @@ describe('F287 D1 Alden golden journey', { concurrency: false }, () => {
             entityId: 'person:alden',
             matchedAlias: 'Alden',
             sourceMessageId: 'message-current',
+            sourceRevision: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           },
         },
       ],
@@ -213,6 +233,7 @@ describe('F287 D1 Alden golden journey', { concurrency: false }, () => {
         invocationId: 'invocation-real',
       },
       now: 1_785_600_000_001,
+      consumerCatId: 'codex-sol',
     });
 
     assert.match(resolution.promptSegment, /<memory-cue v="1"/);
@@ -262,7 +283,7 @@ describe('F287 D1 Alden golden journey', { concurrency: false }, () => {
                       sourceRevision: 'revision-1',
                       axis: 'consumption',
                       consumptionOutcome: 'presented',
-                      catalogVersion: 1,
+                      catalogVersion: 5,
                       resolverVersion: 1,
                       occurredAt: seed.occurredAt,
                     },
@@ -286,7 +307,7 @@ describe('F287 D1 Alden golden journey', { concurrency: false }, () => {
                       opportunityKind: 'recall',
                       producerOwner: 'entity_nudge',
                       consumerScope: { kind: 'invocation', ...input.serverScope },
-                      entryVersion: 'recall-catalog:1:subject_seen:entity_nudge',
+                      entryVersion: 'recall-catalog:5:subject_seen:entity_nudge',
                       subjectKey: 'memory-cue:person_entity:person-memory:person-alden',
                       asOf: { kind: 'version', value: 'revision-1' },
                       sourceRefs: ['person-memory:person-alden'],
@@ -309,7 +330,7 @@ describe('F287 D1 Alden golden journey', { concurrency: false }, () => {
                         sourceRevision: 'revision-1',
                         axis: 'consumption',
                         consumptionOutcome: 'presented',
-                        catalogVersion: 1,
+                        catalogVersion: 5,
                         resolverVersion: 1,
                         occurredAt: seed.occurredAt,
                       },
@@ -331,11 +352,23 @@ describe('F287 D1 Alden golden journey', { concurrency: false }, () => {
         currentUserMessageId: 'message-current',
         frustrationAutoIssueEligible: true,
       };
-      for await (const _event of strategy(deps, ['opus'], 'Alden is here', 'owner-1', 'thread-current', options)) {
+      for await (const _event of strategy(
+        deps,
+        ['opus'],
+        'Alden is here; use ELI5 to explain the system.',
+        'owner-1',
+        'thread-current',
+        options,
+      )) {
         // drain real route assembly
       }
-      const nudgeEventCount = evidenceDb.prepare('SELECT COUNT(*) AS count FROM entity_nudge_events').get().count;
-      return { prompt: capturing.prompts[0], calls, nudgeEventCount };
+      const nudgeEvents = evidenceDb
+        .prepare(
+          `SELECT cat_id, invocation_id, source_message_id, outcome
+           FROM entity_nudge_events ORDER BY event_id`,
+        )
+        .all();
+      return { prompt: capturing.prompts[0], calls, nudgeEvents };
     };
 
     const serial = await run(routeSerial);
@@ -343,7 +376,8 @@ describe('F287 D1 Alden golden journey', { concurrency: false }, () => {
 
     for (const result of [serial, parallel]) {
       assert.equal(result.calls.length, 1, 'one resolver call per actual cat invocation');
-      assert.equal(result.calls[0].seeds.length, 1, 'EntityNudgeService result becomes one typed seed');
+      assert.equal(result.calls[0].seeds.length, 2, 'one Entity seed and one explicit approved Taste seed');
+      assert.match(result.calls[0].seeds[0].payload.sourceRevision, /^sha256:[a-f0-9]{64}$/);
       assert.deepEqual(result.calls[0].seeds[0], {
         kind: 'subject_seen',
         producer: 'entity_nudge',
@@ -351,6 +385,16 @@ describe('F287 D1 Alden golden journey', { concurrency: false }, () => {
         payload: {
           entityId: 'person:alden',
           matchedAlias: 'Alden',
+          sourceMessageId: 'message-current',
+          sourceRevision: result.calls[0].seeds[0].payload.sourceRevision,
+        },
+      });
+      assert.deepEqual(result.calls[0].seeds[1], {
+        kind: 'approved_taste_invoked',
+        producer: 'owner_message',
+        occurredAt: result.calls[0].seeds[1].occurredAt,
+        payload: {
+          triggerKey: 'ELI5',
           sourceMessageId: 'message-current',
         },
       });
@@ -362,7 +406,18 @@ describe('F287 D1 Alden golden journey', { concurrency: false }, () => {
       assert.ok(result.prompt.includes('<recall-opportunity-pointer v="1"'));
       assert.equal(result.prompt.includes('<memory-cue v="1"'), false, 'T2 candidate body must not bypass the mapper');
       assert.equal(result.prompt.includes('[entity-nudge]'), false, 'legacy nudge must not duplicate the Cue');
-      assert.equal(result.nudgeEventCount, 1, 'typed Entity result must be produced once, including side effects');
+      assert.deepEqual(
+        result.nudgeEvents,
+        [
+          {
+            cat_id: 'opus',
+            invocation_id: 'invocation-1',
+            source_message_id: 'message-current',
+            outcome: 'delivered',
+          },
+        ],
+        'typed Entity result must be ledgered only for its exact Cue consumer',
+      );
       assert.equal(result.prompt.includes('Title: Alden'), false, 'T2 pointer must not inline the candidate title');
     }
 
@@ -371,6 +426,6 @@ describe('F287 D1 Alden golden journey', { concurrency: false }, () => {
     const unresolved = await run(routeSerial, false);
     assert.equal(unresolved.prompt.includes('<recall-opportunity-pointer'), false);
     assert.equal(unresolved.prompt.includes('[entity-nudge]'), false, 'untyped fallback must remain withheld');
-    assert.equal(unresolved.nudgeEventCount, 1);
+    assert.deepEqual(unresolved.nudgeEvents, []);
   });
 });

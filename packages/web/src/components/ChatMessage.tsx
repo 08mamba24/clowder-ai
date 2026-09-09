@@ -18,25 +18,34 @@ import { setPendingCrossPostScroll } from '@/utils/crosspost-scroll-target';
 import { doesAssistantMessageRenderBubble } from './assistant-message-renderability';
 import { CatAvatar } from './CatAvatar';
 import { CliDiagnosticsPanel, isKnownReason } from './CliDiagnosticsPanel';
+import { CloudBindingRecoveryCard } from './CloudBindingRecoveryCard';
 import { CollapsibleMarkdown } from './CollapsibleMarkdown';
 import { ConnectorBubble } from './ConnectorBubble';
 import { ContentBlocks } from './ContentBlocks';
 import { CopyIdButton } from './CopyIdButton';
 import { CliOutputBlock } from './cli-output/CliOutputBlock';
 import { toCliEvents } from './cli-output/toCliEvents';
+import {
+  hasCloudBindingRecoveryMetadata,
+  isLinkedCloudBindingRecoveryNotice,
+  projectCloudBindingRecovery,
+} from './cloud-binding-recovery';
 import { DirectionPill } from './DirectionPill';
 import { EvidencePanel } from './EvidencePanel';
 import { GovernanceBlockedCard } from './GovernanceBlockedCard';
 import { ExternalLinkIcon } from './HubConfigIcons';
 import { describeMessageInvocationTrajectory, InvocationTrajectoryAnchor } from './InvocationTrajectoryAnchor';
+import { MessageActionSlot } from './MessageActionSlot';
 import { MessageBubble } from './MessageBubble';
 import { MessageBundleCard } from './MessageBundleCard';
 import { focusTurnAbsorptionSummary, MessageReceiptDock } from './MessageReceiptDock';
 import { MetadataBadge } from './MetadataBadge';
-import { buildMessageDisclosureKey } from './message-disclosure-state';
+import { buildMessageDisclosureKey, buildRichHtmlDisclosureKey } from './message-disclosure-state';
 import { PawFeelDispositionDock } from './paw-feel/PawFeelDispositionDock';
 import { ReplyPill } from './ReplyPill';
 import { BriefingCard } from './rich/BriefingCard';
+import type { CardConfirmationEntry } from './rich/CardBlock';
+import { CustodyOfferCard } from './rich/CustodyOfferCard';
 import { RichBlocks } from './rich/RichBlocks';
 import { SummaryCard } from './SummaryCard';
 import { SystemNoticeBar } from './SystemNoticeBar';
@@ -157,11 +166,15 @@ interface ChatMessageProps {
   dedupCount?: number;
   /** The current browser document has not been admitted to perform forwarding writes. */
   forwardingDisabled?: boolean;
+  /** Routes interactive rich-block sends to the surface that owns this message row. */
+  sendContext?: string;
+  confirmations?: CardConfirmationEntry[];
 }
 
 function needsTimelineProjection(message: ChatMessageType): boolean {
   return Boolean(
     message.extra?.queueReceipt ||
+      hasCloudBindingRecoveryMetadata(message) ||
       message.extra?.turnExecution ||
       message.extra?.auxiliaryTurnExecutions?.length ||
       (message.source?.connector === 'hold-ball' && typeof message.source.meta?.taskId === 'string') ||
@@ -180,6 +193,8 @@ export const ChatMessage = memo(function ChatMessage({
   hideDiagnosticsPanel,
   dedupCount,
   forwardingDisabled = false,
+  sendContext,
+  confirmations,
 }: ChatMessageProps) {
   const coCreator = useCoCreatorConfig();
   const { state: ttsState, synthesize: ttsSynthesize, activeMessageId } = useTts();
@@ -189,6 +204,11 @@ export const ChatMessage = memo(function ChatMessage({
   const bodyDisclosureKey = buildMessageDisclosureKey(disclosureThreadId, message, 'body');
   const thinkingDisclosureKey = buildMessageDisclosureKey(disclosureThreadId, message, 'thinking');
   const cliDisclosureKey = buildMessageDisclosureKey(disclosureThreadId, message, 'cli');
+  const richHtmlDisclosureKeys = Object.fromEntries(
+    (message.extra?.rich?.blocks ?? [])
+      .filter((block) => block.kind === 'html_widget')
+      .map((block) => [block.id, buildRichHtmlDisclosureKey(disclosureThreadId, message, block)]),
+  );
   const isLoadingThreads = useChatStore((s) => s.isLoadingThreads);
   const crossThreadSourceName = useChatStore((s) => {
     const sourceId = message.extra?.crossPost?.sourceThreadId;
@@ -208,6 +228,7 @@ export const ChatMessage = memo(function ChatMessage({
   const isSystem = message.type === 'system';
   const isSummary = message.type === 'summary';
   const isConnector = message.type === 'connector';
+  const cloudBindingRecovery = isUser ? projectCloudBindingRecovery(message, threadMessages) : undefined;
   const projectedSystemContent = message.extra?.systemInfo
     ? ((
         formatVisibleSystemInfo(
@@ -540,6 +561,7 @@ export const ChatMessage = memo(function ChatMessage({
 
   if (isConnector && message.source) {
     if (isConnectorSystemNotice(message)) {
+      if (isLinkedCloudBindingRecoveryNotice(message, threadMessages)) return null;
       return <SystemNoticeBar message={message} />;
     }
     return <ConnectorBubble message={message} threadId={currentThreadId} timelineMessages={threadMessages} />;
@@ -618,6 +640,7 @@ export const ChatMessage = memo(function ChatMessage({
 
     const userHeader = (
       <div className="flex justify-end items-center gap-2 mb-1">
+        <MessageActionSlot />
         {isWhisper && (
           <span
             className={`text-xs px-1.5 py-0.5 rounded ${isRevealed ? 'bg-cafe-surface-elevated text-cafe-secondary' : 'bg-semantic-warning-surface text-semantic-warning'}`}
@@ -707,6 +730,17 @@ export const ChatMessage = memo(function ChatMessage({
         ) : (
           <CollapsibleMarkdown content={message.content} disclosureKey={bodyDisclosureKey} />
         )}
+        {cloudBindingRecovery && renderThreadId ? (
+          <CloudBindingRecoveryCard
+            threadId={renderThreadId}
+            sourceMessageId={message.id}
+            targetCatId={cloudBindingRecovery.targetCatId}
+            attemptId={cloudBindingRecovery.attemptId}
+          />
+        ) : null}
+        {message.extra?.custodyOfferV1 ? (
+          <CustodyOfferCard sourceMessageId={message.id} expectedOffer={message.extra.custodyOfferV1} />
+        ) : null}
         {messageReceiptDock}
       </MessageBubble>
     );
@@ -733,6 +767,7 @@ export const ChatMessage = memo(function ChatMessage({
     message.extra?.auxiliaryTurnExecutions?.length ? (
       <div
         className="mb-1 flex flex-col gap-1 min-w-0"
+        data-testid="message-header"
         data-turn-execution-owner={message.extra?.turnExecution?.invocationId}
       >
         <div className="flex items-center gap-2 min-w-0">
@@ -839,6 +874,7 @@ export const ChatMessage = memo(function ChatMessage({
               onSynthesize={ttsSynthesize}
             />
           )}
+          <MessageActionSlot />
         </div>
         {showSchedulerAccent && (
           <div className={SCHEDULER_ACCENT_BADGE_CLASS}>
@@ -961,7 +997,10 @@ export const ChatMessage = memo(function ChatMessage({
           sourceThreadId={renderThreadId}
           sourceMessageIds={message.projectionSourceMessageIds ?? [message.id]}
           messageSource={message.source}
+          htmlWidgetDisclosureKeys={richHtmlDisclosureKeys}
           forwardingEnabled={!message.isStreaming && !forwardingDisabled}
+          sendContext={sendContext}
+          confirmations={confirmations}
         />
       )}
       {freshnessNotice && !message.extra?.supplement && (

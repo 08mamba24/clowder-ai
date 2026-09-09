@@ -3,11 +3,21 @@ import type {
   ActiveInvocationFreshnessController,
   PreparedFreshnessNotice,
 } from '../../freshness/FreshnessNoticeBroker.js';
-import type { AgentCarrierSession, ProviderCompactionObservation, ProviderContinuityEvidence } from '../../types.js';
+import type { CodexNativeResumeReplacementProvenance } from '../../runtime-session/CodexSessionReplacementProvenance.js';
+import type {
+  AgentCarrierSession,
+  PreparedProviderRequestV1,
+  ProviderCompactionObservation,
+  ProviderContinuityEvidence,
+  ProviderRequestGenerationCommitV1,
+} from '../../types.js';
+import { requireExactPreparedProviderMessage } from '../../types.js';
 import {
   asCodexAppServerRecord,
+  boundedUnsupportedCodexAppServerNotificationMethod,
   type CodexAppServerJsonObject,
   codexAppServerErrorMessage,
+  isCodexAppServerTokenUsageNotification,
   mapCodexAppServerCompactionObservation,
   mapCodexAppServerNotification,
   mapCodexAppServerTokenUsage,
@@ -20,12 +30,21 @@ import {
 } from './CodexAppServerLifecycle.js';
 import { CodexAppServerNotificationQueue } from './CodexAppServerNotificationQueue.js';
 import { type CodexAppServerThreadVerdict, resolveCodexAppServerThread } from './CodexAppServerThreadResolver.js';
+import type { CodexRuntimeInteractionContext } from './CodexRuntimeInteractionAdapter.js';
+import {
+  type CodexRuntimeInteractionRunState,
+  createCodexRuntimeInteractionRunState,
+} from './CodexRuntimeInteractionRun.js';
 import {
   classifyCodexAppServerToolSurface,
   classifyCodexProtocolItem,
   classifyCodexSafeBoundary,
 } from './codex-app-server-boundary.js';
-import { buildCodexAppServerThreadParams, closeCodexAppServerTransport } from './codex-app-server-client-helpers.js';
+import {
+  buildCodexAppServerThreadParams,
+  type CodexAppServerApprovalsReviewer,
+  closeCodexAppServerTransport,
+} from './codex-app-server-client-helpers.js';
 import { CodexAppServerRpcError } from './codex-app-server-rpc-error.js';
 
 export type {
@@ -72,6 +91,23 @@ export interface CodexAppServerRunInput {
   config?: JsonObject;
   /** F291: omitted inherits Codex config; null explicitly requests Standard. */
   serviceTier?: string | null;
+  /**
+   * F306: exact app-server wire enum. There is deliberately no default;
+   * production selection of `user` remains blocked on the Phase B interaction
+   * surface, while this adapter seam can carry an explicitly approved route.
+   */
+  approvalsReviewer?: CodexAppServerApprovalsReviewer;
+  /** F306: current-turn response constraint; never persisted as thread config. */
+  outputSchema?: JsonObject;
+  /** F306 Alpha: explicit current-turn provider collaboration preset. */
+  collaborationMode?: {
+    readonly mode: 'plan' | 'default';
+    readonly settings: {
+      readonly model: string;
+      readonly reasoning_effort?: string | null;
+      readonly developer_instructions?: string | null;
+    };
+  };
   imagePaths?: readonly string[];
   signal?: AbortSignal;
   /** Inactivity timeout. Zero keeps the F118 manual-cancel-only default. */
@@ -80,18 +116,31 @@ export interface CodexAppServerRunInput {
   interruptGraceMs?: number;
   /** Zero-based transport recovery attempt, projected with lifecycle events. */
   recoveryAttempt?: number;
+  /** Internal fence: a dead resume carrier is being replaced by this fresh start. */
+  resumeReplacement?: CodexNativeResumeReplacementProvenance;
   /**
    * Provider-internal continuation instruction. App-server receives this as
    * application context with no user input item, so recovery cannot append a
    * synthetic user message to the native thread.
    */
   recoveryInstruction?: string;
+  /** F299: build and durably commit the exact request immediately before turn/start. */
+  prepareRequest?: (
+    promptBytes: string,
+    boundaryReason?: PreparedProviderRequestV1['boundaryReason'],
+  ) => PreparedProviderRequestV1;
+  /** F299: recovery has no user message, but its application context is still model-visible input. */
+  prepareRecoveryRequest?: (recoveryInstruction: string) => PreparedProviderRequestV1;
+  beforeProviderLaunch?: (request: PreparedProviderRequestV1) => Promise<ProviderRequestGenerationCommitV1>;
+  /** F306: one provider-neutral interaction surface bound to this exact invocation. */
+  runtimeInteraction?: Omit<CodexRuntimeInteractionContext, 'signal'>;
 }
 
 export interface CodexAppServerClientDeps {
   wire: AgentCarrierSession;
   freshnessController?: ActiveInvocationFreshnessController;
   onEnvelope?: (direction: 'inbound' | 'outbound', envelope: JsonObject) => void | Promise<void>;
+  onUnsupportedNotification?: (observation: { method: string }) => void | Promise<void>;
   onLifecycle?: (snapshot: CodexAppServerLifecycleSnapshot) => void;
   now?: () => number;
 }
@@ -103,6 +152,7 @@ interface PendingRequest {
   reject(error: Error): void;
   /** F296 B4a: lets a JSON-RPC error name the call it rejected. */
   method: string;
+  params: JsonObject;
 }
 
 /**
@@ -142,6 +192,7 @@ export class CodexAppServerClient {
   private pumpPromise: Promise<void> | null = null;
   private pumpFailure: Error | null = null;
   private pumpEnded = false;
+  private readonly observedUnsupportedNotificationMethods = new Set<string>();
   private readonly lifecycle: CodexAppServerLifecycle;
 
   constructor(private readonly deps: CodexAppServerClientDeps) {
@@ -154,7 +205,8 @@ export class CodexAppServerClient {
   }
 
   async *run(input: CodexAppServerRunInput): AsyncGenerator<unknown> {
-    this.pumpPromise = this.pump();
+    const runtimeInteraction = createCodexRuntimeInteractionRunState(input.runtimeInteraction, input.approvalsReviewer);
+    this.pumpPromise = this.pump(runtimeInteraction);
     // Pending requests / notifications propagate the same failure; attach immediately
     // so carrier shutdown grace cannot expose it as unhandled under Node strict mode.
     void this.pumpPromise.catch(() => {});
@@ -167,6 +219,7 @@ export class CodexAppServerClient {
     const interruptGraceMs = Math.max(0, input.interruptGraceMs ?? DEFAULT_INTERRUPT_GRACE_MS);
     const recoveryInstruction = input.recoveryInstruction?.trim();
     const abortHandler = (): void => {
+      runtimeInteraction?.close('provider_cancelled');
       void this.lifecycle.interrupt(activeThreadId, activeTurnId, 'user_cancel', interruptGraceMs);
     };
     const timeoutHandler = (): void => {
@@ -180,7 +233,7 @@ export class CodexAppServerClient {
     try {
       await this.request('initialize', {
         clientInfo: { name: 'cat-cafe', title: 'Clowder AI', version: '1' },
-        capabilities: recoveryInstruction ? { experimentalApi: true } : {},
+        capabilities: recoveryInstruction || input.collaborationMode ? { experimentalApi: true } : {},
       });
       await this.write({ method: 'initialized' });
       yield this.lifecycle.event(this.lifecycle.transition('initialized'));
@@ -193,6 +246,8 @@ export class CodexAppServerClient {
           input.thread.kind === 'resume' ? { threadId: input.thread.threadId } : undefined,
         ),
         startParams: buildCodexAppServerThreadParams(input),
+        requireExactResume: Boolean(recoveryInstruction),
+        ...(input.resumeReplacement ? { resumeReplacement: input.resumeReplacement } : {}),
         localLiveLease: this.deps.wire.reusedSessionHost === true,
         request: (method, params) => this.request(method, params),
         now: this.deps.now ?? Date.now,
@@ -201,7 +256,11 @@ export class CodexAppServerClient {
       activeThreadId = threadId;
       yield this.lifecycle.event(this.lifecycle.transition('thread_ready', { threadId }));
       this.lifecycle.armInactivityTimeout(timeoutMs, timeoutHandler);
-      yield { type: 'thread.started', thread_id: threadId };
+      yield {
+        type: 'thread.started',
+        thread_id: threadId,
+        ...(verdict.kind === 'replaced' ? { session_replacement: verdict.replacement } : {}),
+      };
       yield { type: 'app_server.continuity_verdict', verdict };
 
       // F296 B4a preflight fence. The provider verdict exists; buffered
@@ -246,6 +305,14 @@ export class CodexAppServerClient {
                 ...(compactions.length > 0 ? { compactions } : {}),
               })
             ).prompt;
+      const preparedRequest = isRecoveryTurn
+        ? input.prepareRecoveryRequest?.(recoveryInstruction as string)
+        : input.prepareRequest?.(promptBytes, (input.recoveryAttempt ?? 0) > 0 ? 'transient_cli_exit' : undefined);
+      if (input.beforeProviderLaunch) {
+        if (!preparedRequest) throw new Error('codex_app_server_request_evidence_unavailable');
+        await input.beforeProviderLaunch(preparedRequest);
+      }
+      const submittedPrompt = preparedRequest ? requireExactPreparedProviderMessage(preparedRequest) : promptBytes;
 
       this.lifecycle.patch({ turnStartSent: true });
       const turnResult = asCodexAppServerRecord(
@@ -254,7 +321,7 @@ export class CodexAppServerClient {
           input: isRecoveryTurn
             ? []
             : [
-                { type: 'text', text: promptBytes },
+                { type: 'text', text: submittedPrompt },
                 ...(input.imagePaths ?? []).map((path) => ({ type: 'localImage', path })),
               ],
           ...(isRecoveryTurn && recoveryInstruction
@@ -267,8 +334,8 @@ export class CodexAppServerClient {
                 },
               }
             : {}),
-          ...(input.cwd ? { cwd: input.cwd } : {}),
-          ...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}),
+          ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
+          ...(input.collaborationMode ? { collaborationMode: input.collaborationMode } : {}),
         }),
       );
       const turn = asCodexAppServerRecord(turnResult?.turn);
@@ -333,8 +400,8 @@ export class CodexAppServerClient {
           }
         }
 
-        if (record?.method === 'thread/tokenUsage/updated') {
-          latestUsage = mapCodexAppServerTokenUsage(asCodexAppServerRecord(record.params)?.tokenUsage) ?? latestUsage;
+        if (isCodexAppServerTokenUsageNotification(record)) {
+          latestUsage = mapCodexAppServerTokenUsage(asCodexAppServerRecord(record?.params)?.tokenUsage) ?? latestUsage;
         }
 
         // F296 B4b (kimi review A4): a compaction can also arrive *during* the
@@ -349,9 +416,11 @@ export class CodexAppServerClient {
         }
 
         const mapped = mapCodexAppServerNotification(envelope);
+        await this.observeUnsupportedNotification(envelope);
         if (mapped?.type === 'turn.completed' && latestUsage) mapped.usage = latestUsage;
         if (mapped) yield mapped;
         if (record?.method === 'turn/completed') {
+          runtimeInteraction?.close('provider_cancelled');
           try {
             await this.deps.freshnessController?.markTurnCompleted(activeTurnId);
           } catch {
@@ -383,6 +452,7 @@ export class CodexAppServerClient {
         }
       }
     } catch (error) {
+      runtimeInteraction?.close('transport_lost');
       const failure = error instanceof Error ? error : new Error(String(error));
       if (activeNotice && this.deps.freshnessController) {
         try {
@@ -395,6 +465,7 @@ export class CodexAppServerClient {
       if (failed) yield this.lifecycle.event(failed);
       throw failure;
     } finally {
+      runtimeInteraction?.close('provider_cancelled');
       const { closing, closed } = await closeCodexAppServerTransport(
         this.deps.wire,
         this.lifecycle,
@@ -461,7 +532,9 @@ export class CodexAppServerClient {
     if (this.pumpFailure) return Promise.reject(this.pumpFailure);
     if (this.pumpEnded) return Promise.reject(new Error('Codex app-server stream is already closed'));
     const id = this.nextRequestId++;
-    const promise = new Promise<unknown>((resolve, reject) => this.pending.set(id, { resolve, reject, method }));
+    const promise = new Promise<unknown>((resolve, reject) =>
+      this.pending.set(id, { resolve, reject, method, params }),
+    );
     // The stream can close while the transport write is still in flight. Mark the
     // response promise handled now; the returned write chain still propagates it.
     void promise.catch(() => {});
@@ -477,7 +550,7 @@ export class CodexAppServerClient {
       });
   }
 
-  private async pump(): Promise<void> {
+  private async pump(runtimeInteraction: CodexRuntimeInteractionRunState | null): Promise<void> {
     try {
       for await (const value of this.deps.wire.read()) {
         const message = asCodexAppServerRecord(value);
@@ -499,23 +572,43 @@ export class CodexAppServerClient {
                 ...(typeof code === 'number' ? { code } : {}),
               }),
             );
-          } else pending.resolve(message.result);
+          } else {
+            if (pending.method === 'turn/start') {
+              const params = asCodexAppServerRecord(pending.params);
+              const result = asCodexAppServerRecord(message.result);
+              const turn = asCodexAppServerRecord(result?.turn);
+              if (typeof params?.threadId === 'string' && typeof turn?.id === 'string') {
+                runtimeInteraction?.bindProviderTurn({ threadId: params.threadId, turnId: turn.id });
+              }
+            }
+            pending.resolve(message.result);
+          }
           continue;
         }
         if (typeof message.id === 'number' && typeof message.method === 'string') {
-          const response = respondToCodexAppServerRequest(message);
-          if (response) await this.write(response);
+          if (runtimeInteraction) {
+            runtimeInteraction.dispatch(
+              message,
+              (response) => this.write(response),
+              (failure) => this.failDetachedRuntimeInteraction(failure),
+            );
+          } else {
+            const response = respondToCodexAppServerRequest(message);
+            if (response) await this.write(response);
+          }
           continue;
         }
         if (typeof message.method === 'string') this.notifications.push(message);
       }
       this.pumpEnded = true;
+      runtimeInteraction?.close('transport_lost');
       this.notifications.end();
       this.rejectPending(new Error('Codex app-server stream closed'));
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
       this.pumpFailure = failure;
       this.pumpEnded = true;
+      runtimeInteraction?.close('transport_lost');
       this.notifications.end(failure);
       this.rejectPending(failure);
       throw failure;
@@ -525,6 +618,26 @@ export class CodexAppServerClient {
   private async write(message: JsonObject): Promise<void> {
     await this.deps.onEnvelope?.('outbound', message);
     await this.deps.wire.write(message);
+  }
+
+  private async observeUnsupportedNotification(envelope: unknown): Promise<void> {
+    const method = boundedUnsupportedCodexAppServerNotificationMethod(envelope);
+    if (!method || this.observedUnsupportedNotificationMethods.has(method)) return;
+    if (this.observedUnsupportedNotificationMethods.size >= 8) return;
+    this.observedUnsupportedNotificationMethods.add(method);
+    try {
+      await this.deps.onUnsupportedNotification?.({ method });
+    } catch {
+      // Runtime health telemetry must never abort provider work.
+    }
+  }
+
+  private failDetachedRuntimeInteraction(failure: Error): void {
+    this.pumpFailure = failure;
+    this.pumpEnded = true;
+    this.notifications.end(failure);
+    this.rejectPending(failure);
+    void this.deps.wire.terminate?.().catch(() => {});
   }
 
   private rejectPending(error: Error): void {

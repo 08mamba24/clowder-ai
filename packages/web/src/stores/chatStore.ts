@@ -6,7 +6,7 @@ import { recordDebugEvent } from '@/debug/invocationEventDebug';
 import { getCachedCats } from '@/hooks/useCatData';
 import { formatCatDisplayName } from '@/lib/cat-display-name';
 import { inferFileKind, inferRenderMode } from '@/lib/file-kind';
-import type { WorkspaceMode } from '@/lib/workspace-modes';
+import { isWorkspaceMode, type WorkspaceMode } from '@/lib/workspace-modes';
 import {
   resolveNavigateTargetWorktreeId,
   scopeWorktreeAliases,
@@ -31,10 +31,12 @@ import type {
   PresentationSurfaceState,
   QueueEntry,
   RichBlock,
+  TeamWorkspaceSubject,
   Thread,
   ThreadState,
   TokenUsage,
   ToolEvent,
+  WorkspaceOpenRequest,
   WorkspacePreviewState,
   WorkspaceSurface,
 } from './chat-types';
@@ -242,6 +244,7 @@ function snapshotActive(s: ChatState): ThreadState {
     workspaceOpenFilePath: s.workspaceOpenFilePath,
     workspaceOpenFileLine: s.workspaceOpenFileLine,
     workspaceMode: s.workspaceMode,
+    teamWorkspaceSubject: s.teamWorkspaceSubject,
     workspaceSurface: s.workspaceSurface,
     workspacePreview: s.workspacePreview,
     rightPanelMode: s.rightPanelMode,
@@ -403,7 +406,7 @@ function resolveWorkspaceMode(
   ts: Pick<ThreadState, 'workspaceMode' | 'workspaceSurface' | 'rightPanelMode' | 'rightPanelOpen'>,
   fallback: WorkspaceMode = 'dev',
 ): WorkspaceMode {
-  if (ts.workspaceMode) return ts.workspaceMode;
+  if (isWorkspaceMode(ts.workspaceMode)) return ts.workspaceMode;
   // Legacy v5 snapshots did not persist the top-level renderer. A visible
   // Browser request is unambiguous evidence that Dev owns the viewport.
   if (ts.workspaceSurface === 'browser' && ts.rightPanelMode === 'workspace' && ts.rightPanelOpen) return 'dev';
@@ -413,13 +416,27 @@ function resolveWorkspaceMode(
 function restoreWorkspaceView(
   ts: Pick<
     ThreadState,
-    'workspaceMode' | 'workspaceSurface' | 'workspacePreview' | 'rightPanelMode' | 'rightPanelOpen'
+    | 'workspaceMode'
+    | 'workspaceSurface'
+    | 'workspacePreview'
+    | 'teamWorkspaceSubject'
+    | 'rightPanelMode'
+    | 'rightPanelOpen'
   >,
-): Pick<ChatState, 'workspaceMode' | 'workspaceSurface' | 'workspacePreview' | 'rightPanelMode' | 'rightPanelOpen'> {
+): Pick<
+  ChatState,
+  | 'workspaceMode'
+  | 'workspaceSurface'
+  | 'workspacePreview'
+  | 'teamWorkspaceSubject'
+  | 'rightPanelMode'
+  | 'rightPanelOpen'
+> {
   return {
     workspaceMode: resolveWorkspaceMode(ts),
     workspaceSurface: ts.workspaceSurface ?? 'home',
     workspacePreview: ts.workspacePreview ?? { port: undefined, path: '/' },
+    teamWorkspaceSubject: ts.teamWorkspaceSubject ?? null,
     rightPanelMode: ts.rightPanelMode ?? 'status',
     rightPanelOpen: ts.rightPanelOpen ?? false,
   };
@@ -447,6 +464,7 @@ export function captureThreadWorkspaceState(state: ChatState, threadId: string):
       revision: readWorkspaceRevision(threadId),
       workspaceWorktreeId: state.workspaceWorktreeId,
       workspaceMode: state.workspaceMode,
+      teamWorkspaceSubject: state.teamWorkspaceSubject,
       workspaceSurface: state.workspaceSurface,
       workspacePreview: { ...state.workspacePreview },
       rightPanelMode: state.rightPanelMode,
@@ -469,6 +487,7 @@ function workspaceStateContentEqual(a: PersistedThreadWorkspaceState, b: Persist
     a.workspaceSurface === b.workspaceSurface &&
     a.workspacePreview.port === b.workspacePreview.port &&
     a.workspacePreview.path === b.workspacePreview.path &&
+    JSON.stringify(a.teamWorkspaceSubject ?? null) === JSON.stringify(b.teamWorkspaceSubject ?? null) &&
     a.rightPanelMode === b.rightPanelMode &&
     a.rightPanelOpen === b.rightPanelOpen
   );
@@ -641,6 +660,17 @@ type ReplaceMessageIdResult = {
   retainedMessage?: ChatMessage;
 };
 
+function rekeyMessageIdentity(message: ChatMessage, fromId: string, toId: string): ChatMessage {
+  const sourceIds = message.projectionSourceMessageIds;
+  if (!sourceIds?.includes(fromId)) return { ...message, id: toId };
+
+  return {
+    ...message,
+    id: toId,
+    projectionSourceMessageIds: [...new Set(sourceIds.map((sourceId) => (sourceId === fromId ? toId : sourceId)))],
+  };
+}
+
 function replaceMessageIdInList(messages: ChatMessage[], fromId: string, toId: string): ReplaceMessageIdResult {
   if (fromId === toId) return { messages };
   const fromIndex = messages.findIndex((msg) => msg.id === fromId);
@@ -656,7 +686,7 @@ function replaceMessageIdInList(messages: ChatMessage[], fromId: string, toId: s
     };
   }
 
-  return { messages: messages.map((msg) => (msg.id === fromId ? { ...msg, id: toId } : msg)) };
+  return { messages: messages.map((msg) => (msg.id === fromId ? rekeyMessageIdentity(msg, fromId, toId) : msg)) };
 }
 
 function recordMessageIdDedupDrop(
@@ -1246,6 +1276,15 @@ export interface ChatState {
   restoreWorkspaceSurface: (surface: WorkspaceSurface) => void;
   workspacePreview: WorkspacePreviewState;
   setWorkspacePreview: (preview: WorkspacePreviewState) => void;
+  teamWorkspaceSubject: TeamWorkspaceSubject | null;
+  workspaceOpenRequest: WorkspaceOpenRequest | null;
+  workspaceOpenRevision: number;
+  /** Change Team list/detail only; never reveals or focuses Workspace. */
+  setTeamWorkspaceSubject: (subject: TeamWorkspaceSubject | null) => void;
+  /** Explicit deep-link/navigation action; reveals the canonical Team workspace. */
+  openTeamSubject: (subject: TeamWorkspaceSubject | null) => void;
+  /** Acknowledge one exact transient request after F307 has consumed it. */
+  consumeWorkspaceOpenRequest: (revision: number) => void;
   workspaceEditToken: string | null;
   workspaceEditTokenExpiry: number | null;
   /** @internal Last workspace-file-set event context (timestamp + threadId).
@@ -1584,6 +1623,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
   restoreWorkspaceSurface: (surface) => set({ workspaceSurface: surface }),
   workspacePreview: { port: undefined, path: '/' },
   setWorkspacePreview: (preview) => set({ workspacePreview: preview }),
+  teamWorkspaceSubject: null,
+  workspaceOpenRequest: null,
+  workspaceOpenRevision: 0,
+  setTeamWorkspaceSubject: (subject) =>
+    set((state) => {
+      const patch = { teamWorkspaceSubject: subject };
+      return { ...patch, ...mirrorActiveFlat(state, patch) };
+    }),
+  openTeamSubject: (subject) =>
+    set((state) => {
+      if (state.presentationLock) return {};
+      const revision = state.workspaceOpenRevision + 1;
+      const durablePatch = {
+        workspaceMode: 'team' as const,
+        teamWorkspaceSubject: subject,
+        rightPanelMode: 'workspace' as const,
+        rightPanelOpen: true,
+      };
+      return {
+        ...durablePatch,
+        workspaceOpenRevision: revision,
+        workspaceOpenRequest: {
+          revision,
+          threadId: state.currentThreadId,
+          target: { kind: 'team' as const, subject },
+        },
+        ...mirrorActiveFlat(state, durablePatch),
+      };
+    }),
+  consumeWorkspaceOpenRequest: (revision) =>
+    set((state) => (state.workspaceOpenRequest?.revision === revision ? { workspaceOpenRequest: null } : {})),
   workspaceEditToken: null,
   workspaceEditTokenExpiry: null,
   _workspaceFileSetAt: { ts: 0, threadId: null },
@@ -1929,8 +1999,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
   workspaceMode: 'dev' as const,
   setWorkspaceMode: (mode) =>
     set((state) => {
-      const patch = { workspaceMode: mode, rightPanelMode: 'workspace' as const };
-      return { ...patch, ...mirrorActiveFlat(state, patch) };
+      const patch = {
+        workspaceMode: mode,
+        rightPanelMode: 'workspace' as const,
+        rightPanelOpen: true,
+      };
+      if (mode === 'dev') return { ...patch, ...mirrorActiveFlat(state, patch) };
+      const revision = state.workspaceOpenRevision + 1;
+      const target =
+        mode === 'team'
+          ? { kind: 'team' as const, subject: state.teamWorkspaceSubject }
+          : { kind: 'mode' as const, mode };
+      return {
+        ...patch,
+        workspaceOpenRevision: revision,
+        workspaceOpenRequest: { revision, threadId: state.currentThreadId, target },
+        ...mirrorActiveFlat(state, patch),
+      };
     }),
   restoreWorkspaceMode: (mode) =>
     set((state) => {
@@ -3562,6 +3647,7 @@ export function hydrateThreadWorkspaceState(
       const durablePatch = {
         workspaceWorktreeId: snapshot.workspaceWorktreeId,
         workspaceMode: resolveWorkspaceMode(snapshot, resolveWorkspaceMode(current)),
+        teamWorkspaceSubject: snapshot.teamWorkspaceSubject ?? null,
         workspaceSurface: snapshot.workspaceSurface,
         workspacePreview: { ...snapshot.workspacePreview },
         rightPanelMode: snapshot.rightPanelMode,

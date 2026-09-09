@@ -15,8 +15,15 @@ import type {
   WriteOpportunityReentryCarrierV1,
 } from '@cat-cafe/shared';
 import {
+  acceptedRevisionSchema,
+  acceptedSourceRefSchema,
   asrPersonMemoryDynamicSceneEntryV1Schema,
+  catOwnedSeedCueCarrierV1Schema,
   deliveryDecisionCueCarrierV1Schema,
+  isProviderSemanticEvent,
+  isValidAcceptedSource,
+  isValidReviewSubjectRef,
+  localReviewGitRevisionSchema,
   MessageBundleCarrierV1Schema,
   MessageContentsSchema,
   writeOpportunityPresentationRetryCarrierV1Schema,
@@ -162,8 +169,94 @@ function parseTurnExecutionProjection(value: unknown): TurnExecutionMessageProje
 
 type StoredMessageExtra = NonNullable<StoredMessage['extra']>;
 
+type ExtraCarrierPersistenceKind = 'parsed' | 'derived';
+
+type ExtraCarrierPersistenceClassification<
+  T extends Record<keyof Required<StoredMessageExtra>, ExtraCarrierPersistenceKind>,
+> = T;
+
+/**
+ * Compile-time exhaustiveness guard for the Redis hydration whitelist.
+ * Every StoredMessage.extra key must be classified when it is introduced.
+ */
+type ExtraCarrierPersistence = ExtraCarrierPersistenceClassification<{
+  semanticEvent: 'parsed';
+  rich: 'parsed';
+  isExplicitPost: 'parsed';
+  stream: 'parsed';
+  causal: 'parsed';
+  proactive: 'parsed';
+  memoryCue: 'parsed';
+  turnExecution: 'parsed';
+  auxiliaryTurnExecutions: 'parsed';
+  crossPost: 'parsed';
+  coordination: 'parsed';
+  localReviewVerdict: 'parsed';
+  callbackDedup: 'parsed';
+  targetCats: 'parsed';
+  messageBundle: 'parsed';
+  meetingArtifact: 'parsed';
+  dynamicSceneEntries: 'parsed';
+  writeOpportunityReentry: 'parsed';
+  writeOpportunityReentries: 'parsed';
+  writeOpportunityPresentationRetry: 'parsed';
+  freshness: 'parsed';
+  supplement: 'parsed';
+  recovery: 'parsed';
+  scheduler: 'parsed';
+  tracing: 'parsed';
+  systemKind: 'parsed';
+  a2aRouting: 'parsed';
+  queueReceipt: 'derived';
+  pluginMessage: 'parsed';
+  custodyOfferV1: 'derived';
+}>;
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isOptionalLocalReviewHead(value: unknown): boolean {
+  return value === undefined || localReviewGitRevisionSchema.safeParse(value).success;
+}
+
+function isValidOptionalAcceptedSourceAnchor(candidate: Record<string, unknown>): boolean {
+  const values = [candidate.reviewSubjectRef, candidate.acceptedSourceRef, candidate.acceptedRevision];
+  if (values.every((value) => value === undefined)) return true;
+  if (values.some((value) => typeof value !== 'string')) return false;
+  const reviewSubjectRef = candidate.reviewSubjectRef as string;
+  const acceptedSourceRef = candidate.acceptedSourceRef as string;
+  const acceptedRevision = candidate.acceptedRevision as string;
+  return (
+    isValidReviewSubjectRef(reviewSubjectRef) &&
+    acceptedSourceRefSchema.safeParse(acceptedSourceRef).success &&
+    acceptedRevisionSchema.safeParse(acceptedRevision).success &&
+    isValidAcceptedSource(acceptedSourceRef, acceptedRevision)
+  );
+}
+
+function parseLocalReviewVerdictCarrier(value: unknown): StoredMessageExtra['localReviewVerdict'] {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as Record<string, unknown>;
+  const verdict = candidate.verdict;
+  if (
+    (verdict !== 'approved' && verdict !== 'changes_requested' && verdict !== 'commented') ||
+    typeof candidate.clientMessageId !== 'string' ||
+    candidate.clientMessageId.length === 0 ||
+    candidate.clientMessageId.length > 200 ||
+    !isOptionalLocalReviewHead(candidate.reviewedHeadSha) ||
+    !isValidOptionalAcceptedSourceAnchor(candidate)
+  ) {
+    return undefined;
+  }
+  return {
+    verdict,
+    clientMessageId: candidate.clientMessageId,
+    ...(typeof candidate.reviewedHeadSha === 'string' ? { reviewedHeadSha: candidate.reviewedHeadSha } : {}),
+    ...(typeof candidate.reviewSubjectRef === 'string' ? { reviewSubjectRef: candidate.reviewSubjectRef } : {}),
+    ...(typeof candidate.acceptedSourceRef === 'string' ? { acceptedSourceRef: candidate.acceptedSourceRef } : {}),
+    ...(typeof candidate.acceptedRevision === 'string' ? { acceptedRevision: candidate.acceptedRevision } : {}),
+  };
 }
 
 function parseProactiveCarrier(value: unknown): StoredMessageExtra['proactive'] {
@@ -190,9 +283,34 @@ function parseMeetingArtifactCarrier(value: unknown): StoredMessageExtra['meetin
   ) {
     return undefined;
   }
+  const hasVersionedResource =
+    candidate.resourceRef !== undefined ||
+    candidate.sourceRevision !== undefined ||
+    candidate.byteLength !== undefined ||
+    candidate.contentType !== undefined;
+  if (
+    hasVersionedResource &&
+    (!isNonEmptyString(candidate.resourceRef) ||
+      candidate.resourceRef.length > 1_024 ||
+      typeof candidate.sourceRevision !== 'string' ||
+      !/^sha256:[0-9a-f]{64}$/.test(candidate.sourceRevision) ||
+      !Number.isSafeInteger(candidate.byteLength) ||
+      Number(candidate.byteLength) < 0 ||
+      candidate.contentType !== 'text/plain')
+  ) {
+    return undefined;
+  }
   return {
     intakeId: candidate.intakeId,
     sourceHandle: candidate.sourceHandle,
+    ...(hasVersionedResource
+      ? {
+          resourceRef: candidate.resourceRef as string,
+          sourceRevision: candidate.sourceRevision as `sha256:${string}`,
+          byteLength: candidate.byteLength as number,
+          contentType: 'text/plain' as const,
+        }
+      : {}),
     trust: 'untrusted_external',
     instructionPolicy: 'data_only',
   };
@@ -208,6 +326,11 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
     const result: StoredMessageExtra = {};
     let hasField = false;
 
+    if (isProviderSemanticEvent(parsed.semanticEvent)) {
+      result.semanticEvent = parsed.semanticEvent;
+      hasField = true;
+    }
+
     // Validate rich sub-field shape
     if (parsed.rich && typeof parsed.rich === 'object' && parsed.rich.v === 1 && Array.isArray(parsed.rich.blocks)) {
       result.rich = parsed.rich as RichMessageExtra;
@@ -215,8 +338,12 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
     }
 
     const deliveryDecision = deliveryDecisionCueCarrierV1Schema.safeParse(parsed.memoryCue?.deliveryDecision);
-    if (deliveryDecision.success) {
-      result.memoryCue = { deliveryDecision: deliveryDecision.data };
+    const catOwnedSeed = catOwnedSeedCueCarrierV1Schema.safeParse(parsed.memoryCue?.catOwnedSeed);
+    if (deliveryDecision.success || catOwnedSeed.success) {
+      result.memoryCue = {
+        ...(deliveryDecision.success ? { deliveryDecision: deliveryDecision.data } : {}),
+        ...(catOwnedSeed.success ? { catOwnedSeed: catOwnedSeed.data } : {}),
+      };
       hasField = true;
     }
 
@@ -259,6 +386,18 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
     if (writeOpportunityReentry.success) {
       result.writeOpportunityReentry = writeOpportunityReentry.data as WriteOpportunityReentryCarrierV1;
       hasField = true;
+    }
+
+    if (Array.isArray(parsed.writeOpportunityReentries) && parsed.writeOpportunityReentries.length <= 8) {
+      const reentries = (parsed.writeOpportunityReentries as unknown[]).map((candidate: unknown) =>
+        writeOpportunityReentryCarrierV1Schema.safeParse(candidate),
+      );
+      if (reentries.length > 0 && reentries.every((candidate) => candidate.success)) {
+        result.writeOpportunityReentries = reentries.map(
+          (candidate) => candidate.data as WriteOpportunityReentryCarrierV1,
+        );
+        hasField = true;
+      }
     }
 
     const writeOpportunityPresentationRetry = writeOpportunityPresentationRetryCarrierV1Schema.safeParse(
@@ -345,6 +484,15 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
       hasField = true;
     }
 
+    // #1371: the typed verdict is durable review evidence. Public prose is
+    // presentation, so Redis hydration must preserve this carrier exactly;
+    // merge-gate separately requires an exact reviewedHeadSha for authority.
+    const localReviewVerdict = parseLocalReviewVerdictCarrier(parsed.localReviewVerdict);
+    if (localReviewVerdict) {
+      result.localReviewVerdict = localReviewVerdict;
+      hasField = true;
+    }
+
     const validCoordinationDedupKeys = new Set(['minted-active-root', 'minted-terminal-root', 'action-active-root']);
     if (
       parsed.callbackDedup &&
@@ -371,6 +519,10 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
         sourceThreadId: parsed.crossPost.sourceThreadId,
         ...(typeof parsed.crossPost.sourceInvocationId === 'string'
           ? { sourceInvocationId: parsed.crossPost.sourceInvocationId }
+          : {}),
+        // #1387: preserve sourceMessageId through Redis round-trip so child can dereference the trigger message
+        ...(typeof parsed.crossPost.sourceMessageId === 'string'
+          ? { sourceMessageId: parsed.crossPost.sourceMessageId }
           : {}),
         // F246 Phase B: preserve effectClass through Redis round-trip
         ...(typeof parsed.crossPost.effectClass === 'string' && validEffectClasses.has(parsed.crossPost.effectClass)

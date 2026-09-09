@@ -1,3 +1,4 @@
+import type { RoutingPreflightDecisionV1 } from '@cat-cafe/shared';
 import type { FastifyBaseLogger } from 'fastify';
 
 export interface CallbackDeliveryDecisionInput {
@@ -7,8 +8,13 @@ export interface CallbackDeliveryDecisionInput {
   threadId: string;
   log: Pick<FastifyBaseLogger, 'error' | 'warn'>;
   logContext?: Record<string, unknown>;
-  enqueueA2A: () => Promise<{ enqueued: readonly string[]; coalesced?: readonly string[] }>;
+  enqueueA2A: () => Promise<{
+    enqueued: readonly string[];
+    coalesced?: readonly string[];
+    routingPreflight?: RoutingPreflightDecisionV1;
+  }>;
   markDelivered?: (deliveredAt: number) => Promise<unknown> | unknown;
+  preserveQueuedOnEnqueueFailure?: boolean;
   zeroEnqueuedWarnMessage: string;
   enqueueFailureMessage: string;
 }
@@ -18,6 +24,7 @@ export interface CallbackDeliveryDecision {
   enqueued: readonly string[];
   enqueueAttempted: boolean;
   enqueueFailed: boolean;
+  routingPreflight?: RoutingPreflightDecisionV1;
 }
 
 async function recoverQueuedMessage(input: CallbackDeliveryDecisionInput, warnMessage: string): Promise<void> {
@@ -26,6 +33,10 @@ async function recoverQueuedMessage(input: CallbackDeliveryDecisionInput, warnMe
   } catch (err) {
     input.log.warn({ ...input.logContext, err, messageId: input.messageId, threadId: input.threadId }, warnMessage);
   }
+}
+
+function shouldPreserveQueuedMessage(input: CallbackDeliveryDecisionInput): boolean {
+  return Boolean(input.willEnqueueToQueue && input.preserveQueuedOnEnqueueFailure);
 }
 
 /**
@@ -38,42 +49,64 @@ export class MessageDeliveryService {
     input: CallbackDeliveryDecisionInput,
   ): Promise<CallbackDeliveryDecision> {
     if (!input.canEnqueueA2A) {
-      if (input.willEnqueueToQueue) {
+      const preserveQueued = shouldPreserveQueuedMessage(input);
+      if (input.willEnqueueToQueue && !preserveQueued) {
         await recoverQueuedMessage(input, input.zeroEnqueuedWarnMessage);
       }
-      return { shouldBroadcastNow: true, enqueued: [], enqueueAttempted: false, enqueueFailed: false };
+      return {
+        shouldBroadcastNow: !preserveQueued,
+        enqueued: [],
+        enqueueAttempted: false,
+        enqueueFailed: preserveQueued,
+      };
     }
 
-    let messageStaysQueued = input.willEnqueueToQueue;
-    let enqueued: readonly string[] = [];
-    let enqueueFailed = false;
     try {
       const a2aResult = await input.enqueueA2A();
-      enqueued = a2aResult.enqueued;
       // F216 AC-D6: coalesced targets are handled (content merged into existing entry).
       // Only warn/recover when truly nothing was handled (enqueued=0 AND coalesced=0).
       const anyHandled = a2aResult.enqueued.length > 0 || (a2aResult.coalesced?.length ?? 0) > 0;
       if (input.willEnqueueToQueue && !anyHandled) {
+        if (input.preserveQueuedOnEnqueueFailure) {
+          return {
+            shouldBroadcastNow: false,
+            enqueued: a2aResult.enqueued,
+            enqueueAttempted: true,
+            enqueueFailed: true,
+            ...(a2aResult.routingPreflight ? { routingPreflight: a2aResult.routingPreflight } : {}),
+          };
+        }
         await recoverQueuedMessage(input, input.zeroEnqueuedWarnMessage);
-        messageStaysQueued = false;
+        return {
+          shouldBroadcastNow: true,
+          enqueued: a2aResult.enqueued,
+          enqueueAttempted: true,
+          enqueueFailed: false,
+          ...(a2aResult.routingPreflight ? { routingPreflight: a2aResult.routingPreflight } : {}),
+        };
       }
+      return {
+        shouldBroadcastNow: !input.willEnqueueToQueue,
+        enqueued: a2aResult.enqueued,
+        enqueueAttempted: true,
+        enqueueFailed: false,
+        ...(a2aResult.routingPreflight ? { routingPreflight: a2aResult.routingPreflight } : {}),
+      };
     } catch (err) {
-      enqueueFailed = true;
       input.log.error(
         { ...input.logContext, err, messageId: input.messageId, threadId: input.threadId },
         input.enqueueFailureMessage,
       );
-      if (input.willEnqueueToQueue) {
+      const preserveQueued = shouldPreserveQueuedMessage(input);
+      if (input.willEnqueueToQueue && !preserveQueued) {
         await recoverQueuedMessage(input, input.enqueueFailureMessage);
       }
-      messageStaysQueued = false;
+      return {
+        shouldBroadcastNow: !preserveQueued,
+        enqueued: [],
+        enqueueAttempted: true,
+        enqueueFailed: true,
+      };
     }
-
-    return {
-      shouldBroadcastNow: !messageStaysQueued,
-      enqueued,
-      enqueueAttempted: true,
-      enqueueFailed,
-    };
   }
 }

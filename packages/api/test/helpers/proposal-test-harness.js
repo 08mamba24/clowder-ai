@@ -16,6 +16,7 @@ export async function createProposalTestContext({
   queueProcessorOverride,
   fetchPrTrackingBoundaryOverride,
   sidebarPresenceSourceOverride,
+  projectRoot,
 } = {}) {
   const { InvocationRegistry } = await import(
     '../../dist/domains/cats/services/agents/invocation/InvocationRegistry.js'
@@ -68,6 +69,7 @@ export async function createProposalTestContext({
     ...(invocationQueueOverride ? { invocationQueue: invocationQueueOverride } : {}),
     ...(queueProcessorOverride ? { queueProcessor: queueProcessorOverride } : {}),
     ...(fetchPrTrackingBoundaryOverride ? { fetchPrTrackingBoundary: fetchPrTrackingBoundaryOverride } : {}),
+    ...(projectRoot ? { projectRoot } : {}),
   });
   if (sidebarPresenceSourceOverride) {
     await app.register(threadsRoutes, {
@@ -80,7 +82,7 @@ export async function createProposalTestContext({
   }
 
   const originByRequest = new Map();
-  async function propose({ userId, catId = 'opus', threadId, body = {} }) {
+  async function propose({ userId, catId = 'opus', threadId, body = {}, originContentBlocks }) {
     const dedupKey = body.clientRequestId ? `${userId}:${catId}:${threadId}:${body.clientRequestId}` : undefined;
     let origin = dedupKey ? originByRequest.get(dedupKey) : undefined;
     if (!origin) {
@@ -88,6 +90,7 @@ export async function createProposalTestContext({
         userId,
         catId: null,
         content: 'Please propose a child thread',
+        contentBlocks: originContentBlocks,
         mentions: [],
         timestamp: Date.now(),
         threadId,

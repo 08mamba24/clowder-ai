@@ -3,7 +3,14 @@
  * Split out of RedisProposalStore.ts to keep both files under the 350-line hard limit (AC-X1).
  */
 
-import type { CatId, ProposalApproveOverrides, ProposalStatus, ReportingMode, ThreadProposal } from '@cat-cafe/shared';
+import type {
+  CatId,
+  DeclaredWorkMode,
+  ProposalApproveOverrides,
+  ProposalStatus,
+  ReportingMode,
+  ThreadProposal,
+} from '@cat-cafe/shared';
 import type { FinalizeApprovalInput } from '../ports/ProposalStore.js';
 import { hydrateApprovalPublication, serializeApprovalPublication } from './RedisApprovalPublication.js';
 
@@ -86,9 +93,7 @@ export function serializeProposal(proposal: ThreadProposal): string[] {
   if (proposal.sourceMessageId) fields.push('sourceMessageId', proposal.sourceMessageId);
   if (proposal.cardMessageId) fields.push('cardMessageId', proposal.cardMessageId);
   if (proposal.reportingMode) fields.push('reportingMode', proposal.reportingMode);
-  if (proposal.communityPrContext) {
-    fields.push('communityPrContext', JSON.stringify(proposal.communityPrContext));
-  }
+  if (proposal.declaredWorkMode) fields.push('declaredWorkMode', proposal.declaredWorkMode);
   if (proposal.publication) fields.push('publication', serializeApprovalPublication(proposal.publication));
   if (proposal.withdrawnBy) fields.push('withdrawnBy', proposal.withdrawnBy);
   if (proposal.withdrawnAt) fields.push('withdrawnAt', String(proposal.withdrawnAt));
@@ -115,8 +120,7 @@ export function hydrateProposal(data: Record<string, string>): ThreadProposal {
   };
   if (initialMessage) proposal.initialMessage = initialMessage;
   if (data.reportingMode) proposal.reportingMode = data.reportingMode as ReportingMode;
-  const communityPrContext = parseCommunityPrContext(data.communityPrContext);
-  if (communityPrContext) proposal.communityPrContext = communityPrContext;
+  if (data.declaredWorkMode) proposal.declaredWorkMode = data.declaredWorkMode as DeclaredWorkMode;
   if (data.approvedBy) proposal.approvedBy = data.approvedBy;
   if (data.approvedAt) proposal.approvedAt = parseInt(data.approvedAt, 10);
   if (data.createdThreadId) proposal.createdThreadId = data.createdThreadId;
@@ -155,6 +159,7 @@ export function applyOverrides(proposal: ThreadProposal, overrides: ProposalAppr
   if (overrides.preferredCats !== undefined) proposal.preferredCats = [...overrides.preferredCats];
   if (overrides.projectPath !== undefined) proposal.projectPath = overrides.projectPath;
   if (overrides.reportingMode !== undefined) proposal.reportingMode = overrides.reportingMode;
+  if (overrides.declaredWorkMode !== undefined) proposal.declaredWorkMode = overrides.declaredWorkMode;
   if (overrides.initialMessage === null) delete proposal.initialMessage;
   else if (typeof overrides.initialMessage === 'string') proposal.initialMessage = overrides.initialMessage;
 }
@@ -167,27 +172,5 @@ function parseCatArray(raw: string | undefined): CatId[] {
     return parsed.filter((entry): entry is string => typeof entry === 'string').map((entry) => entry as CatId);
   } catch {
     return [];
-  }
-}
-
-function parseCommunityPrContext(raw: string | undefined): ThreadProposal['communityPrContext'] {
-  if (!raw) return undefined;
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (
-      parsed.repoFullName !== 'zts212653/clowder-ai' ||
-      !Number.isSafeInteger(parsed.prNumber) ||
-      Number(parsed.prNumber) <= 0 ||
-      parsed.mode !== 'formal_review'
-    ) {
-      return undefined;
-    }
-    return {
-      repoFullName: 'zts212653/clowder-ai',
-      prNumber: Number(parsed.prNumber),
-      mode: 'formal_review',
-    };
-  } catch {
-    return undefined;
   }
 }

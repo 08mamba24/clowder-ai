@@ -1,6 +1,10 @@
 ---
 name: concept-demo-design
 tips_exempt: Existing concept-demo authoring workflow refinement; no new end-user Hub capability surface.
+triggers:
+  - 可证伪技术剖面
+  - 证伪实验台
+  - 技术架构 demo
 description: "把抽象理念、家内 UI/UX 可点稿或端到端用户旅程变成可讲解、可验证的交互 Demo。Use: 做个 demo 让人 get 到、做 F284 式体验 Gate、验证完整用户旅程。Not: 已签字的正式产品前端、已有素材剪辑、PPT、纯视觉探索。Output: 双轴 Demo Contract（判题类型 × 交付车道）+ 确定性交互原型 + 验证记录。"
 ---
 
@@ -13,6 +17,7 @@ Demo 的工作，是把尚未适合直接产品化的问题变成可以亲眼判
 | 当前任务 | 去向 |
 |---|---|
 | 理念还停在文字里，需要让人看见因果变化 | 本 skill，`demo_kind=concept_story` |
+| 技术名词很多，但观众仍无法判断主张是否站得住 | 本 skill 的条件式“可证伪技术剖面” |
 | 正式实现前，需要在家里比较布局、交互、折叠与恢复行为 | 本 skill，`demo_kind=product_experience_gate` |
 | 需要验证用户能否从起点走到目标结果，包括跨面板交接与失败恢复 | 本 skill，`demo_kind=journey_validation` |
 | Demo Contract 已定，需要实现交互前端 | `worktree` + `tdd`，视觉核验用 `browser-preview` |
@@ -122,6 +127,29 @@ Contract 必须记录：
 5. **新世界验证**：改完后用新样本、同题对照、灰度或真实后续行为证明有效。
 6. **拒绝时刻**：适用于自适应系统；展示它怎样拒绝坏尺子、越界反馈或虚假提升。
 
+#### 可证伪技术剖面：把技术名词变成 Claim Bench
+
+只有 Demo 要回答“某项技术主张是否站得住”，并且观众需要亲手检查技术主张时，才触发这一层。普通理念故事、布局比较和用户旅程不为显得专业而补实验台。
+
+故事负责获得注意力；实验台负责赢得信任。
+
+把每项关键技术压成一条可失败的证据链：
+
+~~~text
+主张 → 失效机制 → 技术对象 → 可操纵消融 → verdict → claim ceiling
+~~~
+
+- **主张**必须能输：写清什么观察会推翻它，而不是只写技术名词。
+- **失效机制**先于组件列表：列出至少一个 competing explanation，说明现象还可能由什么造成。
+- **技术对象**落到可指认的状态、算法步骤、数据流或控制面，不用“智能”“进化”代替机制。
+- **可操纵消融**一次只改变一个变量，并保留 control；观众应能亲手制造失败，而不只是切换说明文字。
+- **verdict**由确定规则算出 SUPPORTED、REFUTED 或 UNKNOWN；UNKNOWN 是合法结论。
+- **claim ceiling**限制结论能走多远：单个概念 Demo 不冒充生产效果、因果结论或跨域外推。
+
+外部数字、benchmark、趋势或因果 claim 先走 source-audit；只有存在明确 consumer，且结果会触发 keep、tune 或 sunset 决策时，才把效用问题交给 eval-design。这两者不是 Claim Bench 的必填装饰。
+
+字段模板见 [Demo Contract 的 Claim Bench](refs/demo-contract-template.md#可证伪技术剖面-claim-bench仅在判题是技术主张是否可信时)，展开方法见 [falsifiable-technical-cutaway](refs/falsifiable-technical-cutaway.md)。技术叙事的上游取材与证据边界沿用 [tech-writing 的 7P × 5E 摘要](../tech-writing/SKILL.md#技术叙事的证据剖面)，不在本 Skill 复制第二套理论。
+
 ### `product_experience_gate`
 
 1. **安静默认态**：没有相关工作时，界面能多克制。
@@ -143,6 +171,40 @@ Contract 必须记录：
 
 每一幕只新增一个概念。保留人物、原话和具体动作；压低抽象门槛时，不要把叙事压成 SOP 摘要。
 
+### 真实交互 claim：让输入真的长出状态
+
+只有交付声明真的包含编辑、输入、批注、聊天/讨论、发送、审批、拖动/加节点或可恢复草稿时，才触发这组证据。它适用于 `product_experience_gate`、`journey_validation`，也适用于任何其他 `demo_kind` 的同类真实交互 claim；不能因为页面有 tab、播放键或场景切换就自动触发。`concept_story` 的预设叙事与讲者场景控制不是用户交互 claim，照常可用。
+
+对每一条真实交互 claim，Demo Contract 必须写清并用可重放浏览器旅程证明：
+
+1. **用户语义与因果**：用户是在批注、聊天、审批还是创建节点；哪个动作导致哪条新记录、状态或历史出现。不能用“右栏更新”模糊代替。
+2. **语义控件与状态后果**：核心输入是可编辑语义控件，核心动作有 handler 且改变状态。视觉上像输入框的 `span`、空按钮、或只切换预写场景的控制都不算。
+3. **陌生 sentinel**：测试者输入 fixture 中不存在的一段陌生 sentinel；动作后该值必须出现在 DOM 或声明的 browser store 中，证明不是预写内容轮播。
+4. **条件恢复**：只有声称可恢复/持久化时，才额外刷新并证明同一 sentinel 回来；没有此 claim 不强加 storage。
+5. **可重放证据**：Contract 给出 exact browser-test / journey command。截图和视频只能证明外观，不能单独证明输入、因果或状态增长。
+
+允许 fake backend：内存 state、browser store 或 localStorage 都可以。`pnpm check:design-gate-real-interaction` 守住这条契约的 RED/GREEN 回归 fixture；每个实际 Demo 仍必须把自己的可重放浏览器旅程写进 Contract，不能拿该共享 fixture 代替产品证据。
+
+若交付声明已接入真实产品或具备成熟文档编辑能力，还必须提交 `docs/design-gate-claims/<id>.json`。可执行 checker 会读取其中的 `claims.productIntegration.mountChain`，逐跳核验入口、宿主与 surface 的真实文件、import 和 mount；若有 `claims.documentEditor`，还会核验 manifest 中的引擎依赖、adapter 导入/挂载、五项实现 token，并拒绝 `textarea` / `contentEditable`。只写 Contract 表格、截图或测试 fixture 不算提交证据；普通 concept story 与未作这些 claim 的组件实验不进入该加严车道。
+
+### Workspace / product-shell claim：证明用户拥有工作集
+
+只有 Demo 声称自己在验证 **Workspace、产品主壳、多对象协作或多 Agent 工作台** 时，才触发这组证据；普通设置页、单对象详情页和一次性流程不需要为了“完整”补 tab。
+
+1. **先声明层级**：写清当前画面是一个 feature surface、一个对象详情，还是承载多个 surface 的 product shell。把一个做得很完整的资产页叫“Workspace”不算成立。
+2. **证明接在真实宿主里**：若 claim 是“已进入现有产品 / Collective”，Contract 必须写出**真实产品宿主**的用户入口、目标宿主组件路径与**宿主挂载证据**。单独 `/dev` route、自造导航或 **独立复制壳**可以验证组件，但不得充当产品接入证据。
+3. **工作集由用户组成**：用户能从真实入口把 fixture 中未预开的对象加入工作集，形成新的 typed tab / pane；预先摆好几个场景按钮或只替换同一块 DOM 不算。
+4. **异质 surface 共存**：至少两个职责不同的 surface（例如 Channel + Artifact、Chat + Review、File + Browser）能同时保持或快速切回，而不是把所有能力压成同一张卡或同一个右栏模板。
+5. **主工作面与 sidecar 分工**：inspector / sidecar 只承载临时上下文、短动作或快速窥视；需要持续阅读、编辑、对比或独立导航的对象可以晋升为 tab / split pane。右栏不是所有对象的终身监狱。
+6. **每个 surface 有自己的连续性**：切换后草稿、选择、滚动、缩放和内部导航仍在；只有声称跨刷新恢复时，才要求刷新后恢复同一 working set。
+7. **多 Agent claim 另证运行连续性**：若声称 Agent 可以并行工作，离开其 surface 后运行仍继续，状态可找，结果回到 exact Artifact / Work / Review；头像、在线点或预写“正在运行”不能替代这条因果。
+
+tab chrome 本身不是证据。证据是陌生用户真的创造了一个新工作上下文、在多个上下文间继续做事，且系统没有偷偷丢失状态或把结果塞回一坨聊天回复。
+
+### 文档编辑 claim：接引擎，不造输入框戏法
+
+只有 claim 包含共同编辑文档、稳定选区批注、Agent patch 原位审阅或版本撤销时才触发。Contract 必须点名**成熟编辑器引擎**，并证明 `human_edit / selection_anchor / annotation / patch_review / version_undo` 五项**编辑器适配契约**。原生 `textarea`、`contenteditable` 拼装或按段落拆输入框，只能证明文本字段发生变化，不能通过“文档编辑器”验收。
+
 ## 7. 用最低成本做出“真的画面”
 
 默认选择确定性的纯前端交互。只有核心 claim 依赖真实后端行为时，才增加后端。
@@ -162,7 +224,10 @@ Contract 必须记录：
 | Claim | 机制 |
 |---|---|
 | `demo_kind` 是否选对，Demo 的证据能否回答所声明的判题 | Contract 审计 |
+| 可证伪技术剖面的主张、消融、verdict 与 claim ceiling 是否闭合 | Claim Bench 契约测试 + 确定性状态重放 |
 | 场景顺序、控件、暂停、标签、角色连续性 | 自动化 test / guard |
+| 真实交互 claim 的输入、动作与状态增长 | 语义控件 + 陌生 sentinel 的可重放浏览器旅程；恢复 claim 再加刷新断言 |
+| Workspace / product-shell claim 的用户工作集、异质 surface 与状态连续性 | 从真实入口创建新 typed tab / pane + 跨 surface 切换重放；多 Agent claim 再加后台运行与 exact result-return 证据 |
 | 交付车道是否选对、视觉真相源是否真的被采用 | Contract 审计 + 与所列产品页面逐幕对照 |
 | 产品体验 Gate 的默认态、比较变量、折叠恢复与 Must-Preserve 是否成立 | 确定性 fixture + 浏览器逐态对照 + operator 签字 |
 | 用户旅程的步骤、handoff、失败恢复与终态是否真实 | Journey ledger + step / transition / recovery 断言 |
@@ -188,6 +253,7 @@ Contract 必须记录：
 | 家内 UI 可点稿做成展示站 | 把产品体验判题误当概念宣传 | 选 `product_experience_gate`，从真实产品壳与待裁决变量开工 |
 | 用户旅程只剩几张总结卡 | 用叙事压缩替代真实步骤与交接 | 建 Journey ledger，逐步钉 canonical event、状态与恢复证据 |
 | 做成结论陈列页 | 没定义讲者与观众如何使用 | 先锁观众复述句与讲述节奏 |
+| 把五个技术名词做成五个只换说明文字的按钮 | 展示了分类，没有让 claim 承担失败风险 | 每个关键 claim 配一个可操纵变量、control、消融、确定 verdict 与 claim ceiling |
 | 只有四幕剧本，录不出东西 | 把叙事稿当 Demo | 交付可运行画面与场景控制 |
 | 花两天造真实引擎 | 把“真的 Demo”听成“真的后端” | 先问 claim 是否需要后端；默认纯前端编排 |
 | Skill 写了“复用原生组件”，结果仍做成泛用 SaaS 壳 | 交付对象只写成“观众”，家内体验与外部传播没有 typed lane；弱提醒可被绕过 | 先冻结 `delivery_lane` 与具体视觉真相源；家内 Demo 必须从原生产品壳开工 |
@@ -195,6 +261,10 @@ Contract 必须记录：
 | 一上来滚指标和日志 | 默认观众认识控制台 | 第一幕做面板与指标导览 |
 | 自动播放太快 | 按观看速度设计，没按讲述速度设计 | 试讲定速 + 完整暂停语义 |
 | 两个客户/时间段混在一起 | 场景连续性未写进 Contract | 显式分隔、角色标签、状态前提 |
+| 假输入、空按钮或预设切换被称作“可编辑 / 可聊天” | 只证明了画面与场景控制，没有证明用户因果 | 以陌生 sentinel 走一次真实输入→动作→DOM/store 新状态的浏览器旅程 |
+| 把一个资产页或 Channel 页叫“多人多 Agent Workspace” | 把 feature surface 冒充 product shell；用户无法组成自己的工作集 | 先标明层级，再从真实入口创建异质 tab / pane，并验证切换后的连续性 |
+| 所有对象都塞进右栏或同一块内容区 | 把 inspector 当成主导航，重要对象无法持续阅读、编辑或对比 | sidecar 只做临时上下文；长期对象可晋升 tab / split，主工作面由用户拥有 |
+| tab 都是预先摆好的场景开关 | 只换皮肤，没有创建新对象上下文 | 用 fixture 外对象从真实入口新增 tab，并证明独立状态与关闭 / 恢复语义 |
 | 信号只能经人肉转发 | 没画 signal path | 删除无价值 middle man，换可直达场景 |
 | 收下所有反馈 | 把测量源当规约 owner | 分拣表达问题与立场问题，保留人的晋升/拒绝权 |
 | 改完即宣布成功 | 缺少新世界外推 | 同题对照、新用户、灰度或真实后续行为 |
@@ -207,6 +277,9 @@ Contract 必须记录：
 |---|---|---|---|---|
 | “做个让我在 Hub 里点点、决定 Workspace 怎么改的 Demo” | `product_experience_gate` | `internal_product_gate` | 具体产品页面 / 组件 / worktree；比较态；可隐藏开发控制层 | 独立 SaaS 壳或宣传页成为主界面 |
 | “给不了解 Clowder AI 的外部伙伴录一支 60 秒理念 showcase” | `concept_story` | `external_showcase` | 陌生观众导览、因果变化、品牌身份、原型诚实标注 | 堆家内缩写，或把叙事壳冒充生产 UI |
+| “把归因技术讲清，还要让我亲手试出它何时会判错” | `concept_story` + 可证伪技术剖面 | 依受众选择 | 单一 falsifiable claim、competing explanation、control、ablation、确定 verdict、claim ceiling | 按钮只切换技术说明，claim 永远不会输 |
+| “做一支有感染力的品牌愿景故事，不判具体技术主张” | `concept_story` | `external_showcase` | 因果变化、灵魂帧、诚实边界 | 为显得专业强塞五个实验台 |
+| “用论文数字证明我们的运行成本降低 30%” | `concept_story` + 可证伪技术剖面 | `external_showcase` | source-audit provenance、适用对象、可推翻条件、claim ceiling | 把外部 benchmark 直接改写成自家生产效果 |
 | “做个能录屏的 Demo 给我看看” | 由判题决定，默认先问证据 | `internal_product_gate` | 家内体验入口；录屏只是载体 | 因“录屏”自动切去对外风格 |
 | “把从我提出需求、猫调用工具、结果回到 Workspace、失败后恢复这一整条演出来” | `journey_validation` | `internal_product_gate` | Journey ledger、真实 handoff、失败恢复、可判定终态 | 用几个总结卡跳过真实交接 |
 | “先给家里验证完整旅程，以后也想对外发” | `journey_validation` | 先家内、后独立对外入口 | 同一旅程状态模型 + 两种入口与诚实边界 | 一个半产品、半宣传的混合壳 |

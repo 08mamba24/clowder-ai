@@ -129,6 +129,7 @@ function makeDispatchParams(overrides = {}) {
     threadTitle: 'Test Thread',
     participants: [],
     calledBy: 'opus',
+    sourceMessageId: 'source-message-1',
     intent: 'test intent',
     ...overrides,
   };

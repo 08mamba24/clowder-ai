@@ -266,17 +266,53 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
   }
 
   async function claimDeferredReceiptForProposal(receiptStore, receipt, claimId) {
+    const processorCatId = 'codex-sol';
+    const processingThreadId = 'thread_memory_operations';
+    const processingMessageId = `processing-message-${claimId}`;
+    const processorInvocationId = `processor-invocation-${claimId}`;
     const claimed = await receiptStore.claim({
       ownerUserId: receipt.ownerUserId,
       receiptId: receipt.receiptId,
       claimId,
       now: Date.now(),
       leaseMs: 60_000,
+      processorCatId,
+      processingThreadId,
     });
     assert.equal(claimed.outcome, 'claimed');
+    assert.equal(
+      (
+        await receiptStore.bindProcessingMessage({
+          ownerUserId: receipt.ownerUserId,
+          receiptId: receipt.receiptId,
+          claimId,
+          processorCatId,
+          processingThreadId,
+          processingMessageId,
+          now: Date.now(),
+        })
+      ).outcome,
+      'bound',
+    );
+    assert.equal(
+      (
+        await receiptStore.bindProcessorInvocation({
+          ownerUserId: receipt.ownerUserId,
+          receiptId: receipt.receiptId,
+          claimId,
+          processorCatId,
+          processingThreadId,
+          processingMessageId,
+          processorInvocationId,
+          now: Date.now(),
+        })
+      ).outcome,
+      'bound',
+    );
     return {
       deferredReceiptId: receipt.receiptId,
       deferredReceiptClaimId: claimId,
+      deferredReceiptProcessorInvocationId: processorInvocationId,
       deltaFingerprint: receipt.dedupeHash,
     };
   }
@@ -421,20 +457,11 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
       dedupeHash: deltaFingerprint,
     });
     const now = Date.now();
-    const claim = await receiptStore.claim({
-      ownerUserId: 'owner-1',
-      receiptId,
-      claimId: 'claim-atomic',
-      now,
-      leaseMs: 60_000,
-    });
-    assert.equal(claim.outcome, 'claimed');
+    const lineage = await claimDeferredReceiptForProposal(receiptStore, receipt, 'claim-atomic');
 
     const input = candidateInput({
       candidateId: 'person_candidate_deferred_atomic',
-      deferredReceiptId: receiptId,
-      deferredReceiptClaimId: 'claim-atomic',
-      deltaFingerprint,
+      ...lineage,
     });
     await store.stageCandidate(input);
     await store.commitEnvelope(input.candidateId, envelopeFor(input));
@@ -447,21 +474,33 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     assert.equal(proposedReceipt.sourceCoordinates, undefined);
     assert.equal(proposedReceipt.invocationId, undefined);
 
+    const mismatchReceiptId = `deferred_person_${'d'.repeat(32)}`;
+    const mismatchFingerprint = 'd'.repeat(64);
+    const mismatch = await stageDeferredReceipt(mismatchReceiptId, { dedupeHash: mismatchFingerprint });
+    const mismatchLineage = await claimDeferredReceiptForProposal(
+      mismatch.receiptStore,
+      mismatch.receipt,
+      'claim-invocation-mismatch',
+    );
+    const mismatchInput = candidateInput({
+      candidateId: 'person_candidate_deferred_invocation_mismatch',
+      ...mismatchLineage,
+      deferredReceiptProcessorInvocationId: 'processor-invocation-successor',
+    });
+    await store.stageCandidate(mismatchInput);
+    await assert.rejects(
+      () => store.commitEnvelope(mismatchInput.candidateId, envelopeFor(mismatchInput)),
+      /deferred receipt|CONFLICT/i,
+    );
+    assert.equal((await store.getCandidateForOwner('owner-1', mismatchInput.candidateId)).state, 'staged');
+
     const racedReceiptId = `deferred_person_${'c'.repeat(32)}`;
     const racedFingerprint = 'c'.repeat(64);
     const raced = await stageDeferredReceipt(racedReceiptId, { dedupeHash: racedFingerprint });
-    await raced.receiptStore.claim({
-      ownerUserId: 'owner-1',
-      receiptId: racedReceiptId,
-      claimId: 'claim-raced',
-      now,
-      leaseMs: 60_000,
-    });
+    const racedLineage = await claimDeferredReceiptForProposal(raced.receiptStore, raced.receipt, 'claim-raced');
     const racedInput = candidateInput({
       candidateId: 'person_candidate_deferred_raced',
-      deferredReceiptId: racedReceiptId,
-      deferredReceiptClaimId: 'claim-raced',
-      deltaFingerprint: racedFingerprint,
+      ...racedLineage,
     });
     await store.stageCandidate(racedInput);
     await raced.receiptStore.withdraw('owner-1', racedReceiptId, now + 1);
@@ -479,19 +518,15 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     const expiredReceiptId = `deferred_person_${'b'.repeat(32)}`;
     const expiredFingerprint = 'b'.repeat(64);
     const expired = await stageDeferredReceipt(expiredReceiptId, { dedupeHash: expiredFingerprint });
-    await expired.receiptStore.claim({
-      ownerUserId: 'owner-1',
-      receiptId: expiredReceiptId,
-      claimId: 'claim-expired-after-stage',
-      now,
-      leaseMs: 60_000,
-    });
+    const expiredLineage = await claimDeferredReceiptForProposal(
+      expired.receiptStore,
+      expired.receipt,
+      'claim-expired-after-stage',
+    );
     const expiredInput = candidateInput({
       candidateId: 'person_candidate_deferred_expired_after_stage',
       targetPersonId: 'person_huang_ting',
-      deferredReceiptId: expiredReceiptId,
-      deferredReceiptClaimId: 'claim-expired-after-stage',
-      deltaFingerprint: expiredFingerprint,
+      ...expiredLineage,
     });
     await store.stageCandidate(expiredInput);
     const expiredReceiptKey = expired.receiptStore.keys.receipt('owner-1', expiredReceiptId);
@@ -508,18 +543,57 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
       claimId: 'claim-reclaimed',
       now: Date.now(),
       leaseMs: 60_000,
+      processorCatId: 'codex-sol',
+      processingThreadId: 'thread_memory_operations',
     });
     assert.equal(reclaimed.outcome, 'claimed');
+    const reclaimedProcessingMessageId = 'processing-message-claim-reclaimed';
+    const reclaimedProcessorInvocationId = 'processor-invocation-claim-reclaimed';
+    await expired.receiptStore.bindProcessingMessage({
+      ownerUserId: 'owner-1',
+      receiptId: expiredReceiptId,
+      claimId: 'claim-reclaimed',
+      processorCatId: 'codex-sol',
+      processingThreadId: 'thread_memory_operations',
+      processingMessageId: reclaimedProcessingMessageId,
+      now: Date.now(),
+    });
+    await expired.receiptStore.bindProcessorInvocation({
+      ownerUserId: 'owner-1',
+      receiptId: expiredReceiptId,
+      claimId: 'claim-reclaimed',
+      processorCatId: 'codex-sol',
+      processingThreadId: 'thread_memory_operations',
+      processingMessageId: reclaimedProcessingMessageId,
+      processorInvocationId: reclaimedProcessorInvocationId,
+      now: Date.now(),
+    });
     const staleRenewal = await store.renewDeferredCandidateClaim({
       ownerUserId: 'owner-1',
       candidateId: expiredInput.candidateId,
       receiptId: expiredReceiptId,
       previousClaimId: 'not-the-staged-claim',
       nextClaimId: 'claim-reclaimed',
+      processorInvocationId: reclaimedProcessorInvocationId,
       deltaFingerprint: expiredFingerprint,
       renewedAt: Date.now(),
     });
     assert.equal(staleRenewal.outcome, 'conflict');
+    assert.equal(
+      (await store.getCandidateForOwner('owner-1', expiredInput.candidateId)).deferredReceiptClaimId,
+      'claim-expired-after-stage',
+    );
+    const successorRenewal = await store.renewDeferredCandidateClaim({
+      ownerUserId: 'owner-1',
+      candidateId: expiredInput.candidateId,
+      receiptId: expiredReceiptId,
+      previousClaimId: 'claim-expired-after-stage',
+      nextClaimId: 'claim-reclaimed',
+      processorInvocationId: 'processor-invocation-successor',
+      deltaFingerprint: expiredFingerprint,
+      renewedAt: Date.now(),
+    });
+    assert.equal(successorRenewal.outcome, 'conflict');
     assert.equal(
       (await store.getCandidateForOwner('owner-1', expiredInput.candidateId)).deferredReceiptClaimId,
       'claim-expired-after-stage',
@@ -532,6 +606,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
       receiptId: expiredReceiptId,
       previousClaimId: 'claim-expired-after-stage',
       nextClaimId: 'claim-reclaimed',
+      processorInvocationId: reclaimedProcessorInvocationId,
       deltaFingerprint: expiredFingerprint,
       renewedAt: Date.now(),
     });
@@ -547,6 +622,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
       receiptId: expiredReceiptId,
       previousClaimId: 'claim-expired-after-stage',
       nextClaimId: 'claim-reclaimed',
+      processorInvocationId: reclaimedProcessorInvocationId,
       deltaFingerprint: expiredFingerprint,
       renewedAt: Date.now(),
     });
@@ -558,6 +634,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
       receiptId: expiredReceiptId,
       previousClaimId: 'claim-expired-after-stage',
       nextClaimId: 'claim-reclaimed',
+      processorInvocationId: reclaimedProcessorInvocationId,
       deltaFingerprint: expiredFingerprint,
       renewedAt: Date.now(),
     });
@@ -591,6 +668,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     assert.equal(first.outcome, 'applied');
     assert.equal(first.receipt.state, 'partially_materialized');
     assert.deepEqual(first.receipt.remainingDraftIds, [eventDraft.draftId]);
+    assert.deepEqual(await store.listSettled(input.ownerUserId), []);
 
     const claims = await store.listClaims(input.ownerUserId, first.receipt.personId);
     assert.equal(claims.length, 1);
@@ -626,6 +704,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     assert.equal(terminal.interactionDraft, undefined);
     assert.equal(terminal.sourceBundle, undefined);
     assert.deepEqual(await store.listPending(input.ownerUserId), []);
+    assert.deepEqual(await store.listSettled(input.ownerUserId), [{ candidate: terminal, decidedAt: 300 }]);
 
     const events = await store.listInteractionEvents(input.ownerUserId, second.receipt.personId);
     assert.equal(events.length, 1);
@@ -666,6 +745,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
       decisionId: 'decision_quoted_role',
       authorizedAt: 200,
     });
+    assert.equal((await store.listSettled(input.ownerUserId))[0].candidate.candidateId, input.candidateId);
     const [claim] = await store.listClaims(input.ownerUserId, approved.receipt.personId);
     assert.equal(claim.typedProvenance.assertionBindings[0].role, 'quoted_third_party');
   });
@@ -898,6 +978,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     assert.equal(replay.outcome, 'replayed');
     assert.deepEqual(first.receipt, replay.receipt);
     assert.equal((await store.getCandidateForOwner(input.ownerUserId, input.candidateId)).state, 'withdrawn');
+    assert.deepEqual(await store.listSettled(input.ownerUserId), []);
     assert.equal(await store.getPerson(input.ownerUserId, approved.receipt.personId), null);
     assert.deepEqual(await store.listClaims(input.ownerUserId, approved.receipt.personId), []);
     assert.deepEqual(await store.listRelationships(input.ownerUserId, approved.receipt.personId), []);
@@ -922,6 +1003,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     });
     assert.equal(forgotten.verdict, 'purged');
     assert.equal(await store.getCandidateForOwner(input.ownerUserId, input.candidateId), null);
+    assert.deepEqual(await store.listSettled(input.ownerUserId), []);
   });
 
   it('restores a partial proposal to pending when its only decision is undone', async () => {
@@ -1114,6 +1196,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     assert.equal(result.outcome, 'applied');
     assert.equal(result.candidate.state, 'rejected');
     assert.deepEqual(result.candidate.remainingDraftIds, []);
+    assert.deepEqual(await store.listSettled(input.ownerUserId), [{ candidate: result.candidate, decidedAt: 300 }]);
     assert.equal((await store.listClaims(input.ownerUserId, approved.receipt.personId)).length, 1);
     assert.equal((await store.getPerson(input.ownerUserId, approved.receipt.personId)).status, 'active');
   });
@@ -1370,6 +1453,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
       decidedAt: 400,
     });
     assert.equal(applied.outcome, 'applied');
+    assert.equal((await store.listSettled(pending.ownerUserId))[0].candidate.candidateId, pending.candidateId);
     const entry = applied.candidate.humanDispositionLedgerEntry;
     assert.equal(entry.episode.subjectRef.startsWith('f281_lineage_'), true);
     assert.equal(entry.episode.sourceRef.startsWith('f281_receipt_'), true);
@@ -1592,6 +1676,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     assert.equal(JSON.stringify(forgotten.receipt).includes(pending.candidateId), false);
     assert.equal(JSON.stringify(forgotten.receipt).includes('wrong_lane'), false);
     assert.equal(await store.getCandidateForOwner(pending.ownerUserId, pending.candidateId), null);
+    assert.deepEqual(await store.listSettled(pending.ownerUserId), []);
     assert.equal(await redis.get(PersonMemoryKeys.suppression(pending.ownerUserId, pending.candidateId)), null);
     assert.equal(await redis.get(bindingKey), null);
     assert.equal(await redis.get(lineageLocatorKey), null);
@@ -2822,6 +2907,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
       decisionId: 'decision_forget_seed',
       authorizedAt: 200,
     });
+    assert.equal((await store.listSettled(input.ownerUserId))[0].candidate.candidateId, input.candidateId);
     assert.equal((await store.resolveActivePersonByAlias(input.ownerUserId, '黄挺')).status, 'resolved');
     assert.equal(
       (await store.resolveActivePersonByWorkspaceEntityRef(input.ownerUserId, 'person:huang-ting-huawei')).status,
@@ -2841,6 +2927,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     assert.deepEqual(await store.listClaims(input.ownerUserId, approved.receipt.personId), []);
     assert.deepEqual(await store.listInteractionEvents(input.ownerUserId, approved.receipt.personId), []);
     assert.equal(await store.getCandidateForOwner(input.ownerUserId, input.candidateId), null);
+    assert.deepEqual(await store.listSettled(input.ownerUserId), []);
     assert.deepEqual(await store.resolveActivePersonByAlias(input.ownerUserId, '黄挺'), {
       status: 'not_available',
     });

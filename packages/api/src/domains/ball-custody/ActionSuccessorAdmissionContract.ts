@@ -31,6 +31,19 @@ export interface ActionSuccessorFence {
   invocationLineageRef?: string;
 }
 
+export function actionSuccessorFencesMatch(
+  candidate: ActionSuccessorFence | undefined,
+  expected: ActionSuccessorFence,
+): boolean {
+  return (
+    candidate?.leaseId === expected.leaseId &&
+    candidate?.generation === expected.generation &&
+    candidate?.dispatchId === expected.dispatchId &&
+    candidate?.terminalPredicateDigest === expected.terminalPredicateDigest &&
+    candidate?.invocationLineageRef === expected.invocationLineageRef
+  );
+}
+
 export function buildActionSuccessorFence(lease: ActionSuccessorLease, dispatchId: string): ActionSuccessorFence {
   return {
     leaseId: lease.leaseId,
@@ -67,8 +80,7 @@ export type ActionSuccessorAdmissionResult =
         | 'completion_present'
         | 'terminal_predicate_mismatch'
         | 'predecessor_missing'
-        | 'parallel_return_unsupported'
-        | 'review_reentry_ineligible';
+        | 'parallel_return_unsupported';
       lease: ActionSuccessorLease;
     }
   | { admit: false; outcome: 'subject_terminal'; terminal: ActionSubjectTerminalTruth };

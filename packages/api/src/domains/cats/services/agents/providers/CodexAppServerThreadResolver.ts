@@ -1,5 +1,8 @@
 import {
   CodexActiveWriterRecoveryError,
+  type CodexNativeResumeRejection,
+  type CodexNativeResumeReplacementProvenance,
+  type CodexSessionReplacementProvenance,
   captureCodexActiveWriterDetection,
 } from '../../runtime-session/CodexSessionReplacementProvenance.js';
 import { asCodexAppServerRecord } from './CodexAppServerEventMapper.js';
@@ -24,6 +27,7 @@ export type CodexAppServerThreadVerdict =
       readonly kind: 'replaced';
       readonly requestedThreadId: string;
       readonly threadId: string;
+      readonly replacement: CodexSessionReplacementProvenance;
       readonly raw: unknown;
     }
   | {
@@ -32,6 +36,24 @@ export type CodexAppServerThreadVerdict =
       readonly threadId: string;
       readonly raw: unknown;
     };
+
+/**
+ * The provider rejected a resume by terminating the carrier before it could
+ * form a JSON-RPC envelope. A fallback `thread/start` cannot use that dead
+ * carrier, so the bounded runner must acquire a fresh one first.
+ */
+export class CodexAppServerCarrierReplacementRequiredError extends Error {
+  readonly replacement: CodexNativeResumeReplacementProvenance;
+
+  constructor(message: string, replacement: CodexNativeResumeReplacementProvenance) {
+    super(message);
+    this.name = 'CodexAppServerCarrierReplacementRequiredError';
+    this.replacement = replacement;
+  }
+}
+
+/** Capacity continuation has no user prompt to bootstrap a replacement context. */
+export class CodexAppServerExactResumeRequiredError extends Error {}
 
 /**
  * Does this provider rejection positively mean "the requested thread does not
@@ -51,6 +73,13 @@ export function isThreadNotResumableRejection(message: string): boolean {
   return /^no rollout found for thread id \S+$/i.test(text);
 }
 
+function classifyNativeResumeRejection(message: string): CodexNativeResumeRejection | undefined {
+  const text = message.trim();
+  if (isThreadNotResumableRejection(text)) return 'rollout_not_found';
+  if (text === 'Max payload size exceeded') return 'max_payload_size_exceeded';
+  return undefined;
+}
+
 function threadIdOf(response: unknown): string {
   const record = asCodexAppServerRecord(response);
   const thread = asCodexAppServerRecord(record?.thread);
@@ -66,13 +95,29 @@ export async function resolveCodexAppServerThread(input: {
   params: Record<string, unknown>;
   /** Params for the fallback `thread/start` after a provider-rejected resume. */
   startParams?: Record<string, unknown>;
+  /** Provenance retained while a dead resume carrier is replaced. */
+  resumeReplacement?: CodexNativeResumeReplacementProvenance;
+  /** Recovery must retain the original native history, including completed tools. */
+  requireExactResume?: boolean;
   localLiveLease: boolean;
   request: (method: string, params: Record<string, unknown>) => Promise<unknown>;
   now: () => number;
 }): Promise<CodexAppServerThreadVerdict> {
   if (input.thread.kind === 'start') {
+    if (input.requireExactResume)
+      throw new CodexAppServerExactResumeRequiredError('Capacity recovery requires a resume');
     const raw = await input.request('thread/start', input.params);
-    return { kind: 'started', threadId: threadIdOf(raw), raw };
+    const threadId = threadIdOf(raw);
+    if (input.resumeReplacement) {
+      return {
+        kind: 'replaced',
+        requestedThreadId: input.resumeReplacement.previousNativeThreadId,
+        threadId,
+        replacement: input.resumeReplacement,
+        raw,
+      };
+    }
+    return { kind: 'started', threadId, raw };
   }
 
   const requestedThreadId = input.thread.threadId;
@@ -91,33 +136,50 @@ export async function resolveCodexAppServerThread(input: {
       });
       throw new CodexActiveWriterRecoveryError(failure.message, detection);
     }
-    // Only a provider *verdict* may be answered with a fallback start, and only
-    // a verdict that positively means "this thread does not exist".
-    //
-    // A broken pipe is not a verdict, so a non-RPC error always propagates.
-    // But being a JSON-RPC error is not sufficient either: a follow-up probe on
+    // Only a provider *verdict* may be answered with a fallback start on the
+    // same carrier. Being a JSON-RPC error is not sufficient: a follow-up probe on
     // codex-cli 0.147.0 (2026-08-20) showed the app-server answers BOTH cases
     // with the same code, so `-32600` cannot discriminate:
     //
     //   stale resume  -> -32600 "no rollout found for thread id <uuid>"
     //   our own bug   -> -32600 "Invalid request: missing field `threadId`"
     //
-    // So this defaults to propagating and only falls back on a positively
-    // recognised not-found. The asymmetry is deliberate: an unrecognised
-    // rejection fails the invocation loudly, whereas the opposite default would
-    // silently discard session continuity and bury the real bug behind a
-    // brand-new runtime.
-    if (!isCodexAppServerRpcError(failure) || !isThreadNotResumableRejection(failure.message)) throw failure;
+    // So an unrecognised rejection still propagates loudly. There is one exact
+    // non-RPC exception: production evidence shows an oversized native rollout
+    // kills the carrier during thread/resume with this text and no envelope.
+    // That case requests a fresh-carrier start from the bounded runner; it never
+    // attempts another RPC on the dead carrier.
+    const rejection = classifyNativeResumeRejection(failure.message);
+    if (!rejection) throw failure;
+    if (input.requireExactResume) throw new CodexAppServerExactResumeRequiredError(failure.message);
+    // Not-found is a JSON-RPC provider verdict. The observed max-payload
+    // terminal instead closes the carrier request without an RPC envelope, but
+    // it is equally bounded: exact text, during thread/resume, before turn/start.
+    const detectedAt = input.now();
+    const replacement: CodexNativeResumeReplacementProvenance = {
+      cause: 'native_resume_rejected',
+      previousNativeThreadId: requestedThreadId,
+      detectedAt,
+      rejection,
+    };
+    if (!isCodexAppServerRpcError(failure)) {
+      if (rejection === 'rollout_not_found') throw failure;
+      throw new CodexAppServerCarrierReplacementRequiredError(failure.message, replacement);
+    }
     const fallback = await input.request('thread/start', input.startParams ?? {});
     return {
       kind: 'replaced',
       requestedThreadId,
       threadId: threadIdOf(fallback),
+      replacement,
       raw: fallback,
     };
   }
 
   const threadId = threadIdOf(raw);
+  if (input.requireExactResume && threadId !== requestedThreadId) {
+    throw new CodexAppServerExactResumeRequiredError('Capacity recovery did not resume the original native thread');
+  }
   // A response for a different id is never coerced to resumed.
   if (threadId !== requestedThreadId) {
     return { kind: 'mismatched', requestedThreadId, threadId, raw };

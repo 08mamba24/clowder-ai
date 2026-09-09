@@ -18,6 +18,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { type CatId, type CliEffortPreset, createCatId, resolveCliEffortOverride } from '@cat-cafe/shared';
 import {
   CAT_CAFE_SPLIT_ENTRYPOINTS,
@@ -41,6 +42,7 @@ import { formatCliExitError } from '../../../../../utils/cli-format.js';
 import { formatCliNotFoundError, resolveCliCommand } from '../../../../../utils/cli-resolve.js';
 import { isCliError, isCliTimeout, isLivenessWarning, spawnCli } from '../../../../../utils/cli-spawn.js';
 import type { SpawnFn } from '../../../../../utils/cli-types.js';
+import { findMonorepoRoot } from '../../../../../utils/monorepo-root.js';
 import { CliRawArchive } from '../../session/CliRawArchive.js';
 import type {
   AgentFreshnessCarrierCapability,
@@ -48,6 +50,7 @@ import type {
   AgentService,
   AgentServiceOptions,
   MessageMetadata,
+  PreparedProviderRequestV1,
   ToolExecutionPolicy,
 } from '../../types.js';
 import type { RawArchiveSink } from '../providers/codex-audit-hooks.js';
@@ -58,6 +61,11 @@ import { findGitBashPath } from './claude-agent-win.js';
 import { ClaudeNativeToolBoundaryClassifier } from './claude-native-tool-boundary.js';
 import { extractClaudeUsage, isResultErrorEvent, transformClaudeEvent } from './claude-ndjson-parser.js';
 import { compileL0ViaSubprocess } from './l0-compiler.js';
+import {
+  createMcpSchemaDeliveryLaunchConfig,
+  resolveMcpSchemaDeliveryDiscoverySurface,
+  resolveMcpSchemaDeliveryForProviderLaunch,
+} from './mcp-schema-delivery-capability.js';
 
 const log = createModuleLogger('claude-agent');
 
@@ -439,6 +447,7 @@ export class ClaudeAgentService implements AgentService {
     if (readOnly) {
       args.push('--tools', '', '--strict-mcp-config');
     }
+    let declaredMcpServerNames: readonly string[] | undefined = readOnly ? [] : undefined;
 
     if (options?.sessionId) {
       args.push('--resume', options.sessionId);
@@ -590,6 +599,7 @@ export class ClaudeAgentService implements AgentService {
         args.push('--mcp-config', JSON.stringify({ mcpServers }));
       }
       args.push('--strict-mcp-config');
+      declaredMcpServerNames = Object.keys(mcpServers).sort();
     }
 
     const metadata: MessageMetadata = { provider: 'anthropic', model: effectiveModel };
@@ -698,11 +708,71 @@ export class ClaudeAgentService implements AgentService {
         if (summary.stderrExcerpt) successfulExitStderr.stderrExcerpt = summary.stderrExcerpt;
       };
 
+      const nativeInstructions: PreparedProviderRequestV1['nativeInstructions'] = [
+        {
+          body: readFileSync(l0Path, 'utf8'),
+          injectionDecision: 'native_l0_compiled',
+        },
+        ...(options?.systemPrompt
+          ? [
+              {
+                body: options.systemPrompt,
+                injectionDecision: 'route_append_system_prompt',
+              },
+            ]
+          : []),
+      ];
+      const schemaDeliveryProfile = readOnly ? ('readonly' as const) : ('full' as const);
+      const schemaDelivery = resolveMcpSchemaDeliveryForProviderLaunch({
+        repoRoot: findMonorepoRoot(dirname(fileURLToPath(import.meta.url))),
+        command: claudeCommand,
+        provider: 'anthropic',
+        carrier: 'print_sdk',
+        modelFamily: effectiveModel ?? 'provider-default',
+        profileClass: schemaDeliveryProfile,
+        profileId: schemaDeliveryProfile,
+        config: createMcpSchemaDeliveryLaunchConfig({
+          declaredServerNames: declaredMcpServerNames ?? [],
+          profileId: schemaDeliveryProfile,
+          hostSurface: resolveMcpSchemaDeliveryDiscoverySurface({ provider: 'anthropic', carrier: 'print_sdk' }),
+        }),
+        onHealthEvent: (event) => log.warn({ event }, 'F153 MCP schema delivery capability unknown'),
+      });
+      const preparedRequest: PreparedProviderRequestV1 = Object.freeze({
+        v: 1,
+        message: Object.freeze({
+          body: effectivePrompt,
+          ...(imagePaths.length > 0 ? { injectionDecision: 'adapter_image_path_hints_applied' } : {}),
+        }),
+        nativeInstructions: Object.freeze(nativeInstructions.map((instruction) => Object.freeze(instruction))),
+        runtime: Object.freeze({
+          provider: 'anthropic',
+          carrier: 'print_sdk',
+          ...(effectiveModel ? { model: effectiveModel } : {}),
+          protocol: 'stream-json',
+          reasoningEffort: effortLevel,
+          ...(readOnly ? { toolExecutionPolicy: 'read_only' as const } : {}),
+        }),
+        tools: Object.freeze({
+          finalSurface: readOnly
+            ? ('exact' as const)
+            : declaredMcpServerNames
+              ? ('declared_only' as const)
+              : ('unknown' as const),
+          ...(declaredMcpServerNames ? { declaredServerNames: Object.freeze(declaredMcpServerNames) } : {}),
+          ...(readOnly ? { catCafeSchemas: Object.freeze([]) } : {}),
+          schemaDelivery: Object.freeze(schemaDelivery),
+        }),
+        providerNativeVisibility: 'unknown',
+      });
+      await options?.beforeProviderLaunch?.(preparedRequest);
+      if (!('body' in preparedRequest.message)) throw new Error('claude_prepared_message_not_exact');
+
       const cliOpts = {
         command: claudeCommand,
         args,
         // #840 R2: main prompt moves off argv to stdin (see args comment above).
-        stdinInput: effectivePrompt,
+        stdinInput: preparedRequest.message.body,
         ...(options?.workingDirectory ? { cwd: options.workingDirectory } : {}),
         env: envOverrides,
         onSuccessfulExitStderr,

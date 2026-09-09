@@ -23,14 +23,48 @@ function loadCensus() {
   return parse(readFileSync(censusPath, 'utf8'));
 }
 
+function assertInstanceLocalMigrationContract(census, validateMeasurementBundleCensus) {
+  const active = census.entries.filter((entry) => entry.classification === 'active_decision_bearing');
+  const assigned = active.filter((entry) => entry.validityMigration.batch !== null);
+  if (assigned.length === 0) {
+    assert.equal(
+      active.every(
+        (entry) =>
+          entry.validityMigration.status === 'unmigrated' &&
+          entry.validityMigration.batch === null &&
+          entry.validityMigration.certificateRef === null &&
+          entry.validityMigration.resultRef === null &&
+          entry.validityMigration.replayRef === null &&
+          entry.validityMigration.actionGate === 'keep_observe_only' &&
+          typeof entry.validityMigration.hardBlockReason === 'string' &&
+          entry.validityMigration.hardBlockReason.length > 0,
+      ),
+      true,
+      'a public bootstrap census must keep every active domain locked without inherited evidence',
+    );
+
+    const firstMigration = structuredClone(census);
+    const memoryMigration = firstMigration.entries.find((entry) => entry.domainId === 'eval:memory').validityMigration;
+    assert.equal(memoryMigration.riskRank, 1);
+    memoryMigration.batch = 1;
+    memoryMigration.status = 'contract_ready';
+    assert.doesNotThrow(() => validateMeasurementBundleCensus(firstMigration, repoRoot));
+  } else {
+    assert.deepEqual(
+      active.filter((entry) => entry.validityMigration.batch === 1).map((entry) => entry.domainId),
+      ['eval:memory'],
+    );
+  }
+}
+
 describe('F267 real measurement bundle census', () => {
-  it('covers each real registry entry once and derives the exact 9/1/1 classification', async () => {
+  it('covers each real registry entry once and derives the exact 11/1/2 classification', async () => {
     const { validateMeasurementBundleCensus } = await moduleUnderTest();
     const { scanMeasurementVerdictCorpus } = await corpusModuleUnderTest();
     const census = validateMeasurementBundleCensus(loadCensus(), repoRoot);
     const corpus = scanMeasurementVerdictCorpus(repoRoot);
 
-    assert.equal(census.entries.length, 11);
+    assert.equal(census.entries.length, 14);
     assert.equal(census.schemaVersion, 2);
     assert.deepEqual(
       census.entries
@@ -41,15 +75,21 @@ describe('F267 real measurement bundle census', () => {
         'eval:a2a',
         'eval:anchor-first',
         'eval:capability-wakeup',
+        'eval:design-gate',
         'eval:freshness',
         'eval:friction',
         'eval:memory',
         'eval:qc',
         'eval:sop',
         'eval:task-outcome',
+        'eval:trajectory-inspector',
       ],
     );
     assert.equal(census.entries.find((entry) => entry.domainId === 'eval:capability-tips')?.classification, 'gated');
+    assert.equal(
+      census.entries.find((entry) => entry.domainId === 'eval:capability-evolution')?.classification,
+      'registered_nonoperational',
+    );
     assert.equal(
       census.entries.find((entry) => entry.domainId === 'eval:external-case-closure')?.classification,
       'registered_nonoperational',
@@ -63,25 +103,40 @@ describe('F267 real measurement bundle census', () => {
     const active = census.entries.filter((entry) => entry.classification === 'active_decision_bearing');
     assert.deepEqual(
       active.map((entry) => entry.validityMigration.riskRank).sort((left, right) => left - right),
-      [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     );
-    assert.deepEqual(
-      active.filter((entry) => entry.validityMigration.batch === 1).map((entry) => entry.domainId),
-      ['eval:memory'],
-    );
-    assert.equal(
-      census.entries.find((entry) => entry.domainId === 'eval:task-outcome')?.validityMigration.status,
-      'blocked_f275',
-    );
-    assert.equal(
-      census.entries.find((entry) => entry.domainId === 'eval:friction')?.validityMigration.status,
-      'certified_insufficient',
-    );
-    assert.equal(
-      active.every((entry) => entry.validityMigration.actionGate === 'keep_observe_only'),
-      true,
-      'uncertified or insufficient bundles must fail closed',
-    );
+    assertInstanceLocalMigrationContract(census, validateMeasurementBundleCensus);
+  });
+
+  it('accepts a valid first instance-local migration without source snapshot statuses', async () => {
+    const { validateMeasurementBundleCensus } = await moduleUnderTest();
+    const partial = structuredClone(loadCensus());
+    for (const entry of partial.entries.filter((candidate) => candidate.classification === 'active_decision_bearing')) {
+      entry.validityMigration.batch = null;
+      entry.validityMigration.status = 'unmigrated';
+      entry.validityMigration.certificateRef = null;
+      entry.validityMigration.resultRef = null;
+      entry.validityMigration.replayRef = null;
+      entry.validityMigration.actionGate = 'keep_observe_only';
+      entry.validityMigration.hardBlockReason = 'Measurement validity has not been certified.';
+    }
+    const memoryMigration = partial.entries.find((entry) => entry.domainId === 'eval:memory').validityMigration;
+    memoryMigration.batch = 1;
+    memoryMigration.status = 'contract_ready';
+
+    const validated = validateMeasurementBundleCensus(partial, repoRoot);
+    assert.doesNotThrow(() => assertInstanceLocalMigrationContract(validated, validateMeasurementBundleCensus));
+
+    const usable = structuredClone(partial);
+    const usableMemory = usable.entries.find((entry) => entry.domainId === 'eval:memory').validityMigration;
+    usableMemory.status = 'certified_usable';
+    usableMemory.certificateRef = 'docs/harness-feedback/certificates/public-memory.yaml';
+    usableMemory.resultRef = 'docs/harness-feedback/measurement-results/public-memory.yaml';
+    usableMemory.replayRef = 'docs/harness-feedback/replays/public-memory.yaml';
+    usableMemory.actionGate = 'certificate_actions_allowed';
+    usableMemory.hardBlockReason = null;
+    const validatedUsable = validateMeasurementBundleCensus(usable, repoRoot);
+    assert.doesNotThrow(() => assertInstanceLocalMigrationContract(validatedUsable, validateMeasurementBundleCensus));
   });
 
   it('refreshes only derived verdict counts while preserving the reviewed census contract', async () => {
@@ -134,6 +189,40 @@ describe('F267 real measurement bundle census', () => {
     assert.notEqual(left.hash, right.hash);
   });
 
+  it('accepts a fully unmigrated public instance only while every active domain remains fail-closed', async () => {
+    const { validateMeasurementBundleCensus } = await moduleUnderTest();
+    const publicBootstrap = loadCensus();
+    const active = publicBootstrap.entries.filter((entry) => entry.classification === 'active_decision_bearing');
+    for (const entry of active) {
+      entry.validityMigration = {
+        ...entry.validityMigration,
+        batch: null,
+        status: 'unmigrated',
+        certificateRef: null,
+        resultRef: null,
+        replayRef: null,
+        actionGate: 'keep_observe_only',
+        hardBlockReason: `Public instance has not certified ${entry.domainId}.`,
+      };
+    }
+
+    assert.doesNotThrow(() => validateMeasurementBundleCensus(publicBootstrap, repoRoot));
+
+    const withoutBlock = structuredClone(publicBootstrap);
+    withoutBlock.entries.find((entry) => entry.domainId === 'eval:a2a').validityMigration.hardBlockReason = null;
+    assert.throws(() => validateMeasurementBundleCensus(withoutBlock, repoRoot), /hard block reason/i);
+
+    const withPrivateEvidence = structuredClone(publicBootstrap);
+    withPrivateEvidence.entries.find((entry) => entry.domainId === 'eval:a2a').validityMigration.certificateRef =
+      'docs/harness-feedback/certificates/private.yaml';
+    assert.throws(() => validateMeasurementBundleCensus(withPrivateEvidence, repoRoot), /cannot claim evidence refs/i);
+
+    const withUnsafeAction = structuredClone(publicBootstrap);
+    withUnsafeAction.entries.find((entry) => entry.domainId === 'eval:a2a').validityMigration.actionGate =
+      'certificate_actions_allowed';
+    assert.throws(() => validateMeasurementBundleCensus(withUnsafeAction, repoRoot), /action gate/i);
+  });
+
   it('rejects stale coverage, duplicate ids, wrong consumers, and false active claims', async () => {
     const { validateMeasurementBundleCensus } = await moduleUnderTest();
 
@@ -162,15 +251,18 @@ describe('F267 real measurement bundle census', () => {
     skippedBatch.entries.find((entry) => entry.domainId === 'eval:a2a').validityMigration.batch = 3;
     assert.throws(() => validateMeasurementBundleCensus(skippedBatch, repoRoot), /batch|risk rank/i);
 
-    const batchBeforeEvidence = loadCensus();
-    const anchorMigration = batchBeforeEvidence.entries.find(
-      (entry) => entry.domainId === 'eval:anchor-first',
+    const unmigratedBatch = loadCensus();
+    const unmigratedMemory = unmigratedBatch.entries.find(
+      (entry) => entry.domainId === 'eval:memory',
     ).validityMigration;
-    anchorMigration.status = 'unmigrated';
-    anchorMigration.certificateRef = null;
-    anchorMigration.resultRef = null;
-    anchorMigration.replayRef = null;
-    assert.throws(() => validateMeasurementBundleCensus(batchBeforeEvidence, repoRoot), /unmigrated.*batch/i);
+    unmigratedMemory.batch = 1;
+    unmigratedMemory.status = 'unmigrated';
+    unmigratedMemory.certificateRef = null;
+    unmigratedMemory.resultRef = null;
+    unmigratedMemory.replayRef = null;
+    unmigratedMemory.actionGate = 'keep_observe_only';
+    unmigratedMemory.hardBlockReason = 'Measurement validity has not been certified.';
+    assert.throws(() => validateMeasurementBundleCensus(unmigratedBatch, repoRoot), /unmigrated.*batch/i);
 
     const unsafeActionGate = loadCensus();
     const memoryMigration = unsafeActionGate.entries.find(

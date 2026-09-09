@@ -1,3 +1,6 @@
+export * from './builtin-runtime/collective-agent-verifier.js';
+export * from './builtin-runtime/collective-connector-runtime.js';
+export * from './builtin-runtime/hybrid-supervisor.js';
 export * from './external-plugin-lifecycle.js';
 export * from './external-runtime/index.js';
 export * from './host-broker/index.js';
@@ -13,6 +16,8 @@ export type {
   OfficialPluginAuthCommandSpec,
 } from './official-plugin-auth-command.js';
 export * from './official-plugin-history-import.js';
+export * from './official-plugin-meeting-intake.js';
+export * from './official-plugin-meeting-intake-port.js';
 export * from './official-signal-routes.js';
 export { PluginRegistry, resourceCapId } from './PluginRegistry.js';
 export type { ActivatePluginResult, ActivationResult, LimbAdapterFactory } from './PluginResourceActivator.js';

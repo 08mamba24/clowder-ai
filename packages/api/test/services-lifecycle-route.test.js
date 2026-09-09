@@ -448,6 +448,7 @@ describe('service lifecycle write routes', () => {
             return updated;
           },
         },
+        findPidsByPort: async () => [],
         runScript: async () =>
           new Promise((resolve) => {
             started = true;
@@ -2402,6 +2403,44 @@ describe('service lifecycle write routes', () => {
       });
       assert.equal(startRes.statusCode, 200, startRes.payload);
       assert.equal(startEnv?.WHISPER_MODEL, 'mlx-community/whisper-large-v3-turbo');
+    } finally {
+      await app.close();
+      restoreOwner(previousOwner);
+    }
+  });
+
+  it('injects the manifest default when a persisted service predates selectedModel', async () => {
+    const previousOwner = process.env.DEFAULT_OWNER_USER_ID;
+    process.env.DEFAULT_OWNER_USER_ID = 'you';
+    const configs = new Map([['embedding-model', { installed: true, enabled: false }]]);
+    let startEnv = null;
+    const app = await buildApp({
+      lifecycle: {
+        serviceConfig: {
+          get: (id) => configs.get(id) ?? { enabled: false },
+          set: (id, patch) => {
+            const updated = { ...(configs.get(id) ?? { enabled: false }), ...patch };
+            configs.set(id, updated);
+            return updated;
+          },
+        },
+        runScript: async (input) => {
+          if (input.action === 'start') startEnv = input.env;
+          return { code: null, pid: 4403, output: '' };
+        },
+        findPidsByPort: async () => [],
+        readProcessCommand: async () => null,
+      },
+    });
+    try {
+      const startRes = await app.inject({
+        method: 'POST',
+        url: '/api/services/embedding-model/start',
+        headers: SESSION_HEADERS,
+      });
+
+      assert.equal(startRes.statusCode, 200, startRes.payload);
+      assert.equal(startEnv?.EMBED_MODEL, 'mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ');
     } finally {
       await app.close();
       restoreOwner(previousOwner);

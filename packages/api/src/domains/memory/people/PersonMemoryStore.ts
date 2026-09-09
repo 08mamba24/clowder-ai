@@ -37,6 +37,7 @@ export interface StagePersonMemoryCandidateInput {
   sourceBundle: PersonMemoryResolvedSourceBundle;
   deferredReceiptId?: string;
   deferredReceiptClaimId?: string;
+  deferredReceiptProcessorInvocationId?: string;
   deltaFingerprint?: string;
   replacesProposalId?: CaptureCandidateId;
   /** IDs-only lineage for proposals created from a delivered Standing Reflex opportunity. */
@@ -52,6 +53,7 @@ export interface RenewDeferredPersonMemoryCandidateClaimInput {
   receiptId: string;
   previousClaimId: string;
   nextClaimId: string;
+  processorInvocationId: string;
   deltaFingerprint: string;
   renewedAt: number;
 }
@@ -80,6 +82,11 @@ export interface StoredPersonMemoryCandidate
   latestDecisionReceipt?: PersonMemoryDecisionReceipt;
   latestUndoReceipt?: PersonMemoryUndoReceipt;
   replacedByProposalId?: CaptureCandidateId;
+}
+
+export interface StoredPersonMemorySettledCandidate {
+  candidate: StoredPersonMemoryCandidate;
+  decidedAt: number;
 }
 
 export interface PersonMemoryDecisionReceipt {
@@ -234,6 +241,7 @@ export interface PersonMemoryStore {
   ): Promise<RenewDeferredPersonMemoryCandidateClaimResult>;
   getCandidateForOwner(ownerUserId: string, candidateId: string): Promise<StoredPersonMemoryCandidate | null>;
   listPending(ownerUserId: string, limit?: number): Promise<StoredPersonMemoryCandidate[]>;
+  listSettled(ownerUserId: string, limit?: number): Promise<StoredPersonMemorySettledCandidate[]>;
   resolvePendingCandidateBySubject(ownerUserId: string, subject: string): Promise<StoredPersonMemoryCandidate | null>;
   resolveDormantCandidateBySubject(ownerUserId: string, subject: string): Promise<PersonMemorySuppressionToken | null>;
   getPublication(candidateId: string, ownerUserId?: string): Promise<ApprovalPublication | null>;
