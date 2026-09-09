@@ -297,4 +297,87 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
       rmSync(projectRoot, { recursive: true, force: true });
     }
   });
+
+  it('upgrades a persisted catalog pinning the pre-zai slim whitelist, for both harness members', () => {
+    const { projectRoot, templatePath } = isolateTemplate();
+    try {
+      const template = JSON.parse(readFileSync(templatePath, 'utf-8'));
+      const LEGACY_PIN = ['cat-cafe-memory', 'cat-cafe-collab', 'cat-cafe-signals'];
+      // Both members still pin the exact pre-zai shipped default.
+      const breeds = ['grok-build', 'dsh'].map((breedId) => {
+        const breed = structuredClone(template.breeds.find((candidate) => candidate.id === breedId));
+        breed.variants[0].acp.mcpWhitelist = [...LEGACY_PIN];
+        return breed;
+      });
+      const catalogPath = join(projectRoot, '.cat-cafe', 'cat-catalog.json');
+      mkdirSync(dirname(catalogPath), { recursive: true });
+      writeFileSync(catalogPath, JSON.stringify({ version: template.version, breeds }));
+
+      // getAcpConfig resolves template + catalog from projectRoot and runs the
+      // read-time migration (with atomic write-back) on the catalog.
+      for (const catId of ['grok-build', 'dsh']) {
+        assert.deepEqual(
+          getAcpConfig(catId, projectRoot)?.mcpWhitelist,
+          SLIM_MCP,
+          `${catId}: legacy default pin upgrades to the shipped 7`,
+        );
+      }
+
+      // Migration persists to disk (atomic write-back) and is idempotent.
+      const persisted = JSON.parse(readFileSync(catalogPath, 'utf-8'));
+      for (const breedId of ['grok-build', 'dsh']) {
+        const persistedBreed = persisted.breeds.find((breed) => breed.id === breedId);
+        assert.deepEqual(
+          persistedBreed.variants[0].acp.mcpWhitelist,
+          SLIM_MCP,
+          `${breedId}: upgraded whitelist written back to the catalog`,
+        );
+        assert.deepEqual(
+          getAcpConfig(breedId, projectRoot)?.mcpWhitelist,
+          SLIM_MCP,
+          `${breedId}: reload from the upgraded catalog stays at the shipped 7`,
+        );
+      }
+    } finally {
+      _resetCachedConfig();
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves customized whitelists untouched by the pre-zai pin migration', () => {
+    const { projectRoot, templatePath } = isolateTemplate();
+    try {
+      const template = JSON.parse(readFileSync(templatePath, 'utf-8'));
+      // Both members carry user-customized lists that differ from the legacy
+      // default pin in content and length — the migration must not touch them.
+      const customizations = {
+        'grok-build': ['cat-cafe-memory', 'zread'],
+        dsh: ['cat-cafe-memory'],
+      };
+      const breeds = ['grok-build', 'dsh'].map((breedId) => {
+        const breed = structuredClone(template.breeds.find((candidate) => candidate.id === breedId));
+        breed.variants[0].acp.mcpWhitelist = [...customizations[breedId]];
+        return breed;
+      });
+      const catalogPath = join(projectRoot, '.cat-cafe', 'cat-catalog.json');
+      mkdirSync(dirname(catalogPath), { recursive: true });
+      writeFileSync(catalogPath, JSON.stringify({ version: template.version, breeds }));
+
+      for (const [catId, expected] of Object.entries(customizations)) {
+        assert.deepEqual(
+          getAcpConfig(catId, projectRoot)?.mcpWhitelist,
+          expected,
+          `${catId}: customized whitelist is the user decision and must not be touched`,
+        );
+      }
+      const persisted = JSON.parse(readFileSync(catalogPath, 'utf-8'));
+      for (const [breedId, expected] of Object.entries(customizations)) {
+        const persistedBreed = persisted.breeds.find((breed) => breed.id === breedId);
+        assert.deepEqual(persistedBreed.variants[0].acp.mcpWhitelist, expected);
+      }
+    } finally {
+      _resetCachedConfig();
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
 });
