@@ -147,12 +147,20 @@ describe('accounts split-root (dual-root topology; no migrate-on-read)', () => {
     setSplitEnv();
     await writeFile(
       join(runtimeRoot, '.cat-cafe', 'accounts.json'),
-      JSON.stringify({ 'max20x-2': { authType: 'api_key', clientId: 'anthropic', displayName: 'stale-name' } }, null, 2),
+      JSON.stringify(
+        { 'max20x-2': { authType: 'api_key', clientId: 'anthropic', displayName: 'stale-name' } },
+        null,
+        2,
+      ),
       'utf-8',
     );
     await writeFile(
       join(workspaceRoot, '.cat-cafe', 'accounts.json'),
-      JSON.stringify({ 'max20x-2': { authType: 'api_key', clientId: 'anthropic', displayName: 'fresh-name' } }, null, 2),
+      JSON.stringify(
+        { 'max20x-2': { authType: 'api_key', clientId: 'anthropic', displayName: 'fresh-name' } },
+        null,
+        2,
+      ),
       'utf-8',
     );
     const beforeWs = readFileSync(join(workspaceRoot, '.cat-cafe', 'accounts.json'), 'utf-8');

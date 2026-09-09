@@ -72,7 +72,11 @@ export function parseStoredAccount(value: unknown, source: string): AccountConfi
   const parsed = accountSchema.safeParse({ ...raw, authType: normalizeLegacyAuthType(raw.authType) });
   if (!parsed.success) malformedAccountStore(source);
   // Drop any Zod-produced record fields and reattach the prototype-safe maps.
-  const { modelAliases: _droppedAliases, envVars: _droppedEnv, ...scalars } = parsed.data as AccountConfig & {
+  const {
+    modelAliases: _droppedAliases,
+    envVars: _droppedEnv,
+    ...scalars
+  } = parsed.data as AccountConfig & {
     modelAliases?: unknown;
     envVars?: unknown;
   };

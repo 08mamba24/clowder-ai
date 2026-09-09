@@ -193,7 +193,12 @@ describe('account-store canonical equality (dual-root P1-14/15/16)', () => {
   });
 
   const UNUSABLE = [
-    { title: 'models holding a map', runtime: { models: { 'gpt-leak': 'x' } }, workspace: {}, secret: 'sk-models-object' },
+    {
+      title: 'models holding a map',
+      runtime: { models: { 'gpt-leak': 'x' } },
+      workspace: {},
+      secret: 'sk-models-object',
+    },
     { title: 'null models', runtime: { models: null }, workspace: {}, secret: 'sk-models-null' },
     {
       title: 'blank model entry',
@@ -299,9 +304,7 @@ describe('account-store canonical equality (dual-root P1-14/15/16)', () => {
   });
 
   it('reviewer repro: envVars.__proto__ must not collapse into both-equal (R19)', () => {
-    const runtimeAccount = JSON.parse(
-      '{"authType":"api_key","clientId":"anthropic","envVars":{"__proto__":"value"}}',
-    );
+    const runtimeAccount = JSON.parse('{"authType":"api_key","clientId":"anthropic","envVars":{"__proto__":"value"}}');
     const workspaceAccount = JSON.parse('{"authType":"api_key","clientId":"anthropic"}');
     seedPair(runtimeAccount, workspaceAccount, 'sk-proto-env');
     assertRejected('envVars.__proto__', 'sk-proto-env');
