@@ -98,6 +98,29 @@ test('with-test-home strips the runtime Claude carrier from outer shell', () => 
   assert.equal(result.stdout.trim(), '');
 });
 
+test('with-test-home does not pass the live DSH installation or composition into API children', () => {
+  const result = spawnSync(
+    'bash',
+    [
+      withTestHome,
+      'node',
+      '-p',
+      'JSON.stringify([process.env.CAT_CAFE_DSH_ROOT, process.env.CAT_CAFE_DSH_ACP_CONFIG])',
+    ],
+    {
+      cwd: resolve(__dirname, '..'),
+      env: {
+        ...process.env,
+        CAT_CAFE_DSH_ROOT: '/fixture/live-dsh',
+        CAT_CAFE_DSH_ACP_CONFIG: '/fixture/live-cordis.yml',
+      },
+      encoding: 'utf8',
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), [null, null]);
+});
+
 /**
  * P1-13: the wrapper must own BOTH home coordinates.
  *

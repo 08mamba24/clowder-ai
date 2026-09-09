@@ -81,8 +81,7 @@ describe('dsh ACP bootstrap', () => {
   it('merges family MCP plugins including stdio env into the cordis overlay', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-overlay-'));
     const { config } = writeDshFixture(root);
-    const outputPath = join(root, 'merged.cordis.yml');
-    writeDshAcpOverlayConfig({
+    const outputPath = writeDshAcpOverlayConfig({
       baseConfigPath: config,
       servers: [
         {
@@ -92,7 +91,7 @@ describe('dsh ACP bootstrap', () => {
           env: [{ name: 'CAT_CAFE_API_URL', value: 'http://127.0.0.1:9' }],
         },
       ],
-      outputPath,
+      outputDir: root,
       pluginName: RELATIVE_MCP_CLIENT,
     });
     const yaml = readFileSync(outputPath, 'utf-8');
@@ -107,7 +106,7 @@ describe('dsh ACP bootstrap', () => {
 
   it('prepareDshAcpSpawnForProject writes a sibling overlay with relative mcp-client + family MCP', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-prepare-'));
-    const { bin, config, overlay } = writeDshFixture(root);
+    const { bin, config } = writeDshFixture(root);
     const bootstrapCwd = join(root, 'boot');
     const projectRoot = mkdtempSync(join(tmpdir(), 'dsh-project-'));
     const prepared = await prepareDshAcpSpawnForProject({
@@ -132,9 +131,9 @@ describe('dsh ACP bootstrap', () => {
     assert.equal(prepared.cwd, join(root, 'examples', 'acp-agent'));
     const configIdx = prepared.args.indexOf('--config');
     assert.ok(configIdx >= 0, 'spawn args must pass --config');
-    assert.equal(prepared.args[configIdx + 1], overlay);
+    assert.equal(prepared.args[configIdx + 1], prepared.overlayPath);
     assert.notEqual(prepared.args[configIdx + 1], config, 'Hub must not spawn official-only cordis.yml');
-    const yaml = readFileSync(overlay, 'utf-8');
+    const yaml = readFileSync(prepared.overlayPath, 'utf-8');
     assert.match(yaml, /id: acp-agent/);
     assert.match(yaml, /serverName: 'cat-cafe-memory'/);
     assert.match(yaml, /transport: stdio/);
@@ -156,7 +155,7 @@ describe('dsh ACP bootstrap', () => {
 
   it('does not inherit ambient CAT_CAFE_AGENT_KEY_FILE into the DSH MCP overlay', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-agentkey-'));
-    const { overlay } = writeDshFixture(root);
+    writeDshFixture(root);
     // Another cat's persistent agent key, as the API process ambient env may
     // carry it; the path string is a fixture, never a real key.
     const foreignKeyPath = join(root, 'antigravity.secret');
@@ -178,11 +177,57 @@ describe('dsh ACP bootstrap', () => {
     });
     assert.equal(prepared.ok, true);
     if (!prepared.ok) return;
-    const yaml = readFileSync(overlay, 'utf-8');
+    const yaml = readFileSync(prepared.overlayPath, 'utf-8');
     assert.doesNotMatch(yaml, /CAT_CAFE_AGENT_KEY_FILE/);
     assert.doesNotMatch(yaml, new RegExp(foreignKeyPath.replaceAll('/', '\\/')));
     assert.match(yaml, /CAT_CAFE_CREDENTIAL_FILE: !!js process\.env\.CAT_CAFE_CREDENTIAL_FILE/);
     assert.match(yaml, /CAT_CAFE_CAT_ID: 'dsh'/);
+  });
+
+  it('keeps already prepared MCP configs intact across projects, cats, and configuration changes', async () => {
+    const harness = mkdtempSync(join(tmpdir(), 'dsh-shared-install-'));
+    const { config, overlay: legacyOverlay } = writeDshFixture(harness);
+    writeFileSync(legacyOverlay, '# existing runtime overlay must remain untouched\n');
+    const projectA = mkdtempSync(join(tmpdir(), 'dsh-live-project-'));
+    const projectB = mkdtempSync(join(tmpdir(), 'security-boundary-'));
+    const prepare = (projectRoot, catId = 'dsh', mcpWhitelist = ['cat-cafe-memory']) =>
+      prepareDshAcpSpawnForProject({
+        command: 'dsh',
+        args: [],
+        projectRoot,
+        bootstrapCwd: join(projectRoot, 'boot'),
+        mcpWhitelist,
+        mcpSupport: true,
+        catId,
+        env: { CAT_CAFE_DSH_ROOT: harness, PATH: '/nonexistent', CAT_CAFE_API_URL: 'http://127.0.0.1:9' },
+      });
+    const first = await prepare(projectA);
+    assert.equal(first.ok, true);
+    if (!first.ok) return;
+    const firstConfig = readFileSync(first.overlayPath, 'utf8');
+    const later = await Promise.all([
+      prepare(projectB),
+      prepare(projectA, 'another-dsh'),
+      prepare(projectA, 'dsh', ['cat-cafe-collab']),
+    ]);
+    for (const next of later) {
+      assert.equal(next.ok, true);
+      if (!next.ok) continue;
+      assert.notEqual(next.overlayPath, first.overlayPath, 'another startup must not replace an existing spawn config');
+    }
+    assert.equal(readFileSync(first.overlayPath, 'utf8'), firstConfig);
+    assert.ok(firstConfig.includes(join(projectA, 'packages/mcp-server/dist/memory.js')));
+    assert.ok(!firstConfig.includes(projectB));
+    assert.equal(readFileSync(legacyOverlay, 'utf8'), '# existing runtime overlay must remain untouched\n');
+    const same = await prepare(projectA);
+    assert.equal(same.ok, true);
+    if (same.ok)
+      assert.equal(same.overlayPath, first.overlayPath, 'unchanged config must keep the pool spawn signature stable');
+    writeFileSync(config, "- id: changed-base\n  name: '@deepseek-ai/dsh-acp-demo'\n");
+    const changedBase = await prepare(projectA);
+    assert.equal(changedBase.ok, true);
+    if (changedBase.ok) assert.notEqual(changedBase.overlayPath, first.overlayPath);
+    assert.equal(readFileSync(first.overlayPath, 'utf8'), firstConfig);
   });
 
   it('skips Hub overlay when family MCP is requested but mcp-client entry is missing', async () => {
@@ -232,7 +277,7 @@ describe('dsh ACP bootstrap', () => {
 
   it('omits blockedCats family servers from the overlay', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-blocked-'));
-    const { overlay } = writeDshFixture(root);
+    writeDshFixture(root);
     const projectRoot = mkdtempSync(join(tmpdir(), 'dsh-project-blocked-'));
     mkdirSync(join(projectRoot, '.cat-cafe'), { recursive: true });
     writeFileSync(
@@ -263,7 +308,7 @@ describe('dsh ACP bootstrap', () => {
     });
     assert.equal(prepared.ok, true);
     if (!prepared.ok) return;
-    const yaml = readFileSync(overlay, 'utf-8');
+    const yaml = readFileSync(prepared.overlayPath, 'utf-8');
     assert.match(yaml, /serverName: 'cat-cafe-memory'/);
     assert.match(yaml, /serverName: 'cat-cafe-signals'/);
     assert.doesNotMatch(yaml, /serverName: 'cat-cafe-collab'/);

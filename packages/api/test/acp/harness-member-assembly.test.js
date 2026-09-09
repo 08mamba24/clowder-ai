@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -51,7 +51,7 @@ function writeDshFixture() {
   const configDir = join(root, 'examples', 'acp-agent');
   mkdirSync(configDir, { recursive: true });
   writeFileSync(join(configDir, 'cordis.yml'), "- id: acp-agent\n  name: '@deepseek-ai/dsh-acp-demo'\n");
-  return { root, bin, overlay: join(configDir, 'cat-cafe-dsh-acp.cordis.yml') };
+  return { root, bin, configDir };
 }
 
 function withDshRoot(root, fn) {
@@ -184,13 +184,15 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
         );
         const configIdx = dshSpawn.args.indexOf('--config');
         assert.ok(configIdx >= 0, `DSH spawn must pass --config, got ${JSON.stringify(dshSpawn.args)}`);
-        assert.equal(dshSpawn.args[configIdx + 1], fixture.overlay);
+        const overlayPath = dshSpawn.args[configIdx + 1];
+        assert.equal(dirname(overlayPath), fixture.configDir);
+        assert.match(basename(overlayPath), /^cat-cafe-dsh-acp\.[a-f0-9]{64}\.cordis\.yml$/);
         assert.notEqual(
           dshSpawn.args[configIdx + 1],
           join(fixture.root, 'examples', 'acp-agent', 'cordis.yml'),
           'Hub argv must be the sibling overlay, not official-only cordis.yml',
         );
-        const overlayYaml = readFileSync(fixture.overlay, 'utf-8');
+        const overlayYaml = readFileSync(overlayPath, 'utf-8');
         assert.match(overlayYaml, /serverName: 'cat-cafe-memory'/);
         assert.match(overlayYaml, /serverName: 'cat-cafe-collab'/);
         assert.match(overlayYaml, /serverName: 'cat-cafe-signals'/);
