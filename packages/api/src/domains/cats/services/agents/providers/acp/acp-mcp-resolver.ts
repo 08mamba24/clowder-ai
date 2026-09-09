@@ -20,7 +20,10 @@ import {
   resolvePencilCommand,
   SENSITIVE_KEY_PATTERNS,
 } from '../../../../../../config/capabilities/capability-orchestrator.js';
-import { resolveMcpServerEnvReferences } from '../../../../../../config/capabilities/mcp-env-reference.js';
+import {
+  renderMcpServerEnvReferenceValues,
+  resolveMcpServerEnvReferences,
+} from '../../../../../../config/capabilities/mcp-env-reference.js';
 import {
   isRetiredGithubMcpCapability,
   isRetiredGithubMcpConfigEntry,
@@ -111,8 +114,11 @@ function capabilityEntryToAcpMcpServer(
   mcpServer: NonNullable<CapabilityEntry['mcpServer']>,
   projectRoot: string,
   env: Readonly<Record<string, string | undefined>>,
+  envReferenceValueRenderer?: (value: string) => string,
 ): AcpMcpServer | null {
-  const resolvedServer = resolveMcpServerEnvReferences(mcpServer, env, name);
+  const resolvedServer = envReferenceValueRenderer
+    ? renderMcpServerEnvReferenceValues(mcpServer, envReferenceValueRenderer, env, name)
+    : resolveMcpServerEnvReferences(mcpServer, env, name);
   if (resolvedServer.transport === 'streamableHttp' && resolvedServer.url) {
     return {
       type: 'http' as const,
@@ -266,6 +272,13 @@ export async function resolveAcpMcpServers(
     configSourceRoot?: string;
     /** Environment used to resolve `${VAR}` references at invocation time. */
     env?: Readonly<Record<string, string | undefined>>;
+    /**
+     * Rewrite each `${VAR}`-carrying env/header value instead of resolving it
+     * to a secret. Rendered output keeps references (validated against `env`,
+     * fail-closed on missing) so callers can persist configs that interpolate
+     * at process boot — the DSH Cordis overlay uses this with `!!js` values.
+     */
+    envReferenceValueRenderer?: (value: string) => string;
   },
 ): Promise<AcpMcpServer[]> {
   // F161: when mcpSupport is explicitly disabled, skip ALL MCP servers
@@ -368,7 +381,13 @@ export async function resolveAcpMcpServers(
           }
           continue;
         }
-        const server = capabilityEntryToAcpMcpServer(name, cap.mcpServer, externalRoot, opts?.env ?? process.env);
+        const server = capabilityEntryToAcpMcpServer(
+          name,
+          cap.mcpServer,
+          externalRoot,
+          opts?.env ?? process.env,
+          opts?.envReferenceValueRenderer,
+        );
         if (server) servers.push(server);
         else missing.push(name);
       }

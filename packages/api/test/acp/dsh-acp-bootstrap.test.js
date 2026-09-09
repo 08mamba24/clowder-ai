@@ -184,6 +184,122 @@ describe('dsh ACP bootstrap', () => {
     assert.match(yaml, /CAT_CAFE_CAT_ID: 'dsh'/);
   });
 
+  it('resolves the full 7-server whitelist without materializing secret values into the overlay', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-zai-'));
+    writeDshFixture(root);
+    const projectRoot = mkdtempSync(join(tmpdir(), 'dsh-project-zai-'));
+    const capDir = join(projectRoot, '.cat-cafe');
+    mkdirSync(capDir, { recursive: true });
+    const bearer = (id) => ({
+      id,
+      type: 'mcp',
+      enabled: true,
+      globalEnabled: true,
+      mcpServer: {
+        transport: 'streamableHttp',
+        url: `https://open.bigmodel.cn/api/mcp/${id}/mcp`,
+        headers: { Authorization: 'Bearer ${Z_AI_API_KEY_TEST}' },
+      },
+    });
+    writeFileSync(
+      join(capDir, 'capabilities.json'),
+      JSON.stringify({
+        version: 2,
+        capabilities: [
+          bearer('zread'),
+          bearer('web-search-prime'),
+          bearer('web-reader'),
+          {
+            id: 'zai-mcp-server',
+            type: 'mcp',
+            enabled: true,
+            globalEnabled: true,
+            mcpServer: {
+              transport: 'stdio',
+              command: 'npx',
+              args: ['-y', '@z_ai/mcp-server'],
+              env: { Z_AI_API_KEY_TEST: '${Z_AI_API_KEY_TEST}' },
+            },
+          },
+        ],
+      }),
+    );
+    const prepared = await prepareDshAcpSpawnForProject({
+      command: 'dsh',
+      args: [],
+      projectRoot,
+      bootstrapCwd: join(root, 'boot'),
+      mcpWhitelist: [
+        'cat-cafe-memory',
+        'cat-cafe-collab',
+        'cat-cafe-signals',
+        'zai-mcp-server',
+        'zread',
+        'web-search-prime',
+        'web-reader',
+      ],
+      mcpSupport: true,
+      catId: 'dsh',
+      env: {
+        CAT_CAFE_DSH_ROOT: root,
+        PATH: '/nonexistent',
+        CAT_CAFE_API_URL: 'http://127.0.0.1:9',
+        Z_AI_API_KEY_TEST: 'sk-live-secret-fixture',
+      },
+    });
+    assert.equal(prepared.ok, true);
+    if (!prepared.ok) return;
+    const yaml = readFileSync(prepared.overlayPath, 'utf-8');
+    const serverNames = [...yaml.matchAll(/serverName: '([^']+)'/g)].map((m) => m[1]);
+    for (const name of ['cat-cafe-memory', 'cat-cafe-collab', 'cat-cafe-signals', 'zai-mcp-server', 'zread', 'web-search-prime', 'web-reader']) {
+      assert.ok(serverNames.includes(name), `overlay must carry ${name}, got ${serverNames.join(',')}`);
+    }
+    // Secrets stay as boot-time Cordis interpolation, never as literal values.
+    assert.doesNotMatch(yaml, /sk-live-secret-fixture/);
+    assert.match(yaml, /Z_AI_API_KEY_TEST: !!js process\.env\.Z_AI_API_KEY_TEST/);
+    assert.match(yaml, /Authorization: !!js 'Bearer ' \+ process\.env\.Z_AI_API_KEY_TEST/);
+  });
+
+  it('fails closed when the overlay references a missing secret env var', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-zai-missing-'));
+    writeDshFixture(root);
+    const projectRoot = mkdtempSync(join(tmpdir(), 'dsh-project-zai-missing-'));
+    const capDir = join(projectRoot, '.cat-cafe');
+    mkdirSync(capDir, { recursive: true });
+    writeFileSync(
+      join(capDir, 'capabilities.json'),
+      JSON.stringify({
+        version: 2,
+        capabilities: [
+          {
+            id: 'zread',
+            type: 'mcp',
+            enabled: true,
+            globalEnabled: true,
+            mcpServer: {
+              transport: 'streamableHttp',
+              url: 'https://open.bigmodel.cn/api/mcp/zread/mcp',
+              headers: { Authorization: 'Bearer ${Z_AI_API_KEY_TEST}' },
+            },
+          },
+        ],
+      }),
+    );
+    await assert.rejects(
+      prepareDshAcpSpawnForProject({
+        command: 'dsh',
+        args: [],
+        projectRoot,
+        bootstrapCwd: join(root, 'boot'),
+        mcpWhitelist: ['zread'],
+        mcpSupport: true,
+        catId: 'dsh',
+        env: { CAT_CAFE_DSH_ROOT: root, PATH: '/nonexistent' },
+      }),
+      /Z_AI_API_KEY_TEST/,
+    );
+  });
+
   it('keeps already prepared MCP configs intact across projects, cats, and configuration changes', async () => {
     const harness = mkdtempSync(join(tmpdir(), 'dsh-shared-install-'));
     const { config, overlay: legacyOverlay } = writeDshFixture(harness);

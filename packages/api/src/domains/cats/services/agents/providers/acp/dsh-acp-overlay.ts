@@ -87,6 +87,11 @@ function httpPluginLines(server: AcpMcpServerHttp, pluginName: string): string[]
   if (server.headers.length > 0) {
     lines.push('    headers:');
     for (const header of server.headers) {
+      // `!!js` values must stay unquoted — Cordis evaluates them at process boot
+      if (header.value.startsWith('!!js ')) {
+        lines.push(`      ${header.name}: ${header.value}`);
+        continue;
+      }
       lines.push(`      ${header.name}: ${yamlQuote(header.value)}`);
     }
   }
