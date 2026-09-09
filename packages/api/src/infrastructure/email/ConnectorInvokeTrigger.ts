@@ -61,6 +61,14 @@ import type { StreamingOutboundHook } from '../connectors/StreamingOutboundHook.
 
 export type TriggerOutcome = 'dispatched' | 'enqueued' | 'full';
 
+/** Why a connector wake was parked in Queue instead of direct admission. */
+export type ConnectorQueueReason =
+  | 'force_queue'
+  | 'auto_resume_suppressed'
+  | 'busy_active_execution'
+  | 'thread_acquire_failed'
+  | 'active_invocation_running';
+
 type DirectInvocationAdmission =
   | {
       readonly kind: 'execute';
@@ -254,6 +262,7 @@ export class ConnectorInvokeTrigger {
         policy.suggestedSkill,
         policy.coalesceKey,
         true,
+        'force_queue',
       );
       if (outcome === 'enqueued') {
         const exactEntry = this.opts.invocationQueue.findEntryWithMessageId(threadId, messageId);
@@ -282,11 +291,17 @@ export class ConnectorInvokeTrigger {
         policy?.sourceCategory,
         policy?.suggestedSkill,
         policy?.coalesceKey,
+        false,
+        'auto_resume_suppressed',
       );
     }
 
-    // F185 AC-1: thread-level queue/processingSlots gate
-    if (this.opts.queueProcessor?.isThreadBusy(threadId)) {
+    // F185 AC-1, amended (clowder-ai#17): connector admission keys on ACTIVE
+    // EXECUTION only. Counting queued entries as busy deadlocks an idle thread:
+    // the wake parks in Queue, and the only auto-drain trigger is an invocation
+    // completion that never comes — the entry then waits for the next user
+    // message. Queued leftovers alone must not block direct admission.
+    if (this.opts.queueProcessor?.hasActiveExecution?.(threadId)) {
       return this.enqueueWhileActive(
         threadId,
         catId,
@@ -298,13 +313,15 @@ export class ConnectorInvokeTrigger {
         policy?.sourceCategory,
         policy?.suggestedSkill,
         policy?.coalesceKey,
+        false,
+        'busy_active_execution',
       );
     }
 
     // F185 AC-2: atomic thread-level acquire — TOCTOU-safe
     const controller = invocationTracker.tryStartThread(threadId, catId, userId, [catId]);
     if (!controller) {
-      return this.enqueueWhileActive(
+      const outcome = await this.enqueueWhileActive(
         threadId,
         catId,
         userId,
@@ -315,7 +332,11 @@ export class ConnectorInvokeTrigger {
         policy?.sourceCategory,
         policy?.suggestedSkill,
         policy?.coalesceKey,
+        false,
+        'thread_acquire_failed',
       );
+      if (outcome === 'enqueued') await this.drainIfExecutionIdle(threadId, messageId);
+      return outcome;
     }
 
     const releaseDirectAdmission = (): void => {
@@ -534,6 +555,7 @@ export class ConnectorInvokeTrigger {
     suggestedSkill?: string,
     coalesceKey?: string,
     autoExecute = false,
+    queueReason: ConnectorQueueReason = 'active_invocation_running',
   ): Promise<'full' | 'enqueued'> {
     const { invocationQueue, socketManager, log } = this.opts;
 
@@ -650,10 +672,26 @@ export class ConnectorInvokeTrigger {
       result.outcome,
     );
     log.info(
-      { threadId, catId, outcome: result.outcome },
-      '[ConnectorInvokeTrigger] Queued (active invocation running)',
+      { threadId, catId, outcome: result.outcome, reason: queueReason },
+      '[ConnectorInvokeTrigger] Queued (admission refused)',
     );
     return result.outcome;
+  }
+
+  /**
+   * Acquisition lost a race or hit a sealed slot. If the thread still has no
+   * active execution, the entry must not wait for a completion event that will
+   * never fire — align with the forceQueue drain contract.
+   */
+  private async drainIfExecutionIdle(threadId: string, messageId: string): Promise<void> {
+    if (this.opts.queueProcessor?.hasActiveExecution?.(threadId)) return;
+    const exactEntry = this.opts.invocationQueue.findEntryWithMessageId(threadId, messageId);
+    if (exactEntry && (await this.isQueueEntryCustodyReady(exactEntry, messageId))) {
+      await this.opts.queueProcessor?.tryAutoExecute(threadId, {
+        bypassNonAgentGate: true,
+        onlyEntryId: exactEntry.id,
+      });
+    }
   }
 
   /**
