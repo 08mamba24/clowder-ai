@@ -404,7 +404,8 @@ describe('global accounts (clowder-ai#340)', () => {
     assert.equal(result['my-proxy'].authType, 'api_key');
     assert.equal(result['my-proxy'].displayName, 'My Proxy');
     assert.equal(result['my-proxy'].baseUrl, 'https://proxy.example/v1');
-    assert.deepEqual(result['my-proxy'].modelAliases, { 'kimi-code/k3': 'kimi-k3' });
+    // null-prototype maps are intentional (R19); compare own entries, not [[Prototype]].
+    assert.deepEqual({ ...result['my-proxy'].modelAliases }, { 'kimi-code/k3': 'kimi-k3' });
     assert.ok(result['team-key'], 'team-key account should exist');
     assert.equal(result['team-key'].authType, 'api_key');
     // Must NOT create an "anthropic" shell account from the parent key
@@ -515,7 +516,7 @@ describe('global accounts (clowder-ai#340)', () => {
     );
 
     const result = migrateAndReadAccounts(projectRoot);
-    assert.deepEqual(result.shared.modelAliases, { 'kimi-code/k3': 'kimi-k3' });
+    assert.deepEqual({ ...result.shared.modelAliases }, { 'kimi-code/k3': 'kimi-k3' });
     const credentialPath = join(globalRoot, '.cat-cafe', 'credentials.json');
     if (existsSync(credentialPath)) {
       const credentials = JSON.parse(await readFile(credentialPath, 'utf-8'));
@@ -580,7 +581,7 @@ describe('global accounts (clowder-ai#340)', () => {
     const result = migrateAndReadAccounts(projectRoot);
     // Equivalence is decided on the NORMALISED view; the stored value itself is
     // returned verbatim, because global still wins on a merge.
-    assert.deepEqual(result.shared.modelAliases, { 'b/y': ' up-y ', 'a/x': ' up-x ' });
+    assert.deepEqual({ ...result.shared.modelAliases }, { 'b/y': ' up-y ', 'a/x': ' up-x ' });
     // Not a conflict, so the legacy source's secret is imported. That import is
     // the observable proof — a conflict would skip it, as the sibling test above
     // asserts for a genuinely different alias.

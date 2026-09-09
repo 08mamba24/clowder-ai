@@ -282,4 +282,61 @@ describe('account-store canonical equality (dual-root P1-14/15/16)', () => {
       /modelAliases invalid \(values not shown\)/,
     );
   });
+
+  /**
+   * R19: JSON own-key "__proto__" is data. z.record / plain `{}` assignment used
+   * to drop it, so a runtime-only `__proto__` alias compared equal to a clean
+   * workspace account (both-equal). Fixtures must come from JSON.parse — a JS
+   * object literal `{ __proto__: x }` invokes the prototype setter.
+   */
+  it('reviewer repro: modelAliases.__proto__ must not collapse into both-equal (R19)', () => {
+    const runtimeAccount = JSON.parse(
+      '{"authType":"api_key","clientId":"anthropic","modelAliases":{"__proto__":"model-x"}}',
+    );
+    const workspaceAccount = JSON.parse('{"authType":"api_key","clientId":"anthropic"}');
+    seedPair(runtimeAccount, workspaceAccount, 'sk-proto-alias');
+    assertRejected('modelAliases.__proto__', 'sk-proto-alias');
+  });
+
+  it('reviewer repro: envVars.__proto__ must not collapse into both-equal (R19)', () => {
+    const runtimeAccount = JSON.parse(
+      '{"authType":"api_key","clientId":"anthropic","envVars":{"__proto__":"value"}}',
+    );
+    const workspaceAccount = JSON.parse('{"authType":"api_key","clientId":"anthropic"}');
+    seedPair(runtimeAccount, workspaceAccount, 'sk-proto-env');
+    assertRejected('envVars.__proto__', 'sk-proto-env');
+  });
+
+  it('identical __proto__ aliases on both roots remain both-equal (R19 control)', () => {
+    const account = JSON.parse(
+      '{"authType":"api_key","clientId":"anthropic","modelAliases":{"__proto__":"model-x","ok":"y"}}',
+    );
+    seedPair(structuredClone(account), structuredClone(account));
+    const profile = resolveByAccountRef(runtimeRoot, 'shared');
+    assert.ok(profile);
+    assert.ok(profile.modelAliases);
+    assert.equal(Object.hasOwn(profile.modelAliases, '__proto__'), true);
+    assert.equal(Object.getOwnPropertyDescriptor(profile.modelAliases, '__proto__')?.value, 'model-x');
+    assert.equal(profile.modelAliases.ok, 'y');
+  });
+
+  it('parseStoredAccount + canonicalizeAccount preserve __proto__ maps as own data', async () => {
+    const { parseStoredAccount } = await import('../dist/config/account-store-format.js');
+    const raw = JSON.parse(
+      '{"authType":"api_key","modelAliases":{"__proto__":"model-x"},"envVars":{"__proto__":"ENV"}}',
+    );
+    const parsed = parseStoredAccount(raw, 'r19-proto-fixture');
+    assert.equal(Object.hasOwn(parsed.modelAliases, '__proto__'), true);
+    assert.equal(Object.getOwnPropertyDescriptor(parsed.modelAliases, '__proto__')?.value, 'model-x');
+    assert.equal(Object.hasOwn(parsed.envVars, '__proto__'), true);
+    assert.equal(Object.getOwnPropertyDescriptor(parsed.envVars, '__proto__')?.value, 'ENV');
+
+    const canonical = canonicalizeAccount(parsed);
+    assert.equal(Object.hasOwn(canonical.modelAliases, '__proto__'), true);
+    assert.equal(Object.getOwnPropertyDescriptor(canonical.modelAliases, '__proto__')?.value, 'model-x');
+    assert.equal(Object.hasOwn(canonical.envVars, '__proto__'), true);
+    assert.equal(Object.getOwnPropertyDescriptor(canonical.envVars, '__proto__')?.value, 'ENV');
+    assert.notEqual(Object.getPrototypeOf(canonical.modelAliases), Object.prototype);
+    assert.notEqual(Object.getPrototypeOf(canonical.envVars), Object.prototype);
+  });
 });

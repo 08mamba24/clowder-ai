@@ -1,6 +1,7 @@
 /** Shared pure format boundary for read-only account snapshots and explicit legacy migration. */
 import type { AccountConfig, CredentialEntry } from '@cat-cafe/shared';
 import { z } from 'zod';
+import { refStore } from './ref-store.js';
 
 export class AccountStoreVerdictError extends Error {}
 
@@ -8,7 +9,9 @@ export function malformedAccountStore(source: string): never {
   throw new AccountStoreVerdictError(`Invalid/malformed account store (${source}); repair it before use`);
 }
 
-const stringRecord = z.record(z.string());
+// modelAliases / envVars are NOT z.record: Zod's record parser silently drops the
+// own-key "__proto__" (R19), which made dual-root equality treat a populated
+// alias map as empty and accept both-equal. Parse those maps with refStore.
 const accountSchema = z
   .object({
     authType: z.enum(['oauth', 'api_key']),
@@ -16,8 +19,6 @@ const accountSchema = z
     baseUrl: z.string().optional(),
     displayName: z.string().optional(),
     models: z.array(z.string()).optional(),
-    modelAliases: stringRecord.optional(),
-    envVars: stringRecord.optional(),
   })
   .passthrough();
 const credentialSchema = z
@@ -34,6 +35,28 @@ export function objectMap(value: unknown, source: string): Record<string, unknow
   return value as Record<string, unknown>;
 }
 
+/**
+ * Persistable string maps whose KEYS are data (alias names, env var names).
+ * Must preserve every JSON own-key — including "__proto__" / "constructor" —
+ * via null-prototype + defineProperty. Never z.record / plain `{}` assignment.
+ */
+function parseStringRecord(value: unknown, source: string): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) malformedAccountStore(source);
+  const out = refStore<string>();
+  for (const key of Object.keys(value as object)) {
+    const entry = (value as Record<string, unknown>)[key];
+    if (typeof entry !== 'string') malformedAccountStore(source);
+    Object.defineProperty(out, key, {
+      value: entry,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return out;
+}
+
 export function normalizeLegacyAuthType(value: unknown): AccountConfig['authType'] | undefined {
   if (typeof value !== 'string') return undefined;
   const normalized = value.trim().toLowerCase();
@@ -44,9 +67,20 @@ export function normalizeLegacyAuthType(value: unknown): AccountConfig['authType
 
 export function parseStoredAccount(value: unknown, source: string): AccountConfig {
   const raw = objectMap(value, source);
+  const modelAliases = parseStringRecord(raw.modelAliases, source);
+  const envVars = parseStringRecord(raw.envVars, source);
   const parsed = accountSchema.safeParse({ ...raw, authType: normalizeLegacyAuthType(raw.authType) });
   if (!parsed.success) malformedAccountStore(source);
-  return parsed.data;
+  // Drop any Zod-produced record fields and reattach the prototype-safe maps.
+  const { modelAliases: _droppedAliases, envVars: _droppedEnv, ...scalars } = parsed.data as AccountConfig & {
+    modelAliases?: unknown;
+    envVars?: unknown;
+  };
+  return {
+    ...scalars,
+    ...(modelAliases !== undefined ? { modelAliases } : {}),
+    ...(envVars !== undefined ? { envVars } : {}),
+  };
 }
 
 export function parseStoredCredential(value: unknown, source: string): CredentialEntry {
@@ -56,11 +90,22 @@ export function parseStoredCredential(value: unknown, source: string): Credentia
 }
 
 export function canonicalJson(value: unknown): string {
-  return JSON.stringify(value ?? null, (_key, entry) =>
-    entry && typeof entry === 'object' && !Array.isArray(entry)
-      ? Object.fromEntries(Object.entries(entry as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)))
-      : entry,
-  );
+  return JSON.stringify(value ?? null, (_key, entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    // Sort keys onto a null-prototype object so a data key "__proto__" stays an
+    // own property through the replacer (Object.fromEntries would be fine on
+    // Node 24, but assign-based copies elsewhere are not — keep one write path).
+    const sorted = refStore<unknown>();
+    for (const key of Object.keys(entry as object).sort((a, b) => a.localeCompare(b))) {
+      Object.defineProperty(sorted, key, {
+        value: (entry as Record<string, unknown>)[key],
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return sorted;
+  });
 }
 
 /**
@@ -72,6 +117,7 @@ export function canonicalJson(value: unknown): string {
 export function canonicalizeAccount(account: AccountConfig) {
   const models = canonicalizeModels(account.models);
   const aliases = canonicalizeModelAliases(account.modelAliases);
+  const envVars = canonicalizeEnvVars(account.envVars);
   const baseUrl = canonicalizeOptionalText(account.baseUrl, 'baseUrl');
   const displayName = canonicalizeOptionalText(account.displayName, 'displayName');
   return {
@@ -81,7 +127,7 @@ export function canonicalizeAccount(account: AccountConfig) {
     ...(displayName ? { displayName } : {}),
     ...(models.length ? { models } : {}),
     ...(Object.keys(aliases).length ? { modelAliases: aliases } : {}),
-    ...(Object.keys(account.envVars ?? {}).length ? { envVars: account.envVars } : {}),
+    ...(Object.keys(envVars).length ? { envVars } : {}),
   };
 }
 
@@ -113,16 +159,31 @@ function canonicalizeModels(models: readonly string[] | undefined): string[] {
 }
 
 function canonicalizeModelAliases(aliases: Record<string, string> | undefined): Record<string, string> {
-  if (aliases == null) return {};
-  const normalized: Record<string, string> = {};
-  for (const [alias, model] of Object.entries(aliases)) {
-    const key = alias.trim();
-    const value = model.trim();
+  if (aliases == null) return refStore();
+  const normalized = refStore<string>();
+  for (const rawKey of Object.keys(aliases)) {
+    const key = rawKey.trim();
+    const value = aliases[rawKey].trim();
     if (!key || !value) invalidAccountField('modelAliases');
     if (Object.hasOwn(normalized, key)) invalidAccountField('modelAliases');
-    normalized[key] = value;
+    // defineProperty: plain `normalized[key] = value` would invoke the __proto__
+    // setter on a normal object; refStore is null-prototype, but keep the same
+    // write path for every key so prototype-named aliases stay own data.
+    Object.defineProperty(normalized, key, {
+      value,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   return normalized;
+}
+
+function canonicalizeEnvVars(envVars: Record<string, string> | undefined): Record<string, string> {
+  if (envVars == null) return refStore();
+  // Preserve every own key (including "__proto__") as data — no trim/filter that
+  // could collapse a populated map into absence.
+  return refStore(envVars);
 }
 
 /** v1 nested provider families and v2/v3 flat providers/profiles share this decoder. */
