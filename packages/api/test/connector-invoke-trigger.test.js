@@ -2968,7 +2968,9 @@ describe('ConnectorInvokeTrigger', () => {
     it('AC-2: enqueues when tryStartThread returns null (thread busy in tracker)', async () => {
       const mockQueueProcessor = /** @type {any} */ ({
         isThreadBusy: () => false,
-        hasActiveExecution: () => true,
+        // Must be false: with true, admission short-circuits at
+        // busy_active_execution and the tryStartThread path below is never reached.
+        hasActiveExecution: () => false,
         isCatBusy: () => false,
         async onInvocationComplete() {},
         async tryAutoExecute() {},
