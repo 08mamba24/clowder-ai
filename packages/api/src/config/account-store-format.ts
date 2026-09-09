@@ -63,22 +63,66 @@ export function canonicalJson(value: unknown): string {
   );
 }
 
+/**
+ * Normalize account fields for dual-root equality without rewriting observable
+ * semantics. models[0] is a live default — never sort. Alias trim-collisions and
+ * blank-after-trim entries are unusable persisted content: fail closed instead of
+ * silently dropping them into equivalence with a cleaner peer store.
+ */
 export function canonicalizeAccount(account: AccountConfig) {
-  const models = account.models ? [...new Set(account.models.map((model) => model.trim()).filter(Boolean))].sort() : [];
-  const aliases = Object.fromEntries(
-    Object.entries(account.modelAliases ?? {})
-      .map(([alias, model]) => [alias.trim(), model.trim()])
-      .filter(([alias, model]) => alias && model),
-  );
+  const models = canonicalizeModels(account.models);
+  const aliases = canonicalizeModelAliases(account.modelAliases);
+  const baseUrl = canonicalizeOptionalText(account.baseUrl, 'baseUrl');
+  const displayName = canonicalizeOptionalText(account.displayName, 'displayName');
   return {
     authType: normalizeLegacyAuthType(account.authType) ?? malformedAccountStore('account authType'),
     ...(account.clientId ? { clientId: account.clientId.trim() } : {}),
-    ...(account.baseUrl?.trim() ? { baseUrl: account.baseUrl.trim().replace(/\/+$/, '') } : {}),
-    ...(account.displayName?.trim() ? { displayName: account.displayName.trim() } : {}),
+    ...(baseUrl ? { baseUrl: baseUrl.replace(/\/+$/, '') } : {}),
+    ...(displayName ? { displayName } : {}),
     ...(models.length ? { models } : {}),
     ...(Object.keys(aliases).length ? { modelAliases: aliases } : {}),
     ...(Object.keys(account.envVars ?? {}).length ? { envVars: account.envVars } : {}),
   };
+}
+
+function invalidAccountField(field: string): never {
+  // Values stay out of the message: callers may be comparing stores that also
+  // carry credentials, and unusable content must not leak through diagnostics.
+  throw new AccountStoreVerdictError(`${field} invalid (values not shown)`);
+}
+
+function canonicalizeOptionalText(value: string | undefined, field: string): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) invalidAccountField(field);
+  return trimmed;
+}
+
+function canonicalizeModels(models: readonly string[] | undefined): string[] {
+  if (models == null) return [];
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const model of models) {
+    const trimmed = model.trim();
+    if (!trimmed) invalidAccountField('models');
+    if (seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+function canonicalizeModelAliases(aliases: Record<string, string> | undefined): Record<string, string> {
+  if (aliases == null) return {};
+  const normalized: Record<string, string> = {};
+  for (const [alias, model] of Object.entries(aliases)) {
+    const key = alias.trim();
+    const value = model.trim();
+    if (!key || !value) invalidAccountField('modelAliases');
+    if (Object.hasOwn(normalized, key)) invalidAccountField('modelAliases');
+    normalized[key] = value;
+  }
+  return normalized;
 }
 
 /** v1 nested provider families and v2/v3 flat providers/profiles share this decoder. */
