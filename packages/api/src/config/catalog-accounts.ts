@@ -61,13 +61,24 @@ function writeFileAtomic(filePath: string, content: string, mode?: number): void
 }
 
 function readAllGlobal(projectRoot?: string): Record<string, AccountConfig> {
+  const empty = () => Object.create(null) as Record<string, AccountConfig>;
   const accountsPath = resolveAccountsPath(projectRoot);
-  if (!existsSync(accountsPath)) return {};
+  if (!existsSync(accountsPath)) return empty();
   const raw = readFileSync(accountsPath, 'utf-8');
   try {
     const parsed = JSON.parse(raw);
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
-    return parsed as Record<string, AccountConfig>;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return empty();
+    // Re-key into a null-prototype map so refs like "toString" / "__proto__" stay data.
+    const accounts = empty();
+    for (const [ref, account] of Object.entries(parsed as Record<string, AccountConfig>)) {
+      Object.defineProperty(accounts, ref, {
+        value: account,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return accounts;
   } catch {
     // Fix P1-3: corrupt file → backup + warn, not silent swallow
     const backupPath = `${accountsPath}.bak`;
@@ -78,7 +89,7 @@ function readAllGlobal(projectRoot?: string): Record<string, AccountConfig> {
       /* best-effort backup */
     }
     console.error(`[catalog-accounts] corrupt ${accountsPath} — backed up to .bak, treating as empty`);
-    return {};
+    return empty();
   }
 }
 
@@ -103,10 +114,11 @@ function describeAccountConflict(existing: AccountConfig, incoming: AccountConfi
   if ((current.displayName ?? '(none)') !== (next.displayName ?? '(none)')) {
     diffs.push(`displayName ${current.displayName ?? '(none)'} vs ${next.displayName ?? '(none)'}`);
   }
-  if (JSON.stringify(current.models ?? []) !== JSON.stringify(next.models ?? [])) {
+  if (canonicalJson(current.models ?? []) !== canonicalJson(next.models ?? [])) {
     diffs.push(`models ${JSON.stringify(current.models ?? [])} vs ${JSON.stringify(next.models ?? [])}`);
   }
-  if (JSON.stringify(current.modelAliases ?? {}) !== JSON.stringify(next.modelAliases ?? {})) {
+  // canonicalJson sorts keys so padding/key-order-only alias differences stay equivalent.
+  if (canonicalJson(current.modelAliases ?? {}) !== canonicalJson(next.modelAliases ?? {})) {
     diffs.push(
       `modelAliases ${JSON.stringify(current.modelAliases ?? {})} vs ${JSON.stringify(next.modelAliases ?? {})}`,
     );
@@ -209,11 +221,17 @@ function migrateLegacyFrom(
   const metaPath = resolve(root, CONFIG_SUBDIR, 'provider-profiles.json');
   if (!existsSync(metaPath)) return;
   const parsed = parseLegacyProviderProfiles(JSON.parse(readFileSync(metaPath, 'utf-8')));
-  const accounts = Object.fromEntries(
-    Object.entries(parsed).filter(
-      ([ref, account]) => !opts?.shouldImportAccount || opts.shouldImportAccount(ref, account),
-    ),
-  );
+  // Do not use Object.fromEntries here: a ref named "__proto__" corrupts [[Prototype]].
+  const accounts = Object.create(null) as Record<string, AccountConfig>;
+  for (const [ref, account] of Object.entries(parsed)) {
+    if (opts?.shouldImportAccount && !opts.shouldImportAccount(ref, account)) continue;
+    Object.defineProperty(accounts, ref, {
+      value: account,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
   if (Object.keys(accounts).length === 0) return;
   const { merged } = mergeIntoGlobal(accounts, projectRoot, { skipConflicts: true });
   const mergedSet = new Set(merged);
@@ -225,22 +243,39 @@ function migrateLegacyFrom(
   const profileSecrets = parseLegacyProviderSecrets(JSON.parse(readFileSync(secretsPath, 'utf-8')));
   const globalRoot = resolveGlobalRoot(projectRoot);
   const credPath = resolve(globalRoot, CONFIG_SUBDIR, 'credentials.json');
-  const existing = existsSync(credPath)
-    ? (() => {
-        try {
-          return JSON.parse(readFileSync(credPath, 'utf-8'));
-        } catch {
-          return {};
+  const existing = Object.create(null) as Record<string, { apiKey: string }>;
+  if (existsSync(credPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(credPath, 'utf-8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const [ref, entry] of Object.entries(parsed as Record<string, { apiKey: string }>)) {
+          Object.defineProperty(existing, ref, {
+            value: entry,
+            enumerable: true,
+            configurable: true,
+            writable: true,
+          });
         }
-      })()
-    : {};
+      }
+    } catch {
+      /* treat as empty */
+    }
+  }
   let credCount = 0;
+  const writeCred = (id: string, apiKey: string) => {
+    Object.defineProperty(existing, id, {
+      value: { apiKey },
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+    credCount++;
+  };
   for (const [id, secret] of Object.entries(profileSecrets)) {
-    if (!(id in accounts) || id in existing || !secret?.apiKey) continue;
+    if (!(id in accounts) || Object.hasOwn(existing, id) || !secret?.apiKey) continue;
     if (mergedSet.has(id)) {
       // First run: account was just merged — safe to import its secret.
-      existing[id] = { apiKey: String(secret.apiKey) };
-      credCount++;
+      writeCred(id, String(secret.apiKey));
     } else {
       // Retry path: account already existed in global (skipped by merge).
       // Only import if the global account's fields match what we'd migrate —
@@ -249,8 +284,7 @@ function migrateLegacyFrom(
       const g = globalAfterMerge[id];
       const l = accounts[id];
       if (g && accountsEquivalent(g, l)) {
-        existing[id] = { apiKey: String(secret.apiKey) };
-        credCount++;
+        writeCred(id, String(secret.apiKey));
       }
     }
   }

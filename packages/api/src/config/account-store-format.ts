@@ -93,7 +93,7 @@ export function parseLegacyProviderProfiles(
 ): Record<string, AccountConfig | AccountStoreVerdictError> {
   const meta = objectMap(value, 'provider-profiles.json');
   const raw = meta.providers === undefined ? meta.profiles : meta.providers;
-  if (raw === undefined) return {};
+  if (raw === undefined) return Object.create(null) as Record<string, AccountConfig | AccountStoreVerdictError>;
   const entries = Array.isArray(raw)
     ? raw
     : Object.values(objectMap(raw, 'provider-profiles.json')).flatMap((entry) => {
@@ -102,7 +102,7 @@ export function parseLegacyProviderProfiles(
         if (!Array.isArray(group.profiles)) malformedAccountStore('provider-profiles.json profiles');
         return group.profiles;
       });
-  const accounts: Record<string, AccountConfig | AccountStoreVerdictError> = {};
+  const accounts = Object.create(null) as Record<string, AccountConfig | AccountStoreVerdictError>;
   for (const entry of entries) {
     const profile = objectMap(entry, 'provider-profiles.json profile');
     if (typeof profile.id !== 'string' || !profile.id.trim()) malformedAccountStore('provider-profiles.json id');
@@ -115,7 +115,12 @@ export function parseLegacyProviderProfiles(
         ),
       deferEntryErrors,
     );
-    Object.defineProperty(accounts, profile.id.trim(), { value: normalized, enumerable: true, configurable: true });
+    Object.defineProperty(accounts, profile.id.trim(), {
+      value: normalized,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   return accounts;
 }
@@ -139,15 +144,20 @@ export function parseLegacyProviderSecrets(
             'provider-profiles.secrets.local.json providers',
           ),
         ).flatMap((group) => Object.entries(objectMap(group, 'provider-profiles.secrets.local.json family')));
-  return Object.fromEntries(
-    entries.map(([ref, secret]) => [
-      ref,
-      decodeLegacyEntry(
+  // Avoid Object.fromEntries: a legacy ref named "__proto__" would corrupt [[Prototype]].
+  const secrets = Object.create(null) as Record<string, CredentialEntry | AccountStoreVerdictError>;
+  for (const [ref, secret] of entries) {
+    Object.defineProperty(secrets, ref, {
+      value: decodeLegacyEntry(
         () => parseStoredCredential(secret, `provider-profiles.secrets.local.json credential ${ref}`),
         deferEntryErrors,
       ),
-    ]),
-  );
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return secrets;
 }
 
 function decodeLegacyEntry<T>(decode: () => T, deferErrors: boolean): T | AccountStoreVerdictError {

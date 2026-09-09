@@ -326,7 +326,7 @@ describe('global accounts (clowder-ai#340)', () => {
    * could not express the fixture.
    */
   it('a v1 legacy profile id of __proto__ still migrates its credential (R20)', async () => {
-    const { readCatalogAccounts, resetMigrationState } = await import('../dist/config/catalog-accounts.js');
+    const { resetMigrationState } = await import('../dist/config/catalog-accounts.js');
     resetMigrationState();
 
     await writeFile(
@@ -344,7 +344,8 @@ describe('global accounts (clowder-ai#340)', () => {
       'utf-8',
     );
 
-    const result = readCatalogAccounts(projectRoot);
+    // Upstream contract: migration is explicit (startup / migrateCatalogAccounts), not a read side-effect.
+    const result = migrateAndReadAccounts(projectRoot);
     assert.ok(Object.hasOwn(result, '__proto__'), 'the __proto__ account must be migrated');
     assert.equal(result['__proto__'].displayName, 'Proto Profile');
 
@@ -575,7 +576,8 @@ describe('global accounts (clowder-ai#340)', () => {
       'utf-8',
     );
 
-    const result = readCatalogAccounts(projectRoot);
+    // Upstream contract: migration is explicit (startup / migrateCatalogAccounts), not a read side-effect.
+    const result = migrateAndReadAccounts(projectRoot);
     // Equivalence is decided on the NORMALISED view; the stored value itself is
     // returned verbatim, because global still wins on a merge.
     assert.deepEqual(result.shared.modelAliases, { 'b/y': ' up-y ', 'a/x': ' up-x ' });

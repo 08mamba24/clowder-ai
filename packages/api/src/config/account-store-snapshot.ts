@@ -178,7 +178,18 @@ export function inspectAccountCatalog(projectRoot: string) {
 }
 
 export function readAccountCatalogSnapshot(projectRoot: string): Record<string, AccountConfig> {
-  return Object.fromEntries(
-    Object.entries(inspectAccountCatalog(projectRoot).entries).map(([ref, entry]) => [ref, entry.account]),
-  );
+  // Null-prototype map: Object.fromEntries([['__proto__', ...]]) corrupts [[Prototype]]
+  // and breaks R19/R20 ref-keyed store contracts (toString / __proto__ as data).
+  const accounts = Object.create(null) as Record<string, AccountConfig>;
+  for (const [ref, entry] of Object.entries(inspectAccountCatalog(projectRoot).entries)) {
+    if (entry.account) {
+      Object.defineProperty(accounts, ref, {
+        value: entry.account,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+  }
+  return accounts;
 }
