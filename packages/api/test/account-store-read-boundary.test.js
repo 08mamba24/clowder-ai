@@ -251,13 +251,13 @@ describe('account store read boundary (P1-8)', () => {
 });
 
 /**
- * P1-9: the public reader was the wrong place to stand.
+ * P1-9: migration sources must be guarded at first open.
  *
- * readCatalogAccounts() runs ensureMigrated() before readAllGlobal(), and those
- * migrations open $HOME's credentials.json, legacy provider-profiles files and
- * the project catalog — then COPY what they find into the caller's own store.
- * Reading it back out of the fixture afterwards is completely legal, so the
- * final guard saw nothing wrong. The crossing had already happened.
+ * Ordinary catalog reads are pure (no migrate-on-read). Format migrations run
+ * only from accountStartupHook / write / explicit migrateCatalogAccounts, and
+ * those paths open $HOME credentials, legacy provider-profiles, and the project
+ * catalog — then COPY what they find into the caller's store. Guarding only the
+ * final reader is too late; the crossing has already happened.
  *
  * A protected HOME is stood in for by a mkdtemp dir declared through
  * CAT_CAFE_TEST_REAL_HOME (砚砚's R11 shape). The operator's real home is never
@@ -311,16 +311,16 @@ function homeMigrationEnv(home, extraEnv = {}) {
   return env;
 }
 
-function catalogReadInnerTest(innerDir, name, projectRoot) {
+function catalogMigrateInnerTest(innerDir, name, projectRoot) {
   const innerTest = join(innerDir, `${name}.test.mjs`);
   writeFileSync(
     innerTest,
     [
       "import { test } from 'node:test';",
-      `import { readCatalogAccounts } from ${JSON.stringify(CATALOG_ACCOUNTS_DIST)};`,
+      `import { migrateCatalogAccounts } from ${JSON.stringify(CATALOG_ACCOUNTS_DIST)};`,
       `test('${name}', () => {`,
-      `  readCatalogAccounts(${JSON.stringify(projectRoot)});`,
-      "  console.log('CATALOG_READ_OK=true');",
+      `  migrateCatalogAccounts(${JSON.stringify(projectRoot)});`,
+      "  console.log('CATALOG_MIGRATE_OK=true');",
       '});',
       '',
     ].join('\n'),
@@ -334,7 +334,7 @@ describe('account migration source boundary (P1-9)', () => {
     const project = makeTemp('p19-own-project-');
     seedHomeCredential(home);
 
-    const innerTest = catalogReadInnerTest(makeTemp('p19-inner-'), 'home-cred-source', project);
+    const innerTest = catalogMigrateInnerTest(makeTemp('p19-inner-'), 'home-cred-source', project);
     const res = spawnSync(process.execPath, ['--test', innerTest], {
       encoding: 'utf-8',
       // The fake home is DECLARED protected, which is what the operator's real
@@ -367,7 +367,7 @@ describe('account migration source boundary (P1-9)', () => {
     const fixture = buildFixture();
     seedHomeCredential(fixture.fakeHome);
 
-    const innerTest = catalogReadInnerTest(fixture.innerDir, 'home-cred-target', fixture.workspaceRoot);
+    const innerTest = catalogMigrateInnerTest(fixture.innerDir, 'home-cred-target', fixture.workspaceRoot);
     const { status, out } = runBareChild(fixture, innerTest);
 
     assert.notEqual(status, 0, `reading the inherited target must FAIL. Output:\n${out}`);
@@ -383,7 +383,7 @@ describe('account migration source boundary (P1-9)', () => {
    */
   it('a bare `node --test` cannot read legacy provider profiles out of an inherited store', () => {
     const fixture = buildFixture();
-    const innerTest = catalogReadInnerTest(fixture.innerDir, 'legacy-source', fixture.workspaceRoot);
+    const innerTest = catalogMigrateInnerTest(fixture.innerDir, 'legacy-source', fixture.workspaceRoot);
     const { status, out } = runBareChild(fixture, innerTest, { CAT_CAFE_SKIP_HOMEDIR_MIGRATION: '1' });
 
     assert.notEqual(status, 0, `reading an inherited legacy source must FAIL. Output:\n${out}`);
@@ -413,7 +413,7 @@ describe('account migration source boundary (P1-9)', () => {
       { mode: 0o600 },
     );
 
-    const innerTest = catalogReadInnerTest(makeTemp('p19-inner-legacy-'), 'home-legacy-source', home);
+    const innerTest = catalogMigrateInnerTest(makeTemp('p19-inner-legacy-'), 'home-legacy-source', home);
     const res = spawnSync(process.execPath, ['--test', innerTest], {
       encoding: 'utf-8',
       env: homeMigrationEnv(home, { CAT_CAFE_TEST_REAL_HOME: home }),
@@ -437,7 +437,7 @@ describe('account migration source boundary (P1-9)', () => {
     const project = makeTemp('p19-owned-project-');
     seedHomeCredential(home);
 
-    const innerTest = catalogReadInnerTest(makeTemp('p19-inner-owned-'), 'home-owned', project);
+    const innerTest = catalogMigrateInnerTest(makeTemp('p19-inner-owned-'), 'home-owned', project);
     const res = spawnSync(process.execPath, ['--test', innerTest], {
       encoding: 'utf-8',
       env: homeMigrationEnv(home),
@@ -462,7 +462,7 @@ describe('account migration source boundary (P1-9)', () => {
       process.execPath,
       [
         '-e',
-        `import(${JSON.stringify(CATALOG_ACCOUNTS_DIST)}).then((m) => m.readCatalogAccounts(${JSON.stringify(project)}));`,
+        `import(${JSON.stringify(CATALOG_ACCOUNTS_DIST)}).then((m) => m.migrateCatalogAccounts(${JSON.stringify(project)}));`,
       ],
       { encoding: 'utf-8', env: homeMigrationEnv(home, { CAT_CAFE_TEST_REAL_HOME: home }) },
     );
@@ -474,16 +474,14 @@ describe('account migration source boundary (P1-9)', () => {
 });
 
 /**
- * P1-11: a direct reader guards its OWN first open.
+ * P1-11: a direct migration reader guards its OWN first open.
  *
- * §26 placed three guards and argued that any further one was unreachable —
- * ensureMigrated() has a fixed order, so an earlier guard on the same root
- * would always refuse first, and a line no mutation can kill is decoration. The
- * order is fixed; the STATE is not. Completion caches live for the whole
- * process while CAT_CAFE_TEST_SANDBOX_ALLOW_UNSAFE_ROOT and
- * CAT_CAFE_SKIP_HOMEDIR_MIGRATION are re-read on every call, so a first call
- * made under an explicit opt-out caches away the guard the second call was
- * counting on — and the reader downstream still opens the file.
+ * migrateCatalogAccounts has a fixed order, so an earlier guard on the same
+ * root would always refuse first — but the STATE is not fixed. Completion
+ * caches live for the whole process while CAT_CAFE_TEST_SANDBOX_ALLOW_UNSAFE_ROOT
+ * and CAT_CAFE_SKIP_HOMEDIR_MIGRATION are re-read on every call, so a first
+ * call made under an explicit opt-out caches away the guard the second call
+ * was counting on — and the reader downstream still opens the file.
  *
  * Every test below is that two-phase shape in ONE child process, because a
  * fresh process would reset the caches and hide the defect entirely.
@@ -563,14 +561,14 @@ describe('direct-reader boundary (P1-11)', () => {
       lines: [
         '// Phase 1: opt-out ON, no project catalog yet.',
         "process.env.CAT_CAFE_TEST_SANDBOX_ALLOW_UNSAFE_ROOT = '1';",
-        'catalog.readCatalogAccounts(PROJECT);',
+        'catalog.migrateCatalogAccounts(PROJECT);',
         '// Phase 2: protection restored, and now the catalog exists.',
         'delete process.env.CAT_CAFE_TEST_SANDBOX_ALLOW_UNSAFE_ROOT;',
         "mkdirSync(join(PROJECT, '.cat-cafe'), { recursive: true });",
         `writeFileSync(join(PROJECT, '.cat-cafe', 'cat-catalog.json'), ${JSON.stringify(
           `${JSON.stringify({ accounts: { [PROJECT_PROBE_REF]: { client: 'anthropic', mode: 'api_key' } } })}\n`,
         )});`,
-        'catalog.readCatalogAccounts(PROJECT);',
+        'catalog.migrateCatalogAccounts(PROJECT);',
         "console.log('PHASE2_ALLOWED=true');",
       ],
     });
@@ -607,12 +605,12 @@ describe('direct-reader boundary (P1-11)', () => {
         '//          project legacy guard is cached away under the opt-out.',
         "process.env.CAT_CAFE_SKIP_HOMEDIR_MIGRATION = '1';",
         "process.env.CAT_CAFE_TEST_SANDBOX_ALLOW_UNSAFE_ROOT = '1';",
-        'catalog.readCatalogAccounts(PROJECT);',
+        'catalog.migrateCatalogAccounts(PROJECT);',
         '// Phase 2: both switches off — migrateHomedirCredentials now runs and',
         '//          asks the protected project which refs it references.',
         'delete process.env.CAT_CAFE_SKIP_HOMEDIR_MIGRATION;',
         'delete process.env.CAT_CAFE_TEST_SANDBOX_ALLOW_UNSAFE_ROOT;',
-        'catalog.readCatalogAccounts(PROJECT);',
+        'catalog.migrateCatalogAccounts(PROJECT);',
         "console.log('PHASE2_ALLOWED=true');",
       ],
     });
@@ -636,12 +634,12 @@ describe('direct-reader boundary (P1-11)', () => {
       home: makeTemp('p111-control-home-'),
       lines: [
         "process.env.CAT_CAFE_TEST_SANDBOX_ALLOW_UNSAFE_ROOT = '1';",
-        'catalog.readCatalogAccounts(PROJECT);',
+        'catalog.migrateCatalogAccounts(PROJECT);',
         "mkdirSync(join(PROJECT, '.cat-cafe'), { recursive: true });",
         `writeFileSync(join(PROJECT, '.cat-cafe', 'cat-catalog.json'), ${JSON.stringify(
           `${JSON.stringify({ accounts: { [PROJECT_PROBE_REF]: { client: 'anthropic', mode: 'api_key' } } })}\n`,
         )});`,
-        'catalog.readCatalogAccounts(PROJECT);',
+        'catalog.migrateCatalogAccounts(PROJECT);',
       ],
     });
 

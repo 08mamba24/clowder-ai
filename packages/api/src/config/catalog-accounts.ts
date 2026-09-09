@@ -521,10 +521,8 @@ export function resetMigrationState(): void {
 // ── Public API (signatures kept backward-compatible, projectRoot used for migration) ──
 
 export function readCatalogAccounts(projectRoot: string): Record<string, AccountConfig> {
-  // Keep migrate-on-read for CLI/tests/operator paths. Hub boot also calls
-  // accountStartupHook explicitly before the first syncAgentRegistry so
-  // fail-fast store adjudication still precedes ACP registration.
-  migrateCatalogAccounts(projectRoot);
+  // Ordinary reads are pure (upstream contract). Migration runs only from
+  // accountStartupHook / writeCatalogAccount / explicit migrateCatalogAccounts.
   return readAccountCatalogSnapshot(projectRoot);
 }
 
