@@ -24,8 +24,43 @@ describe('model-pricing', () => {
         'gpt-5.4-long',
         'gpt-5.5',
         'gpt-5.5-long',
+        'gpt-5.6-sol',
+        'gpt-5.6-sol-long',
+        'gpt-6-astra',
+        'gpt-6-astra-long',
       ]) {
         assert.ok(getModelPricing(model), `missing pricing for ${model}`);
+      }
+    });
+
+    it('covers current roster API models with sourced prices', () => {
+      for (const model of [
+        'deepseek-flash',
+        'deepseek-v4-flash',
+        'deepseek-v4-flash-vision-exp',
+        'deepseek-v4-pro',
+        'deepseek/deepseek-v4-pro',
+        'glm-5.3',
+        'glm-5',
+        'glm-5.1',
+        'glm-5.2',
+        'gemini-3.6-flash',
+        'gemini-2.5-pro',
+      ]) {
+        const pricing = getModelPricing(model);
+        assert.ok(pricing, `missing pricing for ${model}`);
+        assert.ok(pricing.source, `missing source url for ${model}`);
+        assert.ok(pricing.verifiedAt, `missing verification date for ${model}`);
+      }
+    });
+
+    it('maps retired DeepSeek flash aliases to Flash price card', () => {
+      const canonical = getModelPricing('deepseek-flash');
+      for (const alias of ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp']) {
+        const pricing = getModelPricing(alias);
+        assert.ok(canonical && pricing);
+        assert.equal(pricing.inputPerMillion, canonical.inputPerMillion);
+        assert.equal(pricing.outputPerMillion, canonical.outputPerMillion);
       }
     });
 
