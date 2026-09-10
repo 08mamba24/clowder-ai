@@ -4,7 +4,7 @@ import { callbackPost } from './callback-tools.js';
 import type { ToolResult } from './file-tools.js';
 
 /** Keep identical to packages/shared OWNER_STATE_REF_PATTERN (DSH-portable allowlist). */
-const OWNER_STATE_REF_PATTERN = /^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+-]+$/;
+const OWNER_STATE_REF_PATTERN = /^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$/;
 
 /**
  * The cat-facing half of the Phase 3 journey.

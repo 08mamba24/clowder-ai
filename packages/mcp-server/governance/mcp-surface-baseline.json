@@ -1886,7 +1886,7 @@
                   "ownerStateRef": {
                     "maxLength": 500,
                     "minLength": 1,
-                    "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+-]+$",
+                    "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$",
                     "type": "string"
                   },
                   "version": {
@@ -1989,7 +1989,7 @@
         ],
         "type": "object"
       },
-      "inputSchemaDigest": "sha256:71264a50eedd181e35ce17d0d16ebe94d10e8a2c77802f794a4887e88a58c731",
+      "inputSchemaDigest": "sha256:c4bffc7fdaa851a5eedbfd526d694ccab2f33b1eac21be78a634b1214413864c",
       "annotations": {
         "destructiveHint": false,
         "openWorldHint": false,
@@ -2004,7 +2004,7 @@
         "policy": "host-default"
       },
       "implementationRef": "module:./tools/capability-evolution-round-tools.js#handleConstituteEvolutionProgram",
-      "protectedImplementationDigest": "sha256:e55aee5d73ab2bc3d76cec15c65ef91a8faaa558fbf19023b272ddd851cf8abf"
+      "protectedImplementationDigest": "sha256:427c9709d5317ac4438a8fbc72dc8055412a48cc0b6e684b6786004145c37007"
     },
     {
       "name": "cat_cafe_correct_person_claim",
@@ -3561,7 +3561,7 @@
         "policy": "host-default"
       },
       "implementationRef": "module:./tools/capability-evolution-tools.js#handleGetEvolutionProgram",
-      "protectedImplementationDigest": "sha256:21122a842b779b8b86a7e8dff5ae060890dd4c10861e8c6091a49d6924574136"
+      "protectedImplementationDigest": "sha256:8bb99f7b218be1cdf8b2e816882122cb38644c5234f16eeb41e8fe714e2c5d3f"
     },
     {
       "name": "cat_cafe_get_message",
@@ -4267,7 +4267,7 @@
         "policy": "host-default"
       },
       "implementationRef": "module:./tools/capability-evolution-tools.js#handleIssueCapabilityEvolutionMeasurement",
-      "protectedImplementationDigest": "sha256:21122a842b779b8b86a7e8dff5ae060890dd4c10861e8c6091a49d6924574136"
+      "protectedImplementationDigest": "sha256:8bb99f7b218be1cdf8b2e816882122cb38644c5234f16eeb41e8fe714e2c5d3f"
     },
     {
       "name": "cat_cafe_library_archive",
@@ -4666,7 +4666,7 @@
                 "joinKey": {
                   "maxLength": 500,
                   "minLength": 1,
-                  "pattern": "^(?:thread|message|subject):[a-zA-Z0-9._/:+-]+$",
+                  "pattern": "^(?:thread|message|subject):[a-zA-Z0-9._/:+@#-]+$",
                   "type": "string"
                 },
                 "namedConsumerRef": {
@@ -4707,7 +4707,7 @@
               "ownerStateRef": {
                 "maxLength": 500,
                 "minLength": 1,
-                "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+-]+$",
+                "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$",
                 "type": "string"
               },
               "version": {
@@ -4733,7 +4733,7 @@
         ],
         "type": "object"
       },
-      "inputSchemaDigest": "sha256:469c5ef274b2bfda2a3a6a197e3934f829e60a07b89311e36ff025e23d9bb607",
+      "inputSchemaDigest": "sha256:1325cb1e52ed556271112029b9224fdcac74e537f9e1c6cb0b5653b6ae5c8d5f",
       "annotations": {
         "destructiveHint": false,
         "openWorldHint": false,
@@ -4748,7 +4748,7 @@
         "policy": "host-default"
       },
       "implementationRef": "module:./tools/capability-evolution-tools.js#handleLinkEvolutionProgramObservation",
-      "protectedImplementationDigest": "sha256:21122a842b779b8b86a7e8dff5ae060890dd4c10861e8c6091a49d6924574136"
+      "protectedImplementationDigest": "sha256:8bb99f7b218be1cdf8b2e816882122cb38644c5234f16eeb41e8fe714e2c5d3f"
     },
     {
       "name": "cat_cafe_list_diaries",
@@ -5809,7 +5809,7 @@
               "ownerStateRef": {
                 "maxLength": 500,
                 "minLength": 1,
-                "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+-]+$",
+                "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$",
                 "type": "string"
               },
               "version": {
@@ -5843,7 +5843,7 @@
         ],
         "type": "object"
       },
-      "inputSchemaDigest": "sha256:bad2fbe7f8cf799a58b2184383ea84c8a72c1785c6b68a701766d02d8eb1a0b9",
+      "inputSchemaDigest": "sha256:fb71e64b31a1ca5f9e9dfe8b30c9ba29fb2532e0a279ded3b1bd0bd7faf33285",
       "annotations": {
         "destructiveHint": false,
         "openWorldHint": false,
@@ -5858,7 +5858,7 @@
         "policy": "host-default"
       },
       "implementationRef": "module:./tools/capability-evolution-round-tools.js#handleOpenEvolutionRound",
-      "protectedImplementationDigest": "sha256:e55aee5d73ab2bc3d76cec15c65ef91a8faaa558fbf19023b272ddd851cf8abf"
+      "protectedImplementationDigest": "sha256:427c9709d5317ac4438a8fbc72dc8055412a48cc0b6e684b6786004145c37007"
     },
     {
       "name": "cat_cafe_open_with_workspace_navigator",
@@ -9767,7 +9767,7 @@
                           "ownerStateRef": {
                             "maxLength": 500,
                             "minLength": 1,
-                            "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+-]+$",
+                            "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$",
                             "type": "string"
                           },
                           "version": {
@@ -9958,7 +9958,7 @@
         ],
         "type": "object"
       },
-      "inputSchemaDigest": "sha256:7b27e59b3a03239618ab2b60cb6308a5fe8ba41d40fd3f8dbb8d18539ddb2b19",
+      "inputSchemaDigest": "sha256:6e7c08963cae907f31012f84f587c359119da55dd3503578f052000e99cd19cb",
       "annotations": {
         "destructiveHint": false,
         "openWorldHint": false,
@@ -9973,7 +9973,7 @@
         "policy": "host-default"
       },
       "implementationRef": "module:./tools/capability-evolution-round-tools.js#handleRecordEvolutionEvaluation",
-      "protectedImplementationDigest": "sha256:e55aee5d73ab2bc3d76cec15c65ef91a8faaa558fbf19023b272ddd851cf8abf"
+      "protectedImplementationDigest": "sha256:427c9709d5317ac4438a8fbc72dc8055412a48cc0b6e684b6786004145c37007"
     },
     {
       "name": "cat_cafe_record_external_review_verdict",
@@ -12238,7 +12238,7 @@
               "ownerStateRef": {
                 "maxLength": 500,
                 "minLength": 1,
-                "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+-]+$",
+                "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$",
                 "type": "string"
               },
               "version": {
@@ -12260,7 +12260,7 @@
         ],
         "type": "object"
       },
-      "inputSchemaDigest": "sha256:ef20cdb82aefa213757dd6801175560bdbc5b9816c7298742513b8066149259e",
+      "inputSchemaDigest": "sha256:ecda38a9c7c27437fc0985a90768b218296440fdc84794b2e6e0bafe7fd81900",
       "annotations": {
         "destructiveHint": false,
         "openWorldHint": false,
@@ -12275,7 +12275,7 @@
         "policy": "host-default"
       },
       "implementationRef": "module:./tools/capability-evolution-tools.js#handleStartEvolutionProgram",
-      "protectedImplementationDigest": "sha256:21122a842b779b8b86a7e8dff5ae060890dd4c10861e8c6091a49d6924574136"
+      "protectedImplementationDigest": "sha256:8bb99f7b218be1cdf8b2e816882122cb38644c5234f16eeb41e8fe714e2c5d3f"
     },
     {
       "name": "cat_cafe_start_guide",
@@ -13106,7 +13106,7 @@
                       "ownerStateRef": {
                         "maxLength": 500,
                         "minLength": 1,
-                        "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+-]+$",
+                        "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$",
                         "type": "string"
                       },
                       "version": {
@@ -13319,7 +13319,7 @@
         ],
         "type": "object"
       },
-      "inputSchemaDigest": "sha256:d3d45f7ef35086a82608602ff710f7e0c6e7ff4eb576050e7baffaecc0229b2a",
+      "inputSchemaDigest": "sha256:483989fed3eea784f48fa6a4758e1df77c9b957f8d957181ad39565c71d42e5c",
       "annotations": {
         "destructiveHint": false,
         "openWorldHint": false,
@@ -13334,7 +13334,7 @@
         "policy": "host-default"
       },
       "implementationRef": "module:./tools/capability-evolution-tools.js#handleUpdateEvolutionProgram",
-      "protectedImplementationDigest": "sha256:21122a842b779b8b86a7e8dff5ae060890dd4c10861e8c6091a49d6924574136"
+      "protectedImplementationDigest": "sha256:8bb99f7b218be1cdf8b2e816882122cb38644c5234f16eeb41e8fe714e2c5d3f"
     },
     {
       "name": "cat_cafe_update_guide_state",

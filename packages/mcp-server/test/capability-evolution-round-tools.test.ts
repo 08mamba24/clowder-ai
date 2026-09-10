@@ -218,7 +218,7 @@ describe('F311 Phase 3 cat-facing round actions', () => {
     const ownerRefPatterns = patterns.filter((pattern) => pattern.startsWith('^[a-z][a-z0-9-]*:'));
     assert.ok(ownerRefPatterns.length > 0, `no ownerStateRef patterns found in ${patterns.join(' | ')}`);
     for (const pattern of ownerRefPatterns) {
-      assert.equal(pattern, '^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+-]+$');
+      assert.equal(pattern, '^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$');
     }
   });
 });
