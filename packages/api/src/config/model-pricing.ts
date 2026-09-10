@@ -5,10 +5,12 @@
  * report cost natively (e.g. Codex CLI has tokens but no costUsd).
  *
  * Prices are per 1 million tokens, sourced from provider pricing pages.
- * Last verified: 2026-06-11 (OpenAI developers.openai.com/api/docs/pricing)
+ * Last verified: 2026-09-10 (OpenAI / DeepSeek / Z.ai / Google Gemini pricing pages)
  *
  * NOTE: These are estimates. Claude CLI reports exact cost via total_cost_usd;
  * this table is only used when costUsd is missing from the CLI output.
+ * ACP cats (zcode / DSH) currently emit context-fill usage only — adding a
+ * price here does not invent costUsd until that path reports turn tokens.
  */
 
 export interface ModelPricing {
@@ -70,6 +72,126 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
     inputPerMillion: 10.0,
     cachedInputPerMillion: 1.0,
     outputPerMillion: 45.0,
+  },
+  // OpenAI GPT-5.6 Sol — promo standard (at least through 2026-11-21)
+  'gpt-5.6-sol': {
+    inputPerMillion: 4.0,
+    cachedInputPerMillion: 0.4,
+    outputPerMillion: 20.0,
+    source: 'https://developers.openai.com/api/docs/pricing',
+    verifiedAt: '2026-09-10',
+  },
+  'gpt-5.6-sol-long': {
+    inputPerMillion: 8.0,
+    cachedInputPerMillion: 0.8,
+    outputPerMillion: 30.0,
+    source: 'https://developers.openai.com/api/docs/pricing',
+    verifiedAt: '2026-09-10',
+  },
+  // OpenAI GPT-6 Astra — standard / long context
+  'gpt-6-astra': {
+    inputPerMillion: 10.0,
+    cachedInputPerMillion: 1.0,
+    outputPerMillion: 50.0,
+    source: 'https://developers.openai.com/api/docs/pricing',
+    verifiedAt: '2026-09-10',
+  },
+  'gpt-6-astra-long': {
+    inputPerMillion: 20.0,
+    cachedInputPerMillion: 2.0,
+    outputPerMillion: 75.0,
+    source: 'https://developers.openai.com/api/docs/pricing',
+    verifiedAt: '2026-09-10',
+  },
+
+  // ── DeepSeek ───────────────────────────────────────────────────────
+  // Official peak rates (USD / 1M). Off-peak is half. Peak hours UTC Mon–Fri
+  // 01:00–04:00 and 06:00–10:00. Table has one slot — use peak as conservative
+  // estimate. Legacy flash aliases bill at Flash rates.
+  // Source: https://api-docs.deepseek.com/quick_start/pricing (2026-09-10)
+  'deepseek-flash': {
+    inputPerMillion: 0.3,
+    cachedInputPerMillion: 0.006,
+    outputPerMillion: 1.2,
+    source: 'https://api-docs.deepseek.com/quick_start/pricing',
+    verifiedAt: '2026-09-10',
+  },
+  'deepseek-v4-flash': {
+    inputPerMillion: 0.3,
+    cachedInputPerMillion: 0.006,
+    outputPerMillion: 1.2,
+    source: 'https://api-docs.deepseek.com/quick_start/pricing',
+    verifiedAt: '2026-09-10',
+  },
+  'deepseek-v4-flash-vision-exp': {
+    inputPerMillion: 0.3,
+    cachedInputPerMillion: 0.006,
+    outputPerMillion: 1.2,
+    source: 'https://api-docs.deepseek.com/quick_start/pricing',
+    verifiedAt: '2026-09-10',
+  },
+  'deepseek/deepseek-v4-pro': {
+    inputPerMillion: 1.32,
+    cachedInputPerMillion: 0.044,
+    outputPerMillion: 3.96,
+    source: 'https://api-docs.deepseek.com/quick_start/pricing',
+    verifiedAt: '2026-09-10',
+  },
+  'deepseek-v4-pro': {
+    inputPerMillion: 1.32,
+    cachedInputPerMillion: 0.044,
+    outputPerMillion: 3.96,
+    source: 'https://api-docs.deepseek.com/quick_start/pricing',
+    verifiedAt: '2026-09-10',
+  },
+
+  // ── Z.ai / 智谱 GLM ────────────────────────────────────────────────
+  // USD list from Z.ai docs. Domestic open.bigmodel.cn is ¥8 / ¥2 / ¥28 for
+  // GLM-5.3 (same relative scale). Prefer USD list for this USD table.
+  'glm-5.3': {
+    inputPerMillion: 1.4,
+    cachedInputPerMillion: 0.26,
+    outputPerMillion: 4.4,
+    source: 'https://docs.z.ai/guides/overview/pricing',
+    verifiedAt: '2026-09-10',
+  },
+  'glm-5': {
+    inputPerMillion: 1.0,
+    cachedInputPerMillion: 0.2,
+    outputPerMillion: 3.2,
+    source: 'https://docs.z.ai/guides/overview/pricing',
+    verifiedAt: '2026-09-10',
+  },
+  'glm-5.1': {
+    inputPerMillion: 1.4,
+    cachedInputPerMillion: 0.26,
+    outputPerMillion: 4.4,
+    source: 'https://docs.z.ai/guides/overview/pricing',
+    verifiedAt: '2026-09-10',
+  },
+  'glm-5.2': {
+    inputPerMillion: 1.4,
+    cachedInputPerMillion: 0.26,
+    outputPerMillion: 4.4,
+    source: 'https://docs.z.ai/guides/overview/pricing',
+    verifiedAt: '2026-09-10',
+  },
+
+  // ── Google Gemini (paid tier) ──────────────────────────────────────
+  // Promo rates through 2026-12-31 for 3.6 Flash. Pro uses <=200k tier.
+  'gemini-3.6-flash': {
+    inputPerMillion: 0.75,
+    cachedInputPerMillion: 0.075,
+    outputPerMillion: 3.75,
+    source: 'https://ai.google.dev/gemini-api/docs/pricing',
+    verifiedAt: '2026-09-10',
+  },
+  'gemini-2.5-pro': {
+    inputPerMillion: 1.25,
+    cachedInputPerMillion: 0.125,
+    outputPerMillion: 10.0,
+    source: 'https://ai.google.dev/gemini-api/docs/pricing',
+    verifiedAt: '2026-09-10',
   },
 
   // ── Kimi (Moonshot) ────────────────────────────────────────────────
