@@ -194,14 +194,12 @@ describe('F311 Phase 3 cat-facing round actions', () => {
     ]);
   });
 
-  it('advertises DSH-safe ownerStateRef JSON Schema patterns (no nested-unescaped [)', async () => {
+  it('advertises DSH-safe ownerStateRef JSON Schema patterns (allowlist, no denylist brackets)', async () => {
     // Regression for: DeepSeek ACP aborts the turn with
     //   Invalid schema for function '...constitute_evolution_program':
     //   "^[a-z][a-z0-9-]*:[^\\s{}[\\]\"']+$" is not a "regex"
     // when MCP advertises a pattern whose character class contains a raw '['.
-    const { toJsonSchemaCompat } = await import(
-      '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js'
-    );
+    const { toJsonSchemaCompat } = await import('@modelcontextprotocol/sdk/server/zod-json-schema-compat.js');
     const json = toJsonSchemaCompat(z.object(constituteEvolutionProgramInputSchema).strict(), {
       strictUnions: true,
       pipeStrategy: 'input',
@@ -215,13 +213,12 @@ describe('F311 Phase 3 cat-facing round actions', () => {
     walk(json);
     assert.ok(patterns.length > 0, 'expected at least one JSON Schema pattern');
     for (const pattern of patterns) {
-      // DSH-rejected form embeds a raw '[' right after `{` inside the char class.
       assert.equal(pattern.includes('{}['), false, pattern);
     }
     const ownerRefPatterns = patterns.filter((pattern) => pattern.startsWith('^[a-z][a-z0-9-]*:'));
     assert.ok(ownerRefPatterns.length > 0, `no ownerStateRef patterns found in ${patterns.join(' | ')}`);
     for (const pattern of ownerRefPatterns) {
-      assert.equal(pattern.includes('\\[\\]'), true, pattern);
+      assert.equal(pattern, '^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+-]+$');
     }
   });
 });

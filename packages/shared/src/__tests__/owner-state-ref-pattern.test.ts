@@ -34,10 +34,10 @@ describe('OWNER_STATE_REF_PATTERN (DSH-portable kind:id)', () => {
     }
   });
 
-  it('serializes without a raw [ inside the id character class', () => {
+  it('advertises an allowlist id class (no denylist brackets that break DSH ACP)', () => {
     // The DSH-rejected form embeds `[^\s{}[\]...]` — a raw `[` after `{`.
     const source = OWNER_STATE_REF_PATTERN.source;
     assert.equal(source.includes('{}['), false, source);
-    assert.equal(source.includes('\\[\\]'), true, source);
+    assert.equal(source, '^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+-]+$');
   });
 });
