@@ -24,7 +24,8 @@ const bounded = (max: number) => z.string().trim().min(1).max(max);
 const ownerRef = z
   .object({
     ownerFeatureId: bounded(120),
-    ownerStateRef: bounded(500).regex(/^[a-z][a-z0-9-]*:[^\s{}[\]"']+$/),
+    // Keep in sync with OWNER_STATE_REF_PATTERN — DSH ACP rejects nested-unescaped `[` in pattern.
+    ownerStateRef: bounded(500).regex(/^[a-z][a-z0-9-]*:[^\s{}'"\[\]]+$/),
     version: bounded(240).optional(),
   })
   .strict();
