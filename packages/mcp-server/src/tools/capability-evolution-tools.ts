@@ -111,7 +111,7 @@ const ownerSurfaceBinding = z
   .object({
     sourceKind: bounded(120).regex(/^[a-z0-9][a-z0-9-]*$/),
     ownerSurfaceRef: ownerRef,
-    joinKey: bounded(500).regex(/^(?:thread|message|subject):[^\s{}[\]"']+$/),
+    joinKey: bounded(500).regex(/^(?:thread|message|subject):[a-zA-Z0-9._/:+-]+$/),
     namedConsumerRef: ownerRef,
     instrumentationRef: ownerRef,
   })
