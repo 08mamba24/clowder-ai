@@ -1225,8 +1225,16 @@
           "acp": {
             "command": "dsh",
             "startupArgs": [],
-            "mcpWhitelist": ["cat-cafe-memory", "cat-cafe-collab", "cat-cafe-signals"],
-            "pool": { "maxLiveProcesses": 1 }
+            "mcpWhitelist": [
+              "cat-cafe-memory",
+              "cat-cafe-collab",
+              "cat-cafe-signals",
+              "zai-mcp-server",
+              "zread",
+              "web-search-prime",
+              "web-reader"
+            ],
+            "pool": { "maxLiveProcesses": 2 }
           },
           "contextBudget": {
             "maxPromptTokens": 400000,
