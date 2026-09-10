@@ -1242,7 +1242,7 @@
               "web-search-prime",
               "web-reader"
             ],
-            "pool": { "maxLiveProcesses": 1 }
+            "pool": { "maxLiveProcesses": 2 }
           },
           "contextBudget": {
             "maxPromptTokens": 400000,
