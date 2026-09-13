@@ -197,18 +197,30 @@ function atomicSwap(input: {
     try {
       fs.renameSync(staging, profileDir);
     } catch (err) {
-      if (fs.existsSync(backup)) fs.renameSync(backup, profileDir);
-      return { ok: false, violations: [`swap failed: ${String(err)}`] };
+      // 回滚 backup 并**清掉含新凭证的 staging**（round-2 P1-7：不留凭证孤儿）
+      try {
+        if (fs.existsSync(backup)) fs.renameSync(backup, profileDir);
+      } catch {
+        /* best effort rollback */
+      }
+      try {
+        if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+      return { ok: false, violations: [`swap failed (rolled back, staging cleaned): ${String(err)}`] };
     }
     if (fs.existsSync(backup)) fs.rmSync(backup, { recursive: true, force: true });
     return { ok: true, violations: [], swapped: swapReason, accountFingerprint: fingerprint };
   } catch (err) {
-    try {
-      if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
-    } catch {
-      /* best effort */
+    for (const leftover of [staging, backup]) {
+      try {
+        if (fs.existsSync(leftover)) fs.rmSync(leftover, { recursive: true, force: true });
+      } catch {
+        /* best effort：任何遗留都不该含可用凭证（backup 在 swap 成功后删除，失败路径在上面） */
+      }
     }
-    return { ok: false, violations: [`swap aborted: ${String(err)}`] };
+    return { ok: false, violations: [`swap aborted (staging/backup cleaned): ${String(err)}`] };
   }
 }
 

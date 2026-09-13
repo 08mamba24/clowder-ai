@@ -48,10 +48,12 @@ const CAT = 'cat_test_qoder';
 
 // ── argv：prompt 走 stdin，安全 flag 全集 ───────────────────────────────────
 test('buildQoderArgs: stdin prompt channel, no prompt text in argv, full safety set', () => {
-  const args = buildQoderArgs({ profileDir: '/p' });
+  const args = buildQoderArgs({ profileDir: '/p', model: 'qwen-max' });
   assert.deepEqual(args, [
     '-p',
     '-',
+    '-m',
+    'qwen-max',
     '-o',
     'stream-json',
     '--config-dir',
@@ -64,7 +66,7 @@ test('buildQoderArgs: stdin prompt channel, no prompt text in argv, full safety 
     '--setting-sources',
     'user',
   ]);
-  const resume = buildQoderArgs({ profileDir: '/p', sessionId: 'sid-1' });
+  const resume = buildQoderArgs({ profileDir: '/p', model: 'qwen-max', sessionId: 'sid-1' });
   assert.ok(resume.includes('-r') && resume.includes('sid-1'));
   assert.ok(!args.join(' ').includes('bypass_permissions'));
 });
@@ -94,15 +96,31 @@ test('sanitizeQoderEnv: case-insensitive qoder strip + denied injection keys', (
 });
 
 // ── init 门：tools/mcp/model/版本 全锁 ─────────────────────────────────────
-test('qoderInitGate: version, permissionMode, tools, mcp, model all enforced', () => {
-  const good = { protocol_version: '1.4.0', permissionMode: 'default', model: 'Auto', tools: [], mcp_servers: [] };
-  assert.equal(qoderInitGate(good).ok, true);
-  assert.equal(qoderInitGate({ ...good, protocol_version: '2.0' }).ok, false);
-  assert.equal(qoderInitGate({ ...good, permissionMode: 'bypass_permissions' }).ok, false);
-  assert.equal(qoderInitGate({ ...good, tools: ['Bash', 'Write'] }).ok, false, 'full tool surface must not pass');
-  assert.equal(qoderInitGate({ ...good, mcp_servers: [{ name: 'x', status: 'connected' }] }).ok, false);
+test('qoderInitGate: version, permissionMode, tools, mcp, model all enforced (missing fields red)', () => {
+  const good = { protocol_version: '1.4.0', permissionMode: 'default', model: 'qwen-max', tools: [], mcp_servers: [] };
+  assert.equal(qoderInitGate(good, 'qwen-max').ok, true);
+  assert.equal(qoderInitGate({ ...good, protocol_version: '2.0' }, 'qwen-max').ok, false);
+  assert.equal(qoderInitGate({ ...good, permissionMode: 'bypass_permissions' }, 'qwen-max').ok, false);
+  assert.equal(
+    qoderInitGate({ ...good, tools: ['Bash', 'Write'] }, 'qwen-max').ok,
+    false,
+    'full tool surface must not pass',
+  );
+  assert.equal(qoderInitGate({ ...good, mcp_servers: [{ name: 'x', status: 'connected' }] }, 'qwen-max').ok, false);
+  // round-2 P1-1：字段缺失（undefined）不得当空数组放行
+  const noTools = { ...good };
+  delete noTools.tools;
+  assert.equal(qoderInitGate(noTools, 'qwen-max').ok, false, 'missing tools field red');
+  const noMcp = { ...good };
+  delete noMcp.mcp_servers;
+  assert.equal(qoderInitGate(noMcp, 'qwen-max').ok, false, 'missing mcp_servers field red');
   assert.equal(qoderInitGate({ ...good, model: 'Auto' }, 'qwen-max').ok, false, 'silent Auto fallback red');
-  assert.equal(qoderInitGate({ ...good, model: 'qwen-max' }, 'qwen-max').ok, true);
+});
+
+test('argv carries explicit -m model (round-2 P1-1: model is a typed input, actually sent)', () => {
+  const args = buildQoderArgs({ profileDir: '/p', model: 'qwen-max' });
+  const i = args.indexOf('-m');
+  assert.ok(i > 0 && args[i + 1] === 'qwen-max');
 });
 
 // ── profile：路径逃逸 / 深度盲区 / hooks 语义 / fail-closed ───────────────
@@ -315,6 +333,7 @@ test('invoke: workingDirectory missing → fail closed, no spawn', async () => {
   const svc = new QoderAgentService({
     catId: CAT,
     profileDir: '/p',
+    model: 'Auto',
     binary: '/usr/bin/true',
     profileFs: greenProfileFs(),
     spawnFn: () => {
@@ -333,6 +352,7 @@ test('invoke: success fixture → done with real init model + billing; argv has 
   const svc = new QoderAgentService({
     catId: CAT,
     profileDir: '/p',
+    model: 'Auto',
     binary: '/usr/bin/true',
     profileFs: greenProfileFs(),
     spawnFn: (_cmd, args) => {
@@ -352,6 +372,7 @@ test('invoke: auth-error fixture → error terminal, never done (P1-D dialect tr
   const svc = new QoderAgentService({
     catId: CAT,
     profileDir: '/p',
+    model: 'Auto',
     binary: '/usr/bin/true',
     profileFs: greenProfileFs(),
     spawnFn: () => fakeChild(fixtureLines('auth-error'), { exitCode: 1 }),
@@ -365,6 +386,7 @@ test('invoke: tool-use fixture (full tool surface) → init gate red, stream abo
   const svc = new QoderAgentService({
     catId: CAT,
     profileDir: '/p',
+    model: 'Auto',
     binary: '/usr/bin/true',
     profileFs: greenProfileFs(),
     spawnFn: () => fakeChild(fixtureLines('tool-use')),
@@ -379,6 +401,7 @@ test('invoke: assistant before init → fail closed', async () => {
   const svc = new QoderAgentService({
     catId: CAT,
     profileDir: '/p',
+    model: 'Auto',
     binary: '/usr/bin/true',
     profileFs: greenProfileFs(),
     spawnFn: () => fakeChild([assistantLine]),
@@ -391,6 +414,7 @@ test('invoke: nonzero exit without successful result → error with stderr diagn
   const svc = new QoderAgentService({
     catId: CAT,
     profileDir: '/p',
+    model: 'Auto',
     binary: '/usr/bin/true',
     profileFs: greenProfileFs(),
     spawnFn: () => fakeChild(fixtureLines('success'), { exitCode: 3, stderr: ['boom'] }),
@@ -408,10 +432,165 @@ test('invoke: default profile fs works on real dirs (default-constructor path)',
   const svc = new QoderAgentService({
     catId: CAT,
     profileDir: prof.profileDir,
+    model: 'Auto',
     binary: '/usr/bin/true',
     spawnFn: () => fakeChild(fixtureLines('success')),
   });
   const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp' });
   assert.ok(out.some((m) => m.type === 'done'));
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ══ round-2 P1 回归：全部走真实 invoke() ═══════════════════════════════════
+
+test('round2 P1-2: beforeProviderLaunch rejecting → 0 spawn, no prompt leaves', async () => {
+  let spawned = 0;
+  const svc = new QoderAgentService({
+    catId: CAT,
+    profileDir: '/p',
+    model: 'Auto',
+    binary: '/usr/bin/true',
+    profileFs: greenProfileFs(),
+    spawnFn: () => {
+      spawned++;
+      return fakeChild(fixtureLines('success'));
+    },
+  });
+  const out = await runInvoke(svc, 'must-not-send', {
+    workingDirectory: '/tmp',
+    beforeProviderLaunch: async () => {
+      throw new Error('recorder says no');
+    },
+  });
+  assert.equal(spawned, 0, 'recorder rejection must prevent spawn');
+  assert.ok(out.some((m) => m.type === 'error' && m.error.includes('recorder')));
+});
+
+test('round2 P1-3: pre-aborted signal → 0 spawn, prompt never written', async () => {
+  let spawned = 0;
+  let written = '';
+  const ac = new AbortController();
+  ac.abort();
+  const svc = new QoderAgentService({
+    catId: CAT,
+    profileDir: '/p',
+    model: 'Auto',
+    binary: '/usr/bin/true',
+    profileFs: greenProfileFs(),
+    spawnFn: () => {
+      spawned++;
+      return fakeChild([]);
+    },
+  });
+  // 直接验证：不注入 spawn 捕获 prompt（stdin fake 记录）
+  const child = new EventEmitter();
+  child.stdout = Readable.from([]);
+  child.stderr = Readable.from([]);
+  child.stdin = {
+    write: (s) => {
+      written += s;
+    },
+    end() {},
+  };
+  child.kill = () => {};
+  const svc2 = new QoderAgentService({
+    catId: CAT,
+    profileDir: '/p',
+    model: 'Auto',
+    binary: '/usr/bin/true',
+    profileFs: greenProfileFs(),
+    spawnFn: () => {
+      spawned++;
+      return child;
+    },
+  });
+  const out = await runInvoke(svc2, 'must-not-send', { workingDirectory: '/tmp', signal: ac.signal });
+  assert.equal(spawned, 0, 'pre-aborted signal must prevent spawn entirely');
+  assert.equal(written, '');
+  assert.ok(out.some((m) => m.type === 'error' && m.error.includes('aborted')));
+});
+
+test('round2 P1-4: streaming — messages yield before stream end (no full buffering)', async () => {
+  // init + assistant 通过后，流保持打开：首个 next() 必须已能拿到 session_init
+  const child = new EventEmitter();
+  const ctrl = new (await import('node:stream')).Readable({ read() {} });
+  child.stdout = ctrl;
+  child.stderr = Readable.from([]);
+  child.stdin = { write() {}, end() {} };
+  child.kill = () => {
+    child.emit('close', 0);
+  };
+  const svc = new QoderAgentService({
+    catId: CAT,
+    profileDir: '/p',
+    model: 'Auto',
+    binary: '/usr/bin/true',
+    profileFs: greenProfileFs(),
+    spawnFn: () => {
+      const init = fixtureLines('hook-green-project').find((l) => l.includes('"subtype":"init"'));
+      ctrl.push(init + '\n');
+      return child;
+    },
+  });
+  const iter = svc.invoke('hi', { workingDirectory: '/tmp' });
+  const first = await iter.next();
+  assert.ok(first.done !== true);
+  assert.equal(first.value.type, 'session_init', 'init yielded while stream still open');
+  // 终结流（result + EOF + close），迭代到 done
+  ctrl.push(fixtureLines('success').find((l) => l.includes('"type":"result"')) + '\n');
+  ctrl.push(null);
+  child.emit('close', 0);
+  let done = false;
+  for await (const m of iter) if (m.type === 'done') done = true;
+  assert.ok(done);
+});
+
+test('round2 P1-5: stderr secrets redacted before reaching user-visible error', async () => {
+  const secret = 'Authorization: Bearer sk-proj-1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const svc = new QoderAgentService({
+    catId: CAT,
+    profileDir: '/p',
+    model: 'Auto',
+    binary: '/usr/bin/true',
+    profileFs: greenProfileFs(),
+    spawnFn: () => fakeChild(fixtureLines('auth-error'), { exitCode: 1, stderr: [secret] }),
+  });
+  const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp' });
+  const err = out.find((m) => m.type === 'error');
+  assert.ok(err);
+  assert.ok(!err.error.includes('sk-proj-1234567890'), 'raw token must not leak');
+  assert.ok(err.error.includes('<redacted>') || !err.error.includes('Bearer sk-'), 'redaction applied');
+});
+
+test('round2 P1-7: swap rename failure leaves no staging orphan with credentials', async () => {
+  const fsmod = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'qoder-fault-'));
+  const authA = makeAuth(root, 'token-A');
+  const authB = makeAuth(root, 'token-B');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA });
+  assert.equal(first.audit.ok, true);
+  let renameCalls = 0;
+  const fs = {
+    existsSync: (p) => fsmod.existsSync(p),
+    readdirSync: (p, o) => fsmod.readdirSync(p, o),
+    lstatSync: (p) => fsmod.lstatSync(p),
+    readFileSync: (p) => fsmod.readFileSync(p, 'utf8'),
+    writeFileSync: (p, d) => fsmod.writeFileSync(p, d),
+    copySync: (s, d) => cpSync(s, d, { recursive: true }),
+    mkdirSync: (p, o) => fsmod.mkdirSync(p, o),
+    renameSync: (f, t) => {
+      renameCalls++;
+      // 只打中 staging→live 那一步；回滚 rename 放行（真实单点故障）
+      if (renameCalls === 2) throw new Error('EIO injected');
+      fsmod.renameSync(f, t);
+    },
+    rmSync: (p, o) => fsmod.rmSync(p, o),
+  };
+  const failed = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authB, fs });
+  assert.equal(failed.audit.ok, false, 'swap with injected EIO fails');
+  // live 仍为 A（回滚），且不残留任何含 B 凭证的 staging 目录
+  assert.equal(fsmod.readFileSync(join(first.profileDir, '.auth', 'user'), 'utf8'), 'token-A');
+  const leftovers = fsmod.readdirSync(join(root, 'qoder-profiles')).filter((n) => n.includes('staging'));
+  assert.equal(leftovers.length, 0, 'no staging orphan with new-account credentials');
   rmSync(root, { recursive: true, force: true });
 });

@@ -1,23 +1,29 @@
 /**
- * F317 Phase 1 Slice 1: 窄 QoderAgentService（非路由）
+ * F317 Phase 1 Slice 1: 窄 QoderAgentService（非路由）—— round-2 rework
  *
- * I-4 边界：typed 构造注入（catId / binary / I-11 profile + fs）；缺 workingDirectory fail closed。
- * 安全硬编码（提案 + L1 实证 + Slice 1 review 修正）：
- *   - prompt 走 stdin（`-p -`，2026-09-13 一手验证通过），argv 不携带正文（进程表泄露消除）
- *   - permission mode 不传（CLI 默认 default），init.permissionMode 断言
- *   - `--tools ""` + strict deny-all MCP；init 门精确断言 tools==[] / mcp_servers==[] /
- *     protocol_version（fail closed）/ model（Auto fallback 规则），先于任何 assistant 事件
- *   - env 大小写归一剥离 qoder 前缀 + 拒绝 Node/Dyld 注入变量（NODE_OPTIONS 等），
- *     安全控制仅由本 Service 最终写入；CONFIG_DIR 只经构造注入
- *   - result.is_error 分流（auth-error 夹具实证 subtype:"success" 陷阱）；
- *     done 仅在「成功 result + exit 0」后发出；exit code/stderr/spawn error 全部进诊断
- *   - AbortSignal：取消即 SIGTERM；spawn ENOENT 事件显式处理
+ * I-4 边界：typed 构造注入（catId / binary / model / I-11 profile + fs）；
+ * 缺 workingDirectory fail closed。Round-2 review 修正（砚砚 7xP1）：
+ *   1. model 为必填 typed input，显式 `-m` 下发并传入 init 门（Auto 静默回落红）；
+ *      tools/mcp_servers 字段必须**存在且为空数组**（缺失即红，不 `?? []` 放行）
+ *   2. spawn 前构造 PreparedProviderRequestV1 并 await beforeProviderLaunch ——
+ *      recorder 拒绝/失败时 0 spawn、正文绝不出境
+ *   3. abort 检查先于 spawn；取消用 bounded termination（SIGTERM → 等待 → SIGKILL）
+ *   4. 真·流式输出：init 过门后逐条 yield；诊断仅保留有界 ring buffer
+ *   5. stderr 先过共享 sanitizeCliStderr + 凭证形态 redact，再截断
+ *   6. env denylist 大小写归一（node_options / Node_Options 全拒）
+ *   7. （qoder-runtime-profile.ts）swap 失败路径 finally 清理 staging/backup，无凭证孤儿
  */
 
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { CatId } from '@cat-cafe/shared';
-import type { AgentMessage, AgentService, AgentServiceOptions, TokenUsage } from '../../types.js';
+import type {
+  AgentMessage,
+  AgentService,
+  AgentServiceOptions,
+  PreparedProviderRequestV1,
+  TokenUsage,
+} from '../../types.js';
 import {
   checkQoderProtocolVersion,
   extractQoderUsage,
@@ -27,13 +33,12 @@ import {
 } from './qoder-ndjson-parser.js';
 import { auditQoderProfile, defaultQoderProfileFs, type QoderProfileFs } from './qoder-runtime-profile.js';
 
-/** qoder pilot 允许的唯一 permission mode（bypass_permissions/auto 硬编码禁用） */
 const REQUIRED_PERMISSION_MODE = 'default';
-/** Slice 1 read-only pilot 的预期工具/MCP 面：全空（I-10 预授权在后续 slice 解锁） */
-const EXPECTED_EMPTY_TOOLS: string[] = [];
-const EXPECTED_EMPTY_MCP: string[] = [];
+/** abort 后 SIGTERM 的升级等待（ms），超时 SIGKILL —— 不留后台计费 */
+const TERMINATION_GRACE_MS = 5000;
+/** stderr 诊断 ring 上限（字符） */
+const STDERR_RING_LIMIT = 8192;
 
-/** Node/动态链接器注入变量：任意 preload 会在所有安全门之前执行，一律拒绝 */
 const DENIED_ENV_KEYS = new Set([
   'NODE_OPTIONS',
   'NODE_PRELOAD',
@@ -49,6 +54,8 @@ export interface QoderAgentServiceConfig {
   catId: CatId;
   /** I-11 runtime profile 目录（由 resolver 经 ensureQoderRuntimeProfile 提供并审计） */
   profileDir: string;
+  /** 必填：显式选定并下发 `-m` 的 model（P1-D：Auto 静默回落判失败） */
+  model: string;
   /** 可选覆盖 binary（默认 resolveCliCommand('qodercn')；测试注入用） */
   binary?: string;
   /** 注入 spawn（测试） */
@@ -57,33 +64,30 @@ export interface QoderAgentServiceConfig {
   profileFs?: QoderProfileFs;
 }
 
-/** 构造 qodercn argv（无 prompt 正文——stdin 通道）。导出供单测锁定安全 flag 全集。 */
-export function buildQoderArgs(input: { profileDir: string; sessionId?: string }): string[] {
-  const args = ['-p', '-', '-o', 'stream-json', '--config-dir', input.profileDir];
+/** 构造 qodercn argv（stdin prompt 通道 + 显式 model + 安全 flag 全集） */
+export function buildQoderArgs(input: { profileDir: string; model: string; sessionId?: string }): string[] {
+  const args = ['-p', '-', '-m', input.model, '-o', 'stream-json', '--config-dir', input.profileDir];
   if (input.sessionId) args.push('-r', input.sessionId);
   args.push('--strict-mcp-config', '--allowed-mcp-server-names', 'nothing', '--tools', '', '--setting-sources', 'user');
   return args;
 }
 
-/** 大小写归一剥离 qoder 控制前缀 + 拒绝 Node/Dyld 注入变量（CONFIG_DIR 只能来自构造注入） */
+/** 大小写归一：qoder 前缀 + denylist（node_options / Node_Options / LD_PRELOAD 全拒） */
 export function sanitizeQoderEnv(env: Record<string, string | undefined>): NodeJS.ProcessEnv {
   const clean: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined) continue;
-    if (DENIED_ENV_KEYS.has(k)) continue;
-    if (k.toLowerCase().startsWith('qoder')) continue; // qodercn / qoder / Qodercn_* 全形态
+    if (DENIED_ENV_KEYS.has(k.toUpperCase())) continue;
+    if (k.toLowerCase().startsWith('qoder')) continue;
     clean[k] = v;
   }
   return clean;
 }
 
-/**
- * init 事件门（任何 assistant 事件之前执行，fail closed）：
- * protocol_version / permissionMode / model（Auto fallback 规则）/ 空 tools / 空 MCP。
- */
+/** init 门（任何 assistant 事件之前，fail closed）。tools/mcp 必须存在且精确为空数组。 */
 export function qoderInitGate(
   initEvent: unknown,
-  requestedModel?: string,
+  requestedModel: string,
 ): { ok: true; cliDrift?: string; model?: string } | { ok: false; reason: string } {
   const version = checkQoderProtocolVersion(initEvent);
   if (!version.ok) return version;
@@ -92,23 +96,49 @@ export function qoderInitGate(
   if (e.permissionMode !== REQUIRED_PERMISSION_MODE) {
     return { ok: false, reason: `permissionMode ${String(e.permissionMode)} != ${REQUIRED_PERMISSION_MODE}` };
   }
-  const tools = e.tools;
-  if (JSON.stringify(tools ?? []) !== JSON.stringify(EXPECTED_EMPTY_TOOLS)) {
-    return { ok: false, reason: `tools not empty: ${JSON.stringify(tools)}` };
-  }
-  const mcp = e.mcp_servers;
-  if (JSON.stringify(mcp ?? []) !== JSON.stringify(EXPECTED_EMPTY_MCP)) {
-    return { ok: false, reason: `mcp_servers not empty: ${JSON.stringify(mcp)}` };
-  }
+  if (!Array.isArray(e.tools)) return { ok: false, reason: 'init.tools missing (not an array)' };
+  if (e.tools.length !== 0) return { ok: false, reason: `tools not empty: ${JSON.stringify(e.tools)}` };
+  if (!Array.isArray(e.mcp_servers)) return { ok: false, reason: 'init.mcp_servers missing (not an array)' };
+  if (e.mcp_servers.length !== 0)
+    return { ok: false, reason: `mcp_servers not empty: ${JSON.stringify(e.mcp_servers)}` };
+  // 大小写不敏感（L1 实测：请求 Auto，CLI init 回报 auto —— 同一标识符的两种拼写，非静默回落）
   const actualModel = e.model;
-  if (requestedModel && actualModel !== requestedModel) {
-    return { ok: false, reason: `model ${String(actualModel)} != requested ${requestedModel}` };
+  if (typeof actualModel !== 'string' || actualModel.toLowerCase() !== requestedModel.toLowerCase()) {
+    return { ok: false, reason: `model ${String(actualModel)} != requested ${requestedModel} (silent fallback)` };
   }
   return {
     ok: true,
     cliDrift: 'cliDrift' in version ? version.cliDrift : undefined,
     model: typeof actualModel === 'string' ? actualModel : undefined,
   };
+}
+
+/** stderr 诊断：共享 sanitizer + 凭证形态 redact + 有界 ring */
+async function sanitizeStderrLine(line: string): Promise<string> {
+  let out = line;
+  try {
+    const mod = await import('../../../../../utils/sanitize-cli-stderr.js');
+    out = mod.sanitizeCliStderr(out, {});
+  } catch {
+    /* sanitizer 不可用时继续走自有 redact */
+  }
+  return out.replace(/(Bearer\s+)[A-Za-z0-9._-]{8,}/g, '$1<redacted>').replace(/sk-[A-Za-z0-9]{8,}/g, 'sk-<redacted>');
+}
+
+class StderrRing {
+  private parts: string[] = [];
+  private size = 0;
+  push(s: string): void {
+    this.parts.push(s);
+    this.size += s.length;
+    while (this.size > STDERR_RING_LIMIT && this.parts.length > 1) {
+      this.size -= this.parts[0].length;
+      this.parts.shift();
+    }
+  }
+  tail(): string {
+    return this.parts.join('').trim().slice(-500);
+  }
 }
 
 export class QoderAgentService implements AgentService {
@@ -131,6 +161,37 @@ export class QoderAgentService implements AgentService {
       return;
     }
 
+    // F299：正文/runtime/tool surface 形成后、spawn 前过 recorder —— 拒绝即 0 spawn
+    if (options?.beforeProviderLaunch) {
+      const prepared: PreparedProviderRequestV1 = {
+        v: 1,
+        message: { accuracy: 'exact', body: prompt },
+        nativeInstructions: [],
+        runtime: {
+          provider: 'qoder',
+          carrier: 'qodercn-cli',
+          model: this.config.model,
+          protocol: 'stream-json/1.4.0',
+          toolExecutionPolicy: 'read_only',
+        },
+        tools: { finalSurface: 'declared_only', declaredServerNames: [] },
+        providerNativeVisibility: 'unknown',
+      };
+      try {
+        await options.beforeProviderLaunch(prepared);
+      } catch (err) {
+        yield this.error(`qoder invoke rejected by provider-request recorder: ${String(err)}`);
+        return;
+      }
+    }
+
+    // abort 检查先于 spawn：已取消的请求绝不出境
+    const signal = options?.signal;
+    if (signal?.aborted) {
+      yield this.error('qoder invoke aborted before spawn');
+      return;
+    }
+
     let binary = this.config.binary;
     if (!binary) {
       const { resolveCliCommand } = await import('../../../../../utils/cli-resolve.js');
@@ -141,13 +202,17 @@ export class QoderAgentService implements AgentService {
       }
       binary = resolved;
     }
-    const args = buildQoderArgs({ profileDir: this.config.profileDir, sessionId: options?.sessionId });
+    const args = buildQoderArgs({
+      profileDir: this.config.profileDir,
+      model: this.config.model,
+      sessionId: options?.sessionId,
+    });
     const env = sanitizeQoderEnv({ ...process.env, ...(options?.callbackEnv ?? {}), ...(options?.accountEnv ?? {}) });
 
     let child: ChildProcessWithoutNullStreams;
     try {
       child = (this.config.spawnFn ?? spawn)(binary, args, {
-        cwd: workingDirectory, // resume 语义依赖同 cwd（I-11 第 6 条）
+        cwd: workingDirectory,
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -159,31 +224,29 @@ export class QoderAgentService implements AgentService {
     child.stdin.write(prompt);
     child.stdin.end();
 
-    // 取消：signal 即终止子进程（不留后台计费）
-    const signal = options?.signal;
-    const onAbort = () => child.kill('SIGTERM');
-    if (signal) {
-      if (signal.aborted) {
-        child.kill('SIGTERM');
-        yield this.error('qoder invoke aborted before stream start');
-        return;
-      }
-      signal.addEventListener('abort', onAbort, { once: true });
-    }
+    const onAbort = () => terminateBounded(child);
+    signal?.addEventListener('abort', onAbort, { once: true });
+
     try {
       yield* this.consumeStream(child);
     } finally {
-      if (signal) signal.removeEventListener('abort', onAbort);
-      if (!child.killed) child.kill('SIGTERM');
+      signal?.removeEventListener('abort', onAbort);
+      if (!child.killed) terminateBounded(child);
     }
   }
 
+  /** 真·流式：init 过门后逐条 yield；终态在流后收敛判定 */
   private async *consumeStream(child: ChildProcessWithoutNullStreams): AsyncIterable<AgentMessage> {
-    const { catId } = this.config;
+    const { catId, model } = this.config;
     const rl = createInterface({ input: child.stdout });
-    const stderrChunks: string[] = [];
-    child.stderr.on('data', (d: Buffer) => stderrChunks.push(d.toString()));
-    const collected: AgentMessage[] = [];
+    const stderrRing = new StderrRing();
+    const stderrSanitized: string[] = [];
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (d: string) => {
+      stderrSanitized.push(d);
+      void sanitizeStderrLine(d).then((s) => stderrRing.push(s));
+    });
+
     let initSeen = false;
     let usage: TokenUsage | undefined;
     let billing: QoderBillingMetadata | undefined;
@@ -199,8 +262,6 @@ export class QoderAgentService implements AgentService {
       exitCode = code;
     });
 
-    // 先排空事件流（收集到 collected），流自然结束后统一判定终态——
-    // cancel/排序违规时 SIGTERM 会让 readline 提前结束，exitCode 随后到位。
     try {
       for await (const line of rl) {
         if (!line.trim()) continue;
@@ -213,29 +274,29 @@ export class QoderAgentService implements AgentService {
         const e = event as Record<string, unknown>;
 
         if (e.type === 'system' && e.subtype === 'init') {
-          const gate = qoderInitGate(event);
+          const gate = qoderInitGate(event, model);
           if (!gate.ok) {
             resultError = `qoder init gate failed (fail closed): ${gate.reason}`;
-            child.kill('SIGTERM');
+            terminateBounded(child);
             break;
           }
           initSeen = true;
           actualModel = gate.model;
           const initOut = transformQoderEvent(event, catId);
-          if (initOut) collected.push(...(Array.isArray(initOut) ? initOut : [initOut]));
+          if (initOut) yield* flat(initOut);
           if (gate.cliDrift) {
-            collected.push({
+            yield {
               type: 'system_info',
               catId,
               content: JSON.stringify({ type: 'qoder_cli_drift', catId, warning: gate.cliDrift }),
               timestamp: Date.now(),
-            });
+            };
           }
           continue;
         }
         if (!initSeen && (e.type === 'assistant' || e.type === 'user')) {
           resultError = 'qoder stream violated ordering: assistant/user event before passing init gate';
-          child.kill('SIGTERM');
+          terminateBounded(child);
           break;
         }
         if (e.type === 'result') {
@@ -250,42 +311,38 @@ export class QoderAgentService implements AgentService {
           continue;
         }
         const out = transformQoderEvent(event, catId);
-        if (out) collected.push(...(Array.isArray(out) ? out : [out]));
+        if (out) yield* flat(out);
       }
     } catch (err) {
       resultError = resultError ?? `stream read failed: ${String(err)}`;
     }
     rl.close();
 
-    // 等 exit code / spawn error 到位（SIGTERM 后 close 很快）
-    for (let i = 0; i < 100 && exitCode === undefined && !spawnError; i++) {
+    for (let i = 0; i < 250 && exitCode === undefined && !spawnError; i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
-
-    for (const m of collected) yield m;
 
     if (spawnError) {
       yield this.error(`qoder process error: ${String(spawnError)}`);
       return;
     }
     if (resultError) {
-      yield this.error(diagnostic(resultError, stderrChunks));
+      yield this.error(withDiag(resultError, stderrRing));
       return;
     }
     if (!initSeen) {
-      yield this.error(diagnostic('qoder stream ended without init event (fail closed)', stderrChunks));
+      yield this.error(withDiag('qoder stream ended without init event (fail closed)', stderrRing));
       return;
     }
     if (!successResultSeen) {
-      yield this.error(diagnostic('qoder stream ended without a successful result event', stderrChunks));
+      yield this.error(withDiag('qoder stream ended without a successful result event', stderrRing));
       return;
     }
     if (exitCode !== 0) {
-      yield this.error(diagnostic(`qoder exited with code ${String(exitCode)}`, stderrChunks));
+      yield this.error(withDiag(`qoder exited with code ${String(exitCode)}`, stderrRing));
       return;
     }
 
-    // P1-B：TokenUsage 保持诚实；真账（credits）走独立 billing metadata
     const done: AgentMessage = { type: 'done', catId, timestamp: Date.now() };
     done.metadata = {
       provider: 'qoder',
@@ -296,13 +353,34 @@ export class QoderAgentService implements AgentService {
     yield done;
   }
 
-  /** 供内部展开（数组/单值统一 yield）—— 通过闭包收集 */
   private error(message: string): AgentMessage {
     return { type: 'error', catId: this.config.catId, error: message, timestamp: Date.now() };
   }
 }
 
-function diagnostic(message: string, stderrChunks: string[]): string {
-  const tail = stderrChunks.join('').trim().slice(-500);
+async function* flat(out: AgentMessage | AgentMessage[]): AsyncGenerator<AgentMessage> {
+  if (Array.isArray(out)) {
+    for (const m of out) yield m;
+  } else {
+    yield out;
+  }
+}
+
+function withDiag(message: string, ring: StderrRing): string {
+  const tail = ring.tail();
   return tail ? `${message} | stderr tail: ${tail}` : message;
+}
+
+/** bounded termination：SIGTERM → 等待 close → 超时 SIGKILL */
+function terminateBounded(child: ChildProcessWithoutNullStreams): void {
+  if (child.killed) return;
+  child.kill('SIGTERM');
+  const killer = setTimeout(() => {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }, TERMINATION_GRACE_MS);
+  child.once('close', () => clearTimeout(killer));
 }
