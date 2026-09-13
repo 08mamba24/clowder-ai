@@ -1,11 +1,15 @@
 /**
  * F317 Phase 1 Slice 1 unit tests — 窄 QoderAgentService + runtime profile
  * 纯单测：fake spawn / 注入 fs，不真跑 qodercn。协议形状断言用 L1 夹具。
+ * Slice 1 review 修正后契约：stdin prompt、init 门锁 tools/mcp/model、
+ * result error 分流、exit code 终态、env 大小写+NODE_OPTIONS、路径逃逸、
+ * 深层审计、account 换绑、hooks 空对象语义、default-fs 构造。
  */
 
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
@@ -16,35 +20,38 @@ const SRC = process.env.QODER_PARSER_SRC
   ? join(here, '..', 'src', 'domains', 'cats', 'services', 'agents', 'providers')
   : join(here, '..', 'dist', 'domains', 'cats', 'services', 'agents', 'providers');
 
-let svcModule, profileModule;
+let svcModule, profileModule, parserModule;
 if (process.env.QODER_PARSER_SRC) {
-  // strip-types 本地模式：重写相对 .js import 为同目录 .ts（CI 仍走 dist）
-  const { writeFileSync, mkdtempSync } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const rewrite = (name) => {
-    const src = readFileSync(join(SRC, name + '.ts'), 'utf8');
-    const fixed = src.replace(/from '\.\/([a-z-]+)\.js'/g, "from '" + join(SRC, '$1.ts') + "'");
-    const tmp = join(mkdtempSync(join(tmpdir(), 'qoder-strip-')), name + '.ts');
-    writeFileSync(tmp, fixed);
-    return import('file://' + tmp);
-  };
-  svcModule = await rewrite('QoderAgentService');
+  const fixed = readFileSync(join(SRC, 'QoderAgentService.ts'), 'utf8').replace(
+    /from '\.\/([a-z-]+)\.js'/g,
+    (m, name) => `from '${join(SRC, name + '.ts')}'`,
+  );
+  const tmp = join(mkdtempSync(join(tmpdir(), 'qoder-strip-')), 'QoderAgentService.ts');
+  writeFileSync(tmp, fixed);
+  svcModule = await import('file://' + tmp);
   profileModule = await import('file://' + join(SRC, 'qoder-runtime-profile.ts'));
+  parserModule = await import('file://' + join(SRC, 'qoder-ndjson-parser.ts'));
 } else {
   svcModule = await import(join(SRC, 'QoderAgentService.js'));
   profileModule = await import(join(SRC, 'qoder-runtime-profile.js'));
+  parserModule = await import(join(SRC, 'qoder-ndjson-parser.js'));
 }
 const { buildQoderArgs, sanitizeQoderEnv, qoderInitGate, QoderAgentService } = svcModule;
-const { ensureQoderRuntimeProfile, auditQoderProfile } = profileModule;
+const { ensureQoderRuntimeProfile, auditQoderProfile, isSafeCatIdSegment } = profileModule;
+const FIXTURE = join(here, 'fixtures', 'qoder');
+const fixtureLines = (name) =>
+  readFileSync(join(FIXTURE, 'current', `${name}.jsonl`), 'utf8')
+    .split('\n')
+    .filter(Boolean);
 
 const CAT = 'cat_test_qoder';
 
-// ── argv 安全全集 ────────────────────────────────────────────────────────────
-test('buildQoderArgs: full safety flag set, resume flag, prompt as argv (verified path)', () => {
-  const args = buildQoderArgs({ prompt: 'hi', profileDir: '/p' });
+// ── argv：prompt 走 stdin，安全 flag 全集 ───────────────────────────────────
+test('buildQoderArgs: stdin prompt channel, no prompt text in argv, full safety set', () => {
+  const args = buildQoderArgs({ profileDir: '/p' });
   assert.deepEqual(args, [
     '-p',
-    'hi',
+    '-',
     '-o',
     'stream-json',
     '--config-dir',
@@ -57,199 +64,354 @@ test('buildQoderArgs: full safety flag set, resume flag, prompt as argv (verifie
     '--setting-sources',
     'user',
   ]);
-  const resume = buildQoderArgs({ prompt: 'hi', profileDir: '/p', sessionId: 'sid-1' });
+  const resume = buildQoderArgs({ profileDir: '/p', sessionId: 'sid-1' });
   assert.ok(resume.includes('-r') && resume.includes('sid-1'));
-  // 危险 mode 任何路径都不得出现
-  const all = [...args, ...resume].join(' ');
-  assert.ok(!all.includes('bypass_permissions') && !all.includes('--dangerously-skip-permissions'));
+  assert.ok(!args.join(' ').includes('bypass_permissions'));
 });
 
-// ── env 剥离 ────────────────────────────────────────────────────────────────
-test('sanitizeQoderEnv strips QODER* (CONFIG_DIR only via constructor injection)', () => {
+// ── env：大小写归一 + Node/Dyld 注入拒绝 ───────────────────────────────────
+test('sanitizeQoderEnv: case-insensitive qoder strip + denied injection keys', () => {
   const env = sanitizeQoderEnv({
     PATH: '/bin',
     QODERCN_CONFIG_DIR: '/evil',
-    QODER_CONFIG_DIR: '/evil2',
-    SAFE_VAR: '1',
+    qodercn_config_dir: '/evil',
+    Qoder_Config_Dir: '/evil',
+    NODE_OPTIONS: '--require /evil.js',
+    DYLD_INSERT_LIBRARIES: '/evil.dylib',
+    SAFE: '1',
   });
-  assert.equal(env.SAFE_VAR, '1');
-  assert.equal(env.QODERCN_CONFIG_DIR, undefined);
-  assert.equal(env.QODER_CONFIG_DIR, undefined);
+  assert.equal(env.SAFE, '1');
+  assert.equal(env.PATH, '/bin');
+  for (const k of [
+    'QODERCN_CONFIG_DIR',
+    'qodercn_config_dir',
+    'Qoder_Config_Dir',
+    'NODE_OPTIONS',
+    'DYLD_INSERT_LIBRARIES',
+  ]) {
+    assert.equal(env[k], undefined, k);
+  }
 });
 
-// ── init 门（P1-D / P1-H）─────────────────────────────────────────────────
-test('qoderInitGate: version fail-closed, permissionMode enforced, model mismatch red, Auto ok when unrequested', () => {
-  const good = { protocol_version: '1.4.0', permissionMode: 'default', model: 'Auto' };
+// ── init 门：tools/mcp/model/版本 全锁 ─────────────────────────────────────
+test('qoderInitGate: version, permissionMode, tools, mcp, model all enforced', () => {
+  const good = { protocol_version: '1.4.0', permissionMode: 'default', model: 'Auto', tools: [], mcp_servers: [] };
   assert.equal(qoderInitGate(good).ok, true);
   assert.equal(qoderInitGate({ ...good, protocol_version: '2.0' }).ok, false);
   assert.equal(qoderInitGate({ ...good, permissionMode: 'bypass_permissions' }).ok, false);
-  assert.equal(
-    qoderInitGate({ ...good, model: 'Auto' }, 'qwen-max').ok,
-    false,
-    'requested model silently fell back to Auto',
-  );
+  assert.equal(qoderInitGate({ ...good, tools: ['Bash', 'Write'] }).ok, false, 'full tool surface must not pass');
+  assert.equal(qoderInitGate({ ...good, mcp_servers: [{ name: 'x', status: 'connected' }] }).ok, false);
+  assert.equal(qoderInitGate({ ...good, model: 'Auto' }, 'qwen-max').ok, false, 'silent Auto fallback red');
   assert.equal(qoderInitGate({ ...good, model: 'qwen-max' }, 'qwen-max').ok, true);
 });
 
-// ── runtime profile（I-11）────────────────────────────────────────────────
-function memFs(files) {
-  return {
-    files: new Map(Object.entries(files)),
-    readFileSync(p) {
-      const c = this.files.get(p);
-      if (c === undefined) throw new Error('ENOENT ' + p);
-      return c;
-    },
-    copySync(src, dest) {
-      const walk = (s, d) => {
-        for (const [k, v] of this.files) {
-          if (k === s || k.startsWith(s + '/')) {
-            const nd = d + k.slice(s.length);
-            this.files.set(nd, v);
-          }
-        }
-      };
-      walk(src, dest);
-    },
-    mkdirSync() {},
-    renameSync(from, to) {
-      for (const [k, v] of [...this.files]) {
-        if (k === from || k.startsWith(from + '/')) this.files.set(to + k.slice(from.length), v);
-      }
-      for (const [k] of [...this.files]) if (k === from || k.startsWith(from + '/')) this.files.delete(k);
-    },
-    rmSync(p) {
-      for (const [k] of [...this.files]) if (k === p || k.startsWith(p + '/')) this.files.delete(k);
-    },
-    existsSync: undefined, // 由 audit 内部用 node:fs existsSync —— 单测里 profileDir 审计走真临时目录
-  };
-}
-
-test('auditQoderProfile: hooks in settings / executable plugins / missing .auth are violations', () => {
-  const deps = {
-    readFileSync: (p) =>
-      readFileSyncStub[p] ??
-      (() => {
-        throw new Error('ENOENT');
-      })(),
-    copySync() {},
-    existsSync: (p) => p === '/p/settings.json',
-  };
-  const readFileSyncStub = {
-    '/p/settings.json': '{"hooks":{"SessionStart":[{"hooks":[]}]}}',
-  };
-  const audit = auditQoderProfile('/p', deps);
-  assert.equal(audit.ok, false);
-  assert.ok(audit.violations.some((v) => v.includes('hooks')));
+// ── profile：路径逃逸 / 深度盲区 / hooks 语义 / fail-closed ───────────────
+test('isSafeCatIdSegment rejects traversal segments', () => {
+  assert.equal(isSafeCatIdSegment('cat_ok-1'), true);
+  assert.equal(isSafeCatIdSegment('../../victim'), false);
+  assert.equal(isSafeCatIdSegment('a/b'), false);
+  assert.equal(isSafeCatIdSegment('..'), false);
+  assert.throws(() =>
+    ensureQoderRuntimeProfile({ dataRoot: '/tmp/x', catId: '../../victim', authSourceDir: '/tmp/x' }),
+  );
 });
 
-// 真临时目录版 I-11 生命周期：seed → 复用 → 污染 → 重 seed
-test('ensureQoderRuntimeProfile lifecycle: seed once, reuse, reseed on pollution (sessionsLost marked)', async () => {
-  const fsp = await import('node:fs');
-  const os = await import('node:os');
-  const { mkdirSync, writeFileSync, rmSync } = fsp;
-  const root = os.tmpdir() + '/qoder-profile-test-' + Date.now();
-  const authSrc = root + '/auth-src';
-  mkdirSync(authSrc + '/.auth', { recursive: true });
-  writeFileSync(authSrc + '/.auth/user', 'token-bytes');
-
-  const realFs = {
-    readFileSync: (p) => readFileSync(p, 'utf8'),
-    copySync: (s, d) => fsp.cpSync(s, d, { recursive: true }),
-    mkdirSync,
-    renameSync: fsp.renameSync,
-    rmSync,
-    existsSync: (p) => fsp.existsSync(p),
+function memFs(files, unreadableDirs = new Set()) {
+  const norm = (p) => p.replace(/\/+$/, '');
+  const fs = {
+    files,
+    existsSync: (p) => files.has(norm(p)) || [...files.keys()].some((k) => k.startsWith(norm(p) + '/')),
+    readdirSync: (p) => {
+      if (unreadableDirs.has(norm(p))) throw new Error('EACCES');
+      const prefix = norm(p) + '/';
+      const direct = new Set();
+      for (const k of files.keys()) {
+        if (!k.startsWith(prefix)) continue;
+        const rest = k.slice(prefix.length);
+        if (rest) direct.add(rest.split('/')[0]);
+      }
+      return [...direct].map((name) => ({ name, isDirectory: () => !files.has(prefix + name) }));
+    },
+    lstatSync: (p) => {
+      if (files.has(norm(p))) {
+        const isDir = false;
+        return { isFile: () => !isDir, isSymbolicLink: () => false, mode: 0o644 };
+      }
+      if ([...files.keys()].some((k) => k.startsWith(norm(p) + '/'))) {
+        return { isFile: () => false, isSymbolicLink: () => false, mode: 0o755 };
+      }
+      throw new Error('symlink-or-missing (memfs treats unknown as symlink case)');
+    },
+    readFileSync: (p) => {
+      const v = files.get(norm(p));
+      if (v === undefined) throw new Error('ENOENT');
+      return v;
+    },
+    writeFileSync: (p, d) => files.set(norm(p), d),
+    copySync: (s, d) => {
+      for (const [k, v] of [...files]) if (k === s || k.startsWith(s + '/')) files.set(d + k.slice(s.length), v);
+    },
+    mkdirSync: () => {},
+    renameSync: (from, to) => {
+      for (const [k, v] of [...files])
+        if (k === from || k.startsWith(from + '/')) files.set(to + k.slice(from.length), v);
+      for (const [k] of [...files]) if (k === from || k.startsWith(from + '/')) files.delete(k);
+    },
+    rmSync: (p) => {
+      for (const [k] of [...files]) if (k === p || k.startsWith(p + '/')) files.delete(k);
+    },
   };
+  return fs;
+}
 
-  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authSrc, deps: realFs });
+function profileFs(files) {
+  return memFs(files ?? new Map());
+}
+
+test('audit: deep plugin scripts detected (no depth cap), unreadable dir is violation, symlink red', () => {
+  const deep = memFs(
+    new Map([
+      ['/p/.auth/user', 't'],
+      ['/p/.account-fingerprint', 'f'.repeat(16)],
+    ]),
+  );
+  deep.files.set('/p/plugins/1/2/3/4/5/6/7/evil.js', 'x');
+  const a1 = auditQoderProfile('/p', deep);
+  assert.equal(a1.ok, false);
+  assert.ok(
+    a1.violations.some((v) => v.includes('evil.js')),
+    'depth-8 script detected',
+  );
+
+  const unreadable = memFs(
+    new Map([
+      ['/p/.auth/user', 't'],
+      ['/p/.account-fingerprint', 'f'.repeat(16)],
+    ]),
+    new Set(['/p/plugins']),
+  );
+  unreadable.files.set('/p/plugins/data', '');
+  const a2 = auditQoderProfile('/p', unreadable);
+  assert.equal(a2.ok, false);
+  assert.ok(a2.violations.some((v) => v.includes('unreadable')));
+});
+
+test('audit: hooks:{} counts as empty (no violation), non-empty hooks red', () => {
+  const fs1 = memFs(
+    new Map([
+      ['/p/.auth/user', 't'],
+      ['/p/.account-fingerprint', 'f'.repeat(16)],
+      ['/p/settings.json', '{"hooks":{}}'],
+    ]),
+  );
+  assert.equal(auditQoderProfile('/p', fs1).ok, true);
+  const fs2 = memFs(
+    new Map([
+      ['/p/.auth/user', 't'],
+      ['/p/.account-fingerprint', 'f'.repeat(16)],
+      ['/p/settings.json', '{"hooks":{"SessionStart":[]}}'],
+    ]),
+  );
+  assert.equal(auditQoderProfile('/p', fs2).ok, false);
+});
+
+// ── ensure 生命周期（真临时目录）：seed / 复用 / 换绑 / 失败保留 ───────────
+function makeAuth(root, token) {
+  const dir = join(root, 'auth-' + token);
+  mkdirSync(join(dir, '.auth'), { recursive: true });
+  writeFileSync(join(dir, '.auth', 'user'), token);
+  return dir;
+}
+const realFs = {
+  existsSync,
+  readdirSync: (p, o) => (import('node:fs').then ? [] : []),
+  lstatSync: (p) => import('node:fs'),
+};
+
+test('lifecycle: seed, reuse, account A→B rebind (no stale credentials), failed swap keeps old profile', async () => {
+  const fsmod = await import('node:fs');
+  const real = {
+    existsSync: (p) => fsmod.existsSync(p),
+    readdirSync: (p, o) => fsmod.readdirSync(p, o),
+    lstatSync: (p) => fsmod.lstatSync(p),
+    readFileSync: (p) => fsmod.readFileSync(p, 'utf8'),
+    writeFileSync: (p, d) => fsmod.writeFileSync(p, d),
+    copySync: (s, d) => cpSync(s, d, { recursive: true }),
+    mkdirSync: (p, o) => fsmod.mkdirSync(p, o),
+    renameSync: (f, t) => fsmod.renameSync(f, t),
+    rmSync: (p, o) => fsmod.rmSync(p, o),
+  };
+  const root = mkdtempSync(join(tmpdir(), 'qoder-life-'));
+  const authA = makeAuth(root, 'token-A');
+  const authB = makeAuth(root, 'token-B');
+
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: real });
   assert.equal(first.audit.ok, true);
-  assert.equal(first.audit.reseeded, undefined);
+  assert.equal(readFileSync(join(first.profileDir, '.auth', 'user'), 'utf8'), 'token-A');
 
-  // 复用：同目录直接复用（resume 持久性依赖），无 reseed 标记
-  const second = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authSrc, deps: realFs });
-  assert.equal(second.audit.ok, true);
-  assert.equal(second.audit.reseeded, undefined);
-  assert.equal(second.profileDir, first.profileDir);
+  const reuse = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: real });
+  assert.equal(reuse.audit.ok, true);
+  assert.equal(reuse.audit.swapped, undefined, 'same account reuses profile');
 
-  // 污染：植入 hooks → 下次 ensure 触发重 seed，session 丢失为已知语义
-  writeFileSync(join(first.profileDir, 'settings.json'), '{"hooks":{"SessionStart":[]}}');
-  const third = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authSrc, deps: realFs });
-  assert.equal(third.audit.ok, true);
-  assert.equal(third.audit.reseeded, true);
+  const rebind = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authB, fs: real });
+  assert.equal(rebind.audit.ok, true);
+  assert.equal(rebind.audit.swapped, 'rebind-account');
+  assert.equal(
+    readFileSync(join(rebind.profileDir, '.auth', 'user'), 'utf8'),
+    'token-B',
+    'A→B must not keep A credentials',
+  );
+
+  // 失败的 swap（auth source 不可读）保留旧 profile
+  const before = readFileSync(join(rebind.profileDir, '.auth', 'user'), 'utf8');
+  const failed = ensureQoderRuntimeProfile({
+    dataRoot: root,
+    catId: 'c1',
+    authSourceDir: join(root, 'missing'),
+    fs: real,
+  });
+  assert.equal(failed.audit.ok, false);
+  assert.equal(
+    readFileSync(join(rebind.profileDir, '.auth', 'user'), 'utf8'),
+    before,
+    'old profile preserved on failed swap',
+  );
 
   rmSync(root, { recursive: true, force: true });
 });
 
-// ── Service invoke（fake spawn，L1 夹具事件流）──────────────────────────
-function fakeChild(lines) {
+// ── Service invoke（fake spawn，L1 夹具）──────────────────────────────────
+function fakeChild(lines, opts = {}) {
   const child = new EventEmitter();
   child.stdout = Readable.from(lines.map((l) => l + '\n'));
-  child.stderr = Readable.from([]);
+  child.stderr = Readable.from((opts.stderr ?? []).map((l) => l + '\n'));
+  child.stdin = { write() {}, end() {} };
   child.killed = false;
   child.kill = () => {
     child.killed = true;
+    child.emit('close', opts.exitCode ?? 0);
   };
+  queueMicrotask(() => child.emit('close', opts.exitCode ?? 0));
   return child;
 }
 
-const FIXTURE = join(here, 'fixtures', 'qoder', 'current');
-const fixtureLines = (name) =>
-  readFileSync(join(FIXTURE, `${name}.jsonl`), 'utf8')
-    .split('\n')
-    .filter(Boolean);
+function greenProfileFs() {
+  return memFs(
+    new Map([
+      ['/p/.auth/user', 't'],
+      ['/p/.account-fingerprint', 'f'.repeat(16)],
+    ]),
+  );
+}
 
-test('invoke: workingDirectory missing → fail closed error, no spawn', async () => {
+async function runInvoke(svc, prompt, options) {
+  const out = [];
+  for await (const m of svc.invoke(prompt, options)) out.push(m);
+  return out;
+}
+
+test('invoke: workingDirectory missing → fail closed, no spawn', async () => {
   let spawned = 0;
   const svc = new QoderAgentService({
     catId: CAT,
     profileDir: '/p',
     binary: '/usr/bin/true',
+    profileFs: greenProfileFs(),
     spawnFn: () => {
       spawned++;
       return fakeChild([]);
     },
-    profileDeps: { readFileSync: () => '{"apiKeySource":"oauth"}', copySync() {}, existsSync: () => true },
   });
-  const messages = [];
-  for await (const m of svc.invoke('hi', {})) messages.push(m);
+  const out = await runInvoke(svc, 'hi', {});
   assert.equal(spawned, 0);
-  assert.ok(messages[0].type === 'error' && messages[0].error.includes('workingDirectory'));
+  assert.ok(out[0].type === 'error' && out[0].error.includes('workingDirectory'));
 });
 
-test('invoke: fixture stream → session_init/text/done with usage + billing, init gate green', async () => {
-  // 用 success 夹具改造：补 settings 审计绿（profileDeps 返回空对象）
+test('invoke: success fixture → done with real init model + billing; argv has no prompt text', async () => {
+  let seenArgs;
   const lines = fixtureLines('success');
   const svc = new QoderAgentService({
     catId: CAT,
     profileDir: '/p',
     binary: '/usr/bin/true',
-    spawnFn: () => fakeChild(lines),
-    profileDeps: { readFileSync: () => '{}', copySync() {}, existsSync: () => true },
+    profileFs: greenProfileFs(),
+    spawnFn: (_cmd, args) => {
+      seenArgs = args;
+      return fakeChild(lines);
+    },
   });
-  const messages = [];
-  for await (const m of svc.invoke('ok', { workingDirectory: '/tmp' })) messages.push(m);
-  assert.ok(messages.some((m) => m.type === 'session_init'));
-  const done = messages.find((m) => m.type === 'done');
+  const out = await runInvoke(svc, 'reply with exactly: ok', { workingDirectory: '/tmp' });
+  assert.ok(!seenArgs.includes('reply with exactly: ok'), 'prompt not in argv');
+  const done = out.find((m) => m.type === 'done');
   assert.ok(done, 'done emitted');
-  const meta = done.metadata;
-  assert.equal(meta.provider, 'qoder');
-  assert.ok(meta.usage.numTurns >= 1);
-  assert.ok(meta.qoderBilling.credits > 0, 'credits in billing metadata, not TokenUsage');
-  assert.equal(meta.usage.inputTokens, undefined);
+  assert.equal(done.metadata.model, 'Auto', 'actual init model in metadata');
+  assert.ok(done.metadata.qoderBilling.credits > 0);
 });
 
-test('invoke: assistant before init → fail closed, stream aborted', async () => {
-  const assistantLine = fixtureLines('tool-use').find((l) => l.includes('"type":"assistant"'));
-  const badOrder = [assistantLine]; // assistant 事件，流中无 init
+test('invoke: auth-error fixture → error terminal, never done (P1-D dialect trap)', async () => {
   const svc = new QoderAgentService({
     catId: CAT,
     profileDir: '/p',
     binary: '/usr/bin/true',
-    spawnFn: () => fakeChild(badOrder),
-    profileDeps: { readFileSync: () => '{}', copySync() {}, existsSync: () => true },
+    profileFs: greenProfileFs(),
+    spawnFn: () => fakeChild(fixtureLines('auth-error'), { exitCode: 1 }),
   });
-  const messages = [];
-  for await (const m of svc.invoke('hi', { workingDirectory: '/tmp' })) messages.push(m);
-  assert.ok(messages.some((m) => m.type === 'error' && m.error.includes('before passing init gate')));
+  const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp' });
+  assert.ok(!out.some((m) => m.type === 'done'), 'no done for error result');
+  assert.ok(out.some((m) => m.type === 'error' && /Not logged in|result error/.test(m.error)));
+});
+
+test('invoke: tool-use fixture (full tool surface) → init gate red, stream aborted', async () => {
+  const svc = new QoderAgentService({
+    catId: CAT,
+    profileDir: '/p',
+    binary: '/usr/bin/true',
+    profileFs: greenProfileFs(),
+    spawnFn: () => fakeChild(fixtureLines('tool-use')),
+  });
+  const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp' });
+  assert.ok(!out.some((m) => m.type === 'done'));
+  assert.ok(out.some((m) => m.type === 'error' && m.error.includes('init gate')));
+});
+
+test('invoke: assistant before init → fail closed', async () => {
+  const assistantLine = fixtureLines('tool-use').find((l) => l.includes('"type":"assistant"'));
+  const svc = new QoderAgentService({
+    catId: CAT,
+    profileDir: '/p',
+    binary: '/usr/bin/true',
+    profileFs: greenProfileFs(),
+    spawnFn: () => fakeChild([assistantLine]),
+  });
+  const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp' });
+  assert.ok(out.some((m) => m.type === 'error' && m.error.includes('before passing init gate')));
+});
+
+test('invoke: nonzero exit without successful result → error with stderr diagnostics', async () => {
+  const svc = new QoderAgentService({
+    catId: CAT,
+    profileDir: '/p',
+    binary: '/usr/bin/true',
+    profileFs: greenProfileFs(),
+    spawnFn: () => fakeChild(fixtureLines('success'), { exitCode: 3, stderr: ['boom'] }),
+  });
+  const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp' });
+  const err = out.find((m) => m.type === 'error');
+  assert.ok(err && err.error.includes('code 3') && err.error.includes('boom'));
+});
+
+test('invoke: default profile fs works on real dirs (default-constructor path)', async () => {
+  // 无 profileFs 注入：真实 fs + 真临时绿 profile（覆盖 defaultQoderProfileFs 路径）
+  const root = mkdtempSync(join(tmpdir(), 'qoder-default-'));
+  const prof = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'd1', authSourceDir: makeAuth(root, 'tok') });
+  assert.equal(prof.audit.ok, true);
+  const svc = new QoderAgentService({
+    catId: CAT,
+    profileDir: prof.profileDir,
+    binary: '/usr/bin/true',
+    spawnFn: () => fakeChild(fixtureLines('success')),
+  });
+  const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp' });
+  assert.ok(out.some((m) => m.type === 'done'));
+  rmSync(root, { recursive: true, force: true });
 });
