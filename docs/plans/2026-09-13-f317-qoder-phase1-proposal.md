@@ -53,7 +53,7 @@ qodercn（Qoder 中国版 CLI，`@qodercn-ai/qoderclicn@1.1.51`）headless spawn
 ## 授权线（时序唯一真相，与 spike r2 收尾结论一致）
 
 - **L0 可开始纯实现**（写 parser/Service/测试，不发起任何 qodercn 调用）：双猫放行 r3 提案——已满足（点点、砚砚均 APPROVED）。
-- **L1 受控 gate probes**（唯一豁免的真实 qodercn 调用，仅限 `collect.sh` 采集、MCP 挂载验证、cancel 重采三类脚本化探针，须带结构化 receipt）：直接授权，不依赖 L2。首采夹具补采与重跑都属此类，避免「cancel 重采也是 invocation」的循环。
+- **L1 受控 gate probes**（唯一豁免的真实 qodercn 调用，仅限 `collect.sh` 采集、MCP 挂载验证、cancel 重采三类脚本化探针）：**硬前置**是离线构建干净 auth-only profile（含登录凭证、无 settings/hooks/plugins，collect.sh 强制显式传入且校验、拒绝回退个人 `~/.qoder-cn`）；探针全部走该 profile 并产结构化 generation receipt（sha256 全量 + 断言结果 + 副作用检查）。
 - **L2 首个产品/runtime invocation**：须先完成——① spawn 前干净专用 config/profile 验证（拒绝未授权 settings/plugins/hooks；builtin plugin hook 在受控 sources 下仍执行，预执行防线不能依赖流上检测）；② `cat-cafe-memory` 实挂载 + `CAT_CAFE_READONLY=true` 精确 tools/list 断言（作为 L1 gate probe 执行）；③ cancel 夹具重采（L1 gate probe；signal/exit/无 result 三路与 silent_completion / CLI failure 分测）。
 - L0 可与 L1/L2 并行推进；cat-template 条目（I-9）在 L2 前置三项全绿后最后加入。
 
