@@ -26,6 +26,20 @@
 | S6 | MCP | invocation 级临时 mcp-config + `--strict-mcp-config` + `--allowed-mcp-server-names`，仅开放 `cat-cafe-memory` 只读工具 | 双层（服务器+工具）allowlist 实证 |
 | S7 | 网络/额度 | 服务器本机 API endpoint 连通性；free preview 额度语义 | 结论 + 风险标注 |
 
+## Spike 结果（2026-09-13，谱谱在本机执行）
+
+| # | 状态 | 结果 |
+|---|---|---|
+| S1 | ✅ | `@qoder-ai/qodercli@1.1.51` 安装成功；注意 npm allow-scripts 默认拦 postinstall，需 `npm approve-scripts @qoder-ai/qodercli`；未遇代理问题 |
+| S2 | ✅ | `qoder` 与 `qodercli` 同为 1.1.51，`qoder` dispatcher 正常转发 → **固定用官方入口 `qoder`**；帮助面未发现 `--no-auto-update` 类 flag，版本漂移防线待 S3 后复查（升级 slash 命令存在，需确认 spawn 路径不会触发） |
+| S3 | 🟡 阻塞 | 未登录态下 API 调用返回 `authentication_failed`（"Not logged in · Please run /login"）→ 需浏览器 OAuth，**只有铲屎官能做**：`qoder login` + `--config-dir /tmp/qoder-spike/qconfig`（注：CLI 原生提供 `--config-dir` flag，比 env 更干净） |
+| S4 | 🟢 重大利好 | 未登录也吐完整 stream-json：事件 schema 为 Claude Code 同构（`system/init` 含 tools/mcp_servers/permissionMode/capabilities；`assistant`、`result` 字段齐全）→ `claude-ndjson-parser.ts` 复用可行性高，transform 成本预期从 Kimi 级降到接近零 |
+| S5 | ⏳ | 待 S3 后做（权限 mode 枚举确认含 `bypass_permissions`/`auto` 危险值，接入时硬编码禁用） |
+| S6 | ⏳ | 待 S3 后做（`--strict-mcp-config` / `--allowed-mcp-server-names` / `--mcp-config` flag 全部在位） |
+| S7 | ✅(部分) | 本机 endpoint 连通（返回的是认证错误而非网络错误）；额度语义待登录后看 `usage` slash 命令 |
+
+复现命令：`cd /tmp/qoder-spike && ./node_modules/.bin/qoder -p "say hi" -o stream-json --config-dir ./qconfig`
+
 ## 出口条件
 
 - 全绿 → 谱谱汇总，升级为 F317 正式提案（新 clientId + `QoderAgentService` + 事件 transform），进 Phase 1
