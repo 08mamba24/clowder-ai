@@ -63,6 +63,29 @@ qodercn（Qoder 中国版 CLI，`@qodercn-ai/qoderclicn@1.1.51`）headless spawn
 - 砚砚对授权线三前置项的红绿记录放行；点点抽检夹具 manifest 的 dialect 契约
 - 夹具驱动测试全绿；三项前置红绿记录落 spike 文档
 
+## Phase 1 实施切分（2026-09-13 双猫讨论定稿）
+
+三刀切（砚砚提案、点点附议），每刀独立可验证：
+
+- **Slice 1：非路由的窄 QoderAgentService + 测试**（I-4 边界：typed inputs 经可信 resolver 解析、缺 workingDirectory fail closed、`QODERCN_CONFIG_DIR` 不进 generic accountEnv 的 last-wins 合并、stdin prompt）。**入口条件 I-11（见下）先行**。
+- **Slice 2：注册 + account binding + workspace/session guard 原子 vertical slice**（ClientId/schema/Hub 类型/default CLI/factory/account routing 一次接齐，不留半注册态；`providerRequiresThreadWorkspace` 等 OpenCode 硬编码泛化并覆盖 qoder + e2e resume 测试；account mapping + `QODERCN_CONFIG_DIR` 受控字段校验为安全重点段）。
+- **Slice 3：cat-template 条目**（I-9：Slice 1/2 + 隔离 acceptance 全绿后最后加）。
+
+### I-11 runtime profile ownership / lifecycle（P1，Slice 1 入口条件）
+
+L1 实证：qodercn 把 session 存在 config-dir 的 `projects/<cwd-slug>/`，resume 要求同 config-dir + 同 cwd。采集器的"逐 invocation 临时 clone"会破坏 resume；直接用个人 `~/.qoder-cn` 又越过 clean-profile 边界。生产契约：
+
+1. **归属**：per-cat 持久 runtime profile（`<data>/qoder-profiles/<catId>/`），由 runtime 拥有；用户个人目录不可达。
+2. **Seed**：首次从 accountRef 绑定的 OAuth 凭证安全拷贝 `.auth`（临时目录构建 + 原子 rename）。
+3. **运行**：token 刷新由 provider 在 profile 内自行完成（L1 已证为预期行为）；**每次 invocation 前**跑洁净审计（无 hooks/settings/plugins 可执行文件——L1 collector `audit_auth` 语义移植）；审计红即拒发。
+4. **恢复**：profile 损坏/污染时从 auth source 重新 seed；代价 = profile 内 session 丢失（resume 断裂），记录为已知语义并在日志标注。
+5. **注入**：`QODERCN_CONFIG_DIR` 由 Service 构造时经 resolver 唯一解析提供，绝不参与通用 env 合并。
+6. **workspace**：每次 invocation 校验 thread workspace 绑定，cwd 固定为 workspace（resume 语义依赖，呼应 Slice 2 的 guard 泛化）。
+
+### CodeBuddy Phase 0（并行侦察，与 qodercn 主线无文件交集）
+
+边界（双猫共识）：Spark 独立执行，谱谱当清单顾问；只做侦察（钉 exact 产品/package/binary/version + headless 接口 + auth 存储 + 协议 + 权限 + MCP + 计费），不改 production code、不碰共享 registry、不全局安装/登录/凭证搬运/付费调用；复用 F317 安全不变量与 collector/verify 方法论但**不复制 qoder 专属参数与凭证假设**，不预抽 GenericCliAgent；任一 P1 红 no-go；可行则独立 feature proposal。**registration 前与 qodercn 串行化**（两侧最终共享注册/account/UI seam）。
+
 ## 边界
 
 - CodeBuddy 独立提案；`opencode-qoder-bridge` 不作终态
