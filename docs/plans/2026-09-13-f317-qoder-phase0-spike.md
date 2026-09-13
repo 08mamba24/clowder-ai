@@ -33,7 +33,7 @@
 | S1 | ✅ | `@qoder-ai/qodercli@1.1.51` 安装成功；注意 npm allow-scripts 默认拦 postinstall，需 `npm approve-scripts @qoder-ai/qodercli`；未遇代理问题 |
 | S2 | ✅ | `qoder` 与 `qodercli` 同为 1.1.51，`qoder` dispatcher 正常转发 → **固定用官方入口 `qoder`**；帮助面未发现 `--no-auto-update` 类 flag，版本漂移防线待 S3 后复查（升级 slash 命令存在，需确认 spawn 路径不会触发） |
 | S3 | ✅ | **切换到中国版**（铲屎官决策）：全局安装 `@qodercn-ai/qoderclicn@1.1.51`（bin `qodercn`，`~/.local/bin/qodercn`），铲屎官浏览器 OAuth 登录成功。登录态落在 `/Users/yuhan/.qoder-cn/.auth/user`；headless spawn 复用验证通过：`qodercn -p "reply with exactly: ok" -o json --config-dir /Users/yuhan/.qoder-cn` → `is_error:false, result:"ok", total_credits:1.10`。注意：app-server HOME（`app-server-home/.qoder-cn`）与用户 HOME 是两套，凭证必须指向用户 HOME 路径；国际版入口弃用 |
-| S4 | 🟢 重大利好 | 未登录也吐完整 stream-json：事件 schema 为 Claude Code 同构（`system/init` 含 tools/mcp_servers/permissionMode/capabilities；`assistant`、`result` 字段齐全）→ `claude-ndjson-parser.ts` 复用可行性高，transform 成本预期从 Kimi 级降到接近零 |
+| S4 | 🟡 勘误（2026-09-13，点点复核推翻） | 原结论「schema 同构、`claude-ndjson-parser` 复用可行性高、成本接近零」**过度声明**。实测（`/tmp/qoder-probe/{stream,tooluse,err}.jsonl`）：事件形状兼容成立，但直接复用共享 parser 不成立——`stream_event` 完全缺席、usage token 全 0（真账 credits）、MCP status 词表断裂、无效模型静默回落、独有事件被丢弃。需要独立 Qoder 方言层，见 Phase 1 提案 P1 清单。本行 S4 状态仅指 schema 同构；夹具采集（错误/权限拒绝/resume/cancel/压缩 5 类）未完成，升级为 S4b 收尾门禁 |
 | S5 | ⏳ | 待 S3 后做（权限 mode 枚举确认含 `bypass_permissions`/`auto` 危险值，接入时硬编码禁用） |
 | S6 | ⏳ | 待 S3 后做（`--strict-mcp-config` / `--allowed-mcp-server-names` / `--mcp-config` flag 全部在位） |
 | S7 | ✅(部分) | 本机 endpoint 连通（返回的是认证错误而非网络错误）；登录后实测计费为 credit 制（一次 ok 调用消耗 `total_credits:1.10`，`total_cost_usd:0`），免费额度语义与耗尽行为待长期观察 |
