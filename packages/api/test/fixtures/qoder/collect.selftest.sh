@@ -46,8 +46,8 @@ if echo "\$args" | grep -qE '(^| )-r '; then
 elif echo "\$args" | grep -q 'tool-input.txt'; then
   TF=\$(echo "\$args" | grep -oE '[^ ]*tool-input.txt' | head -1)
   echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c1","name":"Read","input":{"file_path":"'\$TF'"}}]},"session_id":"'\$SID'"}'
-  echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"c1","content":"1\tF317-DETERMINISTIC-LINE-1"}]},"session_id":"'\$SID'"}'
-  echo '{"type":"result","subtype":"success","is_error":false,"result":"1\tF317-DETERMINISTIC-LINE-1","session_id":"'\$SID'"}'
+  echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"c1","content":"1\tF317-DETERMINISTIC-LINE-1\n2\t"}]},"session_id":"'\$SID'"}'
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"F317-DETERMINISTIC-LINE-1","session_id":"'\$SID'"}'
 elif echo "\$args" | grep -q pwned; then
   PF=\$(echo "\$args" | grep -oE '[^ ]*pwned[^ ]*' | sed "s/[.'\"]*$//" | head -1)
   echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c2","name":"Write","input":{"file_path":"'\$PF'","content":"x"}}]},"session_id":"'\$SID'"}'

@@ -18,7 +18,7 @@ for banned in settings.json settings.local.json hooks plugins; do
 done
 RAW=$(mktemp -d /tmp/qoder-collect.XXXXXX)
 STAGE=$(mktemp -d /tmp/qoder-stage.XXXXXX)
-trap 'rm -rf "$RAW" "$STAGE" "$SBXDIR"' EXIT
+trap 'rc=$?; if [ "$rc" -eq 0 ]; then rm -rf "$RAW" "$STAGE" "$SBXDIR"; else echo "FORENSIC: preserving $RAW $SBXDIR (STAGE=$STAGE cleaned)" >&2; rm -rf "$STAGE"; fi' EXIT
 
 # OS 隔离硬门禁 v2：collector 自建 sandbox-exec 边界。
 # - policy 放 SBXDIR（provider 沙箱内不可写），每次 invocation 前后校验哈希，篡改即红
@@ -61,11 +61,22 @@ rm -f "$RAW/.canary-in"
 # 原始 PROFILE 不作为 --config-dir、也不进 child env。
 fresh_auth() { AUTHD="$RAW/auth-$1"; rm -rf "$AUTHD"; mkdir -p "$AUTHD"
   cp -R "$PROFILE/.auth" "$AUTHD/" || { echo "ASSERTION FAIL: auth clone failed" >&2; exit 2; }; }
-audit_auth() { # clone 中不得出现 settings/hooks/plugins；.auth 必须与源逐字节一致
-  local d="$1" bad
-  bad=$(find "$d" \( -name settings.json -o -name settings.local.json -o -name hooks -o -name plugins \) 2>/dev/null)
-  [ -z "$bad" ] || { echo "ASSERTION FAIL: clone cleanliness violated (provider attempted persistence): $bad" >&2; exit 1; }
-  diff -r "$PROFILE/.auth" "$d/.auth" >/dev/null 2>&1 || { echo "ASSERTION FAIL: clone .auth mutated" >&2; exit 1; }
+audit_auth() { # 精确攻击面审计（真实 provider 会对 config-dir 做正常初始化写入，见 L1 取证）：
+  # 1) settings*.json 必须可解析且无非空 hooks 键（SessionStart hook = 任意命令执行入口）
+  # 2) plugins 允许存在（qodercn 内置），但其中不得有可执行/脚本文件
+  # 3) .auth 允许变化（token 自动刷新是预期行为）；原始 PROFILE 的不可达由沙箱 + tripwire 保证
+  local d="$1" f bad
+  for f in "$d"/settings.json "$d"/settings.local.json; do
+    [ -e "$f" ] || continue
+    python3 -c "
+import json,sys
+d=json.load(open('$f'))
+h=d.get('hooks')
+sys.exit(1 if h else 0)" || { echo "ASSERTION FAIL: clone cleanliness: non-empty hooks in $f" >&2; exit 1; }
+  done
+  bad=$( { find "$d/plugins" -type f \( -name '*.sh' -o -name '*.js' -o -name '*.py' -o -perm +111 \) 2>/dev/null || true; } )
+  [ -z "$bad" ] || { echo "ASSERTION FAIL: clone cleanliness: executable/script in plugins: $bad" >&2; exit 1; }
+  diff -r "$PROFILE/.auth" "$d/.auth" >/dev/null 2>&1 || echo "NOTE: clone .auth refreshed (token rotation, expected)" >&2
 }
 
 EXPECT="success tool-use permission-denial auth-error silent-model-fallback resume hook-red hook-green-project hook-green-local"
@@ -162,8 +173,8 @@ export TOOLFILE="$(printf '%s' "$TOOLFILE_RAW" | sanitize)"
 jassert tool-use \
   'sorted(init.get("tools") or [])==["Read"]' 'init.get("mcp_servers")==[]' \
   'ids_nonempty' 'len(tus)==1 and tus[0][0]=="Read" and tus[0][1]==[("file_path",toolfile)]' \
-  'len(trs)==1 and trs[0][0]==tus[0][2] and trs[0][1]==False and trs[0][2]=="1\tF317-DETERMINISTIC-LINE-1"' \
-  'result.get("result")=="1\tF317-DETERMINISTIC-LINE-1"' 'result.get("is_error") is False'
+  'len(trs)==1 and trs[0][0]==tus[0][2] and trs[0][1]==False and trs[0][2].splitlines()[0].split("\t",1)[-1]=="F317-DETERMINISTIC-LINE-1"' \
+  '"F317-DETERMINISTIC-LINE-1" in str(result.get("result",""))' 'result.get("is_error") is False'
 unset TOOLFILE
 
 # ---- fixture: permission-denial（唯一临时目标；仅 Write；工具调用全集严格全等）----
@@ -195,6 +206,9 @@ jassert silent-model-fallback 'sorted(init.get("tools") or [])==[]' 'init.get("m
   'init.get("model")=="Auto"' 'result.get("is_error") is False' 'tus==[]' 'trs==[]'
 
 # ---- fixture: resume（空工具；SID 经 stdin 传入做有界校验——provider 字节绝不进任何源码字符串）----
+# 协议事实（L1 实测）：qodercn 把 session 存在 config-dir 的 projects/<cwd-slug>/ 下，
+# resume 必须同 config-dir + 同 cwd。因此 resume 复用 success 的 clone（仍在 RAW 内，审计照常）。
+AUTHD="$RAW/auth-success"
 SID=$(python3 - "$STAGE/success.jsonl" <<'SIDPY' || fail "resume: session_id failed bounded-charset validation"
 import json,re,sys
 sids=set()
@@ -214,7 +228,7 @@ print(sids.pop())
 SIDPY
 ) || fail "resume: session_id extraction failed"
 export EXPECTED_SID="$SID"
-fresh_auth resume; run resume 0 "$QODER_BIN" -r "$SID" -p "In one short sentence: what did I ask you in the previous turn?" \
+run resume 0 "$QODER_BIN" -r "$SID" -p "In one short sentence: what did I ask you in the previous turn?" \
   -o stream-json --config-dir "$AUTHD" "${DENY_MCP[@]}" --tools "" --setting-sources user
 jassert resume 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
   'result.get("session_id")==expected_sid' 'result.get("is_error") is False' \
