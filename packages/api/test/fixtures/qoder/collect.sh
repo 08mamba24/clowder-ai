@@ -50,7 +50,8 @@ scan() {
     || fail "sensitive content in $(basename "$f")"
 }
 
-# JSONL 语义断言：只读 $STAGE/<name>.jsonl；每条断言 + 结果写入 $STAGE/<name>.assert（进 generation hash）
+# JSONL 语义断言：只读 $STAGE/<name>.jsonl；断言表达式全部是脚本内静态字面量，
+# 一切 provider 可控数据（expected_sid/toolfile/pwned）只经环境变量进 globals，绝不拼进代码字符串。
 jassert() {
   local name=$1; shift
   STAGE_DIR="$STAGE" FIXTURE="$name" python3 - "$@" >"$STAGE/$name.assert" <<'PY' || { cat "$STAGE/$name.assert" >&2; exit 1; }
@@ -61,10 +62,12 @@ env={"rows":rows,
      "init":next((r for r in rows if r.get("subtype")=="init"),None),
      "result":[r for r in rows if r.get("type")=="result"][-1] if any(r.get("type")=="result" for r in rows) else None,
      "assistant":[r for r in rows if r.get("type")=="assistant"],
-     "toolfile":os.environ.get("TOOLFILE",""), "pwned":os.environ.get("PWNEDPATH","")}
+     "toolfile":os.environ.get("TOOLFILE",""), "pwned":os.environ.get("PWNEDPATH",""),
+     "expected_sid":os.environ.get("EXPECTED_SID","")}
+safety={"any":any,"all":all,"str":str,"int":int,"len":len,"sorted":sorted,"bool":bool,"True":True,"False":False,"None":None}
 for c in sys.argv[1:]:
     ok=False
-    try: ok=eval(c, {"__builtins__":{},"any":any,"all":all,"str":str,"int":int,"len":len,"sorted":sorted,"True":True,"False":False,"None":None, **env})
+    try: ok=eval(c, {"__builtins__":{}, **safety, **env})
     except Exception as e: print(f"{name}: check error {c}: {e}"); sys.exit(1)
     if ok is not True: print(f"{name}: FAILED {c}"); sys.exit(1)
 print(f"{name}: ok")
@@ -75,7 +78,6 @@ PY
 
 # ---- fixture: success（空工具 + deny-all MCP）----
 SCENARIO_CWD=$RAW
-TOOLFILE="" PWNEDPATH=""
 run success 0 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json \
   --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "" --setting-sources user
 jassert success \
@@ -84,31 +86,29 @@ jassert success \
   'result.get("result")=="ok"' 'result.get("is_error") is False' \
   'rows[0].get("subtype")=="hook_started"'
 
-# ---- fixture: tool-use（确定性输入文件；仅 Read 工具；路径全等）----
-TOOLFILE="$RAW/tool-input.txt"; printf 'F317-DETERMINISTIC-LINE-1\n' > "$TOOLFILE"
-export TOOLFILE_SANITIZED="$(printf '%s' "$TOOLFILE" | sanitize)"
-run tool-use 0 "$QODER_BIN" -p "Read the file $TOOLFILE and reply with its exact content." \
+# ---- fixture: tool-use（确定性输入文件；仅 Read；工具调用全集严格全等；Read 行号协议规范化）----
+TOOLFILE_RAW="$RAW/tool-input.txt"; printf 'F317-DETERMINISTIC-LINE-1\n' > "$TOOLFILE_RAW"
+run tool-use 0 "$QODER_BIN" -p "Read the file $TOOLFILE_RAW and reply with its exact content." \
   -o stream-json --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "Read" --setting-sources user
-export TOOLFILE="$TOOLFILE_SANITIZED"
+export TOOLFILE="$(printf '%s' "$TOOLFILE_RAW" | sanitize)"
 jassert tool-use \
   'sorted(init.get("tools") or [])==["Read"]' 'init.get("mcp_servers")==[]' \
-  'any(b.get("type")=="tool_use" and b.get("name")=="Read" and b.get("input",{}).get("file_path")==toolfile for r in assistant for b in r.get("message",{}).get("content",[]))' \
-  'any(b.get("type")=="tool_result" and str(b.get("content")).strip()=="F317-DETERMINISTIC-LINE-1" for r in rows if r.get("type")=="user" for b in (r.get("message",{}).get("content") or []))' \
-  'result.get("is_error") is False'
+  'sorted((b.get("name"), str(b.get("input",{}).get("file_path"))) for r in assistant for b in r.get("message",{}).get("content",[]) if b.get("type")=="tool_use")==[("Read",toolfile)]' \
+  'sorted((str(b.get("content")).split("\t",1)[-1].strip(), bool(b.get("is_error"))) for r in rows if r.get("type")=="user" for b in (r.get("message",{}).get("content") or []) if b.get("type")=="tool_result")==[("F317-DETERMINISTIC-LINE-1",False)]' \
+  'str(result.get("result","")).split("\t",1)[-1].strip()=="F317-DETERMINISTIC-LINE-1"' 'result.get("is_error") is False'
 unset TOOLFILE
 
-# ---- fixture: permission-denial（唯一临时目标；仅 Write 工具；路径全等）----
-PWNED="$RAW/pwned.txt"; rm -f "$PWNED"
-export PWNEDPATH_SANITIZED="$(printf '%s' "$PWNED" | sanitize)"
-run permission-denial 0 "$QODER_BIN" -p "Use the Write tool to create $PWNED with content 'x'. Do it now, do not ask." \
+# ---- fixture: permission-denial（唯一临时目标；仅 Write；工具调用全集严格全等）----
+PWNED_RAW="$RAW/pwned.txt"; rm -f "$PWNED_RAW"
+run permission-denial 0 "$QODER_BIN" -p "Use the Write tool to create $PWNED_RAW with content 'x'. Do it now, do not ask." \
   -o stream-json --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "Write" --setting-sources user
-[ ! -e "$PWNED" ] || fail "permission-denial: target file was written"
+[ ! -e "$PWNED_RAW" ] || fail "permission-denial: target file was written"
 echo "target_absent=true" > "$STAGE/permission-denial.side-effect"
-export PWNEDPATH="$PWNEDPATH_SANITIZED"
+export PWNEDPATH="$(printf '%s' "$PWNED_RAW" | sanitize)"
 jassert permission-denial \
   'sorted(init.get("tools") or [])==["Write"]' 'init.get("mcp_servers")==[]' \
-  'any(b.get("type")=="tool_use" and b.get("name")=="Write" and b.get("input",{}).get("file_path")==pwned for r in assistant for b in r.get("message",{}).get("content",[]))' \
-  'any(b.get("is_error") for r in rows if r.get("type")=="user" for b in (r.get("message",{}).get("content") or []))' \
+  'sorted((b.get("name"), str(b.get("input",{}).get("file_path"))) for r in assistant for b in r.get("message",{}).get("content",[]) if b.get("type")=="tool_use")==[("Write",pwned)]' \
+  'sorted((bool(b.get("is_error")),) for r in rows if r.get("type")=="user" for b in (r.get("message",{}).get("content") or []) if b.get("type")=="tool_result")==[(True,)]' \
   'result.get("is_error") is False'
 unset PWNEDPATH
 
@@ -116,7 +116,8 @@ unset PWNEDPATH
 EMPTY=$(mktemp -d "$RAW/empty.XXXXXX")
 run auth-error 1 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json \
   --config-dir "$EMPTY" "${DENY_MCP[@]}" --tools ""
-jassert auth-error 'result.get("is_error") is True' 'result.get("subtype")=="success"' 'init.get("mcp_servers")==[]'
+jassert auth-error 'init is not None' 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
+  'result.get("is_error") is True' 'result.get("subtype")=="success"'
 
 # ---- fixture: silent-model-fallback（空工具）----
 run silent-model-fallback 0 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json \
@@ -124,13 +125,17 @@ run silent-model-fallback 0 "$QODER_BIN" -p "reply with exactly: ok" -o stream-j
 jassert silent-model-fallback 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
   'init.get("model")=="Auto"' 'result.get("is_error") is False'
 
-# ---- fixture: resume（空工具；断言精确回忆）----
+# ---- fixture: resume（空工具；SID 经 env 校验后全等断言；断言精确回忆）----
 SID=$(python3 -c "import json;print(next(json.loads(l)['session_id'] for l in open('$STAGE/success.jsonl') if l.strip()))")
+# provider 可控数据先做有界字符集校验，再经 env 进断言（防 eval 拼串注入）
+python3 -c "import re,sys;sys.exit(0 if re.fullmatch(r'[A-Za-z0-9-]{8,64}', '''$SID''') else 1)" || fail "resume: session_id failed bounded-charset validation"
+export EXPECTED_SID="$SID"
 run resume 0 "$QODER_BIN" -r "$SID" -p "In one short sentence: what did I ask you in the previous turn?" \
   -o stream-json --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "" --setting-sources user
 jassert resume 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
-  'result.get("session_id")=="'"$SID"'"' 'result.get("is_error") is False' \
-  'str(result.get("result","")).lower().find("reply with exactly")!=-1 and "ok" in str(result.get("result","")).lower()'
+  'result.get("session_id")==expected_sid' 'result.get("is_error") is False' \
+  '"reply with exactly" in str(result.get("result","")).lower() and "ok" in str(result.get("result","")).lower()'
+unset EXPECTED_SID
 
 # ---- fixtures: S5 hook 红→绿（独立 project/marker；空工具 + deny-all MCP）----
 mkproj() { local d; d=$(mktemp -d "$RAW/proj.XXXXXX"); mkdir -p "$d/.qoder"; echo "$d"; }
@@ -169,29 +174,49 @@ done
 ACTUAL=$(cd "$STAGE" && ls *.jsonl | sed 's/\.jsonl//' | sort)
 [ "$ACTUAL" = "$(echo $EXPECT | tr ' ' '\n' | sort)" ] || fail "stale/extra fixtures in staging: $ACTUAL"
 
-python3 - "$STAGE" "$EXPECT" > "$STAGE/generation.json" <<'PY'
+CSHA=$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$0")
+python3 - "$STAGE" "$EXPECT" "$CSHA" > "$STAGE/generation.json" <<'PY'
 import json,sys,hashlib,glob,os
-stage,expect=sys.argv[1],sys.argv[2].split()
+stage,expect,csha=sys.argv[1],sys.argv[2].split(),sys.argv[3]
 def sha(p): return hashlib.sha256(open(p,'rb').read()).hexdigest()
 artifacts={}
 for n in expect:
     artifacts[n]={s:sha(f"{stage}/{n}.{s}") for s in ("jsonl","stderr.txt","exit","assert")}
 side_effects={os.path.basename(p):sha(p) for p in sorted(glob.glob(f"{stage}/*.side-effect"))}
-print(json.dumps({"schema":"qoder-f317-generation/2","collector":"collect.sh","expect":expect,
-  "artifacts":artifacts,"side_effects":side_effects},indent=2))
+print(json.dumps({"schema":"qoder-f317-generation/3","collector":"collect.sh","collector_sha256":csha,
+  "expect":expect,"artifacts":artifacts,"side_effects":side_effects},indent=2))
 PY
 
-# ---- 原子发布：唯一 temp 构建 → 已有同代只校验复用 → 单 rename 提交 → temp symlink + mv 切 current ----
-GENHASH=$(python3 -c "import hashlib;print(hashlib.sha256(open('$STAGE/generation.json','rb').read()).hexdigest()[:12])")
-GENID=".gen-$GENHASH"
-if [ -e "$DEST/$GENID" ]; then
-  # 同代重跑：绝不删除已有 generation；校验内容一致后仅切指针
-  diff -r "$STAGE" "$DEST/$GENID" >/dev/null || fail "same generation hash but content differs"
-else
-  TMPGEN="$DEST/.tmpgen.$$"
-  rm -rf "$TMPGEN"; cp -R "$STAGE" "$TMPGEN"
-  mv "$TMPGEN" "$DEST/$GENID"   # 单 rename 提交
-fi
-TMPLINK="$DEST/.current.$$"; rm -f "$TMPLINK"
-ln -s "$GENID" "$TMPLINK" && python3 -c "import os; os.replace('$TMPLINK', '$DEST/current')"   # rename(2)，不跟随旧 symlink
-echo "published generation $GENHASH: $EXPECT"
+# ---- 原子发布（单一 python 步骤）：flock 互斥 → CAS rename 提交 → 校验复用 → os.replace 切指针 ----
+python3 - "$STAGE" "$DEST" <<'PY' || fail "publish failed"
+import os,sys,hashlib,shutil,fcntl,filecmp
+stage,dest=sys.argv[1],sys.argv[2]
+gen_bytes=open(f"{stage}/generation.json","rb").read()
+genhash=hashlib.sha256(gen_bytes).hexdigest()[:12]
+genid=f".gen-{genhash}"; target=os.path.join(dest,genid)
+with open(os.path.join(dest,".publish.lock"),"w") as lf:
+    fcntl.flock(lf,fcntl.LOCK_EX)
+    if os.path.lexists(target):
+        # 同代已存在：绝不删除，逐文件字节比对后复用
+        a=sorted(os.listdir(stage)); b=sorted(os.listdir(target))
+        if a!=b or any(open(os.path.join(stage,f),'rb').read()!=open(os.path.join(target,f),'rb').read() for f in a):
+            print(f"content mismatch for existing {genid}"); sys.exit(1)
+    else:
+        tmp=os.path.join(dest,f".tmpgen.{os.getpid()}.{genhash}")
+        shutil.rmtree(tmp,ignore_errors=True)
+        shutil.copytree(stage,tmp,symlinks=False)
+        try:
+            os.rename(tmp,target)          # CAS：target 已存在则抛 OSError
+        except OSError:
+            shutil.rmtree(tmp,ignore_errors=True)  # 并发对端已提交；走上面的复用路径重试一次
+            if not os.path.isdir(target): print("rename lost race without target"); sys.exit(1)
+            a=sorted(os.listdir(stage)); b=sorted(os.listdir(target))
+            if a!=b or any(open(os.path.join(stage,f),'rb').read()!=open(os.path.join(target,f),'rb').read() for f in a):
+                print(f"content mismatch for racing {genid}"); sys.exit(1)
+    tmplink=os.path.join(dest,f".current.{os.getpid()}")
+    if os.path.lexists(tmplink): os.remove(tmplink)
+    os.symlink(genid,tmplink)
+    os.replace(tmplink,os.path.join(dest,"current"))
+print(f"published generation {genhash}")
+PY
+echo "published: $EXPECT"

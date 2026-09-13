@@ -56,6 +56,7 @@ qodercn（Qoder 中国版 CLI，`@qodercn-ai/qoderclicn@1.1.51`）headless spawn
 - **L1 受控 gate probes**（唯一豁免的真实 qodercn 调用，仅限 `collect.sh` 采集、MCP 挂载验证、cancel 重采三类脚本化探针）：**硬前置**是离线构建干净 auth-only profile（含登录凭证、无 settings/hooks/plugins，collect.sh 强制显式传入且校验、拒绝回退个人 `~/.qoder-cn`）；探针全部走该 profile 并产结构化 generation receipt（sha256 全量 + 断言结果 + 副作用检查）。
 - **L2 首个产品/runtime invocation**：须先完成——① spawn 前干净专用 config/profile 验证（拒绝未授权 settings/plugins/hooks；builtin plugin hook 在受控 sources 下仍执行，预执行防线不能依赖流上检测）；② `cat-cafe-memory` 实挂载 + `CAT_CAFE_READONLY=true` 精确 tools/list 断言（作为 L1 gate probe 执行）；③ cancel 夹具重采（L1 gate probe；signal/exit/无 result 三路与 silent_completion / CLI failure 分测）。
 - L0 可与 L1/L2 并行推进；cat-template 条目（I-9）在 L2 前置三项全绿后最后加入。
+- **OS 隔离边界**：clean profile + deny-all MCP 是配置边界，不是路径 sandbox。含 Read/Write/hook 的 L1 probe 断言虽在 provider 退出后执行，工具面已 fail-closed（精确 `init.tools` 全集断言），但首个含写工具的真实 probe 仍应在文件系统受限的隔离环境执行，并把 sandbox receipt 纳入 generation。
 
 ## 出口条件
 

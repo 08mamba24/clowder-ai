@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """F317 qoder fixture generation 验证器（唯一读方入口）。
 
-fail-closed：解析 DEST/current 指针 → 限制目标仍在 DEST 内 → 校验 schema/collector/expect
-→ 重算 artifacts + side_effects 全量 sha256 → 目录内不得有缺失/额外/篡改文件。
-任何一步失败非零退出。
+fail-closed 契约：
+- current 必须是 symlink 且解析后仍在 DEST 内；generation 目录与所有 artifact 必须是 regular file（拒绝 symlink）
+- 目录名 `.gen-<h>` 的 <h> 必须等于 generation.json 内容 sha256 前 12 位
+- schema/collector/collector_sha256 绑定：collector_sha256 必须等于本目录 collect.sh 的实际 sha256
+  （退化/被改 collector 无法自洽通过）
+- expect 精确匹配；side_effects 必须是精确四项集合
+- artifacts 四类全量 sha256 重算；.assert 必须含 "expressions:" 标记、≥1 条表达式行、末行 "<name>: ok"
+- 目录内不得有缺失/额外/篡改文件
 用法: python3 verify.py [DEST]   # 默认脚本所在目录
 """
-import hashlib, json, os, sys
+import hashlib, json, os, re, sys
 
 EXPECT = ["success", "tool-use", "permission-denial", "auth-error",
           "silent-model-fallback", "resume", "hook-red", "hook-green-project", "hook-green-local"]
 ARTIFACT_SUFFIXES = ("jsonl", "stderr.txt", "exit", "assert")
-SCHEMA = "qoder-f317-generation/2"
+SIDE_EFFECTS = {"permission-denial.side-effect", "hook-red.side-effect",
+                "hook-green-project.side-effect", "hook-green-local.side-effect"}
+SCHEMA = "qoder-f317-generation/3"
 
 
 def fail(msg):
@@ -23,25 +30,48 @@ def sha(path):
     return hashlib.sha256(open(path, "rb").read()).hexdigest()
 
 
+def regular_file(path):
+    return os.path.isfile(path) and not os.path.islink(path)
+
+
 def main():
     dest = os.path.realpath(os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))))
     current = os.path.join(dest, "current")
     if not os.path.islink(current):
-        fail("current is not a symlink")
+        fail("current is not a symlink (no active generation)")
     target = os.readlink(current)
     gendir = os.path.realpath(os.path.join(dest, target))
-    if os.path.dirname(gendir) != dest:
+    if os.path.dirname(gendir) != dest or os.path.basename(gendir) == dest:
         fail(f"current escapes DEST: {target}")
+    m = re.fullmatch(r"\.gen-([0-9a-f]{12})", os.path.basename(gendir))
+    if not m:
+        fail(f"generation dir name malformed: {os.path.basename(gendir)}")
+    if os.path.islink(gendir):
+        fail("generation dir is a symlink")
 
     manifest_path = os.path.join(gendir, "generation.json")
+    if not regular_file(manifest_path):
+        fail("generation.json not a regular file")
+    raw = open(manifest_path, "rb").read()
+    if hashlib.sha256(raw).hexdigest()[:12] != m.group(1):
+        fail("generation dir name does not match generation.json digest")
     try:
-        g = json.load(open(manifest_path))
+        g = json.loads(raw)
     except Exception as e:
         fail(f"unreadable generation.json: {e}")
-    if g.get("schema") != SCHEMA or g.get("collector") != "collect.sh":
-        fail(f"unexpected schema/collector: {g.get('schema')}/{g.get('collector')}")
+
+    if g.get("schema") != SCHEMA:
+        fail(f"unexpected schema: {g.get('schema')}")
+    # collector 指纹绑定：防退化 collector 自洽通过
+    collector_path = os.path.join(dest, "collect.sh")
+    if not regular_file(collector_path):
+        fail("collect.sh missing or not a regular file")
+    if g.get("collector") != "collect.sh" or g.get("collector_sha256") != sha(collector_path):
+        fail("collector identity mismatch (generation not produced by current collect.sh)")
     if sorted(g.get("expect", [])) != sorted(EXPECT):
         fail(f"expect mismatch: {g.get('expect')}")
+    if set(g.get("side_effects", {})) != SIDE_EFFECTS:
+        fail(f"side_effects mismatch: {sorted(g.get('side_effects', {}))}")
 
     expected_files = {"generation.json"}
     for n in EXPECT:
@@ -50,18 +80,29 @@ def main():
             if not h:
                 fail(f"manifest missing hash for {n}.{s}")
             p = os.path.join(gendir, f"{n}.{s}")
-            if not os.path.isfile(p):
-                fail(f"missing artifact {n}.{s}")
+            if not regular_file(p):
+                fail(f"missing or non-regular artifact {n}.{s}")
             if sha(p) != h:
                 fail(f"hash mismatch: {n}.{s}")
             expected_files.add(f"{n}.{s}")
     for name, h in g.get("side_effects", {}).items():
         p = os.path.join(gendir, name)
-        if not os.path.isfile(p):
+        if not regular_file(p):
             fail(f"missing side-effect receipt {name}")
         if sha(p) != h:
             fail(f"hash mismatch: side-effect {name}")
         expected_files.add(name)
+
+    # .assert 强度检查：表达式清单 + 全部通过标记
+    for n in EXPECT:
+        lines = [l.rstrip("\n") for l in open(os.path.join(gendir, f"{n}.assert"))]
+        if "expressions:" not in lines:
+            fail(f"weak assert file: {n}.assert missing expressions marker")
+        if lines and not lines[0].endswith(f"{n}: ok"):
+            fail(f"assert file shows failure: {n}.assert")
+        idx = lines.index("expressions:")
+        if len(lines) - idx - 1 < 1:
+            fail(f"weak assert file: {n}.assert records no expressions")
 
     actual = set(os.listdir(gendir))
     extra, missing = actual - expected_files, expected_files - actual
@@ -71,7 +112,7 @@ def main():
         fail(f"extra/tampered files: {sorted(extra)}")
 
     print(f"verified generation {os.path.basename(gendir)}: {len(EXPECT)} fixtures, "
-          f"{len(g['side_effects'])} side-effect receipts, all hashes match")
+          f"{len(SIDE_EFFECTS)} side-effect receipts, collector-bound, all hashes match")
 
 
 if __name__ == "__main__":

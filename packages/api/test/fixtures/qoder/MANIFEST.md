@@ -1,7 +1,7 @@
 # Qoder (qodercn) golden fixtures — F317 S4b
 
 采集环境: qodercn 1.1.51 (`@qodercn-ai/qoderclicn`), protocol_version 1.4.0, macOS arm64, 2026-09-13。
-`~` 为用户 HOME 占位。**真相源结构**：`current/`（symlink → `.gen-<hash>/`，唯一活跃 generation，读方一律经 `verify.py` 校验）+ `collect.sh`（确定性采集，输出 `generation.json` 全量 sha256 receipt）+ `first-capture/`（首采工件存档，非活跃）+ `PROVENANCE.md`（首采事后台账，非原始 receipt，unknown 字段已标注）。下表文件在 `first-capture/` 下，**注意：首采 tool-use/silent-fallback 的 init 暴露了完整工具面（Bash/Write/Web 等），当时未断言——新 collector 已逐场景 fail-closed 断言精确工具面**。
+`~` 为用户 HOME 占位。**真相源结构**：`current/`（symlink → `.gen-<hash>/`，唯一活跃 generation，读方一律经 `verify.py` 校验；**当前仓内尚无活跃 generation——pending 首次 L1 真实采集，`verify.py` 此时应报 `no active generation`**）+ `collect.sh`（确定性采集，输出 `generation.json` 全量 sha256 receipt）+ `first-capture/`（首采工件存档，非活跃）+ `PROVENANCE.md`（首采事后台账，非原始 receipt，unknown 字段已标注）。下表文件在 `first-capture/` 下，**注意：首采 tool-use/silent-fallback 的 init 暴露了完整工具面（Bash/Write/Web 等），当时未断言——新 collector 已逐场景 fail-closed 断言精确工具面**。
 
 | 文件 | 类别 | 采集命令（要点） | exit | 关键断言 |
 |---|---|---|---|---|
