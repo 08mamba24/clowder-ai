@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # collect.sh 无额度合成回归（stub provider，不调用真实 qodercn、不消耗 credits）
-# 正向: 9 fixture 断言 + generation 发布 + verify.py 全量校验 + 同代重跑 + 并发发布竞争
-# 负向: 断言失败 / 多余工具面 / 错误路径 / 多余 tool_use / 脏 profile / 缺 profile /
-#       篡改检出 / 额外文件（独立干净代）/ symlink 逃逸 / collector 指纹不匹配
+# 正向(3): 9 fixture 断言+发布+verify / 同代重跑 / 同代+异代并发发布竞争
+# 负向(15, 全部断言具体错误类别): bad-output / extra-tool / wrong-path / wrong-result-id /
+#       malicious-sid / dirty-profile / missing-sandbox / missing-profile (collect 侧 8) +
+#       tamper / extra-file / missing-side-effect / false-receipt / symlink-escape /
+#       gen-alias / collector-mismatch (verifier 侧 7)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORK=$(mktemp -d /tmp/qoder-selftest.XXXXXX); trap 'rm -rf "$WORK"' EXIT
 STUB="$WORK/qodercn"; PROF="$WORK/profile"; DEST="$WORK/dest"
 mkdir -p "$PROF/.auth" "$DEST"; touch "$PROF/.auth/user"
+SBOX="$WORK/sandbox.receipt"; printf 'fs_restricted: true\nmethod: selftest-stub-sandbox\n' > "$SBOX"
+export QODER_SANDBOX_RECEIPT="$SBOX"
 
 cat > "$STUB" <<STUBEOF
 #!/usr/bin/env bash
@@ -46,7 +50,7 @@ elif echo "\$args" | grep -q 'tool-input.txt'; then
   echo '{"type":"result","subtype":"success","is_error":false,"result":"1\tF317-DETERMINISTIC-LINE-1","session_id":"'\$SID'"}'
 elif echo "\$args" | grep -q pwned; then
   PF=\$(echo "\$args" | grep -oE '[^ ]*pwned[^ ]*' | sed "s/[.'\"]*$//" | head -1)
-  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c2","name":"Write","input":{"file_path":"'\$PF'"}}]},"session_id":"'\$SID'"}'
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c2","name":"Write","input":{"file_path":"'\$PF'","content":"x"}}]},"session_id":"'\$SID'"}'
   echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"c2","content":"Error: Allow writing?","is_error":true}]},"session_id":"'\$SID'"}'
   echo '{"type":"result","subtype":"success","is_error":false,"permission_denials":[],"result":"denied","session_id":"'\$SID'"}'
 else
@@ -69,24 +73,37 @@ cp "$HERE/collect.sh" "$HERE/verify.py" "$DEST/"
 python3 "$HERE/verify.py" "$DEST" >/dev/null
 echo "rerun ok"
 
-echo "== positive: concurrent publishers do not corrupt generation"
+echo "== positive: concurrent publishers do not corrupt generation (same + different generation)"
+# 异代变体：builtin hook 名变化（断言不锁定该名字）→ 合法但内容不同的另一代
+STUBF="$STUB" WORKD="$WORK" python3 <<'PY'
+import os
+s=open(os.environ['STUBF']).read()
+old='"hook_name":"builtin"'
+assert s.count(old)==1
+p=os.path.join(os.environ['WORKD'],'stub-alt')
+open(p,'w').write(s.replace(old,'"hook_name":"builtin2"'))
+os.chmod(p,0o755)
+PY
 QODER_BIN="$STUB" QODER_PROFILE_DIR="$PROF" DEST="$DEST" bash "$HERE/collect.sh" >/dev/null 2>&1 &
 P1=$!
-QODER_BIN="$STUB" QODER_PROFILE_DIR="$PROF" DEST="$DEST" bash "$HERE/collect.sh" >/dev/null 2>&1 &
+QODER_BIN="$WORK/stub-alt" QODER_PROFILE_DIR="$PROF" DEST="$DEST" bash "$HERE/collect.sh" >/dev/null 2>&1 &
 P2=$!
 wait "$P1"; wait "$P2"
 # 并发后不得存在嵌套 tmp 目录
-find "$DEST" -maxdepth 2 -name '.tmpgen*' -o -maxdepth 2 -name '.gen-*/*' -type d | grep tmpgen && { echo "FAIL: nested temp in generation"; exit 1; }
+find "$DEST" -maxdepth 2 -name '.tmpgen*' | grep . && { echo "FAIL: leftover temp dir"; exit 1; }
 python3 "$HERE/verify.py" "$DEST" >/dev/null
-echo "race ok (verifier green after concurrent publish)"
+CUR_NOW=$(readlink "$DEST/current"); [ -d "$DEST/$CUR_NOW" ] || { echo "FAIL: current dangling after race"; exit 1; }
+echo "race ok (verifier green after concurrent same+diff generation publish)"
 
-neg() { local label=$1 stub=$2; local rc=0
+# neg: 断言具体错误类别（匹配 stderr 中的唯一诊断子串），不再只看非零退出
+neg() { local label=$1 stub=$2 expect=$3; local rc=0 out
   local d="$WORK/dest-$label"; mkdir -p "$d"
-  QODER_BIN="$stub" QODER_PROFILE_DIR="$PROF" DEST="$d" bash "$HERE/collect.sh" >/dev/null 2>&1 || rc=$?
+  out=$(QODER_BIN="$stub" QODER_PROFILE_DIR="$PROF" DEST="$d" bash "$HERE/collect.sh" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || { echo "FAIL: $label not rejected"; exit 1; }
-  echo "$label ok (exit $rc)"; }
+  printf '%s' "$out" | grep -q "$expect" || { echo "FAIL: $label wrong diagnosis (want: $expect)"; printf '%s\n' "$out" | tail -2; exit 1; }
+  echo "$label ok (exit $rc, matched: $expect)"; }
 
-# 变异 stub：断言失败 / 多余工具面 / 错误路径 / 多余 tool_use（python 字面量替换，锚点唯一）
+# 变异 stub：断言失败 / 多余工具面 / 错误路径 / 错误 tool_result id / 恶意 SID（python 字面量替换，锚点唯一）
 STUBF="$STUB" WORKD="$WORK" python3 <<'PY'
 import os
 s=open(os.environ['STUBF']).read()
@@ -94,8 +111,9 @@ muts={
  'bad1': ('"result":"ok"', '"result":"nope"'),
  'bad2': ('TJ=\'["Read"]\'', 'TJ=\'["Bash","Read"]\''),
  'bad3': ('"file_path":"\'$TF\'"', '"file_path":"/tmp/x/tool-input.txt"'),
- 'bad4': ('{"type":"tool_use","id":"c2","name":"Write","input":{"file_path":"\'$PF\'"}}',
-          '{"type":"tool_use","id":"c2","name":"Write","input":{"file_path":"\'$PF\'"}},{"type":"tool_use","id":"c3","name":"Write","input":{"file_path":"/etc/hosts"}}'),
+ 'bad4': ('"tool_use_id":"c2"', '"tool_use_id":"zz"'),
+ 'bad5': ('SID="11111111-2222-3333-4444-555555555555"',
+          "SID=\"''') or 'aaaaaaaa' or re.fullmatch(r'.*','\""),
 }
 for name,(old,new) in muts.items():
     assert s.count(old)==1, f"{name}: anchor x{s.count(old)}: {old!r}"
@@ -105,54 +123,85 @@ for name,(old,new) in muts.items():
 PY
 
 echo "== negative: assertion failure (wrong success output)"
-neg bad-output "$WORK/bad1"
+neg bad-output "$WORK/bad1" 'success: FAILED'
 echo "== negative: unexpected extra tool surface (tool-use exposes Bash)"
-neg extra-tool "$WORK/bad2"
+neg extra-tool "$WORK/bad2" 'tool-use: FAILED'
 echo "== negative: wrong tool_use path (exact match enforced)"
-neg wrong-path "$WORK/bad3"
-echo "== negative: extra tool_use call (full-set equality enforced)"
-neg extra-tool-use "$WORK/bad4"
+neg wrong-path "$WORK/bad3" 'tool-use: FAILED'
+echo "== negative: wrong tool_result id (pairing enforced)"
+neg wrong-result-id "$WORK/bad4" 'permission-denial: FAILED'
+echo "== negative: malicious session_id (source-injection rejected)"
+neg malicious-sid "$WORK/bad5" 'bounded-charset validation'
 
-echo "== negative: dirty profile rejected"
+echo "== negative: dirty profile rejected (category)"
 DIRTY="$WORK/dirty-profile"; mkdir -p "$DIRTY"; echo '{}' > "$DIRTY/settings.json"
-rc=0; QODER_BIN="$STUB" QODER_PROFILE_DIR="$DIRTY" DEST="$DEST" bash "$HERE/collect.sh" >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 2 ] || { echo "FAIL: dirty profile accepted (exit $rc)"; exit 1; }
+rc=0; out=$(QODER_BIN="$STUB" QODER_PROFILE_DIR="$DIRTY" DEST="$DEST" bash "$HERE/collect.sh" 2>&1) || rc=$?
+[ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q "profile not clean" || { echo "FAIL: dirty profile wrong diagnosis"; exit 1; }
 echo "dirty-profile ok (exit 2)"
+
+echo "== negative: missing sandbox receipt rejected (category)"
+rc=0; out=$(env -u QODER_SANDBOX_RECEIPT QODER_BIN="$STUB" QODER_PROFILE_DIR="$PROF" DEST="$DEST" bash "$HERE/collect.sh" 2>&1) || rc=$?
+[ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "QODER_SANDBOX_RECEIPT required" || { echo "FAIL: missing sandbox accepted"; exit 1; }
+echo "missing-sandbox ok (exit $rc)"
 
 echo "== negative: missing profile rejected"
 rc=0; env -u QODER_PROFILE_DIR QODER_BIN="$STUB" DEST="$DEST" bash "$HERE/collect.sh" >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || { echo "FAIL: missing profile accepted"; exit 1; }
 echo "missing-profile ok (exit $rc)"
 
-# verifier 负测：每个用例从独立干净代副本开始（避免错误归因）
+# verifier 负测：每个用例从独立干净代副本开始 + 断言具体 VERIFY FAIL 类别
 fresh_gen() { local d="$WORK/vdest-$1"; rm -rf "$d"; mkdir -p "$d"
   cp "$HERE/collect.sh" "$HERE/verify.py" "$d/" 2>/dev/null
   GEN=$(readlink "$DEST/current")
   cp -R "$DEST/$GEN" "$d/$GEN"; ln -s "$GEN" "$d/current"; echo "$d"; }
 
-vfail() { local label=$1 d=$2; local rc=0
-  python3 "$HERE/verify.py" "$d" >/dev/null 2>&1 || rc=$?
+vfail() { local label=$1 d=$2 expect=$3; local rc=0 out
+  out=$(python3 "$HERE/verify.py" "$d" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || { echo "FAIL: $label not detected"; exit 1; }
-  echo "$label ok (exit $rc)"; }
+  printf '%s' "$out" | grep -q "$expect" || { echo "FAIL: $label wrong diagnosis (want: $expect): $out"; exit 1; }
+  echo "$label ok (matched: $expect)"; }
 
 echo "== negative: tampered artifact detected (clean generation)"
 D=$(fresh_gen tamper); GEN=$(readlink "$D/current"); printf 'x\n' >> "$D/$GEN/success.jsonl"
-vfail tamper "$D"
+vfail tamper "$D" 'hash mismatch'
 
 echo "== negative: extra file detected (clean generation)"
 D=$(fresh_gen extra); GEN=$(readlink "$D/current"); : > "$D/$GEN/rogue.txt"
-vfail extra-file "$D"
+vfail extra-file "$D" 'extra/tampered files'
 
 echo "== negative: missing side-effect receipt detected (clean generation)"
 D=$(fresh_gen noside); GEN=$(readlink "$D/current"); rm "$D/$GEN/hook-red.side-effect"
-vfail missing-side-effect "$D"
+vfail missing-side-effect "$D" 'missing side-effect receipt'
 
-echo "== negative: current symlink escaping DEST detected"
+echo "== negative: false side-effect content detected (semantics enforced)"
+D=$(fresh_gen falsereceipt); GEN=$(readlink "$D/current")
+printf 'target_absent=false\n' > "$D/$GEN/permission-denial.side-effect"
+python3 - "$D" "$GEN" <<'PY'
+import sys,os,json,hashlib,shutil
+d,gen=sys.argv[1],sys.argv[2]
+gd=os.path.join(d,gen)
+man=json.load(open(f"{gd}/generation.json"))
+def sha(p): return hashlib.sha256(open(p,'rb').read()).hexdigest()
+man["side_effects"]["permission-denial.side-effect"]=sha(f"{gd}/permission-denial.side-effect")
+raw=json.dumps(man,indent=2).encode()
+newgen=".gen-"+hashlib.sha256(raw).hexdigest()[:12]
+open(f"{gd}/generation.json","wb").write(raw)
+os.rename(gd, os.path.join(d,newgen))
+os.symlink(newgen, os.path.join(d,"current.tmp")); os.replace(os.path.join(d,"current.tmp"), os.path.join(d,"current"))
+PY
+vfail false-receipt "$D" 'semantic mismatch'
+
+echo "== negative: current escaping DEST detected"
 D=$(fresh_gen escape); ln -sfn ../../outside "$D/current"
-vfail symlink-escape "$D"
+vfail symlink-escape "$D" 'escapes DEST'
+
+echo "== negative: generation entry via alias symlink detected"
+D=$(fresh_gen alias); GEN=$(readlink "$D/current")
+ln -s "$GEN" "$D/.gen-alias"; ln -sfn .gen-alias "$D/current"
+vfail gen-alias "$D" 'generation entry is a symlink'
 
 echo "== negative: collector fingerprint mismatch detected"
 D=$(fresh_gen csha); printf '\n# tampered\n' >> "$D/collect.sh"
-vfail collector-mismatch "$D"
+vfail collector-mismatch "$D" 'collector identity mismatch'
 
 echo "selftest PASS"

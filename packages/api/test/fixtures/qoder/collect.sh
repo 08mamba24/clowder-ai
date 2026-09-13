@@ -16,6 +16,11 @@ mkdir -p "$DEST"; [ -w "$DEST" ] || { echo "DEST not writable: $DEST" >&2; exit 
 for banned in settings.json settings.local.json hooks plugins; do
   [ ! -e "$PROFILE/$banned" ] || { echo "profile not clean: contains $banned" >&2; exit 2; }
 done
+# OS 隔离硬门禁：写工具 probe 必须在文件系统受限环境跑，receipt 文件必填且语义校验
+SBOX="${QODER_SANDBOX_RECEIPT:?QODER_SANDBOX_RECEIPT required (fs-restricted isolation proof; no fallback)}"
+[ -f "$SBOX" ] || { echo "sandbox receipt not found: $SBOX" >&2; exit 2; }
+grep -q '^fs_restricted: true$' "$SBOX" || { echo "sandbox receipt invalid: fs_restricted not true" >&2; exit 2; }
+grep -qE '^method: \S' "$SBOX" || { echo "sandbox receipt invalid: no method" >&2; exit 2; }
 
 RAW=$(mktemp -d /tmp/qoder-collect.XXXXXX)
 STAGE=$(mktemp -d /tmp/qoder-stage.XXXXXX)
@@ -62,6 +67,13 @@ env={"rows":rows,
      "init":next((r for r in rows if r.get("subtype")=="init"),None),
      "result":[r for r in rows if r.get("type")=="result"][-1] if any(r.get("type")=="result" for r in rows) else None,
      "assistant":[r for r in rows if r.get("type")=="assistant"],
+     # 完整投影：tool_use = (name, 全量 input 键值, id)；tool_result = (tool_use_id, is_error, content)
+     "tus":[(b.get("name"), sorted((k,str(v)) for k,v in (b.get("input") or {}).items()), b.get("id"))
+            for r in [r for r in rows if r.get("type")=="assistant"]
+            for b in (r.get("message",{}).get("content") or []) if b.get("type")=="tool_use"],
+     "trs":[(b.get("tool_use_id"), bool(b.get("is_error")), str(b.get("content")))
+            for r in rows if r.get("type")=="user"
+            for b in (r.get("message",{}).get("content") or []) if b.get("type")=="tool_result"],
      "toolfile":os.environ.get("TOOLFILE",""), "pwned":os.environ.get("PWNEDPATH",""),
      "expected_sid":os.environ.get("EXPECTED_SID","")}
 safety={"any":any,"all":all,"str":str,"int":int,"len":len,"sorted":sorted,"bool":bool,"True":True,"False":False,"None":None}
@@ -84,7 +96,7 @@ jassert success \
   'init is not None' 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
   'init.get("permissionMode")=="default"' 'init.get("model")=="Auto"' \
   'result.get("result")=="ok"' 'result.get("is_error") is False' \
-  'rows[0].get("subtype")=="hook_started"'
+  'rows[0].get("subtype")=="hook_started"' 'tus==[]' 'trs==[]'
 
 # ---- fixture: tool-use（确定性输入文件；仅 Read；工具调用全集严格全等；Read 行号协议规范化）----
 TOOLFILE_RAW="$RAW/tool-input.txt"; printf 'F317-DETERMINISTIC-LINE-1\n' > "$TOOLFILE_RAW"
@@ -93,9 +105,9 @@ run tool-use 0 "$QODER_BIN" -p "Read the file $TOOLFILE_RAW and reply with its e
 export TOOLFILE="$(printf '%s' "$TOOLFILE_RAW" | sanitize)"
 jassert tool-use \
   'sorted(init.get("tools") or [])==["Read"]' 'init.get("mcp_servers")==[]' \
-  'sorted((b.get("name"), str(b.get("input",{}).get("file_path"))) for r in assistant for b in r.get("message",{}).get("content",[]) if b.get("type")=="tool_use")==[("Read",toolfile)]' \
-  'sorted((str(b.get("content")).split("\t",1)[-1].strip(), bool(b.get("is_error"))) for r in rows if r.get("type")=="user" for b in (r.get("message",{}).get("content") or []) if b.get("type")=="tool_result")==[("F317-DETERMINISTIC-LINE-1",False)]' \
-  'str(result.get("result","")).split("\t",1)[-1].strip()=="F317-DETERMINISTIC-LINE-1"' 'result.get("is_error") is False'
+  'len(tus)==1 and tus[0][0]=="Read" and tus[0][1]==[("file_path",toolfile)]' \
+  'len(trs)==1 and trs[0][0]==tus[0][2] and trs[0][1]==False and trs[0][2]=="1\tF317-DETERMINISTIC-LINE-1"' \
+  'result.get("result")=="1\tF317-DETERMINISTIC-LINE-1"' 'result.get("is_error") is False'
 unset TOOLFILE
 
 # ---- fixture: permission-denial（唯一临时目标；仅 Write；工具调用全集严格全等）----
@@ -107,8 +119,8 @@ echo "target_absent=true" > "$STAGE/permission-denial.side-effect"
 export PWNEDPATH="$(printf '%s' "$PWNED_RAW" | sanitize)"
 jassert permission-denial \
   'sorted(init.get("tools") or [])==["Write"]' 'init.get("mcp_servers")==[]' \
-  'sorted((b.get("name"), str(b.get("input",{}).get("file_path"))) for r in assistant for b in r.get("message",{}).get("content",[]) if b.get("type")=="tool_use")==[("Write",pwned)]' \
-  'sorted((bool(b.get("is_error")),) for r in rows if r.get("type")=="user" for b in (r.get("message",{}).get("content") or []) if b.get("type")=="tool_result")==[(True,)]' \
+  'len(tus)==1 and tus[0][0]=="Write" and tus[0][1]==[("content","x"),("file_path",pwned)]' \
+  'len(trs)==1 and trs[0][0]==tus[0][2] and trs[0][1]==True and "Error: Allow" in trs[0][2]' \
   'result.get("is_error") is False'
 unset PWNEDPATH
 
@@ -117,24 +129,25 @@ EMPTY=$(mktemp -d "$RAW/empty.XXXXXX")
 run auth-error 1 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json \
   --config-dir "$EMPTY" "${DENY_MCP[@]}" --tools ""
 jassert auth-error 'init is not None' 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
-  'result.get("is_error") is True' 'result.get("subtype")=="success"'
+  'result.get("is_error") is True' 'result.get("subtype")=="success"' 'tus==[]' 'trs==[]'
 
 # ---- fixture: silent-model-fallback（空工具）----
 run silent-model-fallback 0 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json \
   --config-dir "$PROFILE" "${DENY_MCP[@]}" -m definitely-not-a-model-xyz --tools "" --setting-sources user
 jassert silent-model-fallback 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
-  'init.get("model")=="Auto"' 'result.get("is_error") is False'
+  'init.get("model")=="Auto"' 'result.get("is_error") is False' 'tus==[]' 'trs==[]'
 
-# ---- fixture: resume（空工具；SID 经 env 校验后全等断言；断言精确回忆）----
+# ---- fixture: resume（空工具；SID 经 stdin 传入做有界校验——provider 字节绝不进任何源码字符串）----
 SID=$(python3 -c "import json;print(next(json.loads(l)['session_id'] for l in open('$STAGE/success.jsonl') if l.strip()))")
-# provider 可控数据先做有界字符集校验，再经 env 进断言（防 eval 拼串注入）
-python3 -c "import re,sys;sys.exit(0 if re.fullmatch(r'[A-Za-z0-9-]{8,64}', '''$SID''') else 1)" || fail "resume: session_id failed bounded-charset validation"
+printf '%s' "$SID" | python3 -c "import sys,re;sys.exit(0 if re.fullmatch(r'[A-Za-z0-9-]{8,64}',sys.stdin.read()) else 1)" \
+  || fail "resume: session_id failed bounded-charset validation"
 export EXPECTED_SID="$SID"
 run resume 0 "$QODER_BIN" -r "$SID" -p "In one short sentence: what did I ask you in the previous turn?" \
   -o stream-json --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "" --setting-sources user
 jassert resume 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
   'result.get("session_id")==expected_sid' 'result.get("is_error") is False' \
-  '"reply with exactly" in str(result.get("result","")).lower() and "ok" in str(result.get("result","")).lower()'
+  '"reply with exactly" in str(result.get("result","")).lower() and "ok" in str(result.get("result","")).lower()' \
+  'tus==[]' 'trs==[]'
 unset EXPECTED_SID
 
 # ---- fixtures: S5 hook 红→绿（独立 project/marker；空工具 + deny-all MCP）----
@@ -145,7 +158,7 @@ SCENARIO_CWD=$P1D
 run hook-red 0 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools ""
 [ -e "$P1D/marker" ] || fail "hook-red: malicious hook did NOT run (expected red)"
 echo "marker_present=true" > "$STAGE/hook-red.side-effect"
-jassert hook-red 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
+jassert hook-red 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' 'tus==[]' 'trs==[]' \
   'any(r.get("subtype")=="hook_started" and "marker" in str(r.get("hook_name","")) for r in rows)'
 
 P2D=$(mkproj); echo '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch '"$P2D"'/marker"}]}]}}' > "$P2D/.qoder/settings.json"
@@ -154,7 +167,7 @@ run hook-green-project 0 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json
   --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "" --setting-sources user
 [ ! -e "$P2D/marker" ] || fail "hook-green-project: marker exists (block failed)"
 echo "marker_absent=true" > "$STAGE/hook-green-project.side-effect"
-jassert hook-green-project 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
+jassert hook-green-project 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' 'tus==[]' 'trs==[]' \
   'not any("marker" in str(r.get("hook_name","")) for r in rows if r.get("subtype")=="hook_started")'
 
 P3D=$(mkproj); echo '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch '"$P3D"'/marker"}]}]}}' > "$P3D/.qoder/settings.local.json"
@@ -163,10 +176,11 @@ run hook-green-local 0 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json \
   --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "" --setting-sources user
 [ ! -e "$P3D/marker" ] || fail "hook-green-local: marker exists (block failed)"
 echo "marker_absent=true" > "$STAGE/hook-green-local.side-effect"
-jassert hook-green-local 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
+jassert hook-green-local 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' 'tus==[]' 'trs==[]' \
   'not any("marker" in str(r.get("hook_name","")) for r in rows if r.get("subtype")=="hook_started")'
 
-# ---- 发布前：敏感扫描 + 完整性 + generation manifest（stdout/stderr/exit/assert/side-effect 全量 sha256）----
+# ---- 发布前：sandbox receipt 入 STAGE + 敏感扫描 + 完整性 + generation manifest ----
+sanitize < "$SBOX" > "$STAGE/sandbox.side-effect"
 for f in "$STAGE"/*; do scan "$f"; done
 for name in $EXPECT; do
   for suf in jsonl stderr.txt exit assert; do [ -f "$STAGE/$name.$suf" ] || fail "missing artifact $name.$suf"; done

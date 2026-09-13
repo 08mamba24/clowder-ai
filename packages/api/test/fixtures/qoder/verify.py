@@ -17,7 +17,15 @@ EXPECT = ["success", "tool-use", "permission-denial", "auth-error",
           "silent-model-fallback", "resume", "hook-red", "hook-green-project", "hook-green-local"]
 ARTIFACT_SUFFIXES = ("jsonl", "stderr.txt", "exit", "assert")
 SIDE_EFFECTS = {"permission-denial.side-effect", "hook-red.side-effect",
-                "hook-green-project.side-effect", "hook-green-local.side-effect"}
+                "hook-green-project.side-effect", "hook-green-local.side-effect",
+                "sandbox.side-effect"}
+# receipt 语义契约：内容必须精确匹配（防"文件在、语义假"通过）
+RECEIPT_CONTENT = {
+    "permission-denial.side-effect": "target_absent=true\n",
+    "hook-red.side-effect": "marker_present=true\n",
+    "hook-green-project.side-effect": "marker_absent=true\n",
+    "hook-green-local.side-effect": "marker_absent=true\n",
+}
 SCHEMA = "qoder-f317-generation/3"
 
 
@@ -40,7 +48,11 @@ def main():
     if not os.path.islink(current):
         fail("current is not a symlink (no active generation)")
     target = os.readlink(current)
-    gendir = os.path.realpath(os.path.join(dest, target))
+    gen_entry = os.path.join(dest, target)
+    # lstat 先行：generation 入口本身是 symlink（含 .gen-alias 中转链）即拒，realpath 之前判定
+    if os.path.islink(gen_entry):
+        fail(f"generation entry is a symlink: {target}")
+    gendir = os.path.realpath(gen_entry)
     if os.path.dirname(gendir) != dest or os.path.basename(gendir) == dest:
         fail(f"current escapes DEST: {target}")
     m = re.fullmatch(r"\.gen-([0-9a-f]{12})", os.path.basename(gendir))
@@ -91,6 +103,12 @@ def main():
             fail(f"missing side-effect receipt {name}")
         if sha(p) != h:
             fail(f"hash mismatch: side-effect {name}")
+        if name in RECEIPT_CONTENT and open(p).read() != RECEIPT_CONTENT[name]:
+            fail(f"side-effect receipt semantic mismatch: {name}")
+        if name == "sandbox.side-effect":
+            txt = open(p).read()
+            if "fs_restricted: true" not in txt or not re.search(r"^method: \S", txt, re.M):
+                fail("sandbox receipt semantic mismatch")
         expected_files.add(name)
 
     # .assert 强度检查：表达式清单 + 全部通过标记
