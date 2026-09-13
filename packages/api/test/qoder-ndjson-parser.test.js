@@ -3,10 +3,11 @@
  * 夹具 = L1 真实采集一代（packages/api/test/fixtures/qoder/current/，verifier 校验过的 generation）
  * + gate-probes（cancel / mcp-mount）+ 方言陷阱负向用例（auth-error 的 subtype 陷阱等）
  */
-import test from 'node:test';
+
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -26,7 +27,11 @@ const {
 );
 
 const CAT = 'cat_test_qoder';
-const loadJsonl = (p) => readFileSync(p, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+const loadJsonl = (p) =>
+  readFileSync(p, 'utf8')
+    .split('\n')
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l));
 
 // 活跃 generation 的夹具（current -> .gen-<hash>/）
 const currentDir = join(FIXTURES, 'current');
@@ -51,7 +56,12 @@ test('mcp status vocabulary: disconnected maps to failed (P1-C)', () => {
   assert.equal(mapQoderMcpStatus('disconnected'), 'failed');
   assert.equal(mapQoderMcpStatus('connected'), 'connected');
   assert.equal(mapQoderMcpStatus('weird-status'), undefined);
-  const init = { type: 'system', subtype: 'init', session_id: 's1', mcp_servers: [{ name: 'x', status: 'disconnected' }] };
+  const init = {
+    type: 'system',
+    subtype: 'init',
+    session_id: 's1',
+    mcp_servers: [{ name: 'x', status: 'disconnected' }],
+  };
   const out = transformQoderEvent(init, CAT);
   const payload = JSON.parse(out[1].content);
   assert.equal(payload.servers[0].status, 'failed');
@@ -121,7 +131,11 @@ test('qoder-only events pass through as system_info (P1-E), agent_loop never emi
     const out = transformQoderEvent(r, CAT);
     return out == null ? [] : Array.isArray(out) ? out : [out];
   });
-  assert.equal(events.some((m) => m.type === 'agent_loop'), false, 'I-6: agent_loop must not be emitted');
+  assert.equal(
+    events.some((m) => m.type === 'agent_loop'),
+    false,
+    'I-6: agent_loop must not be emitted',
+  );
   const hookInfo = events.find((m) => m.type === 'system_info' && JSON.parse(m.content).type === 'qoder_hook');
   assert.ok(hookInfo, 'hook events surfaced as system_info');
 });
@@ -129,12 +143,19 @@ test('qoder-only events pass through as system_info (P1-E), agent_loop never emi
 test('cancel signature from gate probe: graceful cancel still emits terminal result', () => {
   const rows = loadJsonl(join(FIXTURES, 'gate-probes', 'cancel.jsonl'));
   // 修正后的事实：SIGINT = 优雅取消，终态 result 正常收尾（exit 130 由 wrapper 体现）
-  assert.equal(rows.some((r) => r.type === 'result'), true, 'terminal result present');
+  assert.equal(
+    rows.some((r) => r.type === 'result'),
+    true,
+    'terminal result present',
+  );
   const resultRow = rows.find((r) => r.type === 'result');
   assert.equal(isQoderResultErrorEvent(resultRow), false);
   const events = rows.flatMap((r) => {
     const out = transformQoderEvent(r, CAT);
     return out == null ? [] : Array.isArray(out) ? out : [out];
   });
-  assert.equal(events.some((m) => m.type === 'error'), false);
+  assert.equal(
+    events.some((m) => m.type === 'error'),
+    false,
+  );
 });

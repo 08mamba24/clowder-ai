@@ -103,7 +103,10 @@ export function transformQoderEvent(event: unknown, catId: CatId): AgentMessage 
   }
 
   // P1-E 透传：system/hook_* 与 system/artifacts_update → system_info（诊断可见，不参与语义）
-  if (e.type === 'system' && (e.subtype === 'hook_started' || e.subtype === 'hook_progress' || e.subtype === 'hook_response')) {
+  if (
+    e.type === 'system' &&
+    (e.subtype === 'hook_started' || e.subtype === 'hook_progress' || e.subtype === 'hook_response')
+  ) {
     return {
       type: 'system_info',
       catId,
