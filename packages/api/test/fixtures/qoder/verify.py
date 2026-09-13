@@ -110,7 +110,8 @@ def main():
         if name == "sandbox.side-effect":
             txt = open(p).read()
             for required in ("fs_restricted: true", "canary_home_blocked: true",
-                             "canary_tmp_blocked: true", "canary_raw_allowed: true",
+                             "canary_tmp_blocked: true", "canary_var_tmp_blocked: true",
+                             "canary_raw_allowed: true", "auth_clone_per_invocation: true",
                              "policy_location: outside-provider-writable-scope",
                              "bound_run_dir: "):
                 if required not in txt:

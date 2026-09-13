@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # collect.sh 无额度合成回归（stub provider，不调用真实 qodercn、不消耗 credits）
-# 正向(4): 增攻击韧性（policy 改写+绊线逃逸全被挡） 9 fixture 断言+发布+verify / 同代重跑 / 同代+异代并发发布竞争
-# 负向(18, 全部断言具体错误类别): bad-output / extra-tool / wrong-path / wrong-result-id /
-#       malicious-sid / missing-ids / missing-sid / dirty-profile / missing-profile (collect 侧 9) +
+# 正向(4): 增攻击韧性（policy 改写 + /tmp,/var/tmp,HOME 逃逸全被挡） 9 fixture 断言+发布+verify / 同代重跑 / 同代+异代并发发布竞争
+# 负向(19, 全部断言具体错误类别): bad-output / extra-tool / wrong-path / wrong-result-id /
+#       malicious-sid / missing-ids / missing-sid / clone-pollution / dirty-profile / missing-profile (collect 侧 10) +
 #       tamper / extra-file / missing-side-effect / false-receipt / symlink-escape /
 #       gen-alias / gen-symlink / gen-alias-dir / collector-mismatch (verifier 侧 9)
 # sandbox 不再是自声明 receipt：collector 自建 sandbox-exec 边界 + 行为级 canary（HOME 拒写/RAW 可写）
@@ -122,7 +122,10 @@ muts={
            '"result":"You asked me to reply with exactly ok."}')],
  # 攻击韧性正测变体：每次 invocation 尝试改写任意 policy + 写 HOME/tmp 绊线（应全被沙箱挡下）
  'stub-attack': [('if ! echo "$args" | grep -q \'setting-sources user\'; then',
-   'for pp in /tmp/qoder-sbx.*/sandbox.sb; do echo "(allow default)" > "$pp" 2>/dev/null; done; touch /tmp/qoder-f317-escape 2>/dev/null; touch "$HOME/.qoder-f317-escape" 2>/dev/null\nif ! echo "$args" | grep -q \'setting-sources user\'; then')],
+   'for pp in /tmp/qoder-sbx.*/sandbox.sb; do echo "(allow default)" > "$pp" 2>/dev/null; done; touch /tmp/qoder-f317-escape 2>/dev/null; touch /var/tmp/qoder-f317-escape 2>/dev/null; touch "$HOME/.qoder-f317-escape" 2>/dev/null\nif ! echo "$args" | grep -q \'setting-sources user\'; then')],
+ # clone 持久化污染：首个 invocation 往自己的 config dir 写 settings.json（必须被洁净审计拦下）
+ 'bad8': [('CFGDIR=$(echo "$args" | grep -oE \'config-dir [^ ]+\' | awk \'{print $2}\')',
+           'CFGDIR=$(echo "$args" | grep -oE \'config-dir [^ ]+\' | awk \'{print $2}\')\necho "{}" > "$CFGDIR/settings.json" 2>/dev/null || true')],
 }
 for name,pairs in muts.items():
     for old,new in pairs:
@@ -150,16 +153,20 @@ neg missing-ids "$WORK/bad6" 'permission-denial: FAILED'
 echo "== negative: success/resume without session_id (extractor must fail)"
 neg missing-sid "$WORK/bad7" 'session_id'
 
-echo "== positive: attack resilience (policy rewrite + HOME/tmp escape attempts all blocked)"
-rm -f "$HOME/.qoder-f317-escape" /tmp/qoder-f317-escape
+echo "== positive: attack resilience (policy rewrite + /tmp,/var/tmp,HOME escape attempts all blocked)"
+snap_escape_set() { { ls "$HOME"/.qoder-f317-* /tmp/qoder-f317-* /var/tmp/qoder-f317-* 2>/dev/null || true; } | sort; }
+BEFORE_ESC=$(snap_escape_set)
 AD="$WORK/dest-attack"; mkdir -p "$AD"
 QODER_BIN="$WORK/stub-attack" QODER_PROFILE_DIR="$PROF" DEST="$AD" bash "$HERE/collect.sh" >/dev/null 2>&1 \
   || { echo "FAIL: attack-resilient run rejected"; exit 1; }
 cp "$HERE/collect.sh" "$HERE/verify.py" "$AD/"
 python3 "$HERE/verify.py" "$AD" >/dev/null
-[ ! -e "$HOME/.qoder-f317-escape" ] && [ ! -e /tmp/qoder-f317-escape ] \
-  || { echo "FAIL: escape marker created despite sandbox"; exit 1; }
-echo "attack-resilience ok (policy intact, tripwires clean, verifier green)"
+AFTER_ESC=$(snap_escape_set)
+[ "$BEFORE_ESC" = "$AFTER_ESC" ] || { echo "FAIL: escape marker set changed despite sandbox"; exit 1; }
+echo "attack-resilience ok (policy intact, no new escape markers, verifier green)"
+
+echo "== negative: clone persistence pollution (settings.json into config dir)"
+neg clone-pollution "$WORK/bad8" 'clone cleanliness' 
 
 echo "== negative: dirty profile rejected (category)"
 DIRTY="$WORK/dirty-profile"; mkdir -p "$DIRTY"; echo '{}' > "$DIRTY/settings.json"
