@@ -38,7 +38,7 @@ qodercn（Qoder 中国版 CLI，`@qodercn-ai/qoderclicn@1.1.51`）headless spawn
 
 **I-7 状态真相（P2，已闭环）**：spike S4 勘误已随本 commit 真实落仓（r2 的「已同步」声明当时不实，r3 修正）。
 
-**I-8 S5/S6 安全门（P1，🟡 partial，详见 spike 收尾记录 r2）**：已证——默认 sources 下 project/local 恶意 hook 真实执行（红），`--setting-sources user` 阻断两源（绿）；CLI 接受 `bypass_permissions`（红证）→ 硬编码禁传 + init 断言；strict MCP 过滤 plugin server、`--tools ""` 生效。**未证（进实现前置剩余项）**：① 预执行防线——spawn 前干净专用 config/profile（拒绝未授权 settings/plugins/hooks；builtin plugin hook 在受控 sources 下仍执行，流上 hook allowlist 只是事后第二道检测）；② `cat-cafe-memory` 实挂载 + `CAT_CAFE_READONLY=true` 精确 tools/list 断言（memory MCP 并非天然只读，family 含 distillation 写操作与 library-lifecycle 破坏级操作）；③ cancel 夹具重采。①②必须在首个真实 invocation 前完成。
+**I-8 S5/S6 安全门（P1，🟡 partial，详见 spike 收尾记录 r2）**：已证——默认 sources 下 project/local 恶意 hook 真实执行（红），`--setting-sources user` 阻断两源（绿）；CLI 接受 `bypass_permissions`（红证）→ 硬编码禁传 + init 断言；strict MCP 过滤 plugin server、`--tools ""` 生效。**未证（进实现前置剩余项）**：① 预执行防线——spawn 前干净专用 config/profile（拒绝未授权 settings/plugins/hooks；builtin plugin hook 在受控 sources 下仍执行，流上 hook allowlist 只是事后第二道检测）；② `cat-cafe-memory` 实挂载 + `CAT_CAFE_READONLY=true` 精确 tools/list 断言（memory MCP 并非天然只读，family 含 distillation 写操作与 library-lifecycle 破坏级操作）；③ cancel 夹具重采。时序：①是 L1 一切 probe 的硬前置；②③本身是 L1 gate probe（受控豁免的真实调用）；①②③全绿才解锁 L2 首个产品/runtime invocation。
 
 **I-9 rollout（P2）**：见 P1-F。
 
