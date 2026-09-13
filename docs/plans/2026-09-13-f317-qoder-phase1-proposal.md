@@ -47,20 +47,19 @@ qodercn（Qoder 中国版 CLI，`@qodercn-ai/qoderclicn@1.1.51`）headless spawn
 1. **`qoder-ndjson-parser.ts`**（独立方言层；循 Kimi/Gemini/OpenCode 先例）：复用同构块（assistant text/thinking/tool_use、user tool_result、result 成功路径、session_id）；方言点 = P1-A/B/C/E/H + status 前置映射 + 版本断言分轨 + init 先行断言
 2. **窄 `QoderAgentService`**（I-4 边界）+ I-1 注册链全量改动
 3. 安全硬编码：禁 `bypass_permissions`/`auto`/`--dangerously-skip-permissions`；init.model / init.permissionMode 断言（P1-D）；MCP 双层 allowlist + `CAT_CAFE_READONLY=true` + tools/list 断言（I-8）；`--tools ""`
-4. **S4b 夹具门禁**：9 类 = 8 正路 + `err.jsonl` 负向；现有 3 份覆盖成功/tooluse/静默回落，补采错误、权限拒绝、resume、cancel、压缩 5 类；CLI 产不出的类**删类并记录，不手造假 golden**
-5. `cat-template.json` 条目：门禁全绿后最后加入（I-9）
+4. **S4b 夹具（🟡 现状与 spike r2 一致）**：已落仓 9 份脱敏夹具 + manifest（`packages/api/test/fixtures/qoder/`），覆盖 success / tool-use / permission-denial / auth-error / silent-model-fallback / resume / hook-red / hook-green×2。**未采**：cancel（首次采集失败，transcript 以成功收尾）；压缩 = `deferred/N/A for Phase 1`（compact_boundary 冻结）；MCP 实挂载（见 S6 剩余项）。CLI 产不出的类删类并记录，不手造假 golden
+5. `cat-template.json` 条目：在下方「真实 invocation 授权线」全部满足后最后加入（I-9）
 
-## Phase 1 前置门禁（谱谱执行，红绿记录落 spike 文档）
+## 授权线（时序唯一真相，与 spike r2 收尾结论一致）
 
-- **S4b**：补采 5 类 / 删不可产类
-- **S5**：五源恶意 settings 负向测试 + hooks/plugins 注册面（SessionStart hook = 任意代码执行入口）
-- **S6**：strict 过滤 `plugin:qoder-context`；`--tools ""`；readonly MCP 断言
-- 任一红 → 停止，不进 Phase 1
+- **可开始纯实现**（写 parser/Service/测试，不发起真实 qodercn 调用）：双猫放行 r3 提案即可——已满足（点点协议侧 APPROVED、砚砚架构侧 APPROVED）。
+- **可发起首个真实 invocation**（含夹具补采中消耗 credit 的调用）：须先完成三项前置——① spawn 前干净专用 config/profile 验证（拒绝未授权 settings/plugins/hooks；builtin plugin hook 在受控 sources 下仍执行，预执行防线不能依赖流上检测）；② `cat-cafe-memory` 实挂载 + `CAT_CAFE_READONLY=true` 精确 tools/list 断言；③ cancel 夹具重采（signal/exit/无 result 三路与 silent_completion / CLI failure 分测）。
+- 三项前置可与首 PR 的纯实现部分并行推进；cat-template 条目（I-9）在三项全绿后最后加入。
 
 ## 出口条件
 
-- 砚砚复审 I-1~I-9 闭环；点点协议侧已放行（r2），S4b 夹具到手后抽检
-- 夹具驱动测试全绿；S4b/S5/S6 红绿记录落 spike 文档
+- 砚砚对授权线三前置项的红绿记录放行；点点抽检夹具 manifest 的 dialect 契约
+- 夹具驱动测试全绿；三项前置红绿记录落 spike 文档
 
 ## 边界
 
