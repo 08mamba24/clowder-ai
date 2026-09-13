@@ -63,7 +63,7 @@ fresh_auth() { AUTHD="$RAW/auth-$1"; rm -rf "$AUTHD"; mkdir -p "$AUTHD"
   cp -R "$PROFILE/.auth" "$AUTHD/" || { echo "ASSERTION FAIL: auth clone failed" >&2; exit 2; }; }
 audit_auth() { # clone 中不得出现 settings/hooks/plugins；.auth 必须与源逐字节一致
   local d="$1" bad
-  bad=$(find "$d" -maxdepth 2 \( -name settings.json -o -name settings.local.json -o -name hooks -o -name plugins \) 2>/dev/null)
+  bad=$(find "$d" \( -name settings.json -o -name settings.local.json -o -name hooks -o -name plugins \) 2>/dev/null)
   [ -z "$bad" ] || { echo "ASSERTION FAIL: clone cleanliness violated (provider attempted persistence): $bad" >&2; exit 1; }
   diff -r "$PROFILE/.auth" "$d/.auth" >/dev/null 2>&1 || { echo "ASSERTION FAIL: clone .auth mutated" >&2; exit 1; }
 }
@@ -181,6 +181,7 @@ jassert permission-denial \
 unset PWNEDPATH
 
 # ---- fixture: auth-error（空 config dir，预期 exit 1）----
+AUTHD=""   # auth-error 用独立空目录，不持 clone；reset 防止审计落在上一场景的陈旧 clone
 EMPTY=$(mktemp -d "$RAW/empty.XXXXXX")
 run auth-error 1 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json \
   --config-dir "$EMPTY" "${DENY_MCP[@]}" --tools ""

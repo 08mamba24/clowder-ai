@@ -166,7 +166,7 @@ AFTER_ESC=$(snap_escape_set)
 echo "attack-resilience ok (policy intact, no new escape markers, verifier green)"
 
 echo "== negative: clone persistence pollution (settings.json into config dir)"
-neg clone-pollution "$WORK/bad8" 'clone cleanliness' 
+neg clone-pollution "$WORK/bad8" 'clone cleanliness'
 
 echo "== negative: dirty profile rejected (category)"
 DIRTY="$WORK/dirty-profile"; mkdir -p "$DIRTY"; echo '{}' > "$DIRTY/settings.json"
