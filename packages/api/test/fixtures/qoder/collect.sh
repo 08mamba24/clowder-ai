@@ -18,25 +18,47 @@ for banned in settings.json settings.local.json hooks plugins; do
 done
 RAW=$(mktemp -d /tmp/qoder-collect.XXXXXX)
 STAGE=$(mktemp -d /tmp/qoder-stage.XXXXXX)
-trap 'rm -rf "$RAW" "$STAGE"' EXIT
+trap 'rm -rf "$RAW" "$STAGE" "$SBXDIR"' EXIT
 
-# OS 隔离硬门禁：collector 自建 sandbox-exec 边界（HOME 拒写，RAW/PROFILE 例外），
-# 并以行为级 canary 双向验证（HOME 写必须被拒 / RAW 写必须成功）后才允许任何 provider 调用。
+# OS 隔离硬门禁 v2：collector 自建 sandbox-exec 边界。
+# - policy 放 SBXDIR（provider 沙箱内不可写），每次 invocation 前后校验哈希，篡改即红
+# - 默认拒写面：HOME、/tmp、/private/tmp、/private/var/folders；唯一例外 RAW（规范化绝对路径）
+# - 原始 PROFILE 永不给 provider：一次性 auth clone 落 RAW/auth，逐 run 丢弃
+# - 行为级 canary：HOME 写必须被拒 / /tmp 写必须被拒 / RAW 写必须成功
+# - 全程逃逸绊线：固定探测路径在任何时点出现文件即红
 command -v sandbox-exec >/dev/null 2>&1 || { echo "ASSERTION FAIL: sandbox-exec unavailable, cannot establish isolation" >&2; exit 2; }
-SBX_PROFILE="$RAW/sandbox.sb"
+SBXDIR=$(mktemp -d /tmp/qoder-sbx.XXXXXX)
+SBX_PROFILE="$SBXDIR/sandbox.sb"
+RAWC=$(cd "$RAW" && pwd -P)   # seatbelt 按规范路径匹配，须消除 /tmp → /private/tmp 别名
 cat > "$SBX_PROFILE" <<SBXEOF
 (version 1)
 (allow default)
 (deny file-write* (subpath "$HOME"))
-(allow file-write* (subpath "$RAW"))
-(allow file-write* (subpath "$PROFILE"))
+(deny file-write* (subpath "/tmp"))
+(deny file-write* (subpath "/private/tmp"))
+(deny file-write* (subpath "/private/var/folders"))
+(allow file-write* (subpath "$RAWC"))
 SBXEOF
-CANARY_HOME="$HOME/.qoder-f317-canary-$$"; rm -f "$CANARY_HOME"
+POLICY_FILE_SHA=$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$SBX_PROFILE")
+check_policy_intact() {
+  local now; now=$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$SBX_PROFILE")
+  [ "$now" = "$POLICY_FILE_SHA" ] || { echo "ASSERTION FAIL: sandbox policy tampered between/inside invocations" >&2; exit 1; }
+}
+TRIPWIRES=("$HOME/.qoder-f317-escape" "/tmp/qoder-f317-escape" "$PROFILE/.qoder-f317-escape")
+check_tripwires() {
+  local t; for t in "${TRIPWIRES[@]}"; do [ ! -e "$t" ] || { echo "ASSERTION FAIL: escape tripwire hit: $t" >&2; exit 1; }; done
+}
+check_tripwires
+CANARY_HOME="$HOME/.qoder-f317-canary-$$"; rm -f "$CANARY_HOME"; CANARY_TMP="/tmp/qoder-f317-canary-$$"; rm -f "$CANARY_TMP"
 rc=0; sandbox-exec -f "$SBX_PROFILE" /bin/sh -c "touch '$CANARY_HOME'" 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] && [ ! -e "$CANARY_HOME" ] || { echo "ASSERTION FAIL: sandbox canary: HOME write not blocked (rc=$rc)" >&2; exit 2; }
+rc=0; sandbox-exec -f "$SBX_PROFILE" /bin/sh -c "touch '$CANARY_TMP'" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] && [ ! -e "$CANARY_TMP" ] || { echo "ASSERTION FAIL: sandbox canary: /tmp write not blocked (rc=$rc)" >&2; exit 2; }
 sandbox-exec -f "$SBX_PROFILE" /bin/sh -c "touch '$RAW/.canary-in'" || { echo "ASSERTION FAIL: sandbox canary: RAW write blocked" >&2; exit 2; }
 [ -e "$RAW/.canary-in" ] || { echo "ASSERTION FAIL: sandbox canary: RAW marker missing" >&2; exit 2; }
 rm -f "$RAW/.canary-in"
+# 一次性 auth clone：provider 的 --config-dir 一律指向它，原始 clean profile 不可达
+AUTHCLONE="$RAW/auth"; mkdir -p "$AUTHCLONE"; cp -R "$PROFILE/.auth" "$AUTHCLONE/" || { echo "ASSERTION FAIL: auth clone failed" >&2; exit 2; }
 
 EXPECT="success tool-use permission-denial auth-error silent-model-fallback resume hook-red hook-green-project hook-green-local"
 SANRAW="/tmp/qoder-collect.XXXXXX"   # sanitize() 对 RAW 的投影
@@ -48,7 +70,9 @@ fail() { echo "ASSERTION FAIL: $*" >&2; exit 1; }
 run() {
   local name=$1 expect_exit=$2; shift 2
   local rc=0
+  check_policy_intact
   ( cd "${SCENARIO_CWD:-$RAW}" && sandbox-exec -f "$SBX_PROFILE" "$@" ) >"$RAW/$name.out" 2>"$RAW/$name.err" || rc=$?
+  check_policy_intact; check_tripwires
   echo "$rc" >"$RAW/$name.exit"
   [ "$rc" = "$expect_exit" ] || fail "$name: exit $rc, expected $expect_exit"
   sanitize <"$RAW/$name.out" >"$STAGE/$name.jsonl"
@@ -114,7 +138,7 @@ PY
 # ---- fixture: success（空工具 + deny-all MCP）----
 SCENARIO_CWD=$RAW
 run success 0 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json \
-  --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "" --setting-sources user
+  --config-dir "$AUTHCLONE" "${DENY_MCP[@]}" --tools "" --setting-sources user
 jassert success \
   'init is not None' 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
   'init.get("permissionMode")=="default"' 'init.get("model")=="Auto"' \
@@ -124,7 +148,7 @@ jassert success \
 # ---- fixture: tool-use（确定性输入文件；仅 Read；工具调用全集严格全等；Read 行号协议规范化）----
 TOOLFILE_RAW="$RAW/tool-input.txt"; printf 'F317-DETERMINISTIC-LINE-1\n' > "$TOOLFILE_RAW"
 run tool-use 0 "$QODER_BIN" -p "Read the file $TOOLFILE_RAW and reply with its exact content." \
-  -o stream-json --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "Read" --setting-sources user
+  -o stream-json --config-dir "$AUTHCLONE" "${DENY_MCP[@]}" --tools "Read" --setting-sources user
 export TOOLFILE="$(printf '%s' "$TOOLFILE_RAW" | sanitize)"
 jassert tool-use \
   'sorted(init.get("tools") or [])==["Read"]' 'init.get("mcp_servers")==[]' \
@@ -136,7 +160,7 @@ unset TOOLFILE
 # ---- fixture: permission-denial（唯一临时目标；仅 Write；工具调用全集严格全等）----
 PWNED_RAW="$RAW/pwned.txt"; rm -f "$PWNED_RAW"
 run permission-denial 0 "$QODER_BIN" -p "Use the Write tool to create $PWNED_RAW with content 'x'. Do it now, do not ask." \
-  -o stream-json --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "Write" --setting-sources user
+  -o stream-json --config-dir "$AUTHCLONE" "${DENY_MCP[@]}" --tools "Write" --setting-sources user
 [ ! -e "$PWNED_RAW" ] || fail "permission-denial: target file was written"
 echo "target_absent=true" > "$STAGE/permission-denial.side-effect"
 export PWNEDPATH="$(printf '%s' "$PWNED_RAW" | sanitize)"
@@ -156,27 +180,32 @@ jassert auth-error 'init is not None' 'sorted(init.get("tools") or [])==[]' 'ini
 
 # ---- fixture: silent-model-fallback（空工具）----
 run silent-model-fallback 0 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json \
-  --config-dir "$PROFILE" "${DENY_MCP[@]}" -m definitely-not-a-model-xyz --tools "" --setting-sources user
+  --config-dir "$AUTHCLONE" "${DENY_MCP[@]}" -m definitely-not-a-model-xyz --tools "" --setting-sources user
 jassert silent-model-fallback 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
   'init.get("model")=="Auto"' 'result.get("is_error") is False' 'tus==[]' 'trs==[]'
 
 # ---- fixture: resume（空工具；SID 经 stdin 传入做有界校验——provider 字节绝不进任何源码字符串）----
 SID=$(python3 - "$STAGE/success.jsonl" <<'SIDPY' || fail "resume: session_id failed bounded-charset validation"
 import json,re,sys
+sids=set()
 for line in open(sys.argv[1]):
     if not line.strip(): continue
     d=json.loads(line)
     sid=d.get("session_id")
-    if sid is not None:
-        if not (isinstance(sid,str) and re.fullmatch(r"[A-Za-z0-9-]{8,64}", sid)):
-            sys.exit(1)
-        print(sid)
-        break
+    if sid is None: continue
+    if not (isinstance(sid,str) and re.fullmatch(r"[A-Za-z0-9-]{8,64}", sid)):
+        sys.exit(1)
+    sids.add(sid)
+# success 中必须存在 SID，且所有出现值唯一（空集/多值都是协议异常）
+if len(sids)!=1:
+    sys.stderr.write(f"sid set invalid: {len(sids)} distinct\n")
+    sys.exit(1)
+print(sids.pop())
 SIDPY
 ) || fail "resume: session_id extraction failed"
 export EXPECTED_SID="$SID"
 run resume 0 "$QODER_BIN" -r "$SID" -p "In one short sentence: what did I ask you in the previous turn?" \
-  -o stream-json --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "" --setting-sources user
+  -o stream-json --config-dir "$AUTHCLONE" "${DENY_MCP[@]}" --tools "" --setting-sources user
 jassert resume 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' \
   'result.get("session_id")==expected_sid' 'result.get("is_error") is False' \
   '"reply with exactly" in str(result.get("result","")).lower() and "ok" in str(result.get("result","")).lower()' \
@@ -188,7 +217,7 @@ mkproj() { local d; d=$(mktemp -d "$RAW/proj.XXXXXX"); mkdir -p "$d/.qoder"; ech
 
 P1D=$(mkproj); echo '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch '"$P1D"'/marker"}]}]}}' > "$P1D/.qoder/settings.json"
 SCENARIO_CWD=$P1D
-run hook-red 0 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools ""
+run hook-red 0 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json --config-dir "$AUTHCLONE" "${DENY_MCP[@]}" --tools ""
 [ -e "$P1D/marker" ] || fail "hook-red: malicious hook did NOT run (expected red)"
 echo "marker_present=true" > "$STAGE/hook-red.side-effect"
 jassert hook-red 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' 'tus==[]' 'trs==[]' \
@@ -197,7 +226,7 @@ jassert hook-red 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")=
 P2D=$(mkproj); echo '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch '"$P2D"'/marker"}]}]}}' > "$P2D/.qoder/settings.json"
 SCENARIO_CWD=$P2D
 run hook-green-project 0 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json \
-  --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "" --setting-sources user
+  --config-dir "$AUTHCLONE" "${DENY_MCP[@]}" --tools "" --setting-sources user
 [ ! -e "$P2D/marker" ] || fail "hook-green-project: marker exists (block failed)"
 echo "marker_absent=true" > "$STAGE/hook-green-project.side-effect"
 jassert hook-green-project 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' 'tus==[]' 'trs==[]' \
@@ -206,19 +235,22 @@ jassert hook-green-project 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_
 P3D=$(mkproj); echo '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch '"$P3D"'/marker"}]}]}}' > "$P3D/.qoder/settings.local.json"
 SCENARIO_CWD=$P3D
 run hook-green-local 0 "$QODER_BIN" -p "reply with exactly: ok" -o stream-json \
-  --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "" --setting-sources user
+  --config-dir "$AUTHCLONE" "${DENY_MCP[@]}" --tools "" --setting-sources user
 [ ! -e "$P3D/marker" ] || fail "hook-green-local: marker exists (block failed)"
 echo "marker_absent=true" > "$STAGE/hook-green-local.side-effect"
 jassert hook-green-local 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' 'tus==[]' 'trs==[]' \
   'not any("marker" in str(r.get("hook_name","")) for r in rows if r.get("subtype")=="hook_started")'
 
-# ---- 发布前：sandbox receipt（自产，绑定 profile 指纹与本次 RAW）入 STAGE ----
+# ---- 发布前：最终完整性（policy 未被篡改 + 绊线干净）+ sandbox receipt 入 STAGE ----
+check_policy_intact; check_tripwires
 {
   echo "fs_restricted: true"
-  echo "method: macOS-sandbox-exec"
+  echo "method: macOS-sandbox-exec-immutable-policy"
   echo "profile_sha256: $(sanitize < "$SBX_PROFILE" | python3 -c "import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())")"
   echo "canary_home_blocked: true"
+  echo "canary_tmp_blocked: true"
   echo "canary_raw_allowed: true"
+  echo "policy_location: outside-provider-writable-scope"
   echo "bound_run_dir: $(printf '%s' "$RAW" | sanitize)"
 } > "$STAGE/sandbox.side-effect"
 for f in "$STAGE"/*; do scan "$f"; done

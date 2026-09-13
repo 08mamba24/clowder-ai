@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # collect.sh 无额度合成回归（stub provider，不调用真实 qodercn、不消耗 credits）
-# 正向(3): 9 fixture 断言+发布+verify / 同代重跑 / 同代+异代并发发布竞争
-# 负向(17, 全部断言具体错误类别): bad-output / extra-tool / wrong-path / wrong-result-id /
-#       malicious-sid / missing-ids / dirty-profile / missing-profile (collect 侧 8) +
+# 正向(4): 增攻击韧性（policy 改写+绊线逃逸全被挡） 9 fixture 断言+发布+verify / 同代重跑 / 同代+异代并发发布竞争
+# 负向(18, 全部断言具体错误类别): bad-output / extra-tool / wrong-path / wrong-result-id /
+#       malicious-sid / missing-ids / missing-sid / dirty-profile / missing-profile (collect 侧 9) +
 #       tamper / extra-file / missing-side-effect / false-receipt / symlink-escape /
 #       gen-alias / gen-symlink / gen-alias-dir / collector-mismatch (verifier 侧 9)
 # sandbox 不再是自声明 receipt：collector 自建 sandbox-exec 边界 + 行为级 canary（HOME 拒写/RAW 可写）
@@ -108,19 +108,31 @@ STUBF="$STUB" WORKD="$WORK" python3 <<'PY'
 import os
 s=open(os.environ['STUBF']).read()
 muts={
- 'bad1': ('"result":"ok"', '"result":"nope"'),
- 'bad2': ('TJ=\'["Read"]\'', 'TJ=\'["Bash","Read"]\''),
- 'bad3': ('"file_path":"\'$TF\'"', '"file_path":"/tmp/x/tool-input.txt"'),
- 'bad4': ('"tool_use_id":"c2"', '"tool_use_id":"zz"'),
- 'bad5': ('SID="11111111-2222-3333-4444-555555555555"',
-          "SID=\"''') or 'aaaaaaaa' or re.fullmatch(r'.*','\""),
- 'bad6': ('"id":"c2"', '"id":null'),
+ 'bad1': [('"result":"ok"', '"result":"nope"')],
+ 'bad2': [('TJ=\'["Read"]\'', 'TJ=\'["Bash","Read"]\'')],
+ 'bad3': [('"file_path":"\'$TF\'"', '"file_path":"/tmp/x/tool-input.txt"')],
+ 'bad4': [('"tool_use_id":"c2"', '"tool_use_id":"zz"')],
+ 'bad5': [('SID="11111111-2222-3333-4444-555555555555"',
+          "SID=\"''') or 'aaaaaaaa' or re.fullmatch(r'.*','\"")],
+ # 两端同删 ID：锁住原始 None==None 回归
+ 'bad6': [('"id":"c2"', '"id":null'), ('"tool_use_id":"c2"', '"tool_use_id":null')],
+ # success 与 resume 全程无 session_id：提取器必须红
+ 'bad7': [('"result":"ok","session_id":"\'$SID\'"}', '"result":"ok"}'),
+          ('"result":"You asked me to reply with exactly ok.","session_id":"\'$SID\'"}',
+           '"result":"You asked me to reply with exactly ok."}')],
+ # 攻击韧性正测变体：每次 invocation 尝试改写任意 policy + 写 HOME/tmp 绊线（应全被沙箱挡下）
+ 'stub-attack': [('if ! echo "$args" | grep -q \'setting-sources user\'; then',
+   'for pp in /tmp/qoder-sbx.*/sandbox.sb; do echo "(allow default)" > "$pp" 2>/dev/null; done; touch /tmp/qoder-f317-escape 2>/dev/null; touch "$HOME/.qoder-f317-escape" 2>/dev/null\nif ! echo "$args" | grep -q \'setting-sources user\'; then')],
 }
-for name,(old,new) in muts.items():
-    assert s.count(old)==1, f"{name}: anchor x{s.count(old)}: {old!r}"
-    p=os.path.join(os.environ['WORKD'], name)
-    open(p,'w').write(s.replace(old,new))
-    os.chmod(p, 0o755)
+for name,pairs in muts.items():
+    for old,new in pairs:
+        assert s.count(old)==1, f"{name}: anchor x{s.count(old)}: {old!r}"
+        s=s.replace(old,new)
+    pth=os.path.join(os.environ['WORKD'], name)
+    open(pth,'w').write(s)
+    os.chmod(pth,0o755)
+    for old,new in pairs:  # 还原，供下一个变异基于原 stub
+        s=s.replace(new,old)
 PY
 
 echo "== negative: assertion failure (wrong success output)"
@@ -133,8 +145,21 @@ echo "== negative: wrong tool_result id (pairing enforced)"
 neg wrong-result-id "$WORK/bad4" 'permission-denial: FAILED'
 echo "== negative: malicious session_id (source-injection rejected)"
 neg malicious-sid "$WORK/bad5" 'bounded-charset validation'
-echo "== negative: missing tool ids on both ends (None pairing rejected)"
+echo "== negative: missing tool ids on BOTH ends (None pairing rejected)"
 neg missing-ids "$WORK/bad6" 'permission-denial: FAILED'
+echo "== negative: success/resume without session_id (extractor must fail)"
+neg missing-sid "$WORK/bad7" 'session_id'
+
+echo "== positive: attack resilience (policy rewrite + HOME/tmp escape attempts all blocked)"
+rm -f "$HOME/.qoder-f317-escape" /tmp/qoder-f317-escape
+AD="$WORK/dest-attack"; mkdir -p "$AD"
+QODER_BIN="$WORK/stub-attack" QODER_PROFILE_DIR="$PROF" DEST="$AD" bash "$HERE/collect.sh" >/dev/null 2>&1 \
+  || { echo "FAIL: attack-resilient run rejected"; exit 1; }
+cp "$HERE/collect.sh" "$HERE/verify.py" "$AD/"
+python3 "$HERE/verify.py" "$AD" >/dev/null
+[ ! -e "$HOME/.qoder-f317-escape" ] && [ ! -e /tmp/qoder-f317-escape ] \
+  || { echo "FAIL: escape marker created despite sandbox"; exit 1; }
+echo "attack-resilience ok (policy intact, tripwires clean, verifier green)"
 
 echo "== negative: dirty profile rejected (category)"
 DIRTY="$WORK/dirty-profile"; mkdir -p "$DIRTY"; echo '{}' > "$DIRTY/settings.json"

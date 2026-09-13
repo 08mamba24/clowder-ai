@@ -110,7 +110,9 @@ def main():
         if name == "sandbox.side-effect":
             txt = open(p).read()
             for required in ("fs_restricted: true", "canary_home_blocked: true",
-                             "canary_raw_allowed: true", "bound_run_dir: "):
+                             "canary_tmp_blocked: true", "canary_raw_allowed: true",
+                             "policy_location: outside-provider-writable-scope",
+                             "bound_run_dir: "):
                 if required not in txt:
                     fail("sandbox receipt semantic mismatch")
             if not re.search(r"^method: \S", txt, re.M) or not re.search(r"^profile_sha256: [0-9a-f]{64}", txt, re.M):
