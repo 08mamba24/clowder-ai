@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # collect.sh 无额度合成回归（stub provider，不调用真实 qodercn、不消耗 credits）
 # 正向(3): 9 fixture 断言+发布+verify / 同代重跑 / 同代+异代并发发布竞争
-# 负向(15, 全部断言具体错误类别): bad-output / extra-tool / wrong-path / wrong-result-id /
-#       malicious-sid / dirty-profile / missing-sandbox / missing-profile (collect 侧 8) +
+# 负向(17, 全部断言具体错误类别): bad-output / extra-tool / wrong-path / wrong-result-id /
+#       malicious-sid / missing-ids / dirty-profile / missing-profile (collect 侧 8) +
 #       tamper / extra-file / missing-side-effect / false-receipt / symlink-escape /
-#       gen-alias / collector-mismatch (verifier 侧 7)
+#       gen-alias / gen-symlink / gen-alias-dir / collector-mismatch (verifier 侧 9)
+# sandbox 不再是自声明 receipt：collector 自建 sandbox-exec 边界 + 行为级 canary（HOME 拒写/RAW 可写）
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORK=$(mktemp -d /tmp/qoder-selftest.XXXXXX); trap 'rm -rf "$WORK"' EXIT
 STUB="$WORK/qodercn"; PROF="$WORK/profile"; DEST="$WORK/dest"
 mkdir -p "$PROF/.auth" "$DEST"; touch "$PROF/.auth/user"
-SBOX="$WORK/sandbox.receipt"; printf 'fs_restricted: true\nmethod: selftest-stub-sandbox\n' > "$SBOX"
-export QODER_SANDBOX_RECEIPT="$SBOX"
+
 
 cat > "$STUB" <<STUBEOF
 #!/usr/bin/env bash
@@ -114,6 +114,7 @@ muts={
  'bad4': ('"tool_use_id":"c2"', '"tool_use_id":"zz"'),
  'bad5': ('SID="11111111-2222-3333-4444-555555555555"',
           "SID=\"''') or 'aaaaaaaa' or re.fullmatch(r'.*','\""),
+ 'bad6': ('"id":"c2"', '"id":null'),
 }
 for name,(old,new) in muts.items():
     assert s.count(old)==1, f"{name}: anchor x{s.count(old)}: {old!r}"
@@ -132,6 +133,8 @@ echo "== negative: wrong tool_result id (pairing enforced)"
 neg wrong-result-id "$WORK/bad4" 'permission-denial: FAILED'
 echo "== negative: malicious session_id (source-injection rejected)"
 neg malicious-sid "$WORK/bad5" 'bounded-charset validation'
+echo "== negative: missing tool ids on both ends (None pairing rejected)"
+neg missing-ids "$WORK/bad6" 'permission-denial: FAILED'
 
 echo "== negative: dirty profile rejected (category)"
 DIRTY="$WORK/dirty-profile"; mkdir -p "$DIRTY"; echo '{}' > "$DIRTY/settings.json"
@@ -139,15 +142,10 @@ rc=0; out=$(QODER_BIN="$STUB" QODER_PROFILE_DIR="$DIRTY" DEST="$DEST" bash "$HER
 [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q "profile not clean" || { echo "FAIL: dirty profile wrong diagnosis"; exit 1; }
 echo "dirty-profile ok (exit 2)"
 
-echo "== negative: missing sandbox receipt rejected (category)"
-rc=0; out=$(env -u QODER_SANDBOX_RECEIPT QODER_BIN="$STUB" QODER_PROFILE_DIR="$PROF" DEST="$DEST" bash "$HERE/collect.sh" 2>&1) || rc=$?
-[ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "QODER_SANDBOX_RECEIPT required" || { echo "FAIL: missing sandbox accepted"; exit 1; }
-echo "missing-sandbox ok (exit $rc)"
-
-echo "== negative: missing profile rejected"
-rc=0; env -u QODER_PROFILE_DIR QODER_BIN="$STUB" DEST="$DEST" bash "$HERE/collect.sh" >/dev/null 2>&1 || rc=$?
-[ "$rc" -ne 0 ] || { echo "FAIL: missing profile accepted"; exit 1; }
-echo "missing-profile ok (exit $rc)"
+echo "== negative: missing profile rejected (category)"
+rc=0; out=$(env -u QODER_PROFILE_DIR QODER_BIN="$STUB" DEST="$DEST" bash "$HERE/collect.sh" 2>&1) || rc=$?
+[ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "QODER_PROFILE_DIR required" || { echo "FAIL: missing profile wrong diagnosis"; exit 1; }
+echo "missing-profile ok (matched: QODER_PROFILE_DIR required)"
 
 # verifier 负测：每个用例从独立干净代副本开始 + 断言具体 VERIFY FAIL 类别
 fresh_gen() { local d="$WORK/vdest-$1"; rm -rf "$d"; mkdir -p "$d"
@@ -193,12 +191,22 @@ vfail false-receipt "$D" 'semantic mismatch'
 
 echo "== negative: current escaping DEST detected"
 D=$(fresh_gen escape); ln -sfn ../../outside "$D/current"
-vfail symlink-escape "$D" 'escapes DEST'
+vfail symlink-escape "$D" 'not canonical'
 
-echo "== negative: generation entry via alias symlink detected"
+echo "== negative: generation entry via alias symlink detected (non-canonical target)"
 D=$(fresh_gen alias); GEN=$(readlink "$D/current")
 ln -s "$GEN" "$D/.gen-alias"; ln -sfn .gen-alias "$D/current"
-vfail gen-alias "$D" 'generation entry is a symlink'
+vfail gen-alias "$D" 'not canonical'
+
+echo "== negative: canonical-named generation entry that is a symlink detected"
+D=$(fresh_gen gensym); GEN=$(readlink "$D/current")
+ln -s "$GEN" "$D/.gen-000000000000"; ln -sfn .gen-000000000000 "$D/current"
+vfail gen-symlink "$D" 'generation entry is a symlink'
+
+echo "== negative: generation entry via intermediate alias-dir detected"
+D=$(fresh_gen aliasdir); GEN=$(readlink "$D/current")
+ln -s . "$D/.alias-dir"; ln -sfn ".alias-dir/$GEN" "$D/current"
+vfail gen-alias-dir "$D" 'current target not canonical'
 
 echo "== negative: collector fingerprint mismatch detected"
 D=$(fresh_gen csha); printf '\n# tampered\n' >> "$D/collect.sh"

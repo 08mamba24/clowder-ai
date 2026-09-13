@@ -6,7 +6,7 @@ fail-closed 契约：
 - 目录名 `.gen-<h>` 的 <h> 必须等于 generation.json 内容 sha256 前 12 位
 - schema/collector/collector_sha256 绑定：collector_sha256 必须等于本目录 collect.sh 的实际 sha256
   （退化/被改 collector 无法自洽通过）
-- expect 精确匹配；side_effects 必须是精确四项集合
+- expect 精确匹配；side_effects 必须是精确五项集合（含 sandbox receipt）
 - artifacts 四类全量 sha256 重算；.assert 必须含 "expressions:" 标记、≥1 条表达式行、末行 "<name>: ok"
 - 目录内不得有缺失/额外/篡改文件
 用法: python3 verify.py [DEST]   # 默认脚本所在目录
@@ -48,8 +48,10 @@ def main():
     if not os.path.islink(current):
         fail("current is not a symlink (no active generation)")
     target = os.readlink(current)
+    # current 目标必须是裸规范名（拒绝任何斜杠/中转目录/非规范路径——与 publisher 输出一致）
+    if not re.fullmatch(r"\.gen-[0-9a-f]{12}", target):
+        fail(f"current target not canonical: {target!r}")
     gen_entry = os.path.join(dest, target)
-    # lstat 先行：generation 入口本身是 symlink（含 .gen-alias 中转链）即拒，realpath 之前判定
     if os.path.islink(gen_entry):
         fail(f"generation entry is a symlink: {target}")
     gendir = os.path.realpath(gen_entry)
@@ -107,7 +109,11 @@ def main():
             fail(f"side-effect receipt semantic mismatch: {name}")
         if name == "sandbox.side-effect":
             txt = open(p).read()
-            if "fs_restricted: true" not in txt or not re.search(r"^method: \S", txt, re.M):
+            for required in ("fs_restricted: true", "canary_home_blocked: true",
+                             "canary_raw_allowed: true", "bound_run_dir: "):
+                if required not in txt:
+                    fail("sandbox receipt semantic mismatch")
+            if not re.search(r"^method: \S", txt, re.M) or not re.search(r"^profile_sha256: [0-9a-f]{64}", txt, re.M):
                 fail("sandbox receipt semantic mismatch")
         expected_files.add(name)
 

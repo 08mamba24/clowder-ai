@@ -16,15 +16,27 @@ mkdir -p "$DEST"; [ -w "$DEST" ] || { echo "DEST not writable: $DEST" >&2; exit 
 for banned in settings.json settings.local.json hooks plugins; do
   [ ! -e "$PROFILE/$banned" ] || { echo "profile not clean: contains $banned" >&2; exit 2; }
 done
-# OS 隔离硬门禁：写工具 probe 必须在文件系统受限环境跑，receipt 文件必填且语义校验
-SBOX="${QODER_SANDBOX_RECEIPT:?QODER_SANDBOX_RECEIPT required (fs-restricted isolation proof; no fallback)}"
-[ -f "$SBOX" ] || { echo "sandbox receipt not found: $SBOX" >&2; exit 2; }
-grep -q '^fs_restricted: true$' "$SBOX" || { echo "sandbox receipt invalid: fs_restricted not true" >&2; exit 2; }
-grep -qE '^method: \S' "$SBOX" || { echo "sandbox receipt invalid: no method" >&2; exit 2; }
-
 RAW=$(mktemp -d /tmp/qoder-collect.XXXXXX)
 STAGE=$(mktemp -d /tmp/qoder-stage.XXXXXX)
 trap 'rm -rf "$RAW" "$STAGE"' EXIT
+
+# OS 隔离硬门禁：collector 自建 sandbox-exec 边界（HOME 拒写，RAW/PROFILE 例外），
+# 并以行为级 canary 双向验证（HOME 写必须被拒 / RAW 写必须成功）后才允许任何 provider 调用。
+command -v sandbox-exec >/dev/null 2>&1 || { echo "ASSERTION FAIL: sandbox-exec unavailable, cannot establish isolation" >&2; exit 2; }
+SBX_PROFILE="$RAW/sandbox.sb"
+cat > "$SBX_PROFILE" <<SBXEOF
+(version 1)
+(allow default)
+(deny file-write* (subpath "$HOME"))
+(allow file-write* (subpath "$RAW"))
+(allow file-write* (subpath "$PROFILE"))
+SBXEOF
+CANARY_HOME="$HOME/.qoder-f317-canary-$$"; rm -f "$CANARY_HOME"
+rc=0; sandbox-exec -f "$SBX_PROFILE" /bin/sh -c "touch '$CANARY_HOME'" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] && [ ! -e "$CANARY_HOME" ] || { echo "ASSERTION FAIL: sandbox canary: HOME write not blocked (rc=$rc)" >&2; exit 2; }
+sandbox-exec -f "$SBX_PROFILE" /bin/sh -c "touch '$RAW/.canary-in'" || { echo "ASSERTION FAIL: sandbox canary: RAW write blocked" >&2; exit 2; }
+[ -e "$RAW/.canary-in" ] || { echo "ASSERTION FAIL: sandbox canary: RAW marker missing" >&2; exit 2; }
+rm -f "$RAW/.canary-in"
 
 EXPECT="success tool-use permission-denial auth-error silent-model-fallback resume hook-red hook-green-project hook-green-local"
 SANRAW="/tmp/qoder-collect.XXXXXX"   # sanitize() 对 RAW 的投影
@@ -36,7 +48,7 @@ fail() { echo "ASSERTION FAIL: $*" >&2; exit 1; }
 run() {
   local name=$1 expect_exit=$2; shift 2
   local rc=0
-  ( cd "${SCENARIO_CWD:-$RAW}" && "$@" ) >"$RAW/$name.out" 2>"$RAW/$name.err" || rc=$?
+  ( cd "${SCENARIO_CWD:-$RAW}" && sandbox-exec -f "$SBX_PROFILE" "$@" ) >"$RAW/$name.out" 2>"$RAW/$name.err" || rc=$?
   echo "$rc" >"$RAW/$name.exit"
   [ "$rc" = "$expect_exit" ] || fail "$name: exit $rc, expected $expect_exit"
   sanitize <"$RAW/$name.out" >"$STAGE/$name.jsonl"
@@ -51,7 +63,10 @@ sanitize() {
 # fail-closed 敏感扫描：HOME/PROFILE 原文、常见凭证形态、私钥、IP
 scan() {
   local f=$1
-  ! grep -qE "$HOME|$PROFILE|sk-[A-Za-z0-9]{8,}|Bearer [A-Za-z0-9._-]{8,}|(api[_-]?key|secret|token|password|cookie)['\"]?\s*[:=]|[A-Za-z0-9+/]{40,}={0,2}|-----BEGIN [A-Z ]*PRIVATE KEY-----|([0-9]{1,3}\.){3}[0-9]{1,3}" "$f" \
+  # sandbox receipt 自含 64 位 hex profile 指纹，base64 启发式对其豁免（其余子句全量适用）
+  local base64_clause='|[A-Za-z0-9+/]{40,}={0,2}'
+  case "$f" in */sandbox.side-effect) base64_clause='' ;; esac
+  ! grep -qE "$HOME|$PROFILE|sk-[A-Za-z0-9]{8,}|Bearer [A-Za-z0-9._-]{8,}|(api[_-]?key|secret|token|password|cookie)['\"]?\s*[:=]$base64_clause|-----BEGIN [A-Z ]*PRIVATE KEY-----|([0-9]{1,3}\.){3}[0-9]{1,3}" "$f" \
     || fail "sensitive content in $(basename "$f")"
 }
 
@@ -75,7 +90,15 @@ env={"rows":rows,
             for r in rows if r.get("type")=="user"
             for b in (r.get("message",{}).get("content") or []) if b.get("type")=="tool_result"],
      "toolfile":os.environ.get("TOOLFILE",""), "pwned":os.environ.get("PWNEDPATH",""),
-     "expected_sid":os.environ.get("EXPECTED_SID","")}
+     "expected_sid":os.environ.get("EXPECTED_SID",""),
+     # id 配对前置门：tool_use/tool_result 的 id 必须都是非空字符串（None==None 不算配对）
+     "ids_nonempty":(
+        all(isinstance(b.get("id"),str) and len(b["id"])>0
+            for r in [r for r in rows if r.get("type")=="assistant"]
+            for b in (r.get("message",{}).get("content") or []) if b.get("type")=="tool_use")
+        and all(isinstance(b.get("tool_use_id"),str) and len(b["tool_use_id"])>0
+            for r in rows if r.get("type")=="user"
+            for b in (r.get("message",{}).get("content") or []) if b.get("type")=="tool_result"))}
 safety={"any":any,"all":all,"str":str,"int":int,"len":len,"sorted":sorted,"bool":bool,"True":True,"False":False,"None":None}
 for c in sys.argv[1:]:
     ok=False
@@ -105,7 +128,7 @@ run tool-use 0 "$QODER_BIN" -p "Read the file $TOOLFILE_RAW and reply with its e
 export TOOLFILE="$(printf '%s' "$TOOLFILE_RAW" | sanitize)"
 jassert tool-use \
   'sorted(init.get("tools") or [])==["Read"]' 'init.get("mcp_servers")==[]' \
-  'len(tus)==1 and tus[0][0]=="Read" and tus[0][1]==[("file_path",toolfile)]' \
+  'ids_nonempty' 'len(tus)==1 and tus[0][0]=="Read" and tus[0][1]==[("file_path",toolfile)]' \
   'len(trs)==1 and trs[0][0]==tus[0][2] and trs[0][1]==False and trs[0][2]=="1\tF317-DETERMINISTIC-LINE-1"' \
   'result.get("result")=="1\tF317-DETERMINISTIC-LINE-1"' 'result.get("is_error") is False'
 unset TOOLFILE
@@ -119,7 +142,7 @@ echo "target_absent=true" > "$STAGE/permission-denial.side-effect"
 export PWNEDPATH="$(printf '%s' "$PWNED_RAW" | sanitize)"
 jassert permission-denial \
   'sorted(init.get("tools") or [])==["Write"]' 'init.get("mcp_servers")==[]' \
-  'len(tus)==1 and tus[0][0]=="Write" and tus[0][1]==[("content","x"),("file_path",pwned)]' \
+  'ids_nonempty' 'len(tus)==1 and tus[0][0]=="Write" and tus[0][1]==[("content","x"),("file_path",pwned)]' \
   'len(trs)==1 and trs[0][0]==tus[0][2] and trs[0][1]==True and "Error: Allow" in trs[0][2]' \
   'result.get("is_error") is False'
 unset PWNEDPATH
@@ -138,9 +161,19 @@ jassert silent-model-fallback 'sorted(init.get("tools") or [])==[]' 'init.get("m
   'init.get("model")=="Auto"' 'result.get("is_error") is False' 'tus==[]' 'trs==[]'
 
 # ---- fixture: resume（空工具；SID 经 stdin 传入做有界校验——provider 字节绝不进任何源码字符串）----
-SID=$(python3 -c "import json;print(next(json.loads(l)['session_id'] for l in open('$STAGE/success.jsonl') if l.strip()))")
-printf '%s' "$SID" | python3 -c "import sys,re;sys.exit(0 if re.fullmatch(r'[A-Za-z0-9-]{8,64}',sys.stdin.read()) else 1)" \
-  || fail "resume: session_id failed bounded-charset validation"
+SID=$(python3 - "$STAGE/success.jsonl" <<'SIDPY' || fail "resume: session_id failed bounded-charset validation"
+import json,re,sys
+for line in open(sys.argv[1]):
+    if not line.strip(): continue
+    d=json.loads(line)
+    sid=d.get("session_id")
+    if sid is not None:
+        if not (isinstance(sid,str) and re.fullmatch(r"[A-Za-z0-9-]{8,64}", sid)):
+            sys.exit(1)
+        print(sid)
+        break
+SIDPY
+) || fail "resume: session_id extraction failed"
 export EXPECTED_SID="$SID"
 run resume 0 "$QODER_BIN" -r "$SID" -p "In one short sentence: what did I ask you in the previous turn?" \
   -o stream-json --config-dir "$PROFILE" "${DENY_MCP[@]}" --tools "" --setting-sources user
@@ -179,8 +212,15 @@ echo "marker_absent=true" > "$STAGE/hook-green-local.side-effect"
 jassert hook-green-local 'sorted(init.get("tools") or [])==[]' 'init.get("mcp_servers")==[]' 'tus==[]' 'trs==[]' \
   'not any("marker" in str(r.get("hook_name","")) for r in rows if r.get("subtype")=="hook_started")'
 
-# ---- 发布前：sandbox receipt 入 STAGE + 敏感扫描 + 完整性 + generation manifest ----
-sanitize < "$SBOX" > "$STAGE/sandbox.side-effect"
+# ---- 发布前：sandbox receipt（自产，绑定 profile 指纹与本次 RAW）入 STAGE ----
+{
+  echo "fs_restricted: true"
+  echo "method: macOS-sandbox-exec"
+  echo "profile_sha256: $(sanitize < "$SBX_PROFILE" | python3 -c "import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())")"
+  echo "canary_home_blocked: true"
+  echo "canary_raw_allowed: true"
+  echo "bound_run_dir: $(printf '%s' "$RAW" | sanitize)"
+} > "$STAGE/sandbox.side-effect"
 for f in "$STAGE"/*; do scan "$f"; done
 for name in $EXPECT; do
   for suf in jsonl stderr.txt exit assert; do [ -f "$STAGE/$name.$suf" ] || fail "missing artifact $name.$suf"; done
