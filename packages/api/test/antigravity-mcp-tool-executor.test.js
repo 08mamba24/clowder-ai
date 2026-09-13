@@ -146,7 +146,11 @@ describe('CallMcpToolExecutor', () => {
     assert.equal(strict.CAT_CAFE_READONLY_AGENT_KEY_UNION, undefined, 'no agent-key creds → no union opt-in');
 
     const withKeyFile = buildMcpEnvForTest({ CAT_CAFE_AGENT_KEY_FILE: '/tmp/antigravity.secret' });
-    assert.equal(withKeyFile.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'true', 'antigravity mount with agent-key creds keeps the union');
+    assert.equal(
+      withKeyFile.CAT_CAFE_READONLY_AGENT_KEY_UNION,
+      'true',
+      'antigravity mount with agent-key creds keeps the union',
+    );
 
     const withKeyFiles = buildMcpEnvForTest({ CAT_CAFE_AGENT_KEY_FILES: '{"antigravity":"/tmp/x.secret"}' });
     assert.equal(withKeyFiles.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'true');

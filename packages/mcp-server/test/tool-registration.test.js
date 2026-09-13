@@ -484,7 +484,9 @@ describe('F061 READONLY_ALLOWED_TOOLS whitelist', () => {
 
   test('readonly + agent-key exposes only readonly, principal-capable, or non-callback-safe collab tools', async () => {
     const { buildCollabTools } = await import('../dist/server-toolsets.js');
-    const agentKeyNames = new Set(buildCollabTools({ readonly: true, hasAgentKey: true, agentKeyUnion: true }).map((tool) => tool.name));
+    const agentKeyNames = new Set(
+      buildCollabTools({ readonly: true, hasAgentKey: true, agentKeyUnion: true }).map((tool) => tool.name),
+    );
     const expected = CANONICAL_TOOL_REGISTRY.filter(
       (definition) =>
         definition.serverFamily === 'collab' &&
