@@ -1,0 +1,79 @@
+{
+  "schema": "qoder-f317-generation/3",
+  "collector": "collect.sh",
+  "collector_sha256": "aec28062c7c28ac232a755a2147f6fe4e5ea4b666a845debabe0e520d11b1b64",
+  "expect": [
+    "success",
+    "tool-use",
+    "permission-denial",
+    "auth-error",
+    "silent-model-fallback",
+    "resume",
+    "hook-red",
+    "hook-green-project",
+    "hook-green-local"
+  ],
+  "artifacts": {
+    "success": {
+      "jsonl": "e512125db088db52d32975fa3e604a946062da0d627d69ee2976b5b22b8800c0",
+      "stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "assert": "f8b5f0998d02ccf6dfd3bff1fca304402e399e6204521681cfa067d1f18b01ec"
+    },
+    "tool-use": {
+      "jsonl": "05d3e9fa94847998c680589017b414f352300a92763ffe88821634467d5e0c8d",
+      "stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "assert": "a9f2639f5a02c7c51a9f34328c4fc89b396770e8ef31738332a56d0bb2fbfcf8"
+    },
+    "permission-denial": {
+      "jsonl": "472ad3699bd6c9e2a39ae6a0e3ad212cae7ca7097b4fb4e5a2eaa7415454a9e5",
+      "stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "assert": "ed06a1776f4618a9c2ee14e34cba6ec1f0a1ed82896a97e706974af2ad21e483"
+    },
+    "auth-error": {
+      "jsonl": "7049167ad0caf027116e4bdb33cff694c1a31bef3aaae196f45c30911a056f57",
+      "stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "assert": "80d5edf3788503a165ed4dce2b81a6d691b1a0eebdea5dd903dec5b9687a89a5"
+    },
+    "silent-model-fallback": {
+      "jsonl": "13200610aabc361234ce4f8f9765a6a31b5d38f54b06a0b5dbf00eb7c0b95370",
+      "stderr.txt": "92d0546ea0ad4092ce1c8a1ceb60be16edc80f1481fc607088c8dd2c0feaae48",
+      "exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "assert": "67affd65e08b05a2322eb26d0342560a578675f8f3c2ecca8eb019524e4d27b6"
+    },
+    "resume": {
+      "jsonl": "af6e9a1590f1caea4bd9008342d8bb37dbdc660751115af22cf9771a4330cb64",
+      "stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "assert": "92cbea62dad06214c16a1ab8b8467b98fa313b52d77a76da540a3ae0c9ea78c7"
+    },
+    "hook-red": {
+      "jsonl": "991490856948d08b16e50e6a548702c666d5cd22dba4a628ab6ced8d637d3c51",
+      "stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "assert": "34325f27ac06a656421e110829c89b95d9a1a3673ae771167d49293bacff6a8e"
+    },
+    "hook-green-project": {
+      "jsonl": "d5a12679a811eceee9b5515fcf12d58611d06de79f28fbc3d6743159e7301499",
+      "stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "assert": "896f7795ed2ed153e54535877001d7cb1f9a72b8296f2537f50ed83404731b6f"
+    },
+    "hook-green-local": {
+      "jsonl": "8a4dc4e346497e0d7bdab9164e7603b2c2a85863aea6ff612d9f8d72fffc6182",
+      "stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "assert": "65f72143101b5fddf03369b813808437eb3e82cfad9a424e1c11b5fc6b443b95"
+    }
+  },
+  "side_effects": {
+    "hook-green-local.side-effect": "55b93ebf3ddc7a23f946fe63da14fe54d126c6d7123f1a096297a7842d18a93b",
+    "hook-green-project.side-effect": "55b93ebf3ddc7a23f946fe63da14fe54d126c6d7123f1a096297a7842d18a93b",
+    "hook-red.side-effect": "b698b4ef6dff08ee95355238eac9065910d6ac25a1f520ef425f79b382bf4778",
+    "permission-denial.side-effect": "151040c425a3757b0245c61dd8295f7c115c8864aa1c2fe132dd40c2e8bbb44b",
+    "sandbox.side-effect": "7d80edb6604cfeef834ceb454dfa4e689d5ec2515292f1f0536bfc3c91b0e39b"
+  }
+}

@@ -1,0 +1,10 @@
+fs_restricted: true
+method: macOS-sandbox-exec-allowlist
+profile_sha256: 623357e38cca40a6032b94fe39f0c9fc2915f1ee22246e84e6da192fd5e749b9
+canary_home_blocked: true
+canary_tmp_blocked: true
+canary_var_tmp_blocked: true
+auth_clone_per_invocation: true
+canary_raw_allowed: true
+policy_location: outside-provider-writable-scope
+bound_run_dir: /tmp/qoder-collect.XXXXXX

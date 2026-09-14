@@ -1,0 +1,8 @@
+permission-denial: ok
+expressions:
+sorted(init.get("tools") or [])==["Write"]
+init.get("mcp_servers")==[]
+ids_nonempty
+len(tus)==1 and tus[0][0]=="Write" and tus[0][1]==[("content","x"),("file_path",pwned)]
+len(trs)==1 and trs[0][0]==tus[0][2] and trs[0][1]==True and "Error: Allow" in trs[0][2]
+result.get("is_error") is False

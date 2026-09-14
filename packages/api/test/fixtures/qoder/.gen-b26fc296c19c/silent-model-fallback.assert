@@ -1,0 +1,8 @@
+silent-model-fallback: ok
+expressions:
+sorted(init.get("tools") or [])==[]
+init.get("mcp_servers")==[]
+init.get("model")=="Auto"
+result.get("is_error") is False
+tus==[]
+trs==[]
