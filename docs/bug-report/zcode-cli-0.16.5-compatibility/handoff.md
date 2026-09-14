@@ -95,22 +95,53 @@ scripts, so better-sqlite3 was unavailable. This worktree's dependency was rebui
 under Node 24 (`pnpm --filter @cat-cafe/api rebuild better-sqlite3`), and an
 in-memory SQLite query passed. No application database was opened or changed.
 
-Post-rebuild diagnostic run of world-store, managed hold callbacks, Collective
-routes and Qoder tests: 87 tests, 71 passed, 16 failed. The remaining failures in
-that run are outside this diff:
+Post-rebuild recheck of all 97 files that failed the original gate: 1,018 tests,
+1,002 passed, 16 failed, no cancelled or skipped tests (75.5 seconds). The native
+binding failures are gone. All remaining failures are outside this diff:
 
 - Qoder: 15 failures; `test/fixtures/qoder/current` is absent in base `6ca8b14c0`.
   `verify.py` confirms no active generation; MANIFEST explicitly says genuine
   L1 capture is pending. Archived first-capture files must not be relabeled as
-  verified active fixtures. Owner: zcode, per the F317 Phase 1 proposal.
+  verified active fixtures. The separate repair is
+  [PR #21](https://github.com/08mamba24/clowder-ai/pull/21), head
+  `a16f2049e8f597ba240985c2991d4f650131860f`; it is not part of this branch.
 - Collective: one route test expects 200 but receives 422
   `ROUTE_THREAD_UNAVAILABLE`. Its thread fixture defaults to `owner_1`, while
   imported request headers default to `owner-user`. Both source files are
-  unchanged from the base commit. This needs a baseline fixture correction.
+  unchanged from the base commit. The imported helper is
+  `packages/api/test/plugin-official-routes.fixture.js`.
+  This needs a baseline fixture correction.
 
-Full gate is still **not passed**. The broader post-rebuild failure-set recheck,
-remaining gate stages and real-provider acceptance must be recorded before
-claiming repository-wide acceptance.
+These shared gate blockers were coordinated with the PR #20/#21 owner in
+`thread_msqw8n1bqpvmob6f#0001789374705734-000093-f5a3790c`.
+The failure-set log is
+`/private/tmp/zcode-compat-pd8hpmvr/post-rebuild-failures.log`.
+Web lint passed (existing warnings), and the remaining `pnpm check` stage passed
+separately (exit 0). Its log is
+`/private/tmp/zcode-compat-pd8hpmvr/post-gate-check.log`.
+These checks do not convert the failed full gate into a pass.
+
+`check-hotfix-pattern.mjs` correctly identifies a hotfix: independent review is
+required and author self-merge is prohibited. `check-fallback-layers.mjs` reports
+threshold hits; coordinate review found no retry/fallback stack:
+
+- Provider input uses the two already-supported API-key environment aliases and
+  the existing official Anthropic URL default. Two catches respectively clean
+  a failed file write and distinguish ESRCH from a live/inaccessible PID. The
+  other two matches are boolean validation guards, not fallback choices.
+- Lifecycle tests select an explicitly supplied CLI or the installed desktop
+  CLI; select the restore account key or the original test key; and check either
+  child exit field. These express test cases and process state.
+- Adapter catch handling and fake response defaults replace existing boundaries;
+  they do not add recovery attempts. The only model recovery remains the
+  existing single pre-admission retry, now using the current native schema.
+
+Full gate is still **not passed**. Baseline test repairs, a passing integration
+gate and real-provider acceptance are required before claiming complete
+acceptance. Independent sub-agent review is supporting evidence; no merge-gate
+approval has been issued. Production code remains identical to implementation
+commit `c7e5a2374c5c3047acdc0ec15690cf40126be720`; only this evidence report was
+updated afterward.
 No UI or design artifact is involved (`designs/` is absent in this export).
 The exported package has no `check:architecture-ownership` script; record as a
 warning, not a passed check. Real-provider acceptance remains pending dedicated
