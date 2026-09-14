@@ -1,0 +1,9 @@
+resume: ok
+expressions:
+sorted(init.get("tools") or [])==[]
+init.get("mcp_servers")==[]
+result.get("session_id")==expected_sid
+result.get("is_error") is False
+"reply with exactly" in str(result.get("result","")).lower() and "ok" in str(result.get("result","")).lower()
+tus==[]
+trs==[]

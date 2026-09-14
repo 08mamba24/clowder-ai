@@ -1,0 +1,7 @@
+hook-red: ok
+expressions:
+sorted(init.get("tools") or [])==[]
+init.get("mcp_servers")==[]
+tus==[]
+trs==[]
+any(r.get("subtype")=="hook_started" and "marker" in str(r.get("hook_name","")) for r in rows)

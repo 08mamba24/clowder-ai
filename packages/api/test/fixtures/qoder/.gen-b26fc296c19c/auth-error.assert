@@ -1,0 +1,9 @@
+auth-error: ok
+expressions:
+init is not None
+sorted(init.get("tools") or [])==[]
+init.get("mcp_servers")==[]
+result.get("is_error") is True
+result.get("subtype")=="success"
+tus==[]
+trs==[]
