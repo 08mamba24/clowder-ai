@@ -45,7 +45,10 @@ function writeDshFixture() {
   writeFileSync(join(mcpClientLib, 'index.js'), 'export default {}\n');
   const configDir = join(root, 'examples', 'acp-agent');
   mkdirSync(configDir, { recursive: true });
-  writeFileSync(join(configDir, 'cordis.yml'), "- id: acp-agent\n  name: '@deepseek-ai/dsh-acp-demo'\n");
+  writeFileSync(
+    join(configDir, 'cordis.yml'),
+    "- id: acp-agent\n  name: '@deepseek-ai/dsh-acp-demo'\n  config:\n    provider: deepseek-official\n    model: deepseek-v4-pro\n",
+  );
   return root;
 }
 
@@ -124,7 +127,7 @@ describe('origin↔upstream Hub boot smoke', () => {
     rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  it('accountStartupHook + ACP registry sync tolerate healthy and rejected accounts together', async () => {
+  it('accountStartupHook + ACP registry sync tolerate healthy and rejected accounts together', async (t) => {
     // Healthy account (upstream topology store).
     writeCatalogAccount(projectRoot, 'claude', { authType: 'oauth' });
     // Torn credential without metadata → unavailableAccounts, must not abort startup.
@@ -156,6 +159,11 @@ describe('origin↔upstream Hub boot smoke', () => {
     const templatePath = join(projectRoot, 'cat-template.json');
     const all = toAllCatConfigs(loadCatConfig(templatePath));
     const poolRegistry = new Map();
+    t.after(async () => {
+      await Promise.all([...poolRegistry.values()].map((pool) => pool.closeAll?.()));
+      rmSync(dshRoot, { recursive: true, force: true });
+      rmSync(zcodeBinDir, { recursive: true, force: true });
+    });
     const warnings = [];
     const log = {
       info() {},
@@ -213,9 +221,5 @@ describe('origin↔upstream Hub boot smoke', () => {
       ),
       `expected rejected-account warning during boot sync, got ${JSON.stringify(warnings)}`,
     );
-
-    await Promise.all([...poolRegistry.values()].map((pool) => pool.closeAll?.()));
-    rmSync(dshRoot, { recursive: true, force: true });
-    rmSync(zcodeBinDir, { recursive: true, force: true });
   });
 });

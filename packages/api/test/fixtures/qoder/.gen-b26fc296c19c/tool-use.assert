@@ -1,0 +1,9 @@
+tool-use: ok
+expressions:
+sorted(init.get("tools") or [])==["Read"]
+init.get("mcp_servers")==[]
+ids_nonempty
+len(tus)==1 and tus[0][0]=="Read" and tus[0][1]==[("file_path",toolfile)]
+len(trs)==1 and trs[0][0]==tus[0][2] and trs[0][1]==False and trs[0][2].splitlines()[0].split("\t",1)[-1]=="F317-DETERMINISTIC-LINE-1"
+"F317-DETERMINISTIC-LINE-1" in str(result.get("result",""))
+result.get("is_error") is False

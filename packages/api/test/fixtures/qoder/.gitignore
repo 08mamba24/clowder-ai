@@ -1,0 +1,8 @@
+# Collector outputs stay ignored until a reviewed generation is explicitly
+# force-added with its current symlink; this prevents unpublished captures
+# from becoming repository fixtures by accident.
+current
+.gen-*/
+.publish.lock
+.tmpgen*
+.current.*
