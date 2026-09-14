@@ -4,6 +4,8 @@
 
 Operator request (2026-09-14): “那你这里zcode能并行去别的worktree修改并验证吗”.
 Implementation is isolated in `fix/zcode-cli-compat`, based on `6ca8b14c0`.
+It subsequently incorporated main's Qoder fixture repair `08e02276d` without
+changing any ZCode source or test file.
 It retains the Hub native app-server adapter, native session IDs and persistent
 session storage. It does not modify the user's ZCode configuration or runtime.
 
@@ -104,7 +106,8 @@ binding failures are gone. All remaining failures are outside this diff:
   L1 capture is pending. Archived first-capture files must not be relabeled as
   verified active fixtures. The separate repair is
   [PR #21](https://github.com/08mamba24/clowder-ai/pull/21), head
-  `a16f2049e8f597ba240985c2991d4f650131860f`; it is not part of this branch.
+  `a16f2049e8f597ba240985c2991d4f650131860f`. It merged to main as
+  `08e02276d7cc893fd6439f641625259dafd75a2f` and is now included via a main sync.
 - Collective: one route test expects 200 but receives 422
   `ROUTE_THREAD_UNAVAILABLE`. Its thread fixture defaults to `owner_1`, while
   imported request headers default to `owner-user`. Both source files are
@@ -136,12 +139,35 @@ threshold hits; coordinate review found no retry/fallback stack:
   they do not add recovery attempts. The only model recovery remains the
   existing single pre-admission retry, now using the current native schema.
 
-Full gate is still **not passed**. Baseline test repairs, a passing integration
-gate and real-provider acceptance are required before claiming complete
-acceptance. Independent sub-agent review is supporting evidence; no merge-gate
-approval has been issued. Production code remains identical to implementation
-commit `c7e5a2374c5c3047acdc0ec15690cf40126be720`; only this evidence report was
-updated afterward.
+### CI result and repaired baseline
+
+[PR #22 CI run 34823561895](https://github.com/08mamba24/clowder-ai/actions/runs/34823561895)
+completed for head `067a9032a9980bca55c708fd2b04fa1c12a86782`. The two red
+checks have one cause: the serial lane stopped at seven QoderAgentService
+fixture failures, and the aggregate `Test (Public)` check rejected that failed
+lane. Build, lint, Windows, public contract surfaces and all four pure shards
+passed. This was not evidence of two separate code defects.
+
+The Collective route test passed in CI. The workflow sets
+`DEFAULT_OWNER_USER_ID=default-user` in its isolated test lane; the earlier local
+run left it unset. The inconsistent fixture defaults remain a recorded baseline
+defect, but do not fail the configured CI lane.
+
+After syncing merged PR #21, `verify.py` verified nine Qoder fixtures and five
+side-effect receipts against the collector and file hashes. Qoder parser,
+QoderAgentService and Collective route tests then passed **40/40** under the same
+explicit owner setting as CI. Log:
+`/private/tmp/zcode-compat-pd8hpmvr/post-main-baseline-tests.log`.
+The full gate will be repeated with this CI-equivalent test setting; its prior
+failure remains historical evidence, not a pass.
+
+Full gate is still **not passed**. A passing integration gate and real-provider
+acceptance are required before claiming complete acceptance. Independent
+sub-agent review is supporting evidence; no merge-gate approval has been issued.
+`git diff --exit-code c7e5a2374c5c3047acdc0ec15690cf40126be720 HEAD -- packages/api/src/domains/cats/services/agents/providers/acp packages/api/test/acp`
+returned exit 0 after the main sync: ZCode source and tests are byte-identical to
+the reviewed implementation. Only evidence updates and the already-merged
+baseline fixture repair were added afterward.
 No UI or design artifact is involved (`designs/` is absent in this export).
 The exported package has no `check:architecture-ownership` script; record as a
 warning, not a passed check. Real-provider acceptance remains pending dedicated
