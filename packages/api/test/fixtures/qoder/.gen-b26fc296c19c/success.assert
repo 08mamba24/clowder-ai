@@ -1,0 +1,12 @@
+success: ok
+expressions:
+init is not None
+sorted(init.get("tools") or [])==[]
+init.get("mcp_servers")==[]
+init.get("permissionMode")=="default"
+init.get("model")=="Auto"
+result.get("result")=="ok"
+result.get("is_error") is False
+rows[0].get("subtype")=="hook_started"
+tus==[]
+trs==[]

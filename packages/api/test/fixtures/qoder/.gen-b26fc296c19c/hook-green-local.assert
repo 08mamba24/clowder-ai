@@ -1,0 +1,7 @@
+hook-green-local: ok
+expressions:
+sorted(init.get("tools") or [])==[]
+init.get("mcp_servers")==[]
+tus==[]
+trs==[]
+not any("marker" in str(r.get("hook_name","")) for r in rows if r.get("subtype")=="hook_started")
