@@ -550,7 +550,10 @@ describe('dsh ACP bootstrap', () => {
     writeFileSync(join(binDir, 'bin.js'), '#!/usr/bin/env node\n');
     const configDir = join(root, 'examples', 'acp-agent');
     mkdirSync(configDir, { recursive: true });
-    writeFileSync(join(configDir, 'cordis.yml'), "- id: acp-agent\n  name: '@deepseek-ai/dsh-acp-demo'\n");
+    writeFileSync(
+      join(configDir, 'cordis.yml'),
+      "- id: acp-agent\n  name: '@deepseek-ai/dsh-acp-demo'\n  config:\n    provider: deepseek-official\n    model: deepseek-v4-pro\n",
+    );
     const prepared = await prepareDshAcpSpawnForProject({
       command: 'dsh',
       args: [],
