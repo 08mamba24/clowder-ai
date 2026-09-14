@@ -1,7 +1,7 @@
 # Qoder (qodercn) golden fixtures — F317 S4b
 
 采集环境: qodercn 1.1.51 (`@qodercn-ai/qoderclicn`), protocol_version 1.4.0, macOS arm64, 2026-09-13。
-`~` 为用户 HOME 占位。**真相源结构**：`current/`（symlink → `.gen-<hash>/`，唯一活跃 generation，读方一律经 `verify.py` 校验）+ `collect.sh`（确定性采集，输出 `generation.json` 全量 sha256 receipt）+ `first-capture/`（首采工件存档，非活跃）+ `PROVENANCE.md`（首采事后台账，非原始 receipt，unknown 字段已标注）。仓库当前固定并跟踪经复核的 `.gen-b26fc296c19c/` 与 `current` symlink，使干净 checkout 和 CI 使用同一代已验证夹具；collector 的新 generation 默认仍被 `.gitignore` 隔离，只有复核后才连同 `current` 一起显式 force-add。下表文件在 `first-capture/` 下，**注意：首采 tool-use/silent-fallback 的 init 暴露了完整工具面（Bash/Write/Web 等），当时未断言——新 collector 已逐场景 fail-closed 断言精确工具面**。
+`~` 为用户 HOME 占位。**真相源结构**：`current/`（symlink → `.gen-<hash>/`，唯一活跃 generation，读方一律经 `verify.py` 校验）+ `collect.sh`（确定性采集，输出 `generation.json` 全量 sha256 receipt）+ `first-capture/`（首采工件存档，非活跃）+ `PROVENANCE.md`（首采事后台账，非原始 receipt，unknown 字段已标注）。仓库当前固定并跟踪经复核的 `.gen-b26fc296c19c/` 与 `current` symlink，使干净 checkout 和 CI 使用同一代已验证夹具；collector 的新 generation 默认仍被 `.gitignore` 隔离，只有复核后才连同 `current` 一起显式 force-add。该契约已机械化：`test/f317-qoder-fixture-readside-gate.test.js` 在公开测试中运行 `verify.py`，并断言 `current` 目标及其全部文件在 git 索引内、夹具目录无未提交改动——force-add 漏项或本地重采集会在推送前变红。下表文件在 `first-capture/` 下，**注意：首采 tool-use/silent-fallback 的 init 暴露了完整工具面（Bash/Write/Web 等），当时未断言——新 collector 已逐场景 fail-closed 断言精确工具面**。
 
 | 文件 | 类别 | 采集命令（要点） | exit | 关键断言 |
 |---|---|---|---|---|
