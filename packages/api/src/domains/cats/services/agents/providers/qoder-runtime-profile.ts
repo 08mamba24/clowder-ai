@@ -13,6 +13,11 @@
  * - 审计 fs 依赖全量可注入（测试与生产同一语义文件系统面）
  * - 换绑账号：fingerprint marker 不匹配 → 原子换绑（绝不沿用旧凭证）
  * - swap：stage 新副本审计绿后才替换；失败保留旧 profile（backup 回滚）
+ *
+ * Round-3 修正（砚砚 P1⑤/P1⑥）：
+ * - swap 回滚/清理失败如实返回：不谎称 rolled back/cleaned，含凭证遗留点名路径；
+ *   swap 已提交后 backup 清理失败进 warnings（ok 不翻转——新 profile 已生效）
+ * - auditQoderResumeSession：resume 前 session 必须真实存在于本 profile projects/ 下
  */
 
 import { createHash } from 'node:crypto';
@@ -64,6 +69,11 @@ export interface QoderProfileAudit {
   swapped?: 'reseed-pollution' | 'rebind-account';
   /** account fingerprint（.auth/user 内容 sha256 前 16 位） */
   accountFingerprint?: string;
+  /**
+   * round-3 P1⑤：swap 已提交（新 profile 已生效、审计绿）但收尾清理失败。
+   * 不影响 ok —— 但可能含旧凭证的遗留目录必须被点名，不允许被静默吞掉。
+   */
+  warnings?: string[];
 }
 
 /** 无深度上限的完整遍历；异常与 symlink 一律 violation（安全审计不得把未知当绿） */
@@ -125,6 +135,67 @@ export function isSafeCatIdSegment(catId: string): boolean {
   return /^[A-Za-z0-9_-]{1,128}$/.test(catId);
 }
 
+/** resume sessionId 的有界字符集（collect.sh 同款校验：杜绝路径分量注入搜索） */
+const SAFE_SESSION_ID = /^[A-Za-z0-9-]{8,64}$/;
+
+/**
+ * round-3 P1⑥：provider 初始化后的二次 resume 审计。
+ * L1 实证（collect.sh/提案 I-11）：qodercn 把 session 存在 config-dir 的
+ * projects/<cwd-slug>/ 下，resume 要求同 config-dir + 同 cwd。因此 resume 是对
+ * provider 已初始化 profile 的二次信任：session 必须真实存在于**本** profile 的
+ * projects/ 子树（文件名包含 sessionId）；找不到即 fail-closed —— 跨 profile /
+ * 跨 cwd 的 resume 不是我们的 session，拒绝而不是让 CLI 静默开新会话。
+ */
+export function auditQoderResumeSession(
+  profileDir: string,
+  sessionId: string,
+  fs: QoderProfileFs,
+): { ok: true } | { ok: false; reason: string } {
+  if (!SAFE_SESSION_ID.test(sessionId)) {
+    return { ok: false, reason: `unsafe session id charset: ${JSON.stringify(sessionId.slice(0, 16))}` };
+  }
+  const projectsDir = join(profileDir, 'projects');
+  if (!fs.existsSync(projectsDir)) {
+    return {
+      ok: false,
+      reason: 'no projects/ under runtime profile (provider never initialized this profile) — resume rejected',
+    };
+  }
+  if (!sessionFileExists(projectsDir, sessionId, fs)) {
+    return {
+      ok: false,
+      reason: `resume session ${sessionId} not found under runtime profile projects/ (I-11: resume requires same config-dir + cwd; cross-profile/cross-cwd resume rejected)`,
+    };
+  }
+  return { ok: true };
+}
+
+/** 在 projects/ 子树里找文件名包含 sessionId 的 session 文件；symlink 与不可读一律当不存在 */
+function sessionFileExists(dir: string, sessionId: string, fs: QoderProfileFs): boolean {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    const p = join(dir, entry.name);
+    let st;
+    try {
+      st = fs.lstatSync(p);
+    } catch {
+      continue;
+    }
+    if (st.isSymbolicLink()) continue;
+    if (st.isFile()) {
+      if (entry.name.includes(sessionId)) return true;
+    } else if (sessionFileExists(p, sessionId, fs)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** resolve containment：target 必须严格位于 parent 内（或等于） */
 function assertContained(parent: string, target: string, label: string): void {
   const rp = resolve(parent);
@@ -169,7 +240,9 @@ export function auditQoderProfile(
   return { ok: violations.length === 0, violations, accountFingerprint: fingerprint };
 }
 
-/** 原子替换：stage(seed+fingerprint) → 审计 staging 绿 → swap（旧→backup→回滚保护） */
+/** 原子替换：stage(seed+fingerprint) → 审计 staging 绿 → swap（旧→backup→回滚保护）
+ *  round-3 P1⑤：回滚/清理的每一步成败都如实进入返回值——swap 失败不谎称 "rolled back"，
+ *  清理失败点名含凭证的遗留目录；swap 已提交后 backup 清理失败不翻转 ok，进 warnings。 */
 function atomicSwap(input: {
   profileDir: string;
   authSourceDir: string;
@@ -179,48 +252,72 @@ function atomicSwap(input: {
   const { profileDir, authSourceDir, fs, swapReason } = input;
   const staging = `${profileDir}.staging-${process.pid}-${Date.now()}`;
   const backup = `${profileDir}.old-${process.pid}-${Date.now()}`;
+  /** 收尾失败如实上报（可能含凭证遗留，必须点名路径） */
+  const late: string[] = [];
+  const tryCleanStaging = (): void => {
+    try {
+      if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
+    } catch (err) {
+      late.push(`staging cleanup FAILED — new credentials may remain: ${staging}: ${String(err)}`);
+    }
+  };
   try {
     fs.mkdirSync(staging, { recursive: true });
     fs.copySync(join(authSourceDir, '.auth'), join(staging, '.auth'));
     const fingerprint = computeAccountFingerprint(authSourceDir, fs);
     if (!fingerprint) {
-      fs.rmSync(staging, { recursive: true, force: true });
-      return { ok: false, violations: ['auth source unreadable'] };
+      tryCleanStaging();
+      return { ok: false, violations: ['auth source unreadable', ...late] };
     }
     fs.writeFileSync(join(staging, '.account-fingerprint'), fingerprint);
     const stagingAudit = auditQoderProfile(staging, fs, fingerprint);
     if (!stagingAudit.ok) {
-      fs.rmSync(staging, { recursive: true, force: true });
-      return { ok: false, violations: [`staging audit failed: ${stagingAudit.violations.join('; ')}`] };
+      tryCleanStaging();
+      return { ok: false, violations: [`staging audit failed: ${stagingAudit.violations.join('; ')}`, ...late] };
     }
     if (fs.existsSync(profileDir)) fs.renameSync(profileDir, backup);
     try {
       fs.renameSync(staging, profileDir);
     } catch (err) {
-      // 回滚 backup 并**清掉含新凭证的 staging**（round-2 P1-7：不留凭证孤儿）
-      try {
-        if (fs.existsSync(backup)) fs.renameSync(backup, profileDir);
-      } catch {
-        /* best effort rollback */
+      // 回滚 + 清 staging：每一步成败如实上报（round-3 P1⑤：不谎称 rolled back/cleaned）
+      let rollback: 'restored' | 'not-needed' | 'failed' = 'not-needed';
+      if (fs.existsSync(backup)) {
+        rollback = 'failed';
+        try {
+          fs.renameSync(backup, profileDir);
+          rollback = 'restored';
+        } catch (rbErr) {
+          late.push(`rollback FAILED — previous profile NOT restored: ${String(rbErr)}`);
+        }
       }
-      try {
-        if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
-      } catch {
-        /* best effort */
-      }
-      return { ok: false, violations: [`swap failed (rolled back, staging cleaned): ${String(err)}`] };
+      tryCleanStaging();
+      return { ok: false, violations: [`swap failed: ${String(err)} (rollback: ${rollback})`, ...late] };
     }
-    if (fs.existsSync(backup)) fs.rmSync(backup, { recursive: true, force: true });
-    return { ok: true, violations: [], swapped: swapReason, accountFingerprint: fingerprint };
+    // swap 已提交：新 profile 已生效。backup 清理失败不翻转真相（ok 仍 true），进 warnings
+    const warnings: string[] = [];
+    if (fs.existsSync(backup)) {
+      try {
+        fs.rmSync(backup, { recursive: true, force: true });
+      } catch (err) {
+        warnings.push(`backup cleanup failed — OLD credentials remain at ${backup}: ${String(err)}`);
+      }
+    }
+    return {
+      ok: true,
+      violations: [],
+      swapped: swapReason,
+      accountFingerprint: fingerprint,
+      ...(warnings.length > 0 ? { warnings } : {}),
+    };
   } catch (err) {
     for (const leftover of [staging, backup]) {
       try {
         if (fs.existsSync(leftover)) fs.rmSync(leftover, { recursive: true, force: true });
-      } catch {
-        /* best effort：任何遗留都不该含可用凭证（backup 在 swap 成功后删除，失败路径在上面） */
+      } catch (cleanErr) {
+        late.push(`cleanup FAILED — ${leftover}: ${String(cleanErr)}`);
       }
     }
-    return { ok: false, violations: [`swap aborted (staging/backup cleaned): ${String(err)}`] };
+    return { ok: false, violations: [`swap aborted: ${String(err)}`, ...late] };
   }
 }
 
