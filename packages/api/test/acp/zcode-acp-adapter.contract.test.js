@@ -75,7 +75,9 @@ describe('ZCode ACP adapter contract (fake app-server)', () => {
       assert.ok(setModel, 'adapter must attempt session/setModel recovery');
       assert.equal(setModel.model?.providerId, 'anthropic');
       assert.equal(setModel.model?.modelId, 'GLM-5.2');
-      assert.equal(setModel.revision, 'hub-env:GLM-5.2');
+      assert.equal(setModel.model?.options?.reasoningLevel, 'max');
+      assert.equal(setModel.runtimeModel, null, 'current native schema rejects runtimeModel');
+      assert.equal(setModel.persistAsWorkspaceLastUsed, false);
     } finally {
       acp.child.kill('SIGTERM');
       rmSync(dir, { recursive: true, force: true });

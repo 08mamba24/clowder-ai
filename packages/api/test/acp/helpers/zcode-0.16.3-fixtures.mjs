@@ -1,6 +1,7 @@
 /**
- * Strict ZCode 0.16.3 app-server result shapes from the 0.16.3 bundle schemas:
- * protocol name/version, session snapshot (Rse), and session/send accepted (RLi).
+ * Shared 0.16 protocol name/version, session snapshot and send-accepted shapes.
+ * Originally captured from 0.16.3; model options now include the 0.16.5 registry
+ * reasoning default required by its strict session/setModel schema.
  */
 
 export const ZCODE_PROTOCOL = { name: 'ZCode Protocol', version: 1 };
@@ -36,7 +37,7 @@ export function sessionSnapshot(sessionId, rec = {}) {
       updatedAt: rec.updatedAt ?? now,
     },
     settings: {
-      model: { current: model, available: [] },
+      model: { current: model, available: [{ ref: model, reasoning: { defaultLevel: 'max' } }] },
       thoughtLevel: { enabled: false, available: [] },
       mode: { current: 'yolo' },
     },

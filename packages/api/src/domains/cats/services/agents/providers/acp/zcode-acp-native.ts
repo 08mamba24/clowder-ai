@@ -1,20 +1,23 @@
 import { type ChildProcess, spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import {
   ensureZcodeIsolatedHome,
   type JsonRpc,
   resolveZcodeIsolatedHome,
+  sanitizeZcodeFailureText,
   ZcodeStderrRedactor,
   zcodeAppServerEnv,
   zcodeLaunchPlan,
 } from './zcode-acp-protocol.js';
+import { createZcodeProviderConfig, zcodeProviderPaths } from './zcode-acp-provider-paths.js';
 
 type PendingWaiter = {
   resolve: (msg: JsonRpc) => void;
   timer: ReturnType<typeof setTimeout>;
 };
 
-/** Private ZCode 0.16.3 app-server client. Frames never include `jsonrpc`. */
+/** Private ZCode app-server client. Frames never include `jsonrpc`. */
 export class NativeAppServer {
   private child: ChildProcess;
   private pending = new Map<string, PendingWaiter>();
@@ -23,14 +26,28 @@ export class NativeAppServer {
   private closeListeners: Array<(reason: string) => void> = [];
   private closedReason: string | undefined;
   private stderr = new ZcodeStderrRedactor();
+  private stderrTail: string[] = [];
+  private exited = false;
+  private disposePersonal: () => void;
   readonly isolatedHome: string;
 
   constructor(bin: string, env: NodeJS.ProcessEnv = process.env) {
-    const plan = zcodeLaunchPlan(bin);
+    const plan = zcodeLaunchPlan(realpathSync(bin));
     this.isolatedHome = ensureZcodeIsolatedHome(resolveZcodeIsolatedHome(env));
+    const providerPaths = zcodeProviderPaths(bin);
+    const personal = createZcodeProviderConfig(this.isolatedHome, env);
+    this.disposePersonal = () => {
+      personal.dispose();
+      process.removeListener('exit', this.disposePersonal);
+    };
+    process.once('exit', this.disposePersonal);
     this.child = spawn(plan.command, plan.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: zcodeAppServerEnv(env, this.isolatedHome),
+      env: {
+        ...zcodeAppServerEnv(env, this.isolatedHome),
+        ...providerPaths,
+        ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: personal.path,
+      },
     });
     if (!this.child.stdout || !this.child.stdin) {
       throw new Error('zcode app-server spawn missing stdio pipes');
@@ -39,15 +56,23 @@ export class NativeAppServer {
     rl.on('line', (line) => this.onLine(line));
     this.child.stderr?.on('data', (buf) => {
       for (const line of this.stderr.push(buf.toString())) {
-        process.stderr.write(`[zcode-app-server] ${line}\n`);
+        this.recordStderr(line);
       }
     });
     this.child.on('error', (err) => {
       this.fail(`zcode app-server error: ${err instanceof Error ? err.message : 'spawn failed'}`);
     });
-    this.child.on('exit', (code, signal) => {
+    // close follows the final stdio bytes; exit alone can lose the root cause.
+    this.child.on('close', (code, signal) => {
+      this.exited = true;
+      this.disposePersonal();
       this.flushStderr();
-      this.fail(`zcode app-server exited code=${code} signal=${signal}`);
+      const detail = this.stderrTail.join(' | ');
+      this.fail(sanitizeZcodeFailureText(`zcode app-server exited code=${code} signal=${signal}: ${detail}`));
+    });
+    this.child.stdin.on('error', (err: NodeJS.ErrnoException) => {
+      // EPIPE is followed by close; let it include the drained stderr cause.
+      if (err.code !== 'EPIPE') this.fail(`zcode app-server stdin error: ${err.code}`);
     });
   }
 
@@ -80,13 +105,13 @@ export class NativeAppServer {
       return Promise.resolve({ error: { code: -32000, message: this.closedReason } });
     }
     const id = this.nextId++;
-    this.writeNative({ id, method, params });
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(String(id));
         resolve({ error: { code: -32000, message: `timeout waiting for ${method}` } });
       }, timeoutMs);
       this.pending.set(String(id), { resolve, timer });
+      this.writeNative({ id, method, params });
     });
   }
 
@@ -95,6 +120,9 @@ export class NativeAppServer {
   }
 
   close(): void {
+    // The outer process supervisor may cut short the child's shutdown grace.
+    // Revoke the generated credential input before waiting on any child event.
+    this.disposePersonal();
     this.fail('zcode app-server closed');
     try {
       this.child.stdin?.end();
@@ -105,9 +133,9 @@ export class NativeAppServer {
   }
 
   whenExited(): Promise<void> {
-    if (this.child.exitCode != null || this.child.signalCode) return Promise.resolve();
+    if (this.exited) return Promise.resolve();
     return new Promise((resolve) => {
-      this.child.once('exit', () => resolve());
+      this.child.once('close', () => resolve());
     });
   }
 
@@ -127,7 +155,13 @@ export class NativeAppServer {
 
   private flushStderr(): void {
     const leftover = this.stderr.flush();
-    if (leftover) process.stderr.write(`[zcode-app-server] ${leftover}\n`);
+    if (leftover) this.recordStderr(leftover);
+  }
+
+  private recordStderr(line: string): void {
+    this.stderrTail.push(line);
+    if (this.stderrTail.length > 4) this.stderrTail.shift();
+    process.stderr.write(`[zcode-app-server] ${line}\n`);
   }
 
   private writeNative(payload: JsonRpc): void {

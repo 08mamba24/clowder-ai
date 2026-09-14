@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Native ZCode 0.16.3-shaped app-server fake for adapter contract tests.
+ * Native ZCode fake: current strict setModel and shared 0.16 turn events.
  * No jsonrpc field. session/stop is a request (requires id).
  * Clean-home: omit native model; ZCODE_MODEL env is the source of truth.
  */
@@ -54,7 +54,8 @@ function logRpc(msg) {
       id: msg.id ?? null,
       method: msg.method ?? null,
       model: msg.params?.model ?? msg.params?.runtimeModel?.model ?? null,
-      revision: msg.params?.runtimeModel?.revision ?? null,
+      runtimeModel: msg.params?.runtimeModel ?? null,
+      persistAsWorkspaceLastUsed: msg.params?.persistAsWorkspaceLastUsed ?? null,
       decision: msg.decision ?? null,
       home: isolatedHome ?? null,
     })}\n`,
@@ -95,6 +96,14 @@ async function handle(msg) {
   const method = msg.method;
   const id = msg.id;
   const params = msg.params ?? {};
+  if (method === 'session/list') {
+    write({ id, result: { sessions: [...sessions.keys()].map((sessionId) => ({ sessionId })) } });
+    return;
+  }
+  if (method === 'session/read') {
+    write({ id, result: sessionSnapshot(params.sessionId, sessions.get(params.sessionId)) });
+    return;
+  }
   if (method === 'session/create') {
     const explicit = readModel(params);
     if (explicit) {
@@ -170,9 +179,8 @@ async function handle(msg) {
       });
       return;
     }
-    // A runtimeModel registration from env (adapter -32031 recovery) is accepted
-    // and clears the deferred-adapter warning; bare explicit models are not.
-    if (params.runtimeModel?.model?.modelId === 'REJECTED') {
+    // Current native schema selects an already registered model.
+    if (params.model?.modelId === 'REJECTED') {
       write({
         id,
         error: {
@@ -183,20 +191,12 @@ async function handle(msg) {
       });
       return;
     }
-    // Full 0.16.3 runtimeModel schema is enforced so a malformed adapter
-    // payload fails here instead of green-lighting against the real app-server.
-    const rt = params.runtimeModel;
     const schemaOk =
-      rt &&
-      typeof rt === 'object' &&
-      typeof rt.revision === 'string' &&
-      Number.isFinite(rt.generatedAt) &&
-      rt.model?.providerId === params.model?.providerId &&
-      rt.model?.modelId === params.model?.modelId &&
-      rt.provider?.providerId === rt.model?.providerId &&
-      typeof rt.provider?.kind === 'string' &&
-      Array.isArray(rt.provider?.models) &&
-      rt.provider.models.some((m) => m?.modelId === rt.model?.modelId);
+      params.model?.providerId === 'anthropic' &&
+      typeof params.model?.modelId === 'string' &&
+      params.model?.options?.reasoningLevel === 'max' &&
+      params.persistAsWorkspaceLastUsed === false &&
+      !Object.hasOwn(params, 'runtimeModel');
     if (schemaOk) {
       if (rec.delaySetModel) {
         await new Promise((resolve) => setTimeout(resolve, rec.delaySetModel));

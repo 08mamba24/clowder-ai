@@ -45,7 +45,9 @@ export async function runZcodeAcpAdapter(env: NodeJS.ProcessEnv = process.env): 
   if (!bin) {
     throw new Error('ZCODE_BIN must point at zcode.cjs or the zcode CLI');
   }
-  const native = new NativeAppServer(bin, env);
+  // Create on the first ACP request so discovery/spawn errors can be returned
+  // with its id instead of exiting before the client receives a diagnosis.
+  let native: NativeAppServer | undefined;
   const sessions = new Map<string, string>();
   // Bumped on every session/cancel. The -32031 recovery window (setModel await
   // + resend) has no active native turn, so native session/stop is a no-op
@@ -55,6 +57,7 @@ export async function runZcodeAcpAdapter(env: NodeJS.ProcessEnv = process.env): 
   const inflight = new Set<Promise<void>>();
   const timeoutMs = requestTimeoutMs(env);
   const shutdown = (): void => {
+    if (!native) process.exit(0);
     native.close();
     const done = (): void => {
       process.exit(0);
@@ -78,16 +81,21 @@ export async function runZcodeAcpAdapter(env: NodeJS.ProcessEnv = process.env): 
     } catch {
       continue;
     }
-    const task = handleAcp(native, sessions, cancelGenerations, env, msg, timeoutMs).catch((err) => {
-      acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(err)));
-    });
+    const task = Promise.resolve()
+      .then(() => {
+        native ??= new NativeAppServer(bin, env);
+        return handleAcp(native, sessions, cancelGenerations, env, msg, timeoutMs);
+      })
+      .catch((err) => {
+        acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(err)));
+      });
     inflight.add(task);
     void task.finally(() => inflight.delete(task));
   }
   await Promise.all([...inflight]);
   process.removeListener('SIGTERM', shutdown);
   process.removeListener('SIGINT', shutdown);
-  native.close();
+  native?.close();
 }
 
 async function handleAcp(
@@ -101,7 +109,18 @@ async function handleAcp(
   switch (msg.method) {
     case undefined:
       return;
-    case 'initialize':
+    case 'initialize': {
+      const ready = await native.request('session/list', { includeArchived: false }, Math.min(timeoutMs, 10_000));
+      if (ready.error) {
+        acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(ready.error)));
+        native.close();
+        return;
+      }
+      if (!Array.isArray((ready.result as { sessions?: unknown } | undefined)?.sessions)) {
+        acpError(msg.id, -32603, 'invalid ZCode session/list response during initialization');
+        native.close();
+        return;
+      }
       acpResult(msg.id, {
         protocolVersion: 1,
         authMethods: [],
@@ -112,10 +131,11 @@ async function handleAcp(
         },
       });
       return;
+    }
     case 'session/new':
       return handleSessionNew(native, sessions, msg, timeoutMs);
     case 'session/load':
-      return handleSessionLoad(native, sessions, msg, timeoutMs);
+      return handleSessionLoad(native, sessions, env, msg, timeoutMs);
     case 'session/prompt':
       return handleSessionPrompt(native, sessions, cancelGenerations, env, msg, timeoutMs);
     case 'session/cancel': {
@@ -165,6 +185,7 @@ async function handleSessionNew(
 async function handleSessionLoad(
   native: NativeAppServer,
   sessions: Map<string, string>,
+  env: NodeJS.ProcessEnv,
   msg: JsonRpc,
   timeoutMs: number,
 ): Promise<void> {
@@ -185,6 +206,14 @@ async function handleSessionLoad(
   );
   if (resumed.error) {
     acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(resumed.error)));
+    return;
+  }
+  // A persisted session can reference the previously configured model. Bind
+  // this invocation's model before admitting a new turn, without changing
+  // the workspace default used by concurrent native processes.
+  const selected = await selectConfiguredModel(native, sessionId, env, resumed.result, timeoutMs);
+  if (selected.error) {
+    acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(selected.error)));
     return;
   }
   if (!(await subscribeSession(native, sessionId, msg.id, timeoutMs))) return;
@@ -216,12 +245,8 @@ async function subscribeSession(
 }
 
 /**
- * ZCode 0.16.3 cold-resumes sessions with a deferred model adapter; if the
- * workspace provider registry has not (re)registered the session's model by
- * the time the first prompt lands, session/send fails with -32031
- * (ZCODE_RUNTIME_MODEL_UNAVAILABLE, "历史任务使用的模型已不可用"). Headless ACP
- * clients cannot answer the interactive model-picker, so re-register the
- * env-configured model via session/setModel and retry the send once.
+ * A deferred native adapter can return -32031 before admitting a turn.
+ * Re-select the configured model once; never resend after ACP cancellation.
  */
 function isRuntimeModelUnavailable(error: unknown): boolean {
   const failure = extractZcodeFailure(error);
@@ -229,19 +254,34 @@ function isRuntimeModelUnavailable(error: unknown): boolean {
   return code === '32031' || code === '-32031';
 }
 
-function zcodeEnvRuntimeModel(env: NodeJS.ProcessEnv) {
+async function selectConfiguredModel(
+  native: NativeAppServer,
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  snapshot: unknown,
+  timeoutMs: number,
+): Promise<JsonRpc> {
   const modelId = readZcodeEnvModel(env.ZCODE_MODEL);
-  if (!modelId) return undefined;
-  const model = { providerId: 'anthropic', modelId };
-  return {
-    model,
-    runtimeModel: {
-      model,
-      revision: `hub-env:${modelId}`,
-      generatedAt: Date.now(),
-      provider: { providerId: 'anthropic', kind: 'anthropic', models: [{ modelId }] },
+  if (!modelId) return { error: { message: 'ZCODE_MODEL is missing' } };
+  const settings = (snapshot as { settings?: { model?: { available?: unknown } } })?.settings;
+  const available = settings?.model?.available;
+  type NativeModelOption = { ref?: { providerId?: string; modelId?: string }; reasoning?: { defaultLevel?: string } };
+  const selected = Array.isArray(available)
+    ? (available as NativeModelOption[]).find(
+        (option) => option.ref?.providerId === 'anthropic' && option.ref?.modelId === modelId,
+      )
+    : undefined;
+  const reasoningLevel = selected?.reasoning?.defaultLevel;
+  if (!reasoningLevel) return { error: { message: `ZCode registry has no usable model selection for ${modelId}` } };
+  return native.request(
+    'session/setModel',
+    {
+      sessionId,
+      model: { providerId: 'anthropic', modelId, options: { reasoningLevel } },
+      persistAsWorkspaceLastUsed: false,
     },
-  };
+    timeoutMs,
+  );
 }
 
 async function recoverRuntimeModel(
@@ -250,9 +290,9 @@ async function recoverRuntimeModel(
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
 ): Promise<boolean> {
-  const payload = zcodeEnvRuntimeModel(env);
-  if (!payload) return false;
-  const set = await native.request('session/setModel', { sessionId, ...payload }, timeoutMs);
+  const snapshot = await native.request('session/read', { sessionId }, timeoutMs);
+  if (snapshot.error) return false;
+  const set = await selectConfiguredModel(native, sessionId, env, snapshot.result, timeoutMs);
   if (set.error) {
     process.stderr.write(
       `[zcode-acp-adapter] -32031 recovery via session/setModel failed: ${sanitizeZcodeFailureText(

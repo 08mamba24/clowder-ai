@@ -37,7 +37,7 @@ export function resolveZcodeBin(
   bundledCandidates: readonly string[] = [MAC_APP_ZCODE, LINUX_APP_ZCODE],
 ): string | undefined {
   const override = env.CAT_CAFE_ZCODE_BIN?.trim();
-  if (override && existsSync(override)) return override;
+  if (override) return existsSync(override) ? override : undefined;
   const pathHit = resolveCliCommand('zcode');
   if (pathHit) return pathHit;
   if (env.CAT_CAFE_ZCODE_IGNORE_BUNDLED === '1') return undefined;
