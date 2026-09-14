@@ -1,4 +1,4 @@
-/** Shared ZCode ACP adapter types and 0.16.3 protocol helpers. */
+/** Shared ZCode ACP adapter types and native protocol helpers. */
 
 import { chmodSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -108,7 +108,7 @@ export class ZcodeStderrRedactor {
 
   push(chunk: string): string[] {
     const lines: string[] = [];
-    let data = this.buf + chunk;
+    const data = this.buf + chunk;
     this.buf = '';
     let offset = 0;
     while (offset < data.length) {
@@ -173,9 +173,9 @@ export function extractZcodeFailure(error: unknown): TurnFailure {
 }
 
 /**
- * Clean-home 0.16.3 uses `ZCODE_MODEL` as an env token (e.g. GLM-5.2).
- * Explicit `provider/model` or JSON `{providerId,modelId}` on session/create
- * needs a persisted provider config that Hub-owned empty homes do not have.
+ * The Hub catalog supplies a model token (e.g. GLM-5.2). The adapter binds it
+ * to its own Anthropic provider; native provider/model or JSON selectors are
+ * not catalog model IDs.
  */
 export function readZcodeEnvModel(raw: string | undefined): string | undefined {
   const trimmed = raw?.trim();
@@ -195,7 +195,7 @@ export function diagnoseZcodeSpawnReady(env: NodeJS.ProcessEnv): ZcodeSpawnReady
     return {
       ok: false,
       error: new Error(
-        'ZCode ACP skipped: ZCODE_MODEL must be a clean-home env token such as GLM-5.2. Do not send native {providerId,modelId} on session/create; 0.16.3 rejects zai/glm-5.2 and needs persisted provider config for anthropic/GLM-5.2.',
+        'ZCode ACP skipped: ZCODE_MODEL must be a catalog model token such as GLM-5.2, not provider/model or native model JSON.',
       ),
     };
   }
@@ -251,6 +251,16 @@ export function zcodeAppServerEnv(parent: NodeJS.ProcessEnv, isolatedHome: strin
     XDG_DATA_HOME: join(isolatedHome, '.local', 'share'),
     XDG_STATE_HOME: join(isolatedHome, '.local', 'state'),
     XDG_CACHE_HOME: join(isolatedHome, '.cache'),
+    ZCODE_DATA_BASE_DIR: isolatedHome,
+    ZCODE_HOME: undefined,
+    ZCODE_STORAGE_DIR: undefined,
+    ZCODE_LOG_DIR: undefined,
+    // These belong to the selected native child, not the desktop parent.
+    // In particular, an inherited bundled-refresh path could make the CLI
+    // write to the official read-only provider file used by the Hub.
+    ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: undefined,
+    ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: undefined,
+    ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE: undefined,
     ...(anthropicBaseUrl ? { ANTHROPIC_BASE_URL: anthropicBaseUrl } : {}),
   };
 }

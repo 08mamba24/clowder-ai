@@ -1,14 +1,15 @@
 // @ts-check
 /**
- * Real ZCode 0.16.3, no prompt. Proves clean-home session/create with
- * ZCODE_MODEL env (no native model field) and in-process session/load.
+ * Real ZCode, no prompt. Proves clean-home session/create with
+ * an isolated provider registry and in-process session/load.
  * Dummy key only. Default skip: opt in with CAT_CAFE_ZCODE_LIVE=1, and
- * the binary must report exactly 0.16.3 or the live case fails closed.
- * Adapter restart persistence is covered by the fake store contract.
+ * the binary must report an explicitly covered version or the gate fails closed.
+ * Prompt, cancellation and cold persistence use zcode-acp-native-lifecycle.test.js.
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -16,7 +17,7 @@ import { startAdapter } from './helpers/zcode-acp-test-harness.mjs';
 
 const MAC_APP_ZCODE = '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs';
 const LINUX_APP_ZCODE = '/opt/ZCode/app/resources/glm/zcode.cjs';
-const REQUIRED_ZCODE_VERSION = '0.16.3';
+const COVERED_ZCODE_VERSIONS = ['0.16.5'];
 
 /** @param {NodeJS.ProcessEnv | Record<string, string | undefined>} [env] */
 function isZcodeLiveCreateOptIn(env = process.env) {
@@ -68,25 +69,26 @@ describe('ZCode ACP live-create gate', () => {
     assert.equal(isZcodeLiveCreateOptIn({ CAT_CAFE_ZCODE_LIVE: '1' }), true);
   });
 
-  it('only treats an exact 0.16.3 --version line as protocol evidence', () => {
-    assert.equal(parseZcodeCliVersion('0.16.3\n'), REQUIRED_ZCODE_VERSION);
+  it('requires an exact, explicitly covered --version line', () => {
+    assert.equal(parseZcodeCliVersion('0.16.3\n'), '0.16.3');
+    assert.equal(parseZcodeCliVersion('0.16.5\n'), '0.16.5');
     assert.equal(parseZcodeCliVersion('0.16.2\n'), '0.16.2');
-    assert.notEqual(parseZcodeCliVersion('0.16.2\n'), REQUIRED_ZCODE_VERSION);
+    assert.equal(COVERED_ZCODE_VERSIONS.includes(parseZcodeCliVersion('0.16.2\n')), false);
     assert.equal(parseZcodeCliVersion('1.0.0\n'), '1.0.0');
     assert.equal(parseZcodeCliVersion('not a version\n'), undefined);
   });
 });
 
-describe('ZCode ACP live create (real 0.16.3, no prompt)', { skip: !isZcodeLiveCreateOptIn() }, () => {
-  it('creates and reloads a session in an isolated home without sending a prompt', async () => {
+describe('ZCode ACP live create (real CLI, no prompt)', { skip: !isZcodeLiveCreateOptIn() }, () => {
+  it('creates and reloads a session in an isolated home without sending a prompt', async (t) => {
     const bin = resolveZcodeLiveBin();
-    assert.ok(bin, 'CAT_CAFE_ZCODE_LIVE=1 requires CAT_CAFE_ZCODE_BIN or a bundled ZCode.app 0.16.3 binary');
+    assert.ok(bin, 'CAT_CAFE_ZCODE_LIVE=1 requires CAT_CAFE_ZCODE_BIN or a bundled ZCode.app binary');
     const version = readZcodeCliVersion(bin);
-    assert.equal(
-      version,
-      REQUIRED_ZCODE_VERSION,
-      `refusing to treat ${bin} version ${version ?? '<unknown>'} as 0.16.3 protocol evidence`,
+    assert.ok(
+      COVERED_ZCODE_VERSIONS.includes(version),
+      `unverified ZCode version ${version ?? '<unknown>'}; covered: ${COVERED_ZCODE_VERSIONS.join(', ')}`,
     );
+    t.diagnostic(`ZCode CLI ${version}; sha256=${createHash('sha256').update(readFileSync(bin)).digest('hex')}`);
     const dir = mkdtempSync(join(tmpdir(), 'zcode-live-create-'));
     const isolatedHome = join(dir, 'isolated-home');
     const liveEnv = {
