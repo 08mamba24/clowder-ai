@@ -10,7 +10,16 @@
  */
 
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -318,4 +327,55 @@ test('slice2 r3: qoder capability projects to recognized provider AND carrier', 
   const cap = svc.contextCapability();
   assert.equal(providers.includes(cap.provider), true, 'capability provider is bounded-recognized');
   assert.equal(carriers.includes(cap.carrier), true, 'capability carrier is bounded-recognized');
+});
+
+// ── round-4 P2：生产接线单一真相——分离拓扑下 workspace profile 被 seed、runtime 旧 profile 不被采用 ──
+test('slice2 r4: registerQoderAgentService seeds the WORKSPACE profile; runtime stale profile untouched', async () => {
+  const factoryMod = await import(
+    join(here, '..', 'dist', 'domains', 'cats', 'services', 'agents', 'providers', 'qoder-service-factory.js')
+  );
+  const workspace = mkdtempSync(join(tmpdir(), 'qoder-r4-ws-'));
+  const runtime = mkdtempSync(join(tmpdir(), 'qoder-r4-rt-'));
+  const saved = {};
+  for (const k of ['CAT_CAFE_RUNTIME_ROOT', 'CAT_CAFE_WORKSPACE_ROOT']) {
+    saved[k] = process.env[k];
+    process.env[k] = k === 'CAT_CAFE_RUNTIME_ROOT' ? runtime : workspace;
+  }
+  try {
+    const wsCC = writeQoderCatalog(workspace, { 'qoder-team': { authType: 'oauth', clientId: 'qoder' } });
+    mkdirSync(join(wsCC, 'qoder-auth', 'qoder-team', '.auth'), { recursive: true });
+    writeFileSync(join(wsCC, 'qoder-auth', 'qoder-team', '.auth', 'user'), 'ws-token');
+    // runtime 旧位置：预置一个"陈旧"profile（若被采用/重播种即回归）
+    const rtProfile = join(runtime, '.cat-cafe', 'qoder-profiles', 'cat_qoder_s2', '.auth');
+    mkdirSync(rtProfile, { recursive: true });
+    writeFileSync(join(rtProfile, 'user'), 'stale-runtime-token');
+    const projectRoot = join(runtime, 'packages', 'api');
+    mkdirSync(projectRoot, { recursive: true });
+
+    const reg = factoryMod.registerQoderAgentService({
+      catId: 'cat_qoder_s2',
+      config: { defaultModel: 'Auto', clientId: 'qoder' },
+      projectRoot,
+      accountRef: 'qoder-team',
+      log: { warn: () => {} },
+      modelResolver: () => 'Auto',
+    });
+    assert.equal(reg.ok, true, JSON.stringify(reg));
+    // workspace profile 被 seed（来自 workspace auth source）
+    const wsProfileUser = join(realpathSync(workspace), '.cat-cafe', 'qoder-profiles', 'cat_qoder_s2', '.auth', 'user');
+    assert.ok(existsSync(wsProfileUser), 'workspace runtime profile seeded');
+    assert.equal(readFileSync(wsProfileUser, 'utf8'), 'ws-token');
+    // runtime 旧 profile 原样保留、未被采用（内容未被重播种/改写）
+    assert.equal(readFileSync(join(rtProfile, 'user'), 'utf8'), 'stale-runtime-token');
+    assert.ok(
+      existsSync(join(realpathSync(workspace), '.cat-cafe', 'qoder-profiles', 'cat_qoder_s2', '.account-fingerprint')),
+    );
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(runtime, { recursive: true, force: true });
+  }
 });

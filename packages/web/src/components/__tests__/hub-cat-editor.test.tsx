@@ -2700,6 +2700,7 @@ describe('HubCatEditor', () => {
       profileItem({
         id: 'qoder-oauth',
         provider: 'qoder',
+        clientId: 'qoder',
         displayName: 'Qoder (OAuth)',
         name: 'Qoder (OAuth)',
         authType: 'oauth',
@@ -2712,6 +2713,7 @@ describe('HubCatEditor', () => {
       profileItem({
         id: 'qoder-sponsor',
         provider: 'qoder-sponsor',
+        clientId: 'qoder',
         displayName: 'Qoder Sponsor',
         name: 'Qoder Sponsor',
         authType: 'api_key',
@@ -2727,15 +2729,18 @@ describe('HubCatEditor', () => {
       'codex-oauth',
       'claude-sponsor',
       'codex-sponsor',
+      'qoder-sponsor',
     ]);
     expect(filterProfiles('anthropic', profiles).map((profile) => profile.id)).toEqual([
       'claude-oauth',
       'claude-sponsor',
       'codex-sponsor',
+      'qoder-sponsor',
     ]);
     expect(filterProfiles('opencode', profiles).map((profile) => profile.id)).toEqual([
       'claude-sponsor',
       'codex-sponsor',
+      'qoder-sponsor',
     ]);
     // F317 round-3 P2：qoder 只接受 OAuth/qoder 家族 profile——生产 resolver 拒绝一切
     // qoder api_key 账户（config-dir OAuth-only），UI 不得提供会被注册链静默拒绝的绑定

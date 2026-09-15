@@ -38,7 +38,7 @@ import { getCatModel } from './config/cat-models.js';
 import { resolveCodexCarrierTruth } from './config/codex-cli.js';
 import { configEventBus } from './config/config-event-bus.js';
 import { resolveFrontendBaseUrl, resolveFrontendCorsOrigins } from './config/frontend-origin.js';
-import { qoderDurableConfigRoot, resolveQoderAuthSourceDir } from './config/qoder-auth-source.js';
+
 import { resolveRuntimeDeploymentRevision } from './config/runtime-deployment-revision.js';
 import { initRuntimeOverrides } from './config/session-strategy-overrides.js';
 import { assertStorageReady } from './config/storage-guard.js';
@@ -146,6 +146,7 @@ import {
   KimiAgentService,
   MemoryGovernanceStore,
   OpenCodeAgentService,
+  registerQoderAgentService,
 } from './domains/cats/services/index.js';
 import { FileProfileRepository } from './domains/cats/services/profile/ProfileRepository.js';
 import {
@@ -1968,43 +1969,24 @@ async function main(): Promise<void> {
             service = new OpenCodeAgentService({ catId });
             break;
           case 'qoder': {
-            // F317 Slice 2：构造期 resolver（点点 round-8 P2 硬验收）——经
-            // ensureQoderRuntimeProfile 解析 profileDir 并断言 containment；
-            // model 缺失或审计红 → null → 不注册（无半注册态）。凭证经 config-dir
-            // （<dataRoot>/qoder-auth/<accountRef>），不经 env 注入。
+            // F317 Slice 2：注册链单一真相 = registerQoderAgentService（auth-source
+            // 解析 + durable dataRoot + 构造期 ensure/containment + fail-closed 不注册）。
+            // 分离拓扑 E2E 消费同一函数，防 dataRoot 接线回归。
             const projectRoot = resolveActiveProjectRoot(process.cwd());
-            // round-2 P1：类型化 account→auth-source 装配（OAuth 家族校验 + 安全段 +
-            // realpath containment）；裸拼 ref 的旧路径曾放行 ../.. 穿越与异族账户
-            const qoderAuth = resolveQoderAuthSourceDir({
-              projectRoot,
-              accountRef: resolveBoundAccountRefForCat(projectRoot, catId, config),
-            });
-            if (!qoderAuth.ok) {
-              app.log.warn(
-                `[qoder-factory] cat "${catId}" auth-source rejected: ${qoderAuth.reason}. Cat not registered (fail closed).`,
-              );
-              continue;
-            }
-            // P1-2（round-3）：profiles 与 auth 同拓扑——runtime-worktree 模式下
-            // 落持久 workspace，不随可弃置 checkout 重建丢 OAuth seed/sessions
-            let qoderDataRoot: string;
-            try {
-              qoderDataRoot = join(qoderDurableConfigRoot(projectRoot), '.cat-cafe');
-            } catch (topoErr) {
-              app.log.warn(
-                `[qoder-factory] cat "${catId}" durable root unresolvable: ${String(topoErr)}. Cat not registered.`,
-              );
-              continue;
-            }
-            const qoderService = createQoderAgentService({
+            const qoderRegistration = registerQoderAgentService({
               catId,
               config,
-              dataRoot: qoderDataRoot,
-              authSourceDir: qoderAuth.authSourceDir,
+              projectRoot,
+              accountRef: resolveBoundAccountRefForCat(projectRoot, catId, config),
               log: { warn: (msg) => app.log.warn(msg) },
             });
-            if (!qoderService) continue;
-            service = qoderService;
+            if (!qoderRegistration.ok) {
+              app.log.warn(
+                `[qoder-factory] cat "${catId}" registration rejected: ${qoderRegistration.reason}. Cat not registered (fail closed).`,
+              );
+              continue;
+            }
+            service = qoderRegistration.service;
             break;
           }
           case 'catagent': {

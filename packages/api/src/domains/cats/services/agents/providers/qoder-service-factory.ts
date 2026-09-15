@@ -13,8 +13,10 @@
  * 如实上报但不阻断（新 profile 已生效）。
  */
 
+import { join } from 'node:path';
 import type { CatConfig, CatId } from '@cat-cafe/shared';
 import { getCatModel } from '../../../../../config/cat-models.js';
+import { qoderDurableConfigRoot, resolveQoderAuthSourceDir } from '../../../../../config/qoder-auth-source.js';
 import { QoderAgentService } from './QoderAgentService.js';
 import { ensureQoderRuntimeProfile, type QoderProfileFs } from './qoder-runtime-profile.js';
 
@@ -63,4 +65,47 @@ export function createQoderAgentService(input: QoderServiceFactoryInput): QoderA
     warn(`[qoder-factory] runtime profile audit warnings for "${catId}": ${resolved.audit.warnings.join('; ')}`);
   }
   return new QoderAgentService({ catId, profileDir: resolved.profileDir, model });
+}
+
+/**
+ * round-4 P2（砚砚 review）：注册链接线的可测单一真相——index.ts 的 case 'qoder'
+ * 只做薄调用，auth-source 解析 + durable dataRoot + 工厂全部在这里。分离拓扑 E2E
+ * 直接消费本函数，防"测试测 resolver、生产却改 dataRoot"的错位回归。
+ */
+export interface RegisterQoderAgentServiceInput {
+  catId: CatId;
+  config: CatConfig;
+  /** 注册链的 runtime project root（生产 = resolveActiveProjectRoot(process.cwd())） */
+  projectRoot: string;
+  /** 生产 = resolveBoundAccountRefForCat(projectRoot, catId, config) */
+  accountRef?: string;
+  log?: { warn: (msg: string) => void };
+  fs?: QoderProfileFs;
+  modelResolver?: (catId: CatId) => string | undefined;
+}
+
+export type RegisterQoderAgentServiceResult = { ok: true; service: QoderAgentService } | { ok: false; reason: string };
+
+export function registerQoderAgentService(input: RegisterQoderAgentServiceInput): RegisterQoderAgentServiceResult {
+  const warn = input.log?.warn?.bind(input.log) ?? (() => {});
+  const auth = resolveQoderAuthSourceDir({ projectRoot: input.projectRoot, accountRef: input.accountRef });
+  if (!auth.ok) return { ok: false, reason: auth.reason };
+  let dataRoot: string;
+  try {
+    // 与 auth 同拓扑：runtime-worktree 模式下 profiles 落持久 workspace
+    dataRoot = join(qoderDurableConfigRoot(input.projectRoot), '.cat-cafe');
+  } catch (err) {
+    return { ok: false, reason: `qoder durable root unresolvable: ${String(err)}` };
+  }
+  const service = createQoderAgentService({
+    catId: input.catId,
+    config: input.config,
+    dataRoot,
+    authSourceDir: auth.authSourceDir,
+    log: { warn },
+    ...(input.fs ? { fs: input.fs } : {}),
+    ...(input.modelResolver ? { modelResolver: input.modelResolver } : {}),
+  });
+  if (!service) return { ok: false, reason: 'factory rejected the member (see warnings: model or profile audit)' };
+  return { ok: true, service };
 }
