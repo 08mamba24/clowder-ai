@@ -73,6 +73,7 @@ export const CONTEXT_PROJECTION_ENUMS = Object.freeze({
     'antigravity',
     'kimi',
     'opencode',
+    'qoder',
     'acp',
     'catagent',
     'a2a',

@@ -24,6 +24,8 @@ const factory = await import(
   join(here, '..', 'dist', 'domains', 'cats', 'services', 'agents', 'providers', 'qoder-service-factory.js')
 );
 const { createQoderAgentService } = factory;
+const authSourceMod = await import(join(here, '..', 'dist', 'config', 'qoder-auth-source.js'));
+const { resolveQoderAuthSourceDir } = authSourceMod;
 
 function makeAuthSource(root, token) {
   const dir = join(root, `auth-${token}`);
@@ -53,8 +55,19 @@ test('slice2 P2: factory resolves the runtime profile AT CONSTRUCTION (green pat
     dataRoot: join(root, 'data'),
     authSourceDir: auth,
     log: { warn: () => {} },
+    modelResolver: () => 'Auto',
   });
-  assert.ok(svc, 'green profile + explicit model → service constructed');
+  assert.ok(svc, 'green profile + effective model → service constructed');
+  // P2-1：注册后 capability 不再落 unknown fallback（P1-B 全 false 画像）
+  const cap = svc.contextCapability();
+  assert.equal(cap.provider, 'qoder');
+  assert.equal(cap.carrier, 'qodercn-cli');
+  assert.equal(cap.reportsRuntimeWindow, false);
+  assert.equal(cap.authoritativeUsage, false);
+  assert.equal(cap.usageTelemetry, 'unavailable');
+  assert.equal(cap.nativeWindowControl, false);
+  assert.equal(cap.nativeCompressionControl, false);
+  assert.equal(cap.observesCompression, false);
   assert.equal(typeof svc.invoke, 'function', 'is an AgentService');
   const profileDir = join(root, 'data', 'qoder-profiles', 'cat_qoder_s2');
   assert.ok(existsSync(join(profileDir, '.auth', 'user')), 'profile seeded from auth source at construction');
@@ -72,6 +85,7 @@ test('slice2 P2: custody-red profile → factory returns null (cat NOT registere
     dataRoot,
     authSourceDir: auth,
     log: { warn: () => {} },
+    modelResolver: () => 'Auto',
   });
   assert.ok(first, 'first construction seeds a green profile');
   // 构造期攻击面（点点 round-8 P1 场景）：profile 根被换成指向外部绿目录的 symlink。
@@ -90,6 +104,7 @@ test('slice2 P2: custody-red profile → factory returns null (cat NOT registere
     dataRoot,
     authSourceDir: auth,
     log: { warn: (m) => warns.push(m) },
+    modelResolver: () => 'Auto',
   });
   assert.equal(second, null, 'custody-red profile must NOT construct a service');
   assert.ok(
@@ -106,14 +121,15 @@ test('slice2: missing explicit defaultModel → null (P1-D: model is a hard type
   const warns = [];
   const svc = createQoderAgentService({
     catId: 'cat_qoder_s2',
-    config: { defaultModel: '   ', clientId: 'qoder' },
+    config: { defaultModel: 'Auto', clientId: 'qoder' },
     dataRoot: join(root, 'data'),
     authSourceDir: auth,
     log: { warn: (m) => warns.push(m) },
+    modelResolver: () => '  ',
   });
   assert.equal(svc, null);
   assert.ok(
-    warns.some((w) => /defaultModel/.test(w)),
+    warns.some((w) => /effective model/.test(w)),
     JSON.stringify(warns),
   );
   rmSync(root, { recursive: true, force: true });
@@ -128,6 +144,7 @@ test('slice2: unreadable auth source → null (fail closed)', () => {
     dataRoot: join(root, 'data'),
     authSourceDir: join(root, 'missing-auth'),
     log: { warn: (m) => warns.push(m) },
+    modelResolver: () => 'Auto',
   });
   assert.equal(svc, null);
   assert.ok(
@@ -135,4 +152,74 @@ test('slice2: unreadable auth source → null (fail closed)', () => {
     JSON.stringify(warns),
   );
   rmSync(root, { recursive: true, force: true });
+});
+
+// ── P1-2：类型化 account→auth-source resolver（E2E：真实 catalog + 真实 fs）────
+function writeQoderCatalog(root, accounts) {
+  const cc = join(root, '.cat-cafe');
+  mkdirSync(cc, { recursive: true });
+  writeFileSync(
+    join(cc, 'cat-catalog.json'),
+    JSON.stringify({ version: 2, breeds: [], roster: {}, reviewPolicy: {}, accounts }, null, 2),
+    'utf8',
+  );
+  writeFileSync(join(cc, 'credentials.json'), '{}', 'utf8');
+  return cc;
+}
+
+test('slice2 P1-2: typed auth-source resolver — oauth qoder green; traversal/api_key/wrong-family/stale/missing all red', () => {
+  const root = mkdtempSync(join(tmpdir(), 'qoder-s2e-'));
+  const cc = writeQoderCatalog(root, {
+    qoder: { authType: 'oauth' },
+    'qoder-team': { authType: 'oauth' },
+    'qoder-key': { authType: 'api_key', baseUrl: 'https://api.deepseek.com' },
+    'openai-team': { authType: 'oauth', clientId: 'openai' },
+    'qoder-nodir': { authType: 'oauth' },
+  });
+  for (const ref of ['qoder', 'qoder-team']) {
+    mkdirSync(join(cc, 'qoder-auth', ref, '.auth'), { recursive: true });
+    writeFileSync(join(cc, 'qoder-auth', ref, '.auth', 'user'), `token-${ref}`);
+  }
+  // green：显式 ref 与默认 ref
+  const g1 = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: 'qoder-team' });
+  assert.equal(g1.ok, true, JSON.stringify(g1));
+  assert.equal(g1.authSourceDir, join(cc, 'qoder-auth', 'qoder-team'));
+  const g2 = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: undefined });
+  assert.equal(g2.ok, true, 'default ref falls back to builtin qoder');
+  // 穿越段：从未触达 fs 即拒
+  const t = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: '../../../personal' });
+  assert.equal(t.ok, false);
+  assert.match(t.reason, /unsafe qoder accountRef segment/);
+  // api_key 账户：config-dir auth 要求 oauth
+  const k = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: 'qoder-key' });
+  assert.equal(k.ok, false);
+  assert.match(k.reason, /must be oauth/);
+  // 异家族账户
+  const w = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: 'openai-team' });
+  assert.equal(w.ok, false);
+  assert.match(w.reason, /belongs to provider|not found/);
+  // stale ref（无账户记录）
+  const st = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: 'ghost' });
+  assert.equal(st.ok, false);
+  assert.match(st.reason, /not found/);
+  // oauth 账户存在但 auth source 目录未落位（operator onboarding 缺失）
+  const nd = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: 'qoder-nodir' });
+  assert.equal(nd.ok, false);
+  assert.match(nd.reason, /missing or unresolved/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('slice2 P1-2: auth source symlinked out of the durable root is rejected (realpath containment)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'qoder-s2f-'));
+  const cc = writeQoderCatalog(root, { qoder: { authType: 'oauth' } });
+  const external = mkdtempSync(join(tmpdir(), 'qoder-s2f-ext-'));
+  mkdirSync(join(external, '.auth'), { recursive: true });
+  writeFileSync(join(external, '.auth', 'user'), 'external');
+  mkdirSync(join(cc, 'qoder-auth'), { recursive: true });
+  symlinkSync(external, join(cc, 'qoder-auth', 'qoder'), 'dir');
+  const r = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: 'qoder' });
+  assert.equal(r.ok, false, 'symlinked auth source must not pass containment');
+  assert.match(r.reason, /escapes the durable auth root/);
+  rmSync(root, { recursive: true, force: true });
+  rmSync(external, { recursive: true, force: true });
 });

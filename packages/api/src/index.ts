@@ -38,6 +38,7 @@ import { getCatModel } from './config/cat-models.js';
 import { resolveCodexCarrierTruth } from './config/codex-cli.js';
 import { configEventBus } from './config/config-event-bus.js';
 import { resolveFrontendBaseUrl, resolveFrontendCorsOrigins } from './config/frontend-origin.js';
+import { resolveQoderAuthSourceDir } from './config/qoder-auth-source.js';
 import { resolveRuntimeDeploymentRevision } from './config/runtime-deployment-revision.js';
 import { initRuntimeOverrides } from './config/session-strategy-overrides.js';
 import { assertStorageReady } from './config/storage-guard.js';
@@ -1972,12 +1973,23 @@ async function main(): Promise<void> {
             // model 缺失或审计红 → null → 不注册（无半注册态）。凭证经 config-dir
             // （<dataRoot>/qoder-auth/<accountRef>），不经 env 注入。
             const projectRoot = resolveActiveProjectRoot(process.cwd());
-            const qoderAccountRef = resolveBoundAccountRefForCat(projectRoot, catId, config) ?? 'qoder';
+            // round-2 P1：类型化 account→auth-source 装配（OAuth 家族校验 + 安全段 +
+            // realpath containment）；裸拼 ref 的旧路径曾放行 ../.. 穿越与异族账户
+            const qoderAuth = resolveQoderAuthSourceDir({
+              projectRoot,
+              accountRef: resolveBoundAccountRefForCat(projectRoot, catId, config),
+            });
+            if (!qoderAuth.ok) {
+              app.log.warn(
+                `[qoder-factory] cat "${catId}" auth-source rejected: ${qoderAuth.reason}. Cat not registered (fail closed).`,
+              );
+              continue;
+            }
             const qoderService = createQoderAgentService({
               catId,
               config,
               dataRoot: join(projectRoot, '.cat-cafe'),
-              authSourceDir: join(projectRoot, '.cat-cafe', 'qoder-auth', qoderAccountRef),
+              authSourceDir: qoderAuth.authSourceDir,
               log: { warn: (msg) => app.log.warn(msg) },
             });
             if (!qoderService) continue;

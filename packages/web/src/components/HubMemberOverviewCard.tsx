@@ -26,6 +26,7 @@ function humanizeClientId(clientId: string) {
   if (clientId === 'anthropic') return 'Anthropic';
   if (clientId === 'google') return 'Gemini';
   if (clientId === 'opencode') return 'OpenCode';
+  if (clientId === 'qoder') return 'Qoder';
   if (clientId === 'antigravity') return 'Antigravity';
   return clientId;
 }
@@ -37,6 +38,7 @@ function clientRuntimeLabel(cat: CatData, configCat?: CatConfig) {
   if (accountRef.includes('gemini')) return 'Gemini';
   if (accountRef.includes('kimi') || accountRef.includes('moonshot')) return 'Kimi';
   if (accountRef.includes('opencode')) return 'OpenCode';
+  if (accountRef.includes('qoder')) return 'Qoder';
   if (cat.clientId === 'antigravity') return 'Antigravity';
   if (cat.clientId === 'openai') return 'OpenAI-Compatible';
   return humanizeClientId(configCat?.clientId ?? cat.clientId);
@@ -50,7 +52,8 @@ function accountSummary(cat: CatData) {
     accountRef === 'codex' ||
     accountRef === 'gemini' ||
     accountRef === 'kimi' ||
-    accountRef === 'opencode'
+    accountRef === 'opencode' ||
+    accountRef === 'qoder'
   ) {
     return 'CLI（OAuth）账号';
   }

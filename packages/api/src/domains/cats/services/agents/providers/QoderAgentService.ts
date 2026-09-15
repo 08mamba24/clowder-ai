@@ -427,6 +427,23 @@ export class QoderAgentService implements AgentService {
     yield done;
   }
 
+  /** F317 P1-B 初始能力画像：credits 只进 typed billing metadata，不进 TokenUsage；
+   *  无 runtime window 上报、无权威 usage、无 native 窗口/压缩控制 */
+  contextCapability(): import('../../types.js').AgentContextCapability {
+    return {
+      provider: 'qoder',
+      carrier: 'qodercn-cli',
+      reportsRuntimeWindow: false,
+      authoritativeUsage: false,
+      usageTelemetry: 'unavailable',
+      nativeWindowControl: false,
+      nativeCompressionControl: false,
+      observesCompression: false,
+      reason:
+        'F317 P1-B: credits observed via typed billing metadata only; runtime window and authoritative usage unproven for this carrier',
+    };
+  }
+
   private error(message: string): AgentMessage {
     return { type: 'error', catId: this.config.catId, error: message, timestamp: Date.now() };
   }

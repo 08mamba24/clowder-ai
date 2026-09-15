@@ -14,6 +14,7 @@
  */
 
 import type { CatConfig, CatId } from '@cat-cafe/shared';
+import { getCatModel } from '../../../../../config/cat-models.js';
 import { QoderAgentService } from './QoderAgentService.js';
 import { ensureQoderRuntimeProfile, type QoderProfileFs } from './qoder-runtime-profile.js';
 
@@ -26,15 +27,22 @@ export interface QoderServiceFactoryInput {
   authSourceDir: string;
   log?: { warn: (msg: string) => void };
   fs?: QoderProfileFs;
+  /**
+   * 有效 model 解析（测试注入）。默认 getCatModel(catId)——与 Kimi/OpenCode 同源，
+   * 尊重 CAT_<ID>_MODEL env override > config > fallback（round-2 review P2-2：
+   * 构造期直接读 config.defaultModel 会忽略 env override）。
+   */
+  modelResolver?: (catId: CatId) => string | undefined;
 }
 
 export function createQoderAgentService(input: QoderServiceFactoryInput): QoderAgentService | null {
   const { catId, config } = input;
   const warn = input.log?.warn?.bind(input.log) ?? (() => {});
-  const model = config.defaultModel?.trim() ?? '';
+  void config;
+  const model = (input.modelResolver?.(catId) ?? getCatModel(catId))?.trim() ?? '';
   if (!model) {
     warn(
-      `[qoder-factory] cat "${catId}" has no explicit defaultModel — P1-D requires an exact model. Cat not registered (fail closed).`,
+      `[qoder-factory] cat "${catId}" has no effective model (CAT_${String(catId).toUpperCase()}_MODEL / config) — P1-D requires an exact model. Cat not registered (fail closed).`,
     );
     return null;
   }

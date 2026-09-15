@@ -26,6 +26,7 @@ const BUILTIN_CLIENT_LABELS: Record<BuiltinAccountClient, string> = {
   google: 'Gemini',
   kimi: 'Kimi',
   opencode: 'OpenCode',
+  qoder: 'Qoder',
   acp: 'ACP',
 };
 
@@ -49,6 +50,8 @@ function fallbackAccountRef(cat: CatData): string | null {
       return 'kimi';
     case 'opencode':
       return 'opencode';
+    case 'qoder':
+      return 'qoder';
     default:
       return null;
   }
@@ -91,6 +94,8 @@ function builtinEmptyText(clientId: BuiltinAccountClient | undefined): string {
       return '默认通过 Kimi CLI /usage 获取；如需 API 降级，配置 KIMI_QUOTA_API_FALLBACK_ENABLED=1 与 KIMI_AUTH_TOKEN';
     case 'opencode':
       return 'OpenCode 不单独上报官方额度，实际额度取决于绑定账号';
+    case 'qoder':
+      return 'Qoder 额度取决于绑定账号（qodercn OAuth，credits 经 billing metadata 观测）';
     default:
       return '暂无数据';
   }
