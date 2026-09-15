@@ -366,14 +366,16 @@ test('round3 P1-5c: staging audit failure with failed staging cleanup names the 
   const root = mkdtempSync(join(tmpdir(), 'qoder-p15c-'));
   const authA = makeAuth(root, 'token-A');
   ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
-  // 让 profile 变污染（放一个可执行脚本）→ 触发 atomicSwap；staging 审计必红（readdir EACCES），
-  // 且 staging 清理也失败（rm EACCES）——两件事都必须如实出现在 violations
-  writeFileSync(join(root, 'qoder-profiles', 'c1', 'evil.sh'), 'x');
+  // 让 profile 变污染（round-4 P1-1 后审计面 = plugins/ 子树，污染必须落在那里才触发
+  // atomicSwap）。staging 是 auth-only seed、天然无 plugins/——用 fingerprint 不可读让
+  // staging 审计变红（审计语义内），rm 注入照旧；两件事都必须如实出现在 violations
+  mkdirSync(join(root, 'qoder-profiles', 'c1', 'plugins'), { recursive: true });
+  writeFileSync(join(root, 'qoder-profiles', 'c1', 'plugins', 'evil.sh'), 'x');
   const fs = {
     ...base,
-    readdirSync: (p, o) => {
+    readFileSync: (p) => {
       if (p.includes('.staging-')) throw new Error('EACCES injected');
-      return base.readdirSync(p, o);
+      return base.readFileSync(p);
     },
     rmSync: (p, o) => {
       if (p.includes('.staging-')) throw new Error('EACCES injected');
@@ -790,4 +792,125 @@ test('round3 P1-6c: unsafe sessionId charset rejected before spawn', async () =>
   const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp', sessionId: '../../evil' });
   assert.equal(spawned, 0);
   assert.ok(out.some((m) => m.type === 'error' && m.error.includes('charset')));
+});
+
+// ══ round-4（PR #24 review：砚砚 3×P1 + 1×P2）══════════════════════════════
+
+// P1-1：provider 正常初始化产物不得误杀（L1 audit_auth 攻击面 = plugins/ 子树；
+// 实测本机 .qoder-cn/security-resources/security-scan/bin/qodersec-launch.sh）
+test('round4 P1-1a: provider-owned security-resources scripts do not fail the audit', () => {
+  const fs = memFs(
+    new Map([
+      ['/p/.auth/user', 't'],
+      ['/p/.account-fingerprint', 'f'.repeat(16)],
+      ['/p/security-resources/security-scan/bin/qodersec-launch.sh', '#!/bin/sh'],
+      ['/p/security-resources/security-scan/bin/qodersec-launch.cmd', 'x'],
+      ['/p/security-resources/security-scan/.qoder-plugin/plugin.json', '{}'],
+      ['/p/logs/session.log', 'x'],
+    ]),
+  );
+  const a = auditQoderProfile('/p', fs);
+  assert.equal(a.ok, true, JSON.stringify(a.violations));
+});
+
+test('round4 P1-1b: first invocation provider-owned profile → second invocation + resume stay green', async () => {
+  const sid = 'f8a72ea8-b30d-44b8-82e0-48c0a7f020f5';
+  const fs = memFs(
+    new Map([
+      ['/p/.auth/user', 't'],
+      ['/p/.account-fingerprint', 'f'.repeat(16)],
+      ['/p/security-resources/security-scan/bin/qodersec-launch.sh', '#!/bin/sh'],
+      [`/p/projects/-tmp-wksp/${sid}.jsonl`, '{}'],
+    ]),
+  );
+  const svc = makeSvc({ profileFs: fs, spawnFn: () => fakeChild(fixtureLines('resume')) });
+  const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp/wksp', sessionId: sid });
+  assert.ok(
+    out.some((m) => m.type === 'done'),
+    'provider-initialized profile must stay invocable (no reseed, session preserved)',
+  );
+});
+
+// P1-2：F089 seam——options.spawnCliOverride 优先于共享 spawnCli，且 cliOpts 带 rawArchivePath
+test('round4 P1-2: options.spawnCliOverride takes precedence and receives rawArchivePath', async () => {
+  let directSpawns = 0;
+  let overrideCalls = 0;
+  let overrideSawArchivePath = null;
+  const lines = fixtureLines('success');
+  const svc = makeSvc({
+    spawnFn: () => {
+      directSpawns++;
+      return fakeChild(lines);
+    },
+    rawArchive: {
+      append: async () => {},
+      getPath: (id) => `/tmp/arc-${id}.ndjson`,
+    },
+  });
+  const out = await runInvoke(svc, 'hi', {
+    workingDirectory: '/tmp',
+    invocationId: 'inv-r4',
+    spawnCliOverride: (cliOpts) => {
+      overrideCalls++;
+      overrideSawArchivePath = cliOpts.rawArchivePath;
+      return (async function* () {
+        for (const l of lines) yield JSON.parse(l);
+      })();
+    },
+  });
+  assert.equal(overrideCalls, 1, 'override must be the spawn path');
+  assert.equal(directSpawns, 0, 'shared spawnCli must not run when override present');
+  assert.ok(out.some((m) => m.type === 'done'));
+  assert.ok(
+    typeof overrideSawArchivePath === 'string' && overrideSawArchivePath.includes('inv-r4'),
+    `cliOpts carries rawArchivePath for timeout diagnostics, got: ${String(overrideSawArchivePath)}`,
+  );
+});
+
+// P1-3：canonical cwd 绑定——session 在别的 workspace 项目目录下时必须拒绝
+test('round4 P1-3a: resume across different cwd is rejected (canonical project dir binding)', async () => {
+  let spawned = 0;
+  const sid = 'f8a72ea8-b30d-44b8-82e0-48c0a7f020f5';
+  const fs = memFs(
+    new Map([
+      ['/p/.auth/user', 't'],
+      ['/p/.account-fingerprint', 'f'.repeat(16)],
+      [`/p/projects/-tmp-workspace-a/${sid}.jsonl`, '{}'],
+    ]),
+  );
+  const svc = makeSvc({
+    profileFs: fs,
+    spawnFn: () => {
+      spawned++;
+      return fakeChild(fixtureLines('resume'));
+    },
+  });
+  const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp/workspace-b', sessionId: sid });
+  assert.equal(spawned, 0, 'cross-cwd resume must not spawn');
+  assert.ok(out.some((m) => m.type === 'error' && m.error.includes('resume audit failed')));
+});
+
+test('round4 P1-3b: qoderProjectSlug matches the provider canonical mapping', () => {
+  const qoderProjectSlug = profileModule.qoderProjectSlug;
+  assert.equal(typeof qoderProjectSlug, 'function', 'exported canonical slug');
+  assert.equal(qoderProjectSlug('/tmp/wksp-a'), '-tmp-wksp-a');
+  assert.equal(qoderProjectSlug('/Users/yuhan/cat-cafe'), '-Users-yuhan-cat-cafe');
+  assert.equal(qoderProjectSlug('/tmp/wksp a+b'), '-tmp-wksp-a-b');
+  // >200 字符：截断到 200 + '-' + djb2-xor base36 后缀（provider MI() 同款形状）
+  const long = `/${'x'.repeat(250)}`;
+  const s = qoderProjectSlug(long);
+  assert.ok(s.length > 200 && s.length <= 200 + 1 + 12, `truncated+hash shape, got len ${s.length}`);
+  assert.ok(s.startsWith(`-${'x'.repeat(199)}`), 'prefix is the truncated dash form');
+});
+
+// P2-4：spawn 层同步异常 → typed error 终态，不从 iterable 逸出
+test('round4 P2-4: sync spawn error surfaces as typed error message, not iterator rejection', async () => {
+  const svc = makeSvc({
+    spawnFn: () => {
+      throw Object.assign(new Error('EACCES injected'), { code: 'EACCES' });
+    },
+  });
+  const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp' });
+  assert.ok(Array.isArray(out) && out.length === 1, 'exactly one terminal message');
+  assert.ok(out[0].type === 'error' && out[0].error.includes('spawn failed'), JSON.stringify(out));
 });

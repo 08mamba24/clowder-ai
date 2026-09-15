@@ -9,7 +9,6 @@
  *
  * Slice 1 review 修正（砚砚 8xP1）：
  * - catId 单段安全字符 + resolve containment（杜绝 ../ 逃逸递归删除）
- * - 审计无深度上限；readdir/stat/lstat 异常与 symlink 一律判 violation（fail-closed）
  * - 审计 fs 依赖全量可注入（测试与生产同一语义文件系统面）
  * - 换绑账号：fingerprint marker 不匹配 → 原子换绑（绝不沿用旧凭证）
  * - swap：stage 新副本审计绿后才替换；失败保留旧 profile（backup 回滚）
@@ -17,7 +16,14 @@
  * Round-3 修正（砚砚 P1⑤/P1⑥）：
  * - swap 回滚/清理失败如实返回：不谎称 rolled back/cleaned，含凭证遗留点名路径；
  *   swap 已提交后 backup 清理失败进 warnings（ok 不翻转——新 profile 已生效）
- * - auditQoderResumeSession：resume 前 session 必须真实存在于本 profile projects/ 下
+ * - auditQoderResumeSession：resume 前 session 必须存在于本 profile projects/ 下
+ *
+ * Round-4 修正（PR #24 review，砚砚 2×P1）：
+ * - P1-1 审计攻击面收窄到 plugins/ 子树（L1 audit_auth 语义，collect.sh:77）——
+ *   provider 正常初始化的 security-resources/ 自带脚本不再误杀（否则首次初始化后
+ *   每次调用被拒 + reseed 丢 session）
+ * - P1-3 resume 审计按 qodercn canonical slug（qoderProjectSlug，provider 源码提取）
+ *   精确定位 projects/<slug(cwd)>/<sessionId>.jsonl —— 跨 cwd 不再误放行
  */
 
 import { createHash } from 'node:crypto';
@@ -76,9 +82,19 @@ export interface QoderProfileAudit {
   warnings?: string[];
 }
 
-/** 无深度上限的完整遍历；异常与 symlink 一律 violation（安全审计不得把未知当绿） */
+/**
+ * L1 audit_auth 攻击面（真相源 collect.sh:77：`find "$d/plugins" -type f ...`）：
+ * 可执行/脚本/symlink 审计只针对 **plugins/ 子树**。provider 正常初始化会在
+ * security-resources/ 等处生成自带脚本（实测本机
+ * `.qoder-cn/security-resources/security-scan/bin/qodersec-launch.sh`）——那是
+ * provider-owned 产物，不属于审计面；全根递归会误杀首次初始化后的每次调用
+ * （PR #24 review P1-1：resume 被拒 + reseed 丢 session）。
+ * plugins/ 内部遍历无深度上限；审计面内不可读/不可 stat 一律 violation（fail-closed）。
+ */
 function findExecutableArtifacts(profileDir: string, fs: QoderProfileFs): string[] {
   const offenders: string[] = [];
+  const pluginsDir = join(profileDir, 'plugins');
+  if (!fs.existsSync(pluginsDir)) return offenders;
   const walk = (dir: string): void => {
     let entries;
     try {
@@ -107,7 +123,7 @@ function findExecutableArtifacts(profileDir: string, fs: QoderProfileFs): string
       }
     }
   };
-  walk(profileDir);
+  walk(pluginsDir);
   return offenders;
 }
 
@@ -139,61 +155,58 @@ export function isSafeCatIdSegment(catId: string): boolean {
 const SAFE_SESSION_ID = /^[A-Za-z0-9-]{8,64}$/;
 
 /**
- * round-3 P1⑥：provider 初始化后的二次 resume 审计。
- * L1 实证（collect.sh/提案 I-11）：qodercn 把 session 存在 config-dir 的
- * projects/<cwd-slug>/ 下，resume 要求同 config-dir + 同 cwd。因此 resume 是对
- * provider 已初始化 profile 的二次信任：session 必须真实存在于**本** profile 的
- * projects/ 子树（文件名包含 sessionId）；找不到即 fail-closed —— 跨 profile /
- * 跨 cwd 的 resume 不是我们的 session，拒绝而不是让 CLI 静默开新会话。
+ * qodercn canonical project slug —— 从 provider 运行时源码提取（PR #24 review P1-3），
+ * 不是猜测。`MI(cwd)`：cwd 每个非 [a-zA-Z0-9] 字符替换为 '-'；结果 >200 字符时
+ * 截断到 200 并追加 '-' + |djb2-xor(cwd)| 的 base36。provider 用同一函数定位
+ * `projects/<slug>/` 下的 session 文件。
  */
-export function auditQoderResumeSession(
-  profileDir: string,
-  sessionId: string,
-  fs: QoderProfileFs,
-): { ok: true } | { ok: false; reason: string } {
-  if (!SAFE_SESSION_ID.test(sessionId)) {
-    return { ok: false, reason: `unsafe session id charset: ${JSON.stringify(sessionId.slice(0, 16))}` };
-  }
-  const projectsDir = join(profileDir, 'projects');
-  if (!fs.existsSync(projectsDir)) {
-    return {
-      ok: false,
-      reason: 'no projects/ under runtime profile (provider never initialized this profile) — resume rejected',
-    };
-  }
-  if (!sessionFileExists(projectsDir, sessionId, fs)) {
-    return {
-      ok: false,
-      reason: `resume session ${sessionId} not found under runtime profile projects/ (I-11: resume requires same config-dir + cwd; cross-profile/cross-cwd resume rejected)`,
-    };
-  }
-  return { ok: true };
+export function qoderProjectSlug(cwd: string): string {
+  const dashed = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  if (dashed.length <= 200) return dashed;
+  // 与 provider 字节等价：`A = A * 33 ^ charCodeAt`（JS float 乘法 + ^ 的 ToInt32 截断）
+  let hash = 5381;
+  for (let i = 0; i < cwd.length; i++) hash = (hash * 33) ^ cwd.charCodeAt(i);
+  return `${dashed.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
 }
 
-/** 在 projects/ 子树里找文件名包含 sessionId 的 session 文件；symlink 与不可读一律当不存在 */
-function sessionFileExists(dir: string, sessionId: string, fs: QoderProfileFs): boolean {
-  let entries;
+/**
+ * round-3 P1⑥ / round-4 P1-3：provider 初始化后的二次 resume 审计。
+ * L1 实证（collect.sh/提案 I-11）：qodercn 把 session 存在 config-dir 的
+ * `projects/<qoderProjectSlug(cwd)>/<sessionId>.jsonl`，resume 要求同 config-dir
+ * + 同 cwd。审计按 **canonical 项目目录精确路径**检查（不是整个 projects/ 子树
+ * 按文件名模糊匹配——那只能证明同 profile，跨 cwd 会误放行）；路径必须是常规文件
+ * （symlink/目录/不可 stat 一律拒绝）。
+ */
+export function auditQoderResumeSession(input: {
+  profileDir: string;
+  sessionId: string;
+  /** 本次 invocation 的 spawn cwd（必须与 provider 计算 slug 的输入是同一字符串） */
+  workingDirectory: string;
+  fs: QoderProfileFs;
+}): { ok: true } | { ok: false; reason: string } {
+  if (!SAFE_SESSION_ID.test(input.sessionId)) {
+    return { ok: false, reason: `unsafe session id charset: ${JSON.stringify(input.sessionId.slice(0, 16))}` };
+  }
+  const sessionFile = join(
+    input.profileDir,
+    'projects',
+    qoderProjectSlug(input.workingDirectory),
+    `${input.sessionId}.jsonl`,
+  );
+  if (!input.fs.existsSync(sessionFile)) {
+    return {
+      ok: false,
+      reason: `resume session ${input.sessionId} not found at canonical project path ${sessionFile} (I-11: resume requires same config-dir + same cwd; cross-profile/cross-cwd resume rejected)`,
+    };
+  }
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return false;
-  }
-  for (const entry of entries) {
-    const p = join(dir, entry.name);
-    let st;
-    try {
-      st = fs.lstatSync(p);
-    } catch {
-      continue;
+    if (!input.fs.lstatSync(sessionFile).isFile()) {
+      return { ok: false, reason: `resume session path is not a regular file: ${sessionFile}` };
     }
-    if (st.isSymbolicLink()) continue;
-    if (st.isFile()) {
-      if (entry.name.includes(sessionId)) return true;
-    } else if (sessionFileExists(p, sessionId, fs)) {
-      return true;
-    }
+  } catch (err) {
+    return { ok: false, reason: `resume session path unstatable: ${String(err)}` };
   }
-  return false;
+  return { ok: true };
 }
 
 /** resolve containment：target 必须严格位于 parent 内（或等于） */

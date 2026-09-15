@@ -13,6 +13,12 @@
  *      argv 过 assertExplicitModelFlag（显式 -m provenance），done metadata 记录 provenance
  *   P1⑥ resume 二次审计（qoder-runtime-profile.auditQoderResumeSession）
  *   P1⑤ 见 qoder-runtime-profile.ts（swap 收尾失败如实返回）
+ *
+ * Round-4 修正（PR #24 review，砚砚 2×P1 + 1×P2）：
+ *   P1-2 options.spawnCliOverride（F089 seam）优先于共享 spawnCli；
+ *      CliSpawnOptions 接 rawArchivePath（timeout 诊断定位 raw archive）
+ *   P1-3 resume 审计按 provider canonical slug 精确定位（见 qoder-runtime-profile.ts）
+ *   P2-4 spawn 层异常不再从 iterable 逸出——统一转 qoder typed error 终态
  */
 
 import type { CatId } from '@cat-cafe/shared';
@@ -196,10 +202,16 @@ export class QoderAgentService implements AgentService {
       return;
     }
 
-    // P1⑥：resume 是对 provider 已初始化 profile 的二次信任——session 必须真实存在于本
-    // profile 的 projects/ 下（I-11：resume 语义依赖同 config-dir + 同 cwd）
+    // P1⑥/round-4 P1-3：resume 是对 provider 已初始化 profile 的二次信任——session 必须存在于
+    // 本 profile 的 canonical 项目目录 projects/<qoderProjectSlug(cwd)>/<sessionId>.jsonl
+    // （I-11：resume 语义依赖同 config-dir + 同 cwd，跨 cwd 精确拒绝）
     if (options?.sessionId) {
-      const resumeAudit = auditQoderResumeSession(this.config.profileDir, options.sessionId, fs);
+      const resumeAudit = auditQoderResumeSession({
+        profileDir: this.config.profileDir,
+        sessionId: options.sessionId,
+        workingDirectory,
+        fs,
+      });
       if (!resumeAudit.ok) {
         yield this.error(`qoder invoke rejected: resume audit failed: ${resumeAudit.reason}`);
         return;
@@ -260,37 +272,50 @@ export class QoderAgentService implements AgentService {
     // P1③：spawn/stdin(EPIPE 守卫)/有界终止/exit 等待/liveness 全部由共享 spawnCli 拥有；
     // 门内 fail-closed 终止（init 门红/时序违规）通过 break 触发其 finally 的
     // CliTerminationController 有界终止（SIGTERM → 等待 → SIGKILL，计时器 unref）
-    const events = spawnCli(
-      {
-        command: binary,
-        args,
-        cwd: workingDirectory,
-        stdinInput: prompt,
-        env: buildQoderEnvOverrides({
-          profileDir: this.config.profileDir,
-          callbackEnv: options?.callbackEnv,
-          accountEnv: options?.accountEnv,
-        }),
-        managedArgvFlags: [
-          '-p',
-          '-m',
-          '-o',
-          '--config-dir',
-          '--strict-mcp-config',
-          '--allowed-mcp-server-names',
-          '--tools',
-          '--setting-sources',
-        ],
-        ...(signal ? { signal } : {}),
-        ...(options?.invocationId ? { invocationId: options.invocationId } : {}),
-        ...(options?.cliSessionId ? { cliSessionId: options.cliSessionId } : {}),
-        ...(options?.livenessProbe ? { livenessProbe: options.livenessProbe } : {}),
-        ...(options?.parentSpan ? { parentSpan: options.parentSpan } : {}),
-      },
-      this.config.spawnFn ? { spawnFn: this.config.spawnFn } : undefined,
-    );
+    const cliOpts = {
+      command: binary,
+      args,
+      cwd: workingDirectory,
+      stdinInput: prompt,
+      env: buildQoderEnvOverrides({
+        profileDir: this.config.profileDir,
+        callbackEnv: options?.callbackEnv,
+        accountEnv: options?.accountEnv,
+      }),
+      managedArgvFlags: [
+        '-p',
+        '-m',
+        '-o',
+        '--config-dir',
+        '--strict-mcp-config',
+        '--allowed-mcp-server-names',
+        '--tools',
+        '--setting-sources',
+      ],
+      ...(signal ? { signal } : {}),
+      ...(options?.invocationId ? { invocationId: options.invocationId } : {}),
+      ...(options?.cliSessionId ? { cliSessionId: options.cliSessionId } : {}),
+      ...(options?.livenessProbe ? { livenessProbe: options.livenessProbe } : {}),
+      ...(options?.parentSpan ? { parentSpan: options.parentSpan } : {}),
+      // round-4 P1-2：与 Claude/Kimi/OpenCode 共享接线——rawArchivePath 让 __cliTimeout
+      // 诊断能定位到本 invocation 的 raw archive
+      ...(options?.invocationId && this.rawArchive.getPath
+        ? { rawArchivePath: this.rawArchive.getPath(options.invocationId) }
+        : {}),
+    };
+    // F089 seam（round-4 P1-2）：per-invocation spawnCliOverride（tmux-based spawner 等）
+    // 优先于共享 spawnCli —— 路由/acceptance 只能经 options 注入，不得绕死
+    const events = options?.spawnCliOverride
+      ? options.spawnCliOverride(cliOpts)
+      : spawnCli(cliOpts, this.config.spawnFn ? { spawnFn: this.config.spawnFn } : undefined);
 
-    yield* this.consumeStream(events, options);
+    try {
+      yield* this.consumeStream(events, options);
+    } catch (err) {
+      // round-4 P2-4：spawn 层异常（spawnFn 同步 throw / ENOENT 等，共享 spawnCli 明确会
+      // throw spawn error）不得从 AgentService iterable 逸出 —— 统一转 qoder typed error 终态
+      yield this.error(`qoder spawn failed: ${String(err)}`);
+    }
   }
 
   /** 真·流式：init 过门后逐条 yield；终态在流后收敛判定 */
