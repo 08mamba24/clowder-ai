@@ -36,6 +36,17 @@
  *   ENOENT 对可选 plugins 合法缺失；seam 扩 isDirectory()，非目录节点
  *   （常规文件/FIFO/socket）一律拒绝
  *
+ * Round-9 修正（L2 生产实证）：profile 内 provider 自建的内部软链（logs/latest
+ * 日志轮转）需要放行——此前"symlink 一律拒"误杀生产日志轮转。round-9 初版以
+ * containment（目标仍在 profile 内）放行全部非 plugins 内部软链。
+ *
+ * Round-10 收窄（CHANGES_REQUESTED 复审，P1 blocking）：containment 远宽于唯一
+ * L2 证据（logs/latest -> runs/<ts>），放行了三条安全语义的绕过——.auth 内链
+ * 换账号（fingerprint marker 不变仍 ok）、根 plugins 内链逃逸 executable gate、
+ * projects slug 内链击穿 same-cwd resume 绑定。改为正向窄 allowlist：仅允许
+ * exact profile/logs/latest 且真实目标严格位于 canonical profile/logs/runs/ 下；
+ * 其余 symlink（内部/出界/悬链/plugins 子树）一律 round-7 fail-closed。
+ *
  * Round-8 修正（PR #24 round-7 review，点点 1×P1 + 2×P3）：
  * - traversal 起点自身过 custody：profile 根 symlink（兄弟 profile / 外置绿目录 /
  *   悬链）红即短路；ensure 对 qoder-profiles 根与 profile 根同样先判，悬链不再
@@ -64,7 +75,7 @@ import {
   statSync as fsStatSync,
   writeFileSync as fsWriteFileSync,
 } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 
 export interface QoderProfileFs {
   existsSync: (p: string) => boolean;
@@ -116,7 +127,8 @@ export interface QoderProfileAudit {
  *    非目录/非常规文件节点、不可 stat / 不可遍历目录一律 violation（I-11 §1：profile 由
  *    runtime 拥有，任何执行/会话/配置路径都不得经链接逃到外部）；`.auth` 与 `plugins`
  *    作为语义根节点还必须是真实目录。round-4 该拆掉的只是"全 profile 脚本扩展名判红"，
- *    custody 不随扫描面一起收窄。
+ *    custody 不随扫描面一起收窄。唯一例外（round-10 正向窄 allowlist）：exact
+ *    profile/logs/latest 且真实目标严格位于 canonical profile/logs/runs/ 下。
  * ② executable/script 判定只发生在 plugins/ 子树内（L1 audit_auth 真相源
  *    collect.sh:77）：provider 正常初始化在 security-resources/ 等处生成的自带脚本
  *    （qodersec-launch.sh 等）是真实目录内的 provider-owned 产物，不误杀；但那些目录
@@ -157,7 +169,29 @@ function auditProfileTree(profileDir: string, fs: QoderProfileFs): string[] {
         continue;
       }
       if (st.isSymbolicLink()) {
-        violations.push(`symlink: ${p}`);
+        if (inPlugins) {
+          violations.push(`symlink: ${p}`);
+          continue;
+        }
+        // Round-10（CHANGES_REQUESTED 复审）：containment 不是许可。唯一有 L2 生产
+        // 证据的 provider 内部软链是日志轮转 logs/latest -> logs/runs/<ts>，按正向
+        // 窄 allowlist 放行：路径必须精确是 profile/logs/latest，且 realpath 双侧
+        // 解析后真实目标严格位于 canonical profile/logs/runs/ 之下。其余 symlink
+        // ——含 profile 内部的 .auth 换绑 / 根 plugins 逃逸 executable gate /
+        // projects slug 跨 cwd resume——一律回到 round-7 fail-closed。
+        if (relative(profileDir, p) !== join('logs', 'latest')) {
+          violations.push(`symlink: ${p}`);
+          continue;
+        }
+        try {
+          const targetReal = fs.realpathSync(p);
+          const runsReal = fs.realpathSync(join(profileDir, 'logs', 'runs'));
+          if (!targetReal.startsWith(runsReal + sep)) {
+            violations.push(`symlink target outside canonical logs/runs: ${p} -> ${targetReal}`);
+          }
+        } catch (err) {
+          violations.push(`unresolvable symlink: ${p}: ${String(err)}`);
+        }
         continue;
       }
       if (st.isFile()) {

@@ -13,7 +13,17 @@
 
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -1215,4 +1225,216 @@ test('round8 P3-1: fingerprint symlink is reported as custody violation without 
   );
   rmSync(root, { recursive: true, force: true });
   rmSync(external, { recursive: true, force: true });
+});
+
+// ══ round-9（L2 生产实证：qodercn 在 profile 内建日志轮转软链 logs/latest -> runs/...）═══
+// round-9 曾以 containment（解析后仍在 profile 内）放行全部非 plugins 内部软链；
+// round-10 复审判过宽（见下方 round-10 组），收窄为正向窄 allowlist：仅
+// logs/latest 且目标严格位于 logs/runs/ 下放行，其余回 round-7 fail-closed。
+test('round9: provider log-rotation symlink INSIDE the profile must not fail the audit (L2 repro)', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r9a-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  assert.equal(first.audit.ok, true, 'first invocation seeds green profile');
+  // provider 首次运行后的真实产物形状（生产 20:32 实测）：
+  const logsDir = join(first.profileDir, 'logs');
+  mkdirSync(join(logsDir, 'runs', '2026-09-15T20-32-44-run1'), { recursive: true });
+  writeFileSync(join(logsDir, 'runs', '2026-09-15T20-32-44-run1', 'events.jsonl'), '{}');
+  symlinkSync('runs/2026-09-15T20-32-44-run1', join(logsDir, 'latest'), 'dir');
+  // 第二次 invocation 前的洁净审计（生产 bug：symlink 误杀 → 每次调用被拒）
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, true, `internal rotation symlink must pass: ${JSON.stringify(a.violations)}`);
+  rmSync(root, { recursive: true, force: true });
+});
+
+// round-10（CHANGES_REQUESTED）：containment 不是全局许可——这条原 round-9 绿测
+// 断言的正是被否决的过宽语义（任意内部目录链放行），按新 allowlist 翻转为红。
+test('round10: internal directory symlink outside the logs/latest allowlist is rejected', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r10d-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  mkdirSync(join(first.profileDir, 'data-real'), { recursive: true });
+  symlinkSync('data-real', join(first.profileDir, 'data-link'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'only logs/latest is allowlisted; other internal links stay red');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round9: dangling internal symlink is still a violation (containment unprovable)', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r9c-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  symlinkSync('no-such-target', join(first.profileDir, 'latest'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false);
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round9: symlink escaping the profile is still rejected (round-7 boundary unchanged)', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r9d-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  const external = mkdtempSync(join(tmpdir(), 'qoder-r9d-ext-'));
+  symlinkSync(external, join(first.profileDir, 'escape-link'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false);
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+  rmSync(external, { recursive: true, force: true });
+});
+
+test('round9: plugins-subtree symlinks remain violations (L1 audit_auth attack surface)', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r9e-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  mkdirSync(join(first.profileDir, 'plugins', 'real-dir'), { recursive: true });
+  symlinkSync('real-dir', join(first.profileDir, 'plugins', 'link'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'plugins symlinks stay red regardless of containment');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ══ round-10（CHANGES_REQUESTED：containment ≠ 许可——三条 P1 内部软链绕过）═══
+// 34cffef 以 inPlugins 为唯一例外放行所有非 plugins 内部软链，远宽于唯一 L2 证据
+// （logs/latest -> runs/<ts>）。以下红测复现三条被击穿的安全语义，全部要求
+// profile audit 红（fail-closed 回到 round-7，仅 logs/latest 窄 allowlist 除外）。
+test('round10 P1-1: .auth internal symlink swapping accounts must fail the profile audit', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r10a-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  assert.equal(first.audit.ok, true, 'first invocation seeds green profile');
+  // 攻击（点点 DELTA-1）：根 .auth 整体替换为 profile 内链，指向 B 的凭证副本；
+  // .account-fingerprint 仍是 A 的 marker 且匹配 expectedA——containment 成立、
+  // marker 匹配，但 provider 透过链接实际读到 B 的凭证。
+  const stolen = join(first.profileDir, 'auth-account-B');
+  mkdirSync(stolen, { recursive: true });
+  writeFileSync(join(stolen, 'user'), 'token-B');
+  rmSync(join(first.profileDir, '.auth'), { recursive: true, force: true });
+  symlinkSync('auth-account-B', join(first.profileDir, '.auth'), 'dir');
+  // 攻击载荷就位：透过链接读到的已是 B 凭证（审计是唯一防线）
+  assert.equal(readFileSync(join(first.profileDir, '.auth', 'user'), 'utf8'), 'token-B');
+  const a = auditQoderProfile(first.profileDir, base, first.audit.accountFingerprint);
+  assert.equal(a.ok, false, 'in-profile .auth swap must not pass with a matching fingerprint marker');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round10 P1-1b: .auth/user symlink to an in-profile file must fail the profile audit', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r10f-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  assert.equal(first.audit.ok, true, 'first invocation seeds green profile');
+  // 攻击（点点 DELTA-2）：.auth 保持真实目录，仅把 user 文件换成指向 profile 内
+  // 另一文件的软链——marker 不变、containment 成立，但凭证路径 ≠ seed 路径，
+  // 审计无法再证明"凭证路径 = seed 路径"。
+  writeFileSync(join(first.profileDir, 'stolen-user'), 'token-B');
+  rmSync(join(first.profileDir, '.auth', 'user'));
+  symlinkSync(join(first.profileDir, 'stolen-user'), join(first.profileDir, '.auth', 'user'));
+  assert.equal(readFileSync(join(first.profileDir, '.auth', 'user'), 'utf8'), 'token-B');
+  const a = auditQoderProfile(first.profileDir, base, first.audit.accountFingerprint);
+  assert.equal(a.ok, false, 'credentials path must stay the seeded real file, not an in-profile link');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round10 P1-2: root plugins symlink to an in-profile payload with an executable must fail', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r10b-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  // 攻击：plugins -> payload（profile 内部）；symlink 分支 continue 后既不进入
+  // plugins 语义也不扫目标，payload/evil.sh 以普通子树身份逃过 executable gate。
+  const payload = join(first.profileDir, 'payload');
+  mkdirSync(payload, { recursive: true });
+  writeFileSync(join(payload, 'evil.sh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  symlinkSync('payload', join(first.profileDir, 'plugins'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'plugins symlink must not dodge the plugin executable gate via containment');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round10 P1-3: projects slug internal symlink must not enable cross-cwd resume', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r10c-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  assert.equal(first.audit.ok, true, 'first invocation seeds green profile');
+  // 攻击：session 真实属于 cwdB（slugB）；projects/<slugA> -> <slugB> 内部 sibling
+  // 链让 resume 审计的 existsSync/lstat 跟随链接命中——same-cwd 绑定失效。
+  const qoderProjectSlug = profileModule.qoderProjectSlug;
+  const auditQoderResumeSession = profileModule.auditQoderResumeSession;
+  const slugA = qoderProjectSlug('/tmp/wksp-a');
+  const slugB = qoderProjectSlug('/tmp/wksp-b');
+  const sid = 'sess-12345678';
+  mkdirSync(join(first.profileDir, 'projects', slugB), { recursive: true });
+  writeFileSync(join(first.profileDir, 'projects', slugB, `${sid}.jsonl`), '{}');
+  symlinkSync(slugB, join(first.profileDir, 'projects', slugA), 'dir');
+  // resume 审计按契约（round-8 P3-2）不是 custody 检查，单看可能 ok——
+  // same-cwd 绑定的守门人必须是 profile audit（invoke 顺序：先 profile 后 resume）。
+  const resume = auditQoderResumeSession({
+    profileDir: first.profileDir,
+    sessionId: sid,
+    workingDirectory: '/tmp/wksp-a',
+    fs: base,
+  });
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'projects slug internal symlink must fail the profile audit');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  assert.ok(!(a.ok && resume.ok), 'cross-cwd resume chain (profile audit && resume audit) must be broken');
+  rmSync(root, { recursive: true, force: true });
+});
+
+// round-10 对照：allowlist 本身仍按 L2 证据放行 logs/latest，且要求真实目标严格
+// 位于 canonical logs/runs/ 之下——指向 profile 内其它子树的 latest 同样红。
+test('round10: logs/latest is allowed only when the real target is strictly under logs/runs', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r10e-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  // 反例：latest 指向 profile 内非 runs 子树（containment 成立也不放行）
+  mkdirSync(join(first.profileDir, 'logs'), { recursive: true });
+  mkdirSync(join(first.profileDir, 'elsewhere'), { recursive: true });
+  symlinkSync('../elsewhere', join(first.profileDir, 'logs', 'latest'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'logs/latest must resolve strictly under canonical logs/runs');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
 });
