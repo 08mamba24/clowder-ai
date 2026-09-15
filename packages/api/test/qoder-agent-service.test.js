@@ -264,6 +264,7 @@ async function realFsWrappers() {
       mkdirSync: (p, o) => fsmod.mkdirSync(p, o),
       renameSync: (f, t) => fsmod.renameSync(f, t),
       rmSync: (p, o) => fsmod.rmSync(p, o),
+      realpathSync: (p) => fsmod.realpathSync(p),
     },
   };
 }
@@ -1097,4 +1098,121 @@ test('round7 control: real-dir security-resources with scripts stays green', asy
   const a = auditQoderProfile(first.profileDir, base);
   assert.equal(a.ok, true, JSON.stringify(a.violations));
   rmSync(root, { recursive: true, force: true });
+});
+
+// ══ round-8（PR #24 round-7 review：点点 1×P1 + 2×P3——traversal 不查自己的起点）═══
+test('round8 P1-a: profile root symlink to a sibling audit-green profile fails closed (per-cat ownership)', async () => {
+  const { base } = await realFsWrappers();
+  const { symlinkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r8a-'));
+  const authA = makeAuth(root, 'token-A');
+  const other = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'cat_other', authSourceDir: authA, fs: base });
+  assert.equal(other.audit.ok, true);
+  symlinkSync(other.profileDir, join(root, 'qoder-profiles', 'cat_victim'), 'dir');
+  const victim = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'cat_victim', authSourceDir: authA, fs: base });
+  assert.equal(victim.audit.ok, false, 'root symlink must not cross per-cat ownership');
+  assert.ok(
+    victim.audit.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(victim.audit.violations),
+  );
+  const direct = auditQoderProfile(join(root, 'qoder-profiles', 'cat_victim'), base);
+  assert.equal(direct.ok, false, 'invocation-time audit (no expected fingerprint) must also reject');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round8 P1-b: profile root symlink to an external green dir fails the invocation-time audit', async () => {
+  const { base } = await realFsWrappers();
+  const { symlinkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r8b-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  const external = mkdtempSync(join(tmpdir(), 'qoder-r8b-ext-'));
+  mkdirSync(join(external, '.auth'), { recursive: true });
+  writeFileSync(join(external, '.auth', 'user'), 'token-A');
+  writeFileSync(join(external, '.account-fingerprint'), 'f'.repeat(16));
+  assert.equal(auditQoderProfile(external, base).ok, true, 'external dir itself is audit-green (control)');
+  rmSync(join(first.profileDir, '.auth'), { recursive: true, force: true });
+  writeFileSync(join(first.profileDir, 'x'), ''); // 保证非空占位
+  rmSync(first.profileDir, { recursive: true, force: true });
+  symlinkSync(external, first.profileDir, 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'root link must fail the Service-level pre-invoke audit');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+  rmSync(external, { recursive: true, force: true });
+});
+
+test('round8 P1-c: qoder-profiles root itself a symlink is rejected by ensure', async () => {
+  const { base } = await realFsWrappers();
+  const { symlinkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r8c-'));
+  const authA = makeAuth(root, 'token-A');
+  const externalRoot = mkdtempSync(join(tmpdir(), 'qoder-r8c-ext-'));
+  symlinkSync(externalRoot, join(root, 'qoder-profiles'), 'dir');
+  const res = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  assert.equal(res.audit.ok, false, 'profiles root escaping dataRoot must be rejected');
+  assert.ok(
+    res.audit.violations.some((v) => /symlink|custody/.test(v)),
+    JSON.stringify(res.audit.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+  rmSync(externalRoot, { recursive: true, force: true });
+});
+
+test('round8 P1-d control: real-directory profile root stays green (realpath-normalized tmp dirs)', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r8d-'));
+  const authA = makeAuth(root, 'token-A');
+  const res = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  assert.equal(res.audit.ok, true, JSON.stringify(res.audit.violations));
+  assert.equal(auditQoderProfile(res.profileDir, base).ok, true);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round8 P1-e: dangling profile root link reports a symlink violation, not a misleading swap failure', async () => {
+  const { base } = await realFsWrappers();
+  const { symlinkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r8e-'));
+  const authA = makeAuth(root, 'token-A');
+  mkdirSync(join(root, 'qoder-profiles'), { recursive: true });
+  symlinkSync(join(root, 'no-such-target'), join(root, 'qoder-profiles', 'c1'), 'dir');
+  const res = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  assert.equal(res.audit.ok, false);
+  assert.ok(
+    res.audit.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(res.audit.violations),
+  );
+  assert.ok(
+    res.audit.violations.every((v) => !/swap failed/.test(v)),
+    'must not surface as swap failure',
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+// P3-1：custody 先行、红即短路——外部字节不进 violation 文本
+test('round8 P3-1: fingerprint symlink is reported as custody violation without echoing external bytes', async () => {
+  const { base } = await realFsWrappers();
+  const { symlinkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r8f-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  const external = mkdtempSync(join(tmpdir(), 'qoder-r8f-ext-'));
+  writeFileSync(join(external, 'secret-marker'), 'EXTERNAL-SECRET-CONTENT-9f3a');
+  rmSync(join(first.profileDir, '.account-fingerprint'));
+  symlinkSync(join(external, 'secret-marker'), join(first.profileDir, '.account-fingerprint'));
+  const a = auditQoderProfile(first.profileDir, base, 'deadbeefdeadbeef');
+  assert.equal(a.ok, false);
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  assert.ok(
+    a.violations.every((v) => !v.includes('EXTERNAL-SECRET')),
+    'no external byte echo',
+  );
+  rmSync(root, { recursive: true, force: true });
+  rmSync(external, { recursive: true, force: true });
 });

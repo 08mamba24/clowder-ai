@@ -36,6 +36,13 @@
  *   ENOENT 对可选 plugins 合法缺失；seam 扩 isDirectory()，非目录节点
  *   （常规文件/FIFO/socket）一律拒绝
  *
+ * Round-8 修正（PR #24 round-7 review，点点 1×P1 + 2×P3）：
+ * - traversal 起点自身过 custody：profile 根 symlink（兄弟 profile / 外置绿目录 /
+ *   悬链）红即短路；ensure 对 qoder-profiles 根与 profile 根同样先判，悬链不再
+ *   误报成 swap failure；seam 扩 realpathSync 做双侧解析 containment
+ * - P3-1 custody 先行短路：未验归属不读内容；fingerprint mismatch 只报摘要不回显原文
+ * - P3-2 auditQoderResumeSession 显式注明非 custody 检查、必须后于 profile audit
+ *
  * Round-7 根因收口（PR #24 round-6 review，砚砚 P1）：
  * - custody 不再点状枚举（.auth/plugins 两个根）——settings.json 悬链、外置
  *   projects/（resume 也曾通过）、外置 security-resources/ 都能逃逸。合并为
@@ -51,6 +58,7 @@ import {
   mkdirSync as fsMkdirSync,
   readdirSync as fsReaddirSync,
   readFileSync as fsReadFileSync,
+  realpathSync as fsRealpathSync,
   renameSync as fsRenameSync,
   rmSync as fsRmSync,
   statSync as fsStatSync,
@@ -68,6 +76,8 @@ export interface QoderProfileFs {
   mkdirSync: (p: string, opts: { recursive: true }) => void;
   renameSync: (from: string, to: string) => void;
   rmSync: (p: string, opts: { recursive: true; force: true }) => void;
+  /** round-8 P1：解析符号链接后的绝对路径（realpath containment 用，两侧都解析） */
+  realpathSync: (p: string) => string;
 }
 
 export function defaultQoderProfileFs(): QoderProfileFs {
@@ -81,6 +91,7 @@ export function defaultQoderProfileFs(): QoderProfileFs {
     mkdirSync: (p, o) => fsMkdirSync(p, o),
     renameSync: fsRenameSync,
     rmSync: fsRmSync,
+    realpathSync: (p) => fsRealpathSync(p),
   };
 }
 
@@ -112,6 +123,17 @@ export interface QoderProfileAudit {
  *    本身若是指向外部的 symlink，由 ① 拒绝。
  */
 function auditProfileTree(profileDir: string, fs: QoderProfileFs): string[] {
+  // round-8 P1（点点 review）：traversal 的起点自己也要过 custody——此前起点是
+  // 唯一没被检查的节点，profile 根指向兄弟 profile / 外置绿目录 / 悬链时整树判绿。
+  // 起点红即短路，后代遍历保持 round-7 语义不动。
+  let rootSt;
+  try {
+    rootSt = fs.lstatSync(profileDir);
+  } catch (err) {
+    return [`unstatable profile root: ${profileDir}: ${String(err)}`];
+  }
+  if (rootSt.isSymbolicLink()) return [`symlink: ${profileDir}`];
+  if (!rootSt.isDirectory()) return [`profile root is not a real directory: ${profileDir}`];
   const violations: string[] = [];
   const walk = (dir: string, inPlugins: boolean): void => {
     let entries;
@@ -201,6 +223,10 @@ export function qoderProjectSlug(cwd: string): string {
 
 /**
  * round-3 P1⑥ / round-4 P1-3：provider 初始化后的二次 resume 审计。
+ * ⚠️ round-8 P3-2（点点 review）：本函数不是 custody 检查——父路径 projects/<slug>
+ * 是否为链接由 auditQoderProfile 的全 profile custody 负责，调用方必须先过 profile
+ * audit 再调这里（QoderAgentService.invoke 已保证该顺序；Slice 2 的 resolver 不得
+ * 单独调用本函数）。
  * L1 实证（collect.sh/提案 I-11）：qodercn 把 session 存在 config-dir 的
  * `projects/<qoderProjectSlug(cwd)>/<sessionId>.jsonl`，resume 要求同 config-dir
  * + 同 cwd。审计按 **canonical 项目目录精确路径**检查（不是整个 projects/ 子树
@@ -263,6 +289,12 @@ export function auditQoderProfile(
   fs: QoderProfileFs,
   expectedAccountFingerprint?: string,
 ): QoderProfileAudit {
+  // round-8 P3-1（点点 review）：custody 先行、红即短路——不在未验归属的路径上读取
+  // 任何内容（.account-fingerprint / settings*.json 的外部字节曾进过 violation 文本）
+  const treeViolations = auditProfileTree(profileDir, fs);
+  if (treeViolations.length > 0) {
+    return { ok: false, violations: treeViolations };
+  }
   const violations: string[] = [];
   if (!fs.existsSync(join(profileDir, '.auth'))) violations.push('missing .auth');
   let fingerprint: string | undefined;
@@ -273,13 +305,19 @@ export function auditQoderProfile(
       violations.push('unreadable .account-fingerprint');
     }
     if (expectedAccountFingerprint && fingerprint !== expectedAccountFingerprint) {
-      violations.push(`account fingerprint mismatch (profile=${fingerprint} expected=${expectedAccountFingerprint})`);
+      // 不回显原文：只报读取值的短摘要（内容可能来自任意文件）
+      const readDigest = createHash('sha256')
+        .update(fingerprint ?? '<unreadable>')
+        .digest('hex')
+        .slice(0, 8);
+      violations.push(
+        `account fingerprint mismatch (profile=<${readDigest}> expected=<${expectedAccountFingerprint.slice(0, 8)}…>)`,
+      );
     }
   } else {
     violations.push('missing .account-fingerprint');
   }
   violations.push(...settingsHooksViolations(profileDir, fs));
-  violations.push(...auditProfileTree(profileDir, fs));
   return { ok: violations.length === 0, violations, accountFingerprint: fingerprint };
 }
 
@@ -364,6 +402,28 @@ function atomicSwap(input: {
   }
 }
 
+/** round-8 P1：根节点 custody——node 必须是 root 下的真实目录（ENOENT = 尚未创建，合法） */
+function rootNodeViolations(node: string, root: string, fs: QoderProfileFs): string[] {
+  try {
+    const st = fs.lstatSync(node);
+    if (st.isSymbolicLink()) return [`symlink: ${node}`];
+    if (!st.isDirectory()) return [`${node} is not a real directory`];
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
+    return [`unstatable ${node}: ${String(err)}`];
+  }
+  try {
+    const nodeReal = fs.realpathSync(node);
+    const rootReal = fs.realpathSync(root);
+    if (nodeReal !== rootReal && !nodeReal.startsWith(rootReal + sep)) {
+      return [`${node} escapes runtime custody (realpath ${nodeReal} not under ${rootReal})`];
+    }
+  } catch (err) {
+    return [`realpath unverifiable for ${node}: ${String(err)}`];
+  }
+  return [];
+}
+
 /**
  * ensure：catId 安全段 + containment 校验后——
  * 不存在 → 原子 seed；存在且审计绿 → 复用；污染/换绑 → 原子替换（失败保留旧 profile）
@@ -381,6 +441,14 @@ export function ensureQoderRuntimeProfile(input: {
   const base = join(input.dataRoot, 'qoder-profiles');
   const profileDir = join(base, input.catId);
   assertContained(base, profileDir, 'qoder-profiles root');
+  // round-8 P1（点点 review）：custody 先于一切——qoder-profiles 根与 profile 根必须
+  // 是 runtime 拥有的真实目录（lstat，悬链与已链接同判 symlink）；已存在时另做
+  // realpath containment（两侧都解析，macOS /tmp → /private/tmp 这类合法前缀链接
+  // 不误杀）。词法 assertContained 看不见链接，不能单独承担归属证明。
+  const baseCustody = rootNodeViolations(base, input.dataRoot, fs);
+  if (baseCustody.length > 0) return { profileDir, audit: { ok: false, violations: baseCustody } };
+  const profileCustody = rootNodeViolations(profileDir, base, fs);
+  if (profileCustody.length > 0) return { profileDir, audit: { ok: false, violations: profileCustody } };
   const fingerprint = computeAccountFingerprint(input.authSourceDir, fs);
   if (!fingerprint) return { profileDir, audit: { ok: false, violations: ['auth source unreadable'] } };
 
