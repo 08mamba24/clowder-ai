@@ -1324,15 +1324,40 @@ test('round10 P1-1: .auth internal symlink swapping accounts must fail the profi
   const authA = makeAuth(root, 'token-A');
   const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
   assert.equal(first.audit.ok, true, 'first invocation seeds green profile');
-  // 攻击：.auth -> profile 内的 account-B 凭证副本；.account-fingerprint 仍是 A 的
-  // marker 且匹配 expectedA——containment 成立、marker 匹配，但 provider 实际读到 B。
+  // 攻击（点点 DELTA-1）：根 .auth 整体替换为 profile 内链，指向 B 的凭证副本；
+  // .account-fingerprint 仍是 A 的 marker 且匹配 expectedA——containment 成立、
+  // marker 匹配，但 provider 透过链接实际读到 B 的凭证。
   const stolen = join(first.profileDir, 'auth-account-B');
-  mkdirSync(join(stolen, '.auth'), { recursive: true });
-  writeFileSync(join(stolen, '.auth', 'user'), 'token-B');
+  mkdirSync(stolen, { recursive: true });
+  writeFileSync(join(stolen, 'user'), 'token-B');
   rmSync(join(first.profileDir, '.auth'), { recursive: true, force: true });
   symlinkSync('auth-account-B', join(first.profileDir, '.auth'), 'dir');
+  // 攻击载荷就位：透过链接读到的已是 B 凭证（审计是唯一防线）
+  assert.equal(readFileSync(join(first.profileDir, '.auth', 'user'), 'utf8'), 'token-B');
   const a = auditQoderProfile(first.profileDir, base, first.audit.accountFingerprint);
   assert.equal(a.ok, false, 'in-profile .auth swap must not pass with a matching fingerprint marker');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round10 P1-1b: .auth/user symlink to an in-profile file must fail the profile audit', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r10f-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  assert.equal(first.audit.ok, true, 'first invocation seeds green profile');
+  // 攻击（点点 DELTA-2）：.auth 保持真实目录，仅把 user 文件换成指向 profile 内
+  // 另一文件的软链——marker 不变、containment 成立，但凭证路径 ≠ seed 路径，
+  // 审计无法再证明"凭证路径 = seed 路径"。
+  writeFileSync(join(first.profileDir, 'stolen-user'), 'token-B');
+  rmSync(join(first.profileDir, '.auth', 'user'));
+  symlinkSync(join(first.profileDir, 'stolen-user'), join(first.profileDir, '.auth', 'user'));
+  assert.equal(readFileSync(join(first.profileDir, '.auth', 'user'), 'utf8'), 'token-B');
+  const a = auditQoderProfile(first.profileDir, base, first.audit.accountFingerprint);
+  assert.equal(a.ok, false, 'credentials path must stay the seeded real file, not an in-profile link');
   assert.ok(
     a.violations.some((v) => /symlink/.test(v)),
     JSON.stringify(a.violations),
