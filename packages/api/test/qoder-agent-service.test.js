@@ -163,13 +163,12 @@ function memFs(files, unreadableDirs = new Set()) {
     },
     lstatSync: (p) => {
       if (files.has(norm(p))) {
-        const isDir = false;
-        return { isFile: () => !isDir, isSymbolicLink: () => false, mode: 0o644 };
+        return { isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, mode: 0o644 };
       }
       if ([...files.keys()].some((k) => k.startsWith(norm(p) + '/'))) {
-        return { isFile: () => false, isSymbolicLink: () => false, mode: 0o755 };
+        return { isFile: () => false, isDirectory: () => true, isSymbolicLink: () => false, mode: 0o755 };
       }
-      throw new Error('symlink-or-missing (memfs treats unknown as symlink case)');
+      throw Object.assign(new Error('ENOENT (memfs)'), { code: 'ENOENT' });
     },
     readFileSync: (p) => {
       const v = files.get(norm(p));
@@ -968,5 +967,58 @@ test('round5 P1: real-dir .auth and plugins pass custody (no false positive)', a
   writeFileSync(join(first.profileDir, 'plugins', 'notes.txt'), 'not executable');
   const a = auditQoderProfile(first.profileDir, base);
   assert.equal(a.ok, true, JSON.stringify(a.violations));
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ══ round-6（PR #24 round-5 review：砚砚 P1——dangling symlink 经 existsSync 绕过 custody）═══
+test('round6 P1: dangling plugins symlink fails closed (no link-following existence gate)', async () => {
+  const { base } = await realFsWrappers();
+  const { symlinkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r6a-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  assert.equal(first.audit.ok, true);
+  // 断链：目标此刻不存在（若审计后、CLI 启动前目标出现，即越过 runtime-owned 边界）
+  symlinkSync(join(root, 'not-yet-existing-external'), join(first.profileDir, 'plugins'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'dangling plugins symlink must be a violation');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round6 P1: regular file occupying the plugins root fails closed', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r6b-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  writeFileSync(join(first.profileDir, 'plugins'), 'not a directory');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'non-directory plugins root must be a violation');
+  assert.ok(
+    a.violations.some((v) => /not a real directory|non-directory/i.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round6 P1: FIFO at the .auth position fails closed (non-directory node)', async () => {
+  const { base } = await realFsWrappers();
+  const { spawnSync } = await import('node:child_process');
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r6c-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  rmSync(join(first.profileDir, '.auth'), { recursive: true, force: true });
+  const fifo = join(first.profileDir, '.auth');
+  const mk = spawnSync('mkfifo', [fifo]);
+  assert.equal(mk.status, 0, 'mkfifo available on posix');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'FIFO at custody position must be a violation');
+  assert.ok(
+    a.violations.some((v) => /not a real directory|non-directory/i.test(v)),
+    JSON.stringify(a.violations),
+  );
   rmSync(root, { recursive: true, force: true });
 });

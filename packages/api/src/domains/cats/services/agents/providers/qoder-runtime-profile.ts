@@ -29,6 +29,12 @@
  * - 顶节 custody 与 artifact 扫描面分离：`.auth` / `plugins/` 根节点 lstat
  *   fail-closed（symlink / 非真实目录 / 不可 stat 一律 violation）——修复 round-4
  *   收窄时误删的 symlink custody（.auth→外部目录曾判绿，违反 I-11 §1）
+ *
+ * Round-6 修正（PR #24 round-5 review，砚砚 P1）：
+ * - custody 不再用会跟随链接的 existsSync 预检：dangling plugins symlink 曾被
+ *   当成"目录不存在"跳过（TOCTOU：审计后目标出现即越界）。直接 lstat，仅真
+ *   ENOENT 对可选 plugins 合法缺失；seam 扩 isDirectory()，非目录节点
+ *   （常规文件/FIFO/socket）一律拒绝
  */
 
 import { createHash } from 'node:crypto';
@@ -49,7 +55,7 @@ import { join, resolve, sep } from 'node:path';
 export interface QoderProfileFs {
   existsSync: (p: string) => boolean;
   readdirSync: (p: string, opts: { withFileTypes: true }) => import('node:fs').Dirent[];
-  lstatSync: (p: string) => { isFile(): boolean; isSymbolicLink(): boolean; mode: number };
+  lstatSync: (p: string) => { isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean; mode: number };
   readFileSync: (p: string) => string;
   writeFileSync: (p: string, data: string) => void;
   copySync: (src: string, dest: string) => void;
@@ -99,12 +105,13 @@ export interface QoderProfileAudit {
 function findExecutableArtifacts(profileDir: string, fs: QoderProfileFs): string[] {
   const offenders: string[] = [];
   const pluginsDir = join(profileDir, 'plugins');
-  if (!fs.existsSync(pluginsDir)) return offenders;
   const walk = (dir: string): void => {
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch (err) {
+      // 真 ENOENT = 目录合法缺失；其余（EACCES 等）fail-closed
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return;
       offenders.push(`unreadable dir ${dir}: ${String(err)}`);
       return;
     }
@@ -120,8 +127,10 @@ function findExecutableArtifacts(profileDir: string, fs: QoderProfileFs): string
           if (/\.(sh|js|mjs|cjs|py)$/.test(entry.name) || (st.mode & 0o111) !== 0) {
             offenders.push(`executable artifact: ${p}`);
           }
-        } else {
+        } else if (st.isDirectory()) {
           walk(p);
+        } else {
+          offenders.push(`non-directory node: ${p}`);
         }
       } catch (err) {
         offenders.push(`unstatable ${p}: ${String(err)}`);
@@ -140,17 +149,21 @@ function findExecutableArtifacts(profileDir: string, fs: QoderProfileFs): string
  * lstat fail-closed：不可 stat / symlink / 非目录一律 violation。
  */
 function custodyViolations(profileDir: string, fs: QoderProfileFs): string[] {
+  // round-6 P1：custody 前置存在性检查不得用会跟随链接的 existsSync——dangling
+  // symlink 曾被当成"目录不存在"整段跳过。直接 lstat：仅真正的 ENOENT 对可选的
+  // plugins 视为合法缺失（dangling symlink 会被 lstat 识别为 symlink 并拒绝）；
+  // 其余错误 fail-closed；非目录节点（常规文件/FIFO/socket）一律拒绝。
   const violations: string[] = [];
-  const nodes: readonly [label: string, path: string][] = [
-    ['.auth', join(profileDir, '.auth')],
-    ['plugins', join(profileDir, 'plugins')],
+  const nodes: readonly [label: string, path: string, optional: boolean][] = [
+    ['.auth', join(profileDir, '.auth'), false],
+    ['plugins', join(profileDir, 'plugins'), true],
   ];
-  for (const [label, p] of nodes) {
-    if (!fs.existsSync(p)) continue; // 缺失由既有检查负责（.auth）/ 合法（plugins 可不存在）
+  for (const [label, p, optional] of nodes) {
     let st;
     try {
       st = fs.lstatSync(p);
     } catch (err) {
+      if (optional && (err as NodeJS.ErrnoException)?.code === 'ENOENT') continue;
       violations.push(`unstatable ${label}: ${p}: ${String(err)}`);
       continue;
     }
@@ -158,8 +171,8 @@ function custodyViolations(profileDir: string, fs: QoderProfileFs): string[] {
       violations.push(`symlink at profile root: ${p}`);
       continue;
     }
-    if (st.isFile()) {
-      violations.push(`${label} is a regular file, expected a real directory: ${p}`);
+    if (!st.isDirectory()) {
+      violations.push(`${label} is not a real directory: ${p}`);
     }
   }
   return violations;
