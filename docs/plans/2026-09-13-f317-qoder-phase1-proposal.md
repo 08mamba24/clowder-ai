@@ -1,6 +1,6 @@
 # F317 Phase 1 提案: qodercn CLI 正式接入
 
-> **Status**: proposal r3（点点协议侧 APPROVED @r2；砚砚 9 项架构侧清单已全部落文，待复审）· **Owner**: 谱谱 (zcode/glm-5.3) · **创建**: 2026-09-13 · **r3**: 2026-09-13
+> **Status**: implementation（Slice 1 ✅；Slice 2/3 待实现）· **Owner**: 谱谱 (zcode/glm-5.3) · **创建**: 2026-09-13 · **r3**: 2026-09-13
 > **前置**: Phase 0 spike `2026-09-13-f317-qoder-phase0-spike.md`（S4 已勘误）+ 双猫复核（点点 5 P1 + r2 复审；砚砚 9 项 I-1~I-9）
 > **r3 变更**: 吸收砚砚 I-1~I-9 全清单；spike S4 勘误已真实落仓（同 commit）
 
@@ -67,7 +67,7 @@ qodercn（Qoder 中国版 CLI，`@qodercn-ai/qoderclicn@1.1.51`）headless spawn
 
 三刀切（砚砚提案、点点附议），每刀独立可验证：
 
-- **Slice 1：非路由的窄 QoderAgentService + 测试**（I-4 边界：typed inputs 经可信 resolver 解析、缺 workingDirectory fail closed、`QODERCN_CONFIG_DIR` 不进 generic accountEnv 的 last-wins 合并、stdin prompt）。**入口条件 I-11（见下）先行**。
+- **Slice 1 ✅（PR #24）：非路由的窄 QoderAgentService + 测试**（I-4 边界：typed inputs 经可信 resolver 解析、缺 workingDirectory fail closed、`QODERCN_CONFIG_DIR` 不进 generic accountEnv 的 last-wins 合并、stdin prompt）。**入口条件 I-11（见下）先行**。
 - **Slice 2：注册 + account binding + workspace/session guard 原子 vertical slice**（ClientId/schema/Hub 类型/default CLI/factory/account routing 一次接齐，不留半注册态；`providerRequiresThreadWorkspace` 等 OpenCode 硬编码泛化并覆盖 qoder + e2e resume 测试；account mapping + `QODERCN_CONFIG_DIR` 受控字段校验为安全重点段）。
 - **Slice 3：cat-template 条目**（I-9：Slice 1/2 + 隔离 acceptance 全绿后最后加）。
 
@@ -85,6 +85,12 @@ L1 实证：qodercn 把 session 存在 config-dir 的 `projects/<cwd-slug>/`，r
 ### CodeBuddy Phase 0（并行侦察，与 qodercn 主线无文件交集）
 
 边界（双猫共识）：Spark 独立执行，谱谱当清单顾问；只做侦察（钉 exact 产品/package/binary/version + headless 接口 + auth 存储 + 协议 + 权限 + MCP + 计费），不改 production code、不碰共享 registry、不全局安装/登录/凭证搬运/付费调用；复用 F317 安全不变量与 collector/verify 方法论但**不复制 qoder 专属参数与凭证假设**，不预抽 GenericCliAgent；任一 P1 红 no-go；可行则独立 feature proposal。**registration 前与 qodercn 串行化**（两侧最终共享注册/account/UI seam）。
+
+## Timeline
+
+| 日期 | 事件 |
+|---|---|
+| 2026-09-15 | Slice 1 merged（PR #24）：非路由的窄 `QoderAgentService`、runtime profile lifecycle 与测试落入 main；生产注册点仍为 0，Slice 2 的构造期 `realpath(dataRoot)` containment 断言仍是硬验收条件。 |
 
 ## 边界
 
