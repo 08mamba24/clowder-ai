@@ -1,22 +1,33 @@
 /**
- * F317 Phase 1 Slice 1: 窄 QoderAgentService（非路由）—— round-2 rework
+ * F317 Phase 1 Slice 1: 窄 QoderAgentService（非路由）—— round-3 rework
  *
  * I-4 边界：typed 构造注入（catId / binary / model / I-11 profile + fs）；
- * 缺 workingDirectory fail closed。Round-2 review 修正（砚砚 7xP1）：
- *   1. model 为必填 typed input，显式 `-m` 下发并传入 init 门（Auto 静默回落红）；
- *      tools/mcp_servers 字段必须**存在且为空数组**（缺失即红，不 `?? []` 放行）
- *   2. spawn 前构造 PreparedProviderRequestV1 并 await beforeProviderLaunch ——
- *      recorder 拒绝/失败时 0 spawn、正文绝不出境
- *   3. abort 检查先于 spawn；取消用 bounded termination（SIGTERM → 等待 → SIGKILL）
- *   4. 真·流式输出：init 过门后逐条 yield；诊断仅保留有界 ring buffer
- *   5. stderr 先过共享 sanitizeCliStderr + 凭证形态 redact，再截断
- *   6. env denylist 大小写归一（node_options / Node_Options 全拒）
- *   7. （qoder-runtime-profile.ts）swap 失败路径 finally 清理 staging/backup，无凭证孤儿
+ * 缺 workingDirectory fail closed。Round-3 review 修正（砚砚六组 P1）：
+ *   P1① stderr 不内联进用户可见错误——脱敏/有界由共享 spawnCli 拥有（F212 AC-A9：
+ *      暴露面同步 sanitize、humanized message、封顶尾窗）；本文件不再持有 stderr
+ *   P1② abort 检查先于 recorder；prepared request 深度冻结（落档字节 = 出境字节）
+ *   P1③ 复用 shared spawnCli（stdin EPIPE 守卫、CliTerminationController 有界终止、
+ *      exit/close 等待、liveness 接线）+ CliRawArchive 落档；删除手写
+ *      terminateBounded（非 unref 5s 计时器）与 250×20ms exit 轮询
+ *   P1④ init.model 精确匹配（大小写敏感，auth-error 夹具实测小写 auto 漂移必须红）；
+ *      argv 过 assertExplicitModelFlag（显式 -m provenance），done metadata 记录 provenance
+ *   P1⑥ resume 二次审计（qoder-runtime-profile.auditQoderResumeSession）
+ *   P1⑤ 见 qoder-runtime-profile.ts（swap 收尾失败如实返回）
+ *
+ * Round-4 修正（PR #24 review，砚砚 2×P1 + 1×P2）：
+ *   P1-2 options.spawnCliOverride（F089 seam）优先于共享 spawnCli；
+ *      CliSpawnOptions 接 rawArchivePath（timeout 诊断定位 raw archive）
+ *   P1-3 resume 审计按 provider canonical slug 精确定位（见 qoder-runtime-profile.ts）
+ *   P2-4 spawn 层异常不再从 iterable 逸出——统一转 qoder typed error 终态
  */
 
-import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
-import { createInterface } from 'node:readline';
 import type { CatId } from '@cat-cafe/shared';
+import { createModuleLogger } from '../../../../../infrastructure/logger.js';
+import { formatCliNotFoundError, resolveCliCommand } from '../../../../../utils/cli-resolve.js';
+import { isCliError, isCliTimeout, isLivenessWarning, spawnCli } from '../../../../../utils/cli-spawn.js';
+import type { SpawnFn } from '../../../../../utils/cli-types.js';
+import { isParseError } from '../../../../../utils/ndjson-parser.js';
+import { CliRawArchive } from '../../session/CliRawArchive.js';
 import type {
   AgentMessage,
   AgentService,
@@ -24,6 +35,7 @@ import type {
   PreparedProviderRequestV1,
   TokenUsage,
 } from '../../types.js';
+import { type RawArchiveSink, sanitizeRawEvent } from './codex-audit-hooks.js';
 import {
   checkQoderProtocolVersion,
   extractQoderUsage,
@@ -31,13 +43,16 @@ import {
   type QoderBillingMetadata,
   transformQoderEvent,
 } from './qoder-ndjson-parser.js';
-import { auditQoderProfile, defaultQoderProfileFs, type QoderProfileFs } from './qoder-runtime-profile.js';
+import {
+  auditQoderProfile,
+  auditQoderResumeSession,
+  defaultQoderProfileFs,
+  type QoderProfileFs,
+} from './qoder-runtime-profile.js';
+
+const log = createModuleLogger('qoder-agent-service');
 
 const REQUIRED_PERMISSION_MODE = 'default';
-/** abort 后 SIGTERM 的升级等待（ms），超时 SIGKILL —— 不留后台计费 */
-const TERMINATION_GRACE_MS = 5000;
-/** stderr 诊断 ring 上限（字符） */
-const STDERR_RING_LIMIT = 8192;
 
 const DENIED_ENV_KEYS = new Set([
   'NODE_OPTIONS',
@@ -54,14 +69,16 @@ export interface QoderAgentServiceConfig {
   catId: CatId;
   /** I-11 runtime profile 目录（由 resolver 经 ensureQoderRuntimeProfile 提供并审计） */
   profileDir: string;
-  /** 必填：显式选定并下发 `-m` 的 model（P1-D：Auto 静默回落判失败） */
+  /** 必填：显式选定并下发 `-m` 的 model（P1-D：精确匹配，漂移即失败） */
   model: string;
   /** 可选覆盖 binary（默认 resolveCliCommand('qodercn')；测试注入用） */
   binary?: string;
-  /** 注入 spawn（测试） */
-  spawnFn?: (cmd: string, args: string[], opts: object) => ChildProcessWithoutNullStreams;
+  /** 注入 spawn（测试；生产走共享 spawnCli 的默认 spawn） */
+  spawnFn?: SpawnFn;
   /** 注入 profile 审计文件系统（测试；默认真实 fs） */
   profileFs?: QoderProfileFs;
+  /** #780 先例：raw NDJSON 落档 sink（默认 CliRawArchive） */
+  rawArchive?: RawArchiveSink;
 }
 
 /** 构造 qodercn argv（stdin prompt 通道 + 显式 model + 安全 flag 全集） */
@@ -72,16 +89,39 @@ export function buildQoderArgs(input: { profileDir: string; model: string; sessi
   return args;
 }
 
-/** 大小写归一：qoder 前缀 + denylist（node_options / Node_Options / LD_PRELOAD 全拒） */
-export function sanitizeQoderEnv(env: Record<string, string | undefined>): NodeJS.ProcessEnv {
-  const clean: Record<string, string> = {};
-  for (const [k, v] of Object.entries(env)) {
-    if (v === undefined) continue;
-    if (DENIED_ENV_KEYS.has(k.toUpperCase())) continue;
-    if (k.toLowerCase().startsWith('qoder')) continue;
-    clean[k] = v;
+/** P1④：argv 必须显式携带 `-m <model>`（provenance 断言，缺/错即拒发） */
+export function assertExplicitModelFlag(argv: readonly string[], model: string): void {
+  const i = argv.indexOf('-m');
+  if (!model || i === -1 || argv[i + 1] !== model) {
+    throw new Error(`qoder argv missing explicit -m ${JSON.stringify(model)} (silent-model-fallback guard)`);
   }
-  return clean;
+}
+
+/**
+ * P1③：env 以「覆盖表」交给共享 buildChildEnv 合并（E2BIG 剥离 + PWD/INIT_CWD 钉在 cwd）。
+ * 纪律不变：denylist（大小写归一）与 qoder* 前缀一律从子进程 env 删除（null = delete），
+ * inputs 里的 qoder* 不转发；QODERCN_CONFIG_DIR 只由 resolver 单点注入（I-11 §5）。
+ */
+export function buildQoderEnvOverrides(input: {
+  profileDir: string;
+  inheritEnv?: Record<string, string | undefined>;
+  callbackEnv?: Record<string, string>;
+  accountEnv?: Record<string, string>;
+}): Record<string, string | null> {
+  const overrides: Record<string, string | null> = {};
+  const isDenied = (k: string) => DENIED_ENV_KEYS.has(k.toUpperCase()) || k.toLowerCase().startsWith('qoder');
+  for (const [k, v] of Object.entries(input.inheritEnv ?? process.env)) {
+    if (v === undefined) continue;
+    if (isDenied(k)) overrides[k] = null;
+  }
+  for (const src of [input.callbackEnv, input.accountEnv]) {
+    for (const [k, v] of Object.entries(src ?? {})) {
+      if (isDenied(k)) continue;
+      overrides[k] = v;
+    }
+  }
+  overrides.QODERCN_CONFIG_DIR = input.profileDir;
+  return overrides;
 }
 
 /** init 门（任何 assistant 事件之前，fail closed）。tools/mcp 必须存在且精确为空数组。 */
@@ -101,51 +141,44 @@ export function qoderInitGate(
   if (!Array.isArray(e.mcp_servers)) return { ok: false, reason: 'init.mcp_servers missing (not an array)' };
   if (e.mcp_servers.length !== 0)
     return { ok: false, reason: `mcp_servers not empty: ${JSON.stringify(e.mcp_servers)}` };
-  // 大小写不敏感（L1 实测：请求 Auto，CLI init 回报 auto —— 同一标识符的两种拼写，非静默回落）
+  // P1④ 精确匹配（大小写敏感）。L1 夹具实测：未认证 CLI 回报小写 auto（auth-error），
+  // 静默回落回报 Auto（silent-model-fallback）——任何与请求值不同的字符串（含大小写
+  // 漂移）都是 fail closed；配置值必须等于 CLI 精确回报值。
   const actualModel = e.model;
-  if (typeof actualModel !== 'string' || actualModel.toLowerCase() !== requestedModel.toLowerCase()) {
-    return { ok: false, reason: `model ${String(actualModel)} != requested ${requestedModel} (silent fallback)` };
+  if (typeof actualModel !== 'string' || actualModel !== requestedModel) {
+    return {
+      ok: false,
+      reason: `model ${String(actualModel)} != requested ${requestedModel} (exact-match: silent fallback or case drift)`,
+    };
   }
   return {
     ok: true,
     cliDrift: 'cliDrift' in version ? version.cliDrift : undefined,
-    model: typeof actualModel === 'string' ? actualModel : undefined,
+    model: actualModel,
   };
 }
 
-/** stderr 诊断：共享 sanitizer + 凭证形态 redact + 有界 ring */
-async function sanitizeStderrLine(line: string): Promise<string> {
-  let out = line;
-  try {
-    const mod = await import('../../../../../utils/sanitize-cli-stderr.js');
-    out = mod.sanitizeCliStderr(out, {});
-  } catch {
-    /* sanitizer 不可用时继续走自有 redact */
-  }
-  return out.replace(/(Bearer\s+)[A-Za-z0-9._-]{8,}/g, '$1<redacted>').replace(/sk-[A-Za-z0-9]{8,}/g, 'sk-<redacted>');
-}
-
-class StderrRing {
-  private parts: string[] = [];
-  private size = 0;
-  push(s: string): void {
-    this.parts.push(s);
-    this.size += s.length;
-    while (this.size > STDERR_RING_LIMIT && this.parts.length > 1) {
-      this.size -= this.parts[0].length;
-      this.parts.shift();
-    }
-  }
-  tail(): string {
-    return this.parts.join('').trim().slice(-500);
-  }
+/** P1②：深冻 prepared request —— recorder 落档字节与后续出境字节不可分叉（Kimi 同款契约） */
+function freezePreparedRequest(r: PreparedProviderRequestV1): PreparedProviderRequestV1 {
+  return Object.freeze({
+    ...r,
+    message: Object.freeze({ ...r.message }),
+    nativeInstructions: Object.freeze(r.nativeInstructions.map((i) => Object.freeze({ ...i }))),
+    runtime: Object.freeze({ ...r.runtime }),
+    tools: Object.freeze({
+      ...r.tools,
+      declaredServerNames: Object.freeze([...(r.tools.declaredServerNames ?? [])]),
+    }),
+  });
 }
 
 export class QoderAgentService implements AgentService {
   private readonly config: QoderAgentServiceConfig;
+  private readonly rawArchive: RawArchiveSink;
 
   constructor(config: QoderAgentServiceConfig) {
     this.config = config;
+    this.rawArchive = config.rawArchive ?? new CliRawArchive();
   }
 
   async *invoke(prompt: string, options?: AgentServiceOptions): AsyncIterable<AgentMessage> {
@@ -154,6 +187,14 @@ export class QoderAgentService implements AgentService {
       yield this.error('qoder invoke rejected: workingDirectory is required (fail closed)');
       return;
     }
+
+    // P1②：abort 检查先于 recorder —— 已取消的请求不落档、不出境
+    const signal = options?.signal;
+    if (signal?.aborted) {
+      yield this.error('qoder invoke aborted before provider-request recorder');
+      return;
+    }
+
     const fs = this.config.profileFs ?? defaultQoderProfileFs();
     const audit = auditQoderProfile(this.config.profileDir, fs);
     if (!audit.ok) {
@@ -161,9 +202,48 @@ export class QoderAgentService implements AgentService {
       return;
     }
 
-    // F299：正文/runtime/tool surface 形成后、spawn 前过 recorder —— 拒绝即 0 spawn
+    // P1⑥/round-4 P1-3：resume 是对 provider 已初始化 profile 的二次信任——session 必须存在于
+    // 本 profile 的 canonical 项目目录 projects/<qoderProjectSlug(cwd)>/<sessionId>.jsonl
+    // （I-11：resume 语义依赖同 config-dir + 同 cwd，跨 cwd 精确拒绝）
+    if (options?.sessionId) {
+      const resumeAudit = auditQoderResumeSession({
+        profileDir: this.config.profileDir,
+        sessionId: options.sessionId,
+        workingDirectory,
+        fs,
+      });
+      if (!resumeAudit.ok) {
+        yield this.error(`qoder invoke rejected: resume audit failed: ${resumeAudit.reason}`);
+        return;
+      }
+    }
+
+    let binary = this.config.binary;
+    if (!binary) {
+      const resolved = resolveCliCommand('qodercn');
+      if (!resolved) {
+        yield this.error(formatCliNotFoundError('qodercn'));
+        return;
+      }
+      binary = resolved;
+    }
+    const args = buildQoderArgs({
+      profileDir: this.config.profileDir,
+      model: this.config.model,
+      sessionId: options?.sessionId,
+    });
+    // P1④：显式 -m provenance —— argv 断言不过即 0 spawn
+    try {
+      assertExplicitModelFlag(args, this.config.model);
+    } catch (err) {
+      yield this.error(`qoder invoke rejected: ${String(err)}`);
+      return;
+    }
+
+    // F299：正文/runtime/tool surface 形成后、spawn 前过 recorder —— 拒绝即 0 spawn；
+    // 落档字节深冻（P1②），recorder 之后核验未被改写
     if (options?.beforeProviderLaunch) {
-      const prepared: PreparedProviderRequestV1 = {
+      const prepared = freezePreparedRequest({
         v: 1,
         message: { accuracy: 'exact', body: prompt },
         nativeInstructions: [],
@@ -176,170 +256,162 @@ export class QoderAgentService implements AgentService {
         },
         tools: { finalSurface: 'declared_only', declaredServerNames: [] },
         providerNativeVisibility: 'unknown',
-      };
+      });
       try {
         await options.beforeProviderLaunch(prepared);
       } catch (err) {
         yield this.error(`qoder invoke rejected by provider-request recorder: ${String(err)}`);
         return;
       }
-    }
-
-    // abort 检查先于 spawn：已取消的请求绝不出境
-    const signal = options?.signal;
-    if (signal?.aborted) {
-      yield this.error('qoder invoke aborted before spawn');
-      return;
-    }
-
-    let binary = this.config.binary;
-    if (!binary) {
-      const { resolveCliCommand } = await import('../../../../../utils/cli-resolve.js');
-      const resolved = resolveCliCommand('qodercn');
-      if (!resolved) {
-        yield this.error('qoder binary not found (resolveCliCommand(qodercn) returned null)');
+      if (!('body' in prepared.message) || prepared.message.body !== prompt) {
+        yield this.error('qoder invoke rejected: prepared request mutated across recorder boundary');
         return;
       }
-      binary = resolved;
     }
-    const args = buildQoderArgs({
-      profileDir: this.config.profileDir,
-      model: this.config.model,
-      sessionId: options?.sessionId,
-    });
-    const env = sanitizeQoderEnv({ ...process.env, ...(options?.callbackEnv ?? {}), ...(options?.accountEnv ?? {}) });
 
-    let child: ChildProcessWithoutNullStreams;
+    // P1③：spawn/stdin(EPIPE 守卫)/有界终止/exit 等待/liveness 全部由共享 spawnCli 拥有；
+    // 门内 fail-closed 终止（init 门红/时序违规）通过 break 触发其 finally 的
+    // CliTerminationController 有界终止（SIGTERM → 等待 → SIGKILL，计时器 unref）
+    const cliOpts = {
+      command: binary,
+      args,
+      cwd: workingDirectory,
+      stdinInput: prompt,
+      env: buildQoderEnvOverrides({
+        profileDir: this.config.profileDir,
+        callbackEnv: options?.callbackEnv,
+        accountEnv: options?.accountEnv,
+      }),
+      managedArgvFlags: [
+        '-p',
+        '-m',
+        '-o',
+        '--config-dir',
+        '--strict-mcp-config',
+        '--allowed-mcp-server-names',
+        '--tools',
+        '--setting-sources',
+      ],
+      ...(signal ? { signal } : {}),
+      ...(options?.invocationId ? { invocationId: options.invocationId } : {}),
+      ...(options?.cliSessionId ? { cliSessionId: options.cliSessionId } : {}),
+      ...(options?.livenessProbe ? { livenessProbe: options.livenessProbe } : {}),
+      ...(options?.parentSpan ? { parentSpan: options.parentSpan } : {}),
+      // round-4 P1-2：与 Claude/Kimi/OpenCode 共享接线——rawArchivePath 让 __cliTimeout
+      // 诊断能定位到本 invocation 的 raw archive
+      ...(options?.invocationId && this.rawArchive.getPath
+        ? { rawArchivePath: this.rawArchive.getPath(options.invocationId) }
+        : {}),
+    };
+    // F089 seam（round-4 P1-2）：per-invocation spawnCliOverride（tmux-based spawner 等）
+    // 优先于共享 spawnCli —— 路由/acceptance 只能经 options 注入，不得绕死
+    const events = options?.spawnCliOverride
+      ? options.spawnCliOverride(cliOpts)
+      : spawnCli(cliOpts, this.config.spawnFn ? { spawnFn: this.config.spawnFn } : undefined);
+
     try {
-      child = (this.config.spawnFn ?? spawn)(binary, args, {
-        cwd: workingDirectory,
-        env,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
+      yield* this.consumeStream(events, options);
     } catch (err) {
+      // round-4 P2-4：spawn 层异常（spawnFn 同步 throw / ENOENT 等，共享 spawnCli 明确会
+      // throw spawn error）不得从 AgentService iterable 逸出 —— 统一转 qoder typed error 终态
       yield this.error(`qoder spawn failed: ${String(err)}`);
-      return;
-    }
-
-    child.stdin.write(prompt);
-    child.stdin.end();
-
-    const onAbort = () => terminateBounded(child);
-    signal?.addEventListener('abort', onAbort, { once: true });
-
-    try {
-      yield* this.consumeStream(child);
-    } finally {
-      signal?.removeEventListener('abort', onAbort);
-      if (!child.killed) terminateBounded(child);
     }
   }
 
   /** 真·流式：init 过门后逐条 yield；终态在流后收敛判定 */
-  private async *consumeStream(child: ChildProcessWithoutNullStreams): AsyncIterable<AgentMessage> {
+  private async *consumeStream(
+    events: AsyncGenerator<unknown, void, undefined>,
+    options?: AgentServiceOptions,
+  ): AsyncIterable<AgentMessage> {
     const { catId, model } = this.config;
-    const rl = createInterface({ input: child.stdout });
-    const stderrRing = new StderrRing();
-    const stderrSanitized: string[] = [];
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (d: string) => {
-      stderrSanitized.push(d);
-      void sanitizeStderrLine(d).then((s) => stderrRing.push(s));
-    });
-
     let initSeen = false;
     let usage: TokenUsage | undefined;
     let billing: QoderBillingMetadata | undefined;
     let resultError: string | undefined;
     let successResultSeen = false;
     let actualModel: string | undefined;
-    let exitCode: number | null | undefined;
-    let spawnError: Error | undefined;
-    child.on('error', (err) => {
-      spawnError = err;
-    });
-    child.on('close', (code) => {
-      exitCode = code;
-    });
 
-    try {
-      for await (const line of rl) {
-        if (!line.trim()) continue;
-        let event: unknown;
-        try {
-          event = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        const e = event as Record<string, unknown>;
-
-        if (e.type === 'system' && e.subtype === 'init') {
-          const gate = qoderInitGate(event, model);
-          if (!gate.ok) {
-            resultError = `qoder init gate failed (fail closed): ${gate.reason}`;
-            terminateBounded(child);
-            break;
-          }
-          initSeen = true;
-          actualModel = gate.model;
-          const initOut = transformQoderEvent(event, catId);
-          if (initOut) yield* flat(initOut);
-          if (gate.cliDrift) {
-            yield {
-              type: 'system_info',
-              catId,
-              content: JSON.stringify({ type: 'qoder_cli_drift', catId, warning: gate.cliDrift }),
-              timestamp: Date.now(),
-            };
-          }
-          continue;
-        }
-        if (!initSeen && (e.type === 'assistant' || e.type === 'user')) {
-          resultError = 'qoder stream violated ordering: assistant/user event before passing init gate';
-          terminateBounded(child);
-          break;
-        }
-        if (e.type === 'result') {
-          if (isQoderResultErrorEvent(e)) {
-            resultError = `qoder result error: ${typeof e.result === 'string' ? e.result : 'unknown'}`;
-            continue;
-          }
-          const extracted = extractQoderUsage(e);
-          usage = extracted.usage;
-          billing = extracted.billing;
-          successResultSeen = true;
-          continue;
-        }
-        const out = transformQoderEvent(event, catId);
-        if (out) yield* flat(out);
+    for await (const event of events) {
+      // #780 先例：raw 事件过 sanitize 后 fire-and-forget 落档（仅诊断用途）
+      if (options?.invocationId) {
+        this.rawArchive
+          .append(options.invocationId, sanitizeRawEvent(event))
+          .catch((err) => log.warn({ catId, invocationId: options.invocationId, err }, 'Raw archive write failed'));
       }
-    } catch (err) {
-      resultError = resultError ?? `stream read failed: ${String(err)}`;
-    }
-    rl.close();
 
-    for (let i = 0; i < 250 && exitCode === undefined && !spawnError; i++) {
-      await new Promise((r) => setTimeout(r, 20));
+      if (isLivenessWarning(event)) {
+        const w = event as { level?: string; silenceDurationMs?: number };
+        log.warn(
+          { catId, level: w.level, silenceMs: w.silenceDurationMs },
+          '[QoderAgent] liveness warning — CLI may be stuck',
+        );
+        continue;
+      }
+      if (isParseError(event)) {
+        continue; // 非协议行：跳过（不喂方言层）
+      }
+      if (isCliTimeout(event)) {
+        yield this.error(`qoder ${event.message}`);
+        return;
+      }
+      if (isCliError(event)) {
+        // P1①：humanized message（含 exit code）+ reasonCode；raw stderr 由共享层拥有，绝不内联
+        yield this.error(
+          `qoder process error: ${event.message}${event.reasonCode ? ` (reason: ${event.reasonCode})` : ''}`,
+        );
+        return;
+      }
+
+      const e = event as Record<string, unknown>;
+      if (e.type === 'system' && e.subtype === 'init') {
+        const gate = qoderInitGate(event, model);
+        if (!gate.ok) {
+          resultError = `qoder init gate failed (fail closed): ${gate.reason}`;
+          break; // 触发 spawnCli finally 的共享有界终止
+        }
+        initSeen = true;
+        actualModel = gate.model;
+        const initOut = transformQoderEvent(event, catId);
+        if (initOut) yield* flat(initOut);
+        if (gate.cliDrift) {
+          yield {
+            type: 'system_info',
+            catId,
+            content: JSON.stringify({ type: 'qoder_cli_drift', catId, warning: gate.cliDrift }),
+            timestamp: Date.now(),
+          };
+        }
+        continue;
+      }
+      if (!initSeen && (e.type === 'assistant' || e.type === 'user')) {
+        resultError = 'qoder stream violated ordering: assistant/user event before passing init gate';
+        break;
+      }
+      if (e.type === 'result') {
+        if (isQoderResultErrorEvent(e)) {
+          resultError = `qoder result error: ${typeof e.result === 'string' ? e.result : 'unknown'}`;
+          continue;
+        }
+        const extracted = extractQoderUsage(e);
+        usage = extracted.usage;
+        billing = extracted.billing;
+        successResultSeen = true;
+        continue;
+      }
+      const out = transformQoderEvent(event, catId);
+      if (out) yield* flat(out);
     }
 
-    if (spawnError) {
-      yield this.error(`qoder process error: ${String(spawnError)}`);
-      return;
-    }
     if (resultError) {
-      yield this.error(withDiag(resultError, stderrRing));
+      yield this.error(resultError);
       return;
     }
     if (!initSeen) {
-      yield this.error(withDiag('qoder stream ended without init event (fail closed)', stderrRing));
+      yield this.error('qoder stream ended without init event (fail closed)');
       return;
     }
     if (!successResultSeen) {
-      yield this.error(withDiag('qoder stream ended without a successful result event', stderrRing));
-      return;
-    }
-    if (exitCode !== 0) {
-      yield this.error(withDiag(`qoder exited with code ${String(exitCode)}`, stderrRing));
+      yield this.error('qoder stream ended without a successful result event');
       return;
     }
 
@@ -347,6 +419,8 @@ export class QoderAgentService implements AgentService {
     done.metadata = {
       provider: 'qoder',
       model: actualModel ?? 'unknown',
+      requestedModel: model,
+      modelProvenance: 'explicit-cli-flag',
       usage,
       ...(billing ? { qoderBilling: billing } : {}),
     } as unknown as NonNullable<AgentMessage['metadata']>;
@@ -364,23 +438,4 @@ async function* flat(out: AgentMessage | AgentMessage[]): AsyncGenerator<AgentMe
   } else {
     yield out;
   }
-}
-
-function withDiag(message: string, ring: StderrRing): string {
-  const tail = ring.tail();
-  return tail ? `${message} | stderr tail: ${tail}` : message;
-}
-
-/** bounded termination：SIGTERM → 等待 close → 超时 SIGKILL */
-function terminateBounded(child: ChildProcessWithoutNullStreams): void {
-  if (child.killed) return;
-  child.kill('SIGTERM');
-  const killer = setTimeout(() => {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      /* already gone */
-    }
-  }, TERMINATION_GRACE_MS);
-  child.once('close', () => clearTimeout(killer));
 }
