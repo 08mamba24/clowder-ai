@@ -10573,3 +10573,195 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
 // Guide matching now happens at routing layer (route-serial/route-parallel)
 // and is injected via SystemPromptBuilder + guide-interaction skill.
 // New tests for the routing-layer matching should be added separately.
+
+// ══ F317 Slice 2：qoder workspace/session guard（providerRequiresThreadWorkspace 泛化）═══
+// 注册链最小 cat：克隆既有 config，clientId='qoder'（workspace-strict 第二成员）
+{
+  const dummyL0CompilerFn = async ({ catId }) => `# Dummy L0 for ${catId}\nTest-only stub.`;
+  // makeDeps 是 describe 块内局部 helper——此处自备同款（自包含块）
+  function makeDeps() {
+    let counter = 0;
+    return {
+      registry: {
+        create: () => ({ invocationId: `inv-q-${++counter}`, callbackToken: `tok-q-${counter}` }),
+        verify: async () => ({ ok: false, reason: 'unknown_invocation' }),
+      },
+      sessionManager: {
+        get: async () => undefined,
+        getOrCreate: async () => ({}),
+        store: async () => {},
+        delete: async () => {},
+        resolveWorkingDirectory: () => '/tmp/test',
+      },
+      threadStore: null,
+      apiUrl: 'http://127.0.0.1:3004',
+      contextEpochOwner: new ContextEpochOwner(new InMemoryContextEpochStore()),
+    };
+  }
+  const qoderGuardConfig = (() => {
+    const base = catRegistry.tryGet('codex')?.config;
+    assert.ok(base, 'codex config should exist in registry');
+    return {
+      ...base,
+      id: 'qoder-guard',
+      mentionPatterns: ['@qoder-guard'],
+      clientId: 'qoder',
+      defaultModel: 'Auto',
+    };
+  })();
+  catRegistry.register('qoder-guard', qoderGuardConfig);
+
+  it('drops qoder resume when the stored session workspace differs from the current thread workspace', async () => {
+    const repoA = await makeSameProjectWorkspace('qoder-repo-a-');
+    const repoB = await makeSameProjectWorkspace('qoder-repo-b-');
+    const optionsSeen = [];
+    const service = {
+      l0CompilerFn: dummyL0CompilerFn,
+      async *invoke(_prompt, options) {
+        optionsSeen.push(options ?? {});
+        yield { type: 'done', catId: 'qoder-guard', timestamp: Date.now() };
+      },
+    };
+    const activeRecord = {
+      id: 'rec-qoder-repo-a',
+      seq: 0,
+      status: 'active',
+      cliSessionId: 'ses_qoder_repo_a',
+      catId: 'qoder-guard',
+      threadId: 'thread-qoder-stale-workspace',
+      userId: 'user1',
+      messageCount: 0,
+      workspaceFingerprint: repoA,
+      workingDirectory: repoA,
+    };
+    const chainStore = {
+      getChain: async () => [activeRecord],
+      getActive: async () => activeRecord,
+      get: async () => activeRecord,
+      create: async () => activeRecord,
+      update: async (_id, patch) => Object.assign(activeRecord, patch),
+    };
+    try {
+      await collect(
+        invokeSingleCat(
+          {
+            ...makeDeps(),
+            sessionChainStore: chainStore,
+            threadStore: {
+              get: async () => ({ projectPath: repoB, createdBy: 'user1' }),
+              updateParticipantActivity: async () => {},
+            },
+          },
+          {
+            catId: 'qoder-guard',
+            service,
+            prompt: 'test qoder stale workspace resume',
+            userId: 'user1',
+            threadId: 'thread-qoder-stale-workspace',
+            isLastCat: true,
+          },
+        ),
+      );
+    } finally {
+      await rmWithRetry(repoA);
+      await rmWithRetry(repoB);
+    }
+    assert.equal(optionsSeen.length, 1);
+    assert.equal(optionsSeen[0]?.workingDirectory, repoB);
+    assert.equal(optionsSeen[0]?.sessionId, undefined, 'qoder must start fresh on workspace mismatch');
+    assert.equal(optionsSeen[0]?.cliSessionId, undefined, 'stale session id must not be used for diagnostics either');
+  });
+
+  it('keeps qoder resume when the stored session workspace matches the current thread workspace', async () => {
+    const repo = await makeSameProjectWorkspace('qoder-repo-match-');
+    const optionsSeen = [];
+    const service = {
+      l0CompilerFn: dummyL0CompilerFn,
+      async *invoke(_prompt, options) {
+        optionsSeen.push(options ?? {});
+        yield { type: 'done', catId: 'qoder-guard', timestamp: Date.now() };
+      },
+    };
+    const activeRecord = {
+      id: 'rec-qoder-match',
+      seq: 0,
+      status: 'active',
+      cliSessionId: 'ses_qoder_match',
+      catId: 'qoder-guard',
+      threadId: 'thread-qoder-match-workspace',
+      userId: 'user1',
+      messageCount: 0,
+      workspaceFingerprint: repo,
+      workingDirectory: repo,
+    };
+    const chainStore = {
+      getChain: async () => [activeRecord],
+      getActive: async () => activeRecord,
+      get: async () => activeRecord,
+      create: async () => activeRecord,
+      update: async (_id, patch) => Object.assign(activeRecord, patch),
+    };
+    try {
+      await collect(
+        invokeSingleCat(
+          {
+            ...makeDeps(),
+            sessionChainStore: chainStore,
+            threadStore: {
+              get: async () => ({ projectPath: repo, createdBy: 'user1' }),
+              updateParticipantActivity: async () => {},
+            },
+          },
+          {
+            catId: 'qoder-guard',
+            service,
+            prompt: 'test qoder matched workspace resume',
+            userId: 'user1',
+            threadId: 'thread-qoder-match-workspace',
+            isLastCat: true,
+            sessionId: 'ses_qoder_match',
+          },
+        ),
+      );
+    } finally {
+      await rmWithRetry(repo);
+    }
+    assert.equal(optionsSeen.length, 1);
+    assert.equal(optionsSeen[0]?.sessionId, 'ses_qoder_match', 'matched workspace keeps qoder resume');
+  });
+
+  it('fails loud when a qoder thread projectPath is default (workspace-strict fail-loud)', async () => {
+    let invokedService = false;
+    const service = {
+      l0CompilerFn: dummyL0CompilerFn,
+      async *invoke() {
+        invokedService = true;
+        yield { type: 'done', catId: 'qoder-guard', timestamp: Date.now() };
+      },
+    };
+    const msgs = await collect(
+      invokeSingleCat(
+        {
+          ...makeDeps(),
+          threadStore: {
+            get: async () => ({ projectPath: 'default', createdBy: 'user1' }),
+            updateParticipantActivity: async () => {},
+          },
+        },
+        {
+          catId: 'qoder-guard',
+          service,
+          prompt: 'test qoder missing workspace',
+          userId: 'user1',
+          threadId: 'thread-qoder-no-workspace',
+          isLastCat: true,
+        },
+      ),
+    );
+    assert.equal(invokedService, false, 'qoder must not inherit runtime cwd when projectPath is default');
+    assert.ok(
+      msgs.some((m) => m.type === 'error' && String(m.error).includes('Qoder requires a thread projectPath')),
+      `expected missing projectPath error, got: ${msgs.map((m) => m.type).join(',')}`,
+    );
+  });
+}

@@ -76,7 +76,7 @@ export class LlmAIProvider implements AIProvider {
   }
 
   /** Keep deterministic builtin fallback, and authorize the same destination that fetch receives. */
-  private resolveRequest(client: Exclude<BuiltinAccountClient, 'opencode'>): { apiKey: string; url: string } {
+  private resolveRequest(client: Exclude<BuiltinAccountClient, 'opencode' | 'qoder'>): { apiKey: string; url: string } {
     const root = resolveActiveProjectRoot(process.cwd());
     const entry = catRegistry.tryGet(this.catId);
     const accountRef = entry ? resolveBoundAccountRefForCat(root, this.catId, entry.config) : undefined;

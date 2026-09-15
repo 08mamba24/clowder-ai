@@ -136,6 +136,7 @@ import {
   CodexAgentService,
   createDraftStore,
   createInvocationRecordStore,
+  createQoderAgentService,
   createSessionChainStore,
   createTurnExecutionStore,
   DeliveryCursorStore,
@@ -1965,6 +1966,24 @@ async function main(): Promise<void> {
           case 'opencode':
             service = new OpenCodeAgentService({ catId });
             break;
+          case 'qoder': {
+            // F317 Slice 2：构造期 resolver（点点 round-8 P2 硬验收）——经
+            // ensureQoderRuntimeProfile 解析 profileDir 并断言 containment；
+            // model 缺失或审计红 → null → 不注册（无半注册态）。凭证经 config-dir
+            // （<dataRoot>/qoder-auth/<accountRef>），不经 env 注入。
+            const projectRoot = resolveActiveProjectRoot(process.cwd());
+            const qoderAccountRef = resolveBoundAccountRefForCat(projectRoot, catId, config) ?? 'qoder';
+            const qoderService = createQoderAgentService({
+              catId,
+              config,
+              dataRoot: join(projectRoot, '.cat-cafe'),
+              authSourceDir: join(projectRoot, '.cat-cafe', 'qoder-auth', qoderAccountRef),
+              log: { warn: (msg) => app.log.warn(msg) },
+            });
+            if (!qoderService) continue;
+            service = qoderService;
+            break;
+          }
           case 'catagent': {
             const { CatAgentService } = await import(
               './domains/cats/services/agents/providers/catagent/CatAgentService.js'

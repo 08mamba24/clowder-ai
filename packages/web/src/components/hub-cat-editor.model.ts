@@ -96,6 +96,7 @@ export const CLIENT_OPTIONS: Array<{ value: ClientId; label: string }> = [
   { value: 'google', label: 'Gemini' },
   { value: 'kimi', label: 'Kimi' },
   { value: 'opencode', label: 'OpenCode' },
+  { value: 'qoder', label: 'Qoder' },
   { value: 'antigravity', label: 'Antigravity' },
   { value: 'catagent', label: 'CatAgent' },
   { value: 'acp', label: 'ACP Client' },
@@ -151,7 +152,8 @@ export function usesCliTransport(form: Pick<HubCatEditorFormState, 'clientId' | 
       form.clientId === 'openai' ||
       form.clientId === 'google' ||
       form.clientId === 'kimi' ||
-      form.clientId === 'opencode')
+      form.clientId === 'opencode' ||
+      form.clientId === 'qoder')
   );
 }
 

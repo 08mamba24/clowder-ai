@@ -69,7 +69,17 @@ const cliSchema = z.object({
   carrier: z.enum(['exec_json', 'app_server']).nullable().optional(),
 });
 
-const clientSchema = z.enum(['anthropic', 'openai', 'google', 'kimi', 'antigravity', 'opencode', 'catagent', 'acp']);
+const clientSchema = z.enum([
+  'anthropic',
+  'openai',
+  'google',
+  'kimi',
+  'antigravity',
+  'opencode',
+  'qoder',
+  'catagent',
+  'acp',
+]);
 
 /** F161: ACP transport config schema — matches AcpVariantConfig from cat-config-loader. */
 const acpConfigSchema = z
@@ -267,6 +277,9 @@ function defaultCliForClient(client: ClientId): { command: string; outputFormat:
       return { command: 'kimi', outputFormat: 'stream-json' };
     case 'opencode':
       return { command: 'opencode', outputFormat: 'json' };
+    case 'qoder':
+      // F317: argv 由 QoderAgentService 自建（-p - -m <model> -o stream-json ...），cli.command 仅作 binary 解析名
+      return { command: 'qodercn', outputFormat: 'json' };
     case 'antigravity':
       return { command: 'antigravity', outputFormat: 'json' };
     case 'a2a':
