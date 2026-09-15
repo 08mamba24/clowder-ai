@@ -68,9 +68,12 @@ export function resolveBuiltinClientForProvider(provider: ClientId): BuiltinAcco
  * Provider-level capability (not a per-variant config field): this is a CLI trait, not
  * per-cat data — every OpenCode variant needs it, and a second workspace-strict CLI only
  * adds one branch here, keeping the invocation layer a pure reader (no hardcoded check).
+ *
+ * F317 Slice 2: qoder 加入——resume 语义依赖同 config-dir + 同 cwd（I-11），thread
+ * workspace 绑定是它的硬前置，与 OpenCode 同款 fail-loud。
  */
 export function providerRequiresThreadWorkspace(provider: ClientId | undefined): boolean {
-  return provider === 'opencode';
+  return provider === 'opencode' || provider === 'qoder';
 }
 
 export function resolveAnthropicRuntimeProfile(

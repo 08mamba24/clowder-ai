@@ -38,6 +38,7 @@ import { getCatModel } from './config/cat-models.js';
 import { resolveCodexCarrierTruth } from './config/codex-cli.js';
 import { configEventBus } from './config/config-event-bus.js';
 import { resolveFrontendBaseUrl, resolveFrontendCorsOrigins } from './config/frontend-origin.js';
+
 import { resolveRuntimeDeploymentRevision } from './config/runtime-deployment-revision.js';
 import { initRuntimeOverrides } from './config/session-strategy-overrides.js';
 import { assertStorageReady } from './config/storage-guard.js';
@@ -136,6 +137,7 @@ import {
   CodexAgentService,
   createDraftStore,
   createInvocationRecordStore,
+  createQoderAgentService,
   createSessionChainStore,
   createTurnExecutionStore,
   DeliveryCursorStore,
@@ -144,6 +146,7 @@ import {
   KimiAgentService,
   MemoryGovernanceStore,
   OpenCodeAgentService,
+  registerQoderAgentService,
 } from './domains/cats/services/index.js';
 import { FileProfileRepository } from './domains/cats/services/profile/ProfileRepository.js';
 import {
@@ -1965,6 +1968,27 @@ async function main(): Promise<void> {
           case 'opencode':
             service = new OpenCodeAgentService({ catId });
             break;
+          case 'qoder': {
+            // F317 Slice 2：注册链单一真相 = registerQoderAgentService（auth-source
+            // 解析 + durable dataRoot + 构造期 ensure/containment + fail-closed 不注册）。
+            // 分离拓扑 E2E 消费同一函数，防 dataRoot 接线回归。
+            const projectRoot = resolveActiveProjectRoot(process.cwd());
+            const qoderRegistration = registerQoderAgentService({
+              catId,
+              config,
+              projectRoot,
+              accountRef: resolveBoundAccountRefForCat(projectRoot, catId, config),
+              log: { warn: (msg) => app.log.warn(msg) },
+            });
+            if (!qoderRegistration.ok) {
+              app.log.warn(
+                `[qoder-factory] cat "${catId}" registration rejected: ${qoderRegistration.reason}. Cat not registered (fail closed).`,
+              );
+              continue;
+            }
+            service = qoderRegistration.service;
+            break;
+          }
           case 'catagent': {
             const { CatAgentService } = await import(
               './domains/cats/services/agents/providers/catagent/CatAgentService.js'

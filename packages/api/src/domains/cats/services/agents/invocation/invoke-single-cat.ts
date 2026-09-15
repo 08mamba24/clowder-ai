@@ -2458,6 +2458,8 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
     const catConfig = catRegistry.tryGet(catId as string)?.config;
     const provider = catConfig?.clientId;
     const requiresThreadWorkspace = providerRequiresThreadWorkspace(provider);
+    // F317 Slice 2：workspace-strict 提供方的 fail-loud 文案（OpenCode 原文保持不变）
+    const workspaceStrictLabel = provider === 'qoder' ? 'Qoder' : 'OpenCode';
 
     // Resolve workingDirectory from thread's projectPath
     let workingDirectory: string | undefined;
@@ -2564,14 +2566,14 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
             bootcampWorkspaceError = new Error(bootcampWorkspace.error);
           }
         } else if (requiresThreadWorkspace) {
-          workspaceResolutionFailureMessage = `OpenCode requires a thread projectPath for ${threadId}. Bind the thread to a project workspace before spawning OpenCode.`;
+          workspaceResolutionFailureMessage = `${workspaceStrictLabel} requires a thread projectPath for ${threadId}. Bind the thread to a project workspace before spawning ${workspaceStrictLabel}.`;
         }
       }
     }
     if (requiresThreadWorkspace && threadStore && !workingDirectory && !bootcampWorkspaceError) {
       workspaceResolutionError = new Error(
         workspaceResolutionFailureMessage ??
-          `OpenCode requires a thread projectPath for ${threadId}. Bind the thread to a project workspace before spawning OpenCode.`,
+          `${workspaceStrictLabel} requires a thread projectPath for ${threadId}. Bind the thread to a project workspace before spawning ${workspaceStrictLabel}.`,
       );
     }
     if (bootcampWorkspaceError) {
@@ -2582,14 +2584,14 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
     }
     const workingProjectRoot = workingDirectory ? findMonorepoRoot(workingDirectory) : undefined;
     const sessionWorkspaceBinding =
-      provider === 'opencode' && workingDirectory
+      requiresThreadWorkspace && workingDirectory
         ? {
             workingDirectory: normalizeSessionWorkspacePath(workingDirectory),
             workspaceFingerprint: buildSessionWorkspaceFingerprint(workingDirectory),
           }
         : {};
     const hasSessionWorkspaceBinding = 'workspaceFingerprint' in sessionWorkspaceBinding;
-    if (provider === 'opencode' && sessionId && workingDirectory) {
+    if (requiresThreadWorkspace && sessionId && workingDirectory) {
       const requestedSessionId = sessionId;
       const storedWorkspaceFingerprint = getStoredSessionWorkspaceFingerprint(activeSessionRecordForResume);
       const currentWorkspaceFingerprint = buildSessionWorkspaceFingerprint(workingDirectory);
@@ -2608,7 +2610,7 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
             storedWorkspaceFingerprint: activeSessionRecordForResume?.workspaceFingerprint ?? null,
             currentWorkspaceFingerprint,
           },
-          'OpenCode resume workspace guard dropped stale session',
+          `${workspaceStrictLabel} resume workspace guard dropped stale session`,
         );
         sessionId = undefined;
         sessionManager.delete(userId, catId, threadId).catch(() => {});
@@ -2616,7 +2618,7 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
           type: 'system_info' as const,
           catId,
           content: JSON.stringify({
-            type: 'opencode_resume_workspace_guard',
+            type: `${provider === 'qoder' ? 'qoder' : 'opencode'}_resume_workspace_guard`,
             action: 'start_fresh',
             reason,
             threadId,

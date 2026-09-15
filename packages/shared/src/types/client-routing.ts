@@ -1,7 +1,7 @@
 import type { ClientId } from './cat.js';
 import type { AccountProtocol } from './cat-breed.js';
 
-export type BuiltinAccountClient = Extract<ClientId, 'anthropic' | 'openai' | 'google' | 'kimi' | 'opencode'>;
+export type BuiltinAccountClient = Extract<ClientId, 'anthropic' | 'openai' | 'google' | 'kimi' | 'opencode' | 'qoder'>;
 export type BuiltinAccountProtocol = Extract<AccountProtocol, 'anthropic' | 'openai' | 'google' | 'kimi'>;
 
 const BUILTIN_ACCOUNT_IDS: Record<BuiltinAccountClient, string> = {
@@ -10,6 +10,7 @@ const BUILTIN_ACCOUNT_IDS: Record<BuiltinAccountClient, string> = {
   google: 'gemini',
   kimi: 'kimi',
   opencode: 'opencode',
+  qoder: 'qoder', // F317: qodercn 凭证不经 env 注入（config-dir auth），无 BuiltinAccountProtocol
 };
 
 /** Canonical family, CLI name and historical builtin_* aliases are one identity table. */

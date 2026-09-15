@@ -11,7 +11,16 @@ import { defaultAcpCommandForClient, defaultAcpStartupArgsForClient } from './hu
 import { defaultMcpSupportForClient } from './hub-cat-editor.protocols';
 import type { CatStrategyEntry, StrategyType } from './hub-strategy-types';
 
-export type ClientId = 'anthropic' | 'openai' | 'google' | 'kimi' | 'opencode' | 'antigravity' | 'catagent' | 'acp';
+export type ClientId =
+  | 'anthropic'
+  | 'openai'
+  | 'google'
+  | 'kimi'
+  | 'opencode'
+  | 'qoder'
+  | 'antigravity'
+  | 'catagent'
+  | 'acp';
 /** @deprecated Use ClientId instead. */
 export type ClientValue = ClientId;
 export type SessionChainValue = 'true' | 'false';
@@ -96,6 +105,7 @@ export const CLIENT_OPTIONS: Array<{ value: ClientId; label: string }> = [
   { value: 'google', label: 'Gemini' },
   { value: 'kimi', label: 'Kimi' },
   { value: 'opencode', label: 'OpenCode' },
+  { value: 'qoder', label: 'Qoder' },
   { value: 'antigravity', label: 'Antigravity' },
   { value: 'catagent', label: 'CatAgent' },
   { value: 'acp', label: 'ACP Client' },
@@ -151,7 +161,8 @@ export function usesCliTransport(form: Pick<HubCatEditorFormState, 'clientId' | 
       form.clientId === 'openai' ||
       form.clientId === 'google' ||
       form.clientId === 'kimi' ||
-      form.clientId === 'opencode')
+      form.clientId === 'opencode' ||
+      form.clientId === 'qoder')
   );
 }
 
@@ -257,6 +268,7 @@ function isBuiltinClient(client: ClientId): client is BuiltinAccountClient {
     client === 'google' ||
     client === 'kimi' ||
     client === 'opencode' ||
+    client === 'qoder' ||
     client === 'acp'
   );
 }
@@ -324,6 +336,11 @@ export function filterAccounts(client: ClientId, profiles: ProfileItem[]): Profi
       (profile) => profile.authType === 'api_key' && legacyProfileClient(profile) === 'kimi',
     );
     return [...builtinProfiles, ...kimiApiProfiles.filter((profile) => !builtinProfiles.includes(profile))];
+  }
+  if (effective === 'qoder') {
+    // F317 round-3 P2：生产 resolver 拒绝一切 qoder api_key 账户（config-dir
+    // OAuth-only）——UI 不得提供会被注册链静默拒绝的绑定（否则成员悄悄不可路由）
+    return builtinProfiles;
   }
   const apiKeyProfiles = profiles.filter((profile) => profile.authType === 'api_key');
   return [...builtinProfiles, ...apiKeyProfiles.filter((profile) => !builtinProfiles.includes(profile))];

@@ -9,7 +9,7 @@ import { HubIcon } from './hub-icons';
 import { TagEditor } from './hub-tag-editor';
 import { formInputClass } from './mcp-form-helpers';
 
-const CLIENT_OPTIONS: BuiltinAccountClient[] = ['anthropic', 'openai', 'google', 'kimi', 'opencode', 'acp'];
+const CLIENT_OPTIONS: BuiltinAccountClient[] = ['anthropic', 'openai', 'google', 'kimi', 'opencode', 'qoder', 'acp'];
 
 /** Suggested models per client — kept in sync with cat-template.json clientDefaults. */
 const MODEL_SUGGESTIONS: Partial<Record<BuiltinAccountClient, string[]>> = {
@@ -29,6 +29,8 @@ const MODEL_SUGGESTIONS: Partial<Record<BuiltinAccountClient, string[]>> = {
     'Claude Opus 4.6 (Thinking)',
   ],
   opencode: ['claude-sonnet-4-6', 'claude-opus-4-6'],
+  // F317：model 必须等于 qodercn init 精确回报值（P1-D 精确匹配；'Auto' 为 L1 验证值）
+  qoder: ['Auto'],
 };
 
 export interface UnifiedAuthEditData {

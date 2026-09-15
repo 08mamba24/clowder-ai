@@ -19,6 +19,7 @@ export type ClientId =
   | 'kimi'
   | 'antigravity'
   | 'opencode'
+  | 'qoder' // F317 Slice 2: qodercn CLI（QoderCN 中国版）
   | 'a2a'
   | 'catagent'
   | 'acp'; // F161: Generic ACP client for unknown/user-provided ACP agents
