@@ -1022,3 +1022,79 @@ test('round6 P1: FIFO at the .auth position fails closed (non-directory node)', 
   );
   rmSync(root, { recursive: true, force: true });
 });
+
+// ══ round-7（PR #24 round-6 review：砚砚 P1——profile custody 点状化，未按根因收口）═══
+// 三条真实 fs 复现：settings 悬链 / 外置 projects（resume 也过）/ 外置 security-resources
+test('round7 P1: dangling settings.json symlink fails closed (pre-execution hook gate stays in-profile)', async () => {
+  const { base } = await realFsWrappers();
+  const { symlinkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r7a-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  assert.equal(first.audit.ok, true);
+  symlinkSync(join(root, 'not-yet-external-settings.json'), join(first.profileDir, 'settings.json'));
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'dangling settings.json symlink must be a violation');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round7 P1: external projects symlink fails the profile audit even with a canonical session inside', async () => {
+  const { base } = await realFsWrappers();
+  const { symlinkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r7b-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  const sid = 'f8a72ea8-b30d-44b8-82e0-48c0a7f020f5';
+  const externalProjects = mkdtempSync(join(tmpdir(), 'qoder-r7b-ext-'));
+  mkdirSync(join(externalProjects, '-tmp-wksp'), { recursive: true });
+  writeFileSync(join(externalProjects, '-tmp-wksp', `${sid}.jsonl`), '{}');
+  symlinkSync(externalProjects, join(first.profileDir, 'projects'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'external projects symlink must be a violation');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+  rmSync(externalProjects, { recursive: true, force: true });
+});
+
+test('round7 P1: external security-resources symlink fails closed (provider exec path stays runtime-owned)', async () => {
+  const { base } = await realFsWrappers();
+  const { symlinkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'qode-r7c-'.replace('qode-', 'qoder-')));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  const external = mkdtempSync(join(tmpdir(), 'qoder-r7c-ext-'));
+  mkdirSync(join(external, 'security-scan', 'bin'), { recursive: true });
+  writeFileSync(join(external, 'security-scan', 'bin', 'qodersec-launch.sh'), '#!/bin/sh\n');
+  symlinkSync(external, join(first.profileDir, 'security-resources'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'external security-resources symlink must be a violation');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+  rmSync(external, { recursive: true, force: true });
+});
+
+// 对照：真实目录的 security-resources（含 .sh）不回杀——executable 判定仍只限 plugins/
+test('round7 control: real-dir security-resources with scripts stays green', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r7d-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  mkdirSync(join(first.profileDir, 'security-resources', 'security-scan', 'bin'), { recursive: true });
+  writeFileSync(
+    join(first.profileDir, 'security-resources', 'security-scan', 'bin', 'qodersec-launch.sh'),
+    '#!/bin/sh\n',
+  );
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, true, JSON.stringify(a.violations));
+  rmSync(root, { recursive: true, force: true });
+});

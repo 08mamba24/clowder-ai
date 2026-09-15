@@ -35,6 +35,12 @@
  *   当成"目录不存在"跳过（TOCTOU：审计后目标出现即越界）。直接 lstat，仅真
  *   ENOENT 对可选 plugins 合法缺失；seam 扩 isDirectory()，非目录节点
  *   （常规文件/FIFO/socket）一律拒绝
+ *
+ * Round-7 根因收口（PR #24 round-6 review，砚砚 P1）：
+ * - custody 不再点状枚举（.auth/plugins 两个根）——settings.json 悬链、外置
+ *   projects/（resume 也曾通过）、外置 security-resources/ 都能逃逸。合并为
+ *   全 profile symlink/type/readability-only 的 auditProfileTree traversal；
+ *   executable 判定仍只限 plugins/ 子树（不回杀 provider-owned 脚本）
  */
 
 import { createHash } from 'node:crypto';
@@ -94,87 +100,60 @@ export interface QoderProfileAudit {
 }
 
 /**
- * L1 audit_auth 攻击面（真相源 collect.sh:77：`find "$d/plugins" -type f ...`）：
- * 可执行/脚本/symlink 审计只针对 **plugins/ 子树**。provider 正常初始化会在
- * security-resources/ 等处生成自带脚本（实测本机
- * `.qoder-cn/security-resources/security-scan/bin/qodersec-launch.sh`）——那是
- * provider-owned 产物，不属于审计面；全根递归会误杀首次初始化后的每次调用
- * （PR #24 review P1-1：resume 被拒 + reseed 丢 session）。
- * plugins/ 内部遍历无深度上限；审计面内不可读/不可 stat 一律 violation（fail-closed）。
+ * Round-7 根因收口（PR #24 round-6 review，砚砚 P1）：一个 traversal 同时承担两种语义——
+ * ① custody 全 profile 生效：profile 内任何 symlink（含 dangling——lstat 不跟随链接）、
+ *    非目录/非常规文件节点、不可 stat / 不可遍历目录一律 violation（I-11 §1：profile 由
+ *    runtime 拥有，任何执行/会话/配置路径都不得经链接逃到外部）；`.auth` 与 `plugins`
+ *    作为语义根节点还必须是真实目录。round-4 该拆掉的只是"全 profile 脚本扩展名判红"，
+ *    custody 不随扫描面一起收窄。
+ * ② executable/script 判定只发生在 plugins/ 子树内（L1 audit_auth 真相源
+ *    collect.sh:77）：provider 正常初始化在 security-resources/ 等处生成的自带脚本
+ *    （qodersec-launch.sh 等）是真实目录内的 provider-owned 产物，不误杀；但那些目录
+ *    本身若是指向外部的 symlink，由 ① 拒绝。
  */
-function findExecutableArtifacts(profileDir: string, fs: QoderProfileFs): string[] {
-  const offenders: string[] = [];
-  const pluginsDir = join(profileDir, 'plugins');
-  const walk = (dir: string): void => {
+function auditProfileTree(profileDir: string, fs: QoderProfileFs): string[] {
+  const violations: string[] = [];
+  const walk = (dir: string, inPlugins: boolean): void => {
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch (err) {
-      // 真 ENOENT = 目录合法缺失；其余（EACCES 等）fail-closed
-      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return;
-      offenders.push(`unreadable dir ${dir}: ${String(err)}`);
+      // 子目录真 ENOENT = 合法缺失（如无 plugins/）；其余（EACCES 等）fail-closed
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT' && dir !== profileDir) return;
+      violations.push(`unreadable dir ${dir}: ${String(err)}`);
       return;
     }
     for (const entry of entries) {
       const p = join(dir, entry.name);
+      const atRoot = dir === profileDir;
+      const entersPlugins = inPlugins || (atRoot && entry.name === 'plugins');
+      let st;
       try {
-        const st = fs.lstatSync(p);
-        if (st.isSymbolicLink()) {
-          offenders.push(`symlink: ${p}`);
+        st = fs.lstatSync(p);
+      } catch (err) {
+        violations.push(`unstatable ${p}: ${String(err)}`);
+        continue;
+      }
+      if (st.isSymbolicLink()) {
+        violations.push(`symlink: ${p}`);
+        continue;
+      }
+      if (st.isFile()) {
+        if (atRoot && (entry.name === '.auth' || entry.name === 'plugins')) {
+          violations.push(`${entry.name} is not a real directory: ${p}`);
           continue;
         }
-        if (st.isFile()) {
-          if (/\.(sh|js|mjs|cjs|py)$/.test(entry.name) || (st.mode & 0o111) !== 0) {
-            offenders.push(`executable artifact: ${p}`);
-          }
-        } else if (st.isDirectory()) {
-          walk(p);
-        } else {
-          offenders.push(`non-directory node: ${p}`);
+        if (entersPlugins && (/\.(sh|js|mjs|cjs|py)$/.test(entry.name) || (st.mode & 0o111) !== 0)) {
+          violations.push(`executable artifact: ${p}`);
         }
-      } catch (err) {
-        offenders.push(`unstatable ${p}: ${String(err)}`);
+      } else if (st.isDirectory()) {
+        walk(p, entersPlugins);
+      } else {
+        violations.push(`non-directory node: ${p}`);
       }
     }
   };
-  walk(pluginsDir);
-  return offenders;
-}
-
-/**
- * Round-5 P1（PR #24 round-4 review）：路径 custody 与 artifact 扫描面分离。
- * I-11 §1：profile 由 runtime 拥有、用户个人目录不可达——`.auth` 与 `plugins/`
- * 根节点必须是不经符号链接的真实目录。round-4 收窄扫描面时不得顺手删掉这层
- * custody（`.auth -> 外部目录` / `plugins -> 外部目录` 曾双双判绿）。
- * lstat fail-closed：不可 stat / symlink / 非目录一律 violation。
- */
-function custodyViolations(profileDir: string, fs: QoderProfileFs): string[] {
-  // round-6 P1：custody 前置存在性检查不得用会跟随链接的 existsSync——dangling
-  // symlink 曾被当成"目录不存在"整段跳过。直接 lstat：仅真正的 ENOENT 对可选的
-  // plugins 视为合法缺失（dangling symlink 会被 lstat 识别为 symlink 并拒绝）；
-  // 其余错误 fail-closed；非目录节点（常规文件/FIFO/socket）一律拒绝。
-  const violations: string[] = [];
-  const nodes: readonly [label: string, path: string, optional: boolean][] = [
-    ['.auth', join(profileDir, '.auth'), false],
-    ['plugins', join(profileDir, 'plugins'), true],
-  ];
-  for (const [label, p, optional] of nodes) {
-    let st;
-    try {
-      st = fs.lstatSync(p);
-    } catch (err) {
-      if (optional && (err as NodeJS.ErrnoException)?.code === 'ENOENT') continue;
-      violations.push(`unstatable ${label}: ${p}: ${String(err)}`);
-      continue;
-    }
-    if (st.isSymbolicLink()) {
-      violations.push(`symlink at profile root: ${p}`);
-      continue;
-    }
-    if (!st.isDirectory()) {
-      violations.push(`${label} is not a real directory: ${p}`);
-    }
-  }
+  walk(profileDir, false);
   return violations;
 }
 
@@ -299,9 +278,8 @@ export function auditQoderProfile(
   } else {
     violations.push('missing .account-fingerprint');
   }
-  violations.push(...custodyViolations(profileDir, fs));
   violations.push(...settingsHooksViolations(profileDir, fs));
-  violations.push(...findExecutableArtifacts(profileDir, fs));
+  violations.push(...auditProfileTree(profileDir, fs));
   return { ok: violations.length === 0, violations, accountFingerprint: fingerprint };
 }
 
