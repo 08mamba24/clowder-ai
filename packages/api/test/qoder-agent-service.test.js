@@ -197,7 +197,7 @@ function profileFs(files) {
   return memFs(files ?? new Map());
 }
 
-test('audit: deep plugin scripts detected (no depth cap), unreadable dir is violation, symlink red', () => {
+test('audit: deep plugin scripts detected (no depth cap), unreadable dir is violation', () => {
   const deep = memFs(
     new Map([
       ['/p/.auth/user', 't'],
@@ -913,4 +913,60 @@ test('round4 P2-4: sync spawn error surfaces as typed error message, not iterato
   const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp' });
   assert.ok(Array.isArray(out) && out.length === 1, 'exactly one terminal message');
   assert.ok(out[0].type === 'error' && out[0].error.includes('spawn failed'), JSON.stringify(out));
+});
+
+// ══ round-5（PR #24 round-4 review：砚砚新 P1——顶节 symlink custody 回归）═══
+// 真实文件系统复现砚砚的两条绕过：.auth → 外部目录、plugins → 外部空目录
+// 都曾被 auditQoderProfile 判绿。I-11 §1：profile 由 runtime 拥有、用户个人目录不可达。
+test('round5 P1: .auth root symlink to an external dir fails closed', async () => {
+  const { base } = await realFsWrappers();
+  const { symlinkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r5a-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  assert.equal(first.audit.ok, true);
+  const external = mkdtempSync(join(tmpdir(), 'qoder-r5a-ext-'));
+  writeFileSync(join(external, 'user'), 'external-credential');
+  rmSync(join(first.profileDir, '.auth'), { recursive: true, force: true });
+  symlinkSync(external, join(first.profileDir, '.auth'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, '.auth symlink must be a violation');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+  rmSync(external, { recursive: true, force: true });
+});
+
+test('round5 P1: plugins root symlink to an external dir fails closed (custody ≠ artifact scope)', async () => {
+  const { base } = await realFsWrappers();
+  const { symlinkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r5b-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  assert.equal(first.audit.ok, true);
+  const external = mkdtempSync(join(tmpdir(), 'qoder-r5b-ext-'));
+  symlinkSync(external, join(first.profileDir, 'plugins'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'plugins root symlink must be a violation');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+  rmSync(external, { recursive: true, force: true });
+});
+
+// 对照组：真实目录的 .auth / plugins 不误杀（custody 只拒链接与非目录节点）
+test('round5 P1: real-dir .auth and plugins pass custody (no false positive)', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r5c-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  mkdirSync(join(first.profileDir, 'plugins'), { recursive: true });
+  writeFileSync(join(first.profileDir, 'plugins', 'notes.txt'), 'not executable');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, true, JSON.stringify(a.violations));
+  rmSync(root, { recursive: true, force: true });
 });

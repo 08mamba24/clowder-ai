@@ -24,6 +24,11 @@
  *   每次调用被拒 + reseed 丢 session）
  * - P1-3 resume 审计按 qodercn canonical slug（qoderProjectSlug，provider 源码提取）
  *   精确定位 projects/<slug(cwd)>/<sessionId>.jsonl —— 跨 cwd 不再误放行
+ *
+ * Round-5 修正（PR #24 round-4 review，砚砚 P1）：
+ * - 顶节 custody 与 artifact 扫描面分离：`.auth` / `plugins/` 根节点 lstat
+ *   fail-closed（symlink / 非真实目录 / 不可 stat 一律 violation）——修复 round-4
+ *   收窄时误删的 symlink custody（.auth→外部目录曾判绿，违反 I-11 §1）
  */
 
 import { createHash } from 'node:crypto';
@@ -125,6 +130,39 @@ function findExecutableArtifacts(profileDir: string, fs: QoderProfileFs): string
   };
   walk(pluginsDir);
   return offenders;
+}
+
+/**
+ * Round-5 P1（PR #24 round-4 review）：路径 custody 与 artifact 扫描面分离。
+ * I-11 §1：profile 由 runtime 拥有、用户个人目录不可达——`.auth` 与 `plugins/`
+ * 根节点必须是不经符号链接的真实目录。round-4 收窄扫描面时不得顺手删掉这层
+ * custody（`.auth -> 外部目录` / `plugins -> 外部目录` 曾双双判绿）。
+ * lstat fail-closed：不可 stat / symlink / 非目录一律 violation。
+ */
+function custodyViolations(profileDir: string, fs: QoderProfileFs): string[] {
+  const violations: string[] = [];
+  const nodes: readonly [label: string, path: string][] = [
+    ['.auth', join(profileDir, '.auth')],
+    ['plugins', join(profileDir, 'plugins')],
+  ];
+  for (const [label, p] of nodes) {
+    if (!fs.existsSync(p)) continue; // 缺失由既有检查负责（.auth）/ 合法（plugins 可不存在）
+    let st;
+    try {
+      st = fs.lstatSync(p);
+    } catch (err) {
+      violations.push(`unstatable ${label}: ${p}: ${String(err)}`);
+      continue;
+    }
+    if (st.isSymbolicLink()) {
+      violations.push(`symlink at profile root: ${p}`);
+      continue;
+    }
+    if (st.isFile()) {
+      violations.push(`${label} is a regular file, expected a real directory: ${p}`);
+    }
+  }
+  return violations;
 }
 
 /** settings*.json 出现非空 hooks 键即违规（hooks:{} 视为空，不算违规） */
@@ -248,6 +286,7 @@ export function auditQoderProfile(
   } else {
     violations.push('missing .account-fingerprint');
   }
+  violations.push(...custodyViolations(profileDir, fs));
   violations.push(...settingsHooksViolations(profileDir, fs));
   violations.push(...findExecutableArtifacts(profileDir, fs));
   return { ok: violations.length === 0, violations, accountFingerprint: fingerprint };
