@@ -36,6 +36,11 @@
  *   ENOENT 对可选 plugins 合法缺失；seam 扩 isDirectory()，非目录节点
  *   （常规文件/FIFO/socket）一律拒绝
  *
+ * Round-9 修正（L2 生产实证）：profile 内 provider 自建的内部软链（logs/latest
+ * 日志轮转）放行——custody 不变量是归属 containment 而非链接本身；出界/悬链/
+ * plugins 子树软链维持拒绝（砚砚 round-6 "合法 symlink 需 L1 证据 + 显式受控
+ * 语义"处方的落地，证据 = 生产 logs/latest -> runs/<ts> 实测）。
+ *
  * Round-8 修正（PR #24 round-7 review，点点 1×P1 + 2×P3）：
  * - traversal 起点自身过 custody：profile 根 symlink（兄弟 profile / 外置绿目录 /
  *   悬链）红即短路；ensure 对 qoder-profiles 根与 profile 根同样先判，悬链不再
@@ -157,7 +162,24 @@ function auditProfileTree(profileDir: string, fs: QoderProfileFs): string[] {
         continue;
       }
       if (st.isSymbolicLink()) {
-        violations.push(`symlink: ${p}`);
+        if (inPlugins) {
+          violations.push(`symlink: ${p}`);
+          continue;
+        }
+        // Round-9 受控语义（L2 生产实证 2026-09-15）：qodercn 首次运行会在 profile 内
+        // 建日志轮转软链（logs/latest -> runs/<ts>）——这是 provider 合法内部链接。
+        // custody 的不变量是"归属不逃出 profile"：解析后目标仍在 profile 内即放行；
+        // 出界与悬链（containment 无法证明）一律拒。plugins 子树保持一律拒（L1
+        // audit_auth 攻击面语义不变）。
+        try {
+          const targetReal = fs.realpathSync(p);
+          const profileReal = fs.realpathSync(profileDir);
+          if (targetReal !== profileReal && !targetReal.startsWith(profileReal + sep)) {
+            violations.push(`symlink escapes profile: ${p} -> ${targetReal}`);
+          }
+        } catch (err) {
+          violations.push(`unresolvable symlink: ${p}: ${String(err)}`);
+        }
         continue;
       }
       if (st.isFile()) {

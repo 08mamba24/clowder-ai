@@ -13,7 +13,17 @@
 
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -1215,4 +1225,84 @@ test('round8 P3-1: fingerprint symlink is reported as custody violation without 
   );
   rmSync(root, { recursive: true, force: true });
   rmSync(external, { recursive: true, force: true });
+});
+
+// ══ round-9（L2 生产实证：qodercn 在 profile 内建日志轮转软链 logs/latest -> runs/...）═══
+// 砚砚 round-6 的受控语义处方生效：内部软链（解析后仍在 profile 内）放行；
+// 出界 / 悬链（无法证明 containment）继续拒。红测复现生产行为。
+test('round9: provider log-rotation symlink INSIDE the profile must not fail the audit (L2 repro)', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r9a-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  assert.equal(first.audit.ok, true, 'first invocation seeds green profile');
+  // provider 首次运行后的真实产物形状（生产 20:32 实测）：
+  const logsDir = join(first.profileDir, 'logs');
+  mkdirSync(join(logsDir, 'runs', '2026-09-15T20-32-44-run1'), { recursive: true });
+  writeFileSync(join(logsDir, 'runs', '2026-09-15T20-32-44-run1', 'events.jsonl'), '{}');
+  symlinkSync('runs/2026-09-15T20-32-44-run1', join(logsDir, 'latest'), 'dir');
+  // 第二次 invocation 前的洁净审计（生产 bug：symlink 误杀 → 每次调用被拒）
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, true, `internal rotation symlink must pass: ${JSON.stringify(a.violations)}`);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round9: internal directory symlink inside the profile is allowed', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r9b-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  mkdirSync(join(first.profileDir, 'data-real'), { recursive: true });
+  symlinkSync('data-real', join(first.profileDir, 'data-link'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, true, JSON.stringify(a.violations));
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round9: dangling internal symlink is still a violation (containment unprovable)', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r9c-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  symlinkSync('no-such-target', join(first.profileDir, 'latest'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false);
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('round9: symlink escaping the profile is still rejected (round-7 boundary unchanged)', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r9d-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  const external = mkdtempSync(join(tmpdir(), 'qoder-r9d-ext-'));
+  symlinkSync(external, join(first.profileDir, 'escape-link'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false);
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
+  rmSync(external, { recursive: true, force: true });
+});
+
+test('round9: plugins-subtree symlinks remain violations (L1 audit_auth attack surface)', async () => {
+  const { base } = await realFsWrappers();
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r9e-'));
+  const authA = makeAuth(root, 'token-A');
+  const first = ensureQoderRuntimeProfile({ dataRoot: root, catId: 'c1', authSourceDir: authA, fs: base });
+  mkdirSync(join(first.profileDir, 'plugins', 'real-dir'), { recursive: true });
+  symlinkSync('real-dir', join(first.profileDir, 'plugins', 'link'), 'dir');
+  const a = auditQoderProfile(first.profileDir, base);
+  assert.equal(a.ok, false, 'plugins symlinks stay red regardless of containment');
+  assert.ok(
+    a.violations.some((v) => /symlink/.test(v)),
+    JSON.stringify(a.violations),
+  );
+  rmSync(root, { recursive: true, force: true });
 });
