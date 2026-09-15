@@ -38,7 +38,7 @@ import { getCatModel } from './config/cat-models.js';
 import { resolveCodexCarrierTruth } from './config/codex-cli.js';
 import { configEventBus } from './config/config-event-bus.js';
 import { resolveFrontendBaseUrl, resolveFrontendCorsOrigins } from './config/frontend-origin.js';
-import { resolveQoderAuthSourceDir } from './config/qoder-auth-source.js';
+import { qoderDurableConfigRoot, resolveQoderAuthSourceDir } from './config/qoder-auth-source.js';
 import { resolveRuntimeDeploymentRevision } from './config/runtime-deployment-revision.js';
 import { initRuntimeOverrides } from './config/session-strategy-overrides.js';
 import { assertStorageReady } from './config/storage-guard.js';
@@ -1985,10 +1985,21 @@ async function main(): Promise<void> {
               );
               continue;
             }
+            // P1-2（round-3）：profiles 与 auth 同拓扑——runtime-worktree 模式下
+            // 落持久 workspace，不随可弃置 checkout 重建丢 OAuth seed/sessions
+            let qoderDataRoot: string;
+            try {
+              qoderDataRoot = join(qoderDurableConfigRoot(projectRoot), '.cat-cafe');
+            } catch (topoErr) {
+              app.log.warn(
+                `[qoder-factory] cat "${catId}" durable root unresolvable: ${String(topoErr)}. Cat not registered.`,
+              );
+              continue;
+            }
             const qoderService = createQoderAgentService({
               catId,
               config,
-              dataRoot: join(projectRoot, '.cat-cafe'),
+              dataRoot: qoderDataRoot,
               authSourceDir: qoderAuth.authSourceDir,
               log: { warn: (msg) => app.log.warn(msg) },
             });

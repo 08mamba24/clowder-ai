@@ -337,6 +337,11 @@ export function filterAccounts(client: ClientId, profiles: ProfileItem[]): Profi
     );
     return [...builtinProfiles, ...kimiApiProfiles.filter((profile) => !builtinProfiles.includes(profile))];
   }
+  if (effective === 'qoder') {
+    // F317 round-3 P2：生产 resolver 拒绝一切 qoder api_key 账户（config-dir
+    // OAuth-only）——UI 不得提供会被注册链静默拒绝的绑定（否则成员悄悄不可路由）
+    return builtinProfiles;
+  }
   const apiKeyProfiles = profiles.filter((profile) => profile.authType === 'api_key');
   return [...builtinProfiles, ...apiKeyProfiles.filter((profile) => !builtinProfiles.includes(profile))];
 }

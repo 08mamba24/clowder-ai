@@ -91,6 +91,7 @@ export const CONTEXT_PROJECTION_ENUMS = Object.freeze({
     'cdp_bridge',
     'stream_json',
     'run_json',
+    'qodercn-cli',
     'acp',
     'direct_api',
     'remote',

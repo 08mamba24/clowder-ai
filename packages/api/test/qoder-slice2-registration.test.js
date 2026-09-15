@@ -10,7 +10,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -170,11 +170,12 @@ function writeQoderCatalog(root, accounts) {
 test('slice2 P1-2: typed auth-source resolver — oauth qoder green; traversal/api_key/wrong-family/stale/missing all red', () => {
   const root = mkdtempSync(join(tmpdir(), 'qoder-s2e-'));
   const cc = writeQoderCatalog(root, {
-    qoder: { authType: 'oauth' },
-    'qoder-team': { authType: 'oauth' },
-    'qoder-key': { authType: 'api_key', baseUrl: 'https://api.deepseek.com' },
+    qoder: { authType: 'oauth', clientId: 'qoder' },
+    'qoder-team': { authType: 'oauth', clientId: 'qoder' },
+    'qoder-key': { authType: 'api_key', clientId: 'qoder', baseUrl: 'https://api.deepseek.com' },
     'openai-team': { authType: 'oauth', clientId: 'openai' },
-    'qoder-nodir': { authType: 'oauth' },
+    'qoder-nodir': { authType: 'oauth', clientId: 'qoder' },
+    rogue: { authType: 'oauth' },
   });
   for (const ref of ['qoder', 'qoder-team']) {
     mkdirSync(join(cc, 'qoder-auth', ref, '.auth'), { recursive: true });
@@ -197,11 +198,15 @@ test('slice2 P1-2: typed auth-source resolver — oauth qoder green; traversal/a
   // 异家族账户
   const w = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: 'openai-team' });
   assert.equal(w.ok, false);
-  assert.match(w.reason, /belongs to provider|not found/);
+  assert.match(w.reason, /must declare clientId "qoder"/);
+  // round-3 P1-1(2)：familyless OAuth 一律拒（不再是 client&& 才检查）
+  const fam = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: 'rogue' });
+  assert.equal(fam.ok, false);
+  assert.match(fam.reason, /must declare clientId "qoder"/);
   // stale ref（无账户记录）
   const st = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: 'ghost' });
   assert.equal(st.ok, false);
-  assert.match(st.reason, /not found/);
+  assert.match(st.reason, /no stored account record/);
   // oauth 账户存在但 auth source 目录未落位（operator onboarding 缺失）
   const nd = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: 'qoder-nodir' });
   assert.equal(nd.ok, false);
@@ -211,7 +216,7 @@ test('slice2 P1-2: typed auth-source resolver — oauth qoder green; traversal/a
 
 test('slice2 P1-2: auth source symlinked out of the durable root is rejected (realpath containment)', () => {
   const root = mkdtempSync(join(tmpdir(), 'qoder-s2f-'));
-  const cc = writeQoderCatalog(root, { qoder: { authType: 'oauth' } });
+  const cc = writeQoderCatalog(root, { qoder: { authType: 'oauth', clientId: 'qoder' } });
   const external = mkdtempSync(join(tmpdir(), 'qoder-s2f-ext-'));
   mkdirSync(join(external, '.auth'), { recursive: true });
   writeFileSync(join(external, '.auth', 'user'), 'external');
@@ -222,4 +227,95 @@ test('slice2 P1-2: auth source symlinked out of the durable root is rejected (re
   assert.match(r.reason, /escapes the durable auth root/);
   rmSync(root, { recursive: true, force: true });
   rmSync(external, { recursive: true, force: true });
+});
+
+// ── round-3（砚砚 2×P1 + 2×P2）════════════════════════════════════════════
+// P1-1(1)：无存储账户记录时不得走合成 builtin 回退
+test('slice2 r3: synthetic builtin fallback rejected — auth dir alone is not admission', () => {
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r3a-'));
+  const cc = writeQoderCatalog(root, {}); // 无任何账户记录
+  mkdirSync(join(cc, 'qoder-auth', 'qoder', '.auth'), { recursive: true });
+  writeFileSync(join(cc, 'qoder-auth', 'qoder', '.auth', 'user'), 'tok');
+  const r = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: 'qoder' });
+  assert.equal(r.ok, false, 'no stored record → reject even with auth dir present');
+  assert.match(r.reason, /no stored account record/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+// P1-1(3)：authRoot 自身是 symlink → 拒（child containment 锚不住已出逃的根）
+test('slice2 r3: qoder-auth root itself symlinked out is rejected', () => {
+  const root = mkdtempSync(join(tmpdir(), 'qoder-r3b-'));
+  const cc = writeQoderCatalog(root, { qoder: { authType: 'oauth', clientId: 'qoder' } });
+  const external = mkdtempSync(join(tmpdir(), 'qoder-r3b-ext-'));
+  mkdirSync(join(external, 'qoder', '.auth'), { recursive: true });
+  writeFileSync(join(external, 'qoder', '.auth', 'user'), 'external');
+  mkdirSync(join(cc), { recursive: true });
+  symlinkSync(external, join(cc, 'qoder-auth'), 'dir');
+  const r = resolveQoderAuthSourceDir({ projectRoot: root, accountRef: 'qoder' });
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /auth root is a symlink/);
+  rmSync(root, { recursive: true, force: true });
+  rmSync(external, { recursive: true, force: true });
+});
+
+// P1-2：分离 runtime/workspace 拓扑——账户与 auth 必须落持久 workspace 而非可弃置 checkout
+test('slice2 r3: split runtime/workspace topology — durable root follows the account store', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'qoder-r3c-ws-'));
+  const runtime = mkdtempSync(join(tmpdir(), 'qoder-r3c-rt-'));
+  const saved = {};
+  for (const k of ['CAT_CAFE_RUNTIME_ROOT', 'CAT_CAFE_WORKSPACE_ROOT']) {
+    saved[k] = process.env[k];
+    process.env[k] = k === 'CAT_CAFE_RUNTIME_ROOT' ? runtime : workspace;
+  }
+  try {
+    // 账户 + auth 落持久 workspace
+    const wsCC = writeQoderCatalog(workspace, { 'qoder-team': { authType: 'oauth', clientId: 'qoder' } });
+    mkdirSync(join(wsCC, 'qoder-auth', 'qoder-team', '.auth'), { recursive: true });
+    writeFileSync(join(wsCC, 'qoder-auth', 'qoder-team', '.auth', 'user'), 'tok');
+    // runtime checkout 下有一个"旧位置"目录（存在也不得被采用）
+    mkdirSync(join(runtime, '.cat-cafe', 'qoder-auth', 'qoder-team', '.auth'), { recursive: true });
+    const projectRoot = join(runtime, 'packages', 'api'); // runtime 内项目路径
+    mkdirSync(projectRoot, { recursive: true });
+    const r = resolveQoderAuthSourceDir({ projectRoot, accountRef: 'qoder-team' });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.ok(
+      r.authSourceDir.startsWith(join(realpathSync(workspace), '.cat-cafe', 'qoder-auth')),
+      `auth source must live in the persistent workspace, got ${r.authSourceDir}`,
+    );
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(runtime, { recursive: true, force: true });
+  }
+});
+
+// P2-1：投影级——capability 的 provider/carrier 都必须是枚举认可值（不再 unrecognized）
+test('slice2 r3: qoder capability projects to recognized provider AND carrier', async () => {
+  const contract = await import(
+    join(here, '..', 'dist', 'domains', 'cats', 'services', 'session', 'context-projection-telemetry-contract.js')
+  );
+  const providers = contract.CONTEXT_PROJECTION_ENUMS.providers;
+  const carriers = contract.CONTEXT_PROJECTION_ENUMS.carriers;
+  assert.ok(providers.includes('qoder'), 'providers enum includes qoder');
+  assert.ok(carriers.includes('qodercn-cli'), 'carriers enum includes qodercn-cli');
+  const svc = createQoderAgentService({
+    catId: 'cat_qoder_s2',
+    config: { defaultModel: 'Auto', clientId: 'qoder' },
+    dataRoot: join(mkdtempSync(join(tmpdir(), 'qoder-r3d-')), 'data'),
+    authSourceDir: (() => {
+      const a = mkdtempSync(join(tmpdir(), 'qoder-r3d-auth-'));
+      mkdirSync(join(a, '.auth'), { recursive: true });
+      writeFileSync(join(a, '.auth', 'user'), 't');
+      return a;
+    })(),
+    log: { warn: () => {} },
+    modelResolver: () => 'Auto',
+  });
+  assert.ok(svc);
+  const cap = svc.contextCapability();
+  assert.equal(providers.includes(cap.provider), true, 'capability provider is bounded-recognized');
+  assert.equal(carriers.includes(cap.carrier), true, 'capability carrier is bounded-recognized');
 });
