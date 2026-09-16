@@ -70,7 +70,7 @@ created: 2026-09-16
 | # | 任务 | 验收 |
 |---|---|---|
 | H1 | operator 选定 authMethods 四选一完成登录 | 登录态可被 headless spawn 复用 · **状态：绿——凭证在 Application Support（认 HOME），HOME 注入复用成功；`CODEBUDDY_CONFIG_DIR` 非凭证面（见上）** |
-| H2 | 认证态双通道重采：`session/new`+`session/prompt` 全帧、`session/update` 形状、tool_call 形状、stopReason 词表、cancel 夹具 | 脱敏 golden transcript 入 `packages/api/test/fixtures/codebuddy/` + manifest |
+| H2 | 认证态双通道重采：`session/new`+`session/prompt` 全帧、`session/update` 形状、tool_call 形状、stopReason 词表、cancel 夹具；**+ MCP 注入面探针（2026-09-16 补，dsh-v41-flash 指出）：`session/new` 带非空 `mcpServers` 观察收/拒收/忽略——Phase 0 全帧零提及 `mcpServers`，此项完全未测** | 脱敏 golden transcript 入 `packages/api/test/fixtures/codebuddy/` + manifest；**mcpServers 行为结论落字：收 → F161 纯配置成立；拒收 → `omitSessionMcpServers`（弃家里 MCP 面）或 bootstrap+overlay 量级（DSH 前例：官方 demo 拒非空 → `dsh-acp-bootstrap.ts` 287 行）** |
 | H3 | 计费语义：token/credit/订阅？一次真实调用的账面 | 结论 + 风险标注（Qoder 是 credits 制，此项**不预设**） |
 
 ### H3 计费证据汇总（2026-09-16，谱谱实测 + 瞳瞳本地读图）
