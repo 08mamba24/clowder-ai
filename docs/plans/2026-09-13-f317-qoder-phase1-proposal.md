@@ -91,6 +91,7 @@ L1 实证：qodercn 把 session 存在 config-dir 的 `projects/<cwd-slug>/`，r
 | 日期 | 事件 |
 |---|---|
 | 2026-09-15 | Slice 1 merged（PR #24）：非路由的窄 `QoderAgentService`、runtime profile lifecycle 与测试落入 main；生产注册点仍为 0，Slice 2 的构造期 `realpath(dataRoot)` containment 断言仍是硬验收条件。 |
+| 2026-09-16 | operator 拍板（thread_msqw8n1bqpvmob6f#0001789549509937-000115-920c1684）：放行 L2 受控工具接入；**基础工具一次性全开**，覆盖谱谱建议及 r3/I-9 的逐个 allowlist 渐进策略；I-8 三门（①spawn 前干净专用 profile ②`cat-cafe-memory` 只读挂载断言 ③cancel 夹具重采）仍为解锁硬前置——拍板的是放开广度，不含跳过安全门。"基础工具"清单由 slice 定义并在 PR 里显式列出。 |
 
 ## 边界
 
