@@ -94,15 +94,15 @@
     {
       "path": "packages/api/src/domains/cats/services/session",
       "owner": "codex-sol",
-      "reason": "2026-08-22 full-sync census: 30 files. Session lifecycle now mixes transcript IO, compaction/presentation projection, trajectory resolution, and handoff management; F296/F299 own a boundary-led split.",
-      "expiresAt": "2026-09-15",
+      "reason": "2026-08-22 full-sync census: 30 files. Session lifecycle now mixes transcript IO, compaction/presentation projection, trajectory resolution, and handoff management; F296/F299 own a boundary-led split. 2026-09-16 renewal: expiry turned Lint/dir-size red on every branch (blocked PR #27); re-armed to the 2026-09-30 batch deadline.",
+      "expiresAt": "2026-09-30",
       "ticket": "F296/F299"
     },
     {
       "path": "packages/api/src/domains/cats/services/stores/redis-keys",
       "owner": "codex-sol",
-      "reason": "2026-08-22 full-sync census: 25 files. Root Redis key families need session/presentation/registry grouping while preserving existing community and proposal subdomains; F296/F299 own the split.",
-      "expiresAt": "2026-09-15",
+      "reason": "2026-08-22 full-sync census: 25 files. Root Redis key families need session/presentation/registry grouping while preserving existing community and proposal subdomains; F296/F299 own the split. 2026-09-16 renewal: expiry turned Lint/dir-size red on every branch (blocked PR #27); re-armed to the 2026-09-30 batch deadline.",
+      "expiresAt": "2026-09-30",
       "ticket": "F296/F299"
     },
     {
