@@ -114,6 +114,9 @@ test('L2: controlled argv exposes the complete basic set and preauthorizes bound
     new Set([
       'Read(//tmp/workspace-l2/**)',
       'Edit(//tmp/workspace-l2/**)',
+      'Write(//tmp/workspace-l2/**)',
+      'Glob(//tmp/workspace-l2/**)',
+      'Grep(//tmp/workspace-l2/**)',
       'Bash',
       ...QODER_READONLY_MEMORY_TOOLS.map((name) => `mcp__${QODER_MEMORY_MCP_SERVER}__${name}`),
     ]),
@@ -752,6 +755,54 @@ test(
 );
 
 test(
+  'L2: macOS controlled PATH resolves guarded gh and a runnable pnpm before provider spawn',
+  { skip: process.platform !== 'darwin' },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), 'qoder-l2-path-boundary-'));
+    const workspace = join(root, 'workspace');
+    const controlledRuntime = makeControlledRuntime(root);
+    mkdirSync(workspace, { recursive: true });
+    let attempts;
+    try {
+      const svc = makeSvc({
+        toolAccess: 'controlled',
+        memoryMcpServerPath: controlledRuntime.memoryPath,
+        runtimeRoot: controlledRuntime.runtimeRoot,
+        shellSandboxWrapperPath: controlledRuntime.wrapperPath,
+        sandboxBinary: '/usr/bin/sandbox-exec',
+        spawnFn: (_cmd, _args, options) => {
+          const run = (command) =>
+            spawnSync(process.execPath, [controlledRuntime.wrapperPath, command], {
+              cwd: workspace,
+              env: options.env,
+              encoding: 'utf8',
+            });
+          attempts = {
+            ghPath: run('command -v gh'),
+            ghVersion: run('gh --version'),
+            pnpmPath: run('command -v pnpm'),
+            pnpmVersion: run('pnpm --version'),
+          };
+          return fakeChild(controlledFixture());
+        },
+      });
+      const out = await runInvoke(svc, 'tool PATH canary', { workingDirectory: workspace });
+      assert.ok(
+        out.some((message) => message.type === 'done'),
+        JSON.stringify(out),
+      );
+      assert.equal(attempts.ghPath.status, 0, attempts.ghPath.stderr);
+      assert.match(attempts.ghPath.stdout, /scripts\/guarded-bin\/gh\s*$/);
+      assert.equal(attempts.ghVersion.status, 0, attempts.ghVersion.stderr);
+      assert.equal(attempts.pnpmPath.status, 0, attempts.pnpmPath.stderr);
+      assert.equal(attempts.pnpmVersion.status, 0, attempts.pnpmVersion.stderr);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   'L2: macOS shell-prefix sandbox denies shared git hooks/config and attacker-planted gitdir pointers',
   { skip: process.platform !== 'darwin' },
   async () => {
@@ -779,7 +830,10 @@ test(
 
       const hooksCanary = join(mainRepo, '.git', 'hooks', 'qoder-canary');
       const gitConfig = join(mainRepo, '.git', 'config');
+      const mainRef = join(mainRepo, '.git', 'refs', 'heads', 'main');
+      const forgedRef = join(mainRepo, '.git', 'refs', 'heads', 'qoder-forged');
       const originalConfig = readFileSync(gitConfig, 'utf8');
+      const originalMainRef = readFileSync(mainRef, 'utf8');
       const attempts = [];
       for (const workspace of [worktree, plantedWorkspace]) {
         const svc = makeSvc({
@@ -809,6 +863,9 @@ test(
               gitCommitStderr: gitCommit?.stderr,
               gitdir: run(`/usr/bin/printf '${join(plantedWorkspace, '.git')}\\n' > '${join(gitDir, 'gitdir')}'`),
               hooks: run(`/usr/bin/touch '${hooksCanary}'`),
+              overwriteMainRef: run(`/usr/bin/printf '0000000000000000000000000000000000000000\\n' > '${mainRef}'`),
+              removeMainRef: run(`/bin/rm -f '${mainRef}'`),
+              writeForgedRef: run(`/usr/bin/printf '${originalMainRef.trim()}\\n' > '${forgedRef}'`),
             });
             return fakeChild(controlledFixture());
           },
@@ -825,13 +882,85 @@ test(
       assert.equal(attempts[0].commondir, 1);
       assert.equal(attempts[0].gitdir, 1);
       assert.equal(attempts[0].hooks, 1);
+      assert.equal(attempts[0].overwriteMainRef, 1);
+      assert.equal(attempts[0].removeMainRef, 1);
+      assert.equal(attempts[0].writeForgedRef, 1);
       assert.equal(attempts[1].gitCommit, undefined);
       assert.equal(attempts[1].config, 1);
       assert.equal(attempts[1].commondir, 1);
       assert.equal(attempts[1].gitdir, 1);
       assert.equal(attempts[1].hooks, 1);
+      assert.equal(attempts[1].overwriteMainRef, 1);
+      assert.equal(attempts[1].removeMainRef, 1);
+      assert.equal(attempts[1].writeForgedRef, 1);
       assert.equal(existsSync(hooksCanary), false);
+      assert.equal(existsSync(forgedRef), false);
+      assert.equal(readFileSync(mainRef, 'utf8'), originalMainRef);
       assert.equal(readFileSync(gitConfig, 'utf8'), originalConfig);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'L2: macOS direct-checkout workspace excludes .git except current branch commit metadata',
+  { skip: process.platform !== 'darwin' },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), 'qoder-l2-direct-git-'));
+    const repo = join(root, 'repo');
+    const controlledRuntime = makeControlledRuntime(root);
+    try {
+      assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', repo]).status, 0);
+      writeFileSync(join(repo, 'README.md'), 'initial\n');
+      assert.equal(spawnSync('git', ['-C', repo, 'add', '-A']).status, 0);
+      assert.equal(
+        spawnSync('git', ['-C', repo, '-c', 'user.email=a@b.c', '-c', 'user.name=t', 'commit', '-qm', 'init']).status,
+        0,
+      );
+      assert.equal(spawnSync('git', ['-C', repo, 'branch', 'sibling']).status, 0);
+      writeFileSync(join(repo, 'CHANGE.md'), 'sandboxed direct commit\n');
+      const mainRef = join(repo, '.git', 'refs', 'heads', 'main');
+      const siblingRef = join(repo, '.git', 'refs', 'heads', 'sibling');
+      const forgedRef = join(repo, '.git', 'refs', 'heads', 'forged');
+      const originalSiblingRef = readFileSync(siblingRef, 'utf8');
+      let attempts;
+      const svc = makeSvc({
+        toolAccess: 'controlled',
+        memoryMcpServerPath: controlledRuntime.memoryPath,
+        runtimeRoot: controlledRuntime.runtimeRoot,
+        shellSandboxWrapperPath: controlledRuntime.wrapperPath,
+        sandboxBinary: '/usr/bin/sandbox-exec',
+        spawnFn: (_cmd, _args, options) => {
+          const run = (command) =>
+            spawnSync(process.execPath, [controlledRuntime.wrapperPath, command], {
+              cwd: repo,
+              env: options.env,
+              encoding: 'utf8',
+            });
+          const commit = run(
+            `git add CHANGE.md && git -c user.email=a@b.c -c user.name=t commit -qm sandbox-direct-canary`,
+          );
+          attempts = {
+            commit,
+            currentRef: run(`test -s '${mainRef}'`),
+            forgedRef: run(`/usr/bin/printf '${originalSiblingRef.trim()}\\n' > '${forgedRef}'`),
+            siblingRef: run(`/usr/bin/printf '0000000000000000000000000000000000000000\\n' > '${siblingRef}'`),
+          };
+          return fakeChild(controlledFixture());
+        },
+      });
+      const out = await runInvoke(svc, 'direct git boundary canary', { workingDirectory: repo });
+      assert.ok(
+        out.some((message) => message.type === 'done'),
+        JSON.stringify(out),
+      );
+      assert.equal(attempts.commit.status, 0, attempts.commit.stderr);
+      assert.equal(attempts.currentRef.status, 0, attempts.currentRef.stderr);
+      assert.equal(attempts.forgedRef.status, 1, attempts.forgedRef.stderr);
+      assert.equal(attempts.siblingRef.status, 1, attempts.siblingRef.stderr);
+      assert.equal(existsSync(forgedRef), false);
+      assert.equal(readFileSync(siblingRef, 'utf8'), originalSiblingRef);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -847,10 +976,16 @@ test(
     const controlledRuntime = makeControlledRuntime(root);
     const runtimeSecret = join(controlledRuntime.runtimeRoot, '.env');
     const runtimeCredential = join(controlledRuntime.runtimeRoot, '.cat-cafe', 'credentials.json');
+    const runtimeNpmrc = join(controlledRuntime.runtimeRoot, '.npmrc');
+    const runtimeRootCredential = join(controlledRuntime.runtimeRoot, 'credentials.json');
+    const runtimeSqlite = join(controlledRuntime.runtimeRoot, 'event-memory.sqlite');
     mkdirSync(workspace, { recursive: true });
     mkdirSync(dirname(runtimeCredential), { recursive: true });
     writeFileSync(runtimeSecret, 'DEPLOY_TOKEN=nohome-canary');
     writeFileSync(runtimeCredential, 'credential-canary');
+    writeFileSync(runtimeNpmrc, '_authToken=npm-canary');
+    writeFileSync(runtimeRootCredential, 'root-credential-canary');
+    writeFileSync(runtimeSqlite, 'sqlite-canary');
     const savedHome = process.env.HOME;
     const attempts = [];
     try {
@@ -870,7 +1005,13 @@ test(
                 env: options.env,
                 stdio: 'ignore',
               }).status;
-            attempts.push({ credential: run(runtimeCredential), env: run(runtimeSecret) });
+            attempts.push({
+              credential: run(runtimeCredential),
+              env: run(runtimeSecret),
+              npmrc: run(runtimeNpmrc),
+              rootCredential: run(runtimeRootCredential),
+              sqlite: run(runtimeSqlite),
+            });
             return fakeChild(controlledFixture());
           },
         });
@@ -881,8 +1022,8 @@ test(
         );
       }
       assert.deepEqual(attempts, [
-        { credential: 1, env: 1 },
-        { credential: 1, env: 1 },
+        { credential: 1, env: 1, npmrc: 1, rootCredential: 1, sqlite: 1 },
+        { credential: 1, env: 1, npmrc: 1, rootCredential: 1, sqlite: 1 },
       ]);
     } finally {
       if (savedHome === undefined) delete process.env.HOME;

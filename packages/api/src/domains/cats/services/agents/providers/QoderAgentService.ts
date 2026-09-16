@@ -36,11 +36,17 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
-import { basename, delimiter, dirname, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { CatId } from '@cat-cafe/shared';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 import { formatCliNotFoundError, resolveCliCommand } from '../../../../../utils/cli-resolve.js';
-import { isCliError, isCliTimeout, isLivenessWarning, spawnCli } from '../../../../../utils/cli-spawn.js';
+import {
+  isCliError,
+  isCliTimeout,
+  isLivenessWarning,
+  resolveVerdictGhGuardBin,
+  spawnCli,
+} from '../../../../../utils/cli-spawn.js';
 import type { SpawnFn } from '../../../../../utils/cli-types.js';
 import { isParseError } from '../../../../../utils/ndjson-parser.js';
 import { CliRawArchive } from '../../session/CliRawArchive.js';
@@ -183,6 +189,7 @@ export interface QoderAgentServiceConfig {
 export type QoderSandboxProbeInput = {
   readonly childEnv: Readonly<Record<string, string | null>>;
   readonly denyCanaryPath: string;
+  readonly guardedGhPath?: string;
   readonly scratchDir: string;
   readonly shellSandboxWrapperPath: string;
 };
@@ -218,6 +225,9 @@ export function buildQoderArgs(input: {
   const allowedTools = [
     `Read(${absoluteWorkspacePattern})`,
     `Edit(${absoluteWorkspacePattern})`,
+    `Write(${absoluteWorkspacePattern})`,
+    `Glob(${absoluteWorkspacePattern})`,
+    `Grep(${absoluteWorkspacePattern})`,
     'Bash',
     ...QODER_MEMORY_TOOL_NAMES,
   ];
@@ -333,6 +343,7 @@ type QoderInvocationLease = {
   readonly mcpConfigPath: string;
   readonly childEnv: Record<string, string | null>;
   readonly denyCanaryPath: string;
+  readonly guardedGhPath?: string;
   readonly scratchDir: string;
   dispose(): void;
 };
@@ -340,6 +351,8 @@ type QoderInvocationLease = {
 type GitMetadataAccess = {
   readonly readRoots: readonly string[];
   readonly writeRoots: readonly string[];
+  readonly writeLiterals: readonly string[];
+  readonly workspaceWriteExclusions: readonly string[];
   readonly deniedWriteRoots: readonly string[];
   readonly deniedWriteLiterals: readonly string[];
 };
@@ -347,6 +360,8 @@ type GitMetadataAccess = {
 const EMPTY_GIT_METADATA_ACCESS: GitMetadataAccess = Object.freeze({
   readRoots: Object.freeze([]),
   writeRoots: Object.freeze([]),
+  writeLiterals: Object.freeze([]),
+  workspaceWriteExclusions: Object.freeze([]),
   deniedWriteRoots: Object.freeze([]),
   deniedWriteLiterals: Object.freeze([]),
 });
@@ -367,6 +382,41 @@ function shellLiteral(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+function isPathWithin(parent: string, candidate: string): boolean {
+  const rel = relative(parent, candidate);
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+function gitRefWriteLiterals(gitDir: string, commonDir: string): string[] {
+  const line = readFileSync(join(gitDir, 'HEAD'), 'utf8').split(/\r?\n/, 1)[0]?.trim() ?? '';
+  const name = line.startsWith('ref:') ? line.slice('ref:'.length).trim() : '';
+  const headsRoot = join(commonDir, 'refs', 'heads');
+  const currentRef = name ? resolve(commonDir, name) : '';
+  const literals = [join(commonDir, 'refs', 'stash')];
+  if (currentRef && name.startsWith('refs/heads/') && isPathWithin(headsRoot, currentRef)) {
+    literals.unshift(currentRef);
+  }
+  return literals.flatMap((literal) => [literal, `${literal}.lock`]);
+}
+
+function worktreeLocalGitWriteLiterals(gitDir: string): string[] {
+  return [
+    'AUTO_MERGE',
+    'BISECT_LOG',
+    'CHERRY_PICK_HEAD',
+    'COMMIT_EDITMSG',
+    'FETCH_HEAD',
+    'HEAD',
+    'HEAD.lock',
+    'MERGE_MSG',
+    'MERGE_RR',
+    'ORIG_HEAD',
+    'REVERT_HEAD',
+    'index',
+    'index.lock',
+  ].map((name) => join(gitDir, name));
+}
+
 function protectedGitWrites(gitRoot: string): Pick<GitMetadataAccess, 'deniedWriteRoots' | 'deniedWriteLiterals'> {
   return {
     deniedWriteRoots: [join(gitRoot, 'hooks')],
@@ -380,7 +430,14 @@ function externalGitMetadataAccess(workingDirectory: string): GitMetadataAccess 
   try {
     if (lstatSync(dotGit).isDirectory()) {
       const gitRoot = canonicalPath(dotGit);
-      return { readRoots: [gitRoot], writeRoots: [], ...protectedGitWrites(gitRoot) };
+      return {
+        readRoots: [gitRoot],
+        writeRoots: [join(gitRoot, 'objects'), join(gitRoot, 'logs')],
+        writeLiterals: [...gitRefWriteLiterals(gitRoot, gitRoot), ...worktreeLocalGitWriteLiterals(gitRoot)],
+        // The workspace grant would otherwise recursively re-open .git.
+        workspaceWriteExclusions: [gitRoot],
+        ...protectedGitWrites(gitRoot),
+      };
     }
     const line = readFileSync(dotGit, 'utf8').split(/\r?\n/, 1)[0]?.trim() ?? '';
     if (!line.startsWith('gitdir:')) return EMPTY_GIT_METADATA_ACCESS;
@@ -402,8 +459,11 @@ function externalGitMetadataAccess(workingDirectory: string): GitMetadataAccess 
     return {
       readRoots: [gitDir, commonDir],
       // A normal commit needs the worktree-local index/HEAD plus shared objects,
-      // refs and reflogs. It never needs recursive write over commonDir.
-      writeRoots: [gitDir, join(commonDir, 'objects'), join(commonDir, 'refs'), join(commonDir, 'logs')],
+      // its own branch ref and reflogs. It never needs recursive write over
+      // every shared ref in commonDir.
+      writeRoots: [gitDir, join(commonDir, 'objects'), join(commonDir, 'logs')],
+      writeLiterals: gitRefWriteLiterals(gitDir, commonDir),
+      workspaceWriteExclusions: [],
       deniedWriteRoots: [...protectedWrites.deniedWriteRoots, join(gitDir, 'hooks')],
       deniedWriteLiterals: [
         ...protectedWrites.deniedWriteLiterals,
@@ -429,6 +489,7 @@ function buildSeatbeltPolicy(input: {
   deniedReadLiterals?: readonly string[];
   allowedWriteRoots: readonly string[];
   allowedWriteLiterals?: readonly string[];
+  writeExclusions?: readonly string[];
   deniedWriteRoots?: readonly string[];
   deniedWriteLiterals?: readonly string[];
 }): string {
@@ -444,6 +505,14 @@ function buildSeatbeltPolicy(input: {
     }
     return ancestors;
   });
+  const writeExclusions = unique(input.writeExclusions ?? []);
+  const writeFilters = unique(input.allowedWriteRoots).map((root) => {
+    const exclusions = writeExclusions.filter((candidate) => candidate !== root && isPathWithin(root, candidate));
+    if (exclusions.length === 0) return `(subpath ${seatbeltLiteral(root)})`;
+    return `(require-all (subpath ${seatbeltLiteral(root)}) ${exclusions
+      .map((candidate) => `(require-not (subpath ${seatbeltLiteral(candidate)}))`)
+      .join(' ')})`;
+  });
   return [
     '(version 1)',
     '(allow default)',
@@ -456,7 +525,7 @@ function buildSeatbeltPolicy(input: {
       (literal) => `(deny file-read* (literal ${seatbeltLiteral(literal)}))`,
     ),
     '(deny file-write*)',
-    ...filters(input.allowedWriteRoots).map((filter) => `(allow file-write* ${filter})`),
+    ...writeFilters.map((filter) => `(allow file-write* ${filter})`),
     ...unique(input.allowedWriteLiterals ?? []).map(
       (literal) => `(allow file-write* (literal ${seatbeltLiteral(literal)}))`,
     ),
@@ -468,21 +537,57 @@ function buildSeatbeltPolicy(input: {
   ].join('\n');
 }
 
-function controlledToolPath(): string | null {
+type ControlledToolPath = {
+  readonly path: string | null;
+  readonly allowedReadRoots: readonly string[];
+  readonly guardedGhPath?: string;
+};
+
+function controlledToolPath(operatorHome: string): ControlledToolPath {
   const inherited = process.env.PATH ?? null;
-  if (process.platform !== 'darwin') return inherited;
+  if (process.platform !== 'darwin') return { path: inherited, allowedReadRoots: [] };
   const result = spawnSync('/usr/bin/xcrun', ['--no-cache', '--find', 'git'], {
     encoding: 'utf8',
     timeout: 5_000,
   });
-  if (result.status !== 0) return inherited;
+  if (result.status !== 0) throw new Error('qoder controlled PATH cannot resolve the system git toolchain');
   const gitPath = result.stdout.trim();
-  if (!gitPath) return inherited;
+  if (!gitPath) throw new Error('qoder controlled PATH resolved an empty git toolchain path');
+  const explicitBins: string[] = [];
+  const allowedReadRoots: string[] = [];
+  let guardedGhPath: string | undefined;
   try {
-    const gitBin = dirname(realpathSync(gitPath));
-    return inherited ? `${gitBin}${delimiter}${inherited}` : gitBin;
-  } catch {
-    return inherited;
+    explicitBins.push(dirname(realpathSync(gitPath)), dirname(realpathSync(process.execPath)));
+    const guardedBin = resolveVerdictGhGuardBin();
+    if (!guardedBin) throw new Error('runtime-owned guarded gh is unavailable');
+    explicitBins.push(guardedBin);
+    allowedReadRoots.push(guardedBin);
+    guardedGhPath = join(guardedBin, 'gh');
+    const resolvedPnpm = resolveCliCommand('pnpm');
+    if (resolvedPnpm && isAbsolute(resolvedPnpm) && existsSync(resolvedPnpm)) {
+      const pnpmPath = resolve(resolvedPnpm);
+      const pnpmBin = dirname(pnpmPath);
+      explicitBins.push(pnpmBin);
+      allowedReadRoots.push(pnpmBin);
+      const packageRoot = resolve(pnpmBin, '..', 'node_modules', 'pnpm');
+      if (existsSync(packageRoot) && lstatSync(packageRoot).isDirectory()) allowedReadRoots.push(packageRoot);
+    }
+    const explicitCanonical = new Set(explicitBins.map(canonicalPath));
+    const inheritedBins = (inherited ?? '')
+      .split(delimiter)
+      .filter(Boolean)
+      .filter((entry) => {
+        const canonical = canonicalPath(entry);
+        return explicitCanonical.has(canonical) || !isPathWithin(operatorHome, canonical);
+      });
+    const path = [...new Set([...explicitBins, ...inheritedBins])].join(delimiter);
+    return {
+      path: path || null,
+      allowedReadRoots: [...new Set([...allowedReadRoots, dirname(realpathSync(process.execPath))])],
+      ...(guardedGhPath ? { guardedGhPath } : {}),
+    };
+  } catch (error) {
+    throw new Error(`qoder controlled PATH is unsafe: ${String(error)}`);
   }
 }
 
@@ -517,12 +622,13 @@ function buildControlledQoderEnv(input: {
   workspacePolicyPath: string;
   memoryPolicyPath: string;
   memoryShimPath: string;
+  toolPath: string | null;
 }): Record<string, string | null> {
   const overrides: Record<string, string | null> = {};
   for (const [key, value] of Object.entries(process.env)) {
     overrides[key] = CONTROLLED_ENV_PASSTHROUGH.has(key) || key.startsWith('LC_') ? (value ?? null) : null;
   }
-  overrides.PATH = controlledToolPath();
+  overrides.PATH = input.toolPath;
   overrides.HOME = join(input.scratchDir, 'home');
   overrides.TMPDIR = input.scratchDir;
   overrides.QODERCN_CONFIG_DIR = input.profileDir;
@@ -544,121 +650,137 @@ function createQoderInvocationLease(input: {
   callbackEnv?: Readonly<Record<string, string>>;
 }): QoderInvocationLease {
   const dir = mkdtempSync(join(tmpdir(), 'cat-cafe-qoder-l2-'));
-  const scratchDir = join(dir, 'scratch');
-  const homeDir = join(scratchDir, 'home');
-  const mcpDataDir = join(scratchDir, 'mcp-data');
-  mkdirSync(homeDir, { recursive: true, mode: 0o700 });
-  mkdirSync(mcpDataDir, { recursive: true, mode: 0o700 });
+  try {
+    const scratchDir = join(dir, 'scratch');
+    const homeDir = join(scratchDir, 'home');
+    const mcpDataDir = join(scratchDir, 'mcp-data');
+    mkdirSync(homeDir, { recursive: true, mode: 0o700 });
+    mkdirSync(mcpDataDir, { recursive: true, mode: 0o700 });
 
-  const workspace = canonicalPath(input.workingDirectory);
-  const runtimeRoot = canonicalPath(input.runtimeRoot);
-  const memoryDistRoot = canonicalPath(dirname(input.memoryMcpServerPath));
-  const scratch = canonicalPath(scratchDir);
-  // Unlike os.homedir(), userInfo().homedir does not trust the mutable HOME
-  // environment variable. The sandbox must fence the OS account home even if
-  // a launcher omits or redirects HOME.
-  const operatorHome = canonicalPath(userInfo().homedir);
-  if (!operatorHome || operatorHome === dirname(operatorHome)) {
-    throw new Error('operator home is unresolvable or unsafe');
-  }
-  const systemTmp = canonicalPath('/tmp');
-  const deniedReadRoots = [operatorHome, systemTmp, canonicalPath(tmpdir())];
-  const protectedRuntimeReadRoots = [join(runtimeRoot, '.cat-cafe'), join(runtimeRoot, 'mcp-creds')];
-  const protectedRuntimeReadLiterals = [join(runtimeRoot, '.env'), join(runtimeRoot, '.env.local')];
-  const gitAccess = externalGitMetadataAccess(workspace);
-  const workspacePolicyPath = join(dir, 'workspace.sb');
-  const memoryPolicyPath = join(dir, 'memory.sb');
-  const memoryShimPath = join(dir, 'memory-shim');
-  const denyCanaryPath = join(dir, 'deny-canary');
-  writeFileSync(denyCanaryPath, 'sandbox-deny-canary', { encoding: 'utf8', mode: 0o600 });
-  writeFileSync(
-    memoryShimPath,
-    `#!/bin/sh\nexec ${shellLiteral(process.execPath)} ${shellLiteral(input.memoryMcpServerPath)}\n`,
-    { encoding: 'utf8', mode: 0o700 },
-  );
-  writeFileSync(
-    workspacePolicyPath,
-    buildSeatbeltPolicy({
-      deniedReadRoots,
-      allowedReadRoots: [workspace, scratch, ...gitAccess.readRoots],
-      deniedReadRootsFinal: protectedRuntimeReadRoots,
-      deniedReadLiterals: protectedRuntimeReadLiterals,
-      allowedWriteRoots: [workspace, scratch, ...gitAccess.writeRoots],
-      allowedWriteLiterals: ['/dev/null'],
-      deniedWriteRoots: gitAccess.deniedWriteRoots,
-      deniedWriteLiterals: gitAccess.deniedWriteLiterals,
-    }),
-    { encoding: 'utf8', mode: 0o600 },
-  );
-  writeFileSync(
-    memoryPolicyPath,
-    buildSeatbeltPolicy({
-      deniedReadRoots,
-      // Never grant the whole runtime root: it contains deployment credentials.
-      // The readonly MCP needs only compiled code, dependencies and its immutable shim.
-      allowedReadRoots: [workspace, scratch, memoryDistRoot, join(runtimeRoot, 'node_modules')],
-      allowedReadLiterals: [
-        memoryShimPath,
-        input.memoryMcpServerPath,
-        process.execPath,
-        join(runtimeRoot, 'package.json'),
-        join(runtimeRoot, 'packages', 'mcp-server', 'package.json'),
-      ],
-      deniedReadRootsFinal: protectedRuntimeReadRoots,
-      deniedReadLiterals: protectedRuntimeReadLiterals,
-      allowedWriteRoots: [scratch],
-      allowedWriteLiterals: ['/dev/null'],
-    }),
-    { encoding: 'utf8', mode: 0o600 },
-  );
-
-  const mcpConfigPath = join(dir, 'mcp-config.json');
-  const env: Record<string, string> = {
-    ALLOWED_WORKSPACE_DIRS: workspace,
-    CAT_CAFE_DATA_DIR: mcpDataDir,
-    CAT_CAFE_READONLY: 'true',
-    // Incidental agent-key vars inherited by qodercn must never widen this mount.
-    CAT_CAFE_READONLY_AGENT_KEY_UNION: 'false',
-    HOME: homeDir,
-    TMPDIR: scratchDir,
-  };
-  for (const key of READONLY_MEMORY_IDENTITY_ENV_KEYS) {
-    const value = input.callbackEnv?.[key];
-    if (value) env[key] = value;
-  }
-  writeFileSync(
-    mcpConfigPath,
-    JSON.stringify({
-      mcpServers: {
-        [QODER_MEMORY_MCP_SERVER]: {
-          command: memoryShimPath,
-          args: [],
-          env,
-        },
-      },
-    }),
-    { encoding: 'utf8', mode: 0o600 },
-  );
-  let disposed = false;
-  return {
-    mcpConfigPath,
-    denyCanaryPath,
-    scratchDir,
-    childEnv: buildControlledQoderEnv({
-      profileDir: input.profileDir,
-      scratchDir,
-      shellSandboxWrapperPath: input.shellSandboxWrapperPath,
-      sandboxBinary: input.sandboxBinary,
-      workspacePolicyPath,
-      memoryPolicyPath,
+    const workspace = canonicalPath(input.workingDirectory);
+    const runtimeRoot = canonicalPath(input.runtimeRoot);
+    const memoryDistRoot = canonicalPath(dirname(input.memoryMcpServerPath));
+    const scratch = canonicalPath(scratchDir);
+    // Unlike os.homedir(), userInfo().homedir does not trust the mutable HOME
+    // environment variable. The sandbox must fence the OS account home even if
+    // a launcher omits or redirects HOME.
+    const operatorHome = canonicalPath(userInfo().homedir);
+    if (!operatorHome || operatorHome === dirname(operatorHome)) {
+      throw new Error('operator home is unresolvable or unsafe');
+    }
+    const systemTmp = canonicalPath('/tmp');
+    const deniedReadRoots = [operatorHome, systemTmp, canonicalPath(tmpdir())];
+    const protectedRuntimeReadRoots = [join(runtimeRoot, '.cat-cafe'), join(runtimeRoot, 'mcp-creds')];
+    const protectedRuntimeReadLiterals = [
+      join(runtimeRoot, '.env'),
+      join(runtimeRoot, '.env.local'),
+      join(runtimeRoot, '.npmrc'),
+      join(runtimeRoot, 'credentials.json'),
+      join(runtimeRoot, 'evidence.sqlite'),
+      join(runtimeRoot, 'event-memory.sqlite'),
+    ];
+    const gitAccess = externalGitMetadataAccess(workspace);
+    const toolPath = controlledToolPath(operatorHome);
+    const workspacePolicyPath = join(dir, 'workspace.sb');
+    const memoryPolicyPath = join(dir, 'memory.sb');
+    const memoryShimPath = join(dir, 'memory-shim');
+    const denyCanaryPath = join(dir, 'deny-canary');
+    writeFileSync(denyCanaryPath, 'sandbox-deny-canary', { encoding: 'utf8', mode: 0o600 });
+    writeFileSync(
       memoryShimPath,
-    }),
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
+      `#!/bin/sh\nexec ${shellLiteral(process.execPath)} ${shellLiteral(input.memoryMcpServerPath)}\n`,
+      { encoding: 'utf8', mode: 0o700 },
+    );
+    writeFileSync(
+      workspacePolicyPath,
+      buildSeatbeltPolicy({
+        deniedReadRoots,
+        allowedReadRoots: [workspace, scratch, ...gitAccess.readRoots, ...toolPath.allowedReadRoots],
+        deniedReadRootsFinal: protectedRuntimeReadRoots,
+        deniedReadLiterals: protectedRuntimeReadLiterals,
+        allowedWriteRoots: [workspace, scratch, ...gitAccess.writeRoots],
+        allowedWriteLiterals: ['/dev/null', ...gitAccess.writeLiterals],
+        writeExclusions: gitAccess.workspaceWriteExclusions,
+        deniedWriteRoots: gitAccess.deniedWriteRoots,
+        deniedWriteLiterals: gitAccess.deniedWriteLiterals,
+      }),
+      { encoding: 'utf8', mode: 0o600 },
+    );
+    writeFileSync(
+      memoryPolicyPath,
+      buildSeatbeltPolicy({
+        deniedReadRoots,
+        // Never grant the whole runtime root: it contains deployment credentials.
+        // The readonly MCP needs only compiled code, dependencies and its immutable shim.
+        allowedReadRoots: [workspace, scratch, memoryDistRoot, join(runtimeRoot, 'node_modules')],
+        allowedReadLiterals: [
+          memoryShimPath,
+          input.memoryMcpServerPath,
+          process.execPath,
+          join(runtimeRoot, 'package.json'),
+          join(runtimeRoot, 'packages', 'mcp-server', 'package.json'),
+        ],
+        deniedReadRootsFinal: protectedRuntimeReadRoots,
+        deniedReadLiterals: protectedRuntimeReadLiterals,
+        allowedWriteRoots: [scratch],
+        allowedWriteLiterals: ['/dev/null'],
+      }),
+      { encoding: 'utf8', mode: 0o600 },
+    );
+
+    const mcpConfigPath = join(dir, 'mcp-config.json');
+    const env: Record<string, string> = {
+      ALLOWED_WORKSPACE_DIRS: workspace,
+      CAT_CAFE_DATA_DIR: mcpDataDir,
+      CAT_CAFE_READONLY: 'true',
+      // Incidental agent-key vars inherited by qodercn must never widen this mount.
+      CAT_CAFE_READONLY_AGENT_KEY_UNION: 'false',
+      HOME: homeDir,
+      TMPDIR: scratchDir,
+    };
+    for (const key of READONLY_MEMORY_IDENTITY_ENV_KEYS) {
+      const value = input.callbackEnv?.[key];
+      if (value) env[key] = value;
+    }
+    writeFileSync(
+      mcpConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          [QODER_MEMORY_MCP_SERVER]: {
+            command: memoryShimPath,
+            args: [],
+            env,
+          },
+        },
+      }),
+      { encoding: 'utf8', mode: 0o600 },
+    );
+    let disposed = false;
+    return {
+      mcpConfigPath,
+      denyCanaryPath,
+      ...(toolPath.guardedGhPath ? { guardedGhPath: toolPath.guardedGhPath } : {}),
+      scratchDir,
+      childEnv: buildControlledQoderEnv({
+        profileDir: input.profileDir,
+        scratchDir,
+        shellSandboxWrapperPath: input.shellSandboxWrapperPath,
+        sandboxBinary: input.sandboxBinary,
+        workspacePolicyPath,
+        memoryPolicyPath,
+        memoryShimPath,
+        toolPath: toolPath.path,
+      }),
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 function effectiveChildEnv(overrides: Readonly<Record<string, string | null>>): NodeJS.ProcessEnv {
@@ -680,6 +802,14 @@ function runQoderSandboxProbe(input: QoderSandboxProbeInput): void {
   }
   const denied = run(`/bin/cat ${shellLiteral(input.denyCanaryPath)}`);
   if (denied.status === 0) throw new Error('qoder sandbox deny canary failed open');
+  if (input.guardedGhPath) {
+    const resolvedGh = run('command -v gh');
+    if (resolvedGh.status !== 0 || resolvedGh.stdout.trim() !== input.guardedGhPath) {
+      throw new Error('qoder sandbox guarded gh resolution canary failed');
+    }
+    const guardedGh = run('gh --version');
+    if (guardedGh.status !== 0) throw new Error('qoder sandbox guarded gh execution canary failed');
+  }
 }
 
 /** P1②：深冻 prepared request —— recorder 落档字节与后续出境字节不可分叉（Kimi 同款契约） */
@@ -810,6 +940,7 @@ export class QoderAgentService implements AgentService {
         (this.config.sandboxProbe ?? runQoderSandboxProbe)({
           childEnv: invocationLease.childEnv,
           denyCanaryPath: invocationLease.denyCanaryPath,
+          ...(invocationLease.guardedGhPath ? { guardedGhPath: invocationLease.guardedGhPath } : {}),
           scratchDir: invocationLease.scratchDir,
           shellSandboxWrapperPath: controlledRuntime.shellSandboxWrapperPath,
         });
