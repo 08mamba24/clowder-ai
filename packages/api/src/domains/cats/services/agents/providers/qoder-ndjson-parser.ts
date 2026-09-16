@@ -40,12 +40,22 @@ const QODER_MCP_STATUS_MAP: Record<string, string> = {
 const QODER_TOOLCALLS_SPAN_RE = /<tool_calls>[\s\S]*?<\/tool_calls>/g;
 
 /**
+ * round-12（operator 报告，live session a06547db 实证）：Qwen3.8-Max 还会把
+ * 单数 Qwen 原生函数调用方言 <tool_call>…</tool_call>（<function=…>/
+ * <parameter…> 子标记，实测含畸形 <parameter= 片段）当纯文本吐进 text 块。
+ * round-11 复数守护面对它 0 命中——运行中的 #27+P2 dist 红测 verbatim 透传。
+ * 剥离语义与 round-11 完全同族。属性变体（<tool_call name="x">）未见实证，不追。
+ */
+const QODER_TOOL_CALL_SPAN_RE = /<tool_call>[\s\S]*?<\/tool_call>/g;
+
+/**
  * round-11 P2（点点复核）：max-token 截断在协议中间时，CLI 发出的仍是合法
  * JSON 的 text 块——悬空开标签 / 孤尾闭标签剥不出成对跨度。残留协议标记
  * 一律 fail-closed 截断（残余之后的内容一并丢弃，截后为空则不 emit）。
- * 非 /g：只取首个残留位置。
+ * 非 /g：只取首个残留位置。round-12 并入单数方言：`s?` 同时覆盖
+ * <tool_call(s)> 与 </tool_call(s)> 四种残留形态。
  */
-const QODER_TOOLCALLS_RESIDUE_RE = /<tool_calls>|<\/tool_calls>/;
+const QODER_TOOL_PROTOCOL_RESIDUE_RE = /<\/?tool_calls?>/;
 
 export function mapQoderMcpStatus(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
@@ -160,10 +170,11 @@ export function transformQoderEvent(event: unknown, catId: CatId): AgentMessage 
         // round-11（operator 报告，live session 实证）：qodercn 把内部工具调用协议
         // <tool_calls>…</tool_calls> 作为 assistant text 块发出——协议不是话术，
         // 剥离后才转发；剥空（纯协议块）不 emit；无协议的普通文本逐字透传。
-        // round-11 P2：剥离成对跨度后仍残留协议标记（悬空开/孤尾闭）→
-        // fail-closed 截断，残余之后的内容一并丢弃。
-        const stripped = b.text.replace(QODER_TOOLCALLS_SPAN_RE, '');
-        const residueIdx = stripped.search(QODER_TOOLCALLS_RESIDUE_RE);
+        // round-11 P2 + round-12：剥离成对跨度（复数与单数方言，复数先行——
+        // 若单数块嵌在复数跨度内会被外层一次性剥掉）后仍残留协议标记
+        // （悬空开/孤尾闭，任一方言）→ fail-closed 截断，残余之后的内容一并丢弃。
+        const stripped = b.text.replace(QODER_TOOLCALLS_SPAN_RE, '').replace(QODER_TOOL_CALL_SPAN_RE, '');
+        const residueIdx = stripped.search(QODER_TOOL_PROTOCOL_RESIDUE_RE);
         let content: string;
         if (residueIdx >= 0) {
           content = stripped.slice(0, residueIdx).trim();
