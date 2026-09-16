@@ -58,6 +58,31 @@ const QODER_TOOL_CALL_SPAN_RE = /<tool_call>[\s\S]*?<\/tool_call>/g;
 const QODER_TOOL_PROTOCOL_RESIDUE_RE = /<\/?tool_calls?>/;
 
 /**
+ * round-13 P3-1：按「完整成对 ``` 围栏」分段剥离工具调用协议。围栏段视为
+ * 正当引用逐字保留；围栏外沿用 round-11/12 语义（成对跨度剥离 + 残留
+ * fail-closed）。残留命中时截断的不仅是该段，还包括其后所有段落——与
+ * round-11 P2 的消息级截断契约一致（残余之后的内容一并丢弃）。
+ */
+function stripQoderToolProtocol(text: string): string {
+  const segments = text.split(/(```[\s\S]*?```)/);
+  const kept: string[] = [];
+  for (const seg of segments) {
+    if (seg.startsWith('```') && seg.length >= 6) {
+      kept.push(seg);
+      continue;
+    }
+    const stripped = seg.replace(QODER_TOOLCALLS_SPAN_RE, '').replace(QODER_TOOL_CALL_SPAN_RE, '');
+    const residueIdx = stripped.search(QODER_TOOL_PROTOCOL_RESIDUE_RE);
+    if (residueIdx >= 0) {
+      kept.push(stripped.slice(0, residueIdx));
+      return kept.join('');
+    }
+    kept.push(stripped);
+  }
+  return kept.join('');
+}
+
+/**
  * Qoder can report a successful CLI turn while embedding an unexecuted tool request in an
  * assistant text block and/or the terminal result string. The Service uses this signal to reject
  * that false-success terminal; the parser still owns stripping provider-native protocol from
@@ -195,13 +220,16 @@ export function transformQoderEvent(event: unknown, catId: CatId): AgentMessage 
         // round-11 P2 + round-12：剥离成对跨度（复数与单数方言，复数先行——
         // 若单数块嵌在复数跨度内会被外层一次性剥掉）后仍残留协议标记
         // （悬空开/孤尾闭，任一方言）→ fail-closed 截断，残余之后的内容一并丢弃。
-        const stripped = b.text.replace(QODER_TOOLCALLS_SPAN_RE, '').replace(QODER_TOOL_CALL_SPAN_RE, '');
-        const residueIdx = stripped.search(QODER_TOOL_PROTOCOL_RESIDUE_RE);
+        // round-13 P3-1（点点复核）：完整成对 ``` 围栏段 = 正当引用（讨论/教学），
+        // 摘出不参与剥离与残留守护、逐字保留；未闭合围栏不豁免（截断语境下
+        // 引用意图不可信）。消息级截断语义不变：残留点之后的所有段落（含后续
+        // 围栏）一并丢弃。缩进/~~~ 围栏未见实证，不追。
+        const stripped = stripQoderToolProtocol(b.text);
         let content: string;
-        if (residueIdx >= 0) {
-          content = stripped.slice(0, residueIdx).trim();
+        if (stripped === b.text) {
+          content = b.text;
         } else {
-          content = stripped === b.text ? b.text : stripped.trim();
+          content = stripped.trim();
         }
         if (content.length > 0) {
           messages.push({ type: 'text', catId, content, timestamp: Date.now() });

@@ -342,3 +342,51 @@ test('round12 control: plural and singular spans in one block both strip, real t
   assert.match(texts[0].content, /后文$/);
   assert.ok(texts[0].content.includes('中间真文本'), 'real text between spans survives');
 });
+
+// ══ round-13（点点复审 P3-1：围栏内正当引用协议被吞——round-12 新引入的
+// 假阳性面）═══ 猫在正文里用 ``` 围栏引用协议原文（讨论/教学场景）曾被整段
+// 剥掉。收窄语义：完整成对 ``` 围栏段视为引用，原样保留、不参与剥离与
+// 残留守护；围栏外协议照旧剥离。未闭合围栏（截断）不豁免——余下内容仍按
+// 正文规则 fail-closed，保持 round-11 P2 语义。缩进/~~~ 围栏未见实证，不追。
+test('round13: protocol quoted inside a fenced code block survives verbatim', () => {
+  const text = `讨论一下这个方言：\n\n\`\`\`\n${TOOL_CALL_BLOCK}\n\`\`\`\n\n如上，别在正文里直接发。`;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1, 'quoted protocol is not a leak — message survives');
+  assert.equal(texts[0].content, text, 'fenced quote passes through byte-for-byte');
+});
+
+test('round13: protocol outside fences still strips when a fence is present', () => {
+  const text = `先看示例：\n\n\`\`\`bash\nwhich qodercn\n\`\`\`\n\n然后执行：\n\n${TOOL_CALL_BLOCK}`;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1);
+  assert.ok(!texts[0].content.includes('<tool'), 'protocol outside the fence still strips');
+  assert.ok(texts[0].content.includes('```bash'), 'fence itself survives');
+  assert.ok(texts[0].content.includes('which qodercn'), 'fenced content survives');
+  assert.match(texts[0].content, /然后执行：$/);
+});
+
+test('round13: residue after a fence still truncates fail-closed (message-level)', () => {
+  const dangling = TOOL_CALL_BLOCK.slice(0, TOOL_CALL_BLOCK.indexOf('</tool_call>'));
+  const text = `前文。\n\n\`\`\`bash\nwhich qodercn\n\`\`\`\n\n收尾一句。\n\n${dangling}\n截断后不应再出现的内容`;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1);
+  assert.ok(texts[0].content.includes('```bash'), 'fence before the residue survives');
+  assert.ok(!texts[0].content.includes('<tool'), 'dangling marker never leaks');
+  assert.ok(!texts[0].content.includes('截断后不应再出现的内容'), 'everything after the residue is dropped');
+});
+
+test('round13: unclosed fence is not exempt — residue rules still apply to its tail', () => {
+  const text = `开始引用：\n\n\`\`\`\n${TOOL_CALL_BLOCK}`;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1);
+  assert.ok(!texts[0].content.includes('<tool'), 'protocol inside an unclosed fence still strips (not exempt)');
+  assert.match(texts[0].content, /^开始引用：/, 'text before the unclosed fence survives');
+});
