@@ -87,6 +87,10 @@ created: 2026-09-16
 
 ## 出口条件
 
+- **operator 决策（2026-09-16 15:31 CST，三题已拍）**：
+  - **D1 = a 新猫成员**（占 roster 位；命名/头像/故事另走共创流程）；
+  - **D2 = 默认模型直接 hy4-preview-f，禁止静默换模**——不得配 `--fallback-model` 自动链，模型变更只经 operator 显式指令（实证注意：无 settings 的隔离环境默认回落 `hy3`，故 variant 必须显式 `--model hy4-preview-f`；已测请求 `requestModelId` 忠实透传）；
+  - **D3 = a `CODEBUDDY_AUTH_TOKEN` 环境变量路线**，且**已端到端实证**（15:3x CST）：仅注入 env token、沙箱 HOME、`CODEBUDDY_CREDENTIALS_IN_MEMORY=1`，最小调用 `subtype=success` 回复 `ok`，沙箱 Application Support 无凭证残留——隔离成立，凭证面最小。token 取自凭证文件 `auth.accessToken`（JWT，~1.5k 字符）；注意：该次实测在无 settings 环境跑在 `hy3`（默认回落），账面影响未单测，视为小于 1 积分级。**token 生命周期**：accessToken ~57 天 / refreshToken ~87 天（凭证文件 `expiresIn/refreshExpiresIn` 实测值），到期前需从凭证文件重取或 operator 重登录续期——Phase 1 落"到期提醒"而非自动刷新。
 - H1-H6 全绿 → 按 `2026-09-16-codebuddy-phase1-proposal.md` 走 F161 配置路径立项
 - 任一 P1 红（认证不可隔离 / ACP 行为与 hub 期望不达 / 提权防线破）→ 停止，落 lessons
 
