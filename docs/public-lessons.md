@@ -1972,3 +1972,18 @@ created: 2026-02-26
 - 原理：**把车造得更坚固不会让它自动开向正确目的地。** 方向靠 accepted-source 追溯，确定风险靠 guard，运行健康靠 observability，不确定效用才靠 eval；机制的数量不是质量，能否更早发现偏航且不增加人类协调税才是质量。
 
 - 关联：ADR-031 v3.5 candidate | LL-071（A2A scope 误读放大）| LL-072/083（review 无不动点与开放纠缠）| LL-095（机制工具箱不是清单）| LL-101（长门禁先收敛）| F100 Process Evolution | F303 Design Gate Integrity | F311 Capability Evolution Workspace
+
+### LL-103: "没装我认识的工具" ≠ "机器没有这个能力"——能力断言前先枚举框架级能力与家内已有方法
+
+- 状态：draft
+- 更新时间：2026-09-16
+
+- 坑：读铲屎官发的账单截图时，zcode 检查了 `tesseract`/`pytesseract`/`shortcuts` 三样都不在，就断言"本地无 OCR"并把读图外包给 dsh-vision；而 dsh-vision 当场用 macOS 自带 Vision 框架（`swift` + `VNRecognizeTextRequest`）零安装跑通全本地 OCR。operator 指出"既然用 OCR，你自己也能调用"。
+- 根因：把"我会查的工具清单"当成了"机器能力边界"，没有枚举 OS 系统框架层（Vision 等）与包管理外的能力；也没有先查家内是否有已验证的现成方法（dsh-vision 的 `/tmp/dsh_ocr/` 产物与脚本就在同一台机器上）。同轮还暴露姊妹问题：能力断言没区分工具面与模型链路面——Read 工具能呈现图片，但当前 glm-5.3 binding 在 provider 侧拒绝图片输入（harness 原话 "selected model does not support image input"），operator 记忆中"zcode 能读图"对应的是其它/历史 binding，两者都真、层次不同。
+- 触发条件：以"which/find 某几个常见工具名"作为能力存在性证明；binding/模型链路更换后沿用旧能力画像；外包任务前不检索家内已验证方法。
+- 修复：本轮由 dsh-vision 完成读图（其方法与"先 3-5× LANCZOS 放大再 OCR"教训已记录）；zcode 补做了链路复现（Read 图片 → 确认当前 binding 拒收）。
+- 防护：断言"本机没有 X 能力"前必须枚举三层并留痕：①系统自带框架（macOS Vision/AVFoundation、Windows WinRT 等）；②包管理可一步安装项；③家内已验证方法（其它猫的脚本/产物路径）。能力结论写明"查了什么、排除了什么"；模型能力类断言必须标注 binding 与验证时间，binding 变更即失效。
+- 来源锚点：thread_msqw8n1bqpvmob6f#0001789539067717-000030-4e2437ad（operator 纠正）| /tmp/dsh_ocr/（dsh-vision 方法产物）| docs/plans/2026-09-16-codebuddy-phase0-spike.md（H3 读图链路）
+- 原理：**能力边界是机器与家的事实，不是我工具清单的投影。** 查证的三层枚举（系统框架 / 可安装 / 家内已有）比"我记得的工具名"便宜得多，也才能避免把可自决的活误判成必须外包。
+
+- 关联：LL-101（先收敛再证明）| F311 Capability Evolution Workspace | 家规 Magic Words「我能猜出来」的同族变体：用已知清单替代查询
