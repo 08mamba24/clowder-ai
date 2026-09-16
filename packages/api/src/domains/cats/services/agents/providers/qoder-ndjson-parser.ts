@@ -57,6 +57,28 @@ const QODER_TOOL_CALL_SPAN_RE = /<tool_call>[\s\S]*?<\/tool_call>/g;
  */
 const QODER_TOOL_PROTOCOL_RESIDUE_RE = /<\/?tool_calls?>/;
 
+/**
+ * Qoder can report a successful CLI turn while embedding an unexecuted tool request in an
+ * assistant text block and/or the terminal result string. The Service uses this signal to reject
+ * that false-success terminal; the parser still owns stripping provider-native protocol from
+ * user-visible text.
+ */
+export function qoderEventContainsTextToolProtocol(event: unknown): boolean {
+  if (typeof event !== 'object' || event === null) return false;
+  const e = event as Record<string, unknown>;
+  if (e.type === 'result') {
+    return typeof e.result === 'string' && QODER_TOOL_PROTOCOL_RESIDUE_RE.test(e.result);
+  }
+  if (e.type !== 'assistant') return false;
+  const message = e.message as Record<string, unknown> | undefined;
+  if (!Array.isArray(message?.content)) return false;
+  return message.content.some((block) => {
+    if (typeof block !== 'object' || block === null) return false;
+    const b = block as Record<string, unknown>;
+    return b.type === 'text' && typeof b.text === 'string' && QODER_TOOL_PROTOCOL_RESIDUE_RE.test(b.text);
+  });
+}
+
 export function mapQoderMcpStatus(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
   return QODER_MCP_STATUS_MAP[raw];

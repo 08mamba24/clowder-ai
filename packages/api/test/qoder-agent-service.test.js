@@ -490,6 +490,73 @@ test('invoke: success fixture → done with real init model + billing; argv has 
   assert.ok(done.metadata.qoderBilling.credits > 0);
 });
 
+for (const dialect of [
+  { name: 'plural', open: '<tool_calls>', close: '</tool_calls>' },
+  { name: 'singular', open: '<tool_call>', close: '</tool_call>' },
+]) {
+  test(`invoke: ${dialect.name} text tool protocol with success result → explicit error, never done`, async () => {
+    const lines = fixtureLines('success').map((line) => {
+      const event = JSON.parse(line);
+      const text = event.message?.content?.find((block) => block.type === 'text');
+      if (text) {
+        text.text = [
+          '我先查一下再回。',
+          dialect.open,
+          '<tool><tool_name>bash</tool_name><command>gh auth status</command></tool>',
+          dialect.close,
+        ].join('\n');
+      }
+      if (event.type === 'result') {
+        event.result = '我先查一下再回。';
+        event.is_error = false;
+        event.subtype = 'success';
+      }
+      return JSON.stringify(event);
+    });
+    const svc = makeSvc({ spawnFn: () => fakeChild(lines) });
+
+    const out = await runInvoke(svc, 'inspect gh auth', { workingDirectory: '/tmp' });
+
+    assert.ok(out.some((m) => m.type === 'text' && m.content === '我先查一下再回。'));
+    assert.ok(!out.some((m) => m.type === 'done'), 'unexecuted tool request must not be accepted as done');
+    assert.ok(
+      out.some((m) => m.type === 'error' && /tool.+disabled|unavailable tool/i.test(m.error)),
+      JSON.stringify(out),
+    );
+  });
+}
+
+test('invoke: result-only text tool protocol → explicit error, never done', async () => {
+  const lines = fixtureLines('success')
+    .filter((line) => {
+      const event = JSON.parse(line);
+      return !event.message?.content?.some((block) => block.type === 'text');
+    })
+    .map((line) => {
+      const event = JSON.parse(line);
+      if (event.type === 'result') {
+        event.result = [
+          '我先查一下再回。',
+          '<tool_calls>',
+          '<tool><tool_name>bash</tool_name><command>gh auth status</command></tool>',
+          '</tool_calls>',
+        ].join('\n');
+        event.is_error = false;
+        event.subtype = 'success';
+      }
+      return JSON.stringify(event);
+    });
+  const svc = makeSvc({ spawnFn: () => fakeChild(lines) });
+
+  const out = await runInvoke(svc, 'inspect gh auth', { workingDirectory: '/tmp' });
+
+  assert.ok(!out.some((m) => m.type === 'done'), 'result-only unexecuted tool request must not become done');
+  assert.ok(
+    out.some((m) => m.type === 'error' && /tool.+disabled|unavailable tool/i.test(m.error)),
+    JSON.stringify(out),
+  );
+});
+
 // round-3 P1④：未认证 CLI 回报小写 auto（auth-error 夹具实测）→ 精确匹配 fail closed。
 // 旧契约（大小写宽容）会把这次漂移放行到 result error；精确匹配把它挡在 init 门。
 test('invoke: auth-error fixture → init gate red on model drift (auto != Auto), never done (P1-D)', async () => {

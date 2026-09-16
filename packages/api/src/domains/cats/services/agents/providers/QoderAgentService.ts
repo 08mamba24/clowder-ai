@@ -41,6 +41,7 @@ import {
   extractQoderUsage,
   isQoderResultErrorEvent,
   type QoderBillingMetadata,
+  qoderEventContainsTextToolProtocol,
   transformQoderEvent,
 } from './qoder-ndjson-parser.js';
 import {
@@ -329,6 +330,7 @@ export class QoderAgentService implements AgentService {
     let billing: QoderBillingMetadata | undefined;
     let resultError: string | undefined;
     let successResultSeen = false;
+    let unavailableToolRequestSeen = false;
     let actualModel: string | undefined;
 
     for await (const event of events) {
@@ -387,6 +389,7 @@ export class QoderAgentService implements AgentService {
         resultError = 'qoder stream violated ordering: assistant/user event before passing init gate';
         break;
       }
+      if (qoderEventContainsTextToolProtocol(e)) unavailableToolRequestSeen = true;
       if (e.type === 'result') {
         if (isQoderResultErrorEvent(e)) {
           resultError = `qoder result error: ${typeof e.result === 'string' ? e.result : 'unknown'}`;
@@ -412,6 +415,10 @@ export class QoderAgentService implements AgentService {
     }
     if (!successResultSeen) {
       yield this.error('qoder stream ended without a successful result event');
+      return;
+    }
+    if (unavailableToolRequestSeen) {
+      yield this.error('qoder requested a tool while the tool surface is disabled; no tool was executed');
       return;
     }
 
