@@ -32,6 +32,12 @@ const QODER_MCP_STATUS_MAP: Record<string, string> = {
   failed: 'failed',
 };
 
+/**
+ * round-11：qodercn 内部工具调用协议跨度（live session 实证：真文本前缀 +
+ * 完整 <tool_calls>…</tool_calls> 单块）。协议不是话术——转发前剥离。
+ */
+const QODER_TOOLCALLS_SPAN_RE = /<tool_calls>[\s\S]*?<\/tool_calls>/g;
+
 export function mapQoderMcpStatus(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
   return QODER_MCP_STATUS_MAP[raw];
@@ -142,7 +148,14 @@ export function transformQoderEvent(event: unknown, catId: CatId): AgentMessage 
       if (typeof block !== 'object' || block === null) continue;
       const b = block as Record<string, unknown>;
       if (b.type === 'text' && typeof b.text === 'string' && b.text.length > 0) {
-        messages.push({ type: 'text', catId, content: b.text, timestamp: Date.now() });
+        // round-11（operator 报告，live session 实证）：qodercn 把内部工具调用协议
+        // <tool_calls>…</tool_calls> 作为 assistant text 块发出——协议不是话术，
+        // 剥离后才转发；剥空（纯协议块）不 emit；无协议的普通文本逐字透传。
+        const stripped = b.text.replace(QODER_TOOLCALLS_SPAN_RE, '');
+        const content = stripped === b.text ? b.text : stripped.trim();
+        if (content.length > 0) {
+          messages.push({ type: 'text', catId, content, timestamp: Date.now() });
+        }
       } else if (b.type === 'tool_use' && typeof b.name === 'string') {
         const msg: AgentMessage = {
           type: 'tool_use',
