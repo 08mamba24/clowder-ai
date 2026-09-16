@@ -159,3 +159,91 @@ test('cancel signature from gate probe: graceful cancel still emits terminal res
     false,
   );
 });
+
+// ══ round-11（tool_calls 协议泄漏：operator 报告，live session 33e27ba4 实证形状）═══
+// qodercn 把内部工具调用协议 <tool_calls>…</tool_calls> 作为 assistant text 块
+// 发出（真文本前缀 + 完整跨度，实测 641 字符单块），解析器曾原样透传 → 协议
+// 原文漏进 thread。修复语义：剥离协议跨度、保留真文本；纯协议块不 emit；
+// 无协议的普通文本逐字透传不受影响。夹具为形状复刻（合成），不回灌项目数据。
+// P3-1（点点复核）：真实样本内部是 2-3 个 <tool> 条目，夹具同形状。
+const TOOLCALLS_BLOCK = [
+  '<tool_calls>',
+  '<tool>',
+  '<tool_name>bash</tool_name>',
+  '<command>which qodercn 2>/dev/null || echo "not in PATH"</command>',
+  '<description>Find qodercn binary location</description>',
+  '</tool>',
+  '<tool>',
+  '<tool_name>bash</tool_name>',
+  '<command>ls -la /Users/yuhan/.qoder-cn/ 2>/dev/null || echo "no qoder config dir found"</command>',
+  '<description>Check qoder config directory</description>',
+  '</tool>',
+  '</tool_calls>',
+].join('\n');
+
+test('round11: assistant text with an embedded <tool_calls> span forwards only the real text', () => {
+  const event = {
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: `谱谱传球接到。我来查可用的模型清单。\n\n${TOOLCALLS_BLOCK}` }],
+    },
+  };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1, 'exactly one real-text message');
+  assert.equal(texts[0].content, '谱谱传球接到。我来查可用的模型清单。');
+  assert.ok(!texts[0].content.includes('<tool'), 'no protocol markup leaks');
+});
+
+test('round11: assistant text that is ONLY a <tool_calls> span emits no text message', () => {
+  const event = {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: TOOLCALLS_BLOCK }] },
+  };
+  const out = transformQoderEvent(event, CAT);
+  assert.equal(out, null, 'protocol-only text must not become a chat message');
+});
+
+test('round11: plain text without protocol spans passes through unchanged (control)', () => {
+  const event = {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: '普通回复，含 < 尖括号但不是协议' }] },
+  };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1);
+  assert.equal(texts[0].content, '普通回复，含 < 尖括号但不是协议');
+});
+
+// round-11 P2（点点复核）：max-token 截断在协议中间时，CLI 发出的仍是合法
+// JSON 的 text 块——悬空开标签（有 <tool_calls> 无闭）与孤尾（</tool_calls>
+// 无开）曾整段回退旧行为=原样透传泄漏。语义：剥离成对跨度后若仍残留协议
+// 标记，fail-closed 截断（截后为空则不 emit），残余之后的内容一并丢弃。
+test('round11 P2: dangling unclosed <tool_calls> truncates fail-closed at the marker', () => {
+  const truncated = TOOLCALLS_BLOCK.slice(0, TOOLCALLS_BLOCK.indexOf('</tool_calls>'));
+  const event = {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: `我先查一下再回。\n\n${truncated}` }] },
+  };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1, 'text before the dangling marker survives');
+  assert.equal(texts[0].content, '我先查一下再回。');
+  assert.ok(!texts[0].content.includes('<tool'), 'no protocol markup leaks from a truncated block');
+});
+
+test('round11 P2: orphan </tool_calls> tail truncates fail-closed at the marker', () => {
+  const event = {
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: '结论在前。\n</tool_calls>\n截断后不应再出现的内容' }],
+    },
+  };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1);
+  assert.equal(texts[0].content, '结论在前。');
+  assert.ok(!texts[0].content.includes('tool_calls'), 'orphan tail and everything after it are dropped');
+});

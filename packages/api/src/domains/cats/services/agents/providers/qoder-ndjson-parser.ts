@@ -32,6 +32,21 @@ const QODER_MCP_STATUS_MAP: Record<string, string> = {
   failed: 'failed',
 };
 
+/**
+ * round-11：qodercn 内部工具调用协议跨度（live session 实证：真文本前缀 +
+ * 完整 <tool_calls>…</tool_calls> 单块）。协议不是话术——转发前剥离。
+ * 仅用于 String.replace（/g 会随 replace 重置 lastIndex，勿改作 test/exec）。
+ */
+const QODER_TOOLCALLS_SPAN_RE = /<tool_calls>[\s\S]*?<\/tool_calls>/g;
+
+/**
+ * round-11 P2（点点复核）：max-token 截断在协议中间时，CLI 发出的仍是合法
+ * JSON 的 text 块——悬空开标签 / 孤尾闭标签剥不出成对跨度。残留协议标记
+ * 一律 fail-closed 截断（残余之后的内容一并丢弃，截后为空则不 emit）。
+ * 非 /g：只取首个残留位置。
+ */
+const QODER_TOOLCALLS_RESIDUE_RE = /<tool_calls>|<\/tool_calls>/;
+
 export function mapQoderMcpStatus(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
   return QODER_MCP_STATUS_MAP[raw];
@@ -142,7 +157,22 @@ export function transformQoderEvent(event: unknown, catId: CatId): AgentMessage 
       if (typeof block !== 'object' || block === null) continue;
       const b = block as Record<string, unknown>;
       if (b.type === 'text' && typeof b.text === 'string' && b.text.length > 0) {
-        messages.push({ type: 'text', catId, content: b.text, timestamp: Date.now() });
+        // round-11（operator 报告，live session 实证）：qodercn 把内部工具调用协议
+        // <tool_calls>…</tool_calls> 作为 assistant text 块发出——协议不是话术，
+        // 剥离后才转发；剥空（纯协议块）不 emit；无协议的普通文本逐字透传。
+        // round-11 P2：剥离成对跨度后仍残留协议标记（悬空开/孤尾闭）→
+        // fail-closed 截断，残余之后的内容一并丢弃。
+        const stripped = b.text.replace(QODER_TOOLCALLS_SPAN_RE, '');
+        const residueIdx = stripped.search(QODER_TOOLCALLS_RESIDUE_RE);
+        let content: string;
+        if (residueIdx >= 0) {
+          content = stripped.slice(0, residueIdx).trim();
+        } else {
+          content = stripped === b.text ? b.text : stripped.trim();
+        }
+        if (content.length > 0) {
+          messages.push({ type: 'text', catId, content, timestamp: Date.now() });
+        }
       } else if (b.type === 'tool_use' && typeof b.name === 'string') {
         const msg: AgentMessage = {
           type: 'tool_use',
