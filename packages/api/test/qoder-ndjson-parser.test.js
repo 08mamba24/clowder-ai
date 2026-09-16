@@ -440,3 +440,69 @@ test('round14 F1 control: protocol outside a balanced fence still trips the gate
   const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
   assert.equal(qoderEventContainsTextToolProtocol(event), true);
 });
+
+// ══ round-15（点点复审 round-14 的 P1/P2/P3：segment-join 在消息贴围栏边界时
+// 注入原文没有的 \n，detector 的裸字符串不等比较把格式漂移读成协议剥离——
+// 真实夹具（纯围栏零协议）端到端把 turn 判死。修法：行数组重建 + 显式
+// removed 布尔，detector 用布尔不用字符串比较；闭合栏谓词收紧为裸栏）═══
+test('round15 P1: fence-only text (no protocol at all) must not gate', () => {
+  const text = '```\nF317-DETERMINISTIC-LINE-1\n```'; // 逐字取自 current/tool-use.jsonl
+  assert.equal(
+    qoderEventContainsTextToolProtocol({ type: 'assistant', message: { content: [{ type: 'text', text }] } }),
+    false,
+  );
+  assert.equal(qoderEventContainsTextToolProtocol({ type: 'result', result: text }), false);
+});
+
+test('round15 P2: a legit fenced quote that ends the message must not gate', () => {
+  const text = `讨论：\n\n\`\`\`\n${TOOL_CALL_BLOCK}\n\`\`\``;
+  assert.equal(
+    qoderEventContainsTextToolProtocol({ type: 'assistant', message: { content: [{ type: 'text', text }] } }),
+    false,
+  );
+});
+
+test('round15 P2: a legit fenced quote that starts the message must not gate', () => {
+  const text = `\`\`\`\n${TOOL_CALL_BLOCK}\n\`\`\`\n\n补充说明在后面。`;
+  assert.equal(
+    qoderEventContainsTextToolProtocol({ type: 'assistant', message: { content: [{ type: 'text', text }] } }),
+    false,
+  );
+});
+
+test('round15 P1: fence-boundary messages without protocol pass through byte-identical', () => {
+  const trailing = 'a\n```\nb\n```';
+  const leading = '```\nb\n```\na';
+  for (const text of [trailing, leading]) {
+    const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+    const out = transformQoderEvent(event, CAT);
+    const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+    assert.equal(texts.length, 1);
+    assert.equal(texts[0].content, text, 'no injected separators — byte-identical passthrough');
+    assert.equal(qoderEventContainsTextToolProtocol(event), false);
+  }
+});
+
+test('round15 P3: adjacent fences keep byte-identical spacing', () => {
+  const text = 'a\n```\nb\n```\n```\nc\n```';
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1);
+  assert.equal(texts[0].content, text);
+  assert.equal(qoderEventContainsTextToolProtocol(event), false);
+});
+
+test('round15 P3: info-string line inside a fence is content, not a closer', () => {
+  const text = `\
+\`\`\`\`markdown
+\`\`\`js
+${TOOL_CALL_BLOCK}
+\`\`\`\``;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  assert.equal(qoderEventContainsTextToolProtocol(event), false, 'pseudo-closer must not void the exemption');
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1);
+  assert.ok(texts[0].content.includes('<tool_call>'), 'quoted protocol inside the outer fence stays verbatim');
+});

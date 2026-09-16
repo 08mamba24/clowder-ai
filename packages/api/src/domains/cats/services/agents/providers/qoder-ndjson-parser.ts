@@ -58,56 +58,72 @@ const QODER_TOOL_CALL_SPAN_RE = /<tool_call>[\s\S]*?<\/tool_call>/g;
 const QODER_TOOL_PROTOCOL_RESIDUE_RE = /<\/?tool_calls?>/;
 
 /**
- * round-13 P3-1 + round-14 F2（点点复审）：按「完整成对 ``` 围栏」分段剥离
- * 工具调用协议。围栏判定是逐行状态机——行首 ```（≤3 空格缩进；4+ 反引号行
- * 同样以 ``` 开头，天然成对翻转）切换开/闭态，行中反引号不参与。围栏段视为
- * 正当引用逐字保留；围栏外沿用 round-11/12 语义（成对跨度剥离 + 残留
- * fail-closed，残留点之后的所有段落含后续围栏一并丢弃——消息级截断契约）。
- * **任何未闭合围栏 → 全消息丧失豁免**（round-14 F2：孤儿 ``` 会与后续闭栏
- * 并成伪围栏把裸协议顺带豁免；截断语境下开/闭归属不可信，fail-closed 一刀
- * 切）。~~~/深缩进围栏未实证，不追。detector（下方）与本函数共用此判定——
- * 单一真相源（round-14 F1）。
+ * round-13 P3-1 + round-14 F2 + round-15 P1/P2/P3（点点复审链）：按「完整成对
+ * ``` 围栏」分段剥离工具调用协议。围栏判定是逐行状态机：行首 ```（≤3 空格
+ * 缩进）开栏；**闭合栏必须裸**（``` 后只允许反引号/空白——info-string 行如
+ * ```js 是栏内内容不是闭栏，4+ 反引号栏照常成对）。
+ * 重建用行数组逐行搬运（plain 段剥后拆行回填、空 plain 不补行）——零移除时
+ * 输出与原文逐字相同，不注入任何分隔符（round-15 P1：segment-join 曾在消息
+ * 贴围栏边界时注入 \n，detector 的不等比较把格式漂移误读成协议剥离，真实
+ * 纯围栏夹具把 turn 判死）。**removed 布尔是唯一判据**：plain 段成对跨度被
+ * 剥、或残留命中、或未闭合重放改变了文本 → true；detector 只看它。
+ * 残留命中 → 消息级截断（其后所有行含后续围栏一并丢弃，round-11 P2 契约）。
+ * 任何未闭合围栏 → 全消息丧失豁免、按正文规则重放（round-14 F2：孤儿 ```
+ * 会并成伪围栏豁免裸协议；截断语境下开/闭归属不可信，fail-closed）。
+ * ~~~/深缩进/闭栏长度匹配未实证，不追。
  */
-function stripQoderToolProtocol(text: string): string {
-  const lines = text.split('\n');
-  const kept: string[] = [];
-  let current: string[] = [];
-  let inFence = false;
+function stripQoderProtocolSpans(source: string): { value: string; residue: boolean; changed: boolean } {
+  const stripped = source.replace(QODER_TOOLCALLS_SPAN_RE, '').replace(QODER_TOOL_CALL_SPAN_RE, '');
+  const residueIdx = stripped.search(QODER_TOOL_PROTOCOL_RESIDUE_RE);
+  return {
+    value: residueIdx >= 0 ? stripped.slice(0, residueIdx) : stripped,
+    residue: residueIdx >= 0,
+    changed: stripped !== source,
+  };
+}
 
-  const flushPlain = (): { value: string; residue: boolean } => {
-    const joined = current.join('\n');
-    current = [];
-    const stripped = joined.replace(QODER_TOOLCALLS_SPAN_RE, '').replace(QODER_TOOL_CALL_SPAN_RE, '');
-    const residueIdx = stripped.search(QODER_TOOL_PROTOCOL_RESIDUE_RE);
-    if (residueIdx >= 0) return { value: stripped.slice(0, residueIdx), residue: true };
-    return { value: stripped, residue: false };
+function applyQoderToolProtocolStrip(text: string): { value: string; removed: boolean } {
+  const FENCE_OPEN_RE = /^ {0,3}```/;
+  const FENCE_CLOSE_RE = /^ {0,3}```[\s`]*$/;
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let plain: string[] = [];
+  let inFence = false;
+  let removed = false;
+
+  const isFenceBoundary = (line: string): boolean =>
+    FENCE_OPEN_RE.test(line) && (!inFence || FENCE_CLOSE_RE.test(line));
+
+  const flushPlain = (): boolean => {
+    if (plain.length === 0) return false;
+    const joined = plain.join('\n');
+    plain = [];
+    const { value, residue, changed } = stripQoderProtocolSpans(joined);
+    if (changed || residue) removed = true;
+    out.push(...value.split('\n'));
+    return residue;
   };
 
   for (const line of lines) {
-    if (!/^ {0,3}```/.test(line)) {
-      current.push(line);
+    if (!isFenceBoundary(line)) {
+      (inFence ? out : plain).push(line);
       continue;
     }
     if (inFence) {
-      current.push(line);
-      kept.push(current.join('\n'));
-      current = [];
+      out.push(line);
       inFence = false;
       continue;
     }
-    const { value, residue } = flushPlain();
-    kept.push(value);
-    if (residue) return kept.join('\n');
+    if (flushPlain()) return { value: out.join('\n'), removed };
+    out.push(line);
     inFence = true;
-    current = [line];
   }
   if (inFence) {
-    const stripped = text.replace(QODER_TOOLCALLS_SPAN_RE, '').replace(QODER_TOOL_CALL_SPAN_RE, '');
-    const residueIdx = stripped.search(QODER_TOOL_PROTOCOL_RESIDUE_RE);
-    return residueIdx >= 0 ? stripped.slice(0, residueIdx) : stripped;
+    const { value, residue, changed } = stripQoderProtocolSpans(text);
+    return { value, removed: removed || changed || residue };
   }
-  kept.push(flushPlain().value);
-  return kept.join('\n');
+  flushPlain();
+  return { value: removed ? out.join('\n') : text, removed };
 }
 
 /**
@@ -120,9 +136,9 @@ export function qoderEventContainsTextToolProtocol(event: unknown): boolean {
   if (typeof event !== 'object' || event === null) return false;
   const e = event as Record<string, unknown>;
   if (e.type === 'result') {
-    // round-14 F1：与 parser 共用同一围栏感知剥离（单一真相源）——围栏内
-    // 正当引用不再触发 unexecuted-tool gate，围栏外协议（成对或残留）照旧触发。
-    return typeof e.result === 'string' && stripQoderToolProtocol(e.result) !== e.result;
+    // round-14 F1 + round-15 P1：与 parser 共用同一围栏感知剥离，判据是
+    // removed 布尔而非字符串不等（格式漂移 ≠ 协议剥离）——单一真相源。
+    return typeof e.result === 'string' && applyQoderToolProtocolStrip(e.result).removed;
   }
   if (e.type !== 'assistant') return false;
   const message = e.message as Record<string, unknown> | undefined;
@@ -130,7 +146,7 @@ export function qoderEventContainsTextToolProtocol(event: unknown): boolean {
   return message.content.some((block) => {
     if (typeof block !== 'object' || block === null) return false;
     const b = block as Record<string, unknown>;
-    return b.type === 'text' && typeof b.text === 'string' && stripQoderToolProtocol(b.text) !== b.text;
+    return b.type === 'text' && typeof b.text === 'string' && applyQoderToolProtocolStrip(b.text).removed;
   });
 }
 
@@ -254,12 +270,14 @@ export function transformQoderEvent(event: unknown, catId: CatId): AgentMessage 
         // 摘出不参与剥离与残留守护、逐字保留；未闭合围栏不豁免（截断语境下
         // 引用意图不可信）。消息级截断语义不变：残留点之后的所有段落（含后续
         // 围栏）一并丢弃。缩进/~~~ 围栏未见实证，不追。
-        const stripped = stripQoderToolProtocol(b.text);
+        // round-15 P1：removed 布尔是唯一判据——零移除时逐字透传（含纯围栏/
+        // 贴边界消息），有移除时（跨度剥/残留截断/未闭合重放）才 trim。
+        const { value, removed } = applyQoderToolProtocolStrip(b.text);
         let content: string;
-        if (stripped === b.text) {
+        if (!removed) {
           content = b.text;
         } else {
-          content = stripped.trim();
+          content = value.trim();
         }
         if (content.length > 0) {
           messages.push({ type: 'text', catId, content, timestamp: Date.now() });
