@@ -72,6 +72,15 @@ created: 2026-09-16
 | H1 | operator 选定 authMethods 四选一完成登录 | 登录态可被 headless spawn 复用 · **状态：绿——凭证在 Application Support（认 HOME），HOME 注入复用成功；`CODEBUDDY_CONFIG_DIR` 非凭证面（见上）** |
 | H2 | 认证态双通道重采：`session/new`+`session/prompt` 全帧、`session/update` 形状、tool_call 形状、stopReason 词表、cancel 夹具 | 脱敏 golden transcript 入 `packages/api/test/fixtures/codebuddy/` + manifest |
 | H3 | 计费语义：token/credit/订阅？一次真实调用的账面 | 结论 + 风险标注（Qoder 是 credits 制，此项**不预设**） |
+
+### H3 计费证据汇总（2026-09-16，谱谱实测 + 瞳瞳本地读图）
+
+- **服务端逐调用计费字段**：ACP `usage_update._meta["codebuddy.ai/usage"]` 带 `credit` 字段，hy4-preview-f 最小调用实测 **`credit: 0`**（服务端自报，当前最硬证据）。
+- **CLI `/stats` 两页（Overview/Models，14:00 CST 截图，瞳瞳 macOS Vision 全本地 OCR）无任何费用/费率/credits/free UI**——CLI 侧只有用量：5 sessions、24.9k tokens（In 24.8k/Out 110）、Hy4 preview 占 100%。
+- **⚠️ 用量归属**：上述 24.9k tokens / peak 13:00-14:00 CST 大概率主要是谱谱 12:18-12:45 的登录+采样流量，不代表 operator 日常用量。
+- **账户侧（operator 截图，WorkBuddy 桌面客户端"套餐与积分"，产品归属为 operator 口述、图内无标题栏）**：体验版；总剩余积分 785.39 = 套餐基础 500（已用 0/500，2026/10/01 刷新）+ 平台奖励 300（已用 **14.61**，2026/09/22 10:04 到期）+ 购买 0。
+- **open**：① 三张截图均无 "free/试用/0 费率" 标注，"hy4-preview 免费试用"（operator 判断）无 UI 直接证据；② 平台奖励积分已用 14.61 的归属（CLI 采样 or 桌面端用量）无法从单张快照分辨——**判别实验**：固定面板读数后跑一次定量 CLI 调用，再看积分增量是否为 0（为 0 ⇒ CLI hy4-preview 免费实锤）。
+- 附注：本机时区 CST +0800；hub 消息时间戳为 UTC，两处差 8 小时。
 | H4 | 提权红→绿：project/local settings hook、`--setting-sources` 阻断、`--tools`/`--permission-mode` 断言、禁 `-y`/`auto`/`bypassPermissions` | 红先行记录 + 绿证据（同 Qoder S5 方法论，**全部重跑不搬结论**） |
 | H5 | 版本漂移防线：spawn 路径不自更新实证（homebrew 自动更新 vs `install [target]` pin） | 复现脚本 + pin 方案 |
 | H6 | 进程卫生：prewarm/daemon socket 残留行为（本机已见 `codebuddy-prewarm-wb-pool-*.sock`） | spawn 生命周期内无孤儿进程结论 |
