@@ -55,9 +55,18 @@ created: 2026-09-16
 
 ## Phase 0.5 收尾门禁（operator 登录后，进入实现的前置）
 
+> **2026-09-16 12:3x H1 红线记录（谱谱，一手采样）**：operator 报"登录完成"后复验为**未登录**——
+> ① CLI 登录态唯一落盘路径是 `<CONFIG_DIR>/credentials.json`（bundle：`getCredentialsPath()=join(getHomeDir(),"credentials.json")`，`getHomeDir()=CODEBUDDY_CONFIG_DIR||~/.codebuddy`），operator 真实 `~/.codebuddy` 全树（含隐藏文件）与沙箱 HOME 均无任何 `credentials*.json`；
+> ② operator 自己 12:18 起的交互 TUI（cwd=clowder-ai，pid 90323）里 12:24 发 `login status` 也返回同一 auth-required 文案（session 转录 `projects/…/01a0a875….jsonl`）；
+> ③ headless spawn 以 `CODEBUDDY_CONFIG_DIR` 原地指向她的 `~/.codebuddy` 采样，`result.subtype=error_during_execution`、`total_cost_usd:0`。
+> 根因：12:18-12:19 的 settings.json/user-state/history/local_storage 变更全是 TUI 启动副作用（目录信任提示 + numStartups），不是登录产物；上一轮把它们误读为登录痕迹。
+> 登录形态确认为 `authentication.type='cli-external-link'`（bearerToken + `X-User-Id`，endpoint `copilot.tencent.com`）：必须在交互 TUI 里跑 `/login` 走完浏览器/微信授权，token 才落 `credentials.json`。
+> **修正 C4 推理**：`apiKeySource` 只是当前 endpoint 域名（未认证态默认 `www.codebuddy.ai`，加载产品配置后 `copilot.tencent.com`），不是 API-key 存在性的证据；API-key/env 路径的实锤改为 bundle 常量表：**`CODEBUDDY_AUTH_TOKEN` / `CODEBUDDY_API_KEY` / `CODEBUDDY_BASE_URL`**（`CODEBUDDY_CREDENTIALS_IN_MEMORY` 亦有引用）——若账号可取长效 token，F161 env-map `${auth_token}` 模板成立，可跳过 OAuth 交互。
+> 副作用披露：headless 采样会在原地 CONFIG_DIR 留下 `user-state.json` 心跳更新与 `sessions/` 目录触碰（`--no-session-persistence` 不覆盖）——H1 绿后正式采样建议改用**专用 CONFIG_DIR 复制登录后凭证**或接受该轻量污染。
+
 | # | 任务 | 验收 |
 |---|---|---|
-| H1 | operator 选定 authMethods 四选一完成登录（专用 `CODEBUDDY_CONFIG_DIR`） | 登录态可被 headless spawn 复用，不污染 operator 个人 `~/.codebuddy` |
+| H1 | operator 选定 authMethods 四选一完成登录（专用 `CODEBUDDY_CONFIG_DIR`） | 登录态可被 headless spawn 复用，不污染 operator 个人 `~/.codebuddy` · **状态：红——登录未完成（见上方红线记录），待 operator 在交互 TUI 跑 `/login` 走完外部链接授权** |
 | H2 | 认证态双通道重采：`session/new`+`session/prompt` 全帧、`session/update` 形状、tool_call 形状、stopReason 词表、cancel 夹具 | 脱敏 golden transcript 入 `packages/api/test/fixtures/codebuddy/` + manifest |
 | H3 | 计费语义：token/credit/订阅？一次真实调用的账面 | 结论 + 风险标注（Qoder 是 credits 制，此项**不预设**） |
 | H4 | 提权红→绿：project/local settings hook、`--setting-sources` 阻断、`--tools`/`--permission-mode` 断言、禁 `-y`/`auto`/`bypassPermissions` | 红先行记录 + 绿证据（同 Qoder S5 方法论，**全部重跑不搬结论**） |
