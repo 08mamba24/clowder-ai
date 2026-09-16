@@ -20,6 +20,7 @@ const {
   extractQoderUsage,
   checkQoderProtocolVersion,
   mapQoderMcpStatus,
+  qoderEventContainsTextToolProtocol,
 } = await import(
   process.env.QODER_PARSER_SRC
     ? '../src/domains/cats/services/agents/providers/qoder-ndjson-parser.ts'
@@ -389,4 +390,53 @@ test('round13: unclosed fence is not exempt — residue rules still apply to its
   assert.equal(texts.length, 1);
   assert.ok(!texts[0].content.includes('<tool'), 'protocol inside an unclosed fence still strips (not exempt)');
   assert.match(texts[0].content, /^开始引用：/, 'text before the unclosed fence survives');
+});
+
+// ══ round-14（点点复审 F1/F2：① 豁免谓词过宽——孤儿 ``` 与后续闭栏并段后
+// 整段被豁免，裸协议原样漏出；② gate detector 裸扫原文无围栏感知——围栏内
+// 正当引用照样把 turn 判死）═══ 修法：围栏判定改逐行状态机（行首 ``` 翻转
+// 开/闭），任何未闭合 → 全消息丧失豁免（fail-closed）；detector 与 parser
+// 共用同一剥离 helper（单一真相源）。
+test('round14 F2: a closed fence elsewhere does not exempt an unclosed fence tail (A7)', () => {
+  const text = `start\n\`\`\`\n${TOOL_CALL_BLOCK}\n\n\`\`\`\nok\n\`\`\``;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1);
+  assert.ok(!texts[0].content.includes('<tool'), 'unclosed fence tail must not be exempt — protocol strips');
+  assert.match(texts[0].content, /^start/, 'text before the first fence survives');
+});
+
+test('round14 F2: bare protocol near odd fences strips (A4/A5 shapes)', () => {
+  const mid = `一\n\`\`\`a\nx\n\`\`\`\n二\n\`\`\`\n${TOOL_CALL_BLOCK}`;
+  const tail = `一\n\`\`\`\n${TOOL_CALL_BLOCK}\n\`\`\`\n二\n\`\`\`\nbare tail`;
+  for (const text of [mid, tail]) {
+    const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+    const out = transformQoderEvent(event, CAT);
+    const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+    assert.equal(texts.length, 1);
+    assert.ok(!texts[0].content.includes('<tool'), 'bare protocol never rides a neighboring fence exemption');
+  }
+});
+
+test('round14 F1: fenced quote does not trip the unexecuted-tool gate', () => {
+  const text = `讨论方言：\n\n\`\`\`\n${TOOL_CALL_BLOCK}\n\`\`\`\n\n如上。`;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  assert.equal(
+    qoderEventContainsTextToolProtocol(event),
+    false,
+    'a legitimate fenced quote must not fail the turn (gate shares the fence-aware strip)',
+  );
+});
+
+test('round14 F1: bare protocol still trips the unexecuted-tool gate', () => {
+  const text = `先这样。\n\n${TOOL_CALL_BLOCK}`;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  assert.equal(qoderEventContainsTextToolProtocol(event), true, 'bare protocol outside fences still gates');
+});
+
+test('round14 F1 control: protocol outside a balanced fence still trips the gate', () => {
+  const text = `示例：\n\n\`\`\`bash\nls\n\`\`\`\n\n然后：\n\n${TOOL_CALL_BLOCK}`;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  assert.equal(qoderEventContainsTextToolProtocol(event), true);
 });

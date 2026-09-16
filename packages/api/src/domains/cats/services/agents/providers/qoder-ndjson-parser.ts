@@ -58,28 +58,56 @@ const QODER_TOOL_CALL_SPAN_RE = /<tool_call>[\s\S]*?<\/tool_call>/g;
 const QODER_TOOL_PROTOCOL_RESIDUE_RE = /<\/?tool_calls?>/;
 
 /**
- * round-13 P3-1：按「完整成对 ``` 围栏」分段剥离工具调用协议。围栏段视为
+ * round-13 P3-1 + round-14 F2（点点复审）：按「完整成对 ``` 围栏」分段剥离
+ * 工具调用协议。围栏判定是逐行状态机——行首 ```（≤3 空格缩进；4+ 反引号行
+ * 同样以 ``` 开头，天然成对翻转）切换开/闭态，行中反引号不参与。围栏段视为
  * 正当引用逐字保留；围栏外沿用 round-11/12 语义（成对跨度剥离 + 残留
- * fail-closed）。残留命中时截断的不仅是该段，还包括其后所有段落——与
- * round-11 P2 的消息级截断契约一致（残余之后的内容一并丢弃）。
+ * fail-closed，残留点之后的所有段落含后续围栏一并丢弃——消息级截断契约）。
+ * **任何未闭合围栏 → 全消息丧失豁免**（round-14 F2：孤儿 ``` 会与后续闭栏
+ * 并成伪围栏把裸协议顺带豁免；截断语境下开/闭归属不可信，fail-closed 一刀
+ * 切）。~~~/深缩进围栏未实证，不追。detector（下方）与本函数共用此判定——
+ * 单一真相源（round-14 F1）。
  */
 function stripQoderToolProtocol(text: string): string {
-  const segments = text.split(/(```[\s\S]*?```)/);
+  const lines = text.split('\n');
   const kept: string[] = [];
-  for (const seg of segments) {
-    if (seg.startsWith('```') && seg.length >= 6) {
-      kept.push(seg);
+  let current: string[] = [];
+  let inFence = false;
+
+  const flushPlain = (): { value: string; residue: boolean } => {
+    const joined = current.join('\n');
+    current = [];
+    const stripped = joined.replace(QODER_TOOLCALLS_SPAN_RE, '').replace(QODER_TOOL_CALL_SPAN_RE, '');
+    const residueIdx = stripped.search(QODER_TOOL_PROTOCOL_RESIDUE_RE);
+    if (residueIdx >= 0) return { value: stripped.slice(0, residueIdx), residue: true };
+    return { value: stripped, residue: false };
+  };
+
+  for (const line of lines) {
+    if (!/^ {0,3}```/.test(line)) {
+      current.push(line);
       continue;
     }
-    const stripped = seg.replace(QODER_TOOLCALLS_SPAN_RE, '').replace(QODER_TOOL_CALL_SPAN_RE, '');
-    const residueIdx = stripped.search(QODER_TOOL_PROTOCOL_RESIDUE_RE);
-    if (residueIdx >= 0) {
-      kept.push(stripped.slice(0, residueIdx));
-      return kept.join('');
+    if (inFence) {
+      current.push(line);
+      kept.push(current.join('\n'));
+      current = [];
+      inFence = false;
+      continue;
     }
-    kept.push(stripped);
+    const { value, residue } = flushPlain();
+    kept.push(value);
+    if (residue) return kept.join('\n');
+    inFence = true;
+    current = [line];
   }
-  return kept.join('');
+  if (inFence) {
+    const stripped = text.replace(QODER_TOOLCALLS_SPAN_RE, '').replace(QODER_TOOL_CALL_SPAN_RE, '');
+    const residueIdx = stripped.search(QODER_TOOL_PROTOCOL_RESIDUE_RE);
+    return residueIdx >= 0 ? stripped.slice(0, residueIdx) : stripped;
+  }
+  kept.push(flushPlain().value);
+  return kept.join('\n');
 }
 
 /**
@@ -92,7 +120,9 @@ export function qoderEventContainsTextToolProtocol(event: unknown): boolean {
   if (typeof event !== 'object' || event === null) return false;
   const e = event as Record<string, unknown>;
   if (e.type === 'result') {
-    return typeof e.result === 'string' && QODER_TOOL_PROTOCOL_RESIDUE_RE.test(e.result);
+    // round-14 F1：与 parser 共用同一围栏感知剥离（单一真相源）——围栏内
+    // 正当引用不再触发 unexecuted-tool gate，围栏外协议（成对或残留）照旧触发。
+    return typeof e.result === 'string' && stripQoderToolProtocol(e.result) !== e.result;
   }
   if (e.type !== 'assistant') return false;
   const message = e.message as Record<string, unknown> | undefined;
@@ -100,7 +130,7 @@ export function qoderEventContainsTextToolProtocol(event: unknown): boolean {
   return message.content.some((block) => {
     if (typeof block !== 'object' || block === null) return false;
     const b = block as Record<string, unknown>;
-    return b.type === 'text' && typeof b.text === 'string' && QODER_TOOL_PROTOCOL_RESIDUE_RE.test(b.text);
+    return b.type === 'text' && typeof b.text === 'string' && stripQoderToolProtocol(b.text) !== b.text;
   });
 }
 
