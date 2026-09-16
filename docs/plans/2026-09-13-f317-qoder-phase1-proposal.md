@@ -38,7 +38,7 @@ qodercn（Qoder 中国版 CLI，`@qodercn-ai/qoderclicn@1.1.51`）headless spawn
 
 **I-7 状态真相（P2，已闭环）**：spike S4 勘误已随本 commit 真实落仓（r2 的「已同步」声明当时不实，r3 修正）。
 
-**I-8 S5/S6 安全门（P1，✅ green）**：① PR #24 的 per-cat runtime profile 在每次 spawn 前做全树 custody/污染审计，拒绝未授权 settings/plugins/hooks；② legacy monolith readonly 27-tool gate 已由 `e11f72aa8` 闭合，L2 slice 另按当前 split `memory.js` 真相源钉死 **12** 个只读工具，并以无个人凭证的真实 qodercn init 证明 `cat-cafe-memory=connected`、完整 surface=18；③ cancel 已重采，见 `gate-probes/cancel.{jsonl,exit,receipt.md}`（exit 130 + graceful terminal result）。L2 新增执行边界：callback/invocation 凭证不进 Qoder/Bash/MCP 子进程；Bash 与 stdio MCP 强制走 runtime-owned shell-prefix，macOS Seatbelt 行为 canary 证明工作区内可写、兄弟目录不可读写；无 `sandbox-exec` 即 fail closed。
+**I-8 S5/S6 安全门（P1，✅ green）**：① PR #24 的 per-cat runtime profile 在每次 spawn 前做全树 custody/污染审计，拒绝未授权 settings/plugins/hooks；② legacy monolith readonly 27-tool gate 已由 `e11f72aa8` 闭合，L2 slice 另按当前 split `memory.js` 真相源钉死 **12** 个只读工具，并以无个人凭证的真实 qodercn init 证明 `cat-cafe-memory=connected`、完整 surface=18；③ cancel 已重采，见 `gate-probes/cancel.{jsonl,exit,receipt.md}`（exit 130 + graceful terminal result）。L2 新增执行边界：callback/invocation 凭证不进 Qoder/Bash/MCP 子进程；Bash 与 stdio MCP 强制走 runtime-owned shell-prefix；memory policy 只读精确代码/依赖路径且 shim 位于不可写 lease root，workspace policy 只开放当前 worktree 所需 Git metadata 并显式拒绝 shared hooks/config；每轮 spawn 前同时跑 allow/deny canary。macOS Seatbelt 行为夹具证明正常 workspace write 与 git commit 可用，runtime secret、兄弟目录及 shared Git 控制面不可读写；无 `sandbox-exec`、资产缺失或 canary fail-open 均拒绝启动。
 
 **I-9 rollout（P2）**：见 P1-F。
 
@@ -56,7 +56,7 @@ qodercn（Qoder 中国版 CLI，`@qodercn-ai/qoderclicn@1.1.51`）headless spawn
 - **L1 受控 gate probes**（唯一豁免的真实 qodercn 调用，仅限 `collect.sh` 采集、MCP 挂载验证、cancel 重采三类脚本化探针）：**硬前置**是离线构建干净 auth-only profile（含登录凭证、无 settings/hooks/plugins，collect.sh 强制显式传入且校验、拒绝回退个人 `~/.qoder-cn`）；探针全部走该 profile 并产结构化 generation receipt（sha256 全量 + 断言结果 + 副作用检查）。
 - **L2 首个产品/runtime invocation**：三项前置已闭合——① PR #24 runtime profile pre-spawn audit；② legacy readonly gate + 本 slice split memory 12-tool drift test / authless init probe；③ cancel 重采 receipt。实现仍须跨个体 review、CI、隔离 acceptance 后才能进入 runtime。
 - L0 可与 L1/L2 并行推进；cat-template 条目（I-9）在 L2 前置三项全绿后最后加入。
-- **OS 隔离边界**：L2 不把 permission allowlist 冒充 sandbox。Qoder file tools 保留 workspace path adjudication；Bash/stdio MCP 通过 `QODERCN_SHELL_PREFIX` 进入 runtime-owned wrapper，再分流到 workspace-write 与 memory-readonly 两份 Seatbelt policy。wrapper 子进程默认不可读 operator HOME/系统 tmp、不可写工作区/受控 scratch/git metadata 之外；callback token 与 invocation credential 在进入 Qoder 前即从 child env 删除。非 macOS/缺 `sandbox-exec` 当前 fail closed，不静默降级。
+- **OS 隔离边界**：L2 不把 permission allowlist 冒充 sandbox。Qoder file tools 保留 workspace path adjudication；Bash/stdio MCP 通过 `QODERCN_SHELL_PREFIX` 进入 runtime-owned wrapper，再分流到 workspace-write 与 memory-readonly 两份 Seatbelt policy。memory policy 不得覆盖整个 runtime root；shim/策略/canary 均在不可由模型写入的 lease root。workspace policy 仅给当前 worktree index/HEAD 与 shared objects/refs/logs 写权，shared hooks/config 末位 deny；`.git` 指针须经 reciprocal `gitdir` 证明归属，且 `gitdir/commondir` 身份文件本身不可写。wrapper 子进程默认不可读 OS account home/系统 tmp/runtime 凭证路径、不可写工作区/受控 scratch/上述最窄 Git metadata 之外；callback token 与 invocation credential 在进入 Qoder 前即从 child env 删除。运行资产必须存在且为非 symlink 可执行文件，每轮 allow/deny canary 均通过后才 spawn。非 macOS/缺 `sandbox-exec` 当前 fail closed，不静默降级。
 
 ## 出口条件
 
@@ -95,6 +95,7 @@ L1 实证：qodercn 把 session 存在 config-dir 的 `projects/<cwd-slug>/`，r
 | 2026-09-15 | Slice 2 merged（PR #25，`26b915d12`）：qoder 注册、account binding、workspace/session guard 原子接线完成。 |
 | 2026-09-16 | operator 拍板（thread_msqw8n1bqpvmob6f#0001789549509937-000115-920c1684）：放行 L2 受控工具接入；**基础工具一次性全开**，覆盖谱谱建议及 r3/I-9 的逐个 allowlist 渐进策略；I-8 三门（①spawn 前干净专用 profile ②`cat-cafe-memory` 只读挂载断言 ③cancel 夹具重采）仍为解锁硬前置——拍板的是放开广度，不含跳过安全门。"基础工具"清单由 slice 定义并在 PR 里显式列出。 |
 | 2026-09-16 | L2 implementation evidence：六工具清单定为 `Bash/Edit/Glob/Grep/Read/Write`；split memory exact readonly=12（非 legacy monolith 27）；真实 qodercn 1.1.51 init 在 synthetic-invalid auth profile 下回报 18/18 + memory connected，随后 exit 1；Seatbelt canary 为 workspace write=allow、sibling read/write=deny。 |
+| 2026-09-16 | PR #33 cross-family review rework：关闭 Bash 自选 memory policy（shim 移出 scratch、memory read 面收窄）与 shared `.git` 控制面写逃逸（reciprocal worktree ownership + hooks/config/gitdir/commondir deny）；`os.userInfo().homedir` 固定 OS account-home deny，runtime 凭证路径另加末位 deny；构造期资产校验与 invocation allow/deny canary 均 fail closed。回归同时钉住正常 sandboxed `git add/commit` 不被误伤；本机实际 qoderclicn 1.1.53 synthetic-invalid 探针通过 exact init 门并回报 `cat-cafe-memory=connected`，随后按预期认证错误退出。 |
 
 ## 边界
 
@@ -103,6 +104,7 @@ L1 实证：qodercn 把 session 存在 config-dir 的 `projects/<cwd-slug>/`，r
 
 ## 修订日志
 
+- **r5**: PR #33 review rework 收窄 memory/Git metadata policy，补 operator-home、运行资产与逐轮 sandbox canary 的 fail-closed 回归
 - **r4**: operator 放行 L2 六个基础工具；三门状态按 durable receipts 校正为 green；补 split memory 12-tool 真相、shell-prefix/Seatbelt 与 credential-stripping 执行边界
 - **r3**: 砚砚 I-1~I-9 全清单落文（I-6 终决不发 agent_loop、I-2 定位 read-only pilot、I-4 窄 Service、I-8 五源+readonly 断言、I-9 rollout 后置、I-7 勘误真实落仓）；spike S4 勘误同 commit
 - **r2**: 点点协议侧修订（message.id 去重待裁决、billing metadata、映射前置、Auto 显式、压缩冻结、fail closed、S4b 门禁）

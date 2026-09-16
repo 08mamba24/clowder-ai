@@ -11,6 +11,7 @@
 
 import assert from 'node:assert/strict';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -26,6 +27,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(here, '..', '..', '..');
 const shared = await import('@cat-cafe/shared');
 const { builtinAccountFamilyForRef, builtinAccountIdForClient, protocolForClient } = shared;
 const accountResolver = await import(join(here, '..', 'dist', 'config', 'account-resolver.js'));
@@ -41,6 +43,17 @@ function makeAuthSource(root, token) {
   mkdirSync(join(dir, '.auth'), { recursive: true });
   writeFileSync(join(dir, '.auth', 'user'), token);
   return dir;
+}
+
+function writeControlledRuntimeAssets(root) {
+  const wrapperPath = join(root, 'scripts', 'qoder-shell-sandbox.mjs');
+  const memoryPath = join(root, 'packages', 'mcp-server', 'dist', 'memory.js');
+  mkdirSync(dirname(wrapperPath), { recursive: true });
+  mkdirSync(dirname(memoryPath), { recursive: true });
+  writeFileSync(wrapperPath, '#!/bin/sh\nexit 126\n');
+  chmodSync(wrapperPath, 0o755);
+  writeFileSync(memoryPath, '// qoder factory test entrypoint\n');
+  return { memoryPath, wrapperPath };
 }
 
 // ── 注册链身份表 ───────────────────────────────────────────────────────────
@@ -63,6 +76,7 @@ test('slice2 P2: factory resolves the runtime profile AT CONSTRUCTION (green pat
     config: { defaultModel: 'Auto', clientId: 'qoder' },
     dataRoot: join(root, 'data'),
     authSourceDir: auth,
+    binaryRoot: REPO_ROOT,
     log: { warn: () => {} },
     modelResolver: () => 'Auto',
   });
@@ -84,6 +98,39 @@ test('slice2 P2: factory resolves the runtime profile AT CONSTRUCTION (green pat
   rmSync(root, { recursive: true, force: true });
 });
 
+test('L2: factory rejects missing or non-executable controlled runtime assets', () => {
+  const root = mkdtempSync(join(tmpdir(), 'qoder-l2-assets-'));
+  const auth = makeAuthSource(root, 'token-A');
+  const warnings = [];
+  const missing = createQoderAgentService({
+    catId: 'cat_qoder_s2',
+    config: { defaultModel: 'Auto', clientId: 'qoder' },
+    dataRoot: join(root, 'missing-data'),
+    authSourceDir: auth,
+    memoryMcpServerPath: join(root, 'missing-memory.js'),
+    shellSandboxWrapperPath: join(root, 'missing-wrapper'),
+    log: { warn: (message) => warnings.push(message) },
+    modelResolver: () => 'Auto',
+  });
+  assert.equal(missing, null);
+  assert.ok(warnings.some((message) => message.includes('runtime sandbox asset unavailable')));
+
+  const assets = writeControlledRuntimeAssets(root);
+  chmodSync(assets.wrapperPath, 0o600);
+  const nonExecutable = createQoderAgentService({
+    catId: 'cat_qoder_s2',
+    config: { defaultModel: 'Auto', clientId: 'qoder' },
+    dataRoot: join(root, 'nonexec-data'),
+    authSourceDir: auth,
+    memoryMcpServerPath: assets.memoryPath,
+    shellSandboxWrapperPath: assets.wrapperPath,
+    log: { warn: (message) => warnings.push(message) },
+    modelResolver: () => 'Auto',
+  });
+  assert.equal(nonExecutable, null);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('slice2 P2: custody-red profile → factory returns null (cat NOT registered; string-cache would be fail-open)', async () => {
   const root = mkdtempSync(join(tmpdir(), 'qoder-s2b-'));
   const auth = makeAuthSource(root, 'token-A');
@@ -93,6 +140,7 @@ test('slice2 P2: custody-red profile → factory returns null (cat NOT registere
     config: { defaultModel: 'Auto', clientId: 'qoder' },
     dataRoot,
     authSourceDir: auth,
+    binaryRoot: REPO_ROOT,
     log: { warn: () => {} },
     modelResolver: () => 'Auto',
   });
@@ -112,6 +160,7 @@ test('slice2 P2: custody-red profile → factory returns null (cat NOT registere
     config: { defaultModel: 'Auto', clientId: 'qoder' },
     dataRoot,
     authSourceDir: auth,
+    binaryRoot: REPO_ROOT,
     log: { warn: (m) => warns.push(m) },
     modelResolver: () => 'Auto',
   });
@@ -133,6 +182,7 @@ test('slice2: missing explicit defaultModel → null (P1-D: model is a hard type
     config: { defaultModel: 'Auto', clientId: 'qoder' },
     dataRoot: join(root, 'data'),
     authSourceDir: auth,
+    binaryRoot: REPO_ROOT,
     log: { warn: (m) => warns.push(m) },
     modelResolver: () => '  ',
   });
@@ -152,6 +202,7 @@ test('slice2: unreadable auth source → null (fail closed)', () => {
     config: { defaultModel: 'Auto', clientId: 'qoder' },
     dataRoot: join(root, 'data'),
     authSourceDir: join(root, 'missing-auth'),
+    binaryRoot: REPO_ROOT,
     log: { warn: (m) => warns.push(m) },
     modelResolver: () => 'Auto',
   });
@@ -314,6 +365,7 @@ test('slice2 r3: qoder capability projects to recognized provider AND carrier', 
     catId: 'cat_qoder_s2',
     config: { defaultModel: 'Auto', clientId: 'qoder' },
     dataRoot: join(mkdtempSync(join(tmpdir(), 'qoder-r3d-')), 'data'),
+    binaryRoot: REPO_ROOT,
     authSourceDir: (() => {
       const a = mkdtempSync(join(tmpdir(), 'qoder-r3d-auth-'));
       mkdirSync(join(a, '.auth'), { recursive: true });
@@ -351,6 +403,7 @@ test('slice2 r4: registerQoderAgentService seeds the WORKSPACE profile; runtime 
     writeFileSync(join(rtProfile, 'user'), 'stale-runtime-token');
     const projectRoot = join(runtime, 'packages', 'api');
     mkdirSync(projectRoot, { recursive: true });
+    writeControlledRuntimeAssets(runtime);
 
     const reg = factoryMod.registerQoderAgentService({
       catId: 'cat_qoder_s2',

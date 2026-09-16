@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import type { CatConfig, CatId } from '@cat-cafe/shared';
 import { getCatModel } from '../../../../../config/cat-models.js';
 import { qoderDurableConfigRoot, resolveQoderAuthSourceDir } from '../../../../../config/qoder-auth-source.js';
-import { QoderAgentService } from './QoderAgentService.js';
+import { QoderAgentService, validateQoderControlledRuntimePaths } from './QoderAgentService.js';
 import { ensureQoderRuntimeProfile, type QoderProfileFs } from './qoder-runtime-profile.js';
 
 export interface QoderServiceFactoryInput {
@@ -56,6 +56,18 @@ export function createQoderAgentService(input: QoderServiceFactoryInput): QoderA
     );
     return null;
   }
+  const binaryRoot = input.binaryRoot ?? (process.env.CAT_CAFE_RUNTIME_ROOT?.trim() || process.cwd());
+  const memoryMcpServerPath =
+    input.memoryMcpServerPath ?? join(binaryRoot, 'packages', 'mcp-server', 'dist', 'memory.js');
+  const shellSandboxWrapperPath =
+    input.shellSandboxWrapperPath ?? join(binaryRoot, 'scripts', 'qoder-shell-sandbox.mjs');
+  const runtimeAssets = validateQoderControlledRuntimePaths({ memoryMcpServerPath, shellSandboxWrapperPath });
+  if (!runtimeAssets.ok) {
+    warn(
+      `[qoder-factory] controlled runtime assets invalid: ${runtimeAssets.reason}. Cat not registered (fail closed).`,
+    );
+    return null;
+  }
   // P2 硬验收：构造期 ensure（custody + seed/swap + realpath containment 断言）
   const resolved = ensureQoderRuntimeProfile({
     dataRoot: input.dataRoot,
@@ -72,17 +84,13 @@ export function createQoderAgentService(input: QoderServiceFactoryInput): QoderA
   if (resolved.audit.warnings?.length) {
     warn(`[qoder-factory] runtime profile audit warnings for "${catId}": ${resolved.audit.warnings.join('; ')}`);
   }
-  const binaryRoot = input.binaryRoot ?? (process.env.CAT_CAFE_RUNTIME_ROOT?.trim() || process.cwd());
-  const memoryMcpServerPath =
-    input.memoryMcpServerPath ?? join(binaryRoot, 'packages', 'mcp-server', 'dist', 'memory.js');
-  const shellSandboxWrapperPath =
-    input.shellSandboxWrapperPath ?? join(binaryRoot, 'scripts', 'qoder-shell-sandbox.mjs');
   return new QoderAgentService({
     catId,
     profileDir: resolved.profileDir,
     model,
     toolAccess: 'controlled',
     memoryMcpServerPath,
+    runtimeRoot: binaryRoot,
     shellSandboxWrapperPath,
     ...(input.sandboxBinary ? { sandboxBinary: input.sandboxBinary } : {}),
   });

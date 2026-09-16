@@ -21,7 +21,10 @@
  *   P2-4 spawn 层异常不再从 iterable 逸出——统一转 qoder typed error 终态
  */
 
+import { spawnSync } from 'node:child_process';
 import {
+  accessSync,
+  constants,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -29,10 +32,11 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { tmpdir, userInfo } from 'node:os';
+import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import type { CatId } from '@cat-cafe/shared';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 import { formatCliNotFoundError, resolveCliCommand } from '../../../../../utils/cli-resolve.js';
@@ -166,11 +170,22 @@ export interface QoderAgentServiceConfig {
   toolAccess?: QoderToolAccess;
   /** split readonly memory MCP entrypoint（生产由注册工厂绑定到 runtime dist）。 */
   memoryMcpServerPath?: string;
+  /** Runtime root, explicit so memory policy scope never depends on wrapper placement. */
+  runtimeRoot?: string;
   /** Runtime-owned Qoder shell-prefix wrapper. */
   shellSandboxWrapperPath?: string;
   /** macOS Seatbelt binary（测试 seam；生产动态解析 sandbox-exec）。 */
   sandboxBinary?: string;
+  /** Unit-test seam only; production factory never injects this. */
+  sandboxProbe?: (input: QoderSandboxProbeInput) => void;
 }
+
+export type QoderSandboxProbeInput = {
+  readonly childEnv: Readonly<Record<string, string | null>>;
+  readonly denyCanaryPath: string;
+  readonly scratchDir: string;
+  readonly shellSandboxWrapperPath: string;
+};
 
 /** 构造 qodercn argv（stdin prompt 通道 + 显式 model + 安全 flag 全集） */
 export function buildQoderArgs(input: {
@@ -317,8 +332,24 @@ export function qoderInitGate(
 type QoderInvocationLease = {
   readonly mcpConfigPath: string;
   readonly childEnv: Record<string, string | null>;
+  readonly denyCanaryPath: string;
+  readonly scratchDir: string;
   dispose(): void;
 };
+
+type GitMetadataAccess = {
+  readonly readRoots: readonly string[];
+  readonly writeRoots: readonly string[];
+  readonly deniedWriteRoots: readonly string[];
+  readonly deniedWriteLiterals: readonly string[];
+};
+
+const EMPTY_GIT_METADATA_ACCESS: GitMetadataAccess = Object.freeze({
+  readRoots: Object.freeze([]),
+  writeRoots: Object.freeze([]),
+  deniedWriteRoots: Object.freeze([]),
+  deniedWriteLiterals: Object.freeze([]),
+});
 
 function canonicalPath(path: string): string {
   try {
@@ -336,34 +367,75 @@ function shellLiteral(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function externalGitMetadataRoots(workingDirectory: string): string[] {
+function protectedGitWrites(gitRoot: string): Pick<GitMetadataAccess, 'deniedWriteRoots' | 'deniedWriteLiterals'> {
+  return {
+    deniedWriteRoots: [join(gitRoot, 'hooks')],
+    deniedWriteLiterals: [join(gitRoot, 'config'), join(gitRoot, 'config.worktree')],
+  };
+}
+
+function externalGitMetadataAccess(workingDirectory: string): GitMetadataAccess {
   const dotGit = join(workingDirectory, '.git');
-  if (!existsSync(dotGit)) return [];
+  if (!existsSync(dotGit)) return EMPTY_GIT_METADATA_ACCESS;
   try {
-    if (lstatSync(dotGit).isDirectory()) return [canonicalPath(dotGit)];
+    if (lstatSync(dotGit).isDirectory()) {
+      const gitRoot = canonicalPath(dotGit);
+      return { readRoots: [gitRoot], writeRoots: [], ...protectedGitWrites(gitRoot) };
+    }
     const line = readFileSync(dotGit, 'utf8').split(/\r?\n/, 1)[0]?.trim() ?? '';
-    if (!line.startsWith('gitdir:')) return [];
+    if (!line.startsWith('gitdir:')) return EMPTY_GIT_METADATA_ACCESS;
     const gitDir = canonicalPath(resolve(workingDirectory, line.slice('gitdir:'.length).trim()));
     const commonDirFile = join(gitDir, 'commondir');
-    if (!existsSync(commonDirFile)) return [];
+    const backPointerFile = join(gitDir, 'gitdir');
+    if (!lstatSync(gitDir).isDirectory() || !existsSync(commonDirFile) || !existsSync(backPointerFile)) {
+      return EMPTY_GIT_METADATA_ACCESS;
+    }
     const commonDir = canonicalPath(resolve(gitDir, readFileSync(commonDirFile, 'utf8').trim()));
-    const worktreesRoot = join(commonDir, 'worktrees') + sep;
-    if (basename(commonDir) !== '.git' || !gitDir.startsWith(worktreesRoot)) return [];
-    return [gitDir, commonDir];
+    const worktreesRoot = join(commonDir, 'worktrees');
+    const backPointer = canonicalPath(resolve(gitDir, readFileSync(backPointerFile, 'utf8').trim()));
+    if (basename(commonDir) !== '.git' || dirname(gitDir) !== worktreesRoot || backPointer !== canonicalPath(dotGit)) {
+      // The workspace-owned .git file is attacker-writable. Only Git's reciprocal
+      // gitdir pointer proves that this metadata actually belongs to this workspace.
+      return EMPTY_GIT_METADATA_ACCESS;
+    }
+    const protectedWrites = protectedGitWrites(commonDir);
+    return {
+      readRoots: [gitDir, commonDir],
+      // A normal commit needs the worktree-local index/HEAD plus shared objects,
+      // refs and reflogs. It never needs recursive write over commonDir.
+      writeRoots: [gitDir, join(commonDir, 'objects'), join(commonDir, 'refs'), join(commonDir, 'logs')],
+      deniedWriteRoots: [...protectedWrites.deniedWriteRoots, join(gitDir, 'hooks')],
+      deniedWriteLiterals: [
+        ...protectedWrites.deniedWriteLiterals,
+        join(gitDir, 'config'),
+        join(gitDir, 'config.worktree'),
+        // These reciprocal identity files are the trust proof above. Git does
+        // not mutate them during ordinary add/commit, so keep them immutable.
+        backPointerFile,
+        commonDirFile,
+      ],
+    };
   } catch {
     // A malformed/untrusted .git indirection must not widen the sandbox.
-    return [];
+    return EMPTY_GIT_METADATA_ACCESS;
   }
 }
 
 function buildSeatbeltPolicy(input: {
   deniedReadRoots: readonly string[];
   allowedReadRoots: readonly string[];
+  allowedReadLiterals?: readonly string[];
+  deniedReadRootsFinal?: readonly string[];
+  deniedReadLiterals?: readonly string[];
   allowedWriteRoots: readonly string[];
+  allowedWriteLiterals?: readonly string[];
+  deniedWriteRoots?: readonly string[];
+  deniedWriteLiterals?: readonly string[];
 }): string {
   const unique = (values: readonly string[]) => [...new Set(values.map(canonicalPath))];
   const filters = (roots: readonly string[]) => unique(roots).map((root) => `(subpath ${seatbeltLiteral(root)})`);
-  const metadataAncestors = unique(input.allowedReadRoots).flatMap((root) => {
+  const readLiterals = unique(input.allowedReadLiterals ?? []);
+  const metadataAncestors = unique([...input.allowedReadRoots, ...readLiterals]).flatMap((root) => {
     const ancestors: string[] = [];
     let cursor = root;
     while (cursor !== dirname(cursor)) {
@@ -378,10 +450,63 @@ function buildSeatbeltPolicy(input: {
     ...filters(input.deniedReadRoots).map((filter) => `(deny file-read* ${filter})`),
     ...unique(metadataAncestors).map((root) => `(allow file-read-metadata (literal ${seatbeltLiteral(root)}))`),
     ...filters(input.allowedReadRoots).map((filter) => `(allow file-read* ${filter})`),
+    ...readLiterals.map((literal) => `(allow file-read* (literal ${seatbeltLiteral(literal)}))`),
+    ...filters(input.deniedReadRootsFinal ?? []).map((filter) => `(deny file-read* ${filter})`),
+    ...unique(input.deniedReadLiterals ?? []).map(
+      (literal) => `(deny file-read* (literal ${seatbeltLiteral(literal)}))`,
+    ),
     '(deny file-write*)',
     ...filters(input.allowedWriteRoots).map((filter) => `(allow file-write* ${filter})`),
+    ...unique(input.allowedWriteLiterals ?? []).map(
+      (literal) => `(allow file-write* (literal ${seatbeltLiteral(literal)}))`,
+    ),
+    ...filters(input.deniedWriteRoots ?? []).map((filter) => `(deny file-write* ${filter})`),
+    ...unique(input.deniedWriteLiterals ?? []).map(
+      (literal) => `(deny file-write* (literal ${seatbeltLiteral(literal)}))`,
+    ),
     '',
   ].join('\n');
+}
+
+function controlledToolPath(): string | null {
+  const inherited = process.env.PATH ?? null;
+  if (process.platform !== 'darwin') return inherited;
+  const result = spawnSync('/usr/bin/xcrun', ['--no-cache', '--find', 'git'], {
+    encoding: 'utf8',
+    timeout: 5_000,
+  });
+  if (result.status !== 0) return inherited;
+  const gitPath = result.stdout.trim();
+  if (!gitPath) return inherited;
+  try {
+    const gitBin = dirname(realpathSync(gitPath));
+    return inherited ? `${gitBin}${delimiter}${inherited}` : gitBin;
+  } catch {
+    return inherited;
+  }
+}
+
+export function validateQoderControlledRuntimePaths(input: {
+  memoryMcpServerPath: string;
+  shellSandboxWrapperPath: string;
+  sandboxBinary?: string;
+}): { ok: true } | { ok: false; reason: string } {
+  try {
+    const memory = lstatSync(input.memoryMcpServerPath);
+    if (!memory.isFile() || memory.isSymbolicLink())
+      return { ok: false, reason: 'memory MCP entrypoint is not a real file' };
+    const wrapper = lstatSync(input.shellSandboxWrapperPath);
+    if (!wrapper.isFile() || wrapper.isSymbolicLink())
+      return { ok: false, reason: 'shell-prefix wrapper is not a real file' };
+    accessSync(input.shellSandboxWrapperPath, constants.R_OK | constants.X_OK);
+    if (input.sandboxBinary) {
+      if (!statSync(input.sandboxBinary).isFile()) return { ok: false, reason: 'sandbox binary is not a file' };
+      accessSync(input.sandboxBinary, constants.X_OK);
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: `runtime sandbox asset unavailable: ${String(error)}` };
+  }
 }
 
 function buildControlledQoderEnv(input: {
@@ -397,6 +522,7 @@ function buildControlledQoderEnv(input: {
   for (const [key, value] of Object.entries(process.env)) {
     overrides[key] = CONTROLLED_ENV_PASSTHROUGH.has(key) || key.startsWith('LC_') ? (value ?? null) : null;
   }
+  overrides.PATH = controlledToolPath();
   overrides.HOME = join(input.scratchDir, 'home');
   overrides.TMPDIR = input.scratchDir;
   overrides.QODERCN_CONFIG_DIR = input.profileDir;
@@ -410,6 +536,7 @@ function buildControlledQoderEnv(input: {
 
 function createQoderInvocationLease(input: {
   memoryMcpServerPath: string;
+  runtimeRoot: string;
   shellSandboxWrapperPath: string;
   sandboxBinary: string;
   profileDir: string;
@@ -424,21 +551,42 @@ function createQoderInvocationLease(input: {
   mkdirSync(mcpDataDir, { recursive: true, mode: 0o700 });
 
   const workspace = canonicalPath(input.workingDirectory);
-  const profile = canonicalPath(input.profileDir);
-  const memoryRuntimeRoot = canonicalPath(dirname(dirname(input.shellSandboxWrapperPath)));
+  const runtimeRoot = canonicalPath(input.runtimeRoot);
+  const memoryDistRoot = canonicalPath(dirname(input.memoryMcpServerPath));
   const scratch = canonicalPath(scratchDir);
-  const operatorHome = process.env.HOME ? canonicalPath(process.env.HOME) : profile;
+  // Unlike os.homedir(), userInfo().homedir does not trust the mutable HOME
+  // environment variable. The sandbox must fence the OS account home even if
+  // a launcher omits or redirects HOME.
+  const operatorHome = canonicalPath(userInfo().homedir);
+  if (!operatorHome || operatorHome === dirname(operatorHome)) {
+    throw new Error('operator home is unresolvable or unsafe');
+  }
   const systemTmp = canonicalPath('/tmp');
   const deniedReadRoots = [operatorHome, systemTmp, canonicalPath(tmpdir())];
-  const gitRoots = externalGitMetadataRoots(workspace);
+  const protectedRuntimeReadRoots = [join(runtimeRoot, '.cat-cafe'), join(runtimeRoot, 'mcp-creds')];
+  const protectedRuntimeReadLiterals = [join(runtimeRoot, '.env'), join(runtimeRoot, '.env.local')];
+  const gitAccess = externalGitMetadataAccess(workspace);
   const workspacePolicyPath = join(dir, 'workspace.sb');
   const memoryPolicyPath = join(dir, 'memory.sb');
+  const memoryShimPath = join(dir, 'memory-shim');
+  const denyCanaryPath = join(dir, 'deny-canary');
+  writeFileSync(denyCanaryPath, 'sandbox-deny-canary', { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(
+    memoryShimPath,
+    `#!/bin/sh\nexec ${shellLiteral(process.execPath)} ${shellLiteral(input.memoryMcpServerPath)}\n`,
+    { encoding: 'utf8', mode: 0o700 },
+  );
   writeFileSync(
     workspacePolicyPath,
     buildSeatbeltPolicy({
       deniedReadRoots,
-      allowedReadRoots: [workspace, scratch, ...gitRoots],
-      allowedWriteRoots: [workspace, scratch, ...gitRoots],
+      allowedReadRoots: [workspace, scratch, ...gitAccess.readRoots],
+      deniedReadRootsFinal: protectedRuntimeReadRoots,
+      deniedReadLiterals: protectedRuntimeReadLiterals,
+      allowedWriteRoots: [workspace, scratch, ...gitAccess.writeRoots],
+      allowedWriteLiterals: ['/dev/null'],
+      deniedWriteRoots: gitAccess.deniedWriteRoots,
+      deniedWriteLiterals: gitAccess.deniedWriteLiterals,
     }),
     { encoding: 'utf8', mode: 0o600 },
   );
@@ -446,17 +594,22 @@ function createQoderInvocationLease(input: {
     memoryPolicyPath,
     buildSeatbeltPolicy({
       deniedReadRoots,
-      allowedReadRoots: [workspace, scratch, memoryRuntimeRoot],
+      // Never grant the whole runtime root: it contains deployment credentials.
+      // The readonly MCP needs only compiled code, dependencies and its immutable shim.
+      allowedReadRoots: [workspace, scratch, memoryDistRoot, join(runtimeRoot, 'node_modules')],
+      allowedReadLiterals: [
+        memoryShimPath,
+        input.memoryMcpServerPath,
+        process.execPath,
+        join(runtimeRoot, 'package.json'),
+        join(runtimeRoot, 'packages', 'mcp-server', 'package.json'),
+      ],
+      deniedReadRootsFinal: protectedRuntimeReadRoots,
+      deniedReadLiterals: protectedRuntimeReadLiterals,
       allowedWriteRoots: [scratch],
+      allowedWriteLiterals: ['/dev/null'],
     }),
     { encoding: 'utf8', mode: 0o600 },
-  );
-
-  const memoryShimPath = join(scratchDir, 'memory-shim');
-  writeFileSync(
-    memoryShimPath,
-    `#!/bin/sh\nexec ${shellLiteral(process.execPath)} ${shellLiteral(input.memoryMcpServerPath)}\n`,
-    { encoding: 'utf8', mode: 0o700 },
   );
 
   const mcpConfigPath = join(dir, 'mcp-config.json');
@@ -489,6 +642,8 @@ function createQoderInvocationLease(input: {
   let disposed = false;
   return {
     mcpConfigPath,
+    denyCanaryPath,
+    scratchDir,
     childEnv: buildControlledQoderEnv({
       profileDir: input.profileDir,
       scratchDir,
@@ -504,6 +659,27 @@ function createQoderInvocationLease(input: {
       rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+function effectiveChildEnv(overrides: Readonly<Record<string, string | null>>): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(overrides).filter((entry): entry is [string, string] => entry[1] !== null));
+}
+
+function runQoderSandboxProbe(input: QoderSandboxProbeInput): void {
+  const env = effectiveChildEnv(input.childEnv);
+  const allowPath = join(input.scratchDir, 'allow-canary');
+  const run = (command: string) =>
+    spawnSync(process.execPath, [input.shellSandboxWrapperPath, command], {
+      env,
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+  const allowed = run(`/usr/bin/touch ${shellLiteral(allowPath)}`);
+  if (allowed.status !== 0 || !existsSync(allowPath)) {
+    throw new Error(`qoder sandbox allow canary failed (exit=${String(allowed.status)})`);
+  }
+  const denied = run(`/bin/cat ${shellLiteral(input.denyCanaryPath)}`);
+  if (denied.status === 0) throw new Error('qoder sandbox deny canary failed open');
 }
 
 /** P1②：深冻 prepared request —— recorder 落档字节与后续出境字节不可分叉（Kimi 同款契约） */
@@ -588,14 +764,16 @@ export class QoderAgentService implements AgentService {
     let controlledRuntime:
       | {
           memoryMcpServerPath: string;
+          runtimeRoot: string;
           shellSandboxWrapperPath: string;
           sandboxBinary: string;
         }
       | undefined;
     if (toolAccess === 'controlled') {
       const memoryMcpServerPath = this.config.memoryMcpServerPath;
+      const runtimeRoot = this.config.runtimeRoot;
       const shellSandboxWrapperPath = this.config.shellSandboxWrapperPath;
-      if (!memoryMcpServerPath || !shellSandboxWrapperPath) {
+      if (!memoryMcpServerPath || !runtimeRoot || !shellSandboxWrapperPath) {
         yield this.error('qoder invoke rejected: controlled tools require runtime-owned MCP and shell sandbox paths');
         return;
       }
@@ -604,7 +782,16 @@ export class QoderAgentService implements AgentService {
         yield this.error('qoder invoke rejected: sandbox-exec is required for controlled Bash/Edit/Write access');
         return;
       }
-      controlledRuntime = { memoryMcpServerPath, shellSandboxWrapperPath, sandboxBinary };
+      const runtimeAssets = validateQoderControlledRuntimePaths({
+        memoryMcpServerPath,
+        shellSandboxWrapperPath,
+        sandboxBinary,
+      });
+      if (!runtimeAssets.ok) {
+        yield this.error(`qoder invoke rejected: ${runtimeAssets.reason}`);
+        return;
+      }
+      controlledRuntime = { memoryMcpServerPath, runtimeRoot, shellSandboxWrapperPath, sandboxBinary };
     }
     const expectedInit = toolAccess === 'controlled' ? CONTROLLED_INIT_EXPECTATION : DISABLED_INIT_EXPECTATION;
     let invocationLease: QoderInvocationLease | undefined;
@@ -613,11 +800,18 @@ export class QoderAgentService implements AgentService {
       if (controlledRuntime) {
         invocationLease = createQoderInvocationLease({
           memoryMcpServerPath: controlledRuntime.memoryMcpServerPath,
+          runtimeRoot: controlledRuntime.runtimeRoot,
           shellSandboxWrapperPath: controlledRuntime.shellSandboxWrapperPath,
           sandboxBinary: controlledRuntime.sandboxBinary,
           profileDir: this.config.profileDir,
           workingDirectory,
           callbackEnv: options?.callbackEnv,
+        });
+        (this.config.sandboxProbe ?? runQoderSandboxProbe)({
+          childEnv: invocationLease.childEnv,
+          denyCanaryPath: invocationLease.denyCanaryPath,
+          scratchDir: invocationLease.scratchDir,
+          shellSandboxWrapperPath: controlledRuntime.shellSandboxWrapperPath,
         });
       }
       const args = buildQoderArgs({
