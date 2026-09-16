@@ -12,15 +12,18 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -36,7 +39,14 @@ const SRC = join(here, '..', 'src', 'domains', 'cats', 'services', 'agents', 'pr
 
 const svcModule = await import(join(DIST, 'QoderAgentService.js'));
 const profileModule = await import(join(SRC, 'qoder-runtime-profile.ts'));
-const { buildQoderArgs, qoderInitGate, QoderAgentService } = svcModule;
+const {
+  buildQoderArgs,
+  qoderInitGate,
+  QODER_BASIC_TOOLS,
+  QODER_MEMORY_MCP_SERVER,
+  QODER_READONLY_MEMORY_TOOLS,
+  QoderAgentService,
+} = svcModule;
 const { ensureQoderRuntimeProfile, auditQoderProfile, isSafeCatIdSegment } = profileModule;
 const FIXTURE = join(here, 'fixtures', 'qoder');
 const fixtureLines = (name) =>
@@ -48,7 +58,7 @@ const CAT = 'cat_test_qoder';
 
 // ── argv：prompt 走 stdin，安全 flag 全集 ───────────────────────────────────
 test('buildQoderArgs: stdin prompt channel, no prompt text in argv, full safety set', () => {
-  const args = buildQoderArgs({ profileDir: '/p', model: 'qwen-max' });
+  const args = buildQoderArgs({ profileDir: '/p', model: 'qwen-max', toolAccess: 'disabled' });
   assert.deepEqual(args, [
     '-p',
     '-',
@@ -66,15 +76,59 @@ test('buildQoderArgs: stdin prompt channel, no prompt text in argv, full safety 
     '--setting-sources',
     'user',
   ]);
-  const resume = buildQoderArgs({ profileDir: '/p', model: 'qwen-max', sessionId: 'sid-1' });
+  const resume = buildQoderArgs({
+    profileDir: '/p',
+    model: 'qwen-max',
+    sessionId: 'sid-1',
+    toolAccess: 'disabled',
+  });
   assert.ok(resume.includes('-r') && resume.includes('sid-1'));
   assert.ok(!args.join(' ').includes('bypass_permissions'));
 });
 
 test('argv carries explicit -m model (round-2 P1-1: model is a typed input, actually sent)', () => {
-  const args = buildQoderArgs({ profileDir: '/p', model: 'qwen-max' });
+  const args = buildQoderArgs({ profileDir: '/p', model: 'qwen-max', toolAccess: 'disabled' });
   const i = args.indexOf('-m');
   assert.ok(i > 0 && args[i + 1] === 'qwen-max');
+});
+
+test('L2: controlled argv exposes the complete basic set and preauthorizes bounded write/shell + memory', () => {
+  assert.deepEqual(QODER_BASIC_TOOLS, ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write']);
+  assert.equal(QODER_MEMORY_MCP_SERVER, 'cat-cafe-memory');
+  assert.equal(QODER_READONLY_MEMORY_TOOLS.length, 12, 'split memory.js readonly surface is pinned exactly');
+
+  const args = buildQoderArgs({
+    profileDir: '/p',
+    model: 'Auto',
+    toolAccess: 'controlled',
+    mcpConfigPath: '/tmp/qoder-memory.json',
+    workingDirectory: '/tmp/workspace-l2',
+  });
+  const toolsIndex = args.indexOf('--tools');
+  const firstAllowed = args.indexOf('--allowed-tools');
+  assert.deepEqual(args.slice(toolsIndex + 1, firstAllowed), QODER_BASIC_TOOLS);
+  const allowed = args.flatMap((arg, i) => (arg === '--allowed-tools' ? [args[i + 1]] : []));
+  assert.deepEqual(
+    new Set(allowed),
+    new Set([
+      'Read(//tmp/workspace-l2/**)',
+      'Edit(//tmp/workspace-l2/**)',
+      'Bash',
+      ...QODER_READONLY_MEMORY_TOOLS.map((name) => `mcp__${QODER_MEMORY_MCP_SERVER}__${name}`),
+    ]),
+  );
+  assert.equal(args[args.indexOf('--mcp-config') + 1], '/tmp/qoder-memory.json');
+  assert.equal(args[args.indexOf('--allowed-mcp-server-names') + 1], QODER_MEMORY_MCP_SERVER);
+  assert.ok(!args.includes('nothing'));
+  assert.ok(!args.includes('bypass_permissions'));
+});
+
+test('L2: read-only execution policy collapses back to an empty built-in/MCP surface', () => {
+  const args = buildQoderArgs({ profileDir: '/p', model: 'Auto', toolAccess: 'disabled' });
+  assert.equal(args[args.indexOf('--tools') + 1], '');
+  assert.equal(args[args.indexOf('--allowed-mcp-server-names') + 1], 'nothing');
+  assert.ok(!args.includes('--allowed-tools'));
+  assert.ok(!args.includes('--mcp-config'));
 });
 
 // ── init 门：tools/mcp/model/版本 全锁 ─────────────────────────────────────
@@ -97,6 +151,33 @@ test('qoderInitGate: version, permissionMode, tools, mcp, model all enforced (mi
   delete noMcp.mcp_servers;
   assert.equal(qoderInitGate(noMcp, 'qwen-max').ok, false, 'missing mcp_servers field red');
   assert.equal(qoderInitGate({ ...good, model: 'Auto' }, 'qwen-max').ok, false, 'silent Auto fallback red');
+});
+
+test('L2: init gate accepts only the exact basic + readonly-memory surface and a connected memory server', () => {
+  const expectedTools = [
+    ...QODER_BASIC_TOOLS,
+    ...QODER_READONLY_MEMORY_TOOLS.map((name) => `mcp__${QODER_MEMORY_MCP_SERVER}__${name}`),
+  ];
+  const expected = { tools: expectedTools, mcpServerNames: [QODER_MEMORY_MCP_SERVER] };
+  const good = {
+    protocol_version: '1.4.0',
+    permissionMode: 'default',
+    model: 'Auto',
+    tools: [...expectedTools].reverse(),
+    mcp_servers: [{ name: QODER_MEMORY_MCP_SERVER, status: 'connected' }],
+  };
+  assert.equal(qoderInitGate(good, 'Auto', expected).ok, true, 'order-independent exact set passes');
+  assert.equal(qoderInitGate({ ...good, tools: expectedTools.slice(1) }, 'Auto', expected).ok, false, 'missing red');
+  assert.equal(qoderInitGate({ ...good, tools: [...expectedTools, 'Agent'] }, 'Auto', expected).ok, false, 'extra red');
+  assert.equal(
+    qoderInitGate(
+      { ...good, mcp_servers: [{ name: QODER_MEMORY_MCP_SERVER, status: 'disconnected' }] },
+      'Auto',
+      expected,
+    ).ok,
+    false,
+    'disconnected memory server red',
+  );
 });
 
 // round-3 P1④：精确匹配——大小写漂移不再放行（auth-error 夹具实测：未认证 CLI 回报
@@ -456,9 +537,205 @@ function makeSvc(overrides = {}) {
     model: 'Auto',
     binary: '/usr/bin/true',
     profileFs: greenProfileFs(),
+    toolAccess: 'disabled',
     ...overrides,
   });
 }
+
+function controlledFixture(name = 'tool-use') {
+  const expectedTools = [
+    ...QODER_BASIC_TOOLS,
+    ...QODER_READONLY_MEMORY_TOOLS.map((tool) => `mcp__${QODER_MEMORY_MCP_SERVER}__${tool}`),
+  ];
+  return fixtureLines(name).map((line) => {
+    const event = JSON.parse(line);
+    if (event.type === 'system' && event.subtype === 'init') {
+      event.tools = expectedTools;
+      event.mcp_servers = [{ name: QODER_MEMORY_MCP_SERVER, status: 'connected' }];
+    }
+    return JSON.stringify(event);
+  });
+}
+
+test('L2: controlled invoke fails closed before spawn when sandbox-exec is unavailable', async () => {
+  let spawned = 0;
+  const svc = makeSvc({
+    toolAccess: 'controlled',
+    memoryMcpServerPath: '/runtime/packages/mcp-server/dist/memory.js',
+    shellSandboxWrapperPath: '/runtime/scripts/qoder-shell-sandbox.mjs',
+    sandboxBinary: '',
+    spawnFn: () => {
+      spawned += 1;
+      return fakeChild(controlledFixture());
+    },
+  });
+
+  const out = await runInvoke(svc, 'read the fixture', { workingDirectory: '/tmp/workspace-l2' });
+
+  assert.equal(spawned, 0);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].type, 'error');
+  assert.match(out[0].error, /sandbox-exec is required/);
+});
+
+test('L2: controlled invoke delivers six basic tools and a strict readonly memory config, then cleans it up', async () => {
+  let mcpConfigPath;
+  let mcpConfig;
+  let mcpConfigMode;
+  let seenArgs;
+  let seenEnv;
+  let workspacePolicy;
+  let memoryPolicy;
+  let memoryShim;
+  let prepared;
+  const svc = makeSvc({
+    toolAccess: 'controlled',
+    memoryMcpServerPath: '/runtime/packages/mcp-server/dist/memory.js',
+    shellSandboxWrapperPath: '/runtime/scripts/qoder-shell-sandbox.mjs',
+    sandboxBinary: '/usr/bin/sandbox-exec',
+    spawnFn: (_cmd, args, options) => {
+      seenArgs = args;
+      seenEnv = options.env;
+      mcpConfigPath = args[args.indexOf('--mcp-config') + 1];
+      mcpConfig = JSON.parse(readFileSync(mcpConfigPath, 'utf8'));
+      mcpConfigMode = statSync(mcpConfigPath).mode & 0o777;
+      workspacePolicy = readFileSync(options.env.CAT_CAFE_QODER_WORKSPACE_POLICY, 'utf8');
+      memoryPolicy = readFileSync(options.env.CAT_CAFE_QODER_MEMORY_POLICY, 'utf8');
+      memoryShim = readFileSync(options.env.CAT_CAFE_QODER_MEMORY_SHIM, 'utf8');
+      return fakeChild(controlledFixture());
+    },
+  });
+  const callbackEnv = {
+    CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
+    CAT_CAFE_INVOCATION_ID: 'inv-l2',
+    CAT_CAFE_CALLBACK_TOKEN: 'secret-token',
+    CAT_CAFE_USER_ID: 'user-l2',
+    CAT_CAFE_CAT_ID: CAT,
+    CAT_CAFE_THREAD_ID: 'thread-l2',
+  };
+  const out = await runInvoke(svc, 'read the fixture', {
+    workingDirectory: '/tmp/workspace-l2',
+    callbackEnv,
+    beforeProviderLaunch: async (request) => {
+      prepared = request;
+      return { requestGenerationId: 'rg', generationOrdinal: 1, sessionId: 's' };
+    },
+  });
+
+  assert.ok(
+    out.some((m) => m.type === 'done'),
+    JSON.stringify(out),
+  );
+  assert.ok(seenArgs.includes('--allowed-tools'));
+  assert.deepEqual(Object.keys(mcpConfig.mcpServers), [QODER_MEMORY_MCP_SERVER]);
+  const memory = mcpConfig.mcpServers[QODER_MEMORY_MCP_SERVER];
+  assert.equal(memory.command, seenEnv.CAT_CAFE_QODER_MEMORY_SHIM);
+  assert.deepEqual(memory.args, []);
+  assert.equal(memory.env.CAT_CAFE_READONLY, 'true');
+  assert.equal(memory.env.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'false');
+  assert.equal(memory.env.ALLOWED_WORKSPACE_DIRS, '/tmp/workspace-l2');
+  assert.equal(memory.env.CAT_CAFE_API_URL, 'http://127.0.0.1:3004');
+  assert.equal(memory.env.CAT_CAFE_CALLBACK_TOKEN, undefined, 'readonly memory does not receive write credentials');
+  assert.equal(memory.env.CAT_CAFE_INVOCATION_ID, undefined, 'readonly memory does not receive invocation credentials');
+  assert.equal(mcpConfigMode, 0o600, 'invocation-scoped MCP config must be owner-readable only');
+  assert.equal(
+    seenEnv.CAT_CAFE_CALLBACK_TOKEN,
+    undefined,
+    'Qoder/Bash child env must not inherit callback credentials',
+  );
+  assert.equal(
+    seenEnv.CAT_CAFE_INVOCATION_ID,
+    undefined,
+    'Qoder/Bash child env must not inherit invocation credentials',
+  );
+  assert.equal(seenEnv.QODERCN_SHELL_PREFIX, '/runtime/scripts/qoder-shell-sandbox.mjs');
+  assert.match(workspacePolicy, /\(deny file-read\*/);
+  assert.match(workspacePolicy, /\(deny file-write\*\)/);
+  assert.match(workspacePolicy, /\/tmp\/workspace-l2/);
+  assert.match(memoryPolicy, /\/runtime/);
+  assert.match(memoryPolicy, /\(allow file-write\* \(subpath .*scratch/);
+  assert.match(memoryShim, /\/runtime\/packages\/mcp-server\/dist\/memory\.js/);
+  assert.equal(existsSync(mcpConfigPath), false, 'invocation-scoped MCP config must be removed after invocation');
+  assert.equal(existsSync(memory.command), false, 'memory shim must be removed after invocation');
+  assert.equal(existsSync(seenEnv.CAT_CAFE_QODER_WORKSPACE_POLICY), false, 'sandbox policy must be removed');
+  assert.equal(prepared.runtime.toolExecutionPolicy, 'workspace_write');
+  assert.deepEqual(prepared.tools.declaredServerNames, [QODER_MEMORY_MCP_SERVER]);
+});
+
+test(
+  'L2: macOS shell-prefix sandbox allows workspace writes and blocks sibling read/write',
+  { skip: process.platform !== 'darwin' },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), 'qoder-l2-seatbelt-'));
+    const workspace = join(root, 'workspace');
+    const inside = join(workspace, 'inside.txt');
+    const outside = join(root, 'outside.txt');
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(outside, 'outside-secret');
+    const wrapperPath = join(here, '..', '..', '..', 'scripts', 'qoder-shell-sandbox.mjs');
+    let canary;
+    try {
+      const svc = makeSvc({
+        toolAccess: 'controlled',
+        memoryMcpServerPath: join(here, '..', '..', 'mcp-server', 'dist', 'memory.js'),
+        shellSandboxWrapperPath: wrapperPath,
+        sandboxBinary: '/usr/bin/sandbox-exec',
+        spawnFn: (_cmd, _args, options) => {
+          const run = (command) =>
+            spawnSync(process.execPath, [wrapperPath, command], { env: options.env, stdio: 'ignore' }).status;
+          canary = {
+            insideWrite: run(`/usr/bin/touch '${inside}'`),
+            outsideWrite: run(`/usr/bin/touch '${outside}.new'`),
+            outsideRead: run(`/bin/cat '${outside}'`),
+          };
+          return fakeChild(controlledFixture());
+        },
+      });
+      const out = await runInvoke(svc, 'sandbox canary', { workingDirectory: workspace });
+      assert.ok(
+        out.some((message) => message.type === 'done'),
+        JSON.stringify(out),
+      );
+      assert.equal(canary.insideWrite, 0);
+      assert.notEqual(canary.outsideWrite, 0);
+      assert.notEqual(canary.outsideRead, 0);
+      assert.equal(existsSync(inside), true);
+      assert.equal(existsSync(`${outside}.new`), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test('L2: route read-only policy is supported and launches the legacy empty surface', async () => {
+  let seenArgs;
+  let prepared;
+  const svc = makeSvc({
+    toolAccess: 'controlled',
+    memoryMcpServerPath: '/runtime/packages/mcp-server/dist/memory.js',
+    spawnFn: (_cmd, args) => {
+      seenArgs = args;
+      return fakeChild(fixtureLines('success'));
+    },
+  });
+  assert.equal(svc.supportsToolExecutionPolicy({ mode: 'read_only', replayDeniedToolNames: [] }), true);
+  const out = await runInvoke(svc, 'summarize only', {
+    workingDirectory: '/tmp',
+    toolExecutionPolicy: { mode: 'read_only', replayDeniedToolNames: [] },
+    beforeProviderLaunch: async (request) => {
+      prepared = request;
+      return { requestGenerationId: 'rg', generationOrdinal: 1, sessionId: 's' };
+    },
+  });
+  assert.ok(
+    out.some((m) => m.type === 'done'),
+    JSON.stringify(out),
+  );
+  assert.equal(seenArgs[seenArgs.indexOf('--tools') + 1], '');
+  assert.ok(!seenArgs.includes('--mcp-config'));
+  assert.equal(prepared.runtime.toolExecutionPolicy, 'read_only');
+  assert.deepEqual(prepared.tools.declaredServerNames, []);
+});
 
 test('invoke: workingDirectory missing → fail closed, no spawn', async () => {
   let spawned = 0;

@@ -35,6 +35,14 @@ export interface QoderServiceFactoryInput {
    * 构造期直接读 config.defaultModel 会忽略 env override）。
    */
   modelResolver?: (catId: CatId) => string | undefined;
+  /** Runtime binary root; defaults to CAT_CAFE_RUNTIME_ROOT, then process.cwd(). */
+  binaryRoot?: string;
+  /** Test seam for the split readonly memory MCP entrypoint. */
+  memoryMcpServerPath?: string;
+  /** Test seam for the runtime-owned Qoder shell-prefix sandbox wrapper. */
+  shellSandboxWrapperPath?: string;
+  /** Test seam for macOS Seatbelt. */
+  sandboxBinary?: string;
 }
 
 export function createQoderAgentService(input: QoderServiceFactoryInput): QoderAgentService | null {
@@ -64,7 +72,20 @@ export function createQoderAgentService(input: QoderServiceFactoryInput): QoderA
   if (resolved.audit.warnings?.length) {
     warn(`[qoder-factory] runtime profile audit warnings for "${catId}": ${resolved.audit.warnings.join('; ')}`);
   }
-  return new QoderAgentService({ catId, profileDir: resolved.profileDir, model });
+  const binaryRoot = input.binaryRoot ?? (process.env.CAT_CAFE_RUNTIME_ROOT?.trim() || process.cwd());
+  const memoryMcpServerPath =
+    input.memoryMcpServerPath ?? join(binaryRoot, 'packages', 'mcp-server', 'dist', 'memory.js');
+  const shellSandboxWrapperPath =
+    input.shellSandboxWrapperPath ?? join(binaryRoot, 'scripts', 'qoder-shell-sandbox.mjs');
+  return new QoderAgentService({
+    catId,
+    profileDir: resolved.profileDir,
+    model,
+    toolAccess: 'controlled',
+    memoryMcpServerPath,
+    shellSandboxWrapperPath,
+    ...(input.sandboxBinary ? { sandboxBinary: input.sandboxBinary } : {}),
+  });
 }
 
 /**
@@ -82,6 +103,9 @@ export interface RegisterQoderAgentServiceInput {
   log?: { warn: (msg: string) => void };
   fs?: QoderProfileFs;
   modelResolver?: (catId: CatId) => string | undefined;
+  memoryMcpServerPath?: string;
+  shellSandboxWrapperPath?: string;
+  sandboxBinary?: string;
 }
 
 export type RegisterQoderAgentServiceResult = { ok: true; service: QoderAgentService } | { ok: false; reason: string };
@@ -103,6 +127,10 @@ export function registerQoderAgentService(input: RegisterQoderAgentServiceInput)
     dataRoot,
     authSourceDir: auth.authSourceDir,
     log: { warn },
+    binaryRoot: process.env.CAT_CAFE_RUNTIME_ROOT?.trim() || input.projectRoot,
+    ...(input.memoryMcpServerPath ? { memoryMcpServerPath: input.memoryMcpServerPath } : {}),
+    ...(input.shellSandboxWrapperPath ? { shellSandboxWrapperPath: input.shellSandboxWrapperPath } : {}),
+    ...(input.sandboxBinary ? { sandboxBinary: input.sandboxBinary } : {}),
     ...(input.fs ? { fs: input.fs } : {}),
     ...(input.modelResolver ? { modelResolver: input.modelResolver } : {}),
   });

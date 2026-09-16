@@ -21,6 +21,18 @@
  *   P2-4 spawn 层异常不再从 iterable 逸出——统一转 qoder typed error 终态
  */
 
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import type { CatId } from '@cat-cafe/shared';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 import { formatCliNotFoundError, resolveCliCommand } from '../../../../../utils/cli-resolve.js';
@@ -34,6 +46,7 @@ import type {
   AgentServiceOptions,
   PreparedProviderRequestV1,
   TokenUsage,
+  ToolExecutionPolicy,
 } from '../../types.js';
 import { type RawArchiveSink, sanitizeRawEvent } from './codex-audit-hooks.js';
 import {
@@ -55,6 +68,56 @@ const log = createModuleLogger('qoder-agent-service');
 
 const REQUIRED_PERMISSION_MODE = 'default';
 
+/**
+ * F317 L2 operator decision: expose the complete basic coding surface at once.
+ * Deliberately excludes orchestration/generation surfaces (Agent, Cron, Task*,
+ * Image*, Video*, Workflow, Skill): those are not "basic coding tools".
+ */
+export const QODER_BASIC_TOOLS = Object.freeze(['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write'] as const);
+
+export const QODER_MEMORY_MCP_SERVER = 'cat-cafe-memory';
+
+/**
+ * Exact readonly surface of the split `packages/mcp-server/dist/memory.js`
+ * entrypoint. A cross-package test pins this duplicate projection to
+ * buildMemoryTools({ readonly: true }) so registry drift fails CI.
+ */
+export const QODER_READONLY_MEMORY_TOOLS = Object.freeze([
+  'cat_cafe_graph_resolve',
+  'cat_cafe_list_external_runtime_sessions',
+  'cat_cafe_list_recent',
+  'cat_cafe_list_session_chain',
+  'cat_cafe_read_external_runtime_session',
+  'cat_cafe_read_file_slice',
+  'cat_cafe_read_invocation_detail',
+  'cat_cafe_read_meeting_artifact',
+  'cat_cafe_read_session_digest',
+  'cat_cafe_read_session_events',
+  'cat_cafe_run_perspective',
+  'cat_cafe_search_evidence',
+] as const);
+
+export type QoderToolAccess = 'controlled' | 'disabled';
+
+const QODER_MEMORY_TOOL_NAMES = Object.freeze(
+  QODER_READONLY_MEMORY_TOOLS.map((name) => `mcp__${QODER_MEMORY_MCP_SERVER}__${name}`),
+);
+
+type QoderInitExpectation = {
+  readonly tools: readonly string[];
+  readonly mcpServerNames: readonly string[];
+};
+
+const DISABLED_INIT_EXPECTATION: QoderInitExpectation = Object.freeze({
+  tools: Object.freeze([]),
+  mcpServerNames: Object.freeze([]),
+});
+
+const CONTROLLED_INIT_EXPECTATION: QoderInitExpectation = Object.freeze({
+  tools: Object.freeze([...QODER_BASIC_TOOLS, ...QODER_MEMORY_TOOL_NAMES]),
+  mcpServerNames: Object.freeze([QODER_MEMORY_MCP_SERVER]),
+});
+
 const DENIED_ENV_KEYS = new Set([
   'NODE_OPTIONS',
   'NODE_PRELOAD',
@@ -65,6 +128,25 @@ const DENIED_ENV_KEYS = new Set([
   'LD_PRELOAD',
   'LD_LIBRARY_PATH',
 ]);
+
+const CONTROLLED_ENV_PASSTHROUGH = new Set([
+  'PATH',
+  'LANG',
+  'TERM',
+  'COLORTERM',
+  'NO_COLOR',
+  'TZ',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'NODE_EXTRA_CA_CERTS',
+]);
+
+const READONLY_MEMORY_IDENTITY_ENV_KEYS = [
+  'CAT_CAFE_API_URL',
+  'CAT_CAFE_USER_ID',
+  'CAT_CAFE_CAT_ID',
+  'CAT_CAFE_THREAD_ID',
+] as const;
 
 export interface QoderAgentServiceConfig {
   catId: CatId;
@@ -80,13 +162,62 @@ export interface QoderAgentServiceConfig {
   profileFs?: QoderProfileFs;
   /** #780 先例：raw NDJSON 落档 sink（默认 CliRawArchive） */
   rawArchive?: RawArchiveSink;
+  /** L2 产品路径 = controlled；disabled 仅用于只读策略与历史夹具回放。 */
+  toolAccess?: QoderToolAccess;
+  /** split readonly memory MCP entrypoint（生产由注册工厂绑定到 runtime dist）。 */
+  memoryMcpServerPath?: string;
+  /** Runtime-owned Qoder shell-prefix wrapper. */
+  shellSandboxWrapperPath?: string;
+  /** macOS Seatbelt binary（测试 seam；生产动态解析 sandbox-exec）。 */
+  sandboxBinary?: string;
 }
 
 /** 构造 qodercn argv（stdin prompt 通道 + 显式 model + 安全 flag 全集） */
-export function buildQoderArgs(input: { profileDir: string; model: string; sessionId?: string }): string[] {
+export function buildQoderArgs(input: {
+  profileDir: string;
+  model: string;
+  sessionId?: string;
+  toolAccess: QoderToolAccess;
+  mcpConfigPath?: string;
+  workingDirectory?: string;
+}): string[] {
   const args = ['-p', '-', '-m', input.model, '-o', 'stream-json', '--config-dir', input.profileDir];
   if (input.sessionId) args.push('-r', input.sessionId);
-  args.push('--strict-mcp-config', '--allowed-mcp-server-names', 'nothing', '--tools', '', '--setting-sources', 'user');
+  if (input.toolAccess === 'disabled') {
+    args.push(
+      '--strict-mcp-config',
+      '--allowed-mcp-server-names',
+      'nothing',
+      '--tools',
+      '',
+      '--setting-sources',
+      'user',
+    );
+    return args;
+  }
+  if (!input.mcpConfigPath) throw new Error('controlled qoder tools require a readonly memory MCP config');
+  if (!input.workingDirectory) throw new Error('controlled qoder tools require a workspace permission root');
+  args.push('--tools', ...QODER_BASIC_TOOLS);
+  const normalizedWorkspace = resolve(input.workingDirectory).replaceAll('\\', '/');
+  const absoluteWorkspacePattern = `//${normalizedWorkspace.replace(/^\/+/, '')}/**`;
+  const allowedTools = [
+    `Read(${absoluteWorkspacePattern})`,
+    `Edit(${absoluteWorkspacePattern})`,
+    'Bash',
+    ...QODER_MEMORY_TOOL_NAMES,
+  ];
+  for (const tool of allowedTools) {
+    args.push('--allowed-tools', tool);
+  }
+  args.push(
+    '--mcp-config',
+    input.mcpConfigPath,
+    '--strict-mcp-config',
+    '--allowed-mcp-server-names',
+    QODER_MEMORY_MCP_SERVER,
+    '--setting-sources',
+    'user',
+  );
   return args;
 }
 
@@ -125,10 +256,19 @@ export function buildQoderEnvOverrides(input: {
   return overrides;
 }
 
-/** init 门（任何 assistant 事件之前，fail closed）。tools/mcp 必须存在且精确为空数组。 */
+function exactStringSet(actual: unknown[], expected: readonly string[]): boolean {
+  if (!actual.every((value): value is string => typeof value === 'string')) return false;
+  if (actual.length !== expected.length) return false;
+  const sortedActual = [...actual].sort();
+  const sortedExpected = [...expected].sort();
+  return sortedActual.every((value, index) => value === sortedExpected[index]);
+}
+
+/** init 门（任何 assistant 事件之前，fail closed）。tools/mcp 必须与本次请求精确全等。 */
 export function qoderInitGate(
   initEvent: unknown,
   requestedModel: string,
+  expected: QoderInitExpectation = DISABLED_INIT_EXPECTATION,
 ): { ok: true; cliDrift?: string; model?: string } | { ok: false; reason: string } {
   const version = checkQoderProtocolVersion(initEvent);
   if (!version.ok) return version;
@@ -138,10 +278,25 @@ export function qoderInitGate(
     return { ok: false, reason: `permissionMode ${String(e.permissionMode)} != ${REQUIRED_PERMISSION_MODE}` };
   }
   if (!Array.isArray(e.tools)) return { ok: false, reason: 'init.tools missing (not an array)' };
-  if (e.tools.length !== 0) return { ok: false, reason: `tools not empty: ${JSON.stringify(e.tools)}` };
+  if (!exactStringSet(e.tools, expected.tools)) {
+    return { ok: false, reason: `tools mismatch: ${JSON.stringify(e.tools)}` };
+  }
   if (!Array.isArray(e.mcp_servers)) return { ok: false, reason: 'init.mcp_servers missing (not an array)' };
-  if (e.mcp_servers.length !== 0)
-    return { ok: false, reason: `mcp_servers not empty: ${JSON.stringify(e.mcp_servers)}` };
+  const mcpNames: string[] = [];
+  for (const raw of e.mcp_servers) {
+    if (typeof raw !== 'object' || raw === null) {
+      return { ok: false, reason: `invalid mcp server entry: ${JSON.stringify(raw)}` };
+    }
+    const server = raw as Record<string, unknown>;
+    if (typeof server.name !== 'string') return { ok: false, reason: 'mcp server name missing' };
+    if (server.status !== 'connected') {
+      return { ok: false, reason: `mcp server ${server.name} status ${String(server.status)} != connected` };
+    }
+    mcpNames.push(server.name);
+  }
+  if (!exactStringSet(mcpNames, expected.mcpServerNames)) {
+    return { ok: false, reason: `mcp server set mismatch: ${JSON.stringify(mcpNames)}` };
+  }
   // P1④ 精确匹配（大小写敏感）。L1 夹具实测：未认证 CLI 回报小写 auto（auth-error），
   // 静默回落回报 Auto（silent-model-fallback）——任何与请求值不同的字符串（含大小写
   // 漂移）都是 fail closed；配置值必须等于 CLI 精确回报值。
@@ -156,6 +311,198 @@ export function qoderInitGate(
     ok: true,
     cliDrift: 'cliDrift' in version ? version.cliDrift : undefined,
     model: actualModel,
+  };
+}
+
+type QoderInvocationLease = {
+  readonly mcpConfigPath: string;
+  readonly childEnv: Record<string, string | null>;
+  dispose(): void;
+};
+
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function seatbeltLiteral(value: string): string {
+  return JSON.stringify(value);
+}
+
+function shellLiteral(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function externalGitMetadataRoots(workingDirectory: string): string[] {
+  const dotGit = join(workingDirectory, '.git');
+  if (!existsSync(dotGit)) return [];
+  try {
+    if (lstatSync(dotGit).isDirectory()) return [canonicalPath(dotGit)];
+    const line = readFileSync(dotGit, 'utf8').split(/\r?\n/, 1)[0]?.trim() ?? '';
+    if (!line.startsWith('gitdir:')) return [];
+    const gitDir = canonicalPath(resolve(workingDirectory, line.slice('gitdir:'.length).trim()));
+    const commonDirFile = join(gitDir, 'commondir');
+    if (!existsSync(commonDirFile)) return [];
+    const commonDir = canonicalPath(resolve(gitDir, readFileSync(commonDirFile, 'utf8').trim()));
+    const worktreesRoot = join(commonDir, 'worktrees') + sep;
+    if (basename(commonDir) !== '.git' || !gitDir.startsWith(worktreesRoot)) return [];
+    return [gitDir, commonDir];
+  } catch {
+    // A malformed/untrusted .git indirection must not widen the sandbox.
+    return [];
+  }
+}
+
+function buildSeatbeltPolicy(input: {
+  deniedReadRoots: readonly string[];
+  allowedReadRoots: readonly string[];
+  allowedWriteRoots: readonly string[];
+}): string {
+  const unique = (values: readonly string[]) => [...new Set(values.map(canonicalPath))];
+  const filters = (roots: readonly string[]) => unique(roots).map((root) => `(subpath ${seatbeltLiteral(root)})`);
+  const metadataAncestors = unique(input.allowedReadRoots).flatMap((root) => {
+    const ancestors: string[] = [];
+    let cursor = root;
+    while (cursor !== dirname(cursor)) {
+      ancestors.push(cursor);
+      cursor = dirname(cursor);
+    }
+    return ancestors;
+  });
+  return [
+    '(version 1)',
+    '(allow default)',
+    ...filters(input.deniedReadRoots).map((filter) => `(deny file-read* ${filter})`),
+    ...unique(metadataAncestors).map((root) => `(allow file-read-metadata (literal ${seatbeltLiteral(root)}))`),
+    ...filters(input.allowedReadRoots).map((filter) => `(allow file-read* ${filter})`),
+    '(deny file-write*)',
+    ...filters(input.allowedWriteRoots).map((filter) => `(allow file-write* ${filter})`),
+    '',
+  ].join('\n');
+}
+
+function buildControlledQoderEnv(input: {
+  profileDir: string;
+  scratchDir: string;
+  shellSandboxWrapperPath: string;
+  sandboxBinary: string;
+  workspacePolicyPath: string;
+  memoryPolicyPath: string;
+  memoryShimPath: string;
+}): Record<string, string | null> {
+  const overrides: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    overrides[key] = CONTROLLED_ENV_PASSTHROUGH.has(key) || key.startsWith('LC_') ? (value ?? null) : null;
+  }
+  overrides.HOME = join(input.scratchDir, 'home');
+  overrides.TMPDIR = input.scratchDir;
+  overrides.QODERCN_CONFIG_DIR = input.profileDir;
+  overrides.QODERCN_SHELL_PREFIX = input.shellSandboxWrapperPath;
+  overrides.CAT_CAFE_QODER_SANDBOX_BIN = input.sandboxBinary;
+  overrides.CAT_CAFE_QODER_WORKSPACE_POLICY = input.workspacePolicyPath;
+  overrides.CAT_CAFE_QODER_MEMORY_POLICY = input.memoryPolicyPath;
+  overrides.CAT_CAFE_QODER_MEMORY_SHIM = input.memoryShimPath;
+  return overrides;
+}
+
+function createQoderInvocationLease(input: {
+  memoryMcpServerPath: string;
+  shellSandboxWrapperPath: string;
+  sandboxBinary: string;
+  profileDir: string;
+  workingDirectory: string;
+  callbackEnv?: Readonly<Record<string, string>>;
+}): QoderInvocationLease {
+  const dir = mkdtempSync(join(tmpdir(), 'cat-cafe-qoder-l2-'));
+  const scratchDir = join(dir, 'scratch');
+  const homeDir = join(scratchDir, 'home');
+  const mcpDataDir = join(scratchDir, 'mcp-data');
+  mkdirSync(homeDir, { recursive: true, mode: 0o700 });
+  mkdirSync(mcpDataDir, { recursive: true, mode: 0o700 });
+
+  const workspace = canonicalPath(input.workingDirectory);
+  const profile = canonicalPath(input.profileDir);
+  const memoryRuntimeRoot = canonicalPath(dirname(dirname(input.shellSandboxWrapperPath)));
+  const scratch = canonicalPath(scratchDir);
+  const operatorHome = process.env.HOME ? canonicalPath(process.env.HOME) : profile;
+  const systemTmp = canonicalPath('/tmp');
+  const deniedReadRoots = [operatorHome, systemTmp, canonicalPath(tmpdir())];
+  const gitRoots = externalGitMetadataRoots(workspace);
+  const workspacePolicyPath = join(dir, 'workspace.sb');
+  const memoryPolicyPath = join(dir, 'memory.sb');
+  writeFileSync(
+    workspacePolicyPath,
+    buildSeatbeltPolicy({
+      deniedReadRoots,
+      allowedReadRoots: [workspace, scratch, ...gitRoots],
+      allowedWriteRoots: [workspace, scratch, ...gitRoots],
+    }),
+    { encoding: 'utf8', mode: 0o600 },
+  );
+  writeFileSync(
+    memoryPolicyPath,
+    buildSeatbeltPolicy({
+      deniedReadRoots,
+      allowedReadRoots: [workspace, scratch, memoryRuntimeRoot],
+      allowedWriteRoots: [scratch],
+    }),
+    { encoding: 'utf8', mode: 0o600 },
+  );
+
+  const memoryShimPath = join(scratchDir, 'memory-shim');
+  writeFileSync(
+    memoryShimPath,
+    `#!/bin/sh\nexec ${shellLiteral(process.execPath)} ${shellLiteral(input.memoryMcpServerPath)}\n`,
+    { encoding: 'utf8', mode: 0o700 },
+  );
+
+  const mcpConfigPath = join(dir, 'mcp-config.json');
+  const env: Record<string, string> = {
+    ALLOWED_WORKSPACE_DIRS: workspace,
+    CAT_CAFE_DATA_DIR: mcpDataDir,
+    CAT_CAFE_READONLY: 'true',
+    // Incidental agent-key vars inherited by qodercn must never widen this mount.
+    CAT_CAFE_READONLY_AGENT_KEY_UNION: 'false',
+    HOME: homeDir,
+    TMPDIR: scratchDir,
+  };
+  for (const key of READONLY_MEMORY_IDENTITY_ENV_KEYS) {
+    const value = input.callbackEnv?.[key];
+    if (value) env[key] = value;
+  }
+  writeFileSync(
+    mcpConfigPath,
+    JSON.stringify({
+      mcpServers: {
+        [QODER_MEMORY_MCP_SERVER]: {
+          command: memoryShimPath,
+          args: [],
+          env,
+        },
+      },
+    }),
+    { encoding: 'utf8', mode: 0o600 },
+  );
+  let disposed = false;
+  return {
+    mcpConfigPath,
+    childEnv: buildControlledQoderEnv({
+      profileDir: input.profileDir,
+      scratchDir,
+      shellSandboxWrapperPath: input.shellSandboxWrapperPath,
+      sandboxBinary: input.sandboxBinary,
+      workspacePolicyPath,
+      memoryPolicyPath,
+      memoryShimPath,
+    }),
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      rmSync(dir, { recursive: true, force: true });
+    },
   };
 }
 
@@ -180,6 +527,10 @@ export class QoderAgentService implements AgentService {
   constructor(config: QoderAgentServiceConfig) {
     this.config = config;
     this.rawArchive = config.rawArchive ?? new CliRawArchive();
+  }
+
+  supportsToolExecutionPolicy(policy: ToolExecutionPolicy): boolean {
+    return policy.mode === 'read_only';
   }
 
   async *invoke(prompt: string, options?: AgentServiceOptions): AsyncIterable<AgentMessage> {
@@ -228,100 +579,146 @@ export class QoderAgentService implements AgentService {
       }
       binary = resolved;
     }
-    const args = buildQoderArgs({
-      profileDir: this.config.profileDir,
-      model: this.config.model,
-      sessionId: options?.sessionId,
-    });
-    // P1④：显式 -m provenance —— argv 断言不过即 0 spawn
+
+    const configuredToolAccess = this.config.toolAccess ?? 'disabled';
+    const toolAccess: QoderToolAccess =
+      configuredToolAccess === 'disabled' || options?.toolExecutionPolicy?.mode === 'read_only'
+        ? 'disabled'
+        : 'controlled';
+    let controlledRuntime:
+      | {
+          memoryMcpServerPath: string;
+          shellSandboxWrapperPath: string;
+          sandboxBinary: string;
+        }
+      | undefined;
+    if (toolAccess === 'controlled') {
+      const memoryMcpServerPath = this.config.memoryMcpServerPath;
+      const shellSandboxWrapperPath = this.config.shellSandboxWrapperPath;
+      if (!memoryMcpServerPath || !shellSandboxWrapperPath) {
+        yield this.error('qoder invoke rejected: controlled tools require runtime-owned MCP and shell sandbox paths');
+        return;
+      }
+      const sandboxBinary = this.config.sandboxBinary ?? resolveCliCommand('sandbox-exec') ?? undefined;
+      if (!sandboxBinary) {
+        yield this.error('qoder invoke rejected: sandbox-exec is required for controlled Bash/Edit/Write access');
+        return;
+      }
+      controlledRuntime = { memoryMcpServerPath, shellSandboxWrapperPath, sandboxBinary };
+    }
+    const expectedInit = toolAccess === 'controlled' ? CONTROLLED_INIT_EXPECTATION : DISABLED_INIT_EXPECTATION;
+    let invocationLease: QoderInvocationLease | undefined;
+
     try {
-      assertExplicitModelFlag(args, this.config.model);
-    } catch (err) {
-      yield this.error(`qoder invoke rejected: ${String(err)}`);
-      return;
-    }
-
-    // F299：正文/runtime/tool surface 形成后、spawn 前过 recorder —— 拒绝即 0 spawn；
-    // 落档字节深冻（P1②），recorder 之后核验未被改写
-    if (options?.beforeProviderLaunch) {
-      const prepared = freezePreparedRequest({
-        v: 1,
-        message: { accuracy: 'exact', body: prompt },
-        nativeInstructions: [],
-        runtime: {
-          provider: 'qoder',
-          carrier: 'qodercn-cli',
-          model: this.config.model,
-          protocol: 'stream-json/1.4.0',
-          toolExecutionPolicy: 'read_only',
-        },
-        tools: { finalSurface: 'declared_only', declaredServerNames: [] },
-        providerNativeVisibility: 'unknown',
-      });
-      try {
-        await options.beforeProviderLaunch(prepared);
-      } catch (err) {
-        yield this.error(`qoder invoke rejected by provider-request recorder: ${String(err)}`);
-        return;
+      if (controlledRuntime) {
+        invocationLease = createQoderInvocationLease({
+          memoryMcpServerPath: controlledRuntime.memoryMcpServerPath,
+          shellSandboxWrapperPath: controlledRuntime.shellSandboxWrapperPath,
+          sandboxBinary: controlledRuntime.sandboxBinary,
+          profileDir: this.config.profileDir,
+          workingDirectory,
+          callbackEnv: options?.callbackEnv,
+        });
       }
-      if (!('body' in prepared.message) || prepared.message.body !== prompt) {
-        yield this.error('qoder invoke rejected: prepared request mutated across recorder boundary');
-        return;
-      }
-    }
-
-    // P1③：spawn/stdin(EPIPE 守卫)/有界终止/exit 等待/liveness 全部由共享 spawnCli 拥有；
-    // 门内 fail-closed 终止（init 门红/时序违规）通过 break 触发其 finally 的
-    // CliTerminationController 有界终止（SIGTERM → 等待 → SIGKILL，计时器 unref）
-    const cliOpts = {
-      command: binary,
-      args,
-      cwd: workingDirectory,
-      stdinInput: prompt,
-      env: buildQoderEnvOverrides({
+      const args = buildQoderArgs({
         profileDir: this.config.profileDir,
-        callbackEnv: options?.callbackEnv,
-        accountEnv: options?.accountEnv,
-      }),
-      managedArgvFlags: [
-        '-p',
-        '-m',
-        '-o',
-        '--config-dir',
-        '--strict-mcp-config',
-        '--allowed-mcp-server-names',
-        '--tools',
-        '--setting-sources',
-      ],
-      ...(signal ? { signal } : {}),
-      ...(options?.invocationId ? { invocationId: options.invocationId } : {}),
-      ...(options?.cliSessionId ? { cliSessionId: options.cliSessionId } : {}),
-      ...(options?.livenessProbe ? { livenessProbe: options.livenessProbe } : {}),
-      ...(options?.parentSpan ? { parentSpan: options.parentSpan } : {}),
-      // round-4 P1-2：与 Claude/Kimi/OpenCode 共享接线——rawArchivePath 让 __cliTimeout
-      // 诊断能定位到本 invocation 的 raw archive
-      ...(options?.invocationId && this.rawArchive.getPath
-        ? { rawArchivePath: this.rawArchive.getPath(options.invocationId) }
-        : {}),
-    };
-    // F089 seam（round-4 P1-2）：per-invocation spawnCliOverride（tmux-based spawner 等）
-    // 优先于共享 spawnCli —— 路由/acceptance 只能经 options 注入，不得绕死
-    const events = options?.spawnCliOverride
-      ? options.spawnCliOverride(cliOpts)
-      : spawnCli(cliOpts, this.config.spawnFn ? { spawnFn: this.config.spawnFn } : undefined);
+        model: this.config.model,
+        sessionId: options?.sessionId,
+        toolAccess,
+        ...(invocationLease ? { mcpConfigPath: invocationLease.mcpConfigPath, workingDirectory } : {}),
+      });
+      // P1④：显式 -m provenance —— argv 断言不过即 0 spawn
+      assertExplicitModelFlag(args, this.config.model);
 
-    try {
-      yield* this.consumeStream(events, options);
+      // F299：正文/runtime/tool surface 形成后、spawn 前过 recorder —— 拒绝即 0 spawn；
+      // 落档字节深冻（P1②），recorder 之后核验未被改写
+      if (options?.beforeProviderLaunch) {
+        const prepared = freezePreparedRequest({
+          v: 1,
+          message: { accuracy: 'exact', body: prompt },
+          nativeInstructions: [],
+          runtime: {
+            provider: 'qoder',
+            carrier: 'qodercn-cli',
+            model: this.config.model,
+            protocol: 'stream-json/1.4.0',
+            toolExecutionPolicy: toolAccess === 'controlled' ? 'workspace_write' : 'read_only',
+          },
+          tools: {
+            finalSurface: 'declared_only',
+            declaredServerNames: toolAccess === 'controlled' ? [QODER_MEMORY_MCP_SERVER] : [],
+          },
+          providerNativeVisibility: 'unknown',
+        });
+        try {
+          await options.beforeProviderLaunch(prepared);
+        } catch (err) {
+          yield this.error(`qoder invoke rejected by provider-request recorder: ${String(err)}`);
+          return;
+        }
+        if (!('body' in prepared.message) || prepared.message.body !== prompt) {
+          yield this.error('qoder invoke rejected: prepared request mutated across recorder boundary');
+          return;
+        }
+      }
+
+      // P1③：spawn/stdin(EPIPE 守卫)/有界终止/exit 等待/liveness 全部由共享 spawnCli 拥有；
+      // 门内 fail-closed 终止（init 门红/时序违规）通过 break 触发其 finally 的
+      // CliTerminationController 有界终止（SIGTERM → 等待 → SIGKILL，计时器 unref）
+      const cliOpts = {
+        command: binary,
+        args,
+        cwd: workingDirectory,
+        stdinInput: prompt,
+        env:
+          invocationLease?.childEnv ??
+          buildQoderEnvOverrides({
+            profileDir: this.config.profileDir,
+            callbackEnv: options?.callbackEnv,
+            accountEnv: options?.accountEnv,
+          }),
+        managedArgvFlags: [
+          '-p',
+          '-m',
+          '-o',
+          '--config-dir',
+          '--mcp-config',
+          '--strict-mcp-config',
+          '--allowed-mcp-server-names',
+          '--tools',
+          '--allowed-tools',
+          '--setting-sources',
+        ],
+        ...(signal ? { signal } : {}),
+        ...(options?.invocationId ? { invocationId: options.invocationId } : {}),
+        ...(options?.cliSessionId ? { cliSessionId: options.cliSessionId } : {}),
+        ...(options?.livenessProbe ? { livenessProbe: options.livenessProbe } : {}),
+        ...(options?.parentSpan ? { parentSpan: options.parentSpan } : {}),
+        // round-4 P1-2：与 Claude/Kimi/OpenCode 共享接线——rawArchivePath 让 __cliTimeout
+        // 诊断能定位到本 invocation 的 raw archive
+        ...(options?.invocationId && this.rawArchive.getPath
+          ? { rawArchivePath: this.rawArchive.getPath(options.invocationId) }
+          : {}),
+      };
+      // F089 seam（round-4 P1-2）：per-invocation spawnCliOverride（tmux-based spawner 等）
+      // 优先于共享 spawnCli —— 路由/acceptance 只能经 options 注入，不得绕死
+      const events = options?.spawnCliOverride
+        ? options.spawnCliOverride(cliOpts)
+        : spawnCli(cliOpts, this.config.spawnFn ? { spawnFn: this.config.spawnFn } : undefined);
+
+      yield* this.consumeStream(events, expectedInit, toolAccess, options);
     } catch (err) {
-      // round-4 P2-4：spawn 层异常（spawnFn 同步 throw / ENOENT 等，共享 spawnCli 明确会
-      // throw spawn error）不得从 AgentService iterable 逸出 —— 统一转 qoder typed error 终态
       yield this.error(`qoder spawn failed: ${String(err)}`);
+    } finally {
+      invocationLease?.dispose();
     }
   }
 
   /** 真·流式：init 过门后逐条 yield；终态在流后收敛判定 */
   private async *consumeStream(
     events: AsyncGenerator<unknown, void, undefined>,
+    expectedInit: QoderInitExpectation,
+    toolAccess: QoderToolAccess,
     options?: AgentServiceOptions,
   ): AsyncIterable<AgentMessage> {
     const { catId, model } = this.config;
@@ -366,7 +763,7 @@ export class QoderAgentService implements AgentService {
 
       const e = event as Record<string, unknown>;
       if (e.type === 'system' && e.subtype === 'init') {
-        const gate = qoderInitGate(event, model);
+        const gate = qoderInitGate(event, model, expectedInit);
         if (!gate.ok) {
           resultError = `qoder init gate failed (fail closed): ${gate.reason}`;
           break; // 触发 spawnCli finally 的共享有界终止
@@ -418,7 +815,11 @@ export class QoderAgentService implements AgentService {
       return;
     }
     if (unavailableToolRequestSeen) {
-      yield this.error('qoder requested a tool while the tool surface is disabled; no tool was executed');
+      yield this.error(
+        toolAccess === 'disabled'
+          ? 'qoder requested a tool while the tool surface is disabled; no tool was executed'
+          : 'qoder emitted an unavailable/unexecuted textual tool request; no tool was executed',
+      );
       return;
     }
 
