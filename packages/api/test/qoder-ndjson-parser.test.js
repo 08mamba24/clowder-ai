@@ -247,3 +247,98 @@ test('round11 P2: orphan </tool_calls> tail truncates fail-closed at the marker'
   assert.equal(texts[0].content, '结论在前。');
   assert.ok(!texts[0].content.includes('tool_calls'), 'orphan tail and everything after it are dropped');
 });
+
+// ══ round-12（tool_call 单数方言泄漏：operator 报告，live session a06547db 实证形状）═══
+// 2026-09-16：Qwen3.8-Max 经 qodercn 把 Qwen 原生函数调用方言 <tool_call>…
+// </tool_call>（<function=…>/<parameter…> 子标记，实测含畸形 <parameter= 片段）
+// 当纯文本吐进 assistant text 块（stop_reason end_turn）。round-11 的复数
+// <tool_calls> 守护面对它 0 命中——红测实证：运行中的 #27+P2 dist 对 live
+// 样本 verbatim 转发（protocol leaked: true）。语义与 round-11 完全同族：
+// 剥离成对跨度、剥空不 emit、残留 fail-closed 截断。夹具为形状复刻（合成
+// 描述文本），不回灌项目数据。
+const TOOL_CALL_BLOCK = [
+  '<tool_call>',
+  '<function=Bash>',
+  '<parameter=',
+  '<parameter name="description">Probe environment prerequisites for the queued check',
+  '</parameter>',
+  '</function>',
+  '</tool_call>',
+].join('\n');
+
+test('round12: live-shape singular <tool_call> span forwards only the real text', () => {
+  const event = {
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: `收到传球。先检查环境和凭证。\n\n${TOOL_CALL_BLOCK}` }],
+    },
+  };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1, 'exactly one real-text message');
+  assert.equal(texts[0].content, '收到传球。先检查环境和凭证。');
+  assert.ok(!texts[0].content.includes('<tool'), 'singular dialect must not leak');
+});
+
+test('round12: protocol-only singular <tool_call> block emits no text message', () => {
+  const event = {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: TOOL_CALL_BLOCK }] },
+  };
+  const out = transformQoderEvent(event, CAT);
+  assert.equal(out, null, 'protocol-only singular block must not become a chat message');
+});
+
+test('round12: dangling unclosed <tool_call> truncates fail-closed at the marker', () => {
+  const truncated = TOOL_CALL_BLOCK.slice(0, TOOL_CALL_BLOCK.indexOf('</tool_call>'));
+  const event = {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: `我先查一下再回。\n\n${truncated}` }] },
+  };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1, 'text before the dangling marker survives');
+  assert.equal(texts[0].content, '我先查一下再回。');
+  assert.ok(!texts[0].content.includes('<tool'), 'truncated singular block must not leak');
+});
+
+test('round12: orphan </tool_call> tail truncates fail-closed at the marker', () => {
+  const event = {
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: '结论在前。\n</tool_call>\n截断后不应再出现的内容' }],
+    },
+  };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1);
+  assert.equal(texts[0].content, '结论在前。');
+  assert.ok(!texts[0].content.includes('tool_call'), 'orphan tail and everything after it are dropped');
+});
+
+test('round12 control: plural and singular spans in one block both strip, real text survives', () => {
+  const plural = [
+    '<tool_calls>',
+    '<tool>',
+    '<tool_name>bash</tool_name>',
+    '<command>which qodercn</command>',
+    '</tool>',
+    '</tool_calls>',
+  ].join('\n');
+  const event = {
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: `前文\n\n${plural}\n中间真文本\n\n${TOOL_CALL_BLOCK}\n后文` }],
+    },
+  };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1);
+  assert.ok(!texts[0].content.includes('<tool'), 'neither dialect leaks');
+  assert.match(texts[0].content, /^前文/);
+  assert.match(texts[0].content, /后文$/);
+  assert.ok(texts[0].content.includes('中间真文本'), 'real text between spans survives');
+});
