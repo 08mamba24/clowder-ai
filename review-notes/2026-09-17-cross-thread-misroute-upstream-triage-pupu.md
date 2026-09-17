@@ -79,6 +79,10 @@ Round-2 verdict：**P1 撤回，push back 接受**；谱谱编号空间解释与
 - **① 跟踪 #577/#1397**：仍待有回调凭证的会话注册 issue tracking（→ 17:21 UTC 已注册，见 §八.b）；**PR 出现并合入后再评估 sync**（fork 落后 upstream/main 约 2 commit，sync 成本低）。
 - **② 向 upstream 补充证据/评论**：英文草稿已交 operator（内容：迁移血统 PR 号陷阱考据 + 本地 sender-side 缓解描述，无私有坐标），待其以家里 GitHub 身份发布。
 
+### 八.a 原拟稿（历史保留，已被三轮 review 修订）
+
+原拟稿措辞：「当当前 thread 已有可路由目标猫（roster 在册且未禁用）时，carrier 必须留在当前 thread：直接行首 @句柄 或 post_message；禁止以目标猫名字/最近活跃度为关键词 list_threads 选择投递 thread；禁止在无 subject 归属证据时调用 cross_post_message。跨 thread 投递仅允许：目标 thread 拥有该工作主体、用户/feature 显式给出 threadId、或有可验证的归属转移证据。」——round-2 review 指出其谓词错误（以「有可路由猫」而非「本 thread 拥有主体」为留下条件，与 l3-routing-rules 的 F号 owner-thread 特例冲突），已修订；原拟稿留存于此仅为审计对照。
+
 ### 八.b 推送落地与 ① 注册（2026-09-17 17:22 UTC 补记，点点/dsh-v41-flash）
 
 operator 17:18 UTC 指示「点点环境里已有 gh 权限，push 任务直接转给她」，本猫执行并复核：
@@ -91,10 +95,6 @@ operator 17:18 UTC 指示「点点环境里已有 gh 权限，push 任务直接�
 - **② 状态不变**：公开评论需 operator 放行「以 `08mamba24` 身份发布」；本猫已具备执行能力（`gh` 已认证，scopes 含 `repo`），草稿见 16:30 UTC 消息，GO 即可发。
 
 [点点/dsh-v41-flash🐾]
-
-### 八.a 原拟稿（历史保留，已被三轮 review 修订）
-
-原拟稿措辞：「当当前 thread 已有可路由目标猫（roster 在册且未禁用）时，carrier 必须留在当前 thread：直接行首 @句柄 或 post_message；禁止以目标猫名字/最近活跃度为关键词 list_threads 选择投递 thread；禁止在无 subject 归属证据时调用 cross_post_message。跨 thread 投递仅允许：目标 thread 拥有该工作主体、用户/feature 显式给出 threadId、或有可验证的归属转移证据。」——round-2 review 指出其谓词错误（以「有可路由猫」而非「本 thread 拥有主体」为留下条件，与 l3-routing-rules 的 F号 owner-thread 特例冲突），已修订；原拟稿留存于此仅为审计对照。
 
 ## 九、复审裁决记录
 
