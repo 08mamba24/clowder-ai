@@ -20,6 +20,7 @@ const {
   extractQoderUsage,
   checkQoderProtocolVersion,
   mapQoderMcpStatus,
+  qoderEventContainsTextToolProtocol,
 } = await import(
   process.env.QODER_PARSER_SRC
     ? '../src/domains/cats/services/agents/providers/qoder-ndjson-parser.ts'
@@ -389,4 +390,119 @@ test('round13: unclosed fence is not exempt — residue rules still apply to its
   assert.equal(texts.length, 1);
   assert.ok(!texts[0].content.includes('<tool'), 'protocol inside an unclosed fence still strips (not exempt)');
   assert.match(texts[0].content, /^开始引用：/, 'text before the unclosed fence survives');
+});
+
+// ══ round-14（点点复审 F1/F2：① 豁免谓词过宽——孤儿 ``` 与后续闭栏并段后
+// 整段被豁免，裸协议原样漏出；② gate detector 裸扫原文无围栏感知——围栏内
+// 正当引用照样把 turn 判死）═══ 修法：围栏判定改逐行状态机（行首 ``` 翻转
+// 开/闭），任何未闭合 → 全消息丧失豁免（fail-closed）；detector 与 parser
+// 共用同一剥离 helper（单一真相源）。
+test('round14 F2: a closed fence elsewhere does not exempt an unclosed fence tail (A7)', () => {
+  const text = `start\n\`\`\`\n${TOOL_CALL_BLOCK}\n\n\`\`\`\nok\n\`\`\``;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1);
+  assert.ok(!texts[0].content.includes('<tool'), 'unclosed fence tail must not be exempt — protocol strips');
+  assert.match(texts[0].content, /^start/, 'text before the first fence survives');
+});
+
+test('round14 F2: bare protocol near odd fences strips (A4/A5 shapes)', () => {
+  const mid = `一\n\`\`\`a\nx\n\`\`\`\n二\n\`\`\`\n${TOOL_CALL_BLOCK}`;
+  const tail = `一\n\`\`\`\n${TOOL_CALL_BLOCK}\n\`\`\`\n二\n\`\`\`\nbare tail`;
+  for (const text of [mid, tail]) {
+    const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+    const out = transformQoderEvent(event, CAT);
+    const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+    assert.equal(texts.length, 1);
+    assert.ok(!texts[0].content.includes('<tool'), 'bare protocol never rides a neighboring fence exemption');
+  }
+});
+
+test('round14 F1: fenced quote does not trip the unexecuted-tool gate', () => {
+  const text = `讨论方言：\n\n\`\`\`\n${TOOL_CALL_BLOCK}\n\`\`\`\n\n如上。`;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  assert.equal(
+    qoderEventContainsTextToolProtocol(event),
+    false,
+    'a legitimate fenced quote must not fail the turn (gate shares the fence-aware strip)',
+  );
+});
+
+test('round14 F1: bare protocol still trips the unexecuted-tool gate', () => {
+  const text = `先这样。\n\n${TOOL_CALL_BLOCK}`;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  assert.equal(qoderEventContainsTextToolProtocol(event), true, 'bare protocol outside fences still gates');
+});
+
+test('round14 F1 control: protocol outside a balanced fence still trips the gate', () => {
+  const text = `示例：\n\n\`\`\`bash\nls\n\`\`\`\n\n然后：\n\n${TOOL_CALL_BLOCK}`;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  assert.equal(qoderEventContainsTextToolProtocol(event), true);
+});
+
+// ══ round-15（点点复审 round-14 的 P1/P2/P3：segment-join 在消息贴围栏边界时
+// 注入原文没有的 \n，detector 的裸字符串不等比较把格式漂移读成协议剥离——
+// 真实夹具（纯围栏零协议）端到端把 turn 判死。修法：行数组重建 + 显式
+// removed 布尔，detector 用布尔不用字符串比较；闭合栏谓词收紧为裸栏）═══
+test('round15 P1: fence-only text (no protocol at all) must not gate', () => {
+  const text = '```\nF317-DETERMINISTIC-LINE-1\n```'; // 逐字取自 current/tool-use.jsonl
+  assert.equal(
+    qoderEventContainsTextToolProtocol({ type: 'assistant', message: { content: [{ type: 'text', text }] } }),
+    false,
+  );
+  assert.equal(qoderEventContainsTextToolProtocol({ type: 'result', result: text }), false);
+});
+
+test('round15 P2: a legit fenced quote that ends the message must not gate', () => {
+  const text = `讨论：\n\n\`\`\`\n${TOOL_CALL_BLOCK}\n\`\`\``;
+  assert.equal(
+    qoderEventContainsTextToolProtocol({ type: 'assistant', message: { content: [{ type: 'text', text }] } }),
+    false,
+  );
+});
+
+test('round15 P2: a legit fenced quote that starts the message must not gate', () => {
+  const text = `\`\`\`\n${TOOL_CALL_BLOCK}\n\`\`\`\n\n补充说明在后面。`;
+  assert.equal(
+    qoderEventContainsTextToolProtocol({ type: 'assistant', message: { content: [{ type: 'text', text }] } }),
+    false,
+  );
+});
+
+test('round15 P1: fence-boundary messages without protocol pass through byte-identical', () => {
+  const trailing = 'a\n```\nb\n```';
+  const leading = '```\nb\n```\na';
+  for (const text of [trailing, leading]) {
+    const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+    const out = transformQoderEvent(event, CAT);
+    const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+    assert.equal(texts.length, 1);
+    assert.equal(texts[0].content, text, 'no injected separators — byte-identical passthrough');
+    assert.equal(qoderEventContainsTextToolProtocol(event), false);
+  }
+});
+
+test('round15 P3: adjacent fences keep byte-identical spacing', () => {
+  const text = 'a\n```\nb\n```\n```\nc\n```';
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1);
+  assert.equal(texts[0].content, text);
+  assert.equal(qoderEventContainsTextToolProtocol(event), false);
+});
+
+test('round15 P3: info-string line inside a fence is content, not a closer', () => {
+  const text = `\
+\`\`\`\`markdown
+\`\`\`js
+${TOOL_CALL_BLOCK}
+\`\`\`\``;
+  const event = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
+  assert.equal(qoderEventContainsTextToolProtocol(event), false, 'pseudo-closer must not void the exemption');
+  const out = transformQoderEvent(event, CAT);
+  const texts = (Array.isArray(out) ? out : [out]).filter((m) => m && m.type === 'text');
+  assert.equal(texts.length, 1);
+  assert.ok(texts[0].content.includes('<tool_call>'), 'quoted protocol inside the outer fence stays verbatim');
 });
