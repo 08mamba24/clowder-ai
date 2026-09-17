@@ -269,18 +269,24 @@ describe('SystemPromptBuilder', () => {
       'cross_post_message description must mention routing creds (targetCats or line-start @)',
     );
     // F193 round-2 (upstream #577/#1397): carrier is decided by subject ownership —
-    // never by recipient name/activity; feature-id lookup to locate an owner thread stays legal.
+    // stay-in-thread must be conditioned on the current thread OWNING the subject
+    // (not on a routable target cat being present); cat-name/activity carrier lookup
+    // is forbidden; feature-id lookup exists only to locate the owner thread.
     assert.ok(
-      prompt.match(/cross_post_message[^\n]*主体归属决定/),
-      'cross_post_message description must state the subject-ownership carrier rule',
+      prompt.match(/cross_post_message[^\n]*本 thread 拥有该主体[^\n]*留本 thread/),
+      'stay-in-thread must be conditioned on current-thread subject ownership (本 thread 拥有该主体→留本 thread)',
+    );
+    assert.ok(
+      !prompt.match(/cross_post_message[^\n]*可路由目标猫/),
+      'the rejected routable-cat stay-in-thread predicate must not return',
     );
     assert.ok(
       prompt.match(/cross_post_message[^\n]*禁按猫名/),
       'cross_post_message description must forbid carrier selection by cat name/activity',
     );
     assert.ok(
-      prompt.match(/cross_post_message[^\n]*F号/),
-      'cross_post_message description must keep feature-id owner-thread lookup legal',
+      prompt.match(/cross_post_message[^\n]*F号 定位 owner thread/),
+      'feature-id lookup must be scoped to locating the owner thread',
     );
     assert.ok(
       prompt.match(/cross_post_message[^\n]*爪感差[^\n]*sourceMessageId[^\n]*(?:F128|propose_thread)/i),

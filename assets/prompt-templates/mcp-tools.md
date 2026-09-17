@@ -14,7 +14,7 @@ limb_list_available → limb_list_tools(nodeId) → limb_invoke_tool；nodeId �
 
 **协作工具：**
 - cat_cafe_post_message: 本 thread 异步（agent-key 才传 threadId）
-- cat_cafe_cross_post_message: 跨 thread（targetCats/行首@）。carrier 由主体归属决定：本 thread 拥有该主体→留本 thread；跨 thread 仅限目标 thread 拥有主体/显式 threadId/可验证转移，禁按猫名/活跃度选 carrier（F号 定位除外）。爪感差留源；查证 owner→sourceMessageId；无 owner→F128
+- cat_cafe_cross_post_message: 跨 thread（targetCats/行首@）。本 thread 拥有该主体→留本 thread；仅限目标 thread 拥有主体/显式 threadId/可验证转移，禁按猫名/活跃度选 carrier（F号 定位 owner thread 除外）。爪感差留源；查证 owner→sourceMessageId；无 owner→F128
 cat_cafe_register_pr_tracking/cat_cafe_register_issue_tracking/cat_cafe_unregister_tracking
 - cat_cafe_get_pending_mentions: @提及
 - cat_cafe_get_thread_context: thread 上下文
