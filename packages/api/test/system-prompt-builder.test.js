@@ -13,7 +13,7 @@ import { catRegistry } from '@cat-cafe/shared';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPO_ROOT_TEMPLATE = resolve(REPO_ROOT, 'cat-template.json');
 const CAT_TEMPLATE_PATH = REPO_ROOT_TEMPLATE;
-const FULL_RUNTIME_PROMPT_CHAR_BUDGET = 7200; // 6500→6700→7050→7200: gemini35 + gpt-pro + zcode/dsh roster growth
+const FULL_RUNTIME_PROMPT_CHAR_BUDGET = 7300; // 6500→6700→7050→7200→7300: gemini35 + gpt-pro + zcode/dsh + qoder roster growth
 
 function assertWithinFullRuntimePromptBudget(prompt) {
   assert.ok(

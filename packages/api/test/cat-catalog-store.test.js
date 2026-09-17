@@ -440,7 +440,7 @@ describe('cat-catalog-store', () => {
     assert.equal(runtimeCatalog.roster?.glm52?.family, 'dragon-li', 'glm52 roster entry should be persisted');
   });
 
-  it('backfills allowlisted grok-build, dsh, and zcode breeds into a fresh runtime catalog', () => {
+  it('backfills allowlisted grok-build, dsh, zcode, and qoder breeds into a fresh runtime catalog', () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-harness-'));
     const templatePath = join(projectRoot, 'cat-template.json');
     const template = makeF127BootstrapTemplate();
@@ -508,6 +508,28 @@ describe('cat-catalog-store', () => {
           },
         ],
       },
+      {
+        id: 'qoder',
+        catId: 'qoder',
+        name: '俄罗斯蓝猫 Qoder',
+        displayName: '俄罗斯蓝猫 Qoder',
+        nickname: '银线',
+        avatar: '/avatars/default.png',
+        color: { primary: '#7A8BA6', secondary: '#E4EAF2' },
+        mentionPatterns: ['@qoder', '@银线'],
+        roleDescription: 'Qoder CN L2 controlled tools',
+        defaultVariantId: 'qoder-default',
+        variants: [
+          {
+            id: 'qoder-default',
+            catId: 'qoder',
+            clientId: 'qoder',
+            defaultModel: 'Qwen3.8-Max',
+            mcpSupport: true,
+            cli: { command: 'qodercn', outputFormat: 'json' },
+          },
+        ],
+      },
     );
     template.roster['grok-build'] = {
       family: 'grok-build',
@@ -530,6 +552,13 @@ describe('cat-catalog-store', () => {
       available: true,
       evaluation: 'ZCode ADE',
     };
+    template.roster.qoder = {
+      family: 'qoder',
+      roles: ['coder'],
+      lead: false,
+      available: true,
+      evaluation: 'Qoder CN L2',
+    };
     writeFileSync(templatePath, JSON.stringify(template, null, 2));
 
     const catalogPath = bootstrapCatCatalog(projectRoot, templatePath);
@@ -538,9 +567,11 @@ describe('cat-catalog-store', () => {
     assert.ok(breedIds.includes('grok-build'), 'allowlisted grok-build breed should be persisted');
     assert.ok(breedIds.includes('dsh'), 'allowlisted dsh breed should be persisted');
     assert.ok(breedIds.includes('zcode'), 'allowlisted zcode breed should be persisted');
+    assert.ok(breedIds.includes('qoder'), 'allowlisted qoder breed should be persisted');
     assert.equal(runtimeCatalog.roster?.['grok-build']?.family, 'grok-build');
     assert.equal(runtimeCatalog.roster?.dsh?.family, 'dsh');
     assert.equal(runtimeCatalog.roster?.zcode?.family, 'zcode');
+    assert.equal(runtimeCatalog.roster?.qoder?.family, 'qoder');
   });
 
   it('does not re-add deleted glm52 allowlisted breed during bootstrap or resolved reads', async () => {

@@ -306,6 +306,13 @@
       "lead": false,
       "available": true,
       "evaluation": "智谱 ZCode ADE；官方无 ACP，Hub 经 in-repo adapter 转 app-server。橘猫 @glm 仍走 OpenCode"
+    },
+    "qoder": {
+      "family": "qoder",
+      "roles": ["coder"],
+      "lead": false,
+      "available": true,
+      "evaluation": "Qoder CN（Qwen 家族）俄罗斯蓝猫银线；家里首个 L2 受控工具面（六工具经 Seatbelt 沙箱 + 只读 memory）"
     }
   },
   "reviewPolicy": {
@@ -1285,6 +1292,44 @@
             "pool": {
               "maxLiveProcesses": 1
             }
+          },
+          "contextBudget": {
+            "maxPromptTokens": 400000,
+            "maxContextTokens": 360000,
+            "maxMessages": 200,
+            "maxContentLengthPerMsg": 100000
+          }
+        }
+      ]
+    },
+    {
+      "id": "qoder",
+      "catId": "qoder",
+      "name": "俄罗斯蓝猫 Qoder",
+      "displayName": "俄罗斯蓝猫 Qoder",
+      "nickname": "银线",
+      "avatar": "/avatars/default.png",
+      "color": {
+        "primary": "#7A8BA6",
+        "secondary": "#E4EAF2"
+      },
+      "mentionPatterns": ["@qoder", "@银线"],
+      "roleDescription": "Qoder CN CLI（qoderclicn）Qwen 家族成员；家里首个 L2 受控工具面",
+      "teamStrengths": "Qwen 系 coding、六基础工具沙箱执行、只读记忆面",
+      "caution": "L2 受控面：仅 Bash/Edit/Glob/Grep/Read/Write 经 Seatbelt 沙箱 + 只读 cat-cafe-memory 12 工具；无 Agent/Cron/Task/Image/Video/Workflow/Skill。沙箱 darwin-only，缺 sandbox-exec/运行资产/canary 均 fail closed。账号须先绑定（clientId=qoder OAuth）——未登录时 apiKeySource=none 必失败。CLI 验证面版本 1.1.51。",
+      "defaultVariantId": "qoder-default",
+      "variants": [
+        {
+          "id": "qoder-default",
+          "catId": "qoder",
+          "clientId": "qoder",
+          "defaultModel": "Qwen3.8-Max",
+          "mcpSupport": true,
+          "personality": "性格由本人自述，暂留白",
+          "strengths": ["coding", "tool-use"],
+          "cli": {
+            "command": "qodercn",
+            "outputFormat": "json"
           },
           "contextBudget": {
             "maxPromptTokens": 400000,

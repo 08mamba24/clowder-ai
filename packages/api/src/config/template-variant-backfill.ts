@@ -53,6 +53,10 @@ const TEMPLATE_BREED_BACKFILL_ALLOWLIST = new Set([
     catId: 'grok-build',
   }),
   templateBreedKey({
+    breedId: 'qoder',
+    catId: 'qoder',
+  }),
+  templateBreedKey({
     breedId: 'dsh',
     catId: 'dsh',
   }),
