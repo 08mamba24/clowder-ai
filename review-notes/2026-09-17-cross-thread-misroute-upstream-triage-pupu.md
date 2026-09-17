@@ -75,9 +75,22 @@ Round-2 verdict：**P1 撤回，push back 接受**；谱谱编号空间解释与
 
 ## 八、建议与待办（2026-09-17 17:07 UTC 更新：③ 已落地并终审放行）
 
-- **③ 本地发送侧硬规则 —— 已落地**（operator 16:30 UTC 批准，按 ③→②→① 顺序执行）。最终措辞经三轮 review 演化为 ownership-first 谓词（与下文原拟稿的差异见 §九.b）：「本 thread 拥有该主体→留本 thread；仅限目标 thread 拥有主体/显式 threadId/可验证转移，禁按猫名/活跃度选 carrier（F号 定位 owner thread 除外）」。落点：`assets/prompt-templates/mcp-tools.md`（净增 +50 字符，预算内）、`cat-cafe-skills/request-review/SKILL.md`、`packages/mcp-server/src/tools/callback-tools.ts`（threadId/keyword 描述）+ 钉子测试 `cross-post-carrier-invariant.test.ts`。Commits：`cfae99212`（round-1）→ `d40cfcaa2`（round-2 修复）→ `129ac0e4c`（round-3 谓词钉子，**终审 APPROVED exact HEAD**，2026-09-17 17:07 UTC）。三轮 review 均为砚砚/缅因猫（跨族）。**push 待凭据**。
-- **① 跟踪 #577/#1397**：仍待有回调凭证的会话注册 issue tracking；**PR 出现并合入后再评估 sync**（fork 落后 upstream/main 约 2 commit，sync 成本低）。
+- **③ 本地发送侧硬规则 —— 已落地**（operator 16:30 UTC 批准，按 ③→②→① 顺序执行）。最终措辞经三轮 review 演化为 ownership-first 谓词（与下文原拟稿的差异见 §九.b）：「本 thread 拥有该主体→留本 thread；仅限目标 thread 拥有主体/显式 threadId/可验证转移，禁按猫名/活跃度选 carrier（F号 定位 owner thread 除外）」。落点：`assets/prompt-templates/mcp-tools.md`（净增 +50 字符，预算内）、`cat-cafe-skills/request-review/SKILL.md`、`packages/mcp-server/src/tools/callback-tools.ts`（threadId/keyword 描述）+ 钉子测试 `cross-post-carrier-invariant.test.ts`。Commits：`cfae99212`（round-1）→ `d40cfcaa2`（round-2 修复）→ `129ac0e4c`（round-3 谓词钉子，**终审 APPROVED exact HEAD**，2026-09-17 17:07 UTC）。三轮 review 均为砚砚/缅因猫（跨族）。**push 待凭据**（→ 17:19 UTC 已落地，见 §八.b）。
+- **① 跟踪 #577/#1397**：仍待有回调凭证的会话注册 issue tracking（→ 17:21 UTC 已注册，见 §八.b）；**PR 出现并合入后再评估 sync**（fork 落后 upstream/main 约 2 commit，sync 成本低）。
 - **② 向 upstream 补充证据/评论**：英文草稿已交 operator（内容：迁移血统 PR 号陷阱考据 + 本地 sender-side 缓解描述，无私有坐标），待其以家里 GitHub 身份发布。
+
+### 八.b 推送落地与 ① 注册（2026-09-17 17:22 UTC 补记，点点/dsh-v41-flash）
+
+operator 17:18 UTC 指示「点点环境里已有 gh 权限，push 任务直接转给她」，本猫执行并复核：
+
+- **③ 的 4 个 commit 已推送**（普通 `git push origin main`，无 force / 无历史改写）：`cfae99212` → `d40cfcaa2` → `129ac0e4c` → `945a6d38c`，`1d846882b..945a6d38c  main -> main`（exit 0）。推送前核对：tracked worktree 干净、`git merge-base --is-ancestor origin/main HEAD` = true（fast-forward 安全）、ahead/behind = 0/4。
+- **远端头双源复核**：`gh api repos/08mamba24/clowder-ai/commits/main` = `945a6d38c42e1f4c10b4c1a4dbe3226fa0453ac9`，与 `origin/main`（fresh fetch 后）逐字一致；`git rev-list --left-right --count origin/main...HEAD` = `0  0`。
+- **凭据方式（未落盘、未改配置）**：`git -c credential.helper= -c credential.helper='!gh auth git-credential'` 一次性注入；`git config --local/--global --get-all credential.helper` 推送前后均无新增项，token 未写入任何文件 / 日志。
+- **① 已注册**：`issue:zts212653/clowder-ai#1397`、`issue:zts212653/clowder-ai#577` 各一条 issue tracking（谓词 `issue_comment_added` + `issue_author_commented`，expires 2026-10-17T17:21Z，owner 点点/dsh-v41-flash）。请勿重复注册。
+- **§三 live 字段独立复现**（认证 `gh`，2026-09-17 **17:20:55Z**）：#577 `state=open`/`is_pr=false`/`created_at=2026-04-24T07:09:06Z`/`labels=bug,triaged,needs-maintainer-decision`/`user=mindfn`；#1397 `state=open`/`is_pr=false`/`created_at=2026-08-26T03:50:45Z`/`labels=bug,triaged,accepted,needs-info`/`user=mindfn`；`pulls/577` 与 `pulls/1397` 均 **404**；upstream live main = `b2927441b`（与 §四附注 15:33Z 值相同，未移动）。砚砚 round-3 verdict 中「canonical `gh` lacks auth，未复跑 live API」这一证据缺口由此关闭。
+- **② 状态不变**：公开评论需 operator 放行「以 `08mamba24` 身份发布」；本猫已具备执行能力（`gh` 已认证，scopes 含 `repo`），草稿见 16:30 UTC 消息，GO 即可发。
+
+[点点/dsh-v41-flash🐾]
 
 ### 八.a 原拟稿（历史保留，已被三轮 review 修订）
 
