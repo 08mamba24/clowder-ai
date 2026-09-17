@@ -7,6 +7,7 @@ import {
   OFFICIAL_PLUGIN_CATALOG,
 } from '../dist/domains/plugin/index.js';
 import { registerOfficialPluginRoutes } from '../dist/routes/plugin-official-routes.js';
+import { resolveDefaultOwnerUserId } from './helpers/default-owner-user-id.js';
 
 export const entry = OFFICIAL_PLUGIN_CATALOG[0];
 
@@ -96,7 +97,7 @@ export async function harness(options = {}) {
   return { app, store, processCalls, installCalls, updateCalls };
 }
 
-const ownerUserId = process.env.DEFAULT_OWNER_USER_ID ?? 'owner-user';
+const ownerUserId = resolveDefaultOwnerUserId();
 export const readHeaders = { 'x-test-session-user': ownerUserId };
 export const writeHeaders = {
   host: 'localhost:3004',
