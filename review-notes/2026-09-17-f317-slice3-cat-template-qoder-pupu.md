@@ -4,10 +4,10 @@
 - operator 拍板：2026-09-17 10:44 UTC「要」（thread_msqw8n1bqpvmob6f#0001789641877565-000022-2c9d3841）——家里正式新增银线（俄罗斯蓝猫，Qwen 家族）
 - 本 note 随 fix 同 commit 进分支
 
-## 改动面（6 文件）
+## 改动面（7 文件，含本 note）
 
 1. **`cat-template.json`**：
-   - `breeds` 增 `qoder`（`qoder-default` 变体）：clientId=`qoder`（账号系统已支持，accounts enum 早已就位）、defaultModel=`Qwen3.8-Max`（与 live 自定义猫/实测 init 一致）、mcpSupport=true、cli=`qodercn` json（与 routes/cats.ts 既有 case 一致）。**breed-only 入口循 zcode 先例**，不加 roleTemplate；personality 留白（家规：自我画像归本人）。
+   - `breeds` 增 `qoder`（`qoder-default` 变体）：clientId=`qoder`（账号系统已支持，accounts enum 早已就位）、defaultModel=`Qwen3.8-Max`（与 live 自定义猫/实测 init 一致）、mcpSupport=true、cli=`qodercn` json（与 routes/cats.ts 既有 case 一致）。**breed-only 入口循 zcode 先例**，不加 roleTemplate；personality 只写「性格由本人自述，暂留白」**占位字符串**（非身份内容），真正的自我画像归银线本人。
    - `roster` 增 `qoder`：`roles: ["coder"]`（循 dsh/zcode/grok-build 先例；**不**给 peer-reviewer——新成员，review 资格另议）。
    - caution 写明 L2 边界（六工具沙箱、memory 只读 12、darwin-only fail-closed、账号未绑 apiKeySource=none 必失败、CLI 验证面 1.1.51）。
 2. **`template-variant-backfill.ts`**：`TEMPLATE_BREED_BACKFILL_ALLOWLIST` 加 `qoder`——否则存量部署的 runtime catalog 升级时收不到新 breed（半注册态，正是 Slice 2 要防的）。注意回填自带 `occupancy.catIds` 保护：本家 live 已有 catId=`qoder` 自定义猫，回填会正确跳过、不覆盖用户创建的猫。
@@ -25,9 +25,16 @@
 
 ## 明确不做（范围边界）
 
-- 不加 roleTemplate、不写 personality/自我画像——归银线本人
+- 不加 roleTemplate、不代写自我画像——personality 仅为「暂留白」占位串，身份内容归银线本人
 - 不动 `MCP_WHITELIST_DEFAULT_BREEDS`（那是 grok-build/dsh 的 ACP legacy pin 迁移，qoder 非 ACP 无此历史）
 - 不动 live 自定义猫（回填 occupancy 保护自动处理；canonical 化留给 operator 后续决定删自定义猫 or 保留）
+
+## review 记录（砚砚m，2026-09-17，reviewedHeadSha=d3890fdfe）
+
+- **CHANGES_REQUESTED**：2×P2 + 1×P3（详见下），三个指定判断全部认可（occupancy/tombstone 四象限 4/4、7300 预算、roster 只给 coder）
+- **P2-1 已修**：proposal P1-F 的 r1 rollout 契约（fresh-install seed、不更新既有 catalog）与本提交的回填白名单矛盾——P1-F 已改写为 r6 语义并标注取代，写明 occupancy/tombstone 规则
+- **P2-2 已修**：回填只有正向测试——补两个守卫用例：① 手建自定义 qoder（displayName/personality/accountRef）跨 bootstrap 不被模板覆盖；② qoder 删除 tombstone 后 bootstrap/解析读均不复活（镜像 glm52 用例）
+- **P3 已修**：note 口径（7 文件；personality 为占位串而非未写）
 
 ## reviewer 建议重点
 

@@ -574,6 +574,50 @@ describe('cat-catalog-store', () => {
     assert.equal(runtimeCatalog.roster?.qoder?.family, 'qoder');
   });
 
+  it('keeps a hand-customized qoder member intact when the template breed backfills', async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-qoder-keep-'));
+    const templatePath = join(projectRoot, 'cat-template.json');
+    const template = JSON.parse(readFileSync(REPO_TEMPLATE_PATH, 'utf-8'));
+    writeFileSync(templatePath, JSON.stringify(template, null, 2));
+
+    bootstrapCatCatalog(projectRoot, templatePath);
+    await updateRuntimeCat(projectRoot, 'qoder', {
+      displayName: '银线（本家自定义）',
+      personality: '本人自述',
+      accountRef: 'qoder-main',
+    });
+    bootstrapCatCatalog(projectRoot, templatePath);
+
+    const hydrated = JSON.parse(readFileSync(resolveCatCatalogPath(projectRoot), 'utf-8'));
+    const qoder = hydrated.breeds.find((breed) => breed.catId === 'qoder');
+    assert.ok(qoder, 'customized qoder breed must survive bootstrap');
+    assert.equal(qoder.displayName, '银线（本家自定义）', 'runtime displayName must not be clobbered by the template');
+    assert.equal(qoder.variants[0]?.personality, '本人自述', 'runtime personality must be preserved');
+    assert.equal(qoder.variants[0]?.accountRef, 'qoder-main', 'runtime accountRef must be preserved');
+  });
+
+  it('does not re-add deleted qoder allowlisted breed during bootstrap or resolved reads', async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-qoder-delete-'));
+    const templatePath = join(projectRoot, 'cat-template.json');
+    const template = JSON.parse(readFileSync(REPO_TEMPLATE_PATH, 'utf-8'));
+    writeFileSync(templatePath, JSON.stringify(template, null, 2));
+
+    bootstrapCatCatalog(projectRoot, templatePath);
+    await deleteRuntimeCat(projectRoot, 'qoder');
+    bootstrapCatCatalog(projectRoot, templatePath);
+
+    const hydrated = JSON.parse(readFileSync(resolveCatCatalogPath(projectRoot), 'utf-8'));
+    assert.equal(
+      hydrated.breeds.some((breed) => breed.id === 'qoder'),
+      false,
+      'deleted qoder template breed must stay tombstoned after bootstrap',
+    );
+    assert.equal(hydrated.roster?.qoder, undefined);
+
+    const all = toAllCatConfigs(loadResolvedCatConfig(templatePath));
+    assert.equal(all.qoder, undefined, 'resolved reads must not revive deleted qoder');
+  });
+
   it('does not re-add deleted glm52 allowlisted breed during bootstrap or resolved reads', async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-glm52-delete-'));
     const templatePath = join(projectRoot, 'cat-template.json');

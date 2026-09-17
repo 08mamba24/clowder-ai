@@ -21,7 +21,7 @@ qodercn（Qoder 中国版 CLI，`@qodercn-ai/qoderclicn@1.1.51`）headless spawn
 | P1-C | 点点 | `disconnected` 不在 `CLAUDE_MCP_STATUSES`，共享提取器静默丢弃 | 方言层在共享提取**之前**映射，`disconnected→failed` 写死；夹具保留一条 disconnected server；S6 验证 strict 过滤 `plugin:qoder-context` |
 | P1-D | 点点 | 无效 `-m` 静默回落 `Auto` 且成功返回 | init 断言 model，**Auto 必须显式选择**（未显式配置 Auto 时 init.model=Auto 判失败）；断言先于首个 assistant 事件（hook 事件先于 init）；`err.jsonl` 落为负向夹具 |
 | P1-E | 点点+砚砚 I-5 | 独有事件被丢弃 | `hook_*`/`artifacts_update`/`context_management` 仅解析透传；**compact_boundary 冻结**——真实压缩夹具 + carrier authority 证明到手前不接线 |
-| P1-F | 砚砚 I-9 | cat-template 边界 | 新成员条目**在 S4b/S5/S6 与隔离 acceptance 全部通过后**最后加入同一 PR；注明 fresh-install seed、不更新既有 catalog；现有环境由 operator 经 Hub onboarding，禁止写 `.cat-cafe/cat-catalog.json` |
+| P1-F | 砚砚 I-9 | cat-template 边界 | 新成员条目**在 S4b/S5/S6 与隔离 acceptance 全部通过后**最后加入同一 PR。rollout 契约**r6 修订**（取代 r1 的「fresh-install seed、不更新既有 catalog；现有环境由 operator onboarding」——operator 2026-09-17 拍板放行）：qoder 进 `TEMPLATE_BREED_BACKFILL_ALLOWLIST`，`bootstrapCatCatalog` 向缺失 qoder 的既有 catalog 回填；**occupancy 保护**——既有 catId/mention 别名被占用（含手建自定义猫）则整 breed 跳过，不覆盖 displayName/accountRef 等运行时自定义字段；**删除即 tombstone**——bootstrap 与解析读均不复活。禁止直接写 `.cat-cafe/cat-catalog.json` 不变 |
 | P1-H | 点点复审 | 版本断言分轨 | `protocol_version` 未知值 fail closed；`qodercli_version` 漂移仅告警 |
 
 ### 架构侧（砚砚 I 清单）
