@@ -588,7 +588,7 @@ export const listThreadsInputSchema = {
     .optional()
     .describe(
       'Optional: filter threads whose title or threadId contains this keyword (case-insensitive). ' +
-        'Lookup aid only — never use cat-name/keyword matches as the delivery destination for a handoff or review; subject ownership picks the carrier, not recipient activity.',
+        'Lookup aid only: locating a subject-owner thread by feature id is fine; using cat-name/activity matches as the delivery destination for a handoff or review is not.',
     ),
   agentKeyCatId: agentKeyCatIdSchema,
 };
@@ -783,7 +783,9 @@ export const crossPostMessageInputSchema = {
     .string()
     .min(1)
     .describe(
-      'Target thread ID to post into. Carrier-ownership rule: cross-post only when the target thread owns this work/review subject, the user or feature context explicitly named the threadId, or a verifiable ownership transition exists. Never pick a thread by recipient name or recent activity; if the current thread can already route the target cat, stay in-thread (post_message / line-start @).',
+      'Target thread ID to post into. Carrier-ownership rule: the work/review subject decides the carrier. ' +
+        'Stay in-thread (post_message / line-start @) when the current thread owns the subject; cross-post only when the target thread owns the subject, the user or feature context explicitly named the threadId, or a verifiable ownership transition exists. ' +
+        'Locating an owner thread via list_threads by feature id is fine; picking a thread by recipient name or recent activity is not.',
     ),
   content: z
     .string()

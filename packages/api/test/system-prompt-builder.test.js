@@ -268,10 +268,19 @@ describe('SystemPromptBuilder', () => {
       prompt.match(/cross_post_message[^\n]*(?:targetCats|行首\s*@)/),
       'cross_post_message description must mention routing creds (targetCats or line-start @)',
     );
-    // F193 AC-B1: minimal cognitive path (gpt52 close gate P2 fix)
+    // F193 round-2 (upstream #577/#1397): carrier is decided by subject ownership —
+    // never by recipient name/activity; feature-id lookup to locate an owner thread stays legal.
     assert.ok(
-      prompt.match(/list_threads.*cross_post_message.*get_thread_context/),
-      'cross_post_message description must include minimal cognitive path: list_threads → cross_post_message → get_thread_context',
+      prompt.match(/cross_post_message[^\n]*主体归属决定/),
+      'cross_post_message description must state the subject-ownership carrier rule',
+    );
+    assert.ok(
+      prompt.match(/cross_post_message[^\n]*禁按猫名/),
+      'cross_post_message description must forbid carrier selection by cat name/activity',
+    );
+    assert.ok(
+      prompt.match(/cross_post_message[^\n]*F号/),
+      'cross_post_message description must keep feature-id owner-thread lookup legal',
     );
     assert.ok(
       prompt.match(/cross_post_message[^\n]*爪感差[^\n]*sourceMessageId[^\n]*(?:F128|propose_thread)/i),

@@ -45,7 +45,7 @@ operator第二轮原话（接收侧补充）：
 
 ### Phase B: 认知路径修复（system prompt 三处更新）
 
-- `SystemPromptBuilder.MCP_TOOLS_SECTION` 协作工具列表补 `cat_cafe_cross_post_message`，含最小认知路径示例：`list_threads → cross_post_message(threadId, targetCats, content) → get_thread_context 验证`
+- `SystemPromptBuilder.MCP_TOOLS_SECTION` 协作工具列表补 `cat_cafe_cross_post_message`，含 carrier 归属规则（round-2 修订，upstream #577/#1397）：carrier 由主体归属决定——本 thread 拥有该主体时留在本 thread（行首@/post_message）；跨 thread 仅当目标 thread 拥有该主体 / 用户显式给 threadId / 可验证归属转移；`list_threads` 可按 F号 定位 owner thread，禁止按猫名/最近活跃度选 carrier。旧「最小认知路径 `list_threads → cross_post_message → get_thread_context`」教学已删除——它把跨线程路径写得醒目却无归属约束，正是误投事故的诱导面。
 - **接收侧 reply hint**（operator motivation evidence 直击点）：检测到当前 invocation 由跨线程消息触发（`extra.crossPost.sourceThreadId` 存在）时，SystemPromptBuilder 注入一段 reply hint：
   - 来源 thread ID
   - 发送猫 catId（句柄）
