@@ -44,6 +44,15 @@
 - **验证**：新升级序列用例（手建猫跨升级完整保留 displayName/personality/accountRef/roster + 模板 breed 不落地）与既有 opus-47 promotion 用例**同时绿**；扩展回归 13 套 **705/705**；tsc/build/biome/diff-check 全绿。
 - 教训（给 reviewer 也不只是给我）：砚砚坚持「真实升级序列」的测试构造，直接把一个纸面全绿的 rollout 契约打穿——「测试全绿」与「测试证明了契约」是两回事。
 
+## r3 复审（砚砚，reviewedHeadSha=3e08cd044）→ r4 返修
+
+- **P1（blocking，成立）**：我的父-breed 守卫不等价——`createRuntimeCat` 正式接受 `breedId='ragdoll'`（模板已有 breed id），手建猫挂模板 breed 下时守卫失效，Step 4 照删 variant，breed 壳继续占位 → 模板回填也被拦 → 成员完全不可路由。砚砚在 exact HEAD 稳定复现。
+- **r4 修法（按砚砚处方）**：放弃一切「父 breed ∈ 模板 ⇒ 模板所有」的推断，改**显式 promotion 出身 allowlist** `PROMOTED_SUBVARIANT_TAKEOVERS = {'ragdoll::opus-47'}`（唯一有据可查的历史提升，代码注释与既有用例同源）。Step 4 只对 allowlist 内确切 (parent, catId) 形状做接管；其它一切——包括挂模板 breed 下的手建成员——都是用户数据，永不让位，身份之争交给 breed-backfill occupancy 裁决。将来新的模板提升必须显式加条目（成为被 review 的迁移决策，不再隐式推断）。墓碑排除保留（删过的 breed 永不认领）。
+- **ragdoll 回归**：按砚砚原始复现构造补用例（手建 `catId='qoder'` + `breedId='ragdoll'` → 升级 → variant/personality/accountRef/roster 全保留 + 模板 qoder 不落地）。诚实记录：r4 修复本身由独立 dump 证实（升级后 variant 存活），该用例首跑红是我自己的断言 lookup 写错（variant 无显式 catId，身份在 breed 层），修的是测试不是产品——真红由砚砚在 3e08cd044 上完成。
+- **P2 formatter**：已修（`biome format --write` 收行）；complexity 警告核实为 **main 同源**（main 同文件共 6 条 noExcessiveCognitiveComplexity，本分支 2 条且分数与 main 一致，未新增噪声）。
+- **P3 JSDoc**：签名随 r4 回到单集形态，出身规则与参数文档同步更正。
+- **验证**：catalog 45/45（新增 ragdoll 用例）；扩展回归 13 套 **706/706**；tsc/build 绿；biome error 级 exit 0；diff-check 干净。
+
 ## reviewer 建议重点
 
 1. 回填 allowlist 的 occupancy 交互（live 已有 catId=qoder 自定义猫 → 回填跳过 → 模板条目对现网暂不生效，只对新 catalog/删除自定义猫后生效）——确认这是预期迁移语义
@@ -54,5 +63,20 @@
 
 - 跨族 review（@砚砚m）→ push（operator 或持凭证猫）→ CI → merge gate（作者不 self-merge）
 - 合入后：operator 绑 qoder 账号（live 首调诊断的前置）→ E2E 验收（spawn 银线 + 工具任务）
+
+`[谱谱/glm-5.3🐾]`
+
+## r4 中断恢复（谱谱，2026-09-17 晚）——上一节证据勘误 + 重建证据链
+
+- **中断现场（砚砚只读核验）**：上一 r4 节写作途中会话中断——TS 源码仍是 `3e08cd044` 旧版（parent-breed 推断，hash 与该 commit 完全一致），r4 实现只留在 gitignored `dist/config/cat-catalog-store.js` 里；ragdoll 新用例当时"绿"是**读 stale dist 的假绿**。**上一节「验证」行（catalog 45/45、13 套 706/706、build 绿）全部基于 stale dist，在此作废**，以本节重建证据为准。
+- **恢复动作**：把 dist 中已验证的 r4 语义逐处移回 TS 源码——① `PROMOTED_SUBVARIANT_TAKEOVERS = new Set(['ragdoll::opus-47'])` 常量 + 出身规则 docblock；② `migrateCatalogVariants` 签名回单集形态 `externalStandaloneBreedIds?: ReadonlySet<string>`；③ Step 4 过滤弃 parent-breed 推断，改 exact `(breedId, variantCatId)` allowlist 门（`breedId::variantCatId`）+ 墓碑不认领注释；④ helper `readTemplateMigrationScopes` → `readLiveTemplateStandaloneBreedIds`（单集、tombstone 排除、无 readable template 返回 undefined）；⑤ `readCatCatalogRaw` 调用点同步；⑥ 函数 docblock 更新（"Only the shapes recorded in PROMOTED_SUBVARIANT_TAKEOVERS are dropped; parent-breed template membership alone is not ownership"）。`grep` 证实 `externalTemplateScopes`/`readTemplateMigrationScopes` 零残留。
+- **lockfile**：`pnpm-lock.yaml` 的 install 漂移（删两个 importer + libc churn）已 `git checkout --` 剔除，不进本分支。
+- **重建证据（全部对 rebuilt dist，非 stale）**：
+  - 正规 rebuild：`pnpm run build` exit 0；dist `cat-catalog-store.js` shasum `91d92de4…`（stale）→ **`dcf065f5…`**（重建后），`PROMOTED_SUBVARIANT_TAKEOVERS` 标记 3 处在位
+  - ragdoll 回归单跑 **1/1 绿**（`hand-built qoder member nested under a template breed` 用例，rebuilt dist）
+  - 扩展回归 **18 套 661/661**（= 14 套 531/531：cat-catalog-store / cat-config-loader / system-prompt-builder / a2a-mentions / agent-router / cat-account-binding / qoder-slice2-registration / qoder-l2-tool-surface / origin-upstream-boot-smoke / cat-catalog-subscriber / cats-routes-runtime-catalog / catalog-accounts / connector-config-tombstone / f317-qoder-fixture-readside-gate；+ 4 套 130/130：qoder-agent-service / qoder-ndjson-parser / agent-router-speech-mentions / account-binding-subscriber）。说明：中断前 note 所称"13 套 706/706"的精确构成已随会话封存不可复述，本节按可辩护面重建并逐套列名；覆盖只增不减于 9 套已知敏感面
+  - biome：0 error；6 条 `noExcessiveCognitiveComplexity` 警告与 main 同文件**同数同分**（migrateCatalogVariants 复杂度 68=68），无新增噪声
+  - `git diff --check` 干净；工作树仅 src/test/note 三文件，lockfile 已还原
+- **教训（自留）**：中断恢复时"测试绿"必须先证明跑的是新产物——dist 指纹 + 标记核对先于任何用例执行；这正是本次砚砚退回的根因之一。
 
 `[谱谱/glm-5.3🐾]`
