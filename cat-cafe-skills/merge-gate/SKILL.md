@@ -95,7 +95,10 @@ source message 的 current revision 是 ref 中同一个不可变 `messageId`。
 进入 Step 7 之前，author 必须核对：
 
 ```bash
-CURRENT_HEAD="$(gh pr view {PR_NUMBER} --json headRefOid --jq '.headRefOid')"
+# merge-gate repo scope：全链所有 repo-scoped gh 调用共用同一解析器（裸 gh 在本仓会打到 upstream，见 scripts/lib/merge-gate-gh-repo.mjs）
+MERGE_GATE_REPO="$(node scripts/lib/merge-gate-gh-repo.mjs)" || \
+  { echo "❌ merge-gate repo 未解析（origin 缺失/非 GitHub）——阻断，禁止任何裸 gh 调用"; exit 1; }
+CURRENT_HEAD="$(gh pr view {PR_NUMBER} --repo "$MERGE_GATE_REPO" --json headRefOid --jq '.headRefOid')"
 echo "$CURRENT_HEAD"
 ```
 
@@ -146,7 +149,7 @@ merge-gate 执行时，在 Step 7（squash merge）**之前**，猫必须**组�
 
 | # | 检查项 | 验证方式 | 失败动作 |
 |---|--------|----------|----------|
-| E1 | `head` === PR current HEAD | `git rev-parse HEAD` vs `gh pr view {PR_NUMBER} --json headRefOid --jq '.headRefOid'` | BLOCKED — HEAD 不一致，可能有 unpushed commit |
+| E1 | `head` === PR current HEAD | `git rev-parse HEAD` vs `gh pr view {PR_NUMBER} --repo "$MERGE_GATE_REPO" --json headRefOid --jq '.headRefOid'` | BLOCKED — HEAD 不一致，可能有 unpushed commit |
 | E2 | `stale` === false | 按 `headChangeCause` 判定的活跃 review 源覆盖当前 `head`（见上方 `stale` 字段定义的完整映射表）。`nextGateOwner=author` 时（merge-ready 态），沿用最后一次 `headChangeCause` 确定的活跃源；`nextGateOwner=ci/guardian` 时，review 覆盖规则不变（CI/guardian 是额外 gate，不改变 review 覆盖链） | BLOCKED — 补 continuityProof；只有真实新内容才 re-review |
 | E3 | reviewer provenance + accepted source 闭合 | 至少一个按风险选定的 review 源（local 或 cloud）非空且覆盖 `head`；local fact 还必须带完整 accepted-source anchor，并通过 unchanged/re-ack fence；仅校验本 PR 实际选择的 source。**「覆盖」三种合法形态**：① review SHA == `head` 直接覆盖；② `old review APPROVE + continuityProof(C1,C2,C3)` 桥接 reviewedHead → `head`（Matrix `rebase` 行，桥凭证在 Evidence Manifest）；③ **对话内容审 + author 机械转录**（2026-07-16，operator 席位纠偏）：reviewer 已在 thread 对同一内容给出明确 verdict（含 message 锚点），PR diff 与已审内容一致由 **author 出机械证据**（`git diff <已审 ref>..HEAD` 为空 / patch-id 相同 / diff hash 对照）→ author 将 verdict 转录为 PR comment（带 thread 锚点 + 机械证据），**reviewer 零二次出场**。**席位原则：机械动作（对账/转录/落点确认）归 author 或机器，判断动作才归 reviewer——召唤 reviewer 的唯一合法理由是"存在需要判断力的新内容"，两个字符串的相等判断不配烧一只 reviewer invocation** | BLOCKED — 缺 review/source provenance |
 | E4 | `verdict` !== "blocked" | review 结果为 APPROVE（非 BLOCK / CHANGES_REQUESTED） | BLOCKED — reviewer 未放行 |
@@ -252,11 +255,15 @@ fi
 ### 合入方式（唯一正确做法）
 
 ```bash
+# 0. merge-gate repo scope：全链所有 repo-scoped gh 调用共用同一解析器（裸 gh 在本仓会打到 upstream，见 scripts/lib/merge-gate-gh-repo.mjs）
+MERGE_GATE_REPO="$(node scripts/lib/merge-gate-gh-repo.mjs)" || \
+  { echo "❌ merge-gate repo 未解析（origin 缺失/非 GitHub）——阻断，禁止任何裸 gh 调用"; exit 1; }
+
 # 1. Push feature branch
 git push origin {branch}
 
 # 2. 开 PR（读 ../.cat-cafe-shared-refs/pr-template.md 获取 body 模板，用 HEREDOC 填写）
-gh pr create --title "feat(xxx): ..." --body "$(cat <<'EOF'
+gh pr create --repo "$MERGE_GATE_REPO" --title "feat(xxx): ..." --body "$(cat <<'EOF'
 ... 按 ../.cat-cafe-shared-refs/pr-template.md 模板填写 ...
 EOF
 )"
@@ -270,7 +277,7 @@ EOF
 #    )
 # 例：当前下一步是“CI 到终态后继续 merge-gate”：
 #    when=[{kind:'pr_ci_terminal'}, {kind:'pr_became_conflicting'}]
-# 若注册时 CI 已经终态，live baseline 会吸收历史，不补发；立即 `gh pr checks {PR}` 并继续。
+# 若注册时 CI 已经终态，live baseline 会吸收历史，不补发；立即 `gh pr checks {PR} --repo "$MERGE_GATE_REPO"` 并继续。
 # 等待目标变化时显式 re-register；新 generation 原子替换旧 generation，不叠加 tracker/hold。
 # predicate catalog、compact wake 与 terminal 语义见 ../.cat-cafe-shared-refs/pr-signals.md。
 #
@@ -281,7 +288,7 @@ EOF
 # - 复杂冲突 → 通知operator，等指示后再继续
 
 # 4. PR body 防呆检查（禁止任何 @句柄出现在 body）
-PR_BODY="$(gh pr view {PR_NUMBER} --json body --jq '.body')" || \
+PR_BODY="$(gh pr view {PR_NUMBER} --repo "$MERGE_GATE_REPO" --json body --jq '.body')" || \
   { echo "❌ 无法读取 PR body，停止流程"; exit 1; }
 printf '%s\n' "$PR_BODY" | rg -q '@[A-Za-z0-9_-]+ review' && \
   { echo "❌ 不合规：remote review 触发句柄只能写在 comment，不能写在 body"; exit 1; }
@@ -295,7 +302,7 @@ printf '%s\n' "$PR_BODY" | rg -q '@(codex|chatgpt-codex-connector|gpt52|opus|son
 # 详见 ../.cat-cafe-shared-refs/pr-template.md「云端 Review 触发 Comment 模板」
 
 # 触发前按 pr-signals.md 读取同一 PR 的 exact trigger，避免重复 comment。
-gh pr comment {PR_NUMBER} --body '@codex review'
+gh pr comment {PR_NUMBER} --repo "$MERGE_GATE_REPO" --body '@codex review'
 
 # 6. 已选 cloud 时按 ../.cat-cafe-shared-refs/pr-signals.md 的 exact trigger contract 等结果：
 # EYES=0 才能 bounded hold/re-trigger；EYES>0 后只注册 pr_review_result_available typed wait，停止轮询。
@@ -322,11 +329,17 @@ fi
 IS_HOTFIX="$(echo "$HOTFIX_JSON" | jq -r '.hotfix // false')"
 LABEL_ERROR="$(echo "$HOTFIX_JSON" | jq -r '.labelError // empty')"
 if [ -n "$LABEL_ERROR" ]; then
-  echo "⚠️ Hotfix label 添加失败: $LABEL_ERROR — 请手动: gh pr edit {PR_NUMBER} --add-label hotfix"
+  echo "⚠️ Hotfix label 添加失败: $LABEL_ERROR — 请手动: gh pr edit {PR_NUMBER} --repo "$MERGE_GATE_REPO" --add-label hotfix"
+fi
+# P2-1 fail-closed：PR title 不可得且无 commit 关键词证据 → indeterminate，禁止按"非 hotfix"放行
+PR_TITLE_ERROR="$(echo "$HOTFIX_JSON" | jq -r '.prTitleError // empty')"
+if [ "$IS_HOTFIX" != "true" ] && [ -n "$PR_TITLE_ERROR" ]; then
+  echo "❌ PR title 不可得（$PR_TITLE_ERROR）且无 commit 关键词证据——hotfix 判定 indeterminate，阻断 merge-gate（fail-closed）"
+  exit 1
 fi
 if [ "$IS_HOTFIX" = "true" ]; then
-  PR_AUTHOR="$(gh pr view {PR_NUMBER} --json author --jq '.author.login')"
-  REVIEWERS="$(gh pr view {PR_NUMBER} --json reviews --jq '[.reviews[] | select(.state == "APPROVED") | .author.login] | unique | join(",")')"
+  PR_AUTHOR="$(gh pr view {PR_NUMBER} --repo "$MERGE_GATE_REPO" --json author --jq '.author.login')"
+  REVIEWERS="$(gh pr view {PR_NUMBER} --repo "$MERGE_GATE_REPO" --json reviews --jq '[.reviews[] | select(.state == "APPROVED") | .author.login] | unique | join(",")')"
   if [ -z "$REVIEWERS" ] || echo "$REVIEWERS" | grep -q "^${PR_AUTHOR}$"; then
     echo "❌ Hotfix PR 必须有跨猫 review 放行（禁止 self-merge）"
     echo "   Author: $PR_AUTHOR | Approved by: ${REVIEWERS:-none}"
@@ -360,7 +373,7 @@ node scripts/check-feature-truth.mjs
 #       auto-merge，PR 仍 OPEN 未 merged → 【exit 0 ≠ 已 merged】。盲信 exit 0 会 cleanup 未合的 PR。
 #    ❌ 禁止凭退出码判 merge 成败或重跑 gh pr merge。
 MERGE_RC=0
-gh pr merge {PR_NUMBER} --squash --delete-branch || MERGE_RC=$?
+gh pr merge {PR_NUMBER} --repo "$MERGE_GATE_REPO" --squash --delete-branch || MERGE_RC=$?
 # 定性：脚本查 gh pr view state，仅 state=MERGED 才授权 cleanup（回归测试 classify-merge-outcome.test.mjs）。
 # 退出码三态——pending 不是失败，必须与真失败分开出口（cloud P2-4）：
 #   0 = PR truth 确认 MERGED（clean / worktree false-fail）→ 进入 7.5b/8 cleanup
@@ -372,12 +385,12 @@ case "$CLASSIFY_RC" in
   0) : ;;  # confirmed MERGED → 继续 7.5b/8 cleanup
   3)  # merge_pending：PR 入队 / auto-merge，未 merged。不是失败——不 cleanup、不 retry、不 abort。
       echo "⏳ PR 在 merge queue / auto-merge pending（未 merged）——不是失败，暂不 cleanup。"
-      echo "   等它合完再 cleanup：轮询 gh pr view {PR_NUMBER} --json state 到 MERGED，"
-      echo "   或 cat_cafe_hold_ball 等 PR state=MERGED（wakeWhen 跑 gh pr view ... 命令），MERGED 后再进 Step 7.5b/8。"
+      echo "   等它合完再 cleanup：轮询 gh pr view {PR_NUMBER} --repo "$MERGE_GATE_REPO" --json state 到 MERGED，"
+      echo "   或 cat_cafe_hold_ball 等 PR state=MERGED（wakeWhen 跑 gh pr view ... --repo "$MERGE_GATE_REPO" 命令），MERGED 后再进 Step 7.5b/8。"
       exit 3 ;;
   *)  # 1（及其它非 0/3，如 2 bad-invocation）= 真失败 / indeterminate
       echo "❌ merge 未确认成功（真失败 / PR truth 不可得）——停止 merge-gate；人工核 PR 状态"
-      echo "   gh pr view {PR_NUMBER} --json state,mergeable,mergeStateStatus  （不要盲目重跑 gh pr merge 或 cleanup）"
+      echo "   gh pr view {PR_NUMBER} --repo "$MERGE_GATE_REPO" --json state,mergeable,mergeStateStatus  （不要盲目重跑 gh pr merge 或 cleanup）"
       exit 1 ;;
 esac
 
@@ -570,7 +583,7 @@ cd "$MAIN_WT" && git pull origin main   # 取回刚 squash 的 commit，doc-sync
 | Reviewer 放行？ | 搜索明确信号词 |
 | P1/P2 清零？ | 检查 review 记录 |
 | BACKLOG 更新？ | `grep '\[x\]' docs/ROADMAP.md` |
-| 选中 cloud 时通过？ | review body + inline comments + `gh pr checks {PR}`；未选 cloud 记录理由 |
+| 选中 cloud 时通过？ | review body + inline comments + `gh pr checks {PR} --repo "$MERGE_GATE_REPO"`；未选 cloud 记录理由 |
 | Evidence validation 通过？(Step 6.9) | E1-E5 五项全绿（head 一致 + review 不 stale + provenance 闭合 + verdict passed + gate passed） |
 | Feature doc 说真话？(pre-merge) | doc 标 ✅/打勾 AC 有代码支撑 + `node scripts/check-feature-truth.mjs` 绿 |
 | 已合入状态记录？(post-merge) | 有 Phase/AC/Status truth delta → 同步并加 Timeline provenance；无 delta → 留痕跳过 |
@@ -628,7 +641,7 @@ cd "$MAIN_WT" && git pull origin main   # 取回刚 squash 的 commit，doc-sync
 **动作**：**只发 `@codex review` 一行**重新触发（同 SHA 不需要新 commit）。
 
 ```bash
-gh pr comment {PR_NUMBER} --body '@codex review'
+gh pr comment {PR_NUMBER} --repo "$MERGE_GATE_REPO" --body '@codex review'
 ```
 
 > 教训演进：2026-04-18 曾以为是"后台 bug / 没接单"，2026-04-20 PR #1300 确认根因是**详细格式触发 code-write 解析**。极简格式是唯一可靠触发方式（PR #1258 + PR #1300 两次实战验证）。
@@ -664,7 +677,7 @@ gh pr comment {PR_NUMBER} --body '@codex review'
 
 **⚠️ 共享 API 池陷阱（F238 教训）**：同一 provider 的不同 model（Codex/GPT-5.4/GPT-5.5）共享 API 额度。降级必须跨 provider family（OpenAI → Anthropic），不能在同 provider 内换个体。
 
-操作：`gh pr comment {PR} --body "..."` 用标准触发模板 @ 降级 reviewer（句柄查 `cat-config.json`）。
+操作：`gh pr comment {PR} --repo "$MERGE_GATE_REPO" --body "..."` 用标准触发模板 @ 降级 reviewer（句柄查 `cat-config.json`）。
 
 ## 和其他 skill 的区别
 

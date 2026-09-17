@@ -8,8 +8,10 @@
 //   PR_NUMBER=1463 node scripts/check-hotfix-pattern.mjs     # also scan PR title
 //   node scripts/check-hotfix-pattern.mjs --apply-label 1463 # detect + add label
 //
-// Exit codes: 0 = no hotfix, 2 = hotfix detected.
-// Structured output: last line is JSON { hotfix: bool, autoLabel: bool }.
+// Exit codes: 0 = no hotfix, 2 = hotfix detected, 3 = indeterminate
+//   (PR_NUMBER given but title unobtainable and no commit-keyword evidence —
+//   cannot clear, caller must block).
+// Structured output: last line is JSON { hotfix, autoLabel, labelApplied, labelError, prTitleError, indeterminate }.
 
 import { execSync } from 'node:child_process';
 
@@ -49,22 +51,32 @@ const hotfixCommits = commitLines.filter(matchesHotfix);
 const applyLabelIdx = process.argv.indexOf('--apply-label');
 const prNumber = applyLabelIdx >= 0 ? process.argv[applyLabelIdx + 1] : process.env.PR_NUMBER;
 let prTitleMatch = false;
+let prTitleError = null;
 if (prNumber) {
   // Pin --repo to origin: bare `gh pr view` prefers the `upstream` remote and
   // queries the wrong repository in clones tracking both (see
-  // lib/merge-gate-gh-repo.mjs). On resolution failure the title check
-  // degrades to commit-scan only.
+  // lib/merge-gate-gh-repo.mjs). PR_NUMBER given but title unobtainable is NOT
+  // "no hotfix": a title-only hotfix would bypass the cross-cat gate, so the
+  // caller gets a machine-readable prTitleError and — without commit-keyword
+  // evidence — exit 3 (indeterminate), never a clean hotfix:false.
   let ghRepo = null;
   try {
     ghRepo = resolveMergeGateRepository();
   } catch (error) {
-    console.error(`⚠️  ${error.message} — PR title check skipped (commit scan only)`);
+    prTitleError = error.message;
   }
+  let prTitle = '';
   if (ghRepo) {
-    const prTitle = run(`gh pr view ${prNumber} --repo ${ghRepo} --json title --jq '.title'`);
-    if (prTitle && matchesHotfix(prTitle)) {
-      prTitleMatch = true;
+    prTitle = run(`gh pr view ${prNumber} --repo ${ghRepo} --json title --jq '.title'`);
+    if (!prTitle) {
+      prTitleError = 'merge_gate_pr_title_unreadable: gh pr view returned no title';
     }
+  }
+  if (prTitle && matchesHotfix(prTitle)) {
+    prTitleMatch = true;
+  }
+  if (prTitleError) {
+    console.error(`⚠️  ${prTitleError} — PR title check unavailable`);
   }
 }
 
@@ -156,6 +168,10 @@ if (process.env.F153_TELEMETRY === '1') {
 }
 
 // --- Structured output (machine-readable, MUST be last stdout line) ---
-console.log(JSON.stringify({ hotfix: isHotfix, autoLabel, labelApplied, labelError }));
+// Exit codes: 0 = no hotfix, 2 = hotfix detected, 3 = indeterminate.
+// PR_NUMBER given, title unobtainable, and no commit-keyword evidence:
+// "not a hotfix" is unproven — the caller must block, not proceed.
+const indeterminate = Boolean(prNumber) && prTitleError !== null && !isHotfix;
+console.log(JSON.stringify({ hotfix: isHotfix, autoLabel, labelApplied, labelError, prTitleError, indeterminate }));
 
-process.exit(isHotfix ? 2 : 0);
+process.exit(indeterminate ? 3 : isHotfix ? 2 : 0);

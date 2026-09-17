@@ -6,9 +6,15 @@
 // (upstream) and 08mamba24/clowder-ai (origin) resolves every bare
 // `gh pr ...` against `upstream` (gh prefers that remote name). Merge-gate
 // evidence then reads PR truth from the wrong repository — and
-// `gh pr edit --add-label hotfix` WRITES to it. classify-merge-outcome.mjs
-// and check-hotfix-pattern.mjs both carried unpinned calls; these tests pin
-// them to the repository parsed from the `origin` remote.
+// `gh pr edit --add-label hotfix` WRITES to it. classify-merge-outcome.mjs and
+// check-hotfix-pattern.mjs both carried unpinned calls; these tests pin them
+// to the repository parsed from the `origin` remote.
+//
+// The parser tests additionally lock the host allowlist: a `github.com`
+// SUBSTRING match would accept hostile remotes
+// (`https://evil.example/path/github.com/owner/repo.git`,
+// `git@evil.example:github.com/owner/repo.git`) and redirect merge-gate
+// writes at an attacker-chosen repository.
 //
 // Strategy: a temp git repo whose `origin` points at example-owner/example-repo
 // plus a PATH-stubbed `gh` that records argv — no credentials, no network.
@@ -26,11 +32,18 @@ import { parseGitHubRepository, resolveMergeGateRepository } from './merge-gate-
 const SCRIPTS_DIR = fileURLToPath(new URL('..', import.meta.url));
 const HOTFIX_SCRIPT = path.join(SCRIPTS_DIR, 'check-hotfix-pattern.mjs');
 const CLASSIFY_SCRIPT = path.join(SCRIPTS_DIR, 'classify-merge-outcome.mjs');
+const REPO_CLI = fileURLToPath(new URL('./merge-gate-gh-repo.mjs', import.meta.url));
 
-// Temp git repo: base commit + one `fix:` keyword commit on a single .mjs file
-// (keeps autoLabel eligible so the `gh pr edit` write path actually runs), an
-// optional `origin` remote, and bin/gh appending argv to $GH_LOG.
-function buildFixtureRepo({ withOrigin = true, prTruth = { state: 'MERGED' } } = {}) {
+// Temp git repo: base commit + (optional) one `fix:` keyword commit on a
+// single .mjs file (keeps autoLabel eligible so the `gh pr edit` write path
+// actually runs), an optional `origin` remote, and bin/gh appending argv to
+// $GH_LOG. ghFails makes the stub exit 1 to simulate gh-side failure.
+function buildFixtureRepo({
+  withOrigin = true,
+  hotfixCommit = true,
+  ghFails = false,
+  prTruth = { state: 'MERGED' },
+} = {}) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'merge-gate-gh-pin-'));
   const git = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
 
@@ -42,9 +55,10 @@ function buildFixtureRepo({ withOrigin = true, prTruth = { state: 'MERGED' } } =
   git('commit', '-q', '-m', 'chore: base');
   const base = git('rev-parse', 'HEAD').trim();
 
+  const changeMessage = hotfixCommit ? 'fix: keyword commit for label eligibility' : 'chore: no keywords';
   writeFileSync(path.join(dir, 'fix.mjs'), "export const fix = 'fix';\n");
   git('add', '.');
-  git('commit', '-q', '-m', 'fix: keyword commit for label eligibility');
+  git('commit', '-q', '-m', changeMessage);
 
   if (withOrigin) {
     git('remote', 'add', 'origin', 'https://github.com/example-owner/example-repo.git');
@@ -54,10 +68,8 @@ function buildFixtureRepo({ withOrigin = true, prTruth = { state: 'MERGED' } } =
   mkdirSync(binDir);
   const ghLog = path.join(dir, 'gh.log');
   const prTruthFile = path.join(dir, 'pr-truth.json');
-  writeFileSync(
-    path.join(binDir, 'gh'),
-    '#!/bin/sh\nprintf \'%s\\n\' "$@" >> "$GH_LOG"\ncat "$GH_PR_TRUTH" 2>/dev/null || true\n',
-  );
+  const ghBody = ghFails ? 'exit 1\n' : 'cat "$GH_PR_TRUTH" 2>/dev/null || true\n';
+  writeFileSync(path.join(binDir, 'gh'), `#!/bin/sh\nprintf '%s\\n' "$@" >> "$GH_LOG"\n${ghBody}`);
   chmodSync(path.join(binDir, 'gh'), 0o755);
   writeFileSync(prTruthFile, JSON.stringify(prTruth));
 
@@ -105,7 +117,29 @@ function assertPinned(argv, expectedRepo) {
   assert.ok(!argv.includes('zts212653/clowder-ai'), `must not touch the upstream repository: ${JSON.stringify(argv)}`);
 }
 
-describe('parseGitHubRepository', () => {
+describe('parseGitHubRepository — host allowlist (no substring matching)', () => {
+  it('path-injected host https://evil.example/path/github.com/owner/repo.git returns null', () => {
+    assert.equal(parseGitHubRepository('https://evil.example/path/github.com/owner/repo.git'), null);
+  });
+
+  it('path-injected scp host git@evil.example:github.com/owner/repo.git returns null', () => {
+    assert.equal(parseGitHubRepository('git@evil.example:github.com/owner/repo.git'), null);
+  });
+
+  it('ssh URL with non-github host returns null', () => {
+    assert.equal(parseGitHubRepository('ssh://git@evil.example/github.com/a/b'), null);
+  });
+
+  it('host-suffix lookalike https://github.com.evil.com/a/b returns null', () => {
+    assert.equal(parseGitHubRepository('https://github.com.evil.com/a/b'), null);
+  });
+
+  it('non-GitHub host returns null', () => {
+    assert.equal(parseGitHubRepository('https://gitlab.com/a/b.git'), null);
+  });
+});
+
+describe('parseGitHubRepository — accepted shapes', () => {
   it('https URL with .git suffix', () => {
     assert.equal(parseGitHubRepository('https://github.com/08mamba24/clowder-ai.git'), '08mamba24/clowder-ai');
   });
@@ -122,12 +156,24 @@ describe('parseGitHubRepository', () => {
     assert.equal(parseGitHubRepository('ssh://git@github.com/08mamba24/clowder-ai.git'), '08mamba24/clowder-ai');
   });
 
+  it('https URL with port', () => {
+    assert.equal(parseGitHubRepository('https://github.com:443/a/b.git'), 'a/b');
+  });
+
+  it('ssh URL with port', () => {
+    assert.equal(parseGitHubRepository('ssh://git@github.com:22/a/b.git'), 'a/b');
+  });
+
+  it('.git with trailing slash strips both', () => {
+    assert.equal(parseGitHubRepository('https://github.com/a/b.git/'), 'a/b');
+  });
+
   it('trailing slash is stripped', () => {
     assert.equal(parseGitHubRepository('https://github.com/a/b/'), 'a/b');
   });
 
-  it('non-GitHub host returns null', () => {
-    assert.equal(parseGitHubRepository('https://gitlab.com/a/b.git'), null);
+  it('case-insensitive host, case-preserving owner/repo', () => {
+    assert.equal(parseGitHubRepository('https://GITHUB.COM/A/b'), 'A/b');
   });
 
   it('nested path (not owner/repo) returns null', () => {
@@ -178,6 +224,30 @@ describe('resolveMergeGateRepository', () => {
   });
 });
 
+describe('merge-gate-gh-repo CLI (runbook entrypoint)', () => {
+  it('prints the origin repository and exits 0', () => {
+    const fixture = buildFixtureRepo();
+    try {
+      const result = spawnSync('node', [REPO_CLI], { encoding: 'utf8', cwd: fixture.dir, env: fixture.env });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.trim(), 'example-owner/example-repo');
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('unresolvable origin: exit 1 + merge_gate_repo_unresolved on stderr', () => {
+    const fixture = buildFixtureRepo({ withOrigin: false });
+    try {
+      const result = spawnSync('node', [REPO_CLI], { encoding: 'utf8', cwd: fixture.dir, env: fixture.env });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /merge_gate_repo_unresolved/);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('check-hotfix-pattern.mjs — gh calls pinned to origin', () => {
   it('pr view (title scan) and pr edit (--apply-label) both carry --repo <origin>', () => {
     const fixture = buildFixtureRepo();
@@ -188,6 +258,7 @@ describe('check-hotfix-pattern.mjs — gh calls pinned to origin', () => {
       assert.equal(r.lastJson.autoLabel, true);
       assert.equal(r.lastJson.labelApplied, true, `label write should succeed via stub: ${JSON.stringify(r.lastJson)}`);
       assert.equal(r.lastJson.labelError, null);
+      assert.equal(r.lastJson.prTitleError, null);
       const argv = ghArgv(fixture);
       assert.equal(argv.filter((a) => a === '--repo').length, 2, 'both view and edit invocations must be pinned');
       assertPinned(argv, 'example-owner/example-repo');
@@ -196,16 +267,61 @@ describe('check-hotfix-pattern.mjs — gh calls pinned to origin', () => {
     }
   });
 
-  it('no resolvable origin: label write REFUSED, gh never invoked, commit scan still detects', () => {
+  it('no resolvable origin: label write REFUSED, gh never invoked, commit-keyword detection still fires', () => {
     const fixture = buildFixtureRepo({ withOrigin: false });
     try {
       const r = runScript(HOTFIX_SCRIPT, ['--apply-label', '42'], fixture, { HOTFIX_BASE: fixture.base });
-      assert.equal(r.status, 2);
-      assert.equal(r.lastJson.hotfix, true, 'commit-keyword detection must not depend on gh');
+      assert.equal(r.status, 2, 'commit-keyword hotfix is definitive even with title unknown');
+      assert.equal(r.lastJson.hotfix, true);
       assert.equal(r.lastJson.autoLabel, true);
       assert.equal(r.lastJson.labelApplied, false, 'write path must fail closed');
       assert.match(r.lastJson.labelError ?? '', /merge_gate_repo_unresolved/);
+      assert.match(r.lastJson.prTitleError ?? '', /merge_gate_repo_unresolved/);
+      assert.equal(r.lastJson.indeterminate, false);
       assert.equal(ghArgv(fixture).length, 0, 'gh must not be invoked at all without a resolved repo');
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('check-hotfix-pattern.mjs — PR title fail-closed (indeterminate blocks)', () => {
+  it('clean commits + no resolvable origin: exit 3 indeterminate, never a clean hotfix:false', () => {
+    const fixture = buildFixtureRepo({ withOrigin: false, hotfixCommit: false });
+    try {
+      const r = runScript(HOTFIX_SCRIPT, ['--apply-label', '42'], fixture, { HOTFIX_BASE: fixture.base });
+      assert.equal(r.status, 3, 'title unknown + no commit evidence = cannot clear');
+      assert.equal(r.lastJson.hotfix, false);
+      assert.equal(r.lastJson.indeterminate, true);
+      assert.match(r.lastJson.prTitleError ?? '', /merge_gate_repo_unresolved/);
+      assert.equal(ghArgv(fixture).length, 0, 'gh must not be invoked without a resolved repo');
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('clean commits + gh pr view failure: exit 3 indeterminate with prTitleError', () => {
+    const fixture = buildFixtureRepo({ hotfixCommit: false, ghFails: true });
+    try {
+      const r = runScript(HOTFIX_SCRIPT, ['--apply-label', '42'], fixture, { HOTFIX_BASE: fixture.base });
+      assert.equal(r.status, 3);
+      assert.equal(r.lastJson.hotfix, false);
+      assert.equal(r.lastJson.indeterminate, true);
+      assert.match(r.lastJson.prTitleError ?? '', /merge_gate_pr_title_unreadable/);
+      assertPinned(ghArgv(fixture), 'example-owner/example-repo');
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('clean commits + readable non-hotfix title: exit 0 clear (baseline)', () => {
+    const fixture = buildFixtureRepo({ hotfixCommit: false });
+    try {
+      const r = runScript(HOTFIX_SCRIPT, ['--apply-label', '42'], fixture, { HOTFIX_BASE: fixture.base });
+      assert.equal(r.status, 0);
+      assert.equal(r.lastJson.hotfix, false);
+      assert.equal(r.lastJson.indeterminate, false);
+      assert.equal(r.lastJson.prTitleError, null);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
@@ -228,5 +344,16 @@ describe('classify-merge-outcome.mjs — gh pr view pinned to origin', () => {
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('check:pre-merge-gate suite wiring', () => {
+  it('runs this test file from the canonical pre-merge gate suite', () => {
+    const packageJson = JSON.parse(readFileSync(path.join(SCRIPTS_DIR, '..', 'package.json'), 'utf8'));
+    assert.match(
+      packageJson.scripts['check:pre-merge-gate'],
+      /scripts\/lib\/merge-gate-gh-repo\.test\.mjs/,
+      'the repo-scope pin tests must run in the default gate suite, not only by hand',
+    );
   });
 });
