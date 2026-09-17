@@ -440,7 +440,7 @@ describe('cat-catalog-store', () => {
     assert.equal(runtimeCatalog.roster?.glm52?.family, 'dragon-li', 'glm52 roster entry should be persisted');
   });
 
-  it('backfills allowlisted grok-build, dsh, and zcode breeds into a fresh runtime catalog', () => {
+  it('backfills allowlisted grok-build, dsh, zcode, and qoder breeds into a fresh runtime catalog', () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-harness-'));
     const templatePath = join(projectRoot, 'cat-template.json');
     const template = makeF127BootstrapTemplate();
@@ -508,6 +508,28 @@ describe('cat-catalog-store', () => {
           },
         ],
       },
+      {
+        id: 'qoder',
+        catId: 'qoder',
+        name: '俄罗斯蓝猫 Qoder',
+        displayName: '俄罗斯蓝猫 Qoder',
+        nickname: '银线',
+        avatar: '/avatars/default.png',
+        color: { primary: '#7A8BA6', secondary: '#E4EAF2' },
+        mentionPatterns: ['@qoder', '@银线'],
+        roleDescription: 'Qoder CN L2 controlled tools',
+        defaultVariantId: 'qoder-default',
+        variants: [
+          {
+            id: 'qoder-default',
+            catId: 'qoder',
+            clientId: 'qoder',
+            defaultModel: 'Qwen3.8-Max',
+            mcpSupport: true,
+            cli: { command: 'qodercn', outputFormat: 'json' },
+          },
+        ],
+      },
     );
     template.roster['grok-build'] = {
       family: 'grok-build',
@@ -530,6 +552,13 @@ describe('cat-catalog-store', () => {
       available: true,
       evaluation: 'ZCode ADE',
     };
+    template.roster.qoder = {
+      family: 'qoder',
+      roles: ['coder'],
+      lead: false,
+      available: true,
+      evaluation: 'Qoder CN L2',
+    };
     writeFileSync(templatePath, JSON.stringify(template, null, 2));
 
     const catalogPath = bootstrapCatCatalog(projectRoot, templatePath);
@@ -538,9 +567,141 @@ describe('cat-catalog-store', () => {
     assert.ok(breedIds.includes('grok-build'), 'allowlisted grok-build breed should be persisted');
     assert.ok(breedIds.includes('dsh'), 'allowlisted dsh breed should be persisted');
     assert.ok(breedIds.includes('zcode'), 'allowlisted zcode breed should be persisted');
+    assert.ok(breedIds.includes('qoder'), 'allowlisted qoder breed should be persisted');
     assert.equal(runtimeCatalog.roster?.['grok-build']?.family, 'grok-build');
     assert.equal(runtimeCatalog.roster?.dsh?.family, 'dsh');
     assert.equal(runtimeCatalog.roster?.zcode?.family, 'zcode');
+    assert.equal(runtimeCatalog.roster?.qoder?.family, 'qoder');
+  });
+
+  it('blocks qoder breed backfill when a hand-built cat already occupies the qoder identity', async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-qoder-occupancy-'));
+    const templatePath = join(projectRoot, 'cat-template.json');
+
+    // Pre-upgrade template: the repo template before this PR — no qoder breed/roster.
+    const legacyTemplate = JSON.parse(readFileSync(REPO_TEMPLATE_PATH, 'utf-8'));
+    legacyTemplate.breeds = legacyTemplate.breeds.filter((breed) => breed.id !== 'qoder');
+    delete legacyTemplate.roster.qoder;
+    writeFileSync(templatePath, JSON.stringify(legacyTemplate, null, 2));
+    bootstrapCatCatalog(projectRoot, templatePath);
+
+    // Hand-built member occupying the qoder identity under a DIFFERENT breed id,
+    // so the breed-id early-exit cannot mask the occupancy check under test.
+    createRuntimeCat(projectRoot, {
+      catId: 'qoder',
+      breedId: 'custom-qoder',
+      name: '银线（手建）',
+      displayName: '银线（手建）',
+      nickname: '银线',
+      avatar: '/avatars/default.png',
+      color: { primary: '#7A8BA6', secondary: '#E4EAF2' },
+      mentionPatterns: ['@qoder', '@银线'],
+      accountRef: 'qoder-main',
+      roleDescription: '手建占位：升级回填不得覆盖',
+      personality: '本人自述',
+      clientId: 'qoder',
+      defaultModel: 'Qwen3.8-Max',
+      mcpSupport: true,
+      cli: { command: 'qodercn', outputFormat: 'json' },
+    });
+    const customRoster = readRuntimeCatCatalog(projectRoot).roster?.qoder;
+    assert.ok(customRoster, 'hand-built cat must have a runtime roster entry');
+
+    // Upgrade: swap in the current template (with the allowlisted qoder breed) and bootstrap.
+    const currentTemplate = JSON.parse(readFileSync(REPO_TEMPLATE_PATH, 'utf-8'));
+    writeFileSync(templatePath, JSON.stringify(currentTemplate, null, 2));
+    bootstrapCatCatalog(projectRoot, templatePath);
+
+    const hydrated = JSON.parse(readFileSync(resolveCatCatalogPath(projectRoot), 'utf-8'));
+    assert.equal(
+      hydrated.breeds.some((breed) => breed.id === 'qoder'),
+      false,
+      'template qoder breed must not backfill over the occupied qoder identity',
+    );
+    const custom = hydrated.breeds.find((breed) => breed.id === 'custom-qoder');
+    assert.ok(custom, 'hand-built custom-qoder breed must survive the upgrade bootstrap');
+    assert.equal(custom.displayName, '银线（手建）', 'runtime displayName must be preserved');
+    assert.equal(custom.variants[0]?.personality, '本人自述', 'runtime personality must be preserved');
+    assert.equal(custom.variants[0]?.accountRef, 'qoder-main', 'runtime accountRef must be preserved');
+    assert.deepEqual(
+      hydrated.roster?.qoder,
+      customRoster,
+      'runtime roster entry must not be replaced by the template roster',
+    );
+  });
+
+  it('keeps a hand-built qoder member nested under a template breed id (promotion provenance required)', async () => {
+    // Reviewer repro (F317 Slice 3 r3): the editor accepts template breed ids
+    // via createRuntimeCat({ breedId: 'ragdoll' }); parent-breed template
+    // membership must NOT mark the variant as template-owned promotion debris.
+    const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-qoder-ragdoll-'));
+    const templatePath = join(projectRoot, 'cat-template.json');
+
+    const legacyTemplate = JSON.parse(readFileSync(REPO_TEMPLATE_PATH, 'utf-8'));
+    legacyTemplate.breeds = legacyTemplate.breeds.filter((breed) => breed.id !== 'qoder');
+    delete legacyTemplate.roster.qoder;
+    writeFileSync(templatePath, JSON.stringify(legacyTemplate, null, 2));
+    bootstrapCatCatalog(projectRoot, templatePath);
+
+    createRuntimeCat(projectRoot, {
+      catId: 'qoder',
+      breedId: 'ragdoll',
+      name: '银线（手建）',
+      displayName: '银线（手建）',
+      nickname: '银线',
+      avatar: '/avatars/default.png',
+      color: { primary: '#7A8BA6', secondary: '#E4EAF2' },
+      mentionPatterns: ['@qoder', '@银线'],
+      accountRef: 'qoder-main',
+      roleDescription: '手建占位：升级回填不得覆盖',
+      personality: '本人自述',
+      clientId: 'qoder',
+      defaultModel: 'Qwen3.8-Max',
+      mcpSupport: true,
+      cli: { command: 'qodercn', outputFormat: 'json' },
+    });
+    const beforeRoster = readRuntimeCatCatalog(projectRoot).roster?.qoder;
+    assert.ok(beforeRoster, 'hand-built cat must have a runtime roster entry');
+
+    const currentTemplate = JSON.parse(readFileSync(REPO_TEMPLATE_PATH, 'utf-8'));
+    writeFileSync(templatePath, JSON.stringify(currentTemplate, null, 2));
+    bootstrapCatCatalog(projectRoot, templatePath);
+
+    const hydrated = JSON.parse(readFileSync(resolveCatCatalogPath(projectRoot), 'utf-8'));
+    assert.equal(
+      hydrated.breeds.some((breed) => breed.id === 'qoder'),
+      false,
+      'template qoder breed must stay blocked by the occupying hand-built member',
+    );
+    const customBreed = hydrated.breeds.find((breed) => breed.id === 'ragdoll' && breed.catId === 'qoder');
+    assert.ok(customBreed, 'hand-built qoder member breed must survive the upgrade');
+    const customVariant = (customBreed.variants ?? []).find((v) => v.id === 'qoder-default');
+    assert.ok(customVariant, 'hand-built qoder variant under the template breed id must survive');
+    assert.equal(customVariant.personality, '本人自述', 'runtime personality must be preserved');
+    assert.equal(customVariant.accountRef, 'qoder-main', 'runtime accountRef must be preserved');
+    assert.deepEqual(hydrated.roster?.qoder, beforeRoster, 'runtime roster entry must not be replaced');
+  });
+
+  it('does not re-add deleted qoder allowlisted breed during bootstrap or resolved reads', async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-qoder-delete-'));
+    const templatePath = join(projectRoot, 'cat-template.json');
+    const template = JSON.parse(readFileSync(REPO_TEMPLATE_PATH, 'utf-8'));
+    writeFileSync(templatePath, JSON.stringify(template, null, 2));
+
+    bootstrapCatCatalog(projectRoot, templatePath);
+    await deleteRuntimeCat(projectRoot, 'qoder');
+    bootstrapCatCatalog(projectRoot, templatePath);
+
+    const hydrated = JSON.parse(readFileSync(resolveCatCatalogPath(projectRoot), 'utf-8'));
+    assert.equal(
+      hydrated.breeds.some((breed) => breed.id === 'qoder'),
+      false,
+      'deleted qoder template breed must stay tombstoned after bootstrap',
+    );
+    assert.equal(hydrated.roster?.qoder, undefined);
+
+    const all = toAllCatConfigs(loadResolvedCatConfig(templatePath));
+    assert.equal(all.qoder, undefined, 'resolved reads must not revive deleted qoder');
   });
 
   it('does not re-add deleted glm52 allowlisted breed during bootstrap or resolved reads', async () => {

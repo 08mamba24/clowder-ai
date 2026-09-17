@@ -1,6 +1,6 @@
 # F317 Phase 1 提案: qodercn CLI 正式接入
 
-> **Status**: implementation（Slice 1/2 ✅；Slice 3 待实现；L2 受控工具 slice ✅ 已合入 main，PR #33）· **Owner**: 谱谱 (zcode/glm-5.3) · **创建**: 2026-09-13 · **r4**: 2026-09-16
+> **Status**: implementation（Slice 1/2 ✅；L2 受控工具 slice ✅ 已合入 main，PR #33；Slice 3 cat-template 条目实现中，本 PR）· **Owner**: 谱谱 (zcode/glm-5.3) · **创建**: 2026-09-13 · **r6**: 2026-09-17
 > **前置**: Phase 0 spike `2026-09-13-f317-qoder-phase0-spike.md`（S4 已勘误）+ 双猫复核（点点 5 P1 + r2 复审；砚砚 9 项 I-1~I-9）
 > **r3 变更**: 吸收砚砚 I-1~I-9 全清单；spike S4 勘误已真实落仓（同 commit）
 
@@ -21,7 +21,7 @@ qodercn（Qoder 中国版 CLI，`@qodercn-ai/qoderclicn@1.1.51`）headless spawn
 | P1-C | 点点 | `disconnected` 不在 `CLAUDE_MCP_STATUSES`，共享提取器静默丢弃 | 方言层在共享提取**之前**映射，`disconnected→failed` 写死；夹具保留一条 disconnected server；S6 验证 strict 过滤 `plugin:qoder-context` |
 | P1-D | 点点 | 无效 `-m` 静默回落 `Auto` 且成功返回 | init 断言 model，**Auto 必须显式选择**（未显式配置 Auto 时 init.model=Auto 判失败）；断言先于首个 assistant 事件（hook 事件先于 init）；`err.jsonl` 落为负向夹具 |
 | P1-E | 点点+砚砚 I-5 | 独有事件被丢弃 | `hook_*`/`artifacts_update`/`context_management` 仅解析透传；**compact_boundary 冻结**——真实压缩夹具 + carrier authority 证明到手前不接线 |
-| P1-F | 砚砚 I-9 | cat-template 边界 | 新成员条目**在 S4b/S5/S6 与隔离 acceptance 全部通过后**最后加入同一 PR；注明 fresh-install seed、不更新既有 catalog；现有环境由 operator 经 Hub onboarding，禁止写 `.cat-cafe/cat-catalog.json` |
+| P1-F | 砚砚 I-9 | cat-template 边界 | 新成员条目**在 S4b/S5/S6 与隔离 acceptance 全部通过后**最后加入同一 PR。rollout 契约**r6 修订**（取代 r1 的「fresh-install seed、不更新既有 catalog；现有环境由 operator onboarding」——operator 2026-09-17 拍板放行）：qoder 进 `TEMPLATE_BREED_BACKFILL_ALLOWLIST`，`bootstrapCatCatalog` 向缺失 qoder 的既有 catalog 回填；**occupancy 保护**——既有 catId/mention 别名被占用（含手建自定义猫）则整 breed 跳过，不覆盖 displayName/accountRef 等运行时自定义字段；**删除即 tombstone**——bootstrap 与解析读均不复活。禁止直接写 `.cat-cafe/cat-catalog.json` 不变 |
 | P1-H | 点点复审 | 版本断言分轨 | `protocol_version` 未知值 fail closed；`qodercli_version` 漂移仅告警 |
 
 ### 架构侧（砚砚 I 清单）
@@ -69,7 +69,7 @@ qodercn（Qoder 中国版 CLI，`@qodercn-ai/qoderclicn@1.1.51`）headless spawn
 
 - **Slice 1 ✅（PR #24）：非路由的窄 QoderAgentService + 测试**（I-4 边界：typed inputs 经可信 resolver 解析、缺 workingDirectory fail closed、`QODERCN_CONFIG_DIR` 不进 generic accountEnv 的 last-wins 合并、stdin prompt）。**入口条件 I-11（见下）先行**。
 - **Slice 2：注册 + account binding + workspace/session guard 原子 vertical slice**（ClientId/schema/Hub 类型/default CLI/factory/account routing 一次接齐，不留半注册态；`providerRequiresThreadWorkspace` 等 OpenCode 硬编码泛化并覆盖 qoder + e2e resume 测试；account mapping + `QODERCN_CONFIG_DIR` 受控字段校验为安全重点段）。
-- **Slice 3：cat-template 条目**（I-9：Slice 1/2 + 隔离 acceptance 全绿后最后加）。
+- **Slice 3：cat-template 条目**（I-9：Slice 1/2 + 隔离 acceptance 全绿后最后加）——**本 PR**：`breeds` 增 `qoder`（`qoder-default` 变体，clientId=qoder、Qwen3.8-Max、cli=qodercn、mcpSupport=true）；breed-only 入口循 zcode 先例，roleTemplate/personality 留给猫本人。
 - **L2 受控工具 slice（复核中）**：六个基础内置工具一次性可见；只预授权 workspace-scoped Read/Edit、sandboxed Bash 与 12 个 readonly memory tools；init 对 18-tool 全集 + 唯一 connected MCP server fail closed；路由 read-only 请求维持空工具面。
 
 ### I-11 runtime profile ownership / lifecycle（P1，Slice 1 入口条件）
@@ -97,6 +97,8 @@ L1 实证：qodercn 把 session 存在 config-dir 的 `projects/<cwd-slug>/`，r
 | 2026-09-16 | L2 implementation evidence：六工具清单定为 `Bash/Edit/Glob/Grep/Read/Write`；split memory exact readonly=12（非 legacy monolith 27）；真实 qodercn 1.1.51 init 在 synthetic-invalid auth profile 下回报 18/18 + memory connected，随后 exit 1；Seatbelt canary 为 workspace write=allow、sibling read/write=deny。 |
 | 2026-09-16 | PR #33 cross-family review rework：关闭 Bash 自选 memory policy（shim 移出 scratch、memory read 面收窄）与 shared `.git` 控制面写逃逸（reciprocal worktree ownership + hooks/config/gitdir/commondir deny）；`os.userInfo().homedir` 固定 OS account-home deny，runtime 凭证路径另加末位 deny；构造期资产校验与 invocation allow/deny canary 均 fail closed。回归同时钉住正常 sandboxed `git add/commit` 不被误伤；本机实际 qoderclicn 1.1.53 synthetic-invalid 探针通过 exact init 门并回报 `cat-cafe-memory=connected`，随后按预期认证错误退出。 |
 | 2026-09-17 | L2 受控工具 slice merged（PR #33，squash `8b617f2a2`）：非作者独立 review（奶牛猫两轮 APPROVE，绑定 `20dd7cd72`）+ CI 13/13 + 隔离集成树（main `2bae64ca4` ⊕ head `20dd7cd72`）`pnpm gate --risk security` 全量门禁绿后合入；合入树与受门禁树逐字节相同（tree `e1594a936`）。本行只记录代码落 main——API runtime 仍为 `live=dormant`，激活待 operator 显式授权（ADR-039）。 |
+| 2026-09-17 | runtime 激活（B→A 的 A 步完成）：operator 重启后 live health 自报 `deploymentRevision=5f8897e1a`，受控链四项运行资产就绪。live 首次真实 `@qoder` 调用诊断：init 回报 6 基础工具 + model 匹配 + permissionMode=default（L2 路径生效），但 `apiKeySource=none`（账号未绑定）且 `cat-cafe-memory=disconnected`；memory.js 单测握手 1s 绿，判定主因为无认证连锁。前置动作：operator 完成 qoder 账号 OAuth 绑定。 |
+| 2026-09-17 | operator 拍板「要」：家里正式新增银线（俄罗斯蓝猫，Qwen 家族）。Slice 3 = cat-template breed 条目（`qoder` / `qoder-default`，clientId=qoder、Qwen3.8-Max、mcpSupport=true、cli=qodercn，breed-only 入口循 zcode 先例，性格留白归本人）。E2E 验收（真实 spawn + 工具任务）在账号绑定 + 本 PR 合入后执行。 |
 
 ## 边界
 
@@ -105,6 +107,7 @@ L1 实证：qodercn 把 session 存在 config-dir 的 `projects/<cwd-slug>/`，r
 
 ## 修订日志
 
+- **r6**: runtime 激活 + operator 拍板银线转正；Slice 3 落地 cat-template breed 条目（I-9 rollout 收官），live 首调诊断结论（无账号绑定为主因）入档
 - **r5**: PR #33 review rework 收窄 memory/Git metadata policy，补 operator-home、运行资产与逐轮 sandbox canary 的 fail-closed 回归
 - **r4**: operator 放行 L2 六个基础工具；三门状态按 durable receipts 校正为 green；补 split memory 12-tool 真相、shell-prefix/Seatbelt 与 credential-stripping 执行边界
 - **r3**: 砚砚 I-1~I-9 全清单落文（I-6 终决不发 agent_loop、I-2 定位 read-only pilot、I-4 窄 Service、I-8 五源+readonly 断言、I-9 rollout 后置、I-7 勘误真实落仓）；spike S4 勘误同 commit
