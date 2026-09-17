@@ -571,7 +571,15 @@ function makeControlledRuntime(root, wrapperBody) {
   else cpSync(join(here, '..', '..', '..', 'scripts', 'qoder-shell-sandbox.mjs'), wrapperPath);
   chmodSync(wrapperPath, 0o755);
   writeFileSync(memoryPath, "process.stdout.write('memory-ok\\n');\n");
-  return { memoryPath, runtimeRoot, wrapperPath };
+  // Structural controlled tests never execute the sandbox binary (probe is
+  // stubbed), but validation requires an existing executable file — and the
+  // macOS-only /usr/bin/sandbox-exec literal would fail that check on Linux.
+  // Fail loud if a future change ever runs the stub: a silent exit-0 would
+  // fake an "allowed" canary and hide the missing real sandbox.
+  const sandboxExecPath = join(root, 'sandbox-exec');
+  writeFileSync(sandboxExecPath, '#!/bin/sh\necho "test sandbox-exec stub must never execute" >&2\nexit 70\n');
+  chmodSync(sandboxExecPath, 0o755);
+  return { memoryPath, runtimeRoot, sandboxExecPath, wrapperPath };
 }
 
 test('L2: controlled invoke fails closed before spawn when sandbox-exec is unavailable', async () => {
@@ -596,6 +604,34 @@ test('L2: controlled invoke fails closed before spawn when sandbox-exec is unava
   assert.match(out[0].error, /sandbox-exec is required/);
 });
 
+test('L2: controlled invoke fails closed before spawn when the sandbox binary path is missing', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'qoder-l2-missing-sandbox-'));
+  const controlledRuntime = makeControlledRuntime(root);
+  let spawned = 0;
+  try {
+    const svc = makeSvc({
+      toolAccess: 'controlled',
+      memoryMcpServerPath: controlledRuntime.memoryPath,
+      runtimeRoot: controlledRuntime.runtimeRoot,
+      shellSandboxWrapperPath: controlledRuntime.wrapperPath,
+      sandboxBinary: join(root, 'no-such-sandbox-exec'),
+      spawnFn: () => {
+        spawned += 1;
+        return fakeChild(controlledFixture());
+      },
+    });
+
+    const out = await runInvoke(svc, 'read the fixture', { workingDirectory: '/tmp/workspace-l2' });
+
+    assert.equal(spawned, 0);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].type, 'error');
+    assert.match(out[0].error, /runtime sandbox asset unavailable/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('L2: controlled invoke delivers six basic tools and a strict readonly memory config, then cleans it up', async () => {
   const root = mkdtempSync(join(tmpdir(), 'qoder-l2-structural-'));
   const controlledRuntime = makeControlledRuntime(root);
@@ -616,7 +652,7 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
     memoryMcpServerPath: controlledRuntime.memoryPath,
     runtimeRoot: controlledRuntime.runtimeRoot,
     shellSandboxWrapperPath: controlledRuntime.wrapperPath,
-    sandboxBinary: '/usr/bin/sandbox-exec',
+    sandboxBinary: controlledRuntime.sandboxExecPath,
     sandboxProbe: () => {},
     spawnFn: (_cmd, args, options) => {
       seenArgs = args;
@@ -832,8 +868,10 @@ test(
       const gitConfig = join(mainRepo, '.git', 'config');
       const mainRef = join(mainRepo, '.git', 'refs', 'heads', 'main');
       const forgedRef = join(mainRepo, '.git', 'refs', 'heads', 'qoder-forged');
+      const sharedReflog = join(mainRepo, '.git', 'logs', 'HEAD');
       const originalConfig = readFileSync(gitConfig, 'utf8');
       const originalMainRef = readFileSync(mainRef, 'utf8');
+      const originalSharedReflog = readFileSync(sharedReflog, 'utf8');
       const attempts = [];
       for (const workspace of [worktree, plantedWorkspace]) {
         const svc = makeSvc({
@@ -865,6 +903,7 @@ test(
               hooks: run(`/usr/bin/touch '${hooksCanary}'`),
               overwriteMainRef: run(`/usr/bin/printf '0000000000000000000000000000000000000000\\n' > '${mainRef}'`),
               removeMainRef: run(`/bin/rm -f '${mainRef}'`),
+              removeSharedReflog: run(`/bin/rm -f '${sharedReflog}'`),
               writeForgedRef: run(`/usr/bin/printf '${originalMainRef.trim()}\\n' > '${forgedRef}'`),
             });
             return fakeChild(controlledFixture());
@@ -884,6 +923,7 @@ test(
       assert.equal(attempts[0].hooks, 1);
       assert.equal(attempts[0].overwriteMainRef, 1);
       assert.equal(attempts[0].removeMainRef, 1);
+      assert.equal(attempts[0].removeSharedReflog, 1);
       assert.equal(attempts[0].writeForgedRef, 1);
       assert.equal(attempts[1].gitCommit, undefined);
       assert.equal(attempts[1].config, 1);
@@ -892,10 +932,12 @@ test(
       assert.equal(attempts[1].hooks, 1);
       assert.equal(attempts[1].overwriteMainRef, 1);
       assert.equal(attempts[1].removeMainRef, 1);
+      assert.equal(attempts[1].removeSharedReflog, 1);
       assert.equal(attempts[1].writeForgedRef, 1);
       assert.equal(existsSync(hooksCanary), false);
       assert.equal(existsSync(forgedRef), false);
       assert.equal(readFileSync(mainRef, 'utf8'), originalMainRef);
+      assert.equal(readFileSync(sharedReflog, 'utf8'), originalSharedReflog);
       assert.equal(readFileSync(gitConfig, 'utf8'), originalConfig);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -923,6 +965,7 @@ test(
       const mainRef = join(repo, '.git', 'refs', 'heads', 'main');
       const siblingRef = join(repo, '.git', 'refs', 'heads', 'sibling');
       const forgedRef = join(repo, '.git', 'refs', 'heads', 'forged');
+      const reflogHead = join(repo, '.git', 'logs', 'HEAD');
       const originalSiblingRef = readFileSync(siblingRef, 'utf8');
       let attempts;
       const svc = makeSvc({
@@ -945,6 +988,7 @@ test(
             commit,
             currentRef: run(`test -s '${mainRef}'`),
             forgedRef: run(`/usr/bin/printf '${originalSiblingRef.trim()}\\n' > '${forgedRef}'`),
+            removeReflog: run(`/bin/rm -f '${reflogHead}'`),
             siblingRef: run(`/usr/bin/printf '0000000000000000000000000000000000000000\\n' > '${siblingRef}'`),
           };
           return fakeChild(controlledFixture());
@@ -958,8 +1002,10 @@ test(
       assert.equal(attempts.commit.status, 0, attempts.commit.stderr);
       assert.equal(attempts.currentRef.status, 0, attempts.currentRef.stderr);
       assert.equal(attempts.forgedRef.status, 1, attempts.forgedRef.stderr);
+      assert.equal(attempts.removeReflog.status, 1, attempts.removeReflog.stderr);
       assert.equal(attempts.siblingRef.status, 1, attempts.siblingRef.stderr);
       assert.equal(existsSync(forgedRef), false);
+      assert.equal(existsSync(reflogHead), true, 'reflog must survive: append-only, deletion denied');
       assert.equal(readFileSync(siblingRef, 'utf8'), originalSiblingRef);
     } finally {
       rmSync(root, { recursive: true, force: true });

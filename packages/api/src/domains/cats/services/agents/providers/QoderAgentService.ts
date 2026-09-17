@@ -355,6 +355,7 @@ type GitMetadataAccess = {
   readonly workspaceWriteExclusions: readonly string[];
   readonly deniedWriteRoots: readonly string[];
   readonly deniedWriteLiterals: readonly string[];
+  readonly deniedWriteUnlinkRoots: readonly string[];
 };
 
 const EMPTY_GIT_METADATA_ACCESS: GitMetadataAccess = Object.freeze({
@@ -364,6 +365,7 @@ const EMPTY_GIT_METADATA_ACCESS: GitMetadataAccess = Object.freeze({
   workspaceWriteExclusions: Object.freeze([]),
   deniedWriteRoots: Object.freeze([]),
   deniedWriteLiterals: Object.freeze([]),
+  deniedWriteUnlinkRoots: Object.freeze([]),
 });
 
 function canonicalPath(path: string): string {
@@ -436,6 +438,9 @@ function externalGitMetadataAccess(workingDirectory: string): GitMetadataAccess 
         writeLiterals: [...gitRefWriteLiterals(gitRoot, gitRoot), ...worktreeLocalGitWriteLiterals(gitRoot)],
         // The workspace grant would otherwise recursively re-open .git.
         workspaceWriteExclusions: [gitRoot],
+        // Reflogs only ever grow by append; losing them removes the shared
+        // recovery path, so deletion stays denied even where writes are needed.
+        deniedWriteUnlinkRoots: [join(gitRoot, 'logs')],
         ...protectedGitWrites(gitRoot),
       };
     }
@@ -464,6 +469,7 @@ function externalGitMetadataAccess(workingDirectory: string): GitMetadataAccess 
       writeRoots: [gitDir, join(commonDir, 'objects'), join(commonDir, 'logs')],
       writeLiterals: gitRefWriteLiterals(gitDir, commonDir),
       workspaceWriteExclusions: [],
+      deniedWriteUnlinkRoots: [join(commonDir, 'logs')],
       deniedWriteRoots: [...protectedWrites.deniedWriteRoots, join(gitDir, 'hooks')],
       deniedWriteLiterals: [
         ...protectedWrites.deniedWriteLiterals,
@@ -492,6 +498,7 @@ function buildSeatbeltPolicy(input: {
   writeExclusions?: readonly string[];
   deniedWriteRoots?: readonly string[];
   deniedWriteLiterals?: readonly string[];
+  deniedWriteUnlinkRoots?: readonly string[];
 }): string {
   const unique = (values: readonly string[]) => [...new Set(values.map(canonicalPath))];
   const filters = (roots: readonly string[]) => unique(roots).map((root) => `(subpath ${seatbeltLiteral(root)})`);
@@ -533,6 +540,7 @@ function buildSeatbeltPolicy(input: {
     ...unique(input.deniedWriteLiterals ?? []).map(
       (literal) => `(deny file-write* (literal ${seatbeltLiteral(literal)}))`,
     ),
+    ...filters(input.deniedWriteUnlinkRoots ?? []).map((filter) => `(deny file-write-unlink ${filter})`),
     '',
   ].join('\n');
 }
@@ -703,6 +711,7 @@ function createQoderInvocationLease(input: {
         writeExclusions: gitAccess.workspaceWriteExclusions,
         deniedWriteRoots: gitAccess.deniedWriteRoots,
         deniedWriteLiterals: gitAccess.deniedWriteLiterals,
+        deniedWriteUnlinkRoots: gitAccess.deniedWriteUnlinkRoots,
       }),
       { encoding: 'utf8', mode: 0o600 },
     );
