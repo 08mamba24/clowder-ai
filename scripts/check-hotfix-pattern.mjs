@@ -13,6 +13,8 @@
 
 import { execSync } from 'node:child_process';
 
+import { resolveMergeGateRepository } from './lib/merge-gate-gh-repo.mjs';
+
 const HOTFIX_KEYWORDS = [
   /\bfix:/i,
   /\bhotfix:/i,
@@ -48,9 +50,21 @@ const applyLabelIdx = process.argv.indexOf('--apply-label');
 const prNumber = applyLabelIdx >= 0 ? process.argv[applyLabelIdx + 1] : process.env.PR_NUMBER;
 let prTitleMatch = false;
 if (prNumber) {
-  const prTitle = run(`gh pr view ${prNumber} --json title --jq '.title'`);
-  if (prTitle && matchesHotfix(prTitle)) {
-    prTitleMatch = true;
+  // Pin --repo to origin: bare `gh pr view` prefers the `upstream` remote and
+  // queries the wrong repository in clones tracking both (see
+  // lib/merge-gate-gh-repo.mjs). On resolution failure the title check
+  // degrades to commit-scan only.
+  let ghRepo = null;
+  try {
+    ghRepo = resolveMergeGateRepository();
+  } catch (error) {
+    console.error(`⚠️  ${error.message} — PR title check skipped (commit scan only)`);
+  }
+  if (ghRepo) {
+    const prTitle = run(`gh pr view ${prNumber} --repo ${ghRepo} --json title --jq '.title'`);
+    if (prTitle && matchesHotfix(prTitle)) {
+      prTitleMatch = true;
+    }
   }
 }
 
@@ -99,14 +113,27 @@ if (isHotfix) {
 let labelApplied = null;
 let labelError = null;
 if (applyLabelIdx >= 0 && prNumber && autoLabel) {
+  // WRITE PATH — fail closed: a bare `gh pr edit` would label whatever
+  // repository the `upstream` remote resolves to. Refuse to run it unless the
+  // merge-gate repository resolves (lib/merge-gate-gh-repo.mjs).
+  let ghRepo = null;
   try {
-    execSync(`gh pr edit ${prNumber} --add-label hotfix`, { encoding: 'utf-8', stdio: 'pipe' });
-    console.log('✅ hotfix label auto-added (single file ≤50 lines + keyword)');
-    labelApplied = true;
-  } catch (e) {
+    ghRepo = resolveMergeGateRepository();
+  } catch (error) {
     labelApplied = false;
-    labelError = (e.stderr || e.message).trim();
-    console.error(`❌ Failed to add hotfix label to PR #${prNumber}: ${labelError}`);
+    labelError = error.message;
+    console.error(`❌ Refusing to run gh pr edit without a resolved repository: ${labelError}`);
+  }
+  if (ghRepo) {
+    try {
+      execSync(`gh pr edit ${prNumber} --repo ${ghRepo} --add-label hotfix`, { encoding: 'utf-8', stdio: 'pipe' });
+      console.log('✅ hotfix label auto-added (single file ≤50 lines + keyword)');
+      labelApplied = true;
+    } catch (e) {
+      labelApplied = false;
+      labelError = (e.stderr || e.message).trim();
+      console.error(`❌ Failed to add hotfix label to PR #${prNumber}: ${labelError}`);
+    }
   }
 } else if (applyLabelIdx >= 0 && prNumber && isHotfix && !autoLabel) {
   console.log('ℹ️  Hotfix detected but NOT auto-labeling (multi-file or >50 lines). Cat/reviewer decides.');

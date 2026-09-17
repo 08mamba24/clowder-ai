@@ -36,6 +36,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import { resolveMergeGateRepository } from './lib/merge-gate-gh-repo.mjs';
+
 /**
  * Pure classifier. Decides what a merge exit code means given PR truth.
  * @param {{ mergeExitCode: number, prState: string|null|undefined }} input
@@ -168,7 +170,19 @@ function readPrTruth(prNumber) {
     try {
       raw = execFileSync(
         'gh',
-        ['pr', 'view', String(prNumber), '--json', 'state,mergedAt,mergeCommit,mergeable,mergeStateStatus'],
+        // --repo pinned to origin: bare `gh pr view` prefers the `upstream`
+        // remote and reads the wrong repository's PR truth in clones tracking
+        // both (lib/merge-gate-gh-repo.mjs). Resolution failure lands in the
+        // catch below -> PR truth unavailable -> classifier fails closed.
+        [
+          'pr',
+          'view',
+          String(prNumber),
+          '--repo',
+          resolveMergeGateRepository(),
+          '--json',
+          'state,mergedAt,mergeCommit,mergeable,mergeStateStatus',
+        ],
         { encoding: 'utf8' },
       );
     } catch (error) {
