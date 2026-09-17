@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import type { CatConfig, CatId } from '@cat-cafe/shared';
 import { getCatModel } from '../../../../../config/cat-models.js';
 import { qoderDurableConfigRoot, resolveQoderAuthSourceDir } from '../../../../../config/qoder-auth-source.js';
-import { QoderAgentService } from './QoderAgentService.js';
+import { QoderAgentService, validateQoderControlledRuntimePaths } from './QoderAgentService.js';
 import { ensureQoderRuntimeProfile, type QoderProfileFs } from './qoder-runtime-profile.js';
 
 export interface QoderServiceFactoryInput {
@@ -35,6 +35,14 @@ export interface QoderServiceFactoryInput {
    * 构造期直接读 config.defaultModel 会忽略 env override）。
    */
   modelResolver?: (catId: CatId) => string | undefined;
+  /** Runtime binary root; defaults to CAT_CAFE_RUNTIME_ROOT, then process.cwd(). */
+  binaryRoot?: string;
+  /** Test seam for the split readonly memory MCP entrypoint. */
+  memoryMcpServerPath?: string;
+  /** Test seam for the runtime-owned Qoder shell-prefix sandbox wrapper. */
+  shellSandboxWrapperPath?: string;
+  /** Test seam for macOS Seatbelt. */
+  sandboxBinary?: string;
 }
 
 export function createQoderAgentService(input: QoderServiceFactoryInput): QoderAgentService | null {
@@ -45,6 +53,18 @@ export function createQoderAgentService(input: QoderServiceFactoryInput): QoderA
   if (!model) {
     warn(
       `[qoder-factory] cat "${catId}" has no effective model (CAT_${String(catId).toUpperCase()}_MODEL / config) — P1-D requires an exact model. Cat not registered (fail closed).`,
+    );
+    return null;
+  }
+  const binaryRoot = input.binaryRoot ?? (process.env.CAT_CAFE_RUNTIME_ROOT?.trim() || process.cwd());
+  const memoryMcpServerPath =
+    input.memoryMcpServerPath ?? join(binaryRoot, 'packages', 'mcp-server', 'dist', 'memory.js');
+  const shellSandboxWrapperPath =
+    input.shellSandboxWrapperPath ?? join(binaryRoot, 'scripts', 'qoder-shell-sandbox.mjs');
+  const runtimeAssets = validateQoderControlledRuntimePaths({ memoryMcpServerPath, shellSandboxWrapperPath });
+  if (!runtimeAssets.ok) {
+    warn(
+      `[qoder-factory] controlled runtime assets invalid: ${runtimeAssets.reason}. Cat not registered (fail closed).`,
     );
     return null;
   }
@@ -64,7 +84,16 @@ export function createQoderAgentService(input: QoderServiceFactoryInput): QoderA
   if (resolved.audit.warnings?.length) {
     warn(`[qoder-factory] runtime profile audit warnings for "${catId}": ${resolved.audit.warnings.join('; ')}`);
   }
-  return new QoderAgentService({ catId, profileDir: resolved.profileDir, model });
+  return new QoderAgentService({
+    catId,
+    profileDir: resolved.profileDir,
+    model,
+    toolAccess: 'controlled',
+    memoryMcpServerPath,
+    runtimeRoot: binaryRoot,
+    shellSandboxWrapperPath,
+    ...(input.sandboxBinary ? { sandboxBinary: input.sandboxBinary } : {}),
+  });
 }
 
 /**
@@ -82,6 +111,9 @@ export interface RegisterQoderAgentServiceInput {
   log?: { warn: (msg: string) => void };
   fs?: QoderProfileFs;
   modelResolver?: (catId: CatId) => string | undefined;
+  memoryMcpServerPath?: string;
+  shellSandboxWrapperPath?: string;
+  sandboxBinary?: string;
 }
 
 export type RegisterQoderAgentServiceResult = { ok: true; service: QoderAgentService } | { ok: false; reason: string };
@@ -103,6 +135,10 @@ export function registerQoderAgentService(input: RegisterQoderAgentServiceInput)
     dataRoot,
     authSourceDir: auth.authSourceDir,
     log: { warn },
+    binaryRoot: process.env.CAT_CAFE_RUNTIME_ROOT?.trim() || input.projectRoot,
+    ...(input.memoryMcpServerPath ? { memoryMcpServerPath: input.memoryMcpServerPath } : {}),
+    ...(input.shellSandboxWrapperPath ? { shellSandboxWrapperPath: input.shellSandboxWrapperPath } : {}),
+    ...(input.sandboxBinary ? { sandboxBinary: input.sandboxBinary } : {}),
     ...(input.fs ? { fs: input.fs } : {}),
     ...(input.modelResolver ? { modelResolver: input.modelResolver } : {}),
   });

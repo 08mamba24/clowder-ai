@@ -47,6 +47,11 @@ const GUARDED_ZSH_DIR = resolve(CAT_CAFE_RUNTIME_ROOT, 'scripts', 'guarded-zsh')
 type GuardedChildEnv = Record<string, string | null | undefined>;
 type SourceEnvOverrides = Readonly<Record<string, string | null>> | undefined;
 
+/** Canonical guarded-gh directory injected by buildChildEnv (if installed). */
+export function resolveVerdictGhGuardBin(): string | undefined {
+  return !IS_WINDOWS && existsSync(resolve(GUARDED_GH_BIN, 'gh')) ? GUARDED_GH_BIN : undefined;
+}
+
 function hasSourceOverride(sourceOverrides: SourceEnvOverrides, key: string): boolean {
   return sourceOverrides !== undefined && Object.hasOwn(sourceOverrides, key);
 }
@@ -84,7 +89,7 @@ export function withVerdictGhGuardEnv<T extends Record<string, string | null | u
   env: T,
   sourceOverrides?: Readonly<Record<string, string | null>>,
 ): T {
-  if (IS_WINDOWS || !existsSync(resolve(GUARDED_GH_BIN, 'gh'))) return env;
+  if (!resolveVerdictGhGuardBin()) return env;
   const mutable = env as Record<string, string | null | undefined>;
   const currentPath = typeof mutable.PATH === 'string' ? mutable.PATH : (process.env.PATH ?? '');
   const pathEntries = currentPath.split(':').filter(Boolean);

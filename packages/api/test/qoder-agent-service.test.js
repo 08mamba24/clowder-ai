@@ -12,20 +12,24 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import {
+  chmodSync,
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -36,7 +40,14 @@ const SRC = join(here, '..', 'src', 'domains', 'cats', 'services', 'agents', 'pr
 
 const svcModule = await import(join(DIST, 'QoderAgentService.js'));
 const profileModule = await import(join(SRC, 'qoder-runtime-profile.ts'));
-const { buildQoderArgs, qoderInitGate, QoderAgentService } = svcModule;
+const {
+  buildQoderArgs,
+  qoderInitGate,
+  QODER_BASIC_TOOLS,
+  QODER_MEMORY_MCP_SERVER,
+  QODER_READONLY_MEMORY_TOOLS,
+  QoderAgentService,
+} = svcModule;
 const { ensureQoderRuntimeProfile, auditQoderProfile, isSafeCatIdSegment } = profileModule;
 const FIXTURE = join(here, 'fixtures', 'qoder');
 const fixtureLines = (name) =>
@@ -48,7 +59,7 @@ const CAT = 'cat_test_qoder';
 
 // ── argv：prompt 走 stdin，安全 flag 全集 ───────────────────────────────────
 test('buildQoderArgs: stdin prompt channel, no prompt text in argv, full safety set', () => {
-  const args = buildQoderArgs({ profileDir: '/p', model: 'qwen-max' });
+  const args = buildQoderArgs({ profileDir: '/p', model: 'qwen-max', toolAccess: 'disabled' });
   assert.deepEqual(args, [
     '-p',
     '-',
@@ -66,15 +77,62 @@ test('buildQoderArgs: stdin prompt channel, no prompt text in argv, full safety 
     '--setting-sources',
     'user',
   ]);
-  const resume = buildQoderArgs({ profileDir: '/p', model: 'qwen-max', sessionId: 'sid-1' });
+  const resume = buildQoderArgs({
+    profileDir: '/p',
+    model: 'qwen-max',
+    sessionId: 'sid-1',
+    toolAccess: 'disabled',
+  });
   assert.ok(resume.includes('-r') && resume.includes('sid-1'));
   assert.ok(!args.join(' ').includes('bypass_permissions'));
 });
 
 test('argv carries explicit -m model (round-2 P1-1: model is a typed input, actually sent)', () => {
-  const args = buildQoderArgs({ profileDir: '/p', model: 'qwen-max' });
+  const args = buildQoderArgs({ profileDir: '/p', model: 'qwen-max', toolAccess: 'disabled' });
   const i = args.indexOf('-m');
   assert.ok(i > 0 && args[i + 1] === 'qwen-max');
+});
+
+test('L2: controlled argv exposes the complete basic set and preauthorizes bounded write/shell + memory', () => {
+  assert.deepEqual(QODER_BASIC_TOOLS, ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write']);
+  assert.equal(QODER_MEMORY_MCP_SERVER, 'cat-cafe-memory');
+  assert.equal(QODER_READONLY_MEMORY_TOOLS.length, 12, 'split memory.js readonly surface is pinned exactly');
+
+  const args = buildQoderArgs({
+    profileDir: '/p',
+    model: 'Auto',
+    toolAccess: 'controlled',
+    mcpConfigPath: '/tmp/qoder-memory.json',
+    workingDirectory: '/tmp/workspace-l2',
+  });
+  const toolsIndex = args.indexOf('--tools');
+  const firstAllowed = args.indexOf('--allowed-tools');
+  assert.deepEqual(args.slice(toolsIndex + 1, firstAllowed), QODER_BASIC_TOOLS);
+  const allowed = args.flatMap((arg, i) => (arg === '--allowed-tools' ? [args[i + 1]] : []));
+  assert.deepEqual(
+    new Set(allowed),
+    new Set([
+      'Read(//tmp/workspace-l2/**)',
+      'Edit(//tmp/workspace-l2/**)',
+      'Write(//tmp/workspace-l2/**)',
+      'Glob(//tmp/workspace-l2/**)',
+      'Grep(//tmp/workspace-l2/**)',
+      'Bash',
+      ...QODER_READONLY_MEMORY_TOOLS.map((name) => `mcp__${QODER_MEMORY_MCP_SERVER}__${name}`),
+    ]),
+  );
+  assert.equal(args[args.indexOf('--mcp-config') + 1], '/tmp/qoder-memory.json');
+  assert.equal(args[args.indexOf('--allowed-mcp-server-names') + 1], QODER_MEMORY_MCP_SERVER);
+  assert.ok(!args.includes('nothing'));
+  assert.ok(!args.includes('bypass_permissions'));
+});
+
+test('L2: read-only execution policy collapses back to an empty built-in/MCP surface', () => {
+  const args = buildQoderArgs({ profileDir: '/p', model: 'Auto', toolAccess: 'disabled' });
+  assert.equal(args[args.indexOf('--tools') + 1], '');
+  assert.equal(args[args.indexOf('--allowed-mcp-server-names') + 1], 'nothing');
+  assert.ok(!args.includes('--allowed-tools'));
+  assert.ok(!args.includes('--mcp-config'));
 });
 
 // ── init 门：tools/mcp/model/版本 全锁 ─────────────────────────────────────
@@ -97,6 +155,33 @@ test('qoderInitGate: version, permissionMode, tools, mcp, model all enforced (mi
   delete noMcp.mcp_servers;
   assert.equal(qoderInitGate(noMcp, 'qwen-max').ok, false, 'missing mcp_servers field red');
   assert.equal(qoderInitGate({ ...good, model: 'Auto' }, 'qwen-max').ok, false, 'silent Auto fallback red');
+});
+
+test('L2: init gate accepts only the exact basic + readonly-memory surface and a connected memory server', () => {
+  const expectedTools = [
+    ...QODER_BASIC_TOOLS,
+    ...QODER_READONLY_MEMORY_TOOLS.map((name) => `mcp__${QODER_MEMORY_MCP_SERVER}__${name}`),
+  ];
+  const expected = { tools: expectedTools, mcpServerNames: [QODER_MEMORY_MCP_SERVER] };
+  const good = {
+    protocol_version: '1.4.0',
+    permissionMode: 'default',
+    model: 'Auto',
+    tools: [...expectedTools].reverse(),
+    mcp_servers: [{ name: QODER_MEMORY_MCP_SERVER, status: 'connected' }],
+  };
+  assert.equal(qoderInitGate(good, 'Auto', expected).ok, true, 'order-independent exact set passes');
+  assert.equal(qoderInitGate({ ...good, tools: expectedTools.slice(1) }, 'Auto', expected).ok, false, 'missing red');
+  assert.equal(qoderInitGate({ ...good, tools: [...expectedTools, 'Agent'] }, 'Auto', expected).ok, false, 'extra red');
+  assert.equal(
+    qoderInitGate(
+      { ...good, mcp_servers: [{ name: QODER_MEMORY_MCP_SERVER, status: 'disconnected' }] },
+      'Auto',
+      expected,
+    ).ok,
+    false,
+    'disconnected memory server red',
+  );
 });
 
 // round-3 P1④：精确匹配——大小写漂移不再放行（auth-error 夹具实测：未认证 CLI 回报
@@ -456,9 +541,606 @@ function makeSvc(overrides = {}) {
     model: 'Auto',
     binary: '/usr/bin/true',
     profileFs: greenProfileFs(),
+    toolAccess: 'disabled',
     ...overrides,
   });
 }
+
+function controlledFixture(name = 'tool-use') {
+  const expectedTools = [
+    ...QODER_BASIC_TOOLS,
+    ...QODER_READONLY_MEMORY_TOOLS.map((tool) => `mcp__${QODER_MEMORY_MCP_SERVER}__${tool}`),
+  ];
+  return fixtureLines(name).map((line) => {
+    const event = JSON.parse(line);
+    if (event.type === 'system' && event.subtype === 'init') {
+      event.tools = expectedTools;
+      event.mcp_servers = [{ name: QODER_MEMORY_MCP_SERVER, status: 'connected' }];
+    }
+    return JSON.stringify(event);
+  });
+}
+
+function makeControlledRuntime(root, wrapperBody) {
+  const runtimeRoot = join(root, 'runtime');
+  const wrapperPath = join(runtimeRoot, 'scripts', 'qoder-shell-sandbox.mjs');
+  const memoryPath = join(runtimeRoot, 'packages', 'mcp-server', 'dist', 'memory.js');
+  mkdirSync(dirname(wrapperPath), { recursive: true });
+  mkdirSync(dirname(memoryPath), { recursive: true });
+  if (wrapperBody) writeFileSync(wrapperPath, wrapperBody);
+  else cpSync(join(here, '..', '..', '..', 'scripts', 'qoder-shell-sandbox.mjs'), wrapperPath);
+  chmodSync(wrapperPath, 0o755);
+  writeFileSync(memoryPath, "process.stdout.write('memory-ok\\n');\n");
+  // Structural controlled tests never execute the sandbox binary (probe is
+  // stubbed), but validation requires an existing executable file — and the
+  // macOS-only /usr/bin/sandbox-exec literal would fail that check on Linux.
+  // Fail loud if a future change ever runs the stub: a silent exit-0 would
+  // fake an "allowed" canary and hide the missing real sandbox.
+  const sandboxExecPath = join(root, 'sandbox-exec');
+  writeFileSync(sandboxExecPath, '#!/bin/sh\necho "test sandbox-exec stub must never execute" >&2\nexit 70\n');
+  chmodSync(sandboxExecPath, 0o755);
+  return { memoryPath, runtimeRoot, sandboxExecPath, wrapperPath };
+}
+
+test('L2: controlled invoke fails closed before spawn when sandbox-exec is unavailable', async () => {
+  let spawned = 0;
+  const svc = makeSvc({
+    toolAccess: 'controlled',
+    memoryMcpServerPath: '/runtime/packages/mcp-server/dist/memory.js',
+    runtimeRoot: '/runtime',
+    shellSandboxWrapperPath: '/runtime/scripts/qoder-shell-sandbox.mjs',
+    sandboxBinary: '',
+    spawnFn: () => {
+      spawned += 1;
+      return fakeChild(controlledFixture());
+    },
+  });
+
+  const out = await runInvoke(svc, 'read the fixture', { workingDirectory: '/tmp/workspace-l2' });
+
+  assert.equal(spawned, 0);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].type, 'error');
+  assert.match(out[0].error, /sandbox-exec is required/);
+});
+
+test('L2: controlled invoke fails closed before spawn when the sandbox binary path is missing', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'qoder-l2-missing-sandbox-'));
+  const controlledRuntime = makeControlledRuntime(root);
+  let spawned = 0;
+  try {
+    const svc = makeSvc({
+      toolAccess: 'controlled',
+      memoryMcpServerPath: controlledRuntime.memoryPath,
+      runtimeRoot: controlledRuntime.runtimeRoot,
+      shellSandboxWrapperPath: controlledRuntime.wrapperPath,
+      sandboxBinary: join(root, 'no-such-sandbox-exec'),
+      spawnFn: () => {
+        spawned += 1;
+        return fakeChild(controlledFixture());
+      },
+    });
+
+    const out = await runInvoke(svc, 'read the fixture', { workingDirectory: '/tmp/workspace-l2' });
+
+    assert.equal(spawned, 0);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].type, 'error');
+    assert.match(out[0].error, /runtime sandbox asset unavailable/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('L2: controlled invoke delivers six basic tools and a strict readonly memory config, then cleans it up', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'qoder-l2-structural-'));
+  const controlledRuntime = makeControlledRuntime(root);
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  const canonicalWorkspace = realpathSync(workspace);
+  let mcpConfigPath;
+  let mcpConfig;
+  let mcpConfigMode;
+  let seenArgs;
+  let seenEnv;
+  let workspacePolicy;
+  let memoryPolicy;
+  let memoryShim;
+  let prepared;
+  const svc = makeSvc({
+    toolAccess: 'controlled',
+    memoryMcpServerPath: controlledRuntime.memoryPath,
+    runtimeRoot: controlledRuntime.runtimeRoot,
+    shellSandboxWrapperPath: controlledRuntime.wrapperPath,
+    sandboxBinary: controlledRuntime.sandboxExecPath,
+    sandboxProbe: () => {},
+    spawnFn: (_cmd, args, options) => {
+      seenArgs = args;
+      seenEnv = options.env;
+      mcpConfigPath = args[args.indexOf('--mcp-config') + 1];
+      mcpConfig = JSON.parse(readFileSync(mcpConfigPath, 'utf8'));
+      mcpConfigMode = statSync(mcpConfigPath).mode & 0o777;
+      workspacePolicy = readFileSync(options.env.CAT_CAFE_QODER_WORKSPACE_POLICY, 'utf8');
+      memoryPolicy = readFileSync(options.env.CAT_CAFE_QODER_MEMORY_POLICY, 'utf8');
+      memoryShim = readFileSync(options.env.CAT_CAFE_QODER_MEMORY_SHIM, 'utf8');
+      return fakeChild(controlledFixture());
+    },
+  });
+  const callbackEnv = {
+    CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
+    CAT_CAFE_INVOCATION_ID: 'inv-l2',
+    CAT_CAFE_CALLBACK_TOKEN: 'secret-token',
+    CAT_CAFE_USER_ID: 'user-l2',
+    CAT_CAFE_CAT_ID: CAT,
+    CAT_CAFE_THREAD_ID: 'thread-l2',
+  };
+  let out;
+  try {
+    out = await runInvoke(svc, 'read the fixture', {
+      workingDirectory: workspace,
+      callbackEnv,
+      beforeProviderLaunch: async (request) => {
+        prepared = request;
+        return { requestGenerationId: 'rg', generationOrdinal: 1, sessionId: 's' };
+      },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+
+  assert.ok(
+    out.some((m) => m.type === 'done'),
+    JSON.stringify(out),
+  );
+  assert.ok(seenArgs.includes('--allowed-tools'));
+  assert.deepEqual(Object.keys(mcpConfig.mcpServers), [QODER_MEMORY_MCP_SERVER]);
+  const memory = mcpConfig.mcpServers[QODER_MEMORY_MCP_SERVER];
+  assert.equal(memory.command, seenEnv.CAT_CAFE_QODER_MEMORY_SHIM);
+  assert.deepEqual(memory.args, []);
+  assert.equal(memory.env.CAT_CAFE_READONLY, 'true');
+  assert.equal(memory.env.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'false');
+  assert.equal(memory.env.ALLOWED_WORKSPACE_DIRS, canonicalWorkspace);
+  assert.equal(memory.env.CAT_CAFE_API_URL, 'http://127.0.0.1:3004');
+  assert.equal(memory.env.CAT_CAFE_CALLBACK_TOKEN, undefined, 'readonly memory does not receive write credentials');
+  assert.equal(memory.env.CAT_CAFE_INVOCATION_ID, undefined, 'readonly memory does not receive invocation credentials');
+  assert.equal(mcpConfigMode, 0o600, 'invocation-scoped MCP config must be owner-readable only');
+  assert.equal(
+    seenEnv.CAT_CAFE_CALLBACK_TOKEN,
+    undefined,
+    'Qoder/Bash child env must not inherit callback credentials',
+  );
+  assert.equal(
+    seenEnv.CAT_CAFE_INVOCATION_ID,
+    undefined,
+    'Qoder/Bash child env must not inherit invocation credentials',
+  );
+  assert.equal(seenEnv.QODERCN_SHELL_PREFIX, controlledRuntime.wrapperPath);
+  assert.match(workspacePolicy, /\(deny file-read\*/);
+  assert.match(workspacePolicy, /\(deny file-write\*\)/);
+  assert.match(workspacePolicy, /qoder-l2-structural-/);
+  assert.match(memoryPolicy, /packages\/mcp-server\/dist/);
+  assert.match(memoryPolicy, /\(allow file-write\* \(subpath .*scratch/);
+  assert.match(memoryShim, /packages\/mcp-server\/dist\/memory\.js/);
+  assert.equal(existsSync(mcpConfigPath), false, 'invocation-scoped MCP config must be removed after invocation');
+  assert.equal(existsSync(memory.command), false, 'memory shim must be removed after invocation');
+  assert.equal(existsSync(seenEnv.CAT_CAFE_QODER_WORKSPACE_POLICY), false, 'sandbox policy must be removed');
+  assert.equal(prepared.runtime.toolExecutionPolicy, 'workspace_write');
+  assert.deepEqual(prepared.tools.declaredServerNames, [QODER_MEMORY_MCP_SERVER]);
+});
+
+test(
+  'L2: macOS shell-prefix sandbox blocks policy self-selection and runtime-root reads',
+  { skip: process.platform !== 'darwin' },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), 'qoder-l2-seatbelt-'));
+    const workspace = join(root, 'workspace');
+    const inside = join(workspace, 'inside.txt');
+    const outside = join(root, 'outside.txt');
+    const controlledRuntime = makeControlledRuntime(root);
+    const runtimeSecret = join(controlledRuntime.runtimeRoot, '.env');
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(outside, 'outside-secret');
+    writeFileSync(runtimeSecret, 'DEPLOY_TOKEN=seatbelt-canary');
+    let canary;
+    try {
+      const svc = makeSvc({
+        toolAccess: 'controlled',
+        memoryMcpServerPath: controlledRuntime.memoryPath,
+        runtimeRoot: controlledRuntime.runtimeRoot,
+        shellSandboxWrapperPath: controlledRuntime.wrapperPath,
+        sandboxBinary: '/usr/bin/sandbox-exec',
+        spawnFn: (_cmd, _args, options) => {
+          const run = (command) =>
+            spawnSync(process.execPath, [controlledRuntime.wrapperPath, command], {
+              env: options.env,
+              encoding: 'utf8',
+            });
+          const shimPath = options.env.CAT_CAFE_QODER_MEMORY_SHIM;
+          canary = {
+            insideWrite: run(`/usr/bin/touch '${inside}'`).status,
+            outsideWrite: run(`/usr/bin/touch '${outside}.new'`).status,
+            outsideRead: run(`/bin/cat '${outside}'`).status,
+            runtimeRead: run(`/bin/cat '${runtimeSecret}'`).status,
+            shimOverwrite: run(`/usr/bin/printf '#!/bin/sh\\n/bin/cat "${runtimeSecret}"\\n' > '${shimPath}'`).status,
+            shimExec: run(shimPath),
+          };
+          return fakeChild(controlledFixture());
+        },
+      });
+      const out = await runInvoke(svc, 'sandbox canary', { workingDirectory: workspace });
+      assert.ok(
+        out.some((message) => message.type === 'done'),
+        JSON.stringify(out),
+      );
+      assert.equal(canary.insideWrite, 0);
+      assert.notEqual(canary.outsideWrite, 0);
+      assert.notEqual(canary.outsideRead, 0);
+      assert.notEqual(canary.runtimeRead, 0);
+      assert.notEqual(canary.shimOverwrite, 0, 'Bash must not be able to replace the privileged memory shim');
+      assert.doesNotMatch(
+        canary.shimExec.stdout,
+        /seatbelt-canary/,
+        'exact shim command must not reveal runtime secrets',
+      );
+      assert.equal(existsSync(inside), true);
+      assert.equal(existsSync(`${outside}.new`), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'L2: macOS controlled PATH resolves guarded gh and a runnable pnpm before provider spawn',
+  { skip: process.platform !== 'darwin' },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), 'qoder-l2-path-boundary-'));
+    const workspace = join(root, 'workspace');
+    const controlledRuntime = makeControlledRuntime(root);
+    mkdirSync(workspace, { recursive: true });
+    let attempts;
+    try {
+      const svc = makeSvc({
+        toolAccess: 'controlled',
+        memoryMcpServerPath: controlledRuntime.memoryPath,
+        runtimeRoot: controlledRuntime.runtimeRoot,
+        shellSandboxWrapperPath: controlledRuntime.wrapperPath,
+        sandboxBinary: '/usr/bin/sandbox-exec',
+        spawnFn: (_cmd, _args, options) => {
+          const run = (command) =>
+            spawnSync(process.execPath, [controlledRuntime.wrapperPath, command], {
+              cwd: workspace,
+              env: options.env,
+              encoding: 'utf8',
+            });
+          attempts = {
+            ghPath: run('command -v gh'),
+            ghVersion: run('gh --version'),
+            pnpmPath: run('command -v pnpm'),
+            pnpmVersion: run('pnpm --version'),
+          };
+          return fakeChild(controlledFixture());
+        },
+      });
+      const out = await runInvoke(svc, 'tool PATH canary', { workingDirectory: workspace });
+      assert.ok(
+        out.some((message) => message.type === 'done'),
+        JSON.stringify(out),
+      );
+      assert.equal(attempts.ghPath.status, 0, attempts.ghPath.stderr);
+      assert.match(attempts.ghPath.stdout, /scripts\/guarded-bin\/gh\s*$/);
+      assert.equal(attempts.ghVersion.status, 0, attempts.ghVersion.stderr);
+      assert.equal(attempts.pnpmPath.status, 0, attempts.pnpmPath.stderr);
+      assert.equal(attempts.pnpmVersion.status, 0, attempts.pnpmVersion.stderr);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'L2: macOS shell-prefix sandbox denies shared git hooks/config and attacker-planted gitdir pointers',
+  { skip: process.platform !== 'darwin' },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), 'qoder-l2-git-boundary-'));
+    const mainRepo = join(root, 'main-repo');
+    const worktree = join(root, 'cat-worktree');
+    const plantedWorkspace = join(root, 'planted-workspace');
+    const controlledRuntime = makeControlledRuntime(root);
+    try {
+      assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', mainRepo]).status, 0);
+      writeFileSync(join(mainRepo, 'README.md'), 'main repo\n');
+      assert.equal(spawnSync('git', ['-C', mainRepo, 'add', '-A']).status, 0);
+      assert.equal(
+        spawnSync('git', ['-C', mainRepo, '-c', 'user.email=a@b.c', '-c', 'user.name=t', 'commit', '-qm', 'init'])
+          .status,
+        0,
+      );
+      assert.equal(spawnSync('git', ['-C', mainRepo, 'worktree', 'add', '-q', worktree]).status, 0);
+      writeFileSync(join(worktree, 'CHANGE.md'), 'sandboxed commit\n');
+      const gitDir = realpathSync(
+        resolve(worktree, readFileSync(join(worktree, '.git'), 'utf8').trim().slice('gitdir:'.length).trim()),
+      );
+      mkdirSync(plantedWorkspace, { recursive: true });
+      writeFileSync(join(plantedWorkspace, '.git'), readFileSync(join(worktree, '.git'), 'utf8'));
+
+      const hooksCanary = join(mainRepo, '.git', 'hooks', 'qoder-canary');
+      const gitConfig = join(mainRepo, '.git', 'config');
+      const mainRef = join(mainRepo, '.git', 'refs', 'heads', 'main');
+      const forgedRef = join(mainRepo, '.git', 'refs', 'heads', 'qoder-forged');
+      const sharedReflog = join(mainRepo, '.git', 'logs', 'HEAD');
+      const originalConfig = readFileSync(gitConfig, 'utf8');
+      const originalMainRef = readFileSync(mainRef, 'utf8');
+      const originalSharedReflog = readFileSync(sharedReflog, 'utf8');
+      const attempts = [];
+      for (const workspace of [worktree, plantedWorkspace]) {
+        const svc = makeSvc({
+          toolAccess: 'controlled',
+          memoryMcpServerPath: controlledRuntime.memoryPath,
+          runtimeRoot: controlledRuntime.runtimeRoot,
+          shellSandboxWrapperPath: controlledRuntime.wrapperPath,
+          sandboxBinary: '/usr/bin/sandbox-exec',
+          spawnFn: (_cmd, _args, options) => {
+            const runResult = (command) =>
+              spawnSync(process.execPath, [controlledRuntime.wrapperPath, command], {
+                cwd: workspace,
+                env: options.env,
+                encoding: 'utf8',
+              });
+            const run = (command) => runResult(command).status;
+            const gitCommit =
+              workspace === worktree
+                ? runResult(
+                    `git -C '${worktree}' add CHANGE.md && git -C '${worktree}' -c user.email=a@b.c -c user.name=t commit -qm sandbox-canary`,
+                  )
+                : undefined;
+            attempts.push({
+              config: run(`/usr/bin/printf '\\n# qoder-canary\\n' >> '${gitConfig}'`),
+              commondir: run(`/usr/bin/printf '../..\\n' > '${join(gitDir, 'commondir')}'`),
+              gitCommit: gitCommit?.status,
+              gitCommitStderr: gitCommit?.stderr,
+              gitdir: run(`/usr/bin/printf '${join(plantedWorkspace, '.git')}\\n' > '${join(gitDir, 'gitdir')}'`),
+              hooks: run(`/usr/bin/touch '${hooksCanary}'`),
+              overwriteMainRef: run(`/usr/bin/printf '0000000000000000000000000000000000000000\\n' > '${mainRef}'`),
+              removeMainRef: run(`/bin/rm -f '${mainRef}'`),
+              removeSharedReflog: run(`/bin/rm -f '${sharedReflog}'`),
+              writeForgedRef: run(`/usr/bin/printf '${originalMainRef.trim()}\\n' > '${forgedRef}'`),
+            });
+            return fakeChild(controlledFixture());
+          },
+        });
+        const out = await runInvoke(svc, 'git boundary canary', { workingDirectory: workspace });
+        assert.ok(
+          out.some((message) => message.type === 'done'),
+          JSON.stringify(out),
+        );
+      }
+
+      assert.equal(attempts[0].gitCommit, 0, attempts[0].gitCommitStderr);
+      assert.equal(attempts[0].config, 1);
+      assert.equal(attempts[0].commondir, 1);
+      assert.equal(attempts[0].gitdir, 1);
+      assert.equal(attempts[0].hooks, 1);
+      assert.equal(attempts[0].overwriteMainRef, 1);
+      assert.equal(attempts[0].removeMainRef, 1);
+      assert.equal(attempts[0].removeSharedReflog, 1);
+      assert.equal(attempts[0].writeForgedRef, 1);
+      assert.equal(attempts[1].gitCommit, undefined);
+      assert.equal(attempts[1].config, 1);
+      assert.equal(attempts[1].commondir, 1);
+      assert.equal(attempts[1].gitdir, 1);
+      assert.equal(attempts[1].hooks, 1);
+      assert.equal(attempts[1].overwriteMainRef, 1);
+      assert.equal(attempts[1].removeMainRef, 1);
+      assert.equal(attempts[1].removeSharedReflog, 1);
+      assert.equal(attempts[1].writeForgedRef, 1);
+      assert.equal(existsSync(hooksCanary), false);
+      assert.equal(existsSync(forgedRef), false);
+      assert.equal(readFileSync(mainRef, 'utf8'), originalMainRef);
+      assert.equal(readFileSync(sharedReflog, 'utf8'), originalSharedReflog);
+      assert.equal(readFileSync(gitConfig, 'utf8'), originalConfig);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'L2: macOS direct-checkout workspace excludes .git except current branch commit metadata',
+  { skip: process.platform !== 'darwin' },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), 'qoder-l2-direct-git-'));
+    const repo = join(root, 'repo');
+    const controlledRuntime = makeControlledRuntime(root);
+    try {
+      assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', repo]).status, 0);
+      writeFileSync(join(repo, 'README.md'), 'initial\n');
+      assert.equal(spawnSync('git', ['-C', repo, 'add', '-A']).status, 0);
+      assert.equal(
+        spawnSync('git', ['-C', repo, '-c', 'user.email=a@b.c', '-c', 'user.name=t', 'commit', '-qm', 'init']).status,
+        0,
+      );
+      assert.equal(spawnSync('git', ['-C', repo, 'branch', 'sibling']).status, 0);
+      writeFileSync(join(repo, 'CHANGE.md'), 'sandboxed direct commit\n');
+      const mainRef = join(repo, '.git', 'refs', 'heads', 'main');
+      const siblingRef = join(repo, '.git', 'refs', 'heads', 'sibling');
+      const forgedRef = join(repo, '.git', 'refs', 'heads', 'forged');
+      const reflogHead = join(repo, '.git', 'logs', 'HEAD');
+      const originalSiblingRef = readFileSync(siblingRef, 'utf8');
+      let attempts;
+      const svc = makeSvc({
+        toolAccess: 'controlled',
+        memoryMcpServerPath: controlledRuntime.memoryPath,
+        runtimeRoot: controlledRuntime.runtimeRoot,
+        shellSandboxWrapperPath: controlledRuntime.wrapperPath,
+        sandboxBinary: '/usr/bin/sandbox-exec',
+        spawnFn: (_cmd, _args, options) => {
+          const run = (command) =>
+            spawnSync(process.execPath, [controlledRuntime.wrapperPath, command], {
+              cwd: repo,
+              env: options.env,
+              encoding: 'utf8',
+            });
+          const commit = run(
+            `git add CHANGE.md && git -c user.email=a@b.c -c user.name=t commit -qm sandbox-direct-canary`,
+          );
+          attempts = {
+            commit,
+            currentRef: run(`test -s '${mainRef}'`),
+            forgedRef: run(`/usr/bin/printf '${originalSiblingRef.trim()}\\n' > '${forgedRef}'`),
+            removeReflog: run(`/bin/rm -f '${reflogHead}'`),
+            siblingRef: run(`/usr/bin/printf '0000000000000000000000000000000000000000\\n' > '${siblingRef}'`),
+          };
+          return fakeChild(controlledFixture());
+        },
+      });
+      const out = await runInvoke(svc, 'direct git boundary canary', { workingDirectory: repo });
+      assert.ok(
+        out.some((message) => message.type === 'done'),
+        JSON.stringify(out),
+      );
+      assert.equal(attempts.commit.status, 0, attempts.commit.stderr);
+      assert.equal(attempts.currentRef.status, 0, attempts.currentRef.stderr);
+      assert.equal(attempts.forgedRef.status, 1, attempts.forgedRef.stderr);
+      assert.equal(attempts.removeReflog.status, 1, attempts.removeReflog.stderr);
+      assert.equal(attempts.siblingRef.status, 1, attempts.siblingRef.stderr);
+      assert.equal(existsSync(forgedRef), false);
+      assert.equal(existsSync(reflogHead), true, 'reflog must survive: append-only, deletion denied');
+      assert.equal(readFileSync(siblingRef, 'utf8'), originalSiblingRef);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'L2: missing or redirected HOME still denies operator-home and runtime credentials',
+  { skip: process.platform !== 'darwin' },
+  async () => {
+    const root = mkdtempSync(join(homedir(), '.qoder-l2-nohome-'));
+    const workspace = join(tmpdir(), `qoder-l2-nohome-workspace-${process.pid}`);
+    const controlledRuntime = makeControlledRuntime(root);
+    const runtimeSecret = join(controlledRuntime.runtimeRoot, '.env');
+    const runtimeCredential = join(controlledRuntime.runtimeRoot, '.cat-cafe', 'credentials.json');
+    const runtimeNpmrc = join(controlledRuntime.runtimeRoot, '.npmrc');
+    const runtimeRootCredential = join(controlledRuntime.runtimeRoot, 'credentials.json');
+    const runtimeSqlite = join(controlledRuntime.runtimeRoot, 'event-memory.sqlite');
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(dirname(runtimeCredential), { recursive: true });
+    writeFileSync(runtimeSecret, 'DEPLOY_TOKEN=nohome-canary');
+    writeFileSync(runtimeCredential, 'credential-canary');
+    writeFileSync(runtimeNpmrc, '_authToken=npm-canary');
+    writeFileSync(runtimeRootCredential, 'root-credential-canary');
+    writeFileSync(runtimeSqlite, 'sqlite-canary');
+    const savedHome = process.env.HOME;
+    const attempts = [];
+    try {
+      for (const home of [undefined, controlledRuntime.runtimeRoot]) {
+        if (home === undefined) delete process.env.HOME;
+        else process.env.HOME = home;
+        const svc = makeSvc({
+          toolAccess: 'controlled',
+          memoryMcpServerPath: controlledRuntime.memoryPath,
+          runtimeRoot: controlledRuntime.runtimeRoot,
+          shellSandboxWrapperPath: controlledRuntime.wrapperPath,
+          sandboxBinary: '/usr/bin/sandbox-exec',
+          spawnFn: (_cmd, _args, options) => {
+            const run = (path) =>
+              spawnSync(process.execPath, [controlledRuntime.wrapperPath, `/bin/cat '${path}'`], {
+                cwd: workspace,
+                env: options.env,
+                stdio: 'ignore',
+              }).status;
+            attempts.push({
+              credential: run(runtimeCredential),
+              env: run(runtimeSecret),
+              npmrc: run(runtimeNpmrc),
+              rootCredential: run(runtimeRootCredential),
+              sqlite: run(runtimeSqlite),
+            });
+            return fakeChild(controlledFixture());
+          },
+        });
+        const out = await runInvoke(svc, 'HOME fence canary', { workingDirectory: workspace });
+        assert.ok(
+          out.some((message) => message.type === 'done'),
+          JSON.stringify(out),
+        );
+      }
+      assert.deepEqual(attempts, [
+        { credential: 1, env: 1, npmrc: 1, rootCredential: 1, sqlite: 1 },
+        { credential: 1, env: 1, npmrc: 1, rootCredential: 1, sqlite: 1 },
+      ]);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(root, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'L2: a shell-prefix wrapper that does not enforce the deny probe fails closed before qodercn spawn',
+  { skip: process.platform !== 'darwin' },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), 'qoder-l2-prefix-canary-'));
+    const workspace = join(root, 'workspace');
+    const controlledRuntime = makeControlledRuntime(root, '#!/bin/sh\nexit 0\n');
+    mkdirSync(workspace, { recursive: true });
+    let spawned = 0;
+    try {
+      const svc = makeSvc({
+        toolAccess: 'controlled',
+        memoryMcpServerPath: controlledRuntime.memoryPath,
+        runtimeRoot: controlledRuntime.runtimeRoot,
+        shellSandboxWrapperPath: controlledRuntime.wrapperPath,
+        sandboxBinary: '/usr/bin/sandbox-exec',
+        spawnFn: () => {
+          spawned += 1;
+          return fakeChild(controlledFixture());
+        },
+      });
+      const out = await runInvoke(svc, 'prefix canary', { workingDirectory: workspace });
+      assert.equal(spawned, 0);
+      assert.equal(out.length, 1);
+      assert.equal(out[0].type, 'error');
+      assert.match(out[0].error, /sandbox.*canary/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test('L2: route read-only policy is supported and launches the legacy empty surface', async () => {
+  let seenArgs;
+  let prepared;
+  const svc = makeSvc({
+    toolAccess: 'controlled',
+    memoryMcpServerPath: '/runtime/packages/mcp-server/dist/memory.js',
+    spawnFn: (_cmd, args) => {
+      seenArgs = args;
+      return fakeChild(fixtureLines('success'));
+    },
+  });
+  assert.equal(svc.supportsToolExecutionPolicy({ mode: 'read_only', replayDeniedToolNames: [] }), true);
+  const out = await runInvoke(svc, 'summarize only', {
+    workingDirectory: '/tmp',
+    toolExecutionPolicy: { mode: 'read_only', replayDeniedToolNames: [] },
+    beforeProviderLaunch: async (request) => {
+      prepared = request;
+      return { requestGenerationId: 'rg', generationOrdinal: 1, sessionId: 's' };
+    },
+  });
+  assert.ok(
+    out.some((m) => m.type === 'done'),
+    JSON.stringify(out),
+  );
+  assert.equal(seenArgs[seenArgs.indexOf('--tools') + 1], '');
+  assert.ok(!seenArgs.includes('--mcp-config'));
+  assert.equal(prepared.runtime.toolExecutionPolicy, 'read_only');
+  assert.deepEqual(prepared.tools.declaredServerNames, []);
+});
 
 test('invoke: workingDirectory missing → fail closed, no spawn', async () => {
   let spawned = 0;

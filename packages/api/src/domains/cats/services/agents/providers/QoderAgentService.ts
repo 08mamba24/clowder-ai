@@ -21,10 +21,32 @@
  *   P2-4 spawn 层异常不再从 iterable 逸出——统一转 qoder typed error 终态
  */
 
+import { spawnSync } from 'node:child_process';
+import {
+  accessSync,
+  constants,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir, userInfo } from 'node:os';
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { CatId } from '@cat-cafe/shared';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 import { formatCliNotFoundError, resolveCliCommand } from '../../../../../utils/cli-resolve.js';
-import { isCliError, isCliTimeout, isLivenessWarning, spawnCli } from '../../../../../utils/cli-spawn.js';
+import {
+  isCliError,
+  isCliTimeout,
+  isLivenessWarning,
+  resolveVerdictGhGuardBin,
+  spawnCli,
+} from '../../../../../utils/cli-spawn.js';
 import type { SpawnFn } from '../../../../../utils/cli-types.js';
 import { isParseError } from '../../../../../utils/ndjson-parser.js';
 import { CliRawArchive } from '../../session/CliRawArchive.js';
@@ -34,6 +56,7 @@ import type {
   AgentServiceOptions,
   PreparedProviderRequestV1,
   TokenUsage,
+  ToolExecutionPolicy,
 } from '../../types.js';
 import { type RawArchiveSink, sanitizeRawEvent } from './codex-audit-hooks.js';
 import {
@@ -55,6 +78,56 @@ const log = createModuleLogger('qoder-agent-service');
 
 const REQUIRED_PERMISSION_MODE = 'default';
 
+/**
+ * F317 L2 operator decision: expose the complete basic coding surface at once.
+ * Deliberately excludes orchestration/generation surfaces (Agent, Cron, Task*,
+ * Image*, Video*, Workflow, Skill): those are not "basic coding tools".
+ */
+export const QODER_BASIC_TOOLS = Object.freeze(['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write'] as const);
+
+export const QODER_MEMORY_MCP_SERVER = 'cat-cafe-memory';
+
+/**
+ * Exact readonly surface of the split `packages/mcp-server/dist/memory.js`
+ * entrypoint. A cross-package test pins this duplicate projection to
+ * buildMemoryTools({ readonly: true }) so registry drift fails CI.
+ */
+export const QODER_READONLY_MEMORY_TOOLS = Object.freeze([
+  'cat_cafe_graph_resolve',
+  'cat_cafe_list_external_runtime_sessions',
+  'cat_cafe_list_recent',
+  'cat_cafe_list_session_chain',
+  'cat_cafe_read_external_runtime_session',
+  'cat_cafe_read_file_slice',
+  'cat_cafe_read_invocation_detail',
+  'cat_cafe_read_meeting_artifact',
+  'cat_cafe_read_session_digest',
+  'cat_cafe_read_session_events',
+  'cat_cafe_run_perspective',
+  'cat_cafe_search_evidence',
+] as const);
+
+export type QoderToolAccess = 'controlled' | 'disabled';
+
+const QODER_MEMORY_TOOL_NAMES = Object.freeze(
+  QODER_READONLY_MEMORY_TOOLS.map((name) => `mcp__${QODER_MEMORY_MCP_SERVER}__${name}`),
+);
+
+type QoderInitExpectation = {
+  readonly tools: readonly string[];
+  readonly mcpServerNames: readonly string[];
+};
+
+const DISABLED_INIT_EXPECTATION: QoderInitExpectation = Object.freeze({
+  tools: Object.freeze([]),
+  mcpServerNames: Object.freeze([]),
+});
+
+const CONTROLLED_INIT_EXPECTATION: QoderInitExpectation = Object.freeze({
+  tools: Object.freeze([...QODER_BASIC_TOOLS, ...QODER_MEMORY_TOOL_NAMES]),
+  mcpServerNames: Object.freeze([QODER_MEMORY_MCP_SERVER]),
+});
+
 const DENIED_ENV_KEYS = new Set([
   'NODE_OPTIONS',
   'NODE_PRELOAD',
@@ -65,6 +138,25 @@ const DENIED_ENV_KEYS = new Set([
   'LD_PRELOAD',
   'LD_LIBRARY_PATH',
 ]);
+
+const CONTROLLED_ENV_PASSTHROUGH = new Set([
+  'PATH',
+  'LANG',
+  'TERM',
+  'COLORTERM',
+  'NO_COLOR',
+  'TZ',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'NODE_EXTRA_CA_CERTS',
+]);
+
+const READONLY_MEMORY_IDENTITY_ENV_KEYS = [
+  'CAT_CAFE_API_URL',
+  'CAT_CAFE_USER_ID',
+  'CAT_CAFE_CAT_ID',
+  'CAT_CAFE_THREAD_ID',
+] as const;
 
 export interface QoderAgentServiceConfig {
   catId: CatId;
@@ -80,13 +172,77 @@ export interface QoderAgentServiceConfig {
   profileFs?: QoderProfileFs;
   /** #780 先例：raw NDJSON 落档 sink（默认 CliRawArchive） */
   rawArchive?: RawArchiveSink;
+  /** L2 产品路径 = controlled；disabled 仅用于只读策略与历史夹具回放。 */
+  toolAccess?: QoderToolAccess;
+  /** split readonly memory MCP entrypoint（生产由注册工厂绑定到 runtime dist）。 */
+  memoryMcpServerPath?: string;
+  /** Runtime root, explicit so memory policy scope never depends on wrapper placement. */
+  runtimeRoot?: string;
+  /** Runtime-owned Qoder shell-prefix wrapper. */
+  shellSandboxWrapperPath?: string;
+  /** macOS Seatbelt binary（测试 seam；生产动态解析 sandbox-exec）。 */
+  sandboxBinary?: string;
+  /** Unit-test seam only; production factory never injects this. */
+  sandboxProbe?: (input: QoderSandboxProbeInput) => void;
 }
 
+export type QoderSandboxProbeInput = {
+  readonly childEnv: Readonly<Record<string, string | null>>;
+  readonly denyCanaryPath: string;
+  readonly guardedGhPath?: string;
+  readonly scratchDir: string;
+  readonly shellSandboxWrapperPath: string;
+};
+
 /** 构造 qodercn argv（stdin prompt 通道 + 显式 model + 安全 flag 全集） */
-export function buildQoderArgs(input: { profileDir: string; model: string; sessionId?: string }): string[] {
+export function buildQoderArgs(input: {
+  profileDir: string;
+  model: string;
+  sessionId?: string;
+  toolAccess: QoderToolAccess;
+  mcpConfigPath?: string;
+  workingDirectory?: string;
+}): string[] {
   const args = ['-p', '-', '-m', input.model, '-o', 'stream-json', '--config-dir', input.profileDir];
   if (input.sessionId) args.push('-r', input.sessionId);
-  args.push('--strict-mcp-config', '--allowed-mcp-server-names', 'nothing', '--tools', '', '--setting-sources', 'user');
+  if (input.toolAccess === 'disabled') {
+    args.push(
+      '--strict-mcp-config',
+      '--allowed-mcp-server-names',
+      'nothing',
+      '--tools',
+      '',
+      '--setting-sources',
+      'user',
+    );
+    return args;
+  }
+  if (!input.mcpConfigPath) throw new Error('controlled qoder tools require a readonly memory MCP config');
+  if (!input.workingDirectory) throw new Error('controlled qoder tools require a workspace permission root');
+  args.push('--tools', ...QODER_BASIC_TOOLS);
+  const normalizedWorkspace = resolve(input.workingDirectory).replaceAll('\\', '/');
+  const absoluteWorkspacePattern = `//${normalizedWorkspace.replace(/^\/+/, '')}/**`;
+  const allowedTools = [
+    `Read(${absoluteWorkspacePattern})`,
+    `Edit(${absoluteWorkspacePattern})`,
+    `Write(${absoluteWorkspacePattern})`,
+    `Glob(${absoluteWorkspacePattern})`,
+    `Grep(${absoluteWorkspacePattern})`,
+    'Bash',
+    ...QODER_MEMORY_TOOL_NAMES,
+  ];
+  for (const tool of allowedTools) {
+    args.push('--allowed-tools', tool);
+  }
+  args.push(
+    '--mcp-config',
+    input.mcpConfigPath,
+    '--strict-mcp-config',
+    '--allowed-mcp-server-names',
+    QODER_MEMORY_MCP_SERVER,
+    '--setting-sources',
+    'user',
+  );
   return args;
 }
 
@@ -125,10 +281,19 @@ export function buildQoderEnvOverrides(input: {
   return overrides;
 }
 
-/** init 门（任何 assistant 事件之前，fail closed）。tools/mcp 必须存在且精确为空数组。 */
+function exactStringSet(actual: unknown[], expected: readonly string[]): boolean {
+  if (!actual.every((value): value is string => typeof value === 'string')) return false;
+  if (actual.length !== expected.length) return false;
+  const sortedActual = [...actual].sort();
+  const sortedExpected = [...expected].sort();
+  return sortedActual.every((value, index) => value === sortedExpected[index]);
+}
+
+/** init 门（任何 assistant 事件之前，fail closed）。tools/mcp 必须与本次请求精确全等。 */
 export function qoderInitGate(
   initEvent: unknown,
   requestedModel: string,
+  expected: QoderInitExpectation = DISABLED_INIT_EXPECTATION,
 ): { ok: true; cliDrift?: string; model?: string } | { ok: false; reason: string } {
   const version = checkQoderProtocolVersion(initEvent);
   if (!version.ok) return version;
@@ -138,10 +303,25 @@ export function qoderInitGate(
     return { ok: false, reason: `permissionMode ${String(e.permissionMode)} != ${REQUIRED_PERMISSION_MODE}` };
   }
   if (!Array.isArray(e.tools)) return { ok: false, reason: 'init.tools missing (not an array)' };
-  if (e.tools.length !== 0) return { ok: false, reason: `tools not empty: ${JSON.stringify(e.tools)}` };
+  if (!exactStringSet(e.tools, expected.tools)) {
+    return { ok: false, reason: `tools mismatch: ${JSON.stringify(e.tools)}` };
+  }
   if (!Array.isArray(e.mcp_servers)) return { ok: false, reason: 'init.mcp_servers missing (not an array)' };
-  if (e.mcp_servers.length !== 0)
-    return { ok: false, reason: `mcp_servers not empty: ${JSON.stringify(e.mcp_servers)}` };
+  const mcpNames: string[] = [];
+  for (const raw of e.mcp_servers) {
+    if (typeof raw !== 'object' || raw === null) {
+      return { ok: false, reason: `invalid mcp server entry: ${JSON.stringify(raw)}` };
+    }
+    const server = raw as Record<string, unknown>;
+    if (typeof server.name !== 'string') return { ok: false, reason: 'mcp server name missing' };
+    if (server.status !== 'connected') {
+      return { ok: false, reason: `mcp server ${server.name} status ${String(server.status)} != connected` };
+    }
+    mcpNames.push(server.name);
+  }
+  if (!exactStringSet(mcpNames, expected.mcpServerNames)) {
+    return { ok: false, reason: `mcp server set mismatch: ${JSON.stringify(mcpNames)}` };
+  }
   // P1④ 精确匹配（大小写敏感）。L1 夹具实测：未认证 CLI 回报小写 auto（auth-error），
   // 静默回落回报 Auto（silent-model-fallback）——任何与请求值不同的字符串（含大小写
   // 漂移）都是 fail closed；配置值必须等于 CLI 精确回报值。
@@ -157,6 +337,488 @@ export function qoderInitGate(
     cliDrift: 'cliDrift' in version ? version.cliDrift : undefined,
     model: actualModel,
   };
+}
+
+type QoderInvocationLease = {
+  readonly mcpConfigPath: string;
+  readonly childEnv: Record<string, string | null>;
+  readonly denyCanaryPath: string;
+  readonly guardedGhPath?: string;
+  readonly scratchDir: string;
+  dispose(): void;
+};
+
+type GitMetadataAccess = {
+  readonly readRoots: readonly string[];
+  readonly writeRoots: readonly string[];
+  readonly writeLiterals: readonly string[];
+  readonly workspaceWriteExclusions: readonly string[];
+  readonly deniedWriteRoots: readonly string[];
+  readonly deniedWriteLiterals: readonly string[];
+  readonly deniedWriteUnlinkRoots: readonly string[];
+};
+
+const EMPTY_GIT_METADATA_ACCESS: GitMetadataAccess = Object.freeze({
+  readRoots: Object.freeze([]),
+  writeRoots: Object.freeze([]),
+  writeLiterals: Object.freeze([]),
+  workspaceWriteExclusions: Object.freeze([]),
+  deniedWriteRoots: Object.freeze([]),
+  deniedWriteLiterals: Object.freeze([]),
+  deniedWriteUnlinkRoots: Object.freeze([]),
+});
+
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function seatbeltLiteral(value: string): string {
+  return JSON.stringify(value);
+}
+
+function shellLiteral(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function isPathWithin(parent: string, candidate: string): boolean {
+  const rel = relative(parent, candidate);
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+function gitRefWriteLiterals(gitDir: string, commonDir: string): string[] {
+  const line = readFileSync(join(gitDir, 'HEAD'), 'utf8').split(/\r?\n/, 1)[0]?.trim() ?? '';
+  const name = line.startsWith('ref:') ? line.slice('ref:'.length).trim() : '';
+  const headsRoot = join(commonDir, 'refs', 'heads');
+  const currentRef = name ? resolve(commonDir, name) : '';
+  const literals = [join(commonDir, 'refs', 'stash')];
+  if (currentRef && name.startsWith('refs/heads/') && isPathWithin(headsRoot, currentRef)) {
+    literals.unshift(currentRef);
+  }
+  return literals.flatMap((literal) => [literal, `${literal}.lock`]);
+}
+
+function worktreeLocalGitWriteLiterals(gitDir: string): string[] {
+  return [
+    'AUTO_MERGE',
+    'BISECT_LOG',
+    'CHERRY_PICK_HEAD',
+    'COMMIT_EDITMSG',
+    'FETCH_HEAD',
+    'HEAD',
+    'HEAD.lock',
+    'MERGE_MSG',
+    'MERGE_RR',
+    'ORIG_HEAD',
+    'REVERT_HEAD',
+    'index',
+    'index.lock',
+  ].map((name) => join(gitDir, name));
+}
+
+function protectedGitWrites(gitRoot: string): Pick<GitMetadataAccess, 'deniedWriteRoots' | 'deniedWriteLiterals'> {
+  return {
+    deniedWriteRoots: [join(gitRoot, 'hooks')],
+    deniedWriteLiterals: [join(gitRoot, 'config'), join(gitRoot, 'config.worktree')],
+  };
+}
+
+function externalGitMetadataAccess(workingDirectory: string): GitMetadataAccess {
+  const dotGit = join(workingDirectory, '.git');
+  if (!existsSync(dotGit)) return EMPTY_GIT_METADATA_ACCESS;
+  try {
+    if (lstatSync(dotGit).isDirectory()) {
+      const gitRoot = canonicalPath(dotGit);
+      return {
+        readRoots: [gitRoot],
+        writeRoots: [join(gitRoot, 'objects'), join(gitRoot, 'logs')],
+        writeLiterals: [...gitRefWriteLiterals(gitRoot, gitRoot), ...worktreeLocalGitWriteLiterals(gitRoot)],
+        // The workspace grant would otherwise recursively re-open .git.
+        workspaceWriteExclusions: [gitRoot],
+        // Reflogs only ever grow by append; losing them removes the shared
+        // recovery path, so deletion stays denied even where writes are needed.
+        deniedWriteUnlinkRoots: [join(gitRoot, 'logs')],
+        ...protectedGitWrites(gitRoot),
+      };
+    }
+    const line = readFileSync(dotGit, 'utf8').split(/\r?\n/, 1)[0]?.trim() ?? '';
+    if (!line.startsWith('gitdir:')) return EMPTY_GIT_METADATA_ACCESS;
+    const gitDir = canonicalPath(resolve(workingDirectory, line.slice('gitdir:'.length).trim()));
+    const commonDirFile = join(gitDir, 'commondir');
+    const backPointerFile = join(gitDir, 'gitdir');
+    if (!lstatSync(gitDir).isDirectory() || !existsSync(commonDirFile) || !existsSync(backPointerFile)) {
+      return EMPTY_GIT_METADATA_ACCESS;
+    }
+    const commonDir = canonicalPath(resolve(gitDir, readFileSync(commonDirFile, 'utf8').trim()));
+    const worktreesRoot = join(commonDir, 'worktrees');
+    const backPointer = canonicalPath(resolve(gitDir, readFileSync(backPointerFile, 'utf8').trim()));
+    if (basename(commonDir) !== '.git' || dirname(gitDir) !== worktreesRoot || backPointer !== canonicalPath(dotGit)) {
+      // The workspace-owned .git file is attacker-writable. Only Git's reciprocal
+      // gitdir pointer proves that this metadata actually belongs to this workspace.
+      return EMPTY_GIT_METADATA_ACCESS;
+    }
+    const protectedWrites = protectedGitWrites(commonDir);
+    return {
+      readRoots: [gitDir, commonDir],
+      // A normal commit needs the worktree-local index/HEAD plus shared objects,
+      // its own branch ref and reflogs. It never needs recursive write over
+      // every shared ref in commonDir.
+      writeRoots: [gitDir, join(commonDir, 'objects'), join(commonDir, 'logs')],
+      writeLiterals: gitRefWriteLiterals(gitDir, commonDir),
+      workspaceWriteExclusions: [],
+      deniedWriteUnlinkRoots: [join(commonDir, 'logs')],
+      deniedWriteRoots: [...protectedWrites.deniedWriteRoots, join(gitDir, 'hooks')],
+      deniedWriteLiterals: [
+        ...protectedWrites.deniedWriteLiterals,
+        join(gitDir, 'config'),
+        join(gitDir, 'config.worktree'),
+        // These reciprocal identity files are the trust proof above. Git does
+        // not mutate them during ordinary add/commit, so keep them immutable.
+        backPointerFile,
+        commonDirFile,
+      ],
+    };
+  } catch {
+    // A malformed/untrusted .git indirection must not widen the sandbox.
+    return EMPTY_GIT_METADATA_ACCESS;
+  }
+}
+
+function buildSeatbeltPolicy(input: {
+  deniedReadRoots: readonly string[];
+  allowedReadRoots: readonly string[];
+  allowedReadLiterals?: readonly string[];
+  deniedReadRootsFinal?: readonly string[];
+  deniedReadLiterals?: readonly string[];
+  allowedWriteRoots: readonly string[];
+  allowedWriteLiterals?: readonly string[];
+  writeExclusions?: readonly string[];
+  deniedWriteRoots?: readonly string[];
+  deniedWriteLiterals?: readonly string[];
+  deniedWriteUnlinkRoots?: readonly string[];
+}): string {
+  const unique = (values: readonly string[]) => [...new Set(values.map(canonicalPath))];
+  const filters = (roots: readonly string[]) => unique(roots).map((root) => `(subpath ${seatbeltLiteral(root)})`);
+  const readLiterals = unique(input.allowedReadLiterals ?? []);
+  const metadataAncestors = unique([...input.allowedReadRoots, ...readLiterals]).flatMap((root) => {
+    const ancestors: string[] = [];
+    let cursor = root;
+    while (cursor !== dirname(cursor)) {
+      ancestors.push(cursor);
+      cursor = dirname(cursor);
+    }
+    return ancestors;
+  });
+  const writeExclusions = unique(input.writeExclusions ?? []);
+  const writeFilters = unique(input.allowedWriteRoots).map((root) => {
+    const exclusions = writeExclusions.filter((candidate) => candidate !== root && isPathWithin(root, candidate));
+    if (exclusions.length === 0) return `(subpath ${seatbeltLiteral(root)})`;
+    return `(require-all (subpath ${seatbeltLiteral(root)}) ${exclusions
+      .map((candidate) => `(require-not (subpath ${seatbeltLiteral(candidate)}))`)
+      .join(' ')})`;
+  });
+  return [
+    '(version 1)',
+    '(allow default)',
+    ...filters(input.deniedReadRoots).map((filter) => `(deny file-read* ${filter})`),
+    ...unique(metadataAncestors).map((root) => `(allow file-read-metadata (literal ${seatbeltLiteral(root)}))`),
+    ...filters(input.allowedReadRoots).map((filter) => `(allow file-read* ${filter})`),
+    ...readLiterals.map((literal) => `(allow file-read* (literal ${seatbeltLiteral(literal)}))`),
+    ...filters(input.deniedReadRootsFinal ?? []).map((filter) => `(deny file-read* ${filter})`),
+    ...unique(input.deniedReadLiterals ?? []).map(
+      (literal) => `(deny file-read* (literal ${seatbeltLiteral(literal)}))`,
+    ),
+    '(deny file-write*)',
+    ...writeFilters.map((filter) => `(allow file-write* ${filter})`),
+    ...unique(input.allowedWriteLiterals ?? []).map(
+      (literal) => `(allow file-write* (literal ${seatbeltLiteral(literal)}))`,
+    ),
+    ...filters(input.deniedWriteRoots ?? []).map((filter) => `(deny file-write* ${filter})`),
+    ...unique(input.deniedWriteLiterals ?? []).map(
+      (literal) => `(deny file-write* (literal ${seatbeltLiteral(literal)}))`,
+    ),
+    ...filters(input.deniedWriteUnlinkRoots ?? []).map((filter) => `(deny file-write-unlink ${filter})`),
+    '',
+  ].join('\n');
+}
+
+type ControlledToolPath = {
+  readonly path: string | null;
+  readonly allowedReadRoots: readonly string[];
+  readonly guardedGhPath?: string;
+};
+
+function controlledToolPath(operatorHome: string): ControlledToolPath {
+  const inherited = process.env.PATH ?? null;
+  if (process.platform !== 'darwin') return { path: inherited, allowedReadRoots: [] };
+  const result = spawnSync('/usr/bin/xcrun', ['--no-cache', '--find', 'git'], {
+    encoding: 'utf8',
+    timeout: 5_000,
+  });
+  if (result.status !== 0) throw new Error('qoder controlled PATH cannot resolve the system git toolchain');
+  const gitPath = result.stdout.trim();
+  if (!gitPath) throw new Error('qoder controlled PATH resolved an empty git toolchain path');
+  const explicitBins: string[] = [];
+  const allowedReadRoots: string[] = [];
+  let guardedGhPath: string | undefined;
+  try {
+    explicitBins.push(dirname(realpathSync(gitPath)), dirname(realpathSync(process.execPath)));
+    const guardedBin = resolveVerdictGhGuardBin();
+    if (!guardedBin) throw new Error('runtime-owned guarded gh is unavailable');
+    explicitBins.push(guardedBin);
+    allowedReadRoots.push(guardedBin);
+    guardedGhPath = join(guardedBin, 'gh');
+    const resolvedPnpm = resolveCliCommand('pnpm');
+    if (resolvedPnpm && isAbsolute(resolvedPnpm) && existsSync(resolvedPnpm)) {
+      const pnpmPath = resolve(resolvedPnpm);
+      const pnpmBin = dirname(pnpmPath);
+      explicitBins.push(pnpmBin);
+      allowedReadRoots.push(pnpmBin);
+      const packageRoot = resolve(pnpmBin, '..', 'node_modules', 'pnpm');
+      if (existsSync(packageRoot) && lstatSync(packageRoot).isDirectory()) allowedReadRoots.push(packageRoot);
+    }
+    const explicitCanonical = new Set(explicitBins.map(canonicalPath));
+    const inheritedBins = (inherited ?? '')
+      .split(delimiter)
+      .filter(Boolean)
+      .filter((entry) => {
+        const canonical = canonicalPath(entry);
+        return explicitCanonical.has(canonical) || !isPathWithin(operatorHome, canonical);
+      });
+    const path = [...new Set([...explicitBins, ...inheritedBins])].join(delimiter);
+    return {
+      path: path || null,
+      allowedReadRoots: [...new Set([...allowedReadRoots, dirname(realpathSync(process.execPath))])],
+      ...(guardedGhPath ? { guardedGhPath } : {}),
+    };
+  } catch (error) {
+    throw new Error(`qoder controlled PATH is unsafe: ${String(error)}`);
+  }
+}
+
+export function validateQoderControlledRuntimePaths(input: {
+  memoryMcpServerPath: string;
+  shellSandboxWrapperPath: string;
+  sandboxBinary?: string;
+}): { ok: true } | { ok: false; reason: string } {
+  try {
+    const memory = lstatSync(input.memoryMcpServerPath);
+    if (!memory.isFile() || memory.isSymbolicLink())
+      return { ok: false, reason: 'memory MCP entrypoint is not a real file' };
+    const wrapper = lstatSync(input.shellSandboxWrapperPath);
+    if (!wrapper.isFile() || wrapper.isSymbolicLink())
+      return { ok: false, reason: 'shell-prefix wrapper is not a real file' };
+    accessSync(input.shellSandboxWrapperPath, constants.R_OK | constants.X_OK);
+    if (input.sandboxBinary) {
+      if (!statSync(input.sandboxBinary).isFile()) return { ok: false, reason: 'sandbox binary is not a file' };
+      accessSync(input.sandboxBinary, constants.X_OK);
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: `runtime sandbox asset unavailable: ${String(error)}` };
+  }
+}
+
+function buildControlledQoderEnv(input: {
+  profileDir: string;
+  scratchDir: string;
+  shellSandboxWrapperPath: string;
+  sandboxBinary: string;
+  workspacePolicyPath: string;
+  memoryPolicyPath: string;
+  memoryShimPath: string;
+  toolPath: string | null;
+}): Record<string, string | null> {
+  const overrides: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    overrides[key] = CONTROLLED_ENV_PASSTHROUGH.has(key) || key.startsWith('LC_') ? (value ?? null) : null;
+  }
+  overrides.PATH = input.toolPath;
+  overrides.HOME = join(input.scratchDir, 'home');
+  overrides.TMPDIR = input.scratchDir;
+  overrides.QODERCN_CONFIG_DIR = input.profileDir;
+  overrides.QODERCN_SHELL_PREFIX = input.shellSandboxWrapperPath;
+  overrides.CAT_CAFE_QODER_SANDBOX_BIN = input.sandboxBinary;
+  overrides.CAT_CAFE_QODER_WORKSPACE_POLICY = input.workspacePolicyPath;
+  overrides.CAT_CAFE_QODER_MEMORY_POLICY = input.memoryPolicyPath;
+  overrides.CAT_CAFE_QODER_MEMORY_SHIM = input.memoryShimPath;
+  return overrides;
+}
+
+function createQoderInvocationLease(input: {
+  memoryMcpServerPath: string;
+  runtimeRoot: string;
+  shellSandboxWrapperPath: string;
+  sandboxBinary: string;
+  profileDir: string;
+  workingDirectory: string;
+  callbackEnv?: Readonly<Record<string, string>>;
+}): QoderInvocationLease {
+  const dir = mkdtempSync(join(tmpdir(), 'cat-cafe-qoder-l2-'));
+  try {
+    const scratchDir = join(dir, 'scratch');
+    const homeDir = join(scratchDir, 'home');
+    const mcpDataDir = join(scratchDir, 'mcp-data');
+    mkdirSync(homeDir, { recursive: true, mode: 0o700 });
+    mkdirSync(mcpDataDir, { recursive: true, mode: 0o700 });
+
+    const workspace = canonicalPath(input.workingDirectory);
+    const runtimeRoot = canonicalPath(input.runtimeRoot);
+    const memoryDistRoot = canonicalPath(dirname(input.memoryMcpServerPath));
+    const scratch = canonicalPath(scratchDir);
+    // Unlike os.homedir(), userInfo().homedir does not trust the mutable HOME
+    // environment variable. The sandbox must fence the OS account home even if
+    // a launcher omits or redirects HOME.
+    const operatorHome = canonicalPath(userInfo().homedir);
+    if (!operatorHome || operatorHome === dirname(operatorHome)) {
+      throw new Error('operator home is unresolvable or unsafe');
+    }
+    const systemTmp = canonicalPath('/tmp');
+    const deniedReadRoots = [operatorHome, systemTmp, canonicalPath(tmpdir())];
+    const protectedRuntimeReadRoots = [join(runtimeRoot, '.cat-cafe'), join(runtimeRoot, 'mcp-creds')];
+    const protectedRuntimeReadLiterals = [
+      join(runtimeRoot, '.env'),
+      join(runtimeRoot, '.env.local'),
+      join(runtimeRoot, '.npmrc'),
+      join(runtimeRoot, 'credentials.json'),
+      join(runtimeRoot, 'evidence.sqlite'),
+      join(runtimeRoot, 'event-memory.sqlite'),
+    ];
+    const gitAccess = externalGitMetadataAccess(workspace);
+    const toolPath = controlledToolPath(operatorHome);
+    const workspacePolicyPath = join(dir, 'workspace.sb');
+    const memoryPolicyPath = join(dir, 'memory.sb');
+    const memoryShimPath = join(dir, 'memory-shim');
+    const denyCanaryPath = join(dir, 'deny-canary');
+    writeFileSync(denyCanaryPath, 'sandbox-deny-canary', { encoding: 'utf8', mode: 0o600 });
+    writeFileSync(
+      memoryShimPath,
+      `#!/bin/sh\nexec ${shellLiteral(process.execPath)} ${shellLiteral(input.memoryMcpServerPath)}\n`,
+      { encoding: 'utf8', mode: 0o700 },
+    );
+    writeFileSync(
+      workspacePolicyPath,
+      buildSeatbeltPolicy({
+        deniedReadRoots,
+        allowedReadRoots: [workspace, scratch, ...gitAccess.readRoots, ...toolPath.allowedReadRoots],
+        deniedReadRootsFinal: protectedRuntimeReadRoots,
+        deniedReadLiterals: protectedRuntimeReadLiterals,
+        allowedWriteRoots: [workspace, scratch, ...gitAccess.writeRoots],
+        allowedWriteLiterals: ['/dev/null', ...gitAccess.writeLiterals],
+        writeExclusions: gitAccess.workspaceWriteExclusions,
+        deniedWriteRoots: gitAccess.deniedWriteRoots,
+        deniedWriteLiterals: gitAccess.deniedWriteLiterals,
+        deniedWriteUnlinkRoots: gitAccess.deniedWriteUnlinkRoots,
+      }),
+      { encoding: 'utf8', mode: 0o600 },
+    );
+    writeFileSync(
+      memoryPolicyPath,
+      buildSeatbeltPolicy({
+        deniedReadRoots,
+        // Never grant the whole runtime root: it contains deployment credentials.
+        // The readonly MCP needs only compiled code, dependencies and its immutable shim.
+        allowedReadRoots: [workspace, scratch, memoryDistRoot, join(runtimeRoot, 'node_modules')],
+        allowedReadLiterals: [
+          memoryShimPath,
+          input.memoryMcpServerPath,
+          process.execPath,
+          join(runtimeRoot, 'package.json'),
+          join(runtimeRoot, 'packages', 'mcp-server', 'package.json'),
+        ],
+        deniedReadRootsFinal: protectedRuntimeReadRoots,
+        deniedReadLiterals: protectedRuntimeReadLiterals,
+        allowedWriteRoots: [scratch],
+        allowedWriteLiterals: ['/dev/null'],
+      }),
+      { encoding: 'utf8', mode: 0o600 },
+    );
+
+    const mcpConfigPath = join(dir, 'mcp-config.json');
+    const env: Record<string, string> = {
+      ALLOWED_WORKSPACE_DIRS: workspace,
+      CAT_CAFE_DATA_DIR: mcpDataDir,
+      CAT_CAFE_READONLY: 'true',
+      // Incidental agent-key vars inherited by qodercn must never widen this mount.
+      CAT_CAFE_READONLY_AGENT_KEY_UNION: 'false',
+      HOME: homeDir,
+      TMPDIR: scratchDir,
+    };
+    for (const key of READONLY_MEMORY_IDENTITY_ENV_KEYS) {
+      const value = input.callbackEnv?.[key];
+      if (value) env[key] = value;
+    }
+    writeFileSync(
+      mcpConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          [QODER_MEMORY_MCP_SERVER]: {
+            command: memoryShimPath,
+            args: [],
+            env,
+          },
+        },
+      }),
+      { encoding: 'utf8', mode: 0o600 },
+    );
+    let disposed = false;
+    return {
+      mcpConfigPath,
+      denyCanaryPath,
+      ...(toolPath.guardedGhPath ? { guardedGhPath: toolPath.guardedGhPath } : {}),
+      scratchDir,
+      childEnv: buildControlledQoderEnv({
+        profileDir: input.profileDir,
+        scratchDir,
+        shellSandboxWrapperPath: input.shellSandboxWrapperPath,
+        sandboxBinary: input.sandboxBinary,
+        workspacePolicyPath,
+        memoryPolicyPath,
+        memoryShimPath,
+        toolPath: toolPath.path,
+      }),
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function effectiveChildEnv(overrides: Readonly<Record<string, string | null>>): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(overrides).filter((entry): entry is [string, string] => entry[1] !== null));
+}
+
+function runQoderSandboxProbe(input: QoderSandboxProbeInput): void {
+  const env = effectiveChildEnv(input.childEnv);
+  const allowPath = join(input.scratchDir, 'allow-canary');
+  const run = (command: string) =>
+    spawnSync(process.execPath, [input.shellSandboxWrapperPath, command], {
+      env,
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+  const allowed = run(`/usr/bin/touch ${shellLiteral(allowPath)}`);
+  if (allowed.status !== 0 || !existsSync(allowPath)) {
+    throw new Error(`qoder sandbox allow canary failed (exit=${String(allowed.status)})`);
+  }
+  const denied = run(`/bin/cat ${shellLiteral(input.denyCanaryPath)}`);
+  if (denied.status === 0) throw new Error('qoder sandbox deny canary failed open');
+  if (input.guardedGhPath) {
+    const resolvedGh = run('command -v gh');
+    if (resolvedGh.status !== 0 || resolvedGh.stdout.trim() !== input.guardedGhPath) {
+      throw new Error('qoder sandbox guarded gh resolution canary failed');
+    }
+    const guardedGh = run('gh --version');
+    if (guardedGh.status !== 0) throw new Error('qoder sandbox guarded gh execution canary failed');
+  }
 }
 
 /** P1②：深冻 prepared request —— recorder 落档字节与后续出境字节不可分叉（Kimi 同款契约） */
@@ -180,6 +842,10 @@ export class QoderAgentService implements AgentService {
   constructor(config: QoderAgentServiceConfig) {
     this.config = config;
     this.rawArchive = config.rawArchive ?? new CliRawArchive();
+  }
+
+  supportsToolExecutionPolicy(policy: ToolExecutionPolicy): boolean {
+    return policy.mode === 'read_only';
   }
 
   async *invoke(prompt: string, options?: AgentServiceOptions): AsyncIterable<AgentMessage> {
@@ -228,100 +894,165 @@ export class QoderAgentService implements AgentService {
       }
       binary = resolved;
     }
-    const args = buildQoderArgs({
-      profileDir: this.config.profileDir,
-      model: this.config.model,
-      sessionId: options?.sessionId,
-    });
-    // P1④：显式 -m provenance —— argv 断言不过即 0 spawn
-    try {
-      assertExplicitModelFlag(args, this.config.model);
-    } catch (err) {
-      yield this.error(`qoder invoke rejected: ${String(err)}`);
-      return;
-    }
 
-    // F299：正文/runtime/tool surface 形成后、spawn 前过 recorder —— 拒绝即 0 spawn；
-    // 落档字节深冻（P1②），recorder 之后核验未被改写
-    if (options?.beforeProviderLaunch) {
-      const prepared = freezePreparedRequest({
-        v: 1,
-        message: { accuracy: 'exact', body: prompt },
-        nativeInstructions: [],
-        runtime: {
-          provider: 'qoder',
-          carrier: 'qodercn-cli',
-          model: this.config.model,
-          protocol: 'stream-json/1.4.0',
-          toolExecutionPolicy: 'read_only',
-        },
-        tools: { finalSurface: 'declared_only', declaredServerNames: [] },
-        providerNativeVisibility: 'unknown',
+    const configuredToolAccess = this.config.toolAccess ?? 'disabled';
+    const toolAccess: QoderToolAccess =
+      configuredToolAccess === 'disabled' || options?.toolExecutionPolicy?.mode === 'read_only'
+        ? 'disabled'
+        : 'controlled';
+    let controlledRuntime:
+      | {
+          memoryMcpServerPath: string;
+          runtimeRoot: string;
+          shellSandboxWrapperPath: string;
+          sandboxBinary: string;
+        }
+      | undefined;
+    if (toolAccess === 'controlled') {
+      const memoryMcpServerPath = this.config.memoryMcpServerPath;
+      const runtimeRoot = this.config.runtimeRoot;
+      const shellSandboxWrapperPath = this.config.shellSandboxWrapperPath;
+      if (!memoryMcpServerPath || !runtimeRoot || !shellSandboxWrapperPath) {
+        yield this.error('qoder invoke rejected: controlled tools require runtime-owned MCP and shell sandbox paths');
+        return;
+      }
+      const sandboxBinary = this.config.sandboxBinary ?? resolveCliCommand('sandbox-exec') ?? undefined;
+      if (!sandboxBinary) {
+        yield this.error('qoder invoke rejected: sandbox-exec is required for controlled Bash/Edit/Write access');
+        return;
+      }
+      const runtimeAssets = validateQoderControlledRuntimePaths({
+        memoryMcpServerPath,
+        shellSandboxWrapperPath,
+        sandboxBinary,
       });
-      try {
-        await options.beforeProviderLaunch(prepared);
-      } catch (err) {
-        yield this.error(`qoder invoke rejected by provider-request recorder: ${String(err)}`);
+      if (!runtimeAssets.ok) {
+        yield this.error(`qoder invoke rejected: ${runtimeAssets.reason}`);
         return;
       }
-      if (!('body' in prepared.message) || prepared.message.body !== prompt) {
-        yield this.error('qoder invoke rejected: prepared request mutated across recorder boundary');
-        return;
-      }
+      controlledRuntime = { memoryMcpServerPath, runtimeRoot, shellSandboxWrapperPath, sandboxBinary };
     }
-
-    // P1③：spawn/stdin(EPIPE 守卫)/有界终止/exit 等待/liveness 全部由共享 spawnCli 拥有；
-    // 门内 fail-closed 终止（init 门红/时序违规）通过 break 触发其 finally 的
-    // CliTerminationController 有界终止（SIGTERM → 等待 → SIGKILL，计时器 unref）
-    const cliOpts = {
-      command: binary,
-      args,
-      cwd: workingDirectory,
-      stdinInput: prompt,
-      env: buildQoderEnvOverrides({
-        profileDir: this.config.profileDir,
-        callbackEnv: options?.callbackEnv,
-        accountEnv: options?.accountEnv,
-      }),
-      managedArgvFlags: [
-        '-p',
-        '-m',
-        '-o',
-        '--config-dir',
-        '--strict-mcp-config',
-        '--allowed-mcp-server-names',
-        '--tools',
-        '--setting-sources',
-      ],
-      ...(signal ? { signal } : {}),
-      ...(options?.invocationId ? { invocationId: options.invocationId } : {}),
-      ...(options?.cliSessionId ? { cliSessionId: options.cliSessionId } : {}),
-      ...(options?.livenessProbe ? { livenessProbe: options.livenessProbe } : {}),
-      ...(options?.parentSpan ? { parentSpan: options.parentSpan } : {}),
-      // round-4 P1-2：与 Claude/Kimi/OpenCode 共享接线——rawArchivePath 让 __cliTimeout
-      // 诊断能定位到本 invocation 的 raw archive
-      ...(options?.invocationId && this.rawArchive.getPath
-        ? { rawArchivePath: this.rawArchive.getPath(options.invocationId) }
-        : {}),
-    };
-    // F089 seam（round-4 P1-2）：per-invocation spawnCliOverride（tmux-based spawner 等）
-    // 优先于共享 spawnCli —— 路由/acceptance 只能经 options 注入，不得绕死
-    const events = options?.spawnCliOverride
-      ? options.spawnCliOverride(cliOpts)
-      : spawnCli(cliOpts, this.config.spawnFn ? { spawnFn: this.config.spawnFn } : undefined);
+    const expectedInit = toolAccess === 'controlled' ? CONTROLLED_INIT_EXPECTATION : DISABLED_INIT_EXPECTATION;
+    let invocationLease: QoderInvocationLease | undefined;
 
     try {
-      yield* this.consumeStream(events, options);
+      if (controlledRuntime) {
+        invocationLease = createQoderInvocationLease({
+          memoryMcpServerPath: controlledRuntime.memoryMcpServerPath,
+          runtimeRoot: controlledRuntime.runtimeRoot,
+          shellSandboxWrapperPath: controlledRuntime.shellSandboxWrapperPath,
+          sandboxBinary: controlledRuntime.sandboxBinary,
+          profileDir: this.config.profileDir,
+          workingDirectory,
+          callbackEnv: options?.callbackEnv,
+        });
+        (this.config.sandboxProbe ?? runQoderSandboxProbe)({
+          childEnv: invocationLease.childEnv,
+          denyCanaryPath: invocationLease.denyCanaryPath,
+          ...(invocationLease.guardedGhPath ? { guardedGhPath: invocationLease.guardedGhPath } : {}),
+          scratchDir: invocationLease.scratchDir,
+          shellSandboxWrapperPath: controlledRuntime.shellSandboxWrapperPath,
+        });
+      }
+      const args = buildQoderArgs({
+        profileDir: this.config.profileDir,
+        model: this.config.model,
+        sessionId: options?.sessionId,
+        toolAccess,
+        ...(invocationLease ? { mcpConfigPath: invocationLease.mcpConfigPath, workingDirectory } : {}),
+      });
+      // P1④：显式 -m provenance —— argv 断言不过即 0 spawn
+      assertExplicitModelFlag(args, this.config.model);
+
+      // F299：正文/runtime/tool surface 形成后、spawn 前过 recorder —— 拒绝即 0 spawn；
+      // 落档字节深冻（P1②），recorder 之后核验未被改写
+      if (options?.beforeProviderLaunch) {
+        const prepared = freezePreparedRequest({
+          v: 1,
+          message: { accuracy: 'exact', body: prompt },
+          nativeInstructions: [],
+          runtime: {
+            provider: 'qoder',
+            carrier: 'qodercn-cli',
+            model: this.config.model,
+            protocol: 'stream-json/1.4.0',
+            toolExecutionPolicy: toolAccess === 'controlled' ? 'workspace_write' : 'read_only',
+          },
+          tools: {
+            finalSurface: 'declared_only',
+            declaredServerNames: toolAccess === 'controlled' ? [QODER_MEMORY_MCP_SERVER] : [],
+          },
+          providerNativeVisibility: 'unknown',
+        });
+        try {
+          await options.beforeProviderLaunch(prepared);
+        } catch (err) {
+          yield this.error(`qoder invoke rejected by provider-request recorder: ${String(err)}`);
+          return;
+        }
+        if (!('body' in prepared.message) || prepared.message.body !== prompt) {
+          yield this.error('qoder invoke rejected: prepared request mutated across recorder boundary');
+          return;
+        }
+      }
+
+      // P1③：spawn/stdin(EPIPE 守卫)/有界终止/exit 等待/liveness 全部由共享 spawnCli 拥有；
+      // 门内 fail-closed 终止（init 门红/时序违规）通过 break 触发其 finally 的
+      // CliTerminationController 有界终止（SIGTERM → 等待 → SIGKILL，计时器 unref）
+      const cliOpts = {
+        command: binary,
+        args,
+        cwd: workingDirectory,
+        stdinInput: prompt,
+        env:
+          invocationLease?.childEnv ??
+          buildQoderEnvOverrides({
+            profileDir: this.config.profileDir,
+            callbackEnv: options?.callbackEnv,
+            accountEnv: options?.accountEnv,
+          }),
+        managedArgvFlags: [
+          '-p',
+          '-m',
+          '-o',
+          '--config-dir',
+          '--mcp-config',
+          '--strict-mcp-config',
+          '--allowed-mcp-server-names',
+          '--tools',
+          '--allowed-tools',
+          '--setting-sources',
+        ],
+        ...(signal ? { signal } : {}),
+        ...(options?.invocationId ? { invocationId: options.invocationId } : {}),
+        ...(options?.cliSessionId ? { cliSessionId: options.cliSessionId } : {}),
+        ...(options?.livenessProbe ? { livenessProbe: options.livenessProbe } : {}),
+        ...(options?.parentSpan ? { parentSpan: options.parentSpan } : {}),
+        // round-4 P1-2：与 Claude/Kimi/OpenCode 共享接线——rawArchivePath 让 __cliTimeout
+        // 诊断能定位到本 invocation 的 raw archive
+        ...(options?.invocationId && this.rawArchive.getPath
+          ? { rawArchivePath: this.rawArchive.getPath(options.invocationId) }
+          : {}),
+      };
+      // F089 seam（round-4 P1-2）：per-invocation spawnCliOverride（tmux-based spawner 等）
+      // 优先于共享 spawnCli —— 路由/acceptance 只能经 options 注入，不得绕死
+      const events = options?.spawnCliOverride
+        ? options.spawnCliOverride(cliOpts)
+        : spawnCli(cliOpts, this.config.spawnFn ? { spawnFn: this.config.spawnFn } : undefined);
+
+      yield* this.consumeStream(events, expectedInit, toolAccess, options);
     } catch (err) {
-      // round-4 P2-4：spawn 层异常（spawnFn 同步 throw / ENOENT 等，共享 spawnCli 明确会
-      // throw spawn error）不得从 AgentService iterable 逸出 —— 统一转 qoder typed error 终态
       yield this.error(`qoder spawn failed: ${String(err)}`);
+    } finally {
+      invocationLease?.dispose();
     }
   }
 
   /** 真·流式：init 过门后逐条 yield；终态在流后收敛判定 */
   private async *consumeStream(
     events: AsyncGenerator<unknown, void, undefined>,
+    expectedInit: QoderInitExpectation,
+    toolAccess: QoderToolAccess,
     options?: AgentServiceOptions,
   ): AsyncIterable<AgentMessage> {
     const { catId, model } = this.config;
@@ -366,7 +1097,7 @@ export class QoderAgentService implements AgentService {
 
       const e = event as Record<string, unknown>;
       if (e.type === 'system' && e.subtype === 'init') {
-        const gate = qoderInitGate(event, model);
+        const gate = qoderInitGate(event, model, expectedInit);
         if (!gate.ok) {
           resultError = `qoder init gate failed (fail closed): ${gate.reason}`;
           break; // 触发 spawnCli finally 的共享有界终止
@@ -418,7 +1149,11 @@ export class QoderAgentService implements AgentService {
       return;
     }
     if (unavailableToolRequestSeen) {
-      yield this.error('qoder requested a tool while the tool surface is disabled; no tool was executed');
+      yield this.error(
+        toolAccess === 'disabled'
+          ? 'qoder requested a tool while the tool surface is disabled; no tool was executed'
+          : 'qoder emitted an unavailable/unexecuted textual tool request; no tool was executed',
+      );
       return;
     }
 
