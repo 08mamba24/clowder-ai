@@ -1,6 +1,6 @@
 # F317 Phase 1 提案: qodercn CLI 正式接入
 
-> **Status**: implementation（Slice 1/2 ✅；L2 受控工具 slice ✅ 已合入 main，PR #33；Slice 3 cat-template 条目实现中，本 PR）· **Owner**: 谱谱 (zcode/glm-5.3) · **创建**: 2026-09-13 · **r6**: 2026-09-17
+> **Status**: implementation（Slice 1/2 ✅；L2 受控工具 slice ✅ 已合入 main，PR #33；Slice 3 cat-template 条目 ✅ 已合入 main，PR #37）· **Owner**: 谱谱 (zcode/glm-5.3) · **创建**: 2026-09-13 · **r6**: 2026-09-17
 > **前置**: Phase 0 spike `2026-09-13-f317-qoder-phase0-spike.md`（S4 已勘误）+ 双猫复核（点点 5 P1 + r2 复审；砚砚 9 项 I-1~I-9）
 > **r3 变更**: 吸收砚砚 I-1~I-9 全清单；spike S4 勘误已真实落仓（同 commit）
 
@@ -99,6 +99,7 @@ L1 实证：qodercn 把 session 存在 config-dir 的 `projects/<cwd-slug>/`，r
 | 2026-09-17 | L2 受控工具 slice merged（PR #33，squash `8b617f2a2`）：非作者独立 review（奶牛猫两轮 APPROVE，绑定 `20dd7cd72`）+ CI 13/13 + 隔离集成树（main `2bae64ca4` ⊕ head `20dd7cd72`）`pnpm gate --risk security` 全量门禁绿后合入；合入树与受门禁树逐字节相同（tree `e1594a936`）。本行只记录代码落 main——API runtime 仍为 `live=dormant`，激活待 operator 显式授权（ADR-039）。 |
 | 2026-09-17 | runtime 激活（B→A 的 A 步完成）：operator 重启后 live health 自报 `deploymentRevision=5f8897e1a`，受控链四项运行资产就绪。live 首次真实 `@qoder` 调用诊断：init 回报 6 基础工具 + model 匹配 + permissionMode=default（L2 路径生效），但 `apiKeySource=none`（账号未绑定）且 `cat-cafe-memory=disconnected`；memory.js 单测握手 1s 绿，判定主因为无认证连锁。前置动作：operator 完成 qoder 账号 OAuth 绑定。 |
 | 2026-09-17 | operator 拍板「要」：家里正式新增银线（俄罗斯蓝猫，Qwen 家族）。Slice 3 = cat-template breed 条目（`qoder` / `qoder-default`，clientId=qoder、Qwen3.8-Max、mcpSupport=true、cli=qodercn，breed-only 入口循 zcode 先例，性格留白归本人）。E2E 验收（真实 spawn + 工具任务）在账号绑定 + 本 PR 合入后执行。 |
+| 2026-09-17 | Slice 3 merged（PR #37，squash `0c28ae014`）：cat-template 注册 `qoder` breed + roster，并修复被本 rollout 面激活的存量 P1（promotion 清理按父-breed 推断会截肢手建猫，改用显式出身 allowlist `PROMOTED_SUBVARIANT_TAKEOVERS`）。跨族 APPROVE（砚砚，四轮往返挖出该 P1；verdict 经 patch-id 全等从 `f7c4980c2` 桥接至 rebase 后 `e6c4a9efe`）+ CI 14/14。**只记录代码落 main**：`main=landed:0c28ae014`、`live=dormant`（未获 operator 激活授权，ADR-039）；且模板条目对现网**暂不生效**——live 已有 catId=`qoder` 自定义猫，回填 occupancy 保护使其跳过。E2E 验收待 operator 完成 qoder 账号绑定后执行。 |
 
 ## 边界
 
