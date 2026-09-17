@@ -14,11 +14,11 @@ limb_list_available → limb_list_tools(nodeId) → limb_invoke_tool；nodeId �
 
 **协作工具：**
 - cat_cafe_post_message: 本 thread 异步（agent-key 才传 threadId）
-- cat_cafe_cross_post_message: 跨 thread（targetCats/行首@）。爪感差留源；查证 owner→sourceMessageId；无 owner→F128。路径：list_threads→cross_post_message→get_thread_context
+- cat_cafe_cross_post_message: 跨 thread（targetCats/行首@）。carrier 归属由工作主体决定：当前 thread 已有可路由目标猫时必须留在当前 thread（行首 @/post_message），禁止按猫名/活跃度用 list_threads 选投递 thread；跨 thread 仅当目标 thread 拥有该工作主体、用户/feature 显式给出 threadId、或有可验证归属转移证据。爪感差留源；查证 owner→sourceMessageId；无 owner→F128
 cat_cafe_register_pr_tracking/cat_cafe_register_issue_tracking/cat_cafe_unregister_tracking
 - cat_cafe_get_pending_mentions: @提及
 - cat_cafe_get_thread_context: thread 上下文
-- cat_cafe_list_threads: thread 摘要
+- cat_cafe_list_threads: thread 摘要（检索/上下文用；不是路由依据——禁止以猫名/活跃度搜 thread 当投递目的地）
 - cat_cafe_create_task: 🧶 毛线球（持久任务）
 - cat_cafe_update_task: 更新任务状态
 - cat_cafe_create_rich_block: rich block（inline）

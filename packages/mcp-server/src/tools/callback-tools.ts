@@ -586,7 +586,10 @@ export const listThreadsInputSchema = {
     .min(1)
     .max(200)
     .optional()
-    .describe('Optional: filter threads whose title or threadId contains this keyword (case-insensitive).'),
+    .describe(
+      'Optional: filter threads whose title or threadId contains this keyword (case-insensitive). ' +
+        'Lookup aid only — never use cat-name/keyword matches as the delivery destination for a handoff or review; subject ownership picks the carrier, not recipient activity.',
+    ),
   agentKeyCatId: agentKeyCatIdSchema,
 };
 
@@ -776,7 +779,12 @@ export const retryCustodyAdmissionInputSchema = {
 };
 
 export const crossPostMessageInputSchema = {
-  threadId: z.string().min(1).describe('Target thread ID to post into'),
+  threadId: z
+    .string()
+    .min(1)
+    .describe(
+      'Target thread ID to post into. Carrier-ownership rule: cross-post only when the target thread owns this work/review subject, the user or feature context explicitly named the threadId, or a verifiable ownership transition exists. Never pick a thread by recipient name or recent activity; if the current thread can already route the target cat, stay in-thread (post_message / line-start @).',
+    ),
   content: z
     .string()
     .min(1)

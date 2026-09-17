@@ -135,7 +135,7 @@ instructions 中的 no-comment 禁令必须在新 HEAD 复审前清除。
 正式结论前按 **author/custody/handoff source** 分类，repo 名和 GitHub login 不参与分类：
 
 - 外部作者或 external PR / Issue custody：verdict 必须写回同一 GitHub subject，并绑定精确 PR HEAD / Issue body digest；没有 review/comment URL 就还没完成。
-- 本地猫通过 `@` / handoff 交来的 review：默认走 author cat route。**direct review carrier** 是直接承载本轮 review 请求的 thread；它压过任务祖先 thread、旧 `sourceThreadId` 与继承 coordination。初审和复审都用 ordinary durable A2A（普通持久 A2A）：同 thread `post_message`，跨 thread `cross_post_message`，行首 `@reviewer`，并附 PR / exact HEAD（或文档 content digest）。不要附 structured action、review lease、generation、replacement authority 或 review coordination。
+- 本地猫通过 `@` / handoff 交来的 review：默认走 author cat route。**direct review carrier** 是直接承载本轮 review 请求的 thread；它压过任务祖先 thread、旧 `sourceThreadId` 与继承 coordination。carrier 永远由 review 主体的 ownership 决定：当前 thread 拥有该主体时必须同 thread 投递，禁止以 reviewer 身份或其最近活跃度定位 thread（不得按猫名 `list_threads` 选 carrier）；跨 thread 仅当目标 thread 拥有 subject，或用户/feature 显式给出 threadId。初审和复审都用 ordinary durable A2A（普通持久 A2A）：同 thread `post_message`，跨 thread `cross_post_message`，行首 `@reviewer`，并附 PR / exact HEAD（或文档 content digest）。不要附 structured action、review lease、generation、replacement authority 或 review coordination。
 
   reviewer 用同一 ordinary carrier 回行首 `@author`，并在同一次调用里带显式 `clientMessageId`、typed
   `localReviewVerdict`（`approved | changes_requested | commented`）、`reviewedHeadSha`、`reviewSubjectRef`、
