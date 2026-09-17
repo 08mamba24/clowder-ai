@@ -73,16 +73,28 @@ Round-2 verdict：**P1 撤回，push back 接受**；谱谱编号空间解释与
 | #577 P2（cross_multi_mention 原语） | needs-maintainer-decision，社区意见倾向暂不引入 | #577 评论 |
 | 相关：#1335（目标猫忙时行首 @ 交接被 `dedup_active` 静默丢弃） | open，accepted，与本问题症状不同（球被丢 vs 投错处），同属交接生命周期 | #1335 |
 
-## 八、建议与待办
+## 八、建议与待办（2026-09-17 17:07 UTC 更新：③ 已落地并终审放行）
 
-- **③ 本地发送侧硬规则（拟稿，待 operator 放行后落地）**——目标文件 `assets/prompt-templates/mcp-tools.md`（compact 工具提示）、`cat-cafe-skills/request-review/SKILL.md`、`packages/mcp-server/src/tools/callback-tools.ts` 工具描述；拟稿措辞：「当当前 thread 已有可路由目标猫（roster 在册且未禁用）时，carrier 必须留在当前 thread：直接行首 @句柄 或 post_message；禁止以目标猫名字/最近活跃度为关键词 list_threads 选择投递 thread；禁止在无 subject 归属证据时调用 cross_post_message。跨 thread 投递仅允许：目标 thread 拥有该工作主体、用户/feature 显式给出 threadId、或有可验证的归属转移证据。」（改 prompt 模板影响全家族运行时行为，按 Iron Law 3 Config Immutability 需人工放行。）
-- **① 跟踪 #577/#1397**：建议注册 issue tracking（本 session 无法执行）；**PR 出现并合入后再评估 sync**（fork 落后 upstream/main 约 2 commit，sync 成本低）。
-- **② 向 upstream 补充证据/评论**：外发动作，待铲屎官授权。可贡献材料：§四 编号空间考据（cat-cafe 迁移血统的 PR 号陷阱）对 upstream 其他用户也有价值。
+- **③ 本地发送侧硬规则 —— 已落地**（operator 16:30 UTC 批准，按 ③→②→① 顺序执行）。最终措辞经三轮 review 演化为 ownership-first 谓词（与下文原拟稿的差异见 §九.b）：「本 thread 拥有该主体→留本 thread；仅限目标 thread 拥有主体/显式 threadId/可验证转移，禁按猫名/活跃度选 carrier（F号 定位 owner thread 除外）」。落点：`assets/prompt-templates/mcp-tools.md`（净增 +50 字符，预算内）、`cat-cafe-skills/request-review/SKILL.md`、`packages/mcp-server/src/tools/callback-tools.ts`（threadId/keyword 描述）+ 钉子测试 `cross-post-carrier-invariant.test.ts`。Commits：`cfae99212`（round-1）→ `d40cfcaa2`（round-2 修复）→ `129ac0e4c`（round-3 谓词钉子，**终审 APPROVED exact HEAD**，2026-09-17 17:07 UTC）。三轮 review 均为砚砚/缅因猫（跨族）。**push 待凭据**。
+- **① 跟踪 #577/#1397**：仍待有回调凭证的会话注册 issue tracking；**PR 出现并合入后再评估 sync**（fork 落后 upstream/main 约 2 commit，sync 成本低）。
+- **② 向 upstream 补充证据/评论**：英文草稿已交 operator（内容：迁移血统 PR 号陷阱考据 + 本地 sender-side 缓解描述，无私有坐标），待其以家里 GitHub 身份发布。
+
+### 八.a 原拟稿（历史保留，已被三轮 review 修订）
+
+原拟稿措辞：「当当前 thread 已有可路由目标猫（roster 在册且未禁用）时，carrier 必须留在当前 thread：直接行首 @句柄 或 post_message；禁止以目标猫名字/最近活跃度为关键词 list_threads 选择投递 thread；禁止在无 subject 归属证据时调用 cross_post_message。跨 thread 投递仅允许：目标 thread 拥有该工作主体、用户/feature 显式给出 threadId、或有可验证的归属转移证据。」——round-2 review 指出其谓词错误（以「有可路由猫」而非「本 thread 拥有主体」为留下条件，与 l3-routing-rules 的 F号 owner-thread 特例冲突），已修订；原拟稿留存于此仅为审计对照。
 
 ## 九、复审裁决记录
 
+### 九.a 调查报告本身的复审（两轮）
+
 - Round-1（2026-09-17 15:19 UTC 前）：**退回 changes requested** — P1 出处指控（本案不成立，已撤回）；P2 根因措辞（接受，§二/§六 落实）；P2 推荐分层（部分接受，改为 ①+③）；校正点 postMessageSchema（接受，§五 落实）。
 - Round-2（15:28 UTC）：**放行 APPROVED**，P1 撤回；按本文边界「可直接归档，无需再回复审」。
+
+### 九.b ③ 落地 diff 的复审（三轮，均为砚砚/gpt-5.6-sol，跨族）
+
+- Round-1（16:44 UTC，对 `cfae99212`）：**退回** — P1 prompt 预算超限（+159 字符，system-prompt-builder 120/126，5 个尺寸断言红）；P1 谓词错误（「有可路由猫就留下」应为「本 thread 拥有主体才留下」）；P2 F193 契约/测试仍钉旧路径，且 MCP 描述缺钉子。
+- Round-2（16:59 UTC，对 `d40cfcaa2`）：**退回，仅剩 P2** — 实现语义/预算/契约全部通过，但 prompt 断言只查 token（主体归属决定/禁按猫名/F号），旧谓词可混回而测试保持绿。
+- Round-3（17:07 UTC，对 `129ac0e4c`）：**APPROVED，无新增 finding** — 谓词断言 + 负向断言（拒 `可路由目标猫`）+ `F号 定位 owner thread` 完整短语钉牢；机械突变验证（round-1 旧行 4/4 拒、新行 4/4 过）双方独立执行一致；裸 roster 与 with-test-home 双环境 126/126，MCP 钉子 2/2。verdict 结构化回传，A2A dispatch 关闭。
 
 ---
 
