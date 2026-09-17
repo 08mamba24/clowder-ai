@@ -162,14 +162,15 @@ function migrateLegacyGeminiConsumerCarrier(
  */
 function migrateCatalogVariants(
   catalog: CatCafeConfig,
-  externalStandaloneBreedIds?: ReadonlySet<string>,
+  externalTemplateScopes?: { breedIds: ReadonlySet<string>; standaloneBreedIds: ReadonlySet<string> },
 ): { catalog: CatCafeConfig; dirty: boolean } {
   let dirty = false;
   const next = structuredClone(catalog) as CatCafeConfig;
 
-  // Step 4 prep: union the catalog's own breed ids with any external ones (template)
-  // so legacy variants are dropped even when the catalog itself hasn't grown the new breed yet.
-  const standaloneBreedIds = new Set<string>(externalStandaloneBreedIds ?? []);
+  // Step 4 prep: union the catalog's own breed ids with the template's
+  // standalone candidates so legacy variants are dropped even when the catalog
+  // itself hasn't grown the new breed yet.
+  const standaloneBreedIds = new Set<string>(externalTemplateScopes?.standaloneBreedIds ?? []);
   for (const breed of next.breeds as unknown as Record<string, unknown>[]) {
     if (typeof breed.id === 'string') standaloneBreedIds.add(breed.id);
   }
@@ -247,6 +248,13 @@ function migrateCatalogVariants(
       if (!variantCatId) return true;
       // Keep variants whose catId matches their own breed's id (legitimate single-variant breed).
       if (variantCatId === breedId) return true;
+      // The promotion cleanup only applies to template-owned structures: a
+      // variant nested under a template breed that the template restructured.
+      // Variants under runtime-only breeds are hand-built members — a template
+      // breed whose backfill their occupancy blocks must never amputate them.
+      if (externalTemplateScopes && breedId !== undefined && !externalTemplateScopes.breedIds.has(breedId)) {
+        return true;
+      }
       // Drop only when catId points to a *different* standalone top-level breed.
       return !standaloneBreedIds.has(variantCatId);
     });
@@ -702,23 +710,48 @@ export function resolveCatCatalogPath(projectRoot: string): string {
  * Returns an empty set if the template is missing or unreadable — migration
  * still works against catalog-only ids in that case.
  */
-function readTemplateBreedIds(projectRoot: string): Set<string> {
-  const ids = new Set<string>();
+function readTemplateBreeds(projectRoot: string): Record<string, unknown>[] {
   let templateRaw: string;
   try {
     templateRaw = readFileSync(safePath(projectRoot, 'cat-template.json'), 'utf-8');
   } catch {
-    return ids;
+    return [];
   }
   try {
-    const json = JSON.parse(templateRaw) as { breeds?: Array<{ id?: unknown }> };
-    for (const breed of json.breeds ?? []) {
-      if (typeof breed.id === 'string') ids.add(breed.id);
-    }
+    const json = JSON.parse(templateRaw) as { breeds?: unknown };
+    return Array.isArray(json.breeds) ? (json.breeds as Record<string, unknown>[]) : [];
   } catch {
-    // Malformed template — treat as no external ids.
+    // Malformed template — treat as no external breeds.
+    return [];
   }
-  return ids;
+}
+
+/**
+ * Migration scopes derived from the project template:
+ * - `breedIds`: every template breed id. The variant migration may only
+ *   reorganize variants whose parent breed belongs to the template (the
+ *   promotion signature — e.g. a sub-variant raised to its own breed).
+ *   Variants under runtime-only breeds are hand-built user data.
+ * - `standaloneBreedIds`: template breed ids that can actually claim a catId.
+ *   Tombstoned breeds never (re)land, so they must not trigger the legacy
+ *   variant drop for identities they cannot take over.
+ */
+function readTemplateMigrationScopes(
+  projectRoot: string,
+  catalog: Record<string, unknown>,
+): { breedIds: ReadonlySet<string>; standaloneBreedIds: ReadonlySet<string> } | undefined {
+  const templateBreeds = readTemplateBreeds(projectRoot);
+  if (templateBreeds.length === 0) return undefined;
+  const breedIds = new Set<string>();
+  const standaloneBreedIds = new Set<string>();
+  for (const templateBreed of templateBreeds) {
+    if (typeof templateBreed.id !== 'string') continue;
+    breedIds.add(templateBreed.id);
+    if (typeof templateBreed.catId !== 'string') continue;
+    if (hasTombstonedTemplateBreedVariant(catalog, templateBreed)) continue;
+    standaloneBreedIds.add(templateBreed.id);
+  }
+  return { breedIds, standaloneBreedIds };
 }
 
 export interface CatCatalogReadOptions {
@@ -732,10 +765,14 @@ export function readCatCatalogRaw(projectRoot: string, options: CatCatalogReadOp
   const raw = readFileSync(catalogPath, 'utf-8');
   try {
     const parsed = JSON.parse(raw) as CatCafeConfig;
-    // Hand the migration template breed.ids so it can detect legacy variants
-    // that were promoted to standalone breeds in template but not yet here.
-    const templateBreedIds = readTemplateBreedIds(projectRoot);
-    const migrated = migrateCatalogVariants(parsed, templateBreedIds);
+    // Hand the variant migration the template scopes so it can detect legacy
+    // variants promoted to standalone template breeds — but only for structures
+    // the template actually owns and identities a landing breed can claim.
+    const templateScopes = readTemplateMigrationScopes(
+      projectRoot,
+      parsed as unknown as Record<string, unknown>,
+    );
+    const migrated = migrateCatalogVariants(parsed, templateScopes);
     if (migrated.dirty) {
       const nextRaw = `${JSON.stringify(migrated.catalog, null, 2)}\n`;
       if (options.persistMigrations !== false) writeFileAtomic(catalogPath, nextRaw);

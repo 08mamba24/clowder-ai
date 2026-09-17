@@ -36,6 +36,14 @@
 - **P2-2 已修**：回填只有正向测试——补两个守卫用例：① 手建自定义 qoder（displayName/personality/accountRef）跨 bootstrap 不被模板覆盖；② qoder 删除 tombstone 后 bootstrap/解析读均不复活（镜像 glm52 用例）
 - **P3 已修**：note 口径（7 文件；personality 为占位串而非未写）
 
+## 复审（reviewedHeadSha=1b5646ea4）→ 真 bug 挖出并修复（r3）
+
+- 砚砚复审指出 occupancy 用例被 breed-id 早退掩盖，给出真实升级序列构造（旧模板 bootstrap → `createRuntimeCat` 手建 `catId='qoder'`/`breedId='custom-qoder'` → 换新模板 bootstrap）。
+- 按该构造重写用例**首跑即红**，挖出 **P1 级数据丢失 bug（既有代码，被本 PR 的 rollout 面激活）**：`readCatCatalogRaw` 把**全部**模板 breed id 交给 `migrateCatalogVariants` Step 4；Step 4 据此把手建 variant 判为「已提升为独立 breed 的遗留子变体」并删除——但该模板 breed 的回填恰被这个手建猫的 occupancy **拦住**，永远不落地。结果：替换者不来，占位者被截肢（breed 壳还在、variants=[]，手建猫不可路由）。任何「手建猫占了模板新 breed 身份」的存量家升级都会触发（正是本家 live 现状：catId=qoder 的自定义猫 + 模板新增 qoder breed）。
+- **修法（cat-catalog-store.ts）**：① Step 4 的 promotion 清理只对**模板拥有的结构**生效——variant 的父 breed id 必须在模板 breed 集内（opus-47 提升形状：父 breed ragdoll ∈ 模板）；父 breed 是 runtime-only 手建结构时永不触碰。② 墓碑 breed（用户已删）不参与 standalone 认领——它同样永远不会落地。实现：`readTemplateMigrationScopes()` 返回 `{breedIds, standaloneBreedIds(去墓碑)}`，替代原无过滤的 `readTemplateBreedIds`。
+- **验证**：新升级序列用例（手建猫跨升级完整保留 displayName/personality/accountRef/roster + 模板 breed 不落地）与既有 opus-47 promotion 用例**同时绿**；扩展回归 13 套 **705/705**；tsc/build/biome/diff-check 全绿。
+- 教训（给 reviewer 也不只是给我）：砚砚坚持「真实升级序列」的测试构造，直接把一个纸面全绿的 rollout 契约打穿——「测试全绿」与「测试证明了契约」是两回事。
+
 ## reviewer 建议重点
 
 1. 回填 allowlist 的 occupancy 交互（live 已有 catId=qoder 自定义猫 → 回填跳过 → 模板条目对现网暂不生效，只对新 catalog/删除自定义猫后生效）——确认这是预期迁移语义
