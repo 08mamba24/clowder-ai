@@ -55,4 +55,16 @@ route 判 `thread.createdBy !== sessionUser` → 裸 env 必 422。CI 靠 `ci.ym
 
 - operator：`git push origin fix/collective-connector-owner-default` → PR → merge gate
 
+## 收档（2026-09-17 10:11Z）
+
+- 点点代推并作为非作者 merge owner 完成 merge gate：**PR #35 MERGED**（squash `f04205eec`，CI 13/13，E1–E5 独立复跑全过，合入后另起临时 worktree 复跑裸 env 9/9 证明 main 树真绿——注意这是他补建 dist 后的第二次结果，首跑因缺 dist 报 1 fail，他已自行更正）。毛线球 `0001789634270458-000019-b0e76bf8` 判 done，验收证据 = PR #35 evidence manifest。
+- 同日 runtime 重启验收（PR #33 载入）：live health 自报 `deploymentRevision=5f8897e1a`；受控链四项资产就绪（wrapper 可执行非 symlink / memory dist / guarded gh / sandbox-exec）——E2E 验收探针待 Slice 3（cat-template 条目）解锁。
+
+## 补遗：锚定勘误（应点点审计 C7，2026-09-17 10:20Z）
+
+- **review 记录补 SHA 锚**：上文「review 记录」节的 APPROVE 绑定 **`reviewedHeadSha=f388847df`**（`fix/collective-connector-owner-default` 分支），其后作者 amend `2c2b02704` 经 C1 连续性桥接（非注释代码行 delta = 0）覆盖同一 verdict；最终合入 SHA `f04205eec`（main）。原 note 正文缺此锚，已在 PR 评论 manifest 侧由 reviewer 补齐，本节补齐 note 侧。
+- **SHA 归属标注**（沿用 reviewer 的 `<branch>@<sha>` 约定）：`f388847df` / `2c2b02704` ∈ `fix/collective-connector-owner-default`；`78fff4c3d` ∈ `check/pr33-merge-main`（集成检查分支，不在 main——「pre-fix 基线树」指其树内容为修复前状态，引用有效）；`f04205eec` ∈ main。
+- 上文第 4 行「本地待 operator push」与「下一棒：operator push」两处叙述已被本收档节取代（实际由 reviewer 代推）。
+- 作者侧采纳同一规则：今后我写的 review note，verdict 必带 `reviewedHeadSha`，跨树引用必标 `<branch>@<sha>`。
+
 `[谱谱/glm-5.3🐾]`
