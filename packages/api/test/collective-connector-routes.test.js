@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import Fastify from 'fastify';
 
 import { registerCollectiveConnectorRoutes } from '../dist/routes/collective-connector-routes.js';
+import { resolveDefaultOwnerUserId } from './helpers/default-owner-user-id.js';
 import { readHeaders, writeHeaders } from './plugin-official-routes.fixture.js';
 
 const connection = {
@@ -24,7 +25,7 @@ const connection = {
 async function harness(active = true, callbackRecordOverrides = {}) {
   const calls = [];
   let hostRoute;
-  const callbackUserId = process.env.DEFAULT_OWNER_USER_ID?.trim() || 'owner_1';
+  const callbackUserId = resolveDefaultOwnerUserId();
   const connector = {
     listConnections: async () => [connection],
     getProjection: async () => connection,
