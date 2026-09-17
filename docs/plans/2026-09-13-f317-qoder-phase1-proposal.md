@@ -1,6 +1,6 @@
 # F317 Phase 1 提案: qodercn CLI 正式接入
 
-> **Status**: implementation（Slice 1/2 ✅；Slice 3 待实现；L2 受控工具 slice 复核中）· **Owner**: 谱谱 (zcode/glm-5.3) · **创建**: 2026-09-13 · **r4**: 2026-09-16
+> **Status**: implementation（Slice 1/2 ✅；Slice 3 待实现；L2 受控工具 slice ✅ 已合入 main，PR #33）· **Owner**: 谱谱 (zcode/glm-5.3) · **创建**: 2026-09-13 · **r4**: 2026-09-16
 > **前置**: Phase 0 spike `2026-09-13-f317-qoder-phase0-spike.md`（S4 已勘误）+ 双猫复核（点点 5 P1 + r2 复审；砚砚 9 项 I-1~I-9）
 > **r3 变更**: 吸收砚砚 I-1~I-9 全清单；spike S4 勘误已真实落仓（同 commit）
 
@@ -96,6 +96,7 @@ L1 实证：qodercn 把 session 存在 config-dir 的 `projects/<cwd-slug>/`，r
 | 2026-09-16 | operator 拍板（thread_msqw8n1bqpvmob6f#0001789549509937-000115-920c1684）：放行 L2 受控工具接入；**基础工具一次性全开**，覆盖谱谱建议及 r3/I-9 的逐个 allowlist 渐进策略；I-8 三门（①spawn 前干净专用 profile ②`cat-cafe-memory` 只读挂载断言 ③cancel 夹具重采）仍为解锁硬前置——拍板的是放开广度，不含跳过安全门。"基础工具"清单由 slice 定义并在 PR 里显式列出。 |
 | 2026-09-16 | L2 implementation evidence：六工具清单定为 `Bash/Edit/Glob/Grep/Read/Write`；split memory exact readonly=12（非 legacy monolith 27）；真实 qodercn 1.1.51 init 在 synthetic-invalid auth profile 下回报 18/18 + memory connected，随后 exit 1；Seatbelt canary 为 workspace write=allow、sibling read/write=deny。 |
 | 2026-09-16 | PR #33 cross-family review rework：关闭 Bash 自选 memory policy（shim 移出 scratch、memory read 面收窄）与 shared `.git` 控制面写逃逸（reciprocal worktree ownership + hooks/config/gitdir/commondir deny）；`os.userInfo().homedir` 固定 OS account-home deny，runtime 凭证路径另加末位 deny；构造期资产校验与 invocation allow/deny canary 均 fail closed。回归同时钉住正常 sandboxed `git add/commit` 不被误伤；本机实际 qoderclicn 1.1.53 synthetic-invalid 探针通过 exact init 门并回报 `cat-cafe-memory=connected`，随后按预期认证错误退出。 |
+| 2026-09-17 | L2 受控工具 slice merged（PR #33，squash `8b617f2a2`）：非作者独立 review（奶牛猫两轮 APPROVE，绑定 `20dd7cd72`）+ CI 13/13 + 隔离集成树（main `2bae64ca4` ⊕ head `20dd7cd72`）`pnpm gate --risk security` 全量门禁绿后合入；合入树与受门禁树逐字节相同（tree `e1594a936`）。本行只记录代码落 main——API runtime 仍为 `live=dormant`，激活待 operator 显式授权（ADR-039）。 |
 
 ## 边界
 
