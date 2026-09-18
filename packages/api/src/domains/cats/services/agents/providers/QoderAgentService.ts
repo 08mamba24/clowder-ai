@@ -559,7 +559,7 @@ export function validateQoderControlledRuntimePaths(input: {
   }
 }
 
-export function buildControlledQoderEnv(input: {
+function buildControlledQoderEnv(input: {
   profileDir: string;
   scratchDir: string;
   shellSandboxWrapperPath: string;

@@ -246,21 +246,6 @@ test('qoder keychain fix: buildQoderEnvOverrides forces QODERCN_FORCE_FILE_STORA
   assert.equal(minimal.QODERCN_FORCE_FILE_STORAGE, 'true', 'forced even with no inputs at all');
 });
 
-test('qoder keychain fix: buildControlledQoderEnv forces QODERCN_FORCE_FILE_STORAGE=true (last write)', () => {
-  const buildControlledQoderEnv = svcModule.buildControlledQoderEnv;
-  assert.equal(typeof buildControlledQoderEnv, 'function', 'controlled builder exported for env contract test');
-  const env = buildControlledQoderEnv({
-    profileDir: '/p',
-    scratchDir: '/s',
-    shellSandboxWrapperPath: '/w',
-    sandboxBinary: '/usr/bin/sandbox-exec',
-    workspacePolicyPath: '/wp',
-    memoryPolicyPath: '/mp',
-    memoryShimPath: '/ms',
-    toolPath: null,
-  });
-  assert.equal(env.QODERCN_FORCE_FILE_STORAGE, 'true');
-});
 
 // ── profile：路径逃逸 / 深度盲区 / hooks 语义 / fail-closed ───────────────
 test('isSafeCatIdSegment rejects traversal segments', () => {
@@ -707,6 +692,8 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
     CAT_CAFE_CAT_ID: CAT,
     CAT_CAFE_THREAD_ID: 'thread-l2',
   };
+  const prevForceStorage = process.env.QODERCN_FORCE_FILE_STORAGE;
+  process.env.QODERCN_FORCE_FILE_STORAGE = 'false';
   let out;
   try {
     out = await runInvoke(svc, 'read the fixture', {
@@ -718,12 +705,19 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
       },
     });
   } finally {
+    if (prevForceStorage === undefined) delete process.env.QODERCN_FORCE_FILE_STORAGE;
+    else process.env.QODERCN_FORCE_FILE_STORAGE = prevForceStorage;
     rmSync(root, { recursive: true, force: true });
   }
 
   assert.ok(
     out.some((m) => m.type === 'done'),
     JSON.stringify(out),
+  );
+  assert.equal(
+    seenEnv.QODERCN_FORCE_FILE_STORAGE,
+    'true',
+    'controlled spawn env must force the encrypted-file credential backend; inherited false must not win',
   );
   assert.ok(seenArgs.includes('--allowed-tools'));
   assert.deepEqual(Object.keys(mcpConfig.mcpServers), [QODER_MEMORY_MCP_SERVER]);
