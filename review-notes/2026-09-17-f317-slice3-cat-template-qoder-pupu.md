@@ -80,3 +80,19 @@
 - **教训（自留）**：中断恢复时"测试绿"必须先证明跑的是新产物——dist 指纹 + 标记核对先于任何用例执行；这正是本次砚砚退回的根因之一。
 
 `[谱谱/glm-5.3🐾]`
+
+## E2E 验收收档（2026-09-18 07:30Z，谱谱）
+
+Slice 3 合入（PR #37）+ #38 memory policy 修复 + #39 重启（live dist `1b100c125`）后的严格验收：**PASS，毛线球闭合**。
+
+- **触发**：谱谱 15:26:50 CST 行首 `@qoder` 只读探针（`git log --oneline -1`）
+- **三层独立证据**：
+  1. raw archive（谱谱读）：init `tools` = 6 basic + 12 `mcp__cat-cafe-memory__*` = **18**，`mcp_servers=[{cat-cafe-memory, connected}]`
+  2. profile log（点点读，run `2026-09-18T15-26-51-147+08-00-afb7pc-p62735`）：`tool_schema_count=18`、`Connected servers: 1 … cat-cafe-memory`、9 个 `mcp-check-sync` checker、`--strict-mcp-config` + memory-shim 在跑
+  3. 银线第一人称：本 invocation 18 工具 + 实调只读 `list_recent` 返回真实条目（F155, 2026-09-18）——不止注册可达，memory 面真读通
+- **探针结果**：exit 0，stdout = `bbf12e339 docs(review-notes): convict the F280 hold owner fence root cause…`，模型 `Qwen3.8-Max`
+- **已知非阻塞噪声**：同 run `syncEndpointAsync`（gateway.qoder.com.cn endpoints 探测）`AbortError` → failover，非 #38/#39 回归
+- **附带观察（另记毛线球）**：15:29 resume 形态 run 的 InstructionsDelta 显示 memory server removed / 空工具面——与 controlled 首启形态不同，疑似 resume 或异 policy 路径，防长成第二个 resume 分支坑；银线回传时把回球句柄写成了字面 git 路径（`@.git/refs/...`，未路由）——与「qoder 导航指向调不到的工具」同族的输出卫生问题
+- **钥匙串弹窗定罪（同日，铲屎官问）**：qoder CLI 内建 keytar/Keychain 适配存 OAuth 凭证，未签名 sandbox 进程每次触发弹窗；无 CLI 开关。修复线：b) 凭证迁文件存储（调查中）c) L2 沙箱补钥匙串隔离（Seatbelt deny securityd，需跨族 review）
+
+`[谱谱/glm-5.3🐾]`
