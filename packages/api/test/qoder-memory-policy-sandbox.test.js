@@ -20,7 +20,6 @@
 import assert from 'node:assert';
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -37,6 +36,7 @@ import { describe, it } from 'node:test';
 import {
   buildQoderMemorySeatbeltPolicy,
   buildQoderMemoryShimScript,
+  isPathWithin,
   resolveWorkspaceDependencyRoots,
 } from '../dist/domains/cats/services/agents/providers/qoderSandboxPolicy.js';
 
@@ -106,7 +106,10 @@ describe('resolveWorkspaceDependencyRoots — runtime layout walk', () => {
     }
     for (const root of roots) {
       assert.ok(
-        root.startsWith(join(repoRoot, 'packages')),
+        // Same component-aware semantics as the production filter
+        // (qoderSandboxPolicy.ts): startsWith would accept sibling
+        // "packages-escape" style paths as subtree members.
+        isPathWithin(join(repoRoot, 'packages'), root),
         `closure root outside the runtime packages tree is a policy widening: ${root}`,
       );
     }
@@ -208,6 +211,15 @@ describe('memory MCP under the real Seatbelt memory policy (darwin)', () => {
         !result.stdout.includes('"serverInfo"'),
         `legacy surface must NOT boot the MCP (negative control); stdout=${JSON.stringify(result.stdout)}`,
       );
+      // Pin the incident signature itself (2026-09-18 live failure mode), so a
+      // timeout or unrelated startup fault cannot pass this control vacuously:
+      // the shim's node process must die on Seatbelt-blocked ESM resolution.
+      assert.match(
+        result.stderr ?? '',
+        /ERR_MODULE_NOT_FOUND/,
+        `legacy surface must fail via module resolution denial, not some other fault; stderr=${JSON.stringify(result.stderr)}`,
+      );
+      assert.notEqual(result.status, 0, 'the shim process must exit nonzero under the legacy surface');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
