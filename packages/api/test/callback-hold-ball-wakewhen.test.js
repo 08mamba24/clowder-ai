@@ -314,6 +314,73 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
     );
   });
 
+  // Route-level incident boundary (review P2-2): the real failure was a
+  // cross-cat @ handoff callback principal getting 503 from
+  // POST /api/callbacks/hold-ball with wakeWhile/wakeWhen. Helper-level tests
+  // above pin the fence resolver; this one pins the authenticated route path.
+  test('F280 fix (route): cross-cat @ handoff callback principal gets wakeWhen 200 (was: 503)', async () => {
+    const parentUserId = 'user-f280-route';
+    // The causal parent is the PASSER's own round: same thread/user, and its
+    // targetCats name the passer — never the receiving cat. Pre-fix, exactly
+    // this shape failed the fourth fence conjunct with
+    // HOLD_OWNER_FENCE_UNAVAILABLE.
+    let routeParentRecord;
+    const deps = makeStubDeps({
+      invocationRecordStore: {
+        getByIdempotencyKey(_threadId, _userId, key) {
+          return { id: `invocation-${key}`, userMessageId: key.slice('connector-'.length), status: 'running' };
+        },
+        async get(id) {
+          assert.equal(id, 'parent-invocation-f280');
+          return routeParentRecord;
+        },
+      },
+    });
+    const app = await createApp(deps);
+    try {
+      const thread = await threadStore.create(parentUserId, 'f280 route boundary');
+      routeParentRecord = {
+        id: 'parent-invocation-f280',
+        threadId: thread.id,
+        userId: parentUserId,
+        targetCats: ['zcode'],
+        actionLeaseCarrier: { kind: 'none' },
+      };
+      const { invocationId, callbackToken } = await registry.create(
+        parentUserId,
+        'dsh-v41-flash',
+        thread.id,
+        'parent-invocation-f280',
+      );
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/callbacks/hold-ball',
+        headers: { 'x-invocation-id': invocationId, 'x-callback-token': callbackToken },
+        payload: {
+          reason: 'canonical gate via cross-cat handoff',
+          nextStep: 'consume gate result',
+          wakeWhen: { command: 'true', timeoutMs: 5_000 },
+        },
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      const body = JSON.parse(response.body);
+      assert.ok(body.taskId, 'route must return the created hold task');
+      const task = deps.dynamicTaskStore.getById(body.taskId);
+      assert.ok(task, 'hold task must be persisted');
+      assert.deepEqual(task.params.holdLifecycle.await.ownerFence, {
+        kind: 'containing_task',
+        generation: 1,
+      });
+      const deadline = Date.now() + 5_000;
+      while (getActiveRunnerCount() > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(getActiveRunnerCount(), 0, 'fast command must leave no active runner residue');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('F261: canonical gate submission persists an independent job before admission and settles it once', async () => {
     const { ManagedRunner } = await import('../dist/infrastructure/managed-runner.js');
     const { recordDurableManagedGateProcess } = await import(
