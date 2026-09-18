@@ -229,6 +229,39 @@ test('round3 P1-3d: buildQoderEnvOverrides — denied/qoder keys deleted, config
   assert.equal(ov.QODERCN_CONFIG_DIR, '/p', 'resolver value wins — single injection point');
 });
 
+// F317 钥匙串修复：qoder CLI 的凭证存储必须强制 encrypted-file 后端——每次
+// spawn 都是新未签名进程，原生 keychain 访问每跑必弹窗。两套 env 构造器都
+// 最终写入 QODERCN_FORCE_FILE_STORAGE='true'（bundle 解码：Rr("FORCE_FILE_STORAGE")
+// → QODERCN_ 命名空间），且继承/callback/account 传 'false' 也压不过。
+test('qoder keychain fix: buildQoderEnvOverrides forces QODERCN_FORCE_FILE_STORAGE=true regardless of inputs', () => {
+  const buildQoderEnvOverrides = svcModule.buildQoderEnvOverrides;
+  const attacked = buildQoderEnvOverrides({
+    profileDir: '/p',
+    inheritEnv: { QODERCN_FORCE_FILE_STORAGE: 'false' },
+    callbackEnv: { QODERCN_FORCE_FILE_STORAGE: 'false' },
+    accountEnv: { QODERCN_FORCE_FILE_STORAGE: 'false' },
+  });
+  assert.equal(attacked.QODERCN_FORCE_FILE_STORAGE, 'true', 'final write must win over all three inputs');
+  const minimal = buildQoderEnvOverrides({ profileDir: '/p' });
+  assert.equal(minimal.QODERCN_FORCE_FILE_STORAGE, 'true', 'forced even with no inputs at all');
+});
+
+test('qoder keychain fix: buildControlledQoderEnv forces QODERCN_FORCE_FILE_STORAGE=true (last write)', () => {
+  const buildControlledQoderEnv = svcModule.buildControlledQoderEnv;
+  assert.equal(typeof buildControlledQoderEnv, 'function', 'controlled builder exported for env contract test');
+  const env = buildControlledQoderEnv({
+    profileDir: '/p',
+    scratchDir: '/s',
+    shellSandboxWrapperPath: '/w',
+    sandboxBinary: '/usr/bin/sandbox-exec',
+    workspacePolicyPath: '/wp',
+    memoryPolicyPath: '/mp',
+    memoryShimPath: '/ms',
+    toolPath: null,
+  });
+  assert.equal(env.QODERCN_FORCE_FILE_STORAGE, 'true');
+});
+
 // ── profile：路径逃逸 / 深度盲区 / hooks 语义 / fail-closed ───────────────
 test('isSafeCatIdSegment rejects traversal segments', () => {
   assert.equal(isSafeCatIdSegment('cat_ok-1'), true);

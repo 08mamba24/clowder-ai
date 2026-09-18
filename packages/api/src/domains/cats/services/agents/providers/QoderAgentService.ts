@@ -286,6 +286,14 @@ export function buildQoderEnvOverrides(input: {
     }
   }
   overrides.QODERCN_CONFIG_DIR = input.profileDir;
+  // F317 keychain fix, forced LAST: every qoder CLI spawn is a fresh unsigned
+  // process, so each native keychain access re-prompts the operator. The
+  // encrypted-file backend is selected before any keychain initialization via
+  // the CLI's own switch (bundle resolves Rr("FORCE_FILE_STORAGE") to the
+  // QODERCN_ namespace). Inherited qoder* keys are nulled above and
+  // callback/account sources skip qoder* keys, so this is the only write —
+  // nothing downstream may turn the file backend off.
+  overrides.QODERCN_FORCE_FILE_STORAGE = 'true';
   return overrides;
 }
 
@@ -551,7 +559,7 @@ export function validateQoderControlledRuntimePaths(input: {
   }
 }
 
-function buildControlledQoderEnv(input: {
+export function buildControlledQoderEnv(input: {
   profileDir: string;
   scratchDir: string;
   shellSandboxWrapperPath: string;
@@ -574,6 +582,10 @@ function buildControlledQoderEnv(input: {
   overrides.CAT_CAFE_QODER_WORKSPACE_POLICY = input.workspacePolicyPath;
   overrides.CAT_CAFE_QODER_MEMORY_POLICY = input.memoryPolicyPath;
   overrides.CAT_CAFE_QODER_MEMORY_SHIM = input.memoryShimPath;
+  // F317 keychain fix, forced LAST: same rationale as buildQoderEnvOverrides —
+  // the encrypted-file credential backend must be selected before any native
+  // keychain initialization, and no passthrough value may override it.
+  overrides.QODERCN_FORCE_FILE_STORAGE = 'true';
   return overrides;
 }
 
