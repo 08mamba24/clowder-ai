@@ -288,11 +288,15 @@ export function buildQoderEnvOverrides(input: {
   overrides.QODERCN_CONFIG_DIR = input.profileDir;
   // F317 keychain fix, forced LAST: every qoder CLI spawn is a fresh unsigned
   // process, so each native keychain access re-prompts the operator. The
-  // encrypted-file backend is selected before any keychain initialization via
-  // the CLI's own switch (bundle resolves Rr("FORCE_FILE_STORAGE") to the
-  // QODERCN_ namespace). Inherited qoder* keys are nulled above and
-  // callback/account sources skip qoder* keys, so this is the only write —
-  // nothing downstream may turn the file backend off.
+  // bundle gates the hybrid token/secret storage with TWO branded switches —
+  // QODERCN_FORCE_ENCRYPTED_FILE_STORAGE enables that storage at all, then
+  // QODERCN_FORCE_FILE_STORAGE picks the encrypted-file backend over the
+  // native keychain. Both must be set; either alone misses the incident path
+  // (single-switch runs never initialize the storage, so no salt is created).
+  // Inherited qoder* keys are nulled above and callback/account sources skip
+  // qoder* keys, so these are the only writes — nothing downstream may turn
+  // the file backend off.
+  overrides.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE = 'true';
   overrides.QODERCN_FORCE_FILE_STORAGE = 'true';
   return overrides;
 }
@@ -582,9 +586,11 @@ function buildControlledQoderEnv(input: {
   overrides.CAT_CAFE_QODER_WORKSPACE_POLICY = input.workspacePolicyPath;
   overrides.CAT_CAFE_QODER_MEMORY_POLICY = input.memoryPolicyPath;
   overrides.CAT_CAFE_QODER_MEMORY_SHIM = input.memoryShimPath;
-  // F317 keychain fix, forced LAST: same rationale as buildQoderEnvOverrides —
-  // the encrypted-file credential backend must be selected before any native
-  // keychain initialization, and no passthrough value may override it.
+  // F317 keychain fix, forced LAST: same two branded switches as
+  // buildQoderEnvOverrides — enable the hybrid storage, then select the
+  // encrypted-file backend before any native keychain initialization. No
+  // passthrough value may override either.
+  overrides.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE = 'true';
   overrides.QODERCN_FORCE_FILE_STORAGE = 'true';
   return overrides;
 }

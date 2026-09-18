@@ -242,10 +242,11 @@ test('qoder keychain fix: buildQoderEnvOverrides forces QODERCN_FORCE_FILE_STORA
     accountEnv: { QODERCN_FORCE_FILE_STORAGE: 'false' },
   });
   assert.equal(attacked.QODERCN_FORCE_FILE_STORAGE, 'true', 'final write must win over all three inputs');
+  assert.equal(attacked.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE, 'true', 'level-1 hybrid-storage switch forced too');
   const minimal = buildQoderEnvOverrides({ profileDir: '/p' });
   assert.equal(minimal.QODERCN_FORCE_FILE_STORAGE, 'true', 'forced even with no inputs at all');
+  assert.equal(minimal.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE, 'true', 'level-1 switch forced with no inputs too');
 });
-
 
 // ── profile：路径逃逸 / 深度盲区 / hooks 语义 / fail-closed ───────────────
 test('isSafeCatIdSegment rejects traversal segments', () => {
@@ -718,6 +719,11 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
     seenEnv.QODERCN_FORCE_FILE_STORAGE,
     'true',
     'controlled spawn env must force the encrypted-file credential backend; inherited false must not win',
+  );
+  assert.equal(
+    seenEnv.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE,
+    'true',
+    'controlled spawn env must also force the level-1 hybrid-storage switch',
   );
   assert.ok(seenArgs.includes('--allowed-tools'));
   assert.deepEqual(Object.keys(mcpConfig.mcpServers), [QODER_MEMORY_MCP_SERVER]);

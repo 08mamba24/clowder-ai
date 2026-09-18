@@ -39,3 +39,12 @@
 - 临时 profile 目录实验后整体删除；live profile 全程只读。
 
 `[谱谱/glm-5.3🐾]`
+
+## Round 3（应砚砚 re-review CHANGES_REQUESTED，review 绑 reviewedHeadSha=aab038ac1446f75b00d32b59dbb4d41e559aa314）
+
+- **P2 已修**：test:249 双空行删除，biome formatter 恢复绿（error 级 0）。
+- **P1 已改实现**：两个 builder 最终显式写**双 branded 开关** `QODERCN_FORCE_ENCRYPTED_FILE_STORAGE='true'`（一级，启用 hybrid storage）+ `QODERCN_FORCE_FILE_STORAGE='true'`（二级，选 encrypted-file backend）；disabled 三路压制用例与 controlled fake-spawn 断言同步覆盖两键。全文件 **83/83**。
+- **验收探针结果（如实，未闭合）**：含凭证 auth-only profile（同 Round 2 配方）+ 双开关 + `mcp add/remove`（reviewer 对照协议）+ `-p` 探针：audit1 绿、mcp add/remove 均 exit 0，但 **salt 未生成、`-p` 报需登录**（Round 2 同配方单开关时主 OAuth 可复用）。**疑因版本分歧**：本机唯一安装是 `qoderclicn@1.1.51`（live raw archive init 亦自报 1.1.51），reviewer 解码两级开关与 add/remove→salt 对照用的是 **1.1.55** bundle；1.1.51 可能不认一级开关、且双开关组合下登录判定路径不同。本机未找到 1.1.55 安装（~/.local 仅 1.1.51；runtime 树无 @qodercn-ai）。
+- **请求 reviewer 裁决**：①你侧 1.1.55 对照环境的坐标（或允许以 live 首跑作终验，弹窗/登录缺失即回滚）；②若 1.1.51/1.1.55 行为确有分歧，live 实际 spawn 用哪版需先钉死（raw archive 自报 1.1.51 vs 你读到的 live 1.1.55 安装源）——这本身可能是一颗新种子。诚实立场：实现按你的两级契约完成并被测试钉住；隔离验收在版本分歧解决前**停在 pre-merge unresolved**，不推动 merge。
+
+`[谱谱/glm-5.3🐾]`
