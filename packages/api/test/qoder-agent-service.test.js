@@ -229,6 +229,26 @@ test('round3 P1-3d: buildQoderEnvOverrides — denied/qoder keys deleted, config
   assert.equal(ov.QODERCN_CONFIG_DIR, '/p', 'resolver value wins — single injection point');
 });
 
+// F317 钥匙串修复（双开关契约）：一级 QODERCN_FORCE_ENCRYPTED_FILE_STORAGE
+// 启用 hybrid token/secret storage，二级 QODERCN_FORCE_FILE_STORAGE 在其内选
+// encrypted-file backend 而非原生 keychain——每次 spawn 都是新未签名进程，
+// 原生 keychain 访问每跑必弹窗。两套 env 构造器都最终写入两个 branded 开关，
+// 且继承/callback/account 传 'false' 也压不过（最终写不可覆盖）。
+test('qoder keychain fix: buildQoderEnvOverrides forces both storage switches regardless of inputs', () => {
+  const buildQoderEnvOverrides = svcModule.buildQoderEnvOverrides;
+  const attacked = buildQoderEnvOverrides({
+    profileDir: '/p',
+    inheritEnv: { QODERCN_FORCE_FILE_STORAGE: 'false', QODERCN_FORCE_ENCRYPTED_FILE_STORAGE: 'false' },
+    callbackEnv: { QODERCN_FORCE_FILE_STORAGE: 'false', QODERCN_FORCE_ENCRYPTED_FILE_STORAGE: 'false' },
+    accountEnv: { QODERCN_FORCE_FILE_STORAGE: 'false', QODERCN_FORCE_ENCRYPTED_FILE_STORAGE: 'false' },
+  });
+  assert.equal(attacked.QODERCN_FORCE_FILE_STORAGE, 'true', 'final write must win over all three inputs');
+  assert.equal(attacked.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE, 'true', 'level-1 hybrid-storage switch forced too');
+  const minimal = buildQoderEnvOverrides({ profileDir: '/p' });
+  assert.equal(minimal.QODERCN_FORCE_FILE_STORAGE, 'true', 'forced even with no inputs at all');
+  assert.equal(minimal.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE, 'true', 'level-1 switch forced with no inputs too');
+});
+
 // ── profile：路径逃逸 / 深度盲区 / hooks 语义 / fail-closed ───────────────
 test('isSafeCatIdSegment rejects traversal segments', () => {
   assert.equal(isSafeCatIdSegment('cat_ok-1'), true);
@@ -674,6 +694,10 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
     CAT_CAFE_CAT_ID: CAT,
     CAT_CAFE_THREAD_ID: 'thread-l2',
   };
+  const prevForceStorage = process.env.QODERCN_FORCE_FILE_STORAGE;
+  const prevForceEncryptedStorage = process.env.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE;
+  process.env.QODERCN_FORCE_FILE_STORAGE = 'false';
+  process.env.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE = 'false';
   let out;
   try {
     out = await runInvoke(svc, 'read the fixture', {
@@ -685,12 +709,26 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
       },
     });
   } finally {
+    if (prevForceStorage === undefined) delete process.env.QODERCN_FORCE_FILE_STORAGE;
+    else process.env.QODERCN_FORCE_FILE_STORAGE = prevForceStorage;
+    if (prevForceEncryptedStorage === undefined) delete process.env.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE;
+    else process.env.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE = prevForceEncryptedStorage;
     rmSync(root, { recursive: true, force: true });
   }
 
   assert.ok(
     out.some((m) => m.type === 'done'),
     JSON.stringify(out),
+  );
+  assert.equal(
+    seenEnv.QODERCN_FORCE_FILE_STORAGE,
+    'true',
+    'controlled spawn env must force the encrypted-file credential backend; inherited false must not win',
+  );
+  assert.equal(
+    seenEnv.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE,
+    'true',
+    'controlled spawn env must also force the level-1 hybrid-storage switch',
   );
   assert.ok(seenArgs.includes('--allowed-tools'));
   assert.deepEqual(Object.keys(mcpConfig.mcpServers), [QODER_MEMORY_MCP_SERVER]);
