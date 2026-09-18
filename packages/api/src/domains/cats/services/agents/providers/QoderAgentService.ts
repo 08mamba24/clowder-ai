@@ -286,18 +286,19 @@ export function buildQoderEnvOverrides(input: {
     }
   }
   overrides.QODERCN_CONFIG_DIR = input.profileDir;
-  // F317 keychain fix, forced LAST: every qoder CLI spawn is a fresh unsigned
-  // process, so each native keychain access re-prompts the operator. The
-  // bundle gates the hybrid token/secret storage with TWO branded switches —
+  // F317 keychain isolation, forced LAST. The bundle gates the hybrid
+  // token/secret storage with TWO branded switches —
   // QODERCN_FORCE_ENCRYPTED_FILE_STORAGE enables that storage at all, then
   // QODERCN_FORCE_FILE_STORAGE picks the encrypted-file backend over the
-  // native keychain. Both must be set; either alone misses the incident path
-  // (single-switch runs never initialize the storage, so no salt is created).
+  // native keychain. The separately signed umid-bridge helper does not use
+  // that storage path; QODERCN_DISABLE_UMID_REPORT prevents it from trying to
+  // create a login-keychain item when the CLI initializes.
   // Inherited qoder* keys are nulled above and callback/account sources skip
   // qoder* keys, so these are the only writes — nothing downstream may turn
-  // the file backend off.
+  // either mitigation off.
   overrides.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE = 'true';
   overrides.QODERCN_FORCE_FILE_STORAGE = 'true';
+  overrides.QODERCN_DISABLE_UMID_REPORT = 'true';
   return overrides;
 }
 
@@ -586,12 +587,13 @@ function buildControlledQoderEnv(input: {
   overrides.CAT_CAFE_QODER_WORKSPACE_POLICY = input.workspacePolicyPath;
   overrides.CAT_CAFE_QODER_MEMORY_POLICY = input.memoryPolicyPath;
   overrides.CAT_CAFE_QODER_MEMORY_SHIM = input.memoryShimPath;
-  // F317 keychain fix, forced LAST: same two branded switches as
-  // buildQoderEnvOverrides — enable the hybrid storage, then select the
-  // encrypted-file backend before any native keychain initialization. No
-  // passthrough value may override either.
+  // Same final-write contract as buildQoderEnvOverrides: keep credentials on
+  // encrypted-file storage and stop the independent umid-bridge helper before
+  // it requests login-keychain creation. No passthrough value may override
+  // these settings.
   overrides.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE = 'true';
   overrides.QODERCN_FORCE_FILE_STORAGE = 'true';
+  overrides.QODERCN_DISABLE_UMID_REPORT = 'true';
   return overrides;
 }
 
