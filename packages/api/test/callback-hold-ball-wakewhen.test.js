@@ -231,6 +231,89 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
     );
   });
 
+  // 2026-09-18 incident (diagnosis:
+  // review-notes/2026-09-18-f280-hold-owner-fence-a2a-handoff-rootcause-dsh.md):
+  // the fence's fourth conjunct compared the CHILD cat against the PARENT's
+  // targetCats — the cats that TRIGGERED the parent round, not the cats the
+  // parent's output handed the ball to. Every cross-cat @ handoff (the most
+  // common pass form) therefore failed hold_ball(wakeWhen) with
+  // HOLD_OWNER_FENCE_UNAVAILABLE (3/3 live samples), while degenerate
+  // self-chains passed. Custody legitimacy is decided at invocation creation
+  // by the router; the fence keeps conversation scoping only.
+  test('F280 fix: cross-cat @ handoff resolves the owner fence (was: guaranteed 503)', async () => {
+    const fence = await resolveHoldWaitOwnerFence(
+      {
+        invocationId: 'child-invocation',
+        parentInvocationId: 'parent-round',
+        threadId: 'thread-handoff',
+        userId: 'user-handoff',
+        catId: 'dsh-v41-flash',
+      },
+      {
+        async get(id) {
+          assert.equal(id, 'parent-round');
+          return {
+            threadId: 'thread-handoff',
+            userId: 'user-handoff',
+            // Parent round was zcode's own round; its OUTPUT message handed
+            // the ball to dsh-v41-flash (child invocation's cat).
+            targetCats: ['zcode'],
+            actionLeaseCarrier: { kind: 'none' },
+          };
+        },
+      },
+    );
+    assert.deepEqual(fence, { kind: 'containing_task', generation: 1 });
+  });
+
+  test('F280 fix: cross-cat handoff inherits the parent action-successor lease (custody continuity)', async () => {
+    const fence = await resolveHoldWaitOwnerFence(
+      {
+        invocationId: 'child-invocation',
+        parentInvocationId: 'parent-round',
+        threadId: 'thread-handoff',
+        userId: 'user-handoff',
+        catId: 'dsh-v41-flash',
+      },
+      {
+        async get() {
+          return {
+            threadId: 'thread-handoff',
+            userId: 'user-handoff',
+            targetCats: ['zcode'],
+            actionLeaseCarrier: { kind: 'action_successor', leaseId: 'lease-9', generation: 9 },
+          };
+        },
+      },
+    );
+    assert.deepEqual(fence, { kind: 'action_successor', leaseId: 'lease-9', generation: 9 });
+  });
+
+  test('F280 fix: a parent from a different user still cannot anchor the fence', async () => {
+    await assert.rejects(
+      resolveHoldWaitOwnerFence(
+        {
+          invocationId: 'child-invocation',
+          parentInvocationId: 'foreign-user-parent',
+          threadId: 'thread-owner',
+          userId: 'user-owner',
+          catId: 'codex',
+        },
+        {
+          async get() {
+            return {
+              threadId: 'thread-owner',
+              userId: 'user-foreign',
+              targetCats: ['codex'],
+              actionLeaseCarrier: { kind: 'none' },
+            };
+          },
+        },
+      ),
+      /outside the authenticated hold owner scope/,
+    );
+  });
+
   test('F261: canonical gate submission persists an independent job before admission and settles it once', async () => {
     const { ManagedRunner } = await import('../dist/infrastructure/managed-runner.js');
     const { recordDurableManagedGateProcess } = await import(
