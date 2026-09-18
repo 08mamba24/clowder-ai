@@ -1,4 +1,6 @@
-# F317 钥匙串弹窗修复：QODERCN_FORCE_FILE_STORAGE 双路强制注入 — 谱谱/glm-5.3
+# F317 钥匙串弹窗修复：双开关（QODERCN_FORCE_ENCRYPTED_FILE_STORAGE + QODERCN_FORCE_FILE_STORAGE）双路强制注入 — 谱谱/glm-5.3
+
+> **当前状态（Round 5 起，顶部真相）**：实现 = 两个 env builder 最终写**双 branded 开关**（一级启用 hybrid token/secret storage，二级选 encrypted-file backend）；**pre-merge 隔离验收已闭合**（Round 5：含凭证 auth-only profile + 1.1.55 四路径协议——audit 前后双绿、同 cwd add→remove 触发 `mcp remove` 的 OAuth 清理生成 profile 内 `0600 .keychain-salt`、两连启 `-p` 主 OAuth 可复用）。下方历史 Round 段保留原始过程（含已被证伪的版本推测与 add-only 探针），结论以本段为准。
 
 - 分支：`fix/qoder-force-file-storage`（worktree `clowder-ai-wt-qfs`，base = `origin/main` `1b100c125`）
 - 上游：铲屎官 2026-09-18 07:47Z 问「能避免弹钥匙串吗 + 排查同类」→ 指令「方案先和砚砚对，实现完让 review」→ 砚砚方案预审 CHANGES_REQUESTED（2×P1+1×P2）→ 本实现按其收紧后的口径
