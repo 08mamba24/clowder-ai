@@ -387,12 +387,19 @@ export async function resolveHoldWaitOwnerFence(
   if (!record.parentInvocationId) return containingTaskFence;
 
   const stored = await invocationRecordStore.get(record.parentInvocationId);
-  if (
-    !stored ||
-    stored.threadId !== record.threadId ||
-    stored.userId !== record.userId ||
-    !stored.targetCats.includes(record.catId)
-  ) {
+  // 2026-09-18 incident (see
+  // review-notes/2026-09-18-f280-hold-owner-fence-a2a-handoff-rootcause-dsh.md):
+  // this guard previously also required `stored.targetCats.includes(record.catId)`.
+  // That compares the CHILD cat against the cats that TRIGGERED the parent
+  // round — the previous hop, not the hop the parent's output handed the ball
+  // to. In an @ handoff the parent round belongs to the PASSING cat
+  // (targetCats=[passer]) and the child is the RECEIVER, so the conjunct was
+  // false for every cross-cat handoff (the most common pass form; 3/3 live
+  // 503 HOLD_OWNER_FENCE_UNAVAILABLE samples) while degenerate self-chains
+  // passed. Custody legitimacy ("the ball was passed to me") is decided at
+  // invocation creation by the router; this fence keeps conversation scoping
+  // only: the parent must exist and belong to the same thread and user.
+  if (!stored || stored.threadId !== record.threadId || stored.userId !== record.userId) {
     throw new Error('callback parent invocation is outside the authenticated hold owner scope');
   }
   if (stored.actionLeaseCarrier.kind === 'none') return containingTaskFence;
