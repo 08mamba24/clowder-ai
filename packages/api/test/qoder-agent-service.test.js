@@ -237,9 +237,9 @@ test('qoder keychain fix: buildQoderEnvOverrides forces QODERCN_FORCE_FILE_STORA
   const buildQoderEnvOverrides = svcModule.buildQoderEnvOverrides;
   const attacked = buildQoderEnvOverrides({
     profileDir: '/p',
-    inheritEnv: { QODERCN_FORCE_FILE_STORAGE: 'false' },
-    callbackEnv: { QODERCN_FORCE_FILE_STORAGE: 'false' },
-    accountEnv: { QODERCN_FORCE_FILE_STORAGE: 'false' },
+    inheritEnv: { QODERCN_FORCE_FILE_STORAGE: 'false', QODERCN_FORCE_ENCRYPTED_FILE_STORAGE: 'false' },
+    callbackEnv: { QODERCN_FORCE_FILE_STORAGE: 'false', QODERCN_FORCE_ENCRYPTED_FILE_STORAGE: 'false' },
+    accountEnv: { QODERCN_FORCE_FILE_STORAGE: 'false', QODERCN_FORCE_ENCRYPTED_FILE_STORAGE: 'false' },
   });
   assert.equal(attacked.QODERCN_FORCE_FILE_STORAGE, 'true', 'final write must win over all three inputs');
   assert.equal(attacked.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE, 'true', 'level-1 hybrid-storage switch forced too');
@@ -694,7 +694,9 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
     CAT_CAFE_THREAD_ID: 'thread-l2',
   };
   const prevForceStorage = process.env.QODERCN_FORCE_FILE_STORAGE;
+  const prevForceEncryptedStorage = process.env.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE;
   process.env.QODERCN_FORCE_FILE_STORAGE = 'false';
+  process.env.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE = 'false';
   let out;
   try {
     out = await runInvoke(svc, 'read the fixture', {
@@ -708,6 +710,8 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
   } finally {
     if (prevForceStorage === undefined) delete process.env.QODERCN_FORCE_FILE_STORAGE;
     else process.env.QODERCN_FORCE_FILE_STORAGE = prevForceStorage;
+    if (prevForceEncryptedStorage === undefined) delete process.env.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE;
+    else process.env.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE = prevForceEncryptedStorage;
     rmSync(root, { recursive: true, force: true });
   }
 

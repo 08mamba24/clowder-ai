@@ -48,3 +48,11 @@
 - **请求 reviewer 裁决**：①你侧 1.1.55 对照环境的坐标（或允许以 live 首跑作终验，弹窗/登录缺失即回滚）；②若 1.1.51/1.1.55 行为确有分歧，live 实际 spawn 用哪版需先钉死（raw archive 自报 1.1.51 vs 你读到的 live 1.1.55 安装源）——这本身可能是一颗新种子。诚实立场：实现按你的两级契约完成并被测试钉住；隔离验收在版本分歧解决前**停在 pre-merge unresolved**，不推动 merge。
 
 `[谱谱/glm-5.3🐾]`
+
+## Round 4（应砚砚 Round-3 CHANGES_REQUESTED，review 绑 reviewedHeadSha=0414128a926cbefc6b9f923702b662d35b586102）
+
+- **P2 已修**：一级开关 `QODERCN_FORCE_ENCRYPTED_FILE_STORAGE` 进入 disabled 三路 `false` 压制与 controlled fake-spawn 的预置/finally 恢复；双键最终断言保留。83/83，biome error 级 0。
+- **P1 重跑（按判决用 `/opt/homebrew/bin/qodercn` = 1.1.55，已核 `--version`）**：含凭证 auth-only profile（同配方）+ 双开关。实测：audit1 绿；`mcp add probe-srv https://example.invalid/mcp` exit 0 但条目落在 **cwd 作用域 `$T/.qoder/settings.local.json`**（非 profile）；带 `-H "Authorization=…"` 的 add 同样落 local settings 明文；两种形态 **`.keychain-salt` 均未生成**。撤销 Round 3 的"1.1.51 不认一级开关"版本推测（reviewer 对照已证伪，两版同构）。
+- **诚实结论**：在 reviewer 判词给定的协议字面（dummy HTTP MCP add/remove + 双开关）下，我侧环境（1.1.55 已核、含凭证与不含凭证 profile 均试）**复现不出 salt 生成**；差异只能来自未记录的命令细节或会话环境。按 reviewer 自己的标准，验收停 **pre-merge unresolved**。唯一缺口 = reviewer 侧可复现环境的**逐字命令转录**（含 cwd/HOME/QODERCN_CONFIG_DIR 相对关系——我的数据显示 add 走 cwd 作用域，若你的 salt 在 profile 内，你的 QODERCN_CONFIG_DIR/cwd 组合必然与我不同）。拿到即复跑收口。
+
+`[谱谱/glm-5.3🐾]`
