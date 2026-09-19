@@ -229,24 +229,38 @@ test('round3 P1-3d: buildQoderEnvOverrides — denied/qoder keys deleted, config
   assert.equal(ov.QODERCN_CONFIG_DIR, '/p', 'resolver value wins — single injection point');
 });
 
-// F317 钥匙串修复（双开关契约）：一级 QODERCN_FORCE_ENCRYPTED_FILE_STORAGE
-// 启用 hybrid token/secret storage，二级 QODERCN_FORCE_FILE_STORAGE 在其内选
-// encrypted-file backend 而非原生 keychain——每次 spawn 都是新未签名进程，
-// 原生 keychain 访问每跑必弹窗。两套 env 构造器都最终写入两个 branded 开关，
-// 且继承/callback/account 传 'false' 也压不过（最终写不可覆盖）。
-test('qoder keychain fix: buildQoderEnvOverrides forces both storage switches regardless of inputs', () => {
+// F317 keychain isolation: the two storage switches keep CLI credentials out
+// of the native keychain, while DISABLE_UMID_REPORT stops the separately
+// signed umid-bridge helper from trying to create a login-keychain item.
+// All three are final writes and cannot be disabled by inherited or supplied
+// environment values.
+test('qoder keychain isolation: buildQoderEnvOverrides forces storage and UMID switches', () => {
   const buildQoderEnvOverrides = svcModule.buildQoderEnvOverrides;
   const attacked = buildQoderEnvOverrides({
     profileDir: '/p',
-    inheritEnv: { QODERCN_FORCE_FILE_STORAGE: 'false', QODERCN_FORCE_ENCRYPTED_FILE_STORAGE: 'false' },
-    callbackEnv: { QODERCN_FORCE_FILE_STORAGE: 'false', QODERCN_FORCE_ENCRYPTED_FILE_STORAGE: 'false' },
-    accountEnv: { QODERCN_FORCE_FILE_STORAGE: 'false', QODERCN_FORCE_ENCRYPTED_FILE_STORAGE: 'false' },
+    inheritEnv: {
+      QODERCN_FORCE_FILE_STORAGE: 'false',
+      QODERCN_FORCE_ENCRYPTED_FILE_STORAGE: 'false',
+      QODERCN_DISABLE_UMID_REPORT: 'false',
+    },
+    callbackEnv: {
+      QODERCN_FORCE_FILE_STORAGE: 'false',
+      QODERCN_FORCE_ENCRYPTED_FILE_STORAGE: 'false',
+      QODERCN_DISABLE_UMID_REPORT: 'false',
+    },
+    accountEnv: {
+      QODERCN_FORCE_FILE_STORAGE: 'false',
+      QODERCN_FORCE_ENCRYPTED_FILE_STORAGE: 'false',
+      QODERCN_DISABLE_UMID_REPORT: 'false',
+    },
   });
   assert.equal(attacked.QODERCN_FORCE_FILE_STORAGE, 'true', 'final write must win over all three inputs');
   assert.equal(attacked.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE, 'true', 'level-1 hybrid-storage switch forced too');
+  assert.equal(attacked.QODERCN_DISABLE_UMID_REPORT, 'true', 'UMID helper must stay disabled');
   const minimal = buildQoderEnvOverrides({ profileDir: '/p' });
   assert.equal(minimal.QODERCN_FORCE_FILE_STORAGE, 'true', 'forced even with no inputs at all');
   assert.equal(minimal.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE, 'true', 'level-1 switch forced with no inputs too');
+  assert.equal(minimal.QODERCN_DISABLE_UMID_REPORT, 'true', 'UMID helper disabled with no inputs too');
 });
 
 // ── profile：路径逃逸 / 深度盲区 / hooks 语义 / fail-closed ───────────────
@@ -696,8 +710,10 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
   };
   const prevForceStorage = process.env.QODERCN_FORCE_FILE_STORAGE;
   const prevForceEncryptedStorage = process.env.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE;
+  const prevDisableUmid = process.env.QODERCN_DISABLE_UMID_REPORT;
   process.env.QODERCN_FORCE_FILE_STORAGE = 'false';
   process.env.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE = 'false';
+  process.env.QODERCN_DISABLE_UMID_REPORT = 'false';
   let out;
   try {
     out = await runInvoke(svc, 'read the fixture', {
@@ -713,6 +729,8 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
     else process.env.QODERCN_FORCE_FILE_STORAGE = prevForceStorage;
     if (prevForceEncryptedStorage === undefined) delete process.env.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE;
     else process.env.QODERCN_FORCE_ENCRYPTED_FILE_STORAGE = prevForceEncryptedStorage;
+    if (prevDisableUmid === undefined) delete process.env.QODERCN_DISABLE_UMID_REPORT;
+    else process.env.QODERCN_DISABLE_UMID_REPORT = prevDisableUmid;
     rmSync(root, { recursive: true, force: true });
   }
 
@@ -730,6 +748,11 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
     'true',
     'controlled spawn env must also force the level-1 hybrid-storage switch',
   );
+  assert.equal(
+    seenEnv.QODERCN_DISABLE_UMID_REPORT,
+    'true',
+    'controlled spawn env must disable the native UMID helper; inherited false must not win',
+  );
   assert.ok(seenArgs.includes('--allowed-tools'));
   assert.deepEqual(Object.keys(mcpConfig.mcpServers), [QODER_MEMORY_MCP_SERVER]);
   const memory = mcpConfig.mcpServers[QODER_MEMORY_MCP_SERVER];
@@ -741,6 +764,7 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
   assert.equal(memory.env.CAT_CAFE_API_URL, 'http://127.0.0.1:3004');
   assert.equal(memory.env.CAT_CAFE_CALLBACK_TOKEN, undefined, 'readonly memory does not receive write credentials');
   assert.equal(memory.env.CAT_CAFE_INVOCATION_ID, undefined, 'readonly memory does not receive invocation credentials');
+  assert.equal(memory.env.QODERCN_DISABLE_UMID_REPORT, undefined, 'readonly memory does not receive Qoder-only env');
   assert.equal(mcpConfigMode, 0o600, 'invocation-scoped MCP config must be owner-readable only');
   assert.equal(
     seenEnv.CAT_CAFE_CALLBACK_TOKEN,
