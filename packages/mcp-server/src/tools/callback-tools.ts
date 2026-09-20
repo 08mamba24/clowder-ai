@@ -12,7 +12,6 @@ import { defineMcpCanonicalFactory, defineMcpMigrationFactory } from '../tool-go
  */
 
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import type {
   ActionSuccessorRequestMetadata,
   CallbackAuthFailureReason,
@@ -24,6 +23,11 @@ import type {
   EntrustedWorkV1,
   SuggestedCrossPostAction,
 } from '@cat-cafe/shared';
+import {
+  hasUsableAgentKeyCredentials,
+  parseAgentKeyFileMap,
+  readAgentKeyFileSync as readAgentKeyFile,
+} from '@cat-cafe/shared/utils';
 import {
   ACTION_SUBJECT_REF_DESCRIPTION,
   acceptedRevisionSchema,
@@ -148,32 +152,10 @@ function requiresInlineAudioSynthesis(block: unknown): boolean {
   return record.kind === 'audio' && text.length > 0 && url.length === 0;
 }
 
-function readAgentKeyFile(path: string | undefined): string | undefined {
-  if (!path) return undefined;
-  try {
-    return readFileSync(path, 'utf-8').trim();
-  } catch {
-    // sidecar missing = no agent-key (not an error)
-    return undefined;
-  }
-}
-
-function parseAgentKeyFileMap(raw: string | undefined): Record<string, string> {
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    const files: Record<string, string> = {};
-    for (const [catId, filePath] of Object.entries(parsed)) {
-      if (typeof filePath === 'string' && filePath.trim()) {
-        files[catId] = filePath.trim();
-      }
-    }
-    return files;
-  } catch {
-    return {};
-  }
-}
+// readAgentKeyFile / parseAgentKeyFileMap moved to @cat-cafe/shared/utils
+// (agent-key-credentials) so every credential-availability decision — toolset
+// union gate, api-side union synthesizers, callback auth, rich-block routing —
+// shares one semantic baseline (#1494).
 
 function resolveAgentKeySecret(options?: AgentKeyOptions): string | undefined {
   const requestedCatId = options?.agentKeyCatId?.trim();
@@ -1844,11 +1826,7 @@ export async function handleCreateRichBlock(input: {
   }
   const block = parsed;
   const hasInvocationCreds = getInvocationAuthSignal().hasFullCredentials;
-  const hasAgentKeyCreds = !!(
-    process.env.CAT_CAFE_AGENT_KEY_SECRET ||
-    process.env.CAT_CAFE_AGENT_KEY_FILE ||
-    process.env.CAT_CAFE_AGENT_KEY_FILES
-  );
+  const hasAgentKeyCreds = hasUsableAgentKeyCredentials(process.env);
 
   const ccRichText = `\`\`\`cc_rich\n${JSON.stringify({ v: 1, blocks: [block] })}\n\`\`\``;
   // Inline TTS is a long-running, non-idempotent server operation. The voice

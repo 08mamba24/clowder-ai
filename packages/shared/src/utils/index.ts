@@ -4,3 +4,4 @@
 
 export * from './redis.js';
 export * from './workspace-paths.js';
+export * from './agent-key-credentials.js';

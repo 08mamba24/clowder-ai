@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { hasUsableAgentKeyCredentials } from '@cat-cafe/shared/utils';
 import {
   getDefaultEnvironment,
   StdioClientTransport,
@@ -138,11 +139,14 @@ function buildMcpEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     ...stringEnv(env),
   };
   merged.CAT_CAFE_READONLY = 'true';
-  // The readonly+agent-key union is explicit opt-in now. The
-  // antigravity in-hub executor is a legit consumer — grant the union only
-  // when this mount actually carries agent-key credentials. Everywhere else
-  // CAT_CAFE_READONLY=true stays strict even if agent-key vars leak in.
-  if (merged.CAT_CAFE_AGENT_KEY_SECRET || merged.CAT_CAFE_AGENT_KEY_FILE || merged.CAT_CAFE_AGENT_KEY_FILES) {
+  // The readonly+agent-key union is explicit opt-in now. The antigravity
+  // in-hub executor is a legit consumer — synthesize the opt-in only when
+  // the switch is ABSENT and the mount actually carries USABLE agent-key
+  // credentials (a '{}' variant map, bad JSON, or a path to a missing
+  // sidecar is not a credential; semantics shared with the server-side
+  // toolset gate via @cat-cafe/shared/utils). An explicit value — including
+  // "false", which forces strict readonly — is never clobbered.
+  if (merged.CAT_CAFE_READONLY_AGENT_KEY_UNION === undefined && hasUsableAgentKeyCredentials(merged)) {
     merged.CAT_CAFE_READONLY_AGENT_KEY_UNION = 'true';
   }
   if (!merged.CAT_CAFE_API_URL) {

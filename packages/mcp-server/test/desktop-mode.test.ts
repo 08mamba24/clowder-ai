@@ -260,10 +260,18 @@ describe('parseToolsetEnv — env shape', () => {
     assert.equal(env.readonly, false);
   });
 
-  it('detects agent-key via any of the 3 env vars', () => {
+  it('hasAgentKey requires a USABLE credential, not env-var presence (#1494)', () => {
     assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_SECRET: 's' } as NodeJS.ProcessEnv).hasAgentKey, true);
-    assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_FILE: '/p' } as NodeJS.ProcessEnv).hasAgentKey, true);
-    assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_FILES: '{}' } as NodeJS.ProcessEnv).hasAgentKey, true);
+    assert.equal(
+      parseToolsetEnv({ CAT_CAFE_AGENT_KEY_FILE: '/p' } as NodeJS.ProcessEnv).hasAgentKey,
+      false,
+      'a path to a missing sidecar is not a credential',
+    );
+    assert.equal(
+      parseToolsetEnv({ CAT_CAFE_AGENT_KEY_FILES: '{}' } as NodeJS.ProcessEnv).hasAgentKey,
+      false,
+      "a '{}' variant map resolves zero keys",
+    );
   });
 
   it('agentKeyUnion only via explicit CAT_CAFE_READONLY_AGENT_KEY_UNION=true', () => {

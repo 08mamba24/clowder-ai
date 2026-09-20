@@ -7,7 +7,9 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { useInvocationAuth } from './helpers/invocation-auth.js';
 
@@ -561,14 +563,21 @@ describe('F061 READONLY_ALLOWED_TOOLS whitelist', () => {
 
   test('readonly mode exposes agent-key tools with explicit CAT_CAFE_READONLY_AGENT_KEY_UNION opt-in', () => {
     const distIndexUrl = new URL('../dist/index.js', import.meta.url).href;
+    // #1494: the union needs USABLE credentials — fake /tmp paths no longer
+    // count, so hand the subprocess real sidecar files.
+    const keyDir = mkdtempSync(join(tmpdir(), 'tool-registration-agent-key-'));
+    const antigravityKey = join(keyDir, 'antigravity.secret');
+    const opusKey = join(keyDir, 'antig-opus.secret');
+    writeFileSync(antigravityKey, 'agent-key-material\n', 'utf-8');
+    writeFileSync(opusKey, 'agent-key-material\n', 'utf-8');
     const script = `
       process.env.CAT_CAFE_READONLY = 'true';
       process.env.CAT_CAFE_READONLY_AGENT_KEY_UNION = 'true';
       delete process.env.CAT_CAFE_AGENT_KEY_SECRET;
       delete process.env.CAT_CAFE_AGENT_KEY_FILE;
       process.env.CAT_CAFE_AGENT_KEY_FILES = JSON.stringify({
-        antigravity: '/tmp/antigravity.secret',
-        'antig-opus': '/tmp/antig-opus.secret',
+        antigravity: ${JSON.stringify(antigravityKey)},
+        'antig-opus': ${JSON.stringify(opusKey)},
       });
       const { createServer } = await import(${JSON.stringify(distIndexUrl)});
       const server = createServer();
@@ -603,6 +612,7 @@ describe('F061 READONLY_ALLOWED_TOOLS whitelist', () => {
       cwd: process.cwd(),
       encoding: 'utf-8',
     });
+    rmSync(keyDir, { recursive: true, force: true });
     assert.equal(result.status, 0, result.stderr || result.stdout);
   });
 });

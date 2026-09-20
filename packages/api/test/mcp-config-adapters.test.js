@@ -726,7 +726,12 @@ describe('writeAntigravityMcpConfig', () => {
   it('passes agent-key sidecar file path to managed cat-cafe servers', async () => {
     const file = join(dir, 'mcp_config.json');
     const keyFile = join(dir, 'agent-key.secret');
-    const keyFiles = JSON.stringify({ antigravity: keyFile, 'antig-opus': join(dir, 'antig-opus.secret') });
+    const opusKeyFile = join(dir, 'antig-opus.secret');
+    // #1494: the union synthesizer now requires USABLE credentials — write
+    // the sidecars so the variant map actually resolves keys.
+    await writeFile(keyFile, 'agent-key-material\n', 'utf-8');
+    await writeFile(opusKeyFile, 'agent-key-material\n', 'utf-8');
+    const keyFiles = JSON.stringify({ antigravity: keyFile, 'antig-opus': opusKeyFile });
     const originalKeyFile = process.env.CAT_CAFE_AGENT_KEY_FILE;
     const originalKeyFiles = process.env.CAT_CAFE_AGENT_KEY_FILES;
     try {
@@ -777,7 +782,11 @@ describe('writeAntigravityMcpConfig', () => {
     );
     const originalKeyFile = process.env.CAT_CAFE_AGENT_KEY_FILE;
     try {
-      process.env.CAT_CAFE_AGENT_KEY_FILE = '/tmp/fake-agent-key';
+      // #1494: usability semantics — the ambient credential must be a real
+      // sidecar so the managed-descriptor positive assertion still holds.
+      const ambientSidecar = join(dir, 'fake-agent-key');
+      await writeFile(ambientSidecar, 'agent-key-material\n', 'utf-8');
+      process.env.CAT_CAFE_AGENT_KEY_FILE = ambientSidecar;
       await writeAntigravityMcpConfig(file, [
         { name: 'cat-cafe-memory', command: 'node', args: ['memory.js'], enabled: true, source: 'cat-cafe' },
       ]);
@@ -880,6 +889,48 @@ describe('writeAntigravityMcpConfig', () => {
     } finally {
       if (originalKeyFile === undefined) delete process.env.CAT_CAFE_AGENT_KEY_FILE;
       else process.env.CAT_CAFE_AGENT_KEY_FILE = originalKeyFile;
+    }
+  });
+
+  it('#1494 P1-2: ambient variant map without usable credentials must not synthesize the union', async () => {
+    const file = join(dir, 'mcp_config.json');
+    const originalKeyFiles = process.env.CAT_CAFE_AGENT_KEY_FILES;
+    try {
+      process.env.CAT_CAFE_AGENT_KEY_FILES = '{}';
+      await writeAntigravityMcpConfig(file, [
+        { name: 'cat-cafe-collab', command: 'node', args: ['collab.js'], enabled: true, source: 'cat-cafe' },
+      ]);
+      const raw = JSON.parse(await readFile(file, 'utf-8'));
+      assert.equal(
+        raw.mcpServers['cat-cafe-collab'].env.CAT_CAFE_READONLY_AGENT_KEY_UNION,
+        undefined,
+        "'{}' variant map resolves zero keys — synthesis must treat it as no credentials",
+      );
+    } finally {
+      if (originalKeyFiles === undefined) delete process.env.CAT_CAFE_AGENT_KEY_FILES;
+      else process.env.CAT_CAFE_AGENT_KEY_FILES = originalKeyFiles;
+    }
+  });
+
+  it('#1494 P1-2: ambient variant map with a usable sidecar still synthesizes the union', async () => {
+    const file = join(dir, 'mcp_config.json');
+    const sidecar = join(dir, 'agent-key.secret');
+    await writeFile(sidecar, 'agent-key-material\n', 'utf-8');
+    const originalKeyFiles = process.env.CAT_CAFE_AGENT_KEY_FILES;
+    try {
+      process.env.CAT_CAFE_AGENT_KEY_FILES = JSON.stringify({ antigravity: sidecar });
+      await writeAntigravityMcpConfig(file, [
+        { name: 'cat-cafe-collab', command: 'node', args: ['collab.js'], enabled: true, source: 'cat-cafe' },
+      ]);
+      const raw = JSON.parse(await readFile(file, 'utf-8'));
+      assert.equal(
+        raw.mcpServers['cat-cafe-collab'].env.CAT_CAFE_READONLY_AGENT_KEY_UNION,
+        'true',
+        'a variant map with a readable sidecar is a real credential — the managed mount keeps the union',
+      );
+    } finally {
+      if (originalKeyFiles === undefined) delete process.env.CAT_CAFE_AGENT_KEY_FILES;
+      else process.env.CAT_CAFE_AGENT_KEY_FILES = originalKeyFiles;
     }
   });
 

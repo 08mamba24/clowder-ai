@@ -20,6 +20,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { hasUsableAgentKeyCredentials } from '@cat-cafe/shared/utils';
 import type { McpServerDescriptor } from '@cat-cafe/shared';
 import { parse as parseToml } from 'smol-toml';
 import { createModuleLogger } from '../../infrastructure/logger.js';
@@ -214,7 +215,9 @@ function ensureWorkspaceEnvForManagedCatCafe(
  * write-tool union to preserved third-party/fork-like entries that merely
  * reuse a cat-cafe-* name. The opt-in may only be synthesized for a managed
  * descriptor (source === 'cat-cafe'), and only when the final merged env
- * actually delivers agent-key credentials. Anything explicitly set —
+ * actually delivers USABLE agent-key credentials (shared semantics with the
+ * server toolset gate: a '{}' variant map, bad JSON, a blank secret, or a
+ * path to a missing sidecar is not a credential). Anything explicitly set —
  * including "false", which forces strict readonly — always wins over
  * synthesis; preserved entries keep whatever the user wrote themselves.
  */
@@ -239,7 +242,7 @@ function ensureAntigravityCatCafeEnv(
   if (
     server.source === 'cat-cafe' &&
     merged.CAT_CAFE_READONLY_AGENT_KEY_UNION === undefined &&
-    (merged.CAT_CAFE_AGENT_KEY_FILE || merged.CAT_CAFE_AGENT_KEY_FILES)
+    hasUsableAgentKeyCredentials(merged)
   ) {
     merged.CAT_CAFE_READONLY_AGENT_KEY_UNION = 'true';
   }

@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { hasUsableAgentKeyCredentials } from '@cat-cafe/shared/utils';
 import { projectAgentKeyCollaborationContract } from './agent-key-collaboration-contract.js';
 import { CANONICAL_TOOL_REGISTRY } from './canonical-server-tools.js';
 import { derivedProfileSet, projectServerFamily } from './canonical-tool-registry.js';
@@ -54,7 +55,11 @@ export function parseToolsetEnv(env: NodeJS.ProcessEnv = process.env): ToolsetEn
   return {
     participation: env.CAT_CAFE_MCP_PROFILE === 'collective-participation',
     readonly: env.CAT_CAFE_READONLY === 'true',
-    hasAgentKey: !!(env.CAT_CAFE_AGENT_KEY_SECRET || env.CAT_CAFE_AGENT_KEY_FILE || env.CAT_CAFE_AGENT_KEY_FILES),
+    // Credential USABILITY, not env presence (#1494): a '{}' variant map, bad
+    // JSON, a blank secret, or a path to a missing sidecar resolve zero keys
+    // and must not widen the surface. Same semantics as the callback auth
+    // resolution (@cat-cafe/shared/utils agent-key-credentials).
+    hasAgentKey: hasUsableAgentKeyCredentials(env),
     desktopMode: desktopMode || undefined,
     agentKeyUnion: env.CAT_CAFE_READONLY_AGENT_KEY_UNION === 'true',
   };
@@ -287,11 +292,13 @@ export function registerCollabToolset(server: McpServer, env?: ToolsetEnv): void
 }
 
 export function registerMemoryToolset(server: McpServer, env?: ToolsetEnv): void {
-  registerTools(server, buildMemoryTools(env));
+  const e = env ?? parseToolsetEnv();
+  registerTools(server, buildMemoryTools(e), e);
 }
 
 export function registerSignalToolset(server: McpServer, env?: ToolsetEnv): void {
-  registerTools(server, buildSignalTools(env));
+  const e = env ?? parseToolsetEnv();
+  registerTools(server, buildSignalTools(e), e);
 }
 
 // F061: limbTools 默认不走 readonly filter（Antigravity 设计要求 — 让 antigravity
@@ -317,15 +324,18 @@ export function buildLimbTools(env?: ToolsetEnv): readonly ToolDef[] {
 }
 
 export function registerLimbToolset(server: McpServer, env?: ToolsetEnv): void {
-  registerTools(server, buildLimbTools(env));
+  const e = env ?? parseToolsetEnv();
+  registerTools(server, buildLimbTools(e), e);
 }
 
 export function registerAudioToolset(server: McpServer, env?: ToolsetEnv): void {
-  registerTools(server, buildAudioTools(env));
+  const e = env ?? parseToolsetEnv();
+  registerTools(server, buildAudioTools(e), e);
 }
 
 export function registerFinanceToolset(server: McpServer, env?: ToolsetEnv): void {
-  registerTools(server, buildFinanceTools(env));
+  const e = env ?? parseToolsetEnv();
+  registerTools(server, buildFinanceTools(e), e);
 }
 
 export function registerFullToolset(server: McpServer, env?: ToolsetEnv): void {
