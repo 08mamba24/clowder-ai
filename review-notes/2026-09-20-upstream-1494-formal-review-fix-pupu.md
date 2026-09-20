@@ -55,12 +55,12 @@
 - **验证**：shared 14/14；mcp-server 凭证+注册批 193/193；全量 clean env **838/839**（唯一红 = #1493 lane 基线）；api 78/78；tsc 三包 0；全仓 biome error 级 exit 0；format 零修复；`git diff --check` 干净。
 - round-2 毛线球 `0001789903731003-000226-c1743771`（维护者已确认 FIXED）：任务板为 owner-only 权限模型（点点实测 403 `Task is owned by another cat`），谱谱全部 carrier 均无 `cat_cafe_*` 工具与凭证（本 session epoch 5-19 均 carrier_unsupported，`~/.cat-cafe/agent-keys/` 无 zcode key）→ 无法自关，已请点点升级 operator 从任务板关闭；round-3 球 `…-000243-90e1c964` 按收口条件（push + CI 全绿 + 维护者确认）到齐后再关，现在关违反 P5。
 
-## Round 4（终态核验 + 三球收口，2026-09-20 14:24-14:4x UTC）
+## Round 4（终态核验 + 三球收口，2026-09-20）
 
 - **维护者终局 review `5260545372`** @ exact HEAD `743cfc5232062cc3b9464ebbf69c4680e98db1c3`：**"LGTM / APPROVE for the code — no remaining PR findings"**，supersede 前三轮全部 finding（谱谱已从 PR 页独立核实原文）。以 COMMENTED 提交 → GitHub decision 字段仍挂 CHANGES_REQUESTED，属**审批状态未闭环**（维护者需再投正式 APPROVE 或由其合并），不是代码任务。Astra（operator 指定的本轮分析位）同结论：无剩余待实现 finding。
-- **执行面终态**（谱谱本轮实测）：远端 `origin/fix/mcp-strict-readonly-union` = `743cfc523`（round-3 已由点点推上）；CI @ 该 HEAD 16 checks 全绿（1 skip 与 main 同款）；#1493 独立 lane 仍 0 formal review，等上游。
+- **执行面终态**（谱谱本轮实测）：远端 `origin/fix/mcp-strict-readonly-union` = `743cfc523`（round-3 已由点点推上）；CI @ 该 HEAD 共 16 checks：15 success、1 skipped（与 main 同款），0 fail、0 pending；#1493 独立 lane 仍 0 formal review，等上游。
 - **三条旧球实质全部完结，收口升级 operator**：round-1 `0001789891992618-000203-7c3fd40f`（三轮 finding 全修 + 终局 LGTM）、round-2 `0001789903731003-000226-c1743771`（维护者判 FIXED）、round-3 `0001789905524611-000243-90e1c964`（收口条件 push+CI 全绿+维护者确认已全部满足）。任务板 owner-only（点点 403 实测）且谱谱全 session 无带工具 carrier（epoch 20 复核 INV/TOKEN 缺失、agent-keys 无 zcode key）→ 请 operator 从任务板关闭三条；谱谱实现线无新任务。
 
 ## 下一步
 
-球交 @砚砚 复审 round-3 delta `00b6f21b2..743cfc523`；APPROVED 后 @dsh-v41-flash push（exact HEAD `743cfc523`）→ 盯 CI → PR #1494 通报维护者复审。
+代码修复、家内复审、push 和 CI 已完成，无新增实现任务。点点（`dsh-v41-flash`）保留 #1494 / #1493 的现有 PR tracking，等待上游正式 review decision；#1494 的 CI 终态与审批状态差异已于 12:28Z 在 PR 通报，不重复请审，不新增 hold。任一 PR 先合入后，由点点核另一分支的 base 并按既定流程更新；新 finding 到达时再派修。任务板三条旧修复球尚未关闭，保留上述 operator 收口请求；不以代码放行冒充任务状态已完成。
