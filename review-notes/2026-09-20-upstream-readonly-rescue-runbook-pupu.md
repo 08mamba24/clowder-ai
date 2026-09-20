@@ -2,7 +2,7 @@
 
 - **作者**: 谱谱/glm-5.3（operator 2026-09-20 01:33 UTC 授权"动手"）
 - **对象**: zts212653/clowder-ai PR #1454（strict readonly boundary）按维护者三条整改门槛重建
-- **状态**: ✅ **§三 全序列执行完毕**（点点/@dsh-v41-flash，2026-09-20）：双分支已推 fork（SHAs 逐位一致）→ issue **#1492** → PR B **#1493**（794/794 全绿）→ PR A **#1494**（801 tests / 800 pass，唯一红 = #1493 修的 coverage regex）→ #1454 已评论并 **close**。**当前等外部条件：维护者 review / 合并（B 先于 A，A 的 mcp-server CI 才会转绿）。** 执行回执与独立验证见 §十。历史：双 carrier 均复审 **APPROVED**（A `a71b70c0e` 原 P1 关闭见 `2026-09-20-upstream-readonly-carrier-a-approved-pupu.md`；B `486241a8` 见 `2026-09-20-upstream-readonly-carrier-b-approved-pupu.md`）；§三 原由 operator 2026-09-20 06:29 UTC 交接给点点
+- **状态**: ✅ **§三 全序列执行完毕**（点点/@dsh-v41-flash，2026-09-20）：双分支已推 fork（SHAs 逐位一致）→ issue **#1492** → PR B **#1493**（794/794 全绿）→ PR A **#1494**（801 tests / 800 pass，唯一红 = #1493 修的 coverage regex）→ #1454 已评论并 **close**。**当前等外部条件：维护者 review / 合并（B 先于 A，A 的 mcp-server CI 才会转绿）。** 执行回执与独立验证见 §十。历史：双 carrier 均复审 **APPROVED**（A `a71b70c0e` 原 P1 关闭见 `2026-09-20-upstream-readonly-carrier-a-approved-pupu.md`；B `486241a8` 见 `2026-09-20-upstream-readonly-carrier-b-approved-pupu.md`）；§三 原由 operator 2026-09-20 06:29 UTC 交接给点点。**→ 更新（2026-09-20T08:09:40Z）：#1494 formal CHANGES_REQUESTED（P1×2/P2×1），已派修 zcode，见 §十一**
 
 ## 一、产出（本地，共享 .git）
 
@@ -136,3 +136,34 @@ GitHub 外部序列已由 点点 在 gh 凭证（`08mamba24`，`repo` scope）�
 > PR A body 相对 §五 有一处**增补**（非改写）：P1 commit `a71b70c0e` 把 union opt-in 合成从「name-gated baseline」改为「managed provenance（`source === 'cat-cafe'`）+ final merged env」，§五 原 bullet 只说「确有凭证时」，故补第 4 条如实描述该 delta。
 
 **剩余 = 纯外部条件**：维护者 review / 合并（B 先于 A）。issue #1492 由 PR A 的 `Fixes #1492` 在合并时自动关闭。
+
+## 十一、#1494 formal review 回执 + 派修（点点/@dsh-v41-flash，2026-09-20 08:1x UTC）
+
+**裁决：CHANGES_REQUESTED**（zts212653，`2026-09-20T08:09:40Z`；reviewed exact HEAD `d1f8d6b0b380184348b68d4997acc09134ee1219` @ base `6291ff0791edde280133320b08a3bfb3e755bd5c`；3 条 inline thread 全 `isResolved=false`，review body 自述 continuity 由 `git range-diff` 复核 `=`、patch 逐字节一致）。
+
+方向 **WELCOME 未变**；custody 仍归 `08mamba24`（原文：*"retains fix custody. Please push the fixes and regression tests to this PR; I will review the resulting delta."*）。**#1493 明确不折进本 PR**（维护者称其为独立 lane）。
+
+### 三条 finding（我已逐条核到源码，非转述）
+
+| # | 级别 | 位置 | 事实 |
+|---|---|---|---|
+| 1 | P1 | `packages/api/.../antigravity/executors/McpToolExecutor.ts:145` | `buildMcpEnv` 只要 `SECRET/FILE/FILES` 任一非空即 `merged.CAT_CAFE_READONLY_AGENT_KEY_UNION='true'`，把显式 `false`、`''`、`'1'`、`'TRUE'` 一并覆盖 → 生产路径传 `process.env`，显式拒绝被抹掉。 |
+| 2 | P1 | `packages/api/src/config/capabilities/mcp-config-adapters.ts:242` | 判据是「变量为非空字符串」而非「凭证可用」：`_FILES='{}'`、坏 JSON、仅空路径、指向不存在的 sidecar 都算有凭证（`'{}'` 时 resolver 拿不到任何 key，mount 却拿到 80 工具并集）。 |
+| 3 | P2 | `packages/mcp-server/src/server-toolsets.ts:281-320` | memory/signal/limb/audio/finance 五族 `registerTools(server, buildXTools(env))` 缺第三参 → 默认重新 `parseToolsetEnv()` 读 `process.env`，parse-once/注入承诺不成立（`CAT_CAFE_MCP_PROFILE='invalid-ambient-profile'` + 注入 fixture 会在 memory 族抛 `Unknown CAT_CAFE_MCP_PROFILE`）。 |
+
+**同类审视（补锅匠防线）**：同类「非空即视为有凭证」判据共 4+1 处 —— `server-toolsets.ts:57`（本 PR 要改的 server 判据）、`McpToolExecutor.ts:145`、`mcp-config-adapters.ts:242`，外加 `callback-tools.ts:1845-1850`（`hasAgentKeyCreds`，rich-block 路由用）。前四处必须同语义；第 5 处若判定不改需在 commit body 说明。
+**语义基线（P4）**：`callback-tools.ts:149-193` 是唯一权威 —— `parseAgentKeyFileMap`（JSON 非数组对象；值须非空 trim 字符串；坏 JSON/空 → `{}`）+ `readAgentKeyFile`（同步读、trim；缺失/空 → 不可用）+ 优先级（`_FILES` 非空时不再回落 SECRET/单 FILE）。api 无 `@cat-cafe/mcp-server` 依赖、两边都依赖 `@cat-cafe/shared` → 纯判据应抽 shared 共用一份。
+
+### 维护者复现口径（复审 delta 的对照基线）
+
+strict ambient-secret mount = **34 tools**；显式合法 opt-in = **80**；executor 显式 `false` = **80（错，应 34）**；显式 opt-in + `CAT_CAFE_AGENT_KEY_FILES='{}'` = **80（错，应 34）**。另：`registerFullToolset(server, {readonly:true})` 在 ambient 非法 profile 下必须不抛。
+
+### 本 PR 当前状态（gh 实查）
+
+OPEN / non-draft，HEAD `d1f8d6b0b`，base = upstream `main@6291ff079`（= main tip，无 BEHIND），`MERGEABLE` / `mergeStateStatus=blocked`（缺 1 个非作者 approval，预期）。`strict_required_status_checks_policy=true` + `dismiss_stale_reviews_on_push=true` ⇒ 本轮修复的 push 不会冲掉任何既有 approval（当前 0 个）。
+
+### 分工
+
+- 修复：@zcode（谱谱）在 `/Users/yuhan/cat-cafe/clowder-ai-wt-upstream-readonly` 分支 A `d1f8d6b0b` 上**新增 commit**（不 amend / 不 force → 维护者要复审 delta）+ 回归测试。
+- push / CI / PR 回帖：点点 的 gh 凭证（`08mamba24`，fork admin）；push 前由点点独立复跑上述四条复现口径。
+- 毛线球：`0001789891992618-000203-7c3fd40f`（owner zcode）。
