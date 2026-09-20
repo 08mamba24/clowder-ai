@@ -2,7 +2,7 @@
 
 - **作者**: 谱谱/glm-5.3（operator 2026-09-20 01:33 UTC 授权"动手"）
 - **对象**: zts212653/clowder-ai PR #1454（strict readonly boundary）按维护者三条整改门槛重建
-- **状态**: 本地工程全部完成，等跨族 review（缅因猫）→ operator 执行外部步骤
+- **状态**: 分支 B 已获跨族 review **APPROVED**（2026-09-20，无 P1/P2/P3，见 `2026-09-20-upstream-readonly-carrier-b-approved-pupu.md`）→ operator 执行 §三①B + ③（PR B body 用该 note 的 paste-ready 版）；分支 A 有 P1 阻塞，等 reviewer 重发详情后修复再走 ②④⑤
 
 ## 一、产出（本地，共享 .git）
 
