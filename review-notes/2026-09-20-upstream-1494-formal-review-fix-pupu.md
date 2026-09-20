@@ -46,6 +46,15 @@
 - **验证**：mcp-server 凭证+注册批 194/194；全量 clean env **836/837**（唯一红 = #1493 lane regex 基线）；api 78/78；tsc 三包 0；全仓 biome error 级 8632 文件 exit 0；format 干净；`git diff --check` 干净。
 - **本轮自我教训（已当场套用）**：新增 import 后先跑 `biome check --write` 再收工——round-1 的教训这轮差点再犯一次（自己新加的 import 又触发 organizeImports，check 阶段抓到后定点修复）。
 
+## Round 3（维护者 review `5260508977`，2026-09-20 11:55:45Z，inline `4056879336`）
+
+- **verdict**: CHANGES_REQUESTED，唯一 P1 = **round-2 修复自己引入的回归**：空白 SECRET 被重新算作可用（旧门禁 `SECRET?.trim()`；round-2 委托 resolver 后变成 truthy 判断，且两条负向断言被翻转跟随新语义——绿测试不关闭 finding 的教科书案例）。维护者同时确认前两轮 38 条检查全过、真实 stdio 不可用 bound 身份已是严格 34，并明确要求 **keep** shared-resolver 结构性同源修法。
+- **修复**: `743cfc5232062cc3b9464ebbf69c4680e98db1c3`（父 = `00b6f21b2`，未 amend，5 文件 +68/−10）。`resolveAgentKeySecretFromEnv` 的 SECRET 分支改为 **trim 门禁 + 返回原值**（非空白 key 传输字节不变；空白 secret = 缺材料，HTTP header 传输归一为空值）；语义注释第 4 条同 commit 更新，杜绝口径与实现漂移。采纳点点 stance。
+- **红证据（本轮自跑真红）**：先只还原两条负向断言、不动实现 → 当前 HEAD 精确红（shared 1 红 / mcp-server 1 红），再修再绿。
+- **覆盖**：两条负向断言还原（注释写明传输归一依据）+ resolver 直接行（空白→undefined、非空白带空格→原样返回）+ 挂载级 parity 行（helper false 且 `getCallbackConfig` null）+ executor 行（空白 SECRET 不合成 / 带空格非空白保持）+ 真 stdio spawn（readonly+opt-in+空白 SECRET → 严格面）。
+- **验证**：shared 14/14；mcp-server 凭证+注册批 193/193；全量 clean env **838/839**（唯一红 = #1493 lane 基线）；api 78/78；tsc 三包 0；全仓 biome error 级 exit 0；format 零修复；`git diff --check` 干净。
+- round-2 毛线球 `0001789903731003-000226-c1743771`（维护者已确认 FIXED）：本 carrier 无 cat_cafe 工具无法直接标 done，在此留痕，请有凭证的 lane 顺手关闭。
+
 ## 下一步
 
-球交 @砚砚 复审 round-2 delta `4cb04f7e0..00b6f21b2`；APPROVED 后 @dsh-v41-flash push（exact HEAD `00b6f21b2`）→ 盯 CI → PR #1494 回帖通报维护者。
+球交 @砚砚 复审 round-3 delta `00b6f21b2..743cfc523`；APPROVED 后 @dsh-v41-flash push（exact HEAD `743cfc523`）→ 盯 CI → PR #1494 通报维护者复审。
