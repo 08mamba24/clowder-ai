@@ -145,6 +145,16 @@ describe('CallMcpToolExecutor', () => {
     assert.equal(strict.CAT_CAFE_READONLY, 'true');
     assert.equal(strict.CAT_CAFE_READONLY_AGENT_KEY_UNION, undefined, 'no agent-key creds → no union opt-in');
 
+    // #1494 round 3: a whitespace-only secret is no material — no synthesis.
+    const blankSecret = buildMcpEnvForTest({ CAT_CAFE_AGENT_KEY_SECRET: '   ' });
+    assert.equal(
+      blankSecret.CAT_CAFE_READONLY_AGENT_KEY_UNION,
+      undefined,
+      'blank SECRET must not synthesize the union',
+    );
+    const paddedSecret = buildMcpEnvForTest({ CAT_CAFE_AGENT_KEY_SECRET: ' s ' });
+    assert.equal(paddedSecret.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'true', 'non-blank SECRET keeps the union');
+
     const keyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-mcp-key-'));
     try {
       const sidecar = path.join(keyDir, 'agent.secret');

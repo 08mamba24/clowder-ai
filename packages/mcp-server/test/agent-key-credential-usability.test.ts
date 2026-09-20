@@ -59,12 +59,12 @@ function strictExpected(env?: ToolsetEnv): Set<string> {
 }
 
 describe('parseToolsetEnv — hasAgentKey is credential usability, not env presence', () => {
-  it('SECRET follows the resolver truthy check: non-empty usable, empty not, whitespace kept (parity)', () => {
+  it('SECRET: non-blank usable, empty/whitespace-only rejected (round-3 restore)', () => {
     assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_SECRET: 'material' }).hasAgentKey, true);
     assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_SECRET: '' }).hasAgentKey, false);
-    // Parity with resolveAgentKeySecret: a truthy whitespace secret is
-    // returned as-is, so availability must agree.
-    assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_SECRET: '   ' }).hasAgentKey, true);
+    // #1494 round 3: a whitespace-only secret is no material — HTTP header
+    // transport normalizes it to an empty value, so it must not count.
+    assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_SECRET: '   ' }).hasAgentKey, false);
   });
 
   it('single FILE counts only when the sidecar exists and reads non-empty', () => {
@@ -214,6 +214,12 @@ describe('availability parity with the real callback resolver (#1494 round 2)', 
     setCredentialEnv({ CAT_CAFE_AGENT_KEY_SECRET: 'material' });
     assert.equal(hasUsableAgentKeyCredentials(process.env), true);
     assert.notEqual(getCallbackConfig({ forceAgentKey: true }), null);
+  });
+
+  it('blank SECRET: helper and resolver both say unusable (#1494 round 3)', () => {
+    setCredentialEnv({ CAT_CAFE_AGENT_KEY_SECRET: '   ' });
+    assert.equal(hasUsableAgentKeyCredentials(process.env), false);
+    assert.equal(getCallbackConfig({ forceAgentKey: true }), null);
   });
 
   it('unbound shared map: mount-level resolver stays null, but a selectable identity resolves — helper says usable', () => {

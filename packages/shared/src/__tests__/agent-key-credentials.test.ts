@@ -65,12 +65,12 @@ describe('readAgentKeyFileSync / agentKeyFileUsable', () => {
 });
 
 describe('hasUsableAgentKeyCredentials', () => {
-  it('SECRET follows the resolver truthy check: non-empty string usable, empty not, whitespace kept (parity)', () => {
+  it('SECRET: non-blank usable, empty/whitespace-only rejected (round-3 restore)', () => {
     expect(hasUsableAgentKeyCredentials({ CAT_CAFE_AGENT_KEY_SECRET: 'secret-material' })).toBe(true);
     expect(hasUsableAgentKeyCredentials({ CAT_CAFE_AGENT_KEY_SECRET: '' })).toBe(false);
-    // Parity with resolveAgentKeySecret: the secret is returned as-is when
-    // truthy — a whitespace-only secret resolves, so availability says yes.
-    expect(hasUsableAgentKeyCredentials({ CAT_CAFE_AGENT_KEY_SECRET: '   ' })).toBe(true);
+    // #1494 round 3: a whitespace-only secret is no material — HTTP header
+    // transport normalizes it to an empty value, so it must not count.
+    expect(hasUsableAgentKeyCredentials({ CAT_CAFE_AGENT_KEY_SECRET: '   ' })).toBe(false);
   });
 
   it('single FILE counts only when the literal path reads non-empty (no path trimming)', () => {
@@ -168,5 +168,11 @@ describe('resolveAgentKeySecretFromEnv', () => {
     expect(
       resolveAgentKeySecretFromEnv({ CAT_CAFE_AGENT_KEY_FILES: '{}', CAT_CAFE_AGENT_KEY_FILE: path }),
     ).toBeUndefined();
+  });
+
+  it('SECRET gate rejects blank material but returns the original bytes for non-blank keys', () => {
+    expect(resolveAgentKeySecretFromEnv({ CAT_CAFE_AGENT_KEY_SECRET: '   ' })).toBeUndefined();
+    expect(resolveAgentKeySecretFromEnv({ CAT_CAFE_AGENT_KEY_SECRET: '\t\n' })).toBeUndefined();
+    expect(resolveAgentKeySecretFromEnv({ CAT_CAFE_AGENT_KEY_SECRET: ' s ' })).toBe(' s ');
   });
 });

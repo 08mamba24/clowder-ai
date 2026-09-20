@@ -16,7 +16,9 @@ import { readFileSync } from 'node:fs';
  *      key never qualifies.
  *   3. A non-empty variant map without an effective identity resolves
  *      nothing at mount level (identities stay per-call selectable).
- *   4. Otherwise CAT_CAFE_AGENT_KEY_SECRET (truthy string, no trimming).
+ *   4. Otherwise CAT_CAFE_AGENT_KEY_SECRET — non-blank after trim, returned
+ *      verbatim (a whitespace-only secret is no material: HTTP header
+ *      transport normalizes it to an empty value).
  *   5. Otherwise the single CAT_CAFE_AGENT_KEY_FILE sidecar, read at its
  *      LITERAL path (no trimming — the reader treats " path " as a filename).
  */
@@ -87,7 +89,7 @@ export function resolveAgentKeySecretFromEnv(
   if (variantMapRaw) return undefined;
 
   const agentKeySecret = env.CAT_CAFE_AGENT_KEY_SECRET;
-  if (agentKeySecret) return agentKeySecret;
+  if (agentKeySecret?.trim()) return agentKeySecret;
 
   return readAgentKeyFileSync(env.CAT_CAFE_AGENT_KEY_FILE);
 }
