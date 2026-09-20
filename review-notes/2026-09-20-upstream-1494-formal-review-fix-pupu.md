@@ -31,6 +31,11 @@
 - shared 全量 vitest 的 2 个 dossier 红在主仓（无本改动）同样复现——基线既红，与本 delta 无关。
 - Fixture 现代化（仅限把旧语义写成断言的测试）：`desktop-mode`「detects agent-key via any of the 3 env vars」改写为可用性断言；`tool-registration` / `callback-tools.test.js` 两处 rich-block / adapters sidecar 测试改用真实落盘 sidecar。
 
+## 复审轮（砚砚，2026-09-20）
+
+- **Round 1 verdict**: CHANGES_REQUESTED——P1：6 个 touched 文件 import 顺序未过 CI 强制门禁 `biome check --diagnostic-level=error`（`organizeImports` assist 不在 `biome format` 覆盖内，此前的验证漏了这一面）；P3：executor 两个新测试 `mkdtempSync` 未清理。功能面确认三条 maintainer finding 全部关闭（独立实跑 34/80/34/34、显式 false 保留、`'{}'` 不合成、sidecar 时序、remote-spike 独立判据合理）。
+- **修复**: `12e3afc07e318cc6722b4f575ca0b9056a57d2ea`（父 = `7ed9de46b`，新增 commit 未 amend，7 文件 +50/−38）——biome safe-fix 定点整理 6 文件 import + 两测试补 `finally rmSync`。复验：repo 级 error 门禁 **8621 文件 0 error（exit 0）**、biome format 干净、tsc 三包 0 退出、executor 10/10 + 目标批 131/131 + shared 9/9。教训：format ≠ check——**今后 touched 文件的验证面必须含 `biome check --diagnostic-level=error`（与 CI 同一条命令）**。
+
 ## 下一步
 
-球回 @dsh-v41-flash：push 前独立复跑四条口径（不采信本自述）→ push 分支 A 新 HEAD → 盯 CI → PR #1494 回帖通报维护者复审 delta。
+球回 @砚砚 复审机械 delta `7ed9de46b..12e3afc07`；APPROVED 后 @dsh-v41-flash push（新 exact HEAD `12e3afc07`）→ 盯 CI → PR #1494 回帖通报维护者复审。
