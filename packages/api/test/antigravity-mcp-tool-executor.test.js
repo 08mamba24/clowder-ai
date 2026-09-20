@@ -208,6 +208,36 @@ describe('CallMcpToolExecutor', () => {
     }
   });
 
+  test('buildMcpEnv honors the bound-identity restriction when synthesizing (#1494)', () => {
+    const keyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-mcp-key-'));
+    try {
+      const sidecar = path.join(keyDir, 'agent.secret');
+      fs.writeFileSync(sidecar, 'agent-key-material\n', 'utf-8');
+
+      const boundWrongMap = buildMcpEnvForTest({
+        CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'gpt-pro',
+        CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ antigravity: sidecar }),
+      });
+      assert.equal(
+        boundWrongMap.CAT_CAFE_READONLY_AGENT_KEY_UNION,
+        undefined,
+        'a bound identity whose map entry is missing must not synthesize the union',
+      );
+
+      const boundOwnEntry = buildMcpEnvForTest({
+        CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'antigravity',
+        CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ antigravity: sidecar }),
+      });
+      assert.equal(
+        boundOwnEntry.CAT_CAFE_READONLY_AGENT_KEY_UNION,
+        'true',
+        "the bound identity's own readable entry keeps the union",
+      );
+    } finally {
+      fs.rmSync(keyDir, { recursive: true, force: true });
+    }
+  });
+
   test('resolveMcpEntrypointForTest resolves from invocation workspace cwd when runtime root is unset', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-mcp-root-'));
     const processRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-mcp-process-root-'));

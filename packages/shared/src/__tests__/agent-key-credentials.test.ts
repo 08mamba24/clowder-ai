@@ -7,6 +7,7 @@ import {
   hasUsableAgentKeyCredentials,
   parseAgentKeyFileMap,
   readAgentKeyFileSync,
+  resolveAgentKeySecretFromEnv,
 } from '../utils/agent-key-credentials.js';
 
 let tmpDir: string | undefined;
@@ -64,16 +65,22 @@ describe('readAgentKeyFileSync / agentKeyFileUsable', () => {
 });
 
 describe('hasUsableAgentKeyCredentials', () => {
-  it('non-empty SECRET alone is usable', () => {
+  it('SECRET follows the resolver truthy check: non-empty string usable, empty not, whitespace kept (parity)', () => {
     expect(hasUsableAgentKeyCredentials({ CAT_CAFE_AGENT_KEY_SECRET: 'secret-material' })).toBe(true);
-    expect(hasUsableAgentKeyCredentials({ CAT_CAFE_AGENT_KEY_SECRET: '   ' })).toBe(false);
+    expect(hasUsableAgentKeyCredentials({ CAT_CAFE_AGENT_KEY_SECRET: '' })).toBe(false);
+    // Parity with resolveAgentKeySecret: the secret is returned as-is when
+    // truthy — a whitespace-only secret resolves, so availability says yes.
+    expect(hasUsableAgentKeyCredentials({ CAT_CAFE_AGENT_KEY_SECRET: '   ' })).toBe(true);
   });
 
-  it('single FILE counts only when the sidecar reads non-empty', () => {
+  it('single FILE counts only when the literal path reads non-empty (no path trimming)', () => {
     const path = sidecar();
     expect(hasUsableAgentKeyCredentials({ CAT_CAFE_AGENT_KEY_FILE: path })).toBe(true);
     expect(hasUsableAgentKeyCredentials({ CAT_CAFE_AGENT_KEY_FILE: '/nonexistent.secret' })).toBe(false);
     expect(hasUsableAgentKeyCredentials({ CAT_CAFE_AGENT_KEY_FILE: '   ' })).toBe(false);
+    // The resolver reads the single-FILE path literally; surrounding spaces
+    // name a different (missing) file, so availability must agree (#1494).
+    expect(hasUsableAgentKeyCredentials({ CAT_CAFE_AGENT_KEY_FILE: ` ${path} ` })).toBe(false);
   });
 
   it('non-empty FILES disables fallback: {} map, bad JSON, all-missing sidecars → false even with SECRET set', () => {
@@ -98,7 +105,68 @@ describe('hasUsableAgentKeyCredentials', () => {
     ).toBe(true);
   });
 
+  it('bound identity: only its own map entry qualifies — unrelated readable keys, SECRET, or single FILE do not', () => {
+    const antigravityPath = sidecar();
+    const gptProPath = sidecar();
+    expect(
+      hasUsableAgentKeyCredentials({
+        CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'gpt-pro',
+        CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ antigravity: antigravityPath }),
+      }),
+    ).toBe(false);
+    expect(
+      hasUsableAgentKeyCredentials({
+        CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'gpt-pro',
+        CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ antigravity: antigravityPath, 'gpt-pro': gptProPath }),
+      }),
+    ).toBe(true);
+    expect(
+      hasUsableAgentKeyCredentials({
+        CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'gpt-pro',
+        CAT_CAFE_AGENT_KEY_SECRET: 'unbound-secret',
+      }),
+    ).toBe(false);
+    expect(hasUsableAgentKeyCredentials({ CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'gpt-pro' })).toBe(false);
+    // Map paths are trimmed by the parser, so a padded entry still resolves.
+    expect(
+      hasUsableAgentKeyCredentials({
+        CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'gpt-pro',
+        CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ 'gpt-pro': `  ${gptProPath}  ` }),
+      }),
+    ).toBe(true);
+  });
+
   it('no vars at all → false', () => {
     expect(hasUsableAgentKeyCredentials({})).toBe(false);
+  });
+});
+
+describe('resolveAgentKeySecretFromEnv', () => {
+  it('requested identity must match the bound identity', () => {
+    const path = sidecar();
+    const env = {
+      CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'gpt-pro',
+      CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ 'gpt-pro': path }),
+    };
+    expect(resolveAgentKeySecretFromEnv(env, { agentKeyCatId: 'antigravity' })).toBeUndefined();
+    expect(resolveAgentKeySecretFromEnv(env, { agentKeyCatId: 'gpt-pro' })).toBe('agent-key-material');
+    expect(resolveAgentKeySecretFromEnv(env)).toBe('agent-key-material');
+  });
+
+  it('variant map present without an effective identity resolves nothing at mount level', () => {
+    const path = sidecar();
+    const env = { CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ antigravity: path }) };
+    expect(resolveAgentKeySecretFromEnv(env)).toBeUndefined();
+    expect(resolveAgentKeySecretFromEnv(env, { agentKeyCatId: 'antigravity' })).toBe('agent-key-material');
+  });
+
+  it('falls back SECRET → literal single FILE only when no variant map exists', () => {
+    const path = sidecar();
+    expect(resolveAgentKeySecretFromEnv({ CAT_CAFE_AGENT_KEY_SECRET: 's' })).toBe('s');
+    expect(resolveAgentKeySecretFromEnv({ CAT_CAFE_AGENT_KEY_FILE: path })).toBe('agent-key-material');
+    expect(resolveAgentKeySecretFromEnv({ CAT_CAFE_AGENT_KEY_FILE: ` ${path} ` })).toBeUndefined();
+    expect(
+      resolveAgentKeySecretFromEnv({ CAT_CAFE_AGENT_KEY_FILES: '{}', CAT_CAFE_AGENT_KEY_FILE: path }),
+    ).toBeUndefined();
   });
 });

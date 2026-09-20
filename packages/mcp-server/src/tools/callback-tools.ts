@@ -51,11 +51,7 @@ import {
   SOP_DEFINITION_IDS,
   taskFeatureIdSchema,
 } from '@cat-cafe/shared';
-import {
-  hasUsableAgentKeyCredentials,
-  parseAgentKeyFileMap,
-  readAgentKeyFileSync as readAgentKeyFile,
-} from '@cat-cafe/shared/utils';
+import { hasUsableAgentKeyCredentials, resolveAgentKeySecretFromEnv } from '@cat-cafe/shared/utils';
 import { z } from 'zod';
 import { sendCallbackRequest } from './callback-outbox.js';
 import { extractReasonTag } from './callback-retry.js';
@@ -153,28 +149,13 @@ function requiresInlineAudioSynthesis(block: unknown): boolean {
 }
 
 // readAgentKeyFile / parseAgentKeyFileMap moved to @cat-cafe/shared/utils
-// (agent-key-credentials) so every credential-availability decision — toolset
-// union gate, api-side union synthesizers, callback auth, rich-block routing —
-// shares one semantic baseline (#1494).
+// (agent-key-credentials), and the resolver core itself now lives there as
+// resolveAgentKeySecretFromEnv — availability decisions and actual callback
+// auth share one implementation, including the bound-identity restriction,
+// precedence, and literal single-FILE path normalization (#1494 round 2).
 
 function resolveAgentKeySecret(options?: AgentKeyOptions): string | undefined {
-  const requestedCatId = options?.agentKeyCatId?.trim();
-  const boundCatId = process.env.CAT_CAFE_AGENT_KEY_BOUND_CAT_ID?.trim();
-  const variantMapRaw = process.env.CAT_CAFE_AGENT_KEY_FILES?.trim();
-  if (requestedCatId && boundCatId && requestedCatId !== boundCatId) return undefined;
-
-  const effectiveCatId = requestedCatId || boundCatId;
-  if (effectiveCatId) {
-    const variantFiles = parseAgentKeyFileMap(variantMapRaw);
-    return readAgentKeyFile(variantFiles[effectiveCatId]);
-  }
-
-  if (variantMapRaw) return undefined;
-
-  const agentKeySecret = process.env.CAT_CAFE_AGENT_KEY_SECRET;
-  if (agentKeySecret) return agentKeySecret;
-
-  return readAgentKeyFile(process.env.CAT_CAFE_AGENT_KEY_FILE);
+  return resolveAgentKeySecretFromEnv(process.env, options);
 }
 
 export function getCallbackConfig(options?: AgentKeyOptions): CallbackConfig | null {

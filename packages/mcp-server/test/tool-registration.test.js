@@ -615,4 +615,43 @@ describe('F061 READONLY_ALLOWED_TOOLS whitelist', () => {
     rmSync(keyDir, { recursive: true, force: true });
     assert.equal(result.status, 0, result.stderr || result.stdout);
   });
+
+  test('readonly + opt-in + unusable BOUND identity stays strict (real stdio entry surface)', () => {
+    const distIndexUrl = new URL('../dist/index.js', import.meta.url).href;
+    // #1494 round 2: the bound identity's map entry is missing, so the union
+    // must not fire even with an explicit opt-in and an unrelated readable
+    // sidecar in the variant map.
+    const keyDir = mkdtempSync(join(tmpdir(), 'tool-registration-agent-key-'));
+    const antigravityKey = join(keyDir, 'antigravity.secret');
+    writeFileSync(antigravityKey, 'agent-key-material\n', 'utf-8');
+    const script = `
+      process.env.CAT_CAFE_READONLY = 'true';
+      process.env.CAT_CAFE_READONLY_AGENT_KEY_UNION = 'true';
+      process.env.CAT_CAFE_AGENT_KEY_BOUND_CAT_ID = 'gpt-pro';
+      delete process.env.CAT_CAFE_AGENT_KEY_SECRET;
+      delete process.env.CAT_CAFE_AGENT_KEY_FILE;
+      process.env.CAT_CAFE_AGENT_KEY_FILES = JSON.stringify({ antigravity: ${JSON.stringify(antigravityKey)} });
+      const { createServer } = await import(${JSON.stringify(distIndexUrl)});
+      const server = createServer();
+      const names = Object.keys(server._registeredTools);
+      if (
+        !names.includes('cat_cafe_search_evidence') ||
+        names.includes('cat_cafe_post_message') ||
+        names.includes('cat_cafe_cross_post_message') ||
+        names.includes('cat_cafe_teleport') ||
+        names.includes('cat_cafe_register_scheduled_task') ||
+        names.includes('cat_cafe_remove_scheduled_task') ||
+        names.includes('cat_cafe_publish_verdict')
+      ) {
+        console.error(JSON.stringify(names.sort()));
+        process.exit(1);
+      }
+    `;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: process.cwd(),
+      encoding: 'utf-8',
+    });
+    rmSync(keyDir, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
 });

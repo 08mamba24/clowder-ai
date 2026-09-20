@@ -2,7 +2,8 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
+import { hasUsableAgentKeyCredentials } from '@cat-cafe/shared/utils';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   AGENT_KEY_TOOLS,
@@ -12,6 +13,7 @@ import {
   registerFullToolset,
   type ToolsetEnv,
 } from '../src/server-toolsets.js';
+import { getCallbackConfig } from '../src/tools/callback-tools.js';
 
 /**
  * #1494 formal-review regressions:
@@ -57,9 +59,12 @@ function strictExpected(env?: ToolsetEnv): Set<string> {
 }
 
 describe('parseToolsetEnv — hasAgentKey is credential usability, not env presence', () => {
-  it('non-empty SECRET is usable; blank SECRET is not', () => {
+  it('SECRET follows the resolver truthy check: non-empty usable, empty not, whitespace kept (parity)', () => {
     assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_SECRET: 'material' }).hasAgentKey, true);
-    assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_SECRET: '   ' }).hasAgentKey, false);
+    assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_SECRET: '' }).hasAgentKey, false);
+    // Parity with resolveAgentKeySecret: a truthy whitespace secret is
+    // returned as-is, so availability must agree.
+    assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_SECRET: '   ' }).hasAgentKey, true);
   });
 
   it('single FILE counts only when the sidecar exists and reads non-empty', () => {
@@ -94,6 +99,140 @@ describe('parseToolsetEnv — hasAgentKey is credential usability, not env prese
       parseToolsetEnv(env).hasAgentKey,
       false,
       'a present variant map is the only source; SECRET/FILE fallback is disabled',
+    );
+  });
+
+  it('bound identity gates hasAgentKey: only its own map entry qualifies (#1494 round 2)', () => {
+    const antigravityPath = sidecar();
+    const gptProPath = sidecar();
+    assert.equal(
+      parseToolsetEnv({
+        CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'gpt-pro',
+        CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ antigravity: antigravityPath }),
+      }).hasAgentKey,
+      false,
+      'an unrelated readable key must not qualify for a bound identity',
+    );
+    assert.equal(
+      parseToolsetEnv({
+        CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'gpt-pro',
+        CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ antigravity: antigravityPath, 'gpt-pro': gptProPath }),
+      }).hasAgentKey,
+      true,
+    );
+    assert.equal(
+      parseToolsetEnv({
+        CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'gpt-pro',
+        CAT_CAFE_AGENT_KEY_SECRET: 'unbound-secret',
+      }).hasAgentKey,
+      false,
+      'a bound identity resolves only through its variant-map entry',
+    );
+  });
+});
+
+describe('availability parity with the real callback resolver (#1494 round 2)', () => {
+  const ENV_KEYS = [
+    'CAT_CAFE_AGENT_KEY_SECRET',
+    'CAT_CAFE_AGENT_KEY_FILE',
+    'CAT_CAFE_AGENT_KEY_FILES',
+    'CAT_CAFE_AGENT_KEY_BOUND_CAT_ID',
+  ] as const;
+  let saved: Record<string, string | undefined>;
+  let savedApiUrl: string | undefined;
+
+  beforeEach(() => {
+    saved = {};
+    for (const key of ENV_KEYS) saved[key] = process.env[key];
+    savedApiUrl = process.env.CAT_CAFE_API_URL;
+    process.env.CAT_CAFE_API_URL = 'http://localhost:3004';
+  });
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+    if (savedApiUrl === undefined) delete process.env.CAT_CAFE_API_URL;
+    else process.env.CAT_CAFE_API_URL = savedApiUrl;
+  });
+
+  /** Replace the credential env wholesale for one row. */
+  function setCredentialEnv(env: Record<string, string>): void {
+    for (const key of ENV_KEYS) delete process.env[key];
+    Object.assign(process.env, env);
+  }
+
+  it('bound identity + unrelated readable map entry: helper and resolver both say unusable', () => {
+    const antigravityPath = sidecar();
+    setCredentialEnv({
+      CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'gpt-pro',
+      CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ antigravity: antigravityPath }),
+    });
+    assert.equal(hasUsableAgentKeyCredentials(process.env), false, 'helper: bound entry missing');
+    assert.equal(getCallbackConfig({ forceAgentKey: true }), null, 'resolver (no selection)');
+    assert.equal(getCallbackConfig({ forceAgentKey: true, agentKeyCatId: 'gpt-pro' }), null, 'resolver (bound id)');
+    assert.equal(
+      getCallbackConfig({ forceAgentKey: true, agentKeyCatId: 'antigravity' }),
+      null,
+      'resolver (mismatched selection)',
+    );
+  });
+
+  it('bound identity + its own readable entry: helper and resolver both say usable', () => {
+    const gptProPath = sidecar();
+    setCredentialEnv({
+      CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'gpt-pro',
+      CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ 'gpt-pro': gptProPath }),
+    });
+    assert.equal(hasUsableAgentKeyCredentials(process.env), true);
+    assert.notEqual(getCallbackConfig({ forceAgentKey: true }), null);
+    assert.notEqual(getCallbackConfig({ forceAgentKey: true, agentKeyCatId: 'gpt-pro' }), null);
+  });
+
+  it('bound identity with only an unbound SECRET: helper and resolver both say unusable', () => {
+    setCredentialEnv({
+      CAT_CAFE_AGENT_KEY_BOUND_CAT_ID: 'gpt-pro',
+      CAT_CAFE_AGENT_KEY_SECRET: 'unbound-secret',
+    });
+    assert.equal(hasUsableAgentKeyCredentials(process.env), false);
+    assert.equal(getCallbackConfig({ forceAgentKey: true }), null);
+  });
+
+  it('padded single-FILE path is read literally: helper and resolver both say unusable', () => {
+    const filePath = sidecar();
+    setCredentialEnv({ CAT_CAFE_AGENT_KEY_FILE: ` ${filePath} ` });
+    assert.equal(hasUsableAgentKeyCredentials(process.env), false);
+    assert.equal(getCallbackConfig({ forceAgentKey: true }), null);
+  });
+
+  it('unbound single FILE / SECRET: helper and resolver both say usable', () => {
+    const filePath = sidecar();
+    setCredentialEnv({ CAT_CAFE_AGENT_KEY_FILE: filePath });
+    assert.equal(hasUsableAgentKeyCredentials(process.env), true);
+    assert.notEqual(getCallbackConfig({ forceAgentKey: true }), null);
+
+    setCredentialEnv({ CAT_CAFE_AGENT_KEY_SECRET: 'material' });
+    assert.equal(hasUsableAgentKeyCredentials(process.env), true);
+    assert.notEqual(getCallbackConfig({ forceAgentKey: true }), null);
+  });
+
+  it('unbound shared map: mount-level resolver stays null, but a selectable identity resolves — helper says usable', () => {
+    const antigravityPath = sidecar();
+    setCredentialEnv({ CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ antigravity: antigravityPath }) });
+    assert.equal(
+      getCallbackConfig({ forceAgentKey: true }),
+      null,
+      'no identity selected at mount level — the resolver intentionally resolves nothing',
+    );
+    assert.notEqual(
+      getCallbackConfig({ forceAgentKey: true, agentKeyCatId: 'antigravity' }),
+      null,
+      'per-call identity selection resolves the shared map',
+    );
+    assert.equal(
+      hasUsableAgentKeyCredentials(process.env),
+      true,
+      'availability counts a selectable identity (maintainer-approved positive)',
     );
   });
 });
