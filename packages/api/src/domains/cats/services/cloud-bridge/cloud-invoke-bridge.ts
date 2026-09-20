@@ -25,6 +25,7 @@ import { CHATGPT_CHAT_URL_REGEX } from '../../../../utils/chatgpt-chat-url.js';
 import { buildDeltaPayload } from './build-delta-payload.js';
 import { type BridgeLogger, type CloudInvokeBridgeDeps, noopBridgeLogger } from './cloud-invoke-bridge-deps.js';
 import { dispatchBoundConversationThroughHost } from './conversation-host-dispatch.js';
+import { dispatchThroughWorkspaceAgent } from './workspace-agent-dispatch.js';
 import type {
   BridgeDispatchOutcome,
   BridgeFallbackReason,
@@ -172,6 +173,26 @@ export class CloudInvokeBridge implements ICloudInvokeBridge {
 
     // 1. Build delta payload (AC-B1c-12).
     const renderedPrompt = buildDeltaPayload(params);
+
+    // 1b. F247 Workspace Agent: the officially configured Trigger API path
+    // owns the outbound outcome when present (fail closed — see
+    // workspace-agent-dispatch.ts for the precedence rationale).
+    const workspaceAgentDecision = await dispatchThroughWorkspaceAgent({
+      adapter: this.deps.workspaceAgentAdapter,
+      workspaceId: this.deps.workspaceAgentWorkspaceId,
+      renderedPrompt,
+      params,
+    });
+    if (workspaceAgentDecision) {
+      if (workspaceAgentDecision.fallback) {
+        await this.fallback(
+          params,
+          workspaceAgentDecision.fallback.reason,
+          workspaceAgentDecision.fallback.detail,
+        );
+      }
+      return workspaceAgentDecision.outcome;
+    }
 
     // 2. Resolve the stable host conversation before choosing a transport.
     // The Host Adapter can append only to an existing binding; it never

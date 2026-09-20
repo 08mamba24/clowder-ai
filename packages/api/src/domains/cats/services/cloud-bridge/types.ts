@@ -103,8 +103,10 @@ export type BridgeDispatchOutcome =
   | {
       readonly kind: 'sent';
       readonly capturedUrl: string;
-      readonly transport?: 'host' | 'legacy-pinchtab';
+      readonly transport?: 'host' | 'legacy-pinchtab' | 'workspace-agent';
       readonly hostMessageId?: string;
+      /** Workspace Agent beta run id — transport telemetry only. */
+      readonly providerRunId?: string;
       readonly idempotentReplay?: boolean;
     }
   | {
@@ -115,7 +117,10 @@ export type BridgeDispatchOutcome =
     }
   | {
       readonly kind: 'error';
-      readonly reason: Extract<BridgeFallbackReason, 'host-append-failed' | 'inject-failed'>;
+      readonly reason: Extract<
+        BridgeFallbackReason,
+        'host-append-failed' | 'inject-failed' | 'workspace-agent-failed'
+      >;
       readonly message: string;
       readonly detail?: string;
       readonly idempotentReplay?: boolean;
@@ -131,7 +136,10 @@ export type BridgeFallbackReason =
   | 'host-append-failed'
   | 'missing-source-message-id'
   | 'incomplete-dispatch-provenance'
-  | 'legacy-delivery-unverified';
+  | 'legacy-delivery-unverified'
+  | 'workspace-agent-unauthorized'
+  | 'workspace-agent-rejected'
+  | 'workspace-agent-failed';
 
 /**
  * The cloud invoke bridge — awaited by `invokeSingleCat` only until a bounded
