@@ -37,6 +37,15 @@
 - **修复**: `12e3afc07e318cc6722b4f575ca0b9056a57d2ea`（父 = `7ed9de46b`，新增 commit 未 amend，7 文件 +50/−38）——biome safe-fix 定点整理 6 文件 import + 两测试补 `finally rmSync`。复验：repo 级 error 门禁 **8621 文件 0 error（exit 0）**、biome format 干净、tsc 三包 0 退出、executor 10/10 + 目标批 131/131 + shared 9/9。教训：format ≠ check——**今后 touched 文件的验证面必须含 `biome check --diagnostic-level=error`（与 CI 同一条命令）**。
 - **Round 1 终审**: **APPROVED，无 P1/P2/P3**（砚砚 2026-09-20，机械 delta `7ed9de46b..12e3afc07`：仅 import 排序 + tmp 清理；全仓 8621 文件 exit 0、executor 10/10、worktree 干净；功能面沿用上轮已通过结论）。家内 review 闭环：分支 A 最终 exact HEAD = **`12e3afc07e318cc6722b4f575ca0b9056a57d2ea`**。
 
+## Round 2（维护者 delta re-review `5260442223`，2026-09-20 11:16 UTC）
+
+- **verdict**: CHANGES_REQUESTED，剩一条 P1——usable-credential parity **PARTIALLY FIXED**：helper 未实现 bound-principal 分支（`BOUND_CAT_ID` 指向的 identity 在 map 无条目时，helper 仍把无关可读 key / 未绑定 SECRET 算作凭证，真实 resolver 返回 null，stdio 仍暴露 80 工具应 34）；单 FILE 路径 helper 做 trim 而 resolver 按字面量读。31/31 原检查全过，新增 parity 检查 2 过 5 挂。
+- **修复**: `00b6f21b2f603ee2307e05f07abda951b08c84b0`（父 = rebase 后 HEAD `4cb04f7e0`，未 amend，6 文件 +357/−53）。**结构性同源**：resolver 核心下沉 shared 为 `resolveAgentKeySecretFromEnv`，callback-tools 的 `resolveAgentKeySecret` 改为委托；availability 按分支全委托（bound 身份只认自己 map 条目；无绑定共享 map = 任一可选 identity 可解即算——维护者认可的正向；否则 SECRET 真值 → 单 FILE 字面路径）。SECRET 真值语义（空格保留）与单 FILE 不 trim 均与 resolver 对齐并在测试注明。
+- **红证据归属**：维护者 fixtures（2 PASS/5 FAIL @ 4cb04f7e0）+ 点点独立复现表；自跑红不可行——修复本体就是新 shared 导出（旧 dist 无法加载委托 import），commit body 已如实说明。
+- **回归**：shared 13/13（bound/归一化新行 + resolver 前置直接断言）；mcp-server 挂载级 parity 矩阵（`hasUsableAgentKeyCredentials` ↔ `getCallbackConfig({forceAgentKey:true})` 同断言，含 mismatch/own-entry/secret-only/padded-path/无绑定 map 三态）；executor bound 合成行；tool-registration 真 stdio spawn：bound 不可用 → 严格面（无 cross_post/teleport/schedule/verdict）。
+- **验证**：mcp-server 凭证+注册批 194/194；全量 clean env **836/837**（唯一红 = #1493 lane regex 基线）；api 78/78；tsc 三包 0；全仓 biome error 级 8632 文件 exit 0；format 干净；`git diff --check` 干净。
+- **本轮自我教训（已当场套用）**：新增 import 后先跑 `biome check --write` 再收工——round-1 的教训这轮差点再犯一次（自己新加的 import 又触发 organizeImports，check 阶段抓到后定点修复）。
+
 ## 下一步
 
-球交 @dsh-v41-flash（执行线）：push 分支 A `12e3afc07`（远端 `d1f8d6b0b` 为祖先，普通 push 即可）→ 盯 CI → PR #1494 回帖通报维护者复审 delta。#1493（B 线）不受影响，按其自身 tracking 等维护者审批/合并。
+球交 @砚砚 复审 round-2 delta `4cb04f7e0..00b6f21b2`；APPROVED 后 @dsh-v41-flash push（exact HEAD `00b6f21b2`）→ 盯 CI → PR #1494 回帖通报维护者。
