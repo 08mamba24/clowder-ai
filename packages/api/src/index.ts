@@ -2273,6 +2273,14 @@ async function main(): Promise<void> {
   const workspaceAgentModules = await import(
     './domains/cats/services/cloud-bridge/workspace-agent/workspace-agent-config.js'
   );
+  const workspaceAgentConfig = workspaceAgentModules.createWorkspaceAgentTriggerConfig({
+    projectRoot: resolveActiveProjectRoot(),
+    env: process.env,
+    logger: bridgeLogger,
+  });
+  const workspaceAgentTriggerAdapter = workspaceAgentModules.createRefreshableWorkspaceAgentTriggerAdapter(
+    workspaceAgentConfig,
+  );
   const { createRefreshablePersonalChromeHostAdapter } = await import(
     './domains/cats/services/cloud-bridge/personal-chrome-host/personal-chrome-host-adapter.js'
   );
@@ -2317,18 +2325,10 @@ async function main(): Promise<void> {
     // Config custody is server-side (mode-0600 settings file with env
     // bootstrap fallback); the token never reaches projections or logs, and
     // resolution is read-per-dispatch so Settings changes apply immediately.
-    workspaceAgent: (() => {
-      const config = workspaceAgentModules.createWorkspaceAgentTriggerConfig({
-        projectRoot: resolveActiveProjectRoot(),
-        env: process.env,
-        logger: bridgeLogger,
-      });
-      const adapter = workspaceAgentModules.createRefreshableWorkspaceAgentTriggerAdapter(config);
-      return () => {
-        const active = config.resolve();
-        return active ? { adapter, workspaceId: active.workspaceId } : null;
-      };
-    })(),
+    workspaceAgent: () => {
+      const active = workspaceAgentConfig.resolve();
+      return active ? { adapter: workspaceAgentTriggerAdapter, workspaceId: active.workspaceId } : null;
+    },
     emitFallback: async ({ threadId: fbThreadId, catId: fbCatId, reason }) => {
       // invokeSingleCat owns the one user-visible status so route persistence,
       // F167 disposition, and Queue settlement share one child invocation.
@@ -5279,6 +5279,14 @@ async function main(): Promise<void> {
   };
   registerPersonalChromePluginRoutes(app, {
     port: personalChromeInstallModule.createPersonalChromePluginPort({ projectRoot: resolveActiveProjectRoot() }),
+  });
+  // F247 Workspace Agent Settings card (#7): owner-only; the token is
+  // write-only (responses are config-store projections with a presence bit).
+  const { registerWorkspaceAgentPluginRoutes } = await import('./routes/workspace-agent-plugin-routes.js');
+  registerWorkspaceAgentPluginRoutes(app, {
+    config: workspaceAgentConfig,
+    adapter: workspaceAgentTriggerAdapter,
+    logger: bridgeLogger,
   });
 
   // F246/F313: one registry and one renderer projection. The F266 writer stays
