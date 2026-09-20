@@ -2,7 +2,7 @@
 
 - **作者**: 谱谱/glm-5.3（operator 2026-09-20 01:33 UTC 授权"动手"）
 - **对象**: zts212653/clowder-ai PR #1454（strict readonly boundary）按维护者三条整改门槛重建
-- **状态**: 双 carrier 均复审 **APPROVED**（A `a71b70c0e` 原 P1 关闭见 `2026-09-20-upstream-readonly-carrier-a-approved-pupu.md`；B `486241a8` 见 `2026-09-20-upstream-readonly-carrier-b-approved-pupu.md`）→ §三 全序列已交接给 点点/@dsh-v41-flash 执行（operator 2026-09-20 06:29 UTC 指定：点点有 gh 权限；①push 双分支 → ②issue → ③PR B → ④PR A → ⑤关 #1454；B 先于 A 合并）
+- **状态**: ✅ **§三 全序列执行完毕**（点点/@dsh-v41-flash，2026-09-20）：双分支已推 fork（SHAs 逐位一致）→ issue **#1492** → PR B **#1493**（794/794 全绿）→ PR A **#1494**（801 tests / 800 pass，唯一红 = #1493 修的 coverage regex）→ #1454 已评论并 **close**。**当前等外部条件：维护者 review / 合并（B 先于 A，A 的 mcp-server CI 才会转绿）。** 执行回执与独立验证见 §十。历史：双 carrier 均复审 **APPROVED**（A `a71b70c0e` 原 P1 关闭见 `2026-09-20-upstream-readonly-carrier-a-approved-pupu.md`；B `486241a8` 见 `2026-09-20-upstream-readonly-carrier-b-approved-pupu.md`）；§三 原由 operator 2026-09-20 06:29 UTC 交接给点点
 
 ## 一、产出（本地，共享 .git）
 
@@ -113,3 +113,26 @@ git push origin fix/mcp-evidence-coverage-regex
 - 维护者整改意见：PR #1454 评论（zts212653，2026-09-13T12:52:44Z）——issue-first / 去 F317 anchor / 干净分支 + 拆分 carriers。
 - 原 PR body 与 scoped review 历史：#1454 评论区（08mamba24 scoped review CHANGES_REQUESTED → 79eda8e16 APPROVED）。
 - upstream 侧漏洞仍在：`upstream/main@9ab0eaf28` `server-toolsets.ts` 仍是 `readonly ∪ (hasAgentKey ? AGENT_KEY : ∅)`。
+
+## 十、执行回执（点点/@dsh-v41-flash，2026-09-20）
+
+GitHub 外部序列已由 点点 在 gh 凭证（`08mamba24`，`repo` scope）下执行完毕：
+
+| 步骤 | 结果 |
+|---|---|
+| ① push 双分支 | A `a71b70c0e…`、B `486241a8…`（`ls-remote` 逐位一致；未 force，未推 main） |
+| ② issue | **#1492** `CAT_CAFE_READONLY unions agent-key write tools from ambient env…`（文案 = §四） |
+| ③ PR B | **#1493** `test(mcp): escape literal parens in evidence coverage regex`（base `main`，1 文件 +1/−1） |
+| ④ PR A | **#1494** `fix(mcp): make CAT_CAFE_READONLY strict — agent-key union requires explicit opt-in`（base `main`，14 文件 +407/−40，body 填 `#1492`/`#1493`） |
+| ⑤ 关 #1454 | 评论已贴（`issuecomment-5748169324`）→ **CLOSED** |
+
+**执行者独立验证（复跑，非转述 runbook）**——在 carrier 自己的 worktree / clean env（`env -u CAT_CAFE_*`）下：
+
+- 分支 B @ `486241a8`：`evidence-tools.test.js` **31/31**；mcp-server 全量 **794 tests / 794 pass / 0 fail**；`biome format` 1 文件干净。
+- 分支 A @ `a71b70c0e`：mcp-server 全量 **801 tests / 800 pass / 1 fail**，唯一红 = evidence coverage matrix 断言（即 B 修的 `(sacred)` 正则，红在断言而非测试名）；api 目标两文件（antigravity executor + mcp-config adapters）**68/68**；`biome format` 14 文件干净。
+- 公开披露面检查：分支 A diff 中 `F317`/`qodercn` **零命中**（必须 `git grep` 对 tree-ish——对工作树查会因 main 内容误报，第一次就踩了这个坑，已用正确姿势复核）；`F061`/`F213` 是 upstream 既有惯例（base 已大量存在：F167 1043 处、F311 571 处），非新增泄漏；非 ASCII 文案与 `env-registry` base 既有中文惯例一致（base 419 行非 ASCII、`'(空)'` 10 处）。
+- **环境陷阱（重要，留给下一位）**：在本 cat 的 ambient shell 里直接跑 mcp-server 全量会看到 **43 fail**；base 与 A **同为 43**（A 新增 7 个测试全过 ⇒ 零新增失败）。根因 = ambient `CAT_CAFE_*`（16 个，含 `CAT_CAFE_CREDENTIAL_FILE`/`CAT_CAFE_STRICT_PROFILE_DEFAULTS`）污染 callback/agent-key 类断言，**不是 carrier 缺陷**。复跑必须 clean env。
+
+> PR A body 相对 §五 有一处**增补**（非改写）：P1 commit `a71b70c0e` 把 union opt-in 合成从「name-gated baseline」改为「managed provenance（`source === 'cat-cafe'`）+ final merged env」，§五 原 bullet 只说「确有凭证时」，故补第 4 条如实描述该 delta。
+
+**剩余 = 纯外部条件**：维护者 review / 合并（B 先于 A）。issue #1492 由 PR A 的 `Fixes #1492` 在合并时自动关闭。
