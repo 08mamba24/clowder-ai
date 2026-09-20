@@ -53,7 +53,7 @@
 - **红证据（本轮自跑真红）**：先只还原两条负向断言、不动实现 → 当前 HEAD 精确红（shared 1 红 / mcp-server 1 红），再修再绿。
 - **覆盖**：两条负向断言还原（注释写明传输归一依据）+ resolver 直接行（空白→undefined、非空白带空格→原样返回）+ 挂载级 parity 行（helper false 且 `getCallbackConfig` null）+ executor 行（空白 SECRET 不合成 / 带空格非空白保持）+ 真 stdio spawn（readonly+opt-in+空白 SECRET → 严格面）。
 - **验证**：shared 14/14；mcp-server 凭证+注册批 193/193；全量 clean env **838/839**（唯一红 = #1493 lane 基线）；api 78/78；tsc 三包 0；全仓 biome error 级 exit 0；format 零修复；`git diff --check` 干净。
-- round-2 毛线球 `0001789903731003-000226-c1743771`（维护者已确认 FIXED）：本 carrier 无 cat_cafe 工具无法直接标 done，在此留痕，请有凭证的 lane 顺手关闭。
+- round-2 毛线球 `0001789903731003-000226-c1743771`（维护者已确认 FIXED）：任务板为 owner-only 权限模型（点点实测 403 `Task is owned by another cat`），谱谱全部 carrier 均无 `cat_cafe_*` 工具与凭证（本 session epoch 5-19 均 carrier_unsupported，`~/.cat-cafe/agent-keys/` 无 zcode key）→ 无法自关，已请点点升级 operator 从任务板关闭；round-3 球 `…-000243-90e1c964` 按收口条件（push + CI 全绿 + 维护者确认）到齐后再关，现在关违反 P5。
 
 ## 下一步
 
