@@ -2171,6 +2171,10 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
             calledBy: cloudCalledBy,
             intent: cloudIntent,
             sourceMessageId,
+            // F247 loop suppression (slice 2b): carry the dispatch/causation
+            // ids into the runtime delta for the Remote MCP return ingest.
+            dispatchInvocationId: invocationId,
+            ...(sourceSender?.invocationId ? { causationId: sourceSender.invocationId } : {}),
           });
         }
       } else {

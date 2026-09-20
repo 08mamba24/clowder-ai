@@ -2270,6 +2270,9 @@ async function main(): Promise<void> {
   }
   const { CloudInvokeBridge } = await import('./domains/cats/services/cloud-bridge/cloud-invoke-bridge.js');
   const bridgeLogger = (await import('./infrastructure/logger.js')).createModuleLogger('cloud-bridge');
+  const workspaceAgentModules = await import(
+    './domains/cats/services/cloud-bridge/workspace-agent/workspace-agent-config.js'
+  );
   const { createRefreshablePersonalChromeHostAdapter } = await import(
     './domains/cats/services/cloud-bridge/personal-chrome-host/personal-chrome-host-adapter.js'
   );
@@ -2310,6 +2313,22 @@ async function main(): Promise<void> {
   const cloudInvokeBridge = new CloudInvokeBridge({
     hostAdapter: personalChromeHostAdapter,
     pinchTabAdapter,
+    // F247 Workspace Agent (KD-24 pending): official Trigger API path.
+    // Config custody is server-side (mode-0600 settings file with env
+    // bootstrap fallback); the token never reaches projections or logs, and
+    // resolution is read-per-dispatch so Settings changes apply immediately.
+    workspaceAgent: (() => {
+      const config = workspaceAgentModules.createWorkspaceAgentTriggerConfig({
+        projectRoot: resolveActiveProjectRoot(),
+        env: process.env,
+        logger: bridgeLogger,
+      });
+      const adapter = workspaceAgentModules.createRefreshableWorkspaceAgentTriggerAdapter(config);
+      return () => {
+        const active = config.resolve();
+        return active ? { adapter, workspaceId: active.workspaceId } : null;
+      };
+    })(),
     emitFallback: async ({ threadId: fbThreadId, catId: fbCatId, reason }) => {
       // invokeSingleCat owns the one user-visible status so route persistence,
       // F167 disposition, and Queue settlement share one child invocation.

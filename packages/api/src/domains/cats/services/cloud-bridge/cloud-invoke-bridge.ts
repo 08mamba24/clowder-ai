@@ -24,6 +24,7 @@
 import { CHATGPT_CHAT_URL_REGEX } from '../../../../utils/chatgpt-chat-url.js';
 import { buildDeltaPayload } from './build-delta-payload.js';
 import { type BridgeLogger, type CloudInvokeBridgeDeps, noopBridgeLogger } from './cloud-invoke-bridge-deps.js';
+import { normalizeCloudCatBinding } from './cloud-cat-bindings-v1.js';
 import { dispatchBoundConversationThroughHost } from './conversation-host-dispatch.js';
 import { dispatchThroughWorkspaceAgent } from './workspace-agent-dispatch.js';
 import type {
@@ -176,10 +177,12 @@ export class CloudInvokeBridge implements ICloudInvokeBridge {
 
     // 1b. F247 Workspace Agent: the officially configured Trigger API path
     // owns the outbound outcome when present (fail closed — see
-    // workspace-agent-dispatch.ts for the precedence rationale).
+    // workspace-agent-dispatch.ts for the precedence rationale). The
+    // resolver is read per dispatch so Settings changes apply immediately.
+    const workspaceAgentTransport = this.deps.workspaceAgent?.() ?? null;
     const workspaceAgentDecision = await dispatchThroughWorkspaceAgent({
-      adapter: this.deps.workspaceAgentAdapter,
-      workspaceId: this.deps.workspaceAgentWorkspaceId,
+      adapter: workspaceAgentTransport?.adapter,
+      workspaceId: workspaceAgentTransport?.workspaceId,
       renderedPrompt,
       params,
     });
@@ -268,15 +271,18 @@ export class CloudInvokeBridge implements ICloudInvokeBridge {
   }
 
   /**
-   * Read the bound URL from thread metadata. Returns null if no binding or
-   * binding fails regex validation.
+   * Read the bound URL from thread metadata for the Personal Chrome Host
+   * path. Versioned bindings (F247 slice 2) normalize first: only a
+   * `personal-chrome-host` entry yields a conversation URL — a
+   * `workspace-agent` entry correctly reads as "no host binding" here
+   * because its conversation continuity lives on the provider side.
    */
   private async readBoundUrl(params: CloudInvokeDispatchParams): Promise<string | null> {
     try {
-      const bindings = (await this.deps.threadStore.getCloudCatBindings(params.threadId)) as Record<string, string>;
-      const existing = bindings[params.catId as unknown as string];
-      if (existing && CHATGPT_CHAT_URL_REGEX.test(existing)) {
-        return existing;
+      const bindings = (await this.deps.threadStore.getCloudCatBindings(params.threadId)) as Record<string, unknown>;
+      const binding = normalizeCloudCatBinding(bindings[params.catId as unknown as string]);
+      if (binding?.provider === 'personal-chrome-host' && CHATGPT_CHAT_URL_REGEX.test(binding.conversationUrl)) {
+        return binding.conversationUrl;
       }
     } catch (err) {
       this.logger.warn(

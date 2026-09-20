@@ -52,6 +52,15 @@ export interface CloudInvokeDispatchParams {
   readonly intent: string;
   /** Exact persisted source message ID: return anchor and Host idempotency key. */
   readonly sourceMessageId: string;
+  /**
+   * F247 loop suppression (slice 2b): the child invocation executing this
+   * dispatch becomes `bridgeEventId` in the runtime delta, and the source
+   * sender's originating invocation becomes `causationId` — the workspace
+   * agent echoes them back via Remote MCP so the return ingest can break
+   * outbound→return→outbound cycles. Optional for older callers.
+   */
+  readonly dispatchInvocationId?: string;
+  readonly causationId?: string;
 }
 
 /**

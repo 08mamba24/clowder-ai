@@ -37,8 +37,7 @@ function makeBridgeDeps(overrides = {}) {
       },
     },
     pinchTabAdapter: null,
-    workspaceAgentAdapter: null,
-    workspaceAgentWorkspaceId: null,
+    workspaceAgent: null,
     emitFallback: async (params) => {
       calls.fallbacks.push(params);
     },
@@ -56,6 +55,13 @@ function makeBridgeDeps(overrides = {}) {
   return { deps, calls };
 }
 
+/** Deps with an active workspace-agent transport (slice 2b resolver shape). */
+function makeWorkspaceAgentDeps(adapter) {
+  return makeBridgeDeps({
+    workspaceAgent: () => ({ adapter, workspaceId: 'ws_1' }),
+  });
+}
+
 const params = {
   catId: 'gpt-pro',
   threadId: 'thread_1',
@@ -69,16 +75,15 @@ const params = {
 
 test('bridge: configured workspace agent owns dispatch — 202 maps to sent, host untouched, no binding io', async () => {
   const triggerCalls = [];
-  const { deps, calls } = makeBridgeDeps({
-    workspaceAgentAdapter: makeTriggerAdapter((url, init) => {
+  const { deps, calls } = makeWorkspaceAgentDeps(
+    makeTriggerAdapter((url, init) => {
       triggerCalls.push({ url, init });
       return jsonResponse(202, {
         conversation_url: 'https://chatgpt.com/c/wa-1',
         agent_trigger_run_id: 'apirun_1',
       });
     }),
-    workspaceAgentWorkspaceId: 'ws_1',
-  });
+  );
   const bridge = new CloudInvokeBridge(deps);
   const outcome = await bridge.dispatch(params);
 
@@ -104,10 +109,7 @@ test('bridge: workspace agent not configured → existing host path preserved (n
 });
 
 test('bridge: workspace agent 401 fails closed with typed recovery — no silent host fallback', async () => {
-  const { deps, calls } = makeBridgeDeps({
-    workspaceAgentAdapter: makeTriggerAdapter(() => jsonResponse(401, {})),
-    workspaceAgentWorkspaceId: 'ws_1',
-  });
+  const { deps, calls } = makeWorkspaceAgentDeps(makeTriggerAdapter(() => jsonResponse(401, {})));
   const bridge = new CloudInvokeBridge(deps);
   const outcome = await bridge.dispatch(params);
   assert.equal(outcome.kind, 'fallback');
@@ -119,10 +121,7 @@ test('bridge: workspace agent 401 fails closed with typed recovery — no silent
 
 test('bridge: workspace agent 404/409 map to workspace-agent-rejected', async () => {
   for (const status of [404, 409]) {
-    const { deps } = makeBridgeDeps({
-      workspaceAgentAdapter: makeTriggerAdapter(() => jsonResponse(status, {})),
-      workspaceAgentWorkspaceId: 'ws_1',
-    });
+    const { deps } = makeWorkspaceAgentDeps(makeTriggerAdapter(() => jsonResponse(status, {})));
     const bridge = new CloudInvokeBridge(deps);
     const outcome = await bridge.dispatch(params);
     assert.equal(outcome.kind, 'fallback');
@@ -131,12 +130,11 @@ test('bridge: workspace agent 404/409 map to workspace-agent-rejected', async ()
 });
 
 test('bridge: workspace agent transport fault maps to workspace-agent-failed error', async () => {
-  const { deps } = makeBridgeDeps({
-    workspaceAgentAdapter: makeTriggerAdapter(() => {
+  const { deps } = makeWorkspaceAgentDeps(
+    makeTriggerAdapter(() => {
       throw new TypeError('Failed to fetch');
     }),
-    workspaceAgentWorkspaceId: 'ws_1',
-  });
+  );
   const bridge = new CloudInvokeBridge(deps);
   const outcome = await bridge.dispatch(params);
   assert.equal(outcome.kind, 'error');
