@@ -1,44 +1,8 @@
-# F317 钥匙串弹窗修复：双开关（QODERCN_FORCE_ENCRYPTED_FILE_STORAGE + QODERCN_FORCE_FILE_STORAGE）双路强制注入 — 谱谱/glm-5.3
 
-> **当前状态（Round 5 起，顶部真相）**：实现 = 两个 env builder 最终写**双 branded 开关**（一级启用 hybrid token/secret storage，二级选 encrypted-file backend）；**pre-merge 隔离验收已闭合**（Round 5：含凭证 auth-only profile + 1.1.55 四路径协议——audit 前后双绿、同 cwd add→remove 触发 `mcp remove` 的 OAuth 清理生成 profile 内 `0600 .keychain-salt`、两连启 `-p` 主 OAuth 可复用）。下方历史 Round 段保留原始过程（含已被证伪的版本推测与 add-only 探针），结论以本段为准。
+## 终验收档（2026-09-20 01:33Z，谱谱）
 
-- 分支：`fix/qoder-force-file-storage`（worktree `clowder-ai-wt-qfs`，base = `origin/main` `1b100c125`）
-- 上游：铲屎官 2026-09-18 07:47Z 问「能避免弹钥匙串吗 + 排查同类」→ 指令「方案先和砚砚对，实现完让 review」→ 砚砚方案预审 CHANGES_REQUESTED（2×P1+1×P2）→ 本实现按其收紧后的口径
-- 事故：qoder CLI（keytar/Keychain 适配）每次 spawn 以新未签名进程读写登录钥匙串 → 操作员每跑必见弹窗
-
-## 当前实现与证据（Round 5 收敛版，取代下方 Round 1 原始草案）
-
-- **实现**：`buildQoderEnvOverrides()`（disabled/read_only）与 `buildControlledQoderEnv()`（controlled，保持私有）都在**最终显式写入**两个 branded 开关：`QODERCN_FORCE_ENCRYPTED_FILE_STORAGE='true'`（一级，启用 hybrid token/secret storage）+ `QODERCN_FORCE_FILE_STORAGE='true'`（二级，在其内选 encrypted-file backend 而非原生 keychain）。disabled 路的 `qoder*` deny 规则使继承/callback/account 三源都压不过最终写；两键契约由测试钉住（disabled 三路 `false` 压制 + controlled structural fake-spawn 预置/恢复两键 `false` 后断言 `seenEnv` 双键 `'true'`）。
-- **pre-merge 隔离验收（已闭合，Round 5）**：含凭证 auth-only profile（live 只读拷贝 `.auth/user`+`machine_id`+`.account-fingerprint`）+ `/opt/homebrew/bin/qodercn`（1.1.55）+ 四路径协议（显式 HOME/profile/cwd，双开关）：audit1 绿 → 同 cwd `mcp add` exit 0（配置落 `work/.qoder/settings.local.json`）→ 同 cwd `mcp remove` exit 0（OAuth 清理触发 encrypted-file store 初始化）→ **`$profile/.keychain-salt` 生成、mode 600、不越出 profile** → `-p` 两连启均 exit 0 答复正常（**主 OAuth 可复用零重登**）→ audit2 绿。
-- **测试与证据**：`qoder-agent-service.test.js` **83/83**（Round 1 草案所写 84/84 为当时含直连 builder 用例的旧数，该用例已按 Round-2 review 删除）；biome error 级 0；`git diff --check` 净；frozen install 零漂移；reviewer 侧独立复验（build/83/83/biome/diff-check/worktree clean）与本记录一致。
-- **下一棒**：reviewer 复核本 note 收敛 → approve → 代推通道 PR → merge → live 重启后由操作员肉眼终验零钥匙串弹窗（唯一无法 pre-merge 观测项，判据 = 操作员确认；若仍弹窗按纪律只报告停并回滚双开关）。
-
-## Round 2（应砚砚正式 review CHANGES_REQUESTED，review 绑 reviewedHeadSha=7a7cb38a3a3e3000af3e46bf39a9682ddccb848f）
-
-- **P2 已修**：`buildControlledQoderEnv` 恢复私有；删除直连 builder 的测试；断言移入既有 structural fake-spawn 用例（`seenEnv.QODERCN_FORCE_FILE_STORAGE === 'true'`，继承键预置 `'false'` 验证压制、finally 可靠恢复）。disabled 三路压制用例保留。全文件 **83/83**（84−1 直连用例）。
-- **P1 已按 F317 auth-only 纪律重跑（含凭证，pre-merge）**：临时 profile 拷入 live 的 `.auth/user`+`machine_id`+`.account-fingerprint`（只读复制，零 live 写）。验收四项：
-  1. ✅ **audit 双绿**：boot 前 `{"ok":true}`、两启后仍 `{"ok":true}`（`auditQoderProfile` 走 dist 真实实现）
-  2. ✅ **两连启 + 主 OAuth 可复用**：两次 `-p` 探针均 exit 0 且模型真实回答 `OK`——无重登、无登录缺失（首启曾因缺 machine_id 报 `MACHINE_ID_MISSING`，补齐后通过——machine_id 是凭证绑定的一部分）
-  3. ✅ **backend 落点 raw 等价证据**：`credential.save reason=startup_validation` 的真实凭证写落在 **profile 内 `.auth/user` 文件**（0600，两启间被 CLI patch 后仍 600）；登录加载 `credential.load outcome=loaded` 全程文件态
-  4. ✅ **零 keychain 依赖的本证**：全流程（登录读、patch 写、两启）都在文件面完成；`.keychain-salt`/credentials 文件不出现 = hybrid secret store 从未被写（本部署 cat-cafe-memory 为 env-key、无 MCP OAuth——`mcp add -H` 实测也只落 local settings）。**GUI 零弹窗**只能由操作员肉眼终证，post-merge 首跑即判；若仍弹窗按纪律只报告停。
-- 诚实记录：`mcp add -H "Authorization=…"` 的 secret 落在 local settings（非 secret store），故无法用 CLI 面强制生成 salt/credentials 文件做直证；backend 选择证据 = 凭证写落点（文件）+ 两版 bundle 的 switch-before-keychain-init 顺序（砚砚 1.1.55 + 我 1.1.51 双验）。
-- 临时 profile 目录实验后整体删除；live profile 全程只读。
-
-`[谱谱/glm-5.3🐾]`
-
-## Round 3（应砚砚 re-review CHANGES_REQUESTED，review 绑 reviewedHeadSha=aab038ac1446f75b00d32b59dbb4d41e559aa314）
-
-- **P2 已修**：test:249 双空行删除，biome formatter 恢复绿（error 级 0）。
-- **P1 已改实现**：两个 builder 最终显式写**双 branded 开关** `QODERCN_FORCE_ENCRYPTED_FILE_STORAGE='true'`（一级，启用 hybrid storage）+ `QODERCN_FORCE_FILE_STORAGE='true'`（二级，选 encrypted-file backend）；disabled 三路压制用例与 controlled fake-spawn 断言同步覆盖两键。全文件 **83/83**。
-- **验收探针结果（如实，未闭合）**：含凭证 auth-only profile（同 Round 2 配方）+ 双开关 + `mcp add/remove`（reviewer 对照协议）+ `-p` 探针：audit1 绿、mcp add/remove 均 exit 0，但 **salt 未生成、`-p` 报需登录**（Round 2 同配方单开关时主 OAuth 可复用）。**疑因版本分歧**：本机唯一安装是 `qoderclicn@1.1.51`（live raw archive init 亦自报 1.1.51），reviewer 解码两级开关与 add/remove→salt 对照用的是 **1.1.55** bundle；1.1.51 可能不认一级开关、且双开关组合下登录判定路径不同。本机未找到 1.1.55 安装（~/.local 仅 1.1.51；runtime 树无 @qodercn-ai）。
-- **请求 reviewer 裁决**：①你侧 1.1.55 对照环境的坐标（或允许以 live 首跑作终验，弹窗/登录缺失即回滚）；②若 1.1.51/1.1.55 行为确有分歧，live 实际 spawn 用哪版需先钉死（raw archive 自报 1.1.51 vs 你读到的 live 1.1.55 安装源）——这本身可能是一颗新种子。诚实立场：实现按你的两级契约完成并被测试钉住；隔离验收在版本分歧解决前**停在 pre-merge unresolved**，不推动 merge。
-
-`[谱谱/glm-5.3🐾]`
-
-## Round 4（应砚砚 Round-3 CHANGES_REQUESTED，review 绑 reviewedHeadSha=0414128a926cbefc6b9f923702b662d35b586102）
-
-- **P2 已修**：一级开关 `QODERCN_FORCE_ENCRYPTED_FILE_STORAGE` 进入 disabled 三路 `false` 压制与 controlled fake-spawn 的预置/finally 恢复；双键最终断言保留。83/83，biome error 级 0。
-- **P1 重跑（按判决用 `/opt/homebrew/bin/qodercn` = 1.1.55，已核 `--version`）**：含凭证 auth-only profile（同配方）+ 双开关。实测：audit1 绿；`mcp add probe-srv https://example.invalid/mcp` exit 0 但条目落在 **cwd 作用域 `$T/.qoder/settings.local.json`**（非 profile）；带 `-H "Authorization=…"` 的 add 同样落 local settings 明文；两种形态 **`.keychain-salt` 均未生成**。撤销 Round 3 的"1.1.51 不认一级开关"版本推测（reviewer 对照已证伪，两版同构）。
-- **诚实结论**：在 reviewer 判词给定的协议字面（dummy HTTP MCP add/remove + 双开关）下，我侧环境（1.1.55 已核、含凭证与不含凭证 profile 均试）**复现不出 salt 生成**；差异只能来自未记录的命令细节或会话环境。按 reviewer 自己的标准，验收停 **pre-merge unresolved**。唯一缺口 = reviewer 侧可复现环境的**逐字命令转录**（含 cwd/HOME/QODERCN_CONFIG_DIR 相对关系——我的数据显示 add 走 cwd 作用域，若你的 salt 在 profile 内，你的 QODERCN_CONFIG_DIR/cwd 组合必然与我不同）。拿到即复跑收口。
+- **操作员肉眼终验 PASS**：#41 合入（`a74503294`）+ 重启后，银线受控运行**零钥匙串弹窗**；操作员指示关闭此线，复发再开。
+- 至此钥匙串线全链闭环：#40（存储后端纵深防御）+ #41（umid-bridge 真凶）均在 live 生效；银线 09-19 11:58Z 探针（exit 0 / Qwen3.8-Max / 零授权交互）+ 本 GUI 判据双证。
+- 残留观察（不阻断）：refresh-token 轮换未单独探针覆盖（登录异常先查此）；qoder 导航/回球句柄输出卫生（另一毛线球）。
 
 `[谱谱/glm-5.3🐾]`
