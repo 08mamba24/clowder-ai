@@ -765,6 +765,124 @@ describe('writeAntigravityMcpConfig', () => {
     }
   });
 
+  it('#1454 P1: ambient agent-key creds must not synthesize the union opt-in for preserved third-party cat-cafe entries', async () => {
+    const file = join(dir, 'mcp_config.json');
+    await writeFile(
+      file,
+      JSON.stringify({
+        mcpServers: {
+          'cat-cafe-server': { command: '/opt/third-party/cat-cafe-server', args: [] },
+        },
+      }),
+    );
+    const originalKeyFile = process.env.CAT_CAFE_AGENT_KEY_FILE;
+    try {
+      process.env.CAT_CAFE_AGENT_KEY_FILE = '/tmp/fake-agent-key';
+      await writeAntigravityMcpConfig(file, [
+        { name: 'cat-cafe-memory', command: 'node', args: ['memory.js'], enabled: true, source: 'cat-cafe' },
+      ]);
+      const raw = JSON.parse(await readFile(file, 'utf-8'));
+      assert.equal(
+        raw.mcpServers['cat-cafe-server'].env.CAT_CAFE_READONLY_AGENT_KEY_UNION,
+        undefined,
+        'a preserved third-party entry that merely reuses a cat-cafe-* name must not get the union opt-in synthesized from ambient creds',
+      );
+      assert.equal(
+        raw.mcpServers['cat-cafe-memory'].env.CAT_CAFE_READONLY_AGENT_KEY_UNION,
+        'true',
+        'managed descriptor with delivered credentials still gets the synthesized opt-in',
+      );
+    } finally {
+      if (originalKeyFile === undefined) delete process.env.CAT_CAFE_AGENT_KEY_FILE;
+      else process.env.CAT_CAFE_AGENT_KEY_FILE = originalKeyFile;
+    }
+  });
+
+  it('#1454 P1: external-source descriptor with a cat-cafe-* name gets no synthesized union', async () => {
+    const file = join(dir, 'mcp_config.json');
+    const originalKeyFile = process.env.CAT_CAFE_AGENT_KEY_FILE;
+    try {
+      process.env.CAT_CAFE_AGENT_KEY_FILE = '/tmp/fake-agent-key';
+      await writeAntigravityMcpConfig(file, [
+        {
+          name: 'cat-cafe-external-tool',
+          command: '/opt/third-party/tool',
+          args: [],
+          enabled: true,
+          source: 'external',
+        },
+      ]);
+      const raw = JSON.parse(await readFile(file, 'utf-8'));
+      assert.equal(
+        raw.mcpServers['cat-cafe-external-tool'].env.CAT_CAFE_READONLY_AGENT_KEY_UNION,
+        undefined,
+        'union synthesis must be gated on managed provenance (source === "cat-cafe"), not on the cat-cafe-* name',
+      );
+    } finally {
+      if (originalKeyFile === undefined) delete process.env.CAT_CAFE_AGENT_KEY_FILE;
+      else process.env.CAT_CAFE_AGENT_KEY_FILE = originalKeyFile;
+    }
+  });
+
+  it('#1454 P1: descriptor-explicit union=false forces strict readonly even with ambient creds', async () => {
+    const file = join(dir, 'mcp_config.json');
+    const originalKeyFile = process.env.CAT_CAFE_AGENT_KEY_FILE;
+    try {
+      process.env.CAT_CAFE_AGENT_KEY_FILE = '/tmp/fake-agent-key';
+      await writeAntigravityMcpConfig(file, [
+        {
+          name: 'cat-cafe',
+          command: 'node',
+          args: ['index.js'],
+          enabled: true,
+          source: 'cat-cafe',
+          env: { CAT_CAFE_READONLY_AGENT_KEY_UNION: 'false' },
+        },
+      ]);
+      const raw = JSON.parse(await readFile(file, 'utf-8'));
+      assert.equal(
+        raw.mcpServers['cat-cafe'].env.CAT_CAFE_READONLY_AGENT_KEY_UNION,
+        'false',
+        'an explicit false on a managed descriptor must keep the mount strict-readonly despite delivered credentials',
+      );
+    } finally {
+      if (originalKeyFile === undefined) delete process.env.CAT_CAFE_AGENT_KEY_FILE;
+      else process.env.CAT_CAFE_AGENT_KEY_FILE = originalKeyFile;
+    }
+  });
+
+  it('#1454 P1: user-explicit union opt-in on a preserved entry is preserved', async () => {
+    const file = join(dir, 'mcp_config.json');
+    await writeFile(
+      file,
+      JSON.stringify({
+        mcpServers: {
+          'cat-cafe-server': {
+            command: '/opt/third-party/cat-cafe-server',
+            args: [],
+            env: { CAT_CAFE_READONLY_AGENT_KEY_UNION: 'true' },
+          },
+        },
+      }),
+    );
+    const originalKeyFile = process.env.CAT_CAFE_AGENT_KEY_FILE;
+    try {
+      process.env.CAT_CAFE_AGENT_KEY_FILE = '/tmp/fake-agent-key';
+      await writeAntigravityMcpConfig(file, [
+        { name: 'cat-cafe-memory', command: 'node', args: ['memory.js'], enabled: true, source: 'cat-cafe' },
+      ]);
+      const raw = JSON.parse(await readFile(file, 'utf-8'));
+      assert.equal(
+        raw.mcpServers['cat-cafe-server'].env.CAT_CAFE_READONLY_AGENT_KEY_UNION,
+        'true',
+        'the user may opt their own preserved entry into the union explicitly; the writer must keep, not strip or duplicate, that choice',
+      );
+    } finally {
+      if (originalKeyFile === undefined) delete process.env.CAT_CAFE_AGENT_KEY_FILE;
+      else process.env.CAT_CAFE_AGENT_KEY_FILE = originalKeyFile;
+    }
+  });
+
   it('#712: preserves legacy cat-cafe monolith in antigravity config when F213 cannot prove ownership', async () => {
     // F213 cleanup only removes entries matching known managed markers (echoLegacyShim).
     // A legacy node-based entry cannot be proven managed → preserved for safety.

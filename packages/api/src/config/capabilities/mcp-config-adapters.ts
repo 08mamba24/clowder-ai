@@ -156,14 +156,6 @@ function buildAntigravityCatCafeEnvBaseline(): Readonly<Record<string, string>> 
   if (agentKeyFile) env.CAT_CAFE_AGENT_KEY_FILE = agentKeyFile;
   const agentKeyFiles = process.env.CAT_CAFE_AGENT_KEY_FILES?.trim();
   if (agentKeyFiles) env.CAT_CAFE_AGENT_KEY_FILES = agentKeyFiles;
-  // The readonly+agent-key union is explicit opt-in. Antigravity
-  // is the legit consumer (its enforced CAT_CAFE_READONLY=true mount needs the
-  // AGENT_KEY write tools), so grant the union only when agent-key files are
-  // actually being handed to this mount. Third-party cat-cafe-* mounts never
-  // get this flag and stay strict-readonly even if the parent env leaks
-  // CAT_CAFE_AGENT_KEY_* vars. (Baseline = lowest priority; a descriptor may
-  // still set the flag to "false" to force strict readonly.)
-  if (agentKeyFile || agentKeyFiles) env.CAT_CAFE_READONLY_AGENT_KEY_UNION = 'true';
   return env;
 }
 
@@ -215,8 +207,22 @@ function ensureWorkspaceEnvForManagedCatCafe(
   };
 }
 
-function ensureAntigravityCatCafeEnv(name: string, env?: Record<string, string>): Record<string, string> | undefined {
-  if (!isCatCafeServer(name)) return env;
+/**
+ * Provenance, not name, grants the union opt-in (upstream #1454 review P1):
+ * synthesizing CAT_CAFE_READONLY_AGENT_KEY_UNION from ambient
+ * CAT_CAFE_AGENT_KEY_* vars inside the name-gated baseline handed the
+ * write-tool union to preserved third-party/fork-like entries that merely
+ * reuse a cat-cafe-* name. The opt-in may only be synthesized for a managed
+ * descriptor (source === 'cat-cafe'), and only when the final merged env
+ * actually delivers agent-key credentials. Anything explicitly set —
+ * including "false", which forces strict readonly — always wins over
+ * synthesis; preserved entries keep whatever the user wrote themselves.
+ */
+function ensureAntigravityCatCafeEnv(
+  server: Pick<McpServerDescriptor, 'name' | 'source'>,
+  env?: Record<string, string>,
+): Record<string, string> | undefined {
+  if (!isCatCafeServer(server.name)) return env;
   const safeEnv = { ...(env ?? {}) };
   delete safeEnv.CAT_CAFE_AGENT_KEY_SECRET;
   // codex review (PR #1414) P1-2: previous merge order put defaults LAST,
@@ -225,11 +231,19 @@ function ensureAntigravityCatCafeEnv(name: string, env?: Record<string, string>)
   //   1. baseline (fillable defaults, e.g. ALLOWED_WORKSPACE_DIRS) — lowest priority
   //   2. descriptor env / pre-existing config — wins for user-controllable keys
   //   3. enforced (CAT_CAFE_API_URL, CAT_CAFE_READONLY) — highest, can't be opted out
-  return {
+  const merged: Record<string, string> = {
     ...buildAntigravityCatCafeEnvBaseline(),
     ...safeEnv,
     ...buildAntigravityCatCafeEnforcedEnv(),
   };
+  if (
+    server.source === 'cat-cafe' &&
+    merged.CAT_CAFE_READONLY_AGENT_KEY_UNION === undefined &&
+    (merged.CAT_CAFE_AGENT_KEY_FILE || merged.CAT_CAFE_AGENT_KEY_FILES)
+  ) {
+    merged.CAT_CAFE_READONLY_AGENT_KEY_UNION = 'true';
+  }
+  return merged;
 }
 
 // ────────── Readers ──────────
@@ -523,7 +537,7 @@ export async function writeAntigravityMcpConfig(filePath: string, servers: McpSe
       continue;
     }
     const entry: Record<string, unknown> = { command: s.command, args: s.args };
-    const env = ensureAntigravityCatCafeEnv(s.name, s.env);
+    const env = ensureAntigravityCatCafeEnv(s, s.env);
     if (env && Object.keys(env).length > 0) entry.env = env;
     if (s.workingDir) entry.cwd = s.workingDir;
     existingMcp[s.name] = entry;
@@ -534,7 +548,10 @@ export async function writeAntigravityMcpConfig(filePath: string, servers: McpSe
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
     const cfg = value as Record<string, unknown>;
     const currentEnv = toStringRecord(cfg.env);
-    cfg.env = ensureAntigravityCatCafeEnv(name, currentEnv);
+    // File-preserved entries carry no managed provenance (F213: no reliable
+    // ownership proof → preserve), so they get the file-read default source —
+    // union synthesis can never fire for them here.
+    cfg.env = ensureAntigravityCatCafeEnv({ name, source: 'external' }, currentEnv);
     existingMcp[name] = cfg;
   }
 
