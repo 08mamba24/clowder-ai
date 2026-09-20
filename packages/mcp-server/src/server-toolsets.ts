@@ -1,6 +1,6 @@
+import { hasUsableAgentKeyCredentials } from '@cat-cafe/shared/utils';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { hasUsableAgentKeyCredentials } from '@cat-cafe/shared/utils';
 import { projectAgentKeyCollaborationContract } from './agent-key-collaboration-contract.js';
 import { CANONICAL_TOOL_REGISTRY } from './canonical-server-tools.js';
 import { derivedProfileSet, projectServerFamily } from './canonical-tool-registry.js';

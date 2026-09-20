@@ -24,11 +24,6 @@ import type {
   SuggestedCrossPostAction,
 } from '@cat-cafe/shared';
 import {
-  hasUsableAgentKeyCredentials,
-  parseAgentKeyFileMap,
-  readAgentKeyFileSync as readAgentKeyFile,
-} from '@cat-cafe/shared/utils';
-import {
   ACTION_SUBJECT_REF_DESCRIPTION,
   acceptedRevisionSchema,
   acceptedSourceRefSchema,
@@ -56,6 +51,11 @@ import {
   SOP_DEFINITION_IDS,
   taskFeatureIdSchema,
 } from '@cat-cafe/shared';
+import {
+  hasUsableAgentKeyCredentials,
+  parseAgentKeyFileMap,
+  readAgentKeyFileSync as readAgentKeyFile,
+} from '@cat-cafe/shared/utils';
 import { z } from 'zod';
 import { sendCallbackRequest } from './callback-outbox.js';
 import { extractReasonTag } from './callback-retry.js';

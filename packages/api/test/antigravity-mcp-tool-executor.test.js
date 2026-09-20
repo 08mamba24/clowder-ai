@@ -146,23 +146,27 @@ describe('CallMcpToolExecutor', () => {
     assert.equal(strict.CAT_CAFE_READONLY_AGENT_KEY_UNION, undefined, 'no agent-key creds → no union opt-in');
 
     const keyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-mcp-key-'));
-    const sidecar = path.join(keyDir, 'agent.secret');
-    fs.writeFileSync(sidecar, 'agent-key-material\n', 'utf-8');
+    try {
+      const sidecar = path.join(keyDir, 'agent.secret');
+      fs.writeFileSync(sidecar, 'agent-key-material\n', 'utf-8');
 
-    const withKeyFile = buildMcpEnvForTest({ CAT_CAFE_AGENT_KEY_FILE: sidecar });
-    assert.equal(
-      withKeyFile.CAT_CAFE_READONLY_AGENT_KEY_UNION,
-      'true',
-      'antigravity mount with a usable sidecar keeps the union',
-    );
+      const withKeyFile = buildMcpEnvForTest({ CAT_CAFE_AGENT_KEY_FILE: sidecar });
+      assert.equal(
+        withKeyFile.CAT_CAFE_READONLY_AGENT_KEY_UNION,
+        'true',
+        'antigravity mount with a usable sidecar keeps the union',
+      );
 
-    const withKeyFiles = buildMcpEnvForTest({
-      CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ antigravity: sidecar }),
-    });
-    assert.equal(withKeyFiles.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'true');
+      const withKeyFiles = buildMcpEnvForTest({
+        CAT_CAFE_AGENT_KEY_FILES: JSON.stringify({ antigravity: sidecar }),
+      });
+      assert.equal(withKeyFiles.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'true');
 
-    const withSecret = buildMcpEnvForTest({ CAT_CAFE_AGENT_KEY_SECRET: 's' });
-    assert.equal(withSecret.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'true');
+      const withSecret = buildMcpEnvForTest({ CAT_CAFE_AGENT_KEY_SECRET: 's' });
+      assert.equal(withSecret.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'true');
+    } finally {
+      fs.rmSync(keyDir, { recursive: true, force: true });
+    }
   });
 
   test('buildMcpEnv treats env presence without usable credentials as no creds (#1494)', () => {
@@ -182,18 +186,26 @@ describe('CallMcpToolExecutor', () => {
 
   test('buildMcpEnv never clobbers an explicit union switch (#1494)', () => {
     const keyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-mcp-key-'));
-    const sidecar = path.join(keyDir, 'agent.secret');
-    fs.writeFileSync(sidecar, 'agent-key-material\n', 'utf-8');
-    const creds = { CAT_CAFE_AGENT_KEY_FILE: sidecar };
+    try {
+      const sidecar = path.join(keyDir, 'agent.secret');
+      fs.writeFileSync(sidecar, 'agent-key-material\n', 'utf-8');
+      const creds = { CAT_CAFE_AGENT_KEY_FILE: sidecar };
 
-    const forcedFalse = buildMcpEnvForTest({ ...creds, CAT_CAFE_READONLY_AGENT_KEY_UNION: 'false' });
-    assert.equal(forcedFalse.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'false', 'explicit false forces strict readonly');
+      const forcedFalse = buildMcpEnvForTest({ ...creds, CAT_CAFE_READONLY_AGENT_KEY_UNION: 'false' });
+      assert.equal(forcedFalse.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'false', 'explicit false forces strict readonly');
 
-    const forcedEmpty = buildMcpEnvForTest({ ...creds, CAT_CAFE_READONLY_AGENT_KEY_UNION: '' });
-    assert.equal(forcedEmpty.CAT_CAFE_READONLY_AGENT_KEY_UNION, '', 'explicit empty string is preserved verbatim');
+      const forcedEmpty = buildMcpEnvForTest({ ...creds, CAT_CAFE_READONLY_AGENT_KEY_UNION: '' });
+      assert.equal(forcedEmpty.CAT_CAFE_READONLY_AGENT_KEY_UNION, '', 'explicit empty string is preserved verbatim');
 
-    const forcedUpper = buildMcpEnvForTest({ ...creds, CAT_CAFE_READONLY_AGENT_KEY_UNION: 'TRUE' });
-    assert.equal(forcedUpper.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'TRUE', 'explicit non-canonical value stays verbatim');
+      const forcedUpper = buildMcpEnvForTest({ ...creds, CAT_CAFE_READONLY_AGENT_KEY_UNION: 'TRUE' });
+      assert.equal(
+        forcedUpper.CAT_CAFE_READONLY_AGENT_KEY_UNION,
+        'TRUE',
+        'explicit non-canonical value stays verbatim',
+      );
+    } finally {
+      fs.rmSync(keyDir, { recursive: true, force: true });
+    }
   });
 
   test('resolveMcpEntrypointForTest resolves from invocation workspace cwd when runtime root is unset', () => {

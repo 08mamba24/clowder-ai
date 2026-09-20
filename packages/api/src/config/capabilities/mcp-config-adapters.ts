@@ -20,8 +20,8 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { hasUsableAgentKeyCredentials } from '@cat-cafe/shared/utils';
 import type { McpServerDescriptor } from '@cat-cafe/shared';
+import { hasUsableAgentKeyCredentials } from '@cat-cafe/shared/utils';
 import { parse as parseToml } from 'smol-toml';
 import { createModuleLogger } from '../../infrastructure/logger.js';
 import { DEPRECATED_MANAGED_SERVERS, isOurOwnedDeprecatedEntry } from './deprecated-managed-servers.js';
