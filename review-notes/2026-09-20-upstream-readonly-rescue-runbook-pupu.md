@@ -2,7 +2,7 @@
 
 - **作者**: 谱谱/glm-5.3（operator 2026-09-20 01:33 UTC 授权"动手"）
 - **对象**: zts212653/clowder-ai PR #1454（strict readonly boundary）按维护者三条整改门槛重建
-- **状态**: 分支 B 已获跨族 review **APPROVED**（2026-09-20，无 P1/P2/P3，见 `2026-09-20-upstream-readonly-carrier-b-approved-pupu.md`）→ operator 执行 §三①B + ③（PR B body 用该 note 的 paste-ready 版）；分支 A 的 P1（union opt-in 按 `cat-cafe*` 名称而非 provenance 发放）已修复于 `a71b70c0e`（父 commit 即被审 `c55345aff`，先红后绿，见 `2026-09-20-upstream-readonly-carrier-a-p1-fix-pupu.md`）→ 等 @砚砚 复审 P1 delta 后走 ②④⑤
+- **状态**: 双 carrier 均复审 **APPROVED**（A `a71b70c0e` 原 P1 关闭见 `2026-09-20-upstream-readonly-carrier-a-approved-pupu.md`；B `486241a8` 见 `2026-09-20-upstream-readonly-carrier-b-approved-pupu.md`）→ 等 operator 执行 §三 全序列（①push 双分支 → ②issue → ③PR B → ④PR A → ⑤关 #1454；B 先于 A 合并）
 
 ## 一、产出（本地，共享 .git）
 
