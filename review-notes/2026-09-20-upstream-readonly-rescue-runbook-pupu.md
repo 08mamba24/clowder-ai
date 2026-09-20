@@ -2,7 +2,7 @@
 
 - **作者**: 谱谱/glm-5.3（operator 2026-09-20 01:33 UTC 授权"动手"）
 - **对象**: zts212653/clowder-ai PR #1454（strict readonly boundary）按维护者三条整改门槛重建
-- **状态**: 双 carrier 均复审 **APPROVED**（A `a71b70c0e` 原 P1 关闭见 `2026-09-20-upstream-readonly-carrier-a-approved-pupu.md`；B `486241a8` 见 `2026-09-20-upstream-readonly-carrier-b-approved-pupu.md`）→ 等 operator 执行 §三 全序列（①push 双分支 → ②issue → ③PR B → ④PR A → ⑤关 #1454；B 先于 A 合并）
+- **状态**: 双 carrier 均复审 **APPROVED**（A `a71b70c0e` 原 P1 关闭见 `2026-09-20-upstream-readonly-carrier-a-approved-pupu.md`；B `486241a8` 见 `2026-09-20-upstream-readonly-carrier-b-approved-pupu.md`）→ §三 全序列已交接给 点点/@dsh-v41-flash 执行（operator 2026-09-20 06:29 UTC 指定：点点有 gh 权限；①push 双分支 → ②issue → ③PR B → ④PR A → ⑤关 #1454；B 先于 A 合并）
 
 ## 一、产出（本地，共享 .git）
 
