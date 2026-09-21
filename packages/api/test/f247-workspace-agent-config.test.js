@@ -384,6 +384,12 @@ test('R3b: builder, segment guard, and full-key validator agree on every ASCII c
       assert.ok(isWorkspaceAgentConversationKey(built), `guard accepts but full-key validator rejects U+${(character.codePointAt(0) || 0).toString(16)}`);
     } else {
       assert.ok(built === null);
+      // astra round-3 P3: reject-side parity — a segment the predicate
+      // rejects must also fail the full-key validator by direct construction.
+      assert.ok(
+        !isWorkspaceAgentConversationKey(`clowder:${workspaceId}:t`),
+        `guard rejects but full-key validator accepts U+${(character.codePointAt(0) || 0).toString(16)}`,
+      );
     }
   }
   // Round-trip: every key the builder produces validates.

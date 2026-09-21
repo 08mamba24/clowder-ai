@@ -18,6 +18,8 @@ const messageByReason: Record<BridgeFallbackReason, (catId: string) => string> =
     `未发送给 @${catId}：投递来源或回程绑定不完整，系统已阻止无法精确审计的云端调用。`,
   'legacy-delivery-unverified': (catId) =>
     `投递给 @${catId} 的结果未知：旧版页面桥没有返回可验证的 Host message receipt。`,
+  'cloud-loop-suppressed': (catId) =>
+    `未再次发送给 @${catId}：这条消息来自 @${catId} 自己的云端回程，再触发同方向派发会形成回声环；如需继续对话请由本地猫或用户重新发起。`,
   'workspace-agent-unauthorized': (catId) =>
     `未发送给 @${catId}：Workspace Agent 授权被拒绝（token 失效或权限不足）。请在设置里重新授权后再试。`,
   'workspace-agent-rejected': (catId) =>

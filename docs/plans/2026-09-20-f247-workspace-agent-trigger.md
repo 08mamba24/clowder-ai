@@ -58,6 +58,19 @@
 - R3b 残留(P2) 已修：单一 segment 谓词 `isWorkspaceAgentConversationKeySegment`（拒空、>256、冒号、全 C0 含 NUL、DEL、全部 Unicode 空白）；builder 的 requireSegment、full-key validator（由谓词重建，split 三段逐一验证）、Settings PUT、config save、persisted parse、env 六消费方全部走它。ASCII 0..127 + Unicode 空白 + BOM 扫描测试证明 builder-throw ⟺ guard-false ⟺ full-key-reject 三方一致。
 - 更正上一轮我的反说法：旧 repro 断言的是**正确行为**，修复后应变绿（不是我说的"翻红=修好"）。
 
+## Review 轮次记录（astra round 3 → APPROVED for corrective delta）
+
+- R1/R3a/R3b 关闭；159/159 回归 + 独立复现 11/11（含 12,300 候选双位置扫描）。
+- 边界记录（astra 答复）：unreadable 态的恢复需要**重启或完整 save**——chmod 恢复不刷新当前实例缓存（配置 load 首读即缓存）。Settings 卡呈现恢复路径时不得暗示修权限即自动重读。
+- P3 已顺手修：parity 测试补 reject-side 断言（guard 拒绝的 segment，直接构造的 full-key 也必须拒绝）。
+
+### ② 防环实现决策（本轮落地）
+
+- **守卫位置**：invoke-single-cat 云派发块，grant 签发**之前**——源消息作者是目标云端猫本人（sourceSender.kind='cat' && id===catId）时 typed 终止 `cloud-loop-suppressed`，不签 grant、不 dispatch。
+- **不变量**：同一回程不再次触发原方向（outbound→return→outbound 断环）；跨猫交接与用户正常 @ 不受影响（三态测试钉住：self-cat 抑制 / 他猫放行 / 用户放行）。
+- **授权边界**：判定只看服务端 source-authority；**不消费模型自报 origin/bridgeEventId**（delta 防环字段仍是 best-effort telemetry，缺省时回退 exact-source durable idempotency）。
+- receipt 语义：suppressed → status 'failed' + disposition 'not_attempted' + transport 'none'（既有映射，无新增层）。
+
 ### Failure-Mode Sweep（本轮）
 
 | pattern | scanned | fixed | N/A |

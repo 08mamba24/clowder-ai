@@ -2126,6 +2126,22 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
         sourceMessageId &&
         sourceSender
       ) {
+        // F247 loop suppression (astra round-1 landing-zone correction): a
+        // message authored by the target cloud cat itself must never
+        // re-trigger the outbound direction to that cat (outbound → return →
+        // outbound cycle). Server-side source-authority only — model-reported
+        // origin fields are never consulted for this decision.
+        if (sourceSender.kind === 'cat' && String(sourceSender.id) === String(catId)) {
+          log.warn(
+            { catId, threadId, invocationId, sourceMessageId },
+            'F247 cloud loop suppressed: source is the target cloud cat itself',
+          );
+          outcome = {
+            kind: 'fallback',
+            reason: 'cloud-loop-suppressed',
+            detail: 'A cloud cat return cannot re-trigger an outbound dispatch to the same cloud cat',
+          };
+        } else {
         let threadMetadata = null;
         if (threadStore) {
           try {
@@ -2176,6 +2192,7 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
             dispatchInvocationId: invocationId,
             ...(sourceSender?.invocationId ? { causationId: sourceSender.invocationId } : {}),
           });
+        }
         }
       } else {
         const reason = !sourceMessageId

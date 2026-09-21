@@ -146,6 +146,7 @@ export type BridgeFallbackReason =
   | 'missing-source-message-id'
   | 'incomplete-dispatch-provenance'
   | 'legacy-delivery-unverified'
+  | 'cloud-loop-suppressed'
   | 'workspace-agent-unauthorized'
   | 'workspace-agent-rejected'
   | 'workspace-agent-failed';
