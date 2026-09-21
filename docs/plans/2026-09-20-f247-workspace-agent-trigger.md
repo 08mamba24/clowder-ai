@@ -71,6 +71,22 @@
 - **授权边界**：判定只看服务端 source-authority；**不消费模型自报 origin/bridgeEventId**（delta 防环字段仍是 best-effort telemetry，缺省时回退 exact-source durable idempotency）。
 - receipt 语义：suppressed → status 'failed' + disposition 'not_attempted' + transport 'none'（既有映射，无新增层）。
 
+## Step ①/③ 交付记录（round-3 后）
+
+### ① Settings web 卡（已落地）
+
+- `packages/web/src/components/settings/WorkspaceAgentPluginPanel.tsx`：状态徽章（已启用/未启用/需修复）、trigger id / workspaceId / token（write-only，已保管显示占位不回显）表单、授权并启用 / 保存、停用（confirm）、发送测试触发、typed 测试结果、invalidConfig 恢复指引（**明确写"仅修权限不会自动重读，需完整保存或重启"**——astra round-3 答复的边界）。挂载于 PluginsContent 三个视图位（紧跟 PersonalChrome 面板）。
+- 组件测试 4/4（disabled 态无 token 物料 / invalid 恢复指引 / PUT 保存 + token 字段 round-trip 后清空 / typed 测试失败展示）；web `tsc --noEmit` 干净。
+
+### ③ 集成验收现状与缺项（诚实清单）
+
+- **已做（stub 级）**：replay——同 exact source 重发携带**相同 Idempotency-Key + 相同 conversation_key**，客户端不去重（provider 拥有 replay 真相）；bridge 测试 10/10。
+- **缺项（需要 owner/真环境，列给铲屎官）**：
+  1. **真实 provider trigger**：需要在 ChatGPT Admin 创建 Workspace Agents scope 的 access token + 一个 trigger（agtch_…）——填进 Settings 卡即可走「发送测试触发」验收 202/conversation_url。
+  2. **真实 Redis restart**：隔离测试库（非生产 Redis）重启后 grant/bindings 语义回归；本机无隔离 Redis 实例可用（sandbox 无法起 docker），需带环境会话执行。
+  3. **页面关闭 live dogfood**：owner 在真实浏览器关页后触发一轮 @gpt-pro 双向观察（Settings 自检会话 + thread 会话）。
+- **live dogfood 剧本（交 owner）**：① Settings 卡填 trigger id + workspace id + token → 保存并启用 → 点「发送测试触发」→ 预期 202 + conversation_url 打开自检会话；② 任意 thread 行首 @gpt-pro 发一条 → 预期 thread 出现 sent receipt（transport=workspace-agent）→ 云端 agent 经 Remote MCP cat_cafe_post_message(replyTo=sourceMessageId) 回写 → 本地气泡出现 gpt-pro 回复；③ 让 gpt-pro 的回复内容里包含 @gpt-pro → 预期 typed `cloud-loop-suppressed`、无第二次出站；④ Settings 停用 → 再 @gpt-pro → 预期走 Personal Chrome/needs-binding 路径（不静默回退已验证，live 再证一次）。
+
 ### Failure-Mode Sweep（本轮）
 
 | pattern | scanned | fixed | N/A |

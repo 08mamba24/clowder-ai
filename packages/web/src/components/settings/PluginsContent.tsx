@@ -14,6 +14,7 @@ import {
 } from '../SettingsResourceCard';
 import { OfficialPluginsPanel } from './OfficialPluginsPanel';
 import { PersonalChromePluginPanel } from './PersonalChromePluginPanel';
+import { WorkspaceAgentPluginPanel } from './WorkspaceAgentPluginPanel';
 import { PluginConfigPanel } from './PluginConfigPanel';
 import { PluginManagerContent } from './plugin-manager/PluginManagerContent';
 import { PluginManagerLiveContent } from './plugin-manager/PluginManagerLiveContent';
@@ -211,6 +212,7 @@ export function PluginsContent() {
     return (
       <div className="flex flex-col gap-3.5" data-testid="plugins-list">
         <PersonalChromePluginPanel />
+        <WorkspaceAgentPluginPanel />
         <OfficialPluginsPanel />
         <SettingsText as="p" variant="sm" tone="muted">
           加载本地插件中...
@@ -223,6 +225,7 @@ export function PluginsContent() {
     return (
       <div className="flex flex-col gap-3.5" data-testid="plugins-list">
         <PersonalChromePluginPanel />
+        <WorkspaceAgentPluginPanel />
         <OfficialPluginsPanel />
         <div
           className="flex flex-col items-center justify-center"

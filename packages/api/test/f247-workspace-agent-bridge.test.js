@@ -221,3 +221,23 @@ test('typed error codes stay distinguishable through the dispatch boundary', () 
   assert.equal(unauthorized.status, 401);
   assert.equal(unauthorized.name, 'WorkspaceAgentTriggerError');
 });
+
+test('replay: re-dispatch of the same exact source reuses the identical Idempotency-Key and conversation_key', async () => {
+  const triggerCalls = [];
+  const { deps } = makeWorkspaceAgentDeps(
+    makeTriggerAdapter((url, init) => {
+      triggerCalls.push({ key: init.headers['Idempotency-Key'], body: JSON.parse(init.body) });
+      return jsonResponse(202, { conversation_url: 'https://chatgpt.com/c/wa-1' });
+    }),
+  );
+  const bridge = new CloudInvokeBridge(deps);
+  const first = await bridge.dispatch(params);
+  const second = await bridge.dispatch(params);
+  assert.equal(first.kind, 'sent');
+  assert.equal(second.kind, 'sent');
+  assert.equal(triggerCalls.length, 2, 'client does not dedupe — the provider owns Idempotency-Key replay');
+  assert.equal(triggerCalls[0].key, 'src-msg-1');
+  assert.equal(triggerCalls[1].key, 'src-msg-1', 'exact-source retry must present the same Idempotency-Key');
+  assert.equal(triggerCalls[0].body.conversation_key, 'clowder:ws_1:thread_1');
+  assert.equal(triggerCalls[1].body.conversation_key, 'clowder:ws_1:thread_1', 'conversation continuity is stable');
+});
