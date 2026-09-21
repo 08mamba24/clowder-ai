@@ -7,6 +7,9 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   buildWorkspaceAgentConversationKey,
@@ -238,4 +241,35 @@ test('bindings migration: JSON-stringified versioned entry (Redis storage form) 
   assert.deepEqual(decoded, entry);
   assert.equal(normalizeCloudCatBinding(JSON.stringify({ v: 1, provider: 'bogus' })), null);
   assert.equal(normalizeCloudCatBinding('{"v":1,"provider":'), null, 'truncated JSON fails closed');
+});
+
+test('round-5 R2: snapshot resolver binds identity + token at resolution time', async () => {
+  const { createWorkspaceAgentTriggerConfig, resolveWorkspaceAgentTransportSnapshot } = await import(
+    '../dist/domains/cats/services/cloud-bridge/workspace-agent/workspace-agent-config.js'
+  );
+  const root = mkdtempSync(join(tmpdir(), 'f247-wa-snap-'));
+  try {
+    const config = createWorkspaceAgentTriggerConfig({
+      projectRoot: root,
+      env: {
+        CAT_CAFE_WORKSPACE_AGENT_TRIGGER_ID: 'agtch_A',
+        CAT_CAFE_WORKSPACE_AGENT_WORKSPACE_ID: 'ws_A',
+        CAT_CAFE_WORKSPACE_AGENT_TOKEN: 'token-A',
+      },
+    });
+    const snapshot = resolveWorkspaceAgentTransportSnapshot(config);
+    assert.equal(snapshot.triggerId, 'agtch_A');
+    assert.equal(snapshot.workspaceId, 'ws_A');
+    // Mid-flight owner change must not alter the in-use snapshot's identity.
+    config.save({ triggerId: 'agtch_B', workspaceId: 'ws_B', token: 'token-B' });
+    assert.equal(snapshot.triggerId, 'agtch_A', 'snapshot identity is immutable');
+    assert.equal(snapshot.workspaceId, 'ws_A');
+    assert.equal(config.resolve()?.triggerId, 'agtch_B');
+    // And after disable, a fresh resolution is null while the old snapshot still completes.
+    config.disable();
+    assert.equal(resolveWorkspaceAgentTransportSnapshot(config), null);
+    assert.equal(snapshot.triggerId, 'agtch_A');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

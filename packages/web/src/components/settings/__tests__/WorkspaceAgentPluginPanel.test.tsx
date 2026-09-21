@@ -133,3 +133,30 @@ describe('WorkspaceAgentPluginPanel', () => {
 afterAll(() => {
   vi.restoreAllMocks();
 });
+
+describe('round-5 R3: provider-aware recovery actions in CloudConversationLink', () => {
+  it('workspace-agent bound entries show the WA settings entry, never the Personal Chrome rebinding', async () => {
+    const { CloudConversationLink } = await import('../../CloudConversationLink');
+    mockApiFetch.mockImplementation(async () =>
+      jsonResponse({
+        bindings: {
+          'gpt-pro': {
+            provider: 'workspace-agent',
+            conversationUrl: 'https://chatgpt.com/c/wa-recovery-1',
+          },
+        },
+      }),
+    );
+    await act(async () => {
+      root!.render(<CloudConversationLink threadId="thread-wa" />);
+    });
+    const container2 = document.querySelector('[data-testid="cloud-conversation-link"]')!;
+    expect(container2.textContent).toContain('wa-recovery-1');
+    expect(container2.querySelector('a[href="https://chatgpt.com/c/wa-recovery-1"]')).not.toBeNull();
+    expect(container2.textContent).not.toContain('更换绑定');
+    const waSettings = [...container2.querySelectorAll('a')].find((a) =>
+      a.getAttribute('href')?.includes('#workspace-agent'),
+    );
+    expect(waSettings).toBeDefined();
+  });
+});

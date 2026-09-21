@@ -203,8 +203,10 @@ export class CloudInvokeBridge implements ICloudInvokeBridge {
           await this.deps.threadStore.updateCloudCatBindingEntry?.(params.threadId, params.catId, {
             v: 1,
             provider: 'workspace-agent',
+            // Snapshot identity from before the await — never re-read from
+            // mutable Settings after the 202 boundary (round-5 R2).
             workspaceId: workspaceAgentTransport.workspaceId,
-            triggerId: workspaceAgentTransport.adapter.triggerId,
+            triggerId: workspaceAgentTransport.triggerId,
             conversationUrl: workspaceAgentDecision.outcome.capturedUrl,
           });
         } catch (err) {

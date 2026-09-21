@@ -69,6 +69,17 @@ export function WorkspaceAgentPluginPanel() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    const reveal = () => {
+      if (window.location.hash === '#workspace-agent') {
+        document.querySelector('[data-testid="workspace-agent-plugin-panel"]')?.scrollIntoView({ block: 'center' });
+      }
+    };
+    reveal();
+    window.addEventListener('hashchange', reveal);
+    return () => window.removeEventListener('hashchange', reveal);
+  }, []);
+
   const save = useCallback(
     async (enabled: boolean) => {
       setBusy(true);

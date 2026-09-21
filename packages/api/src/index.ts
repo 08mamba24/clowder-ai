@@ -2278,6 +2278,8 @@ async function main(): Promise<void> {
     env: process.env,
     logger: bridgeLogger,
   });
+  // Settings test button uses the refreshable adapter (live config per call);
+  // the bridge consumes one snapshot-bound transport per dispatch (round-5 R2).
   const workspaceAgentTriggerAdapter = workspaceAgentModules.createRefreshableWorkspaceAgentTriggerAdapter(
     workspaceAgentConfig,
   );
@@ -2325,10 +2327,7 @@ async function main(): Promise<void> {
     // Config custody is server-side (mode-0600 settings file with env
     // bootstrap fallback); the token never reaches projections or logs, and
     // resolution is read-per-dispatch so Settings changes apply immediately.
-    workspaceAgent: () => {
-      const active = workspaceAgentConfig.resolve();
-      return active ? { adapter: workspaceAgentTriggerAdapter, workspaceId: active.workspaceId } : null;
-    },
+    workspaceAgent: () => workspaceAgentModules.resolveWorkspaceAgentTransportSnapshot(workspaceAgentConfig),
     emitFallback: async ({ threadId: fbThreadId, catId: fbCatId, reason }) => {
       // invokeSingleCat owns the one user-visible status so route persistence,
       // F167 disposition, and Queue settlement share one child invocation.

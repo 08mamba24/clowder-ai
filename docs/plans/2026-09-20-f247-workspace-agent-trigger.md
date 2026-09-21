@@ -95,6 +95,14 @@
 - P3 已修：live dogfood 预期区分「文本自 @（analyzeA2AMentions 过滤，零派发零 receipt）」与「显式进入 admission 的自目标（typed cloud-loop-suppressed）」。
 - 撤回声明：此前"本机不能起隔离 Redis，交 owner"不成立（redis-server 二进制即可）。
 
+## Review 轮次记录（astra round 5 → REQUEST_CHANGES 修正）
+
+- R1(P1) 已修：**单一继承权威** `activeEnvForInheritance()`——仅当持久化文件 absent 且 env 三元组完整合法（即 env 是活跃配置）时，save()/disable() 才可迁移 env 凭据；disabled 墓碑与 invalid/unreadable 文件对 env 的抑制覆盖**继承**而不只是 dispatch。save/disable 的回退链收敛为一条（显式输入 → 文件值 → 可继承 env），多层 ||/?? 链移除。状态矩阵新增 3 用例：invalid 文件 + PUT {enabled:true} 必须 400（完整恢复）、空墓碑 save 不得从 env 补齐、墓碑重复 disable 不导入被抑制凭据。
+- R2(P2) 已修：**一次派发一个配置快照**——resolver 改为 `resolveWorkspaceAgentTransportSnapshot()`（快照绑定的 adapter + triggerId + workspaceId 一次取齐），bridge 锚写入只读快照字段，不 await 后读活配置 getter。测试：in-flight 改 trigger（getter 返回 B）→ 锚仍写快照 A；快照不可变性 + disable 后新 resolve 为 null 而旧快照仍可完成。
+- R3(P2) 已修：CloudConversationLink 的 bound 状态携带 provider；workspace-agent 条目隐藏「更换绑定」（只属于 Personal Chrome 流程），改提供 `#workspace-agent` 深链到 WA 设置卡（面板新增 hash reveal + scrollIntoView）。组件断言：WA 条目渲染打开/复制 + WA 设置入口，Personal Chrome 更换绑定不出现。
+- R4(P2) 已修：redis-cli 从 server binary 同目录推导（再 PATH 兜底）；shutdown 失败**传播**（不再无条件 resolve）；退出等待有界（5s 超时 SIGKILL 且断言非 timeout）；无 cli 时 SIGTERM（--save 1 1 保证落盘）+ 退出码检查。真实重启回归保持通过（119ms）。
+- P3 已修：GET/PATCH 共用 `projectCloudBindingsForOwner()` 单一 owner 投影；对称性测试断言同一 WA 条目在两处响应里都是对象（JSON 存储串不泄漏）。
+
 ### Failure-Mode Sweep（本轮）
 
 | pattern | scanned | fixed | N/A |

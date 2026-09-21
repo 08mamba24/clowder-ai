@@ -55,10 +55,10 @@ function makeBridgeDeps(overrides = {}) {
   return { deps, calls };
 }
 
-/** Deps with an active workspace-agent transport (slice 2b resolver shape). */
-function makeWorkspaceAgentDeps(adapter) {
+/** Deps with an active workspace-agent transport (round-5 snapshot shape). */
+function makeWorkspaceAgentDeps(adapter, identity = { workspaceId: 'ws_1', triggerId: 'agtch_test' }) {
   return makeBridgeDeps({
-    workspaceAgent: () => ({ adapter, workspaceId: 'ws_1' }),
+    workspaceAgent: () => ({ adapter, workspaceId: identity.workspaceId, triggerId: identity.triggerId }),
   });
 }
 
@@ -248,6 +248,7 @@ test('round-4 R3: workspace-agent sent persists the owner-only recovery binding'
     workspaceAgent: () => ({
       adapter: makeTriggerAdapter(() => jsonResponse(202, { conversation_url: 'https://chatgpt.com/c/wa-1' })),
       workspaceId: 'ws_1',
+      triggerId: 'agtch_test',
     }),
     threadStore: {
       getCloudCatBindings: async () => ({}),
@@ -272,6 +273,7 @@ test('round-4 R3: recovery binding write failure does not fail the delivered dis
     workspaceAgent: () => ({
       adapter: makeTriggerAdapter(() => jsonResponse(202, { conversation_url: 'https://chatgpt.com/c/wa-2' })),
       workspaceId: 'ws_1',
+      triggerId: 'agtch_test',
     }),
     threadStore: {
       getCloudCatBindings: async () => ({}),
@@ -308,3 +310,46 @@ function makeBridgeDepsOverrides(overrides) {
   };
   return { deps, calls };
 }
+
+test('round-5 R2: in-flight config change cannot corrupt the binding identity snapshot', async () => {
+  const writes = [];
+  let liveTriggerId = 'agtch_A';
+  // Deferred fetch: the settings config changes WHILE the 202 is pending.
+  const deferred = {};
+  const deferredResponse = new Promise((resolve) => {
+    deferred.resolve = resolve;
+  });
+  const adapter = {
+    get triggerId() {
+      return liveTriggerId; // mutable — the exact hazard round-5 R2 found
+    },
+    trigger: async () => {
+      await deferredResponse;
+      return { conversationUrl: 'https://chatgpt.com/c/from-A' };
+    },
+  };
+  const { deps } = makeBridgeDepsOverrides({
+    workspaceAgent: () => ({
+      adapter,
+      workspaceId: 'ws_A',
+      triggerId: 'agtch_A', // snapshot taken BEFORE the dispatch
+    }),
+    threadStore: {
+      getCloudCatBindings: async () => ({}),
+      updateCloudCatBinding: async () => {},
+      updateCloudCatBindingEntry: async (threadId, catId, entry) => {
+        writes.push(entry);
+      },
+    },
+  });
+  const bridge = new CloudInvokeBridge(deps);
+  const pending = bridge.dispatch(params);
+  liveTriggerId = 'agtch_B'; // owner switches the trigger mid-flight
+  deferred.resolve();
+  const outcome = await pending;
+  assert.equal(outcome.kind, 'sent');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].triggerId, 'agtch_A', 'binding identity must come from the pre-dispatch snapshot');
+  assert.equal(writes[0].workspaceId, 'ws_A');
+  assert.equal(writes[0].conversationUrl, 'https://chatgpt.com/c/from-A');
+});

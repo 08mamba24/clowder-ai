@@ -7,9 +7,9 @@
 
 import assert from 'node:assert/strict';
 import { execFile, spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import net from 'node:net';
 import { after, before, describe, it } from 'node:test';
 
@@ -62,10 +62,47 @@ function startRedis(binary, port, dir) {
   });
 }
 
-function shutdownRedis(port) {
+/**
+ * astra round-5 R4: locate the cli next to the server binary (then PATH),
+ * PROPAGATE failures (never swallow), and fall back to SIGTERM which — with
+ * the --save 1 1 config — persists before exit. Exit waits are bounded.
+ */
+function findRedisCli(serverBinary) {
+  const sibling = join(dirname(serverBinary), 'redis-cli');
+  if (existsSync(sibling)) return sibling;
+  try {
+    if (spawnSync('redis-cli', ['--version'], { stdio: 'ignore' }).status === 0) return 'redis-cli';
+  } catch {
+    /* not on PATH */
+  }
+  return null;
+}
+
+function shutdownRedis(cli, port) {
+  return new Promise((resolve, reject) => {
+    if (!cli) return resolve({ mode: 'signal' });
+    execFile(cli, ['-h', '127.0.0.1', '-p', String(port), 'shutdown', 'save'], (error) => {
+      // redis-cli exits non-zero when the connection closes on SHUTDOWN;
+      // treat connection-level errors on an otherwise issued command as done.
+      if (error && error.code !== 0 && error.code !== undefined && !/connect|ENOENT/i.test(String(error.message))) {
+        return reject(error);
+      }
+      resolve({ mode: 'cli' });
+    });
+  });
+}
+
+function waitForExit(child, timeoutMs = 5_000) {
   return new Promise((resolve) => {
-    const cli = process.env.REDIS_CLI_PATH ?? '/opt/homebrew/bin/redis-cli';
-    execFile(cli, ['-h', '127.0.0.1', '-p', String(port), 'shutdown', 'save'], () => resolve());
+    if (child.exitCode !== null) return resolve(child.exitCode);
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      resolve('timeout');
+    }, timeoutMs);
+    child.once('exit', (code) => {
+      clearTimeout(timer);
+      resolve(code);
+    });
   });
 }
 
@@ -80,6 +117,7 @@ describe('F247 workspace-agent recovery binding across a real Redis restart', { 
   let port;
   let redis;
   let store;
+  let cli;
 
   before(async () => {
     ({ RedisThreadStore } = await import('../dist/domains/cats/services/stores/redis/RedisThreadStore.js'));
@@ -87,6 +125,7 @@ describe('F247 workspace-agent recovery binding across a real Redis restart', { 
     ({ normalizeCloudCatBinding } = await import('../dist/domains/cats/services/cloud-bridge/cloud-cat-bindings-v1.js'));
     dir = mkdtempSync(join(tmpdir(), 'f247-wa-redis-'));
     port = await freePort();
+    cli = findRedisCli(binary);
     child = await startRedis(binary, port, dir);
     redis = createRedisClient({ url: `redis://127.0.0.1:${port}` });
     await redis.ping();
@@ -123,17 +162,17 @@ describe('F247 workspace-agent recovery binding across a real Redis restart', { 
     assert.equal(normalizeCloudCatBinding(before['gpt-pro'])?.conversationUrl, 'https://chatgpt.com/c/wa-restart-1');
     assert.equal(normalizeCloudCatBinding(before['gpt-52'])?.provider, 'personal-chrome-host');
 
-    // Restart cycle: graceful SHUTDOWN SAVE → respawn → fresh client.
+    // Restart cycle: graceful SHUTDOWN SAVE (cli, or SIGTERM+save-config
+    // fallback) → bounded exit wait → respawn → fresh client.
     try {
       await redis.quit();
     } catch {
       /* already closing */
     }
-    await shutdownRedis(port);
-    await new Promise((resolve) => {
-      if (child.exitCode !== null) resolve();
-      else child.once('exit', resolve);
-    });
+    const shutdown = await shutdownRedis(cli, port);
+    if (shutdown.mode === 'signal') child.kill('SIGTERM');
+    const exitCode = await waitForExit(child);
+    assert.notEqual(exitCode, 'timeout', 'redis-server must exit after shutdown');
     child = await startRedis(binary, port, dir);
     redis = createRedisClient({ url: `redis://127.0.0.1:${port}` });
     await redis.ping();

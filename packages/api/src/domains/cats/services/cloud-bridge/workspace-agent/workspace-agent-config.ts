@@ -179,6 +179,20 @@ export function createWorkspaceAgentTriggerConfig(deps: WorkspaceAgentConfigDeps
   };
 
   /**
+   * astra round-5 R1 — the single inheritance authority: env credentials are
+   * inheritable by save()/disable() ONLY when env is the ACTIVE config,
+   * i.e. the persisted file is absent AND the complete env triple is valid.
+   * Disabled tombstones and invalid/unreadable files suppress env not only
+   * for dispatch but for inheritance; recovery from those states always
+   * requires an explicit complete save.
+   */
+  const activeEnvForInheritance = (): WorkspaceAgentResolvedConfig | null => {
+    if (load().kind !== 'absent') return null;
+    const candidate = envConfig();
+    return candidate && candidate !== 'invalid' ? candidate : null;
+  };
+
+  /**
    * astra R3a: a COMPLETE env triple must pass the same constraints as
    * save()/persisted parsing — returns 'invalid' (config error state, never
    * dispatched, never a network-unknown) instead of activating. A partial
@@ -274,15 +288,12 @@ export function createWorkspaceAgentTriggerConfig(deps: WorkspaceAgentConfigDeps
     save(input) {
       const current = load();
       const currentvalue = current.kind === 'enabled' || current.kind === 'disabled' ? current.value : undefined;
-      // astra R2: an explicitly saved env-bootstrapped config migrates the
-      // validated env token into settings custody — the UI promise "留空则
-      // 沿用" must hold for env-sourced states too. Only the validated env
-      // triple is eligible (never disabled/invalid persisted state).
-      const activeEnv = envConfig();
-      const envFallbackToken = activeEnv && activeEnv !== 'invalid' ? activeEnv.token : undefined;
-      const triggerId = input.triggerId !== undefined ? input.triggerId : (currentvalue?.triggerId || (activeEnv && activeEnv !== 'invalid' ? activeEnv.triggerId : undefined));
-      const workspaceId = input.workspaceId !== undefined ? input.workspaceId : (currentvalue?.workspaceId || (activeEnv && activeEnv !== 'invalid' ? activeEnv.workspaceId : undefined));
-      const token = input.token !== undefined ? input.token : (currentvalue?.token ?? envFallbackToken);
+      // One fallback chain, one authority: explicit input → persisted file →
+      // active env (only when the file is absent and env is valid/active).
+      const inheritableEnv = activeEnvForInheritance();
+      const triggerId = input.triggerId ?? currentvalue?.triggerId ?? inheritableEnv?.triggerId;
+      const workspaceId = input.workspaceId ?? currentvalue?.workspaceId ?? inheritableEnv?.workspaceId;
+      const token = input.token ?? currentvalue?.token ?? inheritableEnv?.token;
       const enabled = input.enabled !== undefined ? input.enabled : (currentvalue?.enabled ?? true);
       if (!isNonEmpty(triggerId) || !isNonEmpty(workspaceId) || !isNonEmpty(token)) {
         throw new WorkspaceAgentTriggerError(
@@ -314,13 +325,14 @@ export function createWorkspaceAgentTriggerConfig(deps: WorkspaceAgentConfigDeps
       // an env-bootstrapped transport must be switchable off (astra R1),
       // and the tombstone must survive restarts. astra R2: the tombstone
       // captures the ACTIVE config (file or validated env) so the confirm
-      // copy "重新启用无需重新粘贴" is true for env states as well.
-      const activeEnv = envConfig();
-      const envValue = activeEnv && activeEnv !== 'invalid' ? activeEnv : undefined;
+      // copy "重新启用无需重新粘贴" is true for env states as well. The same
+      // inheritance authority applies: a disabled/invalid file must not gain
+      // suppressed env credentials through a repeat disable (round-5 R1).
+      const inheritableEnv = activeEnvForInheritance();
       const persisted: PersistedShape = {
-        triggerId: currentvalue?.triggerId || envValue?.triggerId || '',
-        workspaceId: currentvalue?.workspaceId || envValue?.workspaceId || '',
-        token: currentvalue?.token || envValue?.token || '',
+        triggerId: currentvalue?.triggerId ?? inheritableEnv?.triggerId ?? '',
+        workspaceId: currentvalue?.workspaceId ?? inheritableEnv?.workspaceId ?? '',
+        token: currentvalue?.token ?? inheritableEnv?.token ?? '',
         enabled: false,
         updatedAt: new Date().toISOString(),
       };
@@ -359,8 +371,30 @@ export function createRefreshableWorkspaceAgentTriggerAdapter(
   };
 }
 
-/** Per-dispatch resolver shape consumed by the cloud invoke bridge. */
-export type WorkspaceAgentTransportResolver = () => {
+/**
+ * Per-dispatch resolver shape consumed by the cloud invoke bridge.
+ * astra round-5 R2: one dispatch uses ONE configuration snapshot — the
+ * adapter is bound to the resolved config (fixed trigger id + token), and
+ * the identity fields travel with it so provenance is never re-read from
+ * mutable Settings after an await boundary.
+ */
+export type WorkspaceAgentTransportSnapshot = {
   readonly adapter: IWorkspaceAgentTriggerAdapter;
   readonly workspaceId: string;
-} | null;
+  readonly triggerId: string;
+};
+
+export type WorkspaceAgentTransportResolver = () => WorkspaceAgentTransportSnapshot | null;
+
+/** Build a snapshot-bound transport from the currently active config. */
+export function resolveWorkspaceAgentTransportSnapshot(
+  config: WorkspaceAgentConfigStore,
+): WorkspaceAgentTransportSnapshot | null {
+  const active = config.resolve();
+  if (!active) return null;
+  const adapter = new WorkspaceAgentTriggerHttpAdapter({
+    triggerId: active.triggerId,
+    tokenProvider: () => active.token,
+  });
+  return { adapter, workspaceId: active.workspaceId, triggerId: active.triggerId };
+}

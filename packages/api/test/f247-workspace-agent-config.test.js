@@ -453,3 +453,66 @@ test('R2: disable on an env-bootstrapped config keeps tokenConfigured for re-ena
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ── astra round-5 R1: inheritance authority state matrix ──────────────────
+
+test('R1: invalid file + complete env + partial save does NOT revive env credentials', () => {
+  const root = tempProjectRoot();
+  try {
+    mkdirSync(join(root, '.cat-cafe'), { recursive: true });
+    writeFileSync(join(root, '.cat-cafe', 'workspace-agent.json'), '{ not json !!!', { mode: 0o600 });
+    const config = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: ENV_TRIPLE });
+    assert.equal(config.resolve(), null);
+    assert.throws(
+      () => config.save({ enabled: true }),
+      (err) => err.code === 'WORKSPACE_AGENT_INVALID_CONFIG',
+      'invalid persisted state requires an explicit complete recovery',
+    );
+    // repeat disable must not import suppressed env credentials either
+    const disabled = config.disable();
+    assert.equal(disabled.tokenConfigured, false, 'no env credential import through disable');
+    assert.equal(disabled.triggerId, null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('R1: disabled tombestone does not gain env fields on repeat disable', () => {
+  const root = tempProjectRoot();
+  try {
+    const config = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: ENV_TRIPLE });
+    config.disable(); // env active → tombstone captures env (legitimate migration)
+    const again = config.disable(); // second disable on the disabled tombstone
+    assert.equal(again.tokenConfigured, true, 'first migration preserved');
+    const persisted = JSON.parse(readFileSync(config.configPath, 'utf-8'));
+    assert.equal(persisted.triggerId, 'agtch_env');
+    assert.equal(persisted.enabled, false);
+    // and the stored identity is stable across further disables
+    const third = config.disable();
+    assert.equal(third.triggerId, 'agtch_env');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('R1: disabled empty tombstone + env + save requires complete input (no env revival)', () => {
+  const root = tempProjectRoot();
+  try {
+    // disabled empty tombstone: env suppressed, nothing stored
+    mkdirSync(join(root, '.cat-cafe'), { recursive: true });
+    writeFileSync(
+      join(root, '.cat-cafe', 'workspace-agent.json'),
+      JSON.stringify({ triggerId: '', workspaceId: '', token: '', enabled: false }),
+      { mode: 0o600 },
+    );
+    const config = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: ENV_TRIPLE });
+    assert.equal(config.resolve(), null);
+    assert.throws(
+      () => config.save({ triggerId: 'agtch_env', workspaceId: 'ws_env' }),
+      (err) => err.code === 'WORKSPACE_AGENT_INVALID_CONFIG',
+      'a disabled tombstone must not be filled from suppressed env via save',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
