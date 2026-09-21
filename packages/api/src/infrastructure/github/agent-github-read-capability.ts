@@ -2,18 +2,13 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { GhReadAuthority, GhReadResult } from './agent-github-read.js';
 import { ghReadFailure } from './agent-github-read-execution.js';
 import { ghReadQuerySchema } from './agent-github-read-schema.js';
+import type { GhReadLease } from './agent-github-read-types.js';
 
 export interface GhReadPrincipal {
   invocationId: string;
   userId: string;
   catId: string;
   threadId: string;
-}
-export interface GhReadLease {
-  readonly token: string;
-  readonly queryUrl: string;
-  readonly mcpUrl: string;
-  revoke(): void;
 }
 export interface GhReadBrokerOptions {
   apiUrl: string;

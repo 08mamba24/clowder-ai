@@ -1101,7 +1101,7 @@ export interface InvocationDeps {
   readonly openGitHubReadLease?: (
     invocationId: string,
     signal?: AbortSignal,
-  ) => Promise<import('../../../../../infrastructure/github/agent-github-read-capability.js').GhReadLease | null>;
+  ) => Promise<import('../../../../../infrastructure/github/agent-github-read-types.js').GhReadLease | null>;
   readonly sessionManager: SessionManager;
   readonly threadStore: IThreadStore | null;
   readonly apiUrl: string;

@@ -38,7 +38,7 @@ import {
 import { tmpdir, userInfo } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { CatId } from '@cat-cafe/shared';
-import type { GhReadLease } from '../../../../../infrastructure/github/agent-github-read-capability.js';
+import type { GhReadLease } from '../../../../../infrastructure/github/agent-github-read-types.js';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 import { formatCliNotFoundError, resolveCliCommand } from '../../../../../utils/cli-resolve.js';
 import {

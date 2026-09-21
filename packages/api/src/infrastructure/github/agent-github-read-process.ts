@@ -80,14 +80,10 @@ export function ghReadProcessOptions(input: {
     'APPDATA',
     'CAT_CAFE_REAL_GH_PATH',
   ]);
-  const env = buildGhCliEnv({
-    baseEnv: Object.fromEntries(Object.entries(input.baseEnv).filter(([key]) => allowed.has(key))),
-  });
-  delete env.GH_FORCE_TTY;
-  delete env.GH_DEBUG;
-  // Request-side carrier selection must never recurse through the host wrapper.
-  delete env.CAT_CAFE_GITHUB_READ_HANDLE;
-  delete env.CAT_CAFE_GITHUB_READ_ENDPOINT;
+  // New entries expand a credential-adjacent boundary and require independent review.
+  // Retain the caller's ProcessEnv type (Next.js augments it), then enforce the allowlist.
+  const env = buildGhCliEnv({ baseEnv: input.baseEnv });
+  for (const key of Object.keys(env)) if (!allowed.has(key)) delete env[key];
   return withHiddenGhCliWindow({
     cwd: input.cwd,
     signal: input.signal,

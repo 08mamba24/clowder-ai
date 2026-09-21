@@ -708,7 +708,7 @@ export interface AgentRouteIntent {
 export interface AgentServiceOptions {
   /** Host closure bound to the exact child. Only supported isolated providers consume it. */
   openGitHubReadLease?: () => Promise<
-    import('../../../infrastructure/github/agent-github-read-capability.js').GhReadLease | null
+    import('../../../infrastructure/github/agent-github-read-types.js').GhReadLease | null
   >;
   /** Route-owned intent. Providers may project only explicit behavior intent onto native modes. */
   routeIntent?: AgentRouteIntent;
