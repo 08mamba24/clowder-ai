@@ -22,7 +22,8 @@ topics: [github, provider, isolation, authentication]
 ## 状态与来源
 
 - **任务来源：** 2026-09-21 operator 消息 `0001789954443843-000354-15718ecc`：「不制定计划修改吗」；后续 `0001789955401202-000363-924099ab`：「需要我决策什么？真的需要我决策吗？」。结合此前两仓只读修复讨论，按现有任务授权继续调查、实现、review 与隔离验收，不再把相同范围送回 operator 重复确认。后一句是对不必要升级的纠正，不伪造为一条新权限批准事件。
-- **当前：Task 1 调查中。** 根因已确认；认证传输绑定仍需验证；生产入口、权限和配置尚未修改。执行授权、技术验证与实际启用分别记录。
+- **当前：Task 1 接线验证继续，Task 2 宿主查询内核开始实施。** 根因已确认；认证传输绑定仍需验证，但它不阻断无真实凭据、无载体依赖的查询内核与拒绝测试。生产入口、权限和配置尚未修改。执行授权、技术验证与实际启用分别记录。
+- **持久任务：** `0001789956139661-000388-6c663874`（本 thread，owner=`astra`，doing）；尚无本功能实现 worktree / PR。旧 PR #41 属于已完成的 umid 修复，不承载本任务。
 - **执行负责人：小星星 / astra。** 计划内容经独立个体审查后提交；实现涉及安全边界，另走非作者 review、针对性安全测试和 merge gate。
 - **已验证事实与建议分开：** 先前宿主登录上下文探针证明认证可用，不证明 Qoder 子进程能逃出继承沙箱；不把探针成功当作产品接通。
 
@@ -140,6 +141,20 @@ type GhReadResult =
 - `zcode-acp-adapter.ts` 的 `handleSessionNew` 目前发送 workspace/mode/persistence；`handleSessionPrompt` 发送 sessionId/content，并按 session cancel generation 处理取消。当前适配层未传逐轮 shell env/窄 handle。
 - 本进程 `command -v zcode` 无结果；仓内 `zcode-0.16.3-fixtures.mjs` 说明样本始于 0.16.3、模型项包含 0.16.5 更新。因此它们不能证明当前安装原生版本的能力全集。
 - 结论：排除“只在池 spawn env 里加凭据即可”的方案；原生 per-attempt 交付路径仍需从 runtime 实际 executable 的代码/协议定位，属于猫猫的技术调查，不转交 operator 选方案。
+
+**2026-09-21 安装原生程序核对与离线反证（Session #4）：**
+
+- 样本：`/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`，SHA-256 `8f5cfccf2a899b92e57bc2a5760b949c1a928f739652fffc9e6d07c24f11ba05`；应用 bundle `3.14.0 / 3.14.0.7681`。应用版本不冒充 CLI semver。这是 `resolveZcodeBin` 的 macOS 默认候选；本次进程检查未捕获在跑的 native app-server，尚不能证明 runtime 无 override 或下轮一定使用此 hash。
+- 原生 schema：`dHt`（create）、`pHt`（resume）、`wHt`（send）均 `.strict()`，没有 `env` / `shellEnv` / `githubReadHandle` 字段；create/resume 实际含 `mcpServers`，不能沿用“原生没有 MCP”这一缺证断言。`wHt` 也没有逐轮 MCP 刷新字段。
+- 调用链：`_Go → rKa` 只传原生 send schema 的既定字段；`_Pn → SKa` 以 `e.deps.env` 创建 session runtime，`lxt` 才把 create/resume 的 MCP 条目投影为 runtime config。`dPn` 在 warm session 已存在时直接返回旧 record，不重新执行 `_Pn`；因此“每次 resume 重传新 mcpServers 即刷新授权”不成立。
+- shell 候选：`SHt.integratedTerminalShell → FZe → yKa → vKa → zte` 看似能传路径，但 `FZe` 的 shell dialect 仅 `cmd | git-bash`；`yKa` 标为 `source=user-config`，`$ss` 不采纳该 source，macOS/Linux 的 `Vss` 从宿主 env 选 shell，未消费 override。另有 `createApp` 的 `gr ??=` 缓存与 `initializeSessionShellEnvironmentIfNeeded`，不能把 runtime-preferences 请求误当成逐 prompt 刷新缝。
+- 离线执行：从该原生文件提取函数到 Node `vm`，以假值运行 **12 项断言通过**：三份 schema 各拒绝三种未知顶层字段（9）；darwin/linux 均忽略 `/fake/per-attempt/bash` override、实际选 `/bin/zsh`（2）；warm resume 在传入新假 MCP env 时仍返回旧 record、未重物化（1）。执行命令为本次工具事件中的 `node <<'JS'`；依赖本仓 `packages/api/node_modules/zod`。schema 的嵌套依赖用 `z.unknown()` 占位，故只证明顶层拒绝；函数提取执行也不代替真实 app-server 端到端验证。没有启动原生进程、计费模型、网络 listener 或真实凭据查询。
+- **Task 1 尚未通过。** 上述断言是排除候选接缝的反证，不是 active→end→resume / 双线程 / 旧 handle 重放矩阵通过。暂不冻结 Task 3–4 载体接线；Task 2 可先用 fake runner 独立实现，不能把尚未解决的一处接线扩大成所有工作的停止条件，也不把“静态未找到”扩大成“所有安全方案都不可能”。
+- **技术复核的具体选择：** 优先判断只调整 ZCode 自身 carrier/attempt 生命周期，能否保留既有 `gh` 入口并让每轮 handle 不被旧 attempt 获得；必须覆盖后台 shell、取消和 cold resume。原生 session MCP 是另一个已存在的接口，但与 `gh` 兼容和原生 warm record 更新均未解决，不能直接把家庭 MCP 接回去或把工具身份当成逐轮身份。当前不提议扩大仓库/主体/写权限，也不要求 operator 选择这些技术接缝。
+
+复核时以 **上述 binary hash + 原生函数/变量符号 + 本仓 adapter/pool owner** 为证据坐标；不用旧 0.16 fixture 的绿灯替代。接线定案后仍须补假载体完整生命周期矩阵并通过独立安全 review，才继续真实启用。
+
+**复核与继续执行（2026-09-21）：** 谱谱 / zcode 在消息 `0001789956244328-000397-47e307f0` 放行文档 SHA256 `4107851e0f9855eab598e7f2ca65e0d01a48d40d27fdfa3645edad04c3b6d18d`，确认原生排除项，并要求输出有界、硬超时、禁 TTY。宿主持有 GitHub 凭据与猫侧窄请求身份是两个问题；前者确定不代表后者已验证。operator 消息 `0001789956478203-000401-50d7f79c` 要求继续推进；执行人恢复球权，先实现 Task 2 独立内核，继续解决 Task 1，不把文档 review 当工程暂停理由。
 
 ## 生命周期普查、状态转移与不变量
 
