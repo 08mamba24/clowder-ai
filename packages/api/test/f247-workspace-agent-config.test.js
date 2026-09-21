@@ -298,3 +298,118 @@ test('R3: persisted workspaceId failing the shared segment constraint is invalid
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ── astra round-2 review fixes (R1 EACCES / R3a env / R3b predicate parity) ─
+
+import { chmodSync } from 'node:fs';
+
+test('R1: unreadable settings dir (EACCES) is invalid, not env-resurrected', () => {
+  const root = tempProjectRoot();
+  const stateDir = join(root, '.cat-cafe');
+  try {
+    const first = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: ENV_TRIPLE });
+    first.disable(); // persisted tombstone: explicit off
+    chmodSync(stateDir, 0o000); // reads now fail with EACCES
+    const second = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: ENV_TRIPLE });
+    assert.equal(second.resolve(), null, 'permission fault must not resurrect env credentials');
+    const projection = second.project();
+    assert.equal(projection.enabled, false);
+    assert.deepEqual(projection.invalidConfig, { reason: 'unreadable_file' });
+  } finally {
+    chmodSync(stateDir, 0o700);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('R3a: complete env triple failing the shared constraints is env_invalid, never active', () => {
+  const root = tempProjectRoot();
+  try {
+    const colon = createWorkspaceAgentTriggerConfig({
+      projectRoot: root,
+      env: { ...ENV_TRIPLE, CAT_CAFE_WORKSPACE_AGENT_WORKSPACE_ID: 'tenant:fixture' },
+    });
+    assert.equal(colon.resolve(), null);
+    assert.deepEqual(colon.project().invalidConfig, { reason: 'env_invalid' });
+    assert.equal(colon.project().enabled, false);
+
+    const nul = createWorkspaceAgentTriggerConfig({
+      projectRoot: root,
+      env: { ...ENV_TRIPLE, CAT_CAFE_WORKSPACE_AGENT_WORKSPACE_ID: 'ws\u0000x' },
+    });
+    assert.equal(nul.resolve(), null);
+    assert.deepEqual(nul.project().invalidConfig, { reason: 'env_invalid' });
+
+    const badTrigger = createWorkspaceAgentTriggerConfig({
+      projectRoot: root,
+      env: { ...ENV_TRIPLE, CAT_CAFE_WORKSPACE_AGENT_TRIGGER_ID: 'bad trigger' },
+    });
+    assert.equal(badTrigger.resolve(), null);
+    assert.deepEqual(badTrigger.project().invalidConfig, { reason: 'env_invalid' });
+
+    // Partial env stays plain unconfigured (no error state).
+    const partial = createWorkspaceAgentTriggerConfig({
+      projectRoot: root,
+      env: { CAT_CAFE_WORKSPACE_AGENT_TRIGGER_ID: 'agtch_env', CAT_CAFE_WORKSPACE_AGENT_TOKEN: 't' },
+    });
+    assert.equal(partial.resolve(), null);
+    assert.equal(partial.project().invalidConfig, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('R3b: builder, segment guard, and full-key validator agree on every ASCII char', async () => {
+  const { buildWorkspaceAgentConversationKey, isWorkspaceAgentConversationKey, isWorkspaceAgentConversationKeySegment } = await import(
+    '../dist/domains/cats/services/cloud-bridge/workspace-agent/conversation-key.js'
+  );
+  const candidates = [];
+  for (let code = 0; code <= 0x7f; code += 1) candidates.push(String.fromCharCode(code));
+  candidates.push('　', '\u00a0', '\u2028', '', '﻿'); // unicode whitespace + BOM
+  for (const character of candidates) {
+    const workspaceId = `ws${character}x`;
+    let builderThrew = false;
+    let built = null;
+    try {
+      built = buildWorkspaceAgentConversationKey({ workspaceId, threadId: 't' });
+    } catch {
+      builderThrew = true;
+    }
+    const guardAccepts = isWorkspaceAgentConversationKeySegment(workspaceId);
+    assert.equal(
+      builderThrew,
+      !guardAccepts,
+      `builder/guard disagree on U+${(character.codePointAt(0) || 0).toString(16)}`,
+    );
+    if (guardAccepts) {
+      assert.ok(isWorkspaceAgentConversationKey(built), `guard accepts but full-key validator rejects U+${(character.codePointAt(0) || 0).toString(16)}`);
+    } else {
+      assert.ok(built === null);
+    }
+  }
+  // Round-trip: every key the builder produces validates.
+  const key = buildWorkspaceAgentConversationKey({ workspaceId: 'ws_1', threadId: 'thread_1' });
+  assert.ok(isWorkspaceAgentConversationKey(key));
+  assert.ok(!isWorkspaceAgentConversationKey('clowder:a:b:c'), 'extra colon segment must fail');
+});
+
+test('R3b: save and persisted parse reject NUL workspaceId through the same predicate', () => {
+  const root = tempProjectRoot();
+  try {
+    const config = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: {} });
+    assert.throws(
+      () => config.save({ triggerId: 'agtch_x', workspaceId: 'ws\u0000x', token: 't' }),
+      (err) => err.code === 'WORKSPACE_AGENT_INVALID_CONFIG',
+    );
+    mkdirSync(join(root, '.cat-cafe'), { recursive: true });
+    writeFileSync(
+      join(root, '.cat-cafe', 'workspace-agent.json'),
+      JSON.stringify({ triggerId: 'agtch_x', workspaceId: 'ws\u0000x', token: 't', enabled: true }),
+      { mode: 0o600 },
+    );
+    const reloaded = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: {} });
+    assert.equal(reloaded.resolve(), null);
+    assert.deepEqual(reloaded.project().invalidConfig, { reason: 'schema_invalid' });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -1,5 +1,5 @@
 /**
- * F247 Workspace Agent (slice 1): stable outbound conversation key.
+ * F247 Workspace Agent (R3b rework): stable outbound conversation key.
  *
  * The Workspace Agents Trigger API accepts a caller-defined
  * `conversation_key` that keeps server-side conversation continuity across
@@ -9,29 +9,45 @@
  * provider, not by thread metadata.
  *
  * Format: `clowder:{workspaceId}:{threadId}`
+ *
+ * astra R3b: there is exactly ONE segment predicate
+ * (`isWorkspaceAgentConversationKeySegment`). The key builder, the full-key
+ * validator, the Settings route, the persisted/env config parsers, and the
+ * HTTP adapter all consume it — a value any consumer accepts is accepted by
+ * all of them. The predicate rejects: empty, >256 chars, ':' (ambiguity),
+ * all C0 controls (including NUL), DEL, and every Unicode whitespace.
  */
 
 const KEY_PREFIX = 'clowder';
 const MAX_SEGMENT_LENGTH = 256;
+const SEGMENT_FORBIDDEN = /[\s]/u;
 
 export interface WorkspaceAgentConversationKeyInput {
   readonly workspaceId: string;
   readonly threadId: string;
 }
 
-function requireSegment(value: string, field: string): string {
-  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_SEGMENT_LENGTH) {
-    throw new Error(`${field} must be a non-empty string of at most ${MAX_SEGMENT_LENGTH} characters`);
-  }
-  const hasControlCharacter = [...value].some((character) => {
+/**
+ * The single segment predicate. Keep this in sync with nothing — everything
+ * else syncs to it.
+ */
+export function isWorkspaceAgentConversationKeySegment(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  if (value.length === 0 || value.length > MAX_SEGMENT_LENGTH) return false;
+  if (value.includes(':')) return false;
+  for (const character of value) {
     const codePoint = character.codePointAt(0) ?? 0;
-    return codePoint < 32 || codePoint === 127;
-  });
-  if (hasControlCharacter) {
-    throw new Error(`${field} must not contain control characters`);
+    if (codePoint < 0x20 || codePoint === 0x7f) return false;
+    if (SEGMENT_FORBIDDEN.test(character)) return false;
   }
-  if (value.includes(':')) {
-    throw new Error(`${field} must not contain ':' — it would make the conversation key ambiguous`);
+  return true;
+}
+
+function requireSegment(value: string, field: string): string {
+  if (!isWorkspaceAgentConversationKeySegment(value)) {
+    throw new Error(
+      `${field} must be 1..${MAX_SEGMENT_LENGTH} characters without ':', control characters, or whitespace`,
+    );
   }
   return value;
 }
@@ -43,19 +59,15 @@ export function buildWorkspaceAgentConversationKey(input: WorkspaceAgentConversa
   return `${KEY_PREFIX}:${workspaceId}:${threadId}`;
 }
 
-const CONVERSATION_KEY_REGEX = /^clowder:[^:\s]{1,256}:[^:\s]{1,256}$/;
-const SEGMENT_REGEX = /^[^:\s]{1,256}$/;
-
 /**
- * Shared segment constraint (astra R3): every consumer of a workspace id —
- * the key builder, the Settings route, and the persisted/env config — must
- * accept exactly the same values, so anything that saves can dispatch.
+ * Structural validation for values read back from config or telemetry.
+ * Rebuilt on the same predicate as the builder: `clowder:<seg>:<seg>` where
+ * both segments pass `isWorkspaceAgentConversationKeySegment` — guard and
+ * builder cannot disagree by construction.
  */
-export function isWorkspaceAgentConversationKeySegment(value: unknown): value is string {
-  return typeof value === 'string' && SEGMENT_REGEX.test(value) && !value.includes('\x7f');
-}
-
-/** Structural validation for values read back from config or telemetry. */
 export function isWorkspaceAgentConversationKey(value: unknown): value is string {
-  return typeof value === 'string' && CONVERSATION_KEY_REGEX.test(value) && !value.includes('\x7f');
+  if (typeof value !== 'string' || !value.startsWith(`${KEY_PREFIX}:`)) return false;
+  const parts = value.split(':');
+  if (parts.length !== 3) return false;
+  return parts[0] === KEY_PREFIX && isWorkspaceAgentConversationKeySegment(parts[1]) && isWorkspaceAgentConversationKeySegment(parts[2]);
 }

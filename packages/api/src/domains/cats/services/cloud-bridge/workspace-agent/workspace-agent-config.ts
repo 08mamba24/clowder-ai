@@ -21,7 +21,7 @@
  * writes, env bootstrap fallback. Projections never return the token.
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import {
@@ -51,8 +51,14 @@ export interface WorkspaceAgentConfigProjection {
   readonly workspaceId: string | null;
   readonly tokenConfigured: boolean;
   readonly source: 'settings' | 'env' | null;
-  /** Present when a settings file exists but is unusable (recoverable). */
-  readonly invalidConfig?: { readonly reason: 'corrupt_file' | 'schema_invalid' };
+  /**
+   * Present when configuration exists but is unusable (recoverable):
+   * corrupt/unreadable settings file, schema-invalid persisted record, or a
+   * complete env triple that fails the shared constraints (astra R1/R3a).
+   */
+  readonly invalidConfig?: {
+    readonly reason: 'corrupt_file' | 'unreadable_file' | 'schema_invalid' | 'env_invalid';
+  };
 }
 
 export interface WorkspaceAgentConfigStore {
@@ -84,7 +90,7 @@ type PersistedState =
   | { readonly kind: 'absent' }
   | { readonly kind: 'enabled'; readonly value: PersistedShape }
   | { readonly kind: 'disabled'; readonly value: PersistedShape }
-  | { readonly kind: 'invalid'; readonly reason: 'corrupt_file' | 'schema_invalid' };
+  | { readonly kind: 'invalid'; readonly reason: 'corrupt_file' | 'unreadable_file' | 'schema_invalid' };
 
 export interface WorkspaceAgentConfigDeps {
   readonly projectRoot: string;
@@ -134,13 +140,23 @@ function parsePersisted(raw: string): PersistedState {
   return { kind: enabled ? 'enabled' : 'disabled', value };
 }
 
+/**
+ * astra R1: read directly — only a confirmed ENOENT means the file is
+ * absent (env bootstrap permitted). Any other filesystem failure (EACCES,
+ * ENOTDIR, EISDIR, …) means the state is UNREADABLE, which suppresses env
+ * bootstrap and projects a recoverable error; an exists-check would fold
+ * permission faults into "absent" and resurrect disabled env credentials.
+ */
 function readPersisted(path: string): PersistedState {
-  if (!existsSync(path)) return { kind: 'absent' };
+  let raw: string;
   try {
-    return parsePersisted(readFileSync(path, 'utf-8'));
-  } catch {
-    return { kind: 'invalid', reason: 'corrupt_file' };
+    raw = readFileSync(path, 'utf-8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return { kind: 'absent' };
+    return { kind: 'invalid', reason: 'unreadable_file' };
   }
+  return parsePersisted(raw);
 }
 
 function atomicWrite(path: string, value: PersistedShape, logger: WorkspaceAgentConfigDeps['logger']): void {
@@ -162,11 +178,20 @@ export function createWorkspaceAgentTriggerConfig(deps: WorkspaceAgentConfigDeps
     return cached;
   };
 
-  const envConfig = (): WorkspaceAgentResolvedConfig | null => {
+  /**
+   * astra R3a: a COMPLETE env triple must pass the same constraints as
+   * save()/persisted parsing — returns 'invalid' (config error state, never
+   * dispatched, never a network-unknown) instead of activating. A partial
+   * triple stays simply unconfigured.
+   */
+  const envConfig = (): WorkspaceAgentResolvedConfig | 'invalid' | null => {
     const envTriggerId = env[ENV_TRIGGER_ID];
     const envWorkspaceId = env[ENV_WORKSPACE_ID];
     const envToken = env[ENV_TOKEN];
     if (!isNonEmpty(envTriggerId) || !isNonEmpty(envWorkspaceId) || !isNonEmpty(envToken)) return null;
+    if (!TRIGGER_ID_PATTERN.test(envTriggerId) || !isWorkspaceAgentConversationKeySegment(envWorkspaceId)) {
+      return 'invalid';
+    }
     return { triggerId: envTriggerId, workspaceId: envWorkspaceId, token: envToken, source: 'env' };
   };
 
@@ -184,7 +209,8 @@ export function createWorkspaceAgentTriggerConfig(deps: WorkspaceAgentConfigDeps
     // explicit off beats implicit env, and broken state must not silently
     // resurrect old credentials. Only a truly absent file bootstraps.
     if (persisted.kind !== 'absent') return null;
-    return envConfig();
+    const fromEnv = envConfig();
+    return fromEnv === 'invalid' ? null : fromEnv;
   };
 
   const projectionFromEnvFallback = (): Pick<WorkspaceAgentConfigProjection, 'triggerId' | 'workspaceId' | 'tokenConfigured' | 'source'> => ({
@@ -227,6 +253,19 @@ export function createWorkspaceAgentTriggerConfig(deps: WorkspaceAgentConfigDeps
           tokenConfigured: false,
           source: null,
           invalidConfig: { reason: persisted.reason },
+        };
+      }
+      // File absent: env may bootstrap — but a complete invalid triple is a
+      // recoverable config error, never an active transport (astra R3a).
+      const fromEnv = envConfig();
+      if (fromEnv === 'invalid') {
+        return {
+          enabled: false,
+          triggerId: isNonEmpty(env[ENV_TRIGGER_ID]) ? env[ENV_TRIGGER_ID]! : null,
+          workspaceId: isNonEmpty(env[ENV_WORKSPACE_ID]) ? env[ENV_WORKSPACE_ID]! : null,
+          tokenConfigured: isNonEmpty(env[ENV_TOKEN]),
+          source: 'env',
+          invalidConfig: { reason: 'env_invalid' },
         };
       }
       const fallback = projectionFromEnvFallback();
