@@ -495,6 +495,7 @@ function buildMentionData(configs: Record<string, import('@cat-cafe/shared').Cat
  * Options for AgentRouter constructor
  */
 export interface AgentRouterOptions {
+  openGitHubReadLease?: import('../invocation/invoke-single-cat.js').InvocationDeps['openGitHubReadLease'];
   agentRegistry: AgentRegistry;
   registry: InvocationRegistry;
   messageStore: IMessageStore;
@@ -628,6 +629,7 @@ export interface AgentRouterOptions {
  * Router that parses @ mentions and routes to appropriate agent services
  */
 export class AgentRouter {
+  private readonly openGitHubReadLease: AgentRouterOptions['openGitHubReadLease'];
   private services: Record<string, AgentService>;
   private registry: InvocationRegistry;
   private messageStore: IMessageStore;
@@ -797,6 +799,7 @@ export class AgentRouter {
     this.rebuildRuntimeCaches(options.agentRegistry);
 
     this.registry = options.registry;
+    this.openGitHubReadLease = options.openGitHubReadLease;
     this.messageStore = options.messageStore;
     this.sessionManager = new SessionManager(options.sessionStore);
     // #1200 P2-3: wire cursor canonicalizer for v1→v2 async resolution
@@ -1470,6 +1473,7 @@ export class AgentRouter {
       services: this.services,
       ...(this.routingDispatchPreflight ? { routingDispatchPreflight: this.routingDispatchPreflight } : {}),
       invocationDeps: {
+        ...(this.openGitHubReadLease ? { openGitHubReadLease: this.openGitHubReadLease } : {}),
         registry: this.registry,
         sessionManager: this.sessionManager,
         threadStore: this.threadStore,

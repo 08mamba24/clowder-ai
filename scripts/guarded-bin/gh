@@ -7,6 +7,13 @@ import { fileURLToPath } from 'node:url';
 const args = process.argv.slice(2);
 const ownDir = dirname(fileURLToPath(import.meta.url));
 
+// Nested shell commands have no authority to call the host read carrier.
+// Only the trusted Qoder shell-prefix can translate a complete standalone read.
+if (process.env.CAT_CAFE_GITHUB_READ_ONLY === 'true') {
+  process.stderr.write('capability_unavailable: use a standalone gh read with explicit --repo\n');
+  process.exit(1);
+}
+
 const VALUE_OPTION_ALIASES = Object.freeze({
   repository: Object.freeze(['--repo', '-R']),
   title: Object.freeze(['--title', '-t']),

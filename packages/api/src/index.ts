@@ -2454,7 +2454,11 @@ async function main(): Promise<void> {
     autoDreamStore: autoDream.services.store,
   });
   memoryCueDeps.sourceReader = memoryCueRuntime.sourceReader;
+  let agentGitHubRead:
+    | import('./infrastructure/github/agent-github-read-capability.js').AgentGitHubReadBroker
+    | undefined;
   router = new AgentRouter({
+    openGitHubReadLease: async (id, signal) => (agentGitHubRead ? agentGitHubRead.open(id, signal) : null),
     agentRegistry,
     registry,
     messageStore,
@@ -3884,6 +3888,31 @@ async function main(): Promise<void> {
   const getGitHubToken = (): string | undefined => {
     return resolveGhCliToken({ pluginEnv: getGitHubPluginEnv() });
   };
+  const { resolveCliCommand: resolveGitHubCommand } = await import('./utils/cli-resolve.js');
+  const ghReadPath = resolveGitHubCommand('gh');
+  if (ghReadPath) {
+    const { AgentGitHubReadBroker } = await import('./infrastructure/github/agent-github-read-capability.js');
+    const { createAgentGitHubReader } = await import('./infrastructure/github/agent-github-read.js');
+    const { agentGitHubReadRoutes } = await import('./routes/agent-github-read.js');
+    agentGitHubRead = new AgentGitHubReadBroker({
+      apiUrl: `http://127.0.0.1:${PORT}`,
+      ownerUserId: privateUserId,
+      resolvePrincipal: async (invocationId) => {
+        const record = await registry.getRecord(invocationId);
+        if (!record) return null;
+        const verified = await registry.verifyLatest(invocationId, record.callbackToken);
+        if (!verified.ok) return null;
+        const { userId, catId, threadId } = verified.record;
+        return { invocationId, userId, catId, threadId };
+      },
+      read: createAgentGitHubReader({ ghPath: ghReadPath, cwd: process.cwd(), baseEnv: process.env }),
+      appendAudit: (event) => getEventAuditLog().append(event),
+    });
+    await app.register(agentGitHubReadRoutes, { broker: agentGitHubRead });
+    app.addHook('onClose', async () => {
+      agentGitHubRead?.close();
+    });
+  }
   const getGitHubExecOptions = (timeout: number): { timeout: number; env?: NodeJS.ProcessEnv; windowsHide: true } => {
     return withHiddenGhCliWindow({
       timeout,

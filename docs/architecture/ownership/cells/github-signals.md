@@ -8,6 +8,9 @@ canonical_features: [F133, F140, F280]
 code_anchors:
   - packages/shared/src/types/task.ts
   - packages/api/src/infrastructure/github/comment-cursors.ts
+  - packages/api/src/infrastructure/github/agent-github-read.ts
+  - packages/api/src/infrastructure/github/agent-github-read-schema.ts
+  - packages/api/src/routes/agent-github-read.ts
   - packages/api/src/infrastructure/email/ReviewFeedbackTaskSpec.ts
   - packages/api/src/infrastructure/email/ReviewFeedbackRouter.ts
   - packages/api/src/infrastructure/email/CiCdCheckTaskSpec.ts
@@ -40,6 +43,12 @@ typed GitHub wait predicate resolution, and compact matched-delta rendering for 
 GitHub remains external truth. Stored cursors, fingerprints and event rows are durable observation
 state and provenance; they do not decide who owns work, whether a cat should wake, or whether a PR
 may merge.
+
+F317/F032 isolated-provider reads use the same host canonical `gh` authentication store, through
+eight typed, bounded operations in `agent-github-read`. This cell owns query schema, fixed argv,
+head/base drift detection and result provenance; it does not mint provider authority or create
+tracking subscriptions. `identity-session` supplies a live child-invocation capability before and
+after each subprocess. Query audit records use the existing durable event audit log.
 
 ## Use This When
 

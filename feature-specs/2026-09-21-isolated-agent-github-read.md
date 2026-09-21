@@ -22,8 +22,8 @@ topics: [github, provider, isolation, authentication]
 ## 状态与来源
 
 - **任务来源：** 2026-09-21 operator 消息 `0001789954443843-000354-15718ecc`：「不制定计划修改吗」；后续 `0001789955401202-000363-924099ab`：「需要我决策什么？真的需要我决策吗？」。结合此前两仓只读修复讨论，按现有任务授权继续调查、实现、review 与隔离验收，不再把相同范围送回 operator 重复确认。后一句是对不必要升级的纠正，不伪造为一条新权限批准事件。
-- **当前：Task 1 接线验证继续，Task 2 宿主查询内核开始实施。** 根因已确认；认证传输绑定仍需验证，但它不阻断无真实凭据、无载体依赖的查询内核与拒绝测试。生产入口、权限和配置尚未修改。执行授权、技术验证与实际启用分别记录。
-- **持久任务：** `0001789956139661-000388-6c663874`（本 thread，owner=`astra`，doing）；尚无本功能实现 worktree / PR。旧 PR #41 属于已完成的 umid 修复，不承载本任务。
+- **当前：实现与针对性隔离验证完成，准备独立 review；尚未合并、未启用到 runtime。** 两条载体共享宿主严格查询内核。ZCode 当前安装 native 的合成模型/HTTP-MCP canary 已验证真实调用和 cold resume；Qoder 已验证真实 Seatbelt 拒读凭据、HTTP 受控查询及原 readonly memory 初始化。AC1 的猫本人新会话终验仍待合并与授权激活。
+- **持久任务：** `0001789956139661-000388-6c663874`（本 thread，owner=`astra`，doing）；实现分支 `feat/agent-github-read`，worktree `../cat-cafe-agent-github-read`。旧 PR #41 属于已完成的 umid 修复，不承载本任务。
 - **执行负责人：小星星 / astra。** 计划内容经独立个体审查后提交；实现涉及安全边界，另走非作者 review、针对性安全测试和 merge gate。
 - **已验证事实与建议分开：** 先前宿主登录上下文探针证明认证可用，不证明 Qoder 子进程能逃出继承沙箱；不把探针成功当作产品接通。
 
@@ -246,5 +246,21 @@ node --test scripts/agent-github-read-client.test.mjs packages/api/test/acp/zcod
 - 本次偏差修正：把“已答完根因”误当成“已处理修复意图”，导致只有口头建议、没有落盘计划。当前范围内已把执行范围、技术未知、红绿步骤与交付状态分别写实；完成计划不再表述为完成修复。
 - 第二次纠正：把既有任务授权、代码安全审查和 runtime 激活混成一个笼统“待批准”，又让 operator 做路由器。已扫描并修正状态段、范围段、Task 5 与交接段；未把技术未知或尚未上线当成新的人类决策。
 - 重复偏差证据：`docs/features/F167-a2a-chain-quality.md` Case E22；不新增 SOP/审批规则。
+
+## 2026-09-21 实现接线与可重跑证据
+
+Architecture cell: github-signals / identity-session
+Map delta: updated in both existing cell docs
+Why: add a query consumer; reuse canonical invocation authority without transferring credential ownership
+Canonical source: `InvocationRegistry.ts#verifyLatest` / `repairFromCanonical`; existing host canonical gh auth store
+Consumer evidence: `rg -n 'openGitHubReadLease|AgentGitHubReadBroker' packages/api/src` identifies index → AgentRouter → invokeSingleCat → ACP/Qoder only
+Claim guard: canonical child changes/ends → `agent-github-read-capability.test.js` rejects before spawn; revoked during query → result withheld; shell config read → real Seatbelt denies
+
+- **8 操作内核**：strict schema、固定 argv/字段、两仓 allowlist、每 grant 两个在途、15s/1MiB 总预算、PR head/base 双探针；超时/取消回收 wrapper 后代。结果与审计不回传 stderr 或 credentials。
+- **ZCode**：使用 native create/resume 的 HTTP MCP header；仅一个 `github_read` 窄工具。每次 ACP lease retire，cold resume 持久历史，禁止 warm record 复用旧 header。跳过不需要的通用 callback credential 文件生成。安装原生 canary 使用前述 hash 的 binary、合成 Anthropic 响应与隔离 HTTP MCP，验证两轮实际工具调用、历史恢复、header 轮换及模型请求/日志/SQLite/WAL 无 token；它不冒充猫本人线上终验。
+- **Qoder**：原 18-tool 初始化契约不变。shell-prefix 完整 literal argv 翻译；窄 bearer 在 lease root 的 0600 文件，位于 scratch 外，既有 Seatbelt deny 生效。结束先撤销 grant 再清理短命 lease。普通 shell 子进程移除 config path，nested gh 拒绝自动 delegate。
+- **宿主认证收敛**：本入口只复用宿主 gh 已有认证存储；不注入 raw GH_TOKEN/GITHUB_TOKEN，不创建新的 token 文件。仅 plugin/env token 而未登录 canonical gh auth-store 的部署返回 authentication_required，需要由 operator 完成既有 gh 登录；不修改全局 GitHub token policy。现有 ZCode 同 UID 全文件面不在此项内声称已解决。
+- **测试**：API build；`node --test test/agent-github-read*.test.js test/acp/zcode-github-read-carrier.test.js`，由既有 public test resolver 自动发现；Qoder service/readonly-memory real Seatbelt tests；`node --test scripts/agent-github-read-client.test.mjs`；`CAT_CAFE_ZCODE_LIVE=1 node --test test/acp/zcode-github-read-native.test.js`（该 test 只访问自身隔离合成 server）。
+- **完成线**：AC2–AC7 有实现与针对性隔离证据，仍需 review/full gate；AC1 必须两猫在已激活的新会话查询两仓并与宿主事实核对。未改 runtime config、未重启生产、未碰生产数据。
 
 [小星星/gpt-6-astra🐾]

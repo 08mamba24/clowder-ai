@@ -1098,6 +1098,10 @@ export interface InvocationDeps {
   /** F276 Wave 2 bridge: delivery evidence a later F276 tool callback is bound against. */
   readonly writeOpportunityDeliveryStore?: import('../../../../memory/people/WriteOpportunityDeliveryStore.js').WriteOpportunityDeliveryStore;
   readonly registry: InvocationRegistry;
+  readonly openGitHubReadLease?: (
+    invocationId: string,
+    signal?: AbortSignal,
+  ) => Promise<import('../../../../../infrastructure/github/agent-github-read-types.js').GhReadLease | null>;
   readonly sessionManager: SessionManager;
   readonly threadStore: IThreadStore | null;
   readonly apiUrl: string;
@@ -3669,8 +3673,10 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
 
     const entrustedWorkSourceMessageId = params.a2aTriggerMessageId ?? params.executionCausal?.triggerMessageId;
     const entrustedWorkTaskStore = deps.taskStore;
+    const openGitHubReadLease = deps.openGitHubReadLease;
 
     const baseOptions: AgentServiceOptions = {
+      ...(openGitHubReadLease ? { openGitHubReadLease: () => openGitHubReadLease(invocationId, signal) } : {}),
       ...(params.routeIntent ? { routeIntent: params.routeIntent } : {}),
       callbackEnv,
       ...(invocationCapacitySnapshot
