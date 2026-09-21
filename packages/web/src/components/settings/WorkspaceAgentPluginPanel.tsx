@@ -69,16 +69,19 @@ export function WorkspaceAgentPluginPanel() {
     void load();
   }, [load]);
 
+  // astra round-6 N1: the initial reveal must wait for the card to actually
+  // mount — the async GET has to land first, so this effect re-runs on state.
   useEffect(() => {
+    if (!state) return;
     const reveal = () => {
       if (window.location.hash === '#workspace-agent') {
-        document.querySelector('[data-testid="workspace-agent-plugin-panel"]')?.scrollIntoView({ block: 'center' });
+        document.getElementById('workspace-agent')?.scrollIntoView?.({ block: 'center' });
       }
     };
     reveal();
     window.addEventListener('hashchange', reveal);
     return () => window.removeEventListener('hashchange', reveal);
-  }, []);
+  }, [state]);
 
   const save = useCallback(
     async (enabled: boolean) => {
@@ -157,7 +160,7 @@ export function WorkspaceAgentPluginPanel() {
     <section className="contents" data-testid="workspace-agent-plugin-panel">
       {error && <div className="rounded-md bg-conn-red-bg px-3 py-2 text-sm text-conn-red-text">{error}</div>}
       {state && (
-        <div className={settingsResourceCardClass}>
+        <div id="workspace-agent" className={settingsResourceCardClass}>
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">

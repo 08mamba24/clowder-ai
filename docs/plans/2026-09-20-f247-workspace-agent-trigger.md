@@ -103,6 +103,14 @@
 - R4(P2) 已修：redis-cli 从 server binary 同目录推导（再 PATH 兜底）；shutdown 失败**传播**（不再无条件 resolve）；退出等待有界（5s 超时 SIGKILL 且断言非 timeout）；无 cli 时 SIGTERM（--save 1 1 保证落盘）+ 退出码检查。真实重启回归保持通过（119ms）。
 - P3 已修：GET/PATCH 共用 `projectCloudBindingsForOwner()` 单一 owner 投影；对称性测试断言同一 WA 条目在两处响应里都是对象（JSON 存储串不泄漏）。
 
+## Review 轮次记录（astra round 6 → APPROVED for corrective delta）
+
+- R1-R4 + P3 全部关闭放行；191/191 独立回归 + 72 格状态迁移矩阵 + 快照双窗口探针。
+- N1(P3) 已修：卡片加稳定 `id="workspace-agent"`；reveal effect 依赖 `[state]`——初始 hash 等卡片真实挂载后才定位（deferred GET 用例：state 到达前 scrollCalls=0、到达后 ≥1）。
+- N2(P3) 已修：shutdown 改经测试自有连接 `sendCommand(new Command('shutdown',['save']))` 原生命令（EVAL 禁 SHUTDOWN）——连接关闭型拒绝=已发出，其余传播；去掉 quit-先于-shutdown；重启段断言 `exitCode===0`；after 走同一清理（client shutdown → 有界等待 → 才 SIGKILL）。cli 依赖整体移除。
+- reviewer 失误记录在案：其首次快照探针 stub 安装晚于 adapter 构造，导致一次带虚拟 token 的真实外呼（401）；已声明并修正重跑。实现侧无需动作，但快照 adapter 构造时机与 stub 顺序的教训记入本 plan。
+- 状态：本地 review 链（6 轮）关闭；剩余 = PR 流程（SOP gate/cloud review）+ owner 环境验收（真实 provider 202、页面关闭 live dogfood）+ 任务卡同步欠账。
+
 ### Failure-Mode Sweep（本轮）
 
 | pattern | scanned | fixed | N/A |

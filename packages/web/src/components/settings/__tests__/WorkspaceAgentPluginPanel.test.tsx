@@ -160,3 +160,33 @@ describe('round-5 R3: provider-aware recovery actions in CloudConversationLink',
     expect(waSettings).toBeDefined();
   });
 });
+
+describe('round-6 N1: initial deep link locates the card after deferred load', () => {
+  it('reveal runs once the state-driven card mounts, not before', async () => {
+    const scrollCalls: number[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function scrollIntoViewSpy() {
+      scrollCalls.push(1);
+    };
+    window.location.hash = '#workspace-agent';
+    try {
+      let releaseStatus: ((value: Response) => void) | undefined;
+      const statusResponse = new Promise<Response>((resolve) => {
+        releaseStatus = resolve;
+      });
+      mockApiFetch.mockImplementation(async () => statusResponse);
+      await act(async () => {
+        root!.render(<WorkspaceAgentPluginPanel />);
+      });
+      expect(scrollCalls.length).toBe(0); // card not mounted yet — no false reveal
+      await act(async () => {
+        releaseStatus!(jsonResponse({ enabled: false, triggerId: null, workspaceId: null, tokenConfigured: false, source: null }));
+      });
+      expect(container!.querySelector('#workspace-agent')).not.toBeNull();
+      expect(scrollCalls.length).toBeGreaterThan(0); // mounted → reveal fired
+    } finally {
+      Element.prototype.scrollIntoView = original;
+      window.location.hash = '';
+    }
+  });
+});

@@ -6,10 +6,10 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFile, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import net from 'node:net';
 import { after, before, describe, it } from 'node:test';
 
@@ -63,33 +63,25 @@ function startRedis(binary, port, dir) {
 }
 
 /**
- * astra round-5 R4: locate the cli next to the server binary (then PATH),
- * PROPAGATE failures (never swallow), and fall back to SIGTERM which — with
- * the --save 1 1 config — persists before exit. Exit waits are bounded.
+ * astra round-6 N2: shutdown is issued through THIS TEST's own Redis
+ * connection — no external cli dependency, no swallowed spawn failures.
+ * SHUTDOWN SAVE never returns a reply (the server closes the connection),
+ * so a connection-closed style error after the command means "issued";
+ * anything else propagates.
  */
-function findRedisCli(serverBinary) {
-  const sibling = join(dirname(serverBinary), 'redis-cli');
-  if (existsSync(sibling)) return sibling;
+async function shutdownViaClient(redisClient) {
+  const { Command } = await import('ioredis');
   try {
-    if (spawnSync('redis-cli', ['--version'], { stdio: 'ignore' }).status === 0) return 'redis-cli';
-  } catch {
-    /* not on PATH */
+    // SHUTDOWN is blocked inside EVAL scripts — send it as a raw command on
+    // our own connection. The server closes the connection instead of
+    // replying, so a connection-closed rejection means "issued".
+    await redisClient.sendCommand(new Command('shutdown', ['save']));
+    return;
+  } catch (error) {
+    const message = String((error && error.message) || error);
+    if (/closed|end|socket|connection|eof|reset/i.test(message)) return;
+    throw error;
   }
-  return null;
-}
-
-function shutdownRedis(cli, port) {
-  return new Promise((resolve, reject) => {
-    if (!cli) return resolve({ mode: 'signal' });
-    execFile(cli, ['-h', '127.0.0.1', '-p', String(port), 'shutdown', 'save'], (error) => {
-      // redis-cli exits non-zero when the connection closes on SHUTDOWN;
-      // treat connection-level errors on an otherwise issued command as done.
-      if (error && error.code !== 0 && error.code !== undefined && !/connect|ENOENT/i.test(String(error.message))) {
-        return reject(error);
-      }
-      resolve({ mode: 'cli' });
-    });
-  });
 }
 
 function waitForExit(child, timeoutMs = 5_000) {
@@ -117,7 +109,6 @@ describe('F247 workspace-agent recovery binding across a real Redis restart', { 
   let port;
   let redis;
   let store;
-  let cli;
 
   before(async () => {
     ({ RedisThreadStore } = await import('../dist/domains/cats/services/stores/redis/RedisThreadStore.js'));
@@ -125,7 +116,6 @@ describe('F247 workspace-agent recovery binding across a real Redis restart', { 
     ({ normalizeCloudCatBinding } = await import('../dist/domains/cats/services/cloud-bridge/cloud-cat-bindings-v1.js'));
     dir = mkdtempSync(join(tmpdir(), 'f247-wa-redis-'));
     port = await freePort();
-    cli = findRedisCli(binary);
     child = await startRedis(binary, port, dir);
     redis = createRedisClient({ url: `redis://127.0.0.1:${port}` });
     await redis.ping();
@@ -135,14 +125,19 @@ describe('F247 workspace-agent recovery binding across a real Redis restart', { 
   });
 
   after(async () => {
+    if (child && child.exitCode === null) {
+      try {
+        if (redis) await shutdownViaClient(redis);
+      } catch {
+        child.kill('SIGTERM'); // --save 1 1 persists before exit
+      }
+      await waitForExit(child);
+      if (child.exitCode === null) child.kill('SIGKILL');
+    }
     try {
       await redis?.quit?.();
     } catch {
-      /* best effort */
-    }
-    if (child && !child.killed) {
-      await shutdownRedis(port).catch(() => {});
-      child.kill('SIGKILL');
+      /* connection already closed by shutdown */
     }
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
@@ -162,17 +157,12 @@ describe('F247 workspace-agent recovery binding across a real Redis restart', { 
     assert.equal(normalizeCloudCatBinding(before['gpt-pro'])?.conversationUrl, 'https://chatgpt.com/c/wa-restart-1');
     assert.equal(normalizeCloudCatBinding(before['gpt-52'])?.provider, 'personal-chrome-host');
 
-    // Restart cycle: graceful SHUTDOWN SAVE (cli, or SIGTERM+save-config
-    // fallback) → bounded exit wait → respawn → fresh client.
-    try {
-      await redis.quit();
-    } catch {
-      /* already closing */
-    }
-    const shutdown = await shutdownRedis(cli, port);
-    if (shutdown.mode === 'signal') child.kill('SIGTERM');
+    // Restart cycle: SHUTDOWN SAVE through our own connection → bounded exit
+    // wait with a strict exit-code check → respawn → fresh client.
+    await shutdownViaClient(redis);
     const exitCode = await waitForExit(child);
     assert.notEqual(exitCode, 'timeout', 'redis-server must exit after shutdown');
+    assert.equal(exitCode, 0, 'graceful SHUTDOWN SAVE exits 0');
     child = await startRedis(binary, port, dir);
     redis = createRedisClient({ url: `redis://127.0.0.1:${port}` });
     await redis.ping();
