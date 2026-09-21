@@ -48,6 +48,7 @@ import { createAcpSessionState, flushAcpThinking, transformAcpEvent } from './ac
 import { resolveAcpMcpServers, resolveDisabledServerIds, resolveUserProjectMcpServers } from './acp-mcp-resolver.js';
 import { callbackEnvDiagnostic, materializeSessionMcpServers } from './acp-session-env.js';
 import type { AcpMcpServer, AcpNewSessionResult, AcpSessionUpdate } from './types.js';
+import { zcodeReadMcp } from './zcode-github-read.js';
 
 const log = createModuleLogger('acp-agent');
 
@@ -114,6 +115,8 @@ type PromptPhase =
   | 'busy_backoff';
 
 export interface AcpAgentServiceConfig {
+  /** Native ZCode receives only the host read descriptor, over its private ACP pipe. */
+  isolatedGitHubRead?: boolean;
   catId: CatId;
   pool: AcpProcessPool;
   poolKey: PoolKey;
@@ -176,6 +179,7 @@ export class AcpAgentService implements AgentService {
   private readonly appliedContextBinding?: import('../../../types.js').AgentContextBinding;
   private readonly mcpSupportEnabled: boolean;
   private readonly omitSessionMcpServers: boolean;
+  private readonly isolatedGitHubRead: boolean;
   /**
    * #1186: Resolved ACP idle TTL — authoritative threshold for all no-event termination.
    * Always concrete: defaults to DEFAULT_ACP_IDLE_TTL_MS (30m) when config omits it,
@@ -200,6 +204,7 @@ export class AcpAgentService implements AgentService {
     this.appliedContextBinding = config.contextBinding;
     this.mcpSupportEnabled = config.mcpSupport !== false;
     this.omitSessionMcpServers = config.omitSessionMcpServers === true;
+    this.isolatedGitHubRead = config.isolatedGitHubRead === true;
     this.idleTtlMs = config.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS;
     this.agentBusyRetryDelaysMs = config.agentBusyRetryDelaysMs ?? DEFAULT_AGENT_BUSY_RETRY_DELAYS_MS;
   }
@@ -390,8 +395,11 @@ export class AcpAgentService implements AgentService {
     // If they exceed the threshold, OpenCode is in a compaction → auto-continue loop.
     let scratchpadSuppressedEvents = 0;
     const MAX_SCRATCHPAD_SUPPRESSED_EVENTS = 50;
+    let githubReadLease: Awaited<ReturnType<NonNullable<AgentServiceOptions['openGitHubReadLease']>>> = null;
 
     try {
+      if (this.isolatedGitHubRead && options?.openGitHubReadLease)
+        githubReadLease = await options.openGitHubReadLease();
       // #712 P1-1: resolve MCP servers at invoke time from capabilities.json
       // so capability toggles take effect immediately without registry rebuild.
       // P1-2: check project-local capabilities.json first, fall back to runtime root.
@@ -448,6 +456,7 @@ export class AcpAgentService implements AgentService {
       // and resume rewrites the same file with fresh creds. A superseded process keeps
       // its own file, which stops updating — its late callbacks fail registry.isLatest().
       const prepareInvokeCredentials = (resumeSessionId?: string): PreparedCredentialEnv | null => {
+        if (this.isolatedGitHubRead) return null;
         const processCredFile = this.omitSessionMcpServers ? lease.client.mcpCredentialFile?.trim() : undefined;
         if (processCredFile) {
           return refreshFrozenCredentialFile(options?.callbackEnv, processCredFile);
@@ -461,7 +470,7 @@ export class AcpAgentService implements AgentService {
         const sessionCallbackEnv = preparedCreds?.env ?? options?.callbackEnv;
         const materialized = materializeSessionMcpServers(invokeServers, sessionCallbackEnv);
         return {
-          mcpServers: this.omitSessionMcpServers ? [] : materialized,
+          mcpServers: githubReadLease ? zcodeReadMcp(githubReadLease) : this.omitSessionMcpServers ? [] : materialized,
           envDiag: callbackEnvDiagnostic(sessionCallbackEnv),
         };
       };
@@ -912,6 +921,7 @@ export class AcpAgentService implements AgentService {
       };
       yield { type: 'done', catId: this.catId, metadata, timestamp: Date.now() };
     } finally {
+      githubReadLease?.revoke();
       client.offCapacity(onCapacity);
       if (onAbort && options?.signal) {
         options.signal.removeEventListener('abort', onAbort);

@@ -16,6 +16,7 @@ code_anchors:
   - packages/api/src/routes/thread-member-effort.ts
   - packages/api/src/routes/thread-member-speed.ts
   - packages/api/src/domains/cats/services/agents/invocation/invoke-single-cat.ts
+  - packages/api/src/infrastructure/github/agent-github-read-capability.ts
   - packages/api/src/domains/cats/services/agents/invocation/request-generation-recorder.ts
   - packages/api/src/domains/runtime-interaction/ports/RuntimeInteractionPort.ts
   - packages/api/src/domains/runtime-interaction/RuntimeInteractionService.ts
@@ -88,6 +89,21 @@ cited_by:
 ---
 
 # Identity / Session
+
+## Isolated provider GitHub read capability (F317/F032)
+
+`invokeSingleCat` binds the host opener to its real child invocation; the broker reuses
+`InvocationRegistry.verifyLatest` and canonical turn-execution terminal repair. Only the private
+owner's zcode and qoder-flash receive the two-repository read grant. The request body cannot choose
+user, cat, thread or invocation. Each provider attempt replaces and finally revokes its capability;
+API restart drops capabilities without deleting transcript or audit data.
+
+ZCode transports the narrow bearer in native session HTTP-MCP headers and retires its own ACP
+carrier after each lease, so cold resume restores history with a fresh header. Qoder's trusted
+shell-prefix reads a lease-root file outside the Seatbelt scratch allowlist. It translates only a
+complete literal command; nested shell processes receive neither the bearer nor its config path.
+The GitHub query executor owns no new raw-token storage or environment injection. These seams do
+not grant family MCP access or change the existing ZCode same-UID filesystem boundary.
 
 Architecture cell: identity-session
 

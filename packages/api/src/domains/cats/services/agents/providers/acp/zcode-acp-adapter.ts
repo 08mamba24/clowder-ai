@@ -18,6 +18,7 @@ import {
   zcodeLaunchPlan,
   zcodeWorkspace,
 } from './zcode-acp-protocol.js';
+import { parseZcodeReadMcp } from './zcode-github-read.js';
 
 export { flattenAcpPrompt, zcodeLaunchPlan };
 
@@ -127,6 +128,7 @@ async function handleAcp(
         agentInfo: { name: 'zcode-acp-adapter', title: 'ZCode', version: '0.16' },
         agentCapabilities: {
           loadSession: true,
+          mcpCapabilities: { http: true },
           promptCapabilities: { image: false, audio: false, embeddedContext: false },
         },
       });
@@ -157,7 +159,7 @@ async function handleSessionNew(
   msg: JsonRpc,
   timeoutMs: number,
 ): Promise<void> {
-  const params = (msg.params ?? {}) as { cwd?: string };
+  const params = (msg.params ?? {}) as { cwd?: string; mcpServers?: unknown };
   const cwd = params.cwd || process.cwd();
   const created = await native.request(
     'session/create',
@@ -165,6 +167,7 @@ async function handleSessionNew(
       workspace: zcodeWorkspace(cwd),
       mode: 'yolo',
       persistence: 'immediate',
+      mcpServers: parseZcodeReadMcp(params.mcpServers),
     },
     timeoutMs,
   );
@@ -189,7 +192,7 @@ async function handleSessionLoad(
   msg: JsonRpc,
   timeoutMs: number,
 ): Promise<void> {
-  const params = (msg.params ?? {}) as { sessionId?: string; cwd?: string };
+  const params = (msg.params ?? {}) as { sessionId?: string; cwd?: string; mcpServers?: unknown };
   const sessionId = params.sessionId?.trim();
   if (!sessionId) {
     acpError(msg.id, -32602, 'session/load requires sessionId');
@@ -201,6 +204,7 @@ async function handleSessionLoad(
     {
       sessionId,
       workspace: zcodeWorkspace(cwd),
+      mcpServers: parseZcodeReadMcp(params.mcpServers),
     },
     timeoutMs,
   );

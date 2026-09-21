@@ -29,6 +29,10 @@ function catConfig(id) {
   };
 }
 
+it('ZCode attempt-scoped MCP headers cannot share a multiplexed carrier', () => {
+  assert.equal(resolveEffectiveAcpSupportsMultiplexing({ command: 'zcode', supportsMultiplexing: true }), false);
+});
+
 function writeDshFixture() {
   const root = mkdtempSync(join(tmpdir(), 'dsh-factory-'));
   const binDir = join(root, 'packages', 'examples', 'acp-demo', 'lib');

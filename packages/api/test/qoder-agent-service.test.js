@@ -602,7 +602,14 @@ function makeControlledRuntime(root, wrapperBody) {
   mkdirSync(dirname(wrapperPath), { recursive: true });
   mkdirSync(dirname(memoryPath), { recursive: true });
   if (wrapperBody) writeFileSync(wrapperPath, wrapperBody);
-  else cpSync(join(here, '..', '..', '..', 'scripts', 'qoder-shell-sandbox.mjs'), wrapperPath);
+  else {
+    cpSync(join(here, '..', '..', '..', 'scripts', 'qoder-shell-sandbox.mjs'), wrapperPath);
+    mkdirSync(join(dirname(wrapperPath), 'lib'), { recursive: true });
+    cpSync(
+      join(here, '..', '..', '..', 'scripts', 'lib', 'agent-github-read-client.mjs'),
+      join(dirname(wrapperPath), 'lib', 'agent-github-read-client.mjs'),
+    );
+  }
   chmodSync(wrapperPath, 0o755);
   writeFileSync(memoryPath, "process.stdout.write('memory-ok\\n');\n");
   // Structural controlled tests never execute the sandbox binary (probe is
@@ -615,6 +622,75 @@ function makeControlledRuntime(root, wrapperBody) {
   chmodSync(sandboxExecPath, 0o755);
   return { memoryPath, runtimeRoot, sandboxExecPath, wrapperPath };
 }
+
+test(
+  'GitHub read lease stays outside scratch, is denied to real shells and revoked on every exit',
+  { skip: process.platform !== 'darwin' },
+  async () => {
+    for (const recorderFails of [false, true]) {
+      const root = mkdtempSync(join(tmpdir(), 'qoder-gh-read-'));
+      const workspace = join(root, 'workspace');
+      mkdirSync(workspace);
+      const runtime = makeControlledRuntime(root);
+      const token = 'h'.repeat(43);
+      let path;
+      let revoked = 0;
+      let prepared;
+      try {
+        const svc = makeSvc({
+          toolAccess: 'controlled',
+          memoryMcpServerPath: runtime.memoryPath,
+          runtimeRoot: runtime.runtimeRoot,
+          shellSandboxWrapperPath: runtime.wrapperPath,
+          sandboxBinary: '/usr/bin/sandbox-exec',
+          sandboxProbe: (probe) => {
+            path = probe.githubReadConfigPath;
+            assert.ok(path && !path.startsWith(probe.scratchDir));
+            assert.equal(statSync(path).mode & 0o777, 0o600);
+            assert.equal(JSON.parse(readFileSync(path, 'utf8')).token, token);
+            const env = Object.fromEntries(Object.entries(probe.childEnv).filter(([, v]) => v !== null));
+            assert.ok(!JSON.stringify(env).includes(token));
+            const denied = spawnSync(process.execPath, [runtime.wrapperPath, `/bin/cat '${path}'`], {
+              env,
+              encoding: 'utf8',
+            });
+            assert.notEqual(denied.status, 0, denied.stdout);
+            assert.ok(!`${denied.stdout}${denied.stderr}`.includes(token));
+            const nested = spawnSync(process.execPath, [runtime.wrapperPath, 'env'], { env, encoding: 'utf8' });
+            assert.equal(nested.status, 0, nested.stderr);
+            assert.ok(!nested.stdout.includes('CAT_CAFE_QODER_GITHUB_READ_CONFIG'));
+          },
+          spawnFn: () => fakeChild(controlledFixture()),
+        });
+        const out = await runInvoke(svc, 'read approved PRs', {
+          workingDirectory: workspace,
+          openGitHubReadLease: async () => ({
+            token,
+            queryUrl: 'http://127.0.0.1:43210/api/agent-github-read',
+            mcpUrl: 'http://127.0.0.1:43210/api/agent-github-read/mcp',
+            revoke() {
+              revoked++;
+              assert.ok(existsSync(path));
+            },
+          }),
+          beforeProviderLaunch: async (request) => {
+            prepared = request;
+            if (recorderFails) throw new Error('blocked');
+          },
+        });
+        assert.equal(revoked, 1);
+        assert.equal(existsSync(path), false);
+        assert.ok(!JSON.stringify([prepared, out]).includes(token));
+        assert.ok(
+          out.some((m) => m.type === (recorderFails ? 'error' : 'done')),
+          JSON.stringify(out),
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  },
+);
 
 test('L2: controlled invoke fails closed before spawn when sandbox-exec is unavailable', async () => {
   let spawned = 0;

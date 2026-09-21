@@ -10,6 +10,9 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parseGhReadCommand, queryGitHubRead } from './lib/agent-github-read-client.mjs';
 
 const requiredEnv = (name) => {
   const value = process.env[name]?.trim();
@@ -40,12 +43,28 @@ try {
   const memoryShim = requiredEnv('CAT_CAFE_QODER_MEMORY_SHIM');
   const selectedPolicy = unwrapSingleShellWord(command) === memoryShim ? memoryPolicy : workspacePolicy;
 
+  const readConfig = process.env.CAT_CAFE_QODER_GITHUB_READ_CONFIG;
+  if (readConfig) {
+    const guardedGh = join(dirname(fileURLToPath(import.meta.url)), 'guarded-bin', 'gh');
+    if (command === 'gh --version' || command === `${guardedGh} --version`) {
+      process.stdout.write('gh (Clowder readonly carrier)\n');
+      process.exit(0);
+    }
+    const query = parseGhReadCommand(command, guardedGh);
+    if (query) {
+      const result = await queryGitHubRead(readConfig, query);
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+      process.exit(result.ok ? 0 : 1);
+    }
+  }
+
   const childEnv = { ...process.env };
   for (const key of [
     'CAT_CAFE_QODER_SANDBOX_BIN',
     'CAT_CAFE_QODER_WORKSPACE_POLICY',
     'CAT_CAFE_QODER_MEMORY_POLICY',
     'CAT_CAFE_QODER_MEMORY_SHIM',
+    'CAT_CAFE_QODER_GITHUB_READ_CONFIG',
     'QODERCN_CONFIG_DIR',
     'QODERCN_SHELL_PREFIX',
     'QODER_SHELL_PREFIX',
@@ -53,6 +72,7 @@ try {
   ]) {
     delete childEnv[key];
   }
+  if (readConfig) childEnv.CAT_CAFE_GITHUB_READ_ONLY = 'true';
 
   const result = spawnSync(sandboxBinary, ['-f', selectedPolicy, '/bin/sh', '-c', command], {
     env: childEnv,
@@ -65,6 +85,14 @@ try {
   }
   process.exit(result.status ?? 1);
 } catch (error) {
-  process.stderr.write(`[qoder-shell-sandbox] ${error instanceof Error ? error.message : String(error)}\n`);
+  // Never serialize a transport error that could contain request credentials.
+  const detail = process.env.CAT_CAFE_QODER_GITHUB_READ_CONFIG
+    ? error instanceof Error && ['unsupported_query', 'output_limit', 'capability_unavailable'].includes(error.message)
+      ? error.message
+      : 'unavailable'
+    : error instanceof Error
+      ? error.message
+      : String(error);
+  process.stderr.write(`[qoder-shell-sandbox] ${detail}\n`);
   process.exit(126);
 }

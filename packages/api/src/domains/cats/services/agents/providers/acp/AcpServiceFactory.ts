@@ -28,19 +28,24 @@ import {
   mintDshCredentialFile,
   prepareDshAcpSpawnForProject,
 } from './dsh-acp-bootstrap.js';
-import { applyZcodeHarnessSpawn, zcodeOmitsAcpSessionMcp, zcodeUnreadyMessage } from './zcode-acp-bootstrap.js';
+import {
+  applyZcodeHarnessSpawn,
+  isZcodeHarnessCommand,
+  zcodeOmitsAcpSessionMcp,
+  zcodeUnreadyMessage,
+} from './zcode-acp-bootstrap.js';
 
 export type AcpPoolRegistry = Map<string, AcpProcessPool>;
 
 /**
- * DSH continuable background turns outlive a Hub lease. Multiplexing would
- * reuse the spawn-frozen credential file across invocations. Catalog config
- * cannot opt DSH back into multiplexing.
+ * DSH background turns and ZCode native warm sessions outlive a Hub lease.
+ * Their attempt-scoped authority requires a fresh carrier. Catalog config
+ * cannot opt either provider back into multiplexing.
  */
 export function resolveEffectiveAcpSupportsMultiplexing(
   acpConfig: Pick<AcpVariantConfig, 'command' | 'supportsMultiplexing'>,
 ): boolean {
-  if (isDshHarnessCommand(acpConfig.command)) return false;
+  if (isDshHarnessCommand(acpConfig.command) || isZcodeHarnessCommand(acpConfig.command)) return false;
   return acpConfig.supportsMultiplexing === true;
 }
 
@@ -280,9 +285,10 @@ async function ensureAcpPool(
     },
     { ...acpConfig, supportsMultiplexing },
     () => {
-      const retireAfterLease = isDshHarnessCommand(acpConfig.command);
+      const dsh = isDshHarnessCommand(acpConfig.command);
+      const retireAfterLease = dsh || isZcodeHarnessCommand(acpConfig.command);
       const env = { ...(spawn.env ?? {}) };
-      if (retireAfterLease) {
+      if (dsh) {
         env.CAT_CAFE_CREDENTIAL_FILE = mintDshCredentialFile(input.projectRoot, input.config.id);
       }
       const clientCfg = {
@@ -423,6 +429,7 @@ export async function createAcpServiceForConfig(
     },
     mcpSupport: config.mcpSupport,
     omitSessionMcpServers: dshOmitsAcpSessionMcp(acpConfig.command) || zcodeOmitsAcpSessionMcp(acpConfig.command),
+    isolatedGitHubRead: isZcodeHarnessCommand(acpConfig.command),
     // #1186: Thread the member's configured idle TTL to AcpAgentService so
     // promptStream uses it as the authoritative no-event termination threshold.
     idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,
