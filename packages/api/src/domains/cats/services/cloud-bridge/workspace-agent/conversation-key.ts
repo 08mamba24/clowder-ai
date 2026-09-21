@@ -44,6 +44,16 @@ export function buildWorkspaceAgentConversationKey(input: WorkspaceAgentConversa
 }
 
 const CONVERSATION_KEY_REGEX = /^clowder:[^:\s]{1,256}:[^:\s]{1,256}$/;
+const SEGMENT_REGEX = /^[^:\s]{1,256}$/;
+
+/**
+ * Shared segment constraint (astra R3): every consumer of a workspace id —
+ * the key builder, the Settings route, and the persisted/env config — must
+ * accept exactly the same values, so anything that saves can dispatch.
+ */
+export function isWorkspaceAgentConversationKeySegment(value: unknown): value is string {
+  return typeof value === 'string' && SEGMENT_REGEX.test(value) && !value.includes('\x7f');
+}
 
 /** Structural validation for values read back from config or telemetry. */
 export function isWorkspaceAgentConversationKey(value: unknown): value is string {

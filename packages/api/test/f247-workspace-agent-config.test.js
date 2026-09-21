@@ -218,3 +218,83 @@ test('http adapter: still validates config via constructor (regression guard)', 
   const adapter = new WorkspaceAgentTriggerHttpAdapter({ triggerId: 'agtch_x', tokenProvider: () => 't' });
   assert.equal(adapter.triggerId, 'agtch_x');
 });
+
+// ── astra round-1 review fixes (R1/R3) ─────────────────────────────────────
+
+import { writeFileSync, mkdirSync } from 'node:fs';
+
+const ENV_TRIPLE = {
+  CAT_CAFE_WORKSPACE_AGENT_TRIGGER_ID: 'agtch_env',
+  CAT_CAFE_WORKSPACE_AGENT_WORKSPACE_ID: 'ws_env',
+  CAT_CAFE_WORKSPACE_AGENT_TOKEN: 'env-secret',
+};
+
+test('R1: env-only disable persists a tombstone that survives store restart', () => {
+  const root = tempProjectRoot();
+  try {
+    const first = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: ENV_TRIPLE });
+    assert.equal(first.resolve()?.source, 'env');
+    const projection = first.disable();
+    assert.equal(projection.enabled, false, 'disable must turn off an env-bootstrapped transport');
+
+    // Rebuild the store (process restart) — the persisted tombstone must win.
+    const second = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: ENV_TRIPLE });
+    assert.equal(second.resolve(), null, 'restart must not resurrect the env bootstrap');
+    assert.equal(second.project().enabled, false);
+    assert.equal(second.project().source, 'settings');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('R1: corrupt settings file does not resurrect env credentials', () => {
+  const root = tempProjectRoot();
+  try {
+    mkdirSync(join(root, '.cat-cafe'), { recursive: true });
+    writeFileSync(join(root, '.cat-cafe', 'workspace-agent.json'), '{ not json !!!', { mode: 0o600 });
+    const config = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: ENV_TRIPLE });
+    assert.equal(config.resolve(), null, 'corrupt file must suppress env bootstrap');
+    const projection = config.project();
+    assert.equal(projection.enabled, false);
+    assert.deepEqual(projection.invalidConfig, { reason: 'corrupt_file' });
+    // Recovery: a full save overwrites the corrupt file and re-enables.
+    config.save({ triggerId: 'agtch_new', workspaceId: 'ws_new', token: 't_new' });
+    assert.equal(config.resolve()?.triggerId, 'agtch_new');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('R1: schema-invalid persisted record (enabled without token) is invalid, not env-resurrected', () => {
+  const root = tempProjectRoot();
+  try {
+    mkdirSync(join(root, '.cat-cafe'), { recursive: true });
+    writeFileSync(
+      join(root, '.cat-cafe', 'workspace-agent.json'),
+      JSON.stringify({ triggerId: 'agtch_x', workspaceId: 'ws_x', token: '', enabled: true }),
+      { mode: 0o600 },
+    );
+    const config = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: ENV_TRIPLE });
+    assert.equal(config.resolve(), null);
+    assert.deepEqual(config.project().invalidConfig, { reason: 'schema_invalid' });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('R3: persisted workspaceId failing the shared segment constraint is invalid', () => {
+  const root = tempProjectRoot();
+  try {
+    mkdirSync(join(root, '.cat-cafe'), { recursive: true });
+    writeFileSync(
+      join(root, '.cat-cafe', 'workspace-agent.json'),
+      JSON.stringify({ triggerId: 'agtch_x', workspaceId: 'tenant:fixture', token: 't', enabled: true }),
+      { mode: 0o600 },
+    );
+    const config = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: {} });
+    assert.equal(config.resolve(), null, 'a saved-but-undispatchable config must not activate');
+    assert.deepEqual(config.project().invalidConfig, { reason: 'schema_invalid' });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

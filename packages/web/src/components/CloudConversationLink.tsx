@@ -6,7 +6,10 @@ import { parseChatGptConversationUrl } from '@/utils/chatgpt-chat-url';
 import { personalChromeSettingsHref } from '@/utils/personal-chrome-settings';
 
 interface CloudBindingsResponse {
-  bindings?: Record<string, string>;
+  // astra R2: values are canonical ChatGPT conversation URL strings by
+  // contract (the server projects versioned entries); guard against
+  // unexpected object shapes instead of feeding them to the URL parser.
+  bindings?: Record<string, string | { provider?: string }>;
 }
 
 type BindingState =
@@ -34,6 +37,7 @@ async function readCloudConversationBinding(threadId: string, signal: AbortSigna
   if (signal.aborted) return null;
   const rawBinding = body.bindings?.['gpt-pro'];
   if (rawBinding === undefined) return { kind: 'empty' };
+  if (typeof rawBinding !== 'string') return { kind: 'invalid' };
 
   const parsed = parseChatGptConversationUrl(rawBinding);
   return parsed ? { kind: 'bound', ...parsed } : { kind: 'invalid' };

@@ -201,3 +201,22 @@ test('POST test: adapter failure surfaces the typed code without the token', asy
     cleanup();
   }
 });
+
+test('R3: PUT rejects a workspaceId the conversation-key builder would refuse', async () => {
+  const { app, cleanup } = buildApp();
+  try {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/plugins/workspace-agent/config',
+      headers: writeHeaders,
+      payload: { triggerId: 'agtch_ui', workspaceId: 'tenant:fixture', token: 't' },
+    });
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.json().code, 'INVALID_CONFIG');
+    const followUp = await app.inject({ method: 'GET', url: '/api/plugins/workspace-agent', headers: readHeaders });
+    assert.equal(followUp.json().enabled, false, 'rejected value must not be partially saved');
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});

@@ -11,7 +11,10 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import { pluginAccessError, requirePluginOwnerLocalAccess, requirePluginWriteAccess } from './plugin-access-guards.js';
 import type { IWorkspaceAgentTriggerAdapter } from '../domains/cats/services/cloud-bridge/workspace-agent/workspace-agent-trigger-adapter.js';
-import { buildWorkspaceAgentConversationKey } from '../domains/cats/services/cloud-bridge/workspace-agent/conversation-key.js';
+import {
+  buildWorkspaceAgentConversationKey,
+  isWorkspaceAgentConversationKeySegment,
+} from '../domains/cats/services/cloud-bridge/workspace-agent/conversation-key.js';
 import type { WorkspaceAgentConfigStore } from '../domains/cats/services/cloud-bridge/workspace-agent/workspace-agent-config.js';
 
 export interface WorkspaceAgentPluginRouteOptions {
@@ -22,7 +25,6 @@ export interface WorkspaceAgentPluginRouteOptions {
 }
 
 const TRIGGER_ID_PATTERN = /^[A-Za-z0-9_:-]{1,200}$/;
-const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,256}$/;
 const TEST_CONVERSATION_SUFFIX = 'settings-selftest';
 
 interface ConfigBody {
@@ -36,6 +38,15 @@ function optionalPattern(value: unknown, pattern: RegExp, field: string): string
   if (value === undefined) return undefined;
   if (typeof value !== 'string' || !pattern.test(value)) {
     throw new Error(`${field} is invalid`);
+  }
+  return value;
+}
+
+/** astra R3: workspace ids share the conversation-key segment constraint. */
+function optionalWorkspaceId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (!isWorkspaceAgentConversationKeySegment(value)) {
+    throw new Error('workspaceId is invalid (must be a conversation-key safe segment)');
   }
   return value;
 }
@@ -68,7 +79,7 @@ export function registerWorkspaceAgentPluginRoutes(app: FastifyInstance, options
     try {
       return options.config.save({
         triggerId: optionalPattern(body.triggerId, TRIGGER_ID_PATTERN, 'triggerId'),
-        workspaceId: optionalPattern(body.workspaceId, WORKSPACE_ID_PATTERN, 'workspaceId'),
+        workspaceId: optionalWorkspaceId(body.workspaceId),
         token: optionalToken(body.token),
         enabled: optionalEnabled(body.enabled),
       });

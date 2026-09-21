@@ -20,6 +20,7 @@ import {
   collectAllThreadMessages,
 } from '../domains/cats/services/agents/routing/thread-artifacts-aggregator.js';
 import { resolveBootcampWorkspaceRoot } from '../domains/cats/services/bootcamp/workspace-root.js';
+import { normalizeCloudCatBinding } from '../domains/cats/services/cloud-bridge/cloud-cat-bindings-v1.js';
 import { recordFreshnessClosureTransition } from '../domains/cats/services/freshness/closure/freshness-closure-telemetry.js';
 import { projectFreshnessClosure } from '../domains/cats/services/freshness/glass-box/FreshnessOutputCommitCoordinator.js';
 import { projectFreshnessSupplementForHistory } from '../domains/cats/services/freshness/glass-box/freshness-supplement-history-projection.js';
@@ -1212,7 +1213,18 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       return { error: 'Only the thread owner can read cloud cat bindings' };
     }
     const bindings = await threadStore.getCloudCatBindings(id);
-    return { bindings };
+    // astra R2: project through the versioned-binding normalizer so legacy
+    // URL strings and any historical versioned values surface a uniform,
+    // honest shape; unusable entries are dropped (matching legacy regex-read
+    // behavior) instead of leaking raw/unvalidated values to the owner API.
+    const projected: Record<string, unknown> = {};
+    for (const [bindingCatId, value] of Object.entries(bindings)) {
+      const normalized = normalizeCloudCatBinding(value);
+      if (!normalized) continue;
+      projected[bindingCatId] =
+        normalized.provider === 'personal-chrome-host' ? normalized.conversationUrl : normalized;
+    }
+    return { bindings: projected };
   });
 
   // PATCH /api/threads/:id/cloud-bindings — STRICT user-owned only.

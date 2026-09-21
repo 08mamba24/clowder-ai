@@ -42,6 +42,15 @@
 4. receipt：transport='workspace-agent' + providerRunId 通过 validator；hostMessageId 在 workspace-agent receipt 上被 validator 拒绝（不冒用）。
 5. （Slice 2+）replay：同 Idempotency-Key 二次 dispatch 复用结果；Redis restart 行为；loop suppression：带 origin/bridgeEventId 的回声不触发二次出站。
 
+## Review 轮次记录（astra round 1 → REQUEST_CHANGES 修正）
+
+- R1(P1) 已修：配置状态机改为 absent/enabled/disabled/invalid 四态；env-only disable 落持久化墓碑（重启后仍 off）；坏/损坏配置不复活 env，投影暴露 invalidConfig 可恢复错误。
+- R3(P2) 已修：workspaceId 约束共享 `isWorkspaceAgentConversationKeySegment`（routes + config save/parse 同源）；保存前拒绝，无效持久化值归入 invalid 态。
+- R2(P2) 已修：投机 writer `updateCloudCatBindingEntry` 移除（无产品调用入口 = 认知脚手架）；绑定层收敛为读取契约——bridge 与 threads.ts cloud-bindings owner API 均经 normalize 投影，web 端非字符串值守卫为 invalid。
+- R4(P3) 已修：v37 缩进回 revision_history，措辞改实指。
+- **落点纠正（未完项②的正确入口）**：Workspace Agent 的 Remote MCP 回程走 `routes/callbacks.ts` 的 agent-key / exact-source grant 分支（约 :1511）；`cloud-assistant-return-ingest.ts` 只是浏览器 observer 回程。环抑制必须覆盖前者，在 callback/outbound admission 边界证明「同一回程不再次触发原方向」，保留合法主动新消息与跨猫交接；不凭模型自报 origin 扩权。
+- probe 记录（非 blocking，实现防环时定契约）：同 source 重试时 Idempotency-Key 稳定而 bridgeEventId 随 invocation 变——稳定事件身份需明确；envelope 极端 shrink 会丢 origin/bridgeEventId/causation 字段——降级语义需写死（fields 为 best-effort telemetry，缺失时回退 exact-source durable idempotency）。
+
 ## 边界与不做
 
 - 不改 Personal Chrome Host 现有行为/测试；不动 legacy pinchtab opt-in。
