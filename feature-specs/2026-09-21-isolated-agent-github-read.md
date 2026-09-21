@@ -21,8 +21,8 @@ topics: [github, provider, isolation, authentication]
 
 ## 状态与来源
 
-- **本轮交付：实施计划。** 2026-09-21 operator 消息 `0001789954443843-000354-15718ecc`：「不制定计划修改吗」。此消息授权把方案做具体；没有据此宣称两个仓库的读取权限已激活。
-- **当前：proposed。** 根因调查完成；认证传输绑定尚需 Task 1 离线验证；生产入口、权限和配置均未修改。
+- **任务来源：** 2026-09-21 operator 消息 `0001789954443843-000354-15718ecc`：「不制定计划修改吗」；后续 `0001789955401202-000363-924099ab`：「需要我决策什么？真的需要我决策吗？」。结合此前两仓只读修复讨论，按现有任务授权继续调查、实现、review 与隔离验收，不再把相同范围送回 operator 重复确认。后一句是对不必要升级的纠正，不伪造为一条新权限批准事件。
+- **当前：Task 1 调查中。** 根因已确认；认证传输绑定仍需验证；生产入口、权限和配置尚未修改。执行授权、技术验证与实际启用分别记录。
 - **执行负责人：小星星 / astra。** 计划内容经独立个体审查后提交；实现涉及安全边界，另走非作者 review、针对性安全测试和 merge gate。
 - **已验证事实与建议分开：** 先前宿主登录上下文探针证明认证可用，不证明 Qoder 子进程能逃出继承沙箱；不把探针成功当作产品接通。
 
@@ -55,17 +55,18 @@ AC7. 查询结果正常进入已有会话 transcript；最小审计记录不含�
 
 本次不增加 push、评论、review、merge、close、rerun/cancel CI、下载 artifacts、clone、任意仓库内容读取、CI 日志全文、watcher、家庭 MCP 或通用远程 shell。CI 首版范围是状态和 run 元数据；后续需要日志时单独定义有界操作，不能顺手透传 `--log`。
 
-## 权限决策包（计划可先交付，启用前必须有来源）
+## 当前执行范围与真正的升级边界
 
-**推荐：给两只猫补齐工作所需的自主只读查询，继续由宿主持有 GitHub 凭据。**
+**当前没有待 operator 决策的技术选项。继续补齐既定工作范围的自主只读查询，GitHub 凭据仍由宿主持有。**
 
-- **候选范围：** `github.com/08mamba24/clowder-ai` 与 `github.com/zts212653/clowder-ai`；主体为当前获准的 zcode、qoder-flash。停用的 qoder 不因同 provider 自动获得 grant。
+- **本次任务范围：** `github.com/08mamba24/clowder-ai` 与 `github.com/zts212653/clowder-ai`；主体为 zcode、qoder-flash；操作为 AC1 只读集合。停用的 qoder 不因同 provider 自动获得 grant。
 - **价值取舍：** 减少 operator / 其他猫代查，优先保持凭据与写权限边界；代价是查询操作集合受限，并需要维护两条载体接线。
-- **为何需要 operator：** 新增隔离载体的读取能力，属于 `cat-cafe-skills/refs/decision-matrix.md` 的安全/权限硬排除；现有宿主登录不等于已授权交给所有子进程。
-- **批准内容：** 上述主体 × 两仓 × AC1 只读操作集合。不要求 operator 选择技术传输方案。
-- **未批准时：** 可写计划、运行假凭据/假 gh 的离线实现与测试；真实 grant 为空，不改 runtime config、不重启服务、不读取新增受控数据面。
-- **回滚：** 撤销该能力的新调用准入，撤销在途 grant，丢弃未交付结果；实现可随 PR revert。已有用户 transcript/审计记录保留，已经读取的信息不可“撤回”，因此权限先于启用。
-- **批准来源字段：** implementation evidence 必须记录 operator sourceMessageId 与精确范围；本文件不能自行填 `approved`。
+- **猫猫负责：** 在上述任务范围内选择实现接缝、补测试、完成跨个体 review、合并和隔离验收。安全 review 是工程责任，不能替换成让 operator 重答“要不要修”。
+- **需要新决策的触发条件：** 新增仓库或主体、增加 GitHub 写操作、交给 agent raw credential、放松 HOME/Seatbelt/readonly memory 隔离，或引入新外部依赖/显著成本。届时提交已查证的必要性与具体替代方案；当前没有证据表明需要这些变化，不预设审批。
+- **实现未通过前：** 真实 grant 不启用，使用假凭据/假 gh 验证。这是未实现/未验收的状态，不是任务缺少 operator 授权。
+- **runtime 操作：** 根目录 `AGENTS.md` 明确 runtime config 变更必须由人操作，且不得修改自身启动配置/终止父进程。若最终激活确实需要这些动作，先完成代码与验收，再给 operator 精确版本、命令与影响窗口；不把上线操作提前包装成设计决策。
+- **回滚：** 撤销能力的新调用准入及在途 grant，丢弃未交付结果；实现可随 PR revert。用户 transcript/审计保留；已读信息不可撤回，所以严格限定既定范围。
+- **来源记录：** implementation evidence 引用以上原始任务消息与实际执行范围，不制造一个不存在的新 `approved` 事件，不因同账户登录而向其他猫自动开放。
 
 ## 终态接口与唯一边界
 
@@ -133,6 +134,12 @@ type GhReadResult =
 **证据门：** 假 ACP 只能验证我们自己的生命周期实现，不能证明 ZCode 原生协议存在所需交付缝。选定 seam 必须引用当前 native binary/version 对应的源码、协议或已捕获真实 trace；fixture 必须复现该真实契约，不得自行发明参数让 fake 变绿。离线证据不足时记录 unresolved；新的真实采样另按既有探针授权执行，不把 fake 绿当 implementation-ready。
 
 **停止判据：** 如果现有 ZCode app-server 无法提供每次 invocation 的隔离交付缝，不伪造“逐 invocation 安全”。技术问题先在当前 reviewer 间收敛；只有需要扩大 OS/权限模型时才给 operator 带有证据的新 Packet。传输选择未解决前，不把该计划标为 implementation-ready。
+
+**2026-09-21 首轮接缝核对（只读，未做原生能力缺失断言）：**
+- `zcode-acp-native.ts` 在 `NativeAppServer` 构造时一次性 spawn 并设置 env；不是逐 prompt 设置。
+- `zcode-acp-adapter.ts` 的 `handleSessionNew` 目前发送 workspace/mode/persistence；`handleSessionPrompt` 发送 sessionId/content，并按 session cancel generation 处理取消。当前适配层未传逐轮 shell env/窄 handle。
+- 本进程 `command -v zcode` 无结果；仓内 `zcode-0.16.3-fixtures.mjs` 说明样本始于 0.16.3、模型项包含 0.16.5 更新。因此它们不能证明当前安装原生版本的能力全集。
+- 结论：排除“只在池 spawn env 里加凭据即可”的方案；原生 per-attempt 交付路径仍需从 runtime 实际 executable 的代码/协议定位，属于猫猫的技术调查，不转交 operator 选方案。
 
 ## 生命周期普查、状态转移与不变量
 
@@ -210,16 +217,19 @@ node --test scripts/agent-github-read-client.test.mjs packages/api/test/acp/zcod
 1. 更新两个 ownership cell 的实现锚点、F317 查询补充说明与 operator 的实际授权来源。按已加载 `worktree` / `tdd` / `quality-gate` / `merge-gate` 的风险车道执行，不把本计划批准代替代码 review。
 2. 本功能触碰安全和跨载体边界，要求非作者审查覆盖最终代码；运行目标测试、类型检查和规定门禁。实现阶段命令真相源为当前 `package.json`，已核实格式命令：`pnpm biome format --write <本次实际代码文件>`；终态 `pnpm check`、`pnpm lint`。本轮只是 Markdown，不运行这些代码门禁。
 3. 仅在隔离 feature checkout 测未合并代码；合并后的 acceptance 使用独立数据/端口。拒绝生产 Redis/SQLite、现有 thread 数据作为测试夹具。
-4. 获得范围批准与 operator 的 runtime 激活窗口后，由 operator 管理配置/重启；不执行自动 `pnpm stop` 或改启动配置。
+4. 完成代码 review 与隔离验收后，按既有部署通道交付已验证版本。若当前服务激活需要人工配置/重启，由 operator 按精确操作单完成；不重新询问既定两仓只读修复范围，也不自行执行 `pnpm stop` 或改启动配置。
 5. 谱谱与银闪各自真实新会话查询同一个指定 PR、Issue、diff、checks/run；宿主读同一对象对照，记录 observedAt/head、调用来源与负向拒绝。再验证 warm resume/取消后的授权失效；不能只由小星星代跑。
 6. 附代码 SHA、PR、独立 review、离线红绿、隔离 acceptance、真实本人自测与授权 source。全部 AC 满足才标 done；代码合入与 live 验收分别记录。
 
 ## 本轮内容验证与交接记录
 
 - Plan content review：2026-09-21 独立实例 `/root/gh_read_plan_review`（gpt-6-astra，非作者）完成正文审查：0 P1、2 P2；按原建议修正 child auditContext 事实和 native seam 证据门后，放行 proposed 计划交付。此 verdict 不放行认证实现或真实权限激活。
+- 本次授权语义一致性复审：同一独立 reviewer 确认 0 P1、0 P2，既有任务承接、人工 runtime 操作与技术验证已分开；未扩大 scope 或移除安全验收。
 - Markdown 检查：提交前运行 `node scripts/check-frontmatter.mjs --strict-delta --base origin/main --docs-root feature-specs` 与 `git diff --check`。
-- 文档交付：普通 proposed plan，未修改执行规则/权限配置；只暂存此文件，main 单 commit + push，不混入既有未跟踪 review-notes。
-- 下一执行项：Task 1 离线接缝验证；范围批准与 runtime 启用不是该离线步骤的前置，不能再用“尚待拍板”阻塞可做的准备。
-- 本次偏差修正：把“已答完根因”误当成“已处理修复意图”，导致只有口头建议、没有落盘计划。当前范围内已把权限包、技术未知、红绿步骤与交付状态分别写实；完成计划不再表述为完成修复。
+- 文档交付：实施计划与调查证据，未修改执行规则/权限配置；只暂存此文件，main 单 commit + push，不混入既有未跟踪 review-notes。
+- 当前执行项：Task 1 接缝验证已开始；既定修复范围不重复审批。技术结论由猫猫负责，真实上线操作仅在可执行版本就绪后按需交人。
+- 本次偏差修正：把“已答完根因”误当成“已处理修复意图”，导致只有口头建议、没有落盘计划。当前范围内已把执行范围、技术未知、红绿步骤与交付状态分别写实；完成计划不再表述为完成修复。
+- 第二次纠正：把既有任务授权、代码安全审查和 runtime 激活混成一个笼统“待批准”，又让 operator 做路由器。已扫描并修正状态段、范围段、Task 5 与交接段；未把技术未知或尚未上线当成新的人类决策。
+- 重复偏差证据：`docs/features/F167-a2a-chain-quality.md` Case E22；不新增 SOP/审批规则。
 
 [小星星/gpt-6-astra🐾]
