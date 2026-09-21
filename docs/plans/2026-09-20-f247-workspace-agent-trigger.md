@@ -2,7 +2,7 @@
 
 任务 `0001789905354421-000238-3994be29` · 实现：谱谱（zcode）· review 把关：小星星（astra，未 review 不得宣称完成/合入）· 方案来源：砚砚（cat-to5aedfl）交接的实现契约 + 官方文档三份（trigger-runs / authentication / plugins-mcp-server，2026-09-20 抓取）。
 
-基线：worktree `clowder-ai-wt-f247-wa`，分支 `feat/f247-workspace-agent`，基于 **upstream main `9bca5ae2f`**（非共享 main `a198187d0`，后者有未推 doc commits + 未跟踪 review notes）。
+基线：worktree `clowder-ai-wt-f247-wa`，分支 `feat/f247-workspace-agent`，基于 **upstream main `9bca5ae2f`**（非共享 main `a198187d0`，后者有未推 doc commits + 未跟踪 review notes）。**PR 归属口径（点点 2026-09-21 核实）**：分支推 **fork `08mamba24/clowder-ai`**，PR 跨仓开向正典 **`zts212653/clowder-ai` base `main`**——家里既有流程（#1493/#1494 同路径；fork main 与 upstream main 已分叉，直接对 fork 开 PR 会产出 1868 files 垃圾 diff）。
 
 ## 官方契约要点（已核实）
 
@@ -111,7 +111,9 @@
 - reviewer 失误记录在案：其首次快照探针 stub 安装晚于 adapter 构造，导致一次带虚拟 token 的真实外呼（401）；已声明并修正重跑。实现侧无需动作，但快照 adapter 构造时机与 stub 顺序的教训记入本 plan。
 - 状态：本地 review 链（6 轮）关闭；N1/N2 已修（f35f50cb8）。
 - **push/PR 阻断实证（2026-09-21）**：本会话 gh 未登录、https 无凭据（credential helper 注入后仍 fatal: could not read Username）、SSH 无密钥（publickey denied）。推分支/开 PR 需要带 gh 凭据的会话或 owner 动作。
-- 剩余清单：① push 分支 `feat/f247-workspace-agent`（12 commits，HEAD 2e825c97c）+ 开 PR + SOP gate/cloud review；② owner 环境验收：真实 provider 202/去重、页面关闭 live dogfood；③ 任务卡同步（callback 凭据持续 0/3）。
+- **PR 已开（2026-09-21，点点执行）**：https://github.com/zts212653/clowder-ai/pull/1516 —— base 正典 main ← head fork:feat/f247-workspace-agent @ 0330b6e4a，32 files / +3682 −26，mergeable=true；她独立复跑定向测试 101/101（含隔离 Redis 重启）；PR 事件跟踪已登记（owner=点点，过期 10-05）。
+- **SHA 披露（不 rewrite）**：`0330b6e4a` 是 astra APPROVED（`f35f50cb8`）之后追加的 docs commit（plan 3 行，非 review report 载体）。按 merge-gate 披露原则如实记录，交由 merge 时 reviewer 复核；不做历史改写（会作废 approval）。
+- 剩余清单：① ~~push + 开 PR~~ 已完成 → 剩 PR review/merge（事件驱动，跟踪在点点名下）；② owner 环境验收：真实 provider 202/去重、页面关闭 live dogfood（剧本见上）；③ 任务卡同步（谱谱会话 callback 凭据持续 0/3，欠账明示）。
 
 ### Failure-Mode Sweep（本轮）
 
