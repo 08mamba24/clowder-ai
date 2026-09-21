@@ -2280,9 +2280,8 @@ async function main(): Promise<void> {
   });
   // Settings test button uses the refreshable adapter (live config per call);
   // the bridge consumes one snapshot-bound transport per dispatch (round-5 R2).
-  const workspaceAgentTriggerAdapter = workspaceAgentModules.createRefreshableWorkspaceAgentTriggerAdapter(
-    workspaceAgentConfig,
-  );
+  const workspaceAgentTriggerAdapter =
+    workspaceAgentModules.createRefreshableWorkspaceAgentTriggerAdapter(workspaceAgentConfig);
   const { createRefreshablePersonalChromeHostAdapter } = await import(
     './domains/cats/services/cloud-bridge/personal-chrome-host/personal-chrome-host-adapter.js'
   );

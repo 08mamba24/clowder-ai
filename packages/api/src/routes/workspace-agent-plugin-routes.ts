@@ -8,14 +8,13 @@
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-
-import { pluginAccessError, requirePluginOwnerLocalAccess, requirePluginWriteAccess } from './plugin-access-guards.js';
-import type { IWorkspaceAgentTriggerAdapter } from '../domains/cats/services/cloud-bridge/workspace-agent/workspace-agent-trigger-adapter.js';
 import {
   buildWorkspaceAgentConversationKey,
   isWorkspaceAgentConversationKeySegment,
 } from '../domains/cats/services/cloud-bridge/workspace-agent/conversation-key.js';
 import type { WorkspaceAgentConfigStore } from '../domains/cats/services/cloud-bridge/workspace-agent/workspace-agent-config.js';
+import type { IWorkspaceAgentTriggerAdapter } from '../domains/cats/services/cloud-bridge/workspace-agent/workspace-agent-trigger-adapter.js';
+import { pluginAccessError, requirePluginOwnerLocalAccess, requirePluginWriteAccess } from './plugin-access-guards.js';
 
 export interface WorkspaceAgentPluginRouteOptions {
   readonly config: WorkspaceAgentConfigStore;
@@ -65,7 +64,10 @@ function optionalEnabled(value: unknown): boolean | undefined {
   return value;
 }
 
-export function registerWorkspaceAgentPluginRoutes(app: FastifyInstance, options: WorkspaceAgentPluginRouteOptions): void {
+export function registerWorkspaceAgentPluginRoutes(
+  app: FastifyInstance,
+  options: WorkspaceAgentPluginRouteOptions,
+): void {
   app.get('/api/plugins/workspace-agent', async (request, reply) => {
     const access = requirePluginOwnerLocalAccess(request, 'read');
     if ('error' in access) return pluginAccessError(reply, access);
@@ -103,7 +105,11 @@ export function registerWorkspaceAgentPluginRoutes(app: FastifyInstance, options
     const active = options.config.resolve();
     if (!active) {
       reply.status(409);
-      return { ok: false, code: 'WORKSPACE_AGENT_NOT_CONFIGURED', message: 'Authorize the Workspace Agent before testing' };
+      return {
+        ok: false,
+        code: 'WORKSPACE_AGENT_NOT_CONFIGURED',
+        message: 'Authorize the Workspace Agent before testing',
+      };
     }
     const nonce = `f247-selftest-${Date.now().toString(36)}`;
     try {

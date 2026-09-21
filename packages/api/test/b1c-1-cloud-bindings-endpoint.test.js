@@ -475,7 +475,6 @@ describe('F247 AC-B1c-8: privacy — default GET /api/threads/:id strips cloudCa
   });
 });
 
-
 // ── astra round-5 P3: GET/PATCH owner projection symmetry for versioned entries ──
 describe('round-5 P3: owner projection symmetry (no storage-form leak)', () => {
   let app;
@@ -492,9 +491,7 @@ describe('round-5 P3: owner projection symmetry (no storage-form leak)', () => {
       triggerId: 'agtch_sym',
       conversationUrl: 'https://chatgpt.com/c/sym-1',
     });
-    const bindings = new Map([
-      ['T1', { codex: versionedJsonString, opus: 'https://chatgpt.com/c/legacy-sym' }],
-    ]);
+    const bindings = new Map([['T1', { codex: versionedJsonString, opus: 'https://chatgpt.com/c/legacy-sym' }]]);
     ({ app } = await makeApp({
       thread: { id: 'T1', createdBy: 'alice', deletedAt: null },
       bindingsByThread: bindings,

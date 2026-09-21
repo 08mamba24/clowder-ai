@@ -23,10 +23,9 @@
 
 import { CHATGPT_CHAT_URL_REGEX } from '../../../../utils/chatgpt-chat-url.js';
 import { buildDeltaPayload } from './build-delta-payload.js';
-import { type BridgeLogger, type CloudInvokeBridgeDeps, noopBridgeLogger } from './cloud-invoke-bridge-deps.js';
 import { normalizeCloudCatBinding } from './cloud-cat-bindings-v1.js';
+import { type BridgeLogger, type CloudInvokeBridgeDeps, noopBridgeLogger } from './cloud-invoke-bridge-deps.js';
 import { dispatchBoundConversationThroughHost } from './conversation-host-dispatch.js';
-import { dispatchThroughWorkspaceAgent } from './workspace-agent-dispatch.js';
 import type {
   BridgeDispatchOutcome,
   BridgeFallbackReason,
@@ -34,6 +33,7 @@ import type {
   ICloudInvokeBridge,
   IPinchTabBridgeAdapter,
 } from './types.js';
+import { dispatchThroughWorkspaceAgent } from './workspace-agent-dispatch.js';
 
 export { buildCloudBridgeStatusContent, buildFallbackMessageContent } from './cloud-bridge-fallback.js';
 export type { BridgeLogger, CloudInvokeBridgeDeps, EmitFallbackFn } from './cloud-invoke-bridge-deps.js';
@@ -188,11 +188,7 @@ export class CloudInvokeBridge implements ICloudInvokeBridge {
     });
     if (workspaceAgentDecision) {
       if (workspaceAgentDecision.fallback) {
-        await this.fallback(
-          params,
-          workspaceAgentDecision.fallback.reason,
-          workspaceAgentDecision.fallback.detail,
-        );
+        await this.fallback(params, workspaceAgentDecision.fallback.reason, workspaceAgentDecision.fallback.detail);
       }
       // astra round-4 R3: persist the owner-only recovery anchor for the
       // thread's provider-side conversation. Best-effort — the dispatch is

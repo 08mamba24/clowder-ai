@@ -126,10 +126,7 @@ export type BridgeDispatchOutcome =
     }
   | {
       readonly kind: 'error';
-      readonly reason: Extract<
-        BridgeFallbackReason,
-        'host-append-failed' | 'inject-failed' | 'workspace-agent-failed'
-      >;
+      readonly reason: Extract<BridgeFallbackReason, 'host-append-failed' | 'inject-failed' | 'workspace-agent-failed'>;
       readonly message: string;
       readonly detail?: string;
       readonly idempotentReplay?: boolean;

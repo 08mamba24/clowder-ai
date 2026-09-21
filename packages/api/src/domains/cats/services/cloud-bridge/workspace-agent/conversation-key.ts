@@ -69,5 +69,9 @@ export function isWorkspaceAgentConversationKey(value: unknown): value is string
   if (typeof value !== 'string' || !value.startsWith(`${KEY_PREFIX}:`)) return false;
   const parts = value.split(':');
   if (parts.length !== 3) return false;
-  return parts[0] === KEY_PREFIX && isWorkspaceAgentConversationKeySegment(parts[1]) && isWorkspaceAgentConversationKeySegment(parts[2]);
+  return (
+    parts[0] === KEY_PREFIX &&
+    isWorkspaceAgentConversationKeySegment(parts[1]) &&
+    isWorkspaceAgentConversationKeySegment(parts[2])
+  );
 }

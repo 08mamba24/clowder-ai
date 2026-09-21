@@ -3,7 +3,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/utils/api-client', () => ({ apiFetch: vi.fn() }));
-vi.mock('../PersonalChromePluginPanel', () => ({ PersonalChromePluginPanel: () => <div data-testid="stub-personal-chrome" /> }));
+vi.mock('../PersonalChromePluginPanel', () => ({
+  PersonalChromePluginPanel: () => <div data-testid="stub-personal-chrome" />,
+}));
 vi.mock('../OfficialPluginsPanel', () => ({ OfficialPluginsPanel: () => <div data-testid="stub-official" /> }));
 
 import { apiFetch } from '@/utils/api-client';

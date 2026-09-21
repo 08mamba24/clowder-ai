@@ -7,9 +7,8 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-
-import { CloudInvokeBridge } from '../dist/domains/cats/services/cloud-bridge/cloud-invoke-bridge.js';
 import { buildCloudBridgeStatusContent } from '../dist/domains/cats/services/cloud-bridge/cloud-bridge-fallback.js';
+import { CloudInvokeBridge } from '../dist/domains/cats/services/cloud-bridge/cloud-invoke-bridge.js';
 import {
   WorkspaceAgentTriggerError,
   WorkspaceAgentTriggerHttpAdapter,
@@ -212,11 +211,7 @@ test('workspace-agent-failed status maps to unknown (bounded-transport ambiguity
 });
 
 test('typed error codes stay distinguishable through the dispatch boundary', () => {
-  const unauthorized = new WorkspaceAgentTriggerError(
-    'WORKSPACE_AGENT_UNAUTHORIZED',
-    'rejected',
-    401,
-  );
+  const unauthorized = new WorkspaceAgentTriggerError('WORKSPACE_AGENT_UNAUTHORIZED', 'rejected', 401);
   assert.equal(unauthorized.code, 'WORKSPACE_AGENT_UNAUTHORIZED');
   assert.equal(unauthorized.status, 401);
   assert.equal(unauthorized.name, 'WorkspaceAgentTriggerError');

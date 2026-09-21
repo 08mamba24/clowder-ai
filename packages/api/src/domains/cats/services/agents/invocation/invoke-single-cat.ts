@@ -2142,57 +2142,57 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
             detail: 'A cloud cat return cannot re-trigger an outbound dispatch to the same cloud cat',
           };
         } else {
-        let threadMetadata = null;
-        if (threadStore) {
+          let threadMetadata = null;
+          if (threadStore) {
+            try {
+              threadMetadata = await threadStore.get(threadId);
+            } catch (err) {
+              log.warn(
+                { catId, threadId, invocationId, err },
+                'F247 cloud transport thread metadata unavailable; dispatching with empty metadata',
+              );
+            }
+          }
+          let grant: Awaited<ReturnType<NonNullable<InvocationDeps['cloudReturnGrantStore']>['issue']>> | undefined;
           try {
-            threadMetadata = await threadStore.get(threadId);
+            grant = await deps.cloudReturnGrantStore.issue({
+              threadId,
+              userId,
+              sourceMessageId,
+              dispatchInvocationId: invocationId,
+              targetCatId: String(catId),
+            });
           } catch (err) {
             log.warn(
-              { catId, threadId, invocationId, err },
-              'F247 cloud transport thread metadata unavailable; dispatching with empty metadata',
+              { catId, threadId, invocationId, sourceMessageId, err },
+              'F247 cloud return grant persistence failed; suppressing Host dispatch',
             );
           }
-        }
-        let grant: Awaited<ReturnType<NonNullable<InvocationDeps['cloudReturnGrantStore']>['issue']>> | undefined;
-        try {
-          grant = await deps.cloudReturnGrantStore.issue({
-            threadId,
-            userId,
-            sourceMessageId,
-            dispatchInvocationId: invocationId,
-            targetCatId: String(catId),
-          });
-        } catch (err) {
-          log.warn(
-            { catId, threadId, invocationId, sourceMessageId, err },
-            'F247 cloud return grant persistence failed; suppressing Host dispatch',
-          );
-        }
-        if (!grant?.ok) {
-          outcome = {
-            kind: 'fallback',
-            reason: 'incomplete-dispatch-provenance',
-            detail: 'Cloud return grant could not be persisted before Host delivery',
-          };
-        } else {
-          outcome = await deps.cloudInvokeBridge.dispatch({
-            catId,
-            threadId,
-            userId,
-            threadTitle: threadMetadata?.title ?? null,
-            participants: (threadMetadata?.participants ?? []).map((participantCatId) => ({
-              catId: participantCatId,
-              handle: `@${participantCatId}`,
-            })),
-            calledBy: cloudCalledBy,
-            intent: cloudIntent,
-            sourceMessageId,
-            // F247 loop suppression (slice 2b): carry the dispatch/causation
-            // ids into the runtime delta for the Remote MCP return ingest.
-            dispatchInvocationId: invocationId,
-            ...(sourceSender?.invocationId ? { causationId: sourceSender.invocationId } : {}),
-          });
-        }
+          if (!grant?.ok) {
+            outcome = {
+              kind: 'fallback',
+              reason: 'incomplete-dispatch-provenance',
+              detail: 'Cloud return grant could not be persisted before Host delivery',
+            };
+          } else {
+            outcome = await deps.cloudInvokeBridge.dispatch({
+              catId,
+              threadId,
+              userId,
+              threadTitle: threadMetadata?.title ?? null,
+              participants: (threadMetadata?.participants ?? []).map((participantCatId) => ({
+                catId: participantCatId,
+                handle: `@${participantCatId}`,
+              })),
+              calledBy: cloudCalledBy,
+              intent: cloudIntent,
+              sourceMessageId,
+              // F247 loop suppression (slice 2b): carry the dispatch/causation
+              // ids into the runtime delta for the Remote MCP return ingest.
+              dispatchInvocationId: invocationId,
+              ...(sourceSender?.invocationId ? { causationId: sourceSender.invocationId } : {}),
+            });
+          }
         }
       } else {
         const reason = !sourceMessageId

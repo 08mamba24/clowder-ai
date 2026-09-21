@@ -6,11 +6,15 @@
  */
 
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
+import { test } from 'node:test';
+import { isCloudBridgeOutboundReceiptV1 } from '@cat-cafe/shared';
+import {
+  normalizeCloudCatBinding,
+  normalizeCloudCatBindings,
+} from '../dist/domains/cats/services/cloud-bridge/cloud-cat-bindings-v1.js';
 import {
   buildWorkspaceAgentConversationKey,
   isWorkspaceAgentConversationKey,
@@ -19,11 +23,6 @@ import {
   WorkspaceAgentTriggerError,
   WorkspaceAgentTriggerHttpAdapter,
 } from '../dist/domains/cats/services/cloud-bridge/workspace-agent/workspace-agent-trigger-adapter.js';
-import {
-  normalizeCloudCatBinding,
-  normalizeCloudCatBindings,
-} from '../dist/domains/cats/services/cloud-bridge/cloud-cat-bindings-v1.js';
-import { isCloudBridgeOutboundReceiptV1 } from '@cat-cafe/shared';
 
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -151,17 +150,14 @@ test('trigger adapter: transport fault never leaks the token in the error', asyn
       throw new TypeError('Failed to fetch https://api.chatgpt.com/ with header Bearer super-secret-token-value');
     },
   });
-  await assert.rejects(
-    adapter.trigger({ input: 'x', conversationKey: 'clowder:w:t', idempotencyKey: 'k' }),
-    (err) => {
-      assert.equal(err.code, 'WORKSPACE_AGENT_TRANSPORT_ERROR');
-      const serialized = JSON.stringify(err);
-      assert.ok(!serialized.includes('super-secret-token-value'), 'token must never appear in serialized error');
-      // Only the error NAME is surfaced — not the message that may echo internals.
-      assert.ok(err.message.includes('TypeError'));
-      return true;
-    },
-  );
+  await assert.rejects(adapter.trigger({ input: 'x', conversationKey: 'clowder:w:t', idempotencyKey: 'k' }), (err) => {
+    assert.equal(err.code, 'WORKSPACE_AGENT_TRANSPORT_ERROR');
+    const serialized = JSON.stringify(err);
+    assert.ok(!serialized.includes('super-secret-token-value'), 'token must never appear in serialized error');
+    // Only the error NAME is surfaced — not the message that may echo internals.
+    assert.ok(err.message.includes('TypeError'));
+    return true;
+  });
 });
 
 test('trigger adapter: missing token / trigger id / malformed conversation key are invalid-config', async () => {
@@ -191,7 +187,11 @@ test('trigger adapter: missing token / trigger id / malformed conversation key a
 
 test('bindings migration: legacy URL string normalizes to personal-chrome-host v1', () => {
   const binding = normalizeCloudCatBinding('https://chatgpt.com/c/abc-123');
-  assert.deepEqual(binding, { v: 1, provider: 'personal-chrome-host', conversationUrl: 'https://chatgpt.com/c/abc-123' });
+  assert.deepEqual(binding, {
+    v: 1,
+    provider: 'personal-chrome-host',
+    conversationUrl: 'https://chatgpt.com/c/abc-123',
+  });
   assert.equal(normalizeCloudCatBinding('https://evil.example/c/1'), null);
   assert.equal(normalizeCloudCatBinding(''), null);
   assert.equal(normalizeCloudCatBinding(42), null);
@@ -213,7 +213,7 @@ test('bindings migration: record normalization drops unusable entries only', () 
   const normalized = normalizeCloudCatBindings({
     'gpt-pro': 'https://chatgpt.com/c/good',
     'claude-pro': { v: 1, provider: 'workspace-agent', workspaceId: 'ws', triggerId: 'agtch_c' },
-    'broken': 'not-a-url',
+    broken: 'not-a-url',
   });
   assert.deepEqual(Object.keys(normalized).sort(), ['claude-pro', 'gpt-pro']);
   assert.equal(normalized['gpt-pro'].provider, 'personal-chrome-host');
@@ -236,7 +236,13 @@ test('receipt validator: workspace-agent transport with providerRunId passes; ho
 });
 
 test('bindings migration: JSON-stringified versioned entry (Redis storage form) decodes identically', () => {
-  const entry = { v: 1, provider: 'workspace-agent', workspaceId: 'ws_r', triggerId: 'agtch_r', conversationUrl: 'https://chatgpt.com/c/r-1' };
+  const entry = {
+    v: 1,
+    provider: 'workspace-agent',
+    workspaceId: 'ws_r',
+    triggerId: 'agtch_r',
+    conversationUrl: 'https://chatgpt.com/c/r-1',
+  };
   const decoded = normalizeCloudCatBinding(JSON.stringify(entry));
   assert.deepEqual(decoded, entry);
   assert.equal(normalizeCloudCatBinding(JSON.stringify({ v: 1, provider: 'bogus' })), null);

@@ -221,7 +221,7 @@ test('http adapter: still validates config via constructor (regression guard)', 
 
 // ── astra round-1 review fixes (R1/R3) ─────────────────────────────────────
 
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 
 const ENV_TRIPLE = {
   CAT_CAFE_WORKSPACE_AGENT_TRIGGER_ID: 'agtch_env',
@@ -359,9 +359,11 @@ test('R3a: complete env triple failing the shared constraints is env_invalid, ne
 });
 
 test('R3b: builder, segment guard, and full-key validator agree on every ASCII char', async () => {
-  const { buildWorkspaceAgentConversationKey, isWorkspaceAgentConversationKey, isWorkspaceAgentConversationKeySegment } = await import(
-    '../dist/domains/cats/services/cloud-bridge/workspace-agent/conversation-key.js'
-  );
+  const {
+    buildWorkspaceAgentConversationKey,
+    isWorkspaceAgentConversationKey,
+    isWorkspaceAgentConversationKeySegment,
+  } = await import('../dist/domains/cats/services/cloud-bridge/workspace-agent/conversation-key.js');
   const candidates = [];
   for (let code = 0; code <= 0x7f; code += 1) candidates.push(String.fromCharCode(code));
   candidates.push('　', '\u00a0', '\u2028', '', '﻿'); // unicode whitespace + BOM
@@ -381,7 +383,10 @@ test('R3b: builder, segment guard, and full-key validator agree on every ASCII c
       `builder/guard disagree on U+${(character.codePointAt(0) || 0).toString(16)}`,
     );
     if (guardAccepts) {
-      assert.ok(isWorkspaceAgentConversationKey(built), `guard accepts but full-key validator rejects U+${(character.codePointAt(0) || 0).toString(16)}`);
+      assert.ok(
+        isWorkspaceAgentConversationKey(built),
+        `guard accepts but full-key validator rejects U+${(character.codePointAt(0) || 0).toString(16)}`,
+      );
     } else {
       assert.ok(built === null);
       // astra round-3 P3: reject-side parity — a segment the predicate

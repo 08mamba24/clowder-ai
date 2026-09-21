@@ -8,9 +8,9 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import net from 'node:net';
 import { after, before, describe, it } from 'node:test';
 
 function findRedisServer() {
@@ -41,7 +41,20 @@ function startRedis(binary, port, dir) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       binary,
-      ['--port', String(port), '--bind', '127.0.0.1', '--dir', dir, '--save', '1 1', '--appendonly', 'no', '--daemonize', 'no'],
+      [
+        '--port',
+        String(port),
+        '--bind',
+        '127.0.0.1',
+        '--dir',
+        dir,
+        '--save',
+        '1 1',
+        '--appendonly',
+        'no',
+        '--daemonize',
+        'no',
+      ],
       { stdio: 'ignore' },
     );
     child.on('error', reject);
@@ -100,79 +113,93 @@ function waitForExit(child, timeoutMs = 5_000) {
 
 const binary = findRedisServer();
 
-describe('F247 workspace-agent recovery binding across a real Redis restart', { skip: binary ? false : 'redis-server binary not available' }, () => {
-  let RedisThreadStore;
-  let createRedisClient;
-  let normalizeCloudCatBinding;
-  let child;
-  let dir;
-  let port;
-  let redis;
-  let store;
+describe(
+  'F247 workspace-agent recovery binding across a real Redis restart',
+  { skip: binary ? false : 'redis-server binary not available' },
+  () => {
+    let RedisThreadStore;
+    let createRedisClient;
+    let normalizeCloudCatBinding;
+    let child;
+    let dir;
+    let port;
+    let redis;
+    let store;
 
-  before(async () => {
-    ({ RedisThreadStore } = await import('../dist/domains/cats/services/stores/redis/RedisThreadStore.js'));
-    ({ createRedisClient } = await import('@cat-cafe/shared/utils'));
-    ({ normalizeCloudCatBinding } = await import('../dist/domains/cats/services/cloud-bridge/cloud-cat-bindings-v1.js'));
-    dir = mkdtempSync(join(tmpdir(), 'f247-wa-redis-'));
-    port = await freePort();
-    child = await startRedis(binary, port, dir);
-    redis = createRedisClient({ url: `redis://127.0.0.1:${port}` });
-    await redis.ping();
-    store = new RedisThreadStore(redis, { ttlSeconds: null });
-    // Seed the thread detail hash so the guarded HSET Lua admits binding writes.
-    await redis.hset('thread:t-wa-restart', 'id', 't-wa-restart');
-  });
+    before(async () => {
+      ({ RedisThreadStore } = await import('../dist/domains/cats/services/stores/redis/RedisThreadStore.js'));
+      ({ createRedisClient } = await import('@cat-cafe/shared/utils'));
+      ({ normalizeCloudCatBinding } = await import(
+        '../dist/domains/cats/services/cloud-bridge/cloud-cat-bindings-v1.js'
+      ));
+      dir = mkdtempSync(join(tmpdir(), 'f247-wa-redis-'));
+      port = await freePort();
+      child = await startRedis(binary, port, dir);
+      redis = createRedisClient({ url: `redis://127.0.0.1:${port}` });
+      await redis.ping();
+      store = new RedisThreadStore(redis, { ttlSeconds: null });
+      // Seed the thread detail hash so the guarded HSET Lua admits binding writes.
+      await redis.hset('thread:t-wa-restart', 'id', 't-wa-restart');
+    });
 
-  after(async () => {
-    if (child && child.exitCode === null) {
-      try {
-        if (redis) await shutdownViaClient(redis);
-      } catch {
-        child.kill('SIGTERM'); // --save 1 1 persists before exit
+    after(async () => {
+      if (child && child.exitCode === null) {
+        try {
+          if (redis) await shutdownViaClient(redis);
+        } catch {
+          child.kill('SIGTERM'); // --save 1 1 persists before exit
+        }
+        await waitForExit(child);
+        if (child.exitCode === null) child.kill('SIGKILL');
       }
-      await waitForExit(child);
-      if (child.exitCode === null) child.kill('SIGKILL');
-    }
-    try {
-      await redis?.quit?.();
-    } catch {
-      /* connection already closed by shutdown */
-    }
-    if (dir) rmSync(dir, { recursive: true, force: true });
-  });
+      try {
+        await redis?.quit?.();
+      } catch {
+        /* connection already closed by shutdown */
+      }
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
 
-  it('persists versioned + legacy bindings across shutdown SAVE and restart', async () => {
-    const versioned = {
-      v: 1,
-      provider: 'workspace-agent',
-      workspaceId: 'ws_restart',
-      triggerId: 'agtch_restart',
-      conversationUrl: 'https://chatgpt.com/c/wa-restart-1',
-    };
-    await store.updateCloudCatBindingEntry('t-wa-restart', 'gpt-pro', versioned);
-    await store.updateCloudCatBinding('t-wa-restart', 'gpt-52', 'https://chatgpt.com/c/legacy-1');
+    it('persists versioned + legacy bindings across shutdown SAVE and restart', async () => {
+      const versioned = {
+        v: 1,
+        provider: 'workspace-agent',
+        workspaceId: 'ws_restart',
+        triggerId: 'agtch_restart',
+        conversationUrl: 'https://chatgpt.com/c/wa-restart-1',
+      };
+      await store.updateCloudCatBindingEntry('t-wa-restart', 'gpt-pro', versioned);
+      await store.updateCloudCatBinding('t-wa-restart', 'gpt-52', 'https://chatgpt.com/c/legacy-1');
 
-    const before = await store.getCloudCatBindings('t-wa-restart');
-    assert.equal(normalizeCloudCatBinding(before['gpt-pro'])?.conversationUrl, 'https://chatgpt.com/c/wa-restart-1');
-    assert.equal(normalizeCloudCatBinding(before['gpt-52'])?.provider, 'personal-chrome-host');
+      const before = await store.getCloudCatBindings('t-wa-restart');
+      assert.equal(normalizeCloudCatBinding(before['gpt-pro'])?.conversationUrl, 'https://chatgpt.com/c/wa-restart-1');
+      assert.equal(normalizeCloudCatBinding(before['gpt-52'])?.provider, 'personal-chrome-host');
 
-    // Restart cycle: SHUTDOWN SAVE through our own connection → bounded exit
-    // wait with a strict exit-code check → respawn → fresh client.
-    await shutdownViaClient(redis);
-    const exitCode = await waitForExit(child);
-    assert.notEqual(exitCode, 'timeout', 'redis-server must exit after shutdown');
-    assert.equal(exitCode, 0, 'graceful SHUTDOWN SAVE exits 0');
-    child = await startRedis(binary, port, dir);
-    redis = createRedisClient({ url: `redis://127.0.0.1:${port}` });
-    await redis.ping();
-    const restartedStore = new RedisThreadStore(redis, { ttlSeconds: null });
+      // Restart cycle: SHUTDOWN SAVE through our own connection → bounded exit
+      // wait with a strict exit-code check → respawn → fresh client.
+      await shutdownViaClient(redis);
+      const exitCode = await waitForExit(child);
+      assert.notEqual(exitCode, 'timeout', 'redis-server must exit after shutdown');
+      assert.equal(exitCode, 0, 'graceful SHUTDOWN SAVE exits 0');
+      child = await startRedis(binary, port, dir);
+      redis = createRedisClient({ url: `redis://127.0.0.1:${port}` });
+      await redis.ping();
+      const restartedStore = new RedisThreadStore(redis, { ttlSeconds: null });
 
-    const after = await restartedStore.getCloudCatBindings('t-wa-restart');
-    const recovered = normalizeCloudCatBinding(after['gpt-pro']);
-    assert.equal(recovered?.provider, 'workspace-agent');
-    assert.equal(recovered?.conversationUrl, 'https://chatgpt.com/c/wa-restart-1', 'owner-only recovery anchor survives restart');
-    assert.equal(recovered?.workspaceId, 'ws_restart');
-    assert.equal(normalizeCloudCatBinding(after['gpt-52'])?.conversationUrl, 'https://chatgpt.com/c/legacy-1', 'legacy string binding survives too');
-  });
-});
+      const after = await restartedStore.getCloudCatBindings('t-wa-restart');
+      const recovered = normalizeCloudCatBinding(after['gpt-pro']);
+      assert.equal(recovered?.provider, 'workspace-agent');
+      assert.equal(
+        recovered?.conversationUrl,
+        'https://chatgpt.com/c/wa-restart-1',
+        'owner-only recovery anchor survives restart',
+      );
+      assert.equal(recovered?.workspaceId, 'ws_restart');
+      assert.equal(
+        normalizeCloudCatBinding(after['gpt-52'])?.conversationUrl,
+        'https://chatgpt.com/c/legacy-1',
+        'legacy string binding survives too',
+      );
+    });
+  },
+);

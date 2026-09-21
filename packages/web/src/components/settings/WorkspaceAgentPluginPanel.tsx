@@ -170,15 +170,19 @@ export function WorkspaceAgentPluginPanel() {
                 {badge && <SettingsBadge tone={badge.tone}>{badge.label}</SettingsBadge>}
               </div>
               <SettingsText as="p" tone="muted" className="mt-1">
-                官方 Trigger API 出站通道：本地 @gpt-pro 经 trigger 投递，云端经 Remote MCP 回写。个人版 Personal
-                Chrome 通道不受影响。
+                官方 Trigger API 出站通道：本地 @gpt-pro 经 trigger 投递，云端经 Remote MCP 回写。个人版 Personal Chrome
+                通道不受影响。
               </SettingsText>
             </div>
           </div>
 
           {state.invalidConfig && (
-            <div className="mt-2 rounded-md bg-conn-red-bg px-3 py-2 text-sm text-conn-red-text" data-testid="workspace-agent-invalid">
-              配置不可用：{INVALID_REASONS[state.invalidConfig.reason] ?? state.invalidConfig.reason}。恢复路径：在下方完整保存一份有效配置（或重启服务后重试读取）；仅修复文件权限不会让当前实例自动重读。
+            <div
+              className="mt-2 rounded-md bg-conn-red-bg px-3 py-2 text-sm text-conn-red-text"
+              data-testid="workspace-agent-invalid"
+            >
+              配置不可用：{INVALID_REASONS[state.invalidConfig.reason] ?? state.invalidConfig.reason}
+              。恢复路径：在下方完整保存一份有效配置（或重启服务后重试读取）；仅修复文件权限不会让当前实例自动重读。
             </div>
           )}
 
@@ -205,7 +209,10 @@ export function WorkspaceAgentPluginPanel() {
             </label>
             <label className="flex flex-col gap-1 text-sm sm:col-span-2">
               <span className="text-conn-muted">
-                访问 token{state.tokenConfigured ? '（服务端已保管；留空则沿用，不会回显）' : '（Admin > Access tokens 创建，Workspace Agents scope）'}
+                访问 token
+                {state.tokenConfigured
+                  ? '（服务端已保管；留空则沿用，不会回显）'
+                  : '（Admin > Access tokens 创建，Workspace Agents scope）'}
               </span>
               <input
                 className="rounded-md border border-conn-border bg-transparent px-2 py-1"
@@ -252,7 +259,10 @@ export function WorkspaceAgentPluginPanel() {
 
           {state.source && (
             <SettingsText as="p" tone="muted" className="mt-2">
-              当前配置来源：{state.source === 'env' ? '环境变量引导（在设置里保存一份后会转为设置托管）' : '设置文件（.cat-cafe/workspace-agent.json，0600）'}
+              当前配置来源：
+              {state.source === 'env'
+                ? '环境变量引导（在设置里保存一份后会转为设置托管）'
+                : '设置文件（.cat-cafe/workspace-agent.json，0600）'}
             </SettingsText>
           )}
         </div>

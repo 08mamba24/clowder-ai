@@ -26,18 +26,16 @@ import { normalizeCloudCatBinding } from '../domains/cats/services/cloud-bridge/
  *  legacy URL strings stay strings; versioned entries surface their provider
  *  shape (workspace-agent entries include the owner-only conversationUrl).
  *  GET and PATCH must share it so storage form never leaks into the contract. */
-function projectCloudBindingsForOwner(
-  bindings: Record<string, unknown>,
-): Record<string, unknown> {
+function projectCloudBindingsForOwner(bindings: Record<string, unknown>): Record<string, unknown> {
   const projected: Record<string, unknown> = {};
   for (const [bindingCatId, value] of Object.entries(bindings)) {
     const normalized = normalizeCloudCatBinding(value);
     if (!normalized) continue;
-    projected[bindingCatId] =
-      normalized.provider === 'personal-chrome-host' ? normalized.conversationUrl : normalized;
+    projected[bindingCatId] = normalized.provider === 'personal-chrome-host' ? normalized.conversationUrl : normalized;
   }
   return projected;
 }
+
 import { recordFreshnessClosureTransition } from '../domains/cats/services/freshness/closure/freshness-closure-telemetry.js';
 import { projectFreshnessClosure } from '../domains/cats/services/freshness/glass-box/FreshnessOutputCommitCoordinator.js';
 import { projectFreshnessSupplementForHistory } from '../domains/cats/services/freshness/glass-box/freshness-supplement-history-projection.js';

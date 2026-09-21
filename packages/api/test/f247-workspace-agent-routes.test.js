@@ -11,12 +11,11 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import Fastify from 'fastify';
-
-import { registerWorkspaceAgentPluginRoutes } from '../dist/routes/workspace-agent-plugin-routes.js';
 import {
   createRefreshableWorkspaceAgentTriggerAdapter,
   createWorkspaceAgentTriggerConfig,
 } from '../dist/domains/cats/services/cloud-bridge/workspace-agent/workspace-agent-config.js';
+import { registerWorkspaceAgentPluginRoutes } from '../dist/routes/workspace-agent-plugin-routes.js';
 
 // The access guard resolves the configured owner from this env (same setup
 // as personal-chrome-plugin-routes.test.js).
@@ -84,7 +83,11 @@ test('GET status: owner read returns projection without token', async () => {
     assert.equal(body.enabled, false);
     assert.equal('token' in body, false);
 
-    const denied = await app.inject({ method: 'GET', url: '/api/plugins/workspace-agent', headers: { host: 'example.com' } });
+    const denied = await app.inject({
+      method: 'GET',
+      url: '/api/plugins/workspace-agent',
+      headers: { host: 'example.com' },
+    });
     assert.ok(denied.statusCode >= 400, 'non-local access must be rejected');
   } finally {
     await app.close();
@@ -153,7 +156,12 @@ test('DELETE disables without losing the token', async () => {
 test('POST test: unconfigured → 409; configured → real trigger with selftest conversation key', async () => {
   const { app, triggerCalls, cleanup } = buildApp();
   try {
-    const unconfigured = await app.inject({ method: 'POST', url: '/api/plugins/workspace-agent/test', headers: writeHeaders, payload: {} });
+    const unconfigured = await app.inject({
+      method: 'POST',
+      url: '/api/plugins/workspace-agent/test',
+      headers: writeHeaders,
+      payload: {},
+    });
     assert.equal(unconfigured.statusCode, 409);
     assert.equal(unconfigured.json().code, 'WORKSPACE_AGENT_NOT_CONFIGURED');
     assert.equal(triggerCalls.length, 0);
@@ -164,7 +172,12 @@ test('POST test: unconfigured → 409; configured → real trigger with selftest
       headers: writeHeaders,
       payload: { triggerId: 'agtch_ui', workspaceId: 'ws_ui', token: 't' },
     });
-    const ok = await app.inject({ method: 'POST', url: '/api/plugins/workspace-agent/test', headers: writeHeaders, payload: {} });
+    const ok = await app.inject({
+      method: 'POST',
+      url: '/api/plugins/workspace-agent/test',
+      headers: writeHeaders,
+      payload: {},
+    });
     assert.equal(ok.statusCode, 200);
     assert.equal(ok.json().ok, true);
     assert.equal(ok.json().conversationUrl, 'https://chatgpt.com/c/selftest-1');
@@ -192,7 +205,12 @@ test('POST test: adapter failure surfaces the typed code without the token', asy
       headers: writeHeaders,
       payload: { triggerId: 'agtch_ui', workspaceId: 'ws_ui', token: 'secret-t' },
     });
-    const res = await app.inject({ method: 'POST', url: '/api/plugins/workspace-agent/test', headers: writeHeaders, payload: {} });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/plugins/workspace-agent/test',
+      headers: writeHeaders,
+      payload: {},
+    });
     assert.equal(res.statusCode, 502);
     assert.equal(res.json().code, 'WORKSPACE_AGENT_UNAUTHORIZED');
     assert.equal(res.body.includes('secret-t'), false);
@@ -222,13 +240,16 @@ test('R3: PUT rejects a workspaceId the conversation-key builder would refuse', 
 });
 
 test('round-4 R2 journey: env-bootstrapped save with blank token migrates; disable keeps re-enable path', async () => {
-  const { app, cleanup } = buildApp({}, {
-    envTriple: {
-      CAT_CAFE_WORKSPACE_AGENT_TRIGGER_ID: 'agtch_env',
-      CAT_CAFE_WORKSPACE_AGENT_WORKSPACE_ID: 'ws_env',
-      CAT_CAFE_WORKSPACE_AGENT_TOKEN: 'env-secret',
+  const { app, cleanup } = buildApp(
+    {},
+    {
+      envTriple: {
+        CAT_CAFE_WORKSPACE_AGENT_TRIGGER_ID: 'agtch_env',
+        CAT_CAFE_WORKSPACE_AGENT_WORKSPACE_ID: 'ws_env',
+        CAT_CAFE_WORKSPACE_AGENT_TOKEN: 'env-secret',
+      },
     },
-  });
+  );
   try {
     const initial = await app.inject({ method: 'GET', url: '/api/plugins/workspace-agent', headers: readHeaders });
     assert.equal(initial.json().enabled, true);

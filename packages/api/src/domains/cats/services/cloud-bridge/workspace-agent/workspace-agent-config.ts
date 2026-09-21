@@ -23,13 +23,12 @@
 
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-
-import {
-  WorkspaceAgentTriggerHttpAdapter,
-  WorkspaceAgentTriggerError,
-  type IWorkspaceAgentTriggerAdapter,
-} from './workspace-agent-trigger-adapter.js';
 import { isWorkspaceAgentConversationKeySegment } from './conversation-key.js';
+import {
+  type IWorkspaceAgentTriggerAdapter,
+  WorkspaceAgentTriggerError,
+  WorkspaceAgentTriggerHttpAdapter,
+} from './workspace-agent-trigger-adapter.js';
 
 const CONFIG_FILENAME = 'workspace-agent.json';
 const ENV_TRIGGER_ID = 'CAT_CAFE_WORKSPACE_AGENT_TRIGGER_ID';
@@ -227,7 +226,10 @@ export function createWorkspaceAgentTriggerConfig(deps: WorkspaceAgentConfigDeps
     return fromEnv === 'invalid' ? null : fromEnv;
   };
 
-  const projectionFromEnvFallback = (): Pick<WorkspaceAgentConfigProjection, 'triggerId' | 'workspaceId' | 'tokenConfigured' | 'source'> => ({
+  const projectionFromEnvFallback = (): Pick<
+    WorkspaceAgentConfigProjection,
+    'triggerId' | 'workspaceId' | 'tokenConfigured' | 'source'
+  > => ({
     triggerId: isNonEmpty(env[ENV_TRIGGER_ID]) ? env[ENV_TRIGGER_ID]! : null,
     workspaceId: isNonEmpty(env[ENV_WORKSPACE_ID]) ? env[ENV_WORKSPACE_ID]! : null,
     tokenConfigured: isNonEmpty(env[ENV_TOKEN]),

@@ -14,7 +14,6 @@ import {
 } from '../SettingsResourceCard';
 import { OfficialPluginsPanel } from './OfficialPluginsPanel';
 import { PersonalChromePluginPanel } from './PersonalChromePluginPanel';
-import { WorkspaceAgentPluginPanel } from './WorkspaceAgentPluginPanel';
 import { PluginConfigPanel } from './PluginConfigPanel';
 import { PluginManagerContent } from './plugin-manager/PluginManagerContent';
 import { PluginManagerLiveContent } from './plugin-manager/PluginManagerLiveContent';
@@ -22,6 +21,7 @@ import { resolvePluginManagerDesignGate } from './plugin-manager/plugin-manager-
 import { PLUGIN_MANAGER_DESIGN_FIXTURES } from './plugin-manager/plugin-manager-fixtures';
 import { SettingsBadge } from './primitives/SettingsBadge';
 import { SettingsText } from './primitives/SettingsText';
+import { WorkspaceAgentPluginPanel } from './WorkspaceAgentPluginPanel';
 
 const BUILTIN_GITHUB_PLUGIN: PluginInfo = {
   id: 'github',

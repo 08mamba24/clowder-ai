@@ -79,7 +79,13 @@ describe('WorkspaceAgentPluginPanel', () => {
           source: 'settings',
         });
       }
-      return jsonResponse({ enabled: true, triggerId: 'agtch_ui', workspaceId: 'ws_ui', tokenConfigured: true, source: 'settings' });
+      return jsonResponse({
+        enabled: true,
+        triggerId: 'agtch_ui',
+        workspaceId: 'ws_ui',
+        tokenConfigured: true,
+        source: 'settings',
+      });
     });
     await act(async () => {
       root!.render(<WorkspaceAgentPluginPanel />);
@@ -113,7 +119,13 @@ describe('WorkspaceAgentPluginPanel', () => {
       if (String(url).endsWith('/test')) {
         return jsonResponse({ ok: false, code: 'WORKSPACE_AGENT_UNAUTHORIZED', message: 'token rejected (401)' }, 502);
       }
-      return jsonResponse({ enabled: true, triggerId: 'agtch_x', workspaceId: 'ws_x', tokenConfigured: true, source: 'settings' });
+      return jsonResponse({
+        enabled: true,
+        triggerId: 'agtch_x',
+        workspaceId: 'ws_x',
+        tokenConfigured: true,
+        source: 'settings',
+      });
     });
     await act(async () => {
       root!.render(<WorkspaceAgentPluginPanel />);
@@ -180,7 +192,9 @@ describe('round-6 N1: initial deep link locates the card after deferred load', (
       });
       expect(scrollCalls.length).toBe(0); // card not mounted yet — no false reveal
       await act(async () => {
-        releaseStatus!(jsonResponse({ enabled: false, triggerId: null, workspaceId: null, tokenConfigured: false, source: null }));
+        releaseStatus!(
+          jsonResponse({ enabled: false, triggerId: null, workspaceId: null, tokenConfigured: false, source: null }),
+        );
       });
       expect(container!.querySelector('#workspace-agent')).not.toBeNull();
       expect(scrollCalls.length).toBeGreaterThan(0); // mounted → reveal fired

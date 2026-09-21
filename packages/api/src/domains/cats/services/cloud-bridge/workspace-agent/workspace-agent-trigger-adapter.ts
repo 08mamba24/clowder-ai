@@ -123,17 +123,20 @@ export class WorkspaceAgentTriggerHttpAdapter implements IWorkspaceAgentTriggerA
 
     let response: Response;
     try {
-      response = await this.fetchImpl(`${this.origin}/v1/workspace_agents/${encodeURIComponent(this.triggerId)}/trigger`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'Idempotency-Key': idempotencyKey,
-          'OpenAI-Beta': RUNS_BETA_HEADER,
+      response = await this.fetchImpl(
+        `${this.origin}/v1/workspace_agents/${encodeURIComponent(this.triggerId)}/trigger`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+            'OpenAI-Beta': RUNS_BETA_HEADER,
+          },
+          body: JSON.stringify({ input, conversation_key: args.conversationKey }),
+          signal: AbortSignal.timeout(this.timeoutMs),
         },
-        body: JSON.stringify({ input, conversation_key: args.conversationKey }),
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
+      );
     } catch (err) {
       // Transport fault: never surface headers/body (token redaction by construction).
       throw new WorkspaceAgentTriggerError(

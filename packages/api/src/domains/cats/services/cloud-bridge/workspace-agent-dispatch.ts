@@ -84,7 +84,10 @@ export async function dispatchThroughWorkspaceAgent(args: {
           message: shortMessage(error),
           detail: `Workspace Agent trigger failed: ${shortMessage(error)}`,
         },
-        fallback: { reason: 'workspace-agent-failed', detail: `Workspace Agent trigger failed: ${shortMessage(error)}` },
+        fallback: {
+          reason: 'workspace-agent-failed',
+          detail: `Workspace Agent trigger failed: ${shortMessage(error)}`,
+        },
       };
     }
     return {
@@ -94,7 +97,10 @@ export async function dispatchThroughWorkspaceAgent(args: {
         message: shortMessage(error),
         detail: `Workspace Agent trigger failed unexpectedly: ${shortMessage(error)}`,
       },
-      fallback: { reason: 'workspace-agent-failed', detail: `Workspace Agent trigger failed unexpectedly: ${shortMessage(error)}` },
+      fallback: {
+        reason: 'workspace-agent-failed',
+        detail: `Workspace Agent trigger failed unexpectedly: ${shortMessage(error)}`,
+      },
     };
   }
 
