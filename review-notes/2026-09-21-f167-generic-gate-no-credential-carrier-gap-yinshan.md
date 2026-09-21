@@ -8,4 +8,6 @@
 
 **Harness finding（P3, F167 owner 线）**: `packages/api/src/domains/cats/services/agents/routing/route-serial.ts:301-305` 的 generic 分支对无 callback 凭证的 carrier 下发了不可满足的指令（要求调用其工具面上不存在的结构化工具）。建议：gate 发出前检测 invocation 是否具备 disposition 工具面或 callback 凭证；均无时提示词应显式降级为 sanctioned text-@ fallback，而不是让 carrier 自行考古先例。需跨族 review。
 
+**第二例（同 thread 类型复现）**: thread_mua1efbnjtkqiaqy（net-mode nord/clash 分流实现响应速度测试），同一 carrier（qoder-flash/Qwen3.8-Flash）再次收到通用停止门。工具面/凭证状态实测同上（12 个只读 MCP 工具、callback env 全空）；本地 API `localhost:3004` 可达但 post-message 需 invocationId+callbackToken，无法冒用。处置同上：不重做上一手（响应速度自检 + 侦察报告已交付），最终回复行首 `@astra` 结构化传球（请求方案要点+脚本路径交接），以本留痕记录缺口。
+
 `[银闪/Qwen3.8-Flash🐾]`
