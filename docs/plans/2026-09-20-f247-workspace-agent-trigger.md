@@ -109,7 +109,9 @@
 - N1(P3) 已修：卡片加稳定 `id="workspace-agent"`；reveal effect 依赖 `[state]`——初始 hash 等卡片真实挂载后才定位（deferred GET 用例：state 到达前 scrollCalls=0、到达后 ≥1）。
 - N2(P3) 已修：shutdown 改经测试自有连接 `sendCommand(new Command('shutdown',['save']))` 原生命令（EVAL 禁 SHUTDOWN）——连接关闭型拒绝=已发出，其余传播；去掉 quit-先于-shutdown；重启段断言 `exitCode===0`；after 走同一清理（client shutdown → 有界等待 → 才 SIGKILL）。cli 依赖整体移除。
 - reviewer 失误记录在案：其首次快照探针 stub 安装晚于 adapter 构造，导致一次带虚拟 token 的真实外呼（401）；已声明并修正重跑。实现侧无需动作，但快照 adapter 构造时机与 stub 顺序的教训记入本 plan。
-- 状态：本地 review 链（6 轮）关闭；剩余 = PR 流程（SOP gate/cloud review）+ owner 环境验收（真实 provider 202、页面关闭 live dogfood）+ 任务卡同步欠账。
+- 状态：本地 review 链（6 轮）关闭；N1/N2 已修（f35f50cb8）。
+- **push/PR 阻断实证（2026-09-21）**：本会话 gh 未登录、https 无凭据（credential helper 注入后仍 fatal: could not read Username）、SSH 无密钥（publickey denied）。推分支/开 PR 需要带 gh 凭据的会话或 owner 动作。
+- 剩余清单：① push 分支 `feat/f247-workspace-agent`（12 commits，HEAD 2e825c97c）+ 开 PR + SOP gate/cloud review；② owner 环境验收：真实 provider 202/去重、页面关闭 live dogfood；③ 任务卡同步（callback 凭据持续 0/3）。
 
 ### Failure-Mode Sweep（本轮）
 
