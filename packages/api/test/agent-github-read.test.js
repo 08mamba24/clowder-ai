@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createAgentGitHubReader } from '../src/infrastructure/github/agent-github-read.js';
+import { createAgentGitHubReader } from '../dist/infrastructure/github/agent-github-read.js';
 
 const repo = '08mamba24/clowder-ai';
 const head = 'a'.repeat(40);
@@ -33,16 +33,15 @@ const run = {
   workflowName: 'CI',
 };
 const check = { name: 'test', state: 'SUCCESS', bucket: 'pass', workflow: 'CI', link: run.url };
-
-function harness(overrides: Record<string, unknown> = {}) {
-  const calls: Array<{ file: string; args: string[]; options: Record<string, unknown> }> = [];
+function harness(overrides = {}) {
+  const calls = [];
   const revoke = new AbortController();
   const authority = { repositories: [repo, 'zts212653/clowder-ai'], signal: revoke.signal };
   const reader = createAgentGitHubReader({
     ghPath: '/host/guarded-bin/gh',
     cwd: '/host/query',
     baseEnv: { HOME: '/host/home', PATH: '/host/bin', GH_TOKEN: 'ambient-secret', GH_FORCE_TTY: '1' },
-    runner: async (file: string, args: string[], options: Record<string, unknown>) => {
+    runner: async (file, args, options) => {
       calls.push({ file, args, options });
       if (args[0] === 'pr' && args[1] === 'diff') return { stdout: 'diff --git a/a b/a\n+ok\n', exitCode: 0 };
       const value = args[0] === 'issue' ? issue : args[0] === 'run' ? run : pr;
@@ -53,7 +52,6 @@ function harness(overrides: Record<string, unknown> = {}) {
   });
   return { reader, calls, authority, revoke };
 }
-
 describe('host GitHub read boundary', () => {
   it('rejects unsupported shapes and injection before the runner', async () => {
     const h = harness();
@@ -81,7 +79,6 @@ describe('host GitHub read boundary', () => {
     }
     assert.equal(h.calls.length, 0);
   });
-
   it('denies absent, foreign-repository and ended authority before spawn', async () => {
     const h = harness();
     const query = { op: 'pr_view', repo, number: 41 };
@@ -91,7 +88,6 @@ describe('host GitHub read boundary', () => {
     assert.equal((await h.reader(query, h.authority)).code, 'invocation_ended');
     assert.equal(h.calls.length, 0);
   });
-
   for (const query of [
     { op: 'pr_view', repo, number: 41 },
     { op: 'pr_diff', repo, number: 41 },
@@ -116,7 +112,7 @@ describe('host GitHub read boundary', () => {
         assert.equal(call.options.cwd, '/host/query');
         assert.equal(call.options.shell, false);
         assert.equal(call.options.windowsHide, true);
-        const env = call.options.env as Record<string, string>;
+        const env = call.options.env;
         assert.equal(env.HOME, '/host/home');
         assert.equal(env.GITHUB_TOKEN, undefined);
         assert.equal(env.GH_TOKEN, undefined);
@@ -126,7 +122,6 @@ describe('host GitHub read boundary', () => {
       }
       assert.ok(!JSON.stringify(result).includes('secret'));
     });
-
   it('normalizes repository case and projects away unrequested response fields', async () => {
     const h = harness({
       runner: async () => ({
@@ -139,10 +134,9 @@ describe('host GitHub read boundary', () => {
     assert.equal(result.provenance.headSha, head);
     assert.ok(!JSON.stringify(result).includes('leak'));
   });
-
   it('marks a bounded list truncated using one extra item, without pagination', async () => {
     const h = harness({
-      runner: async (_file: string, args: string[]) => {
+      runner: async (_file, args) => {
         assert.equal(args[args.indexOf('--limit') + 1], '3');
         return { stdout: JSON.stringify([pr, { ...pr, number: 42 }, { ...pr, number: 43 }]), exitCode: 0 };
       },
@@ -152,11 +146,10 @@ describe('host GitHub read boundary', () => {
     assert.equal(result.data.length, 2);
     assert.equal(result.provenance.truncated, true);
   });
-
   it('rejects a PR diff when head changes while it is read', async () => {
     let n = 0;
     const h = harness({
-      runner: async (_file: string, args: string[]) => ({
+      runner: async (_file, args) => ({
         stdout:
           args[1] === 'diff'
             ? 'diff contents'
@@ -168,7 +161,6 @@ describe('host GitHub read boundary', () => {
     assert.equal(result.code, 'stale_head');
     assert.ok(!('data' in result));
   });
-
   it('retains pending/failing checks and never calls an empty set green', async () => {
     for (const [checks, exitCode, expected] of [
       [[], 0, 'unknown'],
@@ -178,7 +170,7 @@ describe('host GitHub read boundary', () => {
       [[{ ...check, bucket: 'fail', state: 'FAILURE' }], 1, 'fail'],
     ]) {
       const h = harness({
-        runner: async (_file: string, args: string[]) =>
+        runner: async (_file, args) =>
           args[1] === 'checks'
             ? { stdout: JSON.stringify(checks), exitCode }
             : { stdout: JSON.stringify(pr), exitCode: 0 },
@@ -189,14 +181,12 @@ describe('host GitHub read boundary', () => {
       assert.equal(result.provenance.headSha, head);
     }
   });
-
   it('rejects malformed upstream data and version metadata', async () => {
     for (const stdout of ['not json', '{}', JSON.stringify({ ...pr, headRefOid: 'bad' })]) {
       const h = harness({ runner: async () => ({ stdout, exitCode: 0 }) });
       assert.equal((await h.reader({ op: 'pr_view', repo, number: 41 }, h.authority)).code, 'unavailable');
     }
   });
-
   it('discards a result revoked during execution', async () => {
     const h = harness({
       runner: async () => {
@@ -206,7 +196,6 @@ describe('host GitHub read boundary', () => {
     });
     assert.equal((await h.reader({ op: 'pr_view', repo, number: 41 }, h.authority)).code, 'invocation_ended');
   });
-
   it('enforces time and output bounds, including injected runners ignoring cancellation', async () => {
     const slow = harness({ timeoutMs: 15, runner: async () => new Promise(() => {}) });
     const result = await slow.reader({ op: 'pr_view', repo, number: 41 }, slow.authority);
@@ -214,7 +203,6 @@ describe('host GitHub read boundary', () => {
     const large = harness({ maxOutputBytes: 20 });
     assert.equal((await large.reader({ op: 'pr_view', repo, number: 41 }, large.authority)).code, 'output_limit');
   });
-
   it('returns cancellation before spawn and during a hung query', async () => {
     const h = harness();
     const cancel = new AbortController();
@@ -236,7 +224,6 @@ describe('host GitHub read boundary', () => {
       'cancelled',
     );
   });
-
   it('projects failures to typed codes without stderr or credential leakage', async () => {
     for (const [stderr, exitCode, expected] of [
       ['gh: Bad credentials (HTTP 401) resolved-host-secret', 4, 'authentication_required'],
@@ -252,11 +239,10 @@ describe('host GitHub read boundary', () => {
       assert.ok(!JSON.stringify(result).includes('secret'));
     }
   });
-
   it('rejects a diff if only the target branch changes', async () => {
     let n = 0;
     const h = harness({
-      runner: async (_file: string, args: string[]) => ({
+      runner: async (_file, args) => ({
         stdout:
           args[1] === 'diff'
             ? 'diff'
@@ -266,23 +252,21 @@ describe('host GitHub read boundary', () => {
     });
     assert.equal((await h.reader({ op: 'pr_diff', repo, number: 41 }, h.authority)).code, 'stale_head');
   });
-
   it('counts every subprocess against one output budget', async () => {
     const pin = JSON.stringify({ headRefOid: head, baseRefOid: 'c'.repeat(40) });
     const h = harness({
       maxOutputBytes: Buffer.byteLength(pin) * 2,
-      runner: async (_file: string, args: string[]) => ({
+      runner: async (_file, args) => ({
         stdout: args[1] === 'diff' ? 'diff' : pin,
         exitCode: 0,
       }),
     });
     assert.equal((await h.reader({ op: 'pr_diff', repo, number: 41 }, h.authority)).code, 'output_limit');
   });
-
   it('bounds each authority independently and releases slots after errors', async () => {
-    let release: () => void = () => {};
+    let release = () => {};
     let calls = 0;
-    const blocked = new Promise<void>((resolve) => {
+    const blocked = new Promise((resolve) => {
       release = resolve;
     });
     const h = harness({
@@ -297,14 +281,13 @@ describe('host GitHub read boundary', () => {
     const second = h.reader(query, h.authority);
     const other = h.reader(query, { ...h.authority });
     assert.equal((await h.reader(query, h.authority)).code, 'unavailable');
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(calls, 3);
     release();
     await Promise.all([first, second, other]);
     await h.reader(query, h.authority);
     assert.equal(calls, 4);
   });
-
   it('does not spawn with relative host executable or cwd', async () => {
     for (const overrides of [{ ghPath: 'gh' }, { cwd: '.' }]) {
       const h = harness(overrides);

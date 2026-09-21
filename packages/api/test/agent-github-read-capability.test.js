@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createAgentGitHubReader } from '../src/infrastructure/github/agent-github-read.js';
-import { AgentGitHubReadBroker } from '../src/infrastructure/github/agent-github-read-capability.js';
+import { createAgentGitHubReader } from '../dist/infrastructure/github/agent-github-read.js';
+import { AgentGitHubReadBroker } from '../dist/infrastructure/github/agent-github-read-capability.js';
 
 const principal = { invocationId: 'child-1', userId: 'owner', catId: 'zcode', threadId: 'thread-1' };
 const query = { op: 'pr_diff', repo: '08mamba24/clowder-ai', number: 41 };
 function harness() {
   const records = new Map([[principal.invocationId, { ...principal }]]);
-  const audit: unknown[] = [];
+  const audit = [];
   let calls = 0;
   const reader = createAgentGitHubReader({
     ghPath: '/host/gh',
@@ -25,16 +25,15 @@ function harness() {
   const options = {
     apiUrl: 'http://127.0.0.1:43210',
     ownerUserId: 'owner',
-    resolvePrincipal: async (id: string) => records.get(id) ?? null,
+    resolvePrincipal: async (id) => records.get(id) ?? null,
     read: reader,
-    appendAudit: async (entry: unknown) => {
+    appendAudit: async (entry) => {
       audit.push(entry);
     },
   };
   const broker = new AgentGitHubReadBroker(options);
   return { broker, records, audit, options, calls: () => calls };
 }
-
 test('only host-admitted owner and the exact enabled cats obtain a scoped lease', async () => {
   const h = harness();
   for (const change of [{ userId: 'other' }, { catId: 'qoder' }, { catId: 'astra' }, { invocationId: 'parent-1' }]) {
@@ -54,7 +53,6 @@ test('only host-admitted owner and the exact enabled cats obtain a scoped lease'
   assert.ok(!JSON.stringify(h.audit).includes('host-secret'));
   h.broker.close();
 });
-
 test('revocation, attempt replacement and restart cannot refresh old grants', async () => {
   const h = harness();
   const first = await h.broker.open('child-1');
@@ -71,7 +69,6 @@ test('revocation, attempt replacement and restart cannot refresh old grants', as
   assert.equal((await h.broker.query(second.token, query)).ok, false);
   assert.equal(h.calls(), 0);
 });
-
 test('canonical terminal or changed ownership invalidates even an otherwise live transport', async () => {
   for (const terminal of [
     null,
@@ -89,7 +86,6 @@ test('canonical terminal or changed ownership invalidates even an otherwise live
     h.broker.close();
   }
 });
-
 test('abort revokes the grant and terminates in-flight query authority', async () => {
   const h = harness();
   const abort = new AbortController();
@@ -99,7 +95,6 @@ test('abort revokes the grant and terminates in-flight query authority', async (
   assert.equal(await h.broker.authenticate(lease.token), false);
   assert.equal(await h.broker.open('child-1', abort.signal), null);
 });
-
 test('durable audit failure withholds success and late revocation withholds data', async () => {
   const h = harness();
   for (const appendAudit of [

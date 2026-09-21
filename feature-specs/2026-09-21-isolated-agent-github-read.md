@@ -254,13 +254,13 @@ Map delta: updated in both existing cell docs
 Why: add a query consumer; reuse canonical invocation authority without transferring credential ownership
 Canonical source: `InvocationRegistry.ts#verifyLatest` / `repairFromCanonical`; existing host canonical gh auth store
 Consumer evidence: `rg -n 'openGitHubReadLease|AgentGitHubReadBroker' packages/api/src` identifies index → AgentRouter → invokeSingleCat → ACP/Qoder only
-Claim guard: canonical child changes/ends → `agent-github-read-capability.test.ts` rejects before spawn; revoked during query → result withheld; shell config read → real Seatbelt denies
+Claim guard: canonical child changes/ends → `agent-github-read-capability.test.js` rejects before spawn; revoked during query → result withheld; shell config read → real Seatbelt denies
 
 - **8 操作内核**：strict schema、固定 argv/字段、两仓 allowlist、每 grant 两个在途、15s/1MiB 总预算、PR head/base 双探针；超时/取消回收 wrapper 后代。结果与审计不回传 stderr 或 credentials。
 - **ZCode**：使用 native create/resume 的 HTTP MCP header；仅一个 `github_read` 窄工具。每次 ACP lease retire，cold resume 持久历史，禁止 warm record 复用旧 header。跳过不需要的通用 callback credential 文件生成。安装原生 canary 使用前述 hash 的 binary、合成 Anthropic 响应与隔离 HTTP MCP，验证两轮实际工具调用、历史恢复、header 轮换及模型请求/日志/SQLite/WAL 无 token；它不冒充猫本人线上终验。
 - **Qoder**：原 18-tool 初始化契约不变。shell-prefix 完整 literal argv 翻译；窄 bearer 在 lease root 的 0600 文件，位于 scratch 外，既有 Seatbelt deny 生效。结束先撤销 grant 再清理短命 lease。普通 shell 子进程移除 config path，nested gh 拒绝自动 delegate。
 - **宿主认证收敛**：本入口只复用宿主 gh 已有认证存储；不注入 raw GH_TOKEN/GITHUB_TOKEN，不创建新的 token 文件。仅 plugin/env token 而未登录 canonical gh auth-store 的部署返回 authentication_required，需要由 operator 完成既有 gh 登录；不修改全局 GitHub token policy。现有 ZCode 同 UID 全文件面不在此项内声称已解决。
-- **测试**：API build；`pnpm exec tsx --test test/agent-github-read*.test.ts test/acp/zcode-github-read-carrier.test.ts`；Qoder service/readonly-memory real Seatbelt tests；`node --test scripts/agent-github-read-client.test.mjs`；`CAT_CAFE_ZCODE_LIVE=1 node --test test/acp/zcode-github-read-native.test.js`（该 test 只访问自身隔离合成 server）。
+- **测试**：API build；`node --test test/agent-github-read*.test.js test/acp/zcode-github-read-carrier.test.js`，由既有 public test resolver 自动发现；Qoder service/readonly-memory real Seatbelt tests；`node --test scripts/agent-github-read-client.test.mjs`；`CAT_CAFE_ZCODE_LIVE=1 node --test test/acp/zcode-github-read-native.test.js`（该 test 只访问自身隔离合成 server）。
 - **完成线**：AC2–AC7 有实现与针对性隔离证据，仍需 review/full gate；AC1 必须两猫在已激活的新会话查询两仓并与宿主事实核对。未改 runtime config、未重启生产、未碰生产数据。
 
 [小星星/gpt-6-astra🐾]

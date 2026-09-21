@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import Fastify from 'fastify';
-import { createAgentGitHubReader } from '../src/infrastructure/github/agent-github-read.js';
-import { AgentGitHubReadBroker } from '../src/infrastructure/github/agent-github-read-capability.js';
-import { agentGitHubReadRoutes } from '../src/routes/agent-github-read.js';
+import { createAgentGitHubReader } from '../dist/infrastructure/github/agent-github-read.js';
+import { AgentGitHubReadBroker } from '../dist/infrastructure/github/agent-github-read-capability.js';
+import { agentGitHubReadRoutes } from '../dist/routes/agent-github-read.js';
 
 async function harness() {
   let calls = 0;
@@ -32,7 +32,6 @@ async function harness() {
   const query = { op: 'pr_list', repo: '08mamba24/clowder-ai', state: 'open', limit: 5 };
   return { app, broker, lease, headers, query, calls: () => calls };
 }
-
 test('direct route rejects spoofed credentials and identity and accepts the narrow query', async (t) => {
   const h = await harness();
   t.after(() => h.app.close());
@@ -65,12 +64,11 @@ test('direct route rejects spoofed credentials and identity and accepts the narr
     401,
   );
 });
-
 test('MCP exposes only one typed read tool and cannot invoke family callbacks or arbitrary operations', async (t) => {
   const h = await harness();
   t.after(() => h.app.close());
   t.after(() => h.broker.close());
-  const rpc = (method: string, params: unknown) =>
+  const rpc = (method, params) =>
     h.app.inject({
       method: 'POST',
       url: '/api/agent-github-read/mcp',
@@ -86,7 +84,7 @@ test('MCP exposes only one typed read tool and cannot invoke family callbacks or
   assert.deepEqual(init.json().result.capabilities, { tools: { listChanged: true } });
   const listed = await rpc('tools/list', {});
   assert.deepEqual(
-    listed.json().result.tools.map((tool: { name: string }) => tool.name),
+    listed.json().result.tools.map((tool) => tool.name),
     ['github_read'],
   );
   const foreign = await rpc('tools/call', { name: 'cat_cafe_post_message', arguments: { content: 'forged' } });

@@ -5,15 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { runGhReadProcess } from '../src/infrastructure/github/agent-github-read-process.js';
+import { runGhReadProcess } from '../dist/infrastructure/github/agent-github-read-process.js';
 
-async function until(predicate: () => boolean, timeout = 5000) {
+async function until(predicate, timeout = 5000) {
   const end = Date.now() + timeout;
   while (!predicate() && Date.now() < end) await delay(20);
   return predicate();
 }
-
-function alive(pid: number) {
+function alive(pid) {
   try {
     process.kill(pid, 0);
     return true;
@@ -21,7 +20,6 @@ function alive(pid: number) {
     return false;
   }
 }
-
 test('real runner closes stdin and retains exit status without a terminal', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'gh-read-stdin-'));
   try {
@@ -47,8 +45,7 @@ test('real runner closes stdin and retains exit status without a terminal', asyn
     await rm(dir, { recursive: true, force: true });
   }
 });
-
-for (const trigger of ['abort', 'timeout', 'output'] as const) {
+for (const trigger of ['abort', 'timeout', 'output']) {
   test(
     `real runner ${trigger} reclaims a wrapper's detached descendant`,
     { skip: process.platform === 'win32' },
@@ -58,7 +55,7 @@ for (const trigger of ['abort', 'timeout', 'output'] as const) {
       const release = join(dir, 'release');
       const fixture = join(dir, 'fake-gh.cjs');
       const cancel = new AbortController();
-      let pid: number | undefined;
+      let pid;
       await writeFile(
         fixture,
         `
@@ -90,7 +87,7 @@ for (const trigger of ['abort', 'timeout', 'output'] as const) {
         if (trigger === 'output') await writeFile(release, 'go');
         const { error } = await outcome;
         assert.ok(error, `${trigger} must reject`);
-        assert.equal(await until(() => !alive(pid as number)), true, 'descendant must be reclaimed');
+        assert.equal(await until(() => !alive(pid)), true, 'descendant must be reclaimed');
         assert.equal(alive(process.pid), true, 'test parent survives');
       } finally {
         cancel.abort();

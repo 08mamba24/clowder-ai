@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { test } from 'node:test';
-import { AcpAgentService } from '../../src/domains/cats/services/agents/providers/acp/AcpAgentService.js';
+import { AcpAgentService } from '../../dist/domains/cats/services/agents/providers/acp/AcpAgentService.js';
 
 test('ZCode sends only the attempt read header over ACP and revokes it before releasing the carrier', async () => {
-  const events: string[] = [];
-  const requests: unknown[] = [];
+  const events = [];
+  const requests = [];
   const fakeLease = {
     token: 'a'.repeat(43),
     queryUrl: 'http://127.0.0.1:43210/api/agent-github-read',
@@ -16,25 +17,25 @@ test('ZCode sends only the attempt read header over ACP and revokes it before re
     offCapacity() {},
     cancelSession() {},
     clearRecentCapacitySignal() {},
-    async newSession(_cwd: string, servers: unknown[]) {
+    async newSession(_cwd, servers) {
       requests.push(servers);
       return { sessionId: 'native-session' };
     },
-    async loadSession(_id: string, _cwd: string, servers: unknown[]) {
+    async loadSession(_id, _cwd, servers) {
       requests.push(servers);
       return { sessionId: 'native-session' };
     },
-    async *promptStream(_id: string, text: string) {
+    async *promptStream(_id, text) {
       assert.ok(!text.includes(fakeLease.token));
       yield { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } };
     },
   };
   const pool = { acquire: async () => ({ client, release: () => events.push('release') }), rememberSession() {} };
   const service = new AcpAgentService({
-    catId: 'zcode' as never,
-    pool: pool as never,
-    poolKey: { projectPath: '/tmp', providerProfile: 'test' },
-    projectRoot: '/tmp',
+    catId: 'zcode',
+    pool: pool,
+    poolKey: { projectPath: tmpdir(), providerProfile: 'test' },
+    projectRoot: tmpdir(),
     mcpSupport: false,
     omitSessionMcpServers: true,
     isolatedGitHubRead: true,
