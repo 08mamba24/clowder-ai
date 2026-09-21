@@ -75,7 +75,7 @@
 
 ### ① Settings web 卡（已落地）
 
-- `packages/web/src/components/settings/WorkspaceAgentPluginPanel.tsx`：状态徽章（已启用/未启用/需修复）、trigger id / workspaceId / token（write-only，已保管显示占位不回显）表单、授权并启用 / 保存、停用（confirm）、发送测试触发、typed 测试结果、invalidConfig 恢复指引（**明确写"仅修权限不会自动重读，需完整保存或重启"**——astra round-3 答复的边界）。挂载于 PluginsContent 三个视图位（紧跟 PersonalChrome 面板）。
+- `packages/web/src/components/settings/WorkspaceAgentPluginPanel.tsx`：状态徽章（已启用/未启用/需修复）、trigger id / workspaceId / token（write-only，已保管显示占位不回显）表单、授权并启用 / 保存、停用（confirm）、发送测试触发、typed 测试结果、invalidConfig 恢复指引（**明确写"仅修权限不会自动重读，需完整保存或重启"**——astra round-3 答复的边界）。挂载于 PluginsContent 的 loading / 空列表 / **非空列表**三个分支（round-4 R1 修正：初版漏了非空分支，现在有 PluginsContent 层非空目录用例保护）。
 - 组件测试 4/4（disabled 态无 token 物料 / invalid 恢复指引 / PUT 保存 + token 字段 round-trip 后清空 / typed 测试失败展示）；web `tsc --noEmit` 干净。
 
 ### ③ 集成验收现状与缺项（诚实清单）
@@ -83,9 +83,17 @@
 - **已做（stub 级）**：replay——同 exact source 重发携带**相同 Idempotency-Key + 相同 conversation_key**，客户端不去重（provider 拥有 replay 真相）；bridge 测试 10/10。
 - **缺项（需要 owner/真环境，列给铲屎官）**：
   1. **真实 provider trigger**：需要在 ChatGPT Admin 创建 Workspace Agents scope 的 access token + 一个 trigger（agtch_…）——填进 Settings 卡即可走「发送测试触发」验收 202/conversation_url。
-  2. **真实 Redis restart**：隔离测试库（非生产 Redis）重启后 grant/bindings 语义回归；本机无隔离 Redis 实例可用（sandbox 无法起 docker），需带环境会话执行。
+  2. ~~真实 Redis restart~~ **已撤回推给 owner**：round-4 证实本机 redis-server（/opt/homebrew/bin）即可起隔离实例——仓库级回归 `f247-workspace-agent-redis-restart.test.js`（随机端口 + 临时 dir + SHUTDOWN SAVE 重启，versioned 含 URL 与 legacy 绑定跨重启可读；binary 缺席时 skip）。
   3. **页面关闭 live dogfood**：owner 在真实浏览器关页后触发一轮 @gpt-pro 双向观察（Settings 自检会话 + thread 会话）。
-- **live dogfood 剧本（交 owner）**：① Settings 卡填 trigger id + workspace id + token → 保存并启用 → 点「发送测试触发」→ 预期 202 + conversation_url 打开自检会话；② 任意 thread 行首 @gpt-pro 发一条 → 预期 thread 出现 sent receipt（transport=workspace-agent）→ 云端 agent 经 Remote MCP cat_cafe_post_message(replyTo=sourceMessageId) 回写 → 本地气泡出现 gpt-pro 回复；③ 让 gpt-pro 的回复内容里包含 @gpt-pro → 预期 typed `cloud-loop-suppressed`、无第二次出站；④ Settings 停用 → 再 @gpt-pro → 预期走 Personal Chrome/needs-binding 路径（不静默回退已验证，live 再证一次）。
+- **live dogfood 剧本（交 owner）**：① Settings 卡填 trigger id + workspace id + token → 保存并启用 → 点「发送测试触发」→ 预期 202 + conversation_url 打开自检会话；② 任意 thread 行首 @gpt-pro 发一条 → 预期 thread 出现 sent receipt（transport=workspace-agent）→ 云端 agent 经 Remote MCP cat_cafe_post_message(replyTo=sourceMessageId) 回写 → 本地气泡出现 gpt-pro 回复；③ 云端回复文本里行首 @gpt-pro → analyzeA2AMentions 先过滤自目标，零派发零 receipt（**不是** typed cloud-loop-suppressed——该 receipt 只在显式进入 admission 的自目标派发出现，round-4 probe 已区分）；④ Settings 停用 → 再 @gpt-pro → 走 Personal Chrome/needs-binding（不静默回退）。
+
+## Review 轮次记录（astra round 4 → REQUEST_CHANGES 修正）
+
+- R1(P2) 已修：WorkspaceAgentPluginPanel 补挂**非空插件列表**分支（此前只有 loading/空列表）；新增 PluginsContent 层非空目录用例。
+- R2(P2) 已修：save() 在显式保存时**迁入已验证的 env token**（"留空则沿用"对 env 态成立，source 翻转为 settings）；disable() 墓碑捕获活跃配置（含 env），tokenConfigured:true，重新启用无需重粘；routes 层 env 旅程回归（GET env → PUT 空token 200 → DELETE → PUT enabled:true 200）。
+- R3(P2) 已修：正常 dispatch 成功 → bridge 写 versioned binding（含 conversationUrl owner-only 恢复锚，best-effort 且失败不影响已 202 的派发）；RedisThreadStore 增加 updateCloudCatBindingEntry（JSON 序列化进同一 cloudBinding: 字段，guarded Lua）；normalize 接受 JSON 字符串形态；threads.ts owner 投影透出含 URL 的对象；web CloudConversationLink provider-aware 消费（workspace-agent 条目的 URL 渲染为 bound，绝不作为 Personal Chrome route）；**隔离 Redis 重启仓库级回归通过**。
+- P3 已修：live dogfood 预期区分「文本自 @（analyzeA2AMentions 过滤，零派发零 receipt）」与「显式进入 admission 的自目标（typed cloud-loop-suppressed）」。
+- 撤回声明：此前"本机不能起隔离 Redis，交 owner"不成立（redis-server 二进制即可）。
 
 ### Failure-Mode Sweep（本轮）
 

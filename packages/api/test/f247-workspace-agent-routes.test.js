@@ -35,9 +35,9 @@ const writeHeaders = {
 };
 const readHeaders = { host: writeHeaders.host, 'x-test-session-user': ownerUserId };
 
-function buildApp(adapterOverrides = {}) {
+function buildApp(adapterOverrides = {}, buildOptions = {}) {
   const projectRoot = mkdtempSync(join(tmpdir(), 'f247-wa-routes-'));
-  const config = createWorkspaceAgentTriggerConfig({ projectRoot, env: {} });
+  const config = createWorkspaceAgentTriggerConfig({ projectRoot, env: buildOptions.envTriple ?? {} });
   const triggerCalls = [];
   const adapter = {
     trigger: async (args) => {
@@ -215,6 +215,49 @@ test('R3: PUT rejects a workspaceId the conversation-key builder would refuse', 
     assert.equal(res.json().code, 'INVALID_CONFIG');
     const followUp = await app.inject({ method: 'GET', url: '/api/plugins/workspace-agent', headers: readHeaders });
     assert.equal(followUp.json().enabled, false, 'rejected value must not be partially saved');
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+test('round-4 R2 journey: env-bootstrapped save with blank token migrates; disable keeps re-enable path', async () => {
+  const { app, cleanup } = buildApp({}, {
+    envTriple: {
+      CAT_CAFE_WORKSPACE_AGENT_TRIGGER_ID: 'agtch_env',
+      CAT_CAFE_WORKSPACE_AGENT_WORKSPACE_ID: 'ws_env',
+      CAT_CAFE_WORKSPACE_AGENT_TOKEN: 'env-secret',
+    },
+  });
+  try {
+    const initial = await app.inject({ method: 'GET', url: '/api/plugins/workspace-agent', headers: readHeaders });
+    assert.equal(initial.json().enabled, true);
+    assert.equal(initial.json().source, 'env');
+
+    // UI keeps the token blank because the card promises "留空则沿用".
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/api/plugins/workspace-agent/config',
+      headers: writeHeaders,
+      payload: { triggerId: 'agtch_env', workspaceId: 'ws_env' },
+    });
+    assert.equal(saved.statusCode, 200, 'env token migrates on explicit save — no 400');
+    assert.equal(saved.json().source, 'settings');
+    assert.equal(saved.body.includes('env-secret'), false);
+
+    const disabled = await app.inject({ method: 'DELETE', url: '/api/plugins/workspace-agent', headers: writeHeaders });
+    assert.equal(disabled.statusCode, 200);
+    assert.equal(disabled.json().enabled, false);
+    assert.equal(disabled.json().tokenConfigured, true, 're-enable without re-pasting stays possible');
+
+    const reenabled = await app.inject({
+      method: 'PUT',
+      url: '/api/plugins/workspace-agent/config',
+      headers: writeHeaders,
+      payload: { enabled: true },
+    });
+    assert.equal(reenabled.statusCode, 200);
+    assert.equal(reenabled.json().enabled, true);
   } finally {
     await app.close();
     cleanup();

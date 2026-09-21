@@ -419,3 +419,37 @@ test('R3b: save and persisted parse reject NUL workspaceId through the same pred
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ── astra round-4 R2: env bootstrap migration journey ─────────────────────
+
+test('R2: explicit save on an env-bootstrapped config migrates the env token into settings custody', () => {
+  const root = tempProjectRoot();
+  try {
+    const config = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: ENV_TRIPLE });
+    assert.equal(config.resolve()?.source, 'env');
+    // UI journey: user keeps the token blank because the card says "留空则沿用".
+    const saved = config.save({ triggerId: 'agtch_env', workspaceId: 'ws_env' });
+    assert.equal(saved.enabled, true);
+    assert.equal(saved.source, 'settings');
+    assert.equal(JSON.stringify(saved).includes('env-secret'), false, 'token never projected');
+    const persisted = JSON.parse(readFileSync(config.configPath, 'utf-8'));
+    assert.equal(persisted.token, 'env-secret', 'env token migrated into the 0600 settings file');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('R2: disable on an env-bootstrapped config keeps tokenConfigured for re-enable', () => {
+  const root = tempProjectRoot();
+  try {
+    const config = createWorkspaceAgentTriggerConfig({ projectRoot: root, env: ENV_TRIPLE });
+    const disabled = config.disable();
+    assert.equal(disabled.enabled, false);
+    assert.equal(disabled.tokenConfigured, true, 'confirm copy "无需重新粘贴" must hold for env states');
+    const reenabled = config.save({ enabled: true });
+    assert.equal(reenabled.enabled, true);
+    assert.equal(config.resolve()?.triggerId, 'agtch_env');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

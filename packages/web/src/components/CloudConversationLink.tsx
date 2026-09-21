@@ -9,7 +9,7 @@ interface CloudBindingsResponse {
   // astra R2: values are canonical ChatGPT conversation URL strings by
   // contract (the server projects versioned entries); guard against
   // unexpected object shapes instead of feeding them to the URL parser.
-  bindings?: Record<string, string | { provider?: string }>;
+  bindings?: Record<string, string | { provider?: string; conversationUrl?: string }>;
 }
 
 type BindingState =
@@ -37,7 +37,16 @@ async function readCloudConversationBinding(threadId: string, signal: AbortSigna
   if (signal.aborted) return null;
   const rawBinding = body.bindings?.['gpt-pro'];
   if (rawBinding === undefined) return { kind: 'empty' };
-  if (typeof rawBinding !== 'string') return { kind: 'invalid' };
+
+  // astra round-4 R3: the workspace-agent entry carries its own owner-only
+  // conversationUrl; it is a recovery anchor, never a Personal Chrome route.
+  if (typeof rawBinding === 'object' && rawBinding !== null) {
+    if (rawBinding.provider === 'workspace-agent' && typeof rawBinding.conversationUrl === 'string') {
+      const parsed = parseChatGptConversationUrl(rawBinding.conversationUrl);
+      return parsed ? { kind: 'bound', ...parsed } : { kind: 'invalid' };
+    }
+    return { kind: 'invalid' };
+  }
 
   const parsed = parseChatGptConversationUrl(rawBinding);
   return parsed ? { kind: 'bound', ...parsed } : { kind: 'invalid' };

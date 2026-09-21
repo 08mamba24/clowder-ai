@@ -274,9 +274,15 @@ export function createWorkspaceAgentTriggerConfig(deps: WorkspaceAgentConfigDeps
     save(input) {
       const current = load();
       const currentvalue = current.kind === 'enabled' || current.kind === 'disabled' ? current.value : undefined;
-      const triggerId = input.triggerId !== undefined ? input.triggerId : currentvalue?.triggerId;
-      const workspaceId = input.workspaceId !== undefined ? input.workspaceId : currentvalue?.workspaceId;
-      const token = input.token !== undefined ? input.token : currentvalue?.token;
+      // astra R2: an explicitly saved env-bootstrapped config migrates the
+      // validated env token into settings custody — the UI promise "留空则
+      // 沿用" must hold for env-sourced states too. Only the validated env
+      // triple is eligible (never disabled/invalid persisted state).
+      const activeEnv = envConfig();
+      const envFallbackToken = activeEnv && activeEnv !== 'invalid' ? activeEnv.token : undefined;
+      const triggerId = input.triggerId !== undefined ? input.triggerId : (currentvalue?.triggerId || (activeEnv && activeEnv !== 'invalid' ? activeEnv.triggerId : undefined));
+      const workspaceId = input.workspaceId !== undefined ? input.workspaceId : (currentvalue?.workspaceId || (activeEnv && activeEnv !== 'invalid' ? activeEnv.workspaceId : undefined));
+      const token = input.token !== undefined ? input.token : (currentvalue?.token ?? envFallbackToken);
       const enabled = input.enabled !== undefined ? input.enabled : (currentvalue?.enabled ?? true);
       if (!isNonEmpty(triggerId) || !isNonEmpty(workspaceId) || !isNonEmpty(token)) {
         throw new WorkspaceAgentTriggerError(
@@ -306,11 +312,15 @@ export function createWorkspaceAgentTriggerConfig(deps: WorkspaceAgentConfigDeps
       const currentvalue = current.kind === 'enabled' || current.kind === 'disabled' ? current.value : undefined;
       // Persist the disable decision even when nothing was saved before —
       // an env-bootstrapped transport must be switchable off (astra R1),
-      // and the tombstone must survive restarts.
+      // and the tombstone must survive restarts. astra R2: the tombstone
+      // captures the ACTIVE config (file or validated env) so the confirm
+      // copy "重新启用无需重新粘贴" is true for env states as well.
+      const activeEnv = envConfig();
+      const envValue = activeEnv && activeEnv !== 'invalid' ? activeEnv : undefined;
       const persisted: PersistedShape = {
-        triggerId: currentvalue?.triggerId ?? '',
-        workspaceId: currentvalue?.workspaceId ?? '',
-        token: currentvalue?.token ?? '',
+        triggerId: currentvalue?.triggerId || envValue?.triggerId || '',
+        workspaceId: currentvalue?.workspaceId || envValue?.workspaceId || '',
+        token: currentvalue?.token || envValue?.token || '',
         enabled: false,
         updatedAt: new Date().toISOString(),
       };

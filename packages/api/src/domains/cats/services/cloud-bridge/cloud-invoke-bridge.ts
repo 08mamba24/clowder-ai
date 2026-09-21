@@ -194,6 +194,26 @@ export class CloudInvokeBridge implements ICloudInvokeBridge {
           workspaceAgentDecision.fallback.detail,
         );
       }
+      // astra round-4 R3: persist the owner-only recovery anchor for the
+      // thread's provider-side conversation. Best-effort — the dispatch is
+      // already accepted at the 202 boundary; a failed anchor write is
+      // logged and recoverable via the next successful dispatch.
+      if (workspaceAgentDecision.outcome.kind === 'sent' && workspaceAgentTransport) {
+        try {
+          await this.deps.threadStore.updateCloudCatBindingEntry?.(params.threadId, params.catId, {
+            v: 1,
+            provider: 'workspace-agent',
+            workspaceId: workspaceAgentTransport.workspaceId,
+            triggerId: workspaceAgentTransport.adapter.triggerId,
+            conversationUrl: workspaceAgentDecision.outcome.capturedUrl,
+          });
+        } catch (err) {
+          this.logger.warn(
+            { threadId: params.threadId, catId: params.catId, err: serializeError(err) },
+            'F247 workspace-agent: recovery binding write failed (dispatch already delivered)',
+          );
+        }
+      }
       return workspaceAgentDecision.outcome;
     }
 

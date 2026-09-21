@@ -253,6 +253,7 @@ export function PluginsContent() {
   return (
     <div className="flex flex-col gap-3.5" data-testid="plugins-list">
       <PersonalChromePluginPanel />
+      <WorkspaceAgentPluginPanel />
       <OfficialPluginsPanel />
       {toggleError && (
         <div className="rounded-md bg-conn-red-bg px-3 py-2 text-sm text-conn-red-text">{toggleError}</div>

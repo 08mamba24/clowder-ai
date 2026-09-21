@@ -241,3 +241,70 @@ test('replay: re-dispatch of the same exact source reuses the identical Idempote
   assert.equal(triggerCalls[0].body.conversation_key, 'clowder:ws_1:thread_1');
   assert.equal(triggerCalls[1].body.conversation_key, 'clowder:ws_1:thread_1', 'conversation continuity is stable');
 });
+
+test('round-4 R3: workspace-agent sent persists the owner-only recovery binding', async () => {
+  const writes = [];
+  const { deps, calls } = makeBridgeDepsOverrides({
+    workspaceAgent: () => ({
+      adapter: makeTriggerAdapter(() => jsonResponse(202, { conversation_url: 'https://chatgpt.com/c/wa-1' })),
+      workspaceId: 'ws_1',
+    }),
+    threadStore: {
+      getCloudCatBindings: async () => ({}),
+      updateCloudCatBinding: async () => {},
+      updateCloudCatBindingEntry: async (threadId, catId, entry) => {
+        writes.push({ threadId, catId, entry });
+      },
+    },
+  });
+  const bridge = new CloudInvokeBridge(deps);
+  const outcome = await bridge.dispatch(params);
+  assert.equal(outcome.kind, 'sent');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].entry.provider, 'workspace-agent');
+  assert.equal(writes[0].entry.workspaceId, 'ws_1');
+  assert.equal(writes[0].entry.conversationUrl, 'https://chatgpt.com/c/wa-1');
+  assert.equal(calls.bindings.includes('read'), false, 'workspace-agent path still never reads chat-URL bindings');
+});
+
+test('round-4 R3: recovery binding write failure does not fail the delivered dispatch', async () => {
+  const { deps } = makeBridgeDepsOverrides({
+    workspaceAgent: () => ({
+      adapter: makeTriggerAdapter(() => jsonResponse(202, { conversation_url: 'https://chatgpt.com/c/wa-2' })),
+      workspaceId: 'ws_1',
+    }),
+    threadStore: {
+      getCloudCatBindings: async () => ({}),
+      updateCloudCatBinding: async () => {},
+      updateCloudCatBindingEntry: async () => {
+        throw new Error('store down');
+      },
+    },
+  });
+  const bridge = new CloudInvokeBridge(deps);
+  const outcome = await bridge.dispatch(params);
+  assert.equal(outcome.kind, 'sent', '202 already accepted — anchor write is best-effort');
+});
+
+function makeBridgeDepsOverrides(overrides) {
+  const calls = { host: [], bindings: [], fallbacks: [] };
+  const deps = {
+    hostAdapter: {
+      append_message: async (...args) => {
+        calls.host.push(args);
+        return { hostMessageId: 'host-msg-x' };
+      },
+    },
+    pinchTabAdapter: null,
+    workspaceAgent: null,
+    emitFallback: async (params2) => {
+      calls.fallbacks.push(params2);
+    },
+    threadStore: {
+      getCloudCatBindings: async () => ({}),
+      updateCloudCatBinding: async () => {},
+    },
+    ...overrides,
+  };
+  return { deps, calls };
+}

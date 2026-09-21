@@ -231,3 +231,11 @@ test('receipt validator: workspace-agent transport with providerRunId passes; ho
 
   assert.ok(isCloudBridgeOutboundReceiptV1(baseReceipt()), 'legacy host receipt still validates');
 });
+
+test('bindings migration: JSON-stringified versioned entry (Redis storage form) decodes identically', () => {
+  const entry = { v: 1, provider: 'workspace-agent', workspaceId: 'ws_r', triggerId: 'agtch_r', conversationUrl: 'https://chatgpt.com/c/r-1' };
+  const decoded = normalizeCloudCatBinding(JSON.stringify(entry));
+  assert.deepEqual(decoded, entry);
+  assert.equal(normalizeCloudCatBinding(JSON.stringify({ v: 1, provider: 'bogus' })), null);
+  assert.equal(normalizeCloudCatBinding('{"v":1,"provider":'), null, 'truncated JSON fails closed');
+});

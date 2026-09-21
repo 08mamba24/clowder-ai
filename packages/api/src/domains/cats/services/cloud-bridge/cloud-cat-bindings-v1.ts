@@ -28,6 +28,12 @@ export type CloudCatBindingV1 =
       readonly provider: 'workspace-agent';
       readonly workspaceId: string;
       readonly triggerId: string;
+      /**
+       * Owner-only recovery anchor from the dispatch 202 boundary. Lives in
+       * the local-only binding sidecar (never the shared receipt / default
+       * thread context / export) and is never a Personal Chrome route.
+       */
+      readonly conversationUrl?: string;
     };
 
 export const CLOUD_CAT_BINDING_PROVIDERS = ['personal-chrome-host', 'workspace-agent'] as const;
@@ -48,11 +54,11 @@ export function isCloudCatBindingV1(value: unknown): value is CloudCatBindingV1 
     );
   }
   if (binding.provider === 'workspace-agent') {
-    return (
-      Object.keys(binding).length === 4 &&
-      isBoundedNonEmpty(binding.workspaceId, 256) &&
-      isBoundedNonEmpty(binding.triggerId, 256)
-    );
+    const keyCount = Object.keys(binding).length;
+    const hasOptionalUrl = typeof binding.conversationUrl === 'string';
+    if (keyCount !== (hasOptionalUrl ? 5 : 4)) return false;
+    if (!isBoundedNonEmpty(binding.workspaceId, 256) || !isBoundedNonEmpty(binding.triggerId, 256)) return false;
+    return !hasOptionalUrl || CHATGPT_CHAT_URL_REGEX.test(binding.conversationUrl as string);
   }
   return false;
 }
@@ -65,9 +71,20 @@ export function isCloudCatBindingV1(value: unknown): value is CloudCatBindingV1 
  */
 export function normalizeCloudCatBinding(value: unknown): CloudCatBindingV1 | null {
   if (typeof value === 'string') {
-    return CHATGPT_CHAT_URL_REGEX.test(value)
-      ? { v: 1, provider: 'personal-chrome-host', conversationUrl: value }
-      : null;
+    if (CHATGPT_CHAT_URL_REGEX.test(value)) {
+      return { v: 1, provider: 'personal-chrome-host', conversationUrl: value };
+    }
+    // Redis-backed stores persist entries as JSON strings — decode them so
+    // string and object storage read identically after normalization.
+    if (value.startsWith('{')) {
+      try {
+        const parsed: unknown = JSON.parse(value);
+        return isCloudCatBindingV1(parsed) ? parsed : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
   }
   return isCloudCatBindingV1(value) ? value : null;
 }
