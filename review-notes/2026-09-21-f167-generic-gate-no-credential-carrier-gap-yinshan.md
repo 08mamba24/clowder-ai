@@ -10,4 +10,6 @@
 
 **第二例（同 thread 类型复现）**: thread_mua1efbnjtkqiaqy（net-mode nord/clash 分流实现响应速度测试），同一 carrier（qoder-flash/Qwen3.8-Flash）再次收到通用停止门。工具面/凭证状态实测同上（12 个只读 MCP 工具、callback env 全空）；本地 API `localhost:3004` 可达但 post-message 需 invocationId+callbackToken，无法冒用。处置同上：不重做上一手（响应速度自检 + 侦察报告已交付），最终回复行首 `@astra` 结构化传球（请求方案要点+脚本路径交接），以本留痕记录缺口。
 
+**第三例（完成报告后仍触发）**: 同 thread，net-mode 候选包交付完成（RED→GREEN 17/17 + scratch 路径上报 + 行首 @astra 传球）之后的下一轮唤醒仍收到停止门——门对"sanctioned text-@ 已完成 disposition"不可见，对无凭证 carrier 形成重复空转。进一步佐证 P3 finding：gate 需按 invocation 能力降级提示词，且 disposition 判定应识别 text-@ fallback 先例。
+
 `[银闪/Qwen3.8-Flash🐾]`
