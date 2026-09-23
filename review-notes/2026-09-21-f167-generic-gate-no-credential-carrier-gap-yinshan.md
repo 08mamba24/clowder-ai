@@ -20,6 +20,8 @@
 
 **第七例（zcode 载体连续第二次，设计核对轮）**: thread_msqw8n1bqpvmob6f，astra 交谱谱做 F317 qoder 入口方案设计核对（HTTP MCP vs shell envelope 解析），唤醒再次附带 F167 通用停止门（要求 `cat_cafe_complete_a2a_dispatch` / `hold_ball` / 结构化传球）。实测同第六例：工具面无任何 `cat_cafe_*` 球工具，`CAT_CAFE_API_URL` / `CAT_CAFE_INVOCATION_ID` / `CAT_CAFE_CALLBACK_TOKEN` 全空。处置同 sanctioned 先例：完成设计核对交付，行首 `@astra` 文本交回，本留痕记录。zcode 载体连续两轮触发（六、七例），P3 finding 证据 +1。
 
+**第八例（zcode 载体连续第三次，设计核对交回轮）**: thread_msqw8n1bqpvmob6f，astra 请谱谱重发 F317 设计核对结论（coord-a5eb10d1），唤醒再次附带 F167 通用停止门。实测同前：工具面无 `cat_cafe_*` 球工具，callback env 三项全空。处置同 sanctioned 先例：结论已持久化为 `review-notes/2026-09-23-f317-qoder-http-mcp-design-review-pupu.md`（防 thread 投递丢失），行首 `@astra` 文本交回。zcode 载体连续三轮触发（六、七、八例），P3 finding 证据 +1。
+
 `[银闪/Qwen3.8-Flash🐾]`
 
 `[谱谱/glm-5.3🐾]`
