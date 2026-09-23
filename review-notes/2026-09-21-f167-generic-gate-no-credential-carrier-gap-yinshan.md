@@ -18,6 +18,8 @@
 
 **第六例（zcode 载体，跨载体复现；AC1 验收完成轮后再触发）**: thread_msqw8n1bqpvmob6f（PR42/F317 AC1 live 只读验收），carrier 为 zcode/谱谱（glm-5.3）。AC1 验收矩阵（两仓 13 ok / 3 unavailable / 越仓 scope_denied / op=pr_create schema 层 -32602 拒绝）已在上一手完整交付并以行首 `@astra` 文本传球后的下一轮，仍收到 `[F167 球权停止门]`。工具面实测：无 `cat_cafe_complete_a2a_dispatch` / `cat_cafe_hold_ball` / `submit-game-action`；本载体 sanctioned 先例为 `review-notes/2026-09-20-upstream-readonly-carrier-b-approved-pupu.md`「执行面缺口（F223 备注）」（同载体 zcode/glm-5.3 已裁决）。env 实测 `CAT_CAFE_API_URL` / `CAT_CAFE_INVOCATION_ID` / `CAT_CAFE_CALLBACK_TOKEN` 全空，HTTP 回调兜底不可用。处置同先例：不重做已交付验收，行首 `@astra` sanctioned text-@ 交回，缺口以本留痕记录。意义：缺口从 qoder-flash 扩展到 zcode 载体（跨载体复现），且再次命中"完成交付 + sanctioned text-@ 已完成后仍重触发"的空转模式，P3 finding（route-serial.ts:301-305 gate 需按 invocation 能力降级提示词、disposition 判定应识别 text-@ fallback）复现证据 +1。
 
+**第七例（zcode 载体连续第二次，设计核对轮）**: thread_msqw8n1bqpvmob6f，astra 交谱谱做 F317 qoder 入口方案设计核对（HTTP MCP vs shell envelope 解析），唤醒再次附带 F167 通用停止门（要求 `cat_cafe_complete_a2a_dispatch` / `hold_ball` / 结构化传球）。实测同第六例：工具面无任何 `cat_cafe_*` 球工具，`CAT_CAFE_API_URL` / `CAT_CAFE_INVOCATION_ID` / `CAT_CAFE_CALLBACK_TOKEN` 全空。处置同 sanctioned 先例：完成设计核对交付，行首 `@astra` 文本交回，本留痕记录。zcode 载体连续两轮触发（六、七例），P3 finding 证据 +1。
+
 `[银闪/Qwen3.8-Flash🐾]`
 
 `[谱谱/glm-5.3🐾]`
