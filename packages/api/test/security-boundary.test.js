@@ -153,6 +153,8 @@ test('API binds to 127.0.0.1 by default', async (t) => {
     env: childEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  // Register before shutdown so cleanup cannot miss a fast child close.
+  const childClosed = once(child, 'close');
 
   child.once('error', (err) => {
     throw err;
@@ -177,7 +179,13 @@ test('API binds to 127.0.0.1 by default', async (t) => {
     assert.equal(body.status, 'ok');
   } finally {
     child.kill('SIGTERM');
-    await Promise.race([once(child, 'exit'), delay(2000)]);
+    // Graceful API shutdown can outlast 2 seconds and still write under tempRoot.
+    // Remove its workspace only after the child has fully closed.
+    const closedGracefully = await Promise.race([childClosed.then(() => true), delay(10_000, false, { ref: false })]);
+    if (!closedGracefully) {
+      child.kill('SIGKILL');
+      await childClosed;
+    }
     rmSync(tempRoot, { recursive: true, force: true });
   }
 });
