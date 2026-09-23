@@ -299,4 +299,28 @@ describe('ChatMessage stream presentation contracts', () => {
 
     expect(richBlocksConfirmations).toBe(confirmations);
   });
+
+  it('fits plain text while keeping CLI, rich, content, and thinking bubbles at their normal width', () => {
+    const bubbleFitsContent = () =>
+      container.querySelector('[data-testid="message-bubble"]')?.classList.contains('w-fit');
+    const plain = makeStreamMessage({ origin: 'callback', content: 'ok', toolEvents: [], extra: undefined });
+
+    renderMessage(plain);
+    expect(bubbleFitsContent()).toBe(true);
+
+    renderMessage(makeStreamMessage());
+    expect(bubbleFitsContent()).toBe(false);
+
+    renderMessage({
+      ...plain,
+      extra: { rich: { v: 1, blocks: [{ id: 'card-1', kind: 'card', v: 1, title: 'Card' }] } },
+    });
+    expect(bubbleFitsContent()).toBe(false);
+
+    renderMessage({ ...plain, contentBlocks: [{ type: 'text', text: 'Block' }] });
+    expect(bubbleFitsContent()).toBe(false);
+
+    renderMessage({ ...plain, thinking: 'working' });
+    expect(bubbleFitsContent()).toBe(false);
+  });
 });
