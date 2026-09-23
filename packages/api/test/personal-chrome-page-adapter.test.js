@@ -31,8 +31,9 @@ function appendFixtureUserMessage({
   renderedAffordanceText,
   sendCount,
   sentText,
+  turnTagName = 'article',
 }) {
-  const turn = document.createElement('article');
+  const turn = document.createElement(turnTagName);
   if (messageIdPlacement === 'turn-testid') turn.dataset.testid = `conversation-turn-${sendCount}`;
   const message = messageIdPlacement === 'message' ? turn : document.createElement('div');
   message.dataset.messageAuthorRole = 'user';
@@ -73,6 +74,7 @@ function createFixture({
   renderedContentText,
   renderedContentCopies = 1,
   renderedAffordanceText,
+  turnTagName = 'article',
 } = {}) {
   const dom = new JSDOM(
     `<!doctype html><body>
@@ -130,6 +132,7 @@ function createFixture({
         renderedAffordanceText,
         sendCount,
         sentText,
+        turnTagName,
       });
       composer.replaceChildren();
     });
@@ -438,6 +441,106 @@ describe('ChatGPT page adapter', () => {
     });
   });
 
+  it('observes the assistant final when ChatGPT wraps conversation turns in section elements', async () => {
+    const fixture = createFixture({
+      addMessageId: false,
+      messageIdPlacement: 'turn-testid',
+      turnTagName: 'section',
+    });
+    let resolveObserved;
+    const observed = new Promise((resolve) => {
+      resolveObserved = resolve;
+    });
+    const adapter = createChatGptPageAdapter({
+      document: fixture.document,
+      location: fixture.dom.window.location,
+      MutationObserver: fixture.dom.window.MutationObserver,
+      observationTimeoutMs: 50,
+      assistantObservationTimeoutMs: 250,
+      assistantQuietMs: 15,
+      onAssistantFinal: (value) => resolveObserved(value),
+    });
+
+    const receipt = await adapter.appendMessage({
+      requestId: 'request-section-turn-assistant',
+      conversationId: 'conversation-7',
+      text: 'capture the assistant final inside section turns',
+      idempotencyKey: 'source-message-section-turn-assistant',
+    });
+
+    const assistantTurn = fixture.document.createElement('section');
+    assistantTurn.dataset.testid = 'conversation-turn-2';
+    const assistant = fixture.document.createElement('div');
+    assistant.dataset.messageAuthorRole = 'assistant';
+    assistant.textContent = 'assistant final inside a section turn';
+    assistantTurn.append(assistant);
+    fixture.document.querySelector('#messages').append(assistantTurn);
+
+    assert.equal(receipt.hostMessageId, 'conversation-turn-1');
+    assert.deepEqual(await observed, {
+      requestId: 'request-section-turn-assistant',
+      conversationId: 'conversation-7',
+      idempotencyKey: 'source-message-section-turn-assistant',
+      hostMessageId: 'conversation-turn-1',
+      assistantMessageId: 'conversation-turn-2',
+      content: 'assistant final inside a section turn',
+    });
+  });
+
+  it('distinguishes a selector-blind observer from a silent conversation in the durable diagnostic', async () => {
+    const fixture = createFixture({ turnTagName: 'div' });
+    let resolveFailure;
+    const failed = new Promise((resolve) => {
+      resolveFailure = resolve;
+    });
+    const adapter = createChatGptPageAdapter({
+      document: fixture.document,
+      location: fixture.dom.window.location,
+      MutationObserver: fixture.dom.window.MutationObserver,
+      observationTimeoutMs: 50,
+      assistantObservationTimeoutMs: 25,
+      assistantQuietMs: 10,
+      onAssistantObservationFailure: (value) => resolveFailure(value),
+    });
+
+    await adapter.appendMessage({
+      requestId: 'request-selector-blind-observer',
+      conversationId: 'conversation-7',
+      text: 'the host receipt still lands when the observer cannot enumerate turns',
+      idempotencyKey: 'source-message-selector-blind-observer',
+    });
+    const assistantTurn = fixture.document.createElement('div');
+    const assistant = fixture.document.createElement('div');
+    assistant.dataset.messageAuthorRole = 'assistant';
+    assistant.dataset.messageId = 'host-assistant-message-1';
+    assistant.textContent = 'a real assistant reply the turn observer cannot see';
+    assistantTurn.append(assistant);
+    fixture.document.querySelector('#messages').append(assistantTurn);
+
+    const failure = await Promise.race([
+      failed,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('assistant observation failure was swallowed')), 100),
+      ),
+    ]);
+    assert.equal(failure.hostMessageId, 'host-message-1');
+    assert.equal(failure.errorCode, 'ASSISTANT_FINAL_NOT_OBSERVED');
+    assert.deepEqual(failure.diagnostic, {
+      v: 1,
+      userTurnConnected: false,
+      anchorTurnFound: false,
+      followingTurnCount: 0,
+      assistantCandidateCount: 0,
+      laterUserTurnPresent: false,
+      assistantHostIdStatus: 'not_observed',
+      assistantContentStatus: 'not_observed',
+      streamingControlPresent: false,
+      turnMatchCount: 0,
+      userMessageCount: 1,
+      assistantMessageCount: 1,
+    });
+  });
+
   it('re-anchors the causal assistant observer when ChatGPT remounts the source user turn', async () => {
     const fixture = createFixture({ addMessageId: false, messageIdPlacement: 'turn-testid' });
     let resolveObserved;
@@ -577,6 +680,9 @@ describe('ChatGPT page adapter', () => {
         assistantHostIdStatus: 'missing_or_ambiguous',
         assistantContentStatus: 'present',
         streamingControlPresent: false,
+        turnMatchCount: 2,
+        userMessageCount: 1,
+        assistantMessageCount: 1,
       },
     });
     assert.equal(JSON.stringify(failure).includes('content exists'), false);

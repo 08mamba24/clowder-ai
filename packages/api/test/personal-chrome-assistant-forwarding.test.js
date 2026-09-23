@@ -42,8 +42,8 @@ it('forwards a validated source-bound assistant final from the content script to
     content: 'the exact ordinary assistant final',
     observedRevisions: {
       helper: helperArtifactRevision,
-      extension: '0.2.10',
-      pageAdapter: '2026-09-02.1',
+      extension: '0.2.11',
+      pageAdapter: '2026-09-23.1',
     },
   };
 
@@ -111,11 +111,14 @@ it('forwards a privacy-safe assistant observation failure and waits for durable 
       assistantHostIdStatus: 'missing_or_ambiguous',
       assistantContentStatus: 'present',
       streamingControlPresent: false,
+      turnMatchCount: 2,
+      userMessageCount: 1,
+      assistantMessageCount: 1,
     },
     observedRevisions: {
       helper: helperArtifactRevision,
-      extension: '0.2.10',
-      pageAdapter: '2026-09-02.1',
+      extension: '0.2.11',
+      pageAdapter: '2026-09-23.1',
     },
   };
 

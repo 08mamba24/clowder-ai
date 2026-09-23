@@ -115,15 +115,21 @@ describe('personal Chrome extension contract', () => {
 
   it('keeps the manifest, worker, content script, and runtime revision contract aligned', async () => {
     const manifest = JSON.parse(await readFile(join(extensionRoot, 'manifest.json'), 'utf8'));
-    const [worker, contentScriptEntry, contentScript, protocol] = await Promise.all([
+    const [worker, contentScriptEntry, contentScript, protocol, stateHealth] = await Promise.all([
       readFile(join(extensionRoot, 'service-worker.js'), 'utf8'),
       readFile(join(extensionRoot, 'content-script-entry.mjs'), 'utf8'),
       readFile(join(extensionRoot, 'content-script.js'), 'utf8'),
       readFile(join(apiRoot, 'src/domains/cats/services/cloud-bridge/personal-chrome-host/protocol.ts'), 'utf8'),
+      readFile(join(apiRoot, 'scripts/f247-personal-chrome-state-health.mjs'), 'utf8'),
     ]);
 
-    assert.equal(manifest.version, '0.2.10');
-    for (const source of [worker, contentScriptEntry, contentScript, protocol]) assert.match(source, /0\.2\.10/);
+    assert.equal(manifest.version, '0.2.11');
+    for (const source of [worker, contentScriptEntry, contentScript, protocol, stateHealth]) {
+      assert.match(source, /0\.2\.11/);
+    }
+    for (const source of [contentScriptEntry, contentScript, protocol, stateHealth]) {
+      assert.match(source, /2026-09-23\.1/);
+    }
   });
 
   it('checks in deterministic normalized icons derived from the formal gpt-pro repository asset', async () => {

@@ -6,7 +6,7 @@ const APPEND_PROTOCOL_VERSION = 2;
 const SAFE_TOKEN = /^[A-Za-z0-9._:-]+$/;
 const MAX_TEXT_BYTES = 128 * 1024;
 const ASSISTANT_RESULT_TIMEOUT_MS = 2000;
-const EXTENSION_REVISION = chrome.runtime.getManifest?.().version ?? '0.2.10';
+const EXTENSION_REVISION = chrome.runtime.getManifest?.().version ?? '0.2.11';
 let nativePort = null;
 let bindingRequestSequence = 0;
 let bindingQuerySequence = 0;
@@ -28,8 +28,8 @@ function nativeDisconnectCode(message) {
 const validToken = (value, maximum) => typeof value === 'string' && value.length <= maximum && SAFE_TOKEN.test(value);
 const validText = (value) => typeof value === 'string' && value.trim().length > 0 && new TextEncoder().encode(value).byteLength <= MAX_TEXT_BYTES;
 function validAssistantObservationDiagnostic(value) {
-  const fields = ['v', 'userTurnConnected', 'anchorTurnFound', 'followingTurnCount', 'assistantCandidateCount', 'laterUserTurnPresent', 'assistantHostIdStatus', 'assistantContentStatus', 'streamingControlPresent'];
-  return value?.v === 1 && Object.keys(value).length === fields.length && Object.keys(value).every((field) => fields.includes(field)) && ['userTurnConnected', 'anchorTurnFound', 'laterUserTurnPresent', 'streamingControlPresent'].every((field) => typeof value[field] === 'boolean') && ['followingTurnCount', 'assistantCandidateCount'].every((field) => Number.isInteger(value[field]) && value[field] >= 0 && value[field] <= 1000) && ['not_observed', 'unique', 'missing_or_ambiguous'].includes(value.assistantHostIdStatus) && ['not_observed', 'missing', 'present', 'oversized'].includes(value.assistantContentStatus);
+  const fields = ['v', 'userTurnConnected', 'anchorTurnFound', 'followingTurnCount', 'assistantCandidateCount', 'laterUserTurnPresent', 'assistantHostIdStatus', 'assistantContentStatus', 'streamingControlPresent', 'turnMatchCount', 'userMessageCount', 'assistantMessageCount'];
+  return value?.v === 1 && Object.keys(value).length === fields.length && Object.keys(value).every((field) => fields.includes(field)) && ['userTurnConnected', 'anchorTurnFound', 'laterUserTurnPresent', 'streamingControlPresent'].every((field) => typeof value[field] === 'boolean') && ['followingTurnCount', 'assistantCandidateCount', 'turnMatchCount', 'userMessageCount', 'assistantMessageCount'].every((field) => Number.isInteger(value[field]) && value[field] >= 0 && value[field] <= 1000) && ['not_observed', 'unique', 'missing_or_ambiguous'].includes(value.assistantHostIdStatus) && ['not_observed', 'missing', 'present', 'oversized'].includes(value.assistantContentStatus);
 }
 const validRevisions = (value) => validToken(value?.helper, 135) && validToken(value?.extension, 32) && validToken(value?.pageAdapter, 32);
 function settleAssistantFinal(requestId, accepted) {
