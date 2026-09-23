@@ -28,7 +28,7 @@ const SEND_BUTTON_SELECTORS = [
 ];
 const USER_MESSAGE_SELECTOR = '[data-message-author-role="user"]';
 const ASSISTANT_MESSAGE_SELECTOR = '[data-message-author-role="assistant"]';
-const MESSAGE_TURN_SELECTOR = 'article[data-testid^="conversation-turn-"], article';
+const MESSAGE_TURN_SELECTOR = '[data-testid^="conversation-turn-"], article';
 const RENDERED_MESSAGE_CONTENT_SELECTOR = '.whitespace-pre-wrap';
 const STOP_BUTTON_SELECTORS = [
   'button[data-testid="stop-button"]',
@@ -267,6 +267,9 @@ function assistantObservationDiagnostic(document, userTurn, hostMessageId) {
     assistantHostIdStatus,
     assistantContentStatus: assistantContentStatusValue,
     streamingControlPresent: assistantIsStreaming(document),
+    turnMatchCount: Math.min(turns.length, 1_000),
+    userMessageCount: Math.min(document.querySelectorAll(USER_MESSAGE_SELECTOR).length, 1_000),
+    assistantMessageCount: Math.min(document.querySelectorAll(ASSISTANT_MESSAGE_SELECTOR).length, 1_000),
   };
 }
 

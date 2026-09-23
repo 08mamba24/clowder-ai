@@ -17,6 +17,9 @@ const ASSISTANT_OBSERVATION_DIAGNOSTIC_FIELDS = [
   'assistantHostIdStatus',
   'assistantContentStatus',
   'streamingControlPresent',
+  'turnMatchCount',
+  'userMessageCount',
+  'assistantMessageCount',
 ];
 
 function exactRevisions(expected, observed) {
@@ -94,9 +97,13 @@ function validAssistantObservationDiagnostic(value) {
     ['userTurnConnected', 'anchorTurnFound', 'laterUserTurnPresent', 'streamingControlPresent'].every(
       (field) => typeof value[field] === 'boolean',
     ) &&
-    ['followingTurnCount', 'assistantCandidateCount'].every(
-      (field) => Number.isInteger(value[field]) && value[field] >= 0 && value[field] <= 1_000,
-    ) &&
+    [
+      'followingTurnCount',
+      'assistantCandidateCount',
+      'turnMatchCount',
+      'userMessageCount',
+      'assistantMessageCount',
+    ].every((field) => Number.isInteger(value[field]) && value[field] >= 0 && value[field] <= 1_000) &&
     ['not_observed', 'unique', 'missing_or_ambiguous'].includes(value.assistantHostIdStatus) &&
     ['not_observed', 'missing', 'present', 'oversized'].includes(value.assistantContentStatus)
   );
