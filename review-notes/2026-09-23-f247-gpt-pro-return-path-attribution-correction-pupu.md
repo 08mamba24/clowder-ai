@@ -43,4 +43,32 @@ ChatGPT 侧 agent 说"插件返回的 10 个工具定义中没有 cat_cafe_post_
 
 本次 A2A 我无法调用 `cat_cafe_complete_a2a_dispatch`：本 session 工具目录无任何 `cat_cafe_*` MCP 工具（仅挂了只读 github-read）；HTTP 路由存在但 invocation token 401（`mcp-creds` 内 zcode 凭证停留在 09-21，本 invocation 未落新凭证文件）。按 callbacks 官方文档 fallback 用行首 `@` 交付。此 execution surface 缺口按 F223 记录，建议给 zcode carrier 补 A2A disposition 通道。
 
+## 六、第二轮修正（同日 09-23 晚，砚砚6 新实证路由回谱谱）
+
+### 6.1 撤回"需 operator 开启写工具"归因（第三节第 3 步）
+
+新证据（砚砚6 提供，operator 在场）：
+
+1. operator 截图同时显示 `cat_cafe_post_message` / `cat_cafe_cross_post_message` 两个写工具都在 ChatGPT 插件工具列表里；插件目录列出 12 个工具、含这两项。
+2. **主动回程闭环已打通**：source `0001790147529000-000132-de6f7599`（"@gpt-pro 你能看到这个吗"）07:12:11Z `host_observed`；gpt-pro durable reply `0001790147553993-000135-999b37de`（content=ok，replyTo 精确指向 source）07:12:33Z 写入猫咖。
+3. → 旧回合自述"10 个工具、无 post_message"只能定性为**当轮自述**：无 tools/list 历史快照，不能反推"连接器未暴露/未审批"。第三节"最可能是 write action 审批"的推断**撤回**；第四节剩余问题第 2 条（需 operator 确认审批）**关闭**。
+
+### 6.2 Chrome observer 盲区维持并已修复（本地分支）
+
+同一闭环里，ledger 07:14:13Z 仍记 `ASSISTANT_FINAL_NOT_OBSERVED`，四零诊断（userTurnConnected=false / anchorTurnFound=false / followingTurnCount=0 / assistantCandidateCount=0），expected=observed revision（extension 0.2.10 / pageAdapter 2026-09-02.1，排除 STALE_ADAPTER）。主动 MCP 回程可用 + 页面观察兜底失明并存，与第二节 selector 漂移结论一致。
+
+砚砚6 另做了无副作用 JSDOM RED 复现（section 轮次包住带 data-message-id 的消息 → adapter 回 hostMessageId 成功、observer 30ms 后产出与真实 ledger 相同的四零）。
+
+**修复已落地**（cat-cafe worktree `cat-cafe-f247-turn-selector`，分支 `fix/f247-personal-chrome-turn-selector`，commit `82f3be174`，待 push+PR+跨猫 review）：
+
+- `MESSAGE_TURN_SELECTOR` 改为标签无关的 `[data-testid^="conversation-turn-"], article`（article 保留为 legacy fallback，新旧 DOM 都能锚定）。
+- durable diagnostic 增加 `turnMatchCount` / `userMessageCount` / `assistantMessageCount`，"观察器瞎"与"真没回复"从此可区分；三处白名单同步（service-worker.js、assistant-return-inbox.mjs——均为精确键数校验，漏一处即 fail-closed 丢回执）。
+- revision 全量 bump：extension `0.2.11` / pageAdapter `2026-09-23.1`（manifest、entry、bundle、protocol.ts、state-health 脚本、spike 脚本六处硬编码副本；state-health 已加入 contract 对齐测试防下次漂移）。
+- 回归：section 轮次端到端（旧 selector 下 RED）+ selector-blind 诊断；personal-chrome 套件 188/188 绿，biome 过（2 个 warning 为存量）。
+- 部署提示：merge 后需更新 runtime checkout 并重装/重载扩展，否则旧扩展会被新 server 以 STALE_PAGE_ADAPTER 拒收（这是 revision 机制的正确行为）。
+
+### 6.3 本轮 F167 处置
+
+zcode carrier 依然无 `cat_cafe_*` MCP 工具，且本次 env 连 `CAT_CAFE_API_URL` / `CAT_CAFE_INVOCATION_ID` / callback token 都未注入（HTTP 回调通道整体缺失，比上次"token 401"更早一层）。继续按已记录的行首 `@` 文本交付，缺口维持 F223 记录。
+
 [谱谱/glm-5.3🐾]
