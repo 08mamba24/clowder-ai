@@ -137,6 +137,13 @@ const CONTROLLED_INIT_EXPECTATION: QoderInitExpectation = Object.freeze({
   mcpServerNames: Object.freeze([QODER_MEMORY_MCP_SERVER]),
 });
 
+const GITHUB_READ_MCP_SERVER = 'clowder-repository-read';
+const GITHUB_READ_TOOL = `mcp__${GITHUB_READ_MCP_SERVER}__github_read`;
+const GITHUB_READ_INIT_EXPECTATION: QoderInitExpectation = Object.freeze({
+  tools: Object.freeze([...CONTROLLED_INIT_EXPECTATION.tools, GITHUB_READ_TOOL]),
+  mcpServerNames: Object.freeze([...CONTROLLED_INIT_EXPECTATION.mcpServerNames, GITHUB_READ_MCP_SERVER]),
+});
+
 const DENIED_ENV_KEYS = new Set([
   'NODE_OPTIONS',
   'NODE_PRELOAD',
@@ -198,8 +205,8 @@ export interface QoderAgentServiceConfig {
 export type QoderSandboxProbeInput = {
   readonly childEnv: Readonly<Record<string, string | null>>;
   readonly denyCanaryPath: string;
+  readonly mcpConfigPath: string;
   readonly guardedGhPath?: string;
-  readonly githubReadConfigPath?: string;
   readonly scratchDir: string;
   readonly shellSandboxWrapperPath: string;
 };
@@ -212,6 +219,7 @@ export function buildQoderArgs(input: {
   toolAccess: QoderToolAccess;
   mcpConfigPath?: string;
   workingDirectory?: string;
+  githubRead?: boolean;
 }): string[] {
   const args = ['-p', '-', '-m', input.model, '-o', 'stream-json', '--config-dir', input.profileDir];
   if (input.sessionId) args.push('-r', input.sessionId);
@@ -240,6 +248,7 @@ export function buildQoderArgs(input: {
     `Grep(${absoluteWorkspacePattern})`,
     'Bash',
     ...QODER_MEMORY_TOOL_NAMES,
+    ...(input.githubRead ? [GITHUB_READ_TOOL] : []),
   ];
   for (const tool of allowedTools) {
     args.push('--allowed-tools', tool);
@@ -250,6 +259,7 @@ export function buildQoderArgs(input: {
     '--strict-mcp-config',
     '--allowed-mcp-server-names',
     QODER_MEMORY_MCP_SERVER,
+    ...(input.githubRead ? [GITHUB_READ_MCP_SERVER] : []),
     '--setting-sources',
     'user',
   );
@@ -367,7 +377,6 @@ type QoderInvocationLease = {
   readonly childEnv: Record<string, string | null>;
   readonly denyCanaryPath: string;
   readonly guardedGhPath?: string;
-  readonly githubReadConfigPath?: string;
   readonly scratchDir: string;
   dispose(): void;
 };
@@ -704,26 +713,26 @@ function createQoderInvocationLease(input: {
             args: [],
             env,
           },
+          // Native Bash wraps commands before shell-prefix sees them. Mount the
+          // same host-owned read capability directly; never unwrap/eval Bash.
+          ...(input.githubReadLease
+            ? {
+                [GITHUB_READ_MCP_SERVER]: {
+                  type: 'http',
+                  url: input.githubReadLease.mcpUrl,
+                  headers: { Authorization: `Bearer ${input.githubReadLease.token}` },
+                },
+              }
+            : {}),
         },
       }),
       { encoding: 'utf8', mode: 0o600 },
     );
     let disposed = false;
-    const githubReadConfigPath = input.githubReadLease ? join(dir, 'github-read.json') : undefined;
-    if (githubReadConfigPath)
-      writeFileSync(
-        githubReadConfigPath,
-        JSON.stringify({
-          token: input.githubReadLease?.token,
-          queryUrl: input.githubReadLease?.queryUrl,
-        }),
-        { encoding: 'utf8', mode: 0o600 },
-      );
     return {
       mcpConfigPath,
       denyCanaryPath,
       ...(toolPath.guardedGhPath ? { guardedGhPath: toolPath.guardedGhPath } : {}),
-      ...(githubReadConfigPath ? { githubReadConfigPath } : {}),
       scratchDir,
       childEnv: {
         ...buildControlledQoderEnv({
@@ -736,7 +745,6 @@ function createQoderInvocationLease(input: {
           memoryShimPath,
           toolPath: toolPath.path,
         }),
-        ...(githubReadConfigPath ? { CAT_CAFE_QODER_GITHUB_READ_CONFIG: githubReadConfigPath } : {}),
       },
       dispose() {
         if (disposed) return;
@@ -769,8 +777,8 @@ function runQoderSandboxProbe(input: QoderSandboxProbeInput): void {
   }
   const denied = run(`/bin/cat ${shellLiteral(input.denyCanaryPath)}`);
   if (denied.status === 0) throw new Error('qoder sandbox deny canary failed open');
-  if (input.githubReadConfigPath && run(`/bin/cat ${shellLiteral(input.githubReadConfigPath)}`).status === 0) {
-    throw new Error('qoder sandbox GitHub capability canary failed open');
+  if (run(`/bin/cat ${shellLiteral(input.mcpConfigPath)}`).status === 0) {
+    throw new Error('qoder sandbox MCP config canary failed open');
   }
   if (input.guardedGhPath) {
     const resolvedGh = run('command -v gh');
@@ -893,7 +901,6 @@ export class QoderAgentService implements AgentService {
       }
       controlledRuntime = { memoryMcpServerPath, runtimeRoot, shellSandboxWrapperPath, sandboxBinary };
     }
-    const expectedInit = toolAccess === 'controlled' ? CONTROLLED_INIT_EXPECTATION : DISABLED_INIT_EXPECTATION;
     let invocationLease: QoderInvocationLease | undefined;
     let githubReadLease: GhReadLease | null | undefined;
 
@@ -913,19 +920,24 @@ export class QoderAgentService implements AgentService {
         (this.config.sandboxProbe ?? runQoderSandboxProbe)({
           childEnv: invocationLease.childEnv,
           denyCanaryPath: invocationLease.denyCanaryPath,
+          mcpConfigPath: invocationLease.mcpConfigPath,
           ...(invocationLease.guardedGhPath ? { guardedGhPath: invocationLease.guardedGhPath } : {}),
-          ...(invocationLease.githubReadConfigPath
-            ? { githubReadConfigPath: invocationLease.githubReadConfigPath }
-            : {}),
           scratchDir: invocationLease.scratchDir,
           shellSandboxWrapperPath: controlledRuntime.shellSandboxWrapperPath,
         });
       }
+      const expectedInit =
+        toolAccess === 'disabled'
+          ? DISABLED_INIT_EXPECTATION
+          : githubReadLease
+            ? GITHUB_READ_INIT_EXPECTATION
+            : CONTROLLED_INIT_EXPECTATION;
       const args = buildQoderArgs({
         profileDir: this.config.profileDir,
         model: this.config.model,
         sessionId: options?.sessionId,
         toolAccess,
+        githubRead: !!githubReadLease,
         ...(invocationLease ? { mcpConfigPath: invocationLease.mcpConfigPath, workingDirectory } : {}),
       });
       // P1④：显式 -m provenance —— argv 断言不过即 0 spawn
@@ -947,7 +959,7 @@ export class QoderAgentService implements AgentService {
           },
           tools: {
             finalSurface: 'declared_only',
-            declaredServerNames: toolAccess === 'controlled' ? [QODER_MEMORY_MCP_SERVER] : [],
+            declaredServerNames: [...expectedInit.mcpServerNames],
           },
           providerNativeVisibility: 'unknown',
         });

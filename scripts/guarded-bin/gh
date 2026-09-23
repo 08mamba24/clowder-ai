@@ -8,9 +8,13 @@ const args = process.argv.slice(2);
 const ownDir = dirname(fileURLToPath(import.meta.url));
 
 // Nested shell commands have no authority to call the host read carrier.
-// Only the trusted Qoder shell-prefix can translate a complete standalone read.
+// Qoder reads approved repositories through its native, invocation-bound MCP.
 if (process.env.CAT_CAFE_GITHUB_READ_ONLY === 'true') {
-  process.stderr.write('capability_unavailable: use a standalone gh read with explicit --repo\n');
+  if (args.length === 1 && args[0] === '--version') {
+    process.stdout.write('gh (Clowder readonly carrier)\n');
+    process.exit(0);
+  }
+  process.stderr.write('capability_unavailable: use mcp__clowder-repository-read__github_read\n');
   process.exit(1);
 }
 
