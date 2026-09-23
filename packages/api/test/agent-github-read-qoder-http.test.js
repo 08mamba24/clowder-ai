@@ -60,7 +60,8 @@ test('Qoder HTTP MCP protocol carries only approved reads, audits denials and re
     assert.equal(runnerCalls, 1);
     assert.equal(audits.length, 2, 'successful query and scope denial both persist');
     lease.revoke();
-    await assert.rejects(call(query), /401/);
+    // The SDK stores HTTP status on code, separately from the response-body message.
+    await assert.rejects(call(query), { code: 401, message: /"code":"capability_unavailable"/ });
     assert.equal(runnerCalls, 1);
     assert.ok(!JSON.stringify([success, denied, unsupported, audits]).includes(lease.token));
   } finally {

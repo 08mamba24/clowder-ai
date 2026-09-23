@@ -77,9 +77,24 @@ No production runtime config, process or persistent data was modified.
 - No UI changes or matching design artifacts (`designs/` absent in this export).
   Pre-merge native evidence ends at account-auth failure; authenticated personal
   cat invocation remains assigned to the durable task after authorized activation.
+- Follow-on RED at `94fc12282`: `/401/` incorrectly expected the SDK error message
+  to contain the HTTP status. SDK 1.26.0 stores it in `StreamableHTTPError.code`,
+  while the message carries the response body. The assertion now requires both
+  `code: 401` and the exact `capability_unavailable` response code; no production
+  behavior changed and the denial requirement was not relaxed.
+- Targeted GREEN: from this worktree's `packages/api`, Node 24 plus
+  `bash scripts/with-test-home.sh node --test test/agent-github-read-qoder-http.test.js`
+  passed 1/1 (exit 0). The managed RED log remains at
+  `/tmp/f317-qoder-native-94fc12282-gate.log`; that run stopped before native probe
+  or full gate, so it is not evidence that either ran.
+- Repeated tracked native probe passed (probe exit 0; isolated child exit 1 is the
+  asserted account-auth failure), same CLI version/hash above. Authenticated
+  initialize, initialized notification and tools/list were observed; bearer
+  matches in generated files and output were zero. Retained fixture:
+  `/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/qoder-http-mcp-probe-slfvVJ`.
 
 ## Pending
 
-Targeted GREEN, updated native reproducer run, exact-HEAD independent review,
-new-delta gate, authorized activation, qoder-flash fresh-session AC1 and live revoke.
+Exact-HEAD independent review, new-delta full gate, authorized activation,
+qoder-flash fresh-session AC1 and live revoke.
 The task cannot close on a successful build, zcode's live result, or command ACK.
