@@ -12,6 +12,24 @@ describe('model-pricing', () => {
       assert.equal(pricing.outputPerMillion, 14.0);
     });
 
+    it('prices gpt-6-sol standard and long per the official card', () => {
+      // developers.openai.com/api/docs/pricing, verified 2026-09-23 (zcode):
+      // gpt-6-sol 2/0.2/10, gpt-6-sol-long 4/0.4/15 (USD/1M in/cached/out).
+      const std = getModelPricing('gpt-6-sol');
+      const long = getModelPricing('gpt-6-sol-long');
+      assert.ok(std && long);
+      assert.equal(std.inputPerMillion, 2.0);
+      assert.equal(std.cachedInputPerMillion, 0.2);
+      assert.equal(std.outputPerMillion, 10.0);
+      assert.equal(long.inputPerMillion, 4.0);
+      assert.equal(long.cachedInputPerMillion, 0.4);
+      assert.equal(long.outputPerMillion, 15.0);
+      for (const pricing of [std, long]) {
+        assert.equal(pricing.source, 'https://developers.openai.com/api/docs/pricing');
+        assert.equal(pricing.verifiedAt, '2026-09-23');
+      }
+    });
+
     it('returns undefined for unknown models', () => {
       assert.equal(getModelPricing('unknown-model-xyz'), undefined);
     });
@@ -28,6 +46,8 @@ describe('model-pricing', () => {
         'gpt-5.6-sol-long',
         'gpt-6-astra',
         'gpt-6-astra-long',
+        'gpt-6-sol',
+        'gpt-6-sol-long',
       ]) {
         assert.ok(getModelPricing(model), `missing pricing for ${model}`);
       }

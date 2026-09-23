@@ -37,7 +37,10 @@ export function isCodexSpeedValue(value: unknown): value is CodexSpeedValue {
  */
 export function supportsCodexFastModel(model: string | null | undefined): boolean {
   const slug = model?.trim().toLowerCase().split('/').at(-1) ?? '';
-  return /^gpt-5\.(?:4|5|6)(?:$|[-.])/.test(slug);
+  // codex-cli 0.156.1 model/list (2026-09-23): gpt-6-sol, gpt-6-astra and
+  // gpt-6-luna all report additionalSpeedTiers=[fast]. gpt-6-pro and bare
+  // gpt-6 report none and stay out until the native metadata lists them.
+  return /^(?:gpt-5\.(?:4|5|6)|gpt-6-(?:astra|sol|luna))(?:$|[-.])/.test(slug);
 }
 
 export function resolveCodexSpeed(input: ResolveCodexSpeedInput): CodexSpeedResolution {
