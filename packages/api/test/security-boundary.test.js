@@ -186,6 +186,8 @@ test('API binds to 127.0.0.1 by default', async (t) => {
       child.kill('SIGKILL');
       await childClosed;
     }
-    rmSync(tempRoot, { recursive: true, force: true });
+    // Serial CI can still observe a transient ENOTEMPTY after the API child
+    // closes. Retry only the fixture tree's recursive removal, with a bound.
+    rmSync(tempRoot, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 });
   }
 });
