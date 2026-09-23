@@ -27,6 +27,10 @@ const CLI_EFFORT_OPTIONS_BY_PROVIDER: Record<CliEffortProvider, readonly CliEffo
 
 const GPT_5_6_OPENAI_EFFORT_OPTIONS: readonly CliEffortPreset[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
+// codex-cli 0.156.1 model/list (2026-09-23): gpt-6-sol reports the same six
+// efforts; gpt-6-luna stops at max, so it stays on the provider base until onboarded.
+const GPT_6_SOL_OPENAI_EFFORT_OPTIONS = GPT_5_6_OPENAI_EFFORT_OPTIONS;
+
 const CLI_EFFORT_DEFAULT_BY_PROVIDER: Record<CliEffortProvider, CliEffortPreset> = {
   anthropic: 'max',
   openai: 'xhigh',
@@ -46,6 +50,11 @@ function isGpt56Model(model: string | null | undefined): boolean {
   return modelId ? /^gpt-5\.6(?:-|$)/.test(modelId) : false;
 }
 
+function isGpt6SolModel(model: string | null | undefined): boolean {
+  const modelId = normalizeModelSlug(model);
+  return modelId ? /^gpt-6-sol(?:-|$)/.test(modelId) : false;
+}
+
 /**
  * Only the Kimi k3 family declares support_efforts in kimi-code config.toml
  * (low/high/max). kimi-for-coding and k2.x models are boolean-thinking and
@@ -62,6 +71,7 @@ export function getCliEffortOptionsForProvider(
 ): readonly CliEffortPreset[] | null {
   if (!isCliEffortProvider(provider)) return null;
   if (provider === 'openai' && isGpt56Model(model)) return GPT_5_6_OPENAI_EFFORT_OPTIONS;
+  if (provider === 'openai' && isGpt6SolModel(model)) return GPT_6_SOL_OPENAI_EFFORT_OPTIONS;
   if (provider === 'kimi') return isKimiEffortCapableModel(model) ? CLI_EFFORT_OPTIONS_BY_PROVIDER.kimi : null;
   return CLI_EFFORT_OPTIONS_BY_PROVIDER[provider];
 }
