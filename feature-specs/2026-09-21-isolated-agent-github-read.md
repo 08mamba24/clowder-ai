@@ -23,9 +23,9 @@ tips_exempt: Repair of the existing isolated repository-read capability; no new 
 ## 状态与来源
 
 - **任务来源：** 2026-09-21 operator 消息 `0001789954443843-000354-15718ecc`：「不制定计划修改吗」；后续 `0001789955401202-000363-924099ab`：「需要我决策什么？真的需要我决策吗？」。结合此前两仓只读修复讨论，按现有任务授权继续调查、实现、review 与隔离验收，不再把相同范围送回 operator 重复确认。后一句是对不必要升级的纠正，不伪造为一条新权限批准事件。
-- **当前：PR #42 已合并并经 operator 重启；AC1 live 未通过，Qoder 修复进行中。** ZCode 新会话查询及拒绝证据已回传；Qoder native Bash 包装导致旧 shell-prefix 翻译入口不可达。新的 `fix/qoder-github-live` 修复切到原生 HTTP MCP，尚待本轮回归、独立 review、门禁与激活后重验。总 task 保持 doing。
-- **持久任务：** `0001789956139661-000388-6c663874`（本 thread，owner=`astra`，doing）；实现分支 `feat/agent-github-read`，worktree `../cat-cafe-agent-github-read`。旧 PR #41 属于已完成的 umid 修复，不承载本任务。
-- **执行负责人：小星星 / astra。** 计划内容经独立个体审查后提交；实现涉及安全边界，另走非作者 review、针对性安全测试和 merge gate。
+- **当前：PR #42 已合并并经 operator 重启；AC1 live 未通过。** ZCode 新会话查询及拒绝证据已回传；Qoder native Bash 包装导致旧 shell-prefix 翻译入口不可达。PR #44 的原生 HTTP MCP 修复已有完整安全门禁和非作者实现 review 证据；合入、隔离验收、授权激活和 Qoder 新会话重验仍待完成。总 task 保持 doing。
+- **持久任务：** `0001789956139661-000388-6c663874`（本 thread，任务登记 owner=`astra`，doing；当前工作流持球人为砚砚6）；修复分支 `fix/qoder-github-live`，worktree `../cat-cafe-qoder-github-live`。旧 PR #41 属于已完成的 umid 修复，不承载本任务。
+- **执行负责人：砚砚6 / gpt-6-sol。** co-creator 在消息 `0001790151559613-000172-09d19e58` 将 F317 后续交付转交砚砚6；小星星 / astra 仍是 PR #44 的代码作者。安全边界继续按非作者 review、完整门禁和 merge gate 验证。
 - **已验证事实与建议分开：** 先前宿主登录上下文探针证明认证可用，不证明 Qoder 子进程能逃出继承沙箱；不把探针成功当作产品接通。
 
 | 已读依据 | 支持的事实 / 适用边界 |
@@ -262,7 +262,7 @@ Claim guard: canonical child changes/ends → `agent-github-read-capability.test
 - **Qoder**：原 18-tool 初始化契约不变。shell-prefix 完整 literal argv 翻译；窄 bearer 在 lease root 的 0600 文件，位于 scratch 外，既有 Seatbelt deny 生效。结束先撤销 grant 再清理短命 lease。普通 shell 子进程移除 config path，nested gh 拒绝自动 delegate。
 - **宿主认证收敛**：本入口只复用宿主 gh 已有认证存储；不注入 raw GH_TOKEN/GITHUB_TOKEN，不创建新的 token 文件。仅 plugin/env token 而未登录 canonical gh auth-store 的部署返回 authentication_required，需要由 operator 完成既有 gh 登录；不修改全局 GitHub token policy。现有 ZCode 同 UID 全文件面不在此项内声称已解决。
 - **测试**：API build；`node --test test/agent-github-read*.test.js test/acp/zcode-github-read-carrier.test.js`，由既有 public test resolver 自动发现；Qoder service/readonly-memory real Seatbelt tests；`node --test scripts/agent-github-read-client.test.mjs`；`CAT_CAFE_ZCODE_LIVE=1 node --test test/acp/zcode-github-read-native.test.js`（该 test 只访问自身隔离合成 server）。
-- **完成线**：AC2–AC7 有实现与针对性隔离证据，仍需 review/full gate；AC1 必须两猫在已激活的新会话查询两仓并与宿主事实核对。未改 runtime config、未重启生产、未碰生产数据。
+- **完成线（2026-09-21 阶段记录）**：当时 AC2–AC7 已有实现与针对性隔离证据，尚待 review/full gate；AC1 必须两猫在已激活的新会话查询两仓并与宿主事实核对。该阶段未改 runtime config、未重启生产、未碰生产数据；后续门禁与 live 状态以上方当前状态及 2026-09-23 修复记录为准。
 
 [小星星/gpt-6-astra🐾]
 
