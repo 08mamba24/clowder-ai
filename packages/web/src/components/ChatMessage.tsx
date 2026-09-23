@@ -60,9 +60,11 @@ import {
   terminalSurfaceMessageId,
 } from './turn-absorption-summary';
 
+const MAINE_COON_STYLE = { radius: 'rounded-2xl rounded-br-sm', font: 'font-mono' };
 const BREED_STYLES: Record<string, { radius: string; font?: string }> = {
   ragdoll: { radius: 'rounded-2xl rounded-bl-sm' },
-  'maine-coon': { radius: 'rounded-2xl rounded-br-sm', font: 'font-mono' },
+  'maine-coon': MAINE_COON_STYLE,
+  'gpt-pro': MAINE_COON_STYLE,
   siamese: { radius: 'rounded-2xl rounded-tr-sm' },
 };
 const DEFAULT_BREED_STYLE = { radius: 'rounded-2xl' };
@@ -921,6 +923,11 @@ export const ChatMessage = memo(function ChatMessage({
       </div>
     ) : undefined;
 
+  // Cards and execution details need the available message width; short speech
+  // should size from its body rather than the wider sender header.
+  const fitPlainTextBubble =
+    hasTextContent && !hasBlocks && !hasCliBlock && !message.thinking && !message.extra?.rich?.blocks?.length;
+
   return (
     <MessageBubble
       messageId={message.id}
@@ -943,7 +950,7 @@ export const ChatMessage = memo(function ChatMessage({
         catStyle ? ({ '--msg-hue': catStyle.msgHue, '--msg-chroma': catStyle.msgChroma } as CSSProperties) : undefined
       }
       bubbleRadius={catStyle ? catStyle.radius : 'rounded-2xl'}
-      bubbleClassName={catStyle ? (catStyle.font ?? '') : 'bg-cafe-surface'}
+      bubbleClassName={`${catStyle ? (catStyle.font ?? '') : 'bg-cafe-surface'}${fitPlainTextBubble ? ' w-fit' : ''}`}
       bubbleStyle={
         catStyle
           ? { backgroundColor: catStyle.bgColor, color: 'var(--cat-msg-text)' }
