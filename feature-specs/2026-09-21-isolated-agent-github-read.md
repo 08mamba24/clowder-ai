@@ -3,6 +3,7 @@ doc_kind: plan
 created: 2026-09-21
 feature_ids: [F317, F032]
 topics: [github, provider, isolation, authentication]
+tips_exempt: Repair of the existing isolated repository-read capability; no new user setup or invocation flow.
 ---
 
 # 隔离载体 GitHub 只读查询 Implementation Plan
@@ -13,7 +14,7 @@ topics: [github, provider, isolation, authentication]
 **Architecture cell:** `github-signals`（GitHub 事实查询）、`identity-session`（真实 invocation / provider lease 绑定）。
 **Map delta:** update required（随实现 PR 增补两个现有 cell 的 read executor / capability 交界与代码锚点）。
 **Map delta why:** 新增主动读取 consumer 及窄认证接线；不新建 cell，不迁移 GitHub credential owner，也不改变 tracking/wake ownership。
-**Architecture:** 隔离侧 `gh` 包装器把有限 CLI 请求转换成类型化查询；现有 API 宿主校验窄授权后组装固定的 canonical `gh` argv，并返回有来源、有界的结果。包装器是兼容入口，宿主服务才是权限边界。复用已有 GitHub credential resolution、错误分类和 invocation 终态，不另起后台服务或 GitHub SDK。
+**Architecture:** 两个隔离载体经原生 HTTP MCP 提交类型化查询；现有 API 宿主校验窄授权后组装固定的 canonical `gh` argv，并返回有来源、有界的结果。宿主服务拥有权限边界。复用已有 GitHub credential resolution、错误分类和 invocation 终态，不另起后台服务或 GitHub SDK。下方 2026-09-21 的 shell-prefix 实现记录属于历史；2026-09-23 live 发现的原生命令包装缺口由末节修复记录取代。
 **Tech Stack:** TypeScript、Node.js、现有 Fastify API、canonical `gh` CLI、Node test runner；无新外部依赖。
 **前端验证:** No；终验需要两只猫本人在新会话执行查询。
 
@@ -22,9 +23,9 @@ topics: [github, provider, isolation, authentication]
 ## 状态与来源
 
 - **任务来源：** 2026-09-21 operator 消息 `0001789954443843-000354-15718ecc`：「不制定计划修改吗」；后续 `0001789955401202-000363-924099ab`：「需要我决策什么？真的需要我决策吗？」。结合此前两仓只读修复讨论，按现有任务授权继续调查、实现、review 与隔离验收，不再把相同范围送回 operator 重复确认。后一句是对不必要升级的纠正，不伪造为一条新权限批准事件。
-- **当前：实现与针对性隔离验证完成，准备独立 review；尚未合并、未启用到 runtime。** 两条载体共享宿主严格查询内核。ZCode 当前安装 native 的合成模型/HTTP-MCP canary 已验证真实调用和 cold resume；Qoder 已验证真实 Seatbelt 拒读凭据、HTTP 受控查询及原 readonly memory 初始化。AC1 的猫本人新会话终验仍待合并与授权激活。
-- **持久任务：** `0001789956139661-000388-6c663874`（本 thread，owner=`astra`，doing）；实现分支 `feat/agent-github-read`，worktree `../cat-cafe-agent-github-read`。旧 PR #41 属于已完成的 umid 修复，不承载本任务。
-- **执行负责人：小星星 / astra。** 计划内容经独立个体审查后提交；实现涉及安全边界，另走非作者 review、针对性安全测试和 merge gate。
+- **当前：PR #42 已合并并经 operator 重启；AC1 live 未通过。** ZCode 新会话查询及拒绝证据已回传；Qoder native Bash 包装导致旧 shell-prefix 翻译入口不可达。PR #44 的原生 HTTP MCP 修复已有完整安全门禁和非作者实现 review 证据；合入、隔离验收、授权激活和 Qoder 新会话重验仍待完成。总 task 保持 doing。
+- **持久任务：** `0001789956139661-000388-6c663874`（本 thread，任务登记 owner=`astra`，doing；当前工作流持球人为砚砚6）；修复分支 `fix/qoder-github-live`，worktree `../cat-cafe-qoder-github-live`。旧 PR #41 属于已完成的 umid 修复，不承载本任务。
+- **执行负责人：砚砚6 / gpt-6-sol。** co-creator 在消息 `0001790151559613-000172-09d19e58` 将 F317 后续交付转交砚砚6；小星星 / astra 仍是 PR #44 的代码作者。安全边界继续按非作者 review、完整门禁和 merge gate 验证。
 - **已验证事实与建议分开：** 先前宿主登录上下文探针证明认证可用，不证明 Qoder 子进程能逃出继承沙箱；不把探针成功当作产品接通。
 
 | 已读依据 | 支持的事实 / 适用边界 |
@@ -48,7 +49,7 @@ AC3. 未获准仓库、非 github.com 主机、写操作、任意 `gh api` / Gra
 
 AC4. 不新增 raw GitHub token、通用 callback token、宿主 HOME/config/keychain 到 agent 可读面；Qoder 既有 deny canary 继续通过。不能声称本次解决了 zcode 已存在的同 OS 用户全文件访问问题。
 
-AC5. ZCode warm resume、不同线程并发、取消、完成、进程退出与 API 重启不串用窄授权；Qoder 的 sandbox / MCP 18-tool init 契约保持有效。readonly 路由仍不能因此获得额外 Bash 或家庭 MCP。
+AC5. ZCode warm resume、不同线程并发、取消、完成、进程退出与 API 重启不串用窄授权；Qoder 保留 sandbox，未获 grant 时仍为 18-tool init，获 grant 时精确增加 github_read 与对应 server，缺失/漂移/断连均拒启。readonly 路由仍不能因此获得额外 Bash 或家庭 MCP。
 
 AC6. 认证失败、拒绝、限流、未知/空 CI、超时、输出过大与取消有可区分结果；不能把查不到 checks 说成全绿，不能把截断结果说成完整。PR 差异与 CI 附 headSha；查询前后 head 漂移返回 `stale_head`，不能混用不同版本。
 
@@ -261,6 +262,35 @@ Claim guard: canonical child changes/ends → `agent-github-read-capability.test
 - **Qoder**：原 18-tool 初始化契约不变。shell-prefix 完整 literal argv 翻译；窄 bearer 在 lease root 的 0600 文件，位于 scratch 外，既有 Seatbelt deny 生效。结束先撤销 grant 再清理短命 lease。普通 shell 子进程移除 config path，nested gh 拒绝自动 delegate。
 - **宿主认证收敛**：本入口只复用宿主 gh 已有认证存储；不注入 raw GH_TOKEN/GITHUB_TOKEN，不创建新的 token 文件。仅 plugin/env token 而未登录 canonical gh auth-store 的部署返回 authentication_required，需要由 operator 完成既有 gh 登录；不修改全局 GitHub token policy。现有 ZCode 同 UID 全文件面不在此项内声称已解决。
 - **测试**：API build；`node --test test/agent-github-read*.test.js test/acp/zcode-github-read-carrier.test.js`，由既有 public test resolver 自动发现；Qoder service/readonly-memory real Seatbelt tests；`node --test scripts/agent-github-read-client.test.mjs`；`CAT_CAFE_ZCODE_LIVE=1 node --test test/acp/zcode-github-read-native.test.js`（该 test 只访问自身隔离合成 server）。
-- **完成线**：AC2–AC7 有实现与针对性隔离证据，仍需 review/full gate；AC1 必须两猫在已激活的新会话查询两仓并与宿主事实核对。未改 runtime config、未重启生产、未碰生产数据。
+- **完成线（2026-09-21 阶段记录）**：当时 AC2–AC7 已有实现与针对性隔离证据，尚待 review/full gate；AC1 必须两猫在已激活的新会话查询两仓并与宿主事实核对。该阶段未改 runtime config、未重启生产、未碰生产数据；后续门禁与 live 状态以上方当前状态及 2026-09-23 修复记录为准。
 
 [小星星/gpt-6-astra🐾]
+
+## 2026-09-23 Qoder live defect and native MCP repair
+
+PR #42 merge: `2ea10c22c93bcf71edc589e3b4b81461e4e59bd3`; operator restart is
+confirmed by thread message `0001790092973187-000014-c1fe5add`. The preceding
+shell-prefix implementation/testing sections record that historical patch, not
+the repaired carrier's current commands.
+
+- ZCode new-session live evidence: `0001790128316492-000028-629c95b5`.
+- Qoder failure evidence: `0001790128878363-000033-6b6371b7`; its native Bash
+  envelope prevents the old literal parser from reaching the broker.
+- Independent design position: zcode `0001790129344358-000040-4a915b41`.
+- Repair worktree: `../cat-cafe-qoder-github-live`, branch `fix/qoder-github-live`.
+  Qoder now mounts the existing HTTP MCP only with a current host grant and
+  removes the old shell client/parser and separate bearer file. Bash always
+  enters Seatbelt; the private native MCP config remains outside both policies.
+- Validation: `scripts/qoder-shell-sandbox.test.mjs`, the Qoder service/readonly
+  memory suites, and `test/agent-github-read-qoder-http.test.js` protect the new
+  carrier. `test/fixtures/qoder/probe-http-mcp.mjs <installed-cli-js>` independently
+  checks native initialization/discovery and account-error persistence without
+  a real model account. It does not substitute for model-driven query acceptance.
+- No new credential owner, query schema, repository scope, write permission,
+  persistent store or startup configuration. The descriptor URL and 43-character
+  bearer come exclusively from `AgentGitHubReadBroker.open`; the broker validates
+  loopback at construction and fixes the MCP path, rather than accepting an
+  agent-provided descriptor.
+- Completion remains open: regression green, exact-HEAD independent review,
+  new-delta full gate, activation, qoder-flash new-session queries, service audit
+  and live revocation. Owner remains astra on task `0001789956139661-000388-6c663874`.

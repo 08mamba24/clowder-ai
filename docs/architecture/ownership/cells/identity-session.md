@@ -99,9 +99,12 @@ user, cat, thread or invocation. Each provider attempt replaces and finally revo
 API restart drops capabilities without deleting transcript or audit data.
 
 ZCode transports the narrow bearer in native session HTTP-MCP headers and retires its own ACP
-carrier after each lease, so cold resume restores history with a fresh header. Qoder's trusted
-shell-prefix reads a lease-root file outside the Seatbelt scratch allowlist. It translates only a
-complete literal command; nested shell processes receive neither the bearer nor its config path.
+carrier after each lease, so cold resume restores history with a fresh header. Qoder's native HTTP
+MCP config carries its attempt header in a private lease-root file outside both Seatbelt policies.
+Only granted invocations add the exact repository-read tool and server to the init expectation;
+ungranted invocations retain the original 18 tools and read-only execution mounts no MCP.
+Qoder shells always enter Seatbelt and cannot translate commands into host reads. Neither the
+bearer nor the private config path enters their environment. Both carriers revoke before cleanup.
 The GitHub query executor owns no new raw-token storage or environment injection. These seams do
 not grant family MCP access or change the existing ZCode same-UID filesystem boundary.
 

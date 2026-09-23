@@ -135,6 +135,27 @@ test('L2: read-only execution policy collapses back to an empty built-in/MCP sur
   assert.ok(!args.includes('--mcp-config'));
 });
 
+test('GitHub read MCP: only a granted invocation adds the exact readonly tool and server', () => {
+  const args = buildQoderArgs({
+    profileDir: '/p',
+    model: 'Auto',
+    toolAccess: 'controlled',
+    mcpConfigPath: '/tmp/qoder-memory.json',
+    workingDirectory: '/tmp/workspace-l2',
+    githubRead: true,
+  });
+  const allowed = args.flatMap((arg, i) => (arg === '--allowed-tools' ? [args[i + 1]] : []));
+  assert.ok(allowed.includes('mcp__clowder-repository-read__github_read'));
+  const start = args.indexOf('--allowed-mcp-server-names') + 1;
+  assert.deepEqual(args.slice(start, args.indexOf('--setting-sources')), [
+    QODER_MEMORY_MCP_SERVER,
+    'clowder-repository-read',
+  ]);
+  assert.ok(!allowed.some((tool) => tool.includes('clowder-repository-read') && tool.endsWith('*')));
+  const disabled = buildQoderArgs({ profileDir: '/p', model: 'Auto', toolAccess: 'disabled', githubRead: true });
+  assert.ok(!disabled.some((arg) => arg.includes('clowder-repository-read')));
+});
+
 // ── init 门：tools/mcp/model/版本 全锁 ─────────────────────────────────────
 test('qoderInitGate: version, permissionMode, tools, mcp, model all enforced (missing fields red)', () => {
   const good = { protocol_version: '1.4.0', permissionMode: 'default', model: 'qwen-max', tools: [], mcp_servers: [] };
@@ -580,7 +601,7 @@ function makeSvc(overrides = {}) {
   });
 }
 
-function controlledFixture(name = 'tool-use') {
+function controlledFixture(name = 'tool-use', githubRead = false) {
   const expectedTools = [
     ...QODER_BASIC_TOOLS,
     ...QODER_READONLY_MEMORY_TOOLS.map((tool) => `mcp__${QODER_MEMORY_MCP_SERVER}__${tool}`),
@@ -588,8 +609,12 @@ function controlledFixture(name = 'tool-use') {
   return fixtureLines(name).map((line) => {
     const event = JSON.parse(line);
     if (event.type === 'system' && event.subtype === 'init') {
-      event.tools = expectedTools;
+      event.tools = [...expectedTools];
       event.mcp_servers = [{ name: QODER_MEMORY_MCP_SERVER, status: 'connected' }];
+      if (githubRead) {
+        event.tools.push('mcp__clowder-repository-read__github_read');
+        event.mcp_servers.push({ name: 'clowder-repository-read', status: 'connected' });
+      }
     }
     return JSON.stringify(event);
   });
@@ -604,11 +629,6 @@ function makeControlledRuntime(root, wrapperBody) {
   if (wrapperBody) writeFileSync(wrapperPath, wrapperBody);
   else {
     cpSync(join(here, '..', '..', '..', 'scripts', 'qoder-shell-sandbox.mjs'), wrapperPath);
-    mkdirSync(join(dirname(wrapperPath), 'lib'), { recursive: true });
-    cpSync(
-      join(here, '..', '..', '..', 'scripts', 'lib', 'agent-github-read-client.mjs'),
-      join(dirname(wrapperPath), 'lib', 'agent-github-read-client.mjs'),
-    );
   }
   chmodSync(wrapperPath, 0o755);
   writeFileSync(memoryPath, "process.stdout.write('memory-ok\\n');\n");
@@ -622,6 +642,195 @@ function makeControlledRuntime(root, wrapperBody) {
   chmodSync(sandboxExecPath, 0o755);
   return { memoryPath, runtimeRoot, sandboxExecPath, wrapperPath };
 }
+
+test('GitHub read MCP: private HTTP header survives native config, never prompt/env/argv, then revokes before unlink', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'qoder-gh-mcp-'));
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace);
+  const runtime = makeControlledRuntime(root);
+  const token = 'h'.repeat(43);
+  let configPath, config, spawnOptions, argv, prepared;
+  let revoked = 0;
+  try {
+    const lines = controlledFixture('tool-use', true);
+    const svc = makeSvc({
+      toolAccess: 'controlled',
+      memoryMcpServerPath: runtime.memoryPath,
+      runtimeRoot: runtime.runtimeRoot,
+      shellSandboxWrapperPath: runtime.wrapperPath,
+      sandboxBinary: runtime.sandboxExecPath,
+      sandboxProbe: () => {},
+      spawnFn: (_command, args, options) => {
+        argv = args;
+        spawnOptions = options;
+        configPath = args[args.indexOf('--mcp-config') + 1];
+        config = JSON.parse(readFileSync(configPath, 'utf8'));
+        assert.equal(statSync(configPath).mode & 0o777, 0o600);
+        return fakeChild(lines);
+      },
+    });
+    const out = await runInvoke(svc, 'read approved PRs through github_read', {
+      workingDirectory: workspace,
+      openGitHubReadLease: async () => ({
+        token,
+        queryUrl: 'http://127.0.0.1:43210/api/agent-github-read',
+        mcpUrl: 'http://127.0.0.1:43210/api/agent-github-read/mcp',
+        revoke() {
+          revoked++;
+          assert.ok(existsSync(configPath));
+        },
+      }),
+      beforeProviderLaunch: async (request) => {
+        prepared = request;
+      },
+    });
+    assert.deepEqual(config?.mcpServers['clowder-repository-read'], {
+      type: 'http',
+      url: 'http://127.0.0.1:43210/api/agent-github-read/mcp',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.deepEqual(prepared.tools.declaredServerNames, [QODER_MEMORY_MCP_SERVER, 'clowder-repository-read']);
+    assert.ok(!JSON.stringify([argv, spawnOptions.env, prepared, out]).includes(token));
+    assert.equal(
+      out.some((m) => m.type === 'error'),
+      false,
+      JSON.stringify(out),
+    );
+    assert.equal(revoked, 1);
+    assert.equal(existsSync(configPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('GitHub read MCP: denied grants preserve 18 tools and readonly policy never opens a lease', async () => {
+  for (const readOnly of [false, true]) {
+    const root = mkdtempSync(join(tmpdir(), 'qoder-gh-no-grant-'));
+    const workspace = join(root, 'workspace');
+    mkdirSync(workspace);
+    const runtime = makeControlledRuntime(root);
+    let opens = 0;
+    let prepared;
+    try {
+      const svc = makeSvc({
+        toolAccess: 'controlled',
+        memoryMcpServerPath: runtime.memoryPath,
+        runtimeRoot: runtime.runtimeRoot,
+        shellSandboxWrapperPath: runtime.wrapperPath,
+        sandboxBinary: runtime.sandboxExecPath,
+        sandboxProbe: () => {},
+        spawnFn: (_command, args) => {
+          assert.ok(!args.some((arg) => arg.includes('clowder-repository-read')));
+          if (!readOnly) {
+            const config = JSON.parse(readFileSync(args[args.indexOf('--mcp-config') + 1], 'utf8'));
+            assert.deepEqual(Object.keys(config.mcpServers), [QODER_MEMORY_MCP_SERVER]);
+          }
+          return fakeChild(readOnly ? fixtureLines('success') : controlledFixture());
+        },
+      });
+      const out = await runInvoke(svc, 'no granted GitHub read', {
+        workingDirectory: workspace,
+        ...(readOnly ? { toolExecutionPolicy: { mode: 'read_only' } } : {}),
+        openGitHubReadLease: async () => {
+          opens++;
+          return null;
+        },
+        beforeProviderLaunch: async (request) => {
+          prepared = request;
+        },
+      });
+      assert.equal(opens, readOnly ? 0 : 1);
+      assert.deepEqual(prepared.tools.declaredServerNames, readOnly ? [] : [QODER_MEMORY_MCP_SERVER]);
+      assert.ok(
+        out.some((m) => m.type === 'done'),
+        JSON.stringify(out),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('GitHub read MCP: init surface mismatch and early exits revoke before removing private config', async () => {
+  for (const failure of [
+    'missing-tool',
+    'missing-server',
+    'disconnected',
+    'extra-tool',
+    'recorder',
+    'spawn',
+    'cancel',
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), 'qoder-gh-revoke-'));
+    const workspace = join(root, 'workspace');
+    mkdirSync(workspace);
+    const runtime = makeControlledRuntime(root);
+    let configPath;
+    let revoked = 0;
+    let streamClosed = false;
+    try {
+      const svc = makeSvc({
+        toolAccess: 'controlled',
+        memoryMcpServerPath: runtime.memoryPath,
+        runtimeRoot: runtime.runtimeRoot,
+        shellSandboxWrapperPath: runtime.wrapperPath,
+        sandboxBinary: runtime.sandboxExecPath,
+        sandboxProbe: (p) => {
+          configPath = p.mcpConfigPath;
+        },
+      });
+      const invoke = svc.invoke('read approved PRs', {
+        workingDirectory: workspace,
+        openGitHubReadLease: async () => ({
+          token: 'h'.repeat(43),
+          queryUrl: 'http://127.0.0.1:43210/api/agent-github-read',
+          mcpUrl: 'http://127.0.0.1:43210/api/agent-github-read/mcp',
+          revoke() {
+            revoked++;
+            assert.ok(existsSync(configPath));
+            if (failure !== 'recorder') assert.ok(streamClosed, 'provider stream closes before grant disposal');
+          },
+        }),
+        beforeProviderLaunch: async () => {
+          if (failure === 'recorder') throw new Error('recorder rejected');
+        },
+        spawnCliOverride: async function* () {
+          try {
+            if (failure === 'spawn') throw new Error('synthetic spawn failure');
+            for (const line of controlledFixture('tool-use', true)) {
+              const event = JSON.parse(line);
+              if (event.type === 'system' && event.subtype === 'init') {
+                if (failure === 'missing-tool') event.tools.pop();
+                if (failure === 'missing-server') event.mcp_servers.pop();
+                if (failure === 'disconnected') event.mcp_servers[1].status = 'disconnected';
+                if (failure === 'extra-tool') event.tools.push('mcp__clowder-repository-read__write');
+              }
+              yield event;
+            }
+          } finally {
+            streamClosed = true;
+          }
+        },
+      });
+      if (failure === 'cancel') {
+        await invoke.next();
+        await invoke.return();
+      } else {
+        const out = [];
+        for await (const event of invoke) out.push(event);
+        assert.ok(
+          out.some((event) => event.type === 'error'),
+          `${failure}: ${JSON.stringify(out)}`,
+        );
+        assert.ok(!out.some((event) => event.type === 'text'), 'reject drift before model content');
+      }
+      assert.equal(revoked, 1, failure);
+      assert.equal(existsSync(configPath), false, failure);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
 
 test(
   'GitHub read lease stays outside scratch, is denied to real shells and revoked on every exit',
@@ -644,10 +853,13 @@ test(
           shellSandboxWrapperPath: runtime.wrapperPath,
           sandboxBinary: '/usr/bin/sandbox-exec',
           sandboxProbe: (probe) => {
-            path = probe.githubReadConfigPath;
+            path = probe.mcpConfigPath;
             assert.ok(path && !path.startsWith(probe.scratchDir));
             assert.equal(statSync(path).mode & 0o777, 0o600);
-            assert.equal(JSON.parse(readFileSync(path, 'utf8')).token, token);
+            assert.equal(
+              JSON.parse(readFileSync(path, 'utf8')).mcpServers['clowder-repository-read'].headers.Authorization,
+              `Bearer ${token}`,
+            );
             const env = Object.fromEntries(Object.entries(probe.childEnv).filter(([, v]) => v !== null));
             assert.ok(!JSON.stringify(env).includes(token));
             const denied = spawnSync(process.execPath, [runtime.wrapperPath, `/bin/cat '${path}'`], {
@@ -656,11 +868,22 @@ test(
             });
             assert.notEqual(denied.status, 0, denied.stdout);
             assert.ok(!`${denied.stdout}${denied.stderr}`.includes(token));
+            const mcpConfigPath = probe.mcpConfigPath;
+            assert.ok(!mcpConfigPath.startsWith(probe.scratchDir));
+            assert.equal(statSync(mcpConfigPath).mode & 0o777, 0o600);
+            for (const policy of [env.CAT_CAFE_QODER_WORKSPACE_POLICY, env.CAT_CAFE_QODER_MEMORY_POLICY]) {
+              const mcpRead = spawnSync('/usr/bin/sandbox-exec', ['-f', policy, '/bin/cat', mcpConfigPath], {
+                env,
+                encoding: 'utf8',
+              });
+              assert.notEqual(mcpRead.status, 0, mcpRead.stdout);
+              assert.ok(!`${mcpRead.stdout}${mcpRead.stderr}`.includes(token));
+            }
             const nested = spawnSync(process.execPath, [runtime.wrapperPath, 'env'], { env, encoding: 'utf8' });
             assert.equal(nested.status, 0, nested.stderr);
-            assert.ok(!nested.stdout.includes('CAT_CAFE_QODER_GITHUB_READ_CONFIG'));
+            assert.ok(!nested.stdout.includes(path));
           },
-          spawnFn: () => fakeChild(controlledFixture()),
+          spawnFn: () => fakeChild(controlledFixture('tool-use', true)),
         });
         const out = await runInvoke(svc, 'read approved PRs', {
           workingDirectory: workspace,
