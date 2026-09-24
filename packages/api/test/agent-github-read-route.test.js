@@ -87,10 +87,20 @@ test('MCP exposes only one typed read tool and cannot invoke family callbacks or
     listed.json().result.tools.map((tool) => tool.name),
     ['github_read'],
   );
+  assert.equal(
+    listed.json().result.tools[0].inputSchema.properties.query.type,
+    'object',
+    'Qoder needs an explicit object type to marshal the nested query argument',
+  );
   const foreign = await rpc('tools/call', { name: 'cat_cafe_post_message', arguments: { content: 'forged' } });
   assert.ok(foreign.json().error || foreign.json().result?.isError);
   const bad = await rpc('tools/call', { name: 'github_read', arguments: { query: { op: 'api', repo: h.query.repo } } });
   assert.ok(bad.json().error || bad.json().result?.isError);
+  const wrongFields = await rpc('tools/call', {
+    name: 'github_read',
+    arguments: { query: { ...h.query, number: 48 } },
+  });
+  assert.equal(JSON.parse(wrongFields.json().result.content[0].text).code, 'unsupported_query');
   assert.equal(h.calls(), 0);
   const read = await rpc('tools/call', { name: 'github_read', arguments: { query: h.query } });
   assert.equal(read.json().result.isError, false);

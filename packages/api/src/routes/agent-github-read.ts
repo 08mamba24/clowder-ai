@@ -3,7 +3,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AgentGitHubReadBroker } from '../infrastructure/github/agent-github-read-capability.js';
 import { ghReadFailure } from '../infrastructure/github/agent-github-read-execution.js';
-import { ghReadQuerySchema } from '../infrastructure/github/agent-github-read-schema.js';
+import { ghReadMcpQuerySchema } from '../infrastructure/github/agent-github-read-schema.js';
 
 function bearer(request: FastifyRequest): string | undefined {
   const header = request.headers.authorization;
@@ -37,7 +37,7 @@ export async function agentGitHubReadRoutes(
       {
         description:
           'Read approved GitHub PRs, issues, diffs, checks and CI run metadata. Supply one typed query with an explicit owner/repository. No write operations or raw API access.',
-        inputSchema: { query: ghReadQuerySchema },
+        inputSchema: { query: ghReadMcpQuerySchema },
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       },
       async ({ query }) => {
