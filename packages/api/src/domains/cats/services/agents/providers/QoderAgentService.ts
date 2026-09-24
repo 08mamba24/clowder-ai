@@ -259,7 +259,8 @@ export function buildQoderArgs(input: {
     '--strict-mcp-config',
     '--allowed-mcp-server-names',
     QODER_MEMORY_MCP_SERVER,
-    ...(input.githubRead ? [GITHUB_READ_MCP_SERVER] : []),
+    // qoderclicn accepts one <name> per flag; a second bare value stays disconnected.
+    ...(input.githubRead ? ['--allowed-mcp-server-names', GITHUB_READ_MCP_SERVER] : []),
     '--setting-sources',
     'user',
   );
