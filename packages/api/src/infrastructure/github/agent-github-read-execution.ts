@@ -74,6 +74,15 @@ export class GhReadExecution {
     if (this.bytes > options.maxOutputBytes) throw new GhReadError('output_limit');
     const checksResult = checks && [1, 8].includes(output.exitCode) && output.stdout.trim().startsWith('[');
     if (output.exitCode !== 0 && !checksResult) {
+      const repoArg = args[args.indexOf('--repo') + 1];
+      const repository = repoArg?.startsWith('github.com/') ? repoArg.slice('github.com/'.length) : undefined;
+      if (
+        args[0] === 'issue' &&
+        repository &&
+        output.stderr?.trim().toLowerCase() === `the '${repository}' repository has disabled issues`
+      ) {
+        throw new GhReadError('issues_disabled');
+      }
       const error = Object.assign(new Error('gh query failed'), { code: output.exitCode, stderr: output.stderr });
       throw new GhReadError(classifyGhValidationFailure(error));
     }

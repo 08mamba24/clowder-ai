@@ -20,6 +20,19 @@ export const ghReadQuerySchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('run_view'), repo: repository, runId: number }).strict(),
   z.object({ op: z.literal('run_list'), repo: repository, limit }).strict(),
 ]);
+
+// Qoder marshals a nested MCP argument as an object only when its schema has type: "object".
+// The broker still enforces ghReadQuerySchema's exact fields for each operation.
+export const ghReadMcpQuerySchema = z
+  .object({
+    op: z.enum(['pr_view', 'pr_diff', 'pr_checks', 'issue_view', 'pr_list', 'issue_list', 'run_view', 'run_list']),
+    repo: repository,
+    number: number.optional(),
+    runId: number.optional(),
+    state: z.enum(['open', 'closed', 'merged', 'all']).optional(),
+    limit: limit.optional(),
+  })
+  .strict();
 export type GhReadQuery = z.infer<typeof ghReadQuerySchema>;
 export type GhReadFailure =
   | 'capability_unavailable'
@@ -28,6 +41,7 @@ export type GhReadFailure =
   | 'unsupported_query'
   | 'authentication_required'
   | 'permission_denied'
+  | 'issues_disabled'
   | 'rate_limited'
   | 'not_found'
   | 'timeout'

@@ -239,6 +239,21 @@ describe('host GitHub read boundary', () => {
       assert.ok(!JSON.stringify(result).includes('secret'));
     }
   });
+  it('reports disabled Issues as a non-retryable domain refusal only for issue operations', async () => {
+    const stderr = `the '${repo}' repository has disabled issues\n`;
+    const h = harness({ runner: async () => ({ stdout: '', stderr, exitCode: 1 }) });
+    for (const query of [
+      { op: 'issue_view', repo, number: 2 },
+      { op: 'issue_list', repo, state: 'all', limit: 5 },
+    ]) {
+      assert.deepEqual(await h.reader(query, h.authority), {
+        ok: false,
+        code: 'issues_disabled',
+        retryable: false,
+      });
+    }
+    assert.equal((await h.reader({ op: 'pr_view', repo, number: 41 }, h.authority)).code, 'unavailable');
+  });
   it('rejects a diff if only the target branch changes', async () => {
     let n = 0;
     const h = harness({
