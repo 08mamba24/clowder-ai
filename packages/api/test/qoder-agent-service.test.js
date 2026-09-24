@@ -146,11 +146,10 @@ test('GitHub read MCP: only a granted invocation adds the exact readonly tool an
   });
   const allowed = args.flatMap((arg, i) => (arg === '--allowed-tools' ? [args[i + 1]] : []));
   assert.ok(allowed.includes('mcp__clowder-repository-read__github_read'));
-  const start = args.indexOf('--allowed-mcp-server-names') + 1;
-  assert.deepEqual(args.slice(start, args.indexOf('--setting-sources')), [
-    QODER_MEMORY_MCP_SERVER,
-    'clowder-repository-read',
-  ]);
+  // qoderclicn 1.1.51 accepts exactly one <name> per flag. A second bare name
+  // is parsed as a positional argument, leaving that MCP server disconnected.
+  const allowedServers = args.flatMap((arg, i) => (arg === '--allowed-mcp-server-names' ? [args[i + 1]] : []));
+  assert.deepEqual(allowedServers, [QODER_MEMORY_MCP_SERVER, 'clowder-repository-read']);
   assert.ok(!allowed.some((tool) => tool.includes('clowder-repository-read') && tool.endsWith('*')));
   const disabled = buildQoderArgs({ profileDir: '/p', model: 'Auto', toolAccess: 'disabled', githubRead: true });
   assert.ok(!disabled.some((arg) => arg.includes('clowder-repository-read')));
