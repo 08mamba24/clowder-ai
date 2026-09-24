@@ -23,7 +23,7 @@ tips_exempt: Repair of the existing isolated repository-read capability; no new 
 ## 状态与来源
 
 - **任务来源：** 2026-09-21 operator 消息 `0001789954443843-000354-15718ecc`：「不制定计划修改吗」；后续 `0001789955401202-000363-924099ab`：「需要我决策什么？真的需要我决策吗？」。结合此前两仓只读修复讨论，按现有任务授权继续调查、实现、review 与隔离验收，不再把相同范围送回 operator 重复确认。后一句是对不必要升级的纠正，不伪造为一条新权限批准事件。
-- **当前（2026-09-24）：PR #44、#48 已合并，operator 已将 runtime 重启至 `526868a85`；AC1 live 尚未通过。** ZCode 本人新会话已完成两仓 PR/CI/Issue 查询及未授权仓库拒绝；串行复测确认启用 Issues 的仓库可列出，禁用 Issues 的 `08mamba24/clowder-ai` 却错误返回可重试 `unavailable`。Qoder-flash 本人新会话的 `github_read.query` 被客户端当作字符串送达，服务端在入参校验前拒绝，因而该腿尚无真实查询证据。当前修复须经门禁、非作者审查、合入和新 runtime 重验；总 task 保持 doing。
+- **当前（2026-09-24）：PR #44、#48、#49 已合并，operator 已将 runtime 重启至 `0edf6fa7`；AC1 live 尚未通过。** Qoder-flash 本人新会话的两仓 16 项受控查询与未授权仓拒绝已通过，嵌套 `query` marshalling 阻塞消失。ZCode 本人新会话确认禁用仓 `issue_list` 已正确返回 `issues_disabled`，但 `issue_view #1` 两次返回 `unavailable`（报告 `0001790263287567-000008-64562777`）。根因是 `gh issue view` 会把同号 PR 解析为 PR 对象，即使仓库 Issues 已禁用；见下方 2026-09-24 跟进记录。总 task 保持 doing，修复须重新经过门禁、非作者审查、合入与 live 复验。
 - **持久任务：** `0001789956139661-000388-6c663874`（本 thread，任务登记 owner=`astra`，doing；当前工作流持球人为砚砚6）；修复分支 `fix/qoder-github-live`，worktree `../cat-cafe-qoder-github-live`。旧 PR #41 属于已完成的 umid 修复，不承载本任务。
 - **执行负责人：砚砚6 / gpt-6-sol。** co-creator 在消息 `0001790151559613-000172-09d19e58` 将 F317 后续交付转交砚砚6；小星星 / astra 仍是 PR #44 的代码作者。安全边界继续按非作者 review、完整门禁和 merge gate 验证。
 - **已验证事实与建议分开：** 先前宿主登录上下文探针证明认证可用，不证明 Qoder 子进程能逃出继承沙箱；不把探针成功当作产品接通。
@@ -294,3 +294,26 @@ the repaired carrier's current commands.
 - Completion remains open: regression green, exact-HEAD independent review,
   new-delta full gate, activation, qoder-flash new-session queries, service audit
   and live revocation. Owner remains astra on task `0001789956139661-000388-6c663874`.
+
+## 2026-09-24 Issue view domain follow-up
+
+- Qoder-flash live report `0001790263277589-000015-f5955255`: PR #49's
+  object-schema repair allows all 16 two-repository controlled operations; the
+  disabled-Issues `issue_view` used an unspecified number, so that result did
+  not cover ZCode's `#1` case. Host `gh` independently confirms the reported
+  PR heads, check counts and enabled-repository Issue #1525.
+- ZCode live report `0001790263287567-000008-64562777`: disabled-repository
+  `issue_list` returns non-retryable `issues_disabled`, while `issue_view #1`
+  reproducibly returns retryable `unavailable`. Host `gh issue view 1 --repo
+  github.com/08mamba24/clowder-ai --json ...` exits successfully with PR #1
+  (`/pull/1` URL); there is no stderr to classify. An open PR with Issue-shaped
+  fields could even have been projected as an Issue.
+- Follow-up implementation: before `issue_view`, query the
+  host-owned `hasIssuesEnabled` setting with fixed `gh repo view` arguments
+  under the same invocation authority, deadline and output budget. Disabled
+  repositories return `issues_disabled` before `gh issue view` can resolve a
+  PR number. For enabled repositories, reject a PR URL returned by `gh issue
+  view` as `not_found`. Keep the existing `issue_list` path and exact stderr
+  classifier for a setting change between the probe and the Issue command.
+  Live acceptance remains open until
+  this follow-up is merged, activated and retested on `issue_view #1`.

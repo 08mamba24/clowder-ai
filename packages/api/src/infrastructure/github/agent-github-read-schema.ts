@@ -85,6 +85,7 @@ const check = z.object({
   link: z.string(),
 });
 export const ghReadHeadSchema = z.object({ headRefOid: sha, baseRefOid: sha });
+export const ghReadIssuesSettingSchema = z.object({ hasIssuesEnabled: z.boolean() });
 export const GH_READ_HEAD_FIELDS = 'headRefOid,baseRefOid';
 const ITEM_FIELDS = 'number,title,state,url,updatedAt';
 const PULL_FIELDS = `${ITEM_FIELDS},headRefOid,isDraft`;

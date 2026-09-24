@@ -8,6 +8,7 @@ import {
   type GhReadResult,
   ghReadArgs,
   ghReadHeadSchema,
+  ghReadIssuesSettingSchema,
   ghReadQuerySchema,
   ghReadSourceUrl,
   projectGhRead,
@@ -40,6 +41,13 @@ function admissionFailure(repo: string, authority?: GhReadAuthority, signal?: Ab
 }
 
 async function readQuery(query: GhReadQuery, execution: GhReadExecution): Promise<GhReadResult> {
+  if (query.op === 'issue_view') {
+    // gh issue view can resolve a PR number even when repository Issues are disabled.
+    const settings = ghReadIssuesSettingSchema.parse(
+      JSON.parse(await execution.execute(['repo', 'view', `github.com/${query.repo}`, '--json', 'hasIssuesEnabled'])),
+    );
+    if (!settings.hasIssuesEnabled) throw new GhReadError('issues_disabled');
+  }
   const readHead = async () =>
     ghReadHeadSchema.parse(
       JSON.parse(
@@ -57,6 +65,8 @@ async function readQuery(query: GhReadQuery, execution: GhReadExecution): Promis
   const pin = query.op === 'pr_diff' || query.op === 'pr_checks' ? await readHead() : undefined;
   const stdout = await execution.execute(ghReadArgs(query), query.op === 'pr_checks');
   const result = projectGhRead(query, stdout);
+  if (query.op === 'issue_view' && (result.data as { url: string }).url.toLowerCase() !== ghReadSourceUrl(query))
+    throw new GhReadError('not_found');
   if (pin) {
     const after = await readHead();
     if (pin.headRefOid !== after.headRefOid || pin.baseRefOid !== after.baseRefOid) throw new GhReadError('stale_head');
