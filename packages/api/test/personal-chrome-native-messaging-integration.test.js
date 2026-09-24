@@ -150,86 +150,6 @@ describe('Personal Chrome Native Messaging full seam', () => {
     );
   });
 
-  it('reinjects the current content adapter once when an old listener silently ignores append v2', async () => {
-    const serviceWorkerSource = await readFile(serviceWorkerPath, 'utf8');
-    const inboundListeners = [];
-    const outbound = [];
-    const contentRequests = [];
-    const injected = [];
-    let resolveTerminal;
-    const terminal = new Promise((resolve) => {
-      resolveTerminal = resolve;
-    });
-    const chrome = {
-      runtime: {
-        connectNative() {
-          return {
-            onMessage: { addListener: (listener) => inboundListeners.push(listener) },
-            onDisconnect: { addListener() {} },
-            postMessage(message) {
-              outbound.push(message);
-              if (message.kind === 'append_result') resolveTerminal();
-            },
-          };
-        },
-        onMessage: { addListener() {} },
-      },
-      alarms: passiveAlarms(),
-      action: {
-        onClicked: { addListener() {} },
-        setBadgeText() {},
-        setTitle() {},
-      },
-      tabs: {
-        async query() {
-          return [{ id: 73, url: 'https://chatgpt.com/c/conversation-7' }];
-        },
-        async sendMessage(tabId, request) {
-          assert.equal(tabId, 73);
-          contentRequests.push(request);
-          if (contentRequests.length === 1) return undefined;
-          return {
-            v: 2,
-            kind: 'append_result',
-            requestId: request.requestId,
-            idempotencyKey: request.idempotencyKey,
-            status: 'host_observed',
-            hostMessageId: 'chatgpt-user-message-reinjected',
-            observedRevisions: request.expectedRevisions,
-          };
-        },
-      },
-      scripting: {
-        async executeScript(options) {
-          injected.push(options);
-        },
-      },
-    };
-
-    runInNewContext(serviceWorkerSource, { chrome, URL, TextEncoder, setTimeout() {}, clearTimeout() {} });
-    inboundListeners[0]({
-      v: 2,
-      kind: 'append_message',
-      requestId: 'append-after-extension-reload',
-      conversationId: 'conversation-7',
-      idempotencyKey: 'source-thread-7',
-      text: 'TEXT_IS_ONLY_PRESENT_IN_THE_PROTOCOL_REQUEST',
-      expectedRevisions: {
-        helper: helperArtifactRevision,
-        extension: '0.2.12',
-        pageAdapter: '2026-09-24.1',
-      },
-    });
-    await terminal;
-
-    assert.equal(contentRequests.length, 2);
-    assert.equal(injected.length, 1);
-    assert.equal(injected[0].target.tabId, 73);
-    assert.equal(injected[0].files.join(','), 'content-script.js');
-    assert.equal(outbound.at(-1).status, 'host_observed');
-    assert.equal(outbound.at(-1).hostMessageId, 'chatgpt-user-message-reinjected');
-  });
-
   it('round-trips two thread-routed conversations independently and retry-idempotently', async () => {
     const testRoot = await mkdtemp(join(tmpdir(), 'cat-cafe-f247-native-seam-'));
     const socketPath = join(testRoot, 'personal-host.sock');
@@ -392,14 +312,14 @@ describe('Personal Chrome Native Messaging full seam', () => {
         conversationId: 'conversation-7',
         expectedRevisions: {
           helper: helperArtifactRevision,
-          extension: '0.2.12',
+          extension: '0.2.13',
           pageAdapter: '2026-09-24.1',
         },
       });
       assert.equal(revisionHealth.status, 'ready');
       assert.deepEqual(revisionHealth.observedRevisions, {
         helper: helperArtifactRevision,
-        extension: '0.2.12',
+        extension: '0.2.13',
         pageAdapter: '2026-09-24.1',
       });
 

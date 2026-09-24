@@ -350,7 +350,7 @@ describe('Personal Chrome Host installation state', () => {
         idempotencyKey: 'source-after-repair',
         expectedRevisions: {
           helper: record.artifactDigest,
-          extension: '0.2.12',
+          extension: '0.2.13',
           pageAdapter: '2026-09-24.1',
         },
       });

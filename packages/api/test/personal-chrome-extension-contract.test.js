@@ -123,9 +123,9 @@ describe('personal Chrome extension contract', () => {
       readFile(join(apiRoot, 'scripts/f247-personal-chrome-state-health.mjs'), 'utf8'),
     ]);
 
-    assert.equal(manifest.version, '0.2.12');
+    assert.equal(manifest.version, '0.2.13');
     for (const source of [worker, contentScriptEntry, contentScript, protocol, stateHealth]) {
-      assert.match(source, /0\.2\.12/);
+      assert.match(source, /0\.2\.13/);
     }
     for (const source of [contentScriptEntry, contentScript, protocol, stateHealth]) {
       assert.match(source, /2026-09-24\.1/);
@@ -231,6 +231,7 @@ describe('personal Chrome extension contract', () => {
       'personal-chrome-assistant-return-inbox.test.js',
       'personal-chrome-assistant-return-poller.test.ts',
       'personal-chrome-native-messaging-integration.test.js',
+      'personal-chrome-worker-replay.test.js',
       'personal-chrome-native-messaging-watchdog.test.js',
       'personal-chrome-plugin-state-route-exact.test.js',
     ]) {

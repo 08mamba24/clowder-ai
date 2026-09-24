@@ -2,7 +2,7 @@ import { createChatGptPageAdapter } from './chatgpt-page-adapter.mjs';
 
 (() => {
   const APPEND_PROTOCOL_VERSION = 2;
-  const EXTENSION_REVISION = '0.2.12';
+  const EXTENSION_REVISION = '0.2.13';
   const PAGE_ADAPTER_REVISION = '2026-09-24.1';
   const ASSISTANT_RETURN_RETRY_MS = 120_000;
   const previousListener = globalThis.__catCafePersonalChromeAdapterV2?.listener;
