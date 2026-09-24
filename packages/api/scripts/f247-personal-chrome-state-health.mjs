@@ -23,7 +23,7 @@ export async function projectPersonalChromeLiveState({
   if (!installation) return;
   const expectedRevisions = {
     helper: installation.expectedArtifactDigest ?? installation.artifactDigest,
-    extension: '0.2.12',
+    extension: '0.2.13',
     pageAdapter: '2026-09-24.1',
   };
   try {

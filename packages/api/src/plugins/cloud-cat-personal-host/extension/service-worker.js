@@ -6,7 +6,7 @@ const APPEND_PROTOCOL_VERSION = 2;
 const SAFE_TOKEN = /^[A-Za-z0-9._:-]+$/;
 const MAX_TEXT_BYTES = 128 * 1024;
 const ASSISTANT_RESULT_TIMEOUT_MS = 2000;
-const EXTENSION_REVISION = chrome.runtime.getManifest?.().version ?? '0.2.12';
+const EXTENSION_REVISION = chrome.runtime.getManifest?.().version ?? '0.2.13';
 let nativePort = null;
 let bindingRequestSequence = 0;
 let bindingQuerySequence = 0;
@@ -215,14 +215,8 @@ async function dispatchAppend(request) {
   const matches = candidates.filter(
     (tab) => typeof tab.id === 'number' && exactConversationId(tab.url) === request.conversationId,
   );
-  if (matches.length === 0) {
-    postNative(failureFor(request, 'BOUND_TAB_NOT_FOUND'));
-    return;
-  }
-  if (matches.length > 1) {
-    postNative(failureFor(request, 'AMBIGUOUS_BOUND_TABS'));
-    return;
-  }
+  if (matches.length === 0) return void postNative(failureFor(request, 'BOUND_TAB_NOT_FOUND'));
+  if (matches.length > 1) return void postNative(failureFor(request, 'AMBIGUOUS_BOUND_TABS'));
   postNative({
     v: APPEND_PROTOCOL_VERSION,
     kind: 'append_progress',
@@ -231,11 +225,16 @@ async function dispatchAppend(request) {
     status: 'extension_received',
   });
   try {
-    const contentRequest = { ...request, kind: 'append_message_v2' };
-    const result = await sendToCurrentContentAdapter(matches[0].id, contentRequest, 'append_result');
+    // Reinject only before append; a lost append receipt may follow a real submission.
+    const health = await sendToCurrentContentAdapter(matches[0].id, { ...request, kind: 'adapter_health' }, 'adapter_health_result');
+    if (!exactContentResponse(health, request, 'adapter_health_result') || health.status !== 'ready') {
+      return void postNative(failureFor(request, 'STALE_PAGE_ADAPTER', health?.observedRevisions?.pageAdapter));
+    }
+    let result;
+    try { result = await chrome.tabs.sendMessage(matches[0].id, { ...request, kind: 'append_message_v2' }); }
+    catch { return void postNative(failureFor(request, 'SUBMISSION_OUTCOME_UNKNOWN')); }
     if (!exactContentResponse(result, request, 'append_result')) {
-      postNative(failureFor(request, 'STALE_PAGE_ADAPTER', result?.observedRevisions?.pageAdapter));
-      return;
+      return void postNative(failureFor(request, 'SUBMISSION_OUTCOME_UNKNOWN'));
     }
     postNative(result);
   } catch {

@@ -60,7 +60,7 @@ function appendRequest(requestId) {
     idempotencyKey: 'source-message-background-proof',
     expectedRevisions: {
       helper: 'isolated-spike-helper',
-      extension: '0.2.12',
+      extension: '0.2.13',
       pageAdapter: '2026-09-24.1',
     },
   };
