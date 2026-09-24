@@ -56,9 +56,9 @@
 1. `curl -s https://mcp.clowder-ai.com/health` 记 `artifact_revision`
 2. `sha256sum packages/mcp-server/dist/remote-spike.js`（应等于第 1 条；不等 → `pgrep -af remote-spike` 查实际运行实例）
 3. `ps -o pid,lstart,etime,cmd -p $(pgrep -f remote-spike | head -1)`（进程启动时间=最近重启窗口）
-4. 日志 `/tmp/spike-server-b1a.log`（§B 亦写过 `/tmp/spike-b1a.log`，两个都查）：`POST /mcp`、`handleRequest error`、`received SIGTERM`（token 轮换 SOP C.3 会 pkill，属预期）、`auth=absent`
-5. 决定性实验：`tail -f` 日志同时在 ChatGPT 重触发一次 gpt-pro 调用。**判读（本注新增）**：
-   - POST 到达且 200 → **仍需抽取对应响应体**确认 JSON-RPC result 无应用层错误（MCP 应用层错误同样走 200）；确认无错才支持 OpenAI 层归因（缓解=重试/重加 connector）；若 200 内含错误 → 按错误内容另行归因。
+4. 日志 `/tmp/spike-server-b1a.log`（§B 亦写过 `/tmp/spike-b1a.log`，两个都查）：`POST /mcp`、`handleRequest error`、`received SIGTERM`（token 轮换 SOP C.3 会 pkill，属预期）、`auth=absent`。当前 `remote-spike.ts` 只记录请求方法、路径和部分鉴权头是否存在，**不记录响应状态码或响应体**；`auth=absent` 也不代表 `?token=` 缺失。
+5. 对照实验：`tail -f` 日志同时在 ChatGPT 重触发一次 gpt-pro 调用，先确认请求是否到达。以下状态码和 JSON-RPC 内容判读还需要部署节点的安全诊断入口或一次受控、脱敏的响应追踪；**仅凭现有日志不能完成这些判读，也不能结案**：
+   - POST 到达且 200 → **仍需核对对应响应体**确认 JSON-RPC result 无应用层错误（MCP 应用层错误同样走 200）；确认无错才支持 OpenAI 层归因（缓解=重试/重加 connector）；若 200 内含错误 → 按错误内容另行归因。
    - 到达且 401 → 仅证明 token 校验失败；具体归因（token 轮换后 connector URL 未更新 / spike-token 文件被重生成 / 中间层剥参）需在部署盒比对 `~/.cat-cafe/spike-token` 与 ChatGPT connector URL，不能仅凭状态码。
    - 未到达 → Cloudflare / 隧道 / OpenAI 侧。
    - 注意：tool call 前的 initialize/tools/list 突发（re-discovery）是 openai-mcp 已知常态，不算异常。
