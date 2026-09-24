@@ -42,8 +42,8 @@ it('forwards a validated source-bound assistant final from the content script to
     content: 'the exact ordinary assistant final',
     observedRevisions: {
       helper: helperArtifactRevision,
-      extension: '0.2.11',
-      pageAdapter: '2026-09-23.1',
+      extension: '0.2.12',
+      pageAdapter: '2026-09-24.1',
     },
   };
 
@@ -117,8 +117,8 @@ it('forwards a privacy-safe assistant observation failure and waits for durable 
     },
     observedRevisions: {
       helper: helperArtifactRevision,
-      extension: '0.2.11',
-      pageAdapter: '2026-09-23.1',
+      extension: '0.2.12',
+      pageAdapter: '2026-09-24.1',
     },
   };
 

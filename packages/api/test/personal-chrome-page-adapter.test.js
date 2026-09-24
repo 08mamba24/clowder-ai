@@ -76,11 +76,16 @@ function createFixture({
   renderedAffordanceText,
   turnTagName = 'article',
 } = {}) {
+  const sendButtonMarkup = {
+    absent: '',
+    localized: '<form><button type="submit" aria-label="发送"></button></form>',
+    present: '<button data-testid="send-button">Send</button>',
+  }[sendButton];
   const dom = new JSDOM(
     `<!doctype html><body>
       <main id="messages"></main>
       <div id="prompt-textarea" contenteditable="true">${initialComposerText}</div>
-      ${sendButton === 'absent' ? '' : '<button data-testid="send-button">Send</button>'}
+      ${sendButtonMarkup}
     </body>`,
     { url: `https://chatgpt.com/c/${conversationId}`, pretendToBeVisual: true },
   );
@@ -116,7 +121,8 @@ function createFixture({
   let sendCount = 0;
   const sentTexts = [];
   const attachSendHandler = (button) =>
-    button.addEventListener('click', () => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
       sendCount += 1;
       const composer = document.querySelector('#prompt-textarea');
       const sentText = composer.textContent;
@@ -136,12 +142,32 @@ function createFixture({
       });
       composer.replaceChildren();
     });
-  const initialButton = document.querySelector('[data-testid="send-button"]');
+  const initialButton = document.querySelector('[data-testid="send-button"], button[aria-label="发送"]');
   if (initialButton) attachSendHandler(initialButton);
   return { dom, document, attachSendHandler, getSendCount: () => sendCount, sentTexts };
 }
 
 describe('ChatGPT page adapter', () => {
+  it('submits through the current Chinese-labeled button inside the composer form', async () => {
+    const fixture = createFixture({ sendButton: 'localized' });
+    const adapter = createChatGptPageAdapter({
+      document: fixture.document,
+      location: fixture.dom.window.location,
+      MutationObserver: fixture.dom.window.MutationObserver,
+      sendButtonTimeoutMs: 20,
+    });
+
+    const result = await adapter.appendMessage({
+      requestId: 'request-localized-send',
+      conversationId: 'conversation-7',
+      text: 'hello cloud cat',
+      idempotencyKey: 'source-message-localized-send',
+    });
+
+    assert.equal(result.hostMessageId, 'host-message-1');
+    assert.equal(fixture.getSendCount(), 1);
+  });
+
   it('inserts exact text, submits once, and returns the DOM-provided user-message ID', async () => {
     const fixture = createFixture();
     const progress = [];

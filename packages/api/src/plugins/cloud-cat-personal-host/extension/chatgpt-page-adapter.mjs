@@ -25,6 +25,8 @@ const SEND_BUTTON_SELECTORS = [
   'button[data-testid="send-button"]',
   'button[aria-label="Send prompt"]',
   'button[aria-label="发送提示"]',
+  // The current zh-CN composer uses this label without a data-testid.
+  'form button[type="submit"][aria-label="发送"]',
 ];
 const USER_MESSAGE_SELECTOR = '[data-message-author-role="user"]';
 const ASSISTANT_MESSAGE_SELECTOR = '[data-message-author-role="assistant"]';
