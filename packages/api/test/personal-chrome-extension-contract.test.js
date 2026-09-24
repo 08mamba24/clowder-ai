@@ -123,12 +123,12 @@ describe('personal Chrome extension contract', () => {
       readFile(join(apiRoot, 'scripts/f247-personal-chrome-state-health.mjs'), 'utf8'),
     ]);
 
-    assert.equal(manifest.version, '0.2.11');
+    assert.equal(manifest.version, '0.2.12');
     for (const source of [worker, contentScriptEntry, contentScript, protocol, stateHealth]) {
-      assert.match(source, /0\.2\.11/);
+      assert.match(source, /0\.2\.12/);
     }
     for (const source of [contentScriptEntry, contentScript, protocol, stateHealth]) {
-      assert.match(source, /2026-09-23\.1/);
+      assert.match(source, /2026-09-24\.1/);
     }
   });
 
