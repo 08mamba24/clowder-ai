@@ -5,7 +5,7 @@
 状态：**字符串归属已证明（OpenAI 客户端错误类文案）；本次故障根因=主因假设（OpenAI 客户端层），待部署盒 runbook 核验——不得表述为"结案 / 三假设全部排除"**
 
 > 修正记录：初版（本地 commit `436a38de6`，未推送）把"三假设排除 / 归因结案"写得过强。砚砚6 P2（2026-09-24）：公开报告只支持候选解释；`McpServerError` 包装与裸状态码都不足以单独定源；POST 200 还需核对响应体。本版按此收敛（§0/§2.3/§3/§4），并补一处同方向收紧：t/1275728 实录来自 Responses API 面，非 ChatGPT connector 面。
-> 修正记录·二：addendum 初稿（本地 `204cf3ea2`，推送前被退回）把 CF 面板聚合统计与单次请求判读拼配，宣称"覆盖 200/401/5xx 三分判读"。砚砚6 P2·二：面板数据聚合且可能抽样，不能与单条 `POST /mcp` 日志配对归因。已 amend 降级为趋势线索（§4.6），该错误版本未进入远端历史。谱谱补核对：Host/状态码过滤本身普遍可用（仅 JA3/JA4 企业版），受限的是**粒度**而非过滤项——初稿连这点也说反了。
+> 修正记录·二：addendum 初稿（本地 `204cf3ea2`，推送前被退回）把 CF 面板聚合统计与单次请求判读拼配，宣称"覆盖 200/401/5xx 三分判读"。砚砚6 P2·二：面板数据聚合且可能抽样，不能与单条 `POST /mcp` 日志配对归因。已 amend 降级为趋势线索（§4.6），该错误版本未进入远端历史。Cloudflare 官方文档将 Host/状态码详细过滤列在 Pro、Business、Enterprise 的 HTTP Traffic 功能下；实际可用性仍需核对账号套餐与权限。
 
 ## 0. 一句话结论（按砚砚6 P2 修正后）
 
@@ -63,7 +63,7 @@
    - 到达且 401 → 仅证明 token 校验失败；具体归因（token 轮换后 connector URL 未更新 / spike-token 文件被重生成 / 中间层剥参）需在部署盒比对 `~/.cat-cafe/spike-token` 与 ChatGPT connector URL，不能仅凭状态码。
    - 未到达 → Cloudflare / 隧道 / OpenAI 侧。
    - 注意：tool call 前的 initialize/tools/list 突发（re-discovery）是 openai-mcp 已知常态，不算异常。
-6. 状态码观测边界（谱谱补，2026-09-25；同日按砚砚6 P2 推送前降级改写）：CF zone analytics 可按 Host=`mcp.clowder-ai.com` + Edge/Origin 状态码过滤查看**聚合计数**（[zone-analytics](https://developers.cloudflare.com/analytics/account-and-zone-analytics/zone-analytics/)；GraphQL 侧可能抽样 [sampling](https://developers.cloudflare.com/analytics/graphql-api/sampling/)；raw per-request 需 Enterprise Logpush）。聚合数据**不能与服务端某条 `POST /mcp` 日志做单次配对**，也不能在扫描噪声里把某个 4xx 归到 ChatGPT 那一次调用——即使做单次受控重触发，也只能提供弱佐证，不构成归因。因此本条定位为**趋势线索**（如事故窗口 mcp 主机名 4xx/5xx 有无突发）。单次调用的状态码判读需 per-request 观测：`res.on('finish')` 级响应状态日志（约一行，需部署盒重建；**只补状态码，仍看不到 JSON-RPC 响应内容**）或 Enterprise Logpush；响应内容只能靠受控、脱敏的响应追踪。**在补齐 per-request 状态观测之前，runbook 不构成可执行结案。**
+6. 状态码观测边界（谱谱补，2026-09-25；同日按砚砚6 P2 推送前降级改写）：若当前套餐提供详细过滤，CF zone analytics 可按 Host=`mcp.clowder-ai.com` + Edge/Origin 状态码查看**聚合计数**（[zone-analytics](https://developers.cloudflare.com/analytics/account-and-zone-analytics/zone-analytics/)；数据可能抽样，见 [sampling](https://developers.cloudflare.com/analytics/graphql-api/sampling/)）。聚合数据**不能与服务端某条 `POST /mcp` 日志做单次配对**，也不能在扫描噪声里把某个 4xx 归到 ChatGPT 那一次调用——即使做单次受控重触发，也只能提供弱佐证，不构成归因。因此本条定位为**趋势线索**（如事故窗口 mcp 主机名 4xx/5xx 有无突发）。单次调用的状态码判读需可关联该请求的逐请求记录：例如带请求标识的 `res.on('finish')` 状态日志（需部署盒重建；**只补状态码，仍看不到 JSON-RPC 响应内容**），或已启用且套餐允许的 [Instant Logs](https://developers.cloudflare.com/logs/instant-logs/)、[Log Explorer](https://developers.cloudflare.com/log-explorer/)、[Logpush](https://developers.cloudflare.com/logs/logpush/)；响应内容仍需受控、脱敏的响应追踪。**在补齐逐请求状态观测之前，runbook 不构成可执行结案。**
 
 ## 5. 遗留
 
