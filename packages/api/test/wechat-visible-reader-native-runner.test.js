@@ -28,10 +28,10 @@ const accuracyFixturePath = fileURLToPath(
   new URL('../src/plugins/wechat-visible-reader/native/WeChatVisibleReaderAccuracyFixture.swift', import.meta.url),
 );
 const macOsSelfTestOptions = {
-  timeout: 30_000,
+  timeout: 90_000,
   skip: process.platform !== 'darwin' && 'requires macOS xcrun/Swift toolchain',
 };
-const macOsAccuracyTestOptions = { ...macOsSelfTestOptions, timeout: 60_000 };
+const macOsAccuracyTestOptions = { ...macOsSelfTestOptions, timeout: 150_000 };
 
 function successfulRead(overrides = {}) {
   return {
@@ -273,7 +273,8 @@ describe('WeChat visible reader native runner', () => {
       const processResult = spawnSync(executable, ['--self-test'], {
         cwd: tempDirectory,
         encoding: 'utf8',
-        timeout: 10_000,
+        // Vision initialization takes over 20 seconds on this host and slows further in the parallel public gate.
+        timeout: 60_000,
       });
 
       assert.equal(processResult.status, 0, processResult.stderr);
@@ -302,7 +303,7 @@ describe('WeChat visible reader native runner', () => {
       const processResult = spawnSync('/usr/bin/xcrun', ['swift', accuracyFixturePath], {
         cwd: tempDirectory,
         encoding: 'utf8',
-        timeout: 55_000,
+        timeout: 120_000,
       });
 
       assert.equal(processResult.status, 0, processResult.stderr);

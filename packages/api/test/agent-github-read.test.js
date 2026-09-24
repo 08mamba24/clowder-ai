@@ -43,6 +43,7 @@ function harness(overrides = {}) {
     baseEnv: { HOME: '/host/home', PATH: '/host/bin', GH_TOKEN: 'ambient-secret', GH_FORCE_TTY: '1' },
     runner: async (file, args, options) => {
       calls.push({ file, args, options });
+      if (args[0] === 'repo') return { stdout: JSON.stringify({ hasIssuesEnabled: true }), exitCode: 0 };
       if (args[0] === 'pr' && args[1] === 'diff') return { stdout: 'diff --git a/a b/a\n+ok\n', exitCode: 0 };
       const value = args[0] === 'issue' ? issue : args[0] === 'run' ? run : pr;
       const data = args[1] === 'checks' ? [check] : args[1] === 'list' ? [value] : value;
@@ -108,7 +109,9 @@ describe('host GitHub read boundary', () => {
       assert.match(result.provenance.sourceUrl, /^https:\/\/github\.com\/08mamba24\/clowder-ai\//);
       for (const call of h.calls) {
         assert.equal(call.file, '/host/guarded-bin/gh');
-        assert.equal(call.args[call.args.indexOf('--repo') + 1], `github.com/${repo}`);
+        if (call.args[0] === 'repo')
+          assert.deepEqual(call.args, ['repo', 'view', `github.com/${repo}`, '--json', 'hasIssuesEnabled']);
+        else assert.equal(call.args[call.args.indexOf('--repo') + 1], `github.com/${repo}`);
         assert.equal(call.options.cwd, '/host/query');
         assert.equal(call.options.shell, false);
         assert.equal(call.options.windowsHide, true);
@@ -241,7 +244,12 @@ describe('host GitHub read boundary', () => {
   });
   it('reports disabled Issues as a non-retryable domain refusal only for issue operations', async () => {
     const stderr = `the '${repo}' repository has disabled issues\n`;
-    const h = harness({ runner: async () => ({ stdout: '', stderr, exitCode: 1 }) });
+    const h = harness({
+      runner: async (_file, args) =>
+        args[0] === 'repo'
+          ? { stdout: JSON.stringify({ hasIssuesEnabled: true }), exitCode: 0 }
+          : { stdout: '', stderr, exitCode: 1 },
+    });
     for (const query of [
       { op: 'issue_view', repo, number: 2 },
       { op: 'issue_list', repo, state: 'all', limit: 5 },
@@ -253,6 +261,58 @@ describe('host GitHub read boundary', () => {
       });
     }
     assert.equal((await h.reader({ op: 'pr_view', repo, number: 41 }, h.authority)).code, 'unavailable');
+  });
+  it('checks the repository setting before gh issue view resolves a PR', async () => {
+    const calls = [];
+    const h = harness({
+      runner: async (_file, args) => {
+        calls.push(args);
+        if (args[0] === 'repo') return { stdout: JSON.stringify({ hasIssuesEnabled: false }), exitCode: 0 };
+        return {
+          stdout: JSON.stringify({ ...pr, number: 1, state: 'OPEN', url: `https://github.com/${repo}/pull/1` }),
+          exitCode: 0,
+        };
+      },
+    });
+    assert.deepEqual(await h.reader({ op: 'issue_view', repo, number: 1 }, h.authority), {
+      ok: false,
+      code: 'issues_disabled',
+      retryable: false,
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], 'repo');
+    assert.equal(calls[0][1], 'view');
+  });
+  it('does not project a PR returned by gh issue view as an issue', async () => {
+    const h = harness({
+      runner: async (_file, args) => ({
+        stdout: JSON.stringify(
+          args[0] === 'repo' ? { hasIssuesEnabled: true } : { ...issue, url: `https://github.com/${repo}/pull/2` },
+        ),
+        exitCode: 0,
+      }),
+    });
+    assert.deepEqual(await h.reader({ op: 'issue_view', repo, number: 2 }, h.authority), {
+      ok: false,
+      code: 'not_found',
+      retryable: false,
+    });
+  });
+  it('fails closed when the repository Issues setting is malformed', async () => {
+    const calls = [];
+    const h = harness({
+      runner: async (_file, args) => {
+        calls.push(args);
+        return { stdout: JSON.stringify({ hasIssuesEnabled: 'false' }), exitCode: 0 };
+      },
+    });
+    assert.deepEqual(await h.reader({ op: 'issue_view', repo, number: 2 }, h.authority), {
+      ok: false,
+      code: 'unavailable',
+      retryable: true,
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], 'repo');
   });
   it('rejects a diff if only the target branch changes', async () => {
     let n = 0;
