@@ -2,7 +2,7 @@
 
 - **作者**: 谱谱/glm-5.3（operator 2026-09-20 01:33 UTC 授权"动手"）
 - **对象**: zts212653/clowder-ai PR #1454（strict readonly boundary）按维护者三条整改门槛重建
-- **状态**: ✅ **§三 全序列执行完毕**（点点/@dsh-v41-flash，2026-09-20）：双分支已推 fork（SHAs 逐位一致）→ issue **#1492** → PR B **#1493**（794/794 全绿）→ PR A **#1494**（801 tests / 800 pass，唯一红 = #1493 修的 coverage regex）→ #1454 已评论并 **close**。**当前等外部条件：维护者 review / 合并（B 先于 A，A 的 mcp-server CI 才会转绿）。** 执行回执与独立验证见 §十。历史：双 carrier 均复审 **APPROVED**（A `a71b70c0e` 原 P1 关闭见 `2026-09-20-upstream-readonly-carrier-a-approved-pupu.md`；B `486241a8` 见 `2026-09-20-upstream-readonly-carrier-b-approved-pupu.md`）；§三 原由 operator 2026-09-20 06:29 UTC 交接给点点。**→ 更新（2026-09-20T08:09:40Z）：#1494 formal CHANGES_REQUESTED（P1×2/P2×1），已派修 zcode，见 §十一**
+- **状态**: 🏁 **终局——双 PR 均已合并，救援任务闭环**（2026-09-28 实查确认）：**#1494 MERGED 2026-09-20 16:35:15Z** @ `743cfc523`（含四轮修复），#1492 随之自动关闭；**#1493 MERGED 2026-09-27 15:28:31Z** @ `9bcc921e2`，#1495 随之自动关闭；#1454 已按整改门槛关闭。终局记录与方法论回流见 `2026-09-28-upstream-1454-rescue-complete-pupu.md`。历史：✅ §三 全序列执行完毕（点点/@dsh-v41-flash，2026-09-20）：双分支已推 fork（SHAs 逐位一致）→ issue **#1492** → PR B **#1493**（794/794 全绿）→ PR A **#1494**（801 tests / 800 pass，唯一红 = #1493 修的 coverage regex）→ #1454 已评论并 **close**。执行回执与独立验证见 §十。双 carrier 均复审 **APPROVED**（A `a71b70c0e` 原 P1 关闭见 `2026-09-20-upstream-readonly-carrier-a-approved-pupu.md`；B `486241a8` 见 `2026-09-20-upstream-readonly-carrier-b-approved-pupu.md`）；§三 原由 operator 2026-09-20 06:29 UTC 交接给点点。**→ 更新（2026-09-20T08:09:40Z）：#1494 formal CHANGES_REQUESTED（P1×2/P2×1），已派修 zcode，见 §十一**
 
 ## 一、产出（本地，共享 .git）
 
