@@ -98,6 +98,54 @@ test('slice2 P2: factory resolves the runtime profile AT CONSTRUCTION (green pat
   rmSync(root, { recursive: true, force: true });
 });
 
+// F317 收口：cat 配置里已有的 effort/contextWindow 必须真的到达 service（否则永远不下发、落档恒 null）
+test('runtime config: factory passes cat cli.effort + contextWindow into the service, absent = unset', () => {
+  const root = mkdtempSync(join(tmpdir(), 'qoder-runtime-config-'));
+  const auth = makeAuthSource(root, 'token-A');
+  try {
+    const configured = createQoderAgentService({
+      catId: 'cat_qoder_s2',
+      config: { defaultModel: 'Auto', clientId: 'qoder', cli: { effort: ' high ' }, contextWindow: 200000 },
+      dataRoot: join(root, 'data-a'),
+      authSourceDir: auth,
+      binaryRoot: REPO_ROOT,
+      log: { warn: () => {} },
+      modelResolver: () => 'Auto',
+    });
+    assert.ok(configured, 'configured cat still registers');
+    assert.equal(configured.config.reasoningEffort, 'high', 'effort trimmed and forwarded');
+    assert.equal(configured.config.contextWindow, 200000, 'context window forwarded');
+
+    const unset = createQoderAgentService({
+      catId: 'cat_qoder_s2',
+      config: { defaultModel: 'Auto', clientId: 'qoder' },
+      dataRoot: join(root, 'data-b'),
+      authSourceDir: auth,
+      binaryRoot: REPO_ROOT,
+      log: { warn: () => {} },
+      modelResolver: () => 'Auto',
+    });
+    assert.ok(unset, 'unset cat registers unchanged');
+    assert.equal(unset.config.reasoningEffort, undefined, 'Auto effort stays unset (no silent default)');
+    assert.equal(unset.config.contextWindow, undefined, 'Auto context window stays unset (no silent cap)');
+
+    const invalid = createQoderAgentService({
+      catId: 'cat_qoder_s2',
+      config: { defaultModel: 'Auto', clientId: 'qoder', cli: { effort: '   ' }, contextWindow: 0 },
+      dataRoot: join(root, 'data-c'),
+      authSourceDir: auth,
+      binaryRoot: REPO_ROOT,
+      log: { warn: () => {} },
+      modelResolver: () => 'Auto',
+    });
+    assert.ok(invalid, 'blank/zero config still registers');
+    assert.equal(invalid.config.reasoningEffort, undefined, 'blank effort is not forwarded');
+    assert.equal(invalid.config.contextWindow, undefined, 'non-positive window is not forwarded');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('L2: factory rejects missing or non-executable controlled runtime assets', () => {
   const root = mkdtempSync(join(tmpdir(), 'qoder-l2-assets-'));
   const auth = makeAuthSource(root, 'token-A');

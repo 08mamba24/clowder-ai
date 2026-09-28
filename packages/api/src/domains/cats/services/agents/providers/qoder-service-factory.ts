@@ -48,7 +48,16 @@ export interface QoderServiceFactoryInput {
 export function createQoderAgentService(input: QoderServiceFactoryInput): QoderAgentService | null {
   const { catId, config } = input;
   const warn = input.log?.warn?.bind(input.log) ?? (() => {});
-  void config;
+  // F317 收口：把 cat 配置里**已有的**两个运行时旋钮透传给 qodercn（未配置 = 不下发）：
+  //  - `cli.effort`（Hub「Thinking Effort」）→ `--reasoning-effort <level>`
+  //  - `contextWindow`（Hub「Context Window」成员级上限，Auto=undefined）→ `--context-window <size>`
+  // 动机：qodercn 只在被显式设置时才把这些值写进会话正文的 `runtime-config` 行，
+  // 否则 reasoningEffort/contextWindow 恒为 null，腿级排查无法审计思考预算/上下文窗口。
+  const reasoningEffort = config.cli?.effort?.trim() || undefined;
+  const contextWindow =
+    typeof config.contextWindow === 'number' && Number.isInteger(config.contextWindow) && config.contextWindow > 0
+      ? config.contextWindow
+      : undefined;
   const model = (input.modelResolver?.(catId) ?? getCatModel(catId))?.trim() ?? '';
   if (!model) {
     warn(
@@ -92,6 +101,8 @@ export function createQoderAgentService(input: QoderServiceFactoryInput): QoderA
     memoryMcpServerPath,
     runtimeRoot: binaryRoot,
     shellSandboxWrapperPath,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(contextWindow != null ? { contextWindow } : {}),
     ...(input.sandboxBinary ? { sandboxBinary: input.sandboxBinary } : {}),
   });
 }

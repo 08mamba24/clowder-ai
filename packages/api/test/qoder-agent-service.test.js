@@ -42,6 +42,7 @@ const svcModule = await import(join(DIST, 'QoderAgentService.js'));
 const profileModule = await import(join(SRC, 'qoder-runtime-profile.ts'));
 const {
   buildQoderArgs,
+  assertQoderRuntimeConfigFlags,
   qoderInitGate,
   QODER_BASIC_TOOLS,
   QODER_MEMORY_MCP_SERVER,
@@ -153,6 +154,159 @@ test('GitHub read MCP: only a granted invocation adds the exact readonly tool an
   assert.ok(!allowed.some((tool) => tool.includes('clowder-repository-read') && tool.endsWith('*')));
   const disabled = buildQoderArgs({ profileDir: '/p', model: 'Auto', toolAccess: 'disabled', githubRead: true });
   assert.ok(!disabled.some((arg) => arg.includes('clowder-repository-read')));
+});
+
+// ── F317 收口：requested runtime config（思考预算 / 上下文窗口）落档 ──────────
+// 背景：qodercn 只在**被显式设置**时才把这两个值写进会话正文的 `runtime-config` 行，
+// 否则恒为 null，腿级延迟排查无法审计。这里钉死两件事：
+//   ① 未配置 = argv 逐字节不变（零行为变更，见文件首个 deepEqual 用例）；
+//   ② 配置了 = 既下发 flag，又写进 F299 requested runtime config，且二者必须一致。
+test('runtime config: cat effort/window map to exact CLI flags (absent config = no flag)', () => {
+  const off = buildQoderArgs({ profileDir: '/p', model: 'Auto', toolAccess: 'disabled' });
+  assert.ok(!off.includes('--reasoning-effort'));
+  assert.ok(!off.includes('--context-window'));
+
+  const on = buildQoderArgs({
+    profileDir: '/p',
+    model: 'Auto',
+    toolAccess: 'disabled',
+    reasoningEffort: 'high',
+    contextWindow: 200000,
+  });
+  assert.deepEqual(on.slice(on.indexOf('--config-dir'), on.indexOf('--config-dir') + 5), [
+    '--config-dir',
+    '/p',
+    '--reasoning-effort',
+    'high',
+    '--context-window',
+  ]);
+  assert.equal(on[on.indexOf('--context-window') + 1], '200000');
+  assert.equal(on[on.indexOf('-m') + 1], 'Auto', 'model provenance unchanged by the new flags');
+  assert.ok(on.includes('--strict-mcp-config'), 'safety flag set unchanged');
+
+  // 与控制面（controlled）同样生效：flag 在 toolAccess 分支之前追加
+  const controlled = buildQoderArgs({
+    profileDir: '/p',
+    model: 'Auto',
+    toolAccess: 'controlled',
+    mcpConfigPath: '/tmp/qoder-memory.json',
+    workingDirectory: '/tmp/workspace-l2',
+    reasoningEffort: 'medium',
+    contextWindow: 128000,
+  });
+  assert.equal(controlled[controlled.indexOf('--reasoning-effort') + 1], 'medium');
+  assert.equal(controlled[controlled.indexOf('--context-window') + 1], '128000');
+});
+
+test('runtime config: argv↔record provenance guard rejects divergence', () => {
+  const args = buildQoderArgs({
+    profileDir: '/p',
+    model: 'Auto',
+    toolAccess: 'disabled',
+    reasoningEffort: 'high',
+    contextWindow: 200000,
+  });
+  assert.doesNotThrow(() => assertQoderRuntimeConfigFlags(args, { reasoningEffort: 'high', contextWindow: 200000 }));
+  assert.doesNotThrow(
+    () => assertQoderRuntimeConfigFlags([], {}),
+    'unconfigured argv + unconfigured record is consistent',
+  );
+  assert.throws(
+    () => assertQoderRuntimeConfigFlags(args, { reasoningEffort: 'low', contextWindow: 200000 }),
+    /reasoning-effort mismatch/,
+  );
+  assert.throws(
+    () => assertQoderRuntimeConfigFlags(args, { reasoningEffort: 'high', contextWindow: 1000 }),
+    /context-window mismatch/,
+  );
+  assert.throws(() => assertQoderRuntimeConfigFlags(args, {}), /mismatch/, 'recorded nothing while argv carries flags');
+});
+
+test('runtime config: requested record carries only what was actually sent (F299 lane)', async () => {
+  const build = (overrides) => {
+    let argvSeen;
+    let preparedSeen;
+    const svc = makeSvc({
+      ...overrides,
+      spawnFn: (_command, args) => {
+        argvSeen = args;
+        return fakeChild(fixtureLines('success'));
+      },
+    });
+    const invoke = (prompt) =>
+      runInvoke(svc, prompt, {
+        workingDirectory: '/tmp/workspace-l2',
+        beforeProviderLaunch: async (request) => {
+          preparedSeen = request;
+        },
+      });
+    return { invoke, argv: () => argvSeen, prepared: () => preparedSeen };
+  };
+
+  const configured = build({ reasoningEffort: 'high', contextWindow: 200000 });
+  const configuredOut = await configured.invoke('audit the leg');
+  assert.equal(
+    configuredOut.some((m) => m.type === 'error'),
+    false,
+    JSON.stringify(configuredOut),
+  );
+  assert.equal(configured.prepared().runtime.reasoningEffort, 'high');
+  assert.equal(configured.prepared().runtime.contextWindowTokens, 200000);
+  assert.equal(configured.argv()[configured.argv().indexOf('--reasoning-effort') + 1], 'high');
+  assert.equal(configured.argv()[configured.argv().indexOf('--context-window') + 1], '200000');
+
+  const unset = build({});
+  const unsetOut = await unset.invoke('audit the leg');
+  assert.equal(
+    unsetOut.some((m) => m.type === 'error'),
+    false,
+    JSON.stringify(unsetOut),
+  );
+  assert.ok(!('reasoningEffort' in unset.prepared().runtime), 'unset effort must be omitted, not faked');
+  assert.ok(!('contextWindowTokens' in unset.prepared().runtime), 'unset window must be omitted, not faked');
+  assert.ok(!unset.argv().includes('--reasoning-effort'));
+  assert.ok(!unset.argv().includes('--context-window'));
+
+  // 单设组合（P3-2）：两个旋钮必须**互相独立**——只设一个时，另一个仍整键省略。
+  // 「双设 / 双无」两组无法证伪「一个开关顺带落另一个」的耦合实现（例如
+  // `if (effort) { push effort; push window }` 两组都绿），故补这两个组合。
+  const onlyEffort = build({ reasoningEffort: 'low' });
+  const onlyEffortOut = await onlyEffort.invoke('audit the leg');
+  assert.equal(
+    onlyEffortOut.some((m) => m.type === 'error'),
+    false,
+    JSON.stringify(onlyEffortOut),
+  );
+  assert.equal(onlyEffort.prepared().runtime.reasoningEffort, 'low');
+  assert.ok(
+    !('contextWindowTokens' in onlyEffort.prepared().runtime),
+    'window must stay omitted when only effort is set',
+  );
+  assert.equal(onlyEffort.argv()[onlyEffort.argv().indexOf('--reasoning-effort') + 1], 'low');
+  assert.ok(!onlyEffort.argv().includes('--context-window'));
+
+  const onlyWindow = build({ contextWindow: 128000 });
+  const onlyWindowOut = await onlyWindow.invoke('audit the leg');
+  assert.equal(
+    onlyWindowOut.some((m) => m.type === 'error'),
+    false,
+    JSON.stringify(onlyWindowOut),
+  );
+  assert.equal(onlyWindow.prepared().runtime.contextWindowTokens, 128000);
+  assert.ok(!('reasoningEffort' in onlyWindow.prepared().runtime), 'effort must stay omitted when only window is set');
+  assert.equal(onlyWindow.argv()[onlyWindow.argv().indexOf('--context-window') + 1], '128000');
+  assert.ok(!onlyWindow.argv().includes('--reasoning-effort'));
+
+  // 空串/非正数等无效配置一律不下发（不把坏配置变成行为变更）
+  const blank = build({ reasoningEffort: '   ', contextWindow: 0 });
+  const blankOut = await blank.invoke('audit the leg');
+  assert.equal(
+    blankOut.some((m) => m.type === 'error'),
+    false,
+    JSON.stringify(blankOut),
+  );
+  assert.ok(!blank.argv().includes('--reasoning-effort'));
+  assert.ok(!blank.argv().includes('--context-window'));
 });
 
 // ── init 门：tools/mcp/model/版本 全锁 ─────────────────────────────────────
