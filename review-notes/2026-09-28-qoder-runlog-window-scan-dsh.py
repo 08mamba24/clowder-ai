@@ -18,12 +18,18 @@ Milestones per run (all read-only):
   transport     "[endpoints] Inference transport ready operation=<op>"
   cat_req/resp  operation=modelCatalogFetch -->/<--
   cat_saved     "[catalog] Saved model cache to disk"
-  cache_age_s   "[catalog] Loaded N models from stale disk cache (age Xs)"
+  cache         "[catalog] Loaded N models from {fresh,stale} disk cache (age Xs)"
+                -> cache_status=fresh|stale|none  AND cache_age_s.
+                Both legs carry an age; the old stale-only regex was the blind spot
+                that made the fresh group un-reproducible from the table alone.
   recv          input.prompt.received
   model         model.request.started -> model.response.completed (CLI clock)
 
 Derived: init=recv-t0, window=recv-ss_end, stall0=transport-ready,
          stall1=cat_saved-transport, stall2=recv-cat_saved,
+         ttft=mstart-recv  <- the PINNED (2) caliber: prompt intake -> first model
+                              event on the CLI clock. init is always reported as its
+                              own column and never folded into TTFT.
          win_catalog = the window contains the catalog-refresh path.
 
 Join: --join-table attaches sess/idle_s from the canonical 196-leg TSV by pid.
@@ -43,7 +49,7 @@ PROFILES = [
     "/Users/yuhan/cat-cafe/clowder-ai/.cat-cafe/qoder-profiles/qoder",
 ]
 TS = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+08:00)")
-STALE = re.compile(r"stale disk cache \(age (\d+)s\)")
+CACHE = re.compile(r"Loaded \d+ models from (fresh|stale) disk cache \(age (\d+)s\)")
 TRANSPORT = re.compile(r"Inference transport ready operation=(.*?) route=")
 
 
@@ -96,10 +102,11 @@ def scan_run(run_dir: str) -> dict | None:
                     r.setdefault("cat_resp", t)
             elif "[catalog] Saved model cache" in line:
                 r.setdefault("cat_saved", t)
-            elif "stale disk cache" in line:
-                g = STALE.search(line)
-                if g:
-                    r.setdefault("cache_age_s", int(g.group(1)))
+            elif "disk cache (age " in line:
+                g = CACHE.search(line)
+                if g and "cache_status" not in r:
+                    r["cache_status"] = g.group(1)
+                    r["cache_age_s"] = int(g.group(2))
             elif "inbound session_message received type=user" in line:
                 r.setdefault("inbound", t)
             elif "input.prompt.received" in line:
@@ -148,6 +155,17 @@ def main() -> None:
                 row["profile"] = os.path.basename(prof)
                 runs.append(row)
     runs.sort(key=lambda r: r["t0"])
+    # self-computed idle: previous leg's prompt intake (same profile) -> this process start.
+    # Committed here because the (1)/(3) idle figures were quoted without a re-runnable
+    # instrument; the joined `idle_s` column of the 196-leg table is a DIFFERENT definition
+    # (85/196 rows carry it) and gives a different answer.
+    last_recv: dict[str, int] = {}
+    for r in runs:
+        p = r["profile"]
+        if p in last_recv and last_recv[p] < r["t0"]:
+            r["idle_self"] = r["t0"] - last_recv[p]
+        if r.get("recv"):
+            last_recv[p] = r["recv"]
 
     def val(r, name):
         t0 = r["t0"]
@@ -164,8 +182,10 @@ def main() -> None:
             "cat_ms": (r["cat_resp"] - r["cat_req"]) if r.get("cat_resp") and r.get("cat_req") else None,
             "stall2": (r["recv"] - r["cat_saved"]) if r.get("recv") and r.get("cat_saved") else None,
             "model": (r["mend"] - r["mstart"]) if r.get("mend") and r.get("mstart") else None,
+            "ttft": (r["mstart"] - r["recv"]) if r.get("mstart") and r.get("recv") else None,
             "cache_age": r.get("cache_age_s"),
             "idle": (float(j["idle_s"]) * 1000) if j.get("idle_s") else None,
+            "idle_self": r.get("idle_self"),
         }[name]
 
     def vals(name, pred=lambda r: True):
@@ -189,19 +209,22 @@ def main() -> None:
         return num / (dx * dy) if dx and dy else None
 
     if a.out:
-        cols = ["ready", "ss_end", "transport", "window", "init", "stall0", "cat_ms", "stall2", "model"]
+        cols = ["ready", "ss_end", "transport", "window", "init", "stall0", "cat_ms", "stall2",
+                "ttft", "model"]
         names = {"ready": "ready_ms", "ss_end": "ss_end_ms", "transport": "transport_ms",
                  "window": "window_ms", "init": "init_ms", "stall0": "stall0_ms",
-                 "cat_ms": "cat_fetch_ms", "stall2": "stall2_ms", "model": "model_ms"}
+                 "cat_ms": "cat_fetch_ms", "stall2": "stall2_ms", "ttft": "ttft_ms",
+                 "model": "model_ms"}
         hdr = ["UTC", "profile", "run", "pid", "resume", "argv_r", "cli", "sess", "idle_s",
-               "cache_age_s", "win_catalog"] + [names[c] for c in cols]
+               "cache_status", "cache_age_s", "win_catalog"] + [names[c] for c in cols]
         lines = ["\t".join(hdr)]
         for r in runs:
             j = by_pid.get(str(r.get("pid")), {})
             row = [dt.datetime.fromtimestamp(r["t0"] / 1000, dt.timezone.utc).strftime("%m-%d %H:%M:%S"),
                    r["profile"], r["run"], str(r.get("pid")), r.get("resume", ""), str(r.get("has_r", "")),
                    str(r.get("cli_version", "")), j.get("sess", ""), j.get("idle_s", ""),
-                   str(r.get("cache_age_s", "")), str(r.get("win_catalog", ""))]
+                   r.get("cache_status") or "none", str(r.get("cache_age_s", "")),
+                   str(r.get("win_catalog", ""))]
             row += ["" if val(r, c) is None else str(int(val(r, c))) for c in cols]
             lines.append("\t".join(row))
         open(a.out, "w").write("\n".join(lines) + "\n")
@@ -210,40 +233,107 @@ def main() -> None:
     print("== coverage ==")
     print("runs:", len(runs), "| recv:", sum(1 for r in runs if r.get("recv")),
           "| catalog fetch:", sum(1 for r in runs if r.get("cat_req")),
-          "| stale-cache line:", sum(1 for r in runs if r.get("cache_age_s") is not None),
+          "| cache_status:",
+          {k: sum(1 for r in runs if (r.get("cache_status") or "none") == k)
+           for k in ("fresh", "stale", "none")},
           "| transport=model catalog fetch:", sum(1 for r in runs if "model catalog fetch" in r["transport"]))
     print("wait_catalog flags:", {k: sum(1 for r in runs if r.get("wait_catalog") == k) for k in ("true", "false")})
     print()
     for label, pred in [("ALL prompt legs", lambda r: r.get("recv")),
                         ("NEW  (resume=false)", lambda r: r.get("resume") == "false"),
                         ("RESUME (resume=true)", lambda r: r.get("resume") == "true"),
-                        ("cache FRESH (no stale line)", lambda r: r.get("cache_age_s") is None and r.get("recv")),
-                        ("cache STALE", lambda r: r.get("cache_age_s") is not None and r.get("recv")),
+                        ("cache FRESH", lambda r: r.get("cache_status") == "fresh" and r.get("recv")),
+                        ("cache STALE", lambda r: r.get("cache_status") == "stale" and r.get("recv")),
+                        ("cache NONE (no catalog line)", lambda r: r.get("cache_status") is None and r.get("recv")),
                         ("window contains catalog", lambda r: r.get("win_catalog")),
                         ("window w/o catalog", lambda r: r.get("recv") and not r.get("win_catalog"))]:
         n = sum(1 for r in runs if pred(r))
         print(f"-- {label} (n={n})")
-        for c in ("ready", "ss_gap", "window", "init", "stall0", "cat_ms", "stall2", "model"):
+        for c in ("ready", "ss_gap", "window", "init", "stall0", "cat_ms", "stall2", "ttft", "model"):
             stats(c, vals(c, pred))
+    print()
+    print("== (2) TTFT statistics, PINNED caliber = prompt intake -> first model event ==")
+    print("   ttft = model.request.started - input.prompt.received  (both CLI clock)")
+    print("   init (recv-t0) is a separate column and is never folded into TTFT.")
+    print("   cuts: new/resume x cache_status, then multi-day buckets.")
+
+    def cs_is(r, q):
+        return (r.get("cache_status") or "none") == q
+
+    print()
+    for rg, rp in [("ALL", lambda r: True),
+                   ("NEW  (resume=false)", lambda r: r.get("resume") == "false"),
+                   ("RESUME(resume=true)", lambda r: r.get("resume") == "true")]:
+        print(f"   -- {rg}")
+        for cs in ("fresh", "stale", "none", "ANY"):
+            pred = (lambda r, p=rp: p(r)) if cs == "ANY" else (lambda r, p=rp, q=cs: p(r) and cs_is(r, q))
+            stats(f"{cs:5s} ttft", vals("ttft", pred))
+    print()
+    print("   same-leg side-by-side (one row per cache_status; init shown, NOT added in):")
+    for cs in ("fresh", "stale", "none", "ANY"):
+        pred = (lambda r: True) if cs == "ANY" else (lambda r, q=cs: cs_is(r, q))
+        print(f"   -- cache={cs:5s} legs={sum(1 for r in runs if r.get('recv') and pred(r))}")
+        for c in ("window", "init", "ttft", "model"):
+            stats(c, vals(c, pred))
+    print()
+    print("   multi-day buckets (UTC day of process start, all prompt legs):")
+
+    def day_of(r):
+        return dt.datetime.fromtimestamp(r["t0"] / 1000, dt.timezone.utc).strftime("%m-%d")
+
+    days = sorted({day_of(r) for r in runs if val(r, "ttft") is not None})
+    for d in days:
+        dp = lambda r, dd=d: day_of(r) == dd
+        tt, ini = vals("ttft", dp), vals("init", dp)
+        fs = [r.get("cache_status") or "none" for r in runs if dp(r) and val(r, "ttft") is not None]
+        print(f"   {d}  ttft n={len(tt):2d} med={st.median(tt)/1000:7.1f}s | "
+              f"init n={len(ini):2d} med={st.median(ini)/1000 if ini else 0:6.1f}s | "
+              f"cache fresh/stale/none = {fs.count('fresh')}/{fs.count('stale')}/{fs.count('none')}")
     print()
     print("== window anatomy: does the window hold the catalog path? ==")
     for c in ("ready", "window", "init"):
         stats(c, vals(c))
     print()
     print("== correlations ==")
-    def corr(n1, n2):
+
+    def corr(n1, n2, pred=lambda r: True):
         xs, ys = [], []
         for r in runs:
+            if not pred(r):
+                continue
             p, q = val(r, n1), val(r, n2)
             if p is None or q is None:
                 continue
             xs.append(p)
             ys.append(q)
         return len(xs), pearson(xs, ys)
-    for x, y in [("init", "idle"), ("window", "idle"), ("init", "cache_age"), ("stall0", "cache_age"),
-                 ("window", "cache_age"), ("init", "model")]:
+
+    print("  -- idle has TWO definitions; report both, never mix them:")
+    print("     idle_self = prev leg's prompt intake (same profile) -> this process start [this script]")
+    print("     idle      = idle_s joined from the 196-leg table                        [85/196 rows]")
+    for x, y in [("init", "idle_self"), ("window", "idle_self"), ("init", "idle"), ("window", "idle"),
+                 ("init", "cache_age"), ("stall0", "cache_age"), ("window", "cache_age"),
+                 ("init", "model"), ("ttft", "init"), ("ttft", "model")]:
         n, r_ = corr(x, y)
-        print(f"  r({x}, {y}) = {'-' if r_ is None else f'{r_:+.3f}'}  (n={n})")
+        print(f"  r({x:7s}, {y:10s}) = {'-' if r_ is None else f'{r_:+.3f}'}  (n={n})")
+    print("  -- same, controlled for cache_status (is 'idle' just a proxy for stale?):")
+    for cs in ("stale", "fresh"):
+        print(f"     within cache={cs}:")
+        for x, y in [("init", "idle_self"), ("window", "idle_self"), ("init", "cache_age"),
+                     ("window", "cache_age")]:
+            n, r_ = corr(x, y, lambda r, q=cs: (r.get("cache_status") or "none") == q)
+            print(f"     r({x:7s}, {y:10s}) = {'-' if r_ is None else f'{r_:+.3f}'}  (n={n})")
+    print("  -- idle bucket vs window (the threshold claim, re-run on this instrument):")
+    for lo, hi, lbl in [(0, 60_000, "<60s"), (60_000, 300_000, "60-300s"), (300_000, 1_800_000, "300-1800s"),
+                        (1_800_000, 7_200_000, "1800-7200s"), (7_200_000, 10**15, ">7200s")]:
+        pred = lambda r, a=lo, b=hi: r.get("idle_self") is not None and a <= r["idle_self"] < b
+        ws = vals("window", pred)
+        n_stale = sum(1 for r in runs if pred(r) and (r.get("cache_status") or "none") == "stale")
+        if ws:
+            print(f"     idle {lbl:10s} n={len(ws):3d} window med={st.median(ws)/1000:7.1f}s "
+                  f"(stale {n_stale}/{len(ws)})")
+        else:
+            print(f"     idle {lbl:10s} n=0")
     print()
     print("== longest windows (top 12) ==")
     for r in sorted([r for r in runs if val(r, "window") is not None], key=lambda r: -val(r, "window"))[:12]:
