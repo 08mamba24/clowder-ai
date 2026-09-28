@@ -230,9 +230,15 @@ export function buildQoderArgs(input: {
   mcpConfigPath?: string;
   workingDirectory?: string;
   githubRead?: boolean;
-  /** 见 {@link QoderAgentServiceConfig.reasoningEffort}（未配置 = 不下发） */
+  /**
+   * 见 {@link QoderAgentServiceConfig.reasoningEffort}（未配置 = 不下发）。
+   * 调用方契约（P3-1）：本函数是纯 argv 构造器，**自身不校验/不消毒**——与 `model`
+   * 同款分层：消毒在 service/factory 两个入口（trim、正整数），argv↔落档一致性由
+   * {@link assertQoderRuntimeConfigFlags} 在 spawn 前兜底。传 truthy 空白串或非正数
+   * 会原样落 argv，属调用方违约。
+   */
   reasoningEffort?: string;
-  /** 见 {@link QoderAgentServiceConfig.contextWindow}（未配置 = 不下发） */
+  /** 同 {@link buildQoderArgs} 的 `reasoningEffort`：调用方负责消毒，本函数不设防。 */
   contextWindow?: number;
 }): string[] {
   const args = ['-p', '-', '-m', input.model, '-o', 'stream-json', '--config-dir', input.profileDir];

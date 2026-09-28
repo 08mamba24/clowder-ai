@@ -267,6 +267,36 @@ test('runtime config: requested record carries only what was actually sent (F299
   assert.ok(!unset.argv().includes('--reasoning-effort'));
   assert.ok(!unset.argv().includes('--context-window'));
 
+  // 单设组合（P3-2）：两个旋钮必须**互相独立**——只设一个时，另一个仍整键省略。
+  // 「双设 / 双无」两组无法证伪「一个开关顺带落另一个」的耦合实现（例如
+  // `if (effort) { push effort; push window }` 两组都绿），故补这两个组合。
+  const onlyEffort = build({ reasoningEffort: 'low' });
+  const onlyEffortOut = await onlyEffort.invoke('audit the leg');
+  assert.equal(
+    onlyEffortOut.some((m) => m.type === 'error'),
+    false,
+    JSON.stringify(onlyEffortOut),
+  );
+  assert.equal(onlyEffort.prepared().runtime.reasoningEffort, 'low');
+  assert.ok(
+    !('contextWindowTokens' in onlyEffort.prepared().runtime),
+    'window must stay omitted when only effort is set',
+  );
+  assert.equal(onlyEffort.argv()[onlyEffort.argv().indexOf('--reasoning-effort') + 1], 'low');
+  assert.ok(!onlyEffort.argv().includes('--context-window'));
+
+  const onlyWindow = build({ contextWindow: 128000 });
+  const onlyWindowOut = await onlyWindow.invoke('audit the leg');
+  assert.equal(
+    onlyWindowOut.some((m) => m.type === 'error'),
+    false,
+    JSON.stringify(onlyWindowOut),
+  );
+  assert.equal(onlyWindow.prepared().runtime.contextWindowTokens, 128000);
+  assert.ok(!('reasoningEffort' in onlyWindow.prepared().runtime), 'effort must stay omitted when only window is set');
+  assert.equal(onlyWindow.argv()[onlyWindow.argv().indexOf('--context-window') + 1], '128000');
+  assert.ok(!onlyWindow.argv().includes('--reasoning-effort'));
+
   // 空串/非正数等无效配置一律不下发（不把坏配置变成行为变更）
   const blank = build({ reasoningEffort: '   ', contextWindow: 0 });
   const blankOut = await blank.invoke('audit the leg');
