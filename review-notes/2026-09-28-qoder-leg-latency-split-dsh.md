@@ -2,7 +2,7 @@
 
 日期：2026-09-28　thread：`thread_mua1efbnjtkqiaqy`
 对象：基线腿 invocation `7582a5d8-b2ee-49e3-b1f2-13601e31540c`（cat `qoder-flash`，cliSessionId `895fd5f3-2d2a-4f59-abf4-62ea5c3dd0ef`）
-状态：**join 收口（三源 37ms 内吻合，原始数据已逐行核过）；"冷启动 vs 提供方慢"两个延迟已用 n=196 腿证明可解耦；promptLen 对两侧都只有 r≈0.3（固定效应），F148 预期收益维持下调；我此前的"双峰"表述按新数据收回**
+状态：**join 收口（三源 37ms 内吻合，原始数据已逐行核过）；"冷启动 vs 提供方慢"两个延迟已用 n=196 腿证明可解耦；promptLen 对两侧都只有 r≈0.3（固定效应），F148 预期收益维持下调；我此前的"双峰"表述按新数据收回；**§5 的观测缺口已由 PR #52 补齐并合并（squash `2d01b51d5`，live=dormant，待 operator 授权部署）**
 
 ## 0. 一句话结论
 
@@ -100,5 +100,15 @@ harness 侧另两条同腿锚点也核过：L24356 `Created invocation` `14:54:0
 
 - 表：`review-notes/2026-09-28-qoder-leg-latency-table-dsh.tsv`（196 行，含 session/pid/各段耗时/体积/idle）
 - 扫描器：`review-notes/2026-09-28-qoder-leg-scan-dsh.py`（只读；两个 profile 全量重算，约 3s）
+
+## 7. §5 观测缺口补齐：PR #52（已合并，回填本条线）
+
+- **PR**：https://github.com/08mamba24/clowder-ai/pull/52 —「fix(f317): 落档 qoder 的 reasoning effort / context window（CLI 边界）」
+- **复核链**（跨族：布偶复核奶牛）：谱谱 APPROVE（4 验收点逐条核过，2 个 P3）→ 两个 P3 当轮闭合（P3-2 附变异检验证明是真盲点）→ delta APPROVE 沿用（新 head 逐行核过，生产侧 delta 仅 JSDoc）→ 放行合并
+- **CI**（head `a8e453ebf`）：Build / Lint / Public contract surfaces / Public test ×5 / Test (Windows) 全 pass，1 job skipping，0 blocker
+- **合并**：squash `2d01b51d5`（2026-09-28T16:26:09Z），4 文件 +286/−1，远端分支已删
+- **hotfix 闸门（Step 6.8）**：`PR_NUMBER=52 node scripts/check-hotfix-pattern.mjs` → `{"hotfix":false,"autoLabel":false,"indeterminate":false}`（标题 `fix(f317):` 不匹配 `\bfix:` 字面量；4 文件/286 行也够不上 auto-label 双条件）
+- **Activation truth（Step 7.5c）**：`main=landed:2d01b51d5`；`live=dormant`（runtime 未部署/未重启，部署需 operator 显式授权）
+- **闭环条件**：live 激活 + cat 侧设置 `cli.effort` / `contextWindow`（"未设置"本身也是有效落档状态）之后，`runtime-config` 行的 `reasoningEffort`/`contextWindow` 才第一次有值可审计——§5 那条"无法审计思考预算/窗口"的缺口至此才真正关闭
 
 签名：[点点/deepseek-flash🐾]
