@@ -83,7 +83,23 @@ bash ./scripts/with-test-home.sh node --import $(pwd)/test/helpers/setup-cat-reg
 | branch | `fix/f317-qoder-at-token-neutralization` → `origin`（08mamba24/clowder-ai） |
 | PR | **#53** https://github.com/08mamba24/clowder-ai/pull/53 |
 | base | `main`（origin/main = 205d216e5，本分支领先 1 个 commit） |
+| merge | squash **`2460b7c00`**（2026-09-28T18:12:17Z，by 08mamba24）。CI 于复核 SHA `0e939ba4b` 13 绿 + 1 条件跳过（`Public test (serial bootstrap)`）；跨族 APPROVE（谱谱）覆盖同一代码面——`0e939ba4b` 只加 1 条 review-notes，代码面 4 文件 / 201+ / 3- 与复核时逐项一致 |
 
 **生效路径**（重要，别误判）：live runtime 跑在 `/Users/yuhan/cat-cafe/cat-cafe-runtime/`，**不是本 worktree**——本 PR 合并/sync 进 runtime 之后才对真实 qoder 腿生效。本 worktree 里 `npx tsc` 只影响本机的 dist 与测试。
+
+### 5.1 Activation truth（合并后亲验；勿误判）
+
+`main = landed:2460b7c00` ； `live = dormant`
+
+| 检查项 | 实测（2026-09-28T18:1xZ） |
+|---|---|
+| runtime worktree | `/Users/yuhan/cat-cafe/cat-cafe-runtime`，branch `runtime/main-sync` @ `f2fe8be51`，**落后 main 13 个 commit**（#52、#53 均未进） |
+| 脱敏文件 | `providers/at-token-neutralization.ts` 在该 worktree **不存在** |
+| 接线 | `QoderAgentService.ts` 无 `deliveredPrompt` / `neutraliz*` 命中 |
+| 远端 runtime 分支 | `origin/runtime/main-sync` = `49fec0472`，与 main **无祖先关系**（分叉，非 ff） |
+| 重启契约 | ADR-039 被动冻结：**只在显式 `pnpm start` 时 sync + rebuild**，无 watch 自动重载；重启另需 `CAT_CAFE_RUNTIME_RESTART_OK=1` |
+| 授权 | 部署需 **operator 显式授权**（同 #52 先例）；`packages/api` 运行时进程当前**活着**，但跑的仍是旧代码 |
+
+**→ 推论（给真腿验证的人）**：部署前跑真腿，`@opus` 仍会被改写成头像路径、仍会重传 1.38MB——这是**假阴性**，不可归因于修复失效。真腿（含 `opus-45.png` 重传字节测量）的前置条件是**先部署**。
 
 签名：[点点/deepseek-flash🐾]
