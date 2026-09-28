@@ -198,6 +198,16 @@ export interface QoderAgentServiceConfig {
   shellSandboxWrapperPath?: string;
   /** macOS Seatbelt binary（测试 seam；生产动态解析 sandbox-exec）。 */
   sandboxBinary?: string;
+  /**
+   * 可选：cat 配置的 CLI reasoning effort（`CatConfig.cli.effort`），映射到
+   * qodercn `--reasoning-effort <level>`。undefined/空串 = 不下发 flag，保持 CLI 默认。
+   */
+  reasoningEffort?: string;
+  /**
+   * 可选：cat 配置的成员级上下文窗口上限（`CatConfig.contextWindow`，tokens），映射到
+   * qodercn `--context-window <size>`。undefined = 不下发 flag，保持 CLI 默认（Auto）。
+   */
+  contextWindow?: number;
   /** Unit-test seam only; production factory never injects this. */
   sandboxProbe?: (input: QoderSandboxProbeInput) => void;
 }
@@ -220,8 +230,17 @@ export function buildQoderArgs(input: {
   mcpConfigPath?: string;
   workingDirectory?: string;
   githubRead?: boolean;
+  /** 见 {@link QoderAgentServiceConfig.reasoningEffort}（未配置 = 不下发） */
+  reasoningEffort?: string;
+  /** 见 {@link QoderAgentServiceConfig.contextWindow}（未配置 = 不下发） */
+  contextWindow?: number;
 }): string[] {
   const args = ['-p', '-', '-m', input.model, '-o', 'stream-json', '--config-dir', input.profileDir];
+  // 观测性（F317 收口）：qodercn 只把**显式设置**的 runtime config 落进正文
+  // （`type:"runtime-config"` 行；未设置则 reasoningEffort/contextWindow/generation 全为 null）。
+  // 未配置 = 不下发 flag，argv 与历史逐字节一致（零行为变更）。
+  if (input.reasoningEffort) args.push('--reasoning-effort', input.reasoningEffort);
+  if (input.contextWindow != null) args.push('--context-window', String(input.contextWindow));
   if (input.sessionId) args.push('-r', input.sessionId);
   if (input.toolAccess === 'disabled') {
     args.push(
@@ -272,6 +291,33 @@ export function assertExplicitModelFlag(argv: readonly string[], model: string):
   const i = argv.indexOf('-m');
   if (!model || i === -1 || argv[i + 1] !== model) {
     throw new Error(`qoder argv missing explicit -m ${JSON.stringify(model)} (silent-model-fallback guard)`);
+  }
+}
+
+/**
+ * P1④ 同款 provenance：argv 必须与落档的 requested runtime config 一致——
+ * 记录了 effort/context-window 就必须真的下发（防"落档 ≠ 出境"分叉）。
+ */
+export function assertQoderRuntimeConfigFlags(
+  argv: readonly string[],
+  expected: { reasoningEffort?: string; contextWindow?: number },
+): void {
+  const readFlag = (flag: string): string | undefined => {
+    const i = argv.indexOf(flag);
+    return i === -1 ? undefined : argv[i + 1];
+  };
+  const effort = readFlag('--reasoning-effort');
+  if ((expected.reasoningEffort ?? undefined) !== effort) {
+    throw new Error(
+      `qoder argv reasoning-effort mismatch: recorded ${JSON.stringify(expected.reasoningEffort ?? null)} vs argv ${JSON.stringify(effort ?? null)}`,
+    );
+  }
+  const window = readFlag('--context-window');
+  const expectedWindow = expected.contextWindow != null ? String(expected.contextWindow) : undefined;
+  if (expectedWindow !== window) {
+    throw new Error(
+      `qoder argv context-window mismatch: recorded ${JSON.stringify(expectedWindow ?? null)} vs argv ${JSON.stringify(window ?? null)}`,
+    );
   }
 }
 
@@ -933,16 +979,31 @@ export class QoderAgentService implements AgentService {
           : githubReadLease
             ? GITHUB_READ_INIT_EXPECTATION
             : CONTROLLED_INIT_EXPECTATION;
+      // 观测性（F317 收口）：只透传 cat 配置里**已显式设置**的值，未配置即不下发
+      // （零行为变更）。落档与 argv 同源，见 assertQoderRuntimeConfigFlags。
+      const reasoningEffort = this.config.reasoningEffort?.trim() || undefined;
+      const contextWindow =
+        typeof this.config.contextWindow === 'number' &&
+        Number.isInteger(this.config.contextWindow) &&
+        this.config.contextWindow > 0
+          ? this.config.contextWindow
+          : undefined;
       const args = buildQoderArgs({
         profileDir: this.config.profileDir,
         model: this.config.model,
         sessionId: options?.sessionId,
         toolAccess,
         githubRead: !!githubReadLease,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(contextWindow != null ? { contextWindow } : {}),
         ...(invocationLease ? { mcpConfigPath: invocationLease.mcpConfigPath, workingDirectory } : {}),
       });
       // P1④：显式 -m provenance —— argv 断言不过即 0 spawn
       assertExplicitModelFlag(args, this.config.model);
+      assertQoderRuntimeConfigFlags(args, {
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(contextWindow != null ? { contextWindow } : {}),
+      });
 
       // F299：正文/runtime/tool surface 形成后、spawn 前过 recorder —— 拒绝即 0 spawn；
       // 落档字节深冻（P1②），recorder 之后核验未被改写
@@ -956,6 +1017,11 @@ export class QoderAgentService implements AgentService {
             carrier: 'qodercn-cli',
             model: this.config.model,
             protocol: 'stream-json/1.4.0',
+            // requested runtime config（F299 lane，落进 events.live.jsonl 的
+            // request_generation_assembled.runtime.requested）：只写真的下发了的值，
+            // 未配置则整键省略——「设备未设置」与「设置成某值」在档案里可区分。
+            ...(reasoningEffort ? { reasoningEffort } : {}),
+            ...(contextWindow != null ? { contextWindowTokens: contextWindow } : {}),
             toolExecutionPolicy: toolAccess === 'controlled' ? 'workspace_write' : 'read_only',
           },
           tools: {
