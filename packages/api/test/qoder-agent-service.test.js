@@ -1846,6 +1846,46 @@ test('round2 P1-3: pre-aborted signal → 0 spawn, prompt never written', async 
   assert.ok(out.some((m) => m.type === 'error' && m.error.includes('aborted')));
 });
 
+// F317 @token hotfix（2026-09-28）：出境 prompt 逐句柄反引号包裹——CLI 不再把 `@句柄`
+// 当文件引用解析（`@opus` → 1.38MB 头像）。落档字节与 stdin 出境字节必须同源。
+test('F317 hotfix: stdin bytes are @-neutralized and the recorder freezes the same bytes', async () => {
+  const written = [];
+  const recorded = [];
+  const svc = makeSvc({
+    spawnFn: () => fakeChild(fixtureLines('success'), { stdin: { recorder: written } }),
+  });
+  const raw = [
+    '你可以 @队友: @zcode / @dsh-vision',
+    '[正确] @zcode',
+    '请帮忙',
+    '邮箱 foo@bar.com 与真文件引用 @packages/api/src/index.ts 保持原样',
+    '（例如 `@opus`）已包裹形态不动',
+    '',
+  ].join('\n');
+  const out = await runInvoke(svc, raw, {
+    workingDirectory: '/tmp',
+    invocationId: 'inv-at-hotfix',
+    beforeProviderLaunch: async (prepared) => {
+      recorded.push(prepared.message.body);
+    },
+  });
+  const bytes = written.join('');
+  assert.ok(
+    out.some((m) => m.type === 'done'),
+    'leg completes',
+  );
+  assert.notEqual(bytes, raw, 'delivered bytes must differ from the raw prompt (neutralization actually ran)');
+  assert.ok(raw.includes('@zcode /'), 'precondition: raw prompt carries the CLI-resolvable form');
+  assert.ok(bytes.includes('`@zcode` / `@dsh-vision`'), `mentions 列表逐句柄包裹, got: ${bytes.slice(0, 160)}`);
+  assert.ok(bytes.includes('[正确] `@zcode`\n请帮忙'), '路由示例包裹');
+  assert.equal(/(^|[^`\w])@zcode(?![`\w-])/.test(bytes), false, 'no bare @zcode left in delivered bytes');
+  assert.ok(bytes.includes('foo@bar.com'), 'email untouched');
+  assert.ok(bytes.includes('@packages/api/src/index.ts'), 'real file reference untouched');
+  assert.ok(bytes.includes('（例如 `@opus`）'), 'already-wrapped handle untouched');
+  assert.equal(recorded.length, 1, 'recorder saw exactly one prepared request');
+  assert.equal(recorded[0], bytes, 'recorder-frozen body === stdin bytes (same delivered string)');
+});
+
 test('round2 P1-4: streaming — messages yield before stream end (no full buffering)', async () => {
   // init + assistant 通过后，流保持打开：首个 next() 必须已能拿到 session_init
   const child = new EventEmitter();

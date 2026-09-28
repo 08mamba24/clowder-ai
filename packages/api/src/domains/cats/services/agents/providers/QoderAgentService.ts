@@ -19,6 +19,11 @@
  *      CliSpawnOptions 接 rawArchivePath（timeout 诊断定位 raw archive）
  *   P1-3 resume 审计按 provider canonical slug 精确定位（见 qoder-runtime-profile.ts）
  *   P2-4 spawn 层异常不再从 iterable 逸出——统一转 qoder typed error 终态
+ *
+ * Round-5（F317 @token hotfix，2026-09-28）：出境 prompt 先过 `@句柄` 脱敏——
+ *   qodercn 会把 stdin 里的 `@token` 当文件引用替换成仓库路径（`@opus` → 头像 1.38MB/腿；
+ *   名册与路由示例被改写成路径）。脱敏形态与证据见 at-token-neutralization.ts；
+ *   recorder 落档字节 = 出境字节（deliveredPrompt 三处同源）。
  */
 
 import { spawnSync } from 'node:child_process';
@@ -59,6 +64,7 @@ import type {
   TokenUsage,
   ToolExecutionPolicy,
 } from '../../types.js';
+import { neutralizeAtTokensForFileExpansion } from './at-token-neutralization.js';
 import { type RawArchiveSink, sanitizeRawEvent } from './codex-audit-hooks.js';
 import {
   checkQoderProtocolVersion,
@@ -871,6 +877,10 @@ export class QoderAgentService implements AgentService {
   }
 
   async *invoke(prompt: string, options?: AgentServiceOptions): AsyncIterable<AgentMessage> {
+    // F317 @token hotfix（2026-09-28）：qodercn 会把 stdin prompt 里的 `@句柄` 当文件引用
+    // 就地替换成仓库路径（`@opus` → 1.38MB 头像 → 每 spawn 重传；名册/路由示例被改写成路径）。
+    // 脱敏后的字符串是**唯一出境字节**：recorder 落档、变异校验、stdin 三处同源。
+    const deliveredPrompt = neutralizeAtTokensForFileExpansion(prompt);
     const workingDirectory = options?.workingDirectory;
     if (!workingDirectory) {
       yield this.error('qoder invoke rejected: workingDirectory is required (fail closed)');
@@ -1016,7 +1026,7 @@ export class QoderAgentService implements AgentService {
       if (options?.beforeProviderLaunch) {
         const prepared = freezePreparedRequest({
           v: 1,
-          message: { accuracy: 'exact', body: prompt },
+          message: { accuracy: 'exact', body: deliveredPrompt },
           nativeInstructions: [],
           runtime: {
             provider: 'qoder',
@@ -1042,7 +1052,7 @@ export class QoderAgentService implements AgentService {
           yield this.error(`qoder invoke rejected by provider-request recorder: ${String(err)}`);
           return;
         }
-        if (!('body' in prepared.message) || prepared.message.body !== prompt) {
+        if (!('body' in prepared.message) || prepared.message.body !== deliveredPrompt) {
           yield this.error('qoder invoke rejected: prepared request mutated across recorder boundary');
           return;
         }
@@ -1055,7 +1065,7 @@ export class QoderAgentService implements AgentService {
         command: binary,
         args,
         cwd: workingDirectory,
-        stdinInput: prompt,
+        stdinInput: deliveredPrompt,
         env:
           invocationLease?.childEnv ??
           buildQoderEnvOverrides({
