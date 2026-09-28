@@ -75,8 +75,15 @@ bash ./scripts/with-test-home.sh node --import $(pwd)/test/helpers/setup-cat-reg
 2. **10–12s 上传前静默**仍未归因（上一轮标为假设：CLI 文件检索）；本轮不动它。
 3. **全量套件未跑**：只跑了 qoder 两个文件；`pnpm gate` 未跑（本机 github 连不通、耗时）。
 
-## 5. 提交与推送
+## 5. 提交与推送（已落远端，非"本地未上"）
 
-见文件末尾追加的提交信息（push 若失败会如实标注，不写成"已上远端"）。
+| 项 | 值 |
+|---|---|
+| commit | `3f9e853f8` fix(f317): qoder 出境 prompt 的 @句柄脱敏（反引号包裹） |
+| branch | `fix/f317-qoder-at-token-neutralization` → `origin`（08mamba24/clowder-ai） |
+| PR | **#53** https://github.com/08mamba24/clowder-ai/pull/53 |
+| base | `main`（origin/main = 205d216e5，本分支领先 1 个 commit） |
+
+**生效路径**（重要，别误判）：live runtime 跑在 `/Users/yuhan/cat-cafe/cat-cafe-runtime/`，**不是本 worktree**——本 PR 合并/sync 进 runtime 之后才对真实 qoder 腿生效。本 worktree 里 `npx tsc` 只影响本机的 dist 与测试。
 
 签名：[点点/deepseek-flash🐾]
