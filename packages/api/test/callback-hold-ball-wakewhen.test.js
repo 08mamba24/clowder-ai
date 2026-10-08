@@ -503,6 +503,61 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
         completion: new Promise((resolve) => {
           resolveCompletion = resolve;
         }),
+      };
+    };
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'hold-ball-durable-gate-route-'));
+    const previousDataDir = process.env.CAT_CAFE_DATA_DIR;
+    process.env.CAT_CAFE_DATA_DIR = tempDir;
+
+    try {
+      const deps = makeStubDeps();
+      const app = await createApp(deps);
+      const ownerUserId = 'user-durable-gate';
+      const thread = await threadStore.create(ownerUserId, 'durable gate');
+      const { invocationId, callbackToken } = await registry.create(ownerUserId, 'codex', thread.id);
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/callbacks/hold-ball',
+        headers: { 'x-invocation-id': invocationId, 'x-callback-token': callbackToken },
+        payload: {
+          reason: 'canonical gate',
+          nextStep: 'consume terminal truth',
+          wakeWhen: { command: 'pnpm gate' },
+        },
+      });
+
+      assert.equal(response.statusCode, 200, response.body);
+      const body = JSON.parse(response.body);
+      assert.match(body.wakeWhen.jobId, /^managed-gate-/);
+      assert.notEqual(body.wakeWhen.jobId, body.taskId);
+      const task = deps.dynamicTaskStore.getById(body.taskId);
+      const job = task.params.holdLifecycle.managedCommand.durableJob;
+      assert.equal(job.jobId, body.wakeWhen.jobId);
+      assert.equal(job.originTaskId, body.taskId);
+      const running = JSON.parse(readFileSync(job.recordPath, 'utf8'));
+      assert.equal(running.state, 'running');
+      assert.equal(running.ownerIdentity.startedAt, 'birth-42');
+
+      resolveCompletion({ exitCode: 0, timedOut: false, durationMs: 25, tailOutput: 'gate green' });
+      const deadline = Date.now() + 1_000;
+      while (JSON.parse(readFileSync(job.recordPath, 'utf8')).state !== 'terminal' && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(JSON.parse(readFileSync(job.recordPath, 'utf8')).terminalStatus, 'green');
+      assert.equal(JSON.parse(readFileSync(`${job.recordPath}.terminal`, 'utf8')).terminalStatus, 'green');
+      while (getActiveRunnerCount() > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(getActiveRunnerCount(), 0, 'terminal fake worker must leave no active registry residue');
+      await app.close();
+    } finally {
+      ManagedRunner.prototype.start = originalStart;
+      if (previousDataDir === undefined) delete process.env.CAT_CAFE_DATA_DIR;
+      else process.env.CAT_CAFE_DATA_DIR = previousDataDir;
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   for (const [budgetName, wakeWhen, expectedExecutionSlaMs] of [
     ['default budget', { command: 'pnpm gate' }, 3_600_000],
     ['isolated Redis prefix', { command: 'REDIS_URL=redis://127.0.0.1:6398 pnpm gate' }, 3_600_000],

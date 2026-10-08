@@ -86,6 +86,34 @@ describe('probeMcpCapability', () => {
     assert.equal(result.connectionStatus, 'disconnected');
     assert.deepEqual(result.tools, []);
     assert.match(result.error, /env-backed-http.*MISSING_MCP_PROBE_TOKEN/);
+  });
+
+  it('returns unknown when pencil resolver-backed capability cannot resolve a local binary', async () => {
+    const originalBin = process.env.PENCIL_MCP_BIN;
+    const originalApp = process.env.PENCIL_MCP_APP;
+    process.env.PENCIL_MCP_BIN = join(tmpdir(), `missing-pencil-${Date.now()}`);
+    delete process.env.PENCIL_MCP_APP;
+
+    try {
+      const result = await probeMcpCapability(
+        {
+          id: 'pencil',
+          type: 'mcp',
+          enabled: true,
+          source: 'external',
+          mcpServer: { command: '', args: [], resolver: 'pencil' },
+        },
+        { projectRoot: process.cwd() },
+      );
+
+      assert.deepEqual(result, { connectionStatus: 'unknown' });
+    } finally {
+      if (originalBin === undefined) delete process.env.PENCIL_MCP_BIN;
+      else process.env.PENCIL_MCP_BIN = originalBin;
+      if (originalApp === undefined) delete process.env.PENCIL_MCP_APP;
+      else process.env.PENCIL_MCP_APP = originalApp;
+    }
+  });
   it('does not retain the MCP SDK default request timer after a failed probe', async () => {
     const script = `
       const { probeMcpCapability } = await import('./dist/routes/mcp-probe.js');
@@ -131,32 +159,5 @@ describe('probeMcpCapability', () => {
     });
 
     assert.deepEqual(exit, { code: 0, signal: null }, stderr);
-  });
-
-  it('returns unknown when pencil resolver-backed capability cannot resolve a local binary', async () => {
-    const originalBin = process.env.PENCIL_MCP_BIN;
-    const originalApp = process.env.PENCIL_MCP_APP;
-    process.env.PENCIL_MCP_BIN = join(tmpdir(), `missing-pencil-${Date.now()}`);
-    delete process.env.PENCIL_MCP_APP;
-
-    try {
-      const result = await probeMcpCapability(
-        {
-          id: 'pencil',
-          type: 'mcp',
-          enabled: true,
-          source: 'external',
-          mcpServer: { command: '', args: [], resolver: 'pencil' },
-        },
-        { projectRoot: process.cwd() },
-      );
-
-      assert.deepEqual(result, { connectionStatus: 'unknown' });
-    } finally {
-      if (originalBin === undefined) delete process.env.PENCIL_MCP_BIN;
-      else process.env.PENCIL_MCP_BIN = originalBin;
-      if (originalApp === undefined) delete process.env.PENCIL_MCP_APP;
-      else process.env.PENCIL_MCP_APP = originalApp;
-    }
   });
 });
