@@ -7,6 +7,7 @@ import {
   settingsResourceCardClass,
   settingsResourceRowClass,
 } from '../SettingsResourceCard';
+import { DESKTOP_FAILURE_COPY, retainedCompanionDesktopLoss } from './companion-desktop-failure';
 import { OfficialPluginCatchUp, type OfficialPluginCatchUpAction } from './OfficialPluginCatchUp';
 import { OfficialPluginHistoryImport } from './OfficialPluginHistoryImport';
 import {
@@ -16,119 +17,29 @@ import {
   ownerAuthGuidance,
   useOfficialPluginOwnerAuth,
 } from './OfficialPluginOwnerAuth';
+import {
+  officialPluginRepairGuidance,
+  officialPluginPresentation as presentation,
+} from './official-plugin-presentation';
+import type { OfficialPluginAction, OfficialPluginInfo } from './official-plugin-types';
 import { SettingsBadge } from './primitives/SettingsBadge';
 import { SettingsDeleteButton } from './primitives/SettingsDeleteButton';
 import { SettingsPrimaryButton } from './primitives/SettingsPrimaryButton';
 import { SettingsSecondaryButton } from './primitives/SettingsSecondaryButton';
 import { SettingsText } from './primitives/SettingsText';
 
-export interface OfficialPluginInstance {
-  pluginInstanceId: string;
-  installedVersion: string | null;
-  packageDigest: string;
-  lifecycleState: 'installed' | 'retired';
-  configReadiness: 'incomplete' | 'ready';
-  activationState: 'disabled' | 'enabling' | 'enabled' | 'disabling' | 'error';
-  runtimeState: 'stopped' | 'starting' | 'handshaking' | 'healthy' | 'degraded' | 'crashed';
-  lifecycleRevision: number;
-  installedAt: number;
-  updatedAt: number;
-  lastRuntimeError?: {
-    code: string;
-    exitCode: number | null;
-    signal: string | null;
-    occurredAt: number;
-  };
-}
-
-export interface OfficialPluginInfo {
-  catalogId: string;
-  packageName: string;
-  version: string;
-  availableVersion: string;
-  pluginId: string;
-  packageDigest: string;
-  effectiveGrants: string[];
-  ownerAuthAvailable: boolean;
-  updateAvailable: boolean;
-  instance: OfficialPluginInstance | null;
-  intakeHealth?: OfficialMeetingIntakeHealth;
-}
-
-export interface OfficialMeetingIntakeHealth {
-  status: 'ready' | 'auth-expired' | 'degraded';
-  code?: string;
-  lastCycleAt: number | null;
-  lastSuccessfulObservationAt: number | null;
-  lastPublishedAt: number | null;
-  pendingCount: number;
-  catchUp:
-    | { status: 'idle' }
-    | { status: 'needs-owner'; fromCursor: string | null; throughCursor: string; detectedAt: number }
-    | {
-        status: 'previewed';
-        fromCursor: string | null;
-        throughCursor: string;
-        candidateCount: number;
-        fingerprint: string;
-        previewedAt: number;
-      }
-    | {
-        status: 'backlog';
-        fromCursor: string | null;
-        throughCursor: string;
-        candidateCountAtLeast: number;
-        reason: 'PAGE_BOUND' | 'CANDIDATE_BOUND';
-        detectedAt: number;
-      };
-  warning?: {
-    code: string;
-    message: string;
-    action: 'preview-catch-up' | 'resolve-catch-up' | 'repair' | 'needs-owner';
-  };
-}
-
-export type OfficialPluginAction = 'install' | 'update' | 'enable' | 'disable' | 'repair' | 'uninstall';
-
-interface OfficialPluginPresentation {
-  readonly name: string;
-  readonly description: string;
-  readonly detailLabel: string;
-  readonly toggleLabel: string;
-  readonly uninstallLabel: string;
-  readonly icon: string;
-  readonly avatarBackground: string;
-}
-
-function presentation(plugin: OfficialPluginInfo): OfficialPluginPresentation {
-  if (plugin.catalogId === 'collective-connector') {
-    return {
-      name: 'Collective Connector',
-      description: '把 Clowder AI endpoint 配对到独立 Collective Service；凭据只由 Host 托管',
-      detailLabel: '查看 Collective Connector 详情',
-      toggleLabel: 'Collective Connector',
-      uninstallLabel: '卸载 Collective Connector',
-      icon: 'collective',
-      avatarBackground: 'var(--cafe-accent)',
-    };
-  }
-  return {
-    name: '飞书会议纪要同步',
-    description: '自动接收飞书生成的智能纪要和文字稿，交给猫猫整理',
-    detailLabel: '查看飞书会议纪要同步详情',
-    toggleLabel: '飞书会议纪要同步',
-    uninstallLabel: '卸载飞书会议纪要同步',
-    icon: 'video',
-    avatarBackground: 'var(--conn-feishu-bg)',
-  };
-}
+export type {
+  OfficialMeetingIntakeHealth,
+  OfficialPluginAction,
+  OfficialPluginInfo,
+  OfficialPluginInstance,
+} from './official-plugin-types';
 
 const MAINTENANCE_RESUME_FAILURES = new Set([
   'UPDATE_RESUME_FAILED',
   'UPDATE_ROLLBACK_RESUME_FAILED',
   'CATCH_UP_RESUME_FAILED',
 ]);
-
 function maintenanceResumeFailure(plugin: OfficialPluginInfo): boolean {
   const code = plugin.instance?.lastRuntimeError?.code;
   return code !== undefined && MAINTENANCE_RESUME_FAILURES.has(code);
@@ -137,20 +48,24 @@ function maintenanceResumeFailure(plugin: OfficialPluginInfo): boolean {
 function status(plugin: OfficialPluginInfo): { label: string; tone: 'emerald' | 'amber' | 'slate' | 'red' } {
   const instance = plugin.instance;
   if (!instance) return { label: '未安装', tone: 'slate' };
-  if (plugin.updateAvailable) return { label: '可更新', tone: 'amber' };
-  if (plugin.intakeHealth?.warning?.code === 'CATCH_UP_BACKLOG') {
-    return { label: '缺口待处理', tone: 'red' };
-  }
-  if (plugin.intakeHealth?.warning) return { label: '接收有缺口', tone: 'amber' };
   if (
     instance.lastRuntimeError?.code === 'EVENT_BUS_CONFLICT' &&
     (instance.activationState === 'error' || instance.runtimeState === 'crashed')
   ) {
     return { label: '连接被占用', tone: 'red' };
   }
-  if (instance.activationState === 'error' || instance.runtimeState === 'crashed') {
+  if (
+    instance.activationState === 'error' ||
+    instance.runtimeState === 'crashed' ||
+    retainedCompanionDesktopLoss(plugin)
+  ) {
     return { label: '需修复', tone: 'red' };
   }
+  if (plugin.updateAvailable) return { label: '可更新', tone: 'amber' };
+  if (plugin.intakeHealth?.warning?.code === 'CATCH_UP_BACKLOG') {
+    return { label: '缺口待处理', tone: 'red' };
+  }
+  if (plugin.intakeHealth?.warning) return { label: '接收有缺口', tone: 'amber' };
   if (instance.runtimeState === 'healthy') return { label: '运行中', tone: 'emerald' };
   if (instance.runtimeState === 'degraded') return { label: '连接异常', tone: 'amber' };
   if (instance.activationState === 'enabled' || instance.activationState === 'enabling') {
@@ -161,6 +76,31 @@ function status(plugin: OfficialPluginInfo): { label: string; tone: 'emerald' | 
 
 function guidance(plugin: OfficialPluginInfo, auth: OwnerAuthState | null): string {
   const instance = plugin.instance;
+  if (plugin.catalogId === 'companion' && instance?.lastRuntimeError?.code === 'UPDATE_ROLLBACK_RESUME_FAILED') {
+    return '猫猫球旧版未能恢复运行；先点“重试恢复”，再更新 Clowder AI 宿主并重试新版。聊天记录和已安装版本仍保留。';
+  }
+  const retainedLoss = retainedCompanionDesktopLoss(plugin);
+  if (plugin.catalogId === 'companion' && (instance?.runtimeState === 'crashed' || retainedLoss)) {
+    const reason = instance?.lastRuntimeError?.desktopReason ?? '';
+    const cause = Object.hasOwn(DESKTOP_FAILURE_COPY, reason)
+      ? DESKTOP_FAILURE_COPY[reason]
+      : '桌面窗口失去运行状态，原因仍待确认';
+    return `${retainedLoss ? `上次${cause}，当前尚未恢复` : cause}。插件实例未更换，聊天记录仍保留；请查看状态后手动修复。`;
+  }
+  if (plugin.catalogId === 'genoffice-docx') {
+    if (!instance) return 'DOCX alpha：安装后手动启用，再从 Workspace 打开 .docx 文档。';
+    if (plugin.updateAvailable)
+      return `已安装 ${instance.installedVersion ?? '未知版本'}，${plugin.availableVersion} 可用；请先保存文档再更新。`;
+    if (instance.activationState === 'error' || instance.runtimeState === 'crashed')
+      return '编辑器已停止。修复后重新打开文档，继续上次已保存的协作版本。';
+    if (instance.activationState === 'disabled') return '已安装但未启用；启用后可打开 Workspace 中的 DOCX 文档。';
+    if (instance.runtimeState === 'healthy')
+      return 'DOCX 编辑器正在运行；已保存的协作版本可在 Workspace 重开。当前为 alpha，尚未开放 XLSX、PPTX、PDF。';
+    return '正在启动 GenOffice 编辑器…';
+  }
+  if (plugin.catalogId !== 'collective-connector' && plugin.catalogId !== 'feishu-meeting-intake') {
+    return instance ? '查看插件状态，启用后使用其已授权功能。' : '安装后仍需手动启用。';
+  }
   if (plugin.catalogId === 'collective-connector') {
     if (!instance) return '安装后仍需手动启用；启用只启动 Host Connector，不会启动或接管 Collective Service。';
     if (plugin.updateAvailable)
@@ -246,7 +186,8 @@ export function OfficialPluginCard({
   });
   const pluginStatus = status(plugin);
   const activation = plugin.instance?.activationState;
-  const failed = activation === 'error' || plugin.instance?.runtimeState === 'crashed';
+  const failed =
+    activation === 'error' || plugin.instance?.runtimeState === 'crashed' || retainedCompanionDesktopLoss(plugin);
   const eventBusConflict = failed && plugin.instance?.lastRuntimeError?.code === 'EVENT_BUS_CONFLICT';
   const resumeFailed = failed && maintenanceResumeFailure(plugin);
   const transitioning =
@@ -308,7 +249,7 @@ export function OfficialPluginCard({
               onStart={() => void ownerAuth.start()}
             />
           )}
-          {plugin.instance && !canUpdate && ownerAuth.connected && failed && (
+          {plugin.instance && (!plugin.ownerAuthAvailable || ownerAuth.connected) && failed && (
             <SettingsSecondaryButton
               disabled={busy}
               onClick={() => onAction(eventBusConflict || resumeFailed ? 'enable' : 'repair')}
@@ -354,9 +295,7 @@ export function OfficialPluginCard({
           )}
           {failed && !plugin.ownerAuthAvailable && !eventBusConflict && (
             <SettingsText as="p" tone="muted" className="mt-1">
-              {plugin.catalogId === 'collective-connector'
-                ? '检查 Connector 运行错误与本地凭据目录权限，再点“修复”。'
-                : '请确认飞书账号授权有效，再点“修复”。'}
+              {officialPluginRepairGuidance(plugin)}
             </SettingsText>
           )}
           <div className="mt-2 flex items-end justify-between gap-3">

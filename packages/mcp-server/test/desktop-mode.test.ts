@@ -96,7 +96,7 @@ describe('applyReadonlyFilter — env modes', () => {
     }
   });
 
-  it('F317 P1: readonly=true + leaked agent-key env WITHOUT opt-in → strict READONLY only', () => {
+  it('readonly=true + leaked agent-key env WITHOUT opt-in → strict READONLY only', () => {
     const env: ToolsetEnv = { readonly: true, hasAgentKey: true };
     const out = applyReadonlyFilter(ALL_FAKE_TOOLS, env);
     const outNames = new Set(out.map((t) => t.name));
@@ -114,6 +114,7 @@ describe('applyReadonlyFilter — env modes', () => {
       'cat_cafe_post_message',
       'cat_cafe_cross_post_message',
       'cat_cafe_get_thread_context',
+      'cat_cafe_get_thread_cats',
       'cat_cafe_get_workflow_sop',
       'cat_cafe_get_message',
       'cat_cafe_list_threads',
@@ -128,7 +129,6 @@ describe('applyReadonlyFilter — env modes', () => {
     }
 
     const expectedAbsent = [
-      'cat_cafe_get_thread_cats',
       'cat_cafe_list_tasks',
       'cat_cafe_multi_mention',
       'cat_cafe_hold_ball',
@@ -260,10 +260,36 @@ describe('parseToolsetEnv — env shape', () => {
     assert.equal(env.readonly, false);
   });
 
-  it('detects agent-key via any of the 3 env vars', () => {
+  it('hasAgentKey requires a USABLE credential, not env-var presence (#1494)', () => {
     assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_SECRET: 's' } as NodeJS.ProcessEnv).hasAgentKey, true);
-    assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_FILE: '/p' } as NodeJS.ProcessEnv).hasAgentKey, true);
-    assert.equal(parseToolsetEnv({ CAT_CAFE_AGENT_KEY_FILES: '{}' } as NodeJS.ProcessEnv).hasAgentKey, true);
+    assert.equal(
+      parseToolsetEnv({ CAT_CAFE_AGENT_KEY_FILE: '/p' } as NodeJS.ProcessEnv).hasAgentKey,
+      false,
+      'a path to a missing sidecar is not a credential',
+    );
+    assert.equal(
+      parseToolsetEnv({ CAT_CAFE_AGENT_KEY_FILES: '{}' } as NodeJS.ProcessEnv).hasAgentKey,
+      false,
+      "a '{}' variant map resolves zero keys",
+    );
+  });
+
+  it('agentKeyUnion only via explicit CAT_CAFE_READONLY_AGENT_KEY_UNION=true', () => {
+    assert.equal(parseToolsetEnv({} as NodeJS.ProcessEnv).agentKeyUnion, false);
+    assert.equal(
+      parseToolsetEnv({ CAT_CAFE_AGENT_KEY_FILE: '/p' } as NodeJS.ProcessEnv).agentKeyUnion,
+      false,
+      'agent-key vars alone must not opt into the union',
+    );
+    assert.equal(
+      parseToolsetEnv({ CAT_CAFE_READONLY_AGENT_KEY_UNION: 'true' } as NodeJS.ProcessEnv).agentKeyUnion,
+      true,
+    );
+    assert.equal(
+      parseToolsetEnv({ CAT_CAFE_READONLY_AGENT_KEY_UNION: '1' } as NodeJS.ProcessEnv).agentKeyUnion,
+      false,
+      'strict string match like CAT_CAFE_READONLY',
+    );
   });
 
   it('F317 P1: agentKeyUnion only via explicit CAT_CAFE_READONLY_AGENT_KEY_UNION=true', () => {
@@ -392,7 +418,7 @@ describe('buildCollabTools / buildMemoryTools — real toolset assertions (codex
     assert.equal(outNames.has('cat_cafe_shell_exec'), true);
   });
 
-  it('F317 P1: legacy READONLY=true + AGENT_KEY WITHOUT union opt-in → strict (writes blocked)', () => {
+  it('legacy READONLY=true + AGENT_KEY WITHOUT union opt-in → strict (writes blocked)', () => {
     const env: ToolsetEnv = { readonly: true, hasAgentKey: true };
     const out = buildCollabTools(env);
     const outNames = new Set(out.map((t) => t.name));
@@ -422,22 +448,22 @@ describe('buildCollabTools / buildMemoryTools — real toolset assertions (codex
 // =====================================================================
 
 describe('F238 cloud-pro-phase0 mode — Phase B1a security boundary', () => {
-  it('DESKTOP_CLOUD_PRO_PHASE0_ALLOWED_TOOLS contains exactly 12 tools', () => {
+  it('DESKTOP_CLOUD_PRO_PHASE0_ALLOWED_TOOLS contains exactly 13 tools', () => {
     assert.equal(
       DESKTOP_CLOUD_PRO_PHASE0_ALLOWED_TOOLS.size,
-      12,
-      'cloud-pro-phase0 includes the F236 drill and otherwise matches fable-phase0',
+      13,
+      'cloud-pro-phase0 includes scoped thread-cat discovery',
     );
   });
 
-  it('contains the same 12 tools as fable-phase0 through independent profile projections', () => {
+  it('adds only scoped thread-cat discovery to the fable-phase0 surface', () => {
     assert.deepEqual(
       [...DESKTOP_CLOUD_PRO_PHASE0_ALLOWED_TOOLS].sort(),
-      [...DESKTOP_FABLE_PHASE0_ALLOWED_TOOLS].sort(),
+      [...DESKTOP_FABLE_PHASE0_ALLOWED_TOOLS, 'cat_cafe_get_thread_cats'].sort(),
     );
   });
 
-  it('applyReadonlyFilter(cloud-pro-phase0) → only 12 whitelist tools', () => {
+  it('applyReadonlyFilter(cloud-pro-phase0) → only 13 whitelist tools', () => {
     const env: ToolsetEnv = { desktopMode: 'cloud-pro-phase0' };
     const out = applyReadonlyFilter(ALL_FAKE_TOOLS, env);
     const outNames = new Set(out.map((t) => t.name));

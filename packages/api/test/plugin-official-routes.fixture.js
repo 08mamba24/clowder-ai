@@ -57,6 +57,7 @@ export async function harness(options = {}) {
   const app = Fastify();
   const installCalls = [];
   const updateCalls = [];
+  const preflightCalls = [];
   app.addHook('preHandler', async (request) => {
     const raw = request.headers['x-test-session-user'];
     if (typeof raw === 'string' && raw.trim()) request.sessionUserId = raw.trim();
@@ -68,6 +69,10 @@ export async function harness(options = {}) {
     inventory: store,
     lifecycle,
     installer: {
+      preflightUpdate: async (catalogId, expectedRelease) => {
+        preflightCalls.push({ catalogId, expectedRelease });
+        return options.preflightUpdate?.({ catalogId, expectedRelease });
+      },
       install: async (catalogId, expectedRelease) => {
         installCalls.push({ catalogId, expectedRelease });
         return installed;
@@ -94,7 +99,7 @@ export async function harness(options = {}) {
     ...(options.meetingIntake === undefined ? {} : { meetingIntake: options.meetingIntake }),
   });
   await app.ready();
-  return { app, store, processCalls, installCalls, updateCalls };
+  return { app, store, processCalls, installCalls, updateCalls, preflightCalls };
 }
 
 const ownerUserId = resolveDefaultOwnerUserId();

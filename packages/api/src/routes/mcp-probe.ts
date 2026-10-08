@@ -153,8 +153,10 @@ async function probeHttpMcp(
   const client = new Client({ name: 'cat-cafe-capability-probe', version: '0.1.0' }, { capabilities: {} });
 
   try {
-    await withTimeout(client.connect(transport), remainingTimeout(deadlineMs));
-    const result = await withTimeout(client.listTools(), remainingTimeout(deadlineMs));
+    const connectTimeoutMs = remainingTimeout(deadlineMs);
+    await withTimeout(client.connect(transport, { timeout: connectTimeoutMs }), connectTimeoutMs);
+    const listTimeoutMs = remainingTimeout(deadlineMs);
+    const result = await withTimeout(client.listTools(undefined, { timeout: listTimeoutMs }), listTimeoutMs);
     return {
       connectionStatus: 'connected',
       tools: normalizeTools(result.tools ?? []),
@@ -206,8 +208,10 @@ async function probeStdioMcp(
   const client = new Client({ name: 'cat-cafe-capability-probe', version: '0.1.0' }, { capabilities: {} });
 
   try {
-    await withTimeout(client.connect(transport), remainingTimeout(deadlineMs));
-    const result = await withTimeout(client.listTools(), remainingTimeout(deadlineMs));
+    const connectTimeoutMs = remainingTimeout(deadlineMs);
+    await withTimeout(client.connect(transport, { timeout: connectTimeoutMs }), connectTimeoutMs);
+    const listTimeoutMs = remainingTimeout(deadlineMs);
+    const result = await withTimeout(client.listTools(undefined, { timeout: listTimeoutMs }), listTimeoutMs);
     return {
       connectionStatus: 'connected',
       tools: normalizeTools(result.tools ?? []),

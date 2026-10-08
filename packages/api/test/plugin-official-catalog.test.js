@@ -11,6 +11,21 @@ const policy = OFFICIAL_PLUGIN_POLICIES[0];
 const alpha9Digest = 'sha512-d1wf5Il1Ls18Db9EUB4S0qqhDFRe6mSLIyv9E3Tz7VqI59gffHCe+JKmCJOYVGJBiv1ItrTq8ChthF0SzdSWYQ==';
 const alpha10Digest = `sha512-${Buffer.alloc(64, 10).toString('base64')}`;
 
+test('offline Companion bootstrap uses the exact published alpha.13 archive with the same Host grant', () => {
+  const companion = OFFICIAL_PLUGIN_POLICIES.find((entry) => entry.catalogId === 'companion');
+  assert.ok(companion);
+  assert.equal(companion.bootstrapRelease.version, '0.1.0-alpha.13');
+  assert.equal(
+    companion.bootstrapRelease.packageDigest,
+    'sha512-ABEFM559peLzWfxlBKiCtYznDZ+olFdjfH/P7BZ6qeeykVCyUdtA7abF9jkrvzZefNvx3ghDk9n1IRgmP9lU/A==',
+  );
+  assert.equal(
+    companion.bootstrapRelease.archiveUrl,
+    'https://registry.npmjs.org/@clowder-ai/companion/-/companion-0.1.0-alpha.13.tgz',
+  );
+  assert.deepEqual(companion.effectiveGrants, ['windows.create']);
+});
+
 function tarball(version) {
   return `https://registry.npmjs.org/@clowder-ai/feishu-meeting-intake/-/feishu-meeting-intake-${version}.tgz`;
 }
@@ -42,7 +57,7 @@ test('bootstraps alpha.9 policy and hot-refreshes release coordinates without wi
   let now = 1_000;
   let fetches = 0;
   const catalog = new RefreshingOfficialPluginCatalog({
-    policies: OFFICIAL_PLUGIN_POLICIES,
+    policies: [policy],
     now: () => now,
     refreshTtlMs: 1_000,
     fetchFn: async () => {
@@ -87,7 +102,7 @@ test('joins concurrent refreshes and retains last-known-good with bounded degrad
     release = resolve;
   });
   const catalog = new RefreshingOfficialPluginCatalog({
-    policies: OFFICIAL_PLUGIN_POLICIES,
+    policies: [policy],
     now: () => now,
     refreshTtlMs: 1_000,
     fetchFn: async () => {
@@ -124,7 +139,7 @@ test('rejects a newer release that reuses any previously accepted digest', async
   let now = 1_000;
   let next = metadata('0.1.0-alpha.10', alpha10Digest);
   const catalog = new RefreshingOfficialPluginCatalog({
-    policies: OFFICIAL_PLUGIN_POLICIES,
+    policies: [policy],
     now: () => now,
     refreshTtlMs: 1_000,
     fetchFn: async () => response(next),
@@ -209,7 +224,7 @@ for (const [label, metadataFactory, expectedCode] of [
 ]) {
   test(`keeps the reviewed bootstrap on ${label}`, async () => {
     const catalog = new RefreshingOfficialPluginCatalog({
-      policies: OFFICIAL_PLUGIN_POLICIES,
+      policies: [policy],
       now: () => 1_000,
       fetchFn: async () => response(metadataFactory()),
     });
@@ -224,7 +239,7 @@ for (const [label, metadataFactory, expectedCode] of [
 
 test('rejects oversized metadata before parsing it', async () => {
   const catalog = new RefreshingOfficialPluginCatalog({
-    policies: OFFICIAL_PLUGIN_POLICIES,
+    policies: [policy],
     now: () => 1_000,
     fetchFn: async () => response(metadata('0.1.0-alpha.10', alpha10Digest), { 'content-length': '1048576' }),
   });

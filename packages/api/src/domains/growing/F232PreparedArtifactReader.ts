@@ -4,14 +4,13 @@ import {
   collectAllThreadMessages,
 } from '../cats/services/agents/routing/thread-artifacts-aggregator.js';
 import type { IMessageStore } from '../cats/services/stores/ports/MessageStore.js';
-import type { ITaskStore } from '../cats/services/stores/ports/TaskStore.js';
-import type { IThreadStore } from '../cats/services/stores/ports/ThreadStore.js';
-import type { PreparedArtifactReader, PreparedArtifactReadInput } from './EntrustedWorkOwnerReadService.js';
+import { isDurableOwnerReadEvidence } from '../cats/services/stores/visibility.js';
+import type { PreparedArtifactReader, PreparedArtifactReadInput } from './ports/PreparedArtifactReader.js';
+
+type PublicationIndex = ReadonlyMap<string, ThreadArtifactDTO | null>;
 
 interface F232PreparedArtifactReaderDeps {
   readonly messages: Pick<IMessageStore, 'getByThread' | 'getByThreadBefore'>;
-  readonly tasks: Pick<ITaskStore, 'listByThread'>;
-  readonly threads: Pick<IThreadStore, 'getThreadMemory'>;
 }
 
 function artifactCoordinate(artifact: ThreadArtifactDTO): string | undefined {
@@ -22,32 +21,54 @@ function artifactCoordinate(artifact: ThreadArtifactDTO): string | undefined {
 export class F232PreparedArtifactReader implements PreparedArtifactReader {
   constructor(private readonly deps: F232PreparedArtifactReaderDeps) {}
 
-  async readPreparedArtifact(input: PreparedArtifactReadInput) {
-    const [messages, tasks, memory] = await Promise.all([
-      collectAllThreadMessages(this.deps.messages, input.taskThreadId, input.ownerUserId),
-      this.deps.tasks.listByThread(input.taskThreadId),
-      this.deps.threads.getThreadMemory(input.taskThreadId),
-    ]);
-    const prTasks = tasks.filter((task) => task.kind === 'pr_tracking' && task.userId === input.ownerUserId);
-    const fileLedger = (memory?.recentArtifacts ?? []).filter(
-      (artifact) => artifact.type === 'file' || artifact.type === 'plan' || artifact.type === 'feature-doc',
-    );
-    const matches = aggregateThreadArtifacts({ messages, prTasks, fileLedger }).filter(
-      (artifact) => artifactCoordinate(artifact) === input.artifactRef,
-    );
-    if (matches.length !== 1) return null;
-    const artifact = matches[0];
-    if (!artifact) return null;
-    const revision = String(artifact.createdAt);
-    const sourceRef = artifact.sourceMessageId
-      ? `message:${input.taskThreadId}:${artifact.sourceMessageId}`
-      : input.artifactRef;
+  createReadScope(): PreparedArtifactReader {
+    const snapshots = new Map<string, Promise<PublicationIndex>>();
     return {
-      artifactRef: input.artifactRef,
-      artifactRevision: revision,
-      completenessRef: `${sourceRef}#available:${revision}`,
-      previewRef: `${sourceRef}#preview:${revision}`,
-      openInWorkspaceRef: `workspace:artifact:${input.taskThreadId}:${revision}:${input.artifactRef}`,
+      readPreparedArtifact: async (input) => {
+        const key = JSON.stringify([input.ownerUserId, input.taskThreadId]);
+        let snapshot = snapshots.get(key);
+        if (!snapshot) {
+          snapshot = this.readPublicationIndex(input);
+          snapshots.set(key, snapshot);
+        }
+        return preparedCoordinate((await snapshot).get(input.artifactRef), input);
+      },
     };
   }
+
+  async readPreparedArtifact(input: PreparedArtifactReadInput) {
+    return preparedCoordinate((await this.readPublicationIndex(input)).get(input.artifactRef), input);
+  }
+
+  private async readPublicationIndex(input: PreparedArtifactReadInput): Promise<PublicationIndex> {
+    const messages = await collectAllThreadMessages(this.deps.messages, input.taskThreadId, input.ownerUserId);
+    const publications = messages.filter(
+      (message) =>
+        message.userId === input.ownerUserId &&
+        message.threadId === input.taskThreadId &&
+        !message.recall &&
+        !message._tombstone &&
+        isDurableOwnerReadEvidence(message),
+    );
+    // A disk/ledger hit is discovery, not an owner publication prepared for review.
+    const index = new Map<string, ThreadArtifactDTO | null>();
+    for (const artifact of aggregateThreadArtifacts({ messages: publications, prTasks: [], fileLedger: [] })) {
+      const ref = artifactCoordinate(artifact);
+      if (ref) index.set(ref, index.has(ref) ? null : artifact);
+    }
+    return index;
+  }
+}
+
+function preparedCoordinate(artifact: ThreadArtifactDTO | null | undefined, input: PreparedArtifactReadInput) {
+  if (!artifact?.sourceMessageId) return null;
+  const revision = String(artifact.createdAt);
+  const sourceRef = `message:${input.taskThreadId}:${artifact.sourceMessageId}`;
+  return {
+    artifactRef: input.artifactRef,
+    artifactRevision: revision,
+    completenessRef: `${sourceRef}#available:${revision}`,
+    previewRef: `${sourceRef}#preview:${revision}`,
+    openInWorkspaceRef: `workspace:artifact:${input.taskThreadId}:${revision}:${input.artifactRef}`,
+  };
 }

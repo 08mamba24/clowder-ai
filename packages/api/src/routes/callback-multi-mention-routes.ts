@@ -25,6 +25,7 @@ import {
   actionSuccessorFencesMatch,
   reconcileActionSuccessorEnqueue,
 } from '../domains/ball-custody/reconcile-action-successor-enqueue.js';
+import type { TurnCustodyWakeProvenance } from '../domains/ball-custody/TurnCustodyProjectionService.js';
 import type { InvocationQueue } from '../domains/cats/services/agents/invocation/InvocationQueue.js';
 import type { InvocationRecord } from '../domains/cats/services/agents/invocation/InvocationRegistry.js';
 import type { InvocationTracker } from '../domains/cats/services/agents/invocation/InvocationTracker.js';
@@ -276,7 +277,8 @@ export interface MultiMentionRouteDeps {
       catId: string;
       invocationId: string;
       messageIds: readonly string[];
-    }): Promise<void>;
+      seenAt: number;
+    }): Promise<readonly TurnCustodyWakeProvenance[] | void>;
   };
 }
 
@@ -1056,12 +1058,23 @@ export function registerMultiMentionRoutes(app: FastifyInstance, deps: MultiMent
           return {
             status: 'held',
             reason: 'newer_messages_available',
+            freshnessReason: freshnessDecision.reason,
             unseenCount: freshnessDecision.unseenCount,
+            unseenCountKnown: freshnessDecision.unseenCount > 0,
             previews: freshnessDecision.previews ?? [],
             omittedCount: freshnessDecision.omittedCount ?? 0,
             // P2 fix (gpt52 R1): multi_mention has no acknowledgeHeld param,
             // so don't advertise send_with_acknowledge action
             actions: ['read_latest', 'revise'],
+            catchUp: {
+              tool: 'cat_cafe_get_thread_context',
+              arguments: { readIntent: 'unread', responseMode: 'full' },
+              continuation: {
+                cursorArgument: 'cursor',
+                cursorFrom: 'nextCursor',
+                completeWhen: 'hasMore=false',
+              },
+            },
           };
         }
       } catch (err) {

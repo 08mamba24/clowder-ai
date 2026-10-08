@@ -19,18 +19,26 @@ import {
   acceptedSourceRefSchema,
   asrPersonMemoryDynamicSceneEntryV1Schema,
   catOwnedSeedCueCarrierV1Schema,
+  collectiveOwnerAdmissionV1Schema,
+  collectiveWorkDelegationV1Schema,
+  collectiveWorkInvocationV1Schema,
+  companionIdentitySnapshotV1Schema,
+  contentModificationSourceMessageV1Schema,
   deliveryDecisionCueCarrierV1Schema,
+  evolutionPreparationSubmissionV1Schema,
   isProviderSemanticEvent,
   isValidAcceptedSource,
   isValidReviewSubjectRef,
   localReviewGitRevisionSchema,
   MessageBundleCarrierV1Schema,
   MessageContentsSchema,
+  routingPreflightReceiptV1Schema,
   writeOpportunityPresentationRetryCarrierV1Schema,
   writeOpportunityReentryCarrierV1Schema,
 } from '@cat-cafe/shared';
 import { parsePluginMessageExtra } from '../../../../messaging/envelope.js';
-import type { MessageMetadata } from '../../types.js';
+import { MAX_PERSISTED_SUBEXECUTION_EVENTS, type MessageMetadata } from '../../types.js';
+import { parseMessageDeliveryBoundary } from '../message-delivery-boundary.js';
 import type {
   MessageRecallMarker,
   StoredMessage,
@@ -180,11 +188,19 @@ type ExtraCarrierPersistenceClassification<
  * Every StoredMessage.extra key must be classified when it is introduced.
  */
 type ExtraCarrierPersistence = ExtraCarrierPersistenceClassification<{
+  contentModificationRequestV1: 'parsed';
+  collectiveOwnerAdmissionV1: 'parsed';
+  collectiveWorkInvocationV1: 'parsed';
+  collectiveWorkDelegationV1: 'parsed';
+  collectiveAuthorizationInvalid: 'derived';
   semanticEvent: 'parsed';
+  realtimeCompanion: 'parsed';
+  liveCompanion: 'parsed';
   rich: 'parsed';
   isExplicitPost: 'parsed';
   stream: 'parsed';
   causal: 'parsed';
+  deliveryBoundary: 'parsed';
   proactive: 'parsed';
   memoryCue: 'parsed';
   turnExecution: 'parsed';
@@ -206,10 +222,12 @@ type ExtraCarrierPersistence = ExtraCarrierPersistenceClassification<{
   scheduler: 'parsed';
   tracing: 'parsed';
   systemKind: 'parsed';
+  systemInfo: 'parsed';
   a2aRouting: 'parsed';
   queueReceipt: 'derived';
   pluginMessage: 'parsed';
   custodyOfferV1: 'derived';
+  evolutionPreparationSubmissionV1: 'parsed';
 }>;
 
 function isNonEmptyString(value: unknown): value is string {
@@ -272,6 +290,63 @@ function parseProactiveCarrier(value: unknown): StoredMessageExtra['proactive'] 
   return { visitId: candidate.visitId, intentId: candidate.intentId, source: 'private_time' };
 }
 
+function parseRealtimeCompanionCarrier(value: unknown): StoredMessageExtra['realtimeCompanion'] {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as Record<string, unknown>;
+  if (
+    (candidate.consumer !== 'watch_video' && candidate.consumer !== 'meeting_companion') ||
+    !isNonEmptyString(candidate.invocationId) ||
+    candidate.invocationId.length > 128 ||
+    !/^realtime-companion-[0-9a-f-]+$/.test(candidate.invocationId)
+  ) {
+    return undefined;
+  }
+  return { consumer: candidate.consumer, invocationId: candidate.invocationId };
+}
+
+function parseLiveCompanionCarrier(value: unknown): StoredMessageExtra['liveCompanion'] {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as Record<string, unknown>;
+  const validId = (id: unknown): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(id);
+  const identity = companionIdentitySnapshotV1Schema.safeParse(candidate.identity);
+  if (candidate.modality === 'typed') {
+    if (
+      !validId(candidate.callId) ||
+      candidate.role !== 'user' ||
+      !isNonEmptyString(candidate.clientMessageId) ||
+      candidate.clientMessageId.length > 256
+    )
+      return undefined;
+    return {
+      callId: candidate.callId,
+      modality: 'typed',
+      role: 'user',
+      clientMessageId: candidate.clientMessageId,
+      ...(identity.success ? { identity: identity.data } : {}),
+    };
+  }
+  if (
+    (candidate.modality !== 'voice' && candidate.modality !== 'result') ||
+    !validId(candidate.callId) ||
+    !validId(candidate.nativeThreadId) ||
+    !validId(candidate.realtimeSessionId) ||
+    !validId(candidate.nativeItemId) ||
+    (candidate.modality === 'result' && !validId(candidate.nativeTurnId)) ||
+    (candidate.modality === 'voice' && candidate.nativeTurnId !== undefined)
+  )
+    return undefined;
+  return {
+    callId: candidate.callId,
+    nativeThreadId: candidate.nativeThreadId,
+    realtimeSessionId: candidate.realtimeSessionId,
+    nativeItemId: candidate.nativeItemId,
+    modality: candidate.modality,
+    ...(candidate.role === 'user' || candidate.role === 'assistant' ? { role: candidate.role } : {}),
+    ...(candidate.modality === 'result' ? { nativeTurnId: candidate.nativeTurnId as string } : {}),
+    ...(identity.success ? { identity: identity.data } : {}),
+  };
+}
+
 function parseMeetingArtifactCarrier(value: unknown): StoredMessageExtra['meetingArtifact'] {
   if (typeof value !== 'object' || value === null) return undefined;
   const candidate = value as Record<string, unknown>;
@@ -324,10 +399,53 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
     if (typeof parsed !== 'object' || parsed === null) return undefined;
 
     const result: StoredMessageExtra = {};
-    let hasField = false;
+    const modification = contentModificationSourceMessageV1Schema.safeParse(parsed.contentModificationRequestV1);
+    if (modification.success) result.contentModificationRequestV1 = modification.data;
+    let hasField = modification.success;
+    if (parsed.collectiveOwnerAdmissionV1 !== undefined) {
+      const admission = collectiveOwnerAdmissionV1Schema.safeParse(parsed.collectiveOwnerAdmissionV1);
+      if (admission.success) result.collectiveOwnerAdmissionV1 = admission.data;
+      else result.collectiveAuthorizationInvalid = true;
+      hasField = true;
+    }
+    if (parsed.collectiveWorkInvocationV1 !== undefined) {
+      const invocation = collectiveWorkInvocationV1Schema.safeParse(parsed.collectiveWorkInvocationV1);
+      if (invocation.success) result.collectiveWorkInvocationV1 = invocation.data;
+      else result.collectiveAuthorizationInvalid = true;
+      hasField = true;
+    }
+    if (parsed.collectiveWorkDelegationV1 !== undefined) {
+      const delegation = collectiveWorkDelegationV1Schema.safeParse(parsed.collectiveWorkDelegationV1);
+      if (delegation.success) result.collectiveWorkDelegationV1 = delegation.data;
+      else result.collectiveAuthorizationInvalid = true;
+      hasField = true;
+    }
+    if (parsed.collectiveAuthorizationInvalid === true) {
+      result.collectiveAuthorizationInvalid = true;
+      hasField = true;
+    }
 
     if (isProviderSemanticEvent(parsed.semanticEvent)) {
       result.semanticEvent = parsed.semanticEvent;
+      hasField = true;
+    }
+
+    const evolutionPreparationSubmission = evolutionPreparationSubmissionV1Schema.safeParse(
+      parsed.evolutionPreparationSubmissionV1,
+    );
+    if (evolutionPreparationSubmission.success) {
+      result.evolutionPreparationSubmissionV1 = evolutionPreparationSubmission.data;
+      hasField = true;
+    }
+
+    const realtimeCompanion = parseRealtimeCompanionCarrier(parsed.realtimeCompanion);
+    if (realtimeCompanion) {
+      result.realtimeCompanion = realtimeCompanion;
+      hasField = true;
+    }
+    const liveCompanion = parseLiveCompanionCarrier(parsed.liveCompanion);
+    if (liveCompanion) {
+      result.liveCompanion = liveCompanion;
       hasField = true;
     }
 
@@ -406,6 +524,12 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
     if (writeOpportunityPresentationRetry.success) {
       result.writeOpportunityPresentationRetry =
         writeOpportunityPresentationRetry.data as WriteOpportunityPresentationRetryCarrierV1;
+      hasField = true;
+    }
+
+    const deliveryBoundary = parseMessageDeliveryBoundary(parsed.deliveryBoundary);
+    if (deliveryBoundary) {
+      result.deliveryBoundary = deliveryBoundary;
       hasField = true;
     }
 
@@ -641,6 +765,13 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
       result.systemKind = parsed.systemKind;
       hasField = true;
     }
+    if (parsed.systemInfo?.v === 1) {
+      const receipt = routingPreflightReceiptV1Schema.safeParse(parsed.systemInfo.payload);
+      if (receipt.success) {
+        result.systemInfo = { v: 1, payload: receipt.data, fallbackCatId: receipt.data.target.targetCatId };
+        hasField = true;
+      }
+    }
 
     if (parsed.a2aRouting && typeof parsed.a2aRouting === 'object') {
       const routing: NonNullable<typeof result.a2aRouting> = {};
@@ -679,6 +810,49 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
     }
 
     return hasField ? result : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+type PawFeelSourceExtra = Pick<NonNullable<StoredMessage['extra']>, 'stream' | 'crossPost'>;
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+function parsePawFeelSourceStream(value: unknown): PawFeelSourceExtra['stream'] | undefined {
+  const stream = asRecord(value);
+  if (!stream) return undefined;
+  const invocationId = typeof stream.invocationId === 'string' ? stream.invocationId : undefined;
+  const turnInvocationId = typeof stream.turnInvocationId === 'string' ? stream.turnInvocationId : undefined;
+  return invocationId || turnInvocationId
+    ? {
+        ...(invocationId ? { invocationId } : {}),
+        ...(turnInvocationId ? { turnInvocationId } : {}),
+      }
+    : undefined;
+}
+
+function parsePawFeelSourceCrossPost(value: unknown): PawFeelSourceExtra['crossPost'] | undefined {
+  const crossPost = asRecord(value);
+  return typeof crossPost?.sourceThreadId === 'string' ? { sourceThreadId: crossPost.sourceThreadId } : undefined;
+}
+
+/**
+ * F278 reads canonical marker sources without hydrating history-only carriers.
+ * The source verifier needs only stream invocation grouping and cross-post origin;
+ * keep this narrow parser aligned to those two consumers rather than decoding rich
+ * blocks or every optional extra carrier for each global inbox source.
+ */
+export function safeParsePawFeelSourceExtra(raw: string | undefined): PawFeelSourceExtra | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = asRecord(JSON.parse(raw));
+    if (!parsed) return undefined;
+    const stream = parsePawFeelSourceStream(parsed.stream);
+    const crossPost = parsePawFeelSourceCrossPost(parsed.crossPost);
+    return stream || crossPost ? { ...(stream ? { stream } : {}), ...(crossPost ? { crossPost } : {}) } : undefined;
   } catch {
     return undefined;
   }
@@ -738,7 +912,18 @@ export function safeParseMetadata(raw: string | undefined): MessageMetadata | un
       typeof parsed.provider === 'string' &&
       typeof parsed.model === 'string'
     ) {
-      return parsed as MessageMetadata;
+      const metadata = { ...parsed } as MessageMetadata;
+      if (Object.hasOwn(parsed, 'subexecutionEvents')) {
+        const events = (parsed as Record<string, unknown>).subexecutionEvents;
+        if (
+          !Array.isArray(events) ||
+          events.length > MAX_PERSISTED_SUBEXECUTION_EVENTS ||
+          !events.every((event) => isProviderSemanticEvent(event) && event.kind === 'subexecution')
+        ) {
+          delete metadata.subexecutionEvents;
+        }
+      }
+      return metadata;
     }
     return undefined;
   } catch {

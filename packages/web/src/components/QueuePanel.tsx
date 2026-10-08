@@ -16,6 +16,7 @@ import { ForceResetDialog } from './ForceResetDialog';
 import { SortableQueueEntryRow } from './QueueEntryRow';
 import {
   collectExactLiveInvocationIds,
+  collectSettlingInvocationIds,
   projectQueueEntryForActions,
   queueEntryNeedsRecovery,
   queueTargetStateEntries,
@@ -164,6 +165,10 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
+  const settlingInvocationIds = useMemo(
+    () => collectSettlingInvocationIds(activeInvocations, catInvocations),
+    [activeInvocations, catInvocations],
+  );
   const activeInvocationIds = useMemo(
     () => collectExactLiveInvocationIds(activeInvocations, catInvocations),
     [activeInvocations, catInvocations],
@@ -176,7 +181,10 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
     () =>
       queue
         .filter((entry) => {
-          if (entry.source === 'connector' && entry.content.startsWith(SCHEDULER_TRIGGER_PREFIX)) return false;
+          if (entry.source === 'connector' && entry.content.startsWith(SCHEDULER_TRIGGER_PREFIX)) {
+            const hasFailedTarget = queueTargetStateEntries(entry).some(([, state]) => state === 'failed');
+            if (!hasFailedTarget || !entry.recoveryActions?.length) return false;
+          }
           if (entry.status === 'queued') return true;
           const hasProjectedReset = entry.recoveryActions?.some((action) => action.kind === 'force_reset') ?? false;
           const hasActiveTarget =
@@ -185,10 +193,10 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
               : entry.targetCats.some((catId) => activeCatIds.has(catId));
           return hasProjectedReset && !hasActiveTarget;
         })
-        .map((entry) => projectQueueEntryForActions(entry, activeInvocationIds))
+        .map((entry) => projectQueueEntryForActions(entry, activeInvocationIds, settlingInvocationIds))
         .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
         .sort(compareQueueEntries),
-    [activeCatIds, activeInvocationIds, queue],
+    [activeCatIds, activeInvocationIds, settlingInvocationIds, queue],
   );
 
   // A2A queue visibility: explain WHY entries are queued (waiting behind the active turn) so the
@@ -215,7 +223,9 @@ export function QueuePanel({ threadId }: QueuePanelProps) {
   const canRecoverOrphanedQueue =
     !queuePaused &&
     visibleEntries.some(
-      (entry) => entry.status === 'queued' && queueEntryNeedsRecovery(entry, activeInvocationIds, activeCatIds),
+      (entry) =>
+        entry.status === 'queued' &&
+        queueEntryNeedsRecovery(entry, activeInvocationIds, activeCatIds, settlingInvocationIds),
     );
   const activeInvocationIdByCatId = useMemo(
     () =>

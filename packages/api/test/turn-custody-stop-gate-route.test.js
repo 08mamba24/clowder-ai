@@ -10,6 +10,10 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { catRegistry } from '@cat-cafe/shared';
+import { createTypedWaitRegistration } from '../dist/domains/ball-custody/TypedWaitRegistration.js';
+import { TaskStore } from '../dist/domains/cats/services/stores/ports/TaskStore.js';
+import { realWaitWake } from './helpers/event-wait-terminal-fixture.js';
+import { managedWakeRouteRecoveryFixture } from './helpers/managed-wake-route-recovery-fixture.js';
 
 const { TurnCustodyAdoptionRegistry, turnCustodyAdoptionRegistry } = await import(
   '../dist/domains/ball-custody/TurnCustodyAdoptionRegistry.js'
@@ -80,47 +84,49 @@ function createProjectionService({ state, closeDecisions }) {
   };
 }
 
-function createEventWaitTaskStore(threadId) {
-  return {
-    async listByThread() {
-      return [
-        {
-          id: 'task-event-wait',
-          kind: 'pr_tracking',
-          threadId,
-          subjectKey: 'pr:zts212653/cat-cafe#3282',
-          title: 'Review tracking',
-          ownerCatId: 'codex',
-          status: 'doing',
-          why: 'waiting for exact-head review',
-          createdBy: 'codex',
-          createdAt: 1,
-          updatedAt: 2,
-          automationState: {
-            await: {
-              v: 1,
-              generation: 1,
-              subjectRef: 'pr:zts212653/cat-cafe#3282',
-              ownerFence: { kind: 'containing_task', generation: 1 },
-              baseline: {
-                capturedAt: 1_783_700_000_000,
-                headSha: 'head-1',
-                review: { resultTriggerCommentId: 4_936_000_000 },
-              },
-              continuation: {
-                when: [{ kind: 'pr_review_result_available', triggerCommentId: 4_936_000_000 }],
-                // biome-ignore lint/suspicious/noThenProperty: F280's frozen wait contract field.
-                then: 'Consume the exact-HEAD review result.',
-              },
-              expiresAt: 1_883_700_000_000,
-              createdAt: 1_783_700_000_000,
-              provenance: 'explicit_registration',
-            },
-          },
-        },
-      ];
+function createEventWaitTaskStore(
+  threadId,
+  sourceMessageId = 'message-owner-task',
+  holdTaskId,
+  invocationId = 'outer-inv-1',
+) {
+  const store = new TaskStore();
+  const task = store.create({
+    kind: 'pr_tracking',
+    subjectKey: 'pr:zts212653/cat-cafe#3282',
+    threadId,
+    title: 'Registered review',
+    ownerCatId: 'codex',
+    userId: 'user1',
+    createdBy: 'codex',
+  });
+  const active = {
+    v: 1,
+    generation: 1,
+    subjectRef: task.subjectKey,
+    ownerFence: { kind: 'containing_task', generation: 1 },
+    baseline: { capturedAt: Date.now(), headSha: 'head-1', review: { resultTriggerCommentId: 4936000000 } },
+    continuation: {
+      when: [{ kind: 'pr_review_result_available', triggerCommentId: 4936000000 }],
+      // biome-ignore lint/suspicious/noThenProperty: F280 frozen continuation field.
+      then: 'Read the exact review.',
     },
+    expiresAt: Date.now() + 60000,
+    createdAt: Date.now(),
+    provenance: 'explicit_registration',
   };
+  const receipt = createTypedWaitRegistration({
+    task,
+    active,
+    invocationId,
+    source: { kind: 'primary', sourceMessageId, ...(holdTaskId ? { holdTaskId } : {}) },
+  });
+  store.replaceAutomationStateIfGeneration(task.id, {
+    expectedGeneration: null,
+    automationState: { await: active },
+    waitRegistration: receipt,
+  });
+  return store;
 }
 
 function createMockDeps(
@@ -136,6 +142,7 @@ function createMockDeps(
     sessionSealer,
     transcriptReader,
     sessionManager,
+    queueMessageStore,
   } = {},
 ) {
   let sequence = 0;
@@ -179,7 +186,8 @@ function createMockDeps(
         appended.push(stored);
         return stored;
       },
-      getById: async (messageId) => (messageId === triggerMessage?.id ? triggerMessage : null),
+      getById: async (messageId) =>
+        (await queueMessageStore?.getById(messageId)) ?? (messageId === triggerMessage?.id ? triggerMessage : null),
       getRecent: async () => [],
       getMentionsFor: async () => [],
       getBefore: async () => [],
@@ -219,6 +227,7 @@ async function runRoute(
     transcriptReader,
     sessionManager,
     throwAfterInvocationCreated = false,
+    queueMessageStore,
   } = {},
 ) {
   return withCatRegistryLock(async () => {
@@ -244,6 +253,7 @@ async function runRoute(
         sessionSealer,
         transcriptReader,
         sessionManager,
+        queueMessageStore,
       });
       const yielded = [];
       for await (const message of routeSerial(deps, ['codex'], 'custody gate test', 'user1', threadId, {
@@ -723,6 +733,99 @@ describe('F167 Phase T route custody stop gate', () => {
     ]);
   });
 
+  for (const carrier of ['primary', 'adopted']) {
+    for (const [completion, receiptState] of [
+      ['omitted', 'pending'],
+      ['before_read', 'pending'],
+      ['during_turn', 'pending'],
+      ['before_read', 'handled'],
+      ['during_turn', 'handled'],
+      ['omitted', 'withdrawn'],
+      ['during_turn', 'withdrawn'],
+    ]) {
+      test(`#1371 superseded ${carrier} wake event=${completion} receipt=${receiptState} has an honest route terminal`, async () => {
+        const { TurnCustodyProjectionService } = await import(
+          '../dist/domains/ball-custody/TurnCustodyProjectionService.js'
+        );
+        const threadId = `thread-retired-${carrier}-${completion}`;
+        const recovery = await managedWakeRouteRecoveryFixture(threadId, 'codex', 'retired-task');
+        const wake = {
+          kind: 'structured',
+          protocol: 'hold',
+          subjectKey: `ball:thread:${threadId}`,
+          holderCatId: 'codex',
+          sourceMessageId: recovery.messageId,
+          taskId: 'retired-task',
+        };
+        const events = [
+          {
+            kind: 'ball.wake_condition_met',
+            sourceEventId: 'wake:retired-task',
+            payload: { catId: 'codex', taskId: wake.taskId },
+          },
+          { kind: 'ball.handed', sourceEventId: 'review-handoff', payload: { fromCatId: 'codex', toCatId: 'opus' } },
+        ];
+        const settle = () =>
+          events.push({
+            kind: 'ball.hold_dispositioned',
+            sourceEventId: 'terminal:retired-task',
+            payload: {
+              catId: 'codex',
+              sourceMessageId: wake.sourceMessageId,
+              taskId: wake.taskId,
+              retired: true,
+            },
+          });
+        if (completion === 'before_read') {
+          settle();
+          if (receiptState === 'handled') await recovery.settle();
+        }
+        const projection = new TurnCustodyProjectionService({
+          ballCustodyProjectionStore: { get: async () => ({ state: 'active', holder: 'opus' }) },
+          ballCustodyEventLog: { read: async (_key, from = 0) => events.slice(from) },
+        });
+        const opened = await projection.open(wake);
+        assert.equal(opened.state, 'covered_empty', 'superseded subject never becomes an active obligation');
+        const service = {
+          calls: [],
+          async *invoke(prompt) {
+            this.calls.push(prompt);
+            if (completion === 'during_turn') settle();
+            if (completion === 'during_turn' && receiptState === 'handled') await recovery.settle();
+            if (receiptState === 'withdrawn') await recovery.withdraw();
+            yield { type: 'text', catId: 'codex', content: 'Ordinary final answer.', timestamp: Date.now() };
+            yield { type: 'done', catId: 'codex', timestamp: Date.now() };
+          },
+        };
+        const { appended, yielded } = await runRoute(service, threadId, {
+          projectionService: projection,
+          queueMessageStore: recovery.messageStore,
+          routeOptions:
+            carrier === 'primary'
+              ? { turnCustodyWake: wake }
+              : {
+                  turnCustodyWake: { kind: 'unstructured', source: 'user_chat' },
+                  persistedPromptMessageIds: [wake.sourceMessageId],
+                  onPromptMessagesExposed: async () => [wake],
+                },
+        });
+        const done = yielded.find((message) => message.type === 'done');
+        assert.equal(done?.errorCode, receiptState === 'pending' ? 'managed_hold_disposition_missing' : undefined);
+        if (receiptState === 'pending') await recovery.assertRecovery(done);
+        assert.equal(service.calls.length, 1, 'never launch a substitute child for an exact receipt');
+        assert.equal(
+          appended.filter((message) => message.source?.connector === 'routing-guard-failure').length,
+          receiptState === 'pending' ? 1 : 0,
+        );
+        assert.equal(
+          (await projection.close(opened)).shouldBlock,
+          false,
+          'receipt omission must not revive successor custody',
+        );
+      });
+    }
+  }
+
   test('a managed hold body adopted by an already-running turn emits its own continuation proof', async () => {
     const opens = [];
     const projection = {
@@ -780,6 +883,108 @@ describe('F167 Phase T route custody stop gate', () => {
       },
     ]);
   });
+
+  for (const retired of [false, true]) {
+    test(`an adopted ${retired ? 'retired' : 'live'} hold consumes its own newly registered CI wait at route close`, async () => {
+      const threadId = 'thread-adopted-typed-wait';
+      const taskStore = new TaskStore();
+      const wake = {
+        kind: 'structured',
+        protocol: 'hold',
+        subjectKey: `ball:thread:${threadId}`,
+        holderCatId: 'codex',
+        sourceMessageId: 'adopted-ci-source',
+        taskId: 'adopted-ci-command',
+      };
+      const { TurnCustodyProjectionService } = await import(
+        '../dist/domains/ball-custody/TurnCustodyProjectionService.js'
+      );
+      const events = [
+        {
+          kind: 'ball.wake_condition_met',
+          sourceEventId: 'wake:adopted-ci',
+          payload: { catId: 'codex', taskId: wake.taskId },
+        },
+        ...(retired
+          ? [
+              {
+                kind: 'ball.handed',
+                sourceEventId: 'handoff:adopted-ci',
+                payload: { fromCatId: 'codex', toCatId: 'opus' },
+              },
+            ]
+          : []),
+      ];
+      const projection = new TurnCustodyProjectionService({
+        ballCustodyProjectionStore: { get: async () => ({ state: 'active', holder: retired ? 'opus' : 'codex' }) },
+        ballCustodyEventLog: { read: async (_key, from = 0) => events.slice(from) },
+      });
+      const service = {
+        calls: [],
+        async *invoke(prompt) {
+          this.calls.push(prompt);
+          yield {
+            type: 'system_info',
+            catId: 'codex',
+            content: JSON.stringify({ type: 'invocation_created', invocationId: 'provider-child' }),
+            timestamp: Date.now(),
+          };
+          assert.equal(await turnCustodyAdoptionRegistry.adopt('outer-inv-1', [wake]), true);
+          const task = taskStore.create({
+            kind: 'pr_tracking',
+            subjectKey: 'pr:owner/repo#4513',
+            threadId,
+            title: 'CI',
+            userId: 'user1',
+            ownerCatId: 'codex',
+            createdBy: 'codex',
+          });
+          const active = {
+            v: 1,
+            generation: 1,
+            subjectRef: task.subjectKey,
+            ownerFence: { kind: 'containing_task', generation: 1 },
+            baseline: { capturedAt: Date.now(), headSha: 'head-1' },
+            continuation: {
+              when: [{ kind: 'pr_ci_terminal' }],
+              // biome-ignore lint/suspicious/noThenProperty: F280 frozen continuation field.
+              then: 'Read CI.',
+            },
+            createdAt: Date.now(),
+            expiresAt: Date.now() + 60000,
+          };
+          const receipt = createTypedWaitRegistration({
+            task,
+            active,
+            invocationId: 'outer-inv-1',
+            source: { kind: 'adopted_hold', sourceMessageId: wake.sourceMessageId, holdTaskId: wake.taskId },
+          });
+          taskStore.replaceAutomationStateIfGeneration(task.id, {
+            expectedGeneration: null,
+            automationState: { await: active },
+            waitRegistration: receipt,
+          });
+          yield { type: 'text', catId: 'codex', content: 'Registered CI wait.', timestamp: Date.now() };
+          yield { type: 'done', catId: 'codex', timestamp: Date.now() };
+        },
+      };
+      const { yielded } = await runRoute(service, threadId, {
+        taskStore,
+        projectionService: projection,
+        routeOptions: { turnCustodyWake: { kind: 'unstructured', source: 'user_chat' } },
+      });
+      const witnesses = yielded.find((message) => message.type === 'done')?.turnCustodyTerminalWitnesses;
+      assert.equal(service.calls.length, 1);
+      assert.equal(witnesses.length, 1);
+      assert.equal(witnesses[0].sourceMessageId, wake.sourceMessageId);
+      assert.equal(witnesses[0].taskId, wake.taskId);
+      assert.equal(witnesses[0].transition, 'event_wait');
+      assert.deepEqual(witnesses[0].waitRegistration, {
+        taskId: taskStore.listByThread(threadId)[0].id,
+        generation: 1,
+      });
+    });
+  }
 
   test('a full-context tool read can adopt a managed hold after provider execution started', async () => {
     turnCustodyAdoptionRegistry.resetForTest();
@@ -984,6 +1189,9 @@ describe('F167 Phase T route custody stop gate', () => {
     assert.equal(done?.errorCode, 'managed_hold_disposition_missing');
     assert.equal(done?.turnCustodyTerminalWitnesses, undefined);
     assert.equal(appended.filter((message) => message.source?.connector === 'routing-guard-failure').length, 1);
+    const notice = appended.find((message) => message.source?.connector === 'routing-guard-failure');
+    assert.doesNotMatch(notice.content, /结构化补救后/, 'this path never starts a remedial child');
+    assert.match(notice.content, /通知.*结算/);
     assert.equal(service.calls.length, 1, 'the exact child must not be replaced by a remedial child');
   });
 
@@ -1024,7 +1232,7 @@ describe('F167 Phase T route custody stop gate', () => {
 
     const { yielded } = await runRoute(service, threadId, {
       projectionService: projection,
-      taskStore: createEventWaitTaskStore(threadId),
+      taskStore: createEventWaitTaskStore(threadId, 'message-managed-hold', 'task-managed-hold'),
       routeOptions: {
         turnCustodyWake: {
           kind: 'structured',
@@ -1259,6 +1467,7 @@ describe('F167 Phase T route custody stop gate', () => {
       projectionService: projection,
       taskStore: createEventWaitTaskStore(threadId),
       routeOptions: {
+        currentUserMessageId: 'message-owner-task',
         turnCustodyWake: {
           kind: 'action_successor',
           leaseId: 'lease-review',
@@ -1324,6 +1533,11 @@ describe('F167 Phase T route custody stop gate', () => {
       projectionState: 'covered_empty',
       wake: 'coordination_terminal',
     });
+    assert.equal(
+      yielded.some((message) => message.type === 'system_info' && message.content?.includes('silent_completion')),
+      false,
+      'a covered-empty coordination terminal already has a typed completion witness, so no generic empty-output bubble',
+    );
   });
 
   test('legacy typed local-review terminal handback no longer creates a structured dispatch obligation', async () => {
@@ -1430,5 +1644,53 @@ describe('F167 Phase T route custody stop gate', () => {
       ),
       'persisted visible output must point to the structured remedial child',
     );
+  });
+});
+
+describe('F167 terminal event-wait through the real stop gate', () => {
+  // The REAL projection service (not a canned verdict) so the route and the projection cannot
+  // drift apart: the stop gate is only as good as the verdict it is handed.
+  async function realProjectionService() {
+    const { TurnCustodyProjectionService } = await import(
+      '../dist/domains/ball-custody/TurnCustodyProjectionService.js'
+    );
+    return new TurnCustodyProjectionService({
+      ballCustodyProjectionStore: { get: async () => ({ state: 'active', holder: 'codex' }) },
+      ballCustodyEventLog: { read: async () => [] },
+    });
+  }
+  const wakeFor = (threadId, reason) =>
+    realWaitWake(reason, { holderCatId: 'codex', subjectKey: `ball:thread:${threadId}` });
+  const guardFailures = (appended) =>
+    appended.filter((message) => message.source?.connector === 'routing-guard-failure');
+
+  for (const reason of ['subject_terminal', 'expired']) {
+    test(`a ${reason} wake ends the turn once: no remedial child and no guard-failure notice`, async () => {
+      const threadId = `thread-event-wait-${reason}`;
+      const service = createSequenceService('codex', ['The wait already ended; case closed in the task record.']);
+
+      const { appended, yielded } = await runRoute(service, threadId, {
+        projectionService: await realProjectionService(),
+        routeOptions: { turnCustodyWake: wakeFor(threadId, reason) },
+      });
+
+      assert.equal(service.calls.length, 1, 'the settled wait must not spawn a structured remedial child');
+      assert.equal(guardFailures(appended).length, 0);
+      assert.equal(yielded.find((message) => message.type === 'done')?.errorCode, undefined);
+    });
+  }
+
+  test('a matched wake without any continuation still gets the structured remedial child', async () => {
+    const threadId = 'thread-event-wait-matched';
+    const service = createSequenceService('codex', ['Text-only completion.', '@co-creator']);
+
+    const { appended } = await runRoute(service, threadId, {
+      projectionService: await realProjectionService(),
+      routeOptions: { turnCustodyWake: wakeFor(threadId, 'matched') },
+    });
+
+    assert.equal(service.calls.length, 2, 'matched keeps its obligation: the gate must still bite');
+    assert.match(service.calls[1], /结构化/);
+    assert.equal(guardFailures(appended).length, 1);
   });
 });

@@ -29,6 +29,16 @@ function isManagedCommandWake(params: Record<string, unknown>): boolean {
   );
 }
 
+function isTimerHold(params: Record<string, unknown>): boolean {
+  const lifecycle = params.holdLifecycle;
+  return (
+    typeof lifecycle === 'object' &&
+    lifecycle !== null &&
+    !Array.isArray(lifecycle) &&
+    (lifecycle as Record<string, unknown>).mode === 'timer'
+  );
+}
+
 /** Reminder template — fires on schedule, wakes a cat to handle the reminder in-thread */
 export const reminderTemplate: TaskTemplate = {
   templateId: 'reminder',
@@ -45,8 +55,10 @@ export const reminderTemplate: TaskTemplate = {
     const message = (p.params.message as string) || '定时提醒';
     const targetCatId = (p.params.targetCatId as string) || null;
     const triggerUserId = (p.params.triggerUserId as string) || 'default-user';
+    const ownerAuthProvenance = instanceId.startsWith('hold-ball-') ? p.ownerAuthProvenance : undefined;
     const threadId = p.deliveryThreadId;
     const managedCommandWake = instanceId.startsWith('hold-ball-') && isManagedCommandWake(p.params);
+    const timerHold = instanceId.startsWith('hold-ball-') && isTimerHold(p.params);
     // F167 Phase M (codex P1): pre-fire defer activation is hold_ball-specific.
     // Gate on the `hold-ball-` instanceId prefix — callback-hold-ball-routes mints those
     // ids, while public /api/schedule/tasks only mints `dyn-*` (schedule.ts:417), so a
@@ -61,6 +73,7 @@ export const reminderTemplate: TaskTemplate = {
       trigger: p.trigger,
       ...(deferWhileThreadBusy && threadId ? { firePolicy: { deferWhileThreadBusy: true, threadId } } : {}),
       admission: {
+        dependsOnThreadActivity: false,
         async gate() {
           if (!threadId) return { run: false, reason: 'no deliveryThreadId' };
           return { run: true, workItems: [{ signal: message, subjectKey: `thread-${threadId}` }] };
@@ -91,19 +104,26 @@ export const reminderTemplate: TaskTemplate = {
             threadId: tid,
             content,
             userId: 'scheduler',
+            ...(timerHold ? { idempotencyKey: `hold-wake:${instanceId}` } : {}),
             ...(ctx.invokeTrigger ? { extra: { scheduler: { hiddenTrigger: true } } } : {}),
           });
 
           // Wake a cat to act on the trigger message
           if (ctx.invokeTrigger) {
-            try {
-              void Promise.resolve(
-                ctx.invokeTrigger.trigger(tid, catId, triggerUserId, content, messageId, undefined, {
-                  sourceCategory: 'scheduled',
-                }),
-              ).catch(() => {});
-            } catch {
-              // Best-effort: sync trigger throw should not fail the reminder
+            const trigger = () =>
+              ctx.invokeTrigger!.trigger(tid, catId, triggerUserId, content, messageId, undefined, {
+                sourceCategory: 'scheduled',
+                ...(ownerAuthProvenance ? { ownerAuthProvenance } : {}),
+              });
+            if (timerHold) {
+              const outcome = await trigger();
+              if (outcome === 'full') throw new Error('timer hold wake was not admitted');
+            } else {
+              try {
+                void Promise.resolve(trigger()).catch(() => {});
+              } catch {
+                // Ordinary reminders preserve their best-effort trigger semantics.
+              }
             }
           }
         },

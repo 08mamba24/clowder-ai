@@ -5,8 +5,8 @@ related_decisions: [040, 041, 042]
 topics: [freshness, glass-box, supplement, inbox-notice, runtime-descriptor, side-effect-gate, codex-app-server, lifecycle, liveness, ax]
 doc_kind: spec
 created: 2026-06-27
-updated: 2026-09-05
-tips_exempt: Remote-compaction capacity recovery continues the already-authorized task automatically; it adds no user action, setting, or capability to discover.
+updated: 2026-09-27
+tips_exempt: "Renewed 2026-09-27 for F324 Phase A: bounded notice attachment preserves the existing full-read/ack actions without adding a user-invoked capability, setting, or discovery moment."
 ---
 
 # F254: Side-Effect Freshness Gate — 副作用出口 freshness 拦截
@@ -381,8 +381,13 @@ Held 信封结构：
 ```typescript
 interface HeldEnvelope {
   status: 'held';
+  // Stable category retained for existing clients.
   reason: 'newer_messages_available';
+  // Exact gate decision, e.g. pagination_limit_uncertain or unseen_available.
+  freshnessReason: string;
   unseenCount: number;
+  // false means a numeric 0 is uncertainty, not proof that nothing is unseen.
+  unseenCountKnown: boolean;
   // 最多 3 条摘要（DEFAULT_HELD_CONTEXT_LIMIT，学 Raft）
   previews: Array<{
     from: string;     // catId 或 'user'
@@ -391,8 +396,35 @@ interface HeldEnvelope {
   }>;
   omittedCount: number;  // 超过 3 条时的省略数
   actions: ['read_latest', 'revise', 'send_with_acknowledge'];
+  catchUp: {
+    tool: 'cat_cafe_get_thread_context';
+    arguments: { threadId?: string; responseMode: 'full' };
+    continuation: {
+      cursorArgument: 'cursor';
+      cursorFrom: 'nextCursor';
+      completeWhen: 'hasMore=false';
+    };
+  };
 }
 ```
+
+`cross_post_message` 的 `catchUp.arguments.threadId` 必须是目标 thread；同 thread
+`post_message` / `multi_mention` 可省略。`pagination_limit_uncertain` 的 `unseenCount=0`
+表示 bounded scan 无法确定数量，MCP 不得渲染成“确有 0 条未读”。
+
+Architecture cell: `ball-custody` + `transport`
+
+Map delta: none — 本轮只修正既有 freshness gate 的 held envelope、ack escape hatch 与
+`get_thread_context` 跨 thread 读取入口，不迁移 owner、store 或 queued-body custody。
+
+Why: 目标 thread 已有 seenCursor 时，cross-thread full read 也必须从该边界开始；同时仍只允许
+当前执行读取自己的 queued body。这样能恢复发送而不削弱权限、因果相关性或 F167 时间见证围栏。
+
+Canonical source: `packages/api/src/domains/cats/services/freshness/checkFreshnessForPostMessage.ts#checkFreshnessForPostMessage`；`packages/api/src/routes/callbacks.ts#readThreadContext`；`packages/mcp-server/src/tools/callback-tools.ts#_executePostMessage`
+
+Consumer evidence: `rg -n 'checkFreshnessForPostMessage|freshnessReason|catchUp|cat_cafe_get_thread_context' packages/api/src/routes packages/mcp-server/src/tools packages/api/test packages/mcp-server/test`
+
+Claim guard: “HELD/0 可恢复且跨 thread 不泄露 foreign queued body” → `f254-freshness-gate-integration.test.js` 的 `honors acknowledgeHeld when the bounded pagination scan cannot prove catch-up`、`callback-routes.test.js` 的 `pagination-held cross-thread post exposes executable catch-up and succeeds after bounded full-read continuation` 与 `full cross-thread context returns published history without exposing foreign queued bodies` → 删除 early ack、目标 seenCursor 选择或 queued-body 隔离任一项即 RED。
 
 **覆盖的副作用工具**（按优先级）：
 
@@ -409,9 +441,11 @@ interface HeldEnvelope {
 - 检测 `data.status === 'held'` → 返回可读的提示文本给猫
 - 提示包含：原因、新消息摘要、可选动作说明
 - 猫读完 held 信封后可以：
-  - 调无 filter 的 `get_thread_context` 连续读新消息（自动推进游标）
+  - 按 `catchUp` 调无 filter 的 `get_thread_context(responseMode="full")`；跨 thread 使用目标
+    `threadId`，`hasMore=true` 时把 `nextCursor` 作为下一次 `cursor`，直到 `hasMore=false`
   - 修改内容后重新调 `post_message`
-  - 加 `acknowledgeHeld: true` 参数强制发送原文
+  - 加 `acknowledgeHeld: true` 参数强制发送原文；该 escape hatch 在 bounded pagination scan
+    之前生效，不能再次落回 `pagination_limit_uncertain`
 
 #### A3: seenCursor 推进时机
 
@@ -521,6 +555,8 @@ interface FreshnessInvocationState {
 - **Scope**：仅当前 thread（KD-10）。跨 thread notice 不在 Phase B scope 内
 - **持久化**：每次 notice 投递写 `notice_attached` 事件到 FreshnessAttentionEventLog
 - **时序**：只读工具执行完可能的 seenCursor ack 后再计算（`get_thread_context` 会推进 seenCursor，notice 检查在 ack 之后，避免"刚读过又 notice"，codex 洞察）
+
+**2026-09-27 F324 读取回归边界**：`get_thread_context` 已有 seenCursor 时，空未读是完整的空页，不回放历史；分页 lookahead 与实际返回正文决定 hasMore/seen，queued 的 `seen` 仍不等于 `handled`。同一 invocation 已完整曝光的 user queued 工作只回待办锚，不能靠永久去重隐藏失败/未处理工作；connector/agent 的 adoption 失败仍允许正文重试。B1 的 `notice_attached` 在 API 侧先记录，因此 MCP 只在原工具结果预留足够空间时请求 notice；API notice 文本先有界化再记录投递，绝不在末端丢掉一条已登记的提示。回归：`callback-routes.test.js` 的 F324 未读/queued fixture、F167 adoption 重试、`f254-notice-service.test.js` 的有界提示、`tool-response-budget.test.js` 的预留与副作用保护。
 
 #### B2: Turn 结束 notice（hold_ball 提醒 + 延期记录，修订）
 
@@ -709,10 +745,10 @@ Phase E 不再增加另一层“提醒猫去读”的 fallback。它改变输出
 ### Phase A（Freshness Gate MVP）
 
 - [x] AC-A1: 猫调 `post_message` 时，如果 thread 有猫未看过的消息（`latestMessageId > seenCursor`），返回 held 信封而非执行发送——**用独立 seenCursor seq 游标判断，不用 timestamp，不用 deliveryCursor**
-- [x] AC-A2: 猫 turn 中途通过无 filter 的 full `get_thread_context` 读过新消息后，seenCursor 推进，再调 `post_message` 不被 hold（**零误 hold 验证**）
+- [x] AC-A2: 猫 turn 中途通过无 filter 的 full `get_thread_context` 读过新消息后，seenCursor 推进，再调 `post_message` 不被 hold（**零误 hold 验证**）；跨 thread full read 同样从目标 thread 的 seenCursor 开始，但不暴露目标执行的 queued body
 - [x] AC-A3: `seenCursor` 不存在时 fail-open 放行（不因缺数据卡死副作用）
 - [x] AC-A4: held 信封最多展示 3 条摘要 + omittedCount（防 context 膨胀）
-- [x] AC-A5: 猫加 `acknowledgeHeld: true` 可强制发送（escape hatch）
+- [x] AC-A5: 猫加 `acknowledgeHeld: true` 可强制发送（escape hatch），包括 `pagination_limit_uncertain` 分支；ack 不重复 bounded scan
 - [x] AC-A6: `cross_post_message` 和 `multi_mention` 同样受 freshness gate 保护（cross_post 检查**目标 thread** 的 seenCursor；目标 thread 无 cursor 时 fail-open）。`callbacks.ts` 传 `isCrossThread ? 'cross_post_message' : 'post_message'` toolName；`callback-multi-mention-routes.ts` 加 freshness gate（含 play-mode visibility filter）+ fail-open + `deliveryCursorStore` DI
 - [x] AC-A7: 每次 held/forward 决策记录为**独立 freshness 事件流**（不是 F233 `BallCustodyEvent` 联合成员；F233 projector 可选读取此流做聚合报告）。`checkFreshnessForPostMessage` 新增 optional `eventLog` param，6 条决策路径写 `held_decision`/`forward_decision` 事件，fail-open；route 层（post_message + multi_mention）接入 FreshnessAttentionEventLog。15 新测试
 - [x] AC-A8: Redis-backed 测试覆盖游标读写 + held 决策（不用纯 in-memory 假绿）
@@ -796,7 +832,7 @@ Phase E 不再增加另一层“提醒猫去读”的 fallback。它改变输出
     恢复阶段的原生 resume 拒绝或 identity mismatch 必须停止，不能携带空恢复输入换到新 thread。早到的容量 error notice
     不单独授权重试；它由权威终态归并，成功恢复后不发布。中间重试留在 status channel；`blocked_inflight_tool` / `checkpoint_incomplete` / `budget_exhausted` 各保留
     一张用户可见断点卡。AC-D14e 对人工 interrupt / timeout 继续成立，本条只处理 provider 已给出的 failed 终态。
-    按 operator source `0001788622146733-000382-aea9fce5` 收正可选计划、提前通知与 exact-resume 边界。
+    按 operator source `private-source-id` 收正可选计划、提前通知与 exact-resume 边界。
 
 > **AC-D14 lifecycle projection stateful-object gate**：canonical read 保留 parent execution owner 与 child turn
 > identity 两套坐标；tracker 只能在其 `getUserId(threadId, catId)` 等于本次 request user 时提供 lifecycle owner。
@@ -862,7 +898,7 @@ piggyback 推断 native coverage。
 - [x] AC-E6: 连续新消息采用单调 frontier + bounded supersede；每条 lineage 具备 one-running + one-pending 去重，scope 另有 one-running-successor lease，但允许多个 pending/blocked lineage 共存；per-retry-epoch automatic successor attempt 与 per-output conditional-append recheck 均有上界。预算耗尽只 block 当前 lineage 并保留显式 retry/disposition，绝不发布 stale、静默吞 unresolved message 或阻断独立新 work
 - [x] AC-E7: multi-target 继续 per-target 隔离：一只猫的 consume/handled/commit 不推进其他 target；parallel route 创建稳定 `parallelBatchId`，同批 sibling outputs 不进入彼此 relevant frontier，其他新消息仍推进每猫 closure；independent fan-out cutoff 仍归 F108
 - [x] AC-E8: thread 现场展示低噪音 catch 状态，fresh final 后自动收敛；dashboard 仅作深挖，重复 supersede 必须 dedup；blocked 在 Hub 与 connector 都必须成为明确终态/重试指引，不能永远显示 catching-up
-- [x] AC-E9: `eval:freshness` 接入 replayable source + verdict generator，覆盖原始双消息 dogfood、existing-coverage-without-closure、crash/cancel、连续新消息、multi-target、parallel same-batch、attempt/recheck budget、connector blocked 八类结构性 fixture；每次 publish 必跑八类 server-owned fixture，caller 不可挑选证据；fixture-only 明确为 `no_data` 且绝不 healthy，live facts 与 aggregate snapshot 从同一 durable closure 集合推导。`2936df429` 的真空绿缺陷由 formal review 揭示，修复在 latest-main-equivalent `d93dda62e` 以每个 violation predicate 的 RED、mandatory coverage、subset rejection 与 live duplicate/stale custody 证明转绿；待 exact-head gate/re-review 与 PR/cloud/CI。
+- [x] AC-E9: `eval:freshness` 接入 replayable source + verdict generator，覆盖原始双消息 dogfood、existing-coverage-without-closure、crash/cancel、连续新消息、multi-target、parallel same-batch、attempt/recheck budget、connector blocked 八类结构性 fixture；每次 publish 必跑八类 server-owned fixture，caller 不可挑选证据；fixture-only 明确为 `no_data` 且绝不 healthy，live facts 与 aggregate snapshot 从同一 durable closure 集合推导。`2936df429` 的真空绿缺陷由 formal review 揭示，修复在 latest-main-equivalent `d93dda62e` 以每个 violation predicate 的 RED、mandatory coverage、subset rejection 与 live duplicate/stale custody 证明转绿。**2026-09-05 measurement amendment**：本条 closure replay 只保留为结构不变量与 legacy compatibility plane；不得再把 closure-only `no_data` 解释成无 live activity，发布有效性由 AC-E34~E37 的完整 windowed source maturity gate 决定。
 - [x] AC-E10: 约定面接线纳入 convention graph / wiring guard；intake 整文件覆盖若切断 commit gate、closure event 或 eval adapter，`pnpm gate` 必须失败
 - [x] AC-E11: **restart recovery fence**：process startup 不是新的用户意图。启动时发现的 `pending` closure 必须持久化为 `blocked:startup_recovery_requires_explicit_retry`，不得自动召猫；仅仍处于 `running` 且未超过 invocation liveness horizon 的崩溃 attempt 可 recover-forward。blocked projection 必须可由 F5/reconnect hydration 重建，显式 retry 继续复用同一 closure/retry epoch；queued body 读取继续按 target cat 隔离。
 - [x] AC-E12: **lineage custody / poison-pill removal**：scope active truth 从单 pointer 改为 lineage set + one running lease；只有 exact `freshnessClosureId` carrier 可影响该 lineage。旧 pending/blocked ticket 不得吞独立新回答；新 stale turn 必须开自己的 lineage。所有 route exit 在删除 DraftStore 前必须收到 typed draft custody，且每轮有 exact `turnInvocationId` + formal outcome。
@@ -886,7 +922,7 @@ piggyback 推断 native coverage。
 Architecture cell: `ball-custody` + `dispatch` + `bubble-pipeline`
 Map delta: completed — `ball-custody` 登记 typed causal relevance，`dispatch` 登记 shared child ledger，`bubble-pipeline` 登记三类 child 的 live/F5 projection。
 
-现场 anchor：`incident:[thread-id]/0001784219578304-000230-3dd8e178`。
+现场 anchor：`incident:[thread-id]/private-source-id`。
 M1 只路由 Fable；M2 的“你也看看”让 Sol 本轮 prompt 正常覆盖 M1。Fable 对 M1 的后到 sibling reply
 属于同一用户波次的已覆盖因果结果，却被旧 relevance policy 当成 Sol 新工作，再创建一个 supplement；同一
 parent 下的 ordinary、routing guard、freshness supplement 又只能在短 TTL auth registry 中暂时看见，无法作为
@@ -918,6 +954,19 @@ Map delta why: 本轮只修正现有 Web closure projection / hydration 的时�
 - [x] AC-E31: `originTriggerMessageId=null` 的 legacy closure 明示为历史责任并展示自己的月日/时分；不得使用会被理解成“刚发生”的当前责任文案
 - [x] AC-E32: legacy closure 不暴露 one-click retry，只指向 AC-E23 迁移核销；current attributable blocked closure 的显式 retry 契约保持不变
 - [x] AC-E33: background legacy hydration 不制造 unread 或推进 `lastActivity`；active/background/F5 投影共用相同 lineage/time 规则并按 closure ID 幂等
+
+### Phase E-E（Measurement-valid Replay，2026-09-05 runtime 反证重开）
+
+Architecture cell: harness-eval + ball-custody + dispatch
+
+Map delta: none — `eval:freshness` 在既有 harness-eval、ball-custody 与 dispatch owner 上增加同一 owner、同一半开窗口的多源 replay；不新增 lifecycle 或 storage owner。
+
+现场反证：deployed runtime 的 `queued_seen/queued_handled`、gate、notice、reinvoke 与 glass-box counters 均有活动，closure-only replay 却返回 `no_data`。这些 OTel counters 自进程启动累计，既不能构成 weekly 分母，也不能证明所选窗口完整。根因与 RED 见
+
+- [x] AC-E34: 一个 publish selector 必须从相同 owner 与 `[windowStartMs, windowEndMs)` 同时解析四个 server-owned plane：legacy closure compatibility、TTL-0 Queue custody lifecycle、TTL-0 FreshnessSupplement lifecycle、retention-bounded attention/provider event index；`threadIds` narrowing 对四个 plane 一致生效
+- [x] AC-E35: Queue replay 以 current revision 的 target-local terminal truth 计数，同时保留 exact body exposure/attempt history；Supplement 持久 `claimedAt/terminalAt`。窗口相交的 legacy lifecycle 若缺少无法还原的 transition time，source 必须标 incomplete，不得猜时间或归零
+- [x] AC-E36: attention/provider event 的 invocation-local diagnostic log 与 owner-scoped window index 在一个 Redis transaction 中提交；window index 保留至少最大 31-day selector 加调度余量，并把仍可能有并发 append 的最近 60 秒排除在 settled-through watermark 外。每次 API startup 单调推进 coverage 起点，阻断跨 crash/rollback/off-mode 的假连续窗口；同进程 append 失败也推进 process gap。无 coverage watermark、窗口/上述 gap 越界、owner provenance 缺失或任一 source query 失败时，measurement maturity 必须 blocked，且在创建 verdict commit/PR 前拒绝发布
+- [x] AC-E37: 八类 AC-E9 fixture 每次仍由 server 强制注入，legacy closure 仍可 replay；Queue/Supplement/attention 有活动而 legacy closure 为零时，结构 verdict 可保持 `no_data/healthy=false`，但 bundle 必须如实输出 windowed activity，不能写成“无 live activity”。RED 必须证明 source 不完整时即使有这些活动也拒绝发布
 
 <!-- F254_MANUAL_REMINDER_SCOPE: optional-nonblocking -->
 

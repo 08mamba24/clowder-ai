@@ -2,36 +2,39 @@
  * Callback task routes — MCP post_message 回传的任务更新端点
  */
 
-import type { CatId, CustodyAdmissionRequestV1, TaskItem } from '@cat-cafe/shared';
+import type { CatId, TaskItem } from '@cat-cafe/shared';
 import {
   catRegistry,
   createCatId,
   custodyAdmissionRequestV1Schema,
-  custodyOfferV1Schema,
   entrustedWorkClosureSpecV1Schema,
   entrustedWorkTerminalActionV1Schema,
   entrustedWorkUpdateActionV1Schema,
   entrustedWorkV1Schema,
+  taskFeatureIdSchema,
 } from '@cat-cafe/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { resolveCatTarget } from '../domains/cats/services/agents/routing/cat-target-resolver.js';
-import type { IMessageStore, StoredMessage } from '../domains/cats/services/stores/ports/MessageStore.js';
-import { deriveGrowingSourceMessageRevision } from '../domains/cats/services/stores/ports/MessageStore.js';
+import type { IMessageStore } from '../domains/cats/services/stores/ports/MessageStore.js';
+import { queryTaskItems } from '../domains/cats/services/stores/ports/TaskQuery.js';
 import type { ITaskStore } from '../domains/cats/services/stores/ports/TaskStore.js';
 import { isEntrustedWorkTerminalActionRequiredError } from '../domains/cats/services/stores/ports/TaskStoreContract.js';
 import type { IThreadStore } from '../domains/cats/services/stores/ports/ThreadStore.js';
+import type { DevelopmentScopeDocuments } from '../domains/growing/DevelopmentScopeResolver.js';
 import {
-  type EntrustedWorkAdmissionSourceContext,
   EntrustedWorkLifecycleError,
   EntrustedWorkLifecycleService,
 } from '../domains/growing/EntrustedWorkLifecycleService.js';
+import { F232PreparedArtifactReader } from '../domains/growing/F232PreparedArtifactReader.js';
 import type { SocketManager } from '../infrastructure/websocket/index.js';
 import { recordAnchorDrillEvent, recordAnchorPreviewEvent } from './anchor-event-log.js';
 import { recordAnchorFullDrill, recordAnchorReturned } from './anchor-telemetry.js';
 import { anchorTaskWhy } from './callback-anchor-helpers.js';
 import { requireCallbackAuth } from './callback-auth-prehandler.js';
+import { registerCallbackDevelopmentWorkRoutes } from './callback-development-work-routes.js';
 import { deriveCallbackActor, getDeletedCallbackThreadGuard, resolveScopedThreadId } from './callback-scope-helpers.js';
+import { admissionSourceContext, assertDirectAdmissionSourceCustody } from './entrusted-work-source-custody.js';
 
 // F193-E1: shared refine — single source for status-dependent dispatch gate validation.
 // dispatched → require both dispatchedThreadId AND dispatchedMessageId (trace IDs).
@@ -138,6 +141,7 @@ const listTasksQuerySchema = z.object({
   catId: z.string().min(1).optional(),
   status: z.enum(['todo', 'doing', 'blocked', 'done']).optional(),
   kind: z.enum(['work', 'pr_tracking']).optional(),
+  featureId: taskFeatureIdSchema.optional(),
   // F236 AC-A4: why-drill channel — when taskId is given, that task's full (untruncated) why
   // is returned (one-hop drill from the anchored list), staying within the user's thread scope.
   taskId: z.string().min(1).optional(),
@@ -150,10 +154,16 @@ export function registerCallbackTaskRoutes(
     messageStore: IMessageStore;
     socketManager: SocketManager;
     threadStore?: IThreadStore;
+    developmentDocuments?: DevelopmentScopeDocuments;
   },
 ): void {
   const { taskStore, messageStore, socketManager, threadStore } = deps;
-  const entrustedWorkLifecycle = new EntrustedWorkLifecycleService(taskStore);
+  registerCallbackDevelopmentWorkRoutes(app, deps);
+  const entrustedWorkLifecycle = new EntrustedWorkLifecycleService(taskStore, {
+    artifactReader: new F232PreparedArtifactReader({ messages: messageStore }),
+    onChanged: (ownerUserId) =>
+      socketManager.emitToUser(ownerUserId, 'entrusted_work_projection_invalidated', { ownerUserId }),
+  });
 
   app.post('/api/callbacks/update-task', async (request, reply) => {
     const record = requireCallbackAuth(request, reply);
@@ -327,7 +337,9 @@ export function registerCallbackTaskRoutes(
       reply.status(403);
       return { error: 'Task belongs to a different thread' };
     }
-    if (existing.ownerCatId !== actor.catId) {
+    // An authenticated current same-Task delegate may register Artifact evidence.
+    // The callback scope guard permits only artifactRefs + revision for this capability.
+    if (existing.ownerCatId !== actor.catId && record.collectiveWorkBinding?.taskId !== existing.id) {
       reply.status(403);
       return { error: 'Entrusted work is owned by another cat' };
     }
@@ -402,7 +414,7 @@ export function registerCallbackTaskRoutes(
       return { error: 'Invalid request query', details: parsed.error.issues };
     }
 
-    const { threadId, catId, status, kind, taskId } = parsed.data;
+    const { threadId, catId, status, kind, taskId, featureId } = parsed.data;
 
     if (catId && !catRegistry.has(catId)) {
       reply.status(400);
@@ -432,18 +444,26 @@ export function registerCallbackTaskRoutes(
       scopedThreadIds = [actor.threadId];
     }
 
-    const perThreadTasks = await Promise.all(scopedThreadIds.map((id) => taskStore.listByThread(id)));
-    let tasks = perThreadTasks.flat();
-    if (catId) tasks = tasks.filter((item) => item.ownerCatId === catId);
-    if (status) tasks = tasks.filter((item) => item.status === status);
-    if (kind) tasks = tasks.filter((item) => item.kind === kind);
-    if (taskId) tasks = tasks.filter((item) => item.id === taskId);
-    tasks.sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt || b.id.localeCompare(a.id));
+    const result = await queryTaskItems(taskStore, {
+      threadIds: scopedThreadIds,
+      ownerUserId: actor.userId,
+      ...(catId ? { catId } : {}),
+      ...(status ? { status } : {}),
+      ...(kind ? { kind } : {}),
+      ...(taskId ? { taskId } : {}),
+      ...(featureId ? { featureId } : {}),
+    });
+    const tasks = [...result.tasks];
 
     // F236 AC-A4: anchor the why field (head preview + whyLength + whyTruncated + drillDown).
     // A taskId drill returns that task's why in full.
     const isTaskDrill = Boolean(taskId);
-    const payload = { tasks: tasks.map((task) => anchorTaskWhy(task, { full: isTaskDrill })) };
+    const payload = {
+      tasks: tasks.map((task) => anchorTaskWhy(task, { full: isTaskDrill })),
+      totalMatched: result.totalMatched,
+      truncated: result.truncated,
+      ...(result.queryRef ? { queryRef: result.queryRef } : {}),
+    };
     // F236 AC-A1 (R1/砚砚 P1): emit returnedChars for eval-layer payload-shrink accounting.
     const listTasksChars = JSON.stringify(payload).length;
     app.log.info(
@@ -498,81 +518,6 @@ export function registerCallbackTaskRoutes(
     }
     return payload;
   });
-}
-
-async function assertDirectAdmissionSourceCustody(
-  messageStore: IMessageStore,
-  actor: { readonly threadId: string; readonly userId: string },
-  admission: CustodyAdmissionRequestV1,
-): Promise<StoredMessage | null> {
-  if (admission.basis === 'authorized_source') return null;
-  if (admission.sourceRefs.length !== 1 || !admission.sourceRefs[0]?.startsWith('message:')) {
-    throw new EntrustedWorkLifecycleError(
-      'ENTRUSTED_WORK_SOURCE_CUSTODY_MISMATCH',
-      'Conversation admission requires exactly one canonical Message source',
-    );
-  }
-  const sourceMessageId = admission.sourceRefs[0].slice('message:'.length);
-  const source = await messageStore.getById(sourceMessageId);
-  if (!source) {
-    throw new EntrustedWorkLifecycleError(
-      'ENTRUSTED_WORK_SOURCE_NOT_FOUND',
-      'The entrusted-work source Message does not exist',
-    );
-  }
-  if (source.threadId !== actor.threadId || source.userId !== actor.userId) {
-    throw new EntrustedWorkLifecycleError(
-      'ENTRUSTED_WORK_SOURCE_SCOPE_MISMATCH',
-      'The entrusted-work source Message is outside the authenticated owner Thread',
-    );
-  }
-  if (
-    source.catId !== null ||
-    source.source !== undefined ||
-    source.recall !== undefined ||
-    source._tombstone ||
-    source.deletedAt !== undefined ||
-    source.custodyOfferParseFailure
-  ) {
-    throw new EntrustedWorkLifecycleError(
-      'ENTRUSTED_WORK_SOURCE_CUSTODY_MISMATCH',
-      'The entrusted-work source is not a current user-authored Message',
-    );
-  }
-
-  const rawOffer = source.extra?.custodyOfferV1;
-  if (admission.basis === 'explicit_entrustment') {
-    if (rawOffer !== undefined) {
-      throw new EntrustedWorkLifecycleError(
-        'ENTRUSTED_WORK_SOURCE_CUSTODY_MISMATCH',
-        'An existing source offer disposition cannot be bypassed as explicit entrustment',
-      );
-    }
-    return source;
-  }
-
-  const offer = custodyOfferV1Schema.safeParse(rawOffer);
-  const currentRevision = deriveGrowingSourceMessageRevision(source);
-  if (
-    !offer.success ||
-    offer.data.disposition !== 'accepted' ||
-    offer.data.offerId !== admission.offerId ||
-    offer.data.sourceMessageRevision !== admission.sourceMessageRevision ||
-    currentRevision !== admission.sourceMessageRevision ||
-    offer.data.actorRef !== `user:${actor.userId}` ||
-    offer.data.admission.idempotencyKey !== admission.idempotencyKey
-  ) {
-    throw new EntrustedWorkLifecycleError(
-      'ENTRUSTED_WORK_SOURCE_CUSTODY_MISMATCH',
-      'Accepted-offer admission does not match current source custody',
-    );
-  }
-  return source;
-}
-
-function admissionSourceContext(source: StoredMessage | null): EntrustedWorkAdmissionSourceContext | undefined {
-  if (!source) return undefined;
-  return { sourceRef: `message:${source.id}`, content: source.content };
 }
 
 function replyEntrustedWorkLifecycleError(

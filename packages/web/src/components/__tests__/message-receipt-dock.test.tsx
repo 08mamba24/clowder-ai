@@ -2,6 +2,7 @@ import type { QueueMessageReceipt } from '@cat-cafe/shared';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { normalizeQueueMessageReceiptProjections } from '@/hooks/queue-message-receipt-normalizer';
 import type { ChatMessage } from '@/stores/chat-types';
 import { MOUNT_DEFERRED_MESSAGE_EVENT } from '@/utils/scrollToMessage';
 import {
@@ -111,6 +112,76 @@ describe('MessageReceiptDock', () => {
     act(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it('renders a normalized AGY receipt with its queued transport and next-work intent', () => {
+    const normalized = normalizeQueueMessageReceiptProjections([
+      {
+        messageId: 'queued-agy-source',
+        queueReceipt: {
+          version: 1,
+          entryId: 'queued-agy-entry',
+          reminderAttempts: [],
+          targets: [
+            {
+              catId: 'gemini38',
+              state: 'queued',
+              authorIntent: {
+                requested: 'next_work',
+                effective: 'next_work',
+                carrierCapability: {
+                  provider: 'google',
+                  carrier: 'agy_stream_json',
+                  deliverySemantics: 'queued_internal_turn',
+                },
+              },
+            },
+          ],
+        },
+      },
+    ])[0]?.queueReceipt;
+    act(() => {
+      root.render(<MessageReceiptDock receipt={normalized} messages={[]} getCatLabel={() => '烁烁'} />);
+    });
+    const target = container.querySelector('[data-receipt-target="gemini38"]');
+    expect(target).not.toBeNull();
+    expect(target?.textContent).toContain('下一件工作');
+    expect(target?.textContent).toContain('排队内部轮次（非精确读取）');
+    expect(target?.textContent).not.toContain('能力未声明');
+  });
+
+  it('renders exact completed-child settling without claiming source completion', () => {
+    const seen: QueueMessageReceipt = {
+      version: 1,
+      entryId: 'q',
+      targets: [{ catId: 'opus', state: 'seen', invocationId: 'primary', seenAt: 1 }],
+      reminderAttempts: [],
+    };
+    act(() =>
+      root.render(
+        <MessageReceiptDock
+          messageId="m"
+          receipt={seen}
+          messages={[]}
+          getCatLabel={(id) => id}
+          settlingInvocationIds={new Set(['primary'])}
+        />,
+      ),
+    );
+    expect(container.textContent).toContain('正在收尾 · 等待本轮完成');
+    expect(container.textContent).not.toContain('已随本轮完成');
+    act(() =>
+      root.render(
+        <MessageReceiptDock
+          messageId="m"
+          receipt={seen}
+          messages={[]}
+          getCatLabel={(id) => id}
+          settlingInvocationIds={new Set()}
+        />,
+      ),
+    );
+    expect(container.textContent).toContain('尚未确认处理完成');
   });
 
   it('keeps response handling, turn completion, Steer, and reminder truth visibly distinct', () => {
@@ -706,7 +777,11 @@ describe('MessageReceiptDock', () => {
     act(() => {
       root.render(
         <MessageReceiptDock
-          receipt={{ ...receipt, scope: 'primary_trigger' }}
+          receipt={{
+            ...receipt,
+            targets: receipt.targets.filter((target) => target.state === 'handled'),
+            scope: 'primary_trigger',
+          }}
           messages={[]}
           getCatLabel={(catId) => catId}
         />,
@@ -715,6 +790,35 @@ describe('MessageReceiptDock', () => {
 
     expect(container.querySelector('[data-testid="message-receipt-dock"]')).toBeNull();
     expect(container.textContent).toBe('');
+  });
+
+  it('shows an explicit retry for a rejected queued primary trigger without replaying healthy siblings', async () => {
+    const failedAttempt = {
+      id: 'entry-1:sonnet:1',
+      targetCatId: 'sonnet',
+      sequence: 1,
+      state: 'failed' as const,
+      createdAt: 100,
+      updatedAt: 200,
+      terminalReason: 'invocation_failed' as const,
+    };
+    await act(async () => {
+      root.render(
+        <MessageReceiptDock
+          messageId="original-queued"
+          receipt={{
+            ...receipt,
+            scope: 'primary_trigger',
+            targets: [receipt.targets[0]!, { catId: 'sonnet', state: 'failed', attempts: [failedAttempt] }],
+          }}
+          messages={[]}
+          getCatLabel={(id) => id}
+        />,
+      );
+    });
+    expect(container.querySelector('[data-retry-target="opus"]')).toBeNull();
+    expect(container.querySelector('[data-retry-target="sonnet"]')).not.toBeNull();
+    expect(mockApiFetch.mock.calls.every((call) => call[1]?.method !== 'POST')).toBe(true);
   });
 });
 

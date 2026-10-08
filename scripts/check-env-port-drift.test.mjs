@@ -26,8 +26,9 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { dirname, posix, resolve } from 'node:path';
 import { describe, it } from 'node:test';
+import { rootCheckChain } from './lib/root-check-chain.mjs';
 
 const ROOT = resolve(process.cwd());
 
@@ -35,6 +36,9 @@ const ROOT = resolve(process.cwd());
 // Home repo has sync-to-opensource.sh; open-source repo does not.
 const isHomeRepo = existsSync(resolve(ROOT, 'scripts/sync-to-opensource.sh'));
 const hasEnvExampleOpensource = existsSync(resolve(ROOT, '.env.example.opensource'));
+
+// Keep the source-only export regression in the canonical check:env-ports lane.
+if (isHomeRepo) await import('./sync-to-opensource-api-build.test.mjs');
 
 function readEnvFile(relPath) {
   const content = readFileSync(resolve(ROOT, relPath), 'utf-8');
@@ -160,14 +164,14 @@ function readJsonFile(relPath) {
   return JSON.parse(readFileSync(resolve(ROOT, relPath), 'utf-8'));
 }
 
-function extractScriptRefs(command) {
+function extractScriptRefs(command, packageRoot = '') {
   const refs = new Set();
   const matches = String(command).matchAll(
-    /(?:^|\s)(?:bash|node)\s+((?:\.\/)?scripts\/[^\s'"]+)|(?:^|\s)((?:\.\/)?scripts\/[^\s'"]+)/g,
+    /(?:^|\s)(?:bash|node)\s+['"]?((?:\.{1,2}\/|scripts\/)[^\s'"]+)|(?:^|\s)['"]?((?:\.{1,2}\/)*scripts\/[^\s'"]+)/g,
   );
   for (const match of matches) {
     const ref = match[1] ?? match[2];
-    if (ref) refs.add(ref.replace(/^\.\//, ''));
+    if (ref) refs.add(posix.join(packageRoot, ref));
   }
   return [...refs];
 }
@@ -184,17 +188,25 @@ function buildExportedRootScripts(sourceScripts) {
   const scripts = { ...sourceScripts };
   scripts['start:direct'] = 'node ./scripts/start-entry.mjs start:direct --profile=opensource';
   scripts['dev:direct'] = 'node ./scripts/start-entry.mjs dev:direct --profile=opensource';
-  scripts['check:start-profile-isolation'] = 'node --test scripts/start-dev-profile-isolation.test.mjs';
+  scripts['check:start-profile-isolation'] =
+    'node --test scripts/start-dev-profile-isolation.test.mjs scripts/start-dev-named-alpha-redis-lease.test.mjs';
   scripts['check:pre-merge-gate'] =
-    'node --test scripts/pre-merge-check.test.mjs scripts/pre-merge-gate-guard.test.mjs scripts/lib/fseventsd-pressure.test.mjs scripts/lib/clowder-merge-check-evidence.test.mjs scripts/test-bash-runtime.test.mjs scripts/check-worktree-dirty-ledger.test.mjs scripts/classify-merge-outcome.test.mjs scripts/clowder-merge-execution.test.mjs';
-  if (!scripts.check.includes('pnpm check:start-profile-isolation')) {
+    'node --test scripts/pre-merge-check.test.mjs scripts/pre-merge-gate-guard.test.mjs scripts/pre-merge-gate-guard.alpha.test.mjs scripts/lib/alpha-redis-leases.test.mjs scripts/gate-resource-health-monitor.test.mjs scripts/lib/fseventsd-pressure.test.mjs scripts/lib/clowder-merge-check-evidence.test.mjs scripts/lib/git-patch-id.test.mjs scripts/test-bash-runtime.test.mjs scripts/check-worktree-dirty-ledger.test.mjs scripts/classify-merge-outcome.test.mjs scripts/clowder-merge-execution.test.mjs scripts/lib/gate-continuity-claim.test.mjs scripts/lib/gate-continuity-secret.test.mjs';
+  // Mirrors sync-to-opensource.sh: membership looks through the check tiers.
+  if (!rootCheckChain(scripts).split(' && ').includes('pnpm check:start-profile-isolation')) {
     scripts.check += ' && pnpm check:start-profile-isolation';
   }
-  scripts.check = scripts.check.replace(' && pnpm test:architecture-ownership', '');
+  for (const [name, command] of Object.entries(scripts)) {
+    scripts[name] = command
+      .split(' && ')
+      .filter((segment) => segment !== 'pnpm test:architecture-ownership')
+      .join(' && ');
+  }
   delete scripts['check:architecture-ownership'];
   delete scripts['test:architecture-ownership'];
 
   const internalScripts = [
+    'check:browser-consumers',
     'sync:train',
     'antigravity:smoke',
     'check:hmac-salt',
@@ -221,6 +233,11 @@ function buildExportedRootScripts(sourceScripts) {
     // F267 component hashes resolve private home certificate revisions and must
     // be removed from both the exported script table and check:features chain.
     'check:measurement-component-hashes',
+    // F286 bootstrap attestation is bound to cat-cafe origin/main; the public checkout has a
+    // different protected history. Mirrors sync-to-opensource.sh internalScripts.
+    'check:mcp-surface-governance',
+    // F251 sibling guard hard-depends on sync-manifest.yaml (not exported). Mirrors the shell list.
+    'check:sync-docs-runtime-assets',
     // F238 Phase D: reverse-sanitizer detect-only CLI — internal boundary tooling
     // (PR #2333). Must mirror sync-to-opensource.sh internalScripts list.
     'check:reverse-sanitizer',
@@ -246,6 +263,11 @@ function buildExportedRootScripts(sourceScripts) {
     'cloud:copy-url',
     'cloud:stop',
     'check:f247-cloud-services',
+    // F256 Phase A hook regression tests live in test/hooks/, which is not exported.
+    'check:hooks',
+    // Prompt-budget guard (#4686 + follow-up): native L0 tokens + builder-prompt chars against
+    // the HOME roster; the L0 test and the dossier stay home-only. Mirrors sync-to-opensource.sh.
+    'check:prompt-budget',
     // F068 primary-worktree post-checkout guard + local event log are home-only.
     'eval:post-checkout-guard',
     'clean:root-debris',
@@ -266,14 +288,14 @@ function buildExportedRootScripts(sourceScripts) {
   return scripts;
 }
 
-function executeRootPackageTransform(sourceScripts) {
+function executePackageScriptsTransform(sourceScripts, marker = 'PACKAGE_JSON_TRANSFORM_EOF') {
   const syncScript = readFileSync(resolve(ROOT, 'scripts/sync-to-opensource.sh'), 'utf8');
-  const startMarker = 'node - "$FILTERED_DIR/package.json" <<\'PACKAGE_JSON_TRANSFORM_EOF\'\n';
+  const startMarker = `<<'${marker}'\n`;
   const start = syncScript.indexOf(startMarker);
-  assert.notEqual(start, -1, 'public root package transform start marker must exist');
+  assert.notEqual(start, -1, `public package transform ${marker} start marker must exist`);
   const programStart = start + startMarker.length;
-  const end = syncScript.indexOf('\nPACKAGE_JSON_TRANSFORM_EOF', programStart);
-  assert.notEqual(end, -1, 'public root package transform end marker must exist');
+  const end = syncScript.indexOf(`\n${marker}`, programStart);
+  assert.notEqual(end, -1, `public package transform ${marker} end marker must exist`);
 
   const tempRoot = mkdtempSync(resolve(tmpdir(), 'cat-cafe-public-package-transform-'));
   const packagePath = resolve(tempRoot, 'package.json');
@@ -579,7 +601,7 @@ describe(`Code-side port defaults are internally consistent (${repoLabel}: API=$
     assert.doesNotMatch(
       content,
       /export CAT_CAFE_PROVISION_GLOBAL_SIDECAR=1/,
-      'alpha uses isolated Redis 6398 and must not overwrite runtime global agent-key sidecars',
+      'alpha uses dedicated Redis 6397 and must not overwrite runtime global agent-key sidecars',
     );
   });
 
@@ -1155,9 +1177,18 @@ excluded:
         'public package.json should keep only exported source tests in check:pre-merge-gate',
       );
       assert.ok(
-        exportedScripts.check.includes('pnpm check:skills:surfaces') && !content.includes('"check:skills:surfaces",'),
+        rootCheckChain(exportedScripts).split(' && ').includes('pnpm check:skills:surfaces') &&
+          !content.includes('"check:skills:surfaces",'),
         'public package.json should run the exported skill surface guard in pnpm check',
       );
+      // A tier may keep calling a script the transform deleted; the literal
+      // `check` string would never show it. Every step `pnpm check` reaches
+      // must resolve to a script that still exists in the public package.
+      for (const step of rootCheckChain(exportedScripts).split(' && ')) {
+        const match = /^pnpm (?:run )?([\w:.-]+)$/u.exec(step);
+        if (!match || match[1] === 'biome') continue;
+        assert.ok(exportedScripts[match[1]], `public pnpm check reaches a deleted script: ${step}`);
+      }
       assert.ok(
         content.includes('delete pkg.scripts["check:architecture-ownership"]'),
         'public package.json should not expose check:architecture-ownership without exporting its script target',
@@ -1167,8 +1198,9 @@ excluded:
         'public package.json should not expose test:architecture-ownership without exporting its script target',
       );
       assert.ok(
-        content.includes('pkg.scripts.check = pkg.scripts.check.replace(" && pnpm test:architecture-ownership", "")'),
-        'public package.json should remove the source-only architecture ownership test from its check chain',
+        content.includes('.filter((segment) => segment !== "pnpm test:architecture-ownership")') &&
+          !rootCheckChain(exportedScripts).split(' && ').includes('pnpm test:architecture-ownership'),
+        'public package.json should remove the source-only architecture ownership test from every check chain',
       );
       assert.ok(
         content.includes('"check:f223-action-tracking"'),
@@ -1200,7 +1232,7 @@ excluded:
 
     it('public package transform strips home-only memory architecture executables', () => {
       const sourceScripts = readJsonFile('package.json').scripts;
-      const transformedScripts = executeRootPackageTransform(sourceScripts);
+      const transformedScripts = executePackageScriptsTransform(sourceScripts);
       const mirroredScripts = buildExportedRootScripts(sourceScripts);
       const homeOnlyScripts = [
         'gate:shared-red',
@@ -1229,6 +1261,44 @@ excluded:
       );
     });
 
+    it('public package transform and its test mirror agree on every exported root script (drift guard)', () => {
+      // #4686 review P2: the shell transform grew an internalScripts entry while the mirror did not,
+      // and every other assertion stayed green. Compare the two whole outputs on the real package.json
+      // so a one-sided edit turns red by itself.
+      const sourceScripts = readJsonFile('package.json').scripts;
+      assert.deepEqual(
+        buildExportedRootScripts(sourceScripts),
+        executePackageScriptsTransform(sourceScripts),
+        'buildExportedRootScripts must mirror the PACKAGE_JSON_TRANSFORM_EOF program in scripts/sync-to-opensource.sh — update both when adding an internal-only script',
+      );
+    });
+
+    it('normalizes parent-relative script references from their package root', () => {
+      assert.deepEqual(
+        extractScriptRefs(
+          'node ./scripts/local.mjs && node ../../scripts/root.mjs && bash "../../scripts/verify.sh"',
+          'packages/api',
+        ),
+        ['packages/api/scripts/local.mjs', 'scripts/root.mjs', 'scripts/verify.sh'],
+      );
+    });
+
+    it('blocks an unexported parent-relative API build helper until managed_scripts includes it', () => {
+      const managedRoots = new Set(readYamlTopLevelList('sync-manifest.yaml', 'managed_roots'));
+      const managedFiles = new Set(readYamlTopLevelList('sync-manifest.yaml', 'managed_files'));
+      const managedScripts = new Set(readYamlTopLevelList('sync-manifest.yaml', 'managed_scripts'));
+      const probe = 'scripts/future-public-closure-probe.mjs';
+      const sourceScripts = readJsonFile('packages/api/package.json').scripts;
+      sourceScripts['build:actual'] += ` && node ../../${probe}`;
+      const exportedScripts = executePackageScriptsTransform(sourceScripts, 'API_PACKAGE_JSON_TRANSFORM_EOF');
+      const refs = extractScriptRefs(exportedScripts.build, 'packages/api');
+      const missing = () => refs.filter((ref) => !isManagedPath(ref, managedRoots, managedFiles, managedScripts));
+
+      assert.deepEqual(missing(), [probe], 'the parent-relative dependency must not disappear from the guard');
+      managedScripts.add(probe);
+      assert.deepEqual(missing(), [], 'explicit export ownership closes the same dependency');
+    });
+
     it('sync-manifest exports every scripts/* target referenced by exported package.json surfaces', () => {
       const managedRoots = new Set(readYamlTopLevelList('sync-manifest.yaml', 'managed_roots'));
       const managedFiles = new Set(readYamlTopLevelList('sync-manifest.yaml', 'managed_files'));
@@ -1245,13 +1315,18 @@ excluded:
       const missing = [];
       for (const packageJsonPath of packageJsonSurfaces) {
         const pkg = readJsonFile(packageJsonPath);
-        const scripts =
-          packageJsonPath === 'package.json' ? buildExportedRootScripts(pkg.scripts ?? {}) : (pkg.scripts ?? {});
+        const transformMarker = {
+          'package.json': 'PACKAGE_JSON_TRANSFORM_EOF',
+          'packages/api/package.json': 'API_PACKAGE_JSON_TRANSFORM_EOF',
+          'packages/shared/package.json': 'SHARED_PACKAGE_JSON_TRANSFORM_EOF',
+        }[packageJsonPath];
+        const scripts = transformMarker
+          ? executePackageScriptsTransform(pkg.scripts ?? {}, transformMarker)
+          : (pkg.scripts ?? {});
         const packageRoot = packageJsonPath === 'package.json' ? '' : packageJsonPath.slice(0, -'/package.json'.length);
 
         for (const [scriptName, command] of Object.entries(scripts)) {
-          for (const ref of extractScriptRefs(command)) {
-            const exportPath = packageRoot.length > 0 ? `${packageRoot}/${ref}` : ref;
+          for (const exportPath of extractScriptRefs(command, packageRoot)) {
             if (!isManagedPath(exportPath, managedRoots, managedFiles, managedScripts)) {
               missing.push(`${packageJsonPath}:${scriptName} -> ${exportPath}`);
             }
@@ -1414,7 +1489,7 @@ excluded:
 
       assert.doesNotMatch(sanitized, /Redis production Redis \(sacred\)/);
       assert.doesNotMatch(sanitized, /Redis production Redis (sacred)/);
-      assert.doesNotMatch(sanitized, /\b6398\b|\b6399\b/);
+      assert.doesNotMatch(sanitized, /\b6397\b|\b6398\b|\b6399\b/);
       assert.doesNotMatch(sanitized, /Clowder AI 的护城河是情感壁垒不是技术壁垒/);
     });
 
@@ -1426,7 +1501,7 @@ excluded:
       assert.match(sanitized, /\*\*Release acceptance channel\*\*/);
       assert.doesNotMatch(sanitized, /Redis production Redis \(sacred\)/);
       assert.doesNotMatch(sanitized, /Redis production Redis (sacred)/);
-      assert.doesNotMatch(sanitized, /\b6398\b|\b6399\b/);
+      assert.doesNotMatch(sanitized, /\b6397\b|\b6398\b|\b6399\b/);
       assert.doesNotMatch(sanitized, /co-creator/);
     });
 
@@ -2191,7 +2266,7 @@ describe(
       );
       assert.match(
         content,
-        /git -C "\$SOURCE_SYNC_DIR" archive HEAD \| tar -x -C "\$STAGING_DIR"/,
+        /git -C "\$SOURCE_SYNC_DIR" archive 'HEAD\^\{tree\}' \| tar -x -C "\$STAGING_DIR"/,
         'step 1 export should archive the detached origin/main checkout for real full sync',
       );
       assert.match(
@@ -2349,7 +2424,7 @@ describe(
       const gate = readFunctionBody(readSyncScript(), 'run_target_public_gate');
       assert.match(
         gate,
-        /forbidden_ports="3001\|3002\|3011\|3012\|4111\|4000\|6398\|6399"/,
+        /forbidden_ports="3001\|3002\|3011\|3012\|4111\|4000\|6397\|6398\|6399"/,
         'startup acceptance should only block internal/runtime ports, not the public Preview Gateway default',
       );
       assert.doesNotMatch(
@@ -2363,7 +2438,7 @@ describe(
       const gate = readFunctionBody(readSyncScript(), 'run_target_public_gate');
       assert.match(
         gate,
-        /run_public_acceptance_env WATCHPACK_POLLING=true PORT=\$accept_web_port\s+\\\s+pnpm --filter @cat-cafe\/web dev -p \$accept_web_port/,
+        /run_public_startup_env "\$startup_state" "\$gate_target_real" WATCHPACK_POLLING=true PORT=\$accept_web_port\s+\\\s+pnpm --filter @cat-cafe\/web dev -p \$accept_web_port/,
         'startup acceptance should avoid native watchpack EMFILE failures on release machines with many worktrees',
       );
     });

@@ -1,3 +1,12 @@
+import { messageMediaPublicationSourceSchema } from '@cat-cafe/shared';
+import { artifactListViewSchema } from '@/components/artifacts/artifact-list-state';
+import { artifactFileEntranceSchema } from './artifact-file-source';
+import { resolveArtifactReviewTarget } from './artifact-review-surface';
+import { resolveEvolutionMediaTarget } from './evolution-media-surface';
+import { parseFileNavigationOrigin } from './file-navigation-origin';
+import { resolveMessagePublicationSource } from './message-publication-surface';
+import { resolvePublicationTarget } from './publication-surface';
+import { createEntrustedReturnFromRef, resolveFilesTarget } from './real-surface-adapters';
 import type {
   RestoreWorkbenchOptions,
   WorkbenchLayoutState,
@@ -6,6 +15,7 @@ import type {
   WorkspaceSurfaceDescriptor,
 } from './workbench-contract';
 import { createInitialWorkbenchState } from './workbench-initial-state';
+import { workspaceRootSelectionSchema } from './workspace-root-selection';
 
 export { migrateF284WorkspaceState } from './workbench-migrate-f284';
 
@@ -23,6 +33,7 @@ const RENDERER_BY_TYPE: Record<WorkbenchSurfaceType, WorkbenchRenderer> = {
   artifact: 'artifact-view',
   browser: 'browser-preview',
   code: 'code-editor',
+  'content-editor': 'content-editor',
   'evolution-program': 'evolution-program',
   file: 'file-preview',
   review: 'review-summary',
@@ -35,6 +46,7 @@ const OBJECT_KIND_BY_TYPE: Record<WorkbenchSurfaceType, WorkspaceSurfaceDescript
   artifact: 'artifact',
   browser: 'preview-session',
   code: 'file',
+  'content-editor': 'content-editor-session',
   'evolution-program': 'evolution-program',
   file: 'file',
   review: 'review',
@@ -79,9 +91,63 @@ function parseSurface(value: unknown, legacySchema: boolean): WorkspaceSurfaceDe
     if (candidate === null || !isNonEmptyString(candidate.owner) || !isNonEmptyString(candidate.key)) return null;
     resultTargetRef = { owner: candidate.owner, key: candidate.key };
   }
+  let returnTargetRef: WorkspaceSurfaceDescriptor['returnTargetRef'];
+  if (surface.returnTargetRef !== undefined) {
+    const candidate = asRecord(surface.returnTargetRef);
+    if (!candidate || !isNonEmptyString(candidate.owner) || !isNonEmptyString(candidate.key)) return null;
+    returnTargetRef = { owner: candidate.owner, key: candidate.key };
+    if (!createEntrustedReturnFromRef(returnTargetRef)) return null;
+  }
+  let navigationOrigin: WorkspaceSurfaceDescriptor['navigationOrigin'];
+  if (surface.navigationOrigin !== undefined) {
+    const parsedNavigationOrigin = parseFileNavigationOrigin(surface.navigationOrigin);
+    if (parsedNavigationOrigin === null) return null;
+    navigationOrigin = parsedNavigationOrigin;
+  }
+  let messagePublicationSource: WorkspaceSurfaceDescriptor['messagePublicationSource'];
+  let artifactListView: WorkspaceSurfaceDescriptor['artifactListView'];
+  if (surface.artifactListView !== undefined) {
+    const parsed = artifactListViewSchema.safeParse(surface.artifactListView);
+    if (!parsed.success || type !== 'workspace') return null;
+    artifactListView = parsed.data;
+  }
+  let artifactFileSource: WorkspaceSurfaceDescriptor['artifactFileSource'];
+  const rootSelection =
+    surface.rootSelection === undefined ? undefined : workspaceRootSelectionSchema.safeParse(surface.rootSelection);
+  if (rootSelection && (!rootSelection.success || (type !== 'file' && type !== 'code'))) return null;
+  if (surface.artifactFileSource !== undefined) {
+    const parsed = artifactFileEntranceSchema.safeParse(surface.artifactFileSource);
+    if (!parsed.success || (type !== 'file' && type !== 'code')) return null;
+    artifactFileSource = parsed.data;
+  }
+  if (surface.messagePublicationSource !== undefined) {
+    const source = messageMediaPublicationSourceSchema.safeParse(surface.messagePublicationSource);
+    if (!source.success) return null;
+    messagePublicationSource = source.data;
+  }
+  let filesReveal: WorkspaceSurfaceDescriptor['filesReveal'];
+  if (surface.filesReveal !== undefined) {
+    const candidate = asRecord(surface.filesReveal);
+    if (
+      !candidate ||
+      !isNonEmptyString(candidate.path) ||
+      candidate.path.length > 4096 ||
+      !Number.isSafeInteger(candidate.request) ||
+      Number(candidate.request) <= 0 ||
+      type !== 'workspace'
+    )
+      return null;
+    filesReveal = { path: candidate.path, request: Number(candidate.request) };
+  }
+  let filesRepoRoot: string | undefined;
+  if (surface.filesRepoRoot !== undefined) {
+    if (!isNonEmptyString(surface.filesRepoRoot) || surface.filesRepoRoot.length > 4096 || type !== 'workspace')
+      return null;
+    filesRepoRoot = surface.filesRepoRoot;
+  }
   if (!legacySchema && (capabilities.sidecar !== true || capabilities.pin !== true)) return null;
   if (capabilities.mainAreaAttention !== undefined && capabilities.mainAreaAttention !== true) return null;
-  return {
+  const parsed: WorkspaceSurfaceDescriptor = {
     id: surface.id,
     type,
     renderer,
@@ -90,6 +156,14 @@ function parseSurface(value: unknown, legacySchema: boolean): WorkspaceSurfaceDe
     objectRef: { kind: objectKind, id: objectRef.id },
     ownerStateRef: { owner: ownerStateRef.owner, key: ownerStateRef.key },
     ...(resultTargetRef === undefined ? {} : { resultTargetRef }),
+    ...(navigationOrigin === undefined ? {} : { navigationOrigin }),
+    ...(messagePublicationSource ? { messagePublicationSource } : {}),
+    ...(artifactFileSource ? { artifactFileSource } : {}),
+    ...(rootSelection?.success ? { rootSelection: rootSelection.data } : {}),
+    ...(artifactListView ? { artifactListView } : {}),
+    ...(filesReveal ? { filesReveal } : {}),
+    ...(filesRepoRoot ? { filesRepoRoot } : {}),
+    ...(returnTargetRef === undefined ? {} : { returnTargetRef }),
     capabilities: {
       split: true,
       sidecar: legacySchema ? true : capabilities.sidecar === true,
@@ -99,6 +173,37 @@ function parseSurface(value: unknown, legacySchema: boolean): WorkspaceSurfaceDe
       restorePolicy: 'descriptor',
     },
   };
+  if (
+    navigationOrigin &&
+    type !== 'file' &&
+    type !== 'code' &&
+    !(ownerStateRef.owner === 'f232-thread-artifacts' && navigationOrigin.kind === 'artifact-list') &&
+    resolveFilesTarget(parsed) === null &&
+    resolveArtifactReviewTarget(parsed) === null &&
+    resolvePublicationTarget(parsed) === null &&
+    resolveMessagePublicationSource(parsed) === null &&
+    resolveEvolutionMediaTarget(parsed) === null
+  )
+    return null;
+  if ((filesReveal || filesRepoRoot) && resolveFilesTarget(parsed) === null) return null;
+  if (ownerStateRef.owner === 'f138-publication' && resolvePublicationTarget(parsed) === null) return null;
+  if (
+    messagePublicationSource &&
+    resolvePublicationTarget(parsed) === null &&
+    resolveArtifactReviewTarget(parsed) === null
+  )
+    return null;
+  if (ownerStateRef.owner === 'f138-message-source' && resolveMessagePublicationSource(parsed) === null) return null;
+  if (ownerStateRef.owner === 'f311-media' && resolveEvolutionMediaTarget(parsed) === null) return null;
+  if (
+    returnTargetRef &&
+    type !== 'artifact' &&
+    type !== 'file' &&
+    type !== 'code' &&
+    resolveArtifactReviewTarget(parsed) === null
+  )
+    return null;
+  return parsed;
 }
 
 function objectIdentity(surface: WorkspaceSurfaceDescriptor): string {

@@ -4,16 +4,19 @@ import type { McpToolDefinition } from './tool-governance-types.js';
 export type CanonicalToolSources = Readonly<Record<McpServerFamily, readonly McpToolDefinition[]>>;
 
 export type CanonicalToolsetEnv = {
+  collectiveWork?: boolean;
+  participation?: boolean;
   readonly?: boolean;
   hasAgentKey?: boolean;
   desktopMode?: string;
-  /** F317 P1: explicit opt-in for the readonly+agent-key union. */
+  /** Explicit opt-in for the readonly+agent-key union. */
   agentKeyUnion?: boolean;
 };
 
 const DESKTOP_PROFILES = {
   'fable-phase0': 'desktop:fable-phase0',
   'cloud-pro-phase0': 'desktop:cloud-pro-phase0',
+  'live-companion': 'desktop:live-companion',
 } as const;
 
 function assertGovernedDefinition(definition: McpToolDefinition): void {
@@ -33,6 +36,13 @@ function assertGovernedDefinition(definition: McpToolDefinition): void {
     typeof annotations.openWorldHint !== 'boolean'
   ) {
     throw new Error(`MCP tool ${candidate.name ?? '<unnamed>'} is missing its governance certificate`);
+  }
+  if (
+    candidate.policy.resourceFamily === 'plugin-manager' &&
+    candidate.policy.runtimeProfiles.includes('readonly') &&
+    candidate.effectiveRisk.level !== 'read'
+  ) {
+    throw new Error(`Plugin Manager tool ${candidate.name ?? '<unnamed>'} exposes a write operation in readonly`);
   }
 }
 
@@ -56,6 +66,12 @@ export function projectCanonicalToolRegistry(
   registry: readonly FamilyToolDefinition[],
   env: CanonicalToolsetEnv,
 ): readonly FamilyToolDefinition[] {
+  if (env.collectiveWork) {
+    if (env.participation) throw new Error('Conflicting Collective MCP profiles');
+    return registry.filter((definition) => definition.policy.runtimeProfiles.includes('collective-work'));
+  }
+  if (env.participation)
+    return registry.filter((definition) => definition.policy.runtimeProfiles.includes('collective-participation'));
   if (env.desktopMode) {
     const profile = DESKTOP_PROFILES[env.desktopMode as keyof typeof DESKTOP_PROFILES];
     if (!profile) {
@@ -68,7 +84,7 @@ export function projectCanonicalToolRegistry(
   if (!env.readonly) {
     return registry.filter((definition) => definition.policy.runtimeProfiles.includes('full'));
   }
-  // F317 P1: readonly is strict unless the launcher explicitly opted into the
+  // readonly is strict unless the launcher explicitly opted into the
   // agent-key union (agentKeyUnion) AND agent-key credentials are present.
   // Incidental CAT_CAFE_AGENT_KEY_* vars inherited from a parent environment
   // no longer widen a read-only mount.

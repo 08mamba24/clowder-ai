@@ -72,6 +72,16 @@ export function buildQueueEntry(messages: StoredMessage[], entryId: string): Que
   if (!primary || !custody || custody.pendingTargetCats.length === 0) {
     throw new Error('active queue custody group is missing its primary projection');
   }
+  if (
+    custody.executionScope &&
+    (messages.length !== 1 ||
+      custody.allTargetCats.length !== 1 ||
+      (custody.executionScope === 'collective-participation'
+        ? custody.ownerAuthProvenance !== 'unknown'
+        : custody.ownerAuthProvenance !== 'unknown' && custody.ownerAuthProvenance !== 'strict'))
+  ) {
+    throw new Error('Collective execution scope must retain its singleton source and owner provenance after restart');
+  }
   if (custody.carrierByTargetCatId) {
     return createCrossThreadQueueEntryFromCustody(messages, entryId, { queuedTargetsOnly: true });
   }
@@ -109,11 +119,18 @@ export function buildQueueEntry(messages: StoredMessage[], entryId: string): Que
     id: entryId,
     threadId: primary.threadId,
     userId: custody.ownerUserId ?? primary.userId,
-    ownerAuthProvenance: normalizeOwnerAuthProvenance(custody.ownerAuthProvenance),
+    ownerAuthProvenance:
+      custody.executionScope === 'collective-work'
+        ? 'unknown'
+        : normalizeOwnerAuthProvenance(custody.ownerAuthProvenance),
+    ...(custody.executionScope ? { executionScope: custody.executionScope } : {}),
     content: messages.map((message) => message.content).join('\n'),
     messageId: primary.id,
     mergedMessageIds: messages.slice(1).map((message) => message.id),
-    source: waitContinuationCarrier || managedHoldWake ? 'connector' : 'user',
+    source:
+      waitContinuationCarrier || managedHoldWake || custody.executionScope || (primary.catId === null && primary.source)
+        ? 'connector'
+        : 'user',
     ...(waitContinuationCarrier ? { waitContinuationCarrier } : {}),
     targetCats: pendingTargets,
     allTargetCats: allTargets,
@@ -147,7 +164,11 @@ export function buildQueueEntry(messages: StoredMessage[], entryId: string): Que
     createdAt: custody.createdAt,
     autoExecute: false,
     priority: custody.priority,
-    ...(managedHoldWake ? { sourceCategory: 'scheduled' as const } : {}),
+    ...(managedHoldWake
+      ? { sourceCategory: 'scheduled' as const }
+      : custody.sourceCategory
+        ? { sourceCategory: custody.sourceCategory as NonNullable<QueueEntry['sourceCategory']> }
+        : {}),
     ...(custody.position !== undefined ? { position: custody.position } : {}),
   };
 }

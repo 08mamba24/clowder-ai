@@ -25,7 +25,15 @@ interface ProviderNativeFreshnessFactoryDeps {
 export function createProviderNativeFreshnessFactory(
   deps: ProviderNativeFreshnessFactoryDeps,
 ): NonNullable<InvocationDeps['providerNativeFreshnessFactory']> {
-  return async ({ invocationId, threadId, userId, catId, capability }) => {
+  return async ({
+    invocationId,
+    threadId,
+    userId,
+    catId,
+    capability,
+    liveExposureReason,
+    liveResultConsumerActive,
+  }) => {
     const thread = await deps.threadStore.get(threadId);
     const playMode = (thread?.thinkingMode ?? 'debug') === 'play';
     const viewer = playMode ? ({ type: 'cat', catId } as const) : ({ type: 'user' } as const);
@@ -41,24 +49,33 @@ export function createProviderNativeFreshnessFactory(
       : undefined;
     const unseenChecker = new ThreadUnseenChecker({
       userId,
+      ...(capability.carrier === 'claude_agent_sdk' ? { includeExactMessageIds: true } : {}),
       cursorStore: deps.cursorStore,
       messageStore: deps.messageStore,
       messageFilter,
+      ...(liveExposureReason ? { exposureReason: liveExposureReason } : {}),
+      ...(liveResultConsumerActive ? { includeExpectedA2AReplies: true } : {}),
       ...(queueChecker ? { queueChecker } : {}),
     });
     const eventLog = new FreshnessAttentionEventLog(deps.redis);
-    await eventLog.append({
-      kind: 'provider_carrier_capability_declared',
-      invocationId,
-      threadId,
-      catId: catId as CatId,
-      timestamp: Date.now(),
-      ...capability,
-    });
+    await eventLog.append(
+      {
+        kind: 'provider_carrier_capability_declared',
+        invocationId,
+        threadId,
+        catId: catId as CatId,
+        timestamp: Date.now(),
+        ...capability,
+      },
+      { ownerUserId: userId },
+    );
     const broker = new FreshnessNoticeBroker({
       context: { invocationId, threadId, catId: catId as CatId },
-      checkUnseen: () => unseenChecker.checkUnseen({ threadId, catId }),
-      appendEvent: (event) => eventLog.append(event),
+      checkUnseen: () =>
+        liveResultConsumerActive && !liveResultConsumerActive()
+          ? Promise.resolve(null)
+          : unseenChecker.checkUnseen({ threadId, catId }),
+      appendEvent: (event) => eventLog.append(event, { ownerUserId: userId }),
     });
     return bindFreshnessNoticeBroker(broker, capability);
   };

@@ -127,11 +127,24 @@ describe('Eval Domain Registry v0', () => {
       true,
       'freshness eval is scheduled now that the replay selector and generator are wired',
     );
-    assert.equal(entry.metricGlossary?.['freshness.queued_seen']?.source, 'cat_cafe.freshness.queued_seen');
-    assert.equal(entry.metricGlossary?.['freshness.queued_handled']?.source, 'cat_cafe.freshness.queued_handled');
+    assert.equal(entry.metricGlossary?.['freshness.queued_seen']?.source, 'derived:freshness-windowed-replay.queue');
+    assert.equal(entry.metricGlossary?.['freshness.queued_handled']?.source, 'derived:freshness-windowed-replay.queue');
+    assert.equal(
+      entry.metricGlossary?.['freshness.supplement_terminal']?.source,
+      'derived:freshness-windowed-replay.supplement',
+    );
+    assert.equal(
+      entry.metricGlossary?.['freshness.notice_acked']?.source,
+      'derived:freshness-windowed-replay.attention',
+    );
+    assert.equal(
+      entry.metricGlossary?.['freshness.provider_notice_missed']?.source,
+      'derived:freshness-windowed-replay.provider',
+    );
     assert.equal(entry.metricGlossary?.['freshness.replay.failed_samples']?.source, 'derived:freshness-closure-replay');
     assert.equal(entry.fixtures.length, 8);
     assert.equal(entry.handoffTargetResolver.featureId, 'F254');
+    assert.equal(entry.handoffTargetResolver.ownerCatId, 'codex-sol');
   });
 
   it('rejects domain thread as the state source of truth', () => {
@@ -318,7 +331,7 @@ describe('Eval Domain Registry v0', () => {
     assert.equal(entry.frequency, 'weekly');
   });
 
-  it('loads the docs-backed eval:sop registry fixture (re-enabled 2026-06-10)', async () => {
+  it('loads the docs-backed eval:sop registry fixture (dormant since 2026-10-01)', async () => {
     const raw = await readFile(
       new URL('../../../../docs/harness-feedback/eval-domains/eval-sop.yaml', import.meta.url),
       'utf8',
@@ -331,9 +344,12 @@ describe('Eval Domain Registry v0', () => {
     assert.equal(entry.sourceRefsKind, 'sop-trace-eval');
     assert.equal(entry.frequency, 'weekly');
     assert.equal(entry.sla.reevalWithinHours, 336);
-    // Re-enabled: SopTrace producer + file-writer +
-    // PUBLISH_VERDICT_INSTRUCTIONS_BY_DOMAIN['eval:sop'] all wired (F192 sop-wiring PR).
-    assert.equal(entry.enabled, true, 'eval:sop is re-enabled; weekly cron must pick it up');
+    // Re-enabled 2026-06-10 once wired, then made dormant on 2026-10-01: deterministic
+    // SOP checks live in guards and no Program consumes this measure.
+    // 2026-10-01: dormant by owner disposition (docs/discussions/2026-10-01-eval-into-f311/README.md).
+    assert.equal(entry.enabled, false, 'eval:sop is dormant; weekly cron must skip it');
+    assert.ok(parsed.dormancy.decisionRef.length > 0);
+    assert.equal(entry.dormancy?.decisionRef, parsed.dormancy.decisionRef);
   });
 
   // --- sunset flag (silent-fire fix 2026-06-06) ---

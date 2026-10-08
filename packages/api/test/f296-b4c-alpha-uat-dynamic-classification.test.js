@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { test } from 'node:test';
 import { runAlphaUat, unsupportedJourney } from '../../../scripts/f296-alpha-uat.mjs';
+
+const revision = 'a'.repeat(40);
 
 test('keeps dynamic presentation unsupported when the cold producer trace is unavailable', async (t) => {
   const originalFetch = globalThis.fetch;
   const sessionCookie = `cat_cafe_session=${'1'.repeat(64)}`;
-  const deployedRevision = execFileSync('git', ['rev-parse', 'origin/main'], { encoding: 'utf8' }).trim();
   t.after(() => {
     globalThis.fetch = originalFetch;
   });
@@ -18,7 +18,7 @@ test('keeps dynamic presentation unsupported when the cold producer trace is una
         { headers: { 'set-cookie': `${sessionCookie}; Path=/; HttpOnly` } },
       );
     }
-    if (url.pathname === '/health') return Response.json({ deploymentRevision: deployedRevision });
+    if (url.pathname === '/health') return Response.json({ deploymentRevision: revision });
     if (url.pathname === '/ready') return Response.json({ status: 'ready' });
     if (url.pathname === '/api/cats') {
       return Response.json({
@@ -47,11 +47,12 @@ test('keeps dynamic presentation unsupported when the cold producer trace is una
 
   const manifest = await runAlphaUat({
     apiUrl: 'http://127.0.0.1:3012',
-    redisUrl: 'redis://127.0.0.1:6398',
+    redisUrl: 'redis://127.0.0.1:6397',
     catId: 'codex',
     userId: 'f296-alpha-uat',
     timeoutMs: 1000,
     pollMs: 100,
+    expectedRevision: revision,
   });
   assert.deepEqual(manifest.journeys[0], unsupportedJourney('cold', 'telemetry_signal_missing'));
   assert.deepEqual(manifest.dynamicPresentation, {

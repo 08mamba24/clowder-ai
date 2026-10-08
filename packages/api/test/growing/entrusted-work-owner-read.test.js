@@ -61,18 +61,52 @@ function catalogWith(primary) {
     'f246.approval': ineligibleAdapter('f246.approval'),
     'f292.repair': ineligibleAdapter('f292.repair'),
     'f306.runtime_interaction': ineligibleAdapter('f306.runtime_interaction'),
+    'f309.content_review': ineligibleAdapter('f309.content_review'),
+    'f290.collective_work_result': ineligibleAdapter('f290.collective_work_result'),
     [primary.producerId]: primary,
   };
   return new NeedsMeProducerCatalog(Object.values(byId));
 }
 
 function catalogWithMany(...adapters) {
-  const producerIds = ['f246.approval', 'f292.repair', 'f306.runtime_interaction'];
+  const producerIds = [
+    'f246.approval',
+    'f292.repair',
+    'f306.runtime_interaction',
+    'f309.content_review',
+    'f290.collective_work_result',
+  ];
   const provided = new Set(adapters.map((adapter) => adapter.producerId));
   return new NeedsMeProducerCatalog([
     ...adapters,
     ...producerIds.filter((producerId) => !provided.has(producerId)).map(ineligibleAdapter),
   ]);
+}
+
+function publishedArtifactMessages() {
+  return [
+    {
+      id: 'published-ppt',
+      threadId: 'thread-f310',
+      userId: 'owner-1',
+      catId: 'codex-sol',
+      timestamp: now + 7,
+      content: 'Prepared for review',
+      extra: {
+        rich: {
+          blocks: [
+            {
+              kind: 'file',
+              v: 1,
+              id: 'published-ppt',
+              fileName: 'Tomorrow presentation.pptx',
+              url: 'artifact:ppt:tomorrows-ppt',
+            },
+          ],
+        },
+      },
+    },
+  ];
 }
 
 function artifactReader() {
@@ -94,7 +128,7 @@ describe('F310 entrusted-work owner-read backbone', () => {
     const reader = new F232PreparedArtifactReader({
       messages: {
         async getByThread() {
-          return [];
+          return publishedArtifactMessages();
         },
         async getByThreadBefore() {
           return [];
@@ -139,13 +173,13 @@ describe('F310 entrusted-work owner-read backbone', () => {
     assert.deepEqual(prepared, {
       artifactRef: 'artifact:ppt:tomorrows-ppt',
       artifactRevision: String(now + 7),
-      completenessRef: `artifact:ppt:tomorrows-ppt#available:${now + 7}`,
-      previewRef: `artifact:ppt:tomorrows-ppt#preview:${now + 7}`,
+      completenessRef: `message:thread-f310:published-ppt#available:${now + 7}`,
+      previewRef: `message:thread-f310:published-ppt#preview:${now + 7}`,
       openInWorkspaceRef: `workspace:artifact:thread-f310:${now + 7}:artifact:ppt:tomorrows-ppt`,
     });
   });
 
-  test('global Schedule read lists only the owner current admitted work with business time', async () => {
+  test('global Schedule includes untimed admitted work and owner presentation facts without inventing dates', async () => {
     const taskStore = new TaskStore();
     const lifecycle = new EntrustedWorkLifecycleService(taskStore, { now: () => now });
     const quiet = await lifecycle.admitOrResume(admissionCommand());
@@ -184,7 +218,17 @@ describe('F310 entrusted-work owner-read backbone', () => {
     });
 
     assert.equal(response.statusCode, 200);
-    assert.equal(response.json().ownerReads.length, 1);
+    assert.equal(response.json().ownerReads.length, 2);
+    const untimed = response.json().ownerReads.find((read) => read.work?.title === 'No business time');
+    assert.ok(untimed, 'untimed work remains visible');
+    assert.deepEqual(untimed.timeRefs, []);
+    assert.deepEqual(untimed.work, {
+      title: 'No business time',
+      ownerCatId: 'codex-sol',
+      threadId: 'thread-f310',
+      admittedAt: now,
+      ownerNote: 'Explicitly entrusted in the source conversation',
+    });
     assert.equal(response.json().ownerReads[0].envelope.ownerRef, quiet.ownerRef);
     assert.deepEqual(
       response.json().ownerReads[0].timeRefs.map(({ role }) => role),
@@ -331,7 +375,7 @@ describe('F310 entrusted-work owner-read backbone', () => {
       artifactReader: new F232PreparedArtifactReader({
         messages: {
           async getByThread() {
-            return [];
+            return publishedArtifactMessages();
           },
           async getByThreadBefore() {
             return [];
@@ -376,7 +420,7 @@ describe('F310 entrusted-work owner-read backbone', () => {
     assert.equal(after.preparedArtifact.artifactRef, 'artifact:ppt:tomorrows-ppt');
     assert.deepEqual(after.brief.verifiedMilestone, {
       kind: 'artifact_ready',
-      evidenceRef: `artifact:ppt:tomorrows-ppt#available:${now + 7}`,
+      evidenceRef: `message:thread-f310:published-ppt#available:${now + 7}`,
       revision: String(now + 7),
     });
     assert.equal(

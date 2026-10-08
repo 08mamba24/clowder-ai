@@ -1,6 +1,7 @@
 import type { TaskItem } from '@cat-cafe/shared';
 import { entrustedWorkV1Schema } from '@cat-cafe/shared';
 import { prepareEntrustedWorkUpdate } from './EntrustedWorkContractUpdate.js';
+import { reconcileDeploymentWaitTaskMutation } from './TaskDeploymentWaitState.js';
 import type {
   CloseEntrustedWorkStoreInput,
   CloseEntrustedWorkStoreResult,
@@ -25,13 +26,17 @@ export class TaskEntrustedWorkMutationStore {
       ...existing.entrustedWork,
       revision: existing.entrustedWork.revision + 1,
       closure: input.closure,
+      completion: {
+        recordedAt: Date.now(),
+        ...(input.artifactSnapshot ? { artifactSnapshot: input.artifactSnapshot } : {}),
+      },
     });
-    const updated: TaskItem = {
+    const updated: TaskItem = reconcileDeploymentWaitTaskMutation(existing, {
       ...existing,
       status: 'done',
       entrustedWork,
       updatedAt: Date.now(),
-    };
+    });
     this.tasks.set(taskId, updated);
     return { kind: 'closed', task: updated };
   }
@@ -41,7 +46,12 @@ export class TaskEntrustedWorkMutationStore {
     const prepared = prepareEntrustedWorkUpdate(existing ?? null, input);
     if (prepared.kind !== 'ready') return prepared;
     if (!existing) return { kind: 'not_found' };
-    const updated: TaskItem = { ...existing, entrustedWork: prepared.entrustedWork, updatedAt: Date.now() };
+    const updated: TaskItem = {
+      ...existing,
+      status: prepared.status,
+      entrustedWork: prepared.entrustedWork,
+      updatedAt: Date.now(),
+    };
     this.tasks.set(taskId, updated);
     return { kind: 'updated', task: updated };
   }

@@ -151,6 +151,7 @@ describe('personal Chrome extension contract', () => {
         'chatgpt-page-adapter.mjs',
         'chatgpt-page-contract.mjs',
         'chatgpt-composer-transaction.mjs',
+        'chatgpt-composer-controls.mjs',
       ].map((name) => readFile(join(extensionRoot, name), 'utf8')),
     );
     const source = sources.join('\n');
@@ -194,6 +195,7 @@ describe('personal Chrome extension contract', () => {
 
   it('keeps the F247 install and state modules below the repository hard line limit', async () => {
     for (const relativePath of [
+      'scripts/f247-personal-chrome-distribution.mjs',
       'scripts/f247-personal-chrome-install-cli-options.mjs',
       'scripts/f247-personal-chrome-install.mjs',
       'test/personal-chrome-plugin-state-route-exact.test.js',

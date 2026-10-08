@@ -23,7 +23,7 @@ export const RESUMED_LARGE_CONTENT = `${'context-token '.repeat(5500)}\nReply wi
 function parseArgs(argv) {
   const options = {
     apiUrl: ALPHA_API_ORIGIN,
-    redisUrl: 'redis://127.0.0.1:6398',
+    redisUrl: 'redis://127.0.0.1:6397',
     catId: 'codex',
     userId: 'f296-alpha-uat',
     timeoutMs: 300000,
@@ -331,7 +331,8 @@ async function createCanaryThread(options, title) {
 export async function runAlphaUat(options) {
   validateCanonicalContract();
   validateAlphaCoordinates(options.apiUrl, options.redisUrl);
-  const expectedRevision = execFileSync('git', ['rev-parse', 'origin/main'], { encoding: 'utf8' }).trim();
+  const expectedRevision =
+    options.expectedRevision ?? execFileSync('git', ['rev-parse', 'origin/main'], { encoding: 'utf8' }).trim();
   const sessionOptions = await establishSession(options);
   const [health, readiness, cats] = await Promise.all([
     json(sessionOptions, '/health'),

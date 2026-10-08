@@ -4,7 +4,8 @@ import { callbackPost } from './callback-tools.js';
 import type { ToolResult } from './file-tools.js';
 
 /** Keep identical to packages/shared OWNER_STATE_REF_PATTERN (DSH-portable allowlist). */
-const OWNER_STATE_REF_PATTERN = /^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$/;
+// biome-ignore lint/complexity/noUselessEscapeInRegex: Serialized MCP patterns also reach engines with nested character classes.
+const OWNER_STATE_REF_PATTERN = /^[a-z][a-z0-9-]*:[^\s\[\]{}"']+$/;
 
 /**
  * The cat-facing half of the Phase 3 journey.
@@ -36,6 +37,7 @@ const ownerRef = z
   .object({
     ownerFeatureId: bounded(120),
     ownerStateRef: bounded(500).regex(OWNER_STATE_REF_PATTERN),
+    // biome-ignore lint/complexity/noUselessEscapeInRegex: Serialized MCP patterns also reach engines with nested character classes.
     version: bounded(240).optional(),
   })
   .strict();

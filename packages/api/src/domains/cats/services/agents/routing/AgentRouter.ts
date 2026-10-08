@@ -34,8 +34,8 @@ import { inferRoutingContextIntent } from '../../../../routing-context/RoutingDi
 import type { IntentResult } from '../../context/IntentParser.js';
 import { parseIntent, ROUTE_CONTROL_TAGS, stripIntentTags } from '../../context/IntentParser.js';
 import type { IRuntimeSessionStore } from '../../runtime-session/RuntimeSessionStore.js';
-import type { ContextEpochOwner } from '../../session/ContextEpochOwner.js';
-import type { PresentationLedger } from '../../session/PresentationLedger.js';
+import type { ContextEpochOwner } from '../../session/context/ContextEpochOwner.js';
+import type { PresentationLedger } from '../../session/context/PresentationLedger.js';
 import { SessionManager } from '../../session/SessionManager.js';
 import type { ISessionSealer } from '../../session/SessionSealer.js';
 import type { TranscriptReader } from '../../session/TranscriptReader.js';
@@ -57,6 +57,7 @@ import {
 } from '../invocation/invocation-capacity-snapshot.js';
 import type { TaskProgressStore } from '../invocation/TaskProgressStore.js';
 import type { AgentRegistry } from '../registry/AgentRegistry.js';
+import type { AgentRegistrationFailure } from '../registry/AgentServiceUnavailableError.js';
 import type {
   A2ASlotTrackingOptions,
   PersistenceContext,
@@ -496,6 +497,7 @@ function buildMentionData(configs: Record<string, import('@cat-cafe/shared').Cat
  */
 export interface AgentRouterOptions {
   openGitHubReadLease?: import('../invocation/invoke-single-cat.js').InvocationDeps['openGitHubReadLease'];
+  collectiveContext?: import('../invocation/invoke-single-cat.js').InvocationDeps['collectiveContext'];
   agentRegistry: AgentRegistry;
   registry: InvocationRegistry;
   messageStore: IMessageStore;
@@ -510,8 +512,6 @@ export interface AgentRouterOptions {
   contextEpochOwner?: ContextEpochOwner;
   /** F296: authenticated Claude project-hook readiness from API bootstrap. */
   hookAuthenticationReady?: boolean | (() => boolean);
-  /** F296: project-local PreCompact carrier readiness for the invocation workspace. */
-  claudeProjectHookCarrierReady?: boolean | ((projectRoot: string) => boolean);
   /** F296 B3b-2: shared provider-presentation delivery ledger. */
   presentationLedger?: PresentationLedger;
   /** F293: owner-scoped sparse routing projection consumed by provider generation. */
@@ -631,15 +631,16 @@ export interface AgentRouterOptions {
 export class AgentRouter {
   private readonly openGitHubReadLease: AgentRouterOptions['openGitHubReadLease'];
   private services: Record<string, AgentService>;
+  private unavailableServices: ReadonlyMap<string, AgentRegistrationFailure> = new Map();
   private registry: InvocationRegistry;
   private messageStore: IMessageStore;
+  private collectiveContext: import('../invocation/invoke-single-cat.js').InvocationDeps['collectiveContext'];
   private sessionManager: SessionManager;
   private deliveryCursorStore: DeliveryCursorStore;
   private threadStore: IThreadStore | null;
   private sessionChainStore: ISessionChainStore | undefined;
   private contextEpochOwner: ContextEpochOwner | undefined;
   private hookAuthenticationReady: boolean | (() => boolean);
-  private claudeProjectHookCarrierReady: boolean | ((projectRoot: string) => boolean);
   private presentationLedger: PresentationLedger | undefined;
   private routingContextPromptProjection?: import('../../../../routing-context/RoutingContextPromptProjector.js').RoutingContextPromptProjectionPort;
   private routingDispatchPreflight?: import('../../../../routing-context/RoutingDispatchPreflightPort.js').RoutingDispatchPreflightPort;
@@ -784,6 +785,7 @@ export class AgentRouter {
   }
 
   private rebuildRuntimeCaches(agentRegistry: AgentRegistry): void {
+    this.unavailableServices = agentRegistry.getAllUnavailableEntries();
     this.services = {};
     for (const [catId, service] of agentRegistry.getAllEntries()) {
       this.services[catId] = service;
@@ -801,6 +803,7 @@ export class AgentRouter {
     this.registry = options.registry;
     this.openGitHubReadLease = options.openGitHubReadLease;
     this.messageStore = options.messageStore;
+    this.collectiveContext = options.collectiveContext;
     this.sessionManager = new SessionManager(options.sessionStore);
     // #1200 P2-3: wire cursor canonicalizer for v1→v2 async resolution
     const canonicalizer = options.messageStore.canonicalizeCursor
@@ -812,7 +815,6 @@ export class AgentRouter {
     this.sessionChainStore = options.sessionChainStore;
     this.contextEpochOwner = options.contextEpochOwner;
     this.hookAuthenticationReady = options.hookAuthenticationReady ?? false;
-    this.claudeProjectHookCarrierReady = options.claudeProjectHookCarrierReady ?? false;
     this.presentationLedger = options.presentationLedger;
     this.routingContextPromptProjection = options.routingContextPromptProjection;
     this.routingDispatchPreflight = options.routingDispatchPreflight;
@@ -902,6 +904,13 @@ export class AgentRouter {
   contextCapacitySnapshot(catId: CatId): InvocationCapacitySnapshot | undefined {
     const service = this.services[catId];
     return service ? resolveInvocationCapacitySnapshot({ catId, service }) : undefined;
+  }
+
+  supportsCollectiveParticipation(catId: string): boolean {
+    return (
+      this.isRoutableCat(catId) &&
+      this.services[catId]?.supportsToolExecutionPolicy?.({ mode: 'collective_participation' }) === true
+    );
   }
 
   private isRoutableCat(catId: string | null | undefined): catId is CatId {
@@ -1471,9 +1480,12 @@ export class AgentRouter {
     const apiPort = process.env.API_SERVER_PORT ?? '3004';
     return {
       services: this.services,
+      unavailableServices: this.unavailableServices,
       ...(this.routingDispatchPreflight ? { routingDispatchPreflight: this.routingDispatchPreflight } : {}),
       invocationDeps: {
         ...(this.openGitHubReadLease ? { openGitHubReadLease: this.openGitHubReadLease } : {}),
+        messageStore: this.messageStore,
+        ...(this.collectiveContext ? { collectiveContext: this.collectiveContext } : {}),
         registry: this.registry,
         sessionManager: this.sessionManager,
         threadStore: this.threadStore,
@@ -1483,7 +1495,6 @@ export class AgentRouter {
         ...(this.sessionChainStore ? { sessionChainStore: this.sessionChainStore } : {}),
         ...(this.contextEpochOwner ? { contextEpochOwner: this.contextEpochOwner } : {}),
         hookAuthenticationReady: this.hookAuthenticationReady,
-        claudeProjectHookCarrierReady: this.claudeProjectHookCarrierReady,
         ...(this.presentationLedger ? { presentationLedger: this.presentationLedger } : {}),
         ...(this.routingContextPromptProjection
           ? { routingContextPromptProjection: this.routingContextPromptProjection }
@@ -1727,6 +1738,7 @@ export class AgentRouter {
     targetCats: CatId[],
     intent: IntentResult,
     options: A2ASlotTrackingOptions & {
+      liveCompanion?: RouteOptions['liveCompanion'];
       /** Authentication-grade owner provenance; legacy/system producers pass unknown. */
       ownerAuthProvenance: NonNullable<RouteOptions['ownerAuthProvenance']>;
       /** F167 Phase T: turn-scoped protocol carrier for the structured stop gate. */
@@ -1760,6 +1772,7 @@ export class AgentRouter {
       persistedPromptMessages?: RouteOptions['persistedPromptMessages'];
       /** F281: required on typed first-party ingress; only direct_owner is injectable. */
       humanDispositionInvocationOrigin: HumanDispositionInvocationOrigin;
+      routingQueueSource?: RouteOptions['routingQueueSource'];
       /** F153: caller trace context for cross-route A2A propagation */
       callerTraceContext?: CallerTraceContext;
       /** Explicit A2A trigger message ID for queue-dispatched stream reply threading */
@@ -1782,6 +1795,7 @@ export class AgentRouter {
       freshnessSupplementId?: RouteOptions['freshnessSupplementId'];
       freshnessSupplementRequiredMessageIds?: RouteOptions['freshnessSupplementRequiredMessageIds'];
       toolExecutionPolicy?: RouteOptions['toolExecutionPolicy'];
+      executionScope?: RouteOptions['executionScope'];
       memoryCueOpportunitySeeds?: RouteOptions['memoryCueOpportunitySeeds'];
       asrPersonMemoryScenes?: RouteOptions['asrPersonMemoryScenes'];
     },
@@ -1877,6 +1891,7 @@ export class AgentRouter {
     const strategyDeps = this.getStrategyDeps();
     const routingContextIntent = inferRoutingContextIntent(cleanMessage);
     const routeOptions = {
+      ...(options.liveCompanion ? { liveCompanion: options.liveCompanion } : {}),
       routeIntent: projectAgentRouteIntent(intent),
       ...(routingContextIntent ? { routingContextIntent } : {}),
       ownerAuthProvenance: options.ownerAuthProvenance,
@@ -1895,6 +1910,7 @@ export class AgentRouter {
       freshnessSupplementId: options?.freshnessSupplementId,
       freshnessSupplementRequiredMessageIds: options?.freshnessSupplementRequiredMessageIds,
       toolExecutionPolicy: options?.toolExecutionPolicy,
+      executionScope: options?.executionScope,
       memoryCueOpportunitySeeds: options?.memoryCueOpportunitySeeds,
       asrPersonMemoryScenes: options?.asrPersonMemoryScenes,
       invocationController: options?.invocationController,
@@ -1912,6 +1928,7 @@ export class AgentRouter {
       cloudDispatchProvenance: options?.cloudDispatchProvenance,
       requiresExactCloudDispatchProvenance: options?.requiresExactCloudDispatchProvenance,
       humanDispositionInvocationOrigin: options.humanDispositionInvocationOrigin,
+      ...(options.routingQueueSource ? { routingQueueSource: options.routingQueueSource } : {}),
       thinkingMode,
       ...(options?.cursorBoundaries ? { cursorBoundaries: options.cursorBoundaries } : {}),
       ...(options?.persistenceContext ? { persistenceContext: options.persistenceContext } : {}),

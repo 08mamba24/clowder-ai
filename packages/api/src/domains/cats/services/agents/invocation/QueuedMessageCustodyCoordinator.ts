@@ -1,5 +1,6 @@
 import type { CatId, QueueReminderAttempt, QueueTargetAttempt, QueueTargetOutcome } from '@cat-cafe/shared';
 import { actionSuccessorFencesMatch } from '../../../../ball-custody/ActionSuccessorAdmissionContract.js';
+import { rejectTypedWaitCustody, type TypedWaitCustodyGuard } from '../../../../ball-custody/TypedWaitCustodyGuard.js';
 import type {
   RetryAuthorityCommit,
   RetryCustodyTransition,
@@ -27,11 +28,13 @@ import {
   markReminderAttemptSeen,
   requestReminderAttempt,
 } from '../../stores/ports/queued-message-receipt.js';
+import type { ITaskStore } from '../../stores/ports/TaskStoreContract.js';
 import type { QueueEntry } from './InvocationQueue.js';
 import { normalizeOwnerAuthProvenance } from './owner-auth-provenance.js';
 
 interface CoordinatorDeps {
   messageStore: IMessageStore;
+  readWaitRegistration?: ITaskStore['getWaitRegistration'];
   now?: () => number;
 }
 
@@ -74,6 +77,10 @@ function assertExactDispatchContinuationWitness(
   outcomeByCatId?: Readonly<Record<string, QueueTargetOutcome>>,
 ): void {
   for (const catId of successfulTargetCats) {
+    const evidence = outcomeByCatId?.[catId]?.evidenceRef;
+    if (evidence?.kind === 'dispatch_disposition' && evidence.sourceMessageId !== messageId) {
+      throw new Error('dispatch disposition evidence must bind the exact source message');
+    }
     const consumption = outcomeByCatId?.[catId]?.consumption;
     if (consumption?.kind === 'dispatch_handled_continuation' && consumption.sourceMessageId !== messageId) {
       throw new Error('dispatch handled continuation receipt requires its exact source message');
@@ -259,6 +266,16 @@ function appendExposureAttempt(
   return [...attempts.map((attempt) => ({ ...attempt })), attempt];
 }
 
+/** A source keeps its first exact exposure even when the carrier later grows and is reread. */
+function sourceLocalBodyExposure(
+  active: QueueTargetAttempt,
+  carrierExposure: QueueBodyExposure | undefined,
+): QueueBodyExposure | undefined {
+  return carrierExposure && active.invocationId === carrierExposure.invocationId && active.seenAt !== undefined
+    ? { ...carrierExposure, seenAt: active.seenAt }
+    : carrierExposure;
+}
+
 function projectTargetAttemptsFromEntry(
   current: QueuedMessageCustody,
   entry: QueueEntry,
@@ -271,9 +288,10 @@ function projectTargetAttemptsFromEntry(
     if (!active || isTerminalTargetAttempt(active)) continue;
     const failureAt = entry.queuedFailureAtByCatId?.[catId];
     const failureReason = entry.queuedFailureReasonByCatId?.[catId] ?? 'invocation_failed';
-    const bodyExposure = [...(entry.queuedBodyExposures ?? [])]
+    const carrierExposure = [...(entry.queuedBodyExposures ?? [])]
       .reverse()
       .find((candidate) => candidate.targetCatId === catId && candidate.seenAt >= active.createdAt);
+    const bodyExposure = sourceLocalBodyExposure(active, carrierExposure);
     const awakenedAt = entry.queuedAwakenedAtByCatId?.[catId];
     const awakenedInvocationId = entry.queuedAwakenedInvocationIdByCatId?.[catId];
     const isFailed =
@@ -439,13 +457,7 @@ export function createCrossThreadQueueEntryFromCustody(
     }
     return merged;
   };
-  let bodyExposures: QueueBodyExposure[] = [];
-  for (const custody of custodies) {
-    bodyExposures = mergeBodyExposures(
-      bodyExposures,
-      custody.bodyExposures?.filter((exposure) => targetSet.has(exposure.targetCatId)),
-    );
-  }
+  const bodyExposures = intersectCarrierBodyExposures(custodies, entryId, allTargets);
   const bindings = custodies.flatMap((custody) =>
     allTargets.flatMap((catId) => {
       const binding = custody.carrierByTargetCatId?.[catId];
@@ -675,7 +687,41 @@ async function rebindActionSuccessorCarrierSource(
   throw new Error(`action-successor Queue carrier rebind did not converge: ${source.id}`);
 }
 
-function mergeBodyExposures(
+/** A recovered carrier is read only when one invocation covered every source bound to that target. */
+function intersectCarrierBodyExposures(
+  custodies: readonly QueuedMessageCustody[],
+  entryId: string,
+  targetCatIds: readonly string[],
+): QueueBodyExposure[] {
+  const exposures: QueueBodyExposure[] = [];
+  for (const targetCatId of targetCatIds) {
+    const targetCustodies = custodies.filter(
+      (custody) => custody.carrierByTargetCatId?.[targetCatId]?.entryId === entryId,
+    );
+    const first = targetCustodies[0];
+    if (!first) continue;
+    const candidates = first.bodyExposures?.filter((item) => item.targetCatId === targetCatId);
+    if (!candidates) continue;
+    for (const candidate of candidates) {
+      const matching = targetCustodies.map((custody) =>
+        custody.bodyExposures?.find(
+          (item) => item.targetCatId === targetCatId && item.invocationId === candidate.invocationId,
+        ),
+      );
+      const seenAts = matching.flatMap((item) => (item ? [item.seenAt] : []));
+      if (seenAts.length !== targetCustodies.length) continue;
+      exposures.push({
+        targetCatId,
+        invocationId: candidate.invocationId,
+        seenAt: Math.max(...seenAts),
+      });
+    }
+  }
+  return exposures;
+}
+
+/** Message receipts keep their first exposure; a later carrier read may cover newly coalesced sibling sources. */
+function mergeMessageBodyExposures(
   current: readonly QueueBodyExposure[] | undefined,
   incoming: readonly QueueBodyExposure[] | undefined,
 ): QueueBodyExposure[] {
@@ -685,7 +731,7 @@ function mergeBodyExposures(
     const key = `${exposure.targetCatId}\u0000${exposure.invocationId}`;
     const existing = byKey.get(key);
     if (existing) {
-      if (existing.seenAt !== exposure.seenAt) throw new Error('queue body exposure timestamp is immutable');
+      if (exposure.seenAt < existing.seenAt) throw new Error('queue body exposure timestamp cannot regress');
       continue;
     }
     const copy = { ...exposure };
@@ -703,8 +749,10 @@ export function createInitialQueuedMessageCustody(entry: QueueEntry): QueuedMess
     revision: 1,
     ownerUserId: entry.userId,
     ownerAuthProvenance: entry.ownerAuthProvenance,
+    ...(entry.executionScope ? { executionScope: entry.executionScope } : {}),
     ...(entry.authorIntentByCatId ? { authorIntentByCatId: structuredClone(entry.authorIntentByCatId) } : {}),
     intent: entry.intent,
+    ...(entry.sourceCategory ? { sourceCategory: entry.sourceCategory } : {}),
     status: 'queued',
     allTargetCats,
     pendingTargetCats: catIds(entry.targetCats),
@@ -992,7 +1040,11 @@ function activeCustodyFromEntry(entry: QueueEntry, current: QueuedMessageCustody
   if (current.ownerUserId !== undefined && current.ownerUserId !== entry.userId) {
     throw new Error(`Queue entry ${entry.id} owner principal is immutable`);
   }
-  if (normalizeOwnerAuthProvenance(current.ownerAuthProvenance) !== entry.ownerAuthProvenance) {
+  const executionProvenance =
+    current.executionScope === 'collective-work'
+      ? 'unknown'
+      : normalizeOwnerAuthProvenance(current.ownerAuthProvenance);
+  if (executionProvenance !== entry.ownerAuthProvenance || current.executionScope !== entry.executionScope) {
     throw new Error(`Queue entry ${entry.id} owner authentication provenance is immutable`);
   }
   if (current.carrierByTargetCatId || current.carrierStateByTargetCatId) {
@@ -1024,7 +1076,7 @@ function activeCustodyFromEntry(entry: QueueEntry, current: QueuedMessageCustody
       }
       return next;
     };
-    const bodyExposures = mergeBodyExposures(current.bodyExposures, entry.queuedBodyExposures);
+    const bodyExposures = mergeMessageBodyExposures(current.bodyExposures, entry.queuedBodyExposures);
     const targetAttempts = projectTargetAttemptsFromEntry(current, entry, ownedTargets, now);
     const carrierStateByTargetCatId = { ...(current.carrierStateByTargetCatId ?? {}) };
     for (const catId of ownedTargets) {
@@ -1095,7 +1147,7 @@ function activeCustodyFromEntry(entry: QueueEntry, current: QueuedMessageCustody
     steeredInvocationIdByCatId: _steeredInvocationIdByCatId,
     ...stableCurrent
   } = current;
-  const bodyExposures = mergeBodyExposures(current.bodyExposures, entry.queuedBodyExposures);
+  const bodyExposures = mergeMessageBodyExposures(current.bodyExposures, entry.queuedBodyExposures);
   const targetAttempts = projectTargetAttemptsFromEntry(current, entry, current.allTargetCats, now);
   return {
     ...stableCurrent,
@@ -1115,7 +1167,9 @@ function activeCustodyFromEntry(entry: QueueEntry, current: QueuedMessageCustody
     ...(bodyExposures.length > 0 ? { bodyExposures } : {}),
     ...(targetAttempts.length > 0 ? { targetAttempts } : {}),
     failedByCatIds: catIds(entry.queuedFailedByCatIds),
-    handledByCatIds: catIds(entry.queuedHandledByCatIds),
+    // The live carrier prunes retired siblings. Their committed outcomes still
+    // belong to this source when a remaining sibling fails or is retried.
+    handledByCatIds: catIds([...new Set([...current.handledByCatIds, ...(entry.queuedHandledByCatIds ?? [])])]),
     ...(entry.steerRequestedByCatIds?.length ? { steerRequestedByCatIds: catIds(entry.steerRequestedByCatIds) } : {}),
     ...(entry.steeredInvocationIdByCatId && Object.keys(entry.steeredInvocationIdByCatId).length > 0
       ? { steeredInvocationIdByCatId: { ...entry.steeredInvocationIdByCatId } }
@@ -1176,7 +1230,13 @@ function buildSuccessfulTargetTransition(input: {
 }): { next: QueuedMessageCustody; completion: QueueCustodyCompletionResult } {
   const successful = new Set(input.successfulTargetCats);
   const pendingHandledTargetCats = input.current.pendingTargetCats.filter(
-    (catId) => successful.has(catId) && input.current.seenInvocationIdByCatId[catId] === input.invocationId,
+    (catId) =>
+      successful.has(catId) &&
+      (input.current.seenInvocationIdByCatId[catId] === input.invocationId ||
+        (input.outcomeByCatId?.[catId]?.evidenceRef.kind === 'dispatch_disposition' &&
+          input.current.bodyExposures?.some(
+            (exposure) => exposure.targetCatId === catId && exposure.invocationId === input.invocationId,
+          ))),
   );
   const withdrawnHandledTargetCats = (input.current.withdrawnByCatIds ?? []).filter(
     (catId) =>
@@ -1310,12 +1370,14 @@ function buildRetryTargetTransition(
   };
 }
 export class QueuedMessageCustodyCoordinator {
+  private readonly readWaitRegistration: ITaskStore['getWaitRegistration'] | undefined;
   private readonly messageStore: IMessageStore;
   private readonly now: () => number;
   private readonly entryLocks = new Map<string, Promise<void>>();
 
   constructor(deps: CoordinatorDeps) {
     this.messageStore = deps.messageStore;
+    this.readWaitRegistration = deps.readWaitRegistration;
     this.now = deps.now ?? Date.now;
   }
 
@@ -1364,7 +1426,10 @@ export class QueuedMessageCustodyCoordinator {
           current.carrierByTargetCatId ||
           !sameTargets ||
           current.intent !== replacement.intent ||
-          normalizeOwnerAuthProvenance(current.ownerAuthProvenance) !== replacement.ownerAuthProvenance
+          (current.executionScope === 'collective-work'
+            ? 'unknown'
+            : normalizeOwnerAuthProvenance(current.ownerAuthProvenance)) !== replacement.ownerAuthProvenance ||
+          current.executionScope !== replacement.executionScope
         ) {
           throw new Error('Queue replacement custody target, intent, or owner mismatch');
         }
@@ -1741,15 +1806,38 @@ export class QueuedMessageCustodyCoordinator {
   ): Promise<QueueCustodyCompletionResult> {
     const message = await this.messageStore.getById(messageId);
     assertExactDispatchContinuationWitness(messageId, successfulTargetCats, outcomeByCatId);
+    const waitContinuationGuards: TypedWaitCustodyGuard[] = [];
     if (message && isManagedHoldWakeMessage(message)) {
       for (const catId of successfulTargetCats) {
         const outcome = outcomeByCatId?.[catId];
         const continuation = outcome?.consumption?.kind === 'managed_hold_continued' ? outcome.consumption : undefined;
         if (
+          continuation?.transition === 'event_wait' &&
+          !message.queueCustody?.handledByCatIds.some((holder) => holder === catId)
+        ) {
+          const reference = continuation.waitRegistration;
+          if (!reference || !this.readWaitRegistration || outcome?.invocationId !== invocationId) {
+            rejectTypedWaitCustody('proof_invalid');
+          }
+          waitContinuationGuards.push({
+            reference,
+            identity: {
+              invocationId,
+              userId: message.queueCustody?.ownerUserId ?? '',
+              catId,
+              threadId: message.threadId,
+              sourceMessageId: messageId,
+              holdTaskId: continuation.taskId,
+            },
+            readSnapshot: () => this.readWaitRegistration!(reference.taskId),
+          });
+        }
+        if (
           outcome?.disposition !== 'managed_hold_disposition' ||
           (continuation !== undefined &&
             (continuation.sourceMessageId !== messageId || continuation.taskId !== message.source?.meta?.taskId))
         ) {
+          if (continuation?.transition === 'event_wait') rejectTypedWaitCustody('proof_invalid');
           throw new Error('managed hold receipt requires its invocation-bound disposition');
         }
       }
@@ -1775,6 +1863,7 @@ export class QueuedMessageCustodyCoordinator {
       },
       deliveredAt,
       true,
+      waitContinuationGuards,
     );
     return completion;
   }
@@ -1850,8 +1939,11 @@ export class QueuedMessageCustodyCoordinator {
     buildNext: (current: QueuedMessageCustody) => QueuedMessageCustody,
     deliveredAt?: number,
     allowTerminalCurrent = false,
+    waitContinuationGuards?: readonly TypedWaitCustodyGuard[],
   ): Promise<boolean> {
-    return (await this.transitionManaged(messageId, buildNext, deliveredAt, allowTerminalCurrent)).changed;
+    return (
+      await this.transitionManaged(messageId, buildNext, deliveredAt, allowTerminalCurrent, waitContinuationGuards)
+    ).changed;
   }
 
   private async transitionManaged(
@@ -1859,6 +1951,7 @@ export class QueuedMessageCustodyCoordinator {
     buildNext: (current: QueuedMessageCustody) => QueuedMessageCustody,
     deliveredAt?: number,
     allowTerminalCurrent = false,
+    waitContinuationGuards?: readonly TypedWaitCustodyGuard[],
   ): Promise<{ managed: boolean; changed: boolean }> {
     for (let attempt = 0; attempt < QUEUE_CUSTODY_CAS_MAX_ATTEMPTS; attempt += 1) {
       const message = await this.messageStore.getById(messageId);
@@ -1871,6 +1964,7 @@ export class QueuedMessageCustodyCoordinator {
       const result = await this.messageStore.transitionQueueCustody(messageId, {
         expectedRevision: current.revision,
         next,
+        ...(waitContinuationGuards ? { waitContinuationGuards } : {}),
         ...(current.status !== 'terminal' && next.status === 'terminal' && deliveredAt !== undefined
           ? { deliveredAt }
           : {}),

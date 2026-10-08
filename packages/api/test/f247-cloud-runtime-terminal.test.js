@@ -174,7 +174,9 @@ describe('F247 cloud runtime terminal contract', () => {
         },
         {
           ...baseParams,
-          onPromptMessagesExposed: async (input) => exposed.push(input),
+          onPromptMessagesExposed: async (input) => {
+            exposed.push(input);
+          },
         },
       ),
     ).then((messages) => {
@@ -216,7 +218,7 @@ describe('F247 cloud runtime terminal contract', () => {
         status: 'unavailable',
         reason: 'no-adapter',
         message:
-          '未发送给 @gpt-pro：还没有可用的后台 Host Adapter。请先安装并配对 Chrome 扩展，再绑定目标 ChatGPT 会话；前台自动化保持关闭。',
+          '未发送给 @gpt-pro：还没有可用的后台 Host Adapter。请先安装并配对 Chrome 扩展，再绑定目标 ChatGPT 会话。',
         detail: 'No configured personal Chrome Host Adapter',
         outboundReceipt: undefined,
       },

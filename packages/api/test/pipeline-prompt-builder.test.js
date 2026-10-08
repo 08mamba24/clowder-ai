@@ -90,9 +90,9 @@ describe('PipelinePromptBuilder (AC-P2-6)', () => {
     assert.ok(output.includes('布偶猫'), 'Contains identity anchor');
   });
 
-  it('routes an ordinary time-bound entrustment into the custody-recognition hook', async () => {
+  it('routes a natural time-bound work introduction into the custody-recognition hook', async () => {
     const { parseIntent } = await import('../dist/domains/cats/services/context/IntentParser.js');
-    const intent = parseIntent('下周一下午 3 点前帮我准备两个方案，做完回来让我选', 1);
+    const intent = parseIntent('@codex-astra 有个活儿，周四 F311 需要去演示，我现在好焦虑怎么办！', 1);
 
     const output = ppb.buildInvocationContextViaHookPipeline({
       catId: 'opus',
@@ -106,6 +106,21 @@ describe('PipelinePromptBuilder (AC-P2-6)', () => {
       output.includes('load skill: custody-recognition'),
       'D11 should tell the owner cat to load the custody-recognition policy',
     );
+  });
+
+  it('routes an untimed Phase continuation through D11 without implying admission', async () => {
+    const { parseIntent } = await import('../dist/domains/cats/services/context/IntentParser.js');
+    const intent = parseIntent('继续 Phase B', 1);
+    const output = ppb.buildInvocationContextViaHookPipeline({
+      catId: 'opus',
+      mode: 'independent',
+      teammates: [],
+      mcpAvailable: true,
+      promptTags: intent.promptTags,
+    });
+
+    assert.ok(output.includes('load skill: custody-recognition'));
+    assert.ok(output.includes('not authorization'), 'D11 should describe a wakeup rather than an admission');
   });
 
   // -- Full system prompt ------------------------------------------------------

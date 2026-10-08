@@ -8,8 +8,8 @@
  *     (compile-time contract — this test guards against accidental removal)
  *
  * These are structural / wiring tests — the actual bridge dispatch behavior
- * is tested by b1c-2-invoke-single-cat-bridge-wiring.test.js (existing) and
- * b1c-3-pinchtab-bridge-adapter.test.js (new).
+ * is tested by b1c-2-invoke-single-cat-bridge-wiring.test.js and
+ * b1c-2-cloud-invoke-bridge.test.js.
  */
 
 import assert from 'node:assert/strict';
@@ -17,6 +17,7 @@ import { describe, it } from 'node:test';
 
 // Minimal AgentRouter construction — exercises the getStrategyDeps path
 const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+const { AgentRegistry } = await import('../dist/domains/cats/services/agents/registry/AgentRegistry.js');
 
 function makeMockBridge() {
   const dispatches = [];
@@ -31,15 +32,7 @@ function makeMockBridge() {
 function makeMinimalAgentRouter(opts = {}) {
   // Minimal deps to construct an AgentRouter
   return new AgentRouter({
-    agentRegistry: {
-      listAll: () => [],
-      getAllEntries: () => [],
-      isAvailable: () => false,
-      getConfig: () => null,
-      onUpdate: () => () => {},
-      get: () => null,
-      tryGet: () => null,
-    },
+    agentRegistry: new AgentRegistry(),
     registry: {
       create: () => ({}),
       get: () => null,

@@ -1,7 +1,7 @@
 ---
 cell_id: ball-custody
 title: Ball Custody Engine
-summary: 球权与等待责任边界：BallCustodyProjection、Queue 普通 queued message、F254 closure/supplement、F167 action-successor 单账本与 hold rescue authorization，以及 F280 typed AwaitState lifecycle / owner fence / expiry / one-shot consume / canonical user-cancel termination event / immutable continuation carrier。责任对象各自持久化 origin/frontier/holder/generation/final；attention、carrier success、feedback why 与 source collection 都不裁决 action success 或 wake。
+summary: 球权与等待责任边界：BallCustodyProjection、Queue 普通 queued message、F254 closure/supplement、F167 action-successor 单账本与 hold rescue authorization、F280 typed AwaitState lifecycle，以及 managed gate 睡眠恢复的 frozen identity / pause epoch / recovery owner / terminal-intent fence。责任对象各自持久化 origin/frontier/holder/generation/final；attention、carrier success、feedback why 与 source collection 都不裁决 action success 或 wake。
 canonical_features: [F167, F233, F254, F280]
 code_anchors:
   - packages/shared/src/types/action-successor.ts
@@ -19,13 +19,29 @@ code_anchors:
   - packages/api/src/domains/ball-custody/ActionSuccessorRecoverySweep.ts
   - packages/api/src/domains/ball-custody/ManagedCommandWakeRecoverySweep.ts
   - packages/api/src/domains/ball-custody/managed-command-wake-lifecycle.ts
+  - packages/api/src/domains/ball-custody/durable-managed-gate-recovery.ts
+  - packages/api/src/domains/ball-custody/durable-managed-gate-recovery-child-contract.ts
+  - packages/api/src/domains/ball-custody/durable-managed-gate-recovery-policy.ts
+  - packages/api/src/domains/ball-custody/durable-managed-gate-recovery-state.ts
+  - packages/api/src/domains/ball-custody/durable-managed-gate-recovery-store.ts
+  - packages/api/src/domains/ball-custody/durable-managed-gate-power-evidence.ts
+  - packages/api/src/domains/ball-custody/durable-managed-gate-job-validation.ts
+  - scripts/lib/gate-execution-pause-epoch.mjs
   - packages/api/src/domains/ball-custody/hold-ball-access-policy.ts
   - packages/api/src/routes/callback-hold-ball-cancel-routes.ts
   - packages/api/src/domains/ball-custody/TurnCustodyProjectionService.ts
+  - packages/api/src/domains/ball-custody/ManagedHoldSourceSelection.ts
+  - packages/api/src/domains/ball-custody/ManagedHoldDispositionService.ts
+  - packages/api/src/domains/ball-custody/TurnCustodyAdoptionRegistry.ts
   - packages/api/src/domains/ball-custody/turn-custody-wake-provenance.ts
   - packages/api/src/domains/ball-custody/wait-state-machine.ts
   - packages/api/src/domains/ball-custody/wait-continuation-carrier.ts
   - packages/api/src/domains/ball-custody/WaitContinuationRetryPreflight.ts
+  - packages/api/src/domains/ball-custody/TypedWaitRegistration.ts
+  - packages/api/src/domains/ball-custody/TypedWaitContinuation.ts
+  - packages/api/src/domains/ball-custody/TypedWaitCustodyGuard.ts
+  - packages/api/src/domains/cats/services/stores/redis/RedisTypedWaitCustodyGuard.ts
+  - packages/api/src/routes/callback-typed-wait-source.ts
   - packages/api/src/domains/github-signals/GitHubWaitLifecycleService.ts
   - packages/shared/src/types/github-wait.ts
   - packages/shared/src/types/wait-termination.ts
@@ -59,10 +75,15 @@ code_anchors:
   - packages/api/src/domains/cats/services/freshness/FreshnessRelevancePolicy.ts
   - packages/api/src/domains/cats/services/freshness/checkStreamOutputFreshness.ts
   - packages/api/src/domains/cats/services/stores/ports/DeliveryCursorStore.ts
+  - packages/api/src/domains/cats/services/stores/message-delivery-boundary.ts
+  - packages/api/src/domains/cats/services/agents/routing/delivery-boundary-recovery.ts
 doc_anchors:
+  - feature-specs/2026-09-12-issue1371-typed-wait-continuation.md
+  - feature-specs/2026-09-06-issue1371-parallel-cursor.md
   - docs/features/F295-cancelable-execution-projection.md
   - docs/features/F167-a2a-chain-quality.md
   - feature-specs/2026-08-18-f167-hold-rescue-authorization.md
+  - feature-specs/2026-09-20-gate-feedback-time-delivery.md
   - feature-specs/2026-07-11-f167-phase-s-action-successor-single-flight.md
   - feature-specs/2026-07-16-f167-s1-phase-t-custody-cutover.md
   - docs/features/F233-ball-custody-observability.md
@@ -77,8 +98,11 @@ doc_anchors:
   - feature-specs/2026-07-09-f254-phase-e-catch-closure.md
   - feature-specs/2026-06-14-f233-phase-b-ball-custody-event-stream.md
   - feature-specs/2026-07-16-f177-f254-f264-child-execution-truth.md
-static_scan_hints: [ActionSuccessorLease, ActionSuccessorLeaseStore, ActionSuccessorAdmissionService, ActionSubjectTruthResolver, ActionTerminalPredicateCatalog, ActionSuccessorCompletionService, terminalPredicate, completionCandidate, completionCandidates, preflightOutput, continueFreshRevision, claimOrigin, predecessorCatId, returnToPredecessor, returnDeliveryState, actionGeneration, HoldAccessRole, resolveHoldAccess, scheduleMutationAuditStore, AwaitState, WaitOwnerFence, WaitOutcomeV1, WaitContinuationCarrierV1, WaitContinuationRetryPreflight, RetryAuthorityDecision, waitContinuationCarrier, awaitGeneration, expiresAt, matchedPredicate, BallCustodyEvent, BallCustodyProjection, BallCustodyEventLog, BallCustodyIngest, ball-custody-events, buildHandedEvent, ball.dispatch_dispositioned, dispatch_handled_continuation, ball-custody-state-machine, ball-custody-projector, ballcustody:events, ballcustody:projection, blockedSinceAt, ProbeScheduler, WakeSender, FreshnessAttentionEventLog, FreshnessInvocationStateStore, FreshnessNoticeService, FreshnessReinvokeDecider, FreshnessClosureAggregate, FreshnessSupplementAggregate, FreshnessSupplementStateMachine, FreshnessClosureStore, FreshnessClosureLegacyMigrationState, MigrateLegacyFreshnessClosureInput, legacy_migrated, FreshnessOutputCommitCoordinator, FreshnessRelevancePolicy, same_user_wave_sibling_reply, coveredTriggerMessageIds, causal, triggerMessageId, freshnessClosureId, freshnessSupplementId, seenCursor]
+static_scan_hints: [ActionSuccessorLease, ActionSuccessorLeaseStore, ActionSuccessorAdmissionService, ActionSubjectTruthResolver, ActionTerminalPredicateCatalog, ActionSuccessorCompletionService, terminalPredicate, completionCandidate, completionCandidates, preflightOutput, continueFreshRevision, claimOrigin, predecessorCatId, returnToPredecessor, returnDeliveryState, actionGeneration, HoldAccessRole, resolveHoldAccess, scheduleMutationAuditStore, AwaitState, WaitOwnerFence, WaitOutcomeV1, WaitContinuationCarrierV1, WaitContinuationRetryPreflight, RetryAuthorityDecision, waitContinuationCarrier, awaitGeneration, expiresAt, matchedPredicate, DurableGateRecovery, DurableGateFrozenIdentity, pauseEpoch, reconciling_clock, reconciling_owner, terminal_intent, BallCustodyEvent, BallCustodyProjection, BallCustodyEventLog, BallCustodyIngest, ball-custody-events, buildHandedEvent, ball.dispatch_dispositioned, dispatch_handled_continuation, ball-custody-state-machine, ball-custody-projector, ballcustody:events, ballcustody:projection, blockedSinceAt, ProbeScheduler, WakeSender, FreshnessAttentionEventLog, FreshnessInvocationStateStore, FreshnessNoticeService, FreshnessReinvokeDecider, FreshnessClosureAggregate, FreshnessSupplementAggregate, FreshnessSupplementStateMachine, FreshnessClosureStore, FreshnessClosureLegacyMigrationState, MigrateLegacyFreshnessClosureInput, legacy_migrated, FreshnessOutputCommitCoordinator, FreshnessRelevancePolicy, same_user_wave_sibling_reply, coveredTriggerMessageIds, causal, triggerMessageId, freshnessClosureId, freshnessSupplementId, seenCursor]
 cited_by:
+  - {feature: Gate-S3-sleep-recovery, date: 2026-09-24, delta: durable managed gates persist their frozen integration identity before execution and fence full-wake reconciliation under one exact live owner, owner generation, pause epoch and child protocol receipt; the S3 consumer can advance that owner-authenticated epoch but cannot publish or start work through an older fence, while real nonzero outcomes and sticky terminal intent remain authoritative}
+  - {feature: issue-1371-typed-wait, date: 2026-09-12, delta: authenticated typed-wait registration installs a private exact-source receipt in the same Task generation CAS; primary and adopted consumers resolve independently and Queue atomically revalidates active authority}
+  - {feature: issue-1371-parallel-cursor, date: 2026-09-06, delta: per-target output carries an immutable canonical delivery boundary; cold recovery reuses the existing DeliveryCursorStore and loaded visibility window; legacy navigation verifies one exact terminal child without advancing a prefix}
   - {feature: F167-hold-rescue-authorization, date: 2026-08-18, delta: verified trigger principal, exact-thread collaborator, and configured operator become distinct hold access roles; collaborators retain rescue cancel but receive only a safe lifecycle summary, while exact task deletion and actor/owner audit commit atomically through the existing scheduler store}
   - {feature: F295, date: 2026-08-13, delta: active managed-command receipts are projected as cancelable executions without becoming a new lifecycle ledger; DELETE is fenced by exact taskId so an old hold bubble cannot cancel its replacement}
   - {feature: F280-Gate-5, date: 2026-08-12, delta: explicit retry reads the stored wait carrier for UX preflight, then atomically compares the raw Task/action-lease witness and Message custody revisions in the same commit that appends the attempt; stale witnesses and legacy unattributed agent work fail closed}
@@ -107,6 +131,15 @@ cited_by:
 # Ball Custody Engine
 
 Architecture cell: ball-custody
+
+## Typed registration to Queue continuation
+
+F280 的注册 producer 在 canonical Task hash 内，与 await generation 原子安装私有
+`TypedWaitRegistration`。注册入口快照既有 source/adoption，receipt 绑定当前 invocation、
+精确通知及等待身份；公开 AwaitState 不含这些消费权限。带锚审阅仍经过原 coverage 验证。
+F167 primary/adopted 对各自 source 独立查证，F233/F254 的 Queue 回执在原有原子提交中
+复验 Task/receipt/generation/expiry。已经匹配、过期或换代的等待不再授予 active continuation；
+已成功的历史回执可重放。私有字段随 Task 生命周期保存，不增加线程级权限布尔值或独立账本。
 
 ## Canonical Owner
 

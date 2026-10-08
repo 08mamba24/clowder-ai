@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '@/utils/api-client';
 import { type OfficialPluginAction, OfficialPluginCard, type OfficialPluginInfo } from './OfficialPluginCard';
 import type { OfficialPluginCatchUpAction } from './OfficialPluginCatchUp';
+import { officialPluginEnableConfirmation } from './official-plugin-presentation';
 import { SettingsText } from './primitives/SettingsText';
 
 const HEALTH_REFRESH_MS = 5_000;
@@ -21,22 +22,18 @@ interface OfficialPluginCatalogStatus {
 
 function actionConfirmed(plugin: OfficialPluginInfo, action: OfficialPluginAction): boolean {
   if (action === 'enable') {
-    return window.confirm(
-      plugin.catalogId === 'collective-connector'
-        ? '确认启用 Collective Connector？它会恢复 Host 托管的 endpoint 连接，但不会启动 Collective Service。'
-        : '确认启用飞书会议纪要同步？启用后会连接本机 lark-cli。',
-    );
+    return window.confirm(officialPluginEnableConfirmation(plugin));
   }
   if (action === 'update') {
     const enabled = plugin.instance?.activationState === 'enabled';
     return window.confirm(
       enabled
-        ? `确认更新到 ${plugin.availableVersion}？接收服务会短暂重连，并保持已启用状态。`
+        ? `确认更新到 ${plugin.availableVersion}？请先保存正在进行的工作；插件会短暂重启，并保持已启用状态。`
         : `确认更新到 ${plugin.availableVersion}？更新后会保持当前停用状态。`,
     );
   }
   if (action === 'uninstall') {
-    return window.confirm('确认卸载？运行中的进程会先停止，已缓存的不可变包会保留。');
+    return window.confirm('确认卸载？插件会先停止，已缓存的不可变包会保留。');
   }
   return true;
 }
@@ -79,9 +76,10 @@ export function OfficialPluginsPanel() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<OfficialPluginCatalogStatus | null>(null);
 
-  const load = useCallback(async (clearError = true) => {
+  const load = useCallback(async () => {
     try {
       const response = await apiFetch('/api/plugins/official');
       if (!response.ok) throw new Error(`官方插件读取失败 (${response.status})`);
@@ -91,9 +89,9 @@ export function OfficialPluginsPanel() {
       };
       setPlugins(Array.isArray(body.plugins) ? body.plugins : []);
       setCatalog(body.catalog ?? null);
-      if (clearError) setError(null);
+      setReadError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '官方插件读取失败');
+      setReadError(cause instanceof Error ? cause.message : '官方插件读取失败');
     } finally {
       setLoading(false);
     }
@@ -126,10 +124,15 @@ export function OfficialPluginsPanel() {
               ? '可用版本已变化，已刷新到最新版本，请再次确认。'
               : '插件状态已变化，已刷新到最新状态，请重试。',
           );
-          await load(false);
+          await load();
         } else if (body.code === 'CATCH_UP_REQUIRED') {
           setError('检测到未处理的接收缺口，请先预览，再选择“仅恢复以后”或“补抓并恢复”。');
-          await load(false);
+          await load();
+        } else if (action === 'update' && plugin.catalogId === 'companion' && body.code === 'INVALID_PACKAGE_ARCHIVE') {
+          setError(
+            '当前宿主无法验证该版本安装包，可能需要新版 Clowder AI。请更新宿主后重试；已安装版本未替换。如显示“需修复”，请先重试恢复旧版运行。',
+          );
+          await load();
         } else {
           setError(body.error ?? `官方插件操作失败 (${response.status})`);
         }
@@ -183,7 +186,7 @@ export function OfficialPluginsPanel() {
           );
         } else if (body.code === 'STALE_REVISION') {
           setError('插件状态已变化，已刷新到最新状态，请重试。');
-          await load(false);
+          await load();
         } else {
           setError(body.error ?? `飞书缺口恢复失败 (${response.status})`);
         }
@@ -197,11 +200,12 @@ export function OfficialPluginsPanel() {
   );
 
   if (loading) return <SettingsText tone="muted">正在读取官方插件状态…</SettingsText>;
-  if (plugins.length === 0 && !error) return null;
+  if (plugins.length === 0 && !error && !readError) return null;
 
   return (
     <section className="contents" data-testid="official-plugins-panel">
       {error && <div className="rounded-md bg-conn-red-bg px-3 py-2 text-sm text-conn-red-text">{error}</div>}
+      {readError && <div className="rounded-md bg-conn-red-bg px-3 py-2 text-sm text-conn-red-text">{readError}</div>}
       {catalog?.status === 'degraded' && (
         <div className="rounded-md bg-conn-amber-bg px-3 py-2 text-sm text-conn-amber-text">
           版本目录暂时无法刷新；当前显示最近一次可信版本，已安装插件不受影响。

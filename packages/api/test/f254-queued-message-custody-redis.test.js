@@ -16,6 +16,8 @@ describe('F254 queued message custody Redis CAS', { skip: redisIsolationSkipReas
   let InvocationQueue;
   let QueuedMessageCustodyStartupReconciler;
   let rebindCrossThreadQueueCarrierActionFence;
+  let buildQueueEntry;
+  let resolveQueueTurnCustodyWake;
   let connected = false;
 
   before(async () => {
@@ -27,6 +29,8 @@ describe('F254 queued message custody Redis CAS', { skip: redisIsolationSkipReas
       invocationQueueModule,
       startupReconcilerModule,
       custodyCoordinatorModule,
+      startupQueueEntryModule,
+      wakeProvenanceModule,
     ] = await Promise.all([
       import('@cat-cafe/shared/utils'),
       import('../dist/domains/cats/services/stores/redis/RedisMessageStore.js'),
@@ -34,10 +38,14 @@ describe('F254 queued message custody Redis CAS', { skip: redisIsolationSkipReas
       import('../dist/domains/cats/services/agents/invocation/InvocationQueue.js'),
       import('../dist/domains/cats/services/agents/invocation/QueuedMessageCustodyStartupReconciler.js'),
       import('../dist/domains/cats/services/agents/invocation/QueuedMessageCustodyCoordinator.js'),
+      import('../dist/domains/cats/services/agents/invocation/QueuedMessageCustodyStartupQueueEntry.js'),
+      import('../dist/domains/ball-custody/turn-custody-wake-provenance.js'),
     ]);
     InvocationQueue = invocationQueueModule.InvocationQueue;
     QueuedMessageCustodyStartupReconciler = startupReconcilerModule.QueuedMessageCustodyStartupReconciler;
     rebindCrossThreadQueueCarrierActionFence = custodyCoordinatorModule.rebindCrossThreadQueueCarrierActionFence;
+    buildQueueEntry = startupQueueEntryModule.buildQueueEntry;
+    resolveQueueTurnCustodyWake = wakeProvenanceModule.resolveQueueTurnCustodyWake;
     redis = createRedisClient({ url: REDIS_URL });
     try {
       await redis.ping();
@@ -74,6 +82,32 @@ describe('F254 queued message custody Redis CAS', { skip: redisIsolationSkipReas
 
     assert.deepEqual((await store.getById(message.id)).queueCustody, makeCustody());
     assert.equal(await redis.ttl(`msg:${message.id}`), -1);
+    const replayRecords = await store.listOwnerQueueCustodyLifecycles('user-1');
+    assert.deepEqual(replayRecords, [
+      {
+        messageId: message.id,
+        threadId: 'thread-redis',
+        userId: 'user-1',
+        custody: makeCustody(),
+      },
+    ]);
+    assert.equal('content' in replayRecords[0], false, 'replay source must remain content-free');
+
+    await store.append({
+      userId: 'user-1',
+      catId: null,
+      content: 'mismatched custody owner',
+      mentions: ['opus'],
+      timestamp: 1_001,
+      threadId: 'thread-redis',
+      deliveryStatus: 'queued',
+      queueCustody: makeCustody({ entryId: 'entry-other-owner', ownerUserId: 'user-2' }),
+    });
+    assert.deepEqual(
+      await store.listOwnerQueueCustodyLifecycles('user-1'),
+      replayRecords,
+      'owner-scoped replay must reject custody whose durable owner disagrees with the message owner',
+    );
 
     const left = makeCustody({ revision: 2, status: 'processing', processingStartedAt: 1_100, updatedAt: 1_100 });
     const right = makeCustody({ revision: 2, seenByCatIds: ['codex'], updatedAt: 1_101 });
@@ -1132,5 +1166,37 @@ describe('F254 queued message custody Redis CAS', { skip: redisIsolationSkipReas
         outputMessageIds: [response.id],
       },
     });
+  });
+
+  test('sourceCategory survives append, CAS transition, and startup rebuild', async () => {
+    const threadId = 'thread-source-category';
+    const message = await store.append({
+      userId: 'user-1',
+      catId: null,
+      content: 'producer return wake',
+      mentions: ['codex'],
+      timestamp: 1_000,
+      threadId,
+      deliveryStatus: 'queued',
+      source: { connector: 'content-review', label: 'Review', meta: {} },
+      queueCustody: makeCustody({
+        sourceCategory: 'producer_return',
+        allTargetCats: ['codex'],
+        pendingTargetCats: ['codex'],
+      }),
+    });
+    const reread = await store.getById(message.id);
+    assert.equal(reread.queueCustody.sourceCategory, 'producer_return');
+    const cur = reread.queueCustody;
+    await store.transitionQueueCustody(message.id, {
+      expectedRevision: cur.revision,
+      next: { ...cur, revision: cur.revision + 1, updatedAt: cur.updatedAt ?? cur.createdAt },
+    });
+    const afterTransition = await store.getById(message.id);
+    assert.equal(afterTransition.queueCustody.sourceCategory, 'producer_return');
+    const rebuilt = buildQueueEntry([afterTransition], afterTransition.queueCustody.entryId);
+    assert.equal(rebuilt.sourceCategory, 'producer_return');
+    const wake = await resolveQueueTurnCustodyWake(rebuilt, { getById: async () => null });
+    assert.equal(wake.kind, 'unstructured');
   });
 });

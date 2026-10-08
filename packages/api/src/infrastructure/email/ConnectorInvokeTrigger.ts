@@ -50,6 +50,10 @@ import {
   createA2ASlotTrackingBridge,
   type PersistenceContext,
 } from '../../domains/cats/services/agents/routing/route-helpers.js';
+import {
+  normalizeOwnerAuthProvenance,
+  type OwnerAuthProvenance,
+} from '../../domains/cats/services/owner-auth-provenance.js';
 import type {
   IInvocationRecordStore,
   InvocationActionLeaseCarrier,
@@ -62,6 +66,10 @@ import { type AgentMessage, mergeTokenUsage, type TokenUsage } from '../../domai
 import type { MemoryCueOpportunitySeed } from '../../domains/memory/cue/MemoryCueInvocationPromptService.js';
 import { readTrustedConnectorMemoryCueSeeds } from '../../domains/memory/cue/MemoryCueTrustedConnector.js';
 import { bindAsrPersonMemoryReentryFromSchedulerMessage } from '../../domains/memory/people/AsrPersonMemoryReentryCarrier.js';
+import {
+  checkDeploymentWaitStart,
+  type DeploymentWaitStartGuard,
+} from '../../domains/runtime-deployment/DeploymentWaitStartGuard.js';
 import type { SocketManager } from '../../infrastructure/websocket/index.js';
 import { emitQueueUpdated, enrichQueueEntries } from '../../utils/queue-enrichment.js';
 
@@ -174,6 +182,7 @@ export interface ConnectorInvokeTriggerOptions {
   readonly messageStore?: IMessageStore;
   /** Canonical owner used to validate a managed-command wake's frozen action generation. */
   readonly actionSuccessorLeaseStore?: Pick<ActionSuccessorLeaseStore, 'get'>;
+  readonly deploymentWaitStartGuard?: Pick<DeploymentWaitStartGuard, 'check'>;
   readonly log: FastifyBaseLogger;
 }
 
@@ -188,6 +197,8 @@ export interface ConnectorTriggerPolicy {
   readonly suggestedSkill?: string;
   /** Event carriers use the existing Queue/F254/F264 custody even when the thread is idle. */
   readonly forceQueue?: boolean;
+  /** Server-private owner proof restored by durable managed-command producers. */
+  readonly ownerAuthProvenance?: OwnerAuthProvenance;
   /**
    * Optional queue coalescing key for connector bursts that supersede earlier queued work.
    * Later hits reuse the first queued entry: messageIds are merged, but the original content/body stays in place.
@@ -267,6 +278,7 @@ export class ConnectorInvokeTrigger {
   ): Promise<TriggerOutcome> {
     const { invocationTracker } = this.opts;
     const priority = policy?.priority ?? 'normal';
+    const ownerAuthProvenance = normalizeOwnerAuthProvenance(policy?.ownerAuthProvenance);
 
     if (policy?.forceQueue) {
       const outcome = await this.enqueueWhileActive(
@@ -282,6 +294,7 @@ export class ConnectorInvokeTrigger {
         policy.coalesceKey,
         true,
         'force_queue',
+        ownerAuthProvenance,
       );
       if (outcome === 'enqueued') {
         const exactEntry = this.opts.invocationQueue.findEntryWithMessageId(threadId, messageId);
@@ -312,6 +325,7 @@ export class ConnectorInvokeTrigger {
         policy?.coalesceKey,
         false,
         'auto_resume_suppressed',
+        ownerAuthProvenance,
       );
     }
 
@@ -334,6 +348,7 @@ export class ConnectorInvokeTrigger {
         policy?.coalesceKey,
         false,
         'busy_active_execution',
+        ownerAuthProvenance,
       );
     }
 
@@ -353,6 +368,7 @@ export class ConnectorInvokeTrigger {
         policy?.coalesceKey,
         false,
         'thread_acquire_failed',
+        ownerAuthProvenance,
       );
       if (outcome === 'enqueued') await this.drainIfExecutionIdle(threadId, messageId);
       return outcome;
@@ -370,6 +386,11 @@ export class ConnectorInvokeTrigger {
 
     let admission: DirectInvocationAdmission;
     try {
+      const decision = await checkDeploymentWaitStart(
+        { messageId, threadId, userId, catId, expectedDeploymentWait: policy?.reason === 'deployment_wait_satisfied' },
+        { guard: this.opts.deploymentWaitStartGuard, messageStore: this.opts.messageStore },
+      );
+      if (!decision.ok) throw new Error(`deployment wait continuation ${decision.reason}`);
       admission = await this.admitDirectInvocation(threadId, catId, userId, messageId);
     } catch (err) {
       rejectDirectAdmission();
@@ -399,9 +420,11 @@ export class ConnectorInvokeTrigger {
       contentBlocks,
       policy?.sourceCategory,
       policy?.suggestedSkill,
+      ownerAuthProvenance,
       sender,
       controller,
       executionStartReceipt,
+      policy?.reason === 'deployment_wait_satisfied',
     ).catch((err) => {
       executionStartReceipt.reject(err);
       this.opts.log.error(`[ConnectorInvokeTrigger] Unhandled: ${err instanceof Error ? err.message : String(err)}`);
@@ -585,6 +608,7 @@ export class ConnectorInvokeTrigger {
     coalesceKey?: string,
     autoExecute = false,
     queueReason: ConnectorQueueReason = 'active_invocation_running',
+    requestedOwnerAuthProvenance: OwnerAuthProvenance = 'unknown',
   ): Promise<'full' | 'enqueued'> {
     const { invocationQueue, socketManager, log } = this.opts;
 
@@ -610,14 +634,16 @@ export class ConnectorInvokeTrigger {
       ? actionSuccessorCarrierKey(actionLeaseAdmission.actionSuccessorFence, catId)
       : undefined;
 
-    const custodyOwner = sourceMessage?.queueCustody?.ownerAuthProvenance;
+    // Once Queue custody exists it is canonical, including a legacy missing
+    // value that must stay unknown. The private producer carrier is used only
+    // for the first admission of a source message with no custody yet.
+    const ownerAuthProvenance = sourceMessage?.queueCustody
+      ? normalizeOwnerAuthProvenance(sourceMessage.queueCustody.ownerAuthProvenance)
+      : requestedOwnerAuthProvenance;
     const result = invocationQueue.enqueue({
       threadId,
       userId,
-      ownerAuthProvenance:
-        custodyOwner === 'strict' || custodyOwner === 'compatibility_fallback' || custodyOwner === 'unknown'
-          ? custodyOwner
-          : 'unknown',
+      ownerAuthProvenance,
       content: message,
       messageId,
       ...(actionLeaseQueueKey
@@ -779,9 +805,11 @@ export class ConnectorInvokeTrigger {
     contentBlocks?: readonly MessageContent[],
     sourceCategory?: ConnectorTriggerPolicy['sourceCategory'],
     suggestedSkill?: string,
+    ownerAuthProvenance: OwnerAuthProvenance = 'unknown',
     sender?: { id: string; name?: string },
     preAcquiredController?: AbortController,
     executionStartReceipt?: ExecutionStartReceipt,
+    expectedDeploymentWait = false,
   ): Promise<void> {
     const { router, socketManager, invocationRecordStore, invocationTracker, invocationQueue, log } = this.opts;
     const targetCats: CatId[] = [catId];
@@ -941,8 +969,21 @@ export class ConnectorInvokeTrigger {
         }
       }
 
+      const deploymentDecision = await checkDeploymentWaitStart(
+        { messageId, threadId, userId, catId, expectedDeploymentWait },
+        { guard: this.opts.deploymentWaitStartGuard, messageStore: this.opts.messageStore },
+      );
+      if (!deploymentDecision.ok) {
+        finalStatus = deploymentDecision.reason === 'evidence_stale' ? 'failed' : 'canceled';
+        await invocationRecordStore.update(invocationId, { status: finalStatus, expectedStatus: 'running' });
+        executionStartReceipt?.reject(
+          new Error(`deployment wait continuation ${deploymentDecision.reason} before execution`),
+        );
+        return;
+      }
+
       for await (const msg of router.routeExecution(userId, message, threadId, messageId, targetCats, intent, {
-        ownerAuthProvenance: 'unknown',
+        ownerAuthProvenance,
         humanDispositionInvocationOrigin: 'connector',
         turnCustodyWake,
         turnCustodyWakeForCat: (catId) => retargetTurnCustodyWake(turnCustodyWake, catId),
@@ -953,10 +994,10 @@ export class ConnectorInvokeTrigger {
         queueHasQueuedMessages: (tid: string) => invocationQueue.hasQueuedNonAgentForThread(tid),
         getQueuedFreshnessMessagesForCat: (tid: string, uid: string, catId: string, parentInvocationId?: string) =>
           invocationQueue.getQueuedFreshnessMessagesForCat(tid, uid, catId, { parentInvocationId }),
-        deferA2AEnqueue: (e) => invocationQueue.enqueue({ ...e, ownerAuthProvenance: 'unknown' }),
+        deferA2AEnqueue: (e) => invocationQueue.enqueue({ ...e, ownerAuthProvenance }),
         freshnessReinvokeEnqueue: (entry) => {
           const { freshnessContext: _freshnessContext, ...queueFields } = entry;
-          return invocationQueue.enqueue({ ...queueFields, ownerAuthProvenance: 'unknown' });
+          return invocationQueue.enqueue({ ...queueFields, ownerAuthProvenance });
         },
         hasQueuedOrActiveAgentForCat: (tid: string, catId: string) =>
           invocationQueue.hasActiveOrQueuedAgentForCat(tid, catId),
@@ -1447,6 +1488,10 @@ export class ConnectorInvokeTrigger {
           finalStatus,
           invocationId,
           finalStatus === 'succeeded' ? terminalDispositions.getSuccessfulCatIds() : [],
+          false,
+          terminalDispositions.getTerminalInvocationIdByCatId(),
+          [],
+          terminalDispositions.getTerminalConsumptionByInvocationId(),
         )
         .catch(() => {
           /* best-effort, don't crash background task */

@@ -10,7 +10,7 @@
 
 import type { ApprovalItem, ProfileUpdateProposal, SettledApprovalItem } from '@cat-cafe/shared';
 import type { IProfileUpdateProposalStore } from '../../cats/services/stores/ports/ProfileUpdateProposalStore.js';
-import type { IApprovalAdapter, ListSettledOpts } from '../ports/IApprovalAdapter.js';
+import { ALL_PENDING_APPROVALS_LIMIT, type IApprovalAdapter, type ListSettledOpts } from '../ports/IApprovalAdapter.js';
 import { compactApprovalProjections, projectApprovalNavigation } from '../projectApprovalNavigation.js';
 
 const F231_STALE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -22,7 +22,7 @@ export class F231ApprovalAdapter implements IApprovalAdapter {
   constructor(private readonly store: IProfileUpdateProposalStore) {}
 
   listPending(userId: string): ApprovalItem[] | Promise<ApprovalItem[]> {
-    const result = this.store.listPending(userId);
+    const result = this.store.listPending(userId, ALL_PENDING_APPROVALS_LIMIT);
     if (Array.isArray(result)) return compactApprovalProjections(result.map((p) => toItem(p)));
     return result.then((proposals) => compactApprovalProjections(proposals.map((p) => toItem(p))));
   }
@@ -47,7 +47,7 @@ function toItem(p: ProfileUpdateProposal): ApprovalItem | null {
     requesterCatId: p.sourceCatId,
     ownerUserId: p.createdBy,
     status: 'pending' as const,
-    summary: `Profile update: ${p.rationale.slice(0, 80)}`,
+    summary: `${p.targetLayer === 'corpus' ? 'Corpus' : 'Profile'} update: ${p.rationale.slice(0, 80)}`,
     detail: {
       rationale: p.rationale,
       targetLayer: p.targetLayer,
@@ -76,7 +76,7 @@ function toSettledItem(p: ProfileUpdateProposal): SettledApprovalItem | null {
     requesterCatId: p.sourceCatId,
     ownerUserId: p.createdBy,
     status: p.status,
-    summary: `Profile update: ${p.rationale.slice(0, 80)}`,
+    summary: `${p.targetLayer === 'corpus' ? 'Corpus' : 'Profile'} update: ${p.rationale.slice(0, 80)}`,
     detail: {
       rationale: p.rationale,
       targetLayer: p.targetLayer,

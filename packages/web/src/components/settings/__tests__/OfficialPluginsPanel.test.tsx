@@ -86,6 +86,64 @@ describe('OfficialPluginsPanel', () => {
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   });
 
+  it('installs and enables GenOffice with its own DOCX scope and no Feishu authorization', async () => {
+    const genoffice = {
+      ...plugin(null),
+      catalogId: 'genoffice-docx',
+      packageName: '@clowder-ai/genoffice-docx',
+      pluginId: 'official.genoffice-docx',
+      version: '0.1.0-alpha.0',
+      availableVersion: '0.1.0-alpha.0',
+      effectiveGrants: [],
+    };
+    const installed = {
+      ...genoffice,
+      instance: {
+        pluginInstanceId: 'pi_genoffice',
+        installedVersion: '0.1.0-alpha.0',
+        packageDigest: digest,
+        lifecycleState: 'installed',
+        configReadiness: 'ready',
+        activationState: 'disabled',
+        runtimeState: 'stopped',
+        lifecycleRevision: 2,
+        installedAt: 1,
+        updatedAt: 2,
+      },
+    };
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mockApiFetch.mockImplementation(async (url, init) => {
+      if (url === '/api/plugins/official' && !init) return jsonResponse({ plugins: [genoffice] });
+      if (url.endsWith('/install')) return jsonResponse(installed);
+      if (url.endsWith('/enable'))
+        return jsonResponse({
+          ...installed,
+          instance: {
+            ...installed.instance,
+            activationState: 'enabled',
+            runtimeState: 'healthy',
+            lifecycleRevision: 4,
+          },
+        });
+      return jsonResponse({}, 404);
+    });
+    await act(async () => root.render(<OfficialPluginsPanel />));
+    await flushEffects();
+    expect(container.textContent).toContain('GenOffice');
+    expect(container.textContent).not.toContain('飞书');
+    await act(async () => findButtonByAriaLabel(container, '查看 GenOffice 详情')?.click());
+    expect(container.textContent).toContain('DOCX');
+    await act(async () => findButton(container, '安装')?.click());
+    await flushEffects();
+    expect(mockApiFetch.mock.calls.some(([url]) => String(url).endsWith('/enable'))).toBe(false);
+    expect(findButtonByAriaLabel(container, '启用 GenOffice')).toBeDefined();
+    await act(async () => findButtonByAriaLabel(container, '启用 GenOffice')?.click());
+    await flushEffects();
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('DOCX'));
+    expect(confirm.mock.calls.flat().join(' ')).not.toMatch(/飞书|lark-cli/);
+    expect(findButtonByAriaLabel(container, '停用 GenOffice')).toBeDefined();
+  });
+
   it('shows immutable package truth and installs without auto-starting', async () => {
     mockApiFetch.mockImplementation(async (url, init) => {
       if (url === '/api/plugins/official' && !init) return jsonResponse({ plugins: [plugin(null)] });
@@ -397,6 +455,102 @@ describe('OfficialPluginsPanel', () => {
       await Promise.resolve();
     });
     expect(container.textContent).toContain('飞书账号已连接');
+    expect(findButtonByAriaLabel(container, '启用飞书会议纪要同步')).not.toBeUndefined();
+  });
+
+  it('starts a new device login after the previous authorization flow failed', async () => {
+    const installed = plugin(
+      {
+        pluginInstanceId: 'pi_official',
+        lifecycleState: 'installed',
+        configReadiness: 'ready',
+        activationState: 'disabled',
+        runtimeState: 'stopped',
+        lifecycleRevision: 7,
+        installedAt: 1,
+        updatedAt: 2,
+      },
+      true,
+    );
+    let starts = 0;
+    mockApiFetch.mockImplementation(async (url, init) => {
+      if (url === '/api/plugins/official') return jsonResponse({ plugins: [installed] });
+      if (url === '/api/plugins/official/pi_official/auth' && !init) {
+        return jsonResponse({ status: 'failed', error: '飞书认证未完成，请重试。' });
+      }
+      if (url === '/api/plugins/official/pi_official/auth/start') {
+        starts += 1;
+        return jsonResponse({
+          status: 'waiting',
+          verificationUrl: 'https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=reconnect',
+          userCode: 'RECONNECT',
+          qrDataUrl: 'data:image/png;base64,qr',
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    await act(async () => root.render(<OfficialPluginsPanel />));
+    await flushEffects();
+    await act(async () => findButtonByAriaLabel(container, '查看飞书会议纪要同步详情')?.click());
+    expect(container.textContent).toContain('飞书认证未完成，请重试。');
+    expect(findButton(container, '重新连接')).not.toBeUndefined();
+
+    await act(async () => findButton(container, '重新连接')?.click());
+    await flushEffects();
+
+    expect(starts).toBe(1);
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/plugins/official/pi_official/auth/start', { method: 'POST' });
+    expect(container.textContent).toContain('RECONNECT');
+  });
+
+  it('retries an unavailable auth status probe without starting a new login', async () => {
+    const installed = plugin(
+      {
+        pluginInstanceId: 'pi_official',
+        lifecycleState: 'installed',
+        configReadiness: 'ready',
+        activationState: 'disabled',
+        runtimeState: 'stopped',
+        lifecycleRevision: 7,
+        installedAt: 1,
+        updatedAt: 2,
+      },
+      true,
+    );
+    let authReads = 0;
+    mockApiFetch.mockImplementation(async (url, init) => {
+      if (url === '/api/plugins/official') return jsonResponse({ plugins: [installed] });
+      if (url === '/api/plugins/official/pi_official/auth' && !init) {
+        authReads += 1;
+        return authReads === 1
+          ? jsonResponse(
+              {
+                status: 'failed',
+                error: '飞书认证状态暂时无法验证，请稍后重试。',
+                code: 'AUTH_STATUS_FAILED',
+              },
+              502,
+            )
+          : jsonResponse({ status: 'connected' });
+      }
+      if (url === '/api/plugins/official/pi_official/auth/start') {
+        return jsonResponse({ status: 'waiting' });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    await act(async () => root.render(<OfficialPluginsPanel />));
+    await flushEffects();
+    await act(async () => findButtonByAriaLabel(container, '查看飞书会议纪要同步详情')?.click());
+    expect(container.textContent).toContain('飞书认证状态暂时无法验证，请稍后重试。');
+    expect(findButton(container, '重试检查')).not.toBeUndefined();
+
+    await act(async () => findButton(container, '重试检查')?.click());
+    await flushEffects();
+
+    expect(authReads).toBe(2);
+    expect(mockApiFetch.mock.calls.some(([url]) => url === '/api/plugins/official/pi_official/auth/start')).toBe(false);
     expect(findButtonByAriaLabel(container, '启用飞书会议纪要同步')).not.toBeUndefined();
   });
 });

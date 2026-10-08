@@ -43,8 +43,10 @@ import { fileURLToPath } from 'node:url';
 import { catRegistry } from '@cat-cafe/shared';
 import { getDossierL0Pronouns, getDossierL0RoutingNote, getDossierL0SelfDescription } from '@cat-cafe/shared/dossier';
 import {
+  CURRENT_CORPUS_PROFILE_URI,
   CURRENT_RELATIONSHIP_PROFILE_URI,
   DEFAULT_PROFILE_USER_ID,
+  profileCorpusRelativePath,
   profileUserRelativePath,
   relationshipPrimerRelativePath,
   renderUserCapsuleSection,
@@ -55,6 +57,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
 const TEMPLATE_PATH = resolve(REPO_ROOT, 'assets/system-prompts/system-prompt-l0.md');
 const PROMPT_TEMPLATES_DIR = resolve(REPO_ROOT, 'assets/prompt-templates');
+const PUBLIC_PARTICIPATION_TEMPLATE_PATH = resolve(PROMPT_TEMPLATES_DIR, 'l0-public-participation.md');
 const PROMPT_OVERLAYS_DIR = resolve(findWorkspaceRoot(process.cwd()), '.cat-cafe', 'prompt-overlays');
 const DISPLAY_SEGMENT_LABEL_RE = /^── \[[A-Z]\d+] .+──$/;
 const MERGE_GATE_SOURCE_PROVENANCE_TRIGGER = '- MG provenance override：外部finding修完后等PR truth，不@旧reviewer。';
@@ -262,6 +265,26 @@ function buildIdentityBlock(config, runtimeModel) {
   return lines.join('\n');
 }
 
+/**
+ * Public participation may use only identity fields already declared by the
+ * participation profile. It must not inherit dossier text, restrictions,
+ * teammate routing, model bindings, owner references, or local overlays.
+ */
+function buildPublicIdentityBlock(catId) {
+  // The signed Host prompt supplies revision-bound published profile fields.
+  // L0 keeps only the stable addressee; rereading mutable local catalog text
+  // here could expose bytes that were never part of that published revision.
+  return `Identity constant: \`@${catId}\``;
+}
+
+function compilePublicParticipationL0(catId) {
+  return readFileSync(PUBLIC_PARTICIPATION_TEMPLATE_PATH, 'utf8')
+    .split('\n')
+    .filter((line) => !isCompilerAnnotationLine(line))
+    .join('\n')
+    .replace('{{PUBLIC_IDENTITY_BLOCK}}', buildPublicIdentityBlock(catId));
+}
+
 function rosterLabel(cfg) {
   if (cfg.variantLabel) return `${cfg.displayName} ${cfg.variantLabel}`;
   if (cfg.nickname) return `${cfg.displayName}/${cfg.nickname}`;
@@ -384,29 +407,44 @@ function renderCvoRef() {
 export function resolveUserCapsule(profileDir, relationshipKey) {
   const capsulePath = resolve(profileDir, 'operator-capsule.md');
   const primerPath = resolve(profileDir, relationshipPrimerRelativePath(relationshipKey));
+  const corpusPath = resolve(profileDir, profileCorpusRelativePath());
   let primerEntry = '';
+  let corpusEntry = '';
   try {
     accessSync(primerPath);
     primerEntry = `关系轨迹: ${CURRENT_RELATIONSHIP_PROFILE_URI}（cat_cafe_read_profile 按需读）`;
   } catch {
     // No primer for this persona — no pointer line.
   }
+  // Phase E: corpus pointer — existence-gated, never leaks content into L0 (INV-6 no existence leakage
+  // is about non-owner; owner sees pointer only when file exists).
+  try {
+    accessSync(corpusPath);
+    corpusEntry = `共享事实: ${CURRENT_CORPUS_PROFILE_URI}（cat_cafe_read_profile layer=corpus 按需读）`;
+  } catch {
+    // No corpus yet — no pointer line.
+  }
 
-  // State 1: missing / unreadable → primer entry only, if one exists.
-  // Capsule and primer are independently optional profile layers.
+  // State 1: missing / unreadable → pointer entries only, if any exist.
+  // Capsule, primer, and corpus are independently optional profile layers.
   let raw;
   try {
     raw = readFileSync(capsulePath, 'utf8');
   } catch {
-    return primerEntry;
+    const pointers = [primerEntry, corpusEntry].filter(Boolean).join('\n');
+    return pointers;
   }
 
   // The same pure transform is used by F299 when binding durable profile
   // evidence, so the sourceRef describes these exact bytes rather than a
   // later profile revision.
   let section = renderUserCapsuleSection(raw);
-  if (!section) return primerEntry;
-  if (primerEntry) section += `\n\n${primerEntry}`;
+  if (!section) {
+    const pointers = [primerEntry, corpusEntry].filter(Boolean).join('\n');
+    return pointers;
+  }
+  const pointers = [primerEntry, corpusEntry].filter(Boolean).join('\n');
+  if (pointers) section += `\n\n${pointers}`;
 
   return section;
 }
@@ -418,16 +456,25 @@ export function resolveUserCapsule(profileDir, relationshipKey) {
  * @param {string} options.catId - cat ID (must be registered in catRegistry)
  * @param {string} [options.runtimeModel] - resolved runtime model (e.g. claude-opus-4-7)
  * @param {string} [options.profileDir] - override for user profile directory (fixture isolation)
+ * @param {'owner'|'public'|'collective-work'} [options.projection='owner'] - Work retains home L0 without USER_CAPSULE
  * @returns {Promise<string>} compiled L0 ready for system-prompt injection
  */
 export async function compileL0(options) {
   await bootstrapCatRegistry();
-  const { catId, runtimeModel, profileDir } = options;
+  const { catId, runtimeModel, profileDir, projection = 'owner' } = options;
+  if (!['owner', 'public', 'collective-work'].includes(projection)) {
+    throw new Error(`compileL0: unsupported projection "${projection}"`);
+  }
   const entry = catRegistry.tryGet(catId);
   if (!entry) {
     throw new Error(`compileL0: unknown catId "${catId}". Registered: ${catRegistry.getAllIds().join(', ')}`);
   }
   const config = { ...entry.config, catId };
+  // Public output is constructed from a dedicated allowlist. Branch before
+  // reading owner profiles, governance overlays, workflow overlays, teammate
+  // routing, or the co-creator reference so none can become model-visible.
+  if (projection === 'public') return compilePublicParticipationL0(catId);
+
   // Strip compiler-only annotation lines from the main template (same as
   // loadL0SectionTemplate does for L-section files). Allows rich source labels
   // without changing the compiled output sent to the model.
@@ -440,11 +487,14 @@ export async function compileL0(options) {
   // Runtime callers pass a user-scoped profileDir. Direct compiles use the same
   // canonical repository contract for the default user; legacy worktree-local
   // private/profile trees are migration inputs only.
-  const canonicalDataDir = resolve(process.env.CAT_CAFE_DATA_DIR ?? resolve(homedir(), '.cat-cafe'));
-  const resolvedProfileDir =
-    profileDir ?? resolve(canonicalDataDir, ...profileUserRelativePath(DEFAULT_PROFILE_USER_ID).split('/'));
-  const relationshipKey = resolveRelationshipKey(config, catId);
-  const capsuleSection = resolveUserCapsule(resolvedProfileDir, relationshipKey);
+  let capsuleSection = '';
+  if (projection === 'owner') {
+    const canonicalDataDir = resolve(process.env.CAT_CAFE_DATA_DIR ?? resolve(homedir(), '.cat-cafe'));
+    const resolvedProfileDir =
+      profileDir ?? resolve(canonicalDataDir, ...profileUserRelativePath(DEFAULT_PROFILE_USER_ID).split('/'));
+    const relationshipKey = resolveRelationshipKey(config, catId);
+    capsuleSection = resolveUserCapsule(resolvedProfileDir, relationshipKey);
+  }
 
   // Load L1-L7 section templates (static content extracted to individual files)
   let result = template;
@@ -484,24 +534,28 @@ export async function writeL0File(options, outPath) {
 //   node scripts/compile-system-prompt-l0.mjs --cat opus-47 --out p.md → write file
 //   node scripts/compile-system-prompt-l0.mjs --cat opus-47 --profile-dir /abs/path
 //     → override profile directory (gpt52 review P1: fixes symlink/packaged layouts)
+//   node scripts/compile-system-prompt-l0.mjs --cat opus-47 --projection public
+//     → allowlisted public identity/collaboration contract; no owner-local overlays
 if (isCliEntrypoint(import.meta.url, process.argv[1])) {
   const args = process.argv.slice(2);
   const catIdx = args.indexOf('--cat');
   if (catIdx < 0 || !args[catIdx + 1]) {
     console.error(
-      'Usage: node scripts/compile-system-prompt-l0.mjs --cat <catId> [--out <path>] [--profile-dir <path>]',
+      'Usage: node scripts/compile-system-prompt-l0.mjs --cat <catId> [--out <path>] [--profile-dir <path>] [--projection owner|public|collective-work]',
     );
     process.exit(2);
   }
   const catId = args[catIdx + 1];
   const profileDirIdx = args.indexOf('--profile-dir');
   const profileDir = profileDirIdx >= 0 ? args[profileDirIdx + 1] : undefined;
+  const projectionIdx = args.indexOf('--projection');
+  const projection = projectionIdx >= 0 ? args[projectionIdx + 1] : undefined;
   const outIdx = args.indexOf('--out');
   if (outIdx >= 0 && args[outIdx + 1]) {
     const outPath = args[outIdx + 1];
-    await writeL0File({ catId, profileDir }, outPath);
+    await writeL0File({ catId, profileDir, projection }, outPath);
     console.error(`Wrote compiled L0 for ${catId} → ${outPath}`);
   } else {
-    process.stdout.write(await compileL0({ catId, profileDir }));
+    process.stdout.write(await compileL0({ catId, profileDir, projection }));
   }
 }

@@ -151,4 +151,37 @@ test('with-test-home points both home coordinates at the same wrapper-owned temp
   assert.match(home, /cat-cafe-test-home-/, 'HOME must be the wrapper-owned temp dir');
   assert.equal(userProfile, home, 'a split pair means one of the two home coordinates is still the operator’s own');
   assert.notEqual(userProfile, '/outer/operator/profile');
+// REDIS_URL is the one binding here that must be pinned rather than stripped.
+// `packages/shared/src/utils/redis.ts` resolves it with a fallback to the
+// protected endpoint, so an absent value selects that endpoint instead of
+// selecting nothing. These two cases are the boundary; without them it is
+// asserted only by a comment.
+const REDIS_URL_PROBE = 'process.env.REDIS_URL ?? ""';
+
+test('with-test-home pins REDIS_URL when the outer shell has none', () => {
+  const outer = { ...process.env };
+  delete outer.REDIS_URL;
+
+  const result = spawnSync('bash', [withTestHome, 'node', '-p', REDIS_URL_PROBE], {
+    cwd: resolve(__dirname, '..'),
+    env: outer,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'redis://127.0.0.1:6398');
+});
+
+test('with-test-home overrides an inherited REDIS_URL instead of trusting it', () => {
+  const result = spawnSync('bash', [withTestHome, 'node', '-p', REDIS_URL_PROBE], {
+    cwd: resolve(__dirname, '..'),
+    env: {
+      ...process.env,
+      REDIS_URL: 'redis://127.0.0.1:6399',
+    },
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'redis://127.0.0.1:6398');
 });

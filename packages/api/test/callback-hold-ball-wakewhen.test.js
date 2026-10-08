@@ -55,6 +55,7 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
     const unregisteredIds = [];
     const removedIds = [];
     const appendedMessages = [];
+    const ownerAuthProvenanceByTaskId = new Map();
     const defaultTemplate = {
       createSpec(taskId, taskParams) {
         return { taskId, taskParams };
@@ -62,6 +63,18 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
     };
     const deps = {
       registry,
+      holdQuotaStore: {
+        async tryAdmit() {
+          return { admitted: true, count: 1, eventId: `stub-${Date.now()}` };
+        },
+        async releaseByEventId() {
+          return true;
+        },
+        async getCount() {
+          return 0;
+        },
+        async close() {},
+      },
       taskRunner: {
         registerDynamic(spec, taskId) {
           registeredDynamic.push({ spec, taskId });
@@ -77,8 +90,11 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
         },
       },
       dynamicTaskStore: {
-        insert(record) {
+        insert(record, ownerAuthProvenance) {
           insertedTasks.push(record);
+          if (ownerAuthProvenance !== undefined) {
+            ownerAuthProvenanceByTaskId.set(record.id, ownerAuthProvenance);
+          }
         },
         getAll() {
           return insertedTasks.filter((t) => !removedIds.includes(t.id));
@@ -88,7 +104,11 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
         },
         remove(id) {
           removedIds.push(id);
+          ownerAuthProvenanceByTaskId.delete(id);
           return true;
+        },
+        getPrivateOwnerAuthProvenance(id) {
+          return ownerAuthProvenanceByTaskId.get(id) ?? 'unknown';
         },
         updateParams(id, params) {
           const task = insertedTasks.find((t) => t.id === id && !removedIds.includes(t.id));
@@ -134,6 +154,7 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
       _unregisteredIds: unregisteredIds,
       _removedIds: removedIds,
       _appendedMessages: appendedMessages,
+      _ownerAuthProvenanceByTaskId: ownerAuthProvenanceByTaskId,
     };
     return { ...deps, ...overrides };
   }
@@ -174,6 +195,91 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
     assert.ok(typeof getActiveRunnerCount === 'function', 'getActiveRunnerCount should be a function');
     // No-op on non-existent key should not throw
     cancelWakeWhenRunner('nonexistent-thread', 'nonexistent-cat');
+  });
+
+  test('wakeWhen registration persists the authenticated owner provenance outside public task params', async () => {
+    const { ManagedRunner } = await import('../dist/infrastructure/managed-runner.js');
+    const originalStart = ManagedRunner.prototype.start;
+    ManagedRunner.prototype.start = () => ({
+      admission: Promise.resolve({ spawned: false, pid: null, error: 'fixture: no process needed' }),
+      completion: Promise.resolve({ exitCode: null, timedOut: false, durationMs: 0 }),
+    });
+
+    try {
+      const deps = makeStubDeps();
+      const app = await createApp(deps);
+      const ownerUserId = 'user-owner-provenance';
+      const thread = await threadStore.create(ownerUserId, 'owner provenance');
+      const { invocationId, callbackToken } = await registry.create(
+        ownerUserId,
+        'codex',
+        thread.id,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'strict',
+      );
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/callbacks/hold-ball',
+        headers: { 'x-invocation-id': invocationId, 'x-callback-token': callbackToken },
+        payload: {
+          reason: 'preserve strict owner provenance',
+          nextStep: 'resume authenticated owner work',
+          wakeWhen: { command: 'fixture-command' },
+        },
+      });
+
+      assert.equal(response.statusCode, 200, response.body);
+      const taskId = JSON.parse(response.body).taskId;
+      assert.equal(deps._ownerAuthProvenanceByTaskId.get(taskId), 'strict');
+      assert.equal(Object.hasOwn(deps.dynamicTaskStore.getById(taskId).params, 'ownerAuthProvenance'), false);
+      await app.close();
+    } finally {
+      ManagedRunner.prototype.start = originalStart;
+    }
+  });
+
+  test('wakeAfterMs registration preserves the authenticated owner provenance outside public task params', async () => {
+    const deps = makeStubDeps();
+    const app = await createApp(deps);
+    const ownerUserId = 'user-owner-timer-provenance';
+    const thread = await threadStore.create(ownerUserId, 'timer owner provenance');
+    const { invocationId, callbackToken } = await registry.create(
+      ownerUserId,
+      'codex',
+      thread.id,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'strict',
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/callbacks/hold-ball',
+      headers: { 'x-invocation-id': invocationId, 'x-callback-token': callbackToken },
+      payload: {
+        reason: 'wait for a bounded external condition',
+        nextStep: 'resume authenticated owner work',
+        wakeAfterMs: 10_000,
+        waitSourceRef: {
+          kind: 'github_issue',
+          value: 'AgeOfLearning/cat-cafe#999',
+          expectedSignal: 'issue closed',
+          slaUntilMs: Date.now() + 60_000,
+        },
+      },
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+    const taskId = JSON.parse(response.body).taskId;
+    assert.equal(deps._ownerAuthProvenanceByTaskId.get(taskId), 'strict');
+    assert.equal(Object.hasOwn(deps.dynamicTaskStore.getById(taskId).params, 'ownerAuthProvenance'), false);
+    await app.close();
   });
 
   test('F280 Phase D: action-custodied waits reference the canonical action-successor lease', async () => {
@@ -397,60 +503,107 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
         completion: new Promise((resolve) => {
           resolveCompletion = resolve;
         }),
+  for (const [budgetName, wakeWhen, expectedExecutionSlaMs] of [
+    ['default budget', { command: 'pnpm gate' }, 3_600_000],
+    ['isolated Redis prefix', { command: 'REDIS_URL=redis://127.0.0.1:6398 pnpm gate' }, 3_600_000],
+    [
+      'bounded env wrapper',
+      { command: 'env -u NODE_ENV -u REDIS_URL CAT_CAFE_DATA_DIR=/tmp/cat-cafe-gate pnpm gate' },
+      3_600_000,
+    ],
+    ['legacy timeout budget', { command: 'pnpm gate', timeoutMs: 2_000 }, 2_000],
+    ['explicit two-hour budget', { command: 'pnpm gate', timeoutMs: 2_000, executionSlaMs: 7_200_000 }, 7_200_000],
+    ['wall ceiling budget', { command: 'pnpm gate', executionSlaMs: 10_800_000 }, 10_800_000],
+  ]) {
+    test(`F261: canonical gate persists and settles its ${budgetName}`, async () => {
+      const { ManagedRunner } = await import('../dist/infrastructure/managed-runner.js');
+      const { recordDurableManagedGateProcess } = await import(
+        '../dist/domains/ball-custody/durable-managed-gate-job.js'
+      );
+      const originalStart = ManagedRunner.prototype.start;
+      let runnerOptions;
+      let resolveCompletion;
+      ManagedRunner.prototype.start = (_command, options) => {
+        runnerOptions = options;
+        const processIdentity = { pid: 42, ppid: 1, pgid: 42, startedAt: 'birth-42' };
+        assert.ok(options.managedJob);
+        assert.equal(recordDurableManagedGateProcess(options.managedJob, processIdentity), true);
+        return {
+          admission: Promise.resolve({ spawned: true, pid: 42, processIdentity }),
+          completion: new Promise((resolve) => {
+            resolveCompletion = resolve;
+          }),
+        };
       };
-    };
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'hold-ball-durable-gate-route-'));
-    const previousDataDir = process.env.CAT_CAFE_DATA_DIR;
-    process.env.CAT_CAFE_DATA_DIR = tempDir;
+      const tempDir = mkdtempSync(path.join(os.tmpdir(), 'hold-ball-durable-gate-route-'));
+      const previousDataDir = process.env.CAT_CAFE_DATA_DIR;
+      process.env.CAT_CAFE_DATA_DIR = tempDir;
 
-    try {
-      const deps = makeStubDeps();
-      const app = await createApp(deps);
-      const ownerUserId = 'user-durable-gate';
-      const thread = await threadStore.create(ownerUserId, 'durable gate');
-      const { invocationId, callbackToken } = await registry.create(ownerUserId, 'codex', thread.id);
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/callbacks/hold-ball',
-        headers: { 'x-invocation-id': invocationId, 'x-callback-token': callbackToken },
-        payload: {
-          reason: 'canonical gate',
-          nextStep: 'consume terminal truth',
-          wakeWhen: { command: 'pnpm gate' },
-        },
-      });
+      try {
+        const deps = makeStubDeps();
+        const app = await createApp(deps);
+        const ownerUserId = 'user-durable-gate';
+        const thread = await threadStore.create(ownerUserId, 'durable gate');
+        const { invocationId, callbackToken } = await registry.create(ownerUserId, 'codex', thread.id);
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/callbacks/hold-ball',
+          headers: { 'x-invocation-id': invocationId, 'x-callback-token': callbackToken },
+          payload: {
+            reason: 'canonical gate',
+            nextStep: 'consume terminal truth',
+            wakeWhen,
+          },
+        });
 
-      assert.equal(response.statusCode, 200, response.body);
-      const body = JSON.parse(response.body);
-      assert.match(body.wakeWhen.jobId, /^managed-gate-/);
-      assert.notEqual(body.wakeWhen.jobId, body.taskId);
-      const task = deps.dynamicTaskStore.getById(body.taskId);
-      const job = task.params.holdLifecycle.managedCommand.durableJob;
-      assert.equal(job.jobId, body.wakeWhen.jobId);
-      assert.equal(job.originTaskId, body.taskId);
-      const running = JSON.parse(readFileSync(job.recordPath, 'utf8'));
-      assert.equal(running.state, 'running');
-      assert.equal(running.ownerIdentity.startedAt, 'birth-42');
+        assert.equal(response.statusCode, 200, response.body);
+        const body = JSON.parse(response.body);
+        assert.match(body.wakeWhen.jobId, /^managed-gate-/);
+        assert.notEqual(body.wakeWhen.jobId, body.taskId);
+        const task = deps.dynamicTaskStore.getById(body.taskId);
+        const job = task.params.holdLifecycle.managedCommand.durableJob;
+        assert.equal(job.jobId, body.wakeWhen.jobId);
+        assert.equal(job.originTaskId, body.taskId);
+        assert.equal(job.kind, 'resumable_full_gate_v2');
+        assert.deepEqual(job.recovery, {
+          protocolVersion: 2,
+          eventLoopGapMs: 30_000,
+          reconciliationBudgetMs: 30_000,
+          pollMs: 250,
+          powerEvidenceSource: { kind: 'mac_pmset' },
+        });
+        assert.equal(body.wakeWhen.recoveryProtocolVersion, 2);
+        assert.equal(job.executionSlaMs, expectedExecutionSlaMs);
+        assert.equal(body.wakeWhen.executionSlaMs, expectedExecutionSlaMs);
+        assert.equal(body.wakeWhen.wallSlaMs, job.wallSlaMs);
+        assert.equal(job.wallSlaMs, 10_800_000);
+        assert.equal(runnerOptions.managedJob.executionSlaMs, expectedExecutionSlaMs);
+        assert.equal(runnerOptions.timeoutMs, job.wallSlaMs);
+        assert.equal(runnerOptions.maximumTimeoutMs, job.wallSlaMs);
+        const running = JSON.parse(readFileSync(job.recordPath, 'utf8'));
+        assert.equal(running.state, 'running');
+        assert.equal(running.ownerIdentity.startedAt, 'birth-42');
 
-      resolveCompletion({ exitCode: 0, timedOut: false, durationMs: 25, tailOutput: 'gate green' });
-      const deadline = Date.now() + 1_000;
-      while (JSON.parse(readFileSync(job.recordPath, 'utf8')).state !== 'terminal' && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        resolveCompletion({ exitCode: 0, timedOut: false, durationMs: 25, tailOutput: 'gate green' });
+        const deadline = Date.now() + 1_000;
+        while (JSON.parse(readFileSync(job.recordPath, 'utf8')).state !== 'terminal' && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.equal(JSON.parse(readFileSync(job.recordPath, 'utf8')).terminalStatus, 'green');
+        assert.equal(JSON.parse(readFileSync(`${job.recordPath}.terminal`, 'utf8')).terminalStatus, 'green');
+        while (getActiveRunnerCount() > 0 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.equal(getActiveRunnerCount(), 0, 'terminal fake worker must leave no active registry residue');
+        await app.close();
+      } finally {
+        ManagedRunner.prototype.start = originalStart;
+        if (previousDataDir === undefined) delete process.env.CAT_CAFE_DATA_DIR;
+        else process.env.CAT_CAFE_DATA_DIR = previousDataDir;
+        rmSync(tempDir, { recursive: true, force: true });
       }
-      assert.equal(JSON.parse(readFileSync(job.recordPath, 'utf8')).terminalStatus, 'green');
-      assert.equal(JSON.parse(readFileSync(`${job.recordPath}.terminal`, 'utf8')).terminalStatus, 'green');
-      while (getActiveRunnerCount() > 0 && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      assert.equal(getActiveRunnerCount(), 0, 'terminal fake worker must leave no active registry residue');
-      await app.close();
-    } finally {
-      ManagedRunner.prototype.start = originalStart;
-      if (previousDataDir === undefined) delete process.env.CAT_CAFE_DATA_DIR;
-      else process.env.CAT_CAFE_DATA_DIR = previousDataDir;
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
+    });
+  }
 
   // ─── T8: wakeWhen hold with cancel → runner is cancelled ────────────────
   test('T8: wakeWhen hold registers active runner, cancel removes it', async () => {
@@ -491,6 +644,7 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
         // biome-ignore lint/suspicious/noThenProperty: F280's frozen wait contract field.
         then: 'check result',
       },
+      autoRenew: false,
       expiresAt: commandTask.trigger.fireAt,
       createdAt: commandAwait.createdAt,
       provenance: 'explicit_registration',

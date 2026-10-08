@@ -114,6 +114,7 @@ import { normalizeJsonUnicode } from '../utils/json-unicode.js';
 import { getDefaultUploadDir } from '../utils/upload-paths.js';
 import { persistA2ARoutingMessage } from './a2a-routing-projection.js';
 import { admitThreadParticipants } from './thread-participant-admission.js';
+import { readUserMessageReceipt, userMessageReceipt } from './user-message-receipt.js';
 
 /** F088 ISSUE-15: Minimal outbound delivery interface — avoids importing full OutboundDeliveryHook. */
 interface OutboundDeliveryHookLike {
@@ -245,6 +246,7 @@ function bundleAdmissionErrorMessage(reason: MessageBundleAdmissionFailureReason
 const routeChainTracker = new RouteChainCompletionTracker();
 
 export interface MessagesRoutesOptions {
+  liveCompanionSessions?: import('../domains/concierge/live/LiveCompanionSessions.js').LiveCompanionSessions;
   /** Shared owner-preference root. Optional test harnesses retain product-default behavior. */
   projectRoot?: string;
   registry: InvocationRegistry;
@@ -535,7 +537,14 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
       const attemptId = currentRetryableAttemptId(message, request.params.targetCatId);
       if (!attemptId) {
         reply.status(409);
-        return { error: 'This target is no longer retryable', code: 'QUEUE_TARGET_NOT_RETRYABLE' };
+        const target = projectQueueReceipt(message.queueCustody).targets.find(
+          (candidate) => candidate.catId === request.params.targetCatId,
+        );
+        return {
+          error: 'This target is no longer retryable',
+          code: 'QUEUE_TARGET_NOT_RETRYABLE',
+          targetState: target?.attempts?.at(-1)?.state,
+        };
       }
       return { attemptId };
     },
@@ -713,6 +722,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
 
     // Default to 'default' thread for lobby (prevents global broadcast)
     const resolvedThreadId = threadId ?? 'default';
+    const receiptOwner = { userId, threadId: resolvedThreadId };
 
     let admittedMessageBundle: ResolvedBundleAdmission | undefined;
     let explicitBundleTargetCats: CatId[] | undefined;
@@ -1053,14 +1063,42 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
       );
     })();
     const mode = deliveryMode ?? (hasActive ? 'queue' : 'immediate');
+    const liveHandle = request.headers['x-cat-cafe-live-session'];
+    let liveCompanion: import('../domains/concierge/live/LiveCompanionCall.js').LiveCompanionCall | undefined;
+    if (liveHandle !== undefined) {
+      if (typeof liveHandle !== 'string' || !opts.liveCompanionSessions || request.sessionUserId !== userId)
+        return reply.code(403).send({ error: 'Live admission unavailable' });
+      if (mode !== 'immediate' || hasActive || !opts.invocationRecordStore)
+        return reply.code(409).send({ error: 'Live requires an idle Host execution' });
+      try {
+        liveCompanion = opts.liveCompanionSessions.claim(liveHandle, userId, resolvedThreadId, targetCats);
+      } catch {
+        return reply.code(403).send({ error: 'Live admission mismatch' });
+      }
+    }
+    const durableCloudAdmission =
+      mode !== 'force' &&
+      targetCats.some((catId) => catRegistry.tryGet(catId)?.config.provider === 'openai-chatgpt-pro');
     log.debug({ threadId: resolvedThreadId, targetCats, intent: intent.intent, mode, hasActive }, 'Dispatch decision');
+
+    if (durableCloudAdmission) {
+      if (!opts.invocationQueue || !opts.queueProcessor) {
+        reply.status(503);
+        return { error: 'Cloud message recovery is temporarily unavailable', code: 'QUEUE_RETRY_UNAVAILABLE' };
+      }
+      const existing = await opts.messageStore.getByIdempotencyKey(userId, resolvedThreadId, resolvedIdempotencyKey);
+      if (existing) {
+        reply.status(202);
+        return { status: 'duplicate', userMessageId: existing.id, ...userMessageReceipt(existing, receiptOwner) };
+      }
+    }
 
     if (admittedMessageBundle && mode !== 'queue' && !opts.invocationRecordStore) {
       reply.status(503);
       return { error: 'Message Bundle immediate routing is unavailable', code: 'MESSAGE_BUNDLE_UNAVAILABLE' };
     }
 
-    if (mode === 'queue' && hasActive && opts.invocationQueue) {
+    if (((mode === 'queue' && hasActive) || durableCloudAdmission) && opts.invocationQueue) {
       // ① Enqueue first (sync, capacity gatekeeper) — messageId is null at this point
       const enqueueResult = opts.invocationQueue.enqueue({
         threadId: resolvedThreadId,
@@ -1106,6 +1144,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
       }
 
       let storedUserMessageId: string | null = enqueueResult.entry?.messageId ?? null;
+      let appendedUserMessage: StoredMessage | null = null;
 
       // ② Persist queued user work. F264 publishes it to the owner's timeline;
       // deliveryStatus still keeps it out of cat context/mentions until dequeue.
@@ -1131,6 +1170,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
             ...messageBundleWrite,
           });
           storedUserMessageId = userMessage.id;
+          appendedUserMessage = userMessage;
 
           // F192 Phase G AC-G12 / F227: detect magic words → Event Memory (queued path)
           void tryDetectMagicWords(
@@ -1169,6 +1209,14 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
 
       tryAutoCancelPendingHolds(resolvedThreadId, opts.holdBallCancelDeps);
 
+      // The admitting request owns kickoff only after its source + custody commit.
+      // A concurrent replay may observe an entry whose messageId is still null.
+      if (durableCloudAdmission && !hasActive && !enqueueResult.deduped && storedUserMessageId && enqueueResult.entry) {
+        void opts.queueProcessor?.progressOwnedCarrier(enqueueResult.entry, primaryCat).catch((err) => {
+          log.error({ err, threadId: resolvedThreadId }, 'Durable cloud message remains queued after dispatch failure');
+        });
+      }
+
       reply.status(202);
       return {
         status: 'queued',
@@ -1176,6 +1224,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
         entryId: enqueueResult.entry?.id,
         merged: false,
         ...(storedUserMessageId ? { userMessageId: storedUserMessageId } : {}),
+        ...(await readUserMessageReceipt(opts.messageStore, storedUserMessageId, receiptOwner, appendedUserMessage)),
         ...(admittedMessageBundle && storedUserMessageId ? { messageBundleId: storedUserMessageId } : {}),
       };
     }
@@ -1215,6 +1264,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
           mode: 'non_preemptive',
         });
         if (tryResult === null) {
+          if (liveCompanion) return reply.code(409).send({ error: 'Live Host became busy' });
           // TOCTOU: thread became busy between has() and here — degrade to queue
           if (opts.invocationQueue) {
             const enqueueResult = opts.invocationQueue.enqueue({
@@ -1256,6 +1306,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
             // F122 R1-gpt52 P1-1: Wrap append+backfill in try/catch with rollback,
             // matching original queue path (lines 340-374) to prevent ghost queue entries.
             let toctouUserMessageId: string | null = enqueueResult.entry?.messageId ?? null;
+            let toctouAppendedMessage: StoredMessage | null = null;
             if (!enqueueResult.deduped) {
               try {
                 if (!enqueueResult.entry) throw new Error('successful queue admission is missing its entry');
@@ -1277,6 +1328,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
                   ...messageBundleWrite,
                 });
                 toctouUserMessageId = toctouUserMessage.id;
+                toctouAppendedMessage = toctouUserMessage;
                 const queueEntryId = enqueueResult.entry?.id;
                 if (queueEntryId) {
                   opts.invocationQueue.backfillMessageId(resolvedThreadId, userId, queueEntryId, toctouUserMessage.id);
@@ -1306,6 +1358,12 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
               entryId: enqueueResult.entry?.id,
               merged: false,
               ...(toctouUserMessageId ? { userMessageId: toctouUserMessageId } : {}),
+              ...(await readUserMessageReceipt(
+                opts.messageStore,
+                toctouUserMessageId,
+                receiptOwner,
+                toctouAppendedMessage,
+              )),
               ...(admittedMessageBundle && toctouUserMessageId ? { messageBundleId: toctouUserMessageId } : {}),
             };
           }
@@ -1348,6 +1406,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
           status: 'duplicate',
           invocationId: createResult.invocationId,
           ...(existingRecord?.userMessageId ? { userMessageId: existingRecord.userMessageId } : {}),
+          ...(await readUserMessageReceipt(opts.messageStore, existingRecord?.userMessageId, receiptOwner)),
           ...(admittedMessageBundle && existingRecord?.userMessageId
             ? { messageBundleId: existingRecord.userMessageId }
             : {}),
@@ -1393,7 +1452,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
 
       // F122 R1 P1 cont: wrap message write + update before background coroutine.
       // If any of these throw, release the slot to prevent "假忙" leak.
-      let storedUserMessage: { id: string };
+      let storedUserMessage: StoredMessage;
       try {
         // F39: only publish force-cleared after the replacement owner is installed. An explicit
         // acquisition refusal must have zero queue/UI side effects.
@@ -1456,6 +1515,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
         status: 'processing',
         invocationId: createResult.invocationId,
         userMessageId: storedUserMessage.id,
+        ...userMessageReceipt(storedUserMessage, receiptOwner),
         ...(admittedMessageBundle ? { messageBundleId: storedUserMessage.id } : {}),
         timestamp: Date.now(),
       });
@@ -1491,7 +1551,17 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
           queueCompletionNotified = true;
           const completedCatIds = status === 'succeeded' ? terminalDispositions.getSuccessfulCatIds() : [];
           opts.queueProcessor
-            ?.onInvocationComplete(resolvedThreadId, primaryCat, status, createResult.invocationId, completedCatIds)
+            ?.onInvocationComplete(
+              resolvedThreadId,
+              primaryCat,
+              status,
+              createResult.invocationId,
+              completedCatIds,
+              false,
+              terminalDispositions.getTerminalInvocationIdByCatId(),
+              [],
+              terminalDispositions.getTerminalConsumptionByInvocationId(),
+            )
             .catch((err) => {
               log.error(
                 { err, threadId: resolvedThreadId, catId: primaryCat, finalStatus: status },
@@ -1671,6 +1741,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
             {
               ownerAuthProvenance,
               humanDispositionInvocationOrigin: 'direct_owner',
+              ...(liveCompanion ? { liveCompanion } : {}),
               turnCustodyWake: { kind: 'unstructured', source: 'user_chat' },
               ...(contentBlocks ? { contentBlocks } : {}),
               uploadDir,
@@ -1888,7 +1959,10 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
             }
             // P1 fix: finalize streaming session on abort so external placeholders are cleaned up
             await cleanupStreamingOnFailure(resolvedThreadId, createResult.invocationId, streamStartPromise, opts, log);
-          } else if (primaryTerminalError && successfulCatIds.length === 0) {
+          } else if (
+            primaryTerminalError &&
+            (successfulCatIds.length === 0 || terminalDispositions.getPreflightRejectedCatIds().length > 0)
+          ) {
             finalStatus = 'failed';
             routeChainTracker.fail(createResult.invocationId);
             if (cursorBoundaries.size > 0) {
@@ -1897,6 +1971,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
             await opts.invocationRecordStore?.update(createResult.invocationId, {
               status: 'failed',
               error: primaryTerminalError,
+              ...(successfulCatIds.length > 0 ? { successfulCatIds } : {}),
             });
             await cleanupStreamingOnFailure(resolvedThreadId, createResult.invocationId, streamStartPromise, opts, log);
           } else if (persistenceContext.failed) {
@@ -2103,6 +2178,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
             await cleanupStreamingOnFailure(resolvedThreadId, createResult.invocationId, streamStartPromise, opts, log);
           } // end else (non-abort error)
         } finally {
+          await liveCompanion?.fail(new Error('Host execution ended'));
           clearStartupWatchdog();
           clearInterval(heartbeatInterval);
           opts.invocationTracker?.completeAll(resolvedThreadId, targetCats, controller);
@@ -2465,6 +2541,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
       ...(m.origin ? { origin: m.origin } : {}),
       ...(m.thinking ? { thinking: m.thinking } : {}),
       ...(m.extra?.semanticEvent ||
+      m.extra?.liveCompanion?.identity ||
       m.extra?.rich ||
       isCrossThreadProvenance(m.extra?.crossPost?.sourceThreadId, m.threadId) ||
       m.extra?.coordination ||
@@ -2472,8 +2549,10 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
       m.extra?.stream ||
       m.extra?.targetCats ||
       m.extra?.messageBundle ||
+      m.extra?.contentModificationRequestV1 ||
       m.extra?.scheduler ||
       m.extra?.systemKind ||
+      m.extra?.systemInfo ||
       m.extra?.a2aRouting ||
       m.extra?.freshness ||
       m.extra?.supplement ||
@@ -2487,6 +2566,9 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
         ? {
             extra: {
               ...(m.extra?.semanticEvent ? { semanticEvent: m.extra.semanticEvent } : {}),
+              ...(m.extra?.liveCompanion?.identity
+                ? { liveCompanion: { identity: m.extra.liveCompanion.identity } }
+                : {}),
               ...(m.extra?.rich ? { rich: m.extra.rich } : {}),
               ...(isCrossThreadProvenance(m.extra?.crossPost?.sourceThreadId, m.threadId)
                 ? { crossPost: m.extra!.crossPost! }
@@ -2496,8 +2578,12 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
               ...(m.extra?.stream ? { stream: m.extra.stream } : {}),
               ...(m.extra?.targetCats ? { targetCats: m.extra.targetCats } : {}),
               ...(m.extra?.messageBundle ? { messageBundle: m.extra.messageBundle } : {}),
+              ...(m.extra?.contentModificationRequestV1
+                ? { contentModificationRequestV1: m.extra.contentModificationRequestV1 }
+                : {}),
               ...(m.extra?.scheduler ? { scheduler: m.extra.scheduler } : {}),
               ...(m.extra?.systemKind ? { systemKind: m.extra.systemKind } : {}),
+              ...(m.extra?.systemInfo ? { systemInfo: m.extra.systemInfo } : {}),
               ...(m.extra?.a2aRouting ? { a2aRouting: m.extra.a2aRouting } : {}),
               ...(m.extra?.freshness ? { freshness: m.extra.freshness } : {}),
               ...(m.extra?.supplement ? { supplement: m.extra.supplement } : {}),

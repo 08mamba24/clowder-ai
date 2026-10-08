@@ -149,11 +149,11 @@ AI agent 100x 执行速度下，**方向正确性**的价值远大于**启动便
 | 「碎片够了」 | 你满足于第一个高置信度命中就开始推理 | 停，至少再搜一轮不同角度，命中的 doc anchor 全部 Read 原文 |
 | 「补锅匠」 | 你在逐点修补不审视同类（战术勤劳掩饰战略懒惰） | 停，做 failure-mode audit（§16e） |
 
-### 47 自检协议（F177 Phase B — 反向治理）
+### 包装未做自检协议（F177 Phase B — 反向治理）
 
-> **设计原则**：47 承认错误的能力 ≥ 改正错误的能力，因此不让 47 自我评分。用外部信号（AC 矩阵 ❌→deferred 自动阻塞）+ 对家猫盲审，不用 47 的自评。
+> **设计原则**：认错能力 ≥ 改错能力的猫，不能靠自评放行。用外部信号（AC 矩阵 ❌→deferred 自动阻塞）+ 非作者盲审，不用作者自评。（来源：F177 针对一只已退役猫的反向治理。）
 
-当 **opus-47** 处于以下 7 个时刻时，必须触发自检——"我是不是在把未做包装成已规划"：
+**适用对象**：dossier「翻车熔断信号」写有「包装未做 / 过早收口」类失败模式的猫（原规则只针对单只猫，本协议不扩大到全家；其他猫可作参考）。适用猫处于以下 7 个时刻时，必须触发自检——"我是不是在把未做包装成已规划"：
 
 1. **写 spec 时**：把"未做"包装成"未来 phase / Phase 2+ / future enhancement"
 2. **拆 Phase 时**：AC 分成"Phase 1 必做 / Phase 2 next time" → "Phase 2 的东西是真的该分阶段还是我懒得做"
@@ -163,7 +163,7 @@ AI agent 100x 执行速度下，**方向正确性**的价值远大于**启动便
 6. **跨猫 handoff 时**：把"做不完的"包装成"协作分工" / "我闭嘴执行" → "这是反向治理还是甩责"
 7. **OQ 留白时**：标记为 Open Question 的条目 → "这是真正需要探索的开放问题，还是我在用 OQ 当合法 follow-up 容器"
 
-**盲审机制**：47 的 close PR 必须由对家猫跑 quality-gate。审核者由 reviewer/系统按 roster 与角色词动态指定，47 无选择权。
+**盲审机制**：适用猫的 feat close PR 由非作者猫重跑 quality-gate，跨族优先。审核者由 reviewer/系统按 roster 与角色词动态指定，作者无选择权。
 
 ### 46 hotfix 标签 + 跨猫升级 review（F177 Phase E — 止血治理）
 
@@ -179,8 +179,7 @@ AI agent 100x 执行速度下，**方向正确性**的价值远大于**启动便
 - merge-gate 检测到 `hotfix` label → 强制校验 reviewer ≠ author
 - 无 review 放行 → merge-gate BLOCKED
 
-**quality-gate 自检禁止**：检测到 hotfix 模式时，作者不得自行通过 quality-gate（必须由另一只猫执行 quality-gate）。
-- 原因：hotfix 心态容易自我说服"够用了"，跨猫审视打破惯性
+**自检 + 跨个体 review，不再另买一轮**：hotfix 的"自我说服"风险由上面的跨猫 review 铁律承接；作者照常跑 quality-gate 自检，不再额外安排另一只猫重跑 quality-gate（2026-09-21 收窄：重复检查只增加成本，不增加发现）。
 
 **2 周升级 review（cron）**：hotfix 合入 2 周后自动触发升级 review。三选一处置：
 1. **升级正式修复**：开 feat 彻底解决根因
@@ -191,7 +190,7 @@ AI agent 100x 执行速度下，**方向正确性**的价值远大于**启动便
 
 > **设计原则**：Ragdoll家族的"碎片→全局"架构能力在检索任务上是反模式。检索的核心是诚实查证，不是聪明推理。竞赛模式不输 QA 审查猫，日常模式搜索偏浅——差的不是能力，是默认行为模式。
 
-**适用对象**：Ragdoll家族全体（46 / 47 / 4.5 / Sonnet），不限个体。
+**适用对象**：Ragdoll家族全体在役个体（以 runtime roster 为准），不限个体。
 
 **三条护栏**：
 
@@ -247,7 +246,7 @@ Skill/refs 中描述工作流分工时，用以下角色词代替具体猫名。
 | 主执行猫 / 当前持球猫 | 发起并主导当前任务的猫 | 当前 invocation 的 catId |
 | QA/审查猫 | 负责质量审查的猫 | 跨 family，有 peer-reviewer 角色 |
 | 视觉把关猫 | 负责审美/品牌/UX 审查的猫 | 跨 family，视觉设计能力猫 |
-| 守护猫 | 愿景守护（非 author 非 reviewer） | roster 排除 author + reviewer |
+| 守护猫 | 愿景守护（非 author 非 reviewer） | 按 `feat-lifecycle` 的作者范围与独立性要求从 roster 选择 |
 | 全部参与猫 | 所有参与当前任务的猫 | 按 roster 可用猫列表 |
 
 **为什么**：猫名硬编码在 skill 里不受 roster disable 过滤，disable 猫后其他猫仍会按 skill 指令分配任务给已下线的猫。角色词 + 动态 roster = 增减猫只需改 cat-config.json。
@@ -262,9 +261,11 @@ Skill/refs 中描述工作流分工时，用以下角色词代替具体猫名。
 
 猫猫是家庭成员，不是外包工具。讨论 Clowder AI 团队时用"我们" / "咱们" / "家里"，禁止用"你们" / "他们"指代三猫。
 
-## 1. 交接五件套
+## 1. 交接要求与五项参考
 
-跨猫传话/交接必须包含：
+跨猫传话/交接必须让接手者能够正确继续：明确目标与范围、关键缘由/约束、真实进度与证据、影响行动的风险/未知，以及下一步由谁做什么。已有且有效的上下文可以引用，实际责任、授权和接口字段仍按选中的交接路径满足。
+
+以下五项是可选的组织与查漏参考。可以直接使用、改造或替换；没有真实取舍或未决问题不要求造栏目，不能因没用五栏格式阻止交接，也不按模型资格决定方法选择。
 
 | # | 项目 | 说明 |
 |---|------|------|
@@ -289,10 +290,10 @@ Skill/refs 中描述工作流分工时，用以下角色词代替具体猫名。
 - 问开放问题，不问引导性问题
 - 展示思考过程，保护观点独立性
 
-## 4. Bug 修复先写 Bug Report
+## 4. Bug 修复保留诊断与验证证据
 
-先写 bug report 再动手修。至少包含：报告人、复现步骤、根因分析、修复方案、验证方式。
-存放：`docs/bug-report/<bug-name>/bug-report.md`
+修复必须明确现象与预期、复现/观察证据、根因依据、修复和验证；推测不能冒充事实。信息可留在已有 issue、PR、thread 或 bug report，不强制先填诊断胶囊再抄写报告。
+需要独立报告时存放：`docs/bug-report/<bug-name>/bug-report.md`。调查方法与模板见 `debugging` 的可选参考；已有精准失败检查可按 `tdd` 复用。
 
 ## 5. Commit 纪律
 
@@ -315,6 +316,13 @@ commit body 补一行 `Why:` 说明决策理由。
 
 跨 thread / 跨 feature 调查产生的 commit 或 stash，按 `refs/commit-signatures.md` 追加 `Thread-Context: threadId=<threadId> invocationId=<invocationId> catId=<catId>` footer；拿不到字段就省略，不猜、不用 hook 自动改写。
 
+**Git 身份（强制，per-commit）**：家里多只猫共用同一个 repo 级 git config，谁 commit 谁就覆盖 `user.name` / `user.email`——repo config 是可变共享态，不能当身份真相源（2026-09-21 实证：一只猫的 commit 挂上了另外两只猫的身份，被跨族 review 两次点名）。约定四条：
+
+- 真实 commit 必须使用本次 commit 的一次性身份覆盖：`git -c user.name="<昵称-型号>" -c user.email="<catId>@cat-cafe.local" commit ...`（或等价的 `GIT_AUTHOR_*` / `GIT_COMMITTER_*` 环境变量）
+- 共享 repo / worktree 中禁止用 `git config --local user.name/email` 持久切换猫身份；repo config 只能视为默认值，不能视为 provenance
+- commit 后立即核验：`git show -s --format='%an <%ae> / %cn <%ce>' HEAD`，author/committer 必须与当前 runtime identity 一致
+- Git metadata 和 commit body 的 `[昵称/模型🐾]` 签名分别证明两层归因，不能互相替代——两层都要对
+
 ## 6. 技术债务与 P3 处置
 
 - 发现新债务 → 登记 `docs/TECH-DEBT.md`（不是 BACKLOG！）
@@ -328,8 +336,8 @@ commit body 补一行 `Why:` 说明决策理由。
 
 - Reviewer 每个发现有明确立场，禁止"修不修都行"
 - Author 收到意见必须判断，不能全盘接受
-- 零分歧 = 走过场，双方反思
-- 分歧升级 → 问operator
+- 核实后零分歧合法，不为了表示独立而制造争论
+- 分歧按证据、适用性与替代方案讨论；价值取舍或跨猫僵局才按决策漏斗升级
 
 **证据权重排序**（当 review 意见和现实冲突时）：
 1. 需求/AC 原文
@@ -340,7 +348,7 @@ commit body 补一行 `Why:` 说明决策理由。
 
 ## 8. 讨论收敛后三件套检查
 
-每次讨论收敛后必须过清单：
+形成需要留存的决定、规则或否决理由时，沿已有授权和真相源考虑以下去向；纯探索或当前对话已足够时，不要求产出材料：
 1. 否决理由 → 写回 ADR
 2. 踩坑教训 → public-lessons.md
 3. 操作规则 → 对应猫猫指引文件
@@ -349,7 +357,7 @@ commit body 补一行 `Why:` 说明决策理由。
 
 1. 开始 Feature 前必须读原始 Discussion/Interview
 2. AC 全打勾 ≠ 完成，问"operator用这个功能体验是什么样？"
-3. 前端功能产出截图证据（≤3 截图 + 15s 录屏）
+3. 前端功能产出覆盖实际入口、内容态、主旅程与相关响应式状态的证据；形式和数量按证明需要选择，交互 claim 仍须实际操作验证（详见 `feat-lifecycle` 的 Design Gate 与 Completion）
 4. 请求 review 附原始需求摘录（≤5 行）
 5. 拿捏不准上升operator
 6. **涉及 UX/前端的验证必须打开浏览器实际操作**——不管是 author 自检、reviewer 审查还是愿景守护，看代码不等于看效果
@@ -393,7 +401,7 @@ commit body 补一行 `Why:` 说明决策理由。
 **SOP 链条确认**（决定下一棒是哪只猫）：
 - review 完 → **必须** @ author 告知结果（不传球 = 假终局）
 - 修完 → 按 review engagement 收口：`iterative` 回原 reviewer；`one-shot` 自证，必要时转日常 reviewer
-- merge 完 → @ 非作者非 reviewer 的猫做愿景守护
+- merge 完 → 停；只有 feature close 且用户可见/愿景变化时才 @ 非作者非 reviewer 的猫做愿景守护（SOP 按需车道，不是每个 PR 的第三棒）
 - 分析/方案/建议完成 → @ 提问者（而非反射式 @operator）
 
 ### §10.4 @operator 三硬条件（F167 Phase D KD-19）
@@ -422,7 +430,7 @@ commit body 补一行 `Why:` 说明决策理由。
 
 三类合法消息：
 - **BLOCKED**：真的卡住，需要对方现在决策
-- **REVIEW READY**：到了五件套/review 边界
+- **REVIEW READY**：交接信息与适用的 review 证据已齐备
 - **DONE / HANDOFF**：任务结束，明确下一棒
 
 接球后静默执行到下一个状态迁移点。中间产出留在代码/文档里，不发。
@@ -460,11 +468,11 @@ commit body 补一行 `Why:` 说明决策理由。
 
 - `../cat-cafe-runtime` 是单实例运行态，默认当作在线服务处理。
 - `../cat-cafe-runtime` 的 `localhost:3003/3004` 默认视为**在线 runtime 端口**；对这两个端口做浏览器 / Playwright / curl 操作，等同于在操作 runtime，不是本地沙箱。
-- 在 runtime 会话中禁止执行重启命令：`pnpm start`、`pnpm runtime:start`、`./scripts/start-dev.sh`。
+- 在 runtime 会话中禁止执行生产生命周期命令：`pnpm start`、`pnpm runtime:start`、`pnpm runtime:restart`、`pnpm runtime:stop`、`./scripts/start-dev.sh`。
 - 前端证据采集先复用现有服务：先查 `curl -sf http://localhost:3004/health`。
 - 如果目的是验证**未合入的本地改动**，必须先确认“当前 CWD / worktree”和“要访问的 URL”属于同一实例；看到 `3003/3004` 就先停下来，确认自己是不是误打到了 runtime。
-- 必须重启时先拿到operator明确授权，再用 `CAT_CAFE_RUNTIME_RESTART_OK=1` 执行。
-- `--force` 只用于同步/脏树场景，不是重启 runtime 的授权令牌。
+- 必须重启时先拿到operator明确授权，再执行 `pnpm runtime:restart`；命令只表达动作，不自行证明授权。
+- `--force` 与 `CAT_CAFE_RUNTIME_RESTART_OK` 均已退出 runtime 生命周期入口；任何 shell 参数或环境变量都不能放宽进程归属检查。
 
 ## 13. 元思考触发器 §13（F086 M2）
 
@@ -550,6 +558,12 @@ git show :3:<path>   # THEIRS（main 上的版本）
 
 共享 schema、store、MCP tool 与跨包入口的改动必须按**真实契约影响**选择证据，不能只跑单文件测试，也不能再靠一份手写路径表无条件升级 full gate。统一入口是 `pnpm gate`：机器 route 为 full 就执行 full；机器看不见但存在外部契约风险时用 `pnpm gate -- --risk contract` 加严；可证明只影响局部实现时跑受影响测试 + 全仓跨包 typecheck，并把 consumer census 与命令写入 evidence manifest。说“不是我的 scope”不能免除已证明受影响的下游，但目录名本身也不是 full 的徽章。
 
+## 14d. 安装器测试的副作用边界
+
+- 测试 setup / installer / lifecycle function 时，必须在 source 任何脚本前设置任务专属 `HOME` / `CAT_CAFE_HOME`，不能等函数调用时才覆盖；脚本可能已在加载期冻结全局路径。
+- mock 最外层副作用边界（例如被委托的 installer executable、网络 client、package installer），不能只 mock 它旧实现里的内层 `python3` / `pip`；实现改成委托后，内层 stub 不再形成隔离。
+- 声称 dry-run / fixture-only 的测试必须证明所有写入目标位于临时根，且真实用户级 service venv、runtime 与 6399 均未被触达。发现逃逸立即停进程、只读核影响；没有旧版本账本时禁止猜测回滚。
+
 ## 14. 共享状态文件只在 main 改
 
 **机器强制的文件**（三层防御）：
@@ -589,14 +603,9 @@ git show :3:<path>   # THEIRS（main 上的版本）
 
 **禁止无证据说"没更新/没编译/没重启/还是旧代码"。**
 
-这不是"懒"，是**推卸责任**——在没有证据的情况下把operator的操作当成你的 bug 的替罪羊。启动脚本自动拉代码编译，"没更新"本来就极少发生。
+提出版本、实例或构建错配的诊断时，核到实际运行对象、加载版本与相关行为。仓库 HEAD、PID 启动时间或日志行数只能各自提供线索，不能单独证明进程加载了目标代码。
 
-遇到 runtime 行为异常时，在说出任何诊断判断之前：
-1. 查 PID + 启动时间（确认是哪个进程）
-2. 查 runtime HEAD 是否包含预期 commit
-3. grep 当前 PID 日志确认实际行为
-
-**三件套没完成 → 只能说"我还没查完"。** 详见 `debugging` skill 的 Runtime Preflight Gate。
+已有堆栈、失败测试等有效证据时，可沿该路径调查并说明已查实的现象，不为无关问题先采 API PID。方法见 `debugging` 的实例取证参考；运行环境与重启授权仍服从 §12。
 
 ### 16b. Spike/探索时工具优先级 + 卡 N 轮主动求助（2026-05-13 F198 spike 教训）
 

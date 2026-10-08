@@ -67,6 +67,11 @@ export async function createA2ADispositionHarness({
   deliveryStatus,
   registry,
   sourceExtra,
+  log,
+  isLiveCarrierInvocation,
+  getReadEvidenceForMessage,
+  projectAdoptedDisposition,
+  withLiveCarrierOperation,
 } = {}) {
   const eventLog = new MemoryEventLog();
   const projectionStore = new MemoryProjectionStore();
@@ -125,8 +130,13 @@ export async function createA2ADispositionHarness({
     ballCustodyEventLog: eventLog,
     ballCustodyProjectionStore: projectionStore,
     ballCustody: fencedIngest,
+    ...(log ? { log } : {}),
     repairProjection: (subjectKey) => projector.rebuild(subjectKey),
     now: () => 2_000,
+    ...(isLiveCarrierInvocation ? { isLiveCarrierInvocation } : {}),
+    ...(getReadEvidenceForMessage ? { getReadEvidenceForMessage } : {}),
+    ...(projectAdoptedDisposition ? { projectAdoptedDisposition } : {}),
+    ...(withLiveCarrierOperation ? { withLiveCarrierOperation } : {}),
   });
   return {
     eventLog,

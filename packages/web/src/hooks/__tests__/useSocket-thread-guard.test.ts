@@ -371,6 +371,18 @@ describe('useSocket thread guard (P1 regression: cross-thread event leakage)', (
     window.removeEventListener('cat-cafe:custody-offer-updated', updated);
   });
 
+  it('requests source-thread catch-up when a modification source is persisted without focusing that thread', () => {
+    const callbacks: SocketCallbacks = { onMessage: vi.fn() };
+    act(() => root.render(React.createElement(HookWrapper, { callbacks, threadId: 'thread-B' })));
+    mockRequestStreamCatchUp.mockClear();
+    act(() =>
+      simulateServerEvent('content_modification_source_saved', { threadId: 'thread-A', messageId: 'actual-source' }),
+    );
+    expect(mockRequestStreamCatchUp).toHaveBeenCalledExactlyOnceWith('thread-A');
+    expect(callbacks.onMessage).not.toHaveBeenCalled();
+    expect(mockStoreCurrentThreadId).toBe('thread-B');
+  });
+
   it('receives preview auto-open on the stable chat socket across a thread switch', () => {
     mockStoreCurrentThreadId = 'thread-A';
     const callbacks: SocketCallbacks = { onMessage: vi.fn() };
@@ -1747,7 +1759,7 @@ describe('useSocket thread guard (P1 regression: cross-thread event leakage)', (
     );
   });
 
-  it('keeps queue-processing hydrate alive when cleared only removes queued siblings in the background', async () => {
+  it('refreshes live slots after clearing queued siblings in the background', async () => {
     mockStoreCurrentThreadId = 'thread-B';
 
     let resolveQueueJson: ((value: { activeInvocations: Array<{ catId: string; startedAt: number }> }) => void) | null =
@@ -1780,12 +1792,13 @@ describe('useSocket thread guard (P1 regression: cross-thread event leakage)', (
       root.render(React.createElement(HookWrapper, { callbacks, threadId: 'thread-C' }));
     });
 
-    act(() => {
+    await act(async () => {
       simulateServerEvent('queue_updated', {
         threadId: 'thread-B',
         queue: [],
         action: 'cleared',
       });
+      await Promise.resolve();
     });
 
     mockStoreCurrentThreadId = 'thread-B';

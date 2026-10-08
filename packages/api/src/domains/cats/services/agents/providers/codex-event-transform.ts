@@ -1,4 +1,4 @@
-import { type CatId, normalizeThreadGoalObjective } from '@cat-cafe/shared';
+import { type CatId, isProviderSemanticEvent, normalizeThreadGoalObjective } from '@cat-cafe/shared';
 import { isCodexSessionReplacementProvenance } from '../../runtime-session/CodexSessionReplacementProvenance.js';
 import type { AgentMessage } from '../../types.js';
 
@@ -22,6 +22,7 @@ export function parseCodexReconnectNotice(event: unknown): CodexReconnectNotice 
 
 import { normalizeTaskStatus } from '../invocation/invoke-helpers.js';
 import { type CodexApprovalSurface, classifyCodexGithubAppApprovalFailure } from './codex-app-approval-routing.js';
+import { buildCodexAsyncQuestionMessages } from './codex-async-question.js';
 
 // F060: Allowed image MIME types and max base64 payload size (5 MB encoded ≈ 3.75 MB decoded)
 const IMAGE_MIME_WHITELIST = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml']);
@@ -239,6 +240,35 @@ export function transformCodexEvent(
 ): AgentMessage | AgentMessage[] | null {
   if (typeof event !== 'object' || event === null) return null;
   const e = event as Record<string, unknown>;
+
+  if (e.type === 'app_server.subexecution') {
+    const semanticEvent = {
+      v: 1,
+      id: e.event_id,
+      kind: 'subexecution',
+      occurredAt: e.occurred_at,
+      stage: e.stage,
+      subexecutionId: e.subexecution_id,
+      rootExecutionId: e.root_execution_id,
+      parentExecutionId: e.parent_execution_id,
+      rootTurnId: e.root_turn_id,
+      parentTurnId: e.parent_turn_id,
+      ...(typeof e.turn_id === 'string' ? { turnId: e.turn_id } : {}),
+      agentPath: e.agent_path,
+      ...(typeof e.nickname === 'string' ? { nickname: e.nickname } : {}),
+      depth: e.depth,
+      ...(typeof e.content === 'string' ? { content: e.content } : {}),
+      ...(typeof e.message_phase === 'string' ? { messagePhase: e.message_phase } : {}),
+      provenance: { provider: 'codex', carrier: 'app_server', nativeType: 'subAgentActivity' },
+    };
+    if (!isProviderSemanticEvent(semanticEvent) || semanticEvent.kind !== 'subexecution') return null;
+    return {
+      type: 'provider_signal',
+      catId,
+      semanticEvent,
+      timestamp: semanticEvent.occurredAt,
+    };
+  }
 
   if (state) {
     if (e.type === 'turn.completed') {
@@ -485,18 +515,25 @@ export function transformCodexEvent(
     };
   }
 
-  if (item?.type === 'agent_message' && typeof item.text === 'string' && item.text.trim().length > 0) {
+  if (item?.type === 'agent_message') {
+    const asyncQuestionMessages = buildCodexAsyncQuestionMessages(item, catId);
+    if (typeof item.text !== 'string' || item.text.trim().length === 0) {
+      return asyncQuestionMessages.length > 0 ? asyncQuestionMessages : null;
+    }
     const stripped = stripOwnTrailingTurnSignature(item.text, state?.signatureIdentity, state?.canonicalSignature);
     if (state && stripped.signature) state.observedSignature = stripped.signature;
-    if (stripped.content.trim().length === 0) return null;
+    if (stripped.content.trim().length === 0) {
+      return asyncQuestionMessages.length > 0 ? asyncQuestionMessages : null;
+    }
     const prefix = state?.hadPriorTextTurn ? '\n\n' : '';
     if (state) state.hadPriorTextTurn = true;
-    return {
+    const textMessage: AgentMessage = {
       type: 'text',
       catId,
       content: prefix + stripped.content,
       timestamp: Date.now(),
     };
+    return asyncQuestionMessages.length > 0 ? [textMessage, ...asyncQuestionMessages] : textMessage;
   }
 
   if (item?.type === 'command_execution') {

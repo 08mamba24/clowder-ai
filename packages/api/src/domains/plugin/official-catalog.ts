@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
-import type { MeetingIntakeJudgmentField } from '@cat-cafe/shared';
+import { isDeepStrictEqual } from 'node:util';
+import type { MeetingIntakeJudgmentField, PluginDescription, PluginIconSpec } from '@cat-cafe/shared';
 import type { Capability, PluginManifest } from '@clowder-ai/plugin-contract';
+import { PUBLISHED_COMPANION_V2 } from './desktop-window-runtime/published-companion-v2.js';
 
 export interface OfficialPluginOwnerAuth {
   readonly kind: 'lark-cli-device';
@@ -17,8 +19,29 @@ export interface OfficialPluginCatalogEntry {
   readonly distribution: 'registry' | 'bundled';
   readonly archiveUrl: string;
   readonly packageDigest: string;
+  /** Host-owned migration identity hidden when this catalog row is discoverable. */
+  readonly replacesRepositoryPluginId?: string;
   readonly effectiveGrants: readonly Capability[];
   readonly ownerAuth?: OfficialPluginOwnerAuth;
+  /** Canonical discovery presentation. Host grants and installation truth remain separate. */
+  readonly presentation?: {
+    readonly displayName: string;
+    readonly description: PluginDescription;
+    readonly icon: PluginIconSpec;
+    readonly publisher: string;
+  };
+}
+
+/** Catalog discovery may repeat presentation, but it cannot become a second truth. */
+export function officialPluginPresentationMatches(entry: OfficialPluginCatalogEntry, manifest: unknown): boolean {
+  if (entry.presentation === undefined) return true;
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return false;
+  const candidate = manifest as { name?: unknown; description?: unknown; icon?: unknown };
+  return (
+    candidate.name === entry.presentation.displayName &&
+    isDeepStrictEqual(candidate.description, entry.presentation.description) &&
+    isDeepStrictEqual(candidate.icon, entry.presentation.icon)
+  );
 }
 
 export interface OfficialPluginRelease {
@@ -138,6 +161,34 @@ export const OFFICIAL_PLUGIN_POLICIES = [
       packageDigest: bundledManifestDigest(COLLECTIVE_CONNECTOR_PLUGIN_MANIFEST),
     },
     effectiveGrants: [],
+    hostSignalRoutes: [],
+  },
+  {
+    catalogId: 'genoffice-docx',
+    packageName: '@clowder-ai/genoffice-docx',
+    pluginId: 'dev.clowder.genoffice-docx',
+    distribution: 'registry',
+    releaseTag: 'next',
+    bootstrapRelease: {
+      version: '0.1.0-alpha.1',
+      archiveUrl: 'https://registry.npmjs.org/@clowder-ai/genoffice-docx/-/genoffice-docx-0.1.0-alpha.1.tgz',
+      packageDigest: 'sha512-MT893A4JY0zi8WWgI3xxNqE2ENoX8032rdRiJRvUIQxq7A0uvB8gbiapj1cuHBLCuRxgBNg5wBRnwGX69sPxrQ==',
+    },
+    effectiveGrants: [],
+    hostSignalRoutes: [],
+  },
+  {
+    catalogId: 'companion',
+    packageName: '@clowder-ai/companion',
+    pluginId: 'official.companion',
+    distribution: 'registry',
+    releaseTag: 'next',
+    bootstrapRelease: {
+      version: PUBLISHED_COMPANION_V2.version,
+      archiveUrl: `https://registry.npmjs.org/@clowder-ai/companion/-/companion-${PUBLISHED_COMPANION_V2.version}.tgz`,
+      packageDigest: PUBLISHED_COMPANION_V2.packageDigest,
+    },
+    effectiveGrants: ['windows.create'],
     hostSignalRoutes: [],
   },
 ] as const satisfies readonly OfficialPluginCatalogPolicy[];

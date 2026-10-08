@@ -6,9 +6,15 @@
  * KD-10: Cursor commits only after delivery success; trigger is best-effort.
  *
  * Gate: list pr_tracking tasks → fetch comments + reviews → filter by cursor → workItems.
- * Execute: ReviewFeedbackRouter → ConnectorInvokeTrigger → commitCursor.
+ * Execute: ReviewFeedbackRouter → commitCursor (only once the observation is recorded) → ConnectorInvokeTrigger.
  */
-import type { CatId, CommunityEvent, GitHubReviewThreadBaseline, TaskItem } from '@cat-cafe/shared';
+import type {
+  CatId,
+  CommunityEvent,
+  GitHubReviewThreadBaseline,
+  GitHubReviewVerdicts,
+  TaskItem,
+} from '@cat-cafe/shared';
 import { parsePrSubjectKey } from '@cat-cafe/shared';
 import type { ITaskStore } from '../../domains/cats/services/stores/ports/TaskStore.js';
 import {
@@ -27,11 +33,14 @@ import {
   type ExternalCloudReviewClassification,
   type ExternalCloudReviewWaitResult,
 } from '../../domains/community/external-review/external-cloud-review-classifier.js';
+import { reviewVerdictsOf } from '../../domains/github-signals/GitHubReviewVerdicts.js';
 import {
   classifyGitHubReviewLoopBrake,
   type GitHubReviewLoopBrake,
 } from '../../domains/github-signals/github-wait-renderer.js';
 import type { DistillationCheckpoint } from '../distillation/DistillationCheckpoint.js';
+import { gitHubAdmissionCanContinue, gitHubObjectSignal } from '../github/admission-budget.js';
+import { GitHubRateLimitError } from '../github/request-budget.js';
 import type { ExecuteContext, TaskSpec_P1 } from '../scheduler/types.js';
 import type { ConnectorInvokeTrigger, ConnectorTriggerPolicy } from './ConnectorInvokeTrigger.js';
 import type {
@@ -53,6 +62,8 @@ export interface ReviewFeedbackSignal {
   inlineCommentCursor: number;
   conversationCommentCursor: number;
   decisionCursor: number;
+  /** #1392: every verdict on the PR as of this poll, old review ids included. */
+  reviewVerdicts: GitHubReviewVerdicts;
   reviewThreads?: readonly GitHubReviewThreadBaseline[];
   resultTriggerCommentId?: number;
   resultSourceRef?: string;
@@ -83,19 +94,28 @@ export interface PrFeedbackCommentCursors {
 export interface ReviewFeedbackTaskSpecOptions {
   readonly taskStore: ITaskStore;
   /** Return null when PR metadata is temporarily unavailable; gate will continue without head/state filtering. */
-  readonly fetchPrMetadata?: (repoFullName: string, prNumber: number) => Promise<ReviewFeedbackPrMetadata | null>;
+  readonly fetchPrMetadata?: (
+    repoFullName: string,
+    prNumber: number,
+    signal?: AbortSignal,
+  ) => Promise<ReviewFeedbackPrMetadata | null>;
   /** Each GitHub endpoint has an independent numeric ID space and therefore its own cursor. */
   readonly fetchComments: (
     repoFullName: string,
     prNumber: number,
     cursors: PrFeedbackCommentCursors,
+    signal?: AbortSignal,
   ) => Promise<PrFeedbackComment[]>;
-  /** @param sinceId — when provided, only fetch items with id > sinceId (enables per-page early termination). */
-  readonly fetchReviews: (repoFullName: string, prNumber: number, sinceId?: number) => Promise<PrReviewDecision[]>;
+  /**
+   * Every review on the PR. #1392: never cursor-filtered — GitHub dismisses a verdict in place, under
+   * its original id, so a fetch of ids above a cursor can never see the dismissal.
+   */
+  readonly fetchReviews: (repoFullName: string, prNumber: number, signal?: AbortSignal) => Promise<PrReviewDecision[]>;
   readonly fetchReviewThreads?: (
     repoFullName: string,
     prNumber: number,
     reviewThreadIds: readonly string[],
+    signal?: AbortSignal,
   ) => Promise<readonly GitHubReviewThreadBaseline[]>;
   readonly reviewFeedbackRouter: ReviewFeedbackRouter;
   /**
@@ -481,12 +501,15 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
     }
   }
 
+  let nextTaskIndex = 0;
   return {
     id: opts.id ?? 'review-feedback',
     profile: 'poller',
     trigger: { type: 'interval', ms: opts.pollIntervalMs ?? 60_000 },
     admission: {
-      async gate() {
+      async gate(ctx) {
+        const gateSignal = ctx?.signal;
+        gateSignal?.throwIfAborted();
         // #320: Read from unified TaskStore — exclude done tasks (PR merged/closed)
         const tasks = (await opts.taskStore.listByKind('pr_tracking')).filter((t) => t.status !== 'done');
         if (tasks.length === 0) {
@@ -495,7 +518,14 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
 
         const workItems: { signal: ReviewFeedbackSignal; subjectKey: string }[] = [];
 
-        for (const task of tasks) {
+        const startIndex = nextTaskIndex % tasks.length;
+        for (let step = 0; step < tasks.length; step++) {
+          gateSignal?.throwIfAborted();
+          if (!gitHubAdmissionCanContinue(ctx)) break;
+          const signal = gitHubObjectSignal(ctx);
+          const index = (startIndex + step) % tasks.length;
+          const task = tasks[index]!;
+          nextTaskIndex = (index + 1) % tasks.length;
           try {
             const parsed = task.subjectKey ? parsePrSubjectKey(task.subjectKey) : null;
             if (!parsed) continue;
@@ -506,41 +536,12 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
             const trackingSubjectKey = trackingTask.subjectKey ?? task.subjectKey;
             if (!trackingSubjectKey) continue;
 
-            const prMetadata = opts.fetchPrMetadata ? await opts.fetchPrMetadata(repoFullName, prNumber) : null;
-            if (prMetadata?.prState === 'merged' || prMetadata?.prState === 'closed') {
-              opts.log.info(`[review-feedback] PR ${prKey} ${prMetadata.prState} — routing typed terminal lifecycle`);
-              await projectReviewFeedbackTerminalEffects({
-                opts,
-                task: trackingTask,
-                subjectKey: trackingSubjectKey,
-                repoFullName,
-                prNumber,
-                terminalState: prMetadata.prState,
-                prTitle: prMetadata.prTitle,
-              });
-              const reviewState = trackingTask.automationState?.review;
-              const legacyCommentCursor = reviewState?.lastCommentCursor ?? 0;
-              workItems.push({
-                signal: {
-                  repairedTask: trackingTask,
-                  repoFullName,
-                  prNumber,
-                  routingAudit: repairResult.routingAudit,
-                  newComments: [],
-                  newDecisions: [],
-                  headSha: prMetadata.headSha,
-                  inlineCommentCursor: reviewState?.lastInlineCommentCursor ?? legacyCommentCursor,
-                  conversationCommentCursor: reviewState?.lastConversationCommentCursor ?? legacyCommentCursor,
-                  decisionCursor: reviewState?.lastDecisionCursor ?? 0,
-                  subjectState: prMetadata.prState,
-                  validateRoutingRepairFresh: repairResult.validateRoutingRepairFresh,
-                  commitRoutingRepair: repairResult.commitRoutingRepair,
-                  commitCursor: async () => {},
-                },
-                subjectKey: trackingSubjectKey,
-              });
-              continue;
-            }
+            const prMetadata = opts.fetchPrMetadata ? await opts.fetchPrMetadata(repoFullName, prNumber, signal) : null;
+            // #1392 AC-2: a merged/closed PR is still collected. Its terminal outcome marks the task
+            // done, so this is the last poll — feedback posted alongside the merge or close would
+            // otherwise never be fetched. The terminal state rides on this poll's work item.
+            const terminalState =
+              prMetadata?.prState === 'merged' || prMetadata?.prState === 'closed' ? prMetadata.prState : undefined;
 
             // Schema v2: each comments endpoint owns its cursor. A task with only the
             // legacy combined cursor replays each source from zero. That backfill is
@@ -564,14 +565,22 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
             );
             const reviewCursor = resolveCursor(reviewCursors.get(prKey), reviewState?.lastDecisionCursor);
 
-            // #798: Pass cursor to fetch for per-page client-side filtering (eliminates maxBuffer crash)
+            // #798: comments pass their cursors for per-page client-side filtering (eliminates the
+            // maxBuffer crash). Reviews are still fetched whole: a dismissal changes an old
+            // review in place, so the incremental comment lower bound is unsafe for reviews.
             const [comments, reviews] = await Promise.all([
-              opts.fetchComments(repoFullName, prNumber, {
-                inline: inlineCommentCursor,
-                conversation: conversationCommentCursor,
-              }),
-              opts.fetchReviews(repoFullName, prNumber, reviewCursor),
+              opts.fetchComments(
+                repoFullName,
+                prNumber,
+                {
+                  inline: inlineCommentCursor,
+                  conversation: conversationCommentCursor,
+                },
+                signal,
+              ),
+              opts.fetchReviews(repoFullName, prNumber, signal),
             ]);
+            const reviewVerdicts = reviewVerdictsOf(reviews);
 
             // The two endpoints have independent cursor spaces, but their feedback still
             // belongs to one user-visible timeline. Keep cursor checks source-specific and
@@ -640,6 +649,8 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
             // Default: all fresh items are eligible for delivery (no eventLog configured).
             let safeDeliveryComments: typeof freshNewComments = freshNewComments;
             let safeDeliveryReviews: typeof freshNewReviews = freshNewReviews;
+            // False when an item of this poll failed event-log processing and is held back for retry.
+            let collectionComplete = true;
             if (opts.eventLog && trackingTask.subjectKey) {
               const subjectKey = trackingTask.subjectKey;
               // A task may replay comment history either while migrating its legacy
@@ -764,6 +775,18 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
                   maxSafeReviewCursor = Math.max(maxSafeReviewCursor, r.id);
                 }
               }
+              collectionComplete = blockedCommentSources.size === 0 && reviewBreakBeforeId === Infinity;
+            }
+
+            // #1392 AC-2: a terminal outcome marks the task done, and a done task is never polled
+            // again. While this poll holds an item back for retry, ending the task would drop that
+            // item for good. Hold the terminal poll before anything else is recorded: no cursor is
+            // committed, so the next poll collects the same items again and ends tracking with them.
+            if (terminalState && !collectionComplete) {
+              opts.log.warn(
+                `[review-feedback] PR ${prKey} ${terminalState}, but an item failed collection — ending tracking on the next poll`,
+              );
+              continue;
             }
 
             // F280: actor type and prose no longer decide owner visibility. Keep the
@@ -820,7 +843,8 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
             const activeAwait = trackingTask.automationState?.await;
             const activePrBaseline =
               activeAwait && 'headSha' in activeAwait.baseline ? activeAwait.baseline : undefined;
-            if (!activeAwait && !repairResult.routingAudit) {
+            // A terminal PR always reaches the lifecycle, with or without a wait: that is what ends the task.
+            if (!activeAwait && !repairResult.routingAudit && !terminalState) {
               if (hadNewItems || commentCursorMigrationActive) {
                 await advanceCursor(
                   trackingTask.id,
@@ -842,13 +866,16 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
               continue;
             }
 
-            const reviewLoopBrake = await resolveReviewLoopBrake({
-              opts,
-              repoFullName,
-              prNumber,
-              prAuthorLogin: prMetadata?.authorLogin,
-              newDecisions,
-            });
+            // The brake paces re-review wakes on a live PR; it never withholds the terminal wake.
+            const reviewLoopBrake = terminalState
+              ? undefined
+              : await resolveReviewLoopBrake({
+                  opts,
+                  repoFullName,
+                  prNumber,
+                  prAuthorLogin: prMetadata?.authorLogin,
+                  newDecisions,
+                });
 
             const requestedThreadIds =
               activeAwait?.continuation.when.flatMap((predicate) =>
@@ -856,9 +883,23 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
               ) ?? [];
             const reviewThreads =
               requestedThreadIds.length > 0 && opts.fetchReviewThreads
-                ? await opts.fetchReviewThreads(repoFullName, prNumber, requestedThreadIds)
+                ? await opts.fetchReviewThreads(repoFullName, prNumber, requestedThreadIds, signal)
                 : undefined;
             const waitResult = cloudResolution.waitResult;
+
+            if (terminalState) {
+              opts.log.info(`[review-feedback] PR ${prKey} ${terminalState} — routing typed terminal lifecycle`);
+              // After collection succeeded, so a failed fetch retries next poll without projecting twice.
+              await projectReviewFeedbackTerminalEffects({
+                opts,
+                task: trackingTask,
+                subjectKey: trackingSubjectKey,
+                repoFullName,
+                prNumber,
+                terminalState,
+                prTitle: prMetadata?.prTitle,
+              });
+            }
 
             workItems.push({
               signal: {
@@ -872,6 +913,7 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
                 inlineCommentCursor: maxInlineCommentId,
                 conversationCommentCursor: maxConversationCommentId,
                 decisionCursor: maxReviewId,
+                reviewVerdicts,
                 ...(reviewThreads ? { reviewThreads } : {}),
                 ...(waitResult
                   ? {
@@ -885,6 +927,7 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
                     }
                   : {}),
                 ...(reviewLoopBrake ? { reviewLoopBrake } : {}),
+                ...(terminalState ? { subjectState: terminalState } : {}),
                 validateRoutingRepairFresh: repairResult.validateRoutingRepairFresh,
                 commitRoutingRepair: repairResult.commitRoutingRepair,
                 commitCursor: () =>
@@ -909,6 +952,8 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
               subjectKey: trackingSubjectKey,
             });
           } catch (err) {
+            gateSignal?.throwIfAborted();
+            if (err instanceof GitHubRateLimitError) continue;
             opts.log.warn(
               { err, taskId: task.id, subjectKey: task.subjectKey },
               '[review-feedback] fail-open: skipping PR where fetch failed',
@@ -916,6 +961,7 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
           }
         }
 
+        gateSignal?.throwIfAborted();
         if (workItems.length === 0) {
           return { run: false, reason: 'no new feedback' };
         }
@@ -938,10 +984,10 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
         const repairCommitted = await signal.commitRoutingRepair?.();
         if (repairCommitted === false) return;
         ctx.signal?.throwIfAborted();
-        // Once the persist-first cursor advances, routing and durable wake admission
-        // are obligations of that cursor. Do not insert cancellation points until
-        // those effects settle or the feedback can be lost permanently.
-        await signal.commitCursor();
+        // The wait lifecycle records this observation's cursors together with what it matched. The
+        // cursor is committed only after that: moved past an observation the lifecycle never recorded,
+        // it loses that observation for good. Do not insert cancellation points until the cursor and
+        // the wake settle.
         const routeResult = await opts.reviewFeedbackRouter.route(
           {
             repoFullName: signal.repoFullName,
@@ -953,6 +999,7 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
             inlineCommentCursor: signal.inlineCommentCursor,
             conversationCommentCursor: signal.conversationCommentCursor,
             decisionCursor: signal.decisionCursor,
+            reviewVerdicts: signal.reviewVerdicts,
             ...(signal.reviewThreads ? { reviewThreads: signal.reviewThreads } : {}),
             ...(signal.resultTriggerCommentId ? { resultTriggerCommentId: signal.resultTriggerCommentId } : {}),
             ...(signal.resultSourceRef ? { resultSourceRef: signal.resultSourceRef } : {}),
@@ -966,6 +1013,11 @@ export function createReviewFeedbackTaskSpec(opts: ReviewFeedbackTaskSpecOptions
           },
           { taskId: repairedTask.id },
         );
+        if (routeResult.recorded === false) {
+          opts.log.warn(`[review-feedback] ${subjectKey}: observation not recorded; cursor held for the next poll`);
+        } else {
+          await signal.commitCursor();
+        }
         if (routeResult.kind !== 'notified') return;
 
         if (signal.reviewLoopBrake?.kind === 'pause_once') return;

@@ -1,28 +1,39 @@
 import { defineConfig } from 'vitest/config';
+import { vitestReporters } from '../../scripts/test-file-timing/vitest-file-timing-reporter.mjs';
 
 export default defineConfig({
   test: {
+    reporters: vitestReporters(),
     // Only vitest-runner tests. Most shared tests use node:test (import from 'node:test')
     // and run separately via `node --test`. Vitest tests import from 'vitest'.
     include: [
       'test/concierge-config.test.js',
+      'src/__tests__/companion-identity.test.ts',
       'test/pet-skin-projection.test.js',
       'src/__tests__/capability-tips.test.ts',
       'src/__tests__/capability-evolution.test.ts',
+      'src/__tests__/capability-evolution-name.test.ts',
       'src/__tests__/capability-evolution-diagnosis.test.ts',
+      'src/__tests__/capability-evolution-preparation-review.test.ts',
+      'src/__tests__/capability-evolution-preparation.test.ts',
+      'src/__tests__/capability-evolution-preparation-choice.test.ts',
       'src/__tests__/collective.test.ts',
+      'src/__tests__/collective-appearance-bridge.test.ts',
       'src/__tests__/action-successor-types.test.ts',
       'src/__tests__/cross-thread-coordination.test.ts',
       'src/__tests__/auto-dream.test.ts',
       'src/__tests__/human-disposition-feedback.test.ts',
       'src/__tests__/wait-termination.test.ts',
+      'src/__tests__/deployment-wait.test.ts',
       'src/__tests__/proactive-memory-opportunity.test.ts',
       'src/__tests__/memory-write-opportunity.test.ts',
       'src/__tests__/standing-reflex-episode.test.ts',
       'src/__tests__/growing-contract.test.ts',
+      'src/__tests__/growing-development-contract.test.ts',
       'src/__tests__/memory-architecture-closure.test.ts',
       'src/__tests__/lesson-learning-closure.test.ts',
       'src/__tests__/subject-key.test.ts',
+      'src/__tests__/agent-key-credentials.test.ts',
       'src/__tests__/cli-effort.test.ts',
       'src/__tests__/codex-speed.test.ts',
       'src/__tests__/dispatch-proposal-types.test.ts',
@@ -37,6 +48,7 @@ export default defineConfig({
       'src/__tests__/load-dossier-profiles.test.ts',
       'src/__tests__/dossier-snapshot.test.ts',
       'src/__tests__/parse-dossier-profiles.test.ts',
+      'src/__tests__/dossier-parse-diagnostics.test.ts',
       'src/__tests__/profile-frontmatter-parser.test.ts',
       'src/__tests__/scanner-discovery-pure.test.ts',
       'src/__tests__/recall-outcome.test.ts',
@@ -50,8 +62,10 @@ export default defineConfig({
       'src/__tests__/runtime-interaction.test.ts',
       'src/__tests__/routing-context.test.ts',
       'src/__tests__/routing-context-api.test.ts',
+      'src/__tests__/plugin-manager-contract.test.ts',
       'test/message-bundle-schema.test.ts',
       'test/markdown-readable-text.test.ts',
+      'src/__tests__/profile-contract.test.ts',
     ],
   },
 });

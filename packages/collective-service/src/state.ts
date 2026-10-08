@@ -1,25 +1,27 @@
-import { type CollectiveEventEnvelope, collectiveEventEnvelopeSchema } from '@cat-cafe/shared';
+import {
+  type CollectiveEventEnvelope,
+  collectiveBindingVoteRecordSchema,
+  collectiveDecisionRecordSchema,
+  collectiveEventEnvelopeSchema,
+  collectiveParticipationDeclarationSchema,
+  collectiveRoadmapRecordSchema,
+  collectiveVoteRecordSchema,
+  collectiveWorkPolicySchema,
+  collectiveWorkRecordSchema,
+} from '@cat-cafe/shared';
 import { z } from 'zod';
 
 import { CollectiveServiceError } from './errors.js';
+import { provenEventLocation } from './event-location.js';
 import { humanAuthAttemptSchema, humanAuthBindingSchema, humanAuthCompletionSchema } from './human-auth-state.js';
+import { membershipSchema } from './membership-state.js';
+import { reactionRecordSchema } from './reaction-state.js';
 
 export type { HumanAuthIntent } from './human-auth-state.js';
 
 import type { ServiceState } from './service-records.js';
 
-export type {
-  CollectiveRecord,
-  ConnectionRecord,
-  DeepMutable,
-  HumanRecord,
-  InviteRecord,
-  MembershipRecord,
-  MutableServiceState,
-  PairingIntentRecord,
-  ServiceState,
-  SessionRecord,
-} from './service-records.js';
+export type * from './service-records.js';
 
 const humanSchema = z
   .object({
@@ -45,15 +47,6 @@ const collectiveSchema = z
     name: z.string(),
     createdByHumanId: z.string(),
     createdAt: z.string().datetime(),
-  })
-  .strict();
-
-const membershipSchema = z
-  .object({
-    collectiveId: z.string(),
-    humanId: z.string(),
-    role: z.enum(['steward', 'member']),
-    joinedAt: z.string().datetime(),
   })
   .strict();
 
@@ -90,7 +83,9 @@ const connectionSchema = z
     credentialDigest: z.string(),
     authorizedHumanId: z.string().optional(),
     status: z.enum(['connected', 'revoked']),
-    revocationReason: z.enum(['owner_revoked', 'self_revoked', 'identity_rebind_required']).optional(),
+    revocationReason: z
+      .enum(['owner_revoked', 'self_revoked', 'identity_rebind_required', 'membership_left'])
+      .optional(),
     lastDeliveredSequence: z.number().int().nonnegative().default(0),
     lastAckedSequence: z.number().int().nonnegative(),
     createdAt: z.string().datetime(),
@@ -123,6 +118,17 @@ const bootstrapSchema = z
   })
   .strict();
 
+const collaborationOperationReceiptSchema = z
+  .object({
+    actorScope: z.string().min(1).max(320),
+    fingerprint: z.string().min(1).max(64_000),
+    resourceKind: z.enum(['work', 'roadmap', 'vote', 'binding_vote', 'reaction']),
+    resourceId: z.string().min(1).max(160),
+    revision: z.number().int().positive(),
+    recordedAt: z.string().datetime(),
+  })
+  .strict();
+
 const serviceStateV2Schema = z
   .object({
     schemaVersion: z.literal(2),
@@ -140,6 +146,23 @@ const serviceStateV2Schema = z
     pairingIntents: z.record(z.string(), pairingIntentSchema),
     connections: z.record(z.string(), connectionSchema),
     events: z.record(z.string(), z.array(collectiveEventEnvelopeSchema)),
+    participations: z
+      .record(
+        z.string(),
+        collectiveParticipationDeclarationSchema.innerType().extend({
+          publishedAt: z.string().datetime(),
+          workPolicy: collectiveWorkPolicySchema.optional(),
+          scopeStarts: z.record(z.string(), z.number().int().positive()).optional(),
+        }),
+      )
+      .default({}),
+    works: z.record(z.string(), collectiveWorkRecordSchema).default({}),
+    roadmaps: z.record(z.string(), collectiveRoadmapRecordSchema).default({}),
+    votes: z.record(z.string(), collectiveVoteRecordSchema).default({}),
+    bindingVotes: z.record(z.string(), collectiveBindingVoteRecordSchema).default({}),
+    decisions: z.record(z.string(), collectiveDecisionRecordSchema).default({}),
+    reactions: z.record(z.string(), reactionRecordSchema).default({}),
+    collaborationOperations: z.record(z.string(), collaborationOperationReceiptSchema).default({}),
     legacyEvents: z.record(z.string(), z.array(z.unknown())),
     clientEventIndex: z.record(z.string(), z.string()),
   })
@@ -185,7 +208,7 @@ export function parseServiceState(value: unknown): ServiceState {
 
 export function migrateServiceState(value: unknown): { readonly state: ServiceState; readonly migrated: boolean } {
   const version = readSchemaVersion(value);
-  if (version === 2) return { state: parseServiceState(value), migrated: false };
+  if (version === 2) return migrateProvenLocations(parseServiceState(value));
   const legacy = serviceStateV1Schema.parse(value);
   const migratedEvents: Record<string, CollectiveEventEnvelope[]> = {};
   for (const [collectiveId, events] of Object.entries(legacy.events)) {
@@ -231,10 +254,47 @@ export function migrateServiceState(value: unknown): { readonly state: ServiceSt
       ]),
     ),
     events: migratedEvents,
+    participations: {},
+    works: {},
+    roadmaps: {},
+    votes: {},
+    bindingVotes: {},
+    decisions: {},
+    reactions: {},
+    collaborationOperations: {},
     legacyEvents: {},
     clientEventIndex: rebuildClientEventIndex(migratedEvents),
   };
-  return { state: parseServiceState(migrated), migrated: true };
+  return { state: migrateProvenLocations(parseServiceState(migrated)).state, migrated: true };
+}
+
+function migrateProvenLocations(state: ServiceState): { state: ServiceState; migrated: boolean } {
+  let migrated = false;
+  const events = Object.fromEntries(
+    Object.entries(state.events).map(([collectiveId, history]) => [
+      collectiveId,
+      history.map((event) => {
+        const result = migrateProvenEvent(history, event);
+        if (result.migrated) migrated = true;
+        return result.event;
+      }),
+    ]),
+  );
+  return { state: { ...state, events }, migrated };
+}
+
+function migrateProvenEvent(history: readonly CollectiveEventEnvelope[], event: CollectiveEventEnvelope) {
+  const location = event.location ?? provenEventLocation(history, event);
+  if (!location) return { event, migrated: false };
+  const recipient =
+    event.recipient ??
+    (event.target.kind === 'human'
+      ? event.target
+      : event.target.kind === 'channel' || event.target.kind === 'message'
+        ? { kind: 'channel' as const }
+        : undefined);
+  if (event.location && (event.recipient || !recipient)) return { event, migrated: false };
+  return { event: { ...event, location, ...(recipient ? { recipient } : {}) }, migrated: true };
 }
 
 export function membershipKey(collectiveId: string, humanId: string): string {

@@ -66,6 +66,8 @@ export class RedisAuthInvocationBackend implements IAuthInvocationBackend {
     if (input.a2aTriggerMessageId) fields.push('a2aTriggerMessageId', input.a2aTriggerMessageId);
     if (input.originTriggerMessageId) fields.push('originTriggerMessageId', input.originTriggerMessageId);
     if (input.toolExecutionPolicy) fields.push('toolExecutionPolicy', JSON.stringify(input.toolExecutionPolicy));
+    if (input.executionGrant) fields.push('executionGrant', JSON.stringify(input.executionGrant));
+    if (input.collectiveWorkBinding) fields.push('collectiveWorkBinding', JSON.stringify(input.collectiveWorkBinding));
 
     const latestKey = KEY_LATEST(input.threadId, input.catId as string);
     for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -148,6 +150,8 @@ export class RedisAuthInvocationBackend implements IAuthInvocationBackend {
     const records: InvocationRecord[] = [];
     for (const key of await this.scanInvocationKeys()) {
       const raw = await this.redis.hgetall(key);
+      // SCAN is not a snapshot: terminal tombstones may expire before HGETALL.
+      if (Object.keys(raw).length === 0) continue;
       const record = authRecordFromRedisHash(raw, new Set<string>());
       if (!record) throw new Error(`corrupt callback auth record during startup scan: ${key}`);
       if (record.state === 'active') records.push(record);
@@ -208,6 +212,12 @@ export class RedisAuthInvocationBackend implements IAuthInvocationBackend {
     const key = KEY_INV(invocationId);
     if ((await this.redis.hget(key, 'state')) !== 'active') return;
     await this.redis.hset(key, 'traceId', ctx.traceId, 'spanId', ctx.spanId, 'traceFlags', String(ctx.traceFlags));
+  }
+
+  async setExpectedCompactionCarrier(invocationId: string, identity: string): Promise<void> {
+    const key = KEY_INV(invocationId);
+    if ((await this.redis.hget(key, 'state')) !== 'active') return;
+    await this.redis.hset(key, 'expectedCompactionCarrier', identity);
   }
 
   private async verifyWithLua(
@@ -273,7 +283,10 @@ export class RedisAuthInvocationBackend implements IAuthInvocationBackend {
   private async loadMigrationRecords(keys: string[]): Promise<InvocationRecord[]> {
     const records: InvocationRecord[] = [];
     for (const key of keys) {
-      const record = authRecordFromRedisHash(await this.redis.hgetall(key), new Set<string>());
+      const raw = await this.redis.hgetall(key);
+      // Missing after SCAN is normal GC, not a corrupt principal to admit.
+      if (Object.keys(raw).length === 0) continue;
+      const record = authRecordFromRedisHash(raw, new Set<string>());
       if (!record) throw new Error(`corrupt callback auth record during migration: ${key}`);
       records.push(record);
     }

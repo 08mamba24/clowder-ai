@@ -4,7 +4,7 @@ related_features: [F128, F139, F168, F193, F208, F221, F225, F231, F260, F286]
 topics: [approval, hub, cvo-gate, cross-thread, cqrs, proposal, provenance, schedule]
 doc_kind: spec
 created: 2026-06-20
-updated: 2026-08-31
+updated: 2026-09-17
 ---
 
 # F246: Approval Hub — 统一审批中心底座
@@ -14,6 +14,15 @@ updated: 2026-08-31
 Architecture cell: `approval-index`
 Map delta: update required（Phase I）— 保留 feature adapter + query aggregation；`approval-index` 新增统一 producer ingress、单一注册表与来源双锚契约，不新增第二套 canonical proposal store。
 Why: operator 审批不仅会散落，还可能进入 Hub 后失去原文锚点，或由新 producer 完全绕过 Hub。底座必须同时守住“所有猫发起的 operator gate 可见”和“每条审批可精确追溯”。
+
+### Proposed delta — M3 批次命令与恢复（2026-09-17，未接实施）
+
+- **Map delta: proposed** — 在既有 read-through projection/publication ingress 之外，拟增加 F246 所有的 batch issuer、不可变 membership manifest/finalize barrier、TTL=0 command/recovery projection 与唯一 executor/reconciler；[approval-index](../architecture/ownership/cells/approval-index.md) 同步显式区分现状与候选。
+- **Batch ingress 线协议** — `begin` 接完整有序 member descriptors（1–32，itemId/target/payloadDigest），由服务端验证并计算 count/digest、签发 ref/revision；`append` 以该 ref/revision + segmentIndex 填固定四项位置并核实际输入摘要；显式 `finalize` 只在所有声明位置有确定准备结果时封板/发布。缺段不能发布，最后一段不隐式封板。完整 schema 与 four-vs-six 负例见 M3 §4.1/负例14；`cat_cafe_remember` 本身只接完整 1–4 项，不声明分段能力。
+- 新记录只持服务端签发的批次身份、ref/digest/count、成员版本、命令选择与执行 custody。生命周期为 `registered → claimed(attemptRef, fencingGeneration, leaseUntil) → reconciling → terminal`；续约/接管走同一 canonical CAS。lease 到期不删记录，启动与到期恢复先回原 child resolution/attempt/effect proof，再决定 join、回填或执行缺失项。
+- 各 feature 继续独占 child resolution、内容、版本、权限和 effect proof；新 operation key 不能替相同 child revision 建第二 executor。原 owner attempt CAS/fence 必须与 effect commit 去重闭合；Hub 不建第二 proposal/memory 数据库，不以 response waiter 代替持久命令。
+- **B1 接球门** — F246 owner 须明确接受这份 implementation custody，核定自身存储/CAS 与各 producer 接缝后才进入实现/激活。本文只登记候选，不替 Sol 或其他猫接实现、不改变现有 producer writer epoch/cutover，也不扩大 M3 首批 corpus + Taste 目标。
+- B1 交付必须含服务端签发/封板与一张批次卡、选中行快照、唯一领取/续约/到期/启动恢复、稳定 operation/key 查询以及原 owner proof-first 对账。验收至少覆盖缺段/迟到/伪造 ref、双 worker、旧 lease 晚提交、effect 后断连与不同 key 同 child；细则和负例 10–15 由 M3 候选持有。本节不伪造已通过 AC。
 
 ## Why
 
@@ -101,7 +110,7 @@ Why: operator 审批不仅会散落，还可能进入 Hub 后失去原文锚点�
 
 ### Canonical Approval Lifecycle v1（F313 Phase C）
 
-权威设计 seal：`[thread-id]#0001788327680802-000466-ba7a600b`。新增授权边界消费
+权威设计 seal：`[thread-id]#private-source-id`。新增授权边界消费
 `docs/features/F311-capability-evolution-workspace.md@396a379d7b` 的硬约束 13、Phase 4 与 KD-17。
 
 ```text
@@ -429,7 +438,7 @@ Goal: 把 Phase C 后真实遗留的成熟化工作收束成可执行交付，�
 
 ### Phase H.1: History Detail Preservation + Presentation Parity ✅
 
-> **Provenance（2026-08-29）**：operator 指出审批历史相对待审批页丢失过多信息，并明确要求完整技术详情可展开。来源 thread `[thread-id]` message `0001787995877615-000332-1c20e69d`。
+> **Provenance（2026-08-29）**：operator 指出审批历史相对待审批页丢失过多信息，并明确要求完整技术详情可展开。来源 thread `[thread-id]` message `private-source-id`。
 
 - [x] **AC-H9**: 历史卡读取现有 `SettledApprovalItem.detail`，完整内容置于默认折叠、可键盘操作的原生 disclosure；不切片、不另造精简 DTO、不要求数据迁移。
 - [x] **AC-H10**: 历史摘要使用 `ExpandableProse`，过长时可恢复全文；发起人使用 `CompactLabel`，窄屏截断时仍可查看并复制完整身份。
@@ -438,7 +447,7 @@ Goal: 把 Phase C 后真实遗留的成熟化工作收束成可执行交付，�
 
 ### Phase H.2: History Producer Coverage 🚧
 
-> **Provenance（2026-08-31）**：operator 批准 F276 人物提案后，吴浪已 materialize 且可 recall，但 Approval Hub 最近 200 条历史中人物仍为 0。来源 `[thread-id]#0001788158588129-000500-b6e3f556`。
+> **Provenance（2026-08-31）**：operator 批准 F276 人物提案后，吴浪已 materialize 且可 recall，但 Approval Hub 最近 200 条历史中人物仍为 0。来源 `[thread-id]#private-source-id`。
 
 - [x] **AC-H13**: `history: true` 的 catalog producer 在 registry 构造时必须提供 `listSettled`；缺失时启动 fail closed，禁止 `/settled` 静默过滤整个 producer。
 - [x] **AC-H14**: F276 materialized/rejected terminal transition 与 `person-memory:settled:{owner}` 在同一 Redis 原子事务更新；partial、not-now、withdrawn 不进入历史，undo/person forget/proposal forget 原子移除索引。
@@ -446,7 +455,7 @@ Goal: 把 Phase C 后真实遗留的成熟化工作收束成可执行交付，�
 
 ### Phase I: Producer Admission + Exact Provenance + Schedule Gate 🚧
 
-> **Reopen provenance（2026-07-20）**：现状审计与方案基线来自 thread `[thread-id]` message `0001784589151623-000190-e286ebe3`；斑斑独立评议来自 message `0001784602530779-000004-7056ce19`；operator 授权更新本 spec 来自 message `0001784604430659-000047-c9c19f4d`。
+> **Reopen provenance（2026-07-20）**：现状审计与方案基线来自 thread `[thread-id]` message `private-source-id`；斑斑独立评议来自 message `private-source-id`；operator 授权更新本 spec 来自 message `private-source-id`。
 
 **Goal**：把 Approval Hub 从“若干 feature 自愿接入的聚合 UI”升级为“猫/后台 producer 发起 operator gate 时绕不过的发布边界”，并让 Hub、审批卡、触发来源三者可精确互跳。
 
@@ -498,7 +507,7 @@ interface ApprovalEnvelope {
 1. **Wave 0 — 底座先行（PR #3135）**：`ApprovalProducerRegistry` 单源、`ApprovalIngress`、双锚 DTO、truthful jump UI、adapter fan-out 分项日志；本 wave 完成 AC-I1/I4，并先迁移 F128/F225/F231，AC-I2/I3 随其余 producer 在后续 wave 收口。
 2. **Wave 1 — 活风险止血（已实现）**：F139 cat-proxy create/permanent-delete proposal 化，批准后才 materialize/delete；strict principal guard 覆盖同一 mutation endpoint，暂停/恢复保留直执但统一鉴权与审计。
 3. **Wave 2 — 已接但缺锚**：F193 / F260 / F221 统一生成 card，并迁移为 `originRef + approvalCardRef`。
-4. **Wave 3 — 剩余漏接项**：仅 F208 dossier proposal。Authorization system 不再是 Wave 3 项：operator source `[thread-id]#0001787632982035-000007-ecf7a681` 决定当前无需求并直接 sunset；如未来出现新的授权需求，必须作为 feature-specific typed producer 重新立契约，不复活 generic once/thread/global adapter。
+4. **Wave 3 — 剩余漏接项**：仅 F208 dossier proposal。Authorization system 不再是 Wave 3 项：operator source `[thread-id]#private-source-id` 决定当前无需求并直接 sunset；如未来出现新的授权需求，必须作为 feature-specific typed producer 重新立契约，不复活 generic once/thread/global adapter。
 
 #### 机制选择
 

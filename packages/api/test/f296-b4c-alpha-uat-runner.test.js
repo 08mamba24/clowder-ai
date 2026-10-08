@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { describe, test } from 'node:test';
 import {
@@ -19,7 +18,7 @@ import { runCompactionJourney } from '../../../scripts/lib/f296-alpha-uat-journe
 import {
   CONTEXT_PROJECTION_ENUMS,
   CONTEXT_PROJECTION_TELEMETRY_CONTRACT,
-} from '../dist/domains/cats/services/session/context-projection-telemetry-contract.js';
+} from '../dist/domains/cats/services/session/context/context-projection-telemetry-contract.js';
 
 const revision = 'a'.repeat(40);
 const traceId = 'b'.repeat(32);
@@ -114,19 +113,24 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
   });
 
   test('rejects live, random, malformed, and Redis sanctuary coordinates', () => {
-    assert.doesNotThrow(() => validateAlphaCoordinates('http://127.0.0.1:3012', 'redis://127.0.0.1:6398'));
+    assert.doesNotThrow(() => validateAlphaCoordinates('http://127.0.0.1:3012', 'redis://127.0.0.1:6397'));
     for (const api of [
       'http://127.0.0.1:3003',
       'http://127.0.0.1:3004',
       'http://127.0.0.1:3999',
       'http://localhost:3012',
     ]) {
-      throwsReason(() => validateAlphaCoordinates(api, 'redis://127.0.0.1:6398'), 'wrong_api_origin');
+      throwsReason(() => validateAlphaCoordinates(api, 'redis://127.0.0.1:6397'), 'wrong_api_origin');
     }
-    for (const redis of ['redis://127.0.0.1:6399', 'redis://127.0.0.1:7777', 'redis://remote:6398']) {
+    for (const redis of [
+      'redis://127.0.0.1:6398',
+      'redis://127.0.0.1:6399',
+      'redis://127.0.0.1:7777',
+      'redis://remote:6397',
+    ]) {
       throwsReason(() => validateAlphaCoordinates('http://127.0.0.1:3012', redis), 'wrong_redis_endpoint');
     }
-    for (const redis of ['rediss://127.0.0.1:6398', 'redis://user:secret@127.0.0.1:6398', 'redis://127.0.0.1:6398/1']) {
+    for (const redis of ['rediss://127.0.0.1:6397', 'redis://user:secret@127.0.0.1:6397', 'redis://127.0.0.1:6397/1']) {
       throwsReason(() => validateAlphaCoordinates('http://127.0.0.1:3012', redis), 'wrong_redis_endpoint');
     }
   });
@@ -158,7 +162,6 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
   test('polls the real trace read until the completed invocation span is exported', async (t) => {
     const originalFetch = globalThis.fetch;
     const sessionCookie = `cat_cafe_session=${'1'.repeat(64)}`;
-    const deployedRevision = execFileSync('git', ['rev-parse', 'origin/main'], { encoding: 'utf8' }).trim();
     const traceReads = new Map();
     let invocationNumber = 0;
     let metricsValue = 0;
@@ -196,7 +199,7 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
           { headers: { 'set-cookie': `${sessionCookie}; Path=/; HttpOnly` } },
         );
       }
-      if (url.pathname === '/health') return Response.json({ deploymentRevision: deployedRevision });
+      if (url.pathname === '/health') return Response.json({ deploymentRevision: revision });
       if (url.pathname === '/ready') return Response.json({ status: 'ready' });
       if (url.pathname === '/api/cats') {
         return Response.json({
@@ -245,11 +248,12 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
 
     const manifest = await runAlphaUat({
       apiUrl: 'http://127.0.0.1:3012',
-      redisUrl: 'redis://127.0.0.1:6398',
+      redisUrl: 'redis://127.0.0.1:6397',
       catId: 'codex',
       userId: 'f296-alpha-uat',
       timeoutMs: 1000,
       pollMs: 100,
+      expectedRevision: revision,
     });
     assert.equal(manifest.journeys[0].outcome, 'passed');
     assert.equal(manifest.dynamicPresentation.outcome, 'passed');

@@ -29,12 +29,16 @@ describe('F293 Phase B ownership guard', () => {
     expect(definitions).toEqual(['src/components/routing-context/TeamWorkspacePanel.tsx']);
 
     const f284 = source('src/components/WorkspacePanel.tsx');
+    // F309 split the F307 shell: workspace destinations (Team included) render in their own owner file.
     const f307 = source('src/components/workbench/F307OwnerSurfaceRenderer.tsx');
+    const f307Destination = source('src/components/workbench/F307WorkspaceDestinationOwnerSurface.tsx');
     expect(f284).toContain("workspaceMode === 'team'");
     expect(f284).toContain('workspaceOpenRequest={workspaceOpenRequest}');
     expect(f284).not.toContain('<TeamWorkspacePanel');
-    expect(f307).toContain("surface.objectRef.id === 'mode:team'");
-    expect(f307).toContain('<TeamWorkspacePanel');
+    expect(f307).toContain('<WorkspaceDestinationOwnerSurface');
+    expect(f307).not.toContain('<TeamWorkspacePanel');
+    expect(f307Destination).toContain("surface.objectRef.id === 'mode:team'");
+    expect(f307Destination).toContain('<TeamWorkspacePanel');
   });
 
   it('keeps Settings ledger read-only and routes every writer to Team', () => {
@@ -55,9 +59,13 @@ describe('F293 Phase B ownership guard', () => {
 
   it('keeps Team single-column through 420/508px panels and enables two columns only at 780px', () => {
     const layout = source('src/components/routing-context/TeamWorkspacePanel.module.css');
+    expect(layout).toContain('container-name: team');
     expect(layout).toContain('grid-template-columns: minmax(0, 1fr)');
-    expect(layout).toContain('@container (min-width: 48.75rem)');
+    expect(layout).toContain('@container team (min-width: 48.75rem)');
     expect(layout).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))');
+    // F293 AC-UX6: a 360px workbench column must not need horizontal scrolling.
+    expect(layout).toContain('@container team (max-width: 26rem)');
+    expect(layout).not.toMatch(/@media/);
   });
 
   it('keeps resolver/store construction out of routes and actual-send consumers', () => {

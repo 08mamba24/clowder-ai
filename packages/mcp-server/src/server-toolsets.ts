@@ -1,9 +1,17 @@
+import { hasUsableAgentKeyCredentials } from '@cat-cafe/shared/utils';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { projectAgentKeyCollaborationContract } from './agent-key-collaboration-contract.js';
 import { CANONICAL_TOOL_REGISTRY } from './canonical-server-tools.js';
 import { derivedProfileSet, projectServerFamily } from './canonical-tool-registry.js';
 import { jsonSchemaToZod } from './json-schema-to-zod.js';
+import { runWithNativeTurnAuth } from './native-turn-auth.js';
 import type { FamilyToolDefinition, McpServerFamily } from './tool-governance-snapshot.js';
+import {
+  appendFreshnessNoticeWithinBudget,
+  canRequestFreshnessNotice,
+  protectToolResponse,
+} from './tool-response-budget.js';
 import {
   callbackPost,
   getCallbackConfig,
@@ -25,14 +33,16 @@ export const DESKTOP_CLOUD_PRO_PHASE0_ALLOWED_TOOLS = derivedProfileSet(
   'desktop:cloud-pro-phase0',
 );
 
-const KNOWN_DESKTOP_MODES = new Set(['fable-phase0', 'cloud-pro-phase0']);
+const KNOWN_DESKTOP_MODES = new Set(['fable-phase0', 'cloud-pro-phase0', 'live-companion']);
 
 export interface ToolsetEnv {
+  collectiveWork?: boolean;
+  participation?: boolean;
   readonly?: boolean;
   hasAgentKey?: boolean;
   desktopMode?: string;
   /**
-   * F317 P1: explicit opt-in for the readonly+agent-key union
+   * Explicit opt-in for the readonly+agent-key union
    * (CAT_CAFE_READONLY_AGENT_KEY_UNION=true). A read-only mount must stay
    * strictly read-only unless the launcher explicitly grants the union;
    * CAT_CAFE_AGENT_KEY_* vars inherited from a parent environment no longer
@@ -46,10 +56,23 @@ export interface ToolsetEnv {
  * tests may pass a fixture env to avoid module-cache games.
  */
 export function parseToolsetEnv(env: NodeJS.ProcessEnv = process.env): ToolsetEnv {
+  if (env.CAT_CAFE_MCP_PROFILE && !['collective-participation', 'collective-work'].includes(env.CAT_CAFE_MCP_PROFILE))
+    throw new Error('Unknown CAT_CAFE_MCP_PROFILE');
   const desktopMode = env.CAT_CAFE_DESKTOP_MODE?.trim();
+  if (
+    desktopMode === 'live-companion' &&
+    (!env.CAT_CAFE_NATIVE_TURN_CREDENTIAL_FILE || !env.CAT_CAFE_NATIVE_CONNECTION_ID)
+  )
+    throw new Error('Live companion requires native invocation binding');
   return {
+    collectiveWork: env.CAT_CAFE_MCP_PROFILE === 'collective-work',
+    participation: env.CAT_CAFE_MCP_PROFILE === 'collective-participation',
     readonly: env.CAT_CAFE_READONLY === 'true',
-    hasAgentKey: !!(env.CAT_CAFE_AGENT_KEY_SECRET || env.CAT_CAFE_AGENT_KEY_FILE || env.CAT_CAFE_AGENT_KEY_FILES),
+    // Credential USABILITY, not env presence (#1494): a '{}' variant map, bad
+    // JSON, a blank secret, or a path to a missing sidecar resolve zero keys
+    // and must not widen the surface. Same semantics as the callback auth
+    // resolution (@cat-cafe/shared/utils agent-key-credentials).
+    hasAgentKey: hasUsableAgentKeyCredentials(env),
     desktopMode: desktopMode || undefined,
     agentKeyUnion: env.CAT_CAFE_READONLY_AGENT_KEY_UNION === 'true',
   };
@@ -58,19 +81,29 @@ export function parseToolsetEnv(env: NodeJS.ProcessEnv = process.env): ToolsetEn
 /**
  * Filter a list of tools by the current ToolsetEnv.
  *
- * Precedence (V3, codex APPROVE):
- *   1. desktopMode highest — NOT union with READONLY/AGENT_KEY whitelists.
+ * Precedence:
+ *   0. explicit Collective profile — no union with any other runtime surface.
+ *   1. desktopMode — NOT union with READONLY/AGENT_KEY whitelists.
  *      Unknown value → throw (fail-fast on server startup).
  *   2. !readonly → return all tools unchanged.
  *   3. readonly → READONLY_ALLOWED_TOOLS, plus AGENT_KEY_TOOLS only when the
  *      launcher explicitly opted in (agentKeyUnion) AND agent-key credentials
  *      are present (hasAgentKey). Incidental CAT_CAFE_AGENT_KEY_* vars no
- *      longer widen a read-only mount (F317 P1 — qodercn/cat-cafe-memory 实挂).
+ *      longer widen a read-only mount.
  */
 export function applyReadonlyFilter<T extends { name: string }>(
   tools: readonly T[],
   env: ToolsetEnv = parseToolsetEnv(),
 ): readonly T[] {
+  if (env.collectiveWork) {
+    if (env.participation) throw new Error('Conflicting Collective MCP profiles');
+    const allowed = derivedProfileSet(CANONICAL_TOOL_REGISTRY, 'collective-work');
+    return tools.filter((tool) => allowed.has(tool.name));
+  }
+  if (env.participation) {
+    const allowed = derivedProfileSet(CANONICAL_TOOL_REGISTRY, 'collective-participation');
+    return tools.filter((tool) => allowed.has(tool.name));
+  }
   if (env.desktopMode) {
     if (!KNOWN_DESKTOP_MODES.has(env.desktopMode)) {
       throw new Error(
@@ -80,8 +113,12 @@ export function applyReadonlyFilter<T extends { name: string }>(
     if (env.desktopMode === 'fable-phase0') {
       return tools.filter((t) => DESKTOP_FABLE_PHASE0_ALLOWED_TOOLS.has(t.name));
     }
+    if (env.desktopMode === 'live-companion') {
+      const allowed = derivedProfileSet(CANONICAL_TOOL_REGISTRY, 'desktop:live-companion');
+      return tools.filter((tool) => allowed.has(tool.name));
+    }
     if (env.desktopMode === 'cloud-pro-phase0') {
-      // F238 Phase B1a + F231: cloud-pro-phase0 复用 fable-phase0 同 11 工具白名单
+      // Cloud profile derives its own bounded read/message surface from the registry.
       return tools.filter((t) => DESKTOP_CLOUD_PRO_PHASE0_ALLOWED_TOOLS.has(t.name));
     }
   }
@@ -121,7 +158,10 @@ export const EXPLICIT_TOOL_ANNOTATIONS: Readonly<Record<string, ToolDef['annotat
   CANONICAL_TOOL_REGISTRY.map((definition) => [definition.name, definition.annotations]),
 );
 
-type RegisteredToolHandler = (args: never) => Promise<{
+type RegisteredToolHandler = (
+  args: never,
+  extra: { signal: AbortSignal; _meta?: unknown },
+) => Promise<{
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
   [key: string]: unknown;
@@ -186,7 +226,6 @@ async function maybeFreshnessNotice(toolName: string, isReadOnly: boolean): Prom
     // (Cloud review R2 P2-R2-2)
     freshnessNoticeState.lastNoticeToolCallNum = freshnessNoticeState.toolCallCount;
     if (data?.notice?.text) {
-      freshnessNoticeState.noticeDeliveredCount++;
       return data.notice.text;
     }
   } catch {
@@ -196,9 +235,30 @@ async function maybeFreshnessNotice(toolName: string, isReadOnly: boolean): Prom
 }
 
 function resolvePostMessageRegistrationPrincipal(env: ToolsetEnv): PostMessageRegistrationPrincipal {
+  if (process.env.CAT_CAFE_NATIVE_TURN_CREDENTIAL_FILE) return 'invocation';
   if (getInvocationAuthSignal().hasFullCredentials) return 'invocation';
   if (env.hasAgentKey) return 'agent-key';
   return 'unconfigured';
+}
+
+function projectRegistrationContract(tool: ToolDef, principal: PostMessageRegistrationPrincipal) {
+  const isPostMessage = tool.name === 'cat_cafe_post_message';
+  const canonicalSchema = isPostMessage ? projectPostMessageInputSchema(principal) : tool.inputSchema;
+  const agentContract =
+    principal === 'agent-key'
+      ? projectAgentKeyCollaborationContract(tool.name, canonicalSchema, tool.description)
+      : undefined;
+  const schema = agentContract?.inputSchema ?? canonicalSchema;
+  // Callback tools use Zod raw shapes; limb tools use plain JSON Schema.
+  let inputSchema =
+    typeof schema.type === 'string' && typeof schema.properties === 'object' && schema.properties !== null
+      ? jsonSchemaToZod(schema)
+      : z.object(schema as z.ZodRawShape);
+  if ((isPostMessage && principal === 'invocation') || agentContract) {
+    // Reject unsupported fields before default Zod stripping erases their evidence.
+    inputSchema = (inputSchema as z.ZodObject<z.ZodRawShape>).strict();
+  }
+  return { description: agentContract?.description ?? tool.description, inputSchema };
 }
 
 function registerTools(server: McpServer, tools: readonly ToolDef[], env: ToolsetEnv = parseToolsetEnv()): void {
@@ -212,52 +272,50 @@ function registerTools(server: McpServer, tools: readonly ToolDef[], env: Toolse
     config: RegisterToolConfig,
     cb: RegisteredToolHandler,
   ) => void;
+  const principal = resolvePostMessageRegistrationPrincipal(env);
   for (const tool of tools) {
     const annotations = tool.annotations;
     const deliveryMeta = projectSchemaDeliveryMeta(tool);
-    const postMessagePrincipal =
-      tool.name === 'cat_cafe_post_message' ? resolvePostMessageRegistrationPrincipal(env) : null;
-    // Distinguish Zod raw shape (callback tools) from plain JSON Schema (limb tools).
-    // Zod raw shapes have Zod instances as values; JSON Schema has type/properties keys.
-    const schema = postMessagePrincipal ? projectPostMessageInputSchema(postMessagePrincipal) : tool.inputSchema;
-    let zodSchema =
-      typeof schema.type === 'string' && typeof schema.properties === 'object' && schema.properties !== null
-        ? jsonSchemaToZod(schema)
-        : z.object(schema as z.ZodRawShape);
-    if (postMessagePrincipal === 'invocation') {
-      // Omitting threadId from tools/list is not enough: a default Zod object
-      // strips unknown keys, which would erase the evidence before the handler's
-      // fail-closed KD-1 check. Reject it explicitly at the public boundary.
-      zodSchema = (zodSchema as z.ZodObject<z.ZodRawShape>).strict();
-    }
     registerExplicit(
       tool.name,
       {
-        description: tool.description,
-        inputSchema: zodSchema,
+        ...projectRegistrationContract(tool, principal),
         annotations,
         ...(deliveryMeta ? { _meta: deliveryMeta } : {}),
       },
-      async (args: never) => {
-        const result = await tool.handler(args);
-        const typed = {
-          ...(result as Record<string, unknown>),
-        } as {
-          content: Array<{ type: 'text'; text: string }>;
-          isError?: boolean;
-          [key: string]: unknown;
-        };
+      async (args: never, extra: { signal: AbortSignal; _meta?: unknown }) =>
+        runWithNativeTurnAuth(extra._meta, extra.signal, async () => {
+          const result = tool.implementation.runWithExtra
+            ? await tool.implementation.runWithExtra(args, { signal: extra.signal })
+            : await tool.handler(args);
+          const typed = {
+            ...(result as Record<string, unknown>),
+          } as {
+            content: Array<{ type: 'text'; text: string }>;
+            isError?: boolean;
+            [key: string]: unknown;
+          };
 
-        // F254 B1: Piggyback freshness notice on successful read-only tool results
-        if (!typed.isError && annotations.readOnlyHint) {
-          const noticeText = await maybeFreshnessNotice(tool.name, annotations.readOnlyHint);
-          if (noticeText) {
-            typed.content = [...typed.content, { type: 'text', text: `\n\n${noticeText}` }];
+          // F254 B1: Piggyback freshness notice on successful read-only tool results
+          if (!typed.isError && annotations.readOnlyHint && canRequestFreshnessNotice(typed)) {
+            const noticeText = await maybeFreshnessNotice(tool.name, annotations.readOnlyHint);
+            if (noticeText) {
+              const appended = appendFreshnessNoticeWithinBudget(typed, noticeText);
+              if (appended.appended) {
+                typed.content = appended.result.content as typeof typed.content;
+                freshnessNoticeState.noticeDeliveredCount++;
+              } else {
+                // An older API may violate the notice-length contract after it
+                // has already recorded delivery. Keep the true notice visible.
+                typed.content = [...typed.content, { type: 'text', text: `\n\n${noticeText}` }];
+                freshnessNoticeState.noticeDeliveredCount++;
+                return typed;
+              }
+            }
           }
-        }
 
-        return typed;
-      },
+          return protectToolResponse(tool.name, typed, annotations.readOnlyHint);
+        }),
     );
   }
 }
@@ -268,11 +326,13 @@ export function registerCollabToolset(server: McpServer, env?: ToolsetEnv): void
 }
 
 export function registerMemoryToolset(server: McpServer, env?: ToolsetEnv): void {
-  registerTools(server, buildMemoryTools(env));
+  const e = env ?? parseToolsetEnv();
+  registerTools(server, buildMemoryTools(e), e);
 }
 
 export function registerSignalToolset(server: McpServer, env?: ToolsetEnv): void {
-  registerTools(server, buildSignalTools(env));
+  const e = env ?? parseToolsetEnv();
+  registerTools(server, buildSignalTools(e), e);
 }
 
 // F061: limbTools 默认不走 readonly filter（Antigravity 设计要求 — 让 antigravity
@@ -291,26 +351,29 @@ export function buildLimbTools(env?: ToolsetEnv): readonly ToolDef[] {
   // full limb surface in standalone limb.ts entry. Antigravity / default
   // (no desktopMode set) keeps the F061 contract: limb fully exposed,
   // not filtered by readonly.
-  if (e.desktopMode) {
+  if (e.desktopMode || e.participation || e.collectiveWork) {
     return buildFamilyTools('limb', e);
   }
   return CANONICAL_TOOL_REGISTRY.filter((definition) => definition.serverFamily === 'limb');
 }
 
 export function registerLimbToolset(server: McpServer, env?: ToolsetEnv): void {
-  registerTools(server, buildLimbTools(env));
+  const e = env ?? parseToolsetEnv();
+  registerTools(server, buildLimbTools(e), e);
 }
 
 export function registerAudioToolset(server: McpServer, env?: ToolsetEnv): void {
-  registerTools(server, buildAudioTools(env));
+  const e = env ?? parseToolsetEnv();
+  registerTools(server, buildAudioTools(e), e);
 }
 
 export function registerFinanceToolset(server: McpServer, env?: ToolsetEnv): void {
-  registerTools(server, buildFinanceTools(env));
+  const e = env ?? parseToolsetEnv();
+  registerTools(server, buildFinanceTools(e), e);
 }
 
 export function registerFullToolset(server: McpServer, env?: ToolsetEnv): void {
-  // F317 P1: parse the env ONCE and thread it explicitly so a single,
+  // Parse the env ONCE and thread it explicitly so a single,
   // injectable ToolsetEnv governs every family. Under CAT_CAFE_READONLY=true
   // the surface is strict (READONLY_ALLOWED_TOOLS only) unless the launcher
   // explicitly opts into the agent-key union. Tests inject fixtures here

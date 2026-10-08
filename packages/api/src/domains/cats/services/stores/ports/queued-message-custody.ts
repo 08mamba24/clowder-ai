@@ -6,9 +6,16 @@ import type {
   QueueTargetOutcome,
 } from '@cat-cafe/shared';
 import {
+  FRESHNESS_CARRIER_DELIVERY_SEMANTICS,
+  FRESHNESS_CARRIER_PROVIDERS,
+  FRESHNESS_CARRIERS,
+  isQueueDispatchDispositionEvidence,
+} from '@cat-cafe/shared';
+import {
   type ActionSuccessorFence,
   actionSuccessorFencesMatch,
 } from '../../../../ball-custody/ActionSuccessorAdmissionContract.js';
+import type { TypedWaitCustodyGuard } from '../../../../ball-custody/TypedWaitCustodyGuard.js';
 import { normalizeOwnerAuthProvenance, type OwnerAuthProvenance } from '../../owner-auth-provenance.js';
 
 export type QueuedMessageCustodyStatus = 'queued' | 'processing' | 'terminal';
@@ -17,6 +24,12 @@ export interface QueueBodyExposure {
   targetCatId: string;
   invocationId: string;
   seenAt: number;
+}
+
+/** Read provenance is independent of the first body exposure timestamp. */
+export interface QueueReadEvidenceWitness extends QueueBodyExposure {
+  evidenceKind: 'full_contiguous_thread_context';
+  handoffEventId?: string;
 }
 
 export interface QueueTargetCarrierBinding {
@@ -88,6 +101,7 @@ export interface QueuedMessageCustody {
   ownerUserId?: string;
   /** Immutable server-derived authentication fact. Missing only on legacy records. */
   ownerAuthProvenance?: OwnerAuthProvenance;
+  executionScope?: 'collective-participation' | 'collective-work';
   /** The message started this invocation; keep custody but suppress the work-period timeline dock. */
   receiptScope?: 'primary_trigger' | 'cross_thread_delivery';
   /** F264: per-target author-declared work disposition. Missing legacy records mean next_work. */
@@ -104,6 +118,8 @@ export interface QueuedMessageCustody {
    */
   carrierStateByTargetCatId?: Record<string, QueueTargetCarrierState>;
   intent: string;
+  /** Producer admission source category. Optional, immutable once assigned. */
+  sourceCategory?: string;
   status: QueuedMessageCustodyStatus;
   allTargetCats: CatId[];
   pendingTargetCats: CatId[];
@@ -115,6 +131,7 @@ export interface QueuedMessageCustody {
   seenInvocationIdByCatId: Record<string, string>;
   /** Append-only exact prompt-body exposure history; message id is the enclosing custody record. */
   bodyExposures?: QueueBodyExposure[];
+  readEvidenceWitnesses?: QueueReadEvidenceWitness[];
   /** F1308: append-only target delivery attempts; retries always append. */
   targetAttempts?: QueueTargetAttempt[];
   failedByCatIds: CatId[];
@@ -142,6 +159,8 @@ export interface QueuedMessageCustody {
 }
 
 export interface QueueCustodyTransitionInput {
+  /** Transient exact Task authority, consumed at the same boundary as this Queue CAS. */
+  waitContinuationGuards?: readonly TypedWaitCustodyGuard[];
   expectedRevision: number;
   next: QueuedMessageCustody;
   deliveredAt?: number;
@@ -258,6 +277,21 @@ export function queueCustodyAdmissionIntentsMatch(
 
 function assertCustodyIdentity(custody: QueuedMessageCustody): void {
   if (custody.version !== 1) throw new Error('queue custody version must be 1');
+  if (
+    custody.executionScope !== undefined &&
+    custody.executionScope !== 'collective-participation' &&
+    custody.executionScope !== 'collective-work'
+  )
+    throw new Error('invalid queue executionScope');
+  if (
+    custody.executionScope &&
+    (custody.allTargetCats.length !== 1 ||
+      (custody.executionScope === 'collective-participation'
+        ? custody.ownerAuthProvenance !== 'unknown'
+        : custody.ownerAuthProvenance !== 'unknown' && custody.ownerAuthProvenance !== 'strict'))
+  ) {
+    throw new Error('Collective execution scope must preserve exact target and provenance');
+  }
   if (!custody.entryId) throw new Error('queue custody entryId is required');
   if (custody.ownerUserId !== undefined && custody.ownerUserId.length === 0) {
     throw new Error('queue custody ownerUserId must be non-empty');
@@ -511,7 +545,9 @@ function assertTargetOutcomes(
     }
     if (
       !outcome.invocationId ||
-      (outcome.evidenceRef?.kind !== 'invocation_lineage' && outcome.evidenceRef?.kind !== 'turn_execution') ||
+      (outcome.evidenceRef?.kind !== 'invocation_lineage' &&
+        outcome.evidenceRef?.kind !== 'turn_execution' &&
+        !isQueueDispatchDispositionEvidence(outcome.evidenceRef)) ||
       outcome.evidenceRef.invocationId !== outcome.invocationId
     ) {
       throw new Error('target outcome must carry matching invocation evidence');
@@ -519,10 +555,22 @@ function assertTargetOutcomes(
     if (
       outcome.disposition !== 'responded' &&
       outcome.disposition !== 'completed_with_turn' &&
-      outcome.disposition !== 'managed_hold_disposition'
+      outcome.disposition !== 'managed_hold_disposition' &&
+      outcome.disposition !== 'dispatch_disposition'
     ) {
       throw new Error(`invalid target outcome disposition: ${outcome.disposition}`);
     }
+    if ((outcome.disposition === 'dispatch_disposition') !== (outcome.evidenceRef.kind === 'dispatch_disposition')) {
+      throw new Error('dispatch outcome requires exact dispatch event evidence');
+    }
+    if (
+      outcome.evidenceRef.kind === 'dispatch_disposition' &&
+      (outcome.evidenceRef.handoffEventId !== `route:${outcome.evidenceRef.sourceMessageId}:${catId}` ||
+        outcome.evidenceRef.dispositionEventId !==
+          `dispatch-disposition:${outcome.invocationId}:${outcome.evidenceRef.sourceMessageId}` ||
+        outcome.handledAt < outcome.evidenceRef.dispositionAt)
+    )
+      throw new Error('dispatch outcome event identity or timestamp mismatch');
     if (outcome.consumption !== undefined) {
       if (outcome.consumption.kind === 'terminal_silent') {
         if (
@@ -576,6 +624,26 @@ function assertBodyExposures(custody: QueuedMessageCustody, allTargets: Readonly
     const key = `${exposure.targetCatId}\u0000${exposure.invocationId}`;
     if (keys.has(key)) throw new Error('body exposures must be unique by target invocation');
     keys.add(key);
+  }
+  const readKeys = new Set<string>();
+  for (const witness of custody.readEvidenceWitnesses ?? []) {
+    const exposure = custody.bodyExposures?.find(
+      (item) => item.targetCatId === witness.targetCatId && item.invocationId === witness.invocationId,
+    );
+    assertFiniteNonNegative(witness.seenAt, 'readEvidence.seenAt');
+    if (!exposure || witness.seenAt < exposure.seenAt || witness.evidenceKind !== 'full_contiguous_thread_context') {
+      throw new Error('read evidence must bind an exact prior body exposure and a supported read kind');
+    }
+    if (
+      witness.handoffEventId !== undefined &&
+      (typeof witness.handoffEventId !== 'string' ||
+        !witness.handoffEventId.startsWith('route:') ||
+        !witness.handoffEventId.endsWith(`:${witness.targetCatId}`))
+    )
+      throw new Error('read evidence handoff identity is invalid');
+    const key = JSON.stringify(witness);
+    if (readKeys.has(key)) throw new Error('duplicate read evidence witness');
+    readKeys.add(key);
   }
 }
 
@@ -695,27 +763,13 @@ function assertTargetAttempts(custody: QueuedMessageCustody, allTargets: Readonl
 function assertAuthorIntentCarrierCapability(authorIntent: QueueAuthorIntent): void {
   const capability = authorIntent.carrierCapability;
   if (!capability) return;
-  if (!['openai_codex', 'anthropic', 'kimi', 'other'].includes(capability.provider)) {
+  if (!FRESHNESS_CARRIER_PROVIDERS.includes(capability.provider)) {
     throw new Error('invalid queue author intent carrier provider');
   }
-  if (
-    ![
-      'codex_app_server',
-      'codex_exec_json',
-      'claude_print_sdk',
-      'claude_stream_json',
-      'kimi_stream_json',
-      'mcp_result_piggyback',
-      'other',
-    ].includes(capability.carrier)
-  ) {
+  if (!FRESHNESS_CARRIERS.includes(capability.carrier)) {
     throw new Error('invalid queue author intent carrier');
   }
-  if (
-    !['exact_active_turn', 'queued_internal_turn', 'mcp_result_piggyback', 'unsupported', 'undeclared'].includes(
-      capability.deliverySemantics,
-    )
-  ) {
+  if (!FRESHNESS_CARRIER_DELIVERY_SEMANTICS.includes(capability.deliverySemantics)) {
     throw new Error('invalid queue author intent carrier delivery semantics');
   }
 }
@@ -855,6 +909,10 @@ function assertTargetOutcomeMonotonicity(current: QueuedMessageCustody, next: Qu
 }
 
 function assertBodyExposureMonotonicity(current: QueuedMessageCustody, next: QueuedMessageCustody): void {
+  const nextReadWitnesses = new Set((next.readEvidenceWitnesses ?? []).map((item) => JSON.stringify(item)));
+  if ((current.readEvidenceWitnesses ?? []).some((item) => !nextReadWitnesses.has(JSON.stringify(item)))) {
+    throw new Error('queue custody read evidence is append-only');
+  }
   const nextByKey = new Map(
     (next.bodyExposures ?? []).map((exposure) => [`${exposure.targetCatId}\u0000${exposure.invocationId}`, exposure]),
   );
@@ -1051,12 +1109,16 @@ export function assertQueueCustodyTransition(current: QueuedMessageCustody, inpu
   if (input.next.ownerAuthProvenance !== current.ownerAuthProvenance) {
     throw new Error('queue custody ownerAuthProvenance is immutable');
   }
+  if (input.next.executionScope !== current.executionScope) throw new Error('queue executionScope is immutable');
   if (input.next.ownerUserId !== current.ownerUserId) {
     throw new Error('queue custody ownerUserId is immutable');
   }
   if (input.next.version !== current.version) throw new Error('queue custody version is immutable');
   if (input.next.createdAt !== current.createdAt) throw new Error('queue custody createdAt is immutable');
   if (input.next.intent !== current.intent) throw new Error('queue custody intent is immutable');
+  if (input.next.sourceCategory !== current.sourceCategory) {
+    throw new Error('queue custody sourceCategory is immutable');
+  }
   if (current.receiptScope !== undefined && input.next.receiptScope !== current.receiptScope) {
     throw new Error('queue custody receipt scope is immutable once assigned');
   }
@@ -1120,6 +1182,9 @@ export function cloneQueuedMessageCustody(custody: QueuedMessageCustody): Queued
     seenByCatIds: [...custody.seenByCatIds],
     seenInvocationIdByCatId: { ...custody.seenInvocationIdByCatId },
     ...(custody.bodyExposures ? { bodyExposures: custody.bodyExposures.map((exposure) => ({ ...exposure })) } : {}),
+    ...(custody.readEvidenceWitnesses
+      ? { readEvidenceWitnesses: custody.readEvidenceWitnesses.map((witness) => ({ ...witness })) }
+      : {}),
     ...(custody.targetAttempts ? { targetAttempts: custody.targetAttempts.map((attempt) => ({ ...attempt })) } : {}),
     ...(custody.carrierByTargetCatId ? { carrierByTargetCatId: structuredClone(custody.carrierByTargetCatId) } : {}),
     ...(custody.carrierStateByTargetCatId

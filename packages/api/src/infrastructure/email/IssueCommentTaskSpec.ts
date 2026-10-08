@@ -24,6 +24,8 @@ import {
 } from '../../domains/community/issue-analysis/issue-comment-classifier.js';
 import type { GitHubWaitLifecycleService } from '../../domains/github-signals/GitHubWaitLifecycleService.js';
 import type { ExecuteContext, TaskSpec_P1 } from '../../infrastructure/scheduler/types.js';
+import { gitHubAdmissionCanContinue, gitHubObjectSignal } from '../github/admission-budget.js';
+import { GitHubRateLimitError } from '../github/request-budget.js';
 import type { ConnectorInvokeTrigger, ConnectorTriggerPolicy } from './ConnectorInvokeTrigger.js';
 import type { IssueComment, IssueCommentRouter } from './IssueCommentRouter.js';
 
@@ -32,6 +34,14 @@ export interface IssueCommentSignal {
   repoFullName: string;
   issueNumber: number;
   newComments: IssueComment[];
+  /**
+   * #1392 R3: this poll's comments as the typed wait must see them — unfiltered by the community
+   * delivery policy. `newComments` answers "what should the community path notify about"; this
+   * answers "what facts may the wait matcher judge". They were one list, so a comment the community
+   * classifier silenced was never offered to the accepted issue audience while the cursor advanced
+   * past it, and the owner could not receive it on any later poll.
+   */
+  readonly waitFactComments?: IssueComment[];
   readonly deliveredCursor?: number;
   readonly retryWake?: IssuePendingWake;
   readonly commitRoutedWake?: (wake: IssuePendingWake) => Promise<void>;
@@ -48,10 +58,23 @@ export interface IssueTrackingMetadata {
 export interface IssueCommentTaskSpecOptions {
   readonly taskStore: ITaskStore;
   readonly issueCommentRouter: IssueCommentRouter;
-  readonly fetchComments: (repoFullName: string, issueNumber: number, sinceId?: number) => Promise<IssueComment[]>;
-  readonly fetchIssueState: (repoFullName: string, issueNumber: number) => Promise<'open' | 'closed'>;
+  readonly fetchComments: (
+    repoFullName: string,
+    issueNumber: number,
+    sinceId?: number,
+    signal?: AbortSignal,
+  ) => Promise<IssueComment[]>;
+  readonly fetchIssueState: (
+    repoFullName: string,
+    issueNumber: number,
+    signal?: AbortSignal,
+  ) => Promise<'open' | 'closed'>;
   /** Preferred actor-aware metadata path; fetchIssueState remains for backward-compatible adapters. */
-  readonly fetchIssueMetadata?: (repoFullName: string, issueNumber: number) => Promise<IssueTrackingMetadata>;
+  readonly fetchIssueMetadata?: (
+    repoFullName: string,
+    issueNumber: number,
+    signal?: AbortSignal,
+  ) => Promise<IssueTrackingMetadata>;
   readonly invokeTrigger?: ConnectorInvokeTrigger;
   /** F280 Phase C canonical one-shot wait lifecycle. Production wiring requires this. */
   readonly waitLifecycle?: Pick<GitHubWaitLifecycleService, 'observe'>;
@@ -195,12 +218,15 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
     opts.log.info(`[issue-comment] Issue ${issueKey} routed message wake accepted; tracking remains active`);
   }
 
+  let nextTaskIndex = 0;
   return {
     id: opts.id ?? 'issue-comment',
     profile: 'poller',
     trigger: { type: 'interval', ms: opts.pollIntervalMs ?? 60_000 },
     admission: {
-      async gate() {
+      async gate(ctx) {
+        const gateSignal = ctx?.signal;
+        gateSignal?.throwIfAborted();
         const tasks = (await opts.taskStore.listByKind('issue_tracking')).filter((t) => t.status !== 'done');
         if (tasks.length === 0) {
           return { run: false, reason: 'no tracked issues' };
@@ -208,7 +234,14 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
 
         const workItems: { signal: IssueCommentSignal; subjectKey: string }[] = [];
 
-        for (const task of tasks) {
+        const startIndex = nextTaskIndex % tasks.length;
+        for (let step = 0; step < tasks.length; step++) {
+          gateSignal?.throwIfAborted();
+          if (!gitHubAdmissionCanContinue(ctx)) break;
+          const signal = gitHubObjectSignal(ctx);
+          const index = (startIndex + step) % tasks.length;
+          const task = tasks[index]!;
+          nextTaskIndex = (index + 1) % tasks.length;
           try {
             const parsed = task.subjectKey ? parseIssueSubjectKey(task.subjectKey) : null;
             if (!parsed) continue;
@@ -237,8 +270,8 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
             // AC-D4: Check issue state (fetch before comment processing so
             // pending comments are delivered before auto-close — P2-cloud fix)
             const issueMetadata = opts.fetchIssueMetadata
-              ? await opts.fetchIssueMetadata(repoFullName, issueNumber)
-              : { state: await opts.fetchIssueState(repoFullName, issueNumber) };
+              ? await opts.fetchIssueMetadata(repoFullName, issueNumber, signal)
+              : { state: await opts.fetchIssueState(repoFullName, issueNumber, signal) };
             const issueState = issueMetadata.state;
 
             if (opts.eventLog) {
@@ -259,7 +292,7 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
 
               // Fetch since delivery cursor (may include already-collected comments that weren't delivered)
               const fetchSince = Math.min(collectionCursor, deliveryCursor); // = deliveryCursor always
-              const comments = await opts.fetchComments(repoFullName, issueNumber, fetchSince);
+              const comments = await opts.fetchComments(repoFullName, issueNumber, fetchSince, signal);
               const allPending = comments.filter((c) => c.id > fetchSince);
 
               // ── Collection pass: attempt append for ALL pending-delivery comments ────
@@ -369,16 +402,30 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
                 processedComments.length > 0
                   ? Math.max(...processedComments.map((comment) => comment.id))
                   : deliveryCursor;
+              // #1392 R3: everything successfully collected this poll, community verdict aside.
+              const waitFactComments = opts.waitLifecycle
+                ? processedComments.filter((comment) => comment.id > deliveryCursor)
+                : [];
 
               if (issueState === 'closed') {
-                // Issue closed: deliver final pending batch (if any), then mark done
-                if (pendingDelivery.length > 0) {
+                if (processedComments.length < allPending.length) {
+                  // Cloud R6 P1-2 / #1392 AC-2: collection failed midway — processedComments is shorter
+                  // than allPending because the loop broke on an append/projector error. Do NOT end
+                  // tracking, not even with the part that was collected: a done task is never polled
+                  // again, so the failed comment would be dropped for good. The delivery cursor is
+                  // still before this batch, so the next poll collects it again and closes with it.
+                  opts.log.info(
+                    `[issue-comment] Issue ${issueKey} closed but collection incomplete (${processedComments.length}/${allPending.length}) — will retry`,
+                  );
+                } else if (pendingDelivery.length > 0 || waitFactComments.length > 0) {
+                  // Issue closed: deliver the final batch, then mark done
                   workItems.push({
                     signal: {
                       task,
                       repoFullName,
                       issueNumber,
                       newComments: pendingDelivery,
+                      waitFactComments,
                       issueState,
                       deliveredCursor: processedDeliveryBoundary,
                       commitRoutedWake: (wake) => persistRoutedWake(task.id, issueKey, wake),
@@ -386,14 +433,6 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
                     },
                     subjectKey: task.subjectKey!,
                   });
-                } else if (processedComments.length < allPending.length) {
-                  // Cloud R6 P1-2: Collection failed midway — processedComments is shorter than
-                  // allPending because the loop broke on an append/projector error. Do NOT mark
-                  // done: the cursor is still before the failed comment so the next poll can retry.
-                  // Marking done here would permanently stop retries on a transient failure.
-                  opts.log.info(
-                    `[issue-comment] Issue ${issueKey} closed but collection incomplete (${processedComments.length}/${allPending.length}) — will retry`,
-                  );
                 } else {
                   // No pending delivery AND all fetched comments were successfully collected
                   // (or no new comments at all) → safe to close the tracking task.
@@ -423,7 +462,7 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
                 continue;
               }
 
-              if (pendingDelivery.length === 0) {
+              if (pendingDelivery.length === 0 && waitFactComments.length === 0) {
                 // All fetched comments were echoes. Advance the delivery cursor past them
                 // without updating lastNotifiedAt to prevent permanent polling churn —
                 // without this, min(collectionCursor, deliveryCursor) = deliveryCursor keeps
@@ -446,6 +485,7 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
                   repoFullName,
                   issueNumber,
                   newComments: pendingDelivery,
+                  waitFactComments,
                   issueState,
                   deliveredCursor: processedDeliveryBoundary,
                   commitRoutedWake: (wake) => persistRoutedWake(task.id, issueKey, wake),
@@ -459,7 +499,7 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
                 commentCursors.get(issueKey),
                 task.automationState?.issue?.lastCommentCursor,
               );
-              const comments = await opts.fetchComments(repoFullName, issueNumber, commentCursor);
+              const comments = await opts.fetchComments(repoFullName, issueNumber, commentCursor, signal);
               const allNewComments = comments.filter((c) => c.id > commentCursor);
 
               // Use the same canonical classifier as dual-cursor collection/delivery so
@@ -471,15 +511,19 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
 
               const maxCommentId =
                 allNewComments.length > 0 ? Math.max(...allNewComments.map((c) => c.id)) : commentCursor;
+              // #1392 R3: the legacy path has the same split to make.
+              const waitFactComments = opts.waitLifecycle ? allNewComments : [];
 
-              // All new items were echo → advance cursor without notification
-              if (newComments.length === 0 && allNewComments.length > 0) {
+              // All new items were echo → advance cursor without notification.
+              // #1392 R3: only when no typed wait is watching. With one, the matcher has not judged
+              // these comments yet; advancing here is exactly what made them unreachable forever.
+              if (newComments.length === 0 && allNewComments.length > 0 && !opts.waitLifecycle) {
                 await advanceCursor(task.id, issueKey, maxCommentId);
               }
 
               // AC-D4: Issue closed → deliver pending comments first, then auto-close
               if (issueState === 'closed') {
-                if (newComments.length > 0) {
+                if (newComments.length > 0 || waitFactComments.length > 0) {
                   // Deliver final comments; only a durable accepted wake marks the task done.
                   workItems.push({
                     signal: {
@@ -487,6 +531,7 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
                       repoFullName,
                       issueNumber,
                       newComments,
+                      waitFactComments,
                       issueState,
                       deliveredCursor: maxCommentId,
                       commitRoutedWake: (wake) => persistRoutedWake(task.id, issueKey, wake, true),
@@ -518,7 +563,7 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
                 continue;
               }
 
-              if (newComments.length === 0) continue;
+              if (newComments.length === 0 && waitFactComments.length === 0) continue;
 
               workItems.push({
                 signal: {
@@ -526,6 +571,7 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
                   repoFullName,
                   issueNumber,
                   newComments,
+                  waitFactComments,
                   issueState,
                   deliveredCursor: maxCommentId,
                   commitRoutedWake: (wake) => persistRoutedWake(task.id, issueKey, wake, true),
@@ -535,6 +581,8 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
               });
             }
           } catch (err) {
+            gateSignal?.throwIfAborted();
+            if (err instanceof GitHubRateLimitError) continue;
             opts.log.warn(
               { err, taskId: task.id, subjectKey: task.subjectKey },
               '[issue-comment] fail-open: skipping issue where fetch failed',
@@ -542,6 +590,7 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
           }
         }
 
+        gateSignal?.throwIfAborted();
         if (workItems.length === 0) {
           return { run: false, reason: 'no new comments' };
         }
@@ -568,20 +617,25 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
         }
 
         if (opts.waitLifecycle) {
+          // #1392 R3: judge the raw facts, not the community-filtered subset.
+          const observedComments = signal.waitFactComments ?? signal.newComments;
           const deliveredCursor =
             signal.deliveredCursor ??
-            (signal.newComments.length > 0
-              ? Math.max(...signal.newComments.map((comment) => comment.id))
+            (observedComments.length > 0
+              ? Math.max(...observedComments.map((comment) => comment.id))
               : (task.automationState?.issue?.lastCommentCursor ?? 0));
-          await opts.waitLifecycle.observe({
+          const observed = await opts.waitLifecycle.observe({
             taskId: task.id,
             facts: {
               issue: {
                 state: signal.issueState ?? 'open',
-                comments: signal.newComments.map((comment) => ({
+                comments: observedComments.map((comment) => ({
                   id: comment.id,
                   author: comment.author,
                   sourceRef: `github:issue-comment:${comment.id}`,
+                  // #1392 AC-7: the audience is applied at delivery, so it needs what GitHub said
+                  // about the author. The body is not carried here: no accepted issue default reads it.
+                  ...(comment.actorType ? { actorType: comment.actorType } : {}),
                 })),
               },
             },
@@ -595,6 +649,30 @@ export function createIssueCommentTaskSpec(opts: IssueCommentTaskSpecOptions): T
             ...(signal.issueState === 'closed' ? { subjectState: 'closed' as const } : {}),
           });
           ctx?.signal?.throwIfAborted();
+          // #1392 AC-6: observe() writes the owner's message; it does not start the owner. Returning
+          // here left every tracked issue comment delivered and unanswered. Mirrors the PR-side
+          // task specs: one best-effort wake for the message that was actually delivered.
+          if (observed.kind === 'notified' && opts.invokeTrigger) {
+            const ownerCatId = observed.task.ownerCatId ?? task.ownerCatId;
+            try {
+              await opts.invokeTrigger.trigger(
+                observed.task.threadId,
+                ownerCatId as CatId,
+                task.userId,
+                observed.content,
+                observed.messageId,
+                undefined,
+                {
+                  priority: 'normal',
+                  reason: 'github_wait_satisfied',
+                  sourceCategory: 'issue',
+                  coalesceKey: `${subjectKey}:wait:${ownerCatId || 'unassigned'}`,
+                },
+              );
+            } catch (err) {
+              opts.log.warn({ err, subjectKey }, '[issue-comment] wake after delivery failed (best-effort)');
+            }
+          }
           return;
         }
 

@@ -114,6 +114,29 @@ class FakeRedis {
       .sort((left, right) => left.score - right.score)
       .map((entry) => entry.member);
   }
+  multi() {
+    const operations = [];
+    const pipeline = {
+      rpush: (...args) => {
+        operations.push(() => this.rpush(...args));
+        return pipeline;
+      },
+      expire: (...args) => {
+        operations.push(() => this.expire(...args));
+        return pipeline;
+      },
+      zadd: (...args) => {
+        operations.push(() => this.zadd(...args));
+        return pipeline;
+      },
+      zremrangebyscore: (...args) => {
+        operations.push(() => this.zremrangebyscore(...args));
+        return pipeline;
+      },
+      exec: async () => Promise.all(operations.map(async (operation) => [null, await operation()])),
+    };
+    return pipeline;
+  }
 }
 
 describe('F254 D2 provider-native freshness truth', () => {
@@ -1082,7 +1105,7 @@ describe('F254 D2 provider-native freshness truth', () => {
       '/tmp/exit-code',
     );
     assert.match(command, /< '\/tmp\/in\.fifo'/);
-    assert.match(command, /tee '\/tmp\/out\.fifo'/);
+    assert.match(command, /\/tee' '\/tmp\/out\.fifo'/);
     assert.doesNotMatch(command, /turn\/steer|expectedTurnId|freshness notice/);
   });
 
@@ -1235,6 +1258,7 @@ describe('F254 D2 provider-native freshness truth', () => {
     const archived = [];
     const service = new CodexAgentService({
       carrierMode: 'app_server',
+      cliCommand: process.execPath,
       l0CompilerFn: fakeL0Compiler,
       model: 'gpt-5.3-codex',
       rawArchive: { append: async (invocationId, payload) => archived.push({ invocationId, payload }) },
@@ -1282,6 +1306,7 @@ describe('F254 D2 provider-native freshness truth', () => {
     let attempts = 0;
     const service = new CodexAgentService({
       carrierMode: 'app_server',
+      cliCommand: process.execPath,
       l0CompilerFn: fakeL0Compiler,
       model: 'gpt-5.3-codex',
     });
@@ -1316,6 +1341,7 @@ describe('F254 D2 provider-native freshness truth', () => {
 
   it('projects app-server lifecycle and routes user cancel through turn/interrupt', async () => {
     const wire = new FakeAppServerWire();
+    const { promise: turnStarted, resolve: onTurnStarted } = Promise.withResolvers();
     const controller = new AbortController();
     const originalWrite = wire.write.bind(wire);
     wire.write = async (message) => {
@@ -1333,6 +1359,7 @@ describe('F254 D2 provider-native freshness truth', () => {
     let factoryInput;
     const service = new CodexAgentService({
       carrierMode: 'app_server',
+      cliCommand: process.execPath,
       l0CompilerFn: fakeL0Compiler,
       model: 'gpt-5.3-codex',
     });
@@ -1347,12 +1374,11 @@ describe('F254 D2 provider-native freshness truth', () => {
         },
       })) {
         messages.push(message);
+        if (message.metadata?.diagnostics?.appServerLifecycle?.stage === 'turn_accepted') onTurnStarted();
       }
     })();
 
-    while (!wire.writes.some((message) => message.method === 'turn/start')) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
+    await Promise.race([turnStarted, run.then(() => assert.fail('invocation ended before turn/start'))]);
     controller.abort('user_cancel');
     await run;
 
@@ -1414,6 +1440,7 @@ describe('F254 D2 provider-native freshness truth', () => {
     };
     const service = new CodexAgentService({
       carrierMode: 'app_server',
+      cliCommand: process.execPath,
       l0CompilerFn: fakeL0Compiler,
       model: 'gpt-5.3-codex',
     });
@@ -1473,6 +1500,7 @@ describe('F254 D2 provider-native freshness truth', () => {
     };
     const service = new CodexAgentService({
       carrierMode: 'app_server',
+      cliCommand: process.execPath,
       l0CompilerFn: fakeL0Compiler,
       model: 'gpt-5.3-codex',
       spawnFn: () => assert.fail('failed app-server turn must not replay through exec'),

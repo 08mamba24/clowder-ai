@@ -1,6 +1,7 @@
 ---
 feature_ids: [F201]
-related_features: [F061, F172, F174, F178, F183, F193, F194, F197, F211]
+tips_exempt: "The September 29 change assigns future carrier reliability regression to F325 while retaining historical acceptance; no new recovery control or user workflow ships here."
+related_features: [F061, F172, F174, F178, F183, F193, F194, F197, F211, F325]
 topics: [antigravity, reliability, side-effect-journal, availability, recovery, smoke-test, rich-block]
 doc_kind: spec
 created: 2026-05-15
@@ -9,6 +10,8 @@ created: 2026-05-15
 # F201: Antigravity Reliability Contract — Bengal可靠可用性闭环
 
 > **Status**: done | **Owner**: Maine Coon（Maine Coon） | **Reviewer**: Ragdoll Opus 4.6 + Ragdoll Opus 4.7 | **Priority**: P0
+
+**2026-09-29 reliability successor**：历史 done 与证据保留；[F325](F325-antigravity-native-parity.md) B4/C 承接新载体的 no-blind-retry、effect provenance、liveness/recovery 回归。旧 IDE 的执行 adapter 按 F325 D 退役，已完成合同不因换载体失效。
 
 Architecture cell: `transport` + `bubble-pipeline`
 Map delta: none — F201 收口 Antigravity provider/retry/recovery 契约，并通过 F183 bubble pipeline 呈现 typed recovery card；不新增并行 transport 或 UI 渲染边界。
@@ -245,7 +248,7 @@ close_gate_report:
 
   cvo_signoff:
     date: 2026-05-19
-    source: "thread event 0001779184326808-000249-989c2493"
+    source: "thread event private-source-id"
     decisions:
       - "Approved deleting/reclassifying legacy AC-B2, AC-C2, and AC-C3, with the condition that the report aligns to current implementation."
       - "Confirmed controlled YOLO timeout boundary after implementation check: the 600s default applies per Antigravity run_command tool execution, not to the whole cascade or a group of tools."

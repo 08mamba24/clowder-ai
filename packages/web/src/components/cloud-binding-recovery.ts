@@ -1,10 +1,12 @@
 import { isCloudBridgeRecoveryV1 } from '@cat-cafe/shared';
 import type { ChatMessage } from '@/stores/chat-types';
-import { latestRetryableQueueAttempt } from './queue-retry-action';
+import type { RecoveryDeliveryStatus } from './cloud-binding-recovery-operations';
+import { latestCloudReceiptForTarget, latestRetryableQueueAttempt } from './queue-retry-action';
 
 export interface CloudBindingRecoveryProjection {
   targetCatId: string;
   attemptId?: string;
+  deliveryStatus?: RecoveryDeliveryStatus;
 }
 
 function recoveryFromNotice(message: ChatMessage) {
@@ -29,12 +31,24 @@ export function projectCloudBindingRecovery(
   }
   if (!recovery) return undefined;
 
-  const receipt = source.extra?.queueReceipt;
-  if (!receipt) return { targetCatId: recovery.targetCatId };
-  const target = receipt.targets.find((candidate) => candidate.catId === recovery?.targetCatId);
-  if (!target) return undefined;
+  const target = source.extra?.queueReceipt?.targets.find((candidate) => candidate.catId === recovery?.targetCatId);
+  const latestAttempt = target?.attempts?.at(-1);
+  const receipt = latestCloudReceiptForTarget(source.id, recovery.targetCatId, timelineMessages, latestAttempt);
+  if (receipt) {
+    if (receipt.status === 'sent' && receipt.transport === 'host' && receipt.hostMessageId)
+      return { targetCatId: recovery.targetCatId, deliveryStatus: 'sent' };
+    if (receipt.status === 'unknown') return { targetCatId: recovery.targetCatId, deliveryStatus: 'unknown' };
+    if (receipt.status === 'failed' && receipt.transport === 'host')
+      return { targetCatId: recovery.targetCatId, deliveryStatus: 'failed' };
+  }
+  if (!target) return { targetCatId: recovery.targetCatId };
   const attempt = latestRetryableQueueAttempt(target);
-  if (!attempt) return undefined;
+  if (!attempt)
+    return {
+      targetCatId: recovery.targetCatId,
+      deliveryStatus:
+        latestAttempt && ['queued', 'starting', 'appended'].includes(latestAttempt.state) ? 'sending' : 'unknown',
+    };
   return { targetCatId: recovery.targetCatId, attemptId: attempt.id };
 }
 
