@@ -6,7 +6,8 @@ import { resolveEvolutionMediaTarget } from './evolution-media-surface';
 import { parseFileNavigationOrigin } from './file-navigation-origin';
 import { resolveMessagePublicationSource } from './message-publication-surface';
 import { resolvePublicationTarget } from './publication-surface';
-import { createEntrustedReturnFromRef, resolveFilesTarget } from './real-surface-adapters';
+import { createEntrustedReturnFromRef, resolveFilesTarget, resolveFileTarget } from './real-surface-adapters';
+import { resolveThreadReplayThreadId } from './thread-replay-surface';
 import type {
   RestoreWorkbenchOptions,
   WorkbenchLayoutState,
@@ -15,6 +16,7 @@ import type {
   WorkspaceSurfaceDescriptor,
 } from './workbench-contract';
 import { createInitialWorkbenchState } from './workbench-initial-state';
+import { retainPreviewSlot } from './workbench-preview';
 import { workspaceRootSelectionSchema } from './workspace-root-selection';
 
 export { migrateF284WorkspaceState } from './workbench-migrate-f284';
@@ -38,11 +40,13 @@ const RENDERER_BY_TYPE: Record<WorkbenchSurfaceType, WorkbenchRenderer> = {
   file: 'file-preview',
   review: 'review-summary',
   terminal: 'terminal-session',
+  'thread-replay': 'thread-replay',
   workspace: 'workspace-destination',
 };
 
 const OBJECT_KIND_BY_TYPE: Record<WorkbenchSurfaceType, WorkspaceSurfaceDescriptor['objectRef']['kind']> = {
   'agent-run': 'agent-run',
+  'thread-replay': 'thread-replay',
   artifact: 'artifact',
   browser: 'preview-session',
   code: 'file',
@@ -183,6 +187,14 @@ function parseSurface(value: unknown, legacySchema: boolean): WorkspaceSurfaceDe
     resolvePublicationTarget(parsed) === null &&
     resolveMessagePublicationSource(parsed) === null &&
     resolveEvolutionMediaTarget(parsed) === null
+  )
+    return null;
+  if (type === 'thread-replay' && resolveThreadReplayThreadId(parsed) === null) return null;
+  if (
+    ownerStateRef.owner === 'f063-workspace-file' &&
+    (type === 'file' || type === 'code') &&
+    objectRef.id !== ownerStateRef.key &&
+    resolveFileTarget(parsed) === null
   )
     return null;
   if ((filesReveal || filesRepoRoot) && resolveFilesTarget(parsed) === null) return null;
@@ -349,8 +361,9 @@ export function restoreWorkbenchState(value: unknown, options: RestoreWorkbenchO
     pinnedSurfaceIds,
   });
 
-  return {
+  return retainPreviewSlot({
     schemaVersion: 2,
+    previewSurfaceId: isNonEmptyString(raw.previewSurfaceId) ? raw.previewSurfaceId : null,
     layoutOwner: 'f307',
     surfaces,
     pinnedSurfaceIds,
@@ -361,5 +374,5 @@ export function restoreWorkbenchState(value: unknown, options: RestoreWorkbenchO
     activity: hadRestoreDamage
       ? [warning('restore-warning:filtered', '部分布局引用已失效，已跳过并保留其余工作。')]
       : [],
-  };
+  });
 }

@@ -2,9 +2,11 @@ import type { ArtifactReviewView } from '@cat-cafe/shared';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { syncContextAttachmentDraftToStorage } from '@/components/thread-drafts';
 import { mediaView } from '@/components/workbench/content-review/__tests__/WorkspaceContentReviewSurface.fixture';
 import { workspaceReviewDraftKey } from '@/components/workbench/content-review/workspace-review-draft';
 import { contentContextSelectionKey } from '@/components/workbench/PublicationLandingResolver';
+import { useChatStore } from '@/stores/chatStore';
 import { ArtifactReviewSurface } from '../ArtifactReviewSurface';
 
 const mocks = vi.hoisted(() => ({ controller: vi.fn(), act: vi.fn(), apiFetch: vi.fn() }));
@@ -116,6 +118,41 @@ it('renders the common landing using original media, actor, annotation IDs and d
     anchor: { kind: 'image-point', x: 8, y: 9 },
   });
   expect(container.querySelector('[data-testid="content-modification-entry"]')).not.toBeNull();
+});
+it('adds a circled place of a Task round to the chat under the same round and Task a modification request names', async () => {
+  useChatStore.setState({ currentThreadId: 'thread-one', pendingChatInsert: null });
+  syncContextAttachmentDraftToStorage('thread-one', []);
+  localStorage.setItem(
+    draftKey,
+    JSON.stringify({ body: '把这里的字去掉', anchor: { kind: 'image-point', x: 8, y: 9 } }),
+  );
+  await act(async () => root.render(<ArtifactReviewSurface reviewId={view.review.reviewId} onBack={vi.fn()} />));
+  const add = container.querySelector<HTMLButtonElement>('[data-testid="workspace-content-review-media-add-to-chat"]');
+  expect(add).not.toBeNull();
+  await act(async () => add?.click());
+  const queued = useChatStore.getState().pendingChatInsert;
+  expect(queued?.threadId).toBe('thread-one');
+  expect(queued?.contextAttachments).toEqual([
+    {
+      v: 1,
+      id: expect.stringMatching(/^media-[0-9a-f]{8}$/),
+      kind: 'media',
+      title: '旧版/完整作品名',
+      mediaType: 'image/png',
+      source: { kind: 'artifact-review', reviewId: view.review.reviewId, round: 1, expectedReviewRevision: 2 },
+      taskContext: {
+        kind: 'media',
+        taskId: 'task-one',
+        expectedTaskRevision: 1,
+        reviewId: view.review.reviewId,
+        expectedReviewRevision: 2,
+        round: 1,
+      },
+      selections: [{ id: '1', selection: { kind: 'image-point', x: 8, y: 9 }, instruction: '把这里的字去掉' }],
+    },
+  ]);
+  // Adding to the chat is not saving the comment: the review itself was not written.
+  expect(mocks.act).not.toHaveBeenCalled();
 });
 it('opening discussion and switching canvas modes never discards the original unsaved selection', async () => {
   const original = { body: '保留选区', anchor: { kind: 'image-point', x: 8, y: 9 } };

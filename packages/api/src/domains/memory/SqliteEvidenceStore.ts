@@ -765,7 +765,7 @@ export class SqliteEvidenceStore implements IEvidenceStore {
             options,
             trimmed,
           ),
-          meta: { degraded: false },
+          meta: { degraded: true, degradeReason: 'passage_embedding_unavailable', effectiveMode: 'lexical' },
         };
       }
       try {
@@ -791,7 +791,7 @@ export class SqliteEvidenceStore implements IEvidenceStore {
             options,
             trimmed,
           ),
-          meta: { degraded: false },
+          meta: { degraded: true, degradeReason: 'passage_vector_search_error', effectiveMode: 'lexical' },
         };
       }
     }
@@ -807,7 +807,7 @@ export class SqliteEvidenceStore implements IEvidenceStore {
             options,
             trimmed,
           ),
-          meta: { degraded: false },
+          meta: { degraded: true, degradeReason: 'passage_embedding_unavailable', effectiveMode: 'lexical' },
         };
       }
       try {
@@ -834,7 +834,7 @@ export class SqliteEvidenceStore implements IEvidenceStore {
             options,
             trimmed,
           ),
-          meta: { degraded: false },
+          meta: { degraded: true, degradeReason: 'passage_vector_search_error', effectiveMode: 'lexical' },
         };
       }
     }

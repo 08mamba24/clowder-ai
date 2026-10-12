@@ -45,7 +45,8 @@ export function object(value: unknown): RecordValue | null {
 export function validBinding(binding: F317MeetingBinding): boolean {
   return (
     ID_PATTERN.test(binding.threadId) &&
-    ID_PATTERN.test(binding.meetingId) &&
+    typeof binding.meetingId === 'string' &&
+    binding.meetingId.length > 0 &&
     ID_PATTERN.test(binding.callId) &&
     Number.isSafeInteger(binding.generation) &&
     binding.generation >= 0 &&
@@ -129,7 +130,7 @@ export function projectF195Context(
     content: line.text as string,
   });
   return {
-    sourceRef: `f195-transcript:${binding.threadId}:${binding.meetingId}:${artifactId}:${record.chunkNum}:${record.revision}`,
+    sourceRef: `f195-transcript:${binding.threadId}:${ID_PATTERN.test(binding.meetingId) ? binding.meetingId : encodeURIComponent(JSON.stringify(binding.meetingId))}:${artifactId}:${record.chunkNum}:${record.revision}`,
     artifactId,
     cursor: record.cursor,
     chunkNum: record.chunkNum,

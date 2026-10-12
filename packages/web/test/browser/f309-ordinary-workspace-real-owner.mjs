@@ -9,7 +9,7 @@ import { createReviewState, fixtureForApi, THREAD_ID, WEB_ROOT } from './f309-or
  * Starts the shipped workspace + F309 content-review routes over this checkout, with private data.
  * Only the session issuer is synthetic; reads, refusals, writes and SQLite persistence are real.
  */
-export async function startRealWorkspaceOwner(dataDir) {
+export async function startRealWorkspaceOwner(dataDir, { configure } = {}) {
   const root = path.resolve(WEB_ROOT, '../..');
   const previousDataDir = process.env.CAT_CAFE_DATA_DIR;
   const previousRoot = process.env.CAT_CAFE_WORKSPACE_ROOT;
@@ -26,25 +26,44 @@ export async function startRealWorkspaceOwner(dataDir) {
   const { workspaceRoutes } = await import('../../../api/dist/routes/workspace.js');
   const content = createWorkspaceContentReviewComposition({ dataDir, ownerUserId: 'operator' });
   const app = Fastify();
-  app.decorateRequest('sessionUserId', null);
-  app.addHook('onRequest', async (request) => {
-    request.sessionUserId = 'operator';
-  });
-  await app.register(workspaceRoutes);
-  registerWorkspaceContentReviewRoutes(app, { reviews: content.reviews });
-  const api = await app.listen({ host: '127.0.0.1', port: 0 });
-  return {
-    root,
-    api,
-    async close() {
-      await app.close();
-      content.store.close();
-      if (previousDataDir === undefined) delete process.env.CAT_CAFE_DATA_DIR;
-      else process.env.CAT_CAFE_DATA_DIR = previousDataDir;
-      if (previousRoot === undefined) delete process.env.CAT_CAFE_WORKSPACE_ROOT;
-      else process.env.CAT_CAFE_WORKSPACE_ROOT = previousRoot;
-    },
+  let extra;
+  const restore = () => {
+    if (previousDataDir === undefined) delete process.env.CAT_CAFE_DATA_DIR;
+    else process.env.CAT_CAFE_DATA_DIR = previousDataDir;
+    if (previousRoot === undefined) delete process.env.CAT_CAFE_WORKSPACE_ROOT;
+    else process.env.CAT_CAFE_WORKSPACE_ROOT = previousRoot;
   };
+  const close = async () => {
+    try {
+      await app.close();
+      await extra?.close?.();
+    } finally {
+      content.store.close();
+      restore();
+    }
+  };
+  try {
+    app.decorateRequest('sessionUserId', null);
+    app.addHook('onRequest', async (request) => {
+      request.sessionUserId = 'operator';
+    });
+    await app.register(workspaceRoutes);
+    extra = await configure?.({ app, content, root });
+    registerWorkspaceContentReviewRoutes(app, {
+      reviews: content.reviews,
+      ...(extra?.fileQuotes ? { fileQuotes: extra.fileQuotes } : {}),
+    });
+    const api = await app.listen({ host: '127.0.0.1', port: 0 });
+    return {
+      root,
+      api,
+      ...extra,
+      close,
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
 }
 
 /**

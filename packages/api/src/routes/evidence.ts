@@ -43,6 +43,7 @@ import {
   sanitizeEvidenceDrillDown,
 } from './evidence-helpers.js';
 import { boundTopkSearchResponse } from './evidence-topk-budget.js';
+import { registerMessageNavigationSourceRoute } from './message-navigation-source-route.js';
 import { executeMessageSearch, messageSearchQuerySchema, toMessageSearchInput } from './message-search-handler.js';
 
 /** Accepted query parameters — Phase D: scope/mode/depth added */
@@ -176,6 +177,7 @@ function readPersistedVectorCount(
 }
 
 export const evidenceRoutes: FastifyPluginAsync<EvidenceRoutesOptions> = async (app, opts) => {
+  registerMessageNavigationSourceRoute(app, opts.messageSearchService);
   app.get('/api/evidence/search', async (request, reply) => {
     const parseResult = searchSchema.safeParse(request.query);
     if (!parseResult.success) {

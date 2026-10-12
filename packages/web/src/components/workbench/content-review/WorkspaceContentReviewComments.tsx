@@ -188,6 +188,13 @@ function anchorLabel(anchor: ContentReviewAnnotation['anchor']): string {
     if (anchor.anchor.kind === 'image-region') return '圈选的区域';
     return anchor.anchor.framePoint || anchor.anchor.frameRegion ? '视频中的画面' : '视频片段';
   }
+  if (anchor.kind === 'video-project') {
+    const target = anchor.target;
+    if (target.kind === 'project') return '全片';
+    if (target.kind === 'segment') return `镜头 ${target.segmentId}`;
+    if (target.kind === 'artwork') return `画稿 ${target.assetVersionRef}`;
+    return '这一刻';
+  }
   return anchor.quote;
 }
 

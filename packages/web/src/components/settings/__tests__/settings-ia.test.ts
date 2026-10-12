@@ -23,7 +23,7 @@ describe('F322 设置与管理 information architecture', () => {
       '主题',
       '社区',
       '猫猫星球',
-      'Mission Hub',
+      '功能看板',
       '信号',
     ]);
     expect(SETTINGS_IA.map((entry) => entry.group)).toEqual([1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3]);

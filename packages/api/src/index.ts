@@ -7,8 +7,8 @@
 import './settos-guard.js';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   type CatConfig,
   type CatId,
@@ -23,7 +23,11 @@ import fastifyCookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyReply } from 'fastify';
-import { resolveAnthropicRuntimeProfile } from './config/account-resolver.js';
+import {
+  resolveAnthropicRuntimeProfile,
+  resolveForClient,
+  validateRuntimeProviderBinding,
+} from './config/account-resolver.js';
 import { regenerateStartupCliConfigs } from './config/capabilities/startup-cli-config.js';
 import { resolveBoundAccountRefForCat } from './config/cat-account-binding.js';
 import {
@@ -36,6 +40,7 @@ import {
   toAllCatConfigs,
 } from './config/cat-config-loader.js';
 import { getCatModel } from './config/cat-models.js';
+import { reconcileCatRegistry } from './config/cat-registry-reconciliation.js';
 import { resolveCodexCarrierTruth } from './config/codex-cli.js';
 import { configEventBus } from './config/config-event-bus.js';
 import { resolveFrontendBaseUrl, resolveFrontendCorsOrigins } from './config/frontend-origin.js';
@@ -44,7 +49,6 @@ import {
   resolveRuntimeDeploymentCandidate,
   resolveRuntimeDeploymentInclusionProof,
 } from './config/runtime-deployment-inclusion.js';
-import { resolveRuntimeDeploymentRevision } from './config/runtime-deployment-revision.js';
 import { initRuntimeOverrides } from './config/session-strategy-overrides.js';
 import { assertStorageReady } from './config/storage-guard.js';
 import { ApprovalIngress } from './domains/approval-hub/ApprovalIngress.js';
@@ -65,11 +69,13 @@ import { F266ApprovalAdapter } from './domains/approval-hub/adapters/F266Approva
 import { F276ApprovalAdapter } from './domains/approval-hub/adapters/F276ApprovalAdapter.js';
 import { F292ApprovalAdapter } from './domains/approval-hub/adapters/F292ApprovalAdapter.js';
 import { F306ApprovalAdapter } from './domains/approval-hub/adapters/F306ApprovalAdapter.js';
+import { F321ApprovalAdapter } from './domains/approval-hub/adapters/F321ApprovalAdapter.js';
 import { createDispatchProposalStore } from './domains/approval-hub/stores/factories/DispatchProposalStoreFactory.js';
 import { createEntityProposalStore } from './domains/approval-hub/stores/factories/EntityProposalStoreFactory.js';
 import { createActionSuccessorRecoveryCycle } from './domains/ball-custody/ActionSuccessorRecoveryCycle.js';
 import { classifyApprovedActionCarrier } from './domains/ball-custody/ActionSuccessorRecoverySweep.js';
 import { CustodyEventInspector } from './domains/ball-custody/CustodyEventInspector.js';
+import { EventWaitDispositionService } from './domains/ball-custody/EventWaitDispositionService.js';
 import { createSqliteHoldQuotaStore, type IHoldQuotaStore } from './domains/ball-custody/hold-quota-store.js';
 import { RedisHoldQuotaStore } from './domains/ball-custody/hold-quota-store-redis.js';
 import type { ManagedCommandWakeRecoverySweep } from './domains/ball-custody/ManagedCommandWakeRecoverySweep.js';
@@ -107,6 +113,7 @@ import type {
   RouterLike,
 } from './domains/cats/services/agents/invocation/QueueProcessor.js';
 import { QueueProcessor } from './domains/cats/services/agents/invocation/QueueProcessor.js';
+import { QueueSourceCustodyAdmissionService } from './domains/cats/services/agents/invocation/QueueSourceCustodyAdmission.js';
 import { reconcileZombies } from './domains/cats/services/agents/invocation/reconcileZombies.js';
 import { SessionContinuationCoordinator } from './domains/cats/services/agents/invocation/SessionContinuationCoordinator.js';
 import { SessionMutex } from './domains/cats/services/agents/invocation/SessionMutex.js';
@@ -134,7 +141,7 @@ import {
   closeStaleCodexAppServerPools,
   getOrCreateCodexAppServerPool,
 } from './domains/cats/services/agents/providers/codex-app-server-pool-registry.js';
-import { clearL0Cache, warmL0Cache } from './domains/cats/services/agents/providers/l0-compiler.js';
+import { clearL0Cache, clearL0CacheOwner, warmL0Cache } from './domains/cats/services/agents/providers/l0-compiler.js';
 import { AgentRegistry } from './domains/cats/services/agents/registry/AgentRegistry.js';
 import { createPostCompactContextProjector } from './domains/cats/services/agents/routing/post-compact-context-projector.js';
 import { reconcileFreshnessClosuresAtStartup } from './domains/cats/services/freshness/closure/FreshnessClosureStartupReconciler.js';
@@ -233,7 +240,16 @@ import { HumanDispositionFeedbackContextService } from './domains/human-disposit
 import { HumanDispositionLedger } from './domains/human-disposition/HumanDispositionLedger.js';
 import { createDeferredPersonMemoryDailyTaskSpec } from './domains/memory/DeferredPersonMemoryDailyTaskSpec.js';
 import { EntityRegistryStore } from './domains/memory/EntityRegistry.js';
+import { EntityMemoryLifecycleService } from './domains/memory/entity/EntityMemoryLifecycleService.js';
+import { EntityMemoryLifecycleStore } from './domains/memory/entity/EntityMemoryLifecycleStore.js';
 import { sharedProactiveCandidateNudgeReceiptStore } from './domains/memory/entity-nudge-state.js';
+import { createEventMemoryCorrectionProposalStore } from './domains/memory/event/createEventMemoryCorrectionProposalStore.js';
+import { EventMemoryLifecycleService } from './domains/memory/event/EventMemoryLifecycleService.js';
+import {
+  InMemoryOwnerMemoryActionReceiptStore,
+  OwnerMemoryActionCoordinator,
+  RedisOwnerMemoryActionReceiptStore,
+} from './domains/memory/owner/OwnerMemoryActionCoordinator.js';
 import { ProactiveCandidateRegistryResolver } from './domains/memory/ProactiveCandidateRegistryResolver.js';
 import { ProactiveMemoryCandidateDetector } from './domains/memory/ProactiveMemoryCandidateDetector.js';
 import { ProactiveMemoryNudgeService } from './domains/memory/ProactiveMemoryNudgeService.js';
@@ -246,18 +262,25 @@ import { RedisWriteOpportunityDeliveryStore } from './domains/memory/people/Redi
 import { RedisWriteOpportunityTerminalLedger } from './domains/memory/people/RedisWriteOpportunityTerminalLedger.js';
 import { EvidenceStoreWorkspacePersonResolver } from './domains/memory/people/WorkspacePersonResolver.js';
 import { refreshCanonicalProfileIndex } from './domains/memory/private-collection-bindings.js';
+import { ProfileMemoryLifecycleService } from './domains/memory/profile/ProfileMemoryLifecycleService.js';
+import { ProfileMemoryLifecycleStore } from './domains/memory/profile/ProfileMemoryLifecycleStore.js';
 import { RedisDeferredPersonMemoryReceiptStore } from './domains/memory/RedisDeferredPersonMemoryReceiptStore.js';
+import { createTasteProposalWriter } from './domains/memory/taste/createTasteProposalWriter.js';
+import { TasteMemoryLifecycleService } from './domains/memory/taste/TasteMemoryLifecycleService.js';
+import { TasteMemoryLifecycleStore } from './domains/memory/taste/TasteMemoryLifecycleStore.js';
+import { TasteMemoryProjectionWriter } from './domains/memory/taste/TasteMemoryProjectionWriter.js';
+import { importTasteTakeawayCandidates } from './domains/memory/taste/TasteTakeawayCandidateImporter.js';
+import { tasteDocumentAnchor } from './domains/memory/taste/taste-memory-identity.js';
 import { PortDiscoveryService } from './domains/preview/port-discovery.js';
 import { collectRuntimePorts } from './domains/preview/port-validator.js';
 import { PreviewGateway } from './domains/preview/preview-gateway.js';
 import { createRoutingContextRuntime } from './domains/routing-context/index.js';
 import { DeploymentWaitStartGuard } from './domains/runtime-deployment/DeploymentWaitStartGuard.js';
-import { RuntimeDeploymentLedger } from './domains/runtime-deployment/RuntimeDeploymentLedger.js';
 import {
-  RuntimeDeploymentObservationProvider,
-  resolveRuntimeInstallationId,
-  runtimeDeploymentSubjectRef,
-} from './domains/runtime-deployment/RuntimeDeploymentObservationProvider.js';
+  beginOwnedRuntimeDeployment,
+  type RuntimeDeploymentProcessContext,
+} from './domains/runtime-deployment/RuntimeDeploymentBootstrap.js';
+import { runtimeDeploymentSubjectRef } from './domains/runtime-deployment/RuntimeDeploymentObservationProvider.js';
 import { readRuntimeServiceReadiness } from './domains/runtime-deployment/RuntimeDeploymentServiceReadiness.js';
 import { createRuntimeInteractionRuntime } from './domains/runtime-interaction/runtime-interaction-composition.js';
 import { appendServiceLog } from './domains/services/service-lifecycle.js';
@@ -391,14 +414,19 @@ import {
 } from './routes/callback-hold-ball-routes.js';
 import type { CallbackMemoryCueDeps } from './routes/callback-memory-cue-routes.js';
 import { callbackProposeEntityRoutes } from './routes/callback-propose-entity-routes.js';
+import { callbackProposeEventMemoryCorrectionRoutes } from './routes/callback-propose-event-memory-correction-routes.js';
 import { callbackProposeTasteRoutes } from './routes/callback-propose-taste-routes.js';
 import { callbackRuntimeInteractionRoutes } from './routes/callback-runtime-interaction-routes.js';
 import { configSecretsRoutes } from './routes/config-secrets.js';
 import { connectorWebhookRoutes } from './routes/connector-webhooks.js';
 import { dispatchProposalRoutes } from './routes/dispatch-proposal-routes.js';
+import { entityMemoryOwnerRoutes } from './routes/entity-memory-owner.js';
+import { readEntityMemorySource } from './routes/entity-memory-source.js';
 import { buildEntityRecord, registerEntityProposalDecisionRoutes } from './routes/entity-proposal-decision-routes.js';
 import { evalRepairApprovalRoutes } from './routes/eval-repair-approval-routes.js';
 import { evalRepairOutcomeRoutes } from './routes/eval-repair-outcome-routes.js';
+import { registerEventMemoryCorrectionDecisionRoutes } from './routes/event-memory-correction-decision-routes.js';
+import { readEventMemorySource } from './routes/event-memory-source.js';
 import { gameRoutes } from './routes/games.js';
 import { registerHumanDispositionFeedbackRoutes } from './routes/human-disposition-feedback-routes.js';
 import {
@@ -482,6 +510,7 @@ import {
   registerProfileUpdateDecisionRoutes,
   resolutionRoutes,
   routingContextRoutes,
+  routingPreviewRoutes,
   rulesRoutes,
   runtimeInteractionRoutes,
   servicesRoutes,
@@ -516,7 +545,9 @@ import {
 import { knowledgeFeedRoutes } from './routes/knowledge-feed.js';
 import { marketplaceRoutes } from './routes/marketplace.js';
 import { registerPersonMemoryDecisionRoutes } from './routes/person-memory-decision-routes.js';
+import { personMemoryOwnerReadRoutes } from './routes/person-memory-owner-read.js';
 import { previewRoutes } from './routes/preview.js';
+import { profileMemoryOwnerRoutes } from './routes/profile-memory-owner.js';
 import { resolveActiveInvocations } from './routes/queue.js';
 import { runtimeDeploymentRoutes } from './routes/runtime-deployment-routes.js';
 import { registerTasteProposalDecisionRoutes } from './routes/taste-proposal-decision-routes.js';
@@ -585,17 +616,8 @@ async function main(): Promise<void> {
 
   const app = Fastify({ logger: customLogger as unknown as import('fastify').FastifyBaseLogger });
   const privateUserId = (process.env.CAT_CAFE_USER_ID ?? 'default-user').trim();
-  const runtimeDeploymentRevision = resolveRuntimeDeploymentRevision(process.env.CAT_CAFE_RUNTIME_ROOT);
-  let runtimeDeploymentContext:
-    | {
-        ledger: RuntimeDeploymentLedger;
-        provider: RuntimeDeploymentObservationProvider;
-        deploymentId: string;
-        installationId: string;
-        bootId: string;
-        bootSequence: number;
-      }
-    | undefined;
+  let runtimeDeploymentRevision: string | null = null;
+  let runtimeDeploymentContext: RuntimeDeploymentProcessContext | undefined;
   const deploymentWaitLifecycleHolder: {
     current?: import('./domains/runtime-deployment/DeploymentWaitLifecycleService.js').DeploymentWaitLifecycleService;
   } = {};
@@ -604,8 +626,9 @@ async function main(): Promise<void> {
     | import('./domains/runtime-deployment/DeploymentWaitRecoverySweep.js').DeploymentWaitRecoverySweep
     | undefined;
   app.addHook('onClose', () => deploymentWaitRecoveryLoop?.stopPeriodic());
-  const runtimeRoot = process.env.CAT_CAFE_RUNTIME_ROOT;
-  const deploymentId = process.env.CAT_CAFE_DEPLOYMENT_ID;
+  const declaredRuntimeRoot = process.env.CAT_CAFE_RUNTIME_ROOT;
+  const declaredDeploymentId = process.env.CAT_CAFE_DEPLOYMENT_ID;
+  const runtimeEntrypointRoot = findMonorepoRoot(dirname(fileURLToPath(import.meta.url)));
   if (!privateUserId) throw new Error('[api] CAT_CAFE_USER_ID must not be blank');
 
   if (isDebugMode) {
@@ -795,37 +818,33 @@ async function main(): Promise<void> {
     );
   }
 
-  if (runtimeRoot && deploymentId) {
+  if (declaredRuntimeRoot && declaredDeploymentId) {
     try {
-      const installationId = await resolveRuntimeInstallationId(runtimeRoot);
       const dataRoot = process.env.CAT_CAFE_DATA_DIR ?? join(homedir(), '.cat-cafe');
-      const ledger = new RuntimeDeploymentLedger({
-        file: join(dataRoot, 'runtime-deployment', `${installationId}.json`),
-        installationId,
-      });
-      const boot = await ledger.beginBoot({ deploymentId, runningRevision: runtimeDeploymentRevision });
-      const provider = new RuntimeDeploymentObservationProvider({
-        ledger,
-        runtimeRoot,
-        installationId,
-        deploymentId,
+      const context = await beginOwnedRuntimeDeployment({
+        runtimeRoot: declaredRuntimeRoot,
+        entrypointRoot: runtimeEntrypointRoot,
+        deploymentId: declaredDeploymentId,
+        dataRoot,
         currentReadyServices: () =>
           readRuntimeServiceReadiness({
             isApiReady: async () => (await checkReadiness()).status === 'ready',
             webPort: Number(process.env.CAT_CAFE_RUNTIME_WEB_PORT),
           }),
       });
-      runtimeDeploymentContext = {
-        ledger,
-        provider,
-        deploymentId,
-        installationId,
-        bootId: boot.bootId,
-        bootSequence: boot.bootSequence,
-      };
-      recordRuntimeStartupFailure = async (reason) => {
-        await ledger.recordStartupFailure({ deploymentId, bootId: boot.bootId, reason });
-      };
+      if (context) {
+        runtimeDeploymentContext = context;
+        runtimeDeploymentRevision = context.runningRevision;
+        recordRuntimeStartupFailure = async (reason) => {
+          await context.ledger.recordStartupFailure({
+            deploymentId: context.deploymentId,
+            bootId: context.bootId,
+            reason,
+          });
+        };
+      } else {
+        app.log.warn('[F323] inherited deployment coordinates do not own the loaded API entrypoint; ledger disabled');
+      }
     } catch (error) {
       app.log.error({ error }, '[F323] runtime deployment ledger unavailable; deployment waits fail closed');
     }
@@ -996,6 +1015,11 @@ async function main(): Promise<void> {
     messageStore,
     readWaitRegistration: (id) => taskStore.getWaitRegistration(id),
   });
+  const queueSourceCustodyAdmission = new QueueSourceCustodyAdmissionService({
+    queue: invocationQueue,
+    messageStore,
+    queueCustodyCoordinator,
+  });
   const invocationRecordStore = createInvocationRecordStore(redis);
   const sessionStore = redis ? new SessionStore(redis) : undefined;
   // #1200 P2-3: wire cursor canonicalizer for v1→v2 async resolution
@@ -1018,11 +1042,16 @@ async function main(): Promise<void> {
   const entityProposalStore = createEntityProposalStore(redis);
   // F221 Phase B: taste proposal store (InMemory now; Redis in Task 3)
   const tasteProposalStore = createTasteProposalStore(redis);
+  const eventMemoryCorrectionProposalStore = createEventMemoryCorrectionProposalStore(redis);
   const tasteRepository = new FileTasteRepository(findMonorepoRoot(process.cwd()));
   const tasteApprovalCoordinator = {
     lock: new SessionMutex(),
     lockKey: () => tasteRepository.approvalLockKey(),
   };
+  const ownerMemoryActionCoordinator = new OwnerMemoryActionCoordinator({
+    store: redis ? new RedisOwnerMemoryActionReceiptStore(redis) : new InMemoryOwnerMemoryActionReceiptStore(),
+    lock: new SessionMutex(),
+  });
 
   // F235: Community issue draft store + publisher for "Publish to Community" flow
   const communityIssueDraftStore = createCommunityIssueDraftStore(redis);
@@ -1464,6 +1493,70 @@ async function main(): Promise<void> {
       return excluded;
     },
   });
+  const profileMemoryLifecycleStore = new ProfileMemoryLifecycleStore({
+    db: memoryServices.store.getDb(),
+    repository: profileRepository,
+  });
+  const profileMemorySourceReaders = { threadStore, messageStore };
+  const profileMemoryLifecycleService = new ProfileMemoryLifecycleService({
+    store: profileMemoryLifecycleStore,
+    coordinator: ownerMemoryActionCoordinator,
+    targetLock: profileUpdateLock,
+    invalidateDerived: async ({ ownerUserId }) => {
+      clearL0CacheOwner(ownerUserId);
+      if (!memoryServices.collectionStores || !memoryServices.catalog || !memoryServices.dataDir) return;
+      const refresh = await refreshCanonicalProfileIndex(memoryServices.collectionStores, memoryServices.catalog, {
+        dataDir: memoryServices.dataDir,
+        userId: ownerUserId,
+      });
+      if (refresh.status === 'error') throw new Error(`Profile index invalidation failed: ${refresh.error}`);
+    },
+  });
+  const eventMemorySourceReaders = { threadStore, messageStore };
+  const eventMemoryLifecycleService = new EventMemoryLifecycleService({
+    store: memoryServices.eventMemoryStore,
+    coordinator: ownerMemoryActionCoordinator,
+    sourceAvailable: async (event) =>
+      (await readEventMemorySource(event, event.ownerUserId, eventMemorySourceReaders)).status === 'ready',
+  });
+  const entityMemoryLifecycleStore = new EntityMemoryLifecycleStore(memoryServices.store.getDb());
+  const entityMemorySourceReaders = { threadStore, messageStore };
+  const entityMemoryLifecycleService = new EntityMemoryLifecycleService({
+    store: entityMemoryLifecycleStore,
+    coordinator: ownerMemoryActionCoordinator,
+    sourceAvailable: async (entity) =>
+      (await readEntityMemorySource(entity, privateUserId, entityMemorySourceReaders)).status === 'ready',
+  });
+  const tasteMemoryLifecycleStore = new TasteMemoryLifecycleStore(memoryServices.store.getDb());
+  const tasteMemoryLifecycleService = new TasteMemoryLifecycleService({
+    store: tasteMemoryLifecycleStore,
+    writer: new TasteMemoryProjectionWriter(tasteRepository),
+    coordinator: ownerMemoryActionCoordinator,
+    targetLock: tasteApprovalCoordinator.lock,
+    lockKey: tasteApprovalCoordinator.lockKey,
+    invalidateDerived: async ({ sourcePath }) => {
+      const anchor = tasteDocumentAnchor(sourcePath);
+      await memoryServices.evidenceStore.deleteByAnchor(anchor);
+      memoryServices.embeddingLifecycle.getVectorStore()?.delete(anchor);
+    },
+  });
+  const tasteProposalWriter = createTasteProposalWriter(
+    createVignetteWriter(tasteRepository),
+    tasteMemoryLifecycleService,
+  );
+  const takeawayImport = await importTasteTakeawayCandidates({
+    repository: tasteRepository,
+    lifecycleStore: tasteMemoryLifecycleStore,
+    ownerUserId: privateUserId,
+  });
+  app.log.info(
+    {
+      imported: takeawayImport.imported,
+      stale: takeawayImport.stale,
+      unavailableInputs: takeawayImport.unavailableInputs,
+    },
+    '[F321] Taste takeaway candidates reconciled',
+  );
   const { MemoryCueEpisodeStore } = await import('./domains/memory/cue/MemoryCueEpisodeStore.js');
   const { createProcessMemoryCueDrillSecret, MemoryCueDrillHandleService } = await import(
     './domains/memory/cue/MemoryCueDrillHandleService.js'
@@ -1639,6 +1732,11 @@ async function main(): Promise<void> {
           // not from rebuilt summary snapshot in flushDirtyThreads
           ib.accumulateSummaryDelta(msg.threadId, msg.content);
         }
+      };
+      // Queue publication/terminal CAS can change the scan domain without another append.
+      messageStore.onTimelineChanged = (msg) => {
+        ib.markThreadDirty(msg.threadId);
+        ib.accumulateSummaryDelta(msg.threadId, msg.content);
       };
 
       const dirtyFlushTimer = setInterval(async () => {
@@ -1972,167 +2070,6 @@ async function main(): Promise<void> {
     collectDeps: dutyBriefingCollectDeps,
   });
 
-  // ── Phase G: Summary Compaction (registers into unified scheduler) ──
-  if (process.env.F102_ABSTRACTIVE === 'on' && memoryServices.indexBuilder) {
-    try {
-      const { createSummaryCompactionTaskSpec } = await import('./domains/memory/SummaryCompactionTaskSpec.js');
-      const { createAbstractiveClient } = await import('./domains/memory/AbstractiveSummaryClient.js');
-
-      // Abstractive summary API config resolution (priority order):
-      // 1. F102_API_BASE + F102_API_KEY (explicit override)
-      // 2. Unified accounts system (credentials.json) + local proxy
-      // 3. null → skip abstractive
-      const generateAbstractive = createAbstractiveClient(
-        async () => {
-          // Priority 1: explicit F102 config
-          if (process.env.F102_API_BASE && process.env.F102_API_KEY) {
-            return { mode: 'api_key' as const, baseUrl: process.env.F102_API_BASE, apiKey: process.env.F102_API_KEY };
-          }
-          // Priority 2: deterministic binding with installer-only fallback (502 regression)
-          const runtimeProfile = resolveAnthropicRuntimeProfile(process.cwd());
-          const apiKey = runtimeProfile.apiKey;
-          if (!apiKey) return null;
-          const proxyPort = process.env.ANTHROPIC_PROXY_PORT || '9877';
-          // Read first upstream slug from proxy-upstreams.json
-          try {
-            const { readFileSync } = await import('fs');
-            const { resolve: resolvePath } = await import('path');
-            const upstreamsPath =
-              process.env.ANTHROPIC_PROXY_UPSTREAMS_PATH ||
-              resolvePath(process.cwd(), '.cat-cafe', 'proxy-upstreams.json');
-            const upstreams = JSON.parse(readFileSync(upstreamsPath, 'utf-8'));
-            const firstSlug = Object.keys(upstreams)[0];
-            if (!firstSlug) return null;
-            return {
-              mode: 'api_key' as const,
-              baseUrl: `http://127.0.0.1:${proxyPort}/${firstSlug}`,
-              apiKey,
-            };
-          } catch {
-            // No proxy config → try direct with API key
-            return { mode: 'api_key' as const, baseUrl: 'https://api.anthropic.com', apiKey };
-          }
-        },
-        { info: app.log.info.bind(app.log), error: app.log.error.bind(app.log) },
-      );
-
-      const db = memoryServices.store.getDb();
-      const summarySpec = createSummaryCompactionTaskSpec({
-        db,
-        enabled: () => process.env.F102_ABSTRACTIVE === 'on',
-        getThreadLastActivity: async (threadId) => {
-          const msgs = await messageStore.getByThread(threadId, 1, 'default-user');
-          if (msgs.length === 0) return null;
-          return { threadId, lastMessageAt: msgs[0]!.timestamp };
-        },
-        getMessagesAfterWatermark: async (threadId, afterMessageId, limit) => {
-          // P1 fix (砚砚 review): use getByThreadAfter for true "after watermark" semantics,
-          // not "latest N + slice" which would skip messages if delta > limit
-          const msgs = await messageStore.getByThreadAfter(
-            threadId,
-            afterMessageId ?? undefined,
-            limit,
-            'default-user',
-          );
-          return msgs.map((m) => ({
-            id: m.id,
-            content: m.content,
-            catId: m.catId ?? undefined,
-            timestamp: m.timestamp,
-          }));
-        },
-        generateAbstractive,
-        // Re-embed thread after abstractive summary update (semantic search uses vectors)
-        reEmbed: async (anchor: string, text: string) => {
-          const embeddingService = memoryServices.embeddingLifecycle.getService();
-          const vectorStore = memoryServices.embeddingLifecycle.getVectorStore();
-          if (!embeddingService?.isReady() || !vectorStore) return;
-          const [vec] = await embeddingService.embed([text]);
-          vectorStore.upsert(anchor, vec);
-        },
-        // H-3: Submit durable candidates to knowledge emergence pipeline
-        // Gated by F102_DURABLE_CANDIDATES flag (spec §F102 env config)
-        submitCandidate:
-          process.env.F102_DURABLE_CANDIDATES !== 'on'
-            ? undefined
-            : async (candidate) => {
-                const marker = await memoryServices.markerQueue.submit({
-                  content: `[${candidate.kind}] ${candidate.title}: ${candidate.claim}`,
-                  source: `thread:${candidate.threadId}`,
-                  status: 'captured',
-                  // method → lesson: EvidenceKind has no 'method' variant; methods are stored as lessons
-                  targetKind: candidate.kind === 'decision' ? 'decision' : 'lesson',
-                });
-                // Auto-approve explicit candidates (co-creator不需要每条都审)
-                if (candidate.confidence === 'explicit') {
-                  await memoryServices.markerQueue.transition(marker.id, 'normalized');
-                  await memoryServices.markerQueue.transition(marker.id, 'approved');
-                  app.log.info(`[knowledge-emergence] auto-approved: [${candidate.kind}] ${candidate.title}`);
-                } else {
-                  app.log.info(`[knowledge-emergence] submitted for review: [${candidate.kind}] ${candidate.title}`);
-                }
-              },
-        logger: { info: app.log.info.bind(app.log), error: app.log.error.bind(app.log) },
-      });
-
-      taskRunnerV2.register(summarySpec);
-      const candidatesOn = process.env.F102_DURABLE_CANDIDATES === 'on';
-      const topicSegOn = process.env.F102_TOPIC_SEGMENTS === 'on';
-      app.log.info(
-        `[api] F139: summary-compact spec registered (candidates=${candidatesOn ? 'on' : 'off'}, topicSegments=${topicSegOn ? 'on' : 'off'})`,
-      );
-
-      // H-3 backfill: replay lost candidates from summary_segments into MarkerQueue.
-      // Gated by F102_DURABLE_CANDIDATES (same gate as submitCandidate above).
-      if (!candidatesOn) {
-        app.log.info('[knowledge-backfill] skipped (F102_DURABLE_CANDIDATES=off)');
-      } else {
-        // Before the mkdirSync fix, submit() silently failed (ENOENT). This one-shot
-        // replay recovers those candidates. Idempotent via content-based dedup: each
-        // candidate is skipped if a marker with identical content already exists.
-        const existingMarkers = await memoryServices.markerQueue.list();
-        const existingContents = new Set(existingMarkers.map((m) => m.content));
-        const rows = db
-          .prepare('SELECT thread_id, candidates FROM summary_segments WHERE candidates IS NOT NULL')
-          .all() as Array<{ thread_id: string; candidates: string }>;
-        let backfilled = 0;
-        for (const row of rows) {
-          try {
-            const candidates = JSON.parse(row.candidates) as Array<{
-              kind: string;
-              title: string;
-              claim: string;
-              confidence?: string;
-            }>;
-            for (const c of candidates) {
-              const content = `[${c.kind}] ${c.title}: ${c.claim}`;
-              if (existingContents.has(content)) continue;
-              const marker = await memoryServices.markerQueue.submit({
-                content,
-                source: `thread:${row.thread_id}`,
-                status: 'captured',
-                targetKind: c.kind === 'decision' ? 'decision' : 'lesson',
-              });
-              if ((c.confidence ?? 'inferred') === 'explicit') {
-                await memoryServices.markerQueue.transition(marker.id, 'normalized');
-                await memoryServices.markerQueue.transition(marker.id, 'approved');
-              }
-              existingContents.add(content);
-              backfilled++;
-            }
-          } catch (backfillErr) {
-            app.log.error(`[knowledge-backfill] failed for thread ${row.thread_id}: ${backfillErr}`);
-          }
-        }
-        if (backfilled > 0) {
-          app.log.info(`[knowledge-backfill] replayed ${backfilled} lost candidates into MarkerQueue`);
-        }
-      }
-    } catch (err) {
-      app.log.warn(`[api] F102 Phase G: scheduler init failed (non-fatal): ${err}`);
-    }
-  }
-
   // ── F149 Phase C: ACP process pool registry (variantId → AcpProcessPool) ──
   const acpPoolRegistry: AcpPoolRegistry = new Map();
   // F254: Codex app-server warm hosts are profile-scoped and survive catalog refreshes.
@@ -2265,6 +2202,35 @@ async function main(): Promise<void> {
   };
   await syncAgentRegistry(catRegistry.getAllConfigs());
 
+  // F321: one optional curator, using the existing native service and summary storage.
+  if (memoryServices.indexBuilder) {
+    try {
+      const { registerLunaCuration } = await import('./luna-curation-setup.js');
+      await registerLunaCuration({
+        app,
+        db: memoryServices.store.getDb(),
+        runExclusive: (fn) => memoryServices.store.runExclusive(fn),
+        projectRoot: resolveActiveProjectRoot(),
+        ownerUserId: privateUserId,
+        householdTimeZone: getCoCreatorConfig().timeZone ?? 'UTC',
+        agentRegistry,
+        taskRunner: taskRunnerV2,
+        threadStore,
+        messageStore,
+        deliver: schedulerDeliver,
+        reEmbed: async (anchor, text) => {
+          const service = memoryServices.embeddingLifecycle.getService();
+          const vectors = memoryServices.embeddingLifecycle.getVectorStore();
+          if (!service?.isReady() || !vectors) return;
+          const [vector] = await service.embed([text]);
+          vectors.upsert(anchor, vector);
+        },
+      });
+    } catch (error) {
+      app.log.warn({ error }, '[memory-curation] optional initialization unavailable');
+    }
+  }
+
   const runtimeSessionSealReaper = new RuntimeSessionSealReaper({
     runtimeSessionStore,
     sessionSealer,
@@ -2293,7 +2259,7 @@ async function main(): Promise<void> {
   const catCatalogSubscriber = createCatCatalogSubscriber({
     async onReconcile() {
       app.log.info('[api] F136: Cat catalog changed, syncing agent registry...');
-      await syncAgentRegistry(catRegistry.getAllConfigs());
+      await syncAgentRegistry(reconcileCatRegistry(resolveActiveProjectRoot(), new Set()));
     },
     log: app.log,
   });
@@ -2723,7 +2689,17 @@ async function main(): Promise<void> {
     ? new PersonMemoryRecallService(personMemoryStore, workspacePersonResolver)
     : undefined;
   const { createMemoryCueRuntime } = await import('./domains/memory/cue/createMemoryCueRuntime.js');
+  const { createThreadRecallSource } = await import('./domains/memory/curation/create-thread-recall-runtime.js');
+  const threadOverviewSource = createThreadRecallSource({
+    db: memoryServices.store.getDb(),
+    projectRoot: resolveActiveProjectRoot(),
+    ownerUserId: privateUserId,
+    threadStore,
+    messageStore,
+    logger: app.log,
+  });
   const memoryCueRuntime = createMemoryCueRuntime({
+    threadOverviewSource,
     episodeStore: memoryCueEpisodeStore,
     handles: memoryCueHandles,
     evidenceStore: memoryServices.evidenceStore,
@@ -2732,6 +2708,7 @@ async function main(): Promise<void> {
     entityRegistry: new EntityRegistryStore(memoryServices.store.getDb()),
     ...(personMemoryRecallService ? { personRecall: personMemoryRecallService } : {}),
     tasteRepository,
+    tasteLifecycle: tasteMemoryLifecycleStore,
     ownerUserId: privateUserId,
     profileRepository,
     projectDocsRoot: docsRoot,
@@ -2804,7 +2781,9 @@ async function main(): Promise<void> {
     memoryCuePromptService: memoryCueRuntime.promptService,
     profileCueOpportunitySource: memoryCueRuntime.profileOpportunitySource,
     eventCueOpportunitySource: memoryCueRuntime.eventOpportunitySource,
+    threadOverviewOpportunitySource: memoryCueRuntime.threadOverviewOpportunitySource,
     profileRepository,
+    queueSourceCustodyAdmission,
     ...(writeOpportunityTerminalLedger ? { writeOpportunityTerminalLedger } : {}),
     ...(writeOpportunityDeliveryStore ? { writeOpportunityDeliveryStore } : {}),
   });
@@ -2855,6 +2834,7 @@ async function main(): Promise<void> {
     socketManager,
     messageStore,
     queueCustodyCoordinator,
+    queueSourceCustodyAdmission,
     turnExecutionStore,
     log: app.log,
     threadStore:
@@ -3291,7 +3271,9 @@ async function main(): Promise<void> {
         };
         let eventId: string;
         try {
-          eventId = memoryServices.eventMemoryStore.markEvent(record, ownerUserId).event.eventId;
+          const marked = memoryServices.eventMemoryStore.markEvent(record, ownerUserId);
+          if (marked.suppressed) continue;
+          eventId = marked.event.eventId;
         } catch (err) {
           // P1-3 (砚砚): dead-letter so the event is recoverable, not lost.
           try {
@@ -3458,6 +3440,8 @@ async function main(): Promise<void> {
     messageStore,
     taskStore,
     threadStore,
+    ...(personMemoryStore ? { personMemoryStore } : {}),
+    cueSourceReader: memoryCueRuntime.sourceReader,
   });
   const { memoryCueInvocationReadRoutes } = await import('./routes/memory-cue-invocation-read.js');
   await app.register(memoryCueInvocationReadRoutes, {
@@ -3476,6 +3460,7 @@ async function main(): Promise<void> {
     invocationRecordStore,
     turnExecutionStore,
     threadStore,
+    lifecycleStore: tasteMemoryLifecycleStore,
   });
   const { TasteObservatoryReader } = await import('./domains/memory/taste/TasteObservatoryReader.js');
   const tasteBrowseStatistics = new TasteObservatoryReader(
@@ -3485,15 +3470,39 @@ async function main(): Promise<void> {
     invocationRecordStore,
     turnExecutionStore,
     threadStore,
+    tasteMemoryLifecycleStore,
   );
   const { tasteBrowseRoutes } = await import('./routes/taste-browse.js');
   await app.register(tasteBrowseRoutes, {
     ownerUserId: privateUserId,
     tasteRepository,
     proposalStore: tasteProposalStore,
+    lifecycleStore: tasteMemoryLifecycleStore,
+    lifecycleService: tasteMemoryLifecycleService,
     threadStore,
     messageStore,
-    readObservatory: (owner, includePrivate) => tasteBrowseStatistics.read(owner, { includePrivate }),
+    readObservatory: (owner, includePrivate) =>
+      tasteBrowseStatistics.read(owner, { includePrivate, includeDimensionHints: true }),
+  });
+  await app.register(personMemoryOwnerReadRoutes, {
+    ownerUserId: privateUserId,
+    store: personMemoryStore,
+    messageStore,
+    threadStore,
+  });
+  await app.register(entityMemoryOwnerRoutes, {
+    ownerUserId: privateUserId,
+    store: entityMemoryLifecycleStore,
+    lifecycle: entityMemoryLifecycleService,
+    proposalStore: entityProposalStore,
+    sourceReaders: entityMemorySourceReaders,
+  });
+  await app.register(profileMemoryOwnerRoutes, {
+    ownerUserId: privateUserId,
+    store: profileMemoryLifecycleStore,
+    lifecycle: profileMemoryLifecycleService,
+    proposalStore: profileUpdateProposalStore,
+    sourceReaders: profileMemorySourceReaders,
   });
   // F153 Phase E: Hub embedded observability routes
   const { telemetryRoutes } = await import('./routes/telemetry.js');
@@ -4072,6 +4081,7 @@ async function main(): Promise<void> {
           { createProgramEvidenceProofResolver },
           { createProgramEvaluationOwnerResolver },
           { createFileMeasurementDecisionProofResolver },
+          { createGitCapabilityEvolutionMeasurementBindingResolver },
           { createEvolutionOwnerSurfaceResolvers },
           { createEvolutionProgramTriggerRegistrationProvider },
           { resolveCanonicalInvocationTrajectory },
@@ -4082,6 +4092,9 @@ async function main(): Promise<void> {
           import('./infrastructure/capability-evolution/program-evidence-proof-resolver.js'),
           import('./infrastructure/capability-evolution/program-evaluation-owner-resolver.js'),
           import('./infrastructure/harness-eval/measurement/measurement-decision-proof-resolver.js'),
+          import(
+            './infrastructure/harness-eval/measurement/capability-evolution/capability-evolution-measurement-binding-resolver.js'
+          ),
           import('./infrastructure/capability-evolution/program-owner-surface-resolvers.js'),
           import('./infrastructure/capability-evolution/program-trigger-bridge.js'),
           import('./domains/cats/services/session/CanonicalInvocationTrajectoryResolver.js'),
@@ -4124,6 +4137,9 @@ async function main(): Promise<void> {
           joinValidator,
           // Phase 3 evaluation reads owner truth from the same canonical F267 decision proofs.
           evaluationOwnerResolver: createProgramEvaluationOwnerResolver({ decisionProofResolver }),
+          measurementConstitutionResolver: createGitCapabilityEvolutionMeasurementBindingResolver({
+            repoRoot: findMonorepoRoot(process.cwd()),
+          }),
           resolveChangeOwner: () => evolutionChangeOwner,
           triggerRegistration: () => (evolutionObservationDispatch ? triggerRegistration() : undefined),
           dispatchObservationTrigger: (input) => {
@@ -4316,7 +4332,48 @@ async function main(): Promise<void> {
   });
   const { companionDecisionRoutes } = await import('./routes/companion-decision-routes.js');
   await app.register(companionDecisionRoutes, { ownerUserId: privateUserId });
+  let homeHub: import('./domains/concierge/live/host/home/home-hub-delivery.js').HomeHubDelivery | undefined;
+  const artifactWorkLineageHolder: import('./domains/video-studio/content-owner/global-artifact-work-lineage.js').GlobalArtifactWorkLineageResolverHolder =
+    {};
   if (liveCompanionSessions) {
+    const { createF317MeetingControlBundle } = await import('./routes/f317-meeting-control-bundle.js');
+    const meetingControlBundle = createF317MeetingControlBundle(app, {
+      ownerUserId: privateUserId,
+      sessions: liveCompanionSessions,
+      messages: messageStore,
+      threadStore,
+      isCurrentThread: (ownerId, threadId) => conciergeThreadServiceShared.isCurrent(ownerId, threadId),
+    });
+    const { f317LiveMeetingControlRoutes } = await import('./routes/f317-live-meeting-control.js');
+    await app.register(f317LiveMeetingControlRoutes, { registry, service: meetingControlBundle.service });
+    const { f317MeetingShareRoutes } = await import('./routes/f317-meeting-share.js');
+    await app.register(f317MeetingShareRoutes, {
+      ownerUserId: privateUserId,
+      threadStore,
+      host: liveCompanionSessions,
+      service: meetingControlBundle.share,
+    });
+    const { installHomeActions } = await import('./domains/concierge/live/host/home/install-home-actions.js');
+    const { createHomeWorkSource } = await import('./domains/concierge/live/host/home/home-work-source.js');
+    const homeActions = await installHomeActions(app, {
+      ownerUserId: privateUserId,
+      sessions: liveCompanionSessions,
+      messages: messageStore,
+      threads: threadStore,
+      registry,
+      socketManager,
+      isCurrentThread: (ownerId, threadId) => conciergeThreadServiceShared.isCurrent(ownerId, threadId),
+      work: createHomeWorkSource({
+        ownerUserId: privateUserId,
+        isCurrentCompanionThread: (ownerId, threadId) => conciergeThreadServiceShared.isCurrent(ownerId, threadId),
+        projectPath: () => resolveActiveProjectRoot(),
+        messages: messageStore,
+        threads: threadStore,
+        tasks: taskStore,
+        lineage: () => artifactWorkLineageHolder.current,
+      }),
+    });
+    homeHub = homeActions.hub;
     const { maybeStartOwnerLocalNoteLab } = await import('./domains/concierge/live/host/owner-local-note-lab.js');
     const localNoteIsolation = {
       enabled: process.env.CAT_CAFE_F317_LOCAL_NOTE_LAB === '1',
@@ -4326,13 +4383,40 @@ async function main(): Promise<void> {
       memoryStore: process.env.MEMORY_STORE === '1',
       nodeEnv: process.env.NODE_ENV,
     };
+    if (localNoteIsolation.enabled && process.env.CAT_CAFE_JEV_PAGE_CONFIG)
+      throw new Error('Select one page-action composition; product and lab cannot share authority');
+    const { readConfiguredPageAction } = await import('./domains/concierge/action/jev/page-action-config.js');
+    const configuredPage = await readConfiguredPageAction();
     const localNoteLab = await maybeStartOwnerLocalNoteLab(localNoteIsolation);
     const { OwnerPageActionService } = await import('./domains/concierge/live/host/owner-page-action-service.js');
     const pageActionOwner = new OwnerPageActionService({
       ownerUserId: privateUserId,
       sessions: liveCompanionSessions,
       messages: messageStore,
-      ...(localNoteLab ? { profile: localNoteLab.profile, connector: localNoteLab.connector } : {}),
+      ...(configuredPage ?? (localNoteLab ? { profile: localNoteLab.profile, connector: localNoteLab.connector } : {})),
+      recordResult: async ({ scope, requestMessageId, body, receiptId }) => {
+        const result = await messageStore.appendIdempotent({
+          userId: scope.userId,
+          threadId: scope.threadId,
+          catId: scope.catId,
+          content: `[Host 页面操作回执｜来源 ${scope.threadId}#${requestMessageId}]\n${body}`,
+          mentions: [],
+          timestamp: Date.now(),
+          idempotencyKey: `f317-page-action-${receiptId}`,
+        });
+        socketManager?.broadcastAgentMessage(
+          {
+            type: 'text',
+            catId: scope.catId,
+            content: result.message.content,
+            messageId: result.message.id,
+            invocationId: result.message.id,
+            timestamp: result.message.timestamp,
+          },
+          scope.threadId,
+        );
+        return result.message.id;
+      },
     });
     let localNoteSimulation: { stop(): Promise<void> } | undefined;
     if (localNoteLab) {
@@ -4361,6 +4445,8 @@ async function main(): Promise<void> {
       },
       progressOwnedCarrier: (entry, targetCatId) => queueProcessor.progressOwnedCarrier(entry, targetCatId),
       mcpDistDir: join(findMonorepoRoot(), 'packages/mcp-server/dist'),
+      // Keep native meeting exposure off until this package's Host/MCP/native lifecycle cut is verified together.
+      meetingToolsEnabled: false,
       desktopRoot: join(findMonorepoRoot(), 'desktop/companion-live'),
       allowedDirectories: [join(resolveActiveProjectRoot(), 'docs')],
       publish: (message) => {
@@ -4388,6 +4474,8 @@ async function main(): Promise<void> {
     });
     const { f317PageActionRoutes } = await import('./routes/f317-page-action.js');
     await app.register(f317PageActionRoutes, { ownerUserId: privateUserId, service: pageActionOwner });
+    const { f317LivePageActionRoutes } = await import('./routes/f317-live-page-action.js');
+    await app.register(f317LivePageActionRoutes, { registry, service: pageActionOwner });
     if (localNoteLab) {
       try {
         const { startOwnerLocalNoteSimulation } = await import(
@@ -4412,12 +4500,6 @@ async function main(): Promise<void> {
       }
       app.log.info('isolated local note simulation admitted without native media');
     }
-    const { f317MeetingShareRoutes } = await import('./routes/f317-meeting-share.js');
-    await app.register(f317MeetingShareRoutes, {
-      ownerUserId: privateUserId,
-      threadStore,
-      host: liveCompanionSessions,
-    });
   }
   const connectorHubOpts: Parameters<typeof connectorHubRoutes>[1] = { threadStore, redis: redisClient ?? undefined };
   await app.register(connectorHubRoutes, connectorHubOpts);
@@ -5002,6 +5084,9 @@ async function main(): Promise<void> {
   // (lets the user 24h-suppress a (reason, tool, catId) tuple).
   const callbackAuthNotifier = new CallbackAuthSystemMessageNotifier({ messageStore, socketManager });
 
+  let externalReviewTransferService:
+    | import('./domains/community/external-review/ExternalReviewTransferService.js').ExternalReviewTransferService
+    | undefined;
   let externalReviewVerdictService:
     | import('./domains/community/external-review/ExternalReviewVerdictService.js').ExternalReviewVerdictService
     | undefined;
@@ -5039,6 +5124,20 @@ async function main(): Promise<void> {
       freshnessResolvers: new Set(['community_current_head', 'task_active_owner']),
       producers: new Set(['external_review_verdict', 'task_status_transition']),
     });
+    const { ExternalReviewTransferService } = await import(
+      './domains/community/external-review/ExternalReviewTransferService.js'
+    );
+    // A memory auth registry cannot participate in the Redis authority commit.
+    if (registryBackendKind === 'redis')
+      externalReviewTransferService = new ExternalReviewTransferService({
+        eventLog: communityEventLog,
+        objectStore: communityObjectStore,
+        projector: communityProjector,
+        taskStore,
+        threadStore,
+        proposalStore,
+        isLatestInvocation: async (invocationId) => registry.isLatest(invocationId),
+      });
     externalReviewVerdictService = new ExternalReviewVerdictService({
       repoConfigStore: communityRepoConfigStore,
       eventLog: communityEventLog,
@@ -5096,6 +5195,21 @@ async function main(): Promise<void> {
         : {}),
     });
   }
+  // F167: the completion terminal for a matched event-wait wake. Needs only the ledger, so it exists exactly where
+  // the other custody producers do; a runtime without it answers 503 instead of leaving a holder with no way out.
+  const eventWaitDispositionService =
+    ballCustodyIngest && ballCustodyEventLog && ballCustodyProjectionStore
+      ? new EventWaitDispositionService({
+          registry,
+          log: app.log,
+          messageStore,
+          ballCustodyEventLog,
+          ballCustodyProjectionStore,
+          ballCustody: ballCustodyIngest,
+          // Repair goes through the ingest chain, not a bare projector.rebuild (see the managed hold service above).
+          repairProjection: (subjectKey: string) => ballCustodyIngest.rebuild(subjectKey),
+        })
+      : undefined;
   const meetingArtifactReaderHolder: import('./routes/callback-meeting-artifact-routes.js').MeetingArtifactReaderHolder =
     {};
   const namedCatContentHolder: import('./routes/callback-content-editor-routes.js').NamedCatContentHolder = {};
@@ -5206,6 +5320,7 @@ async function main(): Promise<void> {
       : {}),
     verifyPrReviewEventWaitCoverage,
     ...(externalReviewVerdictService ? { externalReviewVerdictService } : {}),
+    ...(externalReviewTransferService ? { externalReviewTransferService } : {}),
     ...(externalReviewRecoveryService ? { externalReviewRecoveryService } : {}),
     ...(workflowSopStore ? { workflowSopStore } : {}),
     queueProcessor,
@@ -5240,6 +5355,7 @@ async function main(): Promise<void> {
       taskStore,
       invocationRecordStore,
       ...(managedHoldDispositionService ? { managedHoldDispositionService } : {}),
+      ...(eventWaitDispositionService ? { eventWaitDispositionService } : {}),
       ...(a2aDispatchDispositionService ? { a2aDispatchDispositionService } : {}),
       ...(ballCustodyIngest ? { ballCustody: ballCustodyIngest } : {}),
       ...(ballCustodyEventLog && ballCustodyProjectionStore
@@ -5305,6 +5421,7 @@ async function main(): Promise<void> {
     memoryStore,
     sessionChainStore,
     transcriptWriter,
+    artifactWorkLineage: artifactWorkLineageHolder,
     deliveryCursorStore,
     freshnessClosureStore,
     invocationQueue,
@@ -5322,6 +5439,7 @@ async function main(): Promise<void> {
       | undefined,
     conciergeThreadService: conciergeThreadServiceShared,
   });
+  await app.register(routingPreviewRoutes, { threadStore, router });
   await app.register(labelsRoutes, { labelStore, threadStore });
   await app.register(threadBranchRoutes, {
     threadStore,
@@ -5442,7 +5560,9 @@ async function main(): Promise<void> {
     return card ? { agentId: catId, catId, displayName: card.displayName } : undefined;
   };
   const pluginProjectRoot = resolveActiveProjectRoot();
-  const { CollectiveWorkAuthority } = await import('./domains/plugin/builtin-runtime/collective-work-authority.js');
+  const { CollectiveWorkAuthority } = await import(
+    './domains/plugin/builtin-runtime/collective-work/collective-work-authority.js'
+  );
   const { CollectiveWorkResultReconciler } = await import(
     './domains/plugin/builtin-runtime/collective-work-result-reconciler.js'
   );
@@ -5495,6 +5615,11 @@ async function main(): Promise<void> {
     './domains/plugin/desktop-window-runtime/electron-executor.js'
   );
   const { CompanionHostBridge } = await import('./domains/concierge/live/CompanionHostBridge.js');
+  const { CompanionWorkOverview } = await import('./domains/concierge/live/work/companion-work-overview.js');
+  const { resolveCompanionWorkPublication } = await import(
+    './domains/concierge/live/host/home/companion-work-publication.js'
+  );
+  const { assertCompanionWorkProject } = await import('./domains/concierge/live/host/companion-work-port.js');
   const { createCompanionDecisionNavigation, createCompanionDecisionSocketDelivery } = await import(
     './domains/concierge/live/host/unified/companion-decision-navigation.js'
   );
@@ -5531,31 +5656,85 @@ async function main(): Promise<void> {
         },
         'companion desktop runtime lost',
       ),
-    createCompanionBridge: ({ assertCurrent, navigate, publicCompanionV2, companionContract, disableCompanion }) =>
-      new CompanionHostBridge({
+    createCompanionBridge: ({ assertCurrent, navigate, publicCompanionV2, companionContract, disableCompanion }) => {
+      // The existing Host runtime composition owns this project binding. Renderer commands cannot select it.
+      const assertWorkCurrent = async () => {
+        await assertCurrent();
+        assertCompanionWorkProject(pluginProjectRoot, resolveActiveProjectRoot());
+      };
+      const decisions = createCompanionDecisionNavigation({
+        ownerUserId: privateUserId,
+        messages: messageStore,
+        threads: threadStore,
+        assertCurrent: assertWorkCurrent,
+        ...createCompanionDecisionSocketDelivery({
+          ownerUserId: privateUserId,
+          parseCookie: (header) => app.parseCookie(header),
+          sockets: () => socketManager?.getIO().sockets.sockets.values() ?? [],
+        }),
+      });
+      const openConversation = (threadId: string) =>
+        navigate(new URL(`/thread/${encodeURIComponent(threadId)}`, resolveFrontendBaseUrl(process.env, app.log)).href);
+      // Architecture cell: concierge-surface
+      // Reuses Task/Message/Artifact owners; the Hub owns navigation and visible-version receipts.
+      const workOptions = {
+        ownerUserId: privateUserId,
+        projectPath: pluginProjectRoot,
+        tasks: taskStore,
+        messages: messageStore,
+        threads: threadStore,
+        assertCurrent: assertWorkCurrent,
+        artifactLineage: {
+          resolve: (input: Parameters<NonNullable<typeof artifactWorkLineageHolder.current>['resolve']>[0]) => {
+            if (!artifactWorkLineageHolder.current) throw new Error('Artifact lineage unavailable');
+            return artifactWorkLineageHolder.current.resolve(input);
+          },
+        },
+      };
+      let workLifetime = new AbortController();
+      const overview =
+        companionContract === '0.1.0-beta.25'
+          ? new CompanionWorkOverview({
+              ...workOptions,
+              open: async (destination) => {
+                if (destination.messageId)
+                  return (
+                    homeHub?.openWork(
+                      privateUserId,
+                      () => resolveCompanionWorkPublication(workOptions, destination),
+                      assertWorkCurrent,
+                      workLifetime.signal,
+                    ) ?? 'unconfirmed'
+                  );
+                await openConversation(destination.threadId);
+                return 'unconfirmed';
+              },
+            })
+          : undefined;
+      const work = overview
+        ? {
+            read: () => overview.read(),
+            open: (entryRef: string) => overview.open(entryRef),
+            reset: () => {
+              workLifetime.abort('companion_binding_revoked');
+              overview.reset();
+              workLifetime = new AbortController();
+            },
+          }
+        : undefined;
+      return new CompanionHostBridge({
         app,
         ownerUserId: privateUserId,
         origin: `http://127.0.0.1:${PORT}`,
-        assertCurrent,
+        assertCurrent: assertWorkCurrent,
         publicCompanionV2,
         ...(companionContract ? { companionContract } : {}),
         ...(disableCompanion ? { disableCompanion } : {}),
-        ...createCompanionDecisionNavigation({
-          ownerUserId: privateUserId,
-          messages: messageStore,
-          threads: threadStore,
-          assertCurrent,
-          ...createCompanionDecisionSocketDelivery({
-            ownerUserId: privateUserId,
-            parseCookie: (header) => app.parseCookie(header),
-            sockets: () => socketManager?.getIO().sockets.sockets.values() ?? [],
-          }),
-        }),
-        openConversation: (threadId) =>
-          navigate(
-            new URL(`/thread/${encodeURIComponent(threadId)}`, resolveFrontendBaseUrl(process.env, app.log)).href,
-          ),
-      }),
+        ...decisions,
+        ...(work ? { work } : {}),
+        openConversation,
+      });
+    },
     routes: signalRouteStore,
     intakes: meetingIntakeStore,
     messageStore,
@@ -5800,6 +5979,7 @@ async function main(): Promise<void> {
   app.addHook('onClose', async () => workspaceContentReviews.store.close());
   registerWorkspaceContentReviewRoutes(app, {
     reviews: workspaceContentReviews.reviews,
+    fileQuotes: { source: workspaceContentReviews.source, messages: messageStore, threads: threadStore },
     changed: (ownerUserId, reviewId) => socketManager?.emitToUser(ownerUserId, 'artifact_review_changed', { reviewId }),
   });
   if (!pluginRuntime.collectiveConnectorRuntime) {
@@ -5970,6 +6150,7 @@ async function main(): Promise<void> {
     F276: bindLegacyApprovalProducer(new F276ApprovalAdapter(personMemoryStore)),
     F292: bindLegacyApprovalProducer(new F292ApprovalAdapter(meetingIntakeStore)),
     F306: bindLegacyApprovalProducer(new F306ApprovalAdapter(runtimeInteractionRuntime.store)),
+    F321: bindLegacyApprovalProducer(new F321ApprovalAdapter(eventMemoryCorrectionProposalStore)),
     F260: bindLegacyApprovalProducer(
       new F260ApprovalAdapter(entityProposalStore, (proposal) => {
         if (!memoryServices.evidenceStore.inspectEntityConflict) {
@@ -5995,10 +6176,16 @@ async function main(): Promise<void> {
   const { PersistedQueueDelivery } = await import(
     './domains/cats/services/agents/invocation/PersistedQueueDelivery.js'
   );
+  const contentReturnDelivery = new PersistedQueueDelivery({
+    messages: messageStore,
+    queue: invocationQueue,
+    progress: (entry, targetCatId) => queueProcessor.progressOwnedCarrier(entry, targetCatId),
+  });
   const artifactReview = createArtifactReviewIntegration({
     dataDir: process.env.CAT_CAFE_DATA_DIR ?? join(resolveActiveProjectRoot(), '.cat-cafe'),
     uploadDir: getDefaultUploadDir(process.env.UPLOAD_DIR),
     owner: collaborativeContent.owner,
+    projects: collaborativeContent.projects,
     publications: preparedArtifactReader,
     workspace: workspaceContentReviews.source,
     ...(evolutionProgramService
@@ -6013,14 +6200,11 @@ async function main(): Promise<void> {
     tasks: taskStore,
     threads: threadStore,
     messages: messageStore,
-    delivery: new PersistedQueueDelivery({
-      messages: messageStore,
-      queue: invocationQueue,
-      progress: (entry, targetCatId) => queueProcessor.progressOwnedCarrier(entry, targetCatId),
-    }),
+    delivery: contentReturnDelivery,
     emit: (userId, event, data) => socketManager?.emitToUser(userId, event, data),
     onError: (error) => app.log.warn({ err: error }, '[artifact-review] recovery remains pending'),
   });
+  artifactWorkLineageHolder.current = artifactReview.globalArtifactWorkLineage;
   collectivePreparedArtifactReader = artifactReview.artifactReader;
   app.addHook('onClose', async () => artifactReview.store.close());
   taskRunnerV2.register(artifactReview.recoverySpec);
@@ -6046,7 +6230,10 @@ async function main(): Promise<void> {
     messages: messageStore,
     turnExecutions: turnExecutionStore,
     queue: invocationQueue,
+    delivery: contentReturnDelivery,
     sourceChanged: (ownerUserId, threadId, messageId) =>
+      socketManager?.emitToUser(ownerUserId, 'content_modification_source_saved', { threadId, messageId }),
+    receiptChanged: (ownerUserId, threadId, messageId) =>
       socketManager?.emitToUser(ownerUserId, 'content_modification_source_saved', { threadId, messageId }),
     changed: (ownerUserId) =>
       socketManager?.emitToUser(ownerUserId, 'entrusted_work_projection_invalidated', { ownerUserId }),
@@ -6066,6 +6253,7 @@ async function main(): Promise<void> {
   );
   await registerCallbackContentModificationRoutes(app, {
     text: modifications.text,
+    receipts: modifications.receipts,
     requests: modifications.requests,
     sourceDiscussions: modifications.sourceDiscussions,
     threads: threadStore,
@@ -6110,6 +6298,7 @@ async function main(): Promise<void> {
     threads: threadStore,
     messages: messageStore,
     proposals: proposalStore,
+    ...(actionSuccessorLeaseStore ? { actionSuccessors: actionSuccessorLeaseStore } : {}),
     ...(requestReviewOwnerLedger
       ? {
           readReviewProvenance: (query) => readRecordedRequestReview(requestReviewOwnerLedger, messageStore, query),
@@ -6301,7 +6490,7 @@ async function main(): Promise<void> {
   registerTasteProposalDecisionRoutes(app, {
     tasteProposalStore,
     socketManager,
-    writeVignette: createVignetteWriter(tasteRepository),
+    writeVignette: tasteProposalWriter,
     approvalCoordinator: tasteApprovalCoordinator,
   });
   // F221 Phase B: callback route for cat_cafe_propose_taste tool (cat-auth)
@@ -6311,6 +6500,20 @@ async function main(): Promise<void> {
     socketManager,
     messageStore,
     approvalIngress,
+    tasteRepository,
+    lifecycleStore: tasteMemoryLifecycleStore,
+  });
+  registerEventMemoryCorrectionDecisionRoutes(app, {
+    store: eventMemoryCorrectionProposalStore,
+    lifecycle: eventMemoryLifecycleService,
+    socketManager,
+  });
+  await app.register(callbackProposeEventMemoryCorrectionRoutes, {
+    registry,
+    eventMemoryStore: memoryServices.eventMemoryStore,
+    proposalStore: eventMemoryCorrectionProposalStore,
+    approvalIngress,
+    sourceReaders: eventMemorySourceReaders,
   });
   // F246 Phase B: dispatch proposal approve/reject endpoints
   await app.register(dispatchProposalRoutes, {
@@ -6475,11 +6678,12 @@ async function main(): Promise<void> {
         }
       : {}),
     observeDeployment: async (input) => runtimeDeploymentContext?.provider.observe(input) ?? null,
-    readCandidate: async () => (runtimeRoot ? resolveRuntimeDeploymentCandidate(runtimeRoot) : null),
+    readCandidate: async () =>
+      runtimeDeploymentContext ? resolveRuntimeDeploymentCandidate(runtimeDeploymentContext.runtimeRoot) : null,
     proveCandidateInclusion: async (targetRevision, candidateRevision) =>
-      runtimeRoot
+      runtimeDeploymentContext
         ? resolveRuntimeDeploymentInclusionProof({
-            runtimeRoot,
+            runtimeRoot: runtimeDeploymentContext.runtimeRoot,
             targetRevision,
             runningRevision: candidateRevision,
           })
@@ -6873,8 +7077,24 @@ async function main(): Promise<void> {
           if (!codexCapabilityService?.requestNativeCapabilitySource) {
             throw new Error('Codex provider source unavailable');
           }
+          const selectedCatId = [...agentRegistry.getAllEntries()].find(
+            ([, service]) => service === codexCapabilityService,
+          )?.[0];
+          if (!selectedCatId) throw new Error('Codex provider source owner unavailable');
+          const projectRoot = resolveActiveProjectRoot(process.cwd());
+          const catConfig = catRegistry.tryGet(selectedCatId)?.config;
+          const account = resolveForClient(
+            projectRoot,
+            'openai',
+            resolveBoundAccountRefForCat(projectRoot, selectedCatId, catConfig),
+          );
+          if (!account) throw new Error('Codex provider source account unavailable');
+          const accountError = validateRuntimeProviderBinding('openai', account, catConfig?.defaultModel);
+          if (accountError) throw new Error(accountError);
           try {
             return await codexCapabilityService.requestNativeCapabilitySource({
+              account,
+              cliConfigArgs: catConfig?.cliConfigArgs,
               invocationId: 'marketplace-capability-source:' + randomUUID(),
               timeoutMs: 8_000,
               cwd: resolveActiveProjectRoot(),
@@ -7079,13 +7299,14 @@ async function main(): Promise<void> {
 
   // Evidence search (SQLite) + reindex endpoint (D-11) + F-4 federated search + F188 rebuild
   const { MessageSearchService } = await import('./domains/memory/MessageSearchService.js');
+  const messageSearchService = new MessageSearchService({
+    evidenceStore: memoryServices.evidenceStore,
+    threadStore,
+    messageStore,
+  });
   await app.register(evidenceRoutes, {
     evidenceStore: memoryServices.evidenceStore,
-    messageSearchService: new MessageSearchService({
-      evidenceStore: memoryServices.evidenceStore,
-      threadStore,
-      messageStore,
-    }),
+    messageSearchService,
     getEmbeddingService: () => memoryServices.embeddingLifecycle.getService(),
     indexBuilder: memoryServices.indexBuilder,
     knowledgeResolver: memoryServices.knowledgeResolver,
@@ -7096,6 +7317,8 @@ async function main(): Promise<void> {
   // F227: Event Memory query route (GET /api/memory/events)
   await app.register(eventsRoutes, {
     eventMemoryStore: memoryServices.eventMemoryStore,
+    lifecycleService: eventMemoryLifecycleService,
+    correctionProposalStore: eventMemoryCorrectionProposalStore,
     socketEmit: (event, data, room) => {
       socketManager?.broadcastToRoom(room, event, data);
     },
@@ -7167,6 +7390,7 @@ async function main(): Promise<void> {
 
   // Phase H: Knowledge Emergence Feed API
   await knowledgeFeedRoutes(app, {
+    ownerUserId: privateUserId,
     markerQueue: memoryServices.markerQueue,
     db: memoryServices.store.getDb(),
     materializationService: memoryServices.materializationService,
@@ -7186,7 +7410,16 @@ async function main(): Promise<void> {
       ownerUserId: privateUserId,
       catalog: memoryServices.catalog,
       stores: libraryStores,
+      searchSources: { tasteRepository, messageSearchService },
       brakeSources: { eventMemoryStore: memoryServices.eventMemoryStore, threadStore, messageStore },
+      recallSources: {
+        threadStore,
+        messageStore,
+        invocationRecordStore,
+        turnExecutionStore,
+        ...(personMemoryStore ? { personMemoryStore } : {}),
+        cueSourceReader: memoryCueRuntime.sourceReader,
+      },
       evidenceDb: memoryServices.store.getDb(),
       markerQueue: memoryServices.markerQueue,
       repoRoot,
@@ -7688,6 +7921,7 @@ async function main(): Promise<void> {
     invocationQueue,
     queueProcessor,
     queueCustodyCoordinator,
+    queueSourceCustodyAdmission,
     messageStore,
     actionSuccessorLeaseStore,
     deploymentWaitStartGuard,

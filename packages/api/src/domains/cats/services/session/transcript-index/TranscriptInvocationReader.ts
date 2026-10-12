@@ -38,7 +38,7 @@ export class TranscriptInvocationReader {
     const inputs: SessionIndexInput[] = [];
     for (const session of sessions) {
       signal?.throwIfAborted();
-      const includeLive = session.status !== 'sealed' && !!this.writer;
+      const includeLive = session.status !== 'sealed';
       const snapshot =
         includeLive && this.writer
           ? await this.writer.readBufferedSnapshot({
@@ -85,6 +85,36 @@ export class TranscriptInvocationReader {
     signal?: AbortSignal,
   ): Promise<Map<string, InvocationReadPage>> {
     const { result, snapshots } = await this.read(sessions, { kind: 'invocation', invocationId, ...page }, signal);
+    return this.materializePages(result, snapshots, invocationId);
+  }
+
+  /** Exact session coordinates share the invocation index, including live-only recovery. */
+  async readEvents(
+    session: IndexedSession,
+    page: { cursor?: number; limit: number },
+    signal?: AbortSignal,
+  ): Promise<InvocationReadPage> {
+    signal?.throwIfAborted();
+    if (session.status === 'sealed') {
+      return this.reader.readEvents(
+        session.id,
+        session.threadId,
+        session.catId,
+        page.cursor === undefined ? undefined : { eventNo: page.cursor },
+        page.limit,
+      );
+    }
+    const { result, snapshots } = await this.read([session], { kind: 'events', ...page }, signal);
+    const materialized = this.materializePages(result, snapshots).get(session.id);
+    if (!materialized) throw new Error('Transcript index omitted the requested session');
+    return materialized;
+  }
+
+  private materializePages(
+    result: InvocationIndexResponse,
+    snapshots: Map<string, TranscriptEvent[]>,
+    invocationId?: string,
+  ): Map<string, InvocationReadPage> {
     return new Map(
       result.pages.map((indexed) => [
         indexed.sessionId,
@@ -93,7 +123,7 @@ export class TranscriptInvocationReader {
           events: indexed.events.map((item) => {
             if ('event' in item) return item.event;
             const event = snapshots.get(indexed.sessionId)?.[item.bufferIndex];
-            if (!event || event.invocationId !== invocationId)
+            if (!event || (invocationId !== undefined && event.invocationId !== invocationId))
               throw new Error('Transcript buffer changed during indexed read');
             return { ...event, eventNo: item.eventNo };
           }),

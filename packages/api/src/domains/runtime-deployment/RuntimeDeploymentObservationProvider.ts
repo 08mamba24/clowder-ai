@@ -1,14 +1,7 @@
-import { createHash } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
 import type { DeploymentObservationV1, DeploymentService, DeploymentSubjectRef } from '@cat-cafe/shared';
 import { resolveRuntimeDeploymentInclusionProof } from '../../config/runtime-deployment-inclusion.js';
 import type { DeploymentObservationProvider } from '../../routes/callback-deployment-wait-routes.js';
 import type { RuntimeDeploymentLedger } from './RuntimeDeploymentLedger.js';
-
-export async function resolveRuntimeInstallationId(runtimeRoot: string): Promise<string> {
-  const canonical = await realpath(runtimeRoot);
-  return createHash('sha256').update(canonical).digest('hex');
-}
 
 export function runtimeDeploymentSubjectRef(installationId: string, deploymentId: string): DeploymentSubjectRef {
   return `deployment:${installationId}:${deploymentId}`;
@@ -21,6 +14,7 @@ export class RuntimeDeploymentObservationProvider implements DeploymentObservati
       readonly runtimeRoot: string;
       readonly installationId: string;
       readonly deploymentId: string;
+      readonly bootId: string;
       /** Current facts for this running instance; absent or failed probes fail closed. */
       readonly currentReadyServices?: () => Promise<readonly DeploymentService[]>;
     },
@@ -32,7 +26,7 @@ export class RuntimeDeploymentObservationProvider implements DeploymentObservati
   }): Promise<DeploymentObservationV1 | null> {
     if (input.deploymentId !== this.options.deploymentId) return null;
     let boot = await this.options.ledger.readCurrent(input.deploymentId).catch(() => null);
-    if (!boot || boot.exit) return null;
+    if (!boot || boot.bootId !== this.options.bootId || boot.exit) return null;
     const initialBoot = boot;
     const live = (await this.options.currentReadyServices?.().catch(() => [] as DeploymentService[])) ?? [];
     const services = [...new Set(live.filter((service) => service === 'api' || service === 'web'))];
@@ -43,13 +37,13 @@ export class RuntimeDeploymentObservationProvider implements DeploymentObservati
       boot = await this.options.ledger
         .markReady({
           deploymentId: input.deploymentId,
-          bootId: boot.bootId,
+          bootId: this.options.bootId,
           services: newlyReady,
         })
         .catch(() => null);
     } else {
       const current = await this.options.ledger.readCurrent(input.deploymentId).catch(() => null);
-      boot = current?.bootId === boot.bootId ? current : null;
+      boot = current?.bootId === this.options.bootId ? current : null;
     }
     if (!boot || boot.exit) return null;
     const inclusionProof =

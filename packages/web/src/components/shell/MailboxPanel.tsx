@@ -1,10 +1,13 @@
-import type { UnifiedAttentionItemV1, UnifiedAttentionReadV1 } from '@cat-cafe/shared';
+import type { UnifiedAttentionReadV1 } from '@cat-cafe/shared';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { type ApprovalSessions, sessionKey } from './mailbox/approval-sessions';
+import type { ApprovalSessions } from './mailbox/approval-sessions';
+import { MailboxApprovalTools, MailboxSecondLayer } from './mailbox/MailboxApprovalTools';
 import { MailboxRow } from './mailbox/MailboxRow';
+import type { MailboxSection } from './mailbox/mailbox-navigation';
+import { useMailboxRows } from './mailbox/mailbox-rows';
 import type { OriginalPlace } from './mailbox/original-place';
-import { RetainedResults } from './mailbox/RetainedResults';
+import { RetainedResult } from './mailbox/RetainedResults';
 import {
   MAILBOX_NAME,
   type MailboxState,
@@ -17,17 +20,6 @@ import type { UnifiedAttentionView } from './use-unified-attention';
 const RAIL_WIDTH_FALLBACK = 52;
 const PANEL_WIDTH = 440;
 const MUTED = { color: 'var(--shell-muted)' } as const;
-
-/** Rows keep every variant the read returned; a repeated decision gets its own key instead of replacing the earlier one. */
-function rowKeys(items: readonly UnifiedAttentionItemV1[]): string[] {
-  const seen = new Map<string, number>();
-  return items.map((item) => {
-    const base = `${item.decisionRef}|${item.approval?.proposalId ?? ''}`;
-    const nth = seen.get(base) ?? 0;
-    seen.set(base, nth + 1);
-    return nth === 0 ? base : `${base}#${nth}`;
-  });
-}
 
 function SourceNotes({ read }: { read: UnifiedAttentionReadV1 }) {
   const notes = [
@@ -161,14 +153,14 @@ function useEscapeToClose(panel: React.RefObject<HTMLElement | null>, onClose: (
 }
 
 /** Which row is open. A row that left the read is forgotten, not merely hidden: if a later read brings it back it starts closed. */
-function useOpenRow(keys: string[]) {
+function useOpenRow(keys: string[], loading: boolean) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const keysSignature = keys.join('\n');
   // biome-ignore lint/correctness/useExhaustiveDependencies: keysSignature stands for keys
   useEffect(() => {
-    setExpandedKey((current) => (current !== null && !keys.includes(current) ? null : current));
-  }, [keysSignature]);
-  const openKey = expandedKey !== null && keys.includes(expandedKey) ? expandedKey : null;
+    if (!loading) setExpandedKey((current) => (current !== null && !keys.includes(current) ? null : current));
+  }, [keysSignature, loading]);
+  const openKey = expandedKey !== null && (loading || keys.includes(expandedKey)) ? expandedKey : null;
   return { openKey, toggle: (key: string) => setExpandedKey(openKey === key ? null : key) };
 }
 
@@ -183,15 +175,12 @@ function panelRows(view: UnifiedAttentionView, sessions: ApprovalSessions) {
   const shown = read ?? staleRead;
   const items = shown?.items ?? [];
   const ownerUserId = shown?.identity.ownerUserId ?? null;
-  const listed = ownerUserId === null ? [] : items.flatMap((item) => (item.approval ? [item.approval] : []));
   return {
     read,
     staleRead,
     items,
-    keys: rowKeys(items),
     ownerUserId,
     hosted: ownerUserId !== null ? { sessions, ownerUserId } : undefined,
-    listedKeys: new Set(listed.map((approval) => sessionKey(ownerUserId as string, approval))),
   };
 }
 
@@ -209,6 +198,9 @@ export function MailboxPanel({
   sessions,
   onOpenPlace,
   onClose,
+  section = 'pending',
+  onSectionChange,
+  selectedProposalId = null,
 }: {
   anchor: React.RefObject<HTMLButtonElement | null>;
   state: MailboxState;
@@ -217,12 +209,17 @@ export function MailboxPanel({
   sessions: ApprovalSessions;
   onOpenPlace: (place: OriginalPlace) => void;
   onClose: () => void;
+  section?: MailboxSection;
+  onSectionChange?: (section: MailboxSection) => void;
+  selectedProposalId?: string | null;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const left = useRailEdge(anchor);
 
-  const { read, staleRead, items, keys, ownerUserId, hosted, listedKeys } = panelRows(view, sessions);
-  const { openKey, toggle } = useOpenRow(keys);
+  const { read, staleRead, items, ownerUserId, hosted } = panelRows(view, sessions);
+  const rows = useMailboxRows(items, sessions, ownerUserId);
+  const keys = rows.map((row) => row.key);
+  const { openKey, toggle } = useOpenRow(keys, view.result.kind === 'loading');
   const canRetry =
     state.kind === 'unavailable' || state.kind === 'partial' || (state.kind === 'has-items' && state.partial);
   // The state carries a count only when the read proved it, so this is exactly the rail badge's rule.
@@ -237,6 +234,19 @@ export function MailboxPanel({
     (first ?? panelRef.current)?.focus();
   }, [left]);
   useEscapeToClose(panelRef, onClose);
+  const handledSelection = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedProposalId) {
+      handledSelection.current = null;
+      return;
+    }
+    if (handledSelection.current === selectedProposalId) return;
+    const row = rows.find((row) => row.kind === 'item' && row.item.approval?.proposalId === selectedProposalId);
+    if (row) {
+      handledSelection.current = selectedProposalId;
+      if (openKey !== row.key) toggle(row.key);
+    }
+  }, [selectedProposalId, rows, openKey, toggle]);
 
   return createPortal(
     <div
@@ -257,48 +267,62 @@ export function MailboxPanel({
       }}
     >
       <PanelHeader total={total} onClose={onClose} />
-      <div
-        role="tabpanel"
-        id="mailbox-tabpanel"
-        aria-labelledby="mailbox-tab-needs-me"
-        className="flex min-h-0 flex-1 flex-col overflow-y-auto px-[22px] pb-4"
-      >
-        <ReadNotes state={state} read={read} stale={staleRead !== null} />
-        <RetainedResults sessions={sessions} ownerUserId={ownerUserId} listedKeys={listedKeys} />
-        {items.length > 0 ? (
-          <ul className="m-0 flex list-none flex-col gap-2 p-0">
-            {items.map((item, index) => (
-              <MailboxRow
-                key={keys[index]}
-                item={item}
-                rowKey={keys[index]}
-                stale={staleRead !== null}
-                expanded={openKey === keys[index]}
-                onToggle={() => toggle(keys[index])}
-                onOpen={onOpenPlace}
-                hosted={hosted}
-              />
-            ))}
-          </ul>
-        ) : null}
-        {read?.page.hasMore ? (
-          <p className="m-0 pt-1.5 text-xs" style={MUTED} data-testid="mailbox-has-more">
-            还有更多事项，这里先显示前 {read.page.limit} 件
-          </p>
-        ) : null}
-        {canRetry ? (
-          <div className="pt-1.5">
-            <button
-              type="button"
-              onClick={view.refetch}
-              data-testid="mailbox-retry"
-              className="shell-nav-row shell-focusable rounded-lg px-2 py-1 text-xs"
-            >
-              重试
-            </button>
-          </div>
-        ) : null}
-      </div>
+      {section !== 'pending' && read !== null ? (
+        <MailboxApprovalTools
+          section={section}
+          view={view}
+          sessions={sessions}
+          onOpenPlace={onOpenPlace}
+          onBack={() => onSectionChange?.('pending')}
+        />
+      ) : (
+        <div
+          role="tabpanel"
+          id="mailbox-tabpanel"
+          aria-labelledby="mailbox-tab-needs-me"
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto px-[22px] pb-4"
+        >
+          <ReadNotes state={state} read={read} stale={staleRead !== null} />
+          {rows.length > 0 ? (
+            <ul className="m-0 flex list-none flex-col gap-2 p-0">
+              {rows.map((row) =>
+                row.kind === 'retained' ? (
+                  <RetainedResult key={row.key} session={row.session} sessions={sessions} />
+                ) : (
+                  <MailboxRow
+                    key={row.key}
+                    item={row.item}
+                    rowKey={row.key}
+                    stale={staleRead !== null}
+                    expanded={openKey === row.key}
+                    onToggle={() => toggle(row.key)}
+                    onOpen={onOpenPlace}
+                    hosted={hosted}
+                  />
+                ),
+              )}
+            </ul>
+          ) : null}
+          {read?.page.hasMore ? (
+            <p className="m-0 pt-1.5 text-xs" style={MUTED} data-testid="mailbox-has-more">
+              还有更多事项，这里先显示前 {read.page.limit} 件
+            </p>
+          ) : null}
+          {canRetry ? (
+            <div className="pt-1.5">
+              <button
+                type="button"
+                onClick={view.refetch}
+                data-testid="mailbox-retry"
+                className="shell-nav-row shell-focusable rounded-lg px-2 py-1 text-xs"
+              >
+                重试
+              </button>
+            </div>
+          ) : null}
+          {onSectionChange ? <MailboxSecondLayer disabled={read === null} onNavigate={onSectionChange} /> : null}
+        </div>
+      )}
     </div>,
     document.body,
   );

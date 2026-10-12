@@ -1,9 +1,10 @@
-import React, { act } from 'react';
+import React, { act, useEffect, useLayoutEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const nav = vi.hoisted(() => ({ pathname: '/thread/current', search: '' }));
 vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn() }),
   usePathname: () => nav.pathname,
   useSearchParams: () => new URLSearchParams(nav.search),
 }));
@@ -34,7 +35,47 @@ vi.mock('@/components/DesktopUpdatePrompt', () => ({ DesktopUpdatePrompt: () => 
 vi.mock('@/services/playbackRuntime', () => ({ getPlaybackManager: vi.fn(), destroyPlaybackRuntime: vi.fn() }));
 
 import { AppShell } from '@/components/AppShell';
+import { useWorkspaceNavigate } from '@/hooks/useWorkspaceNavigate';
+import { captureChatReadingRef } from '@/utils/chat-scroll-memory';
+import { pushThreadRouteWithHistory } from '../../ThreadSidebar/thread-navigation';
+import type { ChatReadingPort } from '../../thread-chat/useThreadChatReadingPort';
+import { readSettingsReadingSession } from '../settings-reading-session';
 import { SHELL_PRESENTATION_STORAGE_KEY, writeShellPresentation } from '../shell-presentation';
+import { useSettingsReadingEntry, useSettingsReadingPort, useSettingsSourceReturn } from '../useSettingsSourceReturn';
+
+const sourceReader: ChatReadingPort = {
+  threadId: 'current',
+  ownerId: 'original-reader',
+  captureReadingRef: () =>
+    captureChatReadingRef({
+      threadId: 'current',
+      position: { top: 320, anchor: 'offset', messageAnchor: { messageId: 'm20', viewportOffsetPx: 42 } },
+    }),
+  restoreReadingRef: async () => ({ status: 'unavailable' }),
+  releaseReadingRef: () => true,
+  navigateToMessage: async () => ({ status: 'unavailable' }),
+};
+function SettingsSourceProbe() {
+  const register = useSettingsReadingPort('Actual source title');
+  const capture = useSettingsReadingEntry();
+  const source = useSettingsSourceReturn();
+  useEffect(() => register(sourceReader), [register]);
+  return (
+    <>
+      <button type="button" data-testid="capture-source" onClick={capture}>
+        Capture
+      </button>
+      <output data-testid="source-label">{source?.label ?? ''}</output>
+    </>
+  );
+}
+// Next commits the address after its route-state render. No popstate is fired by this commit.
+function CommitNextAddress({ children, pathname }: { children: React.ReactNode; pathname: string }) {
+  useLayoutEffect(() => {
+    window.history.replaceState(null, '', pathname);
+  }, [pathname]);
+  return children;
+}
 
 describe('F322 AppShell presentation isolation', () => {
   let host: HTMLDivElement;
@@ -82,6 +123,38 @@ describe('F322 AppShell presentation isolation', () => {
     expect(host.querySelector('input')).toBe(draft);
     act(() => writeShellPresentation('classic'));
     expectShell(false);
+    expect(draft.value).toBe('still unsent');
+  });
+  it('shows the captured Settings source after a Next address commit without a synthetic browser event', () => {
+    writeShellPresentation('v2');
+    const renderSource = () =>
+      act(() =>
+        root.render(
+          <CommitNextAddress pathname={nav.pathname}>
+            <AppShell>
+              <SettingsSourceProbe />
+            </AppShell>
+          </CommitNextAddress>,
+        ),
+      );
+    renderSource();
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="capture-source"]')?.click());
+    expect(readSettingsReadingSession()?.label).toBe('Actual source title');
+    nav.pathname = '/settings';
+    renderSource();
+    expect(window.location.pathname).toBe('/settings');
+    expect(host.querySelector('[data-testid="source-label"]')?.textContent).toBe('Actual source title');
+  });
+  it('follows the original thread-history event without a Next navigation or remounting the draft', () => {
+    render();
+    const draft = host.querySelector('input');
+    if (!draft) throw new Error('Unsent draft input is missing');
+    draft.value = 'still unsent';
+    act(() => pushThreadRouteWithHistory('other', window));
+    expect(nav.pathname).toBe('/thread/current');
+    expect(window.location.pathname).toBe('/thread/other');
+    expect(vi.mocked(useWorkspaceNavigate).mock.calls.at(-1)?.[0]).toBe('other');
+    expect(host.querySelector('input')).toBe(draft);
     expect(draft.value).toBe('still unsent');
   });
   it.each([

@@ -112,6 +112,24 @@ export function ReturnArrowIcon({ className = 'w-5 h-5', color = '#374151' }: Ic
   );
 }
 
+/** Deployment ready — clockwise refresh arrows, monoline SVG. */
+export function RefreshCwIcon({ className = 'w-5 h-5', color = '#374151' }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      fill="none"
+      stroke={color}
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M3 21v-5h5" />
+    </svg>
+  );
+}
+
 /** Auth key — key silhouette, monoline SVG, 24x24 */
 export function AuthKeyIcon({ className = 'w-5 h-5', color = '#374151' }: IconProps) {
   return (

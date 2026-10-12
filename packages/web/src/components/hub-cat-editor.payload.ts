@@ -1,4 +1,5 @@
 import type { CatData } from '@/hooks/useCatData';
+import { buildAgyProfilePatch } from './hub-cat-editor.agy';
 import {
   type ClientId,
   DEFAULT_ANTIGRAVITY_COMMAND_ARGS,
@@ -224,6 +225,7 @@ export function buildCatPayload(form: HubCatEditorFormState, cat?: CatData | nul
     ...contextWindowPatch,
     ...voiceConfigPatch,
     ...buildAcpPatch(form, cat),
+    ...buildAgyProfilePatch(form, cat, context.accountAuthType),
   };
 
   if (form.clientId === 'antigravity') {

@@ -1,19 +1,17 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import {
-  messagePublicationSource,
-  type PublishedMessageCoordinate,
-  usePublishedContent,
-} from '@/components/content-review/usePublishedContent';
+import { useChatArtworkEntry } from '@/components/content-review/useChatArtworkEntry';
+import type { PublishedMessageCoordinate } from '@/components/content-review/usePublishedContent';
 import { CopyButton, Lightbox } from '@/components/Lightbox';
 import type { RichMediaGalleryBlock } from '@/stores/chat-types';
 import { API_URL } from '@/utils/api-client';
 
-function resolveMediaUrl(url: string): string {
+function resolveMediaUrl(url: string, isV2: boolean): string {
   const trimmed = url.trim();
   if (
     trimmed.startsWith('/uploads/') ||
+    (isV2 && trimmed.startsWith('/api/workspace/file/raw?')) ||
     trimmed.startsWith('/api/connector-media/') ||
     trimmed.startsWith('/avatars/')
   ) {
@@ -31,8 +29,9 @@ export function MediaGalleryBlock({
 }) {
   const items = Array.isArray(block.items) ? block.items : [];
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [previewReason, setPreviewReason] = useState<string | undefined>();
   const [failedIndices, setFailedIndices] = useState<Set<number>>(new Set());
-  const published = usePublishedContent();
+  const published = useChatArtworkEntry(publication);
 
   const handleImgError = useCallback((index: number) => {
     setFailedIndices((prev) => {
@@ -48,13 +47,9 @@ export function MediaGalleryBlock({
         {block.title && <div className="font-medium text-sm mb-2">{block.title}</div>}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {items.map((item, i) => {
-            const src = resolveMediaUrl(item.url);
+            const src = resolveMediaUrl(item.url, published.isV2);
             const failed = failedIndices.has(i);
-            const source = messagePublicationSource(
-              publication,
-              { kind: 'media-gallery', blockId: block.id, itemIndex: i },
-              item.url,
-            );
+            const source = published.source(item.url, { kind: 'media-gallery', blockId: block.id, itemIndex: i });
             return (
               // biome-ignore lint/suspicious/noArrayIndexKey: gallery items have no stable id
               <figure key={i} className="relative group space-y-1">
@@ -73,11 +68,17 @@ export function MediaGalleryBlock({
                   <button
                     type="button"
                     disabled={published.busy}
-                    onClick={() =>
-                      source
-                        ? void published.open(source, item.caption ?? item.alt ?? block.title ?? '作品')
-                        : setLightboxIndex(i)
-                    }
+                    onClick={async () => {
+                      if (!source && !published.isV2) {
+                        setLightboxIndex(i);
+                        return;
+                      }
+                      const result = await published.open(source, item.caption ?? item.alt ?? block.title ?? '作品');
+                      if (result.status === 'preview' && published.isV2) {
+                        setPreviewReason(result.reason);
+                        setLightboxIndex(i);
+                      }
+                    }}
                     className="block w-full rounded focus:outline-2 focus:outline-[var(--semantic-info)]"
                     aria-label={
                       source ? `打开作品 ${item.alt ?? block.title ?? '图片'}` : `Enlarge ${item.alt ?? 'image'}`
@@ -112,9 +113,10 @@ export function MediaGalleryBlock({
       </div>
       {lightboxIndex !== null && items[lightboxIndex] && !failedIndices.has(lightboxIndex) && (
         <Lightbox
-          url={resolveMediaUrl(items[lightboxIndex].url)}
+          url={resolveMediaUrl(items[lightboxIndex].url, published.isV2)}
           alt={items[lightboxIndex].alt ?? ''}
           caption={items[lightboxIndex].caption}
+          annotationUnavailableReason={previewReason}
           onClose={() => setLightboxIndex(null)}
         />
       )}

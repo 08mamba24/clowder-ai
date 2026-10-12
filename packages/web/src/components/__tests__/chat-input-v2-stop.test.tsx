@@ -115,37 +115,37 @@ describe('ChatInputActionButton: where the stop button sits', () => {
 
   it('v2, empty draft, a cat running: the mic then the stop — the stop is the last control', () => {
     renderButton({ presentation: 'v2' });
-    expect(micIndex()).toBe(0);
-    expect(stopIndex()).toBe(1);
-    expect(stopIndex()).toBe(labels().length - 1);
+    expect(labels().indexOf('语音输入')).toBe(0);
+    expect(labels().indexOf('停止生成')).toBe(1);
+    expect(labels().indexOf('停止生成')).toBe(labels().length - 1);
   });
 
   it('v2, text in the draft: no stop button; queue-send is the way forward', () => {
     renderButton({ presentation: 'v2', hasText: true });
-    expect(labels()).not.toContain('Stop generation');
+    expect(labels()).not.toContain('停止生成');
     expect(labels()).toContain('排队发送');
   });
 
   it('v2, no cat running: no stop button at all', () => {
     renderButton({ presentation: 'v2', hasActiveInvocation: false, stopState: 'hidden' });
-    expect(labels()).not.toContain('Stop generation');
-    expect(micIndex()).toBe(0);
+    expect(labels()).not.toContain('停止生成');
+    expect(labels().indexOf('语音输入')).toBe(0);
   });
 
   it('v2, the stop still follows the stop state: pending is disabled, and a press stops once', () => {
     const onStop = vi.fn();
     renderButton({ presentation: 'v2', onStop, stopState: 'available' });
-    const stop = container.querySelector<HTMLButtonElement>('button[aria-label="Stop generation"]');
+    const stop = container.querySelector<HTMLButtonElement>('button[aria-label="停止生成"]');
     expect(stop?.disabled).toBe(false);
     act(() => stop?.click());
     expect(onStop).toHaveBeenCalledTimes(1);
     renderButton({ presentation: 'v2', onStop, stopState: 'pending' });
-    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Stop generation"]')?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="正在停止"]')?.disabled).toBe(true);
   });
 
   it('v2, the composer disabled while a cat runs: the big primary stop is still the only action (unchanged)', () => {
     renderButton({ presentation: 'v2', disabled: true });
-    expect(labels()).toEqual(['Stop generation']);
+    expect(labels()).toEqual(['停止生成']);
   });
 });
 

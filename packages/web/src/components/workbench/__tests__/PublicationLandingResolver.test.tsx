@@ -314,3 +314,188 @@ it('a review that appears while the work is shown does not take the work away (F
   await act(async () => action.click());
   expect(resolveArtifactReviewTarget(resolved.mock.calls[0]?.[0])?.reviewId).toBe(context('f').reviewId);
 });
+
+// A receipt is bound to one review. The work's generic entry remembers the review the person last chose and may be
+// the only one of several; a bound target is neither of those, and never turns into a sibling's review.
+const boundTo = (letter: string) => ({ ...target, reviewId: context(letter).reviewId });
+const renderBound = async (letter: string, contexts: ReturnType<typeof context>[], resolved = vi.fn()) => {
+  mock.apiFetch.mockImplementation(async () => new Response(JSON.stringify({ ownerUserId: 'operator', contexts })));
+  const bound = boundTo(letter);
+  await act(async () => {
+    root.render(
+      <PublicationLandingResolver
+        sourceSurface={createPublicationSurface({ ...bound, title: '作品' })}
+        target={bound}
+        onResolved={resolved}
+        onBack={() => {}}
+      >
+        <Editor />
+      </PublicationLandingResolver>,
+    );
+    for (let n = 0; n < 12; n++) await Promise.resolve();
+  });
+  return resolved;
+};
+const NOT_HELD = '这份修改所属的审阅当前不可访问，或已不再包含这一版；没有改去打开这件作品的其他任务审阅。';
+
+it('a target bound to a review enters that review, whatever the generic entry remembered for the work', async () => {
+  localStorage.setItem(contentContextSelectionKey('operator', target.contentRef), context('c').reviewId);
+  const resolved = await renderBound('b', [context('c'), context('b')]);
+  expect(resolveArtifactReviewTarget(resolved.mock.calls[0]?.[0])?.reviewId).toBe(context('b').reviewId);
+  expect(container.querySelector('[aria-label="作品讨论上下文"]')).toBeNull();
+});
+
+it('a target bound to a review enters it even when it is the one of several that the person never chose', async () => {
+  const resolved = await renderBound('c', [context('b'), context('c'), context('d')]);
+  expect(resolveArtifactReviewTarget(resolved.mock.calls[0]?.[0])?.reviewId).toBe(context('c').reviewId);
+  expect(resolved).toHaveBeenCalledTimes(1);
+});
+
+it('says so in place when the bound review is not among the work reviews, and offers no sibling', async () => {
+  localStorage.setItem(contentContextSelectionKey('operator', target.contentRef), context('c').reviewId);
+  const resolved = await renderBound('b', [context('c'), context('d')]);
+  expect(resolved).not.toHaveBeenCalled();
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe(NOT_HELD);
+  expect(container.querySelector('[aria-label="作品讨论上下文"]')).toBeNull();
+  expect(container.textContent).not.toContain('继续');
+  expect(mock.mount).not.toHaveBeenCalled();
+});
+
+it('also says so when the work has no review at all, instead of showing the work as if nothing were bound', async () => {
+  const resolved = await renderBound('b', []);
+  expect(resolved).not.toHaveBeenCalled();
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe(NOT_HELD);
+  expect(mock.mount).not.toHaveBeenCalled();
+});
+
+it('still offers the way back from the bound notice', async () => {
+  const onBack = vi.fn();
+  mock.apiFetch.mockImplementation(async () => new Response(JSON.stringify({ ownerUserId: 'operator', contexts: [] })));
+  const bound = boundTo('b');
+  await act(async () => {
+    root.render(
+      <PublicationLandingResolver
+        sourceSurface={createPublicationSurface({ ...bound, title: '作品' })}
+        target={bound}
+        onResolved={vi.fn()}
+        onBack={onBack}
+      >
+        <Editor />
+      </PublicationLandingResolver>,
+    );
+    for (let n = 0; n < 12; n++) await Promise.resolve();
+  });
+  const back = [...container.querySelectorAll('button')].find((button) => button.textContent === '返回来源');
+  expect(back).toBeDefined();
+  await act(async () => back?.click());
+  expect(onBack).toHaveBeenCalledTimes(1);
+});
+
+// The host keeps one resolver for a work whatever opened it, so the same instance can go from the generic entry to a
+// bound receipt. Nothing the generic entry left behind (the work on screen, the choice it recorded, the catalogue it
+// read) may answer for the bound target.
+const renderGeneric = async (contexts: ReturnType<typeof context>[], resolved = vi.fn()) => {
+  mock.apiFetch.mockImplementation(async () => new Response(JSON.stringify({ ownerUserId: 'operator', contexts })));
+  await act(async () => {
+    root.render(
+      <PublicationLandingResolver sourceSurface={canonical} target={target} onResolved={resolved} onBack={() => {}}>
+        <Editor />
+      </PublicationLandingResolver>,
+    );
+    for (let n = 0; n < 12; n++) await Promise.resolve();
+  });
+  return resolved;
+};
+const siblingButtons = () => [...container.querySelectorAll('[aria-label="关联的任务审阅"] button')];
+
+it('a work shown through the generic entry gives way to a bound target whose review is gone: notice only, no sibling', async () => {
+  const resolved = await renderGeneric([]);
+  expect(container.querySelector('[data-testid="live-editor"]')).not.toBeNull();
+  resolved.mockClear();
+  await renderBound('b', [context('c')], resolved);
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe(NOT_HELD);
+  expect(container.querySelector('[data-testid="live-editor"]')).toBeNull();
+  expect(container.querySelector('[aria-label="关联的任务审阅"]')).toBeNull();
+  expect(resolved).not.toHaveBeenCalled();
+});
+
+it('no sibling can be reached by clicking through after the switch to a bound target', async () => {
+  const resolved = await renderGeneric([]);
+  resolved.mockClear();
+  await renderBound('b', [context('c')], resolved);
+  for (const button of siblingButtons()) await act(async () => (button as HTMLButtonElement).click());
+  expect(resolved).not.toHaveBeenCalled();
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe(NOT_HELD);
+});
+
+it('a choice made on the generic entry does not answer for a bound target', async () => {
+  const resolved = await renderGeneric([context('c'), context('d')]);
+  const select = container.querySelector<HTMLSelectElement>('[aria-label="作品讨论上下文"]');
+  if (!select) throw Error('missing context selection');
+  select.value = context('c').reviewId;
+  await act(async () => select.dispatchEvent(new Event('change', { bubbles: true })));
+  expect(resolved).toHaveBeenCalledTimes(1);
+  // The same instance now serves a receipt bound to a review the owner no longer reports: C was chosen, B was asked for.
+  await renderBound('b', [context('c'), context('d')], resolved);
+  expect(resolved).toHaveBeenCalledTimes(1);
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe(NOT_HELD);
+});
+
+it('the catalogue the generic entry read is not the answer for a bound target while the new read is still pending', async () => {
+  const resolved = await renderGeneric([context('c')]);
+  const select = container.querySelector<HTMLButtonElement>('button');
+  expect(select).not.toBeNull();
+  resolved.mockClear();
+  mock.apiFetch.mockImplementation(() => new Promise<Response>(() => {}));
+  const bound = boundTo('b');
+  await act(async () => {
+    root.render(
+      <PublicationLandingResolver
+        sourceSurface={createPublicationSurface({ ...bound, title: '作品' })}
+        target={bound}
+        onResolved={resolved}
+        onBack={() => {}}
+      >
+        <Editor />
+      </PublicationLandingResolver>,
+    );
+    for (let n = 0; n < 12; n++) await Promise.resolve();
+  });
+  expect(resolved).not.toHaveBeenCalled();
+  expect(siblingButtons()).toHaveLength(0);
+  expect(container.querySelector('[data-testid="live-editor"]')).toBeNull();
+  // Until the owner answers for the bound review, nothing is concluded about it: it is being checked, not missing.
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  expect(container.textContent).toContain('正在核对作品的原讨论');
+});
+
+it('a bound review is still entered after the work was shown through the generic entry', async () => {
+  const resolved = await renderGeneric([]);
+  resolved.mockClear();
+  await renderBound('b', [context('b'), context('c')], resolved);
+  expect(resolved).toHaveBeenCalledTimes(1);
+  expect(resolveArtifactReviewTarget(resolved.mock.calls[0]?.[0])?.reviewId).toBe(context('b').reviewId);
+});
+
+it('goes back to being an ordinary entry when the target stops being bound: the notice does not stick', async () => {
+  // The work was shown through the generic entry, a bound receipt then replaced it with its notice, and now a plain
+  // open of the same work arrives: the work is not on screen, so its one review is entered as for a fresh open.
+  const resolved = await renderGeneric([]);
+  expect(container.querySelector('[data-testid="live-editor"]')).not.toBeNull();
+  resolved.mockClear();
+  await renderBound('b', [context('c')], resolved);
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe(NOT_HELD);
+  mock.apiFetch.mockImplementation(
+    async () => new Response(JSON.stringify({ ownerUserId: 'operator', contexts: [context('c')] })),
+  );
+  await act(async () => {
+    root.render(
+      <PublicationLandingResolver sourceSurface={canonical} target={target} onResolved={resolved} onBack={() => {}}>
+        <Editor />
+      </PublicationLandingResolver>,
+    );
+    for (let n = 0; n < 12; n++) await Promise.resolve();
+  });
+  expect(container.textContent).not.toContain('没有改去打开这件作品的其他任务审阅');
+  expect(resolveArtifactReviewTarget(resolved.mock.calls.at(-1)?.[0])?.reviewId).toBe(context('c').reviewId);
+});

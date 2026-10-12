@@ -112,7 +112,6 @@ export function CollectiveLaunchSurface({
       {frameUrl && (
         <div
           aria-hidden="true"
-          data-concierge-reserved-rect="collective-message-actions"
           style={{
             position: 'absolute',
             right: 0,

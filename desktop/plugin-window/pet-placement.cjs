@@ -2,14 +2,18 @@ const clamp = (value, low, high) => Math.max(low, Math.min(value, high));
 const separated = (a, b) =>
   a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
 const defaultBallSize = 72;
+const minimumBallSize = 43;
+const maximumBallSize = 192;
 const basePet = { width: 120, height: 130 };
 // Mirrors @clowder-ai/companion living-geometry.mjs. Insets exclude the
 // ordinary 8px window padding: left peek, corrected pounce top and wake end
 // right are all part of one reviewed transparent-surface union.
 const baseLivingArt = { left: 24, top: 10, right: 15, bottom: 0 };
 
+const validBallSize = (value) => Number.isInteger(value) && value >= minimumBallSize && value <= maximumBallSize;
+
 function petMetrics(value) {
-  const ballSize = Number.isInteger(value) && value >= 48 && value <= 192 ? value : defaultBallSize;
+  const ballSize = validBallSize(value) ? value : defaultBallSize;
   const scale = ballSize / defaultBallSize;
   const scaled = (input) => Math.ceil(input * scale);
   return {
@@ -88,4 +92,4 @@ function placePetPanel({ area, pet: anchor, panel: requested, pointer, ballSize 
     bounds: { x: Math.round(x), y: Math.round(y), width: Math.ceil(right - x), height: Math.ceil(bottom - y) },
   };
 }
-module.exports = { petMetrics, placePetPanel };
+module.exports = { petMetrics, placePetPanel, validBallSize };

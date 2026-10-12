@@ -320,6 +320,7 @@ export function fixedFixture(pathname) {
     ],
     ['/api/config/cat-order', { catOrder: ['codex-sol', 'codex-terra'] }],
     ['/api/messages', { messages: [], hasMore: false }],
+    ['/api/recall/events', { events: [], sourceViews: [], cueInvocationIds: [], replies: [], replyCursor: null }],
     ['/api/tasks', { tasks: [] }],
     ['/api/bootcamp/threads', { threads: [] }],
     ['/api/capability-evolution/programs', { programs: [evolutionProgramProjection] }],
@@ -350,6 +351,7 @@ export function fixedFixture(pathname) {
           threadTitle: 'Owner B',
         })),
         total: otherArtifacts.length,
+        workLineage: 'unavailable',
       },
     ],
     [

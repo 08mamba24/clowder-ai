@@ -1,6 +1,7 @@
 import { isAbsolute, resolve } from 'node:path';
 import type { EffortLevel, Options } from '@anthropic-ai/claude-agent-sdk';
 import type { CatId } from '@cat-cafe/shared';
+import { buildChildEnv } from '../../../../../utils/cli-spawn.js';
 import type { AgentServiceOptions, PreparedProviderRequestV1 } from '../../types.js';
 import {
   ANTHROPIC_PROFILE_MODE_KEY,
@@ -112,14 +113,10 @@ export async function prepareClaudeSdkLaunch(input: {
   const settings = plan?.ready
     ? composeManagedSettingsDocument(plan, operator.settings, options?.workingDirectory)
     : operator.settings;
-  const env: Record<string, string | undefined> = { ...process.env };
   const overrides = { ...buildClaudeEnvOverrides(options?.callbackEnv), ...options?.accountEnv };
   if (options?.callbackEnv?.[ANTHROPIC_PROFILE_MODE_KEY] === 'subscription')
     for (const key of SUBSCRIPTION_MODE_DENY_KEYS) overrides[key] = null;
-  for (const [key, value] of Object.entries(overrides)) {
-    if (value === null) delete env[key];
-    else env[key] = value;
-  }
+  const env = buildChildEnv(overrides, { workingDirectory: options?.workingDirectory });
   if (readOnly) env.CAT_CAFE_READONLY = 'true';
   const request: PreparedProviderRequestV1 = Object.freeze({
     v: 1,

@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { InvocationQueue } from '../src/domains/cats/services/agents/invocation/InvocationQueue.js';
 import { InvocationTracker } from '../src/domains/cats/services/agents/invocation/InvocationTracker.js';
+import { QueueSourceCustodyAdmissionService } from '../src/domains/cats/services/agents/invocation/QueueSourceCustodyAdmission.js';
 import { AgentRegistry } from '../src/domains/cats/services/agents/registry/AgentRegistry.js';
 import { AgentRouter } from '../src/domains/cats/services/agents/routing/AgentRouter.js';
 import { routeSerial } from '../src/domains/cats/services/agents/routing/route-serial.js';
 import type { AgentMessage, AgentService, AgentServiceOptions } from '../src/domains/cats/services/types.js';
 import { callbackCustodyFixture, DELEGATE, NEXT_CAT } from './f290-communication-a2a-custody-callback.fixture.js';
 import { CAT } from './f290-communication-validation.host.js';
+import { scriptedSessionInit } from './helpers/scoped-test-sessions.js';
 
 export type ScopeCase = 'private' | 'public' | 'delegated-private' | 'home';
 export type DeferCase = 'busy' | 'pending' | 'interrupted';
@@ -55,6 +57,7 @@ export async function routeCustodyFixture(scope: ScopeCase, defer: DeferCase) {
     supportsToolExecutionPolicy: () => true,
     async *invoke(_prompt: string, options?: AgentServiceOptions) {
       calls.push({ catId, policy: options?.toolExecutionPolicy?.mode });
+      yield* scriptedSessionInit(catId, _prompt, options);
       yield {
         type: 'text',
         catId,
@@ -67,8 +70,9 @@ export async function routeCustodyFixture(scope: ScopeCase, defer: DeferCase) {
   };
   const other: AgentService = {
     supportsToolExecutionPolicy: () => true,
-    async *invoke() {
+    async *invoke(_prompt, options) {
       calls.push({ catId: NEXT_CAT });
+      yield* scriptedSessionInit(NEXT_CAT, _prompt, options);
       yield { type: 'done', catId: NEXT_CAT, timestamp: Date.now() };
     },
   };
@@ -76,9 +80,11 @@ export async function routeCustodyFixture(scope: ScopeCase, defer: DeferCase) {
   agents.register(catId, service);
   agents.register(NEXT_CAT, other);
   const router = new AgentRouter({
+    ...f.sessionPorts,
     registry: f.registry,
     agentRegistry: agents,
     messageStore: f.messages,
+    queueSourceCustodyAdmission: new QueueSourceCustodyAdmissionService({ queue, messageStore: f.messages }),
     threadStore: f.threads,
     taskStore: f.tasks,
     collectiveContext: () => f.context,

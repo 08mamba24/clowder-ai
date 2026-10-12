@@ -44,7 +44,7 @@ async function persistThreadAttentionPreference(input: {
   anchor: string;
   alias?: string | null;
   open?: boolean | null;
-  memberSort?: ThreadAttentionMemberSort;
+  memberSort?: ThreadAttentionMemberSort | null;
 }): Promise<ThreadAttentionPreferences> {
   const response = await apiFetch('/api/config/thread-attention', {
     method: 'PUT',
@@ -113,10 +113,10 @@ export function useAttentionClusters(
       anchor: string;
       alias?: string | null;
       open?: boolean | null;
-      memberSort?: ThreadAttentionMemberSort;
+      memberSort?: ThreadAttentionMemberSort | null;
     }) => {
       const intent = typeof input.open === 'boolean' ? beginOpen(input.anchor, input.open) : null;
-      if (input.memberSort) setPendingSort((current) => new Set([...current, input.anchor]));
+      if (input.memberSort !== undefined) setPendingSort((current) => new Set([...current, input.anchor]));
       const mutation = mutationQueue.current.then(async () => {
         setPreferenceError(null);
         const preferences = await persistThreadAttentionPreference(input);
@@ -129,7 +129,7 @@ export function useAttentionClusters(
           setPreferenceError('未能保存这个整理方式，请重试');
         })
         .finally(() => {
-          if (input.memberSort)
+          if (input.memberSort !== undefined)
             setPendingSort((current) => {
               const next = new Set(current);
               next.delete(input.anchor);
@@ -183,7 +183,7 @@ export function useAttentionClusters(
     savedGroups,
     memberSort,
     pendingSort,
-    changeMemberSort: (cluster: AttentionCluster, mode: ThreadAttentionMemberSort) =>
+    changeMemberSort: (cluster: AttentionCluster, mode: ThreadAttentionMemberSort | null) =>
       enqueuePreferenceMutation({ anchor: cluster.anchor, memberSort: mode }),
     groupLoadState,
     groupLoadError,

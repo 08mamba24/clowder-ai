@@ -1,10 +1,10 @@
 ---
 feature_ids: [F247]
-related_features: [F178, F061, F174, F236, F237]
+related_features: [F178, F061, F174, F236, F237, F172, F202, F309, F310, F317, F322]
 topics: [cloud-cat, chatgpt-pro, mcp, multi-provider, custom-instructions, github-connector, chrome-extension, native-messaging]
 doc_kind: spec
 description: Productized cloud-cat platform for connecting ChatGPT Pro and future cloud LLM providers into Clowder AI as first-class collaborators.
-tips_exempt: "Renewed 2026-09-30: legacy PinchTab cloud bridge removal (clowder-ai#1538 / #1550) retires a hidden opt-in transport, with no new capability to teach. Source-bound recovery still teaches title backfill, exact conversation inspection, connection-only versus retry and verified delivery; Settings explains the protected gpt-pro identity and its repair action in context. Separate tips would duplicate those in-place surfaces."
+tips_exempt: "Renewed 2026-10-10: Phase G and the related-feature update record the in-progress independent dot entry; where that entry ships it has its own implementation-anchored tip, so this architecture record adds no separate discovery action. Earlier transport retirement and in-place Settings repair flows are unchanged."
 description_source: model
 description_author: codex
 description_updated_at: 2026-07-06T11:45:00Z
@@ -122,7 +122,6 @@ F178 §12 升级条件给出新 F 号触发集合（self OAuth AS / multi-tenant
 - 愿景：multi-provider 聚集地 → 任何能跑 MCP connector 的云端 LLM 都能成为家庭成员
 
 **operator signoff**：operator 2026-06-21 08:11 UTC "可以更新 feat md 了嘛？" + 08:40 UTC "先更新你的 feat md 然后再开始写代码"。Phase F inline recovery 由 2026-09-04 source `[thread-id]#private-source-id` 放行：“好像ok 你可以update 一下feat md然后开始施工？”，其文案与动作边界来自同 thread `private-source-id`。
-
 ## Current State / 基线（截至 2026-09-04）
 ### 已验证 ✅
 - MCP transport（Streamable HTTP）+ ChatGPT Developer mode connector 兼容（spike B0 mock harness）
@@ -175,7 +174,6 @@ F178 §12 升级条件给出新 F 号触发集合（self OAuth AS / multi-tenant
 - 前端 bubble 渲染优化（catalog hot-add 显示 "Maine CoonPro(Pro Cloud (ChatGPT))" + fallback avatar 已 work；Phase C 升级真头像 + 气泡风格）
 - 多 provider 配置 UI（"配置云端猫"页面）
 - Chrome Web Store 签名 extension 的实际公开 listing；Clowder AI listing 集成与发布阻断状态已就绪，但当前没有发布权限/URL，不能宣称已经公开发布
-
 ## User Journey
 
 1. operator在 Clowder AI 插件市场点击安装 Cloud Cat plugin；向导安装本地 Native Messaging helper，并打开官方 Chrome Web Store 页面。Chrome 仍要求用户确认一次“添加扩展/权限”，插件不得静默绕过浏览器授权。
@@ -183,7 +181,6 @@ F178 §12 升级条件给出新 F 号触发集合（self OAuth AS / multi-tenant
 3. 用户直接 `@gpt-pro`；若 thread 未绑定，系统零发送并在原消息旁显示唯一恢复卡。单授权预选、多授权原地选择、零授权提供显式打开 ChatGPT；点击“绑定此会话并发送”后复用原 `sourceMessageId` 与 latest retryable attempt 写 route + retry。重复点击/重载/重放不得克隆 source 或 Host turn，旧 thread completion 不得更新新卡。
 4. Chrome extension 经 Native Messaging 在不聚焦窗口、不读 Cookie、不调用私有 API 的前提下投递；只有真实 `hostMessageId` 才显示“已发送”，否则显示准确状态与恢复动作。
 5. 云端猫用自己的 `catId` / agent-key 读取完整 thread context并回写猫咖；Hub 以独立身份和 delivery 状态展示，胶囊不复制整段历史。
-
 ## What
 
 6 个核心能力 + 6 个 Phase。
@@ -279,7 +276,6 @@ Console settings "配置云端猫" 流程：
 operator 2026-06-21 06:54 UTC 确认：**ChatGPT 官方 GitHub Connector 已用**。Maine Coon通过 GitHub Connector 访问 `github.com/zts212653/cat-cafe`：看 PR diff / code / commit log。
 
 **Scope 简化**：cat-cafe MCP 不暴露 file_slice 等 code 工具，code 走 GitHub Connector。cat-cafe MCP 只暴露 cat-cafe 独有（thread / message / memory），**48 R2 P0 暴露面减一档**。
-
 ## Phase 划分
 
 ### Phase A — Design Gate + 策略明确 ✅ done
@@ -647,6 +643,9 @@ gpt-pro（以及未来 claude-cloud / gemini-cloud 等其他 cloud cats），不
 
 - 插件页在用户首次安装 `gpt-pro` provider 时提示：“需要 Chrome 扩展的一次安装确认；完成后在目标 ChatGPT conversation 点击绑定。”sourceRef 指向本 spec Phase E/F。
 - `@gpt-pro` 无可用 binding 时提示：“先绑定 conversation，或选择复制并打开。”不得只显示内部 `HOST_APPEND_UNAVAILABLE`。
+### Phase G — dot 独立接入、猫咖内召唤与协作
+
+**Status**: in-progress；Astra 负责设计/范围，Sol61 实现。operator 于本 thread `[thread-id]#private-source-id` 接受概念并要求直接开发、在真实代码里打磨。
 
 ## Acceptance Criteria
 

@@ -33,7 +33,7 @@ export function GenericApprovalDecisionActions({
   const originCardOwnsPendingDecision = approvalProducerMeta(item.sourceFeatureId).decisionSurface === 'origin_card';
   const canDecide = item.resolution === 'open';
   // A host that has locked writes keeps the card readable and its links working; the producer buttons wait.
-  const { writesLocked } = useApprovalHost();
+  const { writesLocked, presentation, originalPlaceAction } = useApprovalHost();
   return (
     <div className="space-y-2">
       {canDecide && entityConflict && (
@@ -49,15 +49,21 @@ export function GenericApprovalDecisionActions({
       {canDecide && isPersonMemoryClaimSelect && <PersonMemoryClaimSelector item={item} onReject={onReject} />}
       {(!isPersonMemoryClaimSelect || !canDecide) && (
         <div className="flex flex-wrap items-center gap-2">
+          {presentation === 'mailbox' ? <span className="mr-auto">{originalPlaceAction}</span> : null}
           {canDecide && item.inlineApprovable && !entityConflict && (
             <button
               type="button"
               onClick={onApprove}
               disabled={Boolean(decidingState) || writesLocked}
               className="rounded-md bg-[var(--semantic-success)] px-3 py-1 text-micro font-medium text-[var(--cafe-accent-foreground)] disabled:opacity-50"
+              style={
+                presentation === 'mailbox'
+                  ? { background: 'var(--shell-primary)', color: 'var(--shell-primary-on)' }
+                  : undefined
+              }
               data-testid="approve-btn"
             >
-              {decidingState === 'approving' ? '...' : '批准'}
+              {decidingState === 'approving' ? '...' : presentation === 'mailbox' ? '同意' : '批准'}
             </button>
           )}
           {canDecide && !entityConflict && !originCardOwnsPendingDecision && (
@@ -71,10 +77,12 @@ export function GenericApprovalDecisionActions({
               {decidingState === 'rejecting' ? '...' : isStale ? '清除' : '拒绝'}
             </button>
           )}
-          <ApprovalProvenanceLinks navigation={item.navigation} onBeforeNavigate={onBeforeNavigate} />
+          {presentation === 'mailbox' ? null : (
+            <ApprovalProvenanceLinks navigation={item.navigation} onBeforeNavigate={onBeforeNavigate} />
+          )}
         </div>
       )}
-      {isPersonMemoryClaimSelect && (
+      {isPersonMemoryClaimSelect && presentation !== 'mailbox' && (
         <ApprovalProvenanceLinks navigation={item.navigation} onBeforeNavigate={onBeforeNavigate} />
       )}
     </div>

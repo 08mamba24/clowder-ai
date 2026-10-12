@@ -5,6 +5,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { CollectiveServiceStore, startCollectiveServer } from '../../../collective-service/dist/index.js';
 import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
+import { openChannelFromCollectiveHome } from './f290-channel-entry.harness.mjs';
+import { disableMockHostPwa } from './f290-mock-host-context.harness.mjs';
 import {
   availablePort,
   browserSessionToken,
@@ -65,7 +67,7 @@ test(
 
       const ownerPopup = await openAuthPopup(ownerPage, '继续使用 GitHub 验证');
       await ownerPopup.getByRole('link', { name: 'Continue as You' }).click();
-      await ownerPage.getByRole('heading', { name: '# general' }).waitFor();
+      await openChannelFromCollectiveHome(ownerPage, 'general');
       await ownerPage.getByPlaceholder('在 #general 里说点什么……').fill('Owner browser message');
       await ownerPage.getByRole('button', { name: '发送', exact: true }).click();
       await ownerPage.getByText('Owner browser message', { exact: true }).waitFor();
@@ -74,14 +76,21 @@ test(
       assert.ok(inviteUrl?.startsWith(`${serviceUrl}/#invite=`));
       await ownerPage.screenshot({ path: path.join(evidenceDirectory, 'owner-direct.png'), fullPage: true });
 
-      const memberContext = await browser.newContext({ viewport: { width: 1440, height: 960 } });
+      // This member later opens the PWA Host with mockHostApi route fixtures.
+      const memberContext = await browser.newContext({
+        viewport: { width: 1440, height: 960 },
+        serviceWorkers: 'block',
+      });
+      await disableMockHostPwa(memberContext, hostUrl);
       await fakeGitHub(memberContext, 'member-code', 'Member');
       const memberPage = await memberContext.newPage();
+      const memberErrors = [];
+      memberPage.on('pageerror', (error) => memberErrors.push(error.message));
       await memberPage.goto(inviteUrl, { waitUntil: 'networkidle' });
       await memberPage.getByRole('heading', { name: '加入同一个共同现场' }).waitFor();
       const memberPopup = await openAuthPopup(memberPage, '使用 GitHub 验证并加入');
       await memberPopup.getByRole('link', { name: 'Continue as Member' }).click();
-      await memberPage.getByRole('heading', { name: '# general' }).waitFor();
+      await openChannelFromCollectiveHome(memberPage, 'general');
       await memberPage.getByText('Owner browser message', { exact: true }).waitFor();
       await memberPage.getByPlaceholder('在 #general 里说点什么……').fill('Member joined the same Collective');
       await memberPage.getByRole('button', { name: '发送', exact: true }).click();
@@ -124,6 +133,7 @@ test(
         (await activeStore.getHumanProjection(memberSessionToken)).human.humanId,
       );
       await memberPage.goto(`${hostUrl}/collective`, { waitUntil: 'networkidle' });
+      assert.equal(await memberPage.evaluate(() => 'serviceWorker' in navigator), false);
       const serviceInput = memberPage.getByLabel('Collective Service 地址');
       if (await serviceInput.isVisible().catch(() => false)) {
         await serviceInput.fill(serviceUrl);
@@ -132,7 +142,7 @@ test(
       await memberPage.locator('[data-testid="collective-launch-surface"]').waitFor();
       const frame = memberPage.frames().find((candidate) => candidate.url().startsWith(`${serviceUrl}/?hostOrigin=`));
       assert.ok(frame, 'Clowder AI launch surface must embed the canonical Service Client');
-      await frame.getByRole('heading', { name: '# general' }).waitFor();
+      await openChannelFromCollectiveHome(frame, 'general');
       assert.equal(await frame.locator('[data-spatial-role="global-rail"]').count(), 0);
       assert.equal(await memberPage.getByRole('button', { name: 'Collective', exact: true }).count(), 1);
       assert.equal(await frame.getByRole('button', { name: '邀请成员' }).count(), 0);
@@ -148,6 +158,8 @@ test(
       assert.equal(hostApi.pairRequests[0].intent.serviceInstanceId, activeStore.serviceInstanceId);
       assert.equal(hostApi.pairRequests[0].rosterFingerprint, 'a'.repeat(64));
       assert.deepEqual(hostApi.pairRequests[0].excludedCatIds, []);
+      // Pairing reloads the embedded Client at its canonical Home entry.
+      await openChannelFromCollectiveHome(frame, 'general');
       await frame.getByRole('button', { name: '我的 Café', exact: true }).waitFor();
       await memberPage.screenshot({ path: path.join(evidenceDirectory, 'host-embedded-member.png'), fullPage: true });
 
@@ -182,6 +194,7 @@ test(
         )}\n`,
       );
 
+      assert.deepEqual(memberErrors, []);
       await memberContext.close();
       await ownerContext.close();
     } finally {

@@ -82,6 +82,7 @@ beforeEach(async () => {
           },
         ],
         coverage: { totalUnverified: 0 },
+        dimensionHints: { presented: 2, drilled: 1, applied: 0, dismissed: 0 },
       };
     },
     proposalStore: { get: async (id) => proposals.get(id) ?? null },
@@ -96,6 +97,17 @@ afterEach(async () => {
 });
 const get = (url, extra = {}) => app.inject({ url, headers: { 'x-test-session': 'owner' }, ...extra });
 const first = async () => (await get('/api/memory/taste')).json().entries[0];
+
+test('projects independent dimension evidence and preserves unavailable rather than a false zero', async () => {
+  assert.deepEqual((await get('/api/memory/taste')).json().dimensionHints, {
+    presented: 2,
+    drilled: 1,
+    applied: 0,
+    dismissed: 0,
+  });
+  failStats = true;
+  assert.equal((await get('/api/memory/taste')).json().dimensionHints, null);
+});
 
 test('an approved memory without quotes or takeaway does not present its scene as an original quote', async () => {
   writeFileSync(

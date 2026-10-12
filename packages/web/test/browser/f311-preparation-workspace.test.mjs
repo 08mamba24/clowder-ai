@@ -8,6 +8,7 @@ import {
   createPmPreparationProgramFixture,
   verifyPreparationWorkspace,
 } from './f311-preparation-workspace.journey.mjs';
+import { waitForResponsiveWorkspaceLayout } from './f311-responsive-workspace-layout.mjs';
 import { CONTRACT_THREAD_ID, startEvolutionWorkspaceBrowserFixture } from './f311-workspace-browser.harness.mjs';
 
 await import('tsx');
@@ -154,6 +155,7 @@ test(
       await workspace.locator('[data-preparation-item="motor"]').scrollIntoViewIfNeeded();
       await capture(page, 'preparation-authored-duck-desktop');
       await page.setViewportSize({ width: 320, height: 900 });
+      await waitForResponsiveWorkspaceLayout(page, surface, 320);
       await assertContained(surface);
       await assertContained(workspace);
       await capture(page, 'preparation-authored-duck-320');
@@ -208,6 +210,7 @@ test(
         .waitFor();
       for (const width of [416, 320]) {
         await page.setViewportSize({ width, height: 900 });
+        await waitForResponsiveWorkspaceLayout(page, surface, width);
         await assertContained(surface);
         await surface.locator('[data-preparation-item="data"]').scrollIntoViewIfNeeded();
         await capture(page, `preparation-submitted-stranger-${width}`);

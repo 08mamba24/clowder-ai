@@ -4,7 +4,7 @@ import './helpers/setup-cat-registry.js';
 
 import { MessageStore } from '../dist/domains/cats/services/stores/ports/MessageStore.js';
 import { TaskStore } from '../dist/domains/cats/services/stores/ports/TaskStore.js';
-import { CollectiveWorkAuthority } from '../dist/domains/plugin/builtin-runtime/collective-work-authority.js';
+import { CollectiveWorkAuthority } from '../dist/domains/plugin/builtin-runtime/collective-work/collective-work-authority.js';
 import { CollectiveWorkRevisionReconciler } from '../dist/domains/plugin/builtin-runtime/collective-work-revision-reconciler.js';
 
 async function fixture() {

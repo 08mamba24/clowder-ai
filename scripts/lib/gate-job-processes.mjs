@@ -232,6 +232,10 @@ function appendTail(current, chunk) {
   return combined.length <= OUTPUT_TAIL_BYTES ? combined : combined.subarray(combined.length - OUTPUT_TAIL_BYTES);
 }
 
+function supervisionErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function runGateCommandWithCleanup({
   cancelRequested = () => false,
   cleanupBudgetMs,
@@ -284,16 +288,21 @@ export async function runGateCommandWithCleanup({
   });
   let timedOut = false;
   let cancelled = false;
-  while (!settled) {
-    if (now() - executionStartedAt >= executionBudgetMs) {
-      timedOut = true;
-      break;
+  let supervisionError = null;
+  try {
+    while (!settled) {
+      if (now() - executionStartedAt >= executionBudgetMs) {
+        timedOut = true;
+        break;
+      }
+      if (cancelRequested()) {
+        cancelled = true;
+        break;
+      }
+      await Promise.race([childDone, sleep(pollMs)]);
     }
-    if (cancelRequested()) {
-      cancelled = true;
-      break;
-    }
-    await Promise.race([childDone, sleep(pollMs)]);
+  } catch (error) {
+    supervisionError = supervisionErrorMessage(error);
   }
   const executionEndedAt = now();
   if (!settled) signalProcessGroup(child, 'SIGTERM');
@@ -304,7 +313,7 @@ export async function runGateCommandWithCleanup({
     killGraceMs,
     now,
     pollMs,
-    settleGraceMs: settled && !timedOut && !cancelled ? cleanupSettleGraceMs : 0,
+    settleGraceMs: settled && !timedOut && !cancelled && supervisionError === null ? cleanupSettleGraceMs : 0,
   });
   if (!commandClosed) {
     // Unproven descendants may retain the write ends. Release our local read
@@ -314,9 +323,9 @@ export async function runGateCommandWithCleanup({
   }
   const completedAt = now();
   return {
-    exitCode: childResult?.code ?? null,
+    exitCode: supervisionError !== null ? 1 : (childResult?.code ?? null),
     signal: childResult?.signal ?? null,
-    error: childResult?.error ?? null,
+    error: supervisionError ?? childResult?.error ?? null,
     timedOut,
     cancelled,
     executionDurationMs: executionEndedAt - executionStartedAt,

@@ -389,6 +389,22 @@ describe('GitHubRepoWebhookHandler', () => {
     assert.equal(catId, 'cat-maine-coon');
   });
 
+  it('declares the bounded repo_inbox wake category on the trigger (F167)', async () => {
+    const { deps, triggeredCalls, deliveredMessages } = createMockDeps();
+    const handler = new GitHubRepoWebhookHandler(CONFIG, deps);
+    const body = makeIssuePayload('opened');
+    const { headers, raw } = makeHeaders('issues', 'delivery-category', body);
+
+    await handler.handleWebhook(body, headers, raw);
+
+    assert.equal(triggeredCalls.length, 1);
+    const [, , , content, messageId, contentBlocks, policy] = triggeredCalls[0];
+    assert.equal(content, deliveredMessages[0].content);
+    assert.ok(messageId);
+    assert.equal(contentBlocks, undefined);
+    assert.deepEqual(policy, { sourceCategory: 'repo_inbox' });
+  });
+
   it('re-resolves the repo inbox owner for every delivery and wake', async () => {
     let currentOwner = 'codex-sol';
     const resolverCalls = [];

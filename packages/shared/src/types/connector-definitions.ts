@@ -121,6 +121,13 @@ export const CONNECTOR_DEFINITIONS: readonly ConnectorDefinition[] = [
     description: '执行现场回报原负责人核验或复核',
   },
   {
+    id: 'deployment-wait',
+    displayName: 'Deployment Wait',
+    icon: { type: 'svg', iconId: 'refresh-cw' },
+    themeColor: '#475569',
+    description: '部署条件满足后接回原任务',
+  },
+  {
     id: 'physical-limb.stackchan',
     displayName: 'StackChan',
     icon: { type: 'svg', iconId: 'robot' },

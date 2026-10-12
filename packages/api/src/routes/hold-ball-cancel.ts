@@ -30,6 +30,7 @@ export type HoldExpectedSignalKey =
   | 'user_message';
 
 export type HoldLifecycleStatus =
+  | 'not_started'
   | 'active'
   | 'retired_by_event'
   | 'retired_by_replacement'

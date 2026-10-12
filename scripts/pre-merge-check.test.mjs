@@ -228,6 +228,17 @@ const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require('node
 const { spawnSync } = require('node:child_process');
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(logPath)}, 'node ' + args.join(' ') + '\\n');
+// leaseHeld:false fixtures retain the actual resource runner, including the
+// canonical empty-argv integration. Shell-flow fixtures model its boundary
+// without repeating admission and settled cleanup at every mocked pnpm stage.
+if (
+  args[0]?.endsWith('/run-with-gate-resource-permit.mjs') &&
+  process.env.CAT_CAFE_FULL_GATE_LEASE_HELD === '1'
+) {
+  const { runGateResourceStageFixture } = require(${JSON.stringify(path.join(repoRoot, 'scripts', 'lib', 'gate-resource-stage-fixture.mjs'))});
+  process.exit(runGateResourceStageFixture(args.slice(1)));
+}
+if (args[0]?.endsWith('gate-resume-controller.mjs')) process.exit(0);
 if (args[0]?.endsWith('gate-continuity-claim.mjs') && args[1] === 'inspect') {
   process.stdout.write(JSON.stringify({ target: { baseSha: '1'.repeat(40) } }));
   process.exit(0);
@@ -657,6 +668,52 @@ describe('pre-merge-check dependency refresh order', () => {
       const beginLine = result.logLines.find((line) => line.includes('gate-terminal-receipt.mjs begin'));
       assert.ok(beginLine?.includes('--risk contract'), beginLine);
       assert.ok(!beginLine?.includes('--resume'), beginLine);
+    },
+  );
+
+  it(
+    'delegates cross-version resume before reading or mutating the controller checkout',
+    SOURCE_GATE_CONTROL_TEST_OPTIONS,
+    (t) => {
+      const result = runGate(requireBash(t), [
+        '--resume-controller',
+        '11111111-2222-4333-8444-555555555555',
+        '--candidate-root',
+        '/tmp/frozen-candidate',
+        '--',
+        '--risk',
+        'security',
+      ]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(
+        result.logLines.find((line) => line.includes('gate-resume-controller.mjs')),
+        `node ${repoRoot}/scripts/gate-resume-controller.mjs --candidate-root /tmp/frozen-candidate ` +
+          '--run-id 11111111-2222-4333-8444-555555555555 -- --risk security',
+      );
+      assert.ok(!result.logLines.some((line) => line.startsWith('git ') || line.startsWith('pnpm ')));
+    },
+  );
+
+  it(
+    'preserves an original pnpm separator inside the cross-version identity',
+    SOURCE_GATE_CONTROL_TEST_OPTIONS,
+    (t) => {
+      const result = runGate(requireBash(t), [
+        '--resume-controller',
+        '11111111-2222-4333-8444-555555555555',
+        '--candidate-root',
+        '/tmp/frozen-candidate',
+        '--',
+        '--',
+        '--risk',
+        'security',
+      ]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(
+        result.logLines.find((line) => line.includes('gate-resume-controller.mjs')),
+        `node ${repoRoot}/scripts/gate-resume-controller.mjs --candidate-root /tmp/frozen-candidate ` +
+          '--run-id 11111111-2222-4333-8444-555555555555 -- -- --risk security',
+      );
     },
   );
 

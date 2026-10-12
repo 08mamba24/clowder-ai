@@ -51,14 +51,14 @@ code_anchors:
   - packages/api/src/domains/plugin/builtin-runtime/collective-connector-runtime.ts
   - packages/api/src/domains/plugin/builtin-runtime/collective-ingress-dispatcher.ts
   - packages/api/src/domains/plugin/builtin-runtime/collective-agent-verifier.ts
-  - packages/api/src/domains/plugin/builtin-runtime/collective-work-authority.ts
+  - packages/api/src/domains/plugin/builtin-runtime/collective-work/collective-work-authority.ts
   - packages/api/src/domains/plugin/builtin-runtime/collective-work/collective-work-admission.ts
   - packages/api/src/domains/plugin/builtin-runtime/collective-work/collective-work-execution-receipt.ts
   - packages/api/src/domains/plugin/builtin-runtime/collective-work/collective-work-artifact-read.ts
   - packages/api/src/infrastructure/document/collective-document-scope.ts
   - packages/api/src/routes/callback-document-routes.ts
   - packages/api/src/config/collective-alpha-boundary.ts
-  - packages/api/src/domains/plugin/builtin-runtime/collective-work-delegation.ts
+  - packages/api/src/domains/plugin/builtin-runtime/collective-work/collective-work-delegation.ts
   - packages/api/src/domains/plugin/builtin-runtime/collective-work-dispatcher.ts
   - packages/api/src/domains/plugin/builtin-runtime/collective-work-revision-reconciler.ts
   - packages/api/src/domains/plugin/builtin-runtime/collective-current-context.ts

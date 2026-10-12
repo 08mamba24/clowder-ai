@@ -15,6 +15,7 @@ import {
   type ExecutionRowInput,
   FORCE_RESET_REASON_COPY,
   formatClock,
+  rowCompactStatusText,
   rowStatusText,
 } from '../row-model';
 
@@ -64,6 +65,7 @@ function input(
     cancelPendingKeys: new Set(),
     silent: {},
     hydrationStale: false,
+    hasConfirmingLegacyExecution: false,
     hasUnverifiedLegacyExecution: false,
     queue: {
       total: entries.length,
@@ -105,7 +107,7 @@ describe('the ten states of the one row', () => {
       queue: { entries: [entry('q1')] },
     });
     const model = deriveExecutionRow(i);
-    expect(text(i)).toBe('3 件在跑 · 排队 1');
+    expect(text(i)).toBe('3 项运行中 · 排队 1');
     expect(model.stop).toEqual({ kind: 'none' });
     expect(model.panelToggle).toBe(true);
   });
@@ -118,7 +120,7 @@ describe('the ten states of the one row', () => {
     });
     const model = deriveExecutionRow(i);
     expect(model.status).toBe('silent');
-    expect(text(i)).toBe('1 件没动静');
+    expect(text(i)).toBe('1 项没有动静');
     expect(model.forceReset).toEqual(['silent_turn']);
   });
 
@@ -168,11 +170,21 @@ describe('the ten states of the one row', () => {
     expect(model.visible).toBe(true);
   });
 
-  it('9  a processing message nobody holds: "N 件处理卡住 · 排队 M" + 强制重置', () => {
+  it('8a  legacy liveness remains neutral while canonical truth is still loading', () => {
+    const i = input({ hasConfirmingLegacyExecution: true });
+    const model = deriveExecutionRow(i);
+    expect(model.status).toBe('confirming');
+    expect(text(i)).toBe('正在确认运行状态…');
+    expect(rowCompactStatusText(model)).toBe('正在确认');
+    expect(model.forceReset).toEqual([]);
+    expect(model.visible).toBe(true);
+  });
+
+  it('9  a processing message nobody holds: "N 项处理受阻 · 排队 M" + 强制重置', () => {
     const i = input({ queue: { entries: [entry('stuck', 'processing'), entry('a'), entry('b')] } });
     const model = deriveExecutionRow(i);
     expect(model.status).toBe('stuck');
-    expect(text(i)).toBe('1 件处理卡住 · 排队 2');
+    expect(text(i)).toBe('1 项处理受阻 · 排队 2');
     expect(model.forceReset).toEqual(['processing_stuck']);
   });
 

@@ -117,8 +117,8 @@ describe('classifyCoCreationDocsLane', () => {
 
     assert.equal(result.lane, 'regular_development');
     assert.equal(result.delivery, 'pull_request');
-    assert.equal(result.cloudReview, 'required');
-    assert.equal(result.fullGate, 'required');
+    assert.equal(result.cloudReview, 'risk_based');
+    assert.equal(result.fullGate, 'risk_based');
     assert.deepEqual(result.nonDocFiles, ['scripts/check-docs.mjs']);
   });
 
@@ -161,24 +161,24 @@ describe('collectChangedFiles', () => {
       runGit(args) {
         commands.push(args.join(' '));
         switch (args.join(' ')) {
-          case 'diff --name-only origin/main...HEAD':
-            return 'docs/a.md\n';
-          case 'diff --name-only':
-            return 'docs/b.md\n';
-          case 'diff --name-only --cached':
-            return 'docs/c.md\n';
+          case 'diff --name-only -z origin/main...HEAD':
+            return 'docs/a.md\0';
+          case 'diff --name-only -z':
+            return 'docs/b.md\0';
+          case 'diff --name-only --cached -z':
+            return 'docs/c.md\0';
           default:
-            return 'docs/c.md\ndocs/d.md\n';
+            return 'docs/c.md\0docs/d.md\0';
         }
       },
     });
 
     assert.deepEqual(result, ['docs/a.md', 'docs/b.md', 'docs/c.md', 'docs/d.md']);
     assert.deepEqual(commands, [
-      'diff --name-only origin/main...HEAD',
-      'diff --name-only',
-      'diff --name-only --cached',
-      'ls-files --others --exclude-standard',
+      'diff --name-only -z origin/main...HEAD',
+      'diff --name-only -z',
+      'diff --name-only --cached -z',
+      'ls-files --others --exclude-standard -z',
     ]);
   });
 });

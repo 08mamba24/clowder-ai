@@ -12,6 +12,17 @@ export const FORGOTTEN = '\0forgotten';
 /** Stands in for a substitution's output: a word, but never a readable path or name. */
 export const OPAQUE = '\u0000opaque';
 
+// Target evidence for an unreadable binding, not a claim about its generated value.
+export const BINDING_EVIDENCE = '\0binding-evidence:';
+export function unresolvedBindingEvidence(text, bindings) {
+  const names = [...text.matchAll(/\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/g)].map((match) => match[1] ?? match[2]);
+  return [
+    ...new Set(
+      names.flatMap((name) => bindings.get(BINDING_EVIDENCE + name) ?? bindings.get(`${BINDING_EVIDENCE}*`) ?? []),
+    ),
+  ];
+}
+
 const MAX_EXPANSIONS = 16;
 
 /** Pure bindings run no program. Substitutions/redirections are deliberately not admitted. */
@@ -29,7 +40,7 @@ export function isShellBinding(text) {
  * an originally unquoted variable would remain one argument in the executing shell.
  */
 export function expandSegmentBindings(text, bindings, env = process.env) {
-  let variants = [{ text: '', argvPreserved: true }];
+  let variants = [{ text: '', argvPreserved: true, unresolvedBindings: [] }];
   let quote;
   const append = (part) => {
     variants = variants.map((variant) => ({ ...variant, text: variant.text + part }));
@@ -51,8 +62,17 @@ export function expandSegmentBindings(text, bindings, env = process.env) {
     const values = expandAll(variable[0], bindings, env);
     if (values) {
       variants = appendBindingViews(variants, values, quote, bindings, env);
-      if (variants.length > MAX_EXPANSIONS) return [{ text, argvPreserved: false }];
-    } else append(variable[0]);
+      if (variants.length > MAX_EXPANSIONS)
+        return [{ text, argvPreserved: false, unresolvedBindings: unresolvedBindingEvidence(text, bindings) }];
+    } else {
+      append(variable[0]);
+      const evidence = unresolvedBindingEvidence(variable[0], bindings);
+      variants = variants.map((variant) => ({
+        ...variant,
+        argvPreserved: variant.argvPreserved && evidence.length === 0,
+        unresolvedBindings: [...new Set([...variant.unresolvedBindings, ...evidence])],
+      }));
+    }
     index += variable[0].length;
   }
   return variants;
@@ -68,6 +88,7 @@ function appendBindingViews(variants, values, quote, bindings, env) {
     values.map((value) => ({
       text: prefix.text + bindingTargetText(value, quote, bindings, env),
       argvPreserved: prefix.argvPreserved && bindingPreservesArgv(value, quote, bindings, env),
+      unresolvedBindings: prefix.unresolvedBindings,
     })),
   );
 }
@@ -134,4 +155,39 @@ function variableValues(name, bindings, env) {
   if (bindings.has(FORGOTTEN)) return null;
   if (name === 'HOME') return [homedir()];
   return env[name] !== undefined ? [env[name]] : null;
+}
+
+export function assignmentBindings(previous, words, env, source) {
+  const bindings = new Map(previous);
+  for (const word of words[0] === 'export' ? words.slice(1) : words) {
+    const index = word.indexOf('=');
+    if (index < 0) continue;
+    const values = expandAll(word.slice(index + 1), bindings, env);
+    replaceBinding(bindings, word.slice(0, index), values?.length === 1 ? values : null, word, source);
+  }
+  return bindings;
+}
+
+export function loopBindings(previous, operands, env, source) {
+  const words = operands.slice(2);
+  if (words.length === 0) return previous; // Zero iterations leave the previous value intact.
+  const bindings = new Map(previous);
+  const values = words.map((word) => expandAll(word, previous, env));
+  replaceBinding(
+    bindings,
+    operands[0],
+    values.every((value) => value?.length === 1) ? values.flat() : null,
+    words.join(' '),
+    source,
+  );
+  return bindings;
+}
+
+/** Every modeled binding write updates value and evidence together, including self-assignment. */
+function replaceBinding(bindings, name, values, expression, source) {
+  const evidence =
+    values === null ? (expression.includes(OPAQUE) ? [source] : unresolvedBindingEvidence(expression, bindings)) : [];
+  bindings.delete(BINDING_EVIDENCE + name);
+  bindings.set(name, values);
+  if (evidence.length) bindings.set(BINDING_EVIDENCE + name, evidence);
 }

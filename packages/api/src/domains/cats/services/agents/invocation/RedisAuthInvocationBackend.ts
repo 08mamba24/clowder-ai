@@ -2,6 +2,7 @@
 
 import type { RedisClient } from '@cat-cafe/shared/utils';
 import type { CallerTraceContext } from '../../../../../infrastructure/telemetry/genai-semconv.js';
+import { AuthInvocationKeys } from './auth-invocation-keys.js';
 import type {
   AuthInvocationInput,
   AuthInvocationMigrationResult,
@@ -23,9 +24,9 @@ import {
 } from './RedisAuthInvocationLua.js';
 import { authRecordFromRedisHash, isAuthTerminalState, parseRedisHashArray } from './RedisAuthInvocationRecord.js';
 
-const KEY_INV = (id: string) => `auth:inv:${id}`;
+const KEY_INV = AuthInvocationKeys.record;
 const KEY_MSGS = (id: string) => `auth:inv:${id}:msgs`;
-const KEY_LATEST = (threadId: string, catId: string) => `auth:latest:${threadId}:${catId}`;
+const KEY_LATEST = AuthInvocationKeys.latest;
 const KEY_REFRESH_COOLDOWN = (id: string) => `auth:refresh-cooldown:${id}`;
 const DEFAULT_TOMBSTONE_GC_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_CLIENT_MESSAGE_IDS = 1000;

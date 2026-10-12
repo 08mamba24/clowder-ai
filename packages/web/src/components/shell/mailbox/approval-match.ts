@@ -17,7 +17,7 @@ import { decidesOnOriginCard } from './original-place';
 export type ApprovalMismatch =
   | { reason: 'not_in_store' }
   | { reason: 'owner' }
-  | { reason: 'identity'; field: 'createdAt' }
+  | { reason: 'identity'; field: 'createdAt' | 'sourceFeatureId' | 'requesterCatId' }
   | { reason: 'capability'; field: 'decisionMode' | 'inlineApprovable' }
   | { reason: 'lifecycle'; field: 'resolution' | 'materialization' }
   | { reason: 'version'; field: 'expiresAt' | 'summary' }
@@ -117,7 +117,20 @@ function credentialMismatch(read: UnifiedAttentionVisibleApproval, store: Approv
   if (read.sourceFeatureId === 'F276' && read.decisionMode === 'claim-select') {
     return personMemoryMismatch(read.detail, store.detail);
   }
-  return null;
+  return sameDetail(read.detail, store.detail) ? null : 'detail';
+}
+
+/** Content and proposed executors are part of the version a user agrees to, including object fields in another order. */
+function sameDetail(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((entry, i) => sameDetail(entry, b[i]));
+  }
+  if (!isRecord(a) || !isRecord(b)) return false;
+  const keys = Object.keys(a);
+  return (
+    keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && sameDetail(a[key], b[key]))
+  );
 }
 
 interface MatchContext {
@@ -138,9 +151,11 @@ const ownerCheck: Check = (_read, store, { readOwnerUserId }) =>
 
 // Two copies that are equally unreadable are not "the same": a time that is not a time cannot identify a decision.
 const identityCheck: Check = (read, store) =>
-  isTime(store.createdAt) && isTime(read.createdAt) && store.createdAt === read.createdAt
-    ? null
-    : { reason: 'identity', field: 'createdAt' };
+  store.requesterCatId !== read.requesterCatId
+    ? { reason: 'identity', field: 'requesterCatId' }
+    : isTime(store.createdAt) && isTime(read.createdAt) && store.createdAt === read.createdAt
+      ? null
+      : { reason: 'identity', field: 'createdAt' };
 
 const capabilityCheck: Check = (read, store) => {
   if (store.decisionMode !== read.decisionMode) return { reason: 'capability', field: 'decisionMode' };
@@ -190,18 +205,29 @@ const CHECKS: readonly Check[] = [
 
 export function matchHostedApproval(input: HostedApprovalMatchInput): HostedApprovalMatch {
   const { read, readOwnerUserId, storeItems, now } = input;
-  const store = storeItems.find(
+  const copies = storeItems.filter(
     (candidate) =>
       isRecord(candidate) &&
       candidate.proposalId === read.proposalId &&
       candidate.sourceFeatureId === read.sourceFeatureId,
   );
-  if (!store) return { kind: 'unmatched', reason: 'not_in_store' };
-  for (const check of CHECKS) {
-    const mismatch = check(read, store, { readOwnerUserId, now });
-    if (mismatch) return { kind: 'unmatched', ...mismatch };
+  if (copies.length === 0) return { kind: 'unmatched', reason: 'not_in_store' };
+  if (
+    storeItems.some(
+      (candidate) =>
+        isRecord(candidate) &&
+        candidate.proposalId === read.proposalId &&
+        candidate.sourceFeatureId !== read.sourceFeatureId,
+    )
+  )
+    return { kind: 'unmatched', reason: 'identity', field: 'sourceFeatureId' };
+  for (const store of copies) {
+    for (const check of CHECKS) {
+      const mismatch = check(read, store, { readOwnerUserId, now });
+      if (mismatch) return { kind: 'unmatched', ...mismatch };
+    }
   }
-  return { kind: 'matched', item: store };
+  return { kind: 'matched', item: copies[0] };
 }
 
 /**
@@ -215,6 +241,9 @@ export function isHostableApproval(approval: UnifiedAttentionVisibleApproval): b
   if (!(approval.sourceFeatureId in APPROVAL_FEATURES)) return false;
   if (decidesOnOriginCard(approval.sourceFeatureId)) return false;
   return (
-    approval.inlineApprovable || approval.decisionMode === 'claim-select' || approval.decisionMode === 'meeting-intake'
+    approval.sourceFeatureId === 'F128' ||
+    approval.inlineApprovable ||
+    approval.decisionMode === 'claim-select' ||
+    approval.decisionMode === 'meeting-intake'
   );
 }

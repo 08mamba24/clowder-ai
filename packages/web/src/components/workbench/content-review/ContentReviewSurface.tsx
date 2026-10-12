@@ -1,7 +1,8 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { type ReactNode, useRef } from 'react';
 import type { WorkspaceFileNavigationOrigin } from '@/stores/chat-types';
+import { useWorkspacePreviewIntent } from '../WorkspacePreviewIntent';
 import { ContentLandingHeader } from './ContentLandingHeader';
 import { contentReviewCapabilities } from './content-review-capabilities';
 import type {
@@ -9,6 +10,7 @@ import type {
   ContentReviewController,
   ContentReviewWorkflow,
 } from './content-review-contract';
+import { type PublicationDisplayRequest, usePublicationDisplay } from './usePublicationDisplay';
 import { WorkspaceContentReviewProjection } from './WorkspaceContentReviewProjection';
 
 export function ContentReviewSurface({
@@ -25,6 +27,7 @@ export function ContentReviewSurface({
   title,
   capabilities,
   workflow,
+  publication,
 }: {
   readonly review: ContentReviewController;
   readonly path: string;
@@ -39,9 +42,14 @@ export function ContentReviewSurface({
   readonly title?: string;
   readonly capabilities?: ContentLandingCapabilities;
   readonly workflow?: ContentReviewWorkflow;
+  readonly publication?: PublicationDisplayRequest;
 }) {
+  const draftStarted = useWorkspacePreviewIntent();
+  const root = useRef<HTMLElement>(null);
+  usePublicationDisplay(root, publication, review.view, review.error);
   return (
     <section
+      ref={root}
       className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
       data-testid="workspace-content-review-surface"
       data-navigation-origin={navigationOrigin?.kind ?? 'unknown'}
@@ -86,8 +94,14 @@ export function ContentReviewSurface({
           target={review.target}
           busy={review.busy}
           activeAnnotationId={review.activeAnnotationId}
-          setDraft={review.setDraft}
-          setTarget={review.setTarget}
+          setDraft={(body) => {
+            review.setDraft(body);
+            if (body.length > 0) draftStarted?.();
+          }}
+          setTarget={(target) => {
+            review.setTarget(target);
+            if (target !== null) draftStarted?.();
+          }}
           setActiveAnnotationId={review.setActiveAnnotationId}
           submitAnnotation={review.submitAnnotation}
           legacyText={review.legacyText}

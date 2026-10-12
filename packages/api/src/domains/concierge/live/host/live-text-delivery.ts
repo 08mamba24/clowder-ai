@@ -3,6 +3,12 @@ import { isCodexAppServerRpcError } from '../../../cats/services/agents/provider
 import { bounded } from '../live-call-async.js';
 import type { LiveCompanionCallOptions } from '../live-call-options.js';
 import { liveMessageDigest, persistLiveUserText } from '../live-transcript.js';
+import type { LiveBoundaryContexts } from './live-boundary-contexts.js';
+
+export interface LiveTextDelivery {
+  messageId: string;
+  delivery: 'accepted' | 'unconfirmed';
+}
 
 export async function sendLiveText(input: {
   options: LiveCompanionCallOptions;
@@ -11,6 +17,8 @@ export async function sendLiveText(input: {
   isAvailable(): boolean;
   text: string;
   clientMessageId: string;
+  /** A new durable owner input supersedes pending speech before native acknowledgement. */
+  onNewOwnerText?(): void;
   deliveries: Map<string, Promise<{ messageId: string; delivery: 'accepted' }>>;
   exposedMessages: Map<string, { kind: 'text' | 'voice'; digest: string }>;
 }): Promise<{ messageId: string; delivery: 'accepted' | 'unconfirmed'; newlyPersisted?: boolean }> {
@@ -21,6 +29,7 @@ export async function sendLiveText(input: {
     input.text,
     input.clientMessageId,
   );
+  if (!stored.idempotent) input.onNewOwnerText?.();
   const previous = input.deliveries.get(stored.message.id);
   if (previous) return bounded(previous);
   if (!stored.idempotent) input.options.publish(stored.message);
@@ -39,4 +48,21 @@ export async function sendLiveText(input: {
     });
   input.deliveries.set(stored.message.id, receipt);
   return { ...(await bounded(receipt)), newlyPersisted: !stored.idempotent };
+}
+
+export async function sendLiveCallText(
+  input: Parameters<typeof sendLiveText>[0] & { contexts: LiveBoundaryContexts; onNewOwnerText(): void },
+) {
+  const actionEpoch = input.text.trim() ? input.contexts.interruptPageAction() : undefined;
+  const delivery = await sendLiveText({
+    ...input,
+    onNewOwnerText: () => {
+      input.contexts.ownerVoice.interrupt();
+      input.onNewOwnerText();
+    },
+  });
+  if (delivery.delivery === 'accepted' && delivery.newlyPersisted && actionEpoch !== undefined)
+    input.contexts.noteAcceptedDirectRequest(delivery.messageId, actionEpoch);
+  if (delivery.delivery === 'accepted') input.contexts.onUserTurn();
+  return { messageId: delivery.messageId, delivery: delivery.delivery };
 }

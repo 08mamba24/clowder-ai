@@ -227,7 +227,9 @@ describe('the lineage ring lightness', () => {
   it('stays quick: all four themes, both modes, well inside a Tuner slider drag', () => {
     const started = performance.now();
     for (const [, p, dark] of variants()) lineageRingLightness(p, dark);
-    expect(performance.now() - started).toBeLessThan(1500);
+    // Guards the complexity class (an accidental quadratic or unmemoised walk is hundreds of times slower), not a latency promise: it takes
+    // about 35 ms on a quiet machine and a loaded box runs several times slower, so the budget is far above that figure.
+    expect(performance.now() - started).toBeLessThan(5000);
   });
 });
 

@@ -1,20 +1,20 @@
 import type { InvocationTrajectorySummary } from '@cat-cafe/shared';
 import type { FastifyInstance } from 'fastify';
 import { resolveCanonicalInvocationTrajectory } from '../domains/cats/services/session/CanonicalInvocationTrajectoryResolver.js';
-import {
-  projectRequestGenerationGaps,
-  projectRequestGenerations,
-} from '../domains/cats/services/session/RequestGenerationProjector.js';
-import {
-  requestGenerationSourceKey,
-  resolveRequestGenerationSourceStates,
-} from '../domains/cats/services/session/request-generation-source-policy.js';
 import type { TranscriptEvent } from '../domains/cats/services/session/TranscriptReader.js';
 import {
   filterThreadRecords,
   resolveThreadAccess,
   threadAccessDeniedBody,
 } from '../domains/cats/services/session/thread-access-policy.js';
+import {
+  projectRequestGenerationGaps,
+  projectRequestGenerations,
+} from '../domains/cats/services/session/transcript-index/RequestGenerationProjector.js';
+import {
+  requestGenerationSourceKey,
+  resolveRequestGenerationSourceStates,
+} from '../domains/cats/services/session/transcript-index/request-generation-source-policy.js';
 import { resolveUserId } from '../utils/request-identity.js';
 import { strictParseTranscriptInteger } from './session-transcript-route-helpers.js';
 import type { ReadableSession, SessionTranscriptRouteOptions } from './session-transcript-route-types.js';

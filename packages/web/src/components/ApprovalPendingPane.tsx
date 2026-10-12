@@ -1,7 +1,7 @@
 'use client';
 
 import type { ApprovalFeatureId, ApprovalHubItem } from '@cat-cafe/shared';
-import { useEffect, useMemo, useRef } from 'react';
+import { Fragment, type ReactNode, useEffect, useMemo, useRef } from 'react';
 import { countApprovalFeatures, isApprovalItemBatchDecidable } from '@/lib/approval-features';
 import { approvalNavigationThreadIds } from '@/lib/approval-navigation';
 import { useApprovalHubStore } from '@/stores/approvalHubStore';
@@ -10,7 +10,18 @@ import { ApprovalItemCard } from './ApprovalItemCard';
 
 export type ApprovalStatusFilter = 'all' | 'pending' | 'stale';
 
+/** A host can scope the original list and guard its actions without copying filters or batch eligibility. */
+export interface ApprovalPendingConsumer {
+  /** The owner's displayed census; eligibility must never remove an existing decision. */
+  items: readonly ApprovalHubItem[];
+  canBatchDecide(item: ApprovalHubItem): boolean;
+  emptyMessage: string;
+  renderItem(item: ApprovalHubItem): ReactNode;
+  onBatchDecision(kind: 'approve' | 'reject'): void;
+}
+
 interface ApprovalPendingPaneProps {
+  consumer?: ApprovalPendingConsumer;
   selectedProposalId?: string | null;
   featureFilters: ReadonlySet<ApprovalFeatureId>;
   onFeatureFiltersChange: (features: Set<ApprovalFeatureId>) => void;
@@ -45,6 +56,7 @@ function applyFilters(
 }
 
 export function ApprovalPendingPane({
+  consumer,
   selectedProposalId = null,
   featureFilters,
   onFeatureFiltersChange,
@@ -53,7 +65,19 @@ export function ApprovalPendingPane({
   threadQuery,
   onThreadQueryChange,
 }: ApprovalPendingPaneProps) {
-  const items = useApprovalHubStore((state) => state.items);
+  const rawItems = useApprovalHubStore((state) => state.items);
+  const items = useMemo(
+    () =>
+      consumer
+        ? consumer.items.filter(
+            (item, index, filtered) =>
+              filtered.findIndex(
+                (other) => other.proposalId === item.proposalId && other.sourceFeatureId === item.sourceFeatureId,
+              ) === index,
+          )
+        : rawItems,
+    [rawItems, consumer],
+  );
   const isLoading = useApprovalHubStore((state) => state.isLoading);
   const error = useApprovalHubStore((state) => state.error);
   const fetchPending = useApprovalHubStore((state) => state.fetchPending);
@@ -100,9 +124,19 @@ export function ApprovalPendingPane({
     target.focus({ preventScroll: true });
   }, [selectedProposalId, selectedProposalIsVisible]);
   const featureCounts = useMemo(() => countApprovalFeatures(items), [items]);
-  const filteredIds = useMemo(() => filteredItems.map((item) => item.proposalId), [filteredItems]);
-  const inlineCount = filteredItems.filter(isApprovalItemBatchDecidable).length;
-  const hasSelection = selectedIds.size > 0;
+  const batchItems = filteredItems.filter((item) =>
+    consumer ? consumer.canBatchDecide(item) : isApprovalItemBatchDecidable(item),
+  );
+  const filteredIds = batchItems.map((item) => item.proposalId);
+  const inlineCount = batchItems.length;
+  const selectedCount = consumer ? filteredIds.filter((id) => selectedIds.has(id)).length : selectedIds.size;
+  const hasSelection = selectedCount > 0;
+  useEffect(() => {
+    if (!consumer || !selectedIds.size) return;
+    const remaining = filteredIds.filter((id) => selectedIds.has(id));
+    // Only narrow the original transient selection; the display census and classic selection stay unchanged.
+    if (remaining.length !== selectedIds.size) selectAllInline(remaining);
+  }, [consumer, filteredIds, selectedIds, selectAllInline]);
   const failedResults = batchResults.filter((result) => !result.success);
   const hasActiveFilters = featureFilters.size > 0 || statusFilter !== 'all' || threadQuery.trim() !== '';
 
@@ -167,21 +201,21 @@ export function ApprovalPendingPane({
             className="rounded px-2 py-0.5 text-micro font-medium text-cafe-interactive/60 hover:text-cafe-interactive"
             data-testid="approval-batch-select-toggle"
           >
-            {hasSelection ? `取消选择 (${selectedIds.size})` : '全选可操作'}
+            {hasSelection ? `取消选择 (${selectedCount})` : '全选可操作'}
           </button>
           {hasSelection && (
             <>
               <button
                 type="button"
-                onClick={() => batchApprove()}
+                onClick={() => (consumer ? consumer.onBatchDecision('approve') : batchApprove())}
                 className="rounded px-2 py-0.5 text-micro font-medium text-[var(--semantic-success)] hover:bg-[var(--semantic-success)]/10"
                 data-testid="approval-batch-approve"
               >
-                批量批准
+                {consumer ? '批量同意' : '批量批准'}
               </button>
               <button
                 type="button"
-                onClick={() => batchReject()}
+                onClick={() => (consumer ? consumer.onBatchDecision('reject') : batchReject())}
                 className="rounded px-2 py-0.5 text-micro font-medium text-[var(--semantic-critical)] hover:bg-[var(--semantic-critical)]/10"
                 data-testid="approval-batch-reject"
               >
@@ -228,14 +262,20 @@ export function ApprovalPendingPane({
           </div>
         )}
         {!isLoading && !error && items.length === 0 && (
-          <PanelMessage testId="approval-empty-state">没有待审批的项目</PanelMessage>
+          <PanelMessage testId="approval-empty-state">
+            {consumer ? consumer.emptyMessage : '没有待审批的项目'}
+          </PanelMessage>
         )}
         {!isLoading && !error && items.length > 0 && filteredItems.length === 0 && (
           <PanelMessage testId="approval-empty-filtered">没有符合筛选条件的项目</PanelMessage>
         )}
-        {filteredItems.map((item) => (
-          <ApprovalItemCard key={item.proposalId} item={item} />
-        ))}
+        {filteredItems.map((item) =>
+          consumer ? (
+            <Fragment key={`${item.sourceFeatureId}:${item.proposalId}`}>{consumer.renderItem(item)}</Fragment>
+          ) : (
+            <ApprovalItemCard key={item.proposalId} item={item} />
+          ),
+        )}
       </div>
     </>
   );

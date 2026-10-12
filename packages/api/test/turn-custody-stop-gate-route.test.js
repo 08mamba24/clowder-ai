@@ -1691,6 +1691,96 @@ describe('F167 terminal event-wait through the real stop gate', () => {
 
     assert.equal(service.calls.length, 2, 'matched keeps its obligation: the gate must still bite');
     assert.match(service.calls[1], /结构化/);
+    assert.match(service.calls[1], /cat_cafe_complete_event_wait/, 'the remedial names the way out that exists');
+    assert.equal(guardFailures(appended).length, 1);
+  });
+
+  // The ledger as the REAL producer leaves it: empty when the turn opens, holding the holder's completion terminal
+  // for exactly this wake's (wait, outcome) by the time the turn closes.
+  function ledgerCompletedDuringTurn(wake, overrides = {}) {
+    const { waitId, outcomeId } = wake.waitContinuationCarrier;
+    const terminal = {
+      kind: 'ball.wait_dispositioned',
+      sourceEventId: `wait-disposition:codex:${outcomeId}`,
+      subjectKey: wake.subjectKey,
+      classification: 'state-changing',
+      payload: {
+        catId: 'codex',
+        invocationId: 'inv-1',
+        sourceMessageId: 'wake-message',
+        waitId,
+        outcomeId,
+        disposition: 'completed',
+        ...overrides,
+      },
+      at: 5_000,
+    };
+    let reads = 0;
+    return { read: async (_subjectKey, from = 0) => ((reads += 1) === 1 ? [] : [terminal].slice(from)) };
+  }
+  async function projectionOver(ballCustodyEventLog, projection = { state: 'active', holder: 'codex' }) {
+    const { TurnCustodyProjectionService } = await import(
+      '../dist/domains/ball-custody/TurnCustodyProjectionService.js'
+    );
+    return new TurnCustodyProjectionService({
+      ballCustodyProjectionStore: { get: async () => projection },
+      ballCustodyEventLog,
+    });
+  }
+
+  test('a matched wake the holder completes through its own terminal ends the turn once', async () => {
+    const threadId = 'thread-event-wait-completed';
+    const wake = wakeFor(threadId, 'matched');
+    const service = createSequenceService('codex', ['Verified, closed the Task, completed the wake.']);
+
+    const { appended, yielded } = await runRoute(service, threadId, {
+      projectionService: await projectionOver(ledgerCompletedDuringTurn(wake)),
+      routeOptions: { turnCustodyWake: wake },
+    });
+
+    assert.equal(service.calls.length, 1, 'a completed wake must not spawn a structured remedial child');
+    assert.equal(guardFailures(appended).length, 0);
+    assert.equal(yielded.find((message) => message.type === 'done')?.errorCode, undefined);
+  });
+
+  for (const [label, projection] of [
+    ['the subject already resolved', { state: 'resolved', holder: 'codex' }],
+    ['another cat holds the ball', { state: 'active', holder: 'someone-else' }],
+  ]) {
+    test(`a wake that is not provably live (${label}) is settled by the retired terminal written in this turn`, async () => {
+      // open has no baseline here; the route closes repeatedly against that same projection. Without a locator close
+      // returned the stale unknown_legacy and the turn ended with a routing-guard-failure (#5049 round 2).
+      const threadId = `thread-event-wait-retired-${label.replace(/\W+/g, '-')}`;
+      const wake = wakeFor(threadId, 'matched');
+      const service = createSequenceService('codex', ['Done; the wake no longer owns the ball, completed it anyway.']);
+
+      const { appended, yielded } = await runRoute(service, threadId, {
+        projectionService: await projectionOver(
+          ledgerCompletedDuringTurn(wake, { retired: true, retiredReason: 'ball_not_held' }),
+          projection,
+        ),
+        routeOptions: { turnCustodyWake: wake },
+      });
+
+      assert.equal(service.calls.length, 1, 'no structured remedial child for an already-settled wake');
+      assert.equal(guardFailures(appended).length, 0);
+      assert.equal(yielded.find((message) => message.type === 'done')?.errorCode, undefined);
+    });
+  }
+
+  test("another wake's terminal does not end this turn: the gate still bites", async () => {
+    const threadId = 'thread-event-wait-wrong-outcome';
+    const wake = wakeFor(threadId, 'matched');
+    const service = createSequenceService('codex', ['Text-only completion.', '@co-creator']);
+
+    const { appended } = await runRoute(service, threadId, {
+      projectionService: await projectionOver(
+        ledgerCompletedDuringTurn(wake, { outcomeId: 'wait:pr:zts212653/cat-cafe#1:g1:matched' }),
+      ),
+      routeOptions: { turnCustodyWake: wake },
+    });
+
+    assert.equal(service.calls.length, 2);
     assert.equal(guardFailures(appended).length, 1);
   });
 });

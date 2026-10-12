@@ -1,10 +1,11 @@
-import { createHash } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getExplicitApprovedTasteTriggerBySourcePath } from '../domains/memory/cue/ExplicitApprovedTasteTriggerCatalog.js';
 import { F315_WORKSPACE_READABILITY_TASTE_BUNDLE_V1 } from '../domains/memory/cue/TasteTaskBundleCatalog.js';
+import type { TasteMemoryLifecycleStore } from '../domains/memory/taste/TasteMemoryLifecycleStore.js';
 import { TasteMemoryReader, type TasteMemoryReadResult } from '../domains/memory/taste/TasteMemoryReader.js';
 import type { TasteObservatorySnapshot } from '../domains/memory/taste/TasteObservatoryReader.js';
+import { tasteMemoryId } from '../domains/memory/taste/taste-memory-identity.js';
 import { resolveCanonicalTasteRoot, type TasteRepository } from '../domains/taste/services/TasteRepository.js';
 
 type ObservatoryEntry = TasteObservatorySnapshot['entries'][number];
@@ -20,27 +21,38 @@ export type TasteRecallView = {
     | null;
 };
 
-export function tasteMemoryId(sourcePath: string): string {
-  return `taste-${createHash('sha256').update(sourcePath).digest('hex').slice(0, 24)}`;
-}
+export { tasteMemoryId };
 
 /** Pin canonical main once per request. Existing/new awaitable reader contracts both work. */
-export async function visibleTasteMemories(repository: TasteRepository, owner: string, privateAccess: boolean) {
+export async function visibleTasteMemories(
+  repository: TasteRepository,
+  owner: string,
+  privateAccess: boolean,
+  lifecycle?: Pick<TasteMemoryLifecycleStore, 'isReadable'>,
+) {
   const root = await resolveCanonicalTasteRoot(repository);
-  const reader = new TasteMemoryReader({ canonicalRoot: () => root, approvalLockKey: () => 'read-only' }, owner);
+  const snapshot = (await repository.publishedSnapshot?.()) ?? null;
+  const reader = new TasteMemoryReader(
+    { canonicalRoot: () => root, approvalLockKey: () => 'read-only', publishedSnapshot: async () => snapshot },
+    owner,
+    {
+      lifecycle,
+    },
+  );
   const directories = privateAccess ? ['docs/taste/vignettes', 'private/taste'] : ['docs/taste/vignettes'];
   const memories: TasteMemoryReadResult[] = [];
   for (const directory of directories) {
-    let names: string[];
-    try {
-      names = await readdir(join(root, directory));
-    } catch (error) {
-      if (directory === 'private/taste' && (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-      throw error;
-    }
+    const names =
+      directory === 'docs/taste/vignettes' && snapshot
+        ? (await snapshot.list()).map((sourcePath) => sourcePath.slice(directory.length + 1))
+        : await listTasteNames(root, directory);
     for (const name of names.sort()) {
       if (!name.endsWith('.md')) continue;
-      const memory = await reader.read({ ownerUserId: owner, sourcePath: `${directory}/${name}` });
+      const memory = await reader.read({
+        ownerUserId: owner,
+        sourcePath: `${directory}/${name}`,
+        includeRetired: true,
+      });
       if (memory) memories.push(memory);
     }
   }
@@ -49,12 +61,33 @@ export async function visibleTasteMemories(repository: TasteRepository, owner: s
   );
 }
 
-export function projectTasteMemory(memory: TasteMemoryReadResult, recall: TasteRecallView | null) {
+async function listTasteNames(root: string, directory: string): Promise<string[]> {
+  try {
+    return await readdir(join(root, directory));
+  } catch (error) {
+    if (directory === 'private/taste' && (error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+export function projectTasteMemory(
+  memory: TasteMemoryReadResult,
+  recall: TasteRecallView | null,
+  lifecycle: {
+    takeawayCandidate?: import('@cat-cafe/shared').TasteTakeawayCandidate | null;
+    pendingCorrectionCount?: number;
+    correctionProposals?: import('@cat-cafe/shared').TasteMemoryCorrectionProposalView[];
+  } = {},
+) {
   const { payload } = memory;
   const trigger = getExplicitApprovedTasteTriggerBySourcePath(memory.sourcePath);
   return {
     id: tasteMemoryId(memory.sourcePath),
     revision: memory.revision,
+    status: memory.status,
+    takeawayCandidate: lifecycle.takeawayCandidate ?? null,
+    pendingCorrectionCount: lifecycle.pendingCorrectionCount ?? 0,
+    ...(lifecycle.correctionProposals ? { correctionProposals: lifecycle.correctionProposals } : {}),
     type: 'taste' as const,
     visibility: memory.visibility,
     title: (payload.takeaway || payload.quotes[0] || '品味 · 原话没有记录下来').slice(0, 160),

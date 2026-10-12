@@ -2,7 +2,7 @@ import { constants } from 'node:fs';
 import { type FileHandle, open, realpath } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { probeImmutableMedia } from '../video-studio/content-owner/published-media-probe.js';
-import { isRenderedMarkdownPath, resolveWorkspaceRenderedQuote } from './workspace-content-rendered-quote.js';
+import { type RenderedQuoteBatchInput, resolveAuthorizedRenderedQuotes } from './workspace-content-rendered-quote.js';
 import {
   MAX_WORKSPACE_COLLABORATION_BYTES,
   type OpenWorkspaceMediaV1,
@@ -22,6 +22,7 @@ import {
   digestWorkspaceFile,
   hasSameWorkspaceFileState,
   openedWorkspaceContentMatchesCanonicalLocator,
+  requireWorkspaceContentBytes,
   supportedWorkspaceMediaMime,
   validateWorkspaceContentLocator,
   validateWorkspaceQuote,
@@ -231,10 +232,13 @@ export class WorkspaceContentSourceService {
   async resolveRenderedTextSelection(
     input: Parameters<WorkspaceContentSourceService['readText']>[0] & { readonly quote: string },
   ): Promise<WorkspaceTextQuoteResolutionV1 & { readonly sourceRevision: `sha256:${string}` }> {
-    const { text, revision } = await this.readText(input);
-    const markdown = isRenderedMarkdownPath(input.locator.path);
-    const quote = validateWorkspaceQuote(input.quote);
-    return { ...resolveWorkspaceRenderedQuote({ text, quote, markdown }), sourceRevision: revision };
+    const { source, resolutions } = await this.resolveRenderedTextSelections({ ...input, quotes: [input.quote] });
+    return { ...resolutions[0], sourceRevision: source.revision };
+  }
+
+  /** Batch references share one authorized stable read and one rendered source map. */
+  async resolveRenderedTextSelections(input: RenderedQuoteBatchInput) {
+    return resolveAuthorizedRenderedQuotes(input, this.readText.bind(this));
   }
 
   private async readStable(
@@ -336,9 +340,4 @@ export class WorkspaceContentSourceService {
       throw new WorkspaceContentSourceError('access_denied');
     }
   }
-}
-
-function requireWorkspaceContentBytes(bytes: Buffer | undefined): Buffer {
-  if (!bytes) throw new WorkspaceContentSourceError('revision_changed');
-  return bytes;
 }

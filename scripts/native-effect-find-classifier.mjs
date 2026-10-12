@@ -87,3 +87,24 @@ export function findArgvDeletes(operands = []) {
 }
 
 export { DELETE_PROGRAMS };
+
+/** Literal command argv owned by exec primaries; pattern operands remain data. */
+export function findExecutedCommands(operands = []) {
+  const commands = [];
+  for (let index = 0; index < operands.length; index += 1) {
+    if (VALUE_PRIMARIES.has(operands[index])) {
+      index += 1;
+      continue;
+    }
+    if (!EXEC_PRIMARIES.has(operands[index])) continue;
+    const end = endOfExec(operands, index + 1);
+    commands.push({
+      args: operands.slice(index + 1, end),
+      complete: end < operands.length,
+      localCwd: !operands[index].endsWith('dir'),
+      stdinUnknown: operands[index].startsWith('-ok'),
+    });
+    index = end;
+  }
+  return commands;
+}

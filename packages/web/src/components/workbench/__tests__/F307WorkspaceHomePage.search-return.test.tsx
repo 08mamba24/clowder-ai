@@ -8,8 +8,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/stores/chatStore', () => ({
-  useChatStore: (selector: (state: { setWorkspaceMode: typeof mocks.setWorkspaceMode }) => unknown) =>
-    selector({ setWorkspaceMode: mocks.setWorkspaceMode }),
+  useChatStore: (selector: (state: { setWorkspaceMode: typeof mocks.setWorkspaceMode; threads: [] }) => unknown) =>
+    selector({ setWorkspaceMode: mocks.setWorkspaceMode, threads: [] }),
 }));
 vi.mock('@/components/workspace/WorkspaceNowSurface', () => ({
   WorkspaceNowSurface: () => null,

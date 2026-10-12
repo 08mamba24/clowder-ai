@@ -20,6 +20,7 @@ import { afterEach, before, beforeEach, describe, it, mock } from 'node:test';
 import { catRegistry } from '@cat-cafe/shared';
 import { ContextEpochOwner } from '../dist/domains/cats/services/session/context/ContextEpochOwner.js';
 import { InMemoryContextEpochStore } from '../dist/domains/cats/services/stores/ports/ContextEpochStore.js';
+import { scopedTestSessions, scriptedSessionInit } from './helpers/scoped-test-sessions.js';
 
 function assertStagingPromptContract(prompt, mode) {
   if (hasSourceStagingContent) {
@@ -325,6 +326,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     };
     const deps = {
       ...makeDeps(),
+      ...scopedTestSessions(process.env.CAT_CAFE_DATA_DIR),
       registry: {
         create: async (...args) => {
           createCalls.push(args);
@@ -372,6 +374,7 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
       supportsToolExecutionPolicy: (policy) => policy.mode === 'collective_work',
       async *invoke(prompt, options) {
         launched.push({ prompt, options });
+        yield* scriptedSessionInit('codex-sol', prompt, options);
         yield { type: 'done', catId: 'codex-sol', timestamp: Date.now() };
       },
     };
@@ -403,7 +406,11 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
       assert.equal(launched.length, 0, 'unsupported private provider must not start a model');
       privateCalls.length = 0;
 
-      await collect(invokeSingleCat(deps, params));
+      const events = await collect(invokeSingleCat(deps, params));
+      assert.deepEqual(
+        events.filter((event) => event.type === 'error'),
+        [],
+      );
 
       assert.equal(privateCalls.length, 1);
       assert.equal(privateCalls[0].phase, 'admission');

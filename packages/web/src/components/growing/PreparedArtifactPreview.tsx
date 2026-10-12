@@ -1,9 +1,10 @@
 'use client';
 
-import type { EntrustedWorkOwnerReadV1, GlobalArtifactDTO } from '@cat-cafe/shared';
+import type { EntrustedWorkOwnerReadV1 } from '@cat-cafe/shared';
 import type { ReactNode } from 'react';
 import { preparedArtifactPresentation } from './prepared-artifact-presentation';
 import { PreparedReviewThumbnail } from './prepared-review-presentation';
+import type { PreparedArtifactMetadata } from './resolve-prepared-artifact';
 
 export type PreparedArtifactCoordinate = NonNullable<EntrustedWorkOwnerReadV1['preparedArtifact']>;
 
@@ -16,7 +17,7 @@ export function PreparedArtifactPreview({
   reviewAction,
 }: {
   coordinate: PreparedArtifactCoordinate;
-  artifact?: GlobalArtifactDTO;
+  artifact?: PreparedArtifactMetadata;
   reviewTitle?: string;
   loading?: boolean;
   onOpen?: () => void;

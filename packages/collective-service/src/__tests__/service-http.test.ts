@@ -45,6 +45,9 @@ describe('Collective Service HTTP process boundary', () => {
     expect(clientHtml).not.toContain('backed by the Service event log');
     expect((await fetch(`${server.url}/collective-client/app.js`)).status).toBe(200);
     expect((await fetch(`${server.url}/collective-client/app.css`)).status).toBe(200);
+    const landingArt = await fetch(`${server.url}/collective-client/collective-landing-A.png`);
+    expect(landingArt.status).toBe(200);
+    expect(landingArt.headers.get('content-type')).toBe('image/png');
 
     const owner = await post(server.url, '/api/bootstrap', {
       secret: opened.bootstrapSecret,

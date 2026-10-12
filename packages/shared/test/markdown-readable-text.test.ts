@@ -161,3 +161,11 @@ describe('markdown readable-text source map (F309 rendered selection → raw ran
     expect(offsetOf(markdown, 'const a')[0]).toBe(markdown.indexOf('const a'));
   });
 });
+
+it('projects a large flat paragraph without using its characters as variadic function arguments', () => {
+  const paragraph = 'x'.repeat(1024 * 1024);
+  const projection = projectMarkdownReadableTextWithSourceMap(paragraph);
+  expect(projection.text).toBe(paragraph);
+  expect(projection.sourceOffsets).toHaveLength(paragraph.length);
+  expect(projection.sourceOffsets.at(-1)).toBe(paragraph.length - 1);
+});

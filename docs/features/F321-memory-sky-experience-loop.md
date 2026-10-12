@@ -1,6 +1,6 @@
 ---
 feature_ids: [F321]
-tips_exempt: "Specification and design coordination only: the proposed per-reply memory view and remembered-content browser are not delivered by this document; update discovery when their real entry points ship."
+tips_exempt: "First-owner-message overview recall is automatic under the existing memory curation setting; its sources and consumption use existing reply cue controls. This unit adds no standalone entry or page."
 related_features: [F102, F200, F221, F227, F231, F246, F258, F260, F263, F276, F287, F292, F296, F299, F307, F311, F312, F313, F314, F316, F322]
 topics: [memory, memory-sky, in-context-observability, experience, learning-loop, command]
 doc_kind: spec
@@ -100,6 +100,32 @@ Workspace 的“记忆”本身保留）。
 以既有 `episode` 面作为经历的家；你拉闸时，当事猫把这次拉闸关联到相关的规则或教训；新的介入先查是否复发；
 做法假设的战绩（守住 / 复发 / 误伤 / 未观察）在星空里可见。复发先定位断点再选机制（思考稿 §11 保留分歧）。
 
+### B/C 共用输入与 Luna 整理 v1（2026-10-08 进度）
+
+输入修复 #5236（`6293d7e060a54ed8184a29b1bf64853edd9d1b05`）与 Luna v1 #5238（`a77c0b06032c18ab5450090ef6552f617c2fc935`）已合入 main：引用原文与批注带作者进入摘要和消息检索，完整消息覆盖决定水位，输出保留全文及逐条来源；整理复用可配置 Luna 的原生只读辅助通道、现有事件触发与每日兜底，只从首次开启后处理。设置一个开关，当时 v2 记忆页新增“这段时间”（后已撤回，见下），系统线程按最终摘要提交结果记录消息数与实际 token，失败不假报成功。
+
+**Luna v1 推进暂停，原七天试跑作废。** You 在 `[thread-id]#private-source-id` 确认自己已打开开关，又在 `private-source-id` 要求按同一提示词对工作、学习、闲聊的五个线程手动整理，先看内容是否有用；不将提案消息当作该试跑已获批准或完成。原派工猫的暂停协调为 `[thread-id]#private-source-id`。实际系统记录存在 11 消息/37079 token、6 消息/29419 token 失败及后续 13 消息/34441 token，开销与少量材料的比例是暂停依据；总 token 不能单独证明缓存命中或计费。
+
+#5253 来源修复与 #5257 页面撤回已在 runtime boot 19 / `a416175de66b7b7a74acd9228f17aa3537f048d6` 确认加载，API health、物理 HEAD 与前端嵌入 revision 一致，Git ancestry 包含两项 landed SHA。原 `revision_included` generation 5 的只读续办已验成：真实桌面与手机浅/深色首屏 3/3，主星书房紧接页头，旧面板/入口消失，品味与已有整理接口可读。原 Task `private-source-id` 按暂停指令保持打开；旧 generation 3 的开启开关/七天提醒动作不会恢复。Sol6.1 此前未登记七天提醒，现在也不登记，不代改家里开关。**11:22 UTC 的新授权见下一节：允许新的概况与联想单元开发及必要实测，旧七天计划、旧 UI 与旧 Task 的部署回调不因此复活或迁移。**功能验证与 Alpha 回放不代表旧 UI 已获体验认可。本段不关闭 Phase B/C 或整个 F321。
+
+### 2026-10-08：Luna 转向线程概况与新线程联想（已授权）
+
+You 明确最大价值是“我新建一个 thread，现在我有个脑洞……曾经几个 thread 和这个脑洞可能有关”，例子为“3D Ragdoll喵建模”；其次是指挥猫能回答工作线程的进度与阻塞。他基本不看回顾页，本单元不新做页面。来源：`[thread-id]#private-source-id`。在 `private-source-id` 接受概况、会话续接、开场递送的方向，同时否决关键词匹配和人为相关性规则；Opus55 的目录图书管理员方案为 `private-source-id`。operator 在 `private-source-id` 委托 Astra 审核，通过后更新本文并新建执行线程；Astra 审核通过，按以下边界实施。
+
+- **概况**：采用手动样本中 C 版的叙事写法，保留在做什么、关键变化、当前结果与原文出处。工作线程说明进度、阻塞、下一步责任和可能偏离；未知如实留白，Task/PR 的当前责任与完成事实仍回原 owner 核验。
+- **会话**：每个源 thread 续用自己的 Luna 原生会话；系统“记忆整理”线程只记日志，不混入各源 thread 的模型上下文。恢复失败、过长或来源撤回时，按当前有效概况重开。
+- **联想**：从当前 owner 可读的概况生成完整一行目录；新线程的开场话与整本目录交给 Luna，选相关线程并说明原因，再读完整概况摘出有用背景与出处。允许零结果；相关性不用关键词、固定标签规则或先行向量 top-k 筛掉候选。
+- **真实接入**：复用 F287/F296 的呈现、来源跳转与消费记录，但现行合同并没有这类入口；在同一实现中明确新增“新线程首条 owner 消息 → 线程概况”这一种 typed 机会与 resolver。模型决定相关内容，不决定什么时候任意唤醒召回；不把概况伪装成已批准的品味/人物记忆。
+- **完成结果**：已存在的旧线程也在目录覆盖范围内；验证实际新线程收到相关背景和可读原文，不能用“摘要写出来了”收口。目录变化会影响缓存，实记输入、输出、缓存与延迟，不把续接或价格比当效果证据。详细冷启动覆盖与检查见执行方案。
+
+本单元由执行线程 `[thread-id]` 承接，Sol6.1 实现、Sol5.6 独立审查，集成 PR #5284 已合入 `87ef384d48b12dbb880ab8e49d8492ff28b92d25`。原 Phase A 及 Luna v1 的旧运行验收仍由原现场继续。当前状态为**代码已交付，Alpha 递送及有明确核对要求的消费已验证；家里已加载，开关关闭，真实自由开场效用待验**。依据见 作者证据 (internal)、Alpha 结构化记录 (internal)与10月9日23:12 UTC运行核验 (internal)。
+
+2026-10-09 主现场接收核验：GH 合入事实、最终独立 review、冻结历史与 Alpha 证据分别对齐；Alpha 原始短开场只有 `presented_unreported`，额外要求回读的只读开场才观察到 `applied`，不把后者替代自然使用。全目录 v3 样本约79.4秒；12条目录的 Alpha 目录/背景阶段约64秒，代码默认最多等待180秒才以空结果继续，不能写成不增加开场等待或已经轻快。You 的下一条真实新想法尚未观察，AC-L/R11/R12 保持未勾。
+
+主现场 Task `private-source-id` 保留后续责任，原 runtime `revision_included=87ef384d48b12dbb880ab8e49d8492ff28b92d25`、API/Web、generation1、`autoRenew=false` 等待已于2026-10-09 23:08 UTC匹配并送达。随后只读核验：API/Web/运行Git均为 `3ca4c4af/boot20`，包含目标提交，HTTP正常；整理开关仍为 `false`，新概况状态及当前prompt片段均为0。2225条owner可读普通线程中2209条有旧summary、16条无summary；这是库存交叉计数，非完整目录实际递送证据。最新整理日志仍在10月8日。本轮未代开启、重启或调用模型，不再等待同一部署；后续仍欠启用后的真实自由开场、延迟与用途证据，不恢复旧七天试跑、不勾AC-L/R11/R12。详见运行核验 (internal)。
+
+### 2026-10-08：Luna 回顾展示被否决
+
 ## User Journey
 
 ### Primary Journey: 看得见这一轮猫用了什么记忆（Phase A）
@@ -120,10 +146,12 @@ Workspace 的“记忆”本身保留）。
 | S1 | workspace | operator | 默认入口 → “我们记住了什么” → 按星球/列表/搜索找到一条 → 看原话、最近用在哪 → 改一句或忘掉 → 下一只猫读到新版 | 浏览器旅程 + 下一轮 cue/drill 坐标 |
 | S2 | workspace | operator | 默认入口 → 拉闸记录 / 召回账本 → 点一条拉闸跳回原消息 | 浏览器旅程 |
 | S3 | message | 猫 | 用到一条记忆时发现“原文不支持这个概括 / 已过时 / 这次不适用” → 提交挂在原条目上的更正建议 → You 在浏览页看到并决定 | typed 回执 + 浏览页截图 |
+| S4 | thread | You → 当前猫 | 新建 thread 提出一个脑洞 → Luna 理解整本目录并读相关概况 → 当前猫收到相关线程、原因、约定/教训及原文坐标 → 核对后用于当前回答；无关时零递送 | 真实开场回放 + 实际 prompt / drill / 回答证据 |
+| S5 | thread | 指挥猫 | You 问进度 → 猫读相关工作线程概况 → 核对最新 Task/PR → 回答进度、卡点、责任与下一步 | 来源概况 + 当前 owner 状态 + 实际答复 |
 
 ## Acceptance Criteria
 
-<!-- Phase B / C 的 AC 在各自 Design Gate 定稿后补入；每条 AC trace 回 Why，且非作者可复核。 -->
+<!-- Luna 单元 AC-L 已接受；其余 Phase B / C 的 AC 仍在各自 Design Gate 定稿后补入。 -->
 
 ### Phase A（明厨亮灶）
 - [ ] AC-A1: 从默认入口进入真实 thread，带记忆提示的猫回复能展开看到该轮随行的记忆及其最新状态（用上了 / 没用 / 看过 / 已随行·未回报 / 已失效并注明原因），每条可回到原文；只呈现而无回报的显示为“未回报”，不得显示为“忽略”；不带记忆提示或映射不到 invocation 的回复不出现任何标记；非 owner 看不到 owner 私有的人物记忆；不向用户暴露原始 prompt。
@@ -131,8 +159,16 @@ Workspace 的“记忆”本身保留）。
 - [ ] AC-A3: 在浏览页修改或遗忘一条，走原车道的更正/遗忘路径；下一只猫读到新版；摘要、索引与检索中的旧内容随之失效，页面说明是否涉及原始消息。
 - [ ] AC-A4: 拉闸记录与召回账本放进侧栏“记忆”页、从默认入口可达（不恢复旧 `WorkspacePanel`，也不挂 Workspace），点一条拉闸能跳回原消息。
 - [ ] AC-A5: 猫用到一条记忆时能提交“原文不支持 / 已过时 / 这次不适用”的更正建议，挂在原条目上供 You 查看和决定，不直接改动原条目。
-- [ ] AC-A6: Workspace 的“记忆”（这条对话的记忆流）在新旧外壳里都能打开；推断出来的“之后没看到读取”如实写成观察，不显示“忽略 / ign.”；说明文字与实际内容一致。You 认可的替代上线之前不下线（KD-6）。
-- [ ] AC-A7: 侧栏“记忆”页取代窄栏“记忆”打开的 `/memory` 页：原页的知识动态、搜索、索引状态、健康度、图书馆、知识图谱都有明确去处以后，旧入口才下线（KD-6）。
+- [x] AC-A6: Workspace 的“记忆”（这条对话的记忆流）在新旧外壳里都能打开；推断出来的“之后没看到读取”如实写成观察，不显示“忽略 / ign.”；说明文字与实际内容一致。You 认可的替代上线之前不下线（KD-6）。第 1 段已随 #5018 合入；本段 Design Gate、作者双壳真实旅程与 Kimi 独立 Alpha 验收通过。Alpha 的长对话、cue 实样及暗色抽样缺口仍保留（见 Timeline）。
+- [x] AC-A7: 侧栏“记忆”页取代窄栏“记忆”打开的 `/memory` 页：原页的知识动态、搜索、索引状态、健康度、图书馆、知识图谱都有明确去处以后，旧入口才下线（KD-6）。#5173 已切换 v2 默认入口；Sonnet 独立 Alpha 核过六项去处，包括关系图、已处理及原资料库管理页，回执 `[thread-id]#private-source-id`，Opus55 在 `[thread-id]#private-source-id` 接受并授权勾选。classic、Workspace 与旧子路由仍保留；不代表 AC-A4 的原消息跳转已验成。
+
+### Phase B：Luna 线程概况与联想单元
+
+- [ ] AC-L1: C 版概况带可回读的原文，连续更新保留重要背景并正确接住迟到纠正；工作现状不捏造责任、完成或偏离结论。指挥猫沿 S5 核对最新状态后能回答进度。
+- [ ] AC-L2: 两个源线程交错整理无串线，同线程至少连续三轮真实续接；重启恢复和撤回后的重建可验证；输出提交失败不推进覆盖水位。输入/输出/缓存 token 与延迟分别按实测记录。
+- [ ] AC-L3: 新线程首条 owner 消息触发整本可读目录的模型联想，随后读取完整概况；目录覆盖已有旧线程且披露未整理缺口，不以近七天/最新五十条代替完整目录，不用关键词或向量预筛代替模型选择。
+- [ ] AC-L4: “3D Ragdoll喵建模”及至少另一条真实新想法的回放，让当前猫实际收到有用背景、相关原因与可读出处；历史回放只用当时已存在的材料。无关负例不硬塞记忆；最终以 You 下一条真实新想法实测反馈检验效用。
+- [ ] AC-L5: 沿既有 cue/drill 递送并记录真实消费状态；跨 owner、私有权限变化、来源撤回/更正与旧会话重用负例通过；只 presented 不冒充 applied。模型故障、目录缺口或超时不阻断普通聊天，不新增记忆页或并行记忆权威。
 
 ## 需求点 Checklist
 
@@ -146,8 +182,10 @@ Workspace 的“记忆”本身保留）。
 | R6 | “当时猫知道什么、做了什么，你为何介入，介入后发生了什么，以及下一项新任务里有没有改善” | Phase C（待 Design Gate） | 真实后续任务记录 | [ ] |
 | R7 | “你是大龄 单身 未婚喵吗？……记忆系统 lose！” | Phase B（待 Design Gate） | 改写/否定/无关负例的真实旅程 | [ ] |
 | R8 | “记忆星空，一个星球选择是 taste，一个是实体、人物、会议……operator的画像” | AC-A2 | 浏览页截图 | [ ] |
-| R9 | “目前这个 workspace 这里的记忆才是用的最多的……有代替的可以 sunset，如果没有在 workspace 这里或许要保存” | AC-A6 | 新外壳截图 + 文案核对 | [ ] |
-| R10 | “你们该归一的是设置页面里面的那份东西，那个才是应该归你们归一重构掉的” | AC-A7 | 默认入口浏览器旅程 | [ ] |
+| R9 | “目前这个 workspace 这里的记忆才是用的最多的……有代替的可以 sunset，如果没有在 workspace 这里或许要保存” | AC-A6 | 新外壳截图 + 文案核对 | [x] #5018 保留原入口并交付对话记忆流；Kimi 独立 Alpha 通过，覆盖边界见 Timeline |
+| R10 | “你们该归一的是设置页面里面的那份东西，那个才是应该归你们归一重构掉的” | AC-A7 | 默认入口浏览器旅程 | [x] #5173 默认入口已切；Sonnet 独立 Alpha 去处走查，来源见 AC-A7 |
+| R11 | 新想法开新线程时，能联想到过去相关线程；“别又给我什么关键词匹配，又制定什么规则” | AC-L3、AC-L4、AC-L5 | 真实开场联想与实际递送，含无同词相关材料和无关负例 | [ ] |
+| R12 | 每条工作 thread 到底什么情况、卡在哪；整理同一 thread 续用对应 Luna session | AC-L1、AC-L2 | 连续更新/交错会话/恢复实测与指挥猫进度问答 | [ ] |
 
 ### 覆盖检查
 - [ ] 每个需求点都能映射到至少一个 AC（R6、R7 在 Phase B/C Design Gate 补 AC）
@@ -183,7 +221,7 @@ Workspace 的“记忆”本身保留）。
 
 ## Review Gate
 
-- Phase A：UI Design Gate 由 You 在真实产品壳确认；实现走跨族 review；合入后由非作者在 Alpha 验收。
+- Phase A：UI 由 owner（Ragdoll）在真实页面整页走查后决定；不设“等 You 看过”的步骤，合入后告诉 You，他随时可以提意见（2026-10-05 起，见 Timeline）；实现走跨族 review；合入后由非作者在 Alpha 验收。2026-10-05 起，review 和验收都交非作者的Maine Coon，由Maine Coon们自己闭环，Ragdoll这周的额度留给只有Ragdoll能做的事（You：`[thread-id]#private-source-id`）。
 
 ## Tips Contribution（F244）
 

@@ -112,6 +112,18 @@
   line-height: 1.4;
   letter-spacing: -0.02em;
 }
+.destination-home {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.destination-home:hover h1 {
+  color: var(--cafe-accent-ink);
+}
 .destination-header p {
   margin: 0;
   color: var(--cafe-text-muted);

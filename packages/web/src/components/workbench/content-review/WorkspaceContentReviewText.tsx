@@ -9,6 +9,8 @@ import { maskLeadingMarkdownFrontmatter } from '@/lib/listen-mode/markdown-sente
 import { useChatStore } from '@/stores/chatStore';
 import { LISTEN_RETURN_DOCUMENT_EVENT } from '@/stores/listenModeStore';
 import { useWorkspaceSurfaceVisibility } from '../WorkspaceSurfaceVisibility';
+import { WorkspaceFileQuoteMarks } from './WorkspaceFileQuoteMarks';
+import { WorkspacePendingFileQuoteMarks } from './WorkspacePendingFileQuoteMarks';
 
 /** 1-based line range of a raw-text span; only meaningful where the rendered text is the raw text. */
 function rawLineRange(text: string, start: number, end: number): { lineStart: number; lineEnd: number } {
@@ -38,6 +40,8 @@ export function WorkspaceContentReviewText({
   const currentThreadId = useChatStore((state) => state.currentThreadId);
   const selectionKey = `${locator.worktreeId}:${locator.path}:${revision}`;
   // The same selection → in-place card → chat annotation chip as the F063 file viewer (CVO095/098).
+  // `selectionKey` names the revision: a card opened on words of one revision does not outlive it, so what is saved
+  // from a card is always the revision on screen.
   const selection = useTextSelectionAction(container, visible, selectionKey, 'container');
   const [following, setFollowing] = useState<'auto' | 'paused' | 'requested'>('auto');
   const file = useMemo(
@@ -91,9 +95,23 @@ export function WorkspaceContentReviewText({
   }, [scrollToLine, text, visible]);
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
+      <WorkspaceFileQuoteMarks
+        locator={locator}
+        revision={revision}
+        text={text}
+        container={container}
+        visible={visible}
+      />
+      <WorkspacePendingFileQuoteMarks
+        locator={locator}
+        revision={revision}
+        text={text}
+        container={container}
+        visible={visible}
+      />
       <div
         ref={container}
-        className="min-h-0 flex-1 overflow-auto rounded-lg border border-cafe-subtle bg-cafe-white p-4"
+        className="min-h-0 flex-1 overflow-auto rounded-lg border border-cafe-subtle bg-cafe-white p-4 pl-10 pr-16"
         data-testid="workspace-content-review-text"
         onWheel={() => setFollowing('paused')}
         onTouchStart={() => setFollowing('paused')}
@@ -172,6 +190,8 @@ export function WorkspaceContentReviewText({
             comment,
             path: locator.path,
             worktreeId: locator.worktreeId,
+            // The text on screen is this exact revision of the file: the cat can only take the request over against it.
+            revision,
             language: markdown ? 'markdown' : null,
             selectionStart: action.selectionStart,
             selectionEnd: action.selectionEnd,
@@ -179,7 +199,7 @@ export function WorkspaceContentReviewText({
             ...(!markdown && action.selectionStart !== undefined && action.selectionEnd !== undefined
               ? rawLineRange(text, action.selectionStart, action.selectionEnd)
               : {}),
-          })
+          }).kind === 'added'
         }
       />
     </div>

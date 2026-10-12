@@ -7,15 +7,18 @@ import type { LiveCompanionCallOptions } from '../live-call-options.js';
 import { type LiveContextGate, whileNotAborted } from './live-controlled-context.js';
 import { bindLiveInboxHost, type LiveInboxHost } from './live-inbox-host.js';
 import { type LiveMeetingDependencies, LiveMeetingHost } from './live-meeting-host.js';
-import { LivePageActionApprovalLedger } from './live-page-action-approval-ledger.js';
+import { bindLiveRecoveryHost } from './live-recovery-binding.js';
+import type { LiveRecoveryHost } from './live-recovery-host.js';
+import { LivePageActionApprovalLedger } from './page-action/live-page-action-approval-ledger.js';
 import {
   type ClosableLivePageActionPort,
   LivePageActionAuthority,
   type TrustedPageActionApproval,
-} from './live-page-action-authority.js';
-import { closePort } from './live-page-action-authority-contract.js';
-import { bindLiveRecoveryHost } from './live-recovery-binding.js';
-import type { LiveRecoveryHost } from './live-recovery-host.js';
+} from './page-action/live-page-action-authority.js';
+import { closePort } from './page-action/live-page-action-authority-contract.js';
+import { LivePageResultHost, type LivePageResultNotice } from './page-action/live-page-result-host.js';
+import { LiveOwnerVoiceContext } from './voice/live-owner-voice.js';
+import { ownerVoiceScope } from './voice/live-owner-voice-source.js';
 
 /** One native boundary admits at most one independent source-backed context. */
 export class LiveBoundaryContexts {
@@ -26,7 +29,11 @@ export class LiveBoundaryContexts {
   private pageActions?: LivePageActionAuthority;
   private callbackInvocationId?: string;
   private userSpeaking = false;
+  private committedVoice = false;
   private closed = false;
+  private realtimeSessionId?: string;
+  private readonly pageResults: LivePageResultHost;
+  readonly ownerVoice: LiveOwnerVoiceContext;
 
   constructor(
     private readonly options: LiveCompanionCallOptions,
@@ -34,7 +41,25 @@ export class LiveBoundaryContexts {
     private readonly wakeNative: () => void,
     private readonly isSameCallExposure: (message: StoredMessage) => boolean,
     private readonly runAction?: <T>(operation: () => Promise<T>) => Promise<T>,
-  ) {}
+  ) {
+    this.pageResults = new LivePageResultHost(context, wakeNative, () => !this.closed && !this.userSpeaking);
+    this.ownerVoice = new LiveOwnerVoiceContext(
+      context,
+      options.messageStore,
+      () => ownerVoiceScope(context, this.callbackInvocationId, options.binding),
+      isSameCallExposure,
+      () => !this.closed && !this.userSpeaking,
+      wakeNative,
+    );
+  }
+
+  queuePageResult(notice: LivePageResultNotice): void {
+    this.pageResults.queue(notice);
+  }
+
+  hasPendingPageResultWake(): boolean {
+    return this.pageResults.hasPendingWake();
+  }
 
   configure(callbackEnv: Record<string, string>): void {
     const input = {
@@ -65,6 +90,7 @@ export class LiveBoundaryContexts {
             : null;
         },
         verifyCompanion: () => this.options.verifyCompanion?.() ?? Promise.resolve(true),
+        isAcceptedDirectVoice: (message) => this.isSameCallExposure(message),
         run: this.runAction,
       });
       ledger.bindRevocation((approvalId) => authority.revoke(approvalId));
@@ -106,8 +132,13 @@ export class LiveBoundaryContexts {
     return this.pageActions?.interrupt();
   }
 
-  noteAcceptedDirectText(messageId: string, epoch: number): void {
-    this.pageActions?.noteAcceptedDirectText(messageId, epoch);
+  noteAcceptedDirectRequest(messageId: string, epoch: number): void {
+    this.pageActions?.noteAcceptedDirectRequest(messageId, epoch);
+  }
+
+  noteOwnerVoice(message: StoredMessage, actionEpoch: number | undefined, voiceEpoch: number): void {
+    if (actionEpoch !== undefined) this.noteAcceptedDirectRequest(message.id, actionEpoch);
+    this.ownerVoice.queue(message, voiceEpoch);
   }
 
   async drainPageAction(): Promise<void> {
@@ -116,10 +147,8 @@ export class LiveBoundaryContexts {
 
   observeCall(): F317LiveCallObservation | null {
     if (this.closed) return null;
-    const invocationId = this.callbackInvocationId;
-    if (!invocationId) return null;
     const binding = this.options.binding;
-    const scope = this.context.scope({ invocationId, catId: binding.catId, threadId: binding.threadId });
+    const scope = ownerVoiceScope(this.context, this.callbackInvocationId, binding);
     return scope ? { ...binding, generation: scope.generation, state: 'talking' } : null;
   }
 
@@ -217,11 +246,24 @@ export class LiveBoundaryContexts {
   }
 
   hasPendingWake(): boolean {
-    return Boolean(this.meeting?.hasPendingWake() || this.inbox?.hasPendingWake() || this.recovery?.hasPendingWake());
+    return Boolean(
+      this.pageResults.hasPendingWake() ||
+        this.ownerVoice.hasPendingWake() ||
+        this.meeting?.hasPendingWake() ||
+        this.inbox?.hasPendingWake() ||
+        this.recovery?.hasPendingWake(),
+    );
   }
 
   async atBoundary(kind: 'idle' | 'tool_complete' | 'turn_complete'): Promise<void> {
     try {
+      const voice = await this.ownerVoice.atBoundary();
+      if (voice !== 'idle') {
+        if (voice !== 'busy') this.pageResults.signal();
+        return;
+      }
+      const pageResult = await this.pageResults.atBoundary();
+      if (pageResult !== 'idle') return;
       const meeting = await this.meeting?.atBoundary();
       if (meeting === 'accepted' || meeting === 'busy') return;
       const inbox = await this.inbox?.atBoundary(kind);
@@ -237,9 +279,13 @@ export class LiveBoundaryContexts {
     }
   }
 
-  observe(message: CodexAppServerJsonObject): void {
+  observe(message: CodexAppServerJsonObject): number | undefined {
     this.inbox?.observe(message);
     const params = message.params as Record<string, unknown> | undefined;
+    const turn = params?.turn as Record<string, unknown> | undefined;
+    this.ownerVoice.observeTurn(message.method, turn?.id);
+    if (message.method === 'thread/realtime/started' && typeof params?.realtimeSessionId === 'string')
+      this.realtimeSessionId = params.realtimeSessionId;
     const delta = params?.delta;
     if (
       message.method === 'thread/realtime/transcript/delta' &&
@@ -250,18 +296,36 @@ export class LiveBoundaryContexts {
       !this.userSpeaking
     ) {
       this.userSpeaking = true;
+      this.committedVoice = false;
+      this.ownerVoice.beginSpeech();
       this.pageActions?.interrupt();
       this.meeting?.onUserSpeaking();
       this.recovery?.cancel('user_speaking');
     }
+    const item = params?.item as Record<string, unknown> | undefined;
+    if (
+      message.method === 'thread/realtime/item/completed' &&
+      item?.type === 'transcriptSegment' &&
+      item.role === 'user'
+    ) {
+      this.committedVoice = true;
+      if (item.realtimeSessionId === this.realtimeSessionId && typeof item.id === 'string')
+        this.ownerVoice.committed(item.id);
+      // Capture the epoch before persistence; a later interruption cannot accept this delayed source.
+      return this.pageActions?.interrupt();
+    }
     if (message.method === 'thread/realtime/transcript/done' && params?.role === 'user') {
       this.userSpeaking = false;
-      this.pageActions?.interrupt();
+      this.ownerVoice.finishSpeech(params?.text);
+      if (!this.committedVoice) this.pageActions?.interrupt();
+      this.committedVoice = false;
       this.onUserTurn();
     }
   }
 
   onUserTurn(): void {
+    this.ownerVoice.signal();
+    this.pageResults.signal();
     this.meeting?.onUserTurn();
     this.recovery?.onUserTurn();
   }
@@ -269,6 +333,8 @@ export class LiveBoundaryContexts {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.ownerVoice.close();
+    this.pageResults.close();
     this.pageActions?.close();
     const ledger = this.options.pageAction?.approvalLedger;
     if (ledger instanceof LivePageActionApprovalLedger) ledger.close();

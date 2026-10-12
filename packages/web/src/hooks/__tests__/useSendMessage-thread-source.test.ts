@@ -59,6 +59,7 @@ function SendRunner({
   deliveryMode,
   messageDisposition,
   contextAttachments,
+  idempotencyKey,
   onDone,
 }: {
   activeThreadId?: string;
@@ -66,6 +67,7 @@ function SendRunner({
   deliveryMode?: 'queue';
   messageDisposition?: 'continue_current' | 'next_work';
   contextAttachments?: ContextAttachment[];
+  idempotencyKey?: string;
   onDone: () => void;
 }) {
   const { handleSend } = useSendMessage(activeThreadId);
@@ -83,8 +85,9 @@ function SendRunner({
       undefined,
       messageDisposition,
       contextAttachments,
+      idempotencyKey ? { idempotencyKey } : undefined,
     ).then(onDone);
-  }, [contextAttachments, deliveryMode, handleSend, messageDisposition, onDone, overrideThreadId]);
+  }, [contextAttachments, deliveryMode, handleSend, idempotencyKey, messageDisposition, onDone, overrideThreadId]);
 
   return null;
 }
@@ -474,6 +477,27 @@ describe('useSendMessage thread source', () => {
         value: originalCrypto,
       });
     }
+  });
+
+  it('reuses a caller-owned idempotency key for recoverable first-message admission', async () => {
+    const idempotencyKey = '33333333-3333-4333-8333-333333333333';
+    await act(async () => {
+      root.render(
+        React.createElement(SendRunner, {
+          activeThreadId: 'default',
+          overrideThreadId: 'thread-first',
+          idempotencyKey,
+          onDone: () => {},
+        }),
+      );
+    });
+
+    const payload = JSON.parse(String(mockApiFetch.mock.calls[0]?.[1]?.body));
+    expect(payload.idempotencyKey).toBe(idempotencyKey);
+    expect(mockAddMessageToThread).toHaveBeenCalledWith(
+      'thread-first',
+      expect.objectContaining({ id: `user-${idempotencyKey}` }),
+    );
   });
 
   it('keeps and reconciles a split-pane user bubble when server smart-defaults to queued', async () => {

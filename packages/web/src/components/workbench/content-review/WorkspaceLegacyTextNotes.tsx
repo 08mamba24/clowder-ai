@@ -125,14 +125,18 @@ export function WorkspaceLegacyTextNotes({
           onClose={() => setContinuing(null)}
           onSave={(comment) => {
             // The person's card is their explicit intent, so the chip is added; the old draft is cleared only
-            // if it is still the exact text the card was opened from.
-            addWorkspaceFileQuoteToChat(currentThreadId, {
+            // if it is still the exact text the card was opened from, and only once the chip really is added.
+            const result = addWorkspaceFileQuoteToChat(currentThreadId, {
               text: continuing.item.quote,
               comment,
               path: locator.path,
               worktreeId: locator.worktreeId,
+              // The words were written in the version the note names. Continuing them does not move them to the
+              // version on screen: the owner checks them against the one they name, and says so if the file moved.
+              revision: continuing.item.sourceRevision,
               language: markdown ? 'markdown' : null,
             });
+            if (result.kind === 'refused') return false;
             setStatus(CONTINUED[legacy.continued(continuing.item)]);
           }}
         />

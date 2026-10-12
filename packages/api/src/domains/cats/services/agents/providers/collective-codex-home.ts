@@ -31,6 +31,7 @@ export async function prepareCollectiveCodexHome(
   return {
     HOME: publicHome,
     CODEX_HOME: publicCodexHome,
+    CODEX_SQLITE_HOME: publicCodexHome,
     ...(process.platform === 'win32' ? { USERPROFILE: publicHome } : {}),
   };
 }

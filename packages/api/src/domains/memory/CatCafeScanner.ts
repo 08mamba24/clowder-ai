@@ -221,7 +221,7 @@ function splitLessonsLearned(docsRoot: string) {
   return results;
 }
 
-function matchGlob(pattern: string, path: string): boolean {
+export function matchGlob(pattern: string, path: string): boolean {
   const regex = pattern
     .replace(/\*\*\//g, '§GLOBSTAR_SLASH§')
     .replace(/\*\*/g, '§GLOBSTAR§')

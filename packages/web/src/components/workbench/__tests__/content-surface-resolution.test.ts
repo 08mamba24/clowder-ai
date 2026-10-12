@@ -4,6 +4,7 @@ import { useF307ExperienceWorkbenchStore } from '../experience-workbench-store';
 import { createMessagePublicationSurface } from '../message-publication-surface';
 import { createPublicationSurface } from '../publication-surface';
 import {
+  createFilePreviewSurface,
   createFileSurface,
   createNeedsMeReturnSurface,
   createWorkspaceModeSurface,
@@ -26,6 +27,93 @@ const weak = {
   ownerStateRef: { owner: 'f232', key: 'old-item' },
 };
 const user = { kind: 'user' as const, reason: 'workspace-home-selection' as const };
+it.each([
+  'focusSurfaceId',
+  'mainAreaAttentionSurfaceId',
+] as const)('retains %s on the actual permanent file identity after an alias merges', (mode) => {
+  const store = useF307ExperienceWorkbenchStore,
+    original = store.getState();
+  const retained = createFileSurface({ worktreeId: 'canonical-root', path: 'A.md' });
+  const alias = createFilePreviewSurface({ worktreeId: 'listed-alias', path: 'A.md' });
+  const target = createFilePreviewSurface({ worktreeId: 'canonical-root', path: 'A.md' });
+  try {
+    store.setState({
+      layout: {
+        ...createInitialWorkbenchState([retained, alias]),
+        activeSurfaceId: alias.id,
+        previewSurfaceId: alias.id,
+        pinnedSurfaceIds: [retained.id],
+      },
+      hydrated: true,
+      focusSurfaceId: null,
+      mainAreaAttentionSurfaceId: null,
+    });
+    if (mode === 'focusSurfaceId') store.getState().enterFocusMode(alias.id);
+    else store.getState().enterMainAreaAttention(alias.id);
+    expect(store.getState()[mode]).toBe(alias.id);
+    store.getState().dispatch({ type: 'resolve-content-surface', sourceSurfaceId: alias.id, surface: target });
+    expect(store.getState().layout.activeSurfaceId).toBe(retained.id);
+    expect(store.getState().layout.surfaces.map((surface) => surface.id)).toEqual([retained.id]);
+    expect(store.getState().layout.previewSurfaceId).toBeNull();
+    expect(store.getState()[mode]).toBe(retained.id);
+  } finally {
+    store.setState(original, true);
+  }
+});
+it('keeps focus when a resolution is rejected and does not redirect another active owner for a late alias', () => {
+  const store = useF307ExperienceWorkbenchStore,
+    original = store.getState();
+  const retained = createFileSurface({ worktreeId: 'canonical-root', path: 'A.md' });
+  const alias = createFilePreviewSurface({ worktreeId: 'listed-alias', path: 'A.md' });
+  try {
+    store.setState({
+      layout: createInitialWorkbenchState([alias]),
+      hydrated: true,
+      focusSurfaceId: alias.id,
+      mainAreaAttentionSurfaceId: alias.id,
+    });
+    store.getState().dispatch({
+      type: 'resolve-content-surface',
+      sourceSurfaceId: alias.id,
+      surface: { ...retained, resultTargetRef: undefined },
+    });
+    expect(store.getState().layout.activeSurfaceId).toBe(alias.id);
+    expect(store.getState().focusSurfaceId).toBe(alias.id);
+    expect(store.getState().mainAreaAttentionSurfaceId).toBe(alias.id);
+    store.setState({
+      layout: { ...createInitialWorkbenchState([alias, retained]), activeSurfaceId: retained.id },
+      focusSurfaceId: retained.id,
+      mainAreaAttentionSurfaceId: retained.id,
+    });
+    store.getState().dispatch({
+      type: 'resolve-content-surface',
+      sourceSurfaceId: alias.id,
+      surface: createFilePreviewSurface({ worktreeId: 'canonical-root', path: 'A.md' }),
+    });
+    expect(store.getState().focusSurfaceId).toBe(retained.id);
+    expect(store.getState().mainAreaAttentionSurfaceId).toBe(retained.id);
+  } finally {
+    store.setState(original, true);
+  }
+});
+it('resolves a new per-file alias back into an existing permanent legacy file without duplicating or migrating it', () => {
+  const first = createFileSurface({ worktreeId: 'exact-canonical-root', path: 'A.md' });
+  const source = createFilePreviewSurface({ worktreeId: 'listed-alias', path: 'A.md', scrollToLine: 37 });
+  const target = createFilePreviewSurface({ worktreeId: 'exact-canonical-root', path: 'A.md', scrollToLine: 37 });
+  const state = {
+    ...createInitialWorkbenchState([first, source]),
+    activeSurfaceId: source.id,
+    previewSurfaceId: source.id,
+    pinnedSurfaceIds: [first.id],
+  };
+  const resolved = resolveContentSurfaceIdentity(state, source.id, target);
+  expect(resolved.surfaces).toHaveLength(1);
+  expect(resolved.surfaces[0]?.id).toBe(first.id);
+  expect(resolved.surfaces[0]?.objectRef).toEqual(first.objectRef);
+  expect(resolved.surfaces[0]?.resultTargetRef).toEqual(target.resultTargetRef);
+  expect(resolved.previewSurfaceId).toBeNull();
+  expect(resolved.pinnedSurfaceIds).toEqual([first.id]);
+});
 it('resolves a file artifact into the existing F063 host and preserves its actual return', () => {
   const file = createFileSurface({ worktreeId: 'original-root', path: 'code.ts' });
   const origin = { ...weak, returnTargetRef: { owner: 'f310-needs-me', key: 'original-item' } };

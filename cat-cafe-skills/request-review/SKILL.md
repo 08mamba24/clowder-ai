@@ -1,6 +1,6 @@
 ---
 name: request-review
-tips_exempt: Renewed 2026-09-05 for separating review assurance from test coverage; this internal review policy adds no distinct end-user-invocable capability surface.
+tips_exempt: "Renewed 2026-10-07 for the reviewer sandbox disposition contract; discovery remains in internal review/worktree guidance, with no end-user Hub operation."
 description: >
   Route a change to a non-author local peer when local review is the selected independent validation source.
   Use when: risk routing chooses a stateful local reviewer for implementation, governance, or semantic context.
@@ -32,7 +32,9 @@ Reviewer 回读原 issue / 讨论 / 已接受决定，再看计划与实际结�
 | 安全 / 鉴权 / 生产数据 / 外部契约，或需要 context-blind 代码扫描 | cloud；不再同时把同一问题默认发 local |
 | 用户可见 feature 的终态是否符合愿景 | 愿景守护在 feature close 触发；本次交付的约定结果仍由已选 reviewer 判断，不给每个 PR 加第三棒 |
 
-安全、数据或契约高风险需要不同视角时可以叠加；叠加理由必须指向不同风险面。相同目的的重复 reviewer 不增加门禁强度，只增加等待。
+默认只找一只 reviewer：测试能兜住的实现正确性找常规 reviewer（另一只Maine Coon或 Sonnet，同族不同个体也行）；方向和形状请创作位一次给完；安全、鉴权、生产数据、外部契约优先 cloud，cloud 不可用时只换成一只本地 reviewer，不拆成两路。
+
+只有两个风险面确实需要不同的人时才加第二只，并写明各自理由。迭代修复只请改动所在那一面的 reviewer 复审；稀缺席位不进迭代循环。F320 #5195 两路复审 6 轮，安全面的两个 P1 都是语义 reviewer 抓到的，是机械拆两路的反例（见 `docs/SOP.md`「Reviewer 配对规则」）。
 
 **选择边界**：只有新增了需要第二只猫判断的实质内容，或风险面明确要求独立验证时才进入本 skill；“有 diff”“SHA 变了”“开了 PR”都不是独立触发器。机械登记、已审内容转录、低风险 direct-main docs 与可证明 continuity 可以 `skip/reuse`。一旦选择 review，同一个体不能 review 自己，证据须覆盖最终实质内容（exact SHA 或 continuityProof）。
 
@@ -123,10 +125,12 @@ git diff --name-only origin/main...HEAD | rg '^[^/]+\.(png|jpe?g|webp|gif|webm|m
 /tmp/cat-cafe-review/{review-target-id}/{reviewer-handle}
 ```
 
-创建时带出生声明，让 reaper 能兜底回收（merge-gate Step 8.5 没跑到时）：
+创建时带出生声明，让 reaper 能识别生命周期：
 `pnpm worktree:new /tmp/cat-cafe-review/{id}/{reviewer} --base {exact-SHA} --owner {reviewer} --policy ttl --ttl-days 7`。
 
 统一入口 `pnpm review:start`，请求中记录实际 web/api 端口。只审 diff 或治理文字时不启动 sandbox；要改代码则 TAKEOVER，另开正式 worktree。
+
+请求中明确沙盒收尾契约：登记 reviewer 在**每轮 verdict 前**停止自有预览、离开沙盒，执行 `worktree:finish` + 同源 `--check`，留下 released 或具名 retained（原因与最多30天截止）回执；不等作者合入。具体命令见 [receive-review 的沙盒生命周期](../receive-review/SKILL.md#review-沙盒生命周期)。没建沙盒不新增工位；blocked 如实回传。作者 merge-gate Step8.5 只读核对本 target 的残留与 owner，TTL/reaper 仅兜底。
 
 ## Verdict return route
 
@@ -214,7 +218,7 @@ replacement 或第二套 review 状态。
 
 ## 正反灰例
 
-- 正例：skill/SOP 语义改动 → 一只跨族 local peer，targeted checks，跳 cloud。
+- 正例：skill/SOP 语义改动 → 按风险选一只非作者 local peer，同族也行；targeted checks，跳 cloud，SOP 元风险强制升档仍适用。
 - 正例：auth callback 变更 → cloud + 回调鉴权 / consumer 测试；若局部验证覆盖不了跨包影响才补 full，需要家里状态语义才叠 local。
 - 反例：local 已审纯文案，又因“流程到了”触发 cloud。
 - 反例：author 没 preview，要求 operator 截图后才肯发 review。

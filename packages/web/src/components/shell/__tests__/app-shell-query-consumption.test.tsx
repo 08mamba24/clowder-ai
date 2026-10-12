@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const nav = vi.hoisted(() => ({ pathname: '/thread/current', search: '' }));
 vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn() }),
   usePathname: () => nav.pathname,
   useSearchParams: () => new URLSearchParams(nav.search),
 }));

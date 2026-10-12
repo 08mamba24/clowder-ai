@@ -1,10 +1,11 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { writeShellPresentation } from '@/components/shell/shell-presentation';
 import { F307FileOwnerSurface } from '../F307FileOwnerSurface';
 import { createFileSurface } from '../real-surface-adapters';
 
-const mocks = vi.hoisted(() => ({ apiFetch: vi.fn() }));
+const mocks = vi.hoisted(() => ({ apiFetch: vi.fn(), canEdit: false }));
 
 vi.mock('@/utils/api-client', () => ({
   API_URL: 'http://localhost:3102',
@@ -16,7 +17,7 @@ vi.mock('@/hooks/useFileEditing', () => ({
     editMode: false,
     setEditMode: vi.fn(),
     saveError: null,
-    canEdit: false,
+    canEdit: mocks.canEdit,
     handleToggleEdit: vi.fn(),
     handleSave: vi.fn(),
   }),
@@ -47,6 +48,7 @@ vi.mock('../content-review/WorkspaceContentReviewSurface', () => ({
     navigationOrigin,
     onBack,
     onOpenFileTools,
+    onApplied,
   }: {
     worktreeId: string;
     path: string;
@@ -55,6 +57,7 @@ vi.mock('../content-review/WorkspaceContentReviewSurface', () => ({
     navigationOrigin?: { kind: string; threadId?: string; query?: string };
     onBack: () => void;
     onOpenFileTools: () => void;
+    onApplied?: () => Promise<void>;
   }) => (
     <div
       data-testid="workspace-content-review"
@@ -71,6 +74,9 @@ vi.mock('../content-review/WorkspaceContentReviewSurface', () => ({
       <button type="button" onClick={onOpenFileTools}>
         文件工具
       </button>
+      <button type="button" data-testid="refresh-after-applied" onClick={() => void onApplied?.()}>
+        已确认写回，刷新正文
+      </button>
     </div>
   ),
 }));
@@ -81,6 +87,7 @@ describe('F307 File owner collaboration entry', () => {
 
   beforeEach(() => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    mocks.canEdit = false;
     mocks.apiFetch.mockReset().mockImplementation(async (url: string) => {
       const path = new URL(`http://local${url}`).searchParams.get('path') ?? '';
       const truncated = path === 'large.md';
@@ -104,6 +111,7 @@ describe('F307 File owner collaboration entry', () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    localStorage.clear();
   });
 
   async function render(path: string) {
@@ -118,6 +126,29 @@ describe('F307 File owner collaboration entry', () => {
       await Promise.resolve();
     });
   }
+
+  it.each(['notes.md', 'cover.png'])('v2 opens %s with annotations by default and can switch back', async (path) => {
+    writeShellPresentation('v2');
+    await render(path);
+    expect(container.querySelector('[data-testid="workspace-content-review"]')).not.toBeNull();
+    await act(async () =>
+      [...container.querySelectorAll('button')].find((button) => button.textContent === '文件工具')!.click(),
+    );
+    expect(container.querySelector('[data-testid="workspace-file-viewer"]')).not.toBeNull();
+    await act(async () =>
+      [...container.querySelectorAll('button')].find((button) => button.textContent === '协作批注')!.click(),
+    );
+    expect(container.querySelector('[data-testid="workspace-content-review"]')).not.toBeNull();
+  });
+
+  it('v2 code keeps ordinary viewing even when the file is editable and collaboration is available', async () => {
+    writeShellPresentation('v2');
+    mocks.canEdit = true;
+    await render('source.ts');
+    expect(container.querySelector('[data-testid="workspace-file-viewer"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workspace-content-review"]')).toBeNull();
+    expect([...container.querySelectorAll('button')].some((button) => button.textContent === '协作批注')).toBe(true);
+  });
 
   it.each([
     'notes.md',
@@ -157,6 +188,45 @@ describe('F307 File owner collaboration entry', () => {
       'other.md',
     );
     expect(container.querySelector('[data-testid="workspace-file-viewer"]')).toBeNull();
+  });
+
+  it('keeps the same collaboration instance while confirmed writeback refreshes its file', async () => {
+    await render('notes.md');
+    const review = container.querySelector<HTMLElement>('[data-testid="workspace-content-review"]');
+    let resolve: (value: Response) => void = () => {};
+    mocks.apiFetch.mockImplementationOnce(
+      () =>
+        new Promise<Response>((finish) => {
+          resolve = finish;
+        }),
+    );
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="refresh-after-applied"]')?.click());
+    expect(container.querySelector('[data-testid="workspace-content-review"]')).toBe(review);
+    await act(async () =>
+      resolve(
+        new Response(
+          JSON.stringify({
+            path: 'notes.md',
+            content: '# Updated source',
+            sha256: 'written-sha',
+            size: 16,
+            mime: 'text/markdown',
+          }),
+        ),
+      ),
+    );
+    expect(container.querySelector('[data-testid="workspace-content-review"]')).toBe(review);
+    expect(review?.dataset.source).toBe('# Updated source');
+    expect(review?.dataset.revision).toBe('sha256:written-sha');
+  });
+
+  it('removes the cached collaboration contents when the refresh is denied', async () => {
+    await render('notes.md');
+    mocks.apiFetch.mockResolvedValueOnce(new Response('{}', { status: 403 }));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="refresh-after-applied"]')?.click());
+    expect(container.querySelector('[data-testid="workspace-content-review"]')).toBeNull();
+    expect(container.textContent).toContain('暂时无法读取此文件');
+    expect(container.textContent).not.toContain('The source body.');
   });
 
   it('retains the ordinary chat origin while F309 is open, without turning it into a Task return edge', async () => {

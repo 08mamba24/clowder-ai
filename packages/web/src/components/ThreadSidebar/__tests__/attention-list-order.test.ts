@@ -30,6 +30,127 @@ const members = (result: ReturnType<typeof orderAttentionList>) =>
   result.items.flatMap((item) => (item.kind === 'cluster' ? item.members : [])).map((member) => member.id);
 
 describe('Group reading order lifecycle', () => {
+  it('r2 mixes groups and conversations by pinned membership then latest activity, with recent group members first', () => {
+    const rows = [
+      { ...row('a'), pinned: false, lastActiveAt: 10 },
+      { ...row('b'), pinned: false, lastActiveAt: 30 },
+      { ...row('pinned'), lastActiveAt: 1 },
+      { ...row('outside'), pinned: false, lastActiveAt: 20 },
+    ];
+    const items = arrangeAttentionRows(
+      rows,
+      rows,
+      buildAttentionClusters(rows, [{ id: 'g', threadIds: ['a', 'b'] }]),
+      'recent',
+    );
+    const classic = orderAttentionList(items, () => true, {});
+    const v2 = orderAttentionList(items, () => true, {}, undefined, true);
+    expect(v2.items.map(attentionItemKey)).toEqual(['thread:pinned', 'group:g', 'thread:outside']);
+    expect(members(v2)).toEqual(['b', 'a']);
+    expect(members(classic)).toEqual(['a', 'b']);
+    expect(items[0]?.kind === 'cluster' && items[0].members.map((member) => member.id)).toEqual(['a', 'b']);
+  });
+  it('uses the same pin-first recent rule inside and outside Groups, without rewriting saved membership', () => {
+    const rows = [
+      { ...row('a'), lastActiveAt: 1 },
+      { ...row('b'), pinned: false, lastActiveAt: 300 },
+      { ...row('outside'), pinned: false, lastActiveAt: 200 },
+    ];
+    const input = arrange(rows, [{ id: 'g', threadIds: ['b', 'a'] }]);
+    const result = orderAttentionList(input, () => true, {}, undefined, true);
+    expect(members(result)).toEqual(['a', 'b']);
+    expect(result.snapshot.itemKeys).toEqual(['group:g', 'thread:outside']);
+    expect(input[0]?.kind === 'cluster' && input[0].cluster.memberIds).toEqual(['b', 'a']);
+  });
+  it('r2 leaves the explicit manual member order and arrange source untouched', () => {
+    const input = arrange(
+      [
+        { ...row('a'), lastActiveAt: 1 },
+        { ...row('b'), lastActiveAt: 30 },
+      ],
+      [{ id: 'g', threadIds: ['a', 'b'] }],
+    );
+    const v2 = orderAttentionList(input, () => true, { 'group:g': 'manual' }, undefined, true);
+    expect(members(v2)).toEqual(['a', 'b']);
+    expect(members(orderAttentionList(input, () => true, {}))).toEqual(['a', 'b']);
+  });
+  it('uses recent/pin order within an explicit v2 running-first partition, preserving classic manual ties', () => {
+    const rows = [
+      { ...row('old'), pinned: false, lastActiveAt: 1 },
+      { ...row('latest'), pinned: false, lastActiveAt: 100 },
+      { ...row('pinned'), lastActiveAt: 2 },
+      { ...row('running', true), pinned: false, lastActiveAt: 3 },
+    ];
+    const input = arrange(rows, [{ id: 'g', threadIds: rows.map((row) => row.id) }]);
+    const modes = { 'group:g': 'running-first' as const };
+    expect(members(orderAttentionList(input, () => true, modes, undefined, true))).toEqual([
+      'running',
+      'pinned',
+      'latest',
+      'old',
+    ]);
+    expect(members(orderAttentionList(input, () => true, modes))).toEqual(['running', 'old', 'latest', 'pinned']);
+    const idle = input.map((item) =>
+      item.kind === 'cluster'
+        ? { ...item, members: item.members.map((member) => ({ ...member, presence: { status: 'done' as const } })) }
+        : item,
+    );
+    expect(members(orderAttentionList(idle, () => true, modes, undefined, true))).toEqual([
+      'pinned',
+      'latest',
+      'running',
+      'old',
+    ]);
+  });
+  it('r2 holds an expanded group through its own read/work/activity updates, then refreshes on reopen', () => {
+    const input = (activity: number, working = false) => {
+      const rows = [
+        { ...row('a', working), pinned: false, lastActiveAt: activity, unreadCount: working ? 0 : 4 },
+        { ...row('b'), pinned: false, lastActiveAt: 20 },
+        { ...row('outside'), pinned: false, lastActiveAt: 30 },
+      ];
+      return arrangeAttentionRows(
+        rows,
+        rows,
+        buildAttentionClusters(rows, [{ id: 'g', threadIds: ['a', 'b'] }]),
+        'recent',
+      );
+    };
+    const first = orderAttentionList(input(10), () => true, {}, undefined, true);
+    expect(members(first)).toEqual(['b', 'a']);
+    expect(first.snapshot.itemKeys).toEqual(['thread:outside', 'group:g']);
+    const reading = orderAttentionList(input(50, true), () => true, {}, first.snapshot, true);
+    expect(members(reading)).toEqual(['b', 'a']);
+    expect(reading.snapshot.itemKeys).toEqual(first.snapshot.itemKeys);
+    expect(reading.items[1]?.kind === 'cluster' && reading.items[1].members[1]?.unreadCount).toBe(0);
+    const selected = orderAttentionList(input(50, true), () => true, { 'group:g': 'manual' }, reading.snapshot, true);
+    expect(members(selected)).toEqual(['a', 'b']);
+    expect(selected.snapshot.itemKeys).toEqual(['group:g', 'thread:outside']);
+    const closed = orderAttentionList(input(50, true), () => false, {}, reading.snapshot, true);
+    expect(closed.snapshot.itemKeys).toEqual(['group:g', 'thread:outside']);
+    const reopened = orderAttentionList(input(50, true), () => true, {}, closed.snapshot, true);
+    expect(members(reopened)).toEqual(['a', 'b']);
+  });
+  it('r2 releases outer placement for outside work while preserving the open member reading order', () => {
+    const input = (working = false) => {
+      const rows = [
+        { ...row('a'), pinned: false, lastActiveAt: working ? 25 : 10 },
+        { ...row('b'), pinned: false, lastActiveAt: 20 },
+        { ...row('outside', working), pinned: false, lastActiveAt: working ? 30 : 1 },
+      ];
+      return arrangeAttentionRows(
+        rows,
+        rows,
+        buildAttentionClusters(rows, [{ id: 'g', threadIds: ['a', 'b'] }]),
+        'recent',
+      );
+    };
+    const first = orderAttentionList(input(), () => true, {}, undefined, true);
+    expect(first.snapshot.itemKeys).toEqual(['group:g', 'thread:outside']);
+    const released = orderAttentionList(input(true), () => true, {}, first.snapshot, true);
+    expect(released.snapshot.itemKeys).toEqual(['thread:outside', 'group:g']);
+    expect(members(released)).toEqual(['b', 'a']);
+  });
   describe.each(['thread', 'closed Group'] as const)('outside %s working-order refinements', (kind) => {
     it.each([
       ['missing to known', undefined, 50],

@@ -1,3 +1,6 @@
+import { resolveFileTarget } from './real-surface-adapters';
+import type { WorkspaceSurfaceDescriptor } from './workbench-contract';
+
 export const DEFAULT_ARTIFACT_WORK_CHAT_BASIS = 30;
 export interface ArtifactWorkOwnerRef {
   readonly owner: string;
@@ -219,5 +222,34 @@ export function reduceArtifactWorkPresentation(
 
 /** Structural on purpose: geometry may classify descriptors without importing an owner implementation. */
 export function isArtifactWorkSurface(surface: { readonly type?: string } | null | undefined): boolean {
-  return surface?.type === 'artifact' || surface?.type === 'review';
+  return surface?.type === 'artifact' || surface?.type === 'review' || surface?.type === 'thread-replay';
+}
+
+type WorkSurfaceCoordinate = { readonly type?: string } & Partial<
+  Pick<WorkspaceSurfaceDescriptor, 'objectRef' | 'ownerStateRef' | 'resultTargetRef'>
+>;
+
+export function isWorkspaceArtworkPath(path: string): boolean {
+  return /\.(png|mp4|mdx?|txt|docx)$/i.test(path);
+}
+
+/** Presentation reads the canonical file coordinate; admission and bytes remain with the file/review owners. */
+export function isWorkspaceArtworkFile(surface: WorkSurfaceCoordinate | null | undefined): boolean {
+  if (surface?.type !== 'file' || !surface.objectRef || !surface.ownerStateRef) return false;
+  const target = resolveFileTarget({
+    objectRef: surface.objectRef,
+    ownerStateRef: surface.ownerStateRef,
+    resultTargetRef: surface.resultTargetRef,
+  });
+  return target !== null && isWorkspaceArtworkPath(target.path);
+}
+
+export function isWorkspaceFullWindowSurface(
+  surface: WorkSurfaceCoordinate | null | undefined,
+  presentation: 'classic' | 'v2' = 'classic',
+): boolean {
+  return (
+    isArtifactWorkSurface(surface) ||
+    (presentation === 'v2' && (surface?.type === 'browser' || isWorkspaceArtworkFile(surface)))
+  );
 }

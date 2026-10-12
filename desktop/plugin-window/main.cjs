@@ -9,8 +9,16 @@ const { createManagedWindow } = require('./window.cjs');
 const { createCompanionPipe } = require('./companion-pipe.cjs');
 const { prepareWindowResources } = require('./preload-bundle.cjs');
 const { configureCompanionAppIdentity } = require('./app-identity.cjs');
+const { createExecutorStdio } = require('./executor-stdio.cjs');
 const { app } = electron;
-const stage = (value) => process.stderr.write(`[desktop-stage] ${value}\n`);
+let window;
+let opening = false;
+let ended = false;
+let companion;
+const stdio = createExecutorStdio(process.stdout, process.stderr, quit);
+const stage = (value) => {
+  if (!ended) stdio.diagnostic(`[desktop-stage] ${value}\n`);
+};
 stage('kernel-started');
 const contract = import(
   pathToFileURL(join(__dirname, '../../packages/api/dist/domains/plugin/desktop-window-runtime/admission.js')).href
@@ -22,25 +30,23 @@ const profile = mkdtempSync(join(tmpdir(), 'clowder-companion-'));
 const identityReady = configureCompanionAppIdentity(app);
 app.setPath('userData', profile);
 process.once('exit', () => rmSync(profile, { recursive: true, force: true }));
-let window;
-let opening = false;
-let ended = false;
 let buffer = Buffer.alloc(0);
 let queue = Promise.resolve();
-const companion = createCompanionPipe((frame, callback) => process.stdout.write(frame, callback));
-const quit = () => {
-  if (ended) return;
+companion = createCompanionPipe((frame, callback) => stdio.write(frame, callback));
+function finish() {
+  if (ended) return false;
   ended = true;
-  companion.close();
+  stdio.close();
+  companion?.close();
   window?.close();
-  app.quit();
-};
+  return true;
+}
+function quit() {
+  if (finish()) app.quit();
+}
 function fatal() {
-  if (ended) return;
-  ended = true;
-  process.stderr.write('[desktop-executor] invalid_or_unavailable_window\n');
-  companion.close();
-  window?.close();
+  if (!finish()) return;
+  stdio.diagnostic('[desktop-executor] invalid_or_unavailable_window\n');
   app.exit(1);
 }
 async function handle(message) {
@@ -58,16 +64,22 @@ async function handle(message) {
     if (opening) throw new Error('Already opened');
     opening = true;
     await app.whenReady();
+    if (ended) return;
     await identityReady;
+    if (ended) return;
     stage('app-ready');
     const loadedContract = await contract;
+    if (ended) return;
     if (!loadedContract) throw new Error('Contract unavailable');
     const validateCompanionCommand = loadedContract.companionCommandValidator(message.params.companionContract);
     stage('contract-ready');
-    window = await createManagedWindow(electron, message.params, {
+    const opened = await createManagedWindow(electron, message.params, {
       voiceResources: prepareWindowResources(profile),
-      onFailure: (reason) => process.stderr.write(`[desktop-runtime] ${reason}\n`),
+      onFailure: (reason) => {
+        if (!ended) stdio.diagnostic(`[desktop-runtime] ${reason}\n`);
+      },
       request: async (command) => {
+        if (ended) return { kind: 'error', code: 'cancelled' };
         stage('bridge-requested');
         const reply = await companion.request(command);
         stage('bridge-replied');
@@ -75,6 +87,11 @@ async function handle(message) {
       },
       validate: validateCompanionCommand,
     });
+    if (ended) {
+      opened.close();
+      return;
+    }
+    window = opened;
     stage('surface-loaded');
   } else {
     if (
@@ -88,8 +105,9 @@ async function handle(message) {
     if (message.method === 'revoke-media') await window.revokeMedia();
     if (message.method === 'navigate') await window.navigate(message.params);
   }
+  if (ended) return;
   await new Promise((resolve, reject) =>
-    process.stdout.write(`${JSON.stringify({ v: 1, id: message.id, ok: true, value })}\n`, (error) =>
+    stdio.write(`${JSON.stringify({ v: 1, id: message.id, ok: true, value })}\n`, (error) =>
       error ? reject(error) : resolve(),
     ),
   );
@@ -122,5 +140,7 @@ process.stdin.on('data', (chunk) => {
   }
 });
 process.stdin.on('end', quit);
+process.stdin.on('error', quit);
 process.on('SIGTERM', quit);
+app.on('before-quit', finish);
 app.on('window-all-closed', quit);

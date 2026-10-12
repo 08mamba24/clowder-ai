@@ -6,6 +6,7 @@ export function createInitialWorkbenchState(surfaces: WorkspaceSurfaceDescriptor
     layoutOwner: 'f307',
     surfaces,
     pinnedSurfaceIds: [],
+    previewSurfaceId: null,
     activeSurfaceId: surfaces[0]?.id ?? null,
     split: null,
     sidecar: null,

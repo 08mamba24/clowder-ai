@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import { apiFetch } from '@/utils/api-client';
 import { ContentLandingHeader } from './content-review/ContentLandingHeader';
-import { createFileSurface } from './real-surface-adapters';
+import { createFilePreviewSurface, createFileSurface } from './real-surface-adapters';
 import { WorkspaceRootConnectionPanel } from './WorkspaceRootConnectionPanel';
 import type { WorkspaceSurfaceDescriptor } from './workbench-contract';
 import {
@@ -34,6 +35,7 @@ export function ArtifactFileSourceResolver({
   worktreeId,
   scrollToLine,
   rootSelection,
+  perFileIdentity,
 }: {
   readonly path: string;
   readonly title: string;
@@ -42,7 +44,11 @@ export function ArtifactFileSourceResolver({
   readonly worktreeId?: string;
   readonly scrollToLine?: number | null;
   readonly rootSelection?: WorkspaceRootSelection;
+  /** Saved legacy descriptors keep their root identity when their alias is resolved. */
+  readonly perFileIdentity?: boolean;
 }) {
+  const presentation = useShellPresentation();
+  const usePerFileIdentity = perFileIdentity ?? presentation === 'v2';
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [connection, setConnection] = useState<{ scope: string; value: WorkspaceRootConnection } | null>(null);
@@ -83,7 +89,10 @@ export function ArtifactFileSourceResolver({
           return;
         }
         const target = targetSchema.parse(body);
-        if (!controller.signal.aborted) callback.current(createFileSurface({ ...target, scrollToLine }));
+        if (!controller.signal.aborted)
+          callback.current(
+            (usePerFileIdentity ? createFilePreviewSurface : createFileSurface)({ ...target, scrollToLine }),
+          );
       } catch (cause) {
         if (!controller.signal.aborted)
           setError(cause instanceof Error ? cause.message : '暂时无法核验原位置，请重试。');
@@ -91,7 +100,7 @@ export function ArtifactFileSourceResolver({
     })();
     return () => controller.abort();
     // biome-ignore lint/correctness/useExhaustiveDependencies: directory branch is presentation metadata, root is the exact request input
-  }, [path, worktreeId, scrollToLine, rootSelection?.root, scope, attempt]);
+  }, [path, worktreeId, scrollToLine, rootSelection?.root, scope, attempt, usePerFileIdentity]);
   return (
     <section className="flex min-h-0 flex-1 flex-col">
       <ContentLandingHeader title={title} onBack={onBack} />

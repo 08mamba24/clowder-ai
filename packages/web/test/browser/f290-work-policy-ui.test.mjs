@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { test } from 'node:test';
 import { CollectiveServiceStore, startCollectiveServer } from '../../../collective-service/dist/index.js';
 import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
 import { registerDefaultEntryJourney } from './default-entry-journey.harness.mjs';
+import { ownerActivityRecovery } from './f290-cafe-activity-recovery.fixture.mjs';
 import { defaultHumanAuthProvider, seedDefaultCollective } from './f290-default-client.fixture.mjs';
 import { reserveNativeOwnerPorts, startNativeOwner } from './f290-native-owner.harness.mjs';
 
@@ -267,3 +269,9 @@ async function poll(predicate) {
   }
   throw new Error('Actual state did not change');
 }
+
+test(
+  'owner activity opens the exact private destination and read recovery clears a stale settings alert',
+  { timeout: 90_000 },
+  ownerActivityRecovery,
+);

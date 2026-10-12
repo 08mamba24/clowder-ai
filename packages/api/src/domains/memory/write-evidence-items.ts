@@ -18,10 +18,16 @@ export function writeEvidenceItems(db: Database.Database, items: EvidenceItem[])
 				 kind = excluded.kind,
 				 status = excluded.status,
 				 title = excluded.title,
-				 summary = excluded.summary,
+				 summary = CASE WHEN evidence_docs.kind = 'thread' AND EXISTS (
+           SELECT 1 FROM thread_curation_state s WHERE 'thread-' || s.thread_id = evidence_docs.anchor
+           AND s.summary_revision = evidence_docs.source_hash AND s.directory_line <> ''
+         ) THEN evidence_docs.summary ELSE excluded.summary END,
 				 keywords = excluded.keywords,
 				 source_path = excluded.source_path,
-				 source_hash = excluded.source_hash,
+				 source_hash = CASE WHEN evidence_docs.kind = 'thread' AND EXISTS (
+           SELECT 1 FROM thread_curation_state s WHERE 'thread-' || s.thread_id = evidence_docs.anchor
+           AND s.summary_revision = evidence_docs.source_hash AND s.directory_line <> ''
+         ) THEN evidence_docs.source_hash ELSE excluded.source_hash END,
 				 superseded_by = excluded.superseded_by,
 				 materialized_from = excluded.materialized_from,
 				 updated_at = excluded.updated_at,

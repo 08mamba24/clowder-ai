@@ -1,13 +1,19 @@
 'use client';
 
-import type { ContentModificationRequest } from '@cat-cafe/shared';
+import type { ContentModificationRecord, ContentModificationRequest } from '@cat-cafe/shared';
 import { useEffect, useRef, useState } from 'react';
 import { ContentModificationLanding } from '@/components/content-review/ContentModificationLanding';
-import { modificationSourceVersion } from '@/components/content-review/modification-draft';
+import { modificationSourceVersion, modificationStorageKey } from '@/components/content-review/modification-draft';
+import {
+  clearModificationFocus,
+  modificationFocusStanding,
+  usePendingModificationFocus,
+} from '@/components/content-review/modification-focus';
 import { useChatStore } from '@/stores/chatStore';
 import { apiFetch } from '@/utils/api-client';
 import type { ContentReviewView } from './content-review-contract';
 import type { WorkspaceAnnotationTarget } from './useWorkspaceContentReview';
+import { workspaceReviewRequestSource } from './workspace-modification-source';
 
 export function WorkspaceModificationEntry({
   view,
@@ -16,6 +22,7 @@ export function WorkspaceModificationEntry({
   disabled,
   onApplied,
   onExpanded,
+  onComparing,
 }: {
   view: ContentReviewView;
   path: string;
@@ -23,39 +30,25 @@ export function WorkspaceModificationEntry({
   disabled: boolean;
   onApplied?: (writtenRevision?: string) => Promise<void> | void;
   onExpanded?: () => void;
+  /**
+   * Whether the Workspace is asked to show one returned candidate next to the original, and for which navigation:
+   * the revision of the one that carried a receipt's ask for a candidate of this file. A receipt that only asks for
+   * the file, and closing the panel, say `null`. The revision is how a newer navigation is told apart later.
+   */
+  onComparing?: (navigationRevision: number | null) => void;
 }) {
   const [intent, setIntent] = useState<{
     sourceVersion: string;
     value: Omit<ContentModificationRequest['intent'], 'body'>;
   } | null>(null);
+  // A request (and candidate) a conversation receipt asked to see; the landing selects it instead of guessing.
+  const [focused, setFocused] = useState<{ record: ContentModificationRecord; candidateRef?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
   const source = view.review.source;
-  const requestSource: ContentModificationRequest['source'] =
-    source.kind === 'publication'
-      ? {
-          kind: 'publication',
-          contentRef: source.publication.contentRef,
-          ownerRevision: source.publication.ownerRevision,
-          ledgerRef: view.review.reviewId,
-          expectedLedgerRevision: view.review.revision,
-        }
-      : source.kind === 'evolution'
-        ? {
-            kind: 'evolution',
-            locator: source.locator,
-            expectedSourceRevision: source.revision,
-            reviewId: view.review.reviewId,
-            expectedReviewRevision: view.review.revision,
-          }
-        : {
-            kind: 'workspace',
-            locator: source.locator,
-            expectedSourceRevision: source.revision,
-            reviewId: view.review.reviewId,
-            expectedReviewRevision: view.review.revision,
-          };
+  const requestSource = workspaceReviewRequestSource(view);
   const sourceVersion = modificationSourceVersion(requestSource);
+  const objectKey = modificationStorageKey(view.review.ownerUserId, requestSource);
   const openKey = JSON.stringify([view.review.ownerUserId, sourceVersion, target]);
   const currentOpenKey = useRef(openKey);
   currentOpenKey.current = openKey;
@@ -66,6 +59,38 @@ export function WorkspaceModificationEntry({
     },
     [],
   );
+  const pendingFocus = usePendingModificationFocus();
+  const currentThreadId = useChatStore((state) => state.currentThreadId);
+  const openRevision = useChatStore((state) => state.workspaceOpenRevision);
+  useEffect(() => {
+    if (!pendingFocus) return;
+    // The ask belongs to the one Workspace navigation that made it. A newer navigation retires it; another
+    // conversation never takes it. No clock is involved, so a slow mount cannot lose an accepted click.
+    const standing = modificationFocusStanding(pendingFocus, { threadId: currentThreadId, revision: openRevision });
+    if (standing === 'superseded') return clearModificationFocus(pendingFocus);
+    if (standing === 'elsewhere') return;
+    if (view.sourceState === 'unavailable') return;
+    const { record } = pendingFocus;
+    // Same object (owner + file), whatever version each side last saw; another file's ask is never ours to take.
+    if (objectKey !== modificationStorageKey(record.ownerUserId, record.payload.source)) return;
+    generation.current++;
+    setPreparing(false);
+    setError(null);
+    setFocused({ record, ...(pendingFocus.candidateRef ? { candidateRef: pendingFocus.candidateRef } : {}) });
+    setIntent({ sourceVersion, value: {} });
+    onExpanded?.();
+    onComparing?.(pendingFocus.candidateRef ? pendingFocus.navigation.revision : null);
+    clearModificationFocus(pendingFocus);
+  }, [
+    pendingFocus,
+    currentThreadId,
+    openRevision,
+    view.sourceState,
+    objectKey,
+    sourceVersion,
+    onExpanded,
+    onComparing,
+  ]);
   const open = async () => {
     if (preparing || view.sourceState === 'unavailable') return;
     setError(null);
@@ -139,11 +164,15 @@ export function WorkspaceModificationEntry({
             mediaType={source.mime}
             initialIntent={intent.value}
             initialIntentSourceVersion={intent.sourceVersion}
+            initialRequest={focused?.record}
+            focusCandidateRef={focused?.candidateRef}
             suggestedThreadId={useChatStore.getState().currentThreadId}
             onClose={() => {
               generation.current++;
               setPreparing(false);
               setIntent(null);
+              setFocused(null);
+              onComparing?.(null);
             }}
             onApplied={onApplied}
           />

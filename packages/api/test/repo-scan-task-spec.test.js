@@ -401,6 +401,21 @@ describe('RepoScanTaskSpec', () => {
       assert.equal(triggerCalls[0][1], 'cat-maine-coon'); // catId
     });
 
+    it('declares the bounded repo_inbox wake category on the trigger (F167)', async () => {
+      const { opts, triggerCalls } = createOpts();
+      const spec = createRepoScanTaskSpec(opts);
+      const gateResult = await spec.admission.gate(gateCtx());
+      const workItem = gateResult.workItems[0];
+
+      await spec.run.execute(workItem.signal, workItem.subjectKey, { assignedCatId: null });
+
+      assert.equal(triggerCalls.length, 1);
+      const [, , , , messageId, contentBlocks, policy] = triggerCalls[0];
+      assert.equal(messageId, 'msg-1');
+      assert.equal(contentBlocks, undefined);
+      assert.deepEqual(policy, { sourceCategory: 'repo_inbox' });
+    });
+
     it('re-resolves the repo inbox owner for every delivery and wake', async () => {
       let currentOwner = 'codex-sol';
       const resolverCalls = [];

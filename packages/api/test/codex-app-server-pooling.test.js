@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -49,6 +49,7 @@ class AsyncInbox {
 class PoolWire {
   constructor(threadId, reusedSessionHost = false, turnCompletion = { status: 'completed' }, turnNotifications = []) {
     this.threadId = threadId;
+    this.cwd = join(tmpdir(), 'cat-cafe-pooling-retained-thread');
     this.reusedSessionHost = reusedSessionHost;
     this.turnCompletion = turnCompletion;
     this.turnNotifications = turnNotifications;
@@ -67,6 +68,15 @@ class PoolWire {
       this.inbox.push({ id: message.id, result: { userAgent: 'fake-pool' } });
     } else if (message.method === 'config/read') {
       this.inbox.push({ id: message.id, result: { config: { mcp_servers: {} } } });
+    } else if (message.method === 'configRequirements/read') {
+      this.inbox.push({ id: message.id, result: { requirements: null } });
+    } else if (message.method === 'account/read') {
+      this.inbox.push({ id: message.id, result: { account: { type: 'chatgpt' } } });
+    } else if (message.method === 'thread/read') {
+      this.inbox.push({
+        id: message.id,
+        result: { thread: { id: message.params.threadId, cwd: this.cwd, turns: [] } },
+      });
     } else if (message.method === 'thread/start' || message.method === 'thread/resume') {
       const threadId = message.method === 'thread/resume' ? message.params.threadId : this.threadId;
       this.inbox.push({ id: message.id, result: { thread: { id: threadId, turns: [] } } });
@@ -116,6 +126,7 @@ class ActiveWriterWire extends PoolWire {
         result: {
           thread: {
             id: this.previousThreadId,
+            cwd: this.cwd,
             status: { type: 'active', activeFlags: [] },
             turns: [{ id: 'turn-old', status: 'inProgress', startedAt: 1_786_630_000, items: [] }],
           },
@@ -493,6 +504,18 @@ test(
       const resumed = await invoke();
       assert.equal(created, 1);
       assert.equal(hosts[0].closeCalls, 1);
+      assert.deepEqual(wire.writes.find((message) => message.method === 'thread/read').params, {
+        threadId: 'native-old',
+        includeTurns: false,
+      });
+      assert.deepEqual(wire.writes.findLast((message) => message.method === 'config/read').params, {
+        cwd: wire.cwd,
+        includeLayers: false,
+      });
+      assert.ok(
+        wire.writes.findLastIndex((message) => message.method === 'config/read') <
+          wire.writes.findIndex((message) => message.method === 'thread/resume'),
+      );
       assert.equal(wire.writes.find((message) => message.method === 'thread/resume').params.threadId, 'native-old');
       assert.equal(
         wire.writes.some((message) => ['thread/start', 'thread/archive', 'turn/interrupt'].includes(message.method)),
@@ -559,6 +582,10 @@ test(
       false,
     );
     for (const wire of wires.slice(0, factoryCalls)) {
+      assert.deepEqual(wire.writes.findLast((message) => message.method === 'config/read').params, {
+        cwd: wire.cwd,
+        includeLayers: false,
+      });
       assert.equal(
         wire.writes.some((message) => ['thread/start', 'thread/archive', 'turn/interrupt'].includes(message.method)),
         false,
@@ -729,7 +756,7 @@ test('pooled Codex carries MCP config per session and refreshes an isolated cred
     CAT_CAFE_EXECUTION_ID: 'parent-execution-1',
     CAT_CAFE_PROCESS_EXECUTION_OWNER: '1',
   };
-  await drain(
+  const firstEvents = await drain(
     service.invoke('first turn', {
       workingDirectory: credsDir,
       invocationId: 'invocation-1',
@@ -744,10 +771,17 @@ test('pooled Codex carries MCP config per session and refreshes an isolated cred
   );
 
   assert.equal(pool.calls.length, 1, 'the app-server carrier must acquire the injected warm pool');
+  assert.deepEqual(
+    firstEvents.filter((event) => event.type === 'error'),
+    [],
+  );
   const firstWire = pool.wires[0];
   const firstStart = firstWire.writes.find((message) => message.method === 'thread/start');
   const credentialPath = managedCredentialPath(firstStart);
-  assert.ok(credentialPath, 'managed MCP config must receive a session credential path');
+  assert.ok(
+    credentialPath,
+    `managed MCP config must receive a session credential path; servers=${Object.keys(firstStart.params.config?.mcp_servers ?? {})}`,
+  );
   assert.deepEqual(firstWire.rememberedSessions, ['codex-thread-1']);
   assert.equal(JSON.parse(readFileSync(credentialPath, 'utf8')).invocationId, 'invocation-1');
 
@@ -835,3 +869,65 @@ test('replacement host rotates credentials while leaving the superseded host fil
   assert.equal(JSON.parse(readFileSync(oldPath, 'utf8')).invocationId, 'replacement-seed');
   assert.equal(JSON.parse(readFileSync(replacementPath, 'utf8')).invocationId, 'replacement-next');
 });
+
+for (const conflict of [false, true])
+  test(`capability probe uses admitted API home and validates native config before inventory (conflict=${conflict})`, async (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'f320-probe-home-')));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const home = join(root, 'missing', '.codex');
+    class CapabilityWire extends PoolWire {
+      async write(message) {
+        if (message.method === 'config/read' && conflict) {
+          this.writes.push(message);
+          this.inbox.push({ id: message.id, result: { config: { sqlite_home: join(root, 'wrong') } } });
+        } else if (
+          [
+            'skills/list',
+            'app/list',
+            'app/installed',
+            'plugin/list',
+            'plugin/installed',
+            'mcpServerStatus/list',
+          ].includes(message.method)
+        ) {
+          this.writes.push(message);
+          this.inbox.push({ id: message.id, result: { data: [], apps: [], marketplaces: [] } });
+        } else await super.write(message);
+      }
+    }
+    const wire = new CapabilityWire('probe-without-thread');
+    const pool = {
+      createSession: async (options) => {
+        assert.notEqual(options.env.CODEX_HOME, home);
+        assert.equal(existsSync(options.env.CODEX_HOME), true, 'mkdir must precede actual pool spawn');
+        return wire;
+      },
+    };
+    const service = new CodexAgentService({
+      carrierMode: 'app_server',
+      appServerHostPool: pool,
+      l0CompilerFn: fakeL0Compiler,
+    });
+    const account = {
+      id: 'api-fixture',
+      authType: 'api_key',
+      apiKey: 'fixture-never-used',
+      baseUrl: 'http://127.0.0.1:1',
+      envVars: { HOME: root, CAT_CAFE_DATA_DIR: join(root, 'data'), CODEX_HOME: home },
+    };
+    const probe = () =>
+      service.requestNativeCapabilitySource({ invocationId: 'probe-fixture', timeoutMs: 1000, cwd: root, account });
+    if (conflict) await assert.rejects(probe(), /configuration_conflict:sqlite_home/);
+    else assert.equal((await probe()).availability, 'live');
+    const methods = wire.writes.map((message) => message.method);
+    assert.deepEqual(methods.slice(0, 5), [
+      'initialize',
+      'initialized',
+      'config/read',
+      'configRequirements/read',
+      'account/read',
+    ]);
+    assert.equal(methods.includes('thread/start'), false);
+    assert.equal(methods.includes('app/list'), !conflict);
+    assert.deepEqual(wire.writes.find((message) => message.method === 'account/read').params, { refreshToken: false });
+  });

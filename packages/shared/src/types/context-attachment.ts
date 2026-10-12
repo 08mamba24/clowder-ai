@@ -1,3 +1,7 @@
+import type { MediaContextAttachment } from './media-context-attachment.js';
+
+export type { MediaContextAttachment } from './media-context-attachment.js';
+
 export const CONTEXT_ATTACHMENT_VERSION = 1 as const;
 export const CONTEXT_ATTACHMENT_MAX_COUNT = 12;
 export const CONTEXT_ATTACHMENT_QUOTE_MAX_LENGTH = 20_000;
@@ -20,6 +24,8 @@ export interface WorkspaceFileContextAttachment extends ContextAttachmentBase {
   readonly path: string;
   readonly worktreeId?: string;
   readonly branch?: string;
+  /** Exact F063 owner revision. `v` remains the attachment format version. */
+  readonly revision?: `sha256:${string}`;
   readonly lineStart?: number;
   readonly lineEnd?: number;
 }
@@ -44,6 +50,8 @@ export interface WorkspaceFileQuoteSource {
   readonly path: string;
   readonly worktreeId?: string;
   readonly branch?: string;
+  /** Exact F063 owner revision; absent only on legacy references. */
+  readonly revision?: `sha256:${string}`;
   readonly language?: string;
   readonly lineStart?: number;
   readonly lineEnd?: number;
@@ -62,7 +70,11 @@ export interface QuoteContextAttachment extends ContextAttachmentBase {
   readonly source: QuoteContextSource;
 }
 
-export type ContextAttachment = ThreadContextAttachment | WorkspaceFileContextAttachment | QuoteContextAttachment;
+export type ContextAttachment =
+  | ThreadContextAttachment
+  | WorkspaceFileContextAttachment
+  | QuoteContextAttachment
+  | MediaContextAttachment;
 
 /**
  * Canonical model-facing projection. Keeping the escaping and wrapper here lets
@@ -79,4 +91,24 @@ export function serializeContextAttachmentsPrompt(attachments: readonly ContextA
 export interface ContextAttachmentContent {
   readonly type: 'context_attachment';
   readonly attachment: ContextAttachment;
+}
+
+/** A read-only file-side view of existing message quotes; it is not a text annotation ledger. */
+export interface WorkspaceFileQuoteReference {
+  readonly threadId: string;
+  readonly messageId: string;
+  readonly authorCatId: string | null;
+  readonly timestamp: number;
+  readonly quoteNumber: number;
+  readonly attachment: QuoteContextAttachment;
+  readonly state: 'current' | 'changed' | 'unversioned' | 'unlocated';
+  /** Only present after the F063 owner resolves this exact quote against its named current revision. */
+  readonly anchor?: { readonly start: number; readonly end: number; readonly quote: string };
+}
+
+export interface WorkspaceFileQuotePage {
+  readonly sourceRevision: string;
+  readonly quotes: readonly WorkspaceFileQuoteReference[];
+  /** Cursor through the owner's messages, including pages with no quotes of this file. */
+  readonly nextCursor?: string;
 }

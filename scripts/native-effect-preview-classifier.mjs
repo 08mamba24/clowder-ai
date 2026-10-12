@@ -1,22 +1,10 @@
-import { realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute } from 'node:path';
+import { parseAlphaLaunchChild, STANDARD_ALPHA_PORTS } from './lib/alpha-launch-contract.mjs';
 import { namedAlphaPreviewDecision } from './lib/alpha-preview.mjs';
+import { canonicalAlphaCwd, canonicalWorktreePreviewPort, physicalDirectory } from './lib/preview-coordinates.mjs';
 import { stripHarmlessRedirections, tokenizeSimpleShellCommand } from './native-effect-shell-tokenizer.mjs';
 
-const ALPHA_PREVIEW_PORT = '3011';
-const RESERVED_PREVIEW_PORTS = new Set([
-  '3001',
-  '3002',
-  '3003',
-  '3004',
-  '3011',
-  '3012',
-  '4100',
-  '4111',
-  '6397',
-  '6398',
-  '6399',
-]);
+const ALPHA_PREVIEW_PORT = String(STANDARD_ALPHA_PORTS.frontend);
 const SAFE_DEV_ENV_UNSETS = new Set(['NODE_ENV', 'npm_config_production', 'NPM_CONFIG_PRODUCTION']);
 const MAX_PREVIEW_LIFETIME_SECONDS = 24 * 60 * 60;
 const MANAGED_PREVIEW_EXECUTION_WRAPPERS = new Set([
@@ -30,7 +18,6 @@ const MANAGED_PREVIEW_EXECUTION_WRAPPERS = new Set([
   'corepack',
   'npx',
 ]);
-const SAFE_MANAGED_PREVIEW_COORDINATE = /^[A-Za-z0-9._/@+-]+$/;
 const INVALID_MANAGED_PREVIEW = Symbol('invalid-managed-preview');
 
 /**
@@ -52,12 +39,37 @@ export function managedPreviewOperationDecision(raw, shellCwd) {
   if (targetsRuntimeSanctuary(invocation.packageCwd)) return deniedPreview();
   if (targetsRuntimeSanctuary(invocation.options.get('--cwd'))) return deniedPreview();
   const namedAlpha = namedAlphaPreviewDecision(invocation, shellCwd);
-  if (namedAlpha) return namedAlpha;
+  if (namedAlpha?.status === 'unregistered') {
+    const observation = unregisteredPreviewStatus(invocation, shellCwd);
+    if (observation) return observation;
+  } else if (namedAlpha) return namedAlpha;
   if (isAlphaPreviewCandidate(invocation)) {
-    return invocation.packageCwd === undefined ? alphaPreviewDecision(invocation, shellCwd) : deniedPreview();
+    return alphaPreviewDecision(invocation, shellCwd);
   }
   if (isWorktreePreviewCandidate(invocation)) return worktreePreviewDecision(invocation, shellCwd);
   return invocation.packageCwd === undefined ? null : deniedPreview();
+}
+
+function unregisteredPreviewStatus({ action, options, packageCwd, child, separator }, shellCwd) {
+  const port = canonicalWorktreePreviewPort(options.get('--port'));
+  const requested = canonicalAlphaCwd(options.get('--cwd'), packageCwd ?? shellCwd);
+  if (!requested) return null; // Feature worktrees keep their existing lifecycle grammar.
+  if (
+    action !== 'status' ||
+    !port ||
+    !requested ||
+    separator >= 0 ||
+    child.length ||
+    options.has('--lifetime-seconds')
+  ) {
+    return deniedPreview();
+  }
+  return allowedPreview({
+    kind: 'preview',
+    action: 'status',
+    effect: 'read',
+    target: `preview://status${requested}:${port}`,
+  });
 }
 
 export function constrainedManagedAlphaPreviewOperation(raw, shellCwd) {
@@ -73,10 +85,17 @@ export function constrainedManagedWorktreePreviewOperation(raw, shellCwd) {
 function alphaPreviewDecision(invocation, shellCwd) {
   const { action, child, options, separator } = invocation;
   if (options.get('--port') !== ALPHA_PREVIEW_PORT) return deniedPreview();
-  const requestedCwd = canonicalAlphaCwd(options.get('--cwd'), shellCwd);
+  const requestedCwd = canonicalAlphaCwd(options.get('--cwd'), invocation.packageCwd ?? shellCwd);
   if (!requestedCwd) return deniedPreview();
   if (!validPreviewLifetime(action, options.get('--lifetime-seconds'))) return deniedPreview();
-  if (!validPreviewAction(action, separator, child)) return deniedPreview();
+  if (action === 'start') {
+    if (separator < 0) return deniedPreview();
+    try {
+      parseAlphaLaunchChild(child, requestedCwd);
+    } catch (error) {
+      return deniedPreview(error.message);
+    }
+  } else if (separator >= 0 || child.length) return deniedPreview();
 
   return allowedPreview({
     kind: 'alpha',
@@ -118,8 +137,8 @@ function allowedPreview(operation) {
   return { status: 'allow', operation };
 }
 
-function deniedPreview() {
-  return { status: 'deny' };
+function deniedPreview(reason) {
+  return { status: 'deny', ...(reason ? { reason } : {}) };
 }
 
 function parseManagedPreviewInvocation(tokens) {
@@ -208,31 +227,10 @@ function targetsRuntimeSanctuary(raw) {
   }
 }
 
-function canonicalAlphaCwd(requestedCwd, shellCwd) {
-  const requested = physicalDirectory(requestedCwd);
-  const shell = physicalDirectory(shellCwd);
-  return requested && requested === shell && basename(requested) === 'cat-cafe' ? requested : null;
-}
-
 function validPreviewLifetime(action, lifetime) {
   if (lifetime === undefined) return true;
   const seconds = Number(lifetime);
   return action === 'start' && Number.isInteger(seconds) && seconds >= 1 && seconds <= MAX_PREVIEW_LIFETIME_SECONDS;
-}
-
-function validPreviewAction(action, separator, child) {
-  if (action !== 'start') return separator < 0 && child.length === 0;
-  return child.length === 2 && child[0] === 'pnpm' && child[1] === 'alpha:start';
-}
-
-function canonicalWorktreePreviewPort(port) {
-  if (typeof port !== 'string') return null;
-  if (!/^[1-9]\d*$/.test(port)) return null;
-  const numericPort = Number(port);
-  if (!Number.isInteger(numericPort)) return null;
-  if (numericPort > 65535) return null;
-  const canonicalPort = String(numericPort);
-  return RESERVED_PREVIEW_PORTS.has(canonicalPort) ? null : canonicalPort;
 }
 
 function canonicalWorktreeCwd(requestedCwd, shellCwd, packageCwd) {
@@ -317,18 +315,6 @@ function validWorktreeCoordinateAssignment({ name, value }, requestedCwd) {
     basename(requestedCwd).startsWith('cat-cafe-') &&
     dirname(coordinate) === dirname(requestedCwd)
   );
-}
-
-function physicalDirectory(raw) {
-  if (typeof raw !== 'string') return null;
-  if (!SAFE_MANAGED_PREVIEW_COORDINATE.test(raw)) return null;
-  if (!isAbsolute(raw)) return null;
-  try {
-    const physical = realpathSync(raw);
-    return statSync(physical).isDirectory() ? physical : null;
-  } catch {
-    return null;
-  }
 }
 
 function parseManagedPreviewOptions(tokens) {

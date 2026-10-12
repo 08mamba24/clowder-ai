@@ -1,11 +1,12 @@
 ---
 name: worktree
-tips_exempt: "Renewed 2026-09-29 for Alpha Redis 6397 and shared developer Redis 6398 safety guidance; this internal checkout setup has no separate end-user command or useful Hub discovery moment."
-description: 为代码、脚本、API 与第一方执行面创建隔离 Git worktree，并配置 Redis 6398；classifier 放行的 co-creation docs direct push 不进入本流程。
+tips_exempt: "Renewed 2026-10-07 for owner-bound finish/check and the 30-day retention limit; this internal developer lifecycle is discovered through worktree/review/merge skills, with no end-user Hub operation."
+description: "Use when: 创建代码/脚本/API工位或收尾。Not for: docs直推、代清其他owner。Output: 隔离worktree（Redis6398）、实际移除工位的released回执或具名retained回执。"
 triggers:
   - "开始开发"
   - "新 worktree"
   - "开 worktree"
+  - "worktree 收尾"
 renamed-from: using-git-worktrees
 ---
 
@@ -187,36 +188,50 @@ pnpm check:worktree-port-offset   # 验证全部 7 个大赛 OFFSET 派生 + 端
 
 详细设计见 *(internal reference removed)*。
 
-## 收工：合入后当场清理
+## 收工：核验释放或具名续留
 
-分支合入 main 后**当场清理**（merge-gate Step 8 同一套），不要留到下次：
+工作结束时，从持有 main 且已包含当前收尾版本的主仓执行唯一收尾入口（merge-gate Step 8 同一套）。旧 feature/review 快照里的 CLI 可能仍执行完整隔离；离开目标目录后调用主仓的 CLI，不从另一份旧快照运行收尾：
 
 ```bash
-git worktree remove ../cat-cafe-{feature-name}
-git branch -d feat/{feature-name}
-git worktree prune
+pnpm worktree:finish ../cat-cafe-{feature-name} --source-ref {原Task或PR的ref}
+pnpm worktree:finish ../cat-cafe-{feature-name} --source-ref {同一ref} --check
 ```
 
-**忘了清会怎样（如实说明）**：什么都不会自动发生——没有定时回收，`worktree:new` 也从不挪动任何目录。
-你忘清的目录会一直占你的名额，直到满额时它出现在拒绝消息的 owner 清单里。登记只是让工具**看得出**
-哪些已被主人放行（`merged`：内容已进 origin/main〔含 squash 合入〕且闲置 7 天；`ttl`：到期）；
-真正挪进隔离区（`pnpm worktree:reap --apply`）和删除（`--purge`）都是显式命令，由获授权的人执行。
-所以收工那三行是你的事。
+只有工具核实工位实际移除、恢复归档验证通过、ledger 有匹配的完成记录，才返回 `state=released` / exit 0。
+它核 owner、保护名单、锁、进程和目标状态；`merged` 还核内容已在 `origin/main`（含 squash）。
+这是 owner 显式收尾，不再等 7 天闲置或 14 天隔离窗：工具先验证归档独有 ignored 原件、工位私有 Git metadata，并保住 HEAD reflog 对象，然后用无 force 的 Git 命令移除工位。分支与源码留在共享 Git；依赖、构建与浏览器测试缓存直接回收，不复制进归档。未知 ignored 内容默认保留，真实 tracked/untracked 源文件仍阻塞释放。
+新回执为 `storageDisposition: removed`，包含归档位置、恢复命令和删除前后可用空间读数。归档里的用户原件持久保留，不自动过期。恢复时重建依赖和构建缓存；不要把全部目录移动到隔离区当作磁盘清理。
+旧隔离回执的 `storageDisposition: quarantined` 只证明离开活跃库存，目录仍占磁盘；不用于声明空间已回收。
+
+仍需预览、验收或接续时，写一条 worktree-local 的 owner/source/原因/截止事实，再核验：
+
+```bash
+pnpm worktree:finish ../cat-cafe-{feature-name} --source-ref {原Task或PR的ref} --retain --reason "等待原Alpha验收" --until {未来ISO时刻}
+pnpm worktree:finish ../cat-cafe-{feature-name} --source-ref {同一ref} --check
+```
+
+单次续留最多30天，`--until` 必须带明确时区（Z 或 offset）；超出范围拒绝，不写登记。到期确需接续须由 owner 重新给出原因与截止。
+`retained` 仍占工位；到期、HEAD 改变或 source 不符时 `--check` 非零，不能当已收尾。
+reaper 尊重有效续留，过期或损坏的续留只报告 review，不能静默按旧策略处置。
+将实际 JSON 回执留在原 Task/PR；`blocked`、merge 成功或单纯命令退出都不替代工位处置。
+
+没有定时回收；`worktree:new` 从不替别人腾位。既有 `reap --apply`/`--purge` 仍是单独授权的显式动作，
+不为满额强删、不代清其他 owner。原始未登记旧目录仍只报告。
 
 ## 异常：满额、想保留、要恢复
 
 | 场景 | 你看到什么 | 怎么做 |
 |------|-----------|--------|
 | 满额被拒 | `capacity: 40/40 …` + 按 owner 列出的占位目录 | 先收掉自己列表里做完的；其余在对应 owner 的 thread 问一句。**不要去清别人的目录，也不用管 undeclared 老库存**（它们不占名额，由维护者一次性处理） |
-| 想长期保留 | — | 建时加 `--policy never`；已有的（包括已在隔离区里的）：`pnpm worktree:new <path> --declare-only --policy never`，之后不会被 purge |
+| 工作结束但还需保留 | — | 用 `worktree:finish --retain --reason ... --until ... --source-ref ...`；核 `retained` 回执与截止。`never` 是主动长期政策，不替代这次收尾的具名理由 |
 | 临时沙盒 | — | `--policy ttl --ttl-days N`（review 沙盒默认 7） |
-| 目录被挪走了 | 原路径不见了 | 在 `../.reaper-quarantine/ledger.jsonl` 按原路径找到那条，执行其 `restore` 命令（`git worktree move <隔离路径> <原路径>`） |
+| 工位已完成移除，要恢复 | 原路径不见了 | 按 finish 回执/ledger 的 `archivePath` 与 `restore` 恢复源码及原件，再重装依赖；旧 `quarantinePath` 回执仍用它自己的 move 恢复命令 |
 | 隔离后又在里面干活了 / 改了登记 | — | 不用管：隔离后有改动、新提交或重新登记的目录**不会被 purge**（`review:changed-in-quarantine` / `redeclared-in-quarantine`），恢复回去即可 |
 
 规则细节留给工具（`scripts/lib/worktree-reaper-core.mjs`），这里只记要点：
 - **名额只算登记过的活跃 worktree**（上限 40）；隔离区里的、白名单的（`runtime`/`alpha`/`tutorials`/`sharing`/`recovery-backups`）、没登记的老目录都不算。`pnpm worktree:check` 看当前数字。
 - **只动出生时登记过的目录**；没登记的只进报告（`pnpm worktree:reap` dry-run，账本 `.cat-cafe/tmp/reaper-<date>.tsv`）。
-- **有未提交改动、locked、有进程在用的永远不动**；隔离满 14 天且期间没人动过，才进入 `--purge` 候选。
+- **有未提交改动、locked、有进程在用的永远不动**；自动 reaper 仅凭闲置/TTL 推断时仍先隔离，满 14 天且期间无人改动才进入 `--purge` 候选。owner 的显式 finish 用上面的真实移除路径。
 
 ## Commit / Stash 溯源 Footer（F193 Phase E）
 

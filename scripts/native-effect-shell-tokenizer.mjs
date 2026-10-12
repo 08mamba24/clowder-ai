@@ -1,3 +1,5 @@
+import { scanShellText } from './lib/shell-lexical.mjs';
+
 /** `/dev/null` and fd duplication are sinks, not mutations of the command's cwd. */
 export function stripHarmlessRedirections(raw) {
   return raw.replace(/(?:^|\s)(?:\d*>{1,2}\s*\/dev\/null|\d*>\s*&\s*\d+)(?=\s|$)/g, ' ');
@@ -7,20 +9,9 @@ export function tokenizeSimpleShellCommand(raw) {
   // A substitution makes a command unreadable -- but only a real one: inside single quotes
   // `x` and $(x) are literal text (a markdown code span in a commit message, 2026-09-27).
   if (/`|\$\(|[<>]\(/.test(unquotedShellText(raw))) return null;
-  const tokenPattern = /"((?:\\.|[^"\\])*)"|'([^']*)'|((?:\\.|[^\s"'\\])+)/g;
-  const tokens = [];
-  let cursor = 0;
-  for (const match of raw.matchAll(tokenPattern)) {
-    if (raw.slice(cursor, match.index).trim()) return null;
-    tokens.push(decodeShellToken(match));
-    cursor = (match.index ?? 0) + match[0].length;
-  }
-  return raw.slice(cursor).trim() ? null : tokens;
-}
-
-function decodeShellToken(match) {
-  if (match[2] !== undefined) return match[2];
-  return (match[1] ?? match[3] ?? '').replace(/\\(.)/g, '$1');
+  // The span reader already owns quoted-piece concatenation: --call='cmd'
+  // is one word, not a flag followed by a separate executable-looking word.
+  return shellWords(raw, { operatorsAreData: true })?.map(({ value }) => value) ?? null;
 }
 
 /**
@@ -62,37 +53,7 @@ export function commandName(raw) {
 
 /** Blank real comments without changing offsets; quoted/escaped # remains word data. */
 export function stripShellComments(raw) {
-  let text = '';
-  let cursor = 0;
-  let wordStart = true;
-  for (let index = 0; index < raw.length; ) {
-    const piece = commentPiece(raw, index, wordStart);
-    if (!piece) return raw;
-    if (piece.comment) {
-      text += raw.slice(cursor, index) + ' '.repeat(piece.next - index);
-      cursor = piece.next;
-    }
-    index = piece.next;
-    wordStart = piece.wordStart;
-  }
-  return text + raw.slice(cursor);
-}
-
-function commentPiece(raw, index, wordStart) {
-  const char = raw[index];
-  // Substitution boundaries need their own shell context. Do not let an inner
-  // comment erase a closing backtick and an executable outer suffix.
-  if (char === '`' || raw.startsWith('$(', index)) return null;
-  if (char === '\\') return { next: index + 2, wordStart: raw[index + 1] === '\n' && wordStart };
-  if (char === "'" || char === '"') {
-    const piece = wordPiece(raw, index);
-    return piece ? { next: piece.next, wordStart: false } : null;
-  }
-  if (char === '#' && wordStart) {
-    const newline = raw.indexOf('\n', index);
-    return { next: newline < 0 ? raw.length : newline, wordStart: true, comment: true };
-  }
-  return { next: index + 1, wordStart: /[\s;&|<>()]/.test(char) };
+  return scanShellText(raw).text;
 }
 
 /**
@@ -101,7 +62,7 @@ function commentPiece(raw, index, wordStart) {
  * prefixOnly retains complete leading words for context options before shell syntax;
  * it does not certify the rest of that command as parsed.
  */
-export function shellWords(raw, { prefixOnly = false } = {}) {
+export function shellWords(raw, { prefixOnly = false, operatorsAreData = false } = {}) {
   const words = [];
   let index = 0;
   while (index < raw.length) {
@@ -110,7 +71,10 @@ export function shellWords(raw, { prefixOnly = false } = {}) {
     const start = index;
     let value = '';
     while (index < raw.length && !/\s/.test(raw[index])) {
-      const piece = wordPiece(raw, index);
+      const piece =
+        operatorsAreData && /[;&|<>()]/.test(raw[index])
+          ? { value: raw[index], next: index + 1 }
+          : wordPiece(raw, index);
       if (!piece) return prefixOnly ? words : null;
       value += piece.value;
       index = piece.next;
@@ -135,7 +99,9 @@ export function shellInvocation(raw) {
     index = item.end;
   }
   result.syntaxComplete = true;
-  result.complete = result.words.every((word) => word.literal) && result.redirections.every((r) => r.operand.literal);
+  result.complete =
+    result.words.every((word) => word.literal) &&
+    result.redirections.every((r) => r.operand.literal && !/^(?:\d*)<<-?$/.test(r.operator));
   return result;
 }
 
@@ -151,7 +117,7 @@ function skipBlanks(raw, index) {
 function invocationItem(raw, start) {
   // Named descriptors are shell syntax, not an argv word; leave them unparsed for now.
   if (/^\{\w+\}[<>]/.test(raw.slice(start))) return null;
-  const redirect = /^(?:\d*(?:<>|>>|>\||>&|<&|>|<)|&>>?)/.exec(raw.slice(start));
+  const redirect = /^(?:\d*(?:<<<|<<-?|<>|>>|>\||>&|<&|>|<)|&>>?)/.exec(raw.slice(start));
   if (!redirect) return invocationWord(raw, start);
   const operand = invocationWord(raw, skipBlanks(raw, start + redirect[0].length));
   return operand ? { operator: redirect[0], operand, start, end: operand.end } : null;

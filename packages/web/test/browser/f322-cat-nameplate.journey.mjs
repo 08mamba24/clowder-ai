@@ -83,7 +83,16 @@ after(async () => {
   }
 });
 
-async function open({ shell = 'v2', width = 720, base = 'light', variant = 'default', scale = 1, saved = null } = {}) {
+async function open({
+  shell = 'v2',
+  width = 720,
+  base = 'light',
+  variant = 'default',
+  scale = 1,
+  saved = null,
+  tuner = false,
+  deferred = false,
+} = {}) {
   const page = await browser.newPage({
     viewport: { width: Math.max(width + 40, 480), height: 1100 },
     deviceScaleFactor: scale,
@@ -96,6 +105,21 @@ async function open({ shell = 'v2', width = 720, base = 'light', variant = 'defa
     if (msg.type() === 'error') errors.push(`console: ${msg.text()}`);
   });
   await page.addInitScript((value) => localStorage.setItem('cat-cafe:shell-presentation', value), shell);
+  if (deferred) {
+    await page.addInitScript(() => {
+      window.IntersectionObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+        takeRecords() {
+          return [];
+        }
+        root = null;
+        rootMargin = '0px';
+        thresholds = [0];
+      };
+    });
+  }
   await page.route('**/*', async (handler) => {
     const request = handler.request();
     const url = new URL(request.url());
@@ -118,6 +142,9 @@ async function open({ shell = 'v2', width = 720, base = 'light', variant = 'defa
       return handler.fulfill({ contentType: 'application/json', body: JSON.stringify({ cats }) });
     // The theme store syncs a saved theme to the server (debounced); the probe only needs it answered.
     if (url.pathname === '/api/config/env') return handler.fulfill({ contentType: 'application/json', body: '{}' });
+    // ThemeApplier asks the server for a saved theme when this browser has none; the answer is "nothing saved".
+    if (url.pathname === '/api/config/env-summary')
+      return handler.fulfill({ contentType: 'application/json', body: JSON.stringify({ variables: [] }) });
     if (url.pathname === '/api/config/cat-order')
       return handler.fulfill({ contentType: 'application/json', body: JSON.stringify({ catOrder: [] }) });
     if (url.pathname.startsWith('/api/')) {
@@ -129,7 +156,9 @@ async function open({ shell = 'v2', width = 720, base = 'light', variant = 'defa
       body: '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/proof.css"><div id="root"></div><script type="module" src="/proof.js"></script>',
     });
   });
-  await page.goto(`${origin}/?w=${width}`, { waitUntil: 'networkidle' });
+  await page.goto(`${origin}/?w=${width}${tuner ? '&tuner=1' : ''}${deferred ? '&deferred=1' : ''}`, {
+    waitUntil: 'networkidle',
+  });
   const waitReady = async () => {
     // The registry arrives after the first render; until then a message has no cat to draw. Wait for it and for the
     // injector's role variables before measuring anything.
@@ -148,13 +177,15 @@ async function open({ shell = 'v2', width = 720, base = 'light', variant = 'defa
   await waitReady();
   if (saved) {
     // The Tuner's save path (real theme store -> localStorage), then a reload: the store reads it back on boot and the
-    // theme is applied the way ThemeApplier applies it. No applyTheme here: that would paint over the restored theme.
+    // real ThemeApplier applies it. No applyTheme here: that would replace the restored theme.
     await page.evaluate((config) => window.__nameplate.saveCustomTheme(config), saved);
     await page.reload({ waitUntil: 'networkidle' });
     await waitReady();
   } else {
     await page.evaluate(([b, v]) => window.__nameplate.applyTheme(b, v), [base, variant]);
   }
+  // The real ThemeApplier has put that theme on the page, resolved against the catalogue that arrived.
+  await page.evaluate(() => window.__nameplate.applied());
   // The avatars are real files; wait for them so the shots and the boxes are final.
   await page.evaluate(() =>
     Promise.all(Array.from(document.images).map((img) => (img.complete ? null : img.decode().catch(() => null)))),
@@ -247,7 +278,17 @@ function measureInPage() {
       backgroundImage: plateStyle.backgroundImage,
     };
     out.avatar = avatar ? rect(avatar) : null;
+    // the face's own circle carries no cat-coloured ring; the work-surface ring is on the wrapper that places the face
     out.avatarShadow = avatar ? getComputedStyle(avatar.parentElement).boxShadow : null;
+    const face = plate.querySelector('[data-testid="cat-nameplate-avatar"]');
+    out.face = face ? { rect: rect(face), ring: getComputedStyle(face).boxShadow } : null;
+    // Is the top of the face (3px below its top edge, on its vertical axis) really painted, not cut off by an ancestor?
+    if (face) {
+      const fr = face.getBoundingClientRect();
+      const hit = document.elementFromPoint(fr.x + fr.width / 2, fr.y + 3);
+      out.faceTopPainted = hit === null ? null : face.contains(hit);
+    }
+    out.workColor = getComputedStyle(column).backgroundColor;
     out.name = {
       text: name.textContent,
       fontSize: nameStyle.fontSize,
@@ -317,14 +358,29 @@ test('v2: the cat is a 26px nameplate over unframed text, aligned with the avata
 
   assert.equal(m.hasPlate, true);
   assert.equal(m.plate.rect.h, 26, 'plate height');
-  assert.equal(m.plate.paddingLeft, '8px');
+  assert.equal(m.plate.paddingLeft, '40px', '40px on the left for the 32px face');
   assert.equal(m.plate.paddingRight, '10px');
   assert.equal(m.plate.borderTopLeftRadius, '8px');
   assert.equal(m.plate.borderBottomLeftRadius, '0px', 'only the top corners are rounded');
   assert.match(m.plate.backgroundImage, /linear-gradient\(/);
-  assert.equal(m.avatar.w, 16);
-  assert.equal(m.avatar.h, 16);
-  assert.equal(m.avatarShadow, 'none', 'no ring around the 16px avatar: the plate is already the cat colour');
+  assert.equal(m.avatar.w, 32);
+  assert.equal(m.avatar.h, 32);
+  assert.equal(m.avatarShadow, 'none', 'no cat-coloured ring around the face: the plate is already the cat colour');
+  // The face is laid over the plate's left end: its bottom edge 2px below the plate's, so its top is 4px above the plate's,
+  // and it starts at the plate's left edge; the name starts 40px in.
+  assert.equal(Math.round(m.avatar.b - m.plate.rect.b), 2, 'the face reaches 2px below the plate');
+  assert.equal(Math.round(m.plate.rect.y - m.avatar.y), 4, 'and rises 4px above it');
+  assert.equal(Math.round(m.avatar.x), Math.round(m.plate.rect.x), 'at the plate left edge');
+  assert.equal(Math.round(m.name.rect.x - m.plate.rect.x), 40, 'the name starts after the 40px the plate leaves');
+  // A 2px ring in the work-surface colour separates the face from the plate.
+  assert.match(m.face.ring, /0px 0px 0px 2px$/, 'a 2px ring');
+  assert.ok(
+    m.face.ring.startsWith(m.workColor),
+    `the ring is the work-surface colour (${m.face.ring} vs ${m.workColor})`,
+  );
+  // The row is wrapped in the production row boundary (content-visibility:auto = paint containment), as in the real list: the
+  // top 4px of the face (and the ring above them) hang outside the plate, and must still be painted.
+  assert.equal(m.faceTopPainted, true, 'the top of the face is painted, not cut off by the row boundary');
   assert.equal(m.name.fontSize, '13px');
   assert.equal(m.name.fontWeight, '600');
   assert.equal(m.name.opacity, '1', 'no opacity that would cost contrast');
@@ -340,8 +396,9 @@ test('v2: the cat is a 26px nameplate over unframed text, aligned with the avata
   assert.equal(m.bubble.overflow, 'visible');
   assert.equal(m.bubble.transform, 'none');
 
-  // The first character sits exactly under the avatar's left edge; the plate itself starts at the column's text edge.
-  assert.equal(Math.round(m.bodyFirstLine.x), Math.round(m.avatar.x), 'text lines up with the avatar');
+  // The reading text keeps the 8px inset it always had from the plate's left edge (the face grew from 16 to 32px and now sits
+  // at that edge, as in the approved draft); the plate itself starts at the column's text edge.
+  assert.equal(Math.round(m.bodyFirstLine.x - m.plate.rect.x), 8, 'the text keeps its 8px inset from the plate edge');
   assert.equal(Math.round(m.plate.rect.x), Math.round(m.message.x), 'plate starts at the message edge');
   for (const id of ['m-opus', 'm-codex', 'm-gemini', 'm-streaming']) {
     assert.deepEqual(
@@ -350,9 +407,36 @@ test('v2: the cat is a 26px nameplate over unframed text, aligned with the avata
       `${id}: nothing is painted past the column's content edge`,
     );
   }
-  // Only the plate's avatar: there is no second, 32px avatar column.
+  // Only the plate's face: there is no avatar column beside the text.
   assert.equal(await page.locator('[data-message-id="m-opus"] img').count(), 1);
 
+  assert.deepEqual(errors, []);
+  assert.deepEqual(unexpected, []);
+  await page.close();
+});
+
+test('v2: deferred placeholders keep their 240px flow while the face may paint 6px outside the row', async () => {
+  const { page, errors, unexpected } = await open({ shell: 'v2', width: 720, deferred: true });
+  const geometry = await page.locator('[data-testid="deferred-placeholder-stack"]').evaluate((stack) => {
+    const rows = [...stack.querySelectorAll('[data-message-viewport-boundary]')];
+    const first = rows[0].getBoundingClientRect();
+    const second = rows[1].getBoundingClientRect();
+    const style = getComputedStyle(rows[0]);
+    return {
+      mountedChildren: rows.map((row) => row.childElementCount),
+      flowPerRow: second.top - first.top,
+      stackHeight: stack.getBoundingClientRect().height,
+      overflowClipMargin: style.overflowClipMargin,
+      paddingTop: style.paddingTop,
+      marginTop: style.marginTop,
+    };
+  });
+  assert.deepEqual(geometry.mountedChildren, [0, 0], 'the probe measures real deferred placeholders');
+  assert.equal(geometry.flowPerRow, 240, 'each placeholder keeps the navigation owner’s 240px estimate');
+  assert.equal(geometry.stackHeight, 480, 'placeholder estimates compose without cumulative scroll-height loss');
+  assert.equal(geometry.overflowClipMargin, '6px', 'paint containment alone makes room for the face and its ring');
+  assert.equal(geometry.paddingTop, '0px');
+  assert.equal(geometry.marginTop, '0px');
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
   await page.close();
@@ -448,7 +532,7 @@ test('the human message and the streaming state are unchanged by the plate', asy
   const { page } = await open({ shell: 'v2', width: 720 });
   const user = await measure(page, 'm-user');
   assert.equal(user.hasPlate, false, 'the co-creator message has no cat plate');
-  // The cat that is still speaking keeps the streaming ring on its (16px) avatar.
+  // The cat that is still speaking keeps the streaming ring on its (32px) face.
   const pulse = await page
     .locator('[data-message-id="m-streaming"] [data-testid="cat-nameplate"] .animate-pulse')
     .count();
@@ -616,6 +700,243 @@ for (const config of [
     await page.close();
   });
 }
+
+/** What the page drew for the cat-name role, the plate step and the ring, next to what the Tuner saved (read back from storage). */
+async function readThemeState(page, base) {
+  return page.evaluate((b) => {
+    const root = getComputedStyle(document.documentElement);
+    const number = (name) => Number(root.getPropertyValue(name));
+    const stored = JSON.parse(localStorage.getItem('cat-cafe:themes') ?? '{}');
+    const params = (stored.custom ?? [])[0]?.params;
+    return {
+      nameL: number('--cat-name-l'),
+      nameC: root.getPropertyValue('--cat-name-c').trim(),
+      nameH: root.getPropertyValue('--cat-name-h').trim(),
+      plateL: number('--cat-surface-l'),
+      plateCmul: number('--cat-surface-cmul'),
+      ringL: number('--cat-lineage-l'),
+      saved: {
+        surface: params?.[b]?.surface,
+        nameL: b === 'light' ? params?.catTextLightL : params?.catTextDarkL,
+        nameC: params?.catTextC,
+        nameH: params?.catTextH,
+      },
+    };
+  }, base);
+}
+
+// Opus 5.5 (3327/3619): when no lightness of the name reads against both the plates and the pages, the PLATE gives way and
+// the name does not. Which plate steps that happens at depends on the colours that really exist: with this catalogue a Light
+// step of .5 leaves a dark name losing to the plates and a light name losing to the page (the plate is drawn lighter, .62), and
+// in Dark the first step that does is above .5 (a Dark .6 is drawn at .5). Where the name alone can fix it, the name moves and
+// the plate stays (Dark .5 with a saved .88 name). Either way what is stored is untouched and the names read.
+for (const config of [
+  { base: 'light', surfaceL: 0.5, nameL: 0.15, plate: 'lighter', nameStays: true },
+  { base: 'dark', surfaceL: 0.6, nameL: 0.96, plate: 'darker', nameStays: true },
+  { base: 'dark', surfaceL: 0.5, nameL: 0.88, plate: 'stays', nameStays: false },
+]) {
+  test(`saved ${config.base} plate L ${config.surfaceL} / Cmul .99, name L ${config.nameL}: plate ${config.plate}, name ${config.nameStays ? 'stays' : 'moves'}, names read, storage is untouched`, async () => {
+    const saved = { ...config, surfaceCmul: 0.99, nameH: 144, nameC: 0.025 };
+    const { page } = await open({ shell: 'v2', width: 720, saved });
+    const state = await readThemeState(page, config.base);
+    assert.deepEqual(
+      state.saved,
+      { surface: { L: config.surfaceL, Cmul: 0.99 }, nameL: config.nameL, nameC: 0.025, nameH: 144 },
+      'what the user saved is untouched in storage',
+    );
+    assert.equal(state.plateCmul, 0.99, "the plate's chroma is the user's");
+    assert.equal(state.nameC, '0.025', "the name's chroma is the user's");
+    assert.equal(state.nameH, '144', "the name's hue is the user's");
+    if (config.nameStays) assert.equal(state.nameL, config.nameL, 'the name stays where it was saved');
+    else assert.ok(state.nameL > config.nameL, `the name goes to the nearest value that reads (got ${state.nameL})`);
+    if (config.plate === 'lighter')
+      assert.ok(state.plateL > config.surfaceL, `the plate is drawn lighter than saved (got ${state.plateL})`);
+    else if (config.plate === 'darker')
+      assert.ok(state.plateL < config.surfaceL, `the plate is drawn darker than saved (got ${state.plateL})`);
+    else assert.equal(state.plateL, config.surfaceL, 'the plate is drawn as saved');
+
+    const seen = {};
+    for (const id of ['m-opus', 'm-codex', 'm-gemini', 'm-streaming']) {
+      const m = await measure(page, id);
+      seen[id] = m.contrast.min;
+      measurements.push({
+        theme: `custom/${config.base} plate ${config.surfaceL}/.99 name ${config.nameL} (saved, restored)`,
+        message: id,
+        name: m.name.text,
+        plateDrawnL: state.plateL,
+        nameDrawnL: state.nameL,
+        contrast: m.contrast,
+      });
+    }
+    assert.ok(
+      Object.values(seen).every((ratio) => ratio >= 4.5),
+      `name contrast per cat (need >= 4.5): ${JSON.stringify(seen)}`,
+    );
+    if (evidenceDir)
+      await page.locator('[data-testid="column"]').screenshot({
+        path: path.join(
+          evidenceDir,
+          `v2-${config.base}-plate-${config.surfaceL}-720${process.env.NAMEPLATE_EVIDENCE_TAG ?? ''}.png`,
+        ),
+      });
+    await page.close();
+  });
+}
+
+// (b) The colours the plate and the ring are resolved against are the ones that really exist, and they are resolved again when
+// they change: publishing a different human colour through the real co-creator cache (the seam the Hub editor writes) changes
+// what the ring is drawn at, with no reload and no Tuner involved.
+test('the ring follows the configured human colour: a new config resolves the theme again', async () => {
+  const { page } = await open({ shell: 'v2', width: 720, base: 'light' });
+  const ringFor = async (color) => {
+    await page.evaluate((c) => window.__nameplate.setConfig(c), color);
+    // The injector has written (or removed) the colour; give the theme two frames to be resolved against it.
+    await page.waitForFunction((c) => Boolean(document.getElementById('f322-cocreator-roles')) === Boolean(c), color);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    return (await readThemeState(page, 'light')).ringL;
+  };
+  const cocoa = await ringFor(null);
+  const yellow = await ringFor({ primary: '#F2C500', secondary: '#eeeeee' });
+  const blue = await ringFor({ primary: '#1F4FD8', secondary: '#eeeeee' });
+  measurements.push({ theme: 'ring follows config (light/default)', cocoa, yellow, blue });
+  assert.ok(
+    new Set([cocoa, yellow, blue]).size > 1,
+    `a different human colour is a different ring: cocoa ${cocoa}, yellow ${yellow}, blue ${blue}`,
+  );
+  await page.close();
+});
+
+// The Tuner says what is drawn (Opus 5.5 3619): nothing when the saved name is what is drawn; "显示时已调到可读" with the saved
+// and the drawn values side by side when the drawn lightness moved; "这组颜色下名字读不清（最高 x:1）" when nothing in the theme
+// reads, never counted as a pass. The numbers in the hint must be the ones the page draws, so they are read back from the page.
+async function readHint(page) {
+  return page.evaluate(() => {
+    const hint = document.querySelector('[data-testid="tuner-name-hint"]');
+    const root = getComputedStyle(document.documentElement);
+    const text = (id) => hint?.querySelector(`[data-testid="${id}"]`)?.textContent ?? null;
+    return {
+      present: Boolean(hint),
+      state: hint?.getAttribute('data-state') ?? null,
+      title: text('tuner-name-hint-title'),
+      name: text('tuner-name-hint-name'),
+      plate: text('tuner-name-hint-plate'),
+      text: hint?.textContent ?? null,
+      drawnNameL: Number(root.getPropertyValue('--cat-name-l')),
+      drawnPlateL: Number(root.getPropertyValue('--cat-surface-l')),
+    };
+  });
+}
+const numberAfter = (text, label) => Number(new RegExp(`${label} L (\\d\\.\\d+)`).exec(text ?? '')?.[1]);
+
+test('the Tuner: a default theme has nothing to say about the cat name', async () => {
+  const { page } = await open({ shell: 'v2', width: 720, base: 'light', tuner: true });
+  await page.waitForSelector('[data-testid="tuner-cat-name"]');
+  const hint = await readHint(page);
+  assert.equal(hint.present, false, `no hint when the saved name is what is drawn (got ${JSON.stringify(hint)})`);
+  await page.close();
+});
+
+test('the Tuner: a saved name that does not read says it was adjusted, saved and drawn side by side, and the page draws what it says', async () => {
+  const { page } = await open({ shell: 'v2', width: 720, saved: SAVED_NEAR_TONE, tuner: true });
+  await page.waitForSelector('[data-testid="tuner-cat-name"]');
+  const hint = await readHint(page);
+  assert.equal(hint.state, 'adjusted');
+  assert.equal(hint.title, '显示时已调到可读');
+  assert.equal(numberAfter(hint.name, '你存的'), 0.78, 'the saved value is shown as saved');
+  const shown = numberAfter(hint.name, '实际显示');
+  assert.ok(shown > 0 && shown < 0.78, `the drawn name is moved (${shown})`);
+  assert.ok(Math.abs(shown - hint.drawnNameL) < 0.0006, `the hint says ${shown}, the page draws ${hint.drawnNameL}`);
+  assert.ok(hint.text.includes('已存的值没有改'), 'and it says nothing stored was changed');
+  assert.ok(!/读不清/.test(hint.text), 'it is not the "does not read" state');
+  measurements.push({ theme: 'tuner/near-tone', hint });
+  await page.close();
+});
+
+test('the Tuner: when the plate gives way, the plate line shows the saved and the drawn plate lightness the page draws', async () => {
+  const saved = { base: 'light', surfaceL: 0.5, surfaceCmul: 0.99, nameL: 0.15, nameH: 144, nameC: 0.025 };
+  const { page } = await open({ shell: 'v2', width: 720, saved, tuner: true });
+  await page.waitForSelector('[data-testid="tuner-cat-name"]');
+  const hint = await readHint(page);
+  assert.equal(hint.state, 'adjusted');
+  assert.equal(hint.name, null, 'the name did not move, so there is no name line');
+  assert.equal(numberAfter(hint.plate, '你存的'), 0.5);
+  const shown = numberAfter(hint.plate, '实际显示');
+  assert.ok(shown > 0.5, `the drawn plate is lighter than saved (${shown})`);
+  assert.ok(Math.abs(shown - hint.drawnPlateL) < 0.0006, `the hint says ${shown}, the page draws ${hint.drawnPlateL}`);
+  measurements.push({ theme: 'tuner/plate-yields', hint });
+  await page.close();
+});
+
+test('the Tuner: a page base on which no name can read says so, with the best figure, and does not call it a pass', async () => {
+  // Page layers on both ends of the lightness scale: a near-black sunken layer under near-white ones. No single name colour
+  // reaches 4.5:1 on both; the best case is drawn and the Tuner says it is not reached.
+  const saved = {
+    base: 'light',
+    surfaceL: 0.85,
+    surfaceCmul: 0.45,
+    nameL: 0.3,
+    nameH: 144,
+    nameC: 0.025,
+    elev: { sunken: 0.1, base: 0.95, elevated: 0.95, canvas: 0.95 },
+  };
+  const { page } = await open({ shell: 'v2', width: 720, saved, tuner: true });
+  await page.waitForSelector('[data-testid="tuner-cat-name"]');
+  const hint = await readHint(page);
+  assert.equal(hint.state, 'unreadable', JSON.stringify(hint));
+  const best = Number(/最高 (\d+\.\d+):1/.exec(hint.title ?? '')?.[1]);
+  assert.ok(best > 1 && best < 4.5, `the figure is a number short of 4.5 (got ${best} from "${hint.title}")`);
+  assert.ok(hint.text.includes('没有达到 4.5:1'));
+  assert.ok(!hint.text.includes('显示时已调到可读'), 'and it is not dressed up as adjusted');
+  // The name moved (saved .3): the not-reached state still shows it, saved and drawn side by side (codex-sol #5086 P2).
+  assert.equal(numberAfter(hint.name, '你存的'), 0.3, 'the name line shows the saved value');
+  const bestL = numberAfter(hint.name, '实际显示');
+  assert.ok(Math.abs(bestL - hint.drawnNameL) < 0.0006, `the hint says ${bestL}, the page draws ${hint.drawnNameL}`);
+  measurements.push({ theme: 'tuner/dead-zone page base', hint });
+  await page.close();
+});
+
+test('the Tuner: every field the page moved is shown with the number the page draws (a saturated plate step and a saturated name: the plate runs a long way)', async () => {
+  // A saturated plate step (Cmul 2, L .1) and a saturated name: the plate has to run a long way. With this catalogue it does
+  // read (the plate goes to .805); whichever state it lands in, every field the page really moved appears in the hint with the
+  // number the page draws. A not-reached state with a moved plate needs colours more extreme than any this catalogue has; that
+  // one is pinned in the resolver's unit tests with the six edge colours a hex can have.
+  const saved = { base: 'light', surfaceL: 0.1, surfaceCmul: 2, nameL: 0.05, nameH: 144, nameC: 0.3 };
+  const { page } = await open({ shell: 'v2', width: 720, saved, tuner: true });
+  await page.waitForSelector('[data-testid="tuner-cat-name"]');
+  const hint = await readHint(page);
+  measurements.push({ theme: 'tuner/saturated plate and name', hint });
+  assert.ok(['adjusted', 'unreadable'].includes(hint.state), `something moved on this theme (${JSON.stringify(hint)})`);
+  // The plate: shown iff the page draws it somewhere else than saved, and with the number it draws.
+  assert.equal(
+    hint.plate !== null,
+    hint.drawnPlateL !== saved.surfaceL,
+    `plate line iff the plate moved: ${JSON.stringify(hint)}`,
+  );
+  if (hint.plate !== null) {
+    assert.equal(numberAfter(hint.plate, '你存的'), saved.surfaceL);
+    assert.ok(
+      Math.abs(numberAfter(hint.plate, '实际显示') - hint.drawnPlateL) < 0.0006,
+      'the plate line is what the page draws',
+    );
+  }
+  // The name: the same.
+  assert.equal(
+    hint.name !== null,
+    hint.drawnNameL !== saved.nameL,
+    `name line iff the name moved: ${JSON.stringify(hint)}`,
+  );
+  if (hint.name !== null)
+    assert.ok(
+      Math.abs(numberAfter(hint.name, '实际显示') - hint.drawnNameL) < 0.0006,
+      'the name line is what the page draws',
+    );
+  // The state and the number never contradict: "not reached" always carries a figure under the criterion.
+  if (hint.state === 'unreadable') {
+    const figure = Number(/最高 (\d+\.\d+):1/.exec(hint.title ?? '')?.[1]);
+    assert.ok(figure < 4.5, `not reached with a figure under 4.5 (got ${figure} from "${hint.title}")`);
+  }
+  await page.close();
+});
 
 /** The classic header name as drawn: its colour at its own opacity, over the page behind it (`body` = --bg-app). */
 function measureClassicNameInPage() {

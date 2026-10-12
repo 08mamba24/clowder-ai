@@ -78,7 +78,10 @@ export function CodeViewer({
   const shellRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
-  const [selectionAction, setSelectionAction] = useState<CodeSelectionAction | null>(null);
+  // The version of the file the words were selected in goes with the selection (taken when it is made).
+  const [selectionAction, setSelectionAction] = useState<
+    (CodeSelectionAction & { readonly version: string | null }) | null
+  >(null);
   const [isDirty, setIsDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const draft = useWorkspaceFileDraft(worktreeId, path, baseSha256);
@@ -103,8 +106,10 @@ export function CodeViewer({
     viewRef.current?.destroy();
 
     const lang = getLanguageExtension(mime, path);
-    const syncSelectionAction = (targetView: EditorView) =>
-      setSelectionAction(selectionActionForView(targetView, shellRef.current));
+    const syncSelectionAction = (targetView: EditorView) => {
+      const next = selectionActionForView(targetView, shellRef.current);
+      setSelectionAction(next && { ...next, version: baseSha256 ?? null });
+    };
 
     const state = EditorState.create({
       doc: text,
@@ -212,11 +217,14 @@ export function CodeViewer({
   const handleAddToChat = useCallback(
     (comment: string) => {
       if (!selectionAction) return;
-      addWorkspaceFileQuoteToChat(currentThreadId, {
+      const result = addWorkspaceFileQuoteToChat(currentThreadId, {
         text: selectionAction.text,
         comment,
         path,
         worktreeId,
+        // The version the selected words were made in (taken with the selection). Add-to-chat is only offered while
+        // reading, where the text shown is the loaded file itself.
+        revision: selectionAction.version,
         branch,
         language: mime,
         lineStart: selectionAction.startLine,
@@ -224,6 +232,7 @@ export function CodeViewer({
         selectionStart: selectionAction.selectionStart,
         selectionEnd: selectionAction.selectionEnd,
       });
+      return result.kind === 'added';
     },
     [path, branch, worktreeId, mime, currentThreadId, selectionAction],
   );

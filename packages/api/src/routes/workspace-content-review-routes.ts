@@ -3,38 +3,19 @@ import {
   evolutionMediaLocatorSchema,
   workspaceContentReviewActionSchema,
 } from '@cat-cafe/shared';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { WorkspaceContentReviewError } from '../domains/collaborative-content/workspace-review/errors.js';
+import type { WorkspaceFileQuoteDependencies } from '../domains/collaborative-content/workspace-review/file-quote-projection.js';
 import type { WorkspaceContentReviewService } from '../domains/collaborative-content/workspace-review/service.js';
-import { WorkspaceContentSourceError } from '../domains/workspace/workspace-content-source.js';
 import { resolveDirectLocalAuthorizationUserId } from '../utils/request-identity.js';
 import { parseMediaByteRange, streamMediaByteRange } from './media-byte-range.js';
+import { replyWorkspaceContentReviewError } from './workspace-content-review-error.js';
+import { registerWorkspaceFileQuoteRoutes } from './workspace-file-quote-routes.js';
 
 const id = z.string().trim().min(1).max(256);
 const revision = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const locatorSchema = z.object({ worktreeId: id, path: z.string().trim().min(1).max(2048) }).strict();
 const paramsSchema = z.object({ reviewId: id }).strict();
-const SOURCE_ERROR_STATUS: Record<WorkspaceContentSourceError['code'], number> = {
-  access_denied: 403,
-  not_found: 404,
-  revision_changed: 409,
-  too_large: 413,
-  unsupported_media: 415,
-  unsupported_text: 415,
-};
-const REVIEW_ERROR_STATUS: Record<WorkspaceContentReviewError['code'], number> = {
-  access_denied: 403,
-  not_found: 404,
-  invalid_action: 400,
-  operation_reused: 409,
-  revision_conflict: 409,
-  source_changed: 409,
-  source_unavailable: 409,
-  version_pending: 409,
-  unsupported_content: 415,
-  existing_contexts: 409,
-};
 const principalActor = (request: FastifyRequest) => {
   if (
     request.headers['x-invocation-id'] ||
@@ -52,9 +33,11 @@ export function registerWorkspaceContentReviewRoutes(
     readonly reviews: WorkspaceContentReviewService;
     readonly namespace?: 'publication';
     readonly changed?: (ownerUserId: string, reviewId: string) => void;
+    readonly fileQuotes?: WorkspaceFileQuoteDependencies;
   },
 ): void {
   const base = deps.namespace === 'publication' ? '/api/content-reviews' : '/api/workspace/content-reviews';
+  if (deps.fileQuotes && !deps.namespace) registerWorkspaceFileQuoteRoutes(app, deps.fileQuotes);
   if (deps.namespace === 'publication')
     app.post(`${base}/resolve`, async (request, reply) => {
       try {
@@ -218,17 +201,4 @@ export function registerWorkspaceContentReviewRoutes(
       return replyWorkspaceContentReviewError(reply, error);
     }
   });
-}
-
-function replyWorkspaceContentReviewError(reply: FastifyReply, error: unknown) {
-  if (error instanceof WorkspaceContentSourceError) {
-    return reply.code(SOURCE_ERROR_STATUS[error.code]).send({ error: { code: error.code } });
-  }
-  if (error instanceof WorkspaceContentReviewError) {
-    return reply
-      .code(REVIEW_ERROR_STATUS[error.code])
-      .send({ error: { code: error.code, ...(error.contexts ? { contexts: error.contexts } : {}) } });
-  }
-  if (error instanceof z.ZodError) return reply.code(400).send({ error: { code: 'invalid_request' } });
-  return reply.code(500).send({ error: { code: 'workspace_content_unavailable' } });
 }

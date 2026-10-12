@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import type { WorkspaceSurfaceDescriptor } from '@/components/workbench/workbench-contract';
 import { FocusModeButton } from '@/components/workspace/FocusModeButton';
 import { WorkspaceFocusExitButton } from '@/components/workspace/WorkspaceFocusShell';
+import { promoteWorkspacePreview } from './WorkspacePreviewIntent';
 
 function SurfaceGlyph({ type }: { type: WorkspaceSurfaceDescriptor['type'] }) {
   if (type === 'browser') {
@@ -56,6 +58,8 @@ export function F307SurfacePane({
   onToggleArtifactWorkFullWindow?: () => void;
   children: ReactNode;
 }) {
+  const chromeOwnedByTool =
+    useShellPresentation() === 'v2' && ['file', 'code', 'browser', 'terminal', 'workspace'].includes(surface.type);
   return (
     <article
       className={`${visible ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 flex-col overflow-auto bg-[var(--console-panel-bg)]`}
@@ -63,8 +67,15 @@ export function F307SurfacePane({
       data-surface-mounted="true"
       aria-label={surface.title}
       aria-hidden={!visible}
+      // Promote in the owner's input batch. Updating the external store during capture
+      // can restore a controlled field's old value before its change handler receives it.
+      onInput={(event) => {
+        if (!(event.target instanceof HTMLElement) || !event.target.matches('textarea, [contenteditable="true"]'))
+          return;
+        promoteWorkspacePreview(surface.id);
+      }}
     >
-      {!focusMode && (
+      {!focusMode && !chromeOwnedByTool && (
         <header
           className="flex h-10 shrink-0 items-center gap-2 border-b border-cafe-subtle bg-cafe-surface/70 px-3"
           data-testid="f307-surface-chrome"
@@ -77,7 +88,7 @@ export function F307SurfacePane({
           {onToggleArtifactWorkFullWindow ? (
             <button
               type="button"
-              className="rounded-lg border border-cafe-subtle bg-cafe-surface-sunken px-2.5 py-1 text-micro font-semibold text-cafe-secondary transition-colors hover:text-cafe"
+              className="shrink-0 whitespace-nowrap rounded-lg border border-cafe-subtle bg-cafe-surface-sunken px-2.5 py-1 text-micro font-semibold text-cafe-secondary transition-colors hover:text-cafe"
               onClick={onToggleArtifactWorkFullWindow}
               aria-label={artifactWorkFullWindow ? '展开聊天' : '整窗查看作品'}
               data-testid={
@@ -96,7 +107,13 @@ export function F307SurfacePane({
         data-testid="f307-owner-surface-host"
       >
         {children}
-        {focusMode && onExitFocusMode && <WorkspaceFocusExitButton onExit={onExitFocusMode} />}
+        {focusMode && onExitFocusMode && (
+          <WorkspaceFocusExitButton
+            onExit={onExitFocusMode}
+            onFullWindow={onToggleArtifactWorkFullWindow}
+            fullWindow={artifactWorkFullWindow}
+          />
+        )}
       </div>
     </article>
   );

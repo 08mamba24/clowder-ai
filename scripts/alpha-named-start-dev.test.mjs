@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { deriveNamedAlphaCoordinates, namedAlphaEnvironment } from './lib/alpha-coordinates.mjs';
@@ -84,8 +84,30 @@ test('foreign replacement Redis cannot receive even a PING from named cleanup', 
     f,
     'STARTED_REDIS=true\nNAMED_ALPHA_REDIS_IDENTITY=""\nredis_ping() { printf "REDIS_READ\\n"; return 0; }\nredis-cli() { printf "REDIS_COMMAND %s\\n" "$*"; }\narchive_redis_snapshot() { :; }\nterminate_managed_pids() { :; }\nremove_redis_dev_lease() { :; }\ncleanup',
   );
-  assert.equal(result.status, 0, result.stderr);
+  assert.notEqual(result.status, 0, 'unproven Redis cleanup cannot report success');
   assert.doesNotMatch(result.stdout, /REDIS_READ|REDIS_COMMAND/, 'missing actual ownership must not contact Redis');
+});
+
+test('failed named Redis cleanup retains its lease and propagates failure', (t) => {
+  const f = namedAlphaFixture(t);
+  for (const failing of ['ping', 'shutdown']) {
+    const result = source(
+      f,
+      `
+STARTED_REDIS=true
+named_alpha_redis_is_owned() { return 0; }
+redis_ping() { ${failing === 'ping' ? 'return 1' : 'return 0'}; }
+redis-cli() { return 1; }
+archive_redis_snapshot() { :; }
+terminate_managed_pids() { :; }
+remove_redis_dev_lease() { :; }
+remove_named_alpha_redis_lease() { printf 'LEASE_REMOVED\\n'; }
+cleanup
+`,
+    );
+    assert.notEqual(result.status, 0, `${failing} failure must propagate`);
+    assert.doesNotMatch(result.stdout, /LEASE_REMOVED|Redis .*已关闭/);
+  }
 });
 
 test('a checkout dotenv cannot mint the named Alpha envelope when the entrypoint did not supply it', (t) => {
@@ -94,4 +116,29 @@ test('a checkout dotenv cannot mint the named Alpha envelope when the entrypoint
   const result = source(f, 'printf "COORDS=%s\\n" "$CAT_CAFE_ALPHA_COORDINATES"', f.env);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), 'COORDS=');
+});
+
+test('dotenv cannot claim a preview cleanup result or pass it to launcher children', (t) => {
+  const f = namedAlphaFixture(t);
+  const forged = join(f.directory, 'forged-cleanup.json');
+  writeFileSync(join(f.alphaRoot, '.env'), `CAT_CAFE_PREVIEW_CLEANUP_RESULT=${forged}\n`);
+  const result = source(f, 'node -e "console.log(process.env.CAT_CAFE_PREVIEW_CLEANUP_RESULT ?? \'unset\')"');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'unset');
+  assert.equal(existsSync(forged), false);
+});
+
+test('a launcher exclusively claims its supplied result before cleanup and keeps it private', (t) => {
+  const f = namedAlphaFixture(t);
+  const path = join(f.directory, 'owned-result.json');
+  const env = { ...environment(f), CAT_CAFE_PREVIEW_CLEANUP_RESULT: path };
+  const result = source(f, 'node -e "console.log(process.env.CAT_CAFE_PREVIEW_CLEANUP_RESULT ?? \'unset\')"', env);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'unset');
+  const pending = readFileSync(path, 'utf8');
+  assert.equal(JSON.parse(pending).exitCode, null, 'claiming ownership is not cleanup completion');
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+  const duplicate = source(f, ':', env);
+  assert.notEqual(duplicate.status, 0, 'a second launcher must not overwrite the first claim');
+  assert.equal(readFileSync(path, 'utf8'), pending);
 });

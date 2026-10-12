@@ -30,6 +30,7 @@ const AUDIO_INPUT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 async function audioFetch(path: string, init?: RequestInit): Promise<Response> {
   return fetch(`${API_URL}/api/audio${path}`, {
     ...init,
+    signal: init?.signal ?? AbortSignal.timeout(path === '/start' || path === '/stop' ? 130_000 : 10_000),
     headers: {
       'Content-Type': 'application/json',
       'x-cat-cafe-user': USER_ID,
@@ -292,6 +293,8 @@ export async function handleAudioCaptureStop(): Promise<ToolResult> {
 
 type StatusResp = {
   running: boolean;
+  lifecycle_state?: string;
+  controller_start?: { phase?: string; meeting_id?: string };
   source?: string;
   app_name?: string;
   duration_s?: number;
@@ -334,6 +337,14 @@ export async function handleAudioCaptureStatus(): Promise<ToolResult> {
     const resp = await audioFetch('/status');
     if (!resp.ok) return errorResult(`Audio service error: ${resp.status}`);
     const s = (await resp.json()) as StatusResp;
+    if (s.controller_start)
+      return successResult(
+        `Audio start ${s.controller_start.phase ?? 'unconfirmed'} [meeting=${s.controller_start.meeting_id ?? 'unknown'}]. The original request is not confirmed terminal; do not start another capture.`,
+      );
+    if (!s.running && s.lifecycle_state && s.lifecycle_state !== 'stopped')
+      return successResult(
+        `PCM is stopped; audio lifecycle is ${s.lifecycle_state}. Original capture cleanup is not confirmed.`,
+      );
     if (!s.running) return successResult('Not currently capturing audio.');
     const label = s.inputs?.length
       ? s.inputs.map((item) => `${item.label ?? item.id} [${item.source}/${item.state ?? 'unknown'}]`).join(', ')

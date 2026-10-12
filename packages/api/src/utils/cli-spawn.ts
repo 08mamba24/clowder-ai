@@ -250,6 +250,11 @@ const ENV_VARS_TO_STRIP: ReadonlySet<string> = new Set([
   // Legacy F296 process-scoped bearer. Session hooks authenticate with the
   // invocation-bound callback pair; never leak a stale operator token to any child.
   'CAT_CAFE_HOOK_TOKEN',
+  // Jev is an API-owned selector. Neither credentials nor its private page
+  // configuration may be delegated through ambient or overridden child env.
+  'TYPESAFE_API_KEY',
+  'TYPESAFE_API_KEY_FILE',
+  'CAT_CAFE_JEV_PAGE_CONFIG',
   // Per-invocation process ownership is a capability, not ambient config. A
   // nested API or persistent host must not inherit the outer invocation.
   CLI_EXECUTION_OWNER_BINDING_ENV,

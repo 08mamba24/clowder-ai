@@ -5,6 +5,7 @@ import {
   MANAGED_HOLD_DISPOSITIONS,
   MANAGED_HOLD_RETIRED_REASONS,
 } from './ball-custody-events.js';
+import { EVENT_WAIT_DISPOSITIONS } from './event-wait-events.js';
 
 /**
  * Value guards for the custody event inspector (F167 PR-2, review P1 on #5031).
@@ -36,6 +37,7 @@ const EVENT_KINDS = {
   'ball.wake_condition_met': true,
   'ball.hold_dispositioned': true,
   'ball.dispatch_dispositioned': true,
+  'ball.wait_dispositioned': true,
   'ball.frozen': true,
   'ball.degraded': true,
   'ball.abandoned': true,
@@ -63,6 +65,10 @@ const CODE_SETS: Partial<Record<BallEventKind, Partial<Record<CodeField, readonl
   'ball.dispatch_dispositioned': {
     disposition: A2A_DISPATCH_DISPOSITIONS,
     via: DISPATCH_TERMINAL_VIAS,
+  },
+  'ball.wait_dispositioned': {
+    disposition: EVENT_WAIT_DISPOSITIONS,
+    retiredReason: MANAGED_HOLD_RETIRED_REASONS,
   },
 };
 

@@ -3,7 +3,20 @@ import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertNamedAlphaCheckout, parseNamedAlphaCoordinates } from './alpha-coordinates.mjs';
+import { alphaIdentityRefusal, captureAlphaIdentity } from './alpha-identity-diagnostics.mjs';
 import { captureProcessIdentity, captureReadableIdentity, PROCESS_START_TIME_FORMAT } from './process-identity.mjs';
+
+const REDIS_SUBJECT = 'Alpha Redis process';
+
+function redisRefusal(expected, current, dataDirectory, mismatchMessage) {
+  return alphaIdentityRefusal({
+    subject: REDIS_SUBJECT,
+    expected,
+    current,
+    required: { cwd: dataDirectory, ucomm: 'redis-server', startedAtFormat: PROCESS_START_TIME_FORMAT },
+    mismatchMessage,
+  });
+}
 
 function listenerPids(port) {
   const output = execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], {
@@ -60,9 +73,14 @@ export function captureNamedAlphaRedisIdentity(
   const listeners = readListeners(scope.port);
   if (listeners.length !== 1 || listeners[0] !== pid)
     throw new Error('Alpha Redis listener does not match the spawned pidfile');
-  const identity = capture(pid);
+  const identity = captureAlphaIdentity(pid, capture, REDIS_SUBJECT);
   if (!validRedisIdentity(identity, scope.dataDirectory))
-    throw new Error('Alpha Redis process identity does not match its new home');
+    throw redisRefusal(
+      undefined,
+      identity,
+      scope.dataDirectory,
+      'Alpha Redis process identity does not match its new home',
+    );
   return { v: 1, ...scope, pid, process: identity };
 }
 
@@ -86,7 +104,7 @@ export function verifyNamedAlphaRedisIdentity(
     throw new Error('Alpha Redis ownership proof is missing or changed');
   const listeners = readListeners(scope.port);
   if (listeners.length !== 1 || listeners[0] !== proof.pid) throw new Error('Alpha Redis listener was replaced');
-  const current = capture(proof.pid);
+  const current = captureAlphaIdentity(proof.pid, capture, REDIS_SUBJECT);
   if (
     !validRedisIdentity(current, scope.dataDirectory) ||
     !validRedisIdentity(proof.process, scope.dataDirectory) ||
@@ -95,7 +113,7 @@ export function verifyNamedAlphaRedisIdentity(
     current.command !== proof.process.command ||
     current.cwd !== proof.process.cwd
   )
-    throw new Error('Alpha Redis process incarnation changed');
+    throw redisRefusal(proof.process, current, scope.dataDirectory, 'Alpha Redis process incarnation changed');
   return true;
 }
 

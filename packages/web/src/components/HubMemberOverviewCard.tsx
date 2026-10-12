@@ -1,4 +1,4 @@
-import type { DragEvent as ReactDragEvent } from 'react';
+import type { DragEvent as ReactDragEvent, ReactNode } from 'react';
 import type { CatData } from '@/hooks/useCatData';
 import { CO_CREATOR_COLOR } from '@/lib/color-defaults';
 import { readableInkOn } from '@/lib/readable-ink';
@@ -242,6 +242,7 @@ function MemberMeta({ cat, configCat }: { cat: CatData; configCat?: CatConfig })
 
 export function HubMemberOverviewCard({
   cat,
+  accountControl,
   configCat,
   onEdit,
   onToggleAvailability,
@@ -256,6 +257,7 @@ export function HubMemberOverviewCard({
   guideTargetId,
 }: {
   cat: CatData;
+  accountControl?: ReactNode;
   configCat?: CatConfig;
   onEdit?: (cat: CatData) => void;
   onToggleAvailability?: (cat: CatData) => void;
@@ -291,7 +293,12 @@ export function HubMemberOverviewCard({
         ) : undefined
       }
       title={title}
-      meta={<MemberMeta cat={cat} configCat={configCat} />}
+      meta={
+        <>
+          <MemberMeta cat={cat} configCat={configCat} />
+          {accountControl}
+        </>
+      }
       badges={<SettingsBadge tone={status.tone}>{status.label}</SettingsBadge>}
       actions={
         <>

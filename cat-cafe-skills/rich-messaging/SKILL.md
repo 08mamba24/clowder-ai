@@ -1,6 +1,6 @@
 ---
 name: rich-messaging
-tips_exempt: Chat-visible delivery routing extends the existing capability-rich-messaging tip; sourceRef stays at wakeup-index
+tips_exempt: "2026-10-04 renewal: local video delivery now points cats at .cat-cafe/evidence + /api/workspace/file/raw because the native guard blocks writes to runtime /uploads; cat-facing path correction inside the existing capability-rich-messaging tip, no new user-facing operation"
 description: 在当前 Chat 直接交付可看、可听或可操作产物（语音、图片、截图、HTML/demo、卡片、清单、diff、交互选择），无需用户说“富文本”；纯文字与讨论/修改 HTML 源码不使用，复杂 localhost 应用用 browser-preview。
 triggers:
   - "发语音"
@@ -172,7 +172,7 @@ DOMPurify 静默剥掉所有 `on*` 属性——widget 照常渲染，点击不�
 - 用 `kind:"file"`，不是 `media_gallery`
 - `url` 必须是 `/uploads/...`、`/api/...` 或 `https://...`
 - `mimeType` 以 `video/` 开头时，Web UI 会渲染内联 `<video>` 播放器
-- **当前自动发布合约只覆盖图片**；本地视频/通用文件没有 `publishGeneratedVideo()`，需要你先显式放到 `/uploads/...`
+- **当前自动发布合约只覆盖图片**；本地视频/通用文件没有 `publishGeneratedVideo()`。runtime 的 `/uploads` 被 native guard 保护（`runtime_sanctuary_mutation`），猫写不进去：把文件放到主仓 `.cat-cafe/evidence/<主题>/`，`url` 填 `/api/workspace/file/raw?worktreeId=cat-cafe&path=.cat-cafe/evidence/<主题>/<文件>`（只收媒体文件，≤10MB），发之前 curl 一遍确认 200
 
 ## 三条纪律
 
@@ -186,7 +186,7 @@ DOMPurify 静默剥掉所有 `on*` 属性——widget 照常渲染，点击不�
 |------|------|----------|
 | 不知道自己能发语音 | operator说"发语音"你说"我是文字猫" | 你可以！用 audio block |
 | "发图"只想到 image-generation | 走 Chrome MCP 现场生成，慢且不稳定 | 先看家里有没有已有图片（`/avatars/`、`/uploads/`），有就 media_gallery 直接发 |
-| 本地成片视频只贴文件路径 | 前端拿不到，线程里也没有内联播放器 | 先把视频放到 `/uploads/...`，再用 `file` rich block；`mimeType:"video/mp4"` 时会内联播放 |
+| 本地成片视频只贴文件路径 | 前端拿不到，线程里也没有内联播放器 | 视频放主仓 `.cat-cafe/evidence/<主题>/`，用 `/api/workspace/file/raw?worktreeId=cat-cafe&path=...` 发 `file` rich block；`mimeType:"video/mp4"` 时会内联播放（runtime `/uploads` 猫写不进） |
 | 本地生成图直接用 `file://` 或源码仓路径 | rich block 发得出去，但前端取不到 | 用 `publishGeneratedImage()` 发布到 `/uploads/...`（F172 共享合约自动解析 uploadDir） |
 | audio 写长段话 | 合成效果差 | 短句口语化，1-2 句 |
 | 只发 block 不写文字 | 猫猫朋友看不懂上下文 | 先写 1-2 句自然语言摘要，再发 block |

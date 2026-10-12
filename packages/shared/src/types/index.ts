@@ -476,12 +476,15 @@ export {
   CONTEXT_ATTACHMENT_VERSION,
   type ContextAttachment,
   type ContextAttachmentContent,
+  type MediaContextAttachment,
   type MessageQuoteSource,
   type QuoteContextAttachment,
   type QuoteContextSource,
   serializeContextAttachmentsPrompt,
   type ThreadContextAttachment,
   type WorkspaceFileContextAttachment,
+  type WorkspaceFileQuotePage,
+  type WorkspaceFileQuoteReference,
   type WorkspaceFileQuoteSource,
 } from './context-attachment.js';
 export type {
@@ -1017,7 +1020,11 @@ export {
   recentEventAvailableOpportunityV1Schema,
   type SubjectSeenOpportunityV1,
   subjectSeenOpportunityV1Schema,
+  type ThreadOpenedOpportunityV1,
+  threadOpenedOpportunityV1Schema,
 } from './memory-cue.js';
+export * from './memory-owner-lifecycle.js';
+export * from './memory-owner-views.js';
 export {
   ASR_PERSON_MEMORY_REFLEX_ENTRY_V1,
   type AsrPersonMemoryDynamicSceneEntryV1,
@@ -1193,9 +1200,12 @@ export {
   type MaterializationAuthority,
   materializableClaimPayloadSchema,
   materializationAuthoritySchema,
+  type OwnerMemoryActionEvidence,
+  ownerMemoryActionEvidenceSchema,
   PERSON_MEMORY_CANDIDATE_STATES,
   PERSON_MEMORY_INTERACTION_EVIDENCE_FIELDS,
   PERSON_MEMORY_LIMITS,
+  PERSON_MEMORY_OWNER_ACTION_KINDS,
   type PersonClaimId,
   type PersonClaimVersion,
   type PersonId,
@@ -1207,6 +1217,7 @@ export {
   type PersonMemoryAssertionRole,
   type PersonMemoryDeletionReceipt,
   type PersonMemoryInteractionApprovalDetail,
+  type PersonMemoryOwnerActionKind,
   type PersonMemoryResolvedSourceBundle,
   type PersonMemorySourceBundleInput,
   type PersonMemorySourceInput,
@@ -1416,6 +1427,7 @@ export type {
   QueueAuthorIntent,
   QueueAuthorIntentFallbackReason,
   QueueAuthorIntentReceipt,
+  QueueCollectivePublicReplyWitness,
   QueueDispatchDispositionEvidenceRef,
   QueueHandledDisposition,
   QueueInvocationSettlement,
@@ -1662,6 +1674,7 @@ export type {
 export type {
   GlobalArtifactDTO,
   GlobalArtifactsResponse,
+  GlobalArtifactWork,
   ThreadArtifactDTO,
   ThreadArtifactsResponse,
   ThreadArtifactType,
@@ -1720,6 +1733,8 @@ export type {
   ThreadAttentionPreferences,
   UserPreferences,
 } from './user-preferences.js';
+export * from './video-project.js';
+export * from './video-project-review.js';
 // F280: canonical wait termination event consumed by F281 feedback adapters.
 export {
   type UserCancelWaitTerminationEventV1,

@@ -30,6 +30,7 @@ test('Live gets memory drilldown and household coordination without operational 
     'list_tasks',
     'cross_post_message',
     'complete_a2a_dispatch',
+    'preview_open',
   ])
     assert.ok(names.has(`cat_cafe_${name}`), name);
   for (const name of [
@@ -41,6 +42,7 @@ test('Live gets memory drilldown and household coordination without operational 
     'library_archive',
     'library_list',
     'register_schedule',
+    'audio_capture_start',
   ])
     assert.ok(!names.has(`cat_cafe_${name}`), name);
   assert.deepEqual(buildLimbTools(env), []);

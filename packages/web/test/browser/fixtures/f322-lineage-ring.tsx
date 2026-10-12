@@ -2,9 +2,12 @@ import { createRoot } from 'react-dom/client';
 import { CatHueInjector } from '@/components/CatHueInjector';
 import { CoCreatorHueInjector } from '@/components/CoCreatorHueInjector';
 import { INIT_DARK, INIT_LIGHT, type TunerState } from '@/components/dev/oklch-tuner-engine';
+import { ThemeApplier } from '@/components/ThemeApplier';
+import { ThemeProvider } from '@/components/ThemeProvider';
 import { primeCoCreatorConfigCache } from '@/hooks/useCoCreatorConfig';
 import { hexToOklch } from '@/lib/color-utils';
-import { applyThemeCSS } from '@/stores/themeStore';
+import { useThemeStore } from '@/stores/themeStore';
+import { ActualProbe, themeApplied } from './f322-theme-applied';
 import '@/app/cat-persona-tokens.css';
 import '@/app/globals.css';
 import '@/app/theme-tokens.css';
@@ -12,18 +15,14 @@ import '@/app/console-tokens.css';
 import '@/app/shell-v2.css';
 
 /**
- * F322 B probe fixture - the lineage ring (`[data-lineage-focus]`) over every layer it can sit on. The REAL theme builder
- * (`applyThemeCSS`), the real cat tokens (`CatHueInjector`, from the registry request) and the real globals.css rule. The
- * human's hue and chroma are what the co-creator injector writes in the product (`--cocreator-hue` / `--cocreator-chroma`
- * on <html>); the probe sets those two variables directly, which is the whole interface between that injector and the ring.
+ * F322 B probe fixture - the lineage ring (`[data-lineage-focus]`) over every layer it can sit on, through the REAL theme
+ * pipeline: the theme store -> `ThemeApplier` -> `applyThemeCSS`, resolved against the cats the registry request returns and the
+ * human colour the real co-creator injector paints (`CoCreatorHueInjector`, in the new shell, from a config published through
+ * the real co-creator cache). Real cat tokens (`CatHueInjector`) and the real globals.css rule.
  *
- * `window.__ring.applyTheme` changes the theme the way the Tuner does; `window.__ring.setHuman` sets the two variables (or
- * removes them, so the static default of cat-persona-tokens.css applies).
- *
- * The REAL chain (config -> injector -> ring), as the product runs it in the new shell: the real `CoCreatorHueInjector`
- * is mounted, `window.__ring.setShell` marks <html> the way AppShell does, and `window.__ring.setConfig` publishes a
- * co-creator config through the real co-creator cache (`primeCoCreatorConfigCache`, the seam the Hub editor and the other
- * probes use), with or without a colour. `window.__ring.expected` is what the injector's own colour function gives a hex.
+ * `window.__ring.applyTheme` changes the theme the way the Tuner does (the store's own actions, so the real applier applies
+ * it); `setConfig` publishes a co-creator config (or one without a colour); `applied()` resolves when the page shows the
+ * active theme resolved against the room as it is now; `expected` is what the injector's own colour function gives a hex.
  */
 function params(base: 'light' | 'dark', variant: 'default' | 'tuned'): TunerState {
   const next = structuredClone(base === 'light' ? INIT_LIGHT : INIT_DARK);
@@ -39,9 +38,8 @@ declare global {
   interface Window {
     __ring: {
       applyTheme: (base: 'light' | 'dark', variant?: 'default' | 'tuned') => void;
-      setHuman: (colour: { hue: number; chroma: number } | null) => void;
-      setShell: (shell: 'v2' | null) => void;
       setConfig: (color: { primary: string; secondary: string } | null) => void;
+      applied: () => Promise<void>;
       expected: (hex: string) => { hue: string; chroma: string };
     };
   }
@@ -49,22 +47,13 @@ declare global {
 
 window.__ring = {
   applyTheme(base, variant = 'default') {
-    document.documentElement.setAttribute('data-theme', base);
-    applyThemeCSS(params(base, variant));
-  },
-  setHuman(colour) {
-    const root = document.documentElement.style;
-    if (colour) {
-      root.setProperty('--cocreator-hue', String(colour.hue));
-      root.setProperty('--cocreator-chroma', String(colour.chroma));
-    } else {
-      root.removeProperty('--cocreator-hue');
-      root.removeProperty('--cocreator-chroma');
+    const store = useThemeStore.getState();
+    if (variant !== 'tuned') {
+      store.setActive(base);
+      return;
     }
-  },
-  setShell(shell) {
-    if (shell) document.documentElement.setAttribute('data-shell', shell);
-    else document.documentElement.removeAttribute('data-shell');
+    if (!store.createCustom('Tuned', base)) throw new Error('could not create the tuned theme');
+    useThemeStore.getState().updateParams(params(base, variant));
   },
   setConfig(color) {
     primeCoCreatorConfigCache({
@@ -74,6 +63,7 @@ window.__ring = {
       ...(color ? { color } : {}),
     });
   },
+  applied: themeApplied,
   expected(hex) {
     // The same function and the same rounding the injector writes with.
     const oklch = hexToOklch(hex);
@@ -100,9 +90,13 @@ const ANY_CAT = [
   ...EXTREME_CATS,
 ].map(([chroma, hue]) => `oklch(var(--cat-surface-l) calc(${chroma} * var(--cat-surface-cmul)) ${hue})`);
 
-function Strip({ background, label }: { background: string; label: string }) {
+/**
+ * `claimed` strips are what the ring is promised to read on: the page layers and the surfaces of the cats and the human that
+ * really exist. `unclaimed` ones are cats of any colour nobody has (the old swept range): measured and disclosed, not promised.
+ */
+function Strip({ background, label, claimed = true }: { background: string; label: string; claimed?: boolean }) {
   return (
-    <div data-layer={label} style={{ background, padding: 20 }}>
+    <div {...(claimed ? { 'data-layer': label } : { 'data-unclaimed': label })} style={{ background, padding: 20 }}>
       <div data-lineage-focus="true" style={{ height: 24 }} />
     </div>
   );
@@ -118,7 +112,7 @@ function Page() {
         <Strip key={bubble} label={bubble} background={`var(${bubble})`} />
       ))}
       {ANY_CAT.map((background) => (
-        <Strip key={background} label={background} background={background} />
+        <Strip key={background} label={background} background={background} claimed={false} />
       ))}
     </div>
   );
@@ -126,11 +120,16 @@ function Page() {
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Missing lineage-ring fixture root');
-window.__ring.applyTheme('light');
+// What AppShell does: only the new presentation marks <html> (the ring's human colour is the new shell's).
+if (window.localStorage.getItem('cat-cafe:shell-presentation') === 'v2') {
+  document.documentElement.setAttribute('data-shell', 'v2');
+}
 createRoot(root).render(
-  <>
+  <ThemeProvider>
     <CatHueInjector />
     <CoCreatorHueInjector />
+    <ThemeApplier />
+    <ActualProbe />
     <Page />
-  </>,
+  </ThemeProvider>,
 );

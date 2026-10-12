@@ -10,7 +10,7 @@ import { MessageStore } from '../dist/domains/cats/services/stores/ports/Message
 import { TaskStore } from '../dist/domains/cats/services/stores/ports/TaskStore.js';
 import { F232PreparedArtifactReader } from '../dist/domains/growing/F232PreparedArtifactReader.js';
 import { CollectiveCurrentContext } from '../dist/domains/plugin/builtin-runtime/collective-current-context.js';
-import { CollectiveWorkAuthority } from '../dist/domains/plugin/builtin-runtime/collective-work-authority.js';
+import { CollectiveWorkAuthority } from '../dist/domains/plugin/builtin-runtime/collective-work/collective-work-authority.js';
 import { CollectiveWorkDispatcher } from '../dist/domains/plugin/builtin-runtime/collective-work-dispatcher.js';
 
 catRegistry.register('codex-astra', {

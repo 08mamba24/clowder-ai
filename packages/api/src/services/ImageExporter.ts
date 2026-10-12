@@ -283,7 +283,7 @@ export class ImageExporter {
     try {
       assertBeforeHtmlWidgetExportDeadline(operation, 'widget readiness');
     } catch (error) {
-      let diagnostics: unknown = undefined;
+      let diagnostics: unknown;
       try {
         diagnostics = await page.evaluate((ids) => {
           const browserGlobal = globalThis as unknown as {

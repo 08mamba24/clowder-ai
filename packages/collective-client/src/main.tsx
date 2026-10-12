@@ -21,6 +21,7 @@ import './styles/composer.css';
 import './styles/members.css';
 import './styles/onboarding.css';
 import './styles/first-entry.css';
+import './styles/collective-home.css';
 
 const root = document.getElementById('collective-root');
 if (!root) throw new Error('Collective client root is missing');

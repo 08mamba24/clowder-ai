@@ -2,29 +2,41 @@
 
 /**
  * F322 original-B: the one row. It replaces, once every action is proven preserved, the top "回复中" / "执行中"
- * bar, the "卡住了？强制重置" banner, the "待处理" queue panel and the "猫猫正在回复中… 取消" row. Until the mount
- * hunks land it is a standalone component: nothing renders it yet.
+ * bar, the "卡住了？强制重置" banner, the "待处理" queue panel and the "猫猫正在回复中… 取消" row. It is mounted
+ * only by ThreadExecutionLayer in v2; classic keeps the original surfaces.
  *
  * The row is a fixed height and the panel overlays the conversation, so opening it never moves the chat.
  */
 import { useEffect, useRef, useState } from 'react';
 import { CatAvatar } from '../CatAvatar';
-import { ExecutionCancelButton } from '../ExecutionCancelButton';
 import { ForceResetDialog } from '../ForceResetDialog';
 import { SteerQueuedEntryModal } from '../SteerQueuedEntryModal';
+import { useShellCopy } from '../shell/shell-copy';
+import styles from './ExecutionRow.module.css';
+import { ExecutionRowActions } from './ExecutionRowActions';
 import { ExecutionRowPanel } from './ExecutionRowPanel';
-import { FORCE_RESET_REASON_COPY, PAUSE_REASON_COPY, rowStatusText } from './row-model';
+import { type ExecutionRowWords, executionRowCopy } from './execution-row.shell-copy';
+import {
+  type ExecutionRowTone,
+  executionRowTone,
+  executionRowToneColor,
+  executionRowToneSurface,
+} from './execution-row-presentation';
+import { rowCompactStatusText, rowStatusText } from './row-model';
 import { type ExecutionRowController, useExecutionRow } from './useExecutionRow';
-
-const ATTENTION = new Set(['silent', 'unverified', 'stuck', 'paused']);
 
 function Avatars({ controller }: { controller: ExecutionRowController }) {
   const { model, executions } = controller;
-  if (model.single) return <CatAvatar catId={model.single.catId} size={20} />;
+  if (model.single)
+    return (
+      <span data-testid="execution-row-avatars" className="flex-none">
+        <CatAvatar catId={model.single.catId} size={20} />
+      </span>
+    );
   const shown = executions.slice(0, 3);
   if (shown.length === 0) return null;
   return (
-    <span className="flex items-center">
+    <span data-testid="execution-row-avatars" className="flex items-center">
       {shown.map((execution, index) => (
         <span key={execution.executionId + execution.catId} className={index === 0 ? '' : '-ml-1.5'}>
           <CatAvatar catId={execution.catId} size={18} />
@@ -51,32 +63,50 @@ function Chevron({ open }: { open: boolean }) {
   );
 }
 
-function Body({ controller, open }: { controller: ExecutionRowController; open: boolean }) {
+function Body({
+  controller,
+  open,
+  tone,
+  words,
+}: {
+  controller: ExecutionRowController;
+  open: boolean;
+  tone: ExecutionRowTone;
+  words: ExecutionRowWords;
+}) {
   const { model, resolveCatName } = controller;
-  const attention = ATTENTION.has(model.status);
-  const title = model.pauseReason ? PAUSE_REASON_COPY[model.pauseReason] : undefined;
+  const title = model.pauseReason ? words.pauseReason[model.pauseReason] : undefined;
+  const fullStatus = rowStatusText(model, resolveCatName, words);
   return (
     <>
-      {attention ? (
-        <span
-          data-testid="execution-row-dot"
-          aria-hidden="true"
-          className="h-2 w-2 flex-none rounded-full"
-          style={{ backgroundColor: 'var(--semantic-warning)' }}
-        />
-      ) : (
-        <Avatars controller={controller} />
-      )}
-      <span data-testid="execution-row-text" title={title} className="min-w-0 truncate font-medium text-cafe-secondary">
-        {rowStatusText(model, resolveCatName)}
+      <Avatars controller={controller} />
+      <span
+        data-testid="execution-row-dot"
+        aria-hidden="true"
+        className="h-2 w-2 flex-none rounded-full"
+        style={{ backgroundColor: executionRowToneColor(tone) }}
+      />
+      <span
+        data-testid="execution-row-text"
+        title={title}
+        className={`${styles.fullStatus} min-w-0 truncate font-medium text-cafe-secondary`}
+      >
+        {fullStatus}
       </span>
+      <output
+        data-testid="execution-row-text-compact"
+        aria-label={fullStatus}
+        className={`${styles.compactStatus} flex-none font-medium text-cafe-secondary`}
+      >
+        {rowCompactStatusText(model, words)}
+      </output>
       {model.staleNote ? (
         <span
           data-testid="execution-row-stale"
           className="flex-none text-micro text-conn-amber-text"
-          title="同步暂时失败，显示最近一次已验证状态。"
+          title={words.staleDetail}
         >
-          状态暂不可核对
+          {words.stale}
         </span>
       ) : null}
       {model.panelToggle ? <Chevron open={open} /> : null}
@@ -85,6 +115,7 @@ function Body({ controller, open }: { controller: ExecutionRowController; open: 
 }
 
 export function ExecutionRow({ threadId }: { threadId: string }) {
+  const words = useShellCopy(executionRowCopy);
   const controller = useExecutionRow(threadId);
   const { model, convergence, forceReset } = controller;
   const [open, setOpen] = useState(false);
@@ -110,10 +141,21 @@ export function ExecutionRow({ threadId }: { threadId: string }) {
     : null;
 
   if (!model.visible) return null;
+  const tone = executionRowTone(model.status);
 
   return (
-    <div ref={rootRef} data-testid="execution-row" data-status={model.status} className="relative">
-      <div className="flex h-9 items-center gap-2 px-4 text-xs">
+    <div
+      ref={rootRef}
+      data-testid="execution-row"
+      data-status={model.status}
+      data-tone={tone}
+      className={`${styles.container} relative mb-2 px-4`}
+    >
+      <div
+        data-testid="execution-row-surface"
+        className="flex h-9 items-center gap-2 rounded-xl border px-3 text-xs"
+        style={{ background: executionRowToneSurface(tone), borderColor: executionRowToneColor(tone) }}
+      >
         {model.panelToggle ? (
           <button
             type="button"
@@ -122,40 +164,14 @@ export function ExecutionRow({ threadId }: { threadId: string }) {
             onClick={() => setOpen(!panelOpen)}
             className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
-            <Body controller={controller} open={panelOpen} />
+            <Body controller={controller} open={panelOpen} tone={tone} words={words} />
           </button>
         ) : (
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            <Body controller={controller} open={false} />
+            <Body controller={controller} open={false} tone={tone} words={words} />
           </div>
         )}
-        {model.forceReset.length > 0 ? (
-          <button
-            type="button"
-            data-testid="execution-row-force-reset"
-            title={model.forceReset.map((reason) => FORCE_RESET_REASON_COPY[reason]).join('；')}
-            onClick={forceReset.request}
-            className="flex-none rounded-md px-2 py-1 font-semibold transition-opacity hover:opacity-90"
-            style={{ backgroundColor: 'var(--semantic-critical-surface)', color: 'var(--semantic-critical)' }}
-          >
-            强制重置
-          </button>
-        ) : null}
-        {model.resumeOnRow ? (
-          <button
-            type="button"
-            data-testid="execution-row-resume"
-            onClick={() => void controller.commands.handleContinue()}
-            className="flex-none rounded-md bg-[var(--semantic-success)] px-2 py-1 text-[var(--cafe-surface)] hover:opacity-90"
-          >
-            {model.resumeOnRow === 'continue' ? '继续' : '恢复'}
-          </button>
-        ) : null}
-        {model.stop.kind === 'button' ? (
-          <span data-testid="execution-row-stop" className="flex-none">
-            <ExecutionCancelButton execution={model.stop.execution} label="■" />
-          </span>
-        ) : null}
+        <ExecutionRowActions controller={controller} words={words} />
       </div>
       {panelOpen ? <ExecutionRowPanel controller={controller} /> : null}
       {steerEntry && steerEntry.status === 'queued' ? (

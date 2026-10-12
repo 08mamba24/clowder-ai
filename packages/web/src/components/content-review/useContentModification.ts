@@ -6,7 +6,7 @@ import {
   type ContentModificationRequest,
   type ContentModificationRequestView,
   contentModificationOutcome,
-  contentModificationRequestSchema,
+  contentModificationRequestContractSchema,
 } from '@cat-cafe/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '@/utils/api-client';
@@ -205,7 +205,7 @@ export function useContentModification(input: {
       const prior = current.current;
       const operation =
         prior.operation ??
-        contentModificationRequestSchema.parse({
+        contentModificationRequestContractSchema.parse({
           operationId: crypto.randomUUID(),
           source: input.source,
           targetCatId: prior.targetCatId,

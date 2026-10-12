@@ -1,11 +1,15 @@
-/** Minimal V24 memory tables for domain-specific historical migration fixtures.
- * Real V27/V41 databases already contain these tables; later memory migrations
+import { SCHEMA_V4 } from '../../dist/domains/memory/schema.js';
+
+/** Historical memory prerequisites for domain-specific migration fixtures.
+ * Real V27/V41 databases already contain the V4 summary and V24 entity tables; later memory migrations
  * must not weaken their production prerequisites to accommodate partial fixtures. */
 export function installLegacyEntityMentionFixture(db) {
+  db.exec(SCHEMA_V4);
   db.exec(`
     CREATE TABLE IF NOT EXISTS evidence_docs (
       anchor TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL,
-      title TEXT NOT NULL, summary TEXT, keywords TEXT, updated_at TEXT NOT NULL
+      title TEXT NOT NULL, summary TEXT, keywords TEXT, updated_at TEXT NOT NULL,
+      source_path TEXT, source_hash TEXT
     );
     CREATE TABLE IF NOT EXISTS evidence_passages (
       id INTEGER PRIMARY KEY AUTOINCREMENT, doc_anchor TEXT NOT NULL,

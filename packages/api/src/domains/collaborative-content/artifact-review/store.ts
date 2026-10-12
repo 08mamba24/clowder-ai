@@ -12,6 +12,7 @@ import {
 import Database from 'better-sqlite3';
 import { ContentAcceptanceStore } from '../modification/acceptance-store.js';
 import { ContentModificationJournal } from '../modification/journal.js';
+import type { MediaPublicationReturnIntent } from '../modification/media-publication/media-publication-return.js';
 import { ModificationTextStore } from '../modification/text/text-store.js';
 import { WorkspaceContentReviewError } from '../workspace-review/errors.js';
 import {
@@ -49,6 +50,27 @@ interface ReviewRow {
 
 /** One permanent owner database; atomic CAS + audit + intent receipt, with no TTL or shadow work state. */
 export class ArtifactReviewStore {
+  registerPublicationReturn(intent: MediaPublicationReturnIntent, requestRevision: number): void {
+    this.database
+      .transaction(() => {
+        const record = this.requests.get(intent.requestId, intent.ownerUserId);
+        const review = this.get(intent.reviewId);
+        const round = review?.rounds.at(-1);
+        if (
+          !record ||
+          record.control ||
+          record.revision !== requestRevision ||
+          record.progress.review?.receiptRef !== intent.source.requestReceiptRef ||
+          review?.revision !== intent.reviewRevision ||
+          round?.number !== intent.round ||
+          round.asset.ownerRevision !== intent.ownerRevision ||
+          this.pendingVersion(intent.reviewId)
+        )
+          throw new Error('Publication return request changed before registration');
+        this.returns.recordPublication(intent);
+      })
+      .immediate();
+  }
   reviewReceipt(reviewId: string, receiptRef: string): ArtifactReviewReceipt | null {
     return this.audit.receiptByRef(reviewId, receiptRef);
   }

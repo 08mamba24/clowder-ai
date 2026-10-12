@@ -1,3 +1,4 @@
+import { withOwnerUncertaintyIndex } from './owner-uncertainty-lua.js';
 /**
  * Lua scripts for the #1200 visibility index.
  *
@@ -53,7 +54,8 @@ export const MAX_BACKFILL_MEMBERS = 50_000;
  *   - string (existing msgId) → idempotency replay, concurrent winner
  *   - number (visibilitySeq) → new message, allocated seq (0 for queued)
  */
-export const APPEND_WITH_VISIBILITY_LUA = `
+export const APPEND_WITH_VISIBILITY_LUA = withOwnerUncertaintyIndex(
+  `
 local hash = KEYS[1]
 local kp = ARGV[1]
 local msgId = ARGV[2]
@@ -184,7 +186,10 @@ if ttlSec > 0 then
 end
 
 return seq
-`;
+`,
+  1,
+  "ARGV[1] .. 'msg:owner-uncertainty:' .. ARGV[3]",
+);
 
 /**
  * DELIVER_LUA extension: allocates visibilitySeq on delivery of a queued message.
@@ -204,7 +209,8 @@ return seq
  *
  * Returns: 0 on CAS no-op, or HGETALL flat array on CAS win.
  */
-export const DELIVER_WITH_VISIBILITY_LUA = `
+export const DELIVER_WITH_VISIBILITY_LUA = withOwnerUncertaintyIndex(
+  `
 local hash = KEYS[1]
 local msgId = ARGV[1]
 local deliveredAt = ARGV[2]
@@ -306,7 +312,9 @@ redis.call('HSETNX', metaKey, 'migrated', '1')
 redis.call('HSET', hash, 'visibilitySeq', tostring(seq))
 
 return redis.call('HGETALL', hash)
-`;
+`,
+  1,
+);
 
 /**
  * CANCEL_LUA extension: extends CANCEL_LUA to ZREM from visibility index
@@ -318,7 +326,8 @@ return redis.call('HGETALL', hash)
  *
  * Returns: 0 on CAS no-op, or HGETALL flat array on CAS win.
  */
-export const CANCEL_WITH_VISIBILITY_LUA = `
+export const CANCEL_WITH_VISIBILITY_LUA = withOwnerUncertaintyIndex(
+  `
 local hash = KEYS[1]
 local kp = ARGV[1]
 
@@ -342,7 +351,9 @@ if threadId and msgId then
 end
 
 return redis.call('HGETALL', hash)
-`;
+`,
+  1,
+);
 
 /**
  * BACKFILL_VISIBILITY: one-shot atomic rank-normalize backfill for a legacy thread.

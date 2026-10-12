@@ -21,7 +21,9 @@ describe('V28 migration — evidence_fts keywords', () => {
           title TEXT NOT NULL,
           summary TEXT,
           keywords TEXT,
-          updated_at TEXT NOT NULL
+          updated_at TEXT NOT NULL,
+          source_path TEXT,
+          source_hash TEXT
         );
         CREATE VIRTUAL TABLE evidence_fts USING fts5(
           title, summary,

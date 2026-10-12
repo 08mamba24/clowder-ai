@@ -31,4 +31,16 @@ describe('System settings production wiring', () => {
     expect(branch).toContain('<HubSystemSettingsTab');
     expect(branch).toContain('<HubEnvFilesTab');
   });
+
+  it('mounts the personal execution-record default only through the real v2 System branch', () => {
+    expect(source).toContain("from './ExecutionRecordDefaultSettings'");
+    const branch = systemBranch();
+    expect(branch).toMatch(/isV2\s*&&\s*\(\s*<ExecutionRecordDefaultSettings/);
+  });
+
+  it('mounts the global send-mode default only through the real v2 System branch', () => {
+    expect(source).toContain("from './MessageDispositionDefaultSettings'");
+    const branch = systemBranch();
+    expect(branch).toMatch(/isV2\s*&&\s*\([\s\S]*<MessageDispositionDefaultSettings/);
+  });
 });

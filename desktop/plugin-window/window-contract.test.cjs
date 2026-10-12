@@ -13,7 +13,7 @@ const modern = '0.1.0-beta.23';
 const unified = '0.1.0-beta.24';
 
 test('the trusted launch retains its exact companion contract instead of inferring ABI from a bridge version', () => {
-  for (const contract of [legacy, modern, unified]) {
+  for (const contract of [legacy, modern, unified, '0.1.0-beta.25']) {
     const admitted = validateLaunch({ ...launch, companionContract: contract });
     assert.equal(admitted.companionContract, contract);
     assert.equal(admitted.publicCompanionV2, true);
@@ -33,6 +33,7 @@ test('the modern renderer receives the required persisted behavior flag while le
     const state = { kind: 'state', phase: 'idle', behaviorEnabled };
     assert.deepEqual(toPublishedWindowReply(state, modern), state);
     assert.deepEqual(toPublishedWindowReply(state, unified), state);
+    assert.deepEqual(toPublishedWindowReply(state, '0.1.0-beta.25'), state);
     assert.deepEqual(toPublishedWindowReply(state, legacy), { kind: 'state', phase: 'idle' });
     assert.deepEqual(toPublishedWindowReply(state), { kind: 'state', phase: 'idle' });
     assert.equal(state.behaviorEnabled, behaviorEnabled, 'conversion must not mutate the trusted Host reply');

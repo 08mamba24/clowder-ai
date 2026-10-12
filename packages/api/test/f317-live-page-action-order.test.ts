@@ -3,8 +3,8 @@ import { test } from 'node:test';
 import { InvocationQueue } from '../src/domains/cats/services/agents/invocation/InvocationQueue.js';
 import { createInitialQueuedMessageCustody } from '../src/domains/cats/services/agents/invocation/QueuedMessageCustodyCoordinator.js';
 import { MessageStore, type ThreadMessageReadOptions } from '../src/domains/cats/services/stores/ports/MessageStore.js';
-import { LivePageActionApprovalLedger } from '../src/domains/concierge/live/host/live-page-action-approval-ledger.js';
-import { LivePageActionAuthority } from '../src/domains/concierge/live/host/live-page-action-authority.js';
+import { LivePageActionApprovalLedger } from '../src/domains/concierge/live/host/page-action/live-page-action-approval-ledger.js';
+import { LivePageActionAuthority } from '../src/domains/concierge/live/host/page-action/live-page-action-authority.js';
 import { appendUser, fixture, issueFixtureApproval, scope } from './helpers/f317-page-action-fixture.js';
 
 function timestampOrderedMessages(store: MessageStore) {
@@ -133,9 +133,9 @@ test('a backdated recalled owner turn cannot leave an older direct action curren
   assert.equal(f.effects(), 0);
 });
 
-test('a saturated owner timeline scan refuses to infer that no unseen queued correction exists', async () => {
+test('a saturated after-source scan refuses to infer that no later owner correction exists', async () => {
   const f = fixture();
-  for (let i = 0; i < 255; i++)
+  for (let i = 0; i < 256; i++)
     f.store.append({
       userId: scope.userId,
       threadId: scope.threadId,

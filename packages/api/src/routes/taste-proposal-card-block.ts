@@ -21,13 +21,22 @@ const DIMENSION_LABELS: Record<string, string> = {
 
 export function buildTasteProposalCardBlock(proposal: TasteProposal): RichCardBlock {
   const scenePreview = proposal.scene.length > 200 ? `${proposal.scene.slice(0, 197)}…` : proposal.scene;
+  const correction = proposal.correctionTarget;
 
   return {
     id: `taste-proposal-${proposal.id}`,
     kind: 'card',
     v: 1,
-    title: '提议捕捉品味信号',
+    title: correction ? '提议更正品味记忆' : '提议捕捉品味信号',
     bodyMarkdown: [
+      ...(correction
+        ? [
+            `**更正原因：** ${correction.reason}`,
+            '',
+            `**建议改动：** \`${JSON.stringify(correction.suggestedPatch)}\``,
+            '',
+          ]
+        : []),
       ...(proposal.takeaway ? [`**猫的判断（假设）：** ${proposal.takeaway}`, ''] : []),
       `**场景：** ${scenePreview}`,
       '',
@@ -39,6 +48,7 @@ export function buildTasteProposalCardBlock(proposal: TasteProposal): RichCardBl
       { label: '标签', value: proposal.tags.join(', ') },
       { label: '隐私', value: proposal.privacy === 'sensitive' ? '敏感' : '公开' },
       { label: '捕捉猫', value: proposal.catId },
+      ...(correction ? [{ label: '动作', value: '更正已有记忆' }] : []),
     ],
   };
 }

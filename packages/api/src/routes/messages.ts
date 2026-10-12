@@ -113,6 +113,7 @@ import { buildCancelMessages, type SocketManager } from '../infrastructure/webso
 import { normalizeJsonUnicode } from '../utils/json-unicode.js';
 import { getDefaultUploadDir } from '../utils/upload-paths.js';
 import { persistA2ARoutingMessage } from './a2a-routing-projection.js';
+import { collectTerminalStreamInvocationIds } from './message-terminal-stream-ids.js';
 import { admitThreadParticipants } from './thread-participant-admission.js';
 import { readUserMessageReceipt, userMessageReceipt } from './user-message-receipt.js';
 
@@ -2550,6 +2551,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
       m.extra?.targetCats ||
       m.extra?.messageBundle ||
       m.extra?.contentModificationRequestV1 ||
+      m.extra?.contentModificationReceiptV1 ||
       m.extra?.scheduler ||
       m.extra?.systemKind ||
       m.extra?.systemInfo ||
@@ -2565,6 +2567,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
       m.extra?.recovery
         ? {
             extra: {
+              ...(m.extra?.outputLayout ? { outputLayout: m.extra.outputLayout } : {}),
               ...(m.extra?.semanticEvent ? { semanticEvent: m.extra.semanticEvent } : {}),
               ...(m.extra?.liveCompanion?.identity
                 ? { liveCompanion: { identity: m.extra.liveCompanion.identity } }
@@ -2580,6 +2583,9 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
               ...(m.extra?.messageBundle ? { messageBundle: m.extra.messageBundle } : {}),
               ...(m.extra?.contentModificationRequestV1
                 ? { contentModificationRequestV1: m.extra.contentModificationRequestV1 }
+                : {}),
+              ...(m.extra?.contentModificationReceiptV1
+                ? { contentModificationReceiptV1: m.extra.contentModificationReceiptV1 }
                 : {}),
               ...(m.extra?.scheduler ? { scheduler: m.extra.scheduler } : {}),
               ...(m.extra?.systemKind ? { systemKind: m.extra.systemKind } : {}),
@@ -2654,18 +2660,13 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
           { threadId: resolvedThreadId, draftCount: drafts.length, draftIds: drafts.map((d) => d.invocationId) },
           '#80 draft merge: found active drafts',
         );
-        // P1-2 dedup: filter out drafts whose invocationId matches a formal message.
+        // P1-2 dedup: only a terminal stream record replaces its draft. An independent
+        // explicit post shares invocation provenance but must coexist with the draft.
         // F194 Phase Z3 P1-3 (砚砚 R): formal set MUST collect both `invocationId` (parent SoT) and
         // `turnInvocationId` (Z3 dual id, where draft.invocationId === turnInvocationId for new
         // formal messages). Without this, append-success-but-draft-not-yet-deleted window double-shows
         // formal + draft for the same turn.
-        const formalInvocationIds = new Set<string>();
-        for (const m of page) {
-          const parentInv = m.extra?.stream?.invocationId;
-          const turnInv = m.extra?.stream?.turnInvocationId;
-          if (parentInv) formalInvocationIds.add(parentInv);
-          if (turnInv) formalInvocationIds.add(turnInv);
-        }
+        const formalInvocationIds = collectTerminalStreamInvocationIds(page);
         activeDrafts = drafts.filter((d) => !formalInvocationIds.has(d.invocationId));
         // Cloud R4 P2: if drafts survive page-level dedup, widen the check to cover
         // formal messages pushed off the first page (race window: TTL > page depth).
@@ -2673,12 +2674,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
         if (activeDrafts.length > 0 && page.length >= limit) {
           const widerLimit = Math.max(200, limit * 4);
           const wider = await opts.messageStore.getByThread(resolvedThreadId, widerLimit, userId, browserTimelineRead);
-          for (const m of wider) {
-            const parentInv = m.extra?.stream?.invocationId;
-            const turnInv = m.extra?.stream?.turnInvocationId;
-            if (parentInv) formalInvocationIds.add(parentInv);
-            if (turnInv) formalInvocationIds.add(turnInv);
-          }
+          collectTerminalStreamInvocationIds(wider, formalInvocationIds);
           activeDrafts = activeDrafts.filter((d) => !formalInvocationIds.has(d.invocationId));
         }
       }
@@ -2817,10 +2813,12 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
               invocationId: turnExecution?.parentInvocationId ?? d.invocationId,
               turnInvocationId: d.invocationId,
             },
+            ...(d.extra?.outputLayout ? { outputLayout: d.extra.outputLayout } : {}),
             ...(turnExecution ? { turnExecution: projectTurnExecutionMessage(turnExecution) } : {}),
           },
           ...(d.toolEvents ? { toolEvents: d.toolEvents } : {}),
           ...(d.thinking ? { thinking: d.thinking } : {}),
+          ...(d.metadata ? { metadata: d.metadata } : {}),
         });
       }
     }

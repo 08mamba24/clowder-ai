@@ -7,6 +7,7 @@ import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
 import { startReviewHost } from './fixtures/f309-artifact-review-host.mjs';
 import { mediaFixture } from './fixtures/f309-artifact-review-media.mjs';
 import { openReviewPanel } from './fixtures/f309-artwork-controls.mjs';
+import './f309-publication-display.journey.mjs';
 
 async function setup(t, name, kind = 'png') {
   const root = await mkdtemp(path.join(tmpdir(), `f309-passive-${name}-`));

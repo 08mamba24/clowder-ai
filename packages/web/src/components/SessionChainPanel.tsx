@@ -1,5 +1,6 @@
 'use client';
 
+import type { SessionRecord } from '@cat-cafe/shared';
 import React, { useEffect, useState } from 'react';
 import { formatCatName, useCatData } from '@/hooks/useCatData';
 import type { CatInvocationInfo, ContextHealthData } from '@/stores/chat-types';
@@ -10,9 +11,10 @@ import { ContextHealthBar } from './ContextHealthBar';
 import { BindSessionInput, SessionIdTag } from './SessionChainInputs';
 import { settingsResourceCardClass } from './SettingsResourceCard';
 import { deriveSessionColors, type SessionColors } from './session-chain-colors';
+import { useSessionChainCompletionRevision } from './useSessionChainCompletionRevision';
 
 /** Minimal session record from API GET /api/threads/:id/sessions */
-interface SessionSummary {
+export interface SessionSummary {
   id: string;
   cliSessionId?: string;
   catId: string;
@@ -36,6 +38,7 @@ interface SessionSummary {
     costUsd?: number;
   };
   runtimeSession?: RuntimeSessionSummary;
+  scopedInvocation?: SessionRecord['scopedInvocation'];
 }
 
 interface RuntimeSessionSummary {
@@ -60,7 +63,7 @@ interface RuntimeSessionSummary {
   };
 }
 
-interface SessionChainLoadError {
+export interface SessionChainLoadError {
   kind: 'access_denied' | 'request_failed';
   message: string;
 }
@@ -93,6 +96,30 @@ export interface SessionChainPanelProps {
   catInvocations: Record<string, CatInvocationInfo>;
   activeInvocations?: Record<string, { catId: string; mode: string; startedAt?: number }>;
   onViewSession?: (sessionId: string, catId?: string) => void;
+  /** Alternate presentation of the same owner data and guarded actions. Classic omits this. */
+  renderProjection?: (state: SessionChainProjection) => React.ReactNode;
+  /** v2 observes completed runs; classic retains its existing read triggers. */
+  refreshOnRunEnd?: boolean;
+}
+
+export interface SessionChainProjection {
+  sessions: SessionSummary[];
+  /** The classic owner's folded retry fragments; alternate views must not expose their actions. */
+  retryFragmentIds: ReadonlySet<string>;
+  loading: boolean;
+  isStale: boolean;
+  loadError: SessionChainLoadError | null;
+  actionError: string | null;
+  runningCatIds: ReadonlySet<string>;
+  unsealedCountByCat: ReadonlyMap<string, number>;
+  hasRecentCompact: boolean;
+  compactingSessionId: string | null;
+  sealingSessionId: string | null;
+  restoringSessionId: string | null;
+  onCompact: (session: SessionSummary) => Promise<void>;
+  onSeal: (sessionId: string) => Promise<void>;
+  onRestore: (session: SessionSummary) => Promise<void>;
+  onRefresh: () => void;
 }
 
 function timeAgo(ts: number): string {
@@ -104,7 +131,7 @@ function timeAgo(ts: number): string {
   return `${hr} 小时前`;
 }
 
-function sealReasonLabel(reason?: string): string {
+export function sealReasonLabel(reason?: string): string {
   if (!reason) return '';
   if (reason.includes('compact')) return '压缩后封存';
   if (reason === 'threshold') return '达到阈值';
@@ -143,7 +170,7 @@ const RUNTIME_LIFECYCLE_LABELS: Record<string, string> = {
   runtime_error_reset: '错误后已重置',
   runtime_sealed: '已封存',
 };
-function runtimeLifecycleLabel(state: string): string {
+export function runtimeLifecycleLabel(state: string): string {
   return RUNTIME_LIFECYCLE_LABELS[state] ?? state;
 }
 
@@ -210,6 +237,8 @@ export function SessionChainPanel({
   catInvocations,
   activeInvocations = {},
   onViewSession,
+  renderProjection,
+  refreshOnRunEnd = false,
 }: SessionChainPanelProps) {
   const { getCatById } = useCatData();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -242,10 +271,11 @@ export function SessionChainPanel({
   const sealSignal = Object.values(catInvocations)
     .map((inv) => `${inv.sessionSeq ?? ''}:${inv.sessionSealed ?? ''}`)
     .join(',');
+  const completionRevision = useSessionChainCompletionRevision(threadId, activeInvocations, refreshOnRunEnd);
 
   // Fetch sessions into a thread-owned result set. Cached data for the requested
   // thread may render immediately; data owned by another thread never may.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sealSignal+refreshKey intentionally trigger re-fetch
+  // biome-ignore lint/correctness/useExhaustiveDependencies: owner read signals intentionally trigger re-fetch
   useEffect(() => {
     let cancelled = false;
     const cached = sessionCache.get(threadId);
@@ -301,7 +331,7 @@ export function SessionChainPanel({
     return () => {
       cancelled = true;
     };
-  }, [threadId, sealSignal, refreshKey]);
+  }, [threadId, sealSignal, refreshKey, completionRevision]);
 
   const visibleSessions = loadedThreadId === threadId ? sessions : [];
   const unsealedSessions = visibleSessions.filter((s) => s.status === 'active');
@@ -443,6 +473,27 @@ export function SessionChainPanel({
       setCompactingSessionId(null);
     }
   };
+
+  if (renderProjection) {
+    return renderProjection({
+      sessions: visibleSessions,
+      retryFragmentIds: retryCorpseIds,
+      loading,
+      isStale,
+      loadError,
+      actionError,
+      runningCatIds,
+      unsealedCountByCat,
+      hasRecentCompact,
+      compactingSessionId,
+      sealingSessionId,
+      restoringSessionId,
+      onCompact: handleNativeCompact,
+      onSeal: handleSeal,
+      onRestore: handleRestoreAsCurrent,
+      onRefresh: () => setRefreshKey((key) => key + 1),
+    });
+  }
 
   return (
     <section className={`${settingsResourceCardClass} p-2.5`}>
@@ -753,7 +804,9 @@ export function SessionChainPanel({
                         )}
                         {/* Session replay entry removed — Phase E AC-E1 sunset.
                             Canonical replay is now Theater Overlay via ThreadItem "回放剧场" (PR E-1). */}
-                        {session.status === 'sealed' ? (
+                        {session.scopedInvocation ? (
+                          <span className="text-micro text-cafe-muted">独立执行 · 不恢复为主页会话</span>
+                        ) : session.status === 'sealed' ? (
                           <button
                             type="button"
                             className="text-micro px-2 py-0.5 rounded border border-[var(--_accent-20)] text-[var(--color-cafe-accent)] hover:bg-[var(--_accent-5)] disabled:opacity-50"

@@ -3,6 +3,7 @@
 import { type ReactNode, useCallback } from 'react';
 import { EvolutionProgramSurface } from '@/components/capability-evolution/solution-gate/SolutionGateHost';
 import { ArtifactReviewSurface } from '@/components/content-review/ArtifactReviewSurface';
+import { TheaterReplayContent } from '@/components/story-player/TheaterReplayContent';
 import type { WorkspaceSurfaceDescriptor } from '@/components/workbench/workbench-contract';
 import { BrowserPanel } from '@/components/workspace/BrowserPanel';
 import { TerminalTab } from '@/components/workspace/TerminalTab';
@@ -34,6 +35,8 @@ import {
   resolveEvolutionProgramId,
   resolveTerminalWorktreeId,
 } from './real-surface-adapters';
+import { resolveThreadReplayThreadId } from './thread-replay-surface';
+import { WorkspacePreviewIntentProvider } from './WorkspacePreviewIntent';
 import { WorkspaceSurfaceVisibilityProvider } from './WorkspaceSurfaceVisibility';
 
 function AgentRunOwnerSurface({ surface }: { surface: WorkspaceSurfaceDescriptor }) {
@@ -85,6 +88,16 @@ function F307OwnerSurfaceContent({
     [browserTarget, onRefreshSurface],
   );
 
+  if (surface.renderer === 'thread-replay') {
+    const threadId = resolveThreadReplayThreadId(surface);
+    return threadId ? (
+      <div className="flex h-full min-h-0 min-w-0 flex-col" data-owner-thread-replay={threadId}>
+        <TheaterReplayContent threadId={threadId} />
+      </div>
+    ) : (
+      <OwnerUnavailable message="线程回放没有一致的对话引用。" />
+    );
+  }
   if (surface.renderer === 'file-preview' || surface.renderer === 'code-editor') {
     return (
       <CanonicalWorkspaceFileSurface
@@ -98,6 +111,7 @@ function F307OwnerSurfaceContent({
         <ArtifactFileNavigator surface={surface}>
           <F307FileOwnerSurface
             surface={surface}
+            focusMode={focusMode}
             onRequestDetach={onRequestDetach}
             onReturnToNavigationOrigin={
               onReturnToFileOrigin ? (origin) => onReturnToFileOrigin(surface, origin) : undefined
@@ -294,9 +308,11 @@ function F307OwnerSurfaceContent({
 export function F307OwnerSurfaceRenderer({ surfaceVisible = true, ...props }: F307OwnerSurfaceRendererProps) {
   return (
     <WorkspaceSurfaceVisibilityProvider visible={surfaceVisible}>
-      <ContentPublicationNavigator key={props.surface.id} surface={props.surface}>
-        <F307OwnerSurfaceContent {...props} />
-      </ContentPublicationNavigator>
+      <WorkspacePreviewIntentProvider surfaceId={props.surface.id}>
+        <ContentPublicationNavigator key={props.surface.id} surface={props.surface}>
+          <F307OwnerSurfaceContent {...props} />
+        </ContentPublicationNavigator>
+      </WorkspacePreviewIntentProvider>
     </WorkspaceSurfaceVisibilityProvider>
   );
 }

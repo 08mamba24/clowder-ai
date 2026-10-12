@@ -1,4 +1,4 @@
-import { respondContentTextSchema } from '@cat-cafe/shared';
+import { normalizeModificationSelections, respondContentTextSchema } from '@cat-cafe/shared';
 import type { IMessageStore } from '../../../cats/services/stores/ports/MessageStore.js';
 import type {
   MediaReviewPrincipal,
@@ -43,7 +43,7 @@ export class ContentTextModificationService {
   async respond(raw: unknown, principal: MediaReviewPrincipal) {
     const command = respondContentTextSchema.parse(raw);
     if (principal.actor.kind !== 'cat') throw new ModificationTextError('not_found');
-    const { source, task } = await this.authorize(command.requestId, principal, true);
+    const { record, source, task } = await this.authorize(command.requestId, principal, true);
     const old = this.deps.store.text
       .proposals(command.requestId)
       .find((item) => item.operationId === command.operationId);
@@ -54,9 +54,12 @@ export class ContentTextModificationService {
         task.entrustedWork.revision !== command.expectedTaskRevision)
     )
       throw new ModificationTextError('task_changed');
+    const selectionIds = new Set(normalizeModificationSelections(record.payload.intent).map((item) => item.id));
+    if (command.edits.some((edit) => edit.selectionId && !selectionIds.has(edit.selectionId)))
+      throw new ModificationTextError('invalid_patch');
     const proposal = this.deps.store.text.respond(command, principal.actor.actorId);
     const candidatePath = await this.execution.materialize(source, proposal);
-    return { proposal, candidatePath };
+    return { record, proposal, candidatePath };
   }
 
   async candidate(requestId: string, proposalRef: string, principal: MediaReviewPrincipal) {

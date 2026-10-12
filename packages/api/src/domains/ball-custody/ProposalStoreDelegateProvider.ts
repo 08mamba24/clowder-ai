@@ -21,6 +21,7 @@ import type {
   DevelopmentScopeSnapshot,
   TaskApprovedDelegateProvider,
 } from './action-subject-delegate-contract.js';
+import { sameDevelopmentScopeSnapshot } from './action-subject-delegate-contract.js';
 
 /**
  * Maps a task to the proposal that grants delegation for it, along with
@@ -108,7 +109,8 @@ export class ProposalStoreDelegateProvider implements TaskApprovedDelegateProvid
     // Step 4: Verify proposal is approved with a created child thread.
     // Non-approved (rejected/withdrawn) or no child thread → fail closed.
     if (proposal.status !== 'approved') return [];
-    if (!proposal.createdThreadId) return [];
+    const createdThreadId = proposal.createdThreadId;
+    if (!createdThreadId) return [];
 
     // Step 5: Verify proposal originated from the task's thread.
     // A proposal from a different thread cannot grant delegation for
@@ -130,18 +132,7 @@ export class ProposalStoreDelegateProvider implements TaskApprovedDelegateProvid
     //      entrustedWork.developmentScope at proposal time cannot delegate).
     //   b) Task has no current scope → scope was removed after approval → stale.
     //   c) Any of the 5 fields differ → scope drift → stale.
-    if (!proposal.approvedDevelopmentScope) return [];
-    if (!currentDevelopmentScope) return [];
-    const approved = proposal.approvedDevelopmentScope;
-    if (
-      approved.featureRef !== currentDevelopmentScope.featureRef ||
-      approved.phaseKey !== currentDevelopmentScope.phaseKey ||
-      approved.workUnitRef !== currentDevelopmentScope.workUnitRef ||
-      approved.acceptedSourceRef !== currentDevelopmentScope.acceptedSourceRef ||
-      approved.acceptedRevision !== currentDevelopmentScope.acceptedRevision
-    ) {
-      return [];
-    }
+    if (!sameDevelopmentScopeSnapshot(proposal.approvedDevelopmentScope, currentDevelopmentScope)) return [];
 
     // Step 8: Use proposal's preferredCats — the explicit execution target
     // set at proposal creation / operator approval. This is NOT the current
@@ -153,8 +144,8 @@ export class ProposalStoreDelegateProvider implements TaskApprovedDelegateProvid
 
     return authorizedCats.map((catId) => ({
       catId,
-      threadId: proposal.createdThreadId!,
-      evidenceRef: `proposal:${binding.proposalId}:approved:thread:${proposal.createdThreadId}:cat:${catId}`,
+      threadId: createdThreadId,
+      evidenceRef: `proposal:${binding.proposalId}:approved:thread:${createdThreadId}:cat:${catId}`,
     }));
   }
 }

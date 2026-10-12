@@ -9,20 +9,38 @@ import { useChatStore } from '@/stores/chatStore';
 function NavigationConversation({ threadId }: { threadId: string }) {
   const { scrollContainerRef, messagesEndRef, handleScroll, jumpToMessage, beginUserScroll } = useChatHistory(threadId);
   const messages = useThreadMessages(threadId);
+  const lateLayout = new URLSearchParams(location.search).has('late-layout');
   return (
     <section data-navigation-proof style={{ position: 'relative', width: 600, height: 600 }}>
-      <div ref={scrollContainerRef} onScroll={handleScroll} data-scroll-chat style={{ height: 600, overflowY: 'auto' }}>
-        {messages.map((message) => (
-          <MessageViewportBoundary key={message.id} messageId={message.id} eager>
-            <article
-              data-message-id={message.id}
-              style={{ minHeight: message.id.endsWith('4') ? 460 : 160, padding: 16 }}
-            >
-              {message.content}
-            </article>
-          </MessageViewportBoundary>
-        ))}
-        <div ref={messagesEndRef} />
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        data-scroll-chat
+        data-chat-container
+        tabIndex={-1}
+        style={{ height: 600, overflowY: 'auto' }}
+      >
+        <div data-thread-chat-reading-column>
+          {messages.map((message) => (
+            <MessageViewportBoundary key={message.id} messageId={message.id} eager>
+              <article
+                data-message-id={message.id}
+                style={{ minHeight: message.id.endsWith('4') ? 460 : 160, padding: 16 }}
+              >
+                {message.content}
+                {lateLayout && message.id === 'nav-3' && (
+                  <img
+                    data-navigation-late-image
+                    src="/late-navigation.svg"
+                    alt="Late layout proof"
+                    style={{ display: 'block', maxWidth: '100%' }}
+                  />
+                )}
+              </article>
+            </MessageViewportBoundary>
+          ))}
+          <div ref={messagesEndRef} />
+        </div>
       </div>
       <div data-navigation-control>
         <MessageNavigator

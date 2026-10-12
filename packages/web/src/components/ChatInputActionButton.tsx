@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useVoiceInput } from '@/hooks/useVoiceInput';
+import { ChatComposerActions } from './ChatComposerActions';
 import { ExpandableProse } from './content-overflow';
 import { LoadingIcon } from './icons/LoadingIcon';
 import { MicIcon } from './icons/MicIcon';
@@ -175,7 +176,27 @@ export function ChatInputActionButton({
       {!isV2 && sideStop}
 
       {/* Primary action button priority chain */}
-      {disabled && showStop ? (
+      {isV2 ? (
+        <ChatComposerActions
+          voice={voice}
+          hasText={hasText}
+          disabled={disabled}
+          sendDisabled={sendDisabled}
+          showStop={showStop}
+          stopState={resolvedStopState}
+          onStop={onStop}
+          onSend={onSend}
+          onQueueSend={isQueueMode ? onQueueSend : undefined}
+          onRequestSteer={
+            isQueueMode && onForceSend && activeExecutionKey !== undefined
+              ? () => {
+                  steerBoundKeyRef.current = activeExecutionKey;
+                  setConfirmSteer(true);
+                }
+              : undefined
+          }
+        />
+      ) : disabled && showStop ? (
         /* Backward compat: when explicitly disabled during active invocation, Stop is the only primary action */
         <button
           type="button"
@@ -262,7 +283,6 @@ export function ChatInputActionButton({
           <MicIcon className="w-5 h-5" />
         </button>
       )}
-      {isV2 && sideStop}
       {confirmSteer && (
         <SteerQueuedEntryModal
           source="draft"

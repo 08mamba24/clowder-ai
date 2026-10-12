@@ -10,7 +10,10 @@ import { ModificationTargetService } from '../collaborative-content/modification
 import { ContentTextModificationService } from '../collaborative-content/modification/text/text-service.js';
 import type { EvolutionMediaReadPort } from '../collaborative-content/workspace-review/evolution-review-source.js';
 import { WorkspaceContentReviewService } from '../collaborative-content/workspace-review/service.js';
+import { VideoProjectReviewService } from '../collaborative-content/workspace-review/video-project-review-service.js';
+import type { VideoProjectReviewPort } from '../collaborative-content/workspace-review/video-project-review-source.js';
 import type { RoutingDispatchPreflightPort } from '../routing-context/RoutingDispatchPreflightPort.js';
+import { GlobalArtifactWorkLineageResolver } from '../video-studio/content-owner/global-artifact-work-lineage.js';
 import { PublishedMediaAccess } from '../video-studio/content-owner/published-media-access.js';
 import { PublishedMediaService } from '../video-studio/content-owner/published-media-service.js';
 import { PublishedMediaSource } from '../video-studio/content-owner/published-media-source.js';
@@ -30,6 +33,7 @@ export function createArtifactReviewIntegration(deps: {
   dataDir: string;
   uploadDir: string;
   owner: ProjectContentOwnerService;
+  projects?: VideoProjectReviewPort;
   publications: PreparedArtifactReader;
   workspace?: WorkspaceContentSourceService;
   evolution?: EvolutionMediaReadPort;
@@ -56,6 +60,12 @@ export function createArtifactReviewIntegration(deps: {
     ...(deps.evolution ? { evolution: deps.evolution } : {}),
   });
   const media = new PublishedMediaService({ owner: deps.owner, access, sources });
+  const globalArtifactWorkLineage = new GlobalArtifactWorkLineageResolver({
+    owner: deps.owner,
+    access,
+    sources,
+    media,
+  });
   const reviews = new ArtifactReviewService({ store, media });
   const ledgers = deps.workspace
     ? new WorkspaceContentReviewService({
@@ -65,7 +75,11 @@ export function createArtifactReviewIntegration(deps: {
         publicationContexts: (target, principal) =>
           readPublicationReviewContexts({ store, reviews, media, threads: deps.threads }, target, principal),
         ...(deps.evolution ? { evolution: deps.evolution } : {}),
+        ...(deps.projects ? { projects: deps.projects } : {}),
       })
+    : undefined;
+  const projectReviews = deps.projects
+    ? new VideoProjectReviewService({ store: store.ledgers, projects: deps.projects })
     : undefined;
   const invalidate = (ownerUserId: string) =>
     deps.emit(ownerUserId, 'entrusted_work_projection_invalidated', { ownerUserId });
@@ -105,10 +119,13 @@ export function createArtifactReviewIntegration(deps: {
     }
   };
   return {
+    uploadDirectory: deps.uploadDir,
     media,
+    globalArtifactWorkLineage,
     text,
     targets,
     ledgers,
+    projectReviews,
     reviews,
     store,
     producer,

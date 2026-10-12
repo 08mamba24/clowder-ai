@@ -1,7 +1,7 @@
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SelectionAnnotationAction } from '@/components/SelectionAnnotationAction';
+import { ADD_TO_CHAT_LABEL, SelectionAnnotationAction } from '@/components/SelectionAnnotationAction';
 
 function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
@@ -145,6 +145,28 @@ describe('SelectionAnnotationAction', () => {
     expect(document.body.querySelector('[data-testid="context-annotation-editor"]')).not.toBeNull();
   });
 
+  it('names the "put this into the chat" action in formal Chinese, the same on the tooltip and the visible button', () => {
+    // The trigger itself, before it is pressed (renderAction opens the editor).
+    act(() => {
+      root.render(
+        <SelectionAnnotationAction
+          selectedText="a selected passage"
+          position={{ top: 280, left: 560 }}
+          positionMode="fixed"
+          actionTestId="selection-add-to-chat"
+          onSave={vi.fn()}
+        />,
+      );
+    });
+    const trigger = document.body.querySelector<HTMLButtonElement>('[data-testid="selection-add-to-chat"]');
+    expect(trigger).not.toBeNull();
+    expect(trigger?.title).toBe(ADD_TO_CHAT_LABEL);
+    expect(trigger?.textContent?.trim()).toBe(ADD_TO_CHAT_LABEL);
+    expect(ADD_TO_CHAT_LABEL).toBe('引用到聊天');
+    // One concept, one name: no second, English name is left on the visible button.
+    expect(trigger?.textContent).not.toMatch(/Add to chat/i);
+  });
+
   it('allows Forward with an empty Comment while keeping Add to chat Comment-required', () => {
     const onSave = vi.fn();
     const onForward = vi.fn();
@@ -157,5 +179,36 @@ describe('SelectionAnnotationAction', () => {
     expect(onForward).toHaveBeenCalledWith('');
     expect(onSave).not.toHaveBeenCalled();
     expect(document.body.querySelector('[data-testid="context-annotation-editor"]')).toBeNull();
+  });
+
+  it('stays open with the words as written when the save is refused, and closes when it is not', () => {
+    const onClose = vi.fn();
+    const onSave = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
+    act(() => {
+      root.render(
+        <SelectionAnnotationAction
+          selectedText="a passage"
+          position={{ top: 10, left: 10 }}
+          positionMode="fixed"
+          actionTestId="selection-add-to-chat"
+          onSave={onSave}
+          onClose={onClose}
+        />,
+      );
+    });
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="selection-add-to-chat"]')?.click());
+    const textarea = () =>
+      document.body.querySelector<HTMLTextAreaElement>('[data-testid="context-annotation-comment"]');
+    act(() => setTextareaValue(textarea() as HTMLTextAreaElement, '这些是我写的话'));
+
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="context-annotation-save"]')?.click());
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(textarea()?.value).toBe('这些是我写的话');
+    expect(onClose).not.toHaveBeenCalled();
+
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="context-annotation-save"]')?.click());
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(document.body.querySelector('[data-testid="context-annotation-editor"]')).toBeNull();
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

@@ -108,7 +108,7 @@ async function storageFixture(t) {
     assert.equal(existsSync(join(directory, 'appendonlydir')), false);
     return original;
   }
-  function storage(extra = '', overrides = {}) {
+  function storage(extra = '', overrides = {}, timeout = 40_000) {
     const consumer = `const m=await import(process.argv[1]); const {resolveNamedAlphaRuntimeBoundary}=m.default??m; const b=await resolveNamedAlphaRuntimeBoundary(process.env); const {readNamedAlphaRedisLeases}=await import(process.argv[2]); const leases=readNamedAlphaRedisLeases(); console.log('STORAGE_PROOF='+JSON.stringify({current:b.isCurrent(),redisUrl:process.env.REDIS_URL,sidecar:process.env.CAT_CAFE_PROVISION_GLOBAL_SIDECAR,leaseCount:leases.live.length}));`;
     const driver = join(f.directory, 'storage-driver.sh');
     writeFileSync(
@@ -127,10 +127,19 @@ async function storageFixture(t) {
         ALPHA_TEST_LEASE_MODULE: join(f.alphaRoot, 'scripts/lib/alpha-redis-leases.mjs'),
       },
       encoding: 'utf8',
-      timeout: 40_000,
+      timeout,
     });
+    const diagnostic = JSON.stringify({
+      status: result.status,
+      signal: result.signal,
+      error: result.error ? { code: result.error.code, message: result.error.message } : null,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+    assert.equal(result.error, undefined, `storage launcher execution failed: ${diagnostic}`);
+    assert.notEqual(result.status, null, `storage launcher was terminated: ${diagnostic}`);
     if (existsSync(registryDir))
-      assert.deepEqual(readdirSync(registryDir), [], 'launcher cleanup releases its own registration');
+      assert.deepEqual(readdirSync(registryDir), [], `launcher cleanup releases its own registration: ${diagnostic}`);
     return result;
   }
   return { ...f, raw, port, env, directory, pidFile, redis, seedRdb, storage };
@@ -237,4 +246,16 @@ test('actual replacement PID is preserved when failed startup cleanup holds an o
   assert.match(result.stderr, /preserving unproven or replaced named Alpha Redis/);
   assert.equal(verifyNamedAlphaRedisIdentity(f.raw, replacement), true);
   assert.equal(f.redis('get', 'fixture-replacement-marker'), 'preserved');
+});
+
+test('launcher timeouts cannot count as an expected storage refusal', async (t) => {
+  const f = await storageFixture(t);
+  assert.throws(() => f.storage('sleep 1', {}, 1), /ETIMEDOUT/);
+  assert.equal(existsSync(f.pidFile), false, 'an execution timeout before storage cannot claim Redis ownership');
+});
+
+test('launcher signals cannot count as an expected storage refusal', async (t) => {
+  const f = await storageFixture(t);
+  assert.throws(() => f.storage('kill -KILL "$$"'), /storage launcher was terminated/);
+  assert.equal(existsSync(f.pidFile), false, 'a signal before storage cannot claim Redis ownership');
 });

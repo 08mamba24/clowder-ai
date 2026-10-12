@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { InvocationQueue } from '../../src/domains/cats/services/agents/invocation/InvocationQueue.js';
+import type { InvocationRegistry } from '../../src/domains/cats/services/agents/invocation/InvocationRegistry.js';
 import { InvocationTracker } from '../../src/domains/cats/services/agents/invocation/InvocationTracker.js';
 import { PersistedQueueDelivery } from '../../src/domains/cats/services/agents/invocation/PersistedQueueDelivery.js';
 import { QueuedMessageCustodyCoordinator } from '../../src/domains/cats/services/agents/invocation/QueuedMessageCustodyCoordinator.js';
@@ -10,7 +11,10 @@ import { InvocationRecordStore } from '../../src/domains/cats/services/stores/po
 import { MessageStore } from '../../src/domains/cats/services/stores/ports/MessageStore.js';
 
 /** Real admission, QueueProcessor and durable custody, with a deterministic provider boundary that never calls a model. */
-export function createPersistedQueueFixture(messages = new MessageStore()) {
+export function createPersistedQueueFixture(
+  messages = new MessageStore(),
+  registry?: Pick<InvocationRegistry, 'create'>,
+) {
   const queue = new InvocationQueue();
   const tracker = new InvocationTracker();
   const records = new InvocationRecordStore();
@@ -19,6 +23,9 @@ export function createPersistedQueueFixture(messages = new MessageStore()) {
   const starts: { threadId: string; userId: string; invocationId: string }[] = [];
   const completed: Promise<void>[] = [];
   const releases: (() => void)[] = [];
+  const providerControls = new Map<string, { release: () => void; settled: Promise<void> }>();
+  const credentials = new Map<string, { invocationId: string; callbackToken: string }>();
+  let additionalPromptMessageIds: string[] = [];
   const processor = new QueueProcessor({
     queue,
     invocationTracker: tracker,
@@ -39,10 +46,25 @@ export function createPersistedQueueFixture(messages = new MessageStore()) {
     router: {
       async *routeExecution(userId, _content, threadId, _messageId, targets, _intent, options) {
         const parentInvocationId = String(options?.parentInvocationId);
-        const invocationId = randomUUID();
         const catId = targets[0]!;
+        const auth = await registry?.create(
+          userId,
+          catId,
+          threadId,
+          parentInvocationId,
+          undefined,
+          undefined,
+          _messageId,
+          'strict',
+        );
+        const invocationId = auth?.invocationId ?? randomUUID();
+        if (auth) credentials.set(invocationId, auth);
         starts.push({ threadId, userId, invocationId });
         const startedAt = Date.now();
+        const promptMessageIds = [
+          ...new Set([...(options?.persistedPromptMessageIds ?? []), ...additionalPromptMessageIds]),
+        ];
+        additionalPromptMessageIds = [];
         turns.createRunning({
           invocationId,
           parentInvocationId,
@@ -53,9 +75,7 @@ export function createPersistedQueueFixture(messages = new MessageStore()) {
           executionKind: 'ordinary',
           causal: {
             triggerMessageId: _messageId,
-            ...(options?.persistedPromptMessageIds?.length
-              ? { coveredMessageIds: options.persistedPromptMessageIds }
-              : {}),
+            ...(promptMessageIds.length ? { coveredMessageIds: promptMessageIds } : {}),
           },
         });
         yield {
@@ -74,7 +94,7 @@ export function createPersistedQueueFixture(messages = new MessageStore()) {
             userId,
             catId,
             invocationId,
-            messageIds: options?.persistedPromptMessageIds,
+            messageIds: promptMessageIds,
             seenAt: Date.now(),
           });
         let finish!: () => void;
@@ -82,7 +102,10 @@ export function createPersistedQueueFixture(messages = new MessageStore()) {
           finish = resolve;
         });
         completed.push(settled);
-        await new Promise<void>((resolve) => releases.push(resolve));
+        await new Promise<void>((resolve) => {
+          releases.push(resolve);
+          providerControls.set(invocationId, { release: resolve, settled });
+        });
         // Release the fixture's provider without fabricating a successful work/Task verdict.
         try {
           if (turns.get(invocationId)?.status === 'running')
@@ -135,5 +158,16 @@ export function createPersistedQueueFixture(messages = new MessageStore()) {
     starts,
     waitForAwakening,
     close,
+    credentials,
+    // Fixture provider explicitly consumes these queued bodies in its next prompt; the production exposure writer persists them.
+    coverOnNextProviderStart(messageIds: string[]) {
+      additionalPromptMessageIds = [...messageIds];
+    },
+    async releaseProvider(invocationId: string) {
+      const control = providerControls.get(invocationId);
+      assert.ok(control, 'exact provider must have started');
+      control.release();
+      await control.settled;
+    },
   };
 }

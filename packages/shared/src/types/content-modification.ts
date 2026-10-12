@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { artifactReviewAnchorSchema } from './artifact-review.js';
 import { type ArtifactReviewImageEdit, artifactReviewImageEditSchema } from './artifact-review-drawing.js';
+import { mediaModificationSelectionItemSchema } from './artifact-review-media.js';
 import { evolutionMediaLocatorSchema } from './evolution-media-source.js';
 import { workspaceContentLocatorSchema, workspaceTextAnchorSchema } from './workspace-content-review.js';
 
@@ -42,7 +43,29 @@ export const contentModificationSourceSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 
-/** One explicit human submit; operational refs never supply the human principal or default target. */
+const contentModificationSelectionSchema = z.union([artifactReviewAnchorSchema, workspaceTextAnchorSchema]);
+export type ContentModificationSelection = z.infer<typeof contentModificationSelectionSchema>;
+const textModificationSelectionItemSchema = z
+  .object({
+    id,
+    selection: workspaceTextAnchorSchema,
+    instruction: z.string().trim().min(1).max(4000).optional(),
+  })
+  .strict();
+export const contentModificationSelectionItemSchema = z.union([
+  textModificationSelectionItemSchema,
+  mediaModificationSelectionItemSchema,
+]);
+
+export const contentModificationTakeoverSchema = z
+  .object({ sourceMessageId: id, operationId: z.string().uuid() })
+  .strict();
+export type ContentModificationTakeover = z.infer<typeof contentModificationTakeoverSchema>;
+
+/**
+ * Stable structural shape for field-level consumers such as retained drafts.
+ * Whole-request boundaries must use contentModificationRequestContractSchema.
+ */
 export const contentModificationRequestSchema = z
   .object({
     operationId: z.string().uuid(),
@@ -53,13 +76,47 @@ export const contentModificationRequestSchema = z
       .object({
         body: z.string().max(4000),
         imageEdit: artifactReviewImageEditSchema.optional(),
-        selection: z.union([artifactReviewAnchorSchema, workspaceTextAnchorSchema]).optional(),
+        selection: contentModificationSelectionSchema.optional(),
+        selections: z.array(contentModificationSelectionItemSchema).min(1).max(12).optional(),
       })
       .strict()
-      .refine(
-        (intent) => Boolean(intent.body.trim()) || intent.imageEdit !== undefined,
-        'A modification instruction is required',
-      ),
+      .superRefine((intent, ctx) => {
+        if (intent.imageEdit && intent.selections)
+          ctx.addIssue({
+            code: 'custom',
+            path: ['imageEdit'],
+            message: 'Choose a whole-image edit or named selections',
+          });
+        if (
+          intent.selection &&
+          intent.selections &&
+          JSON.stringify(intent.selection) !== JSON.stringify(intent.selections[0]?.selection)
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['selections'],
+            message: 'The legacy selection alias must equal the first named selection',
+          });
+        }
+        const ids = new Set<string>();
+        for (const [index, item] of (intent.selections ?? []).entries()) {
+          if (ids.has(item.id)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['selections', index, 'id'],
+              message: 'Selection ids must be unique',
+            });
+          }
+          ids.add(item.id);
+        }
+        if (
+          !intent.body.trim() &&
+          intent.imageEdit === undefined &&
+          !intent.selections?.some((item) => item.instruction)
+        ) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'A modification instruction is required' });
+        }
+      }),
     taskContext: z
       .union([
         z
@@ -83,6 +140,53 @@ export const contentModificationRequestSchema = z
   .strict();
 export type ContentModificationRequest = z.infer<typeof contentModificationRequestSchema>;
 
+/** One explicit human submit; operational refs never supply the human principal or default target. */
+export const contentModificationRequestContractSchema = contentModificationRequestSchema.superRefine((request, ctx) => {
+  const selections = request.intent.selections;
+  if (!selections) return;
+  const text = selections.filter((item) => item.selection.kind === 'text_quote');
+  if (text.length === 0) {
+    if (request.taskContext?.kind === 'text')
+      ctx.addIssue({ code: 'custom', path: ['taskContext'], message: 'Media selections require media context' });
+    return;
+  }
+  if (text.length !== selections.length) {
+    ctx.addIssue({ code: 'custom', path: ['intent', 'selections'], message: 'Do not mix text and media selections' });
+    return;
+  }
+  if (request.source.kind !== 'workspace') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['intent', 'selections'],
+      message: 'Multiple selections require one workspace source',
+    });
+    return;
+  }
+  for (const [index, item] of selections.entries()) {
+    if (item.selection.kind === 'text_quote' && item.selection.baseRevision !== request.source.expectedSourceRevision) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['intent', 'selections', index, 'selection', 'baseRevision'],
+        message: 'Every selection must use the workspace source revision',
+      });
+    }
+  }
+});
+
+export interface NormalizedModificationSelection {
+  readonly id: string;
+  readonly selection: ContentModificationSelection;
+  readonly instruction?: string;
+}
+
+/** One read shape for legacy single-selection requests and named multi-selection requests. */
+export function normalizeModificationSelections(
+  intent: Pick<ContentModificationRequest['intent'], 'selection' | 'selections'>,
+): NormalizedModificationSelection[] {
+  if (intent.selections) return intent.selections.map((item) => ({ ...item }));
+  return intent.selection ? [{ id: 'legacy-1', selection: intent.selection }] : [];
+}
+
 export const CONTENT_MODIFICATION_CLOSURES = {
   'published-result-ready': '返回与本次修改请求关联的新版本和具名回应，可从原作品位置重新打开',
   'file-writeback-applied': '先返回可审阅的新版或diff，经你明确接受后写回原文件，并可重新打开',
@@ -104,6 +208,12 @@ export const contentModificationSourceMessageV1Schema = z
   .strict();
 export type ContentModificationSourceMessageV1 = z.infer<typeof contentModificationSourceMessageV1Schema>;
 
+export {
+  type ContentModificationReceiptV1,
+  contentModificationReceiptFollowUpV1Schema,
+  contentModificationReceiptV1Schema,
+} from './content-modification-receipt.js';
+
 export function imageModificationInstruction(edit: ArtifactReviewImageEdit): string {
   return edit.kind === 'erase-region'
     ? '请移除选中区域内的内容，并自然补全背景，保留区域外的画面。'
@@ -114,13 +224,18 @@ export function imageModificationInstruction(edit: ArtifactReviewImageEdit): str
 export function contentModificationOutcome(intent: ContentModificationRequest['intent']): string {
   const edit = intent.imageEdit;
   const instruction = edit ? imageModificationInstruction(edit) : '';
-  const outcome = [instruction, intent.body.trim()].filter(Boolean).join('\n');
+  const selectionInstructions = normalizeModificationSelections(intent).flatMap((item) =>
+    item.instruction ? [`[${item.id}] ${item.instruction}`] : [],
+  );
+  const outcome = [instruction, intent.body.trim(), ...selectionInstructions].filter(Boolean).join('\n');
   if (!outcome || outcome.length > 4000) throw new Error('modification_intent_length');
   return outcome;
 }
 
 export const contentTextEditSchema = z
   .object({
+    /** Explicit request-selection relation; absence means an additional unscoped change. */
+    selectionId: id.optional(),
     start: z.number().int().nonnegative().safe(),
     end: z.number().int().nonnegative().safe(),
     expectedText: z.string().max(1024 * 1024),

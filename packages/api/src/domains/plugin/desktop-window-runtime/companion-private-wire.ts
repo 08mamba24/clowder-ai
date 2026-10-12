@@ -17,6 +17,12 @@ import {
   validateCompanionCommand as validateUnifiedCompanionCommand,
   validateCompanionReply as validateUnifiedCompanionReply,
 } from '@clowder-ai/plugin-contract-beta24';
+import {
+  validateCompanionCommand as validateWorkCompanionCommand,
+  validateCompanionReply as validateWorkCompanionReply,
+  type CompanionCommand as WorkCompanionCommand,
+  type CompanionReply as WorkCompanionReply,
+} from '@clowder-ai/plugin-contract-beta25';
 import { z } from 'zod';
 import type { CompanionArchiveContract } from './published-companion-v2.js';
 
@@ -55,6 +61,7 @@ export const hostF221Preview = z
             privacy: z.enum(['public', 'sensitive']),
             createdAt: z.string(),
             approvalOriginRef: z.string(),
+            correctionTarget: z.string().max(32000),
             publication: z.string().max(32000),
           })
           .strict(),
@@ -139,12 +146,14 @@ export type HostCompanionCommand =
   | Exclude<CompanionCommand, { kind: `audio.${string}` }>
   | Exclude<ModernCompanionCommand, { kind: `audio.${string}` }>
   | Exclude<UnifiedCompanionCommand, { kind: `audio.${string}` }>
+  | Exclude<WorkCompanionCommand, { kind: `audio.${string}` }>
   | z.infer<typeof offer>
   | z.infer<typeof f221ConfirmTrial>;
 export type HostCompanionReply =
   | CompanionReply
   | ModernCompanionReply
   | UnifiedCompanionReply
+  | WorkCompanionReply
   | HostCompanionState
   | z.infer<typeof answer>
   | HostF221Preview
@@ -153,13 +162,15 @@ export function validateHostCompanionCommand(
   value: unknown,
   contract: CompanionArchiveContract['contract'] = '0.1.0-beta.21',
 ): value is HostCompanionCommand {
-  if (!['0.1.0-beta.21', '0.1.0-beta.23', '0.1.0-beta.24'].includes(contract)) return false;
+  if (!['0.1.0-beta.21', '0.1.0-beta.23', '0.1.0-beta.24', '0.1.0-beta.25'].includes(contract)) return false;
   const validatePublic =
-    contract === '0.1.0-beta.24'
-      ? validateUnifiedCompanionCommand
-      : contract === '0.1.0-beta.23'
-        ? validateModernCompanionCommand
-        : validateCompanionCommand;
+    contract === '0.1.0-beta.25'
+      ? validateWorkCompanionCommand
+      : contract === '0.1.0-beta.24'
+        ? validateUnifiedCompanionCommand
+        : contract === '0.1.0-beta.23'
+          ? validateModernCompanionCommand
+          : validateCompanionCommand;
   return (
     (validatePublic(value) && !value.kind.startsWith('audio.')) ||
     offer.safeParse(value).success ||
@@ -170,13 +181,15 @@ export function validateHostCompanionReply(
   value: unknown,
   contract: CompanionArchiveContract['contract'] = '0.1.0-beta.21',
 ): value is HostCompanionReply {
-  if (!['0.1.0-beta.21', '0.1.0-beta.23', '0.1.0-beta.24'].includes(contract)) return false;
+  if (!['0.1.0-beta.21', '0.1.0-beta.23', '0.1.0-beta.24', '0.1.0-beta.25'].includes(contract)) return false;
   const validatePublic =
-    contract === '0.1.0-beta.24'
-      ? validateUnifiedCompanionReply
-      : contract === '0.1.0-beta.23'
-        ? validateModernCompanionReply
-        : validateCompanionReply;
+    contract === '0.1.0-beta.25'
+      ? validateWorkCompanionReply
+      : contract === '0.1.0-beta.24'
+        ? validateUnifiedCompanionReply
+        : contract === '0.1.0-beta.23'
+          ? validateModernCompanionReply
+          : validateCompanionReply;
   if (value && typeof value === 'object' && 'kind' in value && value.kind === 'state') {
     const parsed = hostStateExtras.safeParse(value);
     if (!parsed.success) return false;

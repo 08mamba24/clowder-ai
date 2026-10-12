@@ -144,6 +144,9 @@ CLI_CAT_CAFE_STRICT_PROFILE_DEFAULTS_OVERRIDE="${CAT_CAFE_STRICT_PROFILE_DEFAULT
 CLI_CAT_CAFE_DEPLOYMENT_ID_OVERRIDE="${CAT_CAFE_DEPLOYMENT_ID-}"
 CLI_CAT_CAFE_ALPHA_COORDINATES_OVERRIDE="${CAT_CAFE_ALPHA_COORDINATES-}"
 CLI_PREVIEW_EXPIRES_AT_OVERRIDE="${CAT_CAFE_PREVIEW_EXPIRES_AT-}"
+CLI_PREVIEW_CLEANUP_RESULT="${CAT_CAFE_PREVIEW_CLEANUP_RESULT-}"
+export -n CLI_PREVIEW_CLEANUP_RESULT
+unset CAT_CAFE_PREVIEW_CLEANUP_RESULT
 CLI_CAT_CAFE_ALPHA_ALLOW_EMPTY_REDIS_OVERRIDE="${CAT_CAFE_ALPHA_ALLOW_EMPTY_REDIS-}"
 CLI_CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED_OVERRIDE="${CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED-}"
 export -n CLI_CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED_OVERRIDE
@@ -177,6 +180,9 @@ fi
 # This launcher-only proof must never be inherited by the API or an agent
 # command it spawns. Dotenv cannot grant it; only the pre-dotenv wrapper can.
 unset CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED
+# Only this launcher can report cleanup; neither dotenv nor its children can
+# claim the supervisor's per-launch result path.
+unset CAT_CAFE_PREVIEW_CLEANUP_RESULT
 
 PREFER_DOTENV_PORTS="${CLI_CAT_CAFE_RESPECT_DOTENV_PORTS_OVERRIDE:-${CAT_CAFE_RESPECT_DOTENV_PORTS:-0}}"
 
@@ -262,6 +268,13 @@ is_official_runtime_data_owner() {
     project_root="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -P)" || return 1
     [ "$runtime_root" = "$project_root" ]
 }
+
+# Runtime-launched tools inherit its environment, not its deployment identity.
+# Use the same launch ownership check as data isolation before daemon identity,
+# Redis owner registration and API children consume this value.
+if [ "${CAT_CAFE_DEPLOYMENT_ID:-}" = "runtime" ] && ! is_official_runtime_data_owner; then
+    unset CAT_CAFE_DEPLOYMENT_ID
+fi
 
 apply_development_data_root_isolation() {
     # The official runtime is itself a linked worktree, but it owns the user's
@@ -1440,6 +1453,8 @@ print_redis_runtime_info() {
     [ -n "$dir" ] && echo "    - dir:       $dir"
     [ -n "$dbfile" ] && echo "    - dbfilename:$dbfile"
     [ -n "$appendonly" ] && echo "    - appendonly:$appendonly"
+    # Informational probes must not turn an unavailable field into startup failure.
+    return 0
 }
 
 run_in_dir() {
@@ -1665,8 +1680,9 @@ setup_storage() {
 
 # 清理函数 — Ctrl+C 时杀所有子进程 + 关闭专属 Redis
 cleanup() {
-    [ "$CLEANUP_RUNNING" = true ] && return 0
+    [ "$CLEANUP_RUNNING" = true ] && return "${CLEANUP_STATUS:-0}"
     CLEANUP_RUNNING=true
+    CLEANUP_STATUS=0
 
     echo ""
     echo "正在关闭服务..."
@@ -1691,14 +1707,25 @@ cleanup() {
     if [ "$USE_REDIS" = true ] && [ "$STARTED_REDIS" = true ]; then
         if ! named_alpha_redis_is_owned; then
             echo "[start-dev] preserving unproven or replaced named Alpha Redis; no protocol command or signal sent" >&2
+            CLEANUP_STATUS=1
         elif redis_ping; then
             archive_redis_snapshot "pre-stop"
-            redis-cli -p "$REDIS_PORT" shutdown save &> /dev/null || true
-            echo "  Redis (端口 $REDIS_PORT) 已关闭"
+            if redis-cli -p "$REDIS_PORT" shutdown save &> /dev/null; then
+                echo "  Redis (端口 $REDIS_PORT) 已关闭"
+            elif [ -n "${CAT_CAFE_ALPHA_COORDINATES:-}" ]; then
+                CLEANUP_STATUS=1
+            fi
+        elif [ -n "${CAT_CAFE_ALPHA_COORDINATES:-}" ]; then
+            CLEANUP_STATUS=1
         fi
     fi
     remove_redis_dev_lease
-    remove_named_alpha_redis_lease || echo "[start-dev] preserving named Alpha lease after failed owner verification" >&2
+    if [ "$CLEANUP_STATUS" -eq 0 ]; then
+        remove_named_alpha_redis_lease || CLEANUP_STATUS=1
+    fi
+    if [ "$CLEANUP_STATUS" -ne 0 ]; then
+        echo "[start-dev] cleanup incomplete; preserving named Alpha lease and data" >&2
+    fi
     wait 2>/dev/null || true
     # Only remove PID file if we are the daemon that wrote it (avoid orphaning a parallel daemon)
     if [ -f "$DAEMON_PID_FILE" ] && [ "$(cat "$DAEMON_PID_FILE" 2>/dev/null)" = "$$" ]; then
@@ -1706,11 +1733,39 @@ cleanup() {
         rm -f "$DAEMON_LOG_PATH_FILE"
     fi
     echo "再见！🐾"
+    return "$CLEANUP_STATUS"
 }
 
-trap cleanup EXIT
-trap 'trap - EXIT; cleanup; exit 130' INT
-trap 'trap - EXIT; cleanup; exit 143' TERM
+claim_preview_cleanup_result() {
+    [ -n "$CLI_PREVIEW_CLEANUP_RESULT" ] || return 0
+    PREVIEW_CLEANUP_PROCESS_GROUP="$(LC_ALL=C ps -p "$$" -o pgid=)" || return 1
+    PREVIEW_CLEANUP_PROCESS_GROUP="${PREVIEW_CLEANUP_PROCESS_GROUP//[[:space:]]/}"
+    case "$PREVIEW_CLEANUP_PROCESS_GROUP" in ''|*[!0-9]*) return 1 ;; esac
+    (umask 077; set -C; printf '{"pid":%s,"processGroupId":%s,"exitCode":null}\n' \
+        "$$" "$PREVIEW_CLEANUP_PROCESS_GROUP" > "$CLI_PREVIEW_CLEANUP_RESULT")
+}
+
+publish_preview_cleanup_result() {
+    [ -n "$CLI_PREVIEW_CLEANUP_RESULT" ] || return 0
+    local temporary="${CLI_PREVIEW_CLEANUP_RESULT}.$$"
+    (umask 077; printf '{"pid":%s,"processGroupId":%s,"exitCode":%s}\n' \
+        "$$" "$PREVIEW_CLEANUP_PROCESS_GROUP" "$1" > "$temporary") || return 1
+    mv -f "$temporary" "$CLI_PREVIEW_CLEANUP_RESULT"
+}
+
+finish_launcher() {
+    local exit_status="$1" cleanup_result="$2"
+    trap - EXIT
+    trap '' INT TERM
+    if ! cleanup; then exit_status=1; cleanup_result=1; fi
+    publish_preview_cleanup_result "$cleanup_result" || exit_status=1
+    exit "$exit_status"
+}
+
+claim_preview_cleanup_result || exit 1
+trap 'finish_launcher "$?" "$?"' EXIT
+trap 'finish_launcher 130 0' INT
+trap 'finish_launcher 143 0' TERM
 
 guard_main_branch_start() {
     if [ "${CAT_CAFE_ALLOW_MAIN_DEV:-0}" = "1" ]; then

@@ -4,13 +4,16 @@ import { ReviewToolbarIcon } from '@/components/content-review/ReviewToolbarIcon
 import commentStyles from '@/components/content-review/review-comment.module.css';
 import toolbarStyles from '@/components/content-review/review-toolbar.module.css';
 import styles from '@/components/content-review/review-workspace.module.css';
+import { useChatStore } from '@/stores/chatStore';
 import { API_URL } from '@/utils/api-client';
 import type { ContentLandingCapabilities, ContentReviewView, ContentReviewWorkflow } from './content-review-contract';
 import type { WorkspaceAnnotationTarget } from './useWorkspaceContentReview';
+import { useWorkspaceMediaChat } from './useWorkspaceMediaChat';
 import { WorkspaceContentReviewComments } from './WorkspaceContentReviewComments';
 import { WorkspaceContentReviewMedia } from './WorkspaceContentReviewMedia';
 import { WorkspaceContentReviewText } from './WorkspaceContentReviewText';
 import { WorkspaceLegacyTextNotes } from './WorkspaceLegacyTextNotes';
+import { AddToChatButton, AddToChatNotice } from './WorkspaceMediaChatControls';
 import { WorkspaceModificationEntry } from './WorkspaceModificationEntry';
 import type { LegacyTextNotes } from './workspace-review-legacy-text';
 
@@ -62,6 +65,13 @@ export function WorkspaceContentReviewProjection({
   const [discussionFocusRequest, setDiscussionFocusRequest] = useState<FocusRequest | null>(null);
   const [canvasFocusRequest, setCanvasFocusRequest] = useState<FocusRequest | null>(null);
   const [modificationOpenRequest, setModificationOpenRequest] = useState(0);
+  // A conversation receipt asked to see one returned candidate: it then takes the room the artwork had, and the
+  // artwork comes back on request. Only layout changes, so nothing the artwork holds (marks, draft, selection) is lost.
+  // It belongs to the one Workspace navigation that carried the ask: this surface keeps its instance when the same file
+  // is opened again, so a newer navigation (a link, the file tree, a receipt that only opens the file) ends it.
+  const [comparingAt, setComparingAt] = useState<number | null>(null);
+  const openRevision = useChatStore((state) => state.workspaceOpenRevision);
+  const comparing = comparingAt !== null && comparingAt === openRevision;
   // A text selection is live, like the card built on it: it targets "请猫修改" but is never stored as a draft,
   // so it cannot overwrite the quote of an old unsubmitted text draft.
   const [textSelection, setTextSelection] = useState<{ revision: string; quote: string } | null>(null);
@@ -84,33 +94,40 @@ export function WorkspaceContentReviewProjection({
   const source = view.currentSource ?? view.review.source;
   const canAuthor = view.canWrite && view.sourceState === 'current' && capabilities.annotate.state === 'available';
   const canWrite = canAuthor && !busy;
+  const mediaChat = useWorkspaceMediaChat({ view, path, workflow, target, draft, setDraft, setTarget });
+  if (source.kind === 'video-project')
+    return <p className="p-3 text-sm text-cafe-muted">当前文件视图尚不支持视频项目审阅。</p>;
   const composer = (
-    <form
-      className={commentStyles.composer}
-      onSubmit={(event) => {
-        event.preventDefault();
-        void submitAnnotation();
-      }}
-    >
-      <label>
-        <span className="sr-only">评论内容</span>
-        <textarea
-          value={draft}
-          maxLength={workflow?.annotationMaxLength ?? 8000}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder="写下这条批注…"
-        />
-      </label>
-      <button
-        type="submit"
-        aria-label="保存批注"
-        className={commentStyles.send}
-        disabled={!canWrite || !target || !draft.trim()}
+    <>
+      <form
+        className={commentStyles.composer}
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submitAnnotation();
+        }}
       >
-        <ReviewToolbarIcon name="send" />
-        <span className="sr-only">保存批注</span>
-      </button>
-    </form>
+        <label>
+          <span className="sr-only">评论内容</span>
+          <textarea
+            value={draft}
+            maxLength={workflow?.annotationMaxLength ?? 8000}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="写下这条批注…"
+          />
+        </label>
+        <AddToChatButton chat={mediaChat} />
+        <button
+          type="submit"
+          aria-label="保存批注"
+          className={commentStyles.send}
+          disabled={!canWrite || !target || !draft.trim()}
+        >
+          <ReviewToolbarIcon name="send" />
+          <span className="sr-only">保存批注</span>
+        </button>
+      </form>
+      <AddToChatNotice chat={mediaChat} />
+    </>
   );
   const comments = workflow?.discussion ? (
     workflow.discussion({
@@ -153,13 +170,16 @@ export function WorkspaceContentReviewProjection({
         disabled={!canWrite || capabilities.requestModification.state !== 'available'}
         onApplied={onApplied}
         onExpanded={() => setModificationOpenRequest((request) => request + 1)}
+        onComparing={setComparingAt}
       />
     );
   if (source.kind === 'text')
     return (
       <>
         {sourceState}
-        {modification}
+        <div className="max-h-[70%] min-h-0 shrink-0 overflow-auto" data-workspace-text-comparison>
+          {modification}
+        </div>
         {legacyText ? (
           <WorkspaceLegacyTextNotes
             legacy={legacyText}
@@ -189,7 +209,7 @@ export function WorkspaceContentReviewProjection({
       </>
     );
   return (
-    <div className={styles.workspace}>
+    <div className={styles.workspace} data-comparing={comparing ? 'true' : undefined}>
       {sourceState}
       {view.sourceState === 'current' ? (
         <WorkspaceContentReviewMedia
@@ -222,8 +242,10 @@ export function WorkspaceContentReviewProjection({
           }}
           onAnchorSelected={(anchor) => {
             setDiscussionOpen(false);
+            mediaChat.clearNotice();
             setTarget({ kind: 'media_anchor', anchor });
           }}
+          pendingChatMarks={mediaChat.marks}
           onAnnotationActive={openDiscussion}
           discussionFocusRequest={discussionFocusRequest}
           canvasFocusRequest={canvasFocusRequest}
@@ -232,9 +254,25 @@ export function WorkspaceContentReviewProjection({
           modificationOpenRequest={modificationOpenRequest}
         />
       ) : null}
-      <p className="shrink-0 border-t border-cafe-subtle px-3 pt-2 text-xs text-cafe-muted">
-        修改想法 · {target?.kind === 'media_anchor' ? '当前选区' : '整图'}
-      </p>
+      {comparing ? (
+        <div
+          className={`${styles.comparingBar} sticky top-0 z-10 flex shrink-0 items-center justify-between gap-2 border-t border-cafe-subtle bg-cafe-surface px-3 text-xs`}
+        >
+          <span className="text-cafe-muted">对照新版</span>
+          <button
+            type="button"
+            data-testid="workspace-return-to-artwork"
+            onClick={() => setComparingAt(null)}
+            className="rounded-md border border-cafe-subtle px-3 py-1.5 font-semibold text-cafe-accent"
+          >
+            回到作品画面
+          </button>
+        </div>
+      ) : (
+        <p className="shrink-0 border-t border-cafe-subtle px-3 pt-2 text-xs text-cafe-muted">
+          修改想法 · {target?.kind === 'media_anchor' ? '当前选区' : '整图'}
+        </p>
+      )}
       <div className={styles.modificationRegion}>{modification}</div>
       {discussionOpen || view.sourceState !== 'current' ? (
         <aside className={styles.drawer} aria-label="作品讨论">

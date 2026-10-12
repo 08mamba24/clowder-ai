@@ -12,6 +12,7 @@ code_anchors:
   - scripts/lib/alpha-coordinates.mjs
   - scripts/lib/alpha-named-launch.sh
   - scripts/lib/alpha-redis-process.mjs
+  - scripts/lib/alpha-identity-diagnostics.mjs
   - scripts/lib/alpha-redis-leases.mjs
   - packages/api/src/config/alpha-coordinates.ts
   - scripts/daemon-state.mjs
@@ -22,6 +23,7 @@ code_anchors:
   - scripts/lib/daemon-health-probe.mjs
   - packages/api/src/config/runtime-deployment-revision.ts
   - packages/api/src/config/runtime-deployment-inclusion.ts
+  - packages/api/src/domains/runtime-deployment/RuntimeDeploymentBootstrap.ts
   - packages/api/src/domains/runtime-deployment/RuntimeDeploymentLedger.ts
   - packages/api/src/domains/runtime-deployment/RuntimeDeploymentObservationProvider.ts
   - packages/api/src/routes/runtime-deployment-routes.ts
@@ -31,7 +33,7 @@ doc_anchors:
   - docs/features/F323-runtime-restart-coordination.md
   - feature-discussions/2026-09-27-runtime-restart-coordination/architecture-review.md
   - feature-specs/2026-09-27-f323-runtime-restart-coordination.md
-static_scan_hints: [StopOperationRecord, requestStop, authorizeRestart, reverify, daemonStatePaths, resolveRuntimeDeploymentRevision, RuntimeDeploymentLedger, RuntimeDeploymentObservationProvider, frozen target, deploymentRevision, boot identity]
+static_scan_hints: [StopOperationRecord, requestStop, authorizeRestart, reverify, daemonStatePaths, resolveRuntimeDeploymentRevision, beginOwnedRuntimeDeployment, RuntimeDeploymentLedger, RuntimeDeploymentObservationProvider, frozen target, deploymentRevision, boot identity]
 cited_by:
   - {feature: F323, date: 2026-09-27, delta: document existing F300 and ADR-039 daemon ownership plus durable boot-observation boundary}
   - {feature: F290, date: 2026-09-30, delta: a named isolated Alpha consumes a frozen main target and validated coordinates without stopping or rewriting an existing deployment}

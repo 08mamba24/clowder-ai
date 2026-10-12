@@ -2,9 +2,9 @@
 
 import { usePathname } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useApprovalHubStore } from '@/stores/approvalHubStore';
 import { useChatStore } from '@/stores/chatStore';
 import { MailboxPanel } from './MailboxPanel';
+import { MAILBOX_NAVIGATE_EVENT, type MailboxNavigation, type MailboxSection } from './mailbox/mailbox-navigation';
 import { openExactPlace } from './mailbox/open-exact-place';
 import type { OriginalPlace } from './mailbox/original-place';
 import { useApprovalSessions } from './mailbox/use-approval-sessions';
@@ -49,8 +49,9 @@ export function MailboxButton() {
   const sessions = useApprovalSessions(view);
   const state = deriveMailboxState(view.result);
   const setWorkspaceMode = useChatStore((s) => s.setWorkspaceMode);
-  const fetchPending = useApprovalHubStore((s) => s.fetchPending);
   const [open, setOpen] = useState(false);
+  const [section, setSection] = useState<MailboxSection>('pending');
+  const [selectedProposalId, setSelectedProposalId] = useState<string | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   // Leaving the page closes the panel: it belongs to the place it was opened from.
@@ -58,6 +59,18 @@ export function MailboxButton() {
   useEffect(() => {
     setOpen(false);
   }, [pathname]);
+
+  useEffect(() => {
+    const navigate = (event: Event) => {
+      const input = (event as CustomEvent<MailboxNavigation>).detail;
+      if (!input || !['pending', 'history', 'tools'].includes(input.section)) return;
+      setSection(input.section);
+      setSelectedProposalId(input.proposalId ?? null);
+      setOpen(true);
+    };
+    window.addEventListener(MAILBOX_NAVIGATE_EVENT, navigate);
+    return () => window.removeEventListener(MAILBOX_NAVIGATE_EVENT, navigate);
+  }, []);
 
   const close = useCallback((restoreFocus: boolean) => {
     setOpen(false);
@@ -74,12 +87,16 @@ export function MailboxButton() {
         openExactPlace(place.actionRef, pathname);
         return;
       }
+      if (place.destination === 'approval') {
+        setSection('tools');
+        setOpen(true);
+        return;
+      }
       openInChat(() => {
         setWorkspaceMode(place.destination);
-        if (place.destination === 'approval') void fetchPending();
       });
     },
-    [openInChat, setWorkspaceMode, fetchPending, pathname],
+    [openInChat, setWorkspaceMode, pathname],
   );
 
   const stateText = mailboxStateText(state);
@@ -96,7 +113,11 @@ export function MailboxButton() {
         ariaExpanded={open}
         ariaHasPopup="dialog"
         disableTip={open}
-        onClick={() => setOpen((wasOpen) => !wasOpen)}
+        onClick={() => {
+          setSection('pending');
+          setSelectedProposalId(null);
+          setOpen((wasOpen) => !wasOpen);
+        }}
         testId="mailbox-button"
         guideId="rail.mailbox"
       >
@@ -108,6 +129,9 @@ export function MailboxButton() {
           state={state}
           view={view}
           sessions={sessions}
+          section={section}
+          onSectionChange={setSection}
+          selectedProposalId={selectedProposalId}
           onOpenPlace={openPlace}
           onClose={() => close(true)}
         />

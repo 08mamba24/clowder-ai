@@ -48,6 +48,17 @@ export interface GlobalArtifactDTO extends ThreadArtifactDTO {
   threadId: string;
   /** thread 标题（用于分组标签 / 上下文显示） */
   threadTitle: string;
+  /**
+   * F309 owner-backed work coordinate. Absent means this artifact has no unique,
+   * currently authorized exact publication landing; callers must not infer one.
+   */
+  work?: GlobalArtifactWork;
+}
+
+export interface GlobalArtifactWork {
+  contentRef: string;
+  ownerRevision: number;
+  currentOwnerRevision: number;
 }
 
 /** GET /api/artifacts 响应 */
@@ -55,4 +66,8 @@ export interface GlobalArtifactsResponse {
   /** 时间倒序 */
   artifacts: GlobalArtifactDTO[];
   total: number;
+  /** `unavailable` means the owner catalogue could not be read completely; no partial work fields are exposed. */
+  workLineage: 'resolved' | 'unavailable';
+  /** Present on bounded views. False means older owner history was intentionally not scanned. */
+  complete?: boolean;
 }

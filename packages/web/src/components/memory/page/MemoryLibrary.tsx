@@ -1,6 +1,9 @@
 'use client';
 import { useState } from 'react';
+import { CreateCollectionDialog } from '../CreateCollectionDialog';
 import type { IndexStatusData } from '../IndexStatus';
+import { LIBRARY_KINDS as KINDS, LIBRARY_VISIBILITY as VISIBILITY } from './library-labels';
+import { MemoryLibraryCandidate } from './MemoryLibraryCandidate';
 import { MemoryReadState } from './MemoryReadState';
 import { type MaintenanceData, MemoryStatusCard } from './MemoryStatus';
 import { formatMemoryDate, type MemoryRead, useMemoryRead } from './use-memory-read';
@@ -22,18 +25,9 @@ export interface LibraryCandidate {
   createdAt: string;
   collectionName: string | null;
   state: string;
+  sourceCollectionId?: string | null;
+  sourceVisibility?: string | null;
 }
-const KINDS: Record<string, string> = {
-  project: '项目',
-  global: '全局',
-  world: '世界',
-  domain: '领域',
-  research: '调研',
-  lesson: '教训',
-  decision: '决策',
-  method: '方法',
-};
-const VISIBILITY: Record<string, string> = { public: '公开', internal: '内部', private: '私有', restricted: '受限' };
 const STATUSES: Record<string, string> = {
   registered: '待索引',
   indexing: '索引中',
@@ -49,10 +43,14 @@ export function MemoryLibrary({
   index: MemoryRead<IndexStatusData>;
   maintenance: MemoryRead<MaintenanceData>;
 }) {
-  const catalog = useMemoryRead<{ collections: LibraryCollection[] }>('/api/memory/catalog');
+  const catalog = useMemoryRead<{ collections: LibraryCollection[]; defaultTargetCollectionId?: string | null }>(
+    '/api/memory/catalog',
+  );
   const feed = useMemoryRead<{ pending: LibraryCandidate[]; processed: LibraryCandidate[] }>(
     '/api/memory/library-feed',
   );
+  const [creating, setCreating] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [processed, setProcessed] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const candidates = feed.data ? (processed ? feed.data.processed : feed.data.pending) : [];
@@ -69,14 +67,29 @@ export function MemoryLibrary({
         <div className="text-right">
           <button
             type="button"
-            disabled
-            className="rounded-lg border border-cafe-subtle px-3 py-2 text-compact opacity-50"
+            onClick={() => setCreating(true)}
+            className="rounded-lg border border-cafe-subtle px-3 py-2 text-compact"
           >
             ＋ 新建资料库
           </button>
-          <p className="mt-1 text-xs text-cafe-muted">尚未接入</p>
         </div>
       </header>
+      {notice && <output className="text-sm text-cafe-secondary">{notice}</output>}
+      {creating && (
+        <CreateCollectionDialog
+          onClose={() => {
+            setCreating(false);
+            catalog.retry();
+            index.retry();
+          }}
+          onCreated={() => {
+            setCreating(false);
+            setNotice('资料库已建好。');
+            catalog.retry();
+            index.retry();
+          }}
+        />
+      )}
       {partial && (
         <output className="block text-sm text-cafe-muted">
           部分读到：下面保留已读取的内容；未读到的部分各自注明。
@@ -87,7 +100,8 @@ export function MemoryLibrary({
           <section aria-label="待收录">
             <div className="mb-3 flex flex-wrap items-center gap-3">
               <h2 className="text-base font-medium">
-                待收录 {feed.data && <span className="ml-1 text-cafe-muted">{feed.data.pending.length}</span>}
+                {processed ? '已处理' : '待收录'}{' '}
+                {feed.data && <span className="ml-1 text-cafe-muted">{candidates.length}</span>}
               </h2>
               <button
                 type="button"
@@ -97,47 +111,25 @@ export function MemoryLibrary({
                 {processed ? '查看待收录' : '查看已处理'}
               </button>
             </div>
-            <p className="mb-3 text-compact text-cafe-muted">猫提议写进资料库的内容，等你决定。</p>
+            <p className="mb-3 text-compact text-cafe-muted">
+              {processed ? '已经处理过的提议，收录结果逐条注明。' : '猫提议写进资料库的内容，等你决定。'}
+            </p>
             <MemoryReadState {...feed} empty={candidates.length === 0} noun={processed ? '已处理记录' : '待收录内容'} />
             <div className="space-y-3">
               {(showAll ? candidates : candidates.slice(0, 2)).map((item) => (
-                <article key={item.id} className="rounded-xl border border-cafe-subtle bg-[var(--console-card-bg)] p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-compact text-cafe-muted">
-                    <span>
-                      {KINDS[item.kind] ?? '资料'} · {formatMemoryDate(item.createdAt)}
-                    </span>
-                    <span>{item.state}</span>
-                  </div>
-                  <p className="mt-3 line-clamp-3 whitespace-pre-wrap break-words text-sm leading-[1.55]">
-                    {item.content}
-                  </p>
-                  <details className="mt-2 text-compact text-cafe-secondary">
-                    <summary className="cursor-pointer text-cafe-accent">展开提议</summary>
-                    <p className="mt-2 whitespace-pre-wrap break-words">{item.content}</p>
-                  </details>
-                  <p className="mt-3 text-compact text-cafe-muted">
-                    {item.collectionName ? `来源资料库：${item.collectionName}` : '来源资料库没有记录下来'}
-                  </p>
-                  {!processed && (
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        disabled
-                        className="rounded-lg border border-cafe-subtle px-3 py-1.5 text-compact opacity-50"
-                      >
-                        收录
-                      </button>
-                      <button
-                        type="button"
-                        disabled
-                        className="rounded-lg border border-cafe-subtle px-3 py-1.5 text-compact opacity-50"
-                      >
-                        不收录
-                      </button>
-                      <span className="text-xs text-cafe-muted">尚未接入</span>
-                    </div>
-                  )}
-                </article>
+                <MemoryLibraryCandidate
+                  key={item.id}
+                  item={item}
+                  collections={catalog.data?.collections ?? []}
+                  defaultTargetCollectionId={catalog.data?.defaultTargetCollectionId ?? null}
+                  processed={processed}
+                  onChanged={(message) => {
+                    setNotice(message);
+                    feed.retry();
+                    catalog.retry();
+                    index.retry();
+                  }}
+                />
               ))}
             </div>
             {candidates.length > 2 && (
@@ -151,10 +143,16 @@ export function MemoryLibrary({
             )}
           </section>
           <section aria-label="全部资料库">
-            <h2 className="mb-3 text-base font-medium">
-              全部资料库{' '}
-              {catalog.data && <span className="ml-2 text-cafe-muted">{catalog.data.collections.length} 个</span>}
-            </h2>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-base font-medium">
+                全部资料库{' '}
+                {catalog.data && <span className="ml-2 text-cafe-muted">{catalog.data.collections.length} 个</span>}
+              </h2>
+              <a href="/memory/catalog?shell=v2" className="text-compact text-cafe-accent underline">
+                管理资料库 ↗
+              </a>
+            </div>
+            <p className="mb-3 text-compact text-cafe-muted">重建、归档和取消归档在原资料库管理页。</p>
             <MemoryReadState {...catalog} empty={!catalog.data?.collections.length} noun="资料库" />
             {catalog.data && (
               <div className="rounded-xl border border-cafe-subtle bg-[var(--console-card-bg)] px-4">

@@ -4,12 +4,12 @@ related_features: [F229, F258, F195, F202, F246, F295, F306, F309, F310]
 topics: [coactive, realtime, desktop-companion, gpt-live]
 doc_kind: spec
 created: 2026-09-15
-updated: 2026-09-28
+updated: 2026-10-08
 description: "让具名家猫通过实时感知与交谈、持续深思和行动，陪人跨应用共看、共听、互相指点，并接续共同经历。"
 description_source: model
 description_author: codex-astra
 description_updated_at: 2026-09-15T08:29:30Z
-tips_exempt: "The installed desktop entry and media boundary landed in #4611; real household, non-GPT and shared-perception acceptance remains open. Add product tips with the accepted user journey, not the synthetic fixture."
+tips_exempt: "Renewed 2026-10-10: the retired floating shell returns to the existing companion entry; current-page Home action scope, custody and synthetic acceptance clarify the existing permission boundary. Household, non-GPT and shared-perception acceptance remain open, so no general desktop capability is advertised."
 mcp_admission_status: accepted
 mcp_admission_ref: "file:docs/features/F317-coactive-companion.md"
 mcp_admission_claims:
@@ -106,6 +106,27 @@ operator 于 `[thread-id]#private-source-id` 明确替代必须完整承接；�
 
 此表是2026-09-16的规格与源码基线，不是新桌面组合已实测通过的声明。实施前按当时实际入口补全逐项清单，交付时走真实旧旅程对照。F229 未验收的完整语音 loop、快速档与 M5 跨线程 attention 不冒充既有完成项；其责任与状态沿原 owner，F317 不自动关闭旧 AC。
 
+#### 2026-10-05：F229 下线范围与网页终态
+
+You 在 `[thread-id]#private-source-id` 的引用批注明确要求 F317 完成承接后 sunset 原 F229 那一套；设计方由 `[thread-id]#private-source-id` 转回。该指令接续 source002/021 的整体承接方向，不是迁移已验收的证明。当前 #5148 仍在修复与验证，不能把公共 companion alpha.20 发布写成完整替代已经生效。
+
+**F317 owner 的终态决定：网页不再保留常驻悬浮猫、边缘小把手或另一只自动出现的兜底猫。** 沿用外壳已有猫猫入口，桌面可用时唤回桌面；未安装、停用、故障或仅使用浏览器时，可主动打开同一条伴随对话和插件设置。文字、图片、历史、富内容与确认继续消费共享 Chat；恢复信息放在主动打开的入口内。具体面板摆放消费 F322/F307 的现有外壳合同，不新建聊天运行时，也不自动开启媒体。
+
+下线对象是旧网页的独立展示壳及其专用行为：全局浮球、toolbar、气泡 chrome、旧网页桌宠动画/位置避让和自动浮球降级。共享 conversation、消息、确认、triage/investigation、导航、设置和 Host API 是 F317 正在复用的能力，不能按 `F229` 名称或目录整包删除；历史、未完成事项及用户偏好不删除、不重置。旧网页位置仅作为原宿主偏好保留，不直接当作桌面坐标。
+
+| 迁移项 | 2026-10-05 已核代码事实 | 下线前必须完成的对照 |
+| --- | --- | --- |
+| 文字、图片、历史、富内容及确认 | `ConciergePanel` 已使用 `ThreadChatSurface`；完整 `ChatContainer` 也消费 `useConciergeConfirmations`；插件可打开原伴随 thread | 从新入口发送、查看图片与操作卡、刷新恢复确认，仍是相同 thread/message；未发送草稿、待填 prompt 和原位置返回不丢失 |
+| 功能求助、记忆导航、传话与调查 | F229 已有 guide、peek/teleport、TriagePlan、调查取消/回执；共享 Chat 合流已完成，尚无本次撤壳后的旅程回证 | 在新入口复验原地看/跳转、确认/取消、结果回流；保留已有服务，不用 Live 工具库存证明整项迁移 |
+| 值班猫、人设、皮肤与安静设置 | 网页 Settings 与桌面设置均消费既有 owner 配置；原生大小、行为和设置生效由原 A/B 接线 | 同一已保存配置在新入口/桌面/重新打开后可读可用；隐藏与静音、插件停用、资料授权仍各自准确，不重置选择 |
+| 隐藏、重新唤出与故障恢复 | `ConciergeRailToggle` 仍以 `surfaceState=toolbar` 回到旧壳；配置加载和 `watchConciergeDesktop` 仍挂在 `ConciergeHost` | 把必要初始化、状态订阅和入口行为迁出旧壳；未安装/停用/恢复失败/纯浏览器下入口可达，不能只删 JSX 后留下空按钮 |
+| F317 页面操作确认 | `OwnerPageActionControl` 当前唯一产品挂载点仍在 `ConciergePanel` | 先接到新的主动入口，真实预览、一次确认、撤销和结果回读均可用；拆旧面板不能顺带拆掉新 F317 的动作许可入口 |
+| 旧浮球专用展示与布局 | `AppShell` 全局挂载 `ConciergeHost`；桌面可见时只让出球身，网页降级时旧浮球仍出现 | 上述承接通过后撤全局浮球/toolbar/气泡及无消费者的专用代码、样式和测试；390 宽搜索/召回按钮无遮挡，刷新与桌面失联不会复活旧球 |
+
+执行顺序：原 A 先完成正在进行的可靠通话/alpha.20 配对切片；随后在原 F317 责任内完成入口和独有确认依赖的承接，与原 B/外壳 writer 协调实际触及文件；按上表跑原旅程及故障状态，再撤旧壳与残留调用。代码需沿原 owner 单写，不另起 F229 替代品或第二套账本。下线门槛是本次受影响的已交付能力与恢复入口连续，不以 F317 全部新增能力为无限等待条件；未交付的旧 AC 继续保留其原状态。
+
+F322 的“窄屏小把手”不再作为终态工作实施。当前遮挡证据仍有效，既有保留区可在迁移期间保留；待旧壳实际移除，再清理其专用标记。DESIGN.md 的对应规则由原设计 owner 消费本决定后撤掉或改为过渡说明。此处是下线决定与可执行顺序，不是 F229 Feature 关闭、日常插件启停或迁移验收通过。
+
 ### Phase A: 产品定义与真实现场设计
 
 **已确认并交付的交互竖切**：operator source `private-source-id` 批准猫身入口与按需菜单；#4661 已实现，2026-09-22 真人拖动/打字发送验收通过。此局部设计从候选推进为已交付；跨应用共感知、指点与完整暂停/恢复设计仍按下方 AC-A1–A4 验收。
@@ -170,6 +191,47 @@ operator 在 source076 授权继续完整交付和拆分执行现场。本节回
 本轮 MCP resource-entry 只承接 U3 已授权的**只读**范围：`cat_cafe_get_running_work` 读 F295 同一 coordinator 的当前 Host 项目；`cat_cafe_get_pending_decisions` 读 owner 范围内已登记 F246 pending 与 F310 Needs Me 关联。来源为 operator 三部分交付授权 `[thread-id]#private-source-id`。完整只读链已由独立 [#4829](https://github.com/zts212653/clowder-ai/pull/4829) 合入 main `5c29599b6395df050bb58d5fd2a839e0d7371526`。这两项不授予决定、打断、producer 写回或 F221 单提案预览权限；代码合入也不等于插件激活、真实日常数据验证或完整 U3 验收。
 
 U3 的 Push/Pull/Hybrid 仍需比较；当前技术基线只支持按需读取设计，typed紧急事实和Host语音确认凭据尚缺。先可查不等于完整U3交付。三部分完成也仍须对照原 I1–I8、S1–S5、AC-A1–D5 收口，不默默放弃跨应用共看、共听、指点、非GPT协作或旧入口完整承接。
+
+**2026-10-04 Jev 产品接入纠偏**：operator source `[thread-id]#private-source-id`
+及 `private-source-id` 指出当前交付仍缺 Jev。上段 U3 分类采用结论保持其原样本与任务边界，
+不构成放弃“Jev＋GPT Live＋后端猫群”或页面动作接入的决定。纠偏时真实 Jev 调用只在实验脚本，
+正式 Host 只有隔离便签 profile；#5098 的网页预览不等于页面执行或 Jev 接通。
+当前沿 A 原现场由 Sol6.1 串行接上正常 Live 请求、真实页面候选、Jev、既有 policy/Driver 与回读，
+复用 F 已交模块，先完成实际产品路径再组织对应真人验收。
+该调整不扩大私人数据外发或真实页面/媒体授权，不提前关闭任何 Phase/AC。
+
+**2026-10-04 Jev 产品技术回证**：#5116、#5125 已合入；后者 merge `48da559f23`。
+Sol6.1 在正常安装、构建、启动的命名 Alpha `f317-jev-spoken` / `4f7fa06860` 完成既定合成范围：
+真实 ASR→自动 Live/Jev `1.13.0`→实际 Hub 一次确认→CDP 写入与回读→同通话准确完成语音及该段新 PCM。
+原源持久回执已被 native RPC 接受，结果正文与起声都晚于实际 applied 观察；r17 原 exit 1 为流式文本判据漏判，
+原回执保留，独立离线核验仍拒绝 r7/r11 误报。10 条本通话消息 TTL=-1，166.12s 正常 stop，自有进程/7 端口/许可释放。
+此为已授权固定 2.069s 音频的 Sol 技术链路；真人桌面体验、ASR 同音、语音耗时/稳定性、whole A/F 与旧事故仍开放。
+
+**2026-10-06 当前页面接入缺口**：operator source
+`[thread-id]#private-source-id` 质疑“提前接入的指定页面”。
+父复核 `ConfiguredJevPage.ts` 与 `OwnerCdpConnector.ts`：现有产品入口仍要求操作者预配精确
+`127.0.0.1` 页面地址、目标 ID/选择器和回读规则，只连接已打开且唯一匹配的页面。
+因此上述技术回证只证明预配页面的受控链路；从主人选定的当前页面取得实际操作候选仍未交付，
+不能把剩余工作归为补日常配置或等待真人测试。原“当前获准页面的真实候选”交付终点保持，
+不要求用户逐页写适配配置，也不把本次纠正当作访问私人页面、外发数据或执行修改的许可。
+
+**2026-10-07 当前页切片合入与合成 Alpha 验收**：#5210 已合 `b946a662e6`，
+非作者权限/consumer review 在 `33acb75a` 关闭两项 P1。父消费原 A 回流
+`[thread-id]#private-source-id` 并核对原件哈希、UI网络、页面值和语音事件：
+命名 Alpha `07f19a3c` 中，真实 ASR → 实际 UI 选择未预写 selector 的合成页面 → 真实 Jev →
+实际确认卡 → 填入并回读“带伞” → 同通话准确文字与新音频成立；同址对照页未修改。
+通话34.24秒正常结束，原配置/catalog恢复，草稿与持久消息保留，自有资源释放。
+这解除逐页预配的工程缺口；仍须一次已连接 CDP 和明确选页，不能称未连接的日常浏览器即开即用。
+本次正向实证是合成页 fill，未知业务结果的 click 仍为 unknown/no_effect；真人体验、长期稳定性、
+
+**2026-10-08 首次日常使用纠偏**：operator source `private-source-id`
+要求猫先准备好至少家内操控，不能用“准备好以后”把连接和配置工作留给人。
+父已沿原 Task33 续接；日常 API 尚未加载 Jev 页面配置，现有 UI 只选择已连接的浏览器，
+而 `OwnerCurrentPageBrowser.ts` 还排除了本地 Hub/Alpha 页面，故不是仅补一个地址就能交付。
+机器已有的 TypeSafe 凭据已用当前产品 selector 实调验证：合成“打开设置”请求由真实
+`jev-1.13.0` 选中设置目标；这仅证明 provider 可用，没有操作任何页面或启用日常接线。
+原 Opus55 设计续办 source319 负责首次使用/恢复旅程，Astra 核准备条件与组合交付，
+原 A 保持 Host 单写和 U1 重复 hello 修复。终点仍是从实际入口完成家内操作并回报真实结果，
 
 ## Acceptance Criteria
 

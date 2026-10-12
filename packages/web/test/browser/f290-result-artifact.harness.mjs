@@ -126,7 +126,11 @@ export function registerNativeOwnerResultArtifactRoutes(app, resultArtifacts) {
   );
   app.get('/api/artifacts', async (request, reply) =>
     request.sessionUserId
-      ? { artifacts: resultArtifacts.listArtifacts(), total: resultArtifacts.listArtifacts().length }
+      ? {
+          artifacts: resultArtifacts.listArtifacts(),
+          total: resultArtifacts.listArtifacts().length,
+          workLineage: 'unavailable',
+        }
       : reply.code(401).send({ error: 'fixture session required' }),
   );
   app.get('/api/threads/:threadId/artifacts', async (request, reply) => {

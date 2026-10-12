@@ -6,6 +6,7 @@ import type {
 } from '../../types.js';
 import { requireExactPreparedProviderMessage } from '../../types.js';
 import { asCodexAppServerRecord, type CodexAppServerJsonObject } from './CodexAppServerEventMapper.js';
+import type { CodexLiveContextKind } from './CodexLiveRunPort.js';
 import { CodexAppServerRpcError } from './codex-app-server-rpc-error.js';
 
 export interface LiveProviderInput {
@@ -13,7 +14,8 @@ export interface LiveProviderInput {
   text: string;
   sourceRef: string;
   sourceRefs?: readonly string[];
-  contextKind?: 'inbox_notice' | 'meeting_context' | 'recovery_context';
+  contextKind?: CodexLiveContextKind;
+  clientUserMessageId?: string;
 }
 export const LIVE_CONTEXT_TRIGGER =
   'The Host attached source-linked context at its original trust level. Continue this call; this is not a new user request.';
@@ -61,14 +63,16 @@ export class CodexLiveTurnInput {
   submitContextAtBoundary(
     text: string,
     sourceRefs: readonly string[],
-    contextKind: 'inbox_notice' | 'meeting_context' | 'recovery_context',
+    contextKind: CodexLiveContextKind,
     signal: AbortSignal,
     authorize: () => Promise<boolean>,
     threadId: string,
     activeTurnId: string | null,
+    clientUserMessageId?: string,
   ): Promise<string> {
     try {
       const { submission, receipt } = this.createContextSubmission(text, sourceRefs, contextKind, signal, authorize);
+      submission.input.clientUserMessageId = clientUserMessageId;
       void this.sendContext(submission, threadId, activeTurnId);
       return receipt;
     } catch (error) {
@@ -78,13 +82,15 @@ export class CodexLiveTurnInput {
   private createContextSubmission(
     text: string,
     sourceRefs: readonly string[],
-    contextKind: 'inbox_notice' | 'meeting_context' | 'recovery_context',
+    contextKind: CodexLiveContextKind,
     signal: AbortSignal,
     authorize: () => Promise<boolean>,
   ): { submission: Submission; receipt: Promise<string> } {
     if (!this.deps.isOpen() || signal.aborted) throw new LiveContextCancelledError();
     if (
-      !['inbox_notice', 'meeting_context', 'recovery_context'].includes(contextKind) ||
+      !['inbox_notice', 'meeting_context', 'recovery_context', 'page_action_result', 'owner_voice_context'].includes(
+        contextKind,
+      ) ||
       sourceRefs.length === 0 ||
       sourceRefs.length > 32
     )
@@ -124,7 +130,13 @@ export class CodexLiveTurnInput {
       if (!this.deps.isOpen() || value.signal?.aborted || !(await value.authorize?.()))
         throw new LiveContextCancelledError();
       if (value.signal?.aborted) throw new LiveContextCancelledError();
-      const result = await this.writeContext(threadId, activeTurnId, recorded.text, value.input.contextKind);
+      const result = await this.writeContext(
+        threadId,
+        activeTurnId,
+        recorded.text,
+        value.input.contextKind,
+        value.input.clientUserMessageId,
+      );
       const acceptedTurnId = acceptedContextTurnId(result, activeTurnId);
       accepted = true;
       await this.settle(request, 'accepted', acceptedTurnId);
@@ -156,6 +168,7 @@ export class CodexLiveTurnInput {
         await this.deps.request(activeTurnId ? 'turn/steer' : 'turn/start', {
           threadId,
           input: [{ type: 'text', text }],
+          clientUserMessageId: value.input.sourceRef,
           ...(activeTurnId ? { expectedTurnId: activeTurnId } : {}),
         }),
       );
@@ -224,7 +237,10 @@ export class CodexLiveTurnInput {
     activeTurnId: string | null,
     text: string,
     contextKind: LiveProviderInput['contextKind'],
+    clientUserMessageId?: string,
   ): Promise<ReturnType<typeof asCodexAppServerRecord>> {
+    if (contextKind === 'owner_voice_context' && !activeTurnId)
+      throw new Error('Owner voice context requires an active native turn');
     const additionalContext = {
       'cat-cafe.live-context': { kind: contextKind === 'meeting_context' ? 'untrusted' : 'application', value: text },
     };
@@ -233,6 +249,7 @@ export class CodexLiveTurnInput {
         threadId,
         input: [{ type: 'text', text: LIVE_CONTEXT_TRIGGER }],
         additionalContext,
+        ...(clientUserMessageId ? { clientUserMessageId } : {}),
         ...(activeTurnId ? { expectedTurnId: activeTurnId } : { turnTrigger: 'live_context' }),
       }),
     );

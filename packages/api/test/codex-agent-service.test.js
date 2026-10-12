@@ -5,11 +5,12 @@
 
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, mock, test } from 'node:test';
 import { catRegistry } from '@cat-cafe/shared';
+import { assertSelectedApiAccount, installAmbientCodexAccount } from './helpers/f320-auth-environment.js';
 import { fakeL0Compiler } from './helpers/fake-l0-compiler.js';
 
 const {
@@ -94,6 +95,100 @@ function createMockProcess() {
 function createMockSpawnFn(proc) {
   return mock.fn(() => proc);
 }
+
+for (const selectedRouting of [{}, { OPENAI_ORGANIZATION: 'org-b', OPENAI_PROJECT: 'project-b' }])
+  test(
+    `F320 API/custom actual spawn receives selected routing and an existing CODEX_HOME (selectedRouting=${Object.keys(selectedRouting).length})`,
+    { timeout: 5000 },
+    async (t) => {
+      installAmbientCodexAccount(t);
+      const proc = createMockProcess();
+      const spawnFn = mock.fn(() => {
+        setImmediate(() => emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 'fixture-api' }]));
+        return proc;
+      });
+      const service = new CodexAgentService({ l0CompilerFn: fakeL0Compiler, spawnFn });
+      const run = collect(
+        service.invoke('fixture', {
+          callbackEnv: {
+            CODEX_AUTH_MODE: 'api_key',
+            OPENAI_API_KEY: 'fixture-key',
+            OPENAI_BASE_URL: 'http://127.0.0.1:1/v1',
+            ...selectedRouting,
+          },
+        }),
+      );
+      await run;
+      assertSelectedApiAccount(spawnFn.mock.calls[0]?.arguments[2].env, 'fixture-key', selectedRouting);
+      const home = spawnFn.mock.calls[0]?.arguments[2].env.CODEX_HOME;
+      assert.ok(home);
+      t.after(() => rmSync(dirname(home), { recursive: true, force: true }));
+      assert.equal(existsSync(home), true, 'native rejects a nonexistent explicit home');
+    },
+  );
+
+test('F320 explicit OAuth clears credentials after accountEnv composition', { timeout: 5000 }, async (t) => {
+  const proc = createMockProcess();
+  const spawnFn = createMockSpawnFn(proc);
+  const service = new CodexAgentService({ l0CompilerFn: fakeL0Compiler, spawnFn });
+  const keys = [
+    'CODEX_API_KEY',
+    'CODEX_ACCESS_TOKEN',
+    'OPENAI_API_KEY',
+    'OPENAI_FEDERATION_RULE_ID',
+    'OPENAI_IDENTITY_TOKEN_FILE',
+  ];
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  t.after(() => {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  });
+  for (const key of keys) process.env[key] = 'fixture-ambient';
+  const promise = collect(
+    service.invoke('OAuth account selection', {
+      callbackEnv: { CODEX_AUTH_MODE: 'oauth' },
+      accountEnv: Object.fromEntries(keys.map((key) => [key, 'fixture-account-override'])),
+    }),
+  );
+  setTimeout(() => emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 'f320-final-env' }]), 50);
+  await promise;
+  assert.equal(spawnFn.mock.callCount(), 1);
+  const childEnv = spawnFn.mock.calls[0].arguments[2].env;
+  for (const key of keys) assert.equal(childEnv[key], undefined, `${key} must not override the selected OAuth account`);
+});
+
+test('F320 actual capability entry uses the selected account home rather than ambient home', async () => {
+  const chosenHome = join(process.env.HOME, 'chosen-codex-home');
+  let launch;
+  const service = new CodexAgentService({
+    l0CompilerFn: fakeL0Compiler,
+    carrierMode: 'app_server',
+    appServerHostPool: {
+      createSession: async (options) => {
+        launch = options;
+        throw new Error('fixture_spawn_boundary');
+      },
+    },
+  });
+  await assert.rejects(
+    service.requestNativeCapabilitySource({
+      invocationId: 'chosen-probe',
+      timeoutMs: 1000,
+      cwd: process.cwd(),
+      account: {
+        id: 'codex-chosen',
+        authType: 'oauth',
+        client: 'openai',
+        envVars: { CODEX_HOME: chosenHome },
+      },
+    }),
+    /fixture_spawn_boundary/,
+  );
+  assert.equal(launch.env.CODEX_HOME, chosenHome);
+  assert.equal(launch.env.CODEX_API_KEY, null);
+});
 
 /**
  * Write NDJSON events to mock process stdout, then end with exit 0.
@@ -216,7 +311,8 @@ async function collectCodexSpawnArgs(workingDirectory) {
         }),
       );
       emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-mcp-workspace-env' }]);
-      await promise;
+      const messages = await promise;
+      assert.equal(spawnFn.mock.callCount(), 1, JSON.stringify(messages));
     });
 
     return spawnFn.mock.calls[0].arguments[1];
@@ -1616,42 +1712,49 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
 
   test('Codex MCP config prefers explicit ALLOWED_WORKSPACE_DIRS over thread workingDirectory', async () => {
     const tmpRoot = makeTempDir('.tmp-mcp-explicit-env-');
+    const allowedRoot = makeTempDir('.tmp-mcp-allowed-root-');
+    const startupRoot = makeTempDir('.tmp-mcp-startup-root-');
 
     try {
       await withWorkspaceEnv(
-        { ALLOWED_WORKSPACE_DIRS: '/explicit/workspace', CAT_CAFE_WORKSPACE_ROOT: '/stale/workspace-root' },
+        { ALLOWED_WORKSPACE_DIRS: allowedRoot, CAT_CAFE_WORKSPACE_ROOT: startupRoot },
         async () => {
           const args = await collectCodexSpawnArgs(tmpRoot);
-          assertWorkspaceScopedServersUseAllowedWorkspaceDirs(
-            args,
-            '/explicit/workspace',
-            'explicit ALLOWED_WORKSPACE_DIRS',
-          );
+          assertWorkspaceScopedServersUseAllowedWorkspaceDirs(args, allowedRoot, 'explicit ALLOWED_WORKSPACE_DIRS');
         },
       );
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
+      rmSync(allowedRoot, { recursive: true, force: true });
+      rmSync(startupRoot, { recursive: true, force: true });
     }
   });
 
   test('Codex MCP config prefers thread workingDirectory over CAT_CAFE_WORKSPACE_ROOT', async () => {
     const tmpRoot = makeTempDir('.tmp-mcp-workspace-root-');
+    const startupRoot = makeTempDir('.tmp-mcp-startup-root-');
 
     try {
-      await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: '/stale/startup-workspace' }, async () => {
+      await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: startupRoot }, async () => {
         const args = await collectCodexSpawnArgs(tmpRoot);
         assertWorkspaceScopedServersUseAllowedWorkspaceDirs(args, tmpRoot, 'thread workingDirectory');
       });
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
+      rmSync(startupRoot, { recursive: true, force: true });
     }
   });
 
   test('Codex MCP config uses CAT_CAFE_WORKSPACE_ROOT when thread workingDirectory is absent', async () => {
-    await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: '/workspace/root' }, async () => {
-      const args = await collectCodexSpawnArgs();
-      assertWorkspaceScopedServersUseAllowedWorkspaceDirs(args, '/workspace/root', 'CAT_CAFE_WORKSPACE_ROOT fallback');
-    });
+    const startupRoot = makeTempDir('.tmp-mcp-fallback-root-');
+    try {
+      await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: startupRoot }, async () => {
+        const args = await collectCodexSpawnArgs();
+        assertWorkspaceScopedServersUseAllowedWorkspaceDirs(args, startupRoot, 'CAT_CAFE_WORKSPACE_ROOT fallback');
+      });
+    } finally {
+      rmSync(startupRoot, { recursive: true, force: true });
+    }
   });
 
   test('Codex MCP external env stays out of argv and command-only servers stay enabled', async () => {
@@ -1675,32 +1778,35 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
         },
       ]);
 
-      await withRuntimeRootEnv(projectDir, async () => {
-        const promise = collect(
-          service.invoke('hello external env', {
-            workingDirectory: projectDir,
-            callbackEnv: {
-              CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
-              CAT_CAFE_INVOCATION_ID: 'inv-secret',
-              CAT_CAFE_CALLBACK_TOKEN: 'tok-secret',
-              CAT_CAFE_CAT_ID: 'codex',
-            },
-          }),
-        );
-        emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-secret' }]);
-        await promise;
+      await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: projectDir }, () =>
+        withRuntimeRootEnv(projectDir, async () => {
+          const promise = collect(
+            service.invoke('hello external env', {
+              workingDirectory: projectDir,
+              callbackEnv: {
+                CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
+                CAT_CAFE_INVOCATION_ID: 'inv-secret',
+                CAT_CAFE_CALLBACK_TOKEN: 'tok-secret',
+                CAT_CAFE_CAT_ID: 'codex',
+              },
+            }),
+          );
+          emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-secret' }]);
+          const messages = await promise;
+          assert.equal(spawnFn.mock.callCount(), 1, JSON.stringify(messages));
 
-        const args = spawnFn.mock.calls[0].arguments[1];
-        assert.ok(
-          args.includes(`mcp_servers.secret-tool.command=${JSON.stringify(process.execPath)}`),
-          'env-wrapped external server must use runtime Node for the wrapper',
-        );
-        assert.ok(args.includes('mcp_servers.secret-tool.enabled=true'), 'external server must stay enabled');
-        assert.ok(
-          !args.some((arg) => arg.includes('SECRET_TOKEN') || arg.includes('super-secret-token')),
-          'external MCP env names and values must not be exposed in argv',
-        );
-      });
+          const args = spawnFn.mock.calls[0].arguments[1];
+          assert.ok(
+            args.includes(`mcp_servers.secret-tool.command=${JSON.stringify(process.execPath)}`),
+            'env-wrapped external server must use runtime Node for the wrapper',
+          );
+          assert.ok(args.includes('mcp_servers.secret-tool.enabled=true'), 'external server must stay enabled');
+          assert.ok(
+            !args.some((arg) => arg.includes('SECRET_TOKEN') || arg.includes('super-secret-token')),
+            'external MCP env names and values must not be exposed in argv',
+          );
+        }),
+      );
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }
@@ -1730,25 +1836,28 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
         },
       ]);
 
-      await withRuntimeRootEnv(projectDir, async () => {
-        const promise = collect(
-          service.invoke('hello relative command', {
-            workingDirectory: projectDir,
-            callbackEnv: {
-              CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
-              CAT_CAFE_INVOCATION_ID: 'inv-relative-command',
-              CAT_CAFE_CALLBACK_TOKEN: 'tok-relative-command',
-              CAT_CAFE_CAT_ID: 'codex',
-            },
-          }),
-        );
-        emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-relative-command' }]);
-        await promise;
+      await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: projectDir }, () =>
+        withRuntimeRootEnv(projectDir, async () => {
+          const promise = collect(
+            service.invoke('hello relative command', {
+              workingDirectory: projectDir,
+              callbackEnv: {
+                CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
+                CAT_CAFE_INVOCATION_ID: 'inv-relative-command',
+                CAT_CAFE_CALLBACK_TOKEN: 'tok-relative-command',
+                CAT_CAFE_CAT_ID: 'codex',
+              },
+            }),
+          );
+          emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-relative-command' }]);
+          const messages = await promise;
+          assert.equal(spawnFn.mock.callCount(), 1, JSON.stringify(messages));
 
-        const args = spawnFn.mock.calls[0].arguments[1];
-        assert.ok(args.includes(`mcp_servers.relative-tool.command="${toolPath}"`));
-        assert.ok(!args.includes('mcp_servers.relative-tool.command="./server"'));
-      });
+          const args = spawnFn.mock.calls[0].arguments[1];
+          assert.ok(args.includes(`mcp_servers.relative-tool.command="${toolPath}"`));
+          assert.ok(!args.includes('mcp_servers.relative-tool.command="./server"'));
+        }),
+      );
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
       rmSync(toolDir, { recursive: true, force: true });
@@ -1784,35 +1893,38 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
         },
       ]);
 
-      await withRuntimeRootEnv(projectDir, async () => {
-        const promise = collect(
-          service.invoke('hello relative workingDir', {
-            workingDirectory: projectDir,
-            callbackEnv: {
-              CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
-              CAT_CAFE_INVOCATION_ID: 'inv-relative-workdir',
-              CAT_CAFE_CALLBACK_TOKEN: 'tok-relative-workdir',
-              CAT_CAFE_CAT_ID: 'codex',
-            },
-          }),
-        );
-        emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-relative-workdir' }]);
-        await promise;
+      await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: projectDir }, () =>
+        withRuntimeRootEnv(projectDir, async () => {
+          const promise = collect(
+            service.invoke('hello relative workingDir', {
+              workingDirectory: projectDir,
+              callbackEnv: {
+                CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
+                CAT_CAFE_INVOCATION_ID: 'inv-relative-workdir',
+                CAT_CAFE_CALLBACK_TOKEN: 'tok-relative-workdir',
+                CAT_CAFE_CAT_ID: 'codex',
+              },
+            }),
+          );
+          emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-relative-workdir' }]);
+          const messages = await promise;
+          assert.equal(spawnFn.mock.callCount(), 1, JSON.stringify(messages));
 
-        const args = spawnFn.mock.calls[0].arguments[1];
-        const serverArgsConfig = args.find((arg) => arg.startsWith('mcp_servers.relative-root-tool.args=['));
-        assert.ok(serverArgsConfig, 'env-wrapped external server must emit wrapper args');
-        const specPath = serverArgsConfig.match(/, "([^"]+mcp-env-spec\.json)"\]$/)?.[1];
-        assert.ok(specPath, 'wrapper args must include a readable spec path');
-        const spec = JSON.parse(readFileSync(specPath, 'utf8'));
-        assert.equal(spec.command, toolPath);
-        assert.deepEqual(spec.args, [dataPath]);
-        assert.equal(spec.cwd, toolDir);
-        assert.ok(
-          !args.some((arg) => arg.includes('SECRET_TOKEN') || arg.includes('super-secret-token')),
-          'external MCP env names and values must not be exposed in argv',
-        );
-      });
+          const args = spawnFn.mock.calls[0].arguments[1];
+          const serverArgsConfig = args.find((arg) => arg.startsWith('mcp_servers.relative-root-tool.args=['));
+          assert.ok(serverArgsConfig, 'env-wrapped external server must emit wrapper args');
+          const specPath = serverArgsConfig.match(/, "([^"]+mcp-env-spec\.json)"\]$/)?.[1];
+          assert.ok(specPath, 'wrapper args must include a readable spec path');
+          const spec = JSON.parse(readFileSync(specPath, 'utf8'));
+          assert.equal(spec.command, toolPath);
+          assert.deepEqual(spec.args, [dataPath]);
+          assert.equal(spec.cwd, toolDir);
+          assert.ok(
+            !args.some((arg) => arg.includes('SECRET_TOKEN') || arg.includes('super-secret-token')),
+            'external MCP env names and values must not be exposed in argv',
+          );
+        }),
+      );
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }
@@ -2185,13 +2297,14 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     const promise = collect(
       service.invoke('hello', {
         contextCapacity: { windowTokens: 372000, inputCeilingTokens: 356000, actionable: true },
+        // API identity is account-owned; ordinary context/reasoning preferences are still configurable.
+        callbackEnv: { CODEX_AUTH_MODE: 'api_key', OPENAI_API_KEY: 'fixture-key' },
         cliConfigArgs: [
           '--config model_context_window=111000',
           '--config=model_auto_compact_token_limit=95000',
           '-c=model_context_window=222000',
           '-cmodel_auto_compact_token_limit=96000',
           '--config model_reasoning_effort="low"',
-          '--config model_provider="custom"',
         ],
       }),
     );
@@ -2223,7 +2336,7 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     );
     assert.ok(
       args.includes('model_provider="custom"'),
-      'provider selection is not part of the capacity binding and must retain its existing precedence',
+      'account-owned API provider must coexist with the context-capacity binding',
     );
   });
 
@@ -3349,10 +3462,9 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     const spawnOpts = spawnFn.mock.calls[0].arguments[2];
     const args = spawnFn.mock.calls[0].arguments[1];
     assert.equal(spawnOpts.env.OPENAI_API_KEY, 'sk-test-api-mode');
-    // F319 B.1: the observed HTTPS provider follows the wire (no custom base
-    // URL), not the auth label. The on/off transport contract for api_key
-    // sessions is pinned in codex-agent-service-f319-served-model.test.js.
-    assert.ok(!args.includes('model_provider="custom"'), 'api_key mode without a base URL is not the custom provider');
+    assert.ok(args.includes('model_provider="custom"'), 'explicit API mode must use its selected env_key');
+    assert.ok(args.includes('model_providers.custom.base_url="https://api.openai.com/v1"'));
+    assert.ok(args.includes('model_providers.custom.env_key="OPENAI_API_KEY"'));
   });
 
   test('callbackEnv auth mode overrides process default when launching codex child env', async () => {

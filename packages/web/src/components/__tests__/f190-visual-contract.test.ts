@@ -25,6 +25,37 @@ function collectSourceFiles(root: string): string[] {
   return files;
 }
 
+interface ModalOverlayCandidate {
+  className: string;
+  exactConsumer: boolean;
+}
+
+function modalOverlayCandidates(source: string): ModalOverlayCandidate[] {
+  const inlineClassNames = [
+    ...source.matchAll(
+      /className=(?:"([^"]*bg-\[var\(--console-overlay-(?:backdrop|medium|light|heavy)\)\][^"]*)"|\{`([^`]*bg-\[var\(--console-overlay-(?:backdrop|medium|light|heavy)\)\][^`]*)`\})/g,
+    ),
+  ]
+    .map((match) => match[1] ?? match[2])
+    .filter((className) => className.includes('inset-0'));
+  const centralizedClassNames = [
+    ...source.matchAll(
+      /const\s+(\w*OVERLAY\w*)\s*=\s*['"]([^'"]*bg-\[var\(--console-overlay-(?:backdrop|medium|light|heavy)\)\][^'"]*)['"]/g,
+    ),
+  ].map((match) => ({ identifier: match[1], className: match[2] }));
+  const classNameExpressions = [...source.matchAll(/className=\{([^}\n]+)\}/g)].map((match) => match[1].trim());
+  const consumedCentralizedClassNames = centralizedClassNames.flatMap(({ identifier, className }) => {
+    const identifierReference = new RegExp(`\\b${identifier}\\b`);
+    return classNameExpressions
+      .filter((expression) => identifierReference.test(expression))
+      .map((expression) => ({ className, exactConsumer: expression === identifier }));
+  });
+  return [
+    ...inlineClassNames.map((className) => ({ className, exactConsumer: true })),
+    ...consumedCentralizedClassNames,
+  ];
+}
+
 describe('F190 visual contract — no hard borders in card/panel components', () => {
   it('SessionChainPanel uses settingsResourceCardClass, not border-[var(--console-border-soft)]', () => {
     const src = readSrc('SessionChainPanel.tsx');
@@ -359,8 +390,10 @@ describe('F190 visual contract — no hard borders in card/panel components', ()
     expect(tokens.fontSize).toHaveProperty('compact');
     expect(tokens.fontSize).toHaveProperty('label');
     expect(tokens.fontSize).toHaveProperty('micro');
+    expect(tokens.fontSize).toHaveProperty('reading');
     expect(tokens.fontSizePx).toHaveProperty('compact');
     expect(tokens.fontSizePx).toHaveProperty('label');
+    expect(tokens.fontSizePx).toHaveProperty('reading');
     expect(config).toContain("require('./src/styles/typography-tokens.json')");
     /* F056: fontSize expanded to object with spread + caption alias;
        verify the spread wiring is intact (not the old direct assignment). */
@@ -693,8 +726,8 @@ describe('#723 cross-page typography consistency', () => {
     expect(src).not.toMatch(/搜索[\s\S]{0,80}border border-/);
   });
 
-  it('MessageNavigator has 1px connecting rail, no extra viewport thumb or raw grey', () => {
-    const src = readSrc('MessageNavigator.tsx');
+  it('classic MessageNavigator preserves its connecting rail and single position indicator', () => {
+    const src = readSrc('ClassicMessageNavigator.tsx');
     expect(src).toContain('w-px');
     expect(src).toContain('console-border-soft');
     expect(src).not.toContain('w-1.5');
@@ -704,14 +737,18 @@ describe('#723 cross-page typography consistency', () => {
     expect(src).not.toContain('viewport');
   });
 
-  it('chat container keeps a visible thin scrollbar for position context', () => {
+  it('chat keeps its thin position indicator until the measured piano is ready', () => {
     const css = readFileSync(resolve(testDir, '../../app/console-shell.css'), 'utf8');
-    const chatRules = css.match(/\[data-chat-container\][\s\S]*?\[data-theme="dark"\]/)?.[0] ?? '';
+    const chatRules = css.match(/\[data-chat-container\]\s*\{([^}]+)\}/)?.[1] ?? '';
     expect(css).toContain('[data-chat-container]');
     expect(css).toContain('scrollbar-width: thin');
     expect(css).toContain('[data-chat-container]::-webkit-scrollbar-thumb');
     expect(chatRules).not.toContain('scrollbar-width: none');
     expect(chatRules).not.toContain('display: none');
+    const measuredRules =
+      css.match(/\[data-chat-container\]\[data-message-piano-ready="true"\]\s*\{([^}]+)\}/)?.[1] ?? '';
+    expect(measuredRules).toContain('scrollbar-width: none');
+    expect(readSrc('thread-chat/ThreadChatSurface.tsx')).toContain('onTrackReadyChange: setPianoReady');
   });
 
   it('PushSettingsPanel uses resource-card shell and embeds PushServiceConfig content', () => {
@@ -765,9 +802,15 @@ describe('#723 interactive button guard — no grey pill on action/toggle contro
   });
 
   it('ChatVoiceFeatureControls: inactive voice entries have no console-pill-bg', () => {
-    const src = readSrc('ChatVoiceFeatureControls.tsx');
-    expect(src).not.toContain('console-pill-bg');
-    expect(src).toContain('text-cafe-secondary');
+    // The cards live in the Classic/V2 implementations; the branch file only routes by presentation.
+    const branch = readSrc('ChatVoiceFeatureControls.tsx');
+    expect(branch).not.toContain('console-pill-bg');
+    const classic = readSrc('ChatVoiceFeatureControlsClassic.tsx');
+    expect(classic).not.toContain('console-pill-bg');
+    expect(classic).toContain('text-cafe-secondary');
+    const v2 = readSrc('ChatVoiceFeatureControlsV2.tsx');
+    expect(v2).not.toContain('console-pill-bg');
+    expect(v2).toContain('text-cafe-secondary');
   });
 
   it('ChatContainerHeader: PanelToggle uses the same borderless icon grammar as the calm header', () => {
@@ -1475,19 +1518,28 @@ describe('#723 round 9 — install button, error suppression, breadcrumb, tab/ca
 
     for (const file of modalOverlayFiles) {
       const src = readSrc(file);
-      const overlayClassNames = [
-        ...src.matchAll(
-          /className=(?:"([^"]*bg-\[var\(--console-overlay-(?:backdrop|medium|light|heavy)\)\][^"]*)"|\{`([^`]*bg-\[var\(--console-overlay-(?:backdrop|medium|light|heavy)\)\][^`]*)`\})/g,
-        ),
-      ]
-        .map((match) => match[1] ?? match[2])
-        .filter((className) => className.includes('inset-0'));
+      const overlayCandidates = modalOverlayCandidates(src);
 
-      expect(overlayClassNames, `${file} should declare at least one console overlay scrim`).not.toHaveLength(0);
-      for (const className of overlayClassNames) {
+      expect(overlayCandidates, `${file} should declare at least one console overlay scrim`).not.toHaveLength(0);
+      for (const { className, exactConsumer } of overlayCandidates) {
+        expect(exactConsumer, `${file} overlay scrim should consume its centralized class without mutation`).toBe(true);
+        expect(className, `${file} overlay scrim should include inset-0`).toContain('inset-0');
         expect(className, `${file} overlay scrim should include backdrop-blur-sm`).toContain('backdrop-blur-sm');
       }
     }
+  });
+
+  it('centralized modal scrim classes count only when JSX consumes the unmodified constant', () => {
+    const overlayClass = 'fixed inset-0 bg-[var(--console-overlay-backdrop)] backdrop-blur-sm flex items-center';
+    const declaration = `const OVERLAY_CLASS = '${overlayClass}';`;
+
+    expect(modalOverlayCandidates(`${declaration}<div className={OVERLAY_CLASS} />`)).toEqual([
+      { className: overlayClass, exactConsumer: true },
+    ]);
+    expect(
+      modalOverlayCandidates(`${declaration}<div className={OVERLAY_CLASS.replace('backdrop-blur-sm', '')} />`),
+    ).toEqual([{ className: overlayClass, exactConsumer: false }]);
+    expect(modalOverlayCandidates(`${declaration}<div className="fixed inset-0" />`)).toEqual([]);
   });
 
   it('HubQuotaBoardTab: rounded-xl + standard shadow, no heavy shadow', () => {

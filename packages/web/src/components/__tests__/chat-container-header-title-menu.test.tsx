@@ -15,7 +15,6 @@ vi.mock('../icons/CatCafeLogo', () => ({ CatCafeLogo: () => null }));
 vi.mock('../ThreadCatPill', () => ({ ThreadCatPill: () => null }));
 vi.mock('../ThreadIndicator', () => ({ ThreadIndicator: () => null, tailTruncate: (value: string) => value }));
 vi.mock('../shell/HeaderCounts', () => ({ ThreadTasksButton: () => null, ThreadWorksButton: () => null }));
-vi.mock('../shell/HeaderParticipants', () => ({ HeaderParticipants: () => null }));
 
 import { ChatContainerHeader } from '../ChatContainerHeader';
 

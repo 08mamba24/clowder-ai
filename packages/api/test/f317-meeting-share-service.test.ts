@@ -20,6 +20,7 @@ function fixture() {
   };
   let capture: F195CaptureObservation | null = {
     running: true,
+    lifecycle: 'running' as const,
     paused: false,
     threadId: 'meeting-thread',
     meetingId: 'mtg-1',
@@ -212,6 +213,7 @@ test('a preview for one App cannot authorize a different App or changed display 
     if (preview.kind !== 'available') return;
     f.setCapture({
       running: true,
+      lifecycle: 'running' as const,
       paused: false,
       threadId: 'meeting-thread',
       meetingId: 'mtg-1',

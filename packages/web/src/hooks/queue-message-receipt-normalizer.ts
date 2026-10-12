@@ -126,6 +126,14 @@ function normalizeConsumption(value: unknown): QueueTerminalConsumptionWitness |
   const candidate = asRecord(value);
   if (!candidate || typeof candidate.kind !== 'string') return undefined;
   if (
+    candidate.kind === 'collective_public_reply' &&
+    ['sourceMessageId', 'sourceEventId', 'acceptedEventId'].every(
+      (key) => typeof candidate[key] === 'string' && candidate[key].trim().length > 0,
+    )
+  ) {
+    return candidate as unknown as QueueTerminalConsumptionWitness;
+  }
+  if (
     candidate.kind === 'terminal_silent' &&
     candidate.projectionState === 'covered_empty' &&
     candidate.wake === 'coordination_terminal'
@@ -181,6 +189,7 @@ function normalizeOutcome(value: unknown): QueueTargetOutcome | undefined {
   if ((candidate.disposition === 'dispatch_disposition') !== (evidenceRef.kind === 'dispatch_disposition'))
     return undefined;
   if (candidate.consumption !== undefined && !consumption) return undefined;
+  if (consumption?.kind === 'collective_public_reply' && candidate.disposition !== 'responded') return undefined;
   return {
     invocationId: candidate.invocationId,
     disposition: candidate.disposition as QueueTargetOutcome['disposition'],

@@ -3,8 +3,21 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseNamedAlphaCoordinates } from './alpha-coordinates.mjs';
+import { alphaIdentityRefusal, captureAlphaIdentity } from './alpha-identity-diagnostics.mjs';
 import { verifyNamedAlphaRedisIdentity } from './alpha-redis-process.mjs';
 import { captureProcessIdentity, PROCESS_START_TIME_FORMAT } from './process-identity.mjs';
+
+const OWNER_SUBJECT = 'Named Alpha Redis owner';
+
+function ownerRefusal(expected, current, alphaRoot, mismatchMessage) {
+  return alphaIdentityRefusal({
+    subject: OWNER_SUBJECT,
+    expected,
+    current,
+    required: { cwd: alphaRoot, ucomm: 'bash', startedAtFormat: PROCESS_START_TIME_FORMAT },
+    mismatchMessage,
+  });
+}
 
 export function namedAlphaRedisRegistryDir(env = process.env) {
   return env.CAT_CAFE_ALPHA_REDIS_REGISTRY_DIR || join(tmpdir(), 'cat-cafe-alpha-redis');
@@ -49,9 +62,14 @@ function validateLease(record, { now = Date.now(), capture = captureProcessIdent
     (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= createdAt || expiresAt <= now))
   )
     throw new Error('Named Alpha Redis lease is expired or has invalid lifetime');
-  const owner = capture(record.owner.pid);
+  const owner = captureAlphaIdentity(record.owner.pid, capture, OWNER_SUBJECT);
   if (!ownerMatches(record.owner.process, owner, coordinates.alphaRoot))
-    throw new Error('Named Alpha Redis owner incarnation changed');
+    throw ownerRefusal(
+      record.owner.process,
+      owner,
+      coordinates.alphaRoot,
+      'Named Alpha Redis owner incarnation changed',
+    );
   if (
     !Number.isSafeInteger(record.redis?.process?.startedAtEpochMs) ||
     owner.startedAtEpochMs > record.redis.process.startedAtEpochMs ||
@@ -75,7 +93,7 @@ export function registerNamedAlphaRedisLease(
       version: 1,
       kind: 'named-alpha',
       coordinates: parseNamedAlphaCoordinates(rawCoordinates),
-      owner: { pid: ownerPid, process: capture(ownerPid) },
+      owner: { pid: ownerPid, process: captureAlphaIdentity(ownerPid, capture, OWNER_SUBJECT) },
       redis,
       createdAt: new Date(now).toISOString(),
       expiresAt,
@@ -133,11 +151,15 @@ export function removeNamedAlphaRedisLease(
 ) {
   if (resolve(file) !== join(resolve(registryDir), basename(file))) throw new Error('Lease is outside Alpha registry');
   const record = readLease(file);
-  if (
-    record.owner.pid !== ownerPid ||
-    !ownerMatches(record.owner.process, capture(ownerPid), record.coordinates.alphaRoot)
-  )
-    throw new Error('Cannot remove another Alpha owner lease');
+  if (record.owner.pid !== ownerPid) throw new Error('Cannot remove another Alpha owner lease');
+  const owner = captureAlphaIdentity(ownerPid, capture, OWNER_SUBJECT);
+  if (!ownerMatches(record.owner.process, owner, record.coordinates.alphaRoot))
+    throw ownerRefusal(
+      record.owner.process,
+      owner,
+      record.coordinates.alphaRoot,
+      'Cannot remove another Alpha owner lease',
+    );
   rmSync(file);
 }
 

@@ -1,8 +1,7 @@
-import { Readable } from 'node:stream';
+import type { Readable } from 'node:stream';
 import type {
   EvolutionMediaLocator,
   PublicationReviewContext,
-  WorkspaceContentActor,
   WorkspaceContentReview,
   WorkspaceContentReviewAction,
   WorkspaceContentReviewView,
@@ -25,15 +24,21 @@ import {
   resolvePublicationReviewSource,
 } from './publication-review-source.js';
 import { type WorkspaceContentReviewStore, type WorkspaceReviewMutation } from './store.js';
+import { readVideoProjectReview, type VideoProjectReviewPort } from './video-project-review-source.js';
 import { applyWorkspaceReviewAction } from './workspace-review-actions.js';
 import {
   assertWorkspaceReviewHuman,
   validateWorkspaceReviewBody,
   validateWorkspaceReviewId,
   workspaceAnnotationId,
-  workspaceReviewIdentity,
 } from './workspace-review-anchors.js';
 import { appendWorkspaceSourceHistory, createWorkspaceReviewMutation } from './workspace-review-mutations.js';
+import { openWorkspaceReviewMedia } from './workspace-review-open-media.js';
+import {
+  type MessageTakeoverReviewPreparation,
+  prepareCanonicalWorkspaceReview,
+  prepareWorkspaceReviewFromMessage,
+} from './workspace-review-preparation.js';
 import { readWorkspaceFileReview } from './workspace-review-read.js';
 import { readRetainedWorkspaceReview, readRetainedWorkspaceRevision } from './workspace-review-retained-source.js';
 import {
@@ -41,11 +46,9 @@ import {
   resolveWorkspaceCurrentSource,
   type WorkspaceAnnotationTarget,
 } from './workspace-review-source.js';
+import type { WorkspaceReviewPrincipal } from './workspace-review-types.js';
 
-export interface WorkspaceReviewPrincipal {
-  readonly userId: string;
-  readonly actor: WorkspaceContentActor;
-}
+export type { WorkspaceReviewPrincipal } from './workspace-review-types.js';
 
 /** F309's task-free collaboration aggregate for F063 files and F138 publication versions. */
 export class WorkspaceContentReviewService {
@@ -61,6 +64,7 @@ export class WorkspaceContentReviewService {
         principal: WorkspaceReviewPrincipal,
       ) => Promise<PublicationReviewContext[]>;
       readonly evolution?: EvolutionMediaReadPort;
+      readonly projects?: VideoProjectReviewPort;
       readonly now?: () => string;
     },
   ) {
@@ -87,43 +91,32 @@ export class WorkspaceContentReviewService {
               userId: input.principal.userId,
               locator: input.locator,
             });
-    const { contentRef, source } = resolved;
     if ('publication' in input) {
       const contexts = await this.resolvePublication(input.publication, input.principal);
       if (contexts.some((context) => !context.ledgerRef))
         throw new WorkspaceContentReviewError('existing_contexts', contexts);
     }
-    const existing = this.options.store.getByContent(input.principal.userId, contentRef);
-    const now = this.now();
-    if (existing) {
-      validateWorkspaceReviewId(input.operationId);
-      return this.read({ principal: input.principal, reviewId: existing.reviewId });
-    }
-    const review: WorkspaceContentReview = {
-      version: 1,
-      reviewId: workspaceReviewIdentity(input.principal.userId, contentRef),
-      ownerUserId: input.principal.userId,
-      contentRef,
-      source,
-      sourceHistory: [source],
-      revision: 1,
-      annotations: [],
-      createdAt: now,
-      updatedAt: now,
-    };
-    const created = this.options.store.create(review, {
-      operationId: validateWorkspaceReviewId(input.operationId),
-      actor: input.principal.actor,
-      now,
-      kind: 'prepare',
-      request:
-        'publication' in input
-          ? { publication: input.publication }
-          : 'evolution' in input
-            ? { evolution: input.evolution }
-            : { locator: input.locator },
-    });
+    const created = prepareCanonicalWorkspaceReview(
+      this.options.store,
+      resolved,
+      {
+        principal: input.principal,
+        operationId: input.operationId,
+        request:
+          'publication' in input
+            ? { publication: input.publication }
+            : 'evolution' in input
+              ? { evolution: input.evolution }
+              : { locator: input.locator },
+      },
+      this.now(),
+    );
     return this.read({ principal: input.principal, reviewId: created.reviewId });
+  }
+
+  /** Called only by the authenticated original-Human takeover resolver, never a public route. */
+  async ensureTextReviewFromMessageTakeover(input: MessageTakeoverReviewPreparation): Promise<WorkspaceContentReview> {
+    return prepareWorkspaceReviewFromMessage(this.options, input, this.now);
   }
 
   async read(input: {
@@ -134,6 +127,8 @@ export class WorkspaceContentReviewService {
     if (review.source.kind === 'publication')
       return readPublicationReview(this.options.publications, review, input.principal);
     if (review.source.kind === 'evolution') return readEvolutionReview(this.options.evolution, review, input.principal);
+    if (review.source.kind === 'video-project')
+      return readVideoProjectReview(this.options.projects, review, input.principal);
     return readWorkspaceFileReview(this.options.source, review, input.principal);
   }
 
@@ -160,7 +155,8 @@ export class WorkspaceContentReviewService {
     readonly body: string;
     readonly target: WorkspaceAnnotationTarget;
   }) {
-    this.requireOwnerReview(input.principal, input.reviewId);
+    const ownerReview = this.requireOwnerReview(input.principal, input.reviewId);
+    if (ownerReview.source.kind === 'video-project') throw new WorkspaceContentReviewError('unsupported_content');
     const mutation = createWorkspaceReviewMutation(input, 'annotate', this.now());
     const replay = this.options.store.replay(mutation);
     if (replay) return { ...replay, replayed: true };
@@ -202,7 +198,8 @@ export class WorkspaceContentReviewService {
     readonly operationId: string;
     readonly action: WorkspaceContentReviewAction;
   }) {
-    this.requireOwnerReview(input.principal, input.reviewId);
+    const ownerReview = this.requireOwnerReview(input.principal, input.reviewId);
+    if (ownerReview.source.kind === 'video-project') throw new WorkspaceContentReviewError('unsupported_content');
     const mutation: WorkspaceReviewMutation = {
       reviewId: input.reviewId,
       expectedRevision: input.expectedRevision,
@@ -322,24 +319,7 @@ export class WorkspaceContentReviewService {
     readonly expectedSourceRevision: string;
   }): Promise<OpenWorkspaceMediaV1 | { mime: string; byteLength: number; stream: Readable }> {
     const view = await this.read({ principal: input.principal, reviewId: input.reviewId });
-    if (view.sourceState !== 'current' || !view.canWrite) throw new WorkspaceContentReviewError('source_changed');
-    if (view.review.source.kind === 'evolution') {
-      if (view.review.source.revision !== input.expectedSourceRevision || !this.options.evolution)
-        throw new WorkspaceContentReviewError('source_changed');
-      const original = await this.options.evolution.read(view.review.source.locator, input.principal);
-      return { mime: original.mime, byteLength: original.bytes.length, stream: Readable.from([original.bytes]) };
-    }
-    if (view.review.source.kind !== 'media' || view.review.source.revision !== input.expectedSourceRevision)
-      throw new WorkspaceContentReviewError('source_changed');
-    const media = await this.options.source.openMedia({
-      principal: { userId: input.principal.userId },
-      locator: view.review.source.locator,
-      expectedRevision: input.expectedSourceRevision,
-    });
-    if (media.contentRef !== view.review.contentRef) {
-      throw new WorkspaceContentReviewError('source_unavailable');
-    }
-    return media;
+    return openWorkspaceReviewMedia(this.options, view, input);
   }
 
   private requireOwnerReview(principal: WorkspaceReviewPrincipal, reviewId: string): WorkspaceContentReview {

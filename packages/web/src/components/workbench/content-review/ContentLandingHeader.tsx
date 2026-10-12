@@ -1,4 +1,6 @@
 import type { ReactNode } from 'react';
+import { useShellCopy } from '@/components/shell/shell-copy';
+import { voiceMeetingCopy } from '@/components/workspace/voice-meeting.shell-copy';
 import type { WorkspaceFileNavigationOrigin } from '@/stores/chat-types';
 
 export function ContentLandingHeader({
@@ -14,6 +16,7 @@ export function ContentLandingHeader({
   readonly onOpenFileTools?: () => void;
   readonly versionControl?: ReactNode;
 }) {
+  const t = useShellCopy(voiceMeetingCopy);
   return (
     // In a narrow column (side-by-side panes, 390px) the controls wrap onto a second line so the
     // title keeps at least ~8rem instead of shrinking to a single character.
@@ -38,7 +41,13 @@ export function ContentLandingHeader({
             onClick={onBack}
             className="shrink-0 rounded-md px-2 py-1 text-xs text-cafe-muted hover:text-cafe"
           >
-            {navigationOrigin ? '返回来源' : '返回'}
+            {/* C 3480: a meeting-panel origin names its source explicitly (in the current shell language,
+                since only the v2 meeting journey produces this origin) instead of the generic 返回来源. */}
+            {navigationOrigin?.kind === 'meeting-transcript'
+              ? `‹ ${t.meeting.title}`
+              : navigationOrigin
+                ? '返回来源'
+                : '返回'}
           </button>
         ) : null}
       </div>

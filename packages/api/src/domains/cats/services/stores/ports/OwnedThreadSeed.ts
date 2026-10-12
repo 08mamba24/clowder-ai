@@ -6,7 +6,8 @@ import type { Thread } from './ThreadStore.js';
 export interface OwnedThreadSeed {
   readonly userId: string;
   readonly idempotencyKey: string;
-  readonly title: string;
+  /** Ordinary owner-created conversations may remain untitled until the first message. */
+  readonly title: string | null;
   readonly participants: readonly CatId[];
   readonly projectPath?: string;
   readonly parentThreadId?: string;

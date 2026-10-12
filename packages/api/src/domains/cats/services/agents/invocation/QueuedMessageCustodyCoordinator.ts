@@ -15,6 +15,7 @@ import type {
   StoredMessage,
 } from '../../stores/ports/MessageStore.js';
 import {
+  assertCollectivePublicReplyBindings,
   cloneQueuedMessageCustody,
   type QueueBodyExposure,
   type QueueCustodyActionSuccessorRebindProof,
@@ -1630,9 +1631,16 @@ export class QueuedMessageCustodyCoordinator {
       let changed = false;
       for (const messageId of this.messageIds(entry)) {
         changed =
-          (await this.transition(messageId, (current) =>
-            settleQueueCustodyWithdrawal(current, entry.targetCats, this.now()),
-          )) || changed;
+          (await this.transition(messageId, (current) => {
+            const selectedTargets = new Set(entry.targetCats);
+            const ownedTargets = current.pendingTargetCats.filter((catId) => {
+              const carrierId = current.carrierByTargetCatId
+                ? current.carrierByTargetCatId[catId]?.entryId
+                : current.entryId;
+              return selectedTargets.has(catId) && carrierId === entry.id;
+            });
+            return ownedTargets.length > 0 ? settleQueueCustodyWithdrawal(current, ownedTargets, this.now()) : current;
+          })) || changed;
       }
       return changed;
     });
@@ -1806,6 +1814,11 @@ export class QueuedMessageCustodyCoordinator {
   ): Promise<QueueCustodyCompletionResult> {
     const message = await this.messageStore.getById(messageId);
     assertExactDispatchContinuationWitness(messageId, successfulTargetCats, outcomeByCatId);
+    if (message?.queueCustody)
+      assertCollectivePublicReplyBindings(message, {
+        ...message.queueCustody,
+        targetOutcomeByCatId: { ...message.queueCustody.targetOutcomeByCatId, ...outcomeByCatId },
+      });
     const waitContinuationGuards: TypedWaitCustodyGuard[] = [];
     if (message && isManagedHoldWakeMessage(message)) {
       for (const catId of successfulTargetCats) {

@@ -11,9 +11,11 @@ import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
  * absorption dock points back to) over every layer it can sit on, in a real browser.
  *
  * The ring is a non-text mark: 3:1 against what it is drawn on. It keeps the human's hue and chroma and only has its
- * lightness floored per theme. The real theme builder, the real cat tokens and the real globals.css rule; the human hue and
- * chroma are the two variables the co-creator injector writes, set directly. Every request is answered in the isolated
- * browser; nothing talks to a service.
+ * lightness resolved per theme, against the colours that really exist: the page layers and the surfaces of the cats the
+ * registry returned and of the human, as the config paints them (Opus 5.5 3619). The real theme store, the real
+ * ThemeApplier, the real cat tokens, the real co-creator injector and the real globals.css rule; the human colour is a config
+ * published through the real co-creator cache. Cats of any colour nobody has are measured and disclosed, not promised. Every
+ * request is answered in the isolated browser; nothing talks to a service.
  *
  * Set RING_EVIDENCE_DIR to also write the measurement table the PR cites.
  */
@@ -38,17 +40,6 @@ const cats = [
   clientId: 'fixture',
   defaultModel: 'fixture',
 }));
-// The three human colours the ring can come in: the static default today (apricot), cocoa, and a stored reddish colour.
-const HUMANS = {
-  apricot: null,
-  cocoa: { hue: 58, chroma: 0.04 },
-  reddish: { hue: 18.9, chroma: 0.05 },
-  // Configured human colours at the edge of what a hex can be, none of them on a hue step: #00ff00, #ff00ff, #0000ff.
-  green: { hue: 142.5, chroma: 0.295 },
-  magenta: { hue: 328.4, chroma: 0.322 },
-  blue: { hue: 264.05, chroma: 0.313 },
-};
-
 before(async () => {
   process.chdir(webRoot);
   const result = await build({
@@ -92,13 +83,33 @@ after(async () => {
   }
 });
 
+// The human colours the ring is checked with, as hex colours a user can pick and as the config publishes them.
+const SECONDARY = '#E9DCCF';
+const CONFIGS = {
+  // No colour in the config: the shared cocoa that shell-v2.css bakes in applies (DESIGN: no colour set -> cocoa).
+  unconfigured: null,
+  // What You's running Cafe stores today, and what the repo's own cat-config.json ships now.
+  stored: { primary: '#815b5b', secondary: '#FFDDD2' },
+  shipped: { primary: '#6B5443', secondary: SECONDARY },
+  // The legal-range edges that broke the first version, now as hex colours a user can pick.
+  green: { primary: '#00ff00', secondary: SECONDARY },
+  magenta: { primary: '#ff00ff', secondary: SECONDARY },
+  blue: { primary: '#0000ff', secondary: SECONDARY },
+  // An opaque 8-digit hex is a legal config value too (#4983 reads it).
+  eightDigit: { primary: '#6666ffff', secondary: SECONDARY },
+};
+// Independent oracle for the three edge colours: the hue/chroma the F056 chain gives them (the review's own numbers).
+const EDGE = { green: [142.5, 0.295], magenta: [328.4, 0.322], blue: [264.05, 0.313] };
+const COCOA = [58, 0.04];
+
 /**
- * @param chain  undefined = the interface level (the two variables set directly, `human`); { color } = the REAL chain in the
- *   new shell: <html data-shell="v2">, the real injector, and a co-creator config published through the real cache with
- *   this colour (`null` = a config without a colour).
+ * The REAL chain in the new shell: <html data-shell="v2">, the real injector, a co-creator config published through the real
+ * cache, the theme through the real store and the real ThemeApplier, resolved against the cats the registry returned and the
+ * human colour in that config. `color`: null = a config without a colour.
  */
-async function open({ base = 'light', variant = 'default', human = 'apricot', chain } = {}) {
+async function open({ base = 'light', variant = 'default', color = null } = {}) {
   const context = await browser.newContext({ viewport: { width: 800, height: 1400 } });
+  await context.addInitScript(() => localStorage.setItem('cat-cafe:shell-presentation', 'v2'));
   const page = await context.newPage();
   page.setDefaultTimeout(5_000);
   const errors = [];
@@ -112,6 +123,9 @@ async function open({ base = 'light', variant = 'default', human = 'apricot', ch
       return handler.fulfill({ contentType: 'application/json', body: JSON.stringify({ cats }) });
     if (url.pathname === '/api/session')
       return handler.fulfill({ contentType: 'application/json', body: '{"userId":"owner-1"}' });
+    // ThemeApplier asks the server for a saved theme when this browser has none; the answer is "nothing saved".
+    if (url.pathname === '/api/config/env-summary')
+      return handler.fulfill({ contentType: 'application/json', body: JSON.stringify({ variables: [] }) });
     if (url.pathname.startsWith('/api/'))
       return handler.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
     return handler.fulfill({
@@ -123,17 +137,14 @@ async function open({ base = 'light', variant = 'default', human = 'apricot', ch
   await page.waitForSelector('[data-layer]');
   await page.waitForSelector('#f056-dynamic-cat-tokens', { state: 'attached' });
   await page.evaluate(
-    ([b, v, h, c]) => {
+    ([b, v, c]) => {
+      window.__ring.setConfig(c);
       window.__ring.applyTheme(b, v);
-      if (c) {
-        window.__ring.setShell('v2');
-        window.__ring.setConfig(c.color);
-      } else {
-        window.__ring.setHuman(h);
-      }
     },
-    [base, variant, HUMANS[human], chain ?? null],
+    [base, variant, color],
   );
+  // The real ThemeApplier has put the theme on the page, resolved against this room.
+  await page.evaluate(() => window.__ring.applied());
   // The ring and the surfaces transition their colours for a moment after a theme change.
   await page.waitForTimeout(500);
   return { page, context, errors };
@@ -169,17 +180,20 @@ function measureInPage() {
       bubbleL: root.getPropertyValue('--cat-bubble-l').trim(),
       lineageL: root.getPropertyValue('--cat-lineage-l').trim(),
       ring: {},
+      unclaimed: {},
       outline: null,
     };
-    for (const strip of document.querySelectorAll('[data-layer]')) {
-      const ring = strip.firstElementChild;
-      const style = getComputedStyle(ring);
-      out.ring[strip.getAttribute('data-layer')] = contrast(
-        rgba(style.outlineColor),
-        rgba(getComputedStyle(strip).backgroundColor),
-      );
+    const ringOver = (strip) => {
+      const style = getComputedStyle(strip.firstElementChild);
       out.outline ??= { width: style.outlineWidth, style: style.outlineStyle, colour: style.outlineColor };
-    }
+      return contrast(rgba(style.outlineColor), rgba(getComputedStyle(strip).backgroundColor));
+    };
+    // What the ring is promised to read on: the page layers and the surfaces of the cats and the human that exist.
+    for (const strip of document.querySelectorAll('[data-layer]'))
+      out.ring[strip.getAttribute('data-layer')] = ringOver(strip);
+    // Cats of any colour nobody has: measured and disclosed, not promised.
+    for (const strip of document.querySelectorAll('[data-unclaimed]'))
+      out.unclaimed[strip.getAttribute('data-unclaimed')] = ringOver(strip);
     return out;
   };
 }
@@ -187,120 +201,6 @@ function measureInPage() {
 const MIN = 3;
 const worst = (ring) => Math.min(...Object.values(ring));
 const weakest = (ring) => Object.entries(ring).sort((a, b) => a[1] - b[1])[0];
-
-for (const base of ['light', 'dark']) {
-  for (const variant of ['default', 'tuned']) {
-    test(`${base} / ${variant}: the ring reads 3:1 on every layer it can sit on, for every human colour`, async () => {
-      const rows = {};
-      for (const human of Object.keys(HUMANS)) {
-        const { page, context, errors } = await open({ base, variant, human });
-        const m = await page.evaluate(measureInPage());
-        await context.close();
-        assert.deepEqual(errors, []);
-        assert.equal(m.outline.width, '2px');
-        assert.equal(m.outline.style, 'solid');
-        const [where, ratio] = weakest(m.ring);
-        // RING_BASELINE=1 records without asserting: it is how the before-numbers of the evidence were taken.
-        if (!process.env.RING_BASELINE)
-          assert.ok(ratio >= MIN, `${base}/${variant}/${human}: ${ratio}:1 on ${where} (needs ${MIN})`);
-        rows[human] = m;
-        measurements.push({
-          case: 'ring',
-          base,
-          variant,
-          human,
-          bubbleL: m.bubbleL,
-          lineageL: m.lineageL,
-          worst: worst(m.ring),
-          ring: m.ring,
-        });
-      }
-      // One value per theme: the human colour moves hue and chroma, never the lightness.
-      if (!process.env.RING_BASELINE) assert.equal(new Set(Object.values(rows).map((m) => m.lineageL)).size, 1);
-    });
-  }
-}
-
-test('the ring keeps the human colour: different colours draw different rings, at the same lightness', async () => {
-  const colours = {};
-  for (const human of Object.keys(HUMANS)) {
-    const { page, context } = await open({ base: 'light', human });
-    colours[human] = (await page.evaluate(measureInPage())).outline.colour;
-    await context.close();
-  }
-  assert.equal(new Set(Object.values(colours)).size, Object.keys(HUMANS).length, JSON.stringify(colours));
-});
-
-test('the config changes while the page is open: the ring follows the new colour, the lightness stays, and every layer still reads', async () => {
-  const { page, context } = await open({ base: 'light', variant: 'default', human: 'apricot' });
-  const first = await page.evaluate(measureInPage());
-  for (const human of ['green', 'magenta', 'blue', 'cocoa']) {
-    await page.evaluate((colour) => window.__ring.setHuman(colour), HUMANS[human]);
-    await page.waitForTimeout(500);
-    const m = await page.evaluate(measureInPage());
-    const [where, ratio] = weakest(m.ring);
-    assert.ok(ratio >= MIN, `after the config became ${human}: ${ratio}:1 on ${where}`);
-    assert.equal(m.lineageL, first.lineageL, "a config change does not move the theme's lightness");
-    assert.notEqual(m.outline.colour, first.outline.colour);
-  }
-  await context.close();
-});
-
-test('the theme changes while the page is open: the lightness is recomputed for the new theme, for the colour in use', async () => {
-  const { page, context } = await open({ base: 'light', variant: 'default', human: 'green' });
-  const seen = {};
-  for (const [base, variant] of [
-    ['light', 'tuned'],
-    ['dark', 'default'],
-    ['dark', 'tuned'],
-    ['light', 'default'],
-  ]) {
-    await page.evaluate(([b, v]) => window.__ring.applyTheme(b, v), [base, variant]);
-    await page.waitForTimeout(500);
-    const m = await page.evaluate(measureInPage());
-    const [where, ratio] = weakest(m.ring);
-    assert.ok(ratio >= MIN, `${base}/${variant} with a green human colour: ${ratio}:1 on ${where}`);
-    seen[`${base}/${variant}`] = m.lineageL;
-  }
-  assert.equal(new Set(Object.values(seen)).size >= 3, true, `the value follows the theme: ${JSON.stringify(seen)}`);
-  await context.close();
-});
-
-test('the saved theme is not rewritten: the bubble lightness stays as saved while only the ring is floored', async () => {
-  const { page, context } = await open({ base: 'light' });
-  const m = await page.evaluate(measureInPage());
-  await context.close();
-  assert.equal(m.bubbleL, '0.62', 'the bubble role keeps its saved lightness');
-  assert.ok(Number(m.lineageL) < 0.62, `the ring is floored darker (${m.lineageL})`);
-  const dark = await open({ base: 'dark' });
-  const d = await dark.page.evaluate(measureInPage());
-  await dark.context.close();
-  assert.equal(d.bubbleL, '0.68', 'the Dark bubble role keeps its saved lightness too');
-  assert.ok(Number(d.lineageL) > 0.68, `the Dark ring is floored lighter (${d.lineageL})`);
-});
-
-// ---------------------------------------------------------------------------------------------------------------------
-// The REAL chain on the merged tree: config -> CoCreatorHueInjector -> --cocreator-hue/chroma -> the ring. The cells above
-// set the two variables themselves (the interface); these publish a co-creator config the way the product loads one and
-// let the real injector write the variables, in the new shell, the only place the injector runs.
-// ---------------------------------------------------------------------------------------------------------------------
-const SECONDARY = '#E9DCCF';
-const CONFIGS = {
-  // No colour in the config: the shared cocoa that shell-v2.css bakes in applies (DESIGN: no colour set -> cocoa).
-  unconfigured: null,
-  // What You's running Cafe stores today, and what the repo's own cat-config.json ships now.
-  stored: { primary: '#815b5b', secondary: '#FFDDD2' },
-  shipped: { primary: '#6B5443', secondary: SECONDARY },
-  // The legal-range edges that broke the first version, now as hex colours a user can pick.
-  green: { primary: '#00ff00', secondary: SECONDARY },
-  magenta: { primary: '#ff00ff', secondary: SECONDARY },
-  blue: { primary: '#0000ff', secondary: SECONDARY },
-  // An opaque 8-digit hex is a legal config value too (#4983 reads it).
-  eightDigit: { primary: '#6666ffff', secondary: SECONDARY },
-};
-// Independent oracle for the three edge colours: the hue/chroma the F056 chain gives them (the review's own numbers).
-const EDGE = { green: [142.5, 0.295], magenta: [328.4, 0.322], blue: [264.05, 0.313] };
-const COCOA = [58, 0.04];
 
 const readHuman = (page) =>
   page.evaluate(() => {
@@ -327,14 +227,16 @@ async function assertChain(page, label, color) {
 
 for (const base of ['light', 'dark']) {
   for (const variant of ['default', 'tuned']) {
-    test(`REAL chain, ${base} / ${variant}: a configured human colour reaches the ring through the injector, and every layer reads 3:1`, async () => {
+    test(`${base} / ${variant}: a configured human colour reaches the ring through the injector, and the ring reads 3:1 on every layer and every surface that exists`, async () => {
       const rows = {};
       for (const [name, color] of Object.entries(CONFIGS)) {
-        const { page, context, errors } = await open({ base, variant, chain: { color } });
+        const { page, context, errors } = await open({ base, variant, color });
         const human = await assertChain(page, `${base}/${variant}/${name}`, color);
         const m = await page.evaluate(measureInPage());
         await context.close();
         assert.deepEqual(errors, []);
+        assert.equal(m.outline.width, '2px');
+        assert.equal(m.outline.style, 'solid');
         if (EDGE[name]) {
           assert.ok(Math.abs(human.hue - EDGE[name][0]) < 0.11, `${name}: hue ${human.hue} vs ${EDGE[name][0]}`);
           assert.ok(
@@ -343,8 +245,7 @@ for (const base of ['light', 'dark']) {
           );
         }
         const [where, ratio] = weakest(m.ring);
-        if (!process.env.RING_BASELINE)
-          assert.ok(ratio >= MIN, `${base}/${variant}/${name} via the injector: ${ratio}:1 on ${where} (needs ${MIN})`);
+        assert.ok(ratio >= MIN, `${base}/${variant}/${name} via the injector: ${ratio}:1 on ${where} (needs ${MIN})`);
         rows[name] = { ...m, human };
         measurements.push({
           case: 'chain',
@@ -354,17 +255,20 @@ for (const base of ['light', 'dark']) {
           primary: color?.primary ?? null,
           hue: human.hue,
           chroma: human.chroma,
+          bubbleL: m.bubbleL,
           lineageL: m.lineageL,
           worst: worst(m.ring),
           weakest: weakest(m.ring)[0],
+          // The old promise (every colour a cat could have) is no longer made; this is how it fares, disclosed.
+          unclaimedWorst: worst(m.unclaimed),
+          unclaimedWeakest: weakest(m.unclaimed)[0],
         });
       }
-      // One value per theme, whatever the config: the injector moves hue and chroma, never the lightness.
-      if (!process.env.RING_BASELINE) assert.equal(new Set(Object.values(rows).map((m) => m.lineageL)).size, 1);
       // And the human colour really arrives. The repo's shipped config colour IS the cocoa that shell-v2.css bakes in
       // (DESIGN: no colour set -> cocoa), so those two draw the same ring on purpose; every other colour draws its own.
       const outline = Object.fromEntries(Object.entries(rows).map(([name, m]) => [name, m.outline.colour]));
       assert.equal(outline.shipped, outline.unconfigured, 'the shipped config colour is the cocoa default');
+      assert.equal(rows.shipped.lineageL, rows.unconfigured.lineageL, 'and it is resolved to the same lightness');
       const others = Object.entries(outline).filter(([name]) => name !== 'shipped');
       assert.equal(
         new Set(others.map(([, colour]) => colour)).size,
@@ -375,32 +279,79 @@ for (const base of ['light', 'dark']) {
   }
 }
 
-test('REAL chain: the config changes while the page is open, the injector rewrites the variables, the ring follows and still reads, and removing the colour returns to cocoa', async () => {
-  const { page, context } = await open({ base: 'light', variant: 'default', chain: { color: CONFIGS.unconfigured } });
+test('the config changes while the page is open: the injector rewrites the variables, the theme is resolved again, the ring follows and still reads, and removing the colour returns to cocoa', async () => {
+  const { page, context } = await open({ base: 'light', variant: 'default', color: CONFIGS.unconfigured });
   const start = await page.evaluate(measureInPage());
   await assertChain(page, 'start', null);
   // The cocoa ring itself reads too (it is the weakest of the colours under the old rule: low chroma at the bubble's L).
   assert.ok(weakest(start.ring)[1] >= MIN, `the cocoa ring at the start: ${weakest(start.ring)}`);
   const seen = [];
+  const lightness = [start.lineageL];
   for (const name of ['green', 'magenta', 'blue', 'stored', 'eightDigit']) {
     await page.evaluate((color) => window.__ring.setConfig(color), CONFIGS[name]);
+    await page.evaluate(() => window.__ring.applied());
     await page.waitForTimeout(500);
     await assertChain(page, `after ${name}`, CONFIGS[name]);
     const m = await page.evaluate(measureInPage());
     const [where, ratio] = weakest(m.ring);
     assert.ok(ratio >= MIN, `after the config became ${name}: ${ratio}:1 on ${where}`);
-    assert.equal(m.lineageL, start.lineageL, "a config change does not move the theme's lightness");
     assert.notEqual(m.outline.colour, start.outline.colour);
     seen.push(m.outline.colour);
+    lightness.push(m.lineageL);
   }
   assert.equal(new Set(seen).size, seen.length, 'each colour draws its own ring');
+  // The ring is resolved against the human colour that is in the config now, so its lightness follows the config too.
+  assert.ok(new Set(lightness).size > 1, `the lightness follows the config: ${JSON.stringify(lightness)}`);
   // The colour removed from the config: the injector takes its variables away, the baked cocoa ring is back, unchanged.
   await page.evaluate(() => window.__ring.setConfig(null));
+  await page.evaluate(() => window.__ring.applied());
   await page.waitForTimeout(500);
   await assertChain(page, 'colour removed', null);
   const back = await page.evaluate(measureInPage());
   assert.ok(weakest(back.ring)[1] >= MIN, `the cocoa ring after the colour was removed: ${weakest(back.ring)}`);
   assert.equal(back.outline.colour, start.outline.colour, 'back to the cocoa ring');
   assert.equal(back.lineageL, start.lineageL);
+  measurements.push({ case: 'config-change', lightness });
   await context.close();
+});
+
+test('the theme changes while the page is open: the lightness is recomputed for the new theme, for the colour in use', async () => {
+  const { page, context } = await open({ base: 'light', variant: 'default', color: CONFIGS.green });
+  const seen = {};
+  for (const [base, variant] of [
+    ['light', 'tuned'],
+    ['dark', 'default'],
+    ['dark', 'tuned'],
+    ['light', 'default'],
+  ]) {
+    await page.evaluate(([b, v]) => window.__ring.applyTheme(b, v), [base, variant]);
+    await page.evaluate(() => window.__ring.applied());
+    await page.waitForTimeout(500);
+    const m = await page.evaluate(measureInPage());
+    const [where, ratio] = weakest(m.ring);
+    assert.ok(ratio >= MIN, `${base}/${variant} with a green human colour: ${ratio}:1 on ${where}`);
+    seen[`${base}/${variant}`] = m.lineageL;
+  }
+  assert.equal(new Set(Object.values(seen)).size >= 3, true, `the value follows the theme: ${JSON.stringify(seen)}`);
+  await context.close();
+});
+
+test('the saved theme is not rewritten: the bubble lightness stays as saved; the ring moves only where the saved value does not read on what exists', async () => {
+  const { page, context } = await open({ base: 'light' });
+  const m = await page.evaluate(measureInPage());
+  await context.close();
+  assert.equal(m.bubbleL, '0.62', 'the bubble role keeps its saved lightness');
+  assert.ok(
+    Number(m.lineageL) < 0.62,
+    `the Light ring is moved darker, where the saved .62 does not read (${m.lineageL})`,
+  );
+  assert.ok(weakest(m.ring)[1] >= MIN, `and it reads: ${weakest(m.ring)}`);
+  const dark = await open({ base: 'dark' });
+  const d = await dark.page.evaluate(measureInPage());
+  await dark.context.close();
+  assert.equal(d.bubbleL, '0.68', 'the Dark bubble role keeps its saved lightness too');
+  // Against the cats and the human that exist, the saved Dark .68 already reads 3:1 on every one of them, so it is drawn as
+  // saved. (The old rule floored it to a lighter value because it was checked against a swept range of colours.)
+  assert.equal(Number(d.lineageL), 0.68, `the Dark ring is drawn as saved, it already reads (${d.lineageL})`);
+  assert.ok(weakest(d.ring)[1] >= MIN, `and it reads: ${weakest(d.ring)}`);
 });

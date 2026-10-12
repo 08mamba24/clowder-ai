@@ -42,6 +42,22 @@ export interface AuthenticatedCompressionObservation {
 
 export interface SessionRecord {
   readonly id: string;
+  /** A one-shot scoped execution is traceable history, never a home resume candidate. */
+  readonly scopedInvocation?:
+    | {
+        readonly invocationId: string;
+        readonly executionScope: 'collective-participation';
+        readonly originMessageId: string;
+      }
+    | {
+        readonly invocationId: string;
+        readonly executionScope: 'collective-work';
+        readonly originMessageId: string;
+        readonly taskId: string;
+        readonly executionRef: string;
+        readonly executionRevision: number;
+        readonly authorityRef: string;
+      };
   /** CLI-reported session ID (from session_init event) */
   cliSessionId?: string;
   /** Canonical workspace path associated with this CLI session, when provider-scoped. */

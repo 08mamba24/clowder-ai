@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type {
+  AgyProfileConfig,
   CatBreed,
   CatCafeConfig,
   CatColor,
@@ -16,6 +17,7 @@ import { bootstrapCatCatalog, readCatCatalog, resolveCatCatalogPath } from './ca
 import type { AcpVariantConfig } from './cat-config-loader.js';
 import { _resetCachedConfig, loadCatConfig, toAllCatConfigs } from './cat-config-loader.js';
 import { clearVoiceCache } from './cat-voices.js';
+import { type CodexBindingSelection, planCodexAccountBinding } from './codex-account-binding.js';
 import { resolveProjectTemplatePath } from './project-template-path.js';
 import { addTemplateVariantTombstone, type TemplateVariantTombstoneInput } from './template-variant-tombstones.js';
 
@@ -51,6 +53,7 @@ export interface RuntimeCatInput {
   provider?: string;
   /** F161: ACP transport config — presence triggers ACP transport instead of CLI. */
   acp?: AcpVariantConfig;
+  agyProfile?: AgyProfileConfig;
 }
 
 export interface RuntimeCatUpdate {
@@ -85,6 +88,7 @@ export interface RuntimeCatUpdate {
   available?: boolean;
   /** F161: ACP transport config — null to remove, undefined to skip. */
   acp?: AcpVariantConfig | null;
+  agyProfile?: AgyProfileConfig | null;
 }
 
 export interface RuntimeCoCreatorUpdate {
@@ -289,6 +293,7 @@ function createBreedFromInput(input: RuntimeCatInput): CatBreed {
           : {}),
         ...(input.strengths ? { strengths: input.strengths } : {}),
         ...(input.acp ? { acp: input.acp } : {}),
+        ...(input.agyProfile ? { agyProfile: input.agyProfile } : {}),
       },
     ],
   } as unknown as CatBreed;
@@ -315,6 +320,28 @@ function buildDefaultRuntimeRosterEntry(
 
 export function readRuntimeCatCatalog(projectRoot: string): CatCafeConfig {
   return readOrBootstrapCatalog(projectRoot);
+}
+
+/** One synchronous catalog commit for the complete confirmed selection, never a per-member PATCH loop. */
+export function bindRuntimeCodexAccounts(
+  projectRoot: string,
+  selection: CodexBindingSelection,
+  previewToken: string,
+): CatCafeConfig {
+  const current = readRuntimeCatCatalog(projectRoot);
+  const plan = planCodexAccountBinding(projectRoot, current, selection);
+  if (plan.previewToken !== previewToken) throw new Error('Binding preview changed; please review it again');
+  const targets = new Set(plan.targets.map((target) => target.catId));
+  const next = {
+    ...current,
+    breeds: current.breeds.map((breed) => ({
+      ...breed,
+      variants: breed.variants.map((variant) =>
+        targets.has(variant.catId ?? breed.catId ?? '') ? { ...variant, accountRef: selection.accountRef } : variant,
+      ),
+    })),
+  };
+  return writeAndValidateCatalog(projectRoot, next);
 }
 
 export function createRuntimeCat(projectRoot: string, input: RuntimeCatInput): CatCafeConfig {
@@ -542,6 +569,7 @@ export function updateRuntimeCat(projectRoot: string, catId: string, patch: Runt
     }
   }
   // F161: ACP transport config — null removes it (revert to CLI transport).
+  if (patch.agyProfile !== undefined) variant.agyProfile = patch.agyProfile;
   if (patch.acp !== undefined) {
     if (patch.acp) {
       (variant as Record<string, unknown>).acp = patch.acp;

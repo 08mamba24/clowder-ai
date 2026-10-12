@@ -73,7 +73,8 @@ function ensureCapacity({ repo, max, parentDir }) {
   if (!cap.over) return;
   const byOwner = new Map();
   for (const h of capacityHolders({ repo, parentDir }).active) {
-    byOwner.set(h.owner, [...(byOwner.get(h.owner) ?? []), h.name]);
+    const name = h.retentionStatus ? `${h.name} [${h.retentionStatus} until=${h.retainedUntil ?? 'unknown'}]` : h.name;
+    byOwner.set(h.owner, [...(byOwner.get(h.owner) ?? []), name]);
   }
   const holders = [...byOwner]
     .sort((a, b) => b[1].length - a[1].length)
@@ -81,7 +82,7 @@ function ensureCapacity({ repo, max, parentDir }) {
     .join('\n');
   const err = new Error(
     `capacity: ${cap.count}/${cap.max} active declared worktrees. Holders:\n${holders}\n` +
-      'Next: finish or remove one of your own; for the rest ask the listed owner in their thread. ' +
+      'Next: use worktree:finish for one of your own; for the rest ask the listed owner in their thread. ' +
       '`pnpm worktree:reap` (dry-run) shows which ones their owners already released. Nothing was created or moved.',
   );
   err.exitCode = 2;

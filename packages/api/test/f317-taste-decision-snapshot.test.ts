@@ -33,7 +33,9 @@ async function anchoredProposal(store: InMemoryTasteProposalStore, takeaway?: st
     approvalCardRef: { threadId: 'home', messageId: 'card-1' },
     createdAt: proposal.createdAt,
   });
-  return (await store.get(proposal.id))!;
+  const anchored = await store.get(proposal.id);
+  assert.ok(anchored);
+  return anchored;
 }
 
 test('a voice decision snapshot requires an anchored, pending canonical proposal', async () => {
@@ -62,7 +64,8 @@ test('a voice decision snapshot requires an anchored, pending canonical proposal
 test('the decision snapshot includes the takeaway that a real vignette would publish', async () => {
   const store = new InMemoryTasteProposalStore();
   const proposal = await anchoredProposal(store, 'ORIGINAL');
-  const snapshot = tasteDecisionSnapshot(proposal)!;
+  const snapshot = tasteDecisionSnapshot(proposal);
+  assert.ok(snapshot);
   assert.equal(snapshot.fields.takeaway, 'ORIGINAL');
   const changed = { ...proposal, takeaway: 'MUTATED AFTER PREVIEW' };
   assert.equal(matchesTasteDecisionSnapshot(changed, snapshot), false);
@@ -76,15 +79,57 @@ test('the decision snapshot includes the takeaway that a real vignette would pub
   assert.equal(validateHostCompanionReply(omitted), false, 'Host must not silently drop published material');
 });
 
+test('the decision snapshot binds the exact source revision and patch of a correction proposal', async () => {
+  const store = new InMemoryTasteProposalStore();
+  const proposal = store.create({
+    proposalId: randomUUID(),
+    userId: 'owner',
+    catId: 'codex',
+    threadId: 'home',
+    scene: '修订已有品味',
+    quote: '原话',
+    tags: ['source-bound'],
+    dimension: 'cognitive-honesty',
+    privacy: 'public',
+    correctionTarget: {
+      sourceAnchor: 'taste-vignette:docs/taste/vignettes/example.md',
+      expectedRevision: `sha256:${'a'.repeat(64)}`,
+      reason: 'outdated',
+      suggestedPatch: { takeaway: '更新后的判断。' },
+    },
+  });
+  await store.commitEnvelope(proposal.id, {
+    canonicalProposalId: proposal.id,
+    sourceFeatureId: 'F221',
+    ownerUserId: proposal.userId,
+    requesterCatId: proposal.catId,
+    originRef: { kind: 'message', threadId: proposal.threadId, messageId: 'source-correction' },
+    approvalCardRef: { threadId: proposal.threadId, messageId: 'card-correction' },
+    createdAt: proposal.createdAt,
+  });
+  const anchored = store.get(proposal.id);
+  assert.ok(anchored);
+  const snapshot = tasteDecisionSnapshot(anchored);
+  assert.ok(snapshot);
+  assert.equal(snapshot.fields.correctionTarget, JSON.stringify(anchored.correctionTarget));
+  const changed = structuredClone(anchored);
+  assert.ok(changed.correctionTarget);
+  changed.correctionTarget.expectedRevision = `sha256:${'b'.repeat(64)}`;
+  assert.equal(matchesTasteDecisionSnapshot(changed, snapshot), false);
+});
+
 test('snapshot CAS refuses a changed proposal, wrong owner, and duplicate confirmation', async () => {
   const store = new InMemoryTasteProposalStore();
   const proposal = await anchoredProposal(store);
-  const snapshot = tasteDecisionSnapshot(proposal)!;
+  const snapshot = tasteDecisionSnapshot(proposal);
+  assert.ok(snapshot);
   assert.equal(store.claimForApproval(proposal.id, 'other', snapshot), null);
   const internal = Reflect.get(store, 'proposals') as Map<string, typeof proposal>;
-  internal.get(proposal.id)!.quote = '改过的原话';
+  const mutableProposal = internal.get(proposal.id);
+  assert.ok(mutableProposal);
+  mutableProposal.quote = '改过的原话';
   assert.equal(store.claimForApproval(proposal.id, 'owner', snapshot), null);
-  internal.get(proposal.id)!.quote = proposal.quote;
+  mutableProposal.quote = proposal.quote;
   assert.equal(store.claimForApproval(proposal.id, 'owner', snapshot)?.status, 'approving');
   assert.equal(store.claimForApproval(proposal.id, 'owner', snapshot), null);
 });
@@ -92,7 +137,8 @@ test('snapshot CAS refuses a changed proposal, wrong owner, and duplicate confir
 test('snapshot rejection cannot settle a changed or already claimed proposal', async () => {
   const store = new InMemoryTasteProposalStore();
   const proposal = await anchoredProposal(store);
-  const snapshot = tasteDecisionSnapshot(proposal)!;
+  const snapshot = tasteDecisionSnapshot(proposal);
+  assert.ok(snapshot);
   const wrong = { ...snapshot, fields: { ...snapshot.fields, privacy: 'public' } };
   assert.equal(store.markRejected(proposal.id, '不合适', 'owner', wrong), null);
   assert.equal(store.markRejected(proposal.id, '不合适', 'owner', snapshot)?.status, 'rejected');
@@ -102,7 +148,8 @@ test('snapshot rejection cannot settle a changed or already claimed proposal', a
 test('snapshot approval writes once and cannot turn recovery into a fresh confirmation', async () => {
   const store = new InMemoryTasteProposalStore();
   const proposal = await anchoredProposal(store);
-  const snapshot = tasteDecisionSnapshot(proposal)!;
+  const snapshot = tasteDecisionSnapshot(proposal);
+  assert.ok(snapshot);
   let writes = 0;
   const deps = {
     store,

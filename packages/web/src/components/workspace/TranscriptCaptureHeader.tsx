@@ -1,6 +1,8 @@
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import { AudioHealthStrip } from './AudioHealthStrip';
 import type { AudioStatus } from './audio-transcript-contract';
 import { MeetingShareControl } from './MeetingShareControl';
+import { TranscriptCaptureHeaderV2 } from './TranscriptCaptureHeaderV2';
 
 function formatDuration(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -8,15 +10,7 @@ function formatDuration(sec: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-export function TranscriptCaptureHeader({
-  status,
-  sourceLabel,
-  elapsed,
-  onResume,
-  onPause,
-  onStop,
-  onPopOut,
-}: {
+export interface TranscriptCaptureHeaderProps {
   status: AudioStatus;
   sourceLabel: string;
   elapsed: number;
@@ -24,7 +18,21 @@ export function TranscriptCaptureHeader({
   onPause(): void;
   onStop(): void;
   onPopOut(): void;
-}) {
+  /** v2 only: whether a stopped session still has something to show (lines, saved paths or elapsed time). */
+  hasSession?: boolean;
+  /** v2 only: reset the panel back to its prepare state after a stop. */
+  onStartAgain?: () => void;
+}
+
+function TranscriptCaptureHeaderClassic({
+  status,
+  sourceLabel,
+  elapsed,
+  onResume,
+  onPause,
+  onStop,
+  onPopOut,
+}: TranscriptCaptureHeaderProps) {
   return (
     <>
       <div className="flex items-center gap-2 border-b border-cafe-border px-3 py-2">
@@ -75,5 +83,17 @@ export function TranscriptCaptureHeader({
       <AudioHealthStrip status={status} />
       {status.running && <MeetingShareControl />}
     </>
+  );
+}
+
+export function TranscriptCaptureHeader(props: TranscriptCaptureHeaderProps) {
+  const presentation = useShellPresentation();
+  if (presentation !== 'v2') return <TranscriptCaptureHeaderClassic {...props} />;
+  return (
+    <TranscriptCaptureHeaderV2
+      {...props}
+      hasSession={props.hasSession ?? false}
+      onStartAgain={props.onStartAgain ?? (() => {})}
+    />
   );
 }

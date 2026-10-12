@@ -818,6 +818,36 @@ test('explicit CLI environment does not inherit unrelated runtime credentials', 
   }
 });
 
+test('API-only Jev credentials and page configuration do not reach an actual agent child', () => {
+  const keys = ['TYPESAFE_API_KEY', 'TYPESAFE_API_KEY_FILE', 'CAT_CAFE_JEV_PAGE_CONFIG'];
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) process.env[key] = 'synthetic-api-only-sentinel';
+    const env = buildChildEnv(
+      Object.fromEntries([
+        ...keys.map((key) => [key, 'synthetic-override-sentinel']),
+        ['CAT_CAFE_CALLBACK_TOKEN', 'synthetic-invocation-credential'],
+        ['OPENAI_API_KEY', 'synthetic-selected-account-credential'],
+      ]),
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        '-e',
+        'console.log(JSON.stringify({jev: ["TYPESAFE_API_KEY","TYPESAFE_API_KEY_FILE","CAT_CAFE_JEV_PAGE_CONFIG"].some(k=>process.env[k]!==undefined), callback:process.env.CAT_CAFE_CALLBACK_TOKEN==="synthetic-invocation-credential", account:process.env.OPENAI_API_KEY==="synthetic-selected-account-credential"}))',
+      ],
+      { env, encoding: 'utf8' },
+    );
+    assert.equal(result.status, 0);
+    assert.deepEqual(JSON.parse(result.stdout), { jev: false, callback: true, account: true });
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test('spawnCli applies an explicit environment at the process boundary', async () => {
   const saved = process.env.F325_AMBIENT_SECRET;
   process.env.F325_AMBIENT_SECRET = 'fake-runtime-secret';

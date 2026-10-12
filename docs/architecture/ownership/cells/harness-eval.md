@@ -96,6 +96,7 @@ code_anchors:
   - packages/api/src/infrastructure/harness-eval/measurement/capability-evolution/capability-evolution-measurement-source-validation.ts
   - packages/api/src/infrastructure/harness-eval/measurement/capability-evolution/capability-evolution-measurement-source-store.ts
   - packages/api/src/infrastructure/harness-eval/measurement/capability-evolution/capability-evolution-measurement-issuer.ts
+  - packages/api/src/infrastructure/harness-eval/measurement/capability-evolution/capability-evolution-measurement-binding-resolver.ts
   - packages/api/src/infrastructure/harness-eval/measurement/measurement-artifact-files.ts
   - packages/api/src/infrastructure/harness-eval/measurement/measurement-decision-proof-owner-object-spec.ts
   - packages/api/src/infrastructure/harness-eval/measurement/measurement-decision-proof-resolver.ts

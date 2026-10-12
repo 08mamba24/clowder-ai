@@ -9,17 +9,28 @@ Real-shell host for the shared F307 Workbench kernel.
 
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { ListenModePlayer } from '@/components/listen-mode/ListenModePlayer';
+import { resolveShellCopy, useShellCopy } from '@/components/shell/shell-copy';
+import { readShellLanguage } from '@/components/shell/shell-language';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import type {
   F284WorkspaceSnapshot,
   WorkbenchAction,
   WorkbenchLayoutState,
+  WorkspaceSurfaceDescriptor,
 } from '@/components/workbench/workbench-contract';
 import { projectWorkbench } from '@/components/workbench/workbench-model';
+import { voiceMeetingCopy } from '@/components/workspace/voice-meeting.shell-copy';
 import type { WorkspaceDevSurface } from '@/components/workspace/WorkspaceLauncher';
+import { canonicalLauncherDestination } from '@/components/workspace/WorkspaceLauncher';
 import type { LauncherWorkspaceSearch } from '@/components/workspace/WorkspaceLauncherSearch';
+import { useCatData } from '@/hooks/useCatData';
 import { useIsDesktop } from '@/hooks/useIsDesktop';
+import { resolveCatDisplayName } from '@/lib/cat-display-name';
 import type { WorkspaceOpenRequest } from '@/stores/chat-types';
-import { isArtifactWorkSurface } from './artifact-work-presentation';
+import { useChatStore } from '@/stores/chatStore';
+import { useToastStore } from '@/stores/toastStore';
+import { captureChatReadingBeforeLayoutChange } from '@/utils/chat-layout-change';
+import { isWorkspaceFullWindowSurface } from './artifact-work-presentation';
 import { toggleArtifactWorkFullWindow } from './artifact-work-presentation-actions';
 import { restoreEvolutionMediaOrigin } from './evolution-media-navigation';
 import { useF307ExperienceWorkbenchStore } from './experience-workbench-store';
@@ -32,14 +43,19 @@ import { createPublicationSurface } from './publication-surface';
 import {
   createArtifactSurface,
   createEvolutionProgramSurface,
+  createFilePreviewSurface,
   createFileSurface,
   createFilesSurface,
   createTeamWorkspaceSurface,
+  createWorkspaceDestinationSurface,
   createWorkspaceModeSurface,
   resolveFileTarget,
 } from './real-surface-adapters';
 import { returnFileCard } from './return-file-card';
+import { workspaceChromeCopy } from './workspace-chrome.shell-copy';
+import { workspaceEntryTitle } from './workspace-entry-title';
 import { workspaceFileReturnAction } from './workspace-file-return';
+import { rememberWorkspaceForeground } from './workspace-presentation-lock';
 
 function WorkbenchActivity({
   layout,
@@ -165,6 +181,9 @@ function useExplicitWorkspaceNavigation({
   threadId?: string;
 }) {
   const consumedRevision = useRef(0);
+  const { getCatById } = useCatData();
+  const previewEnabled = useShellPresentation() === 'v2';
+  const entryCopy = useShellCopy(workspaceChromeCopy);
   useEffect(() => {
     if (
       !hydrated ||
@@ -190,7 +209,7 @@ function useExplicitWorkspaceNavigation({
                     navigationOrigin: request.target.navigationOrigin,
                   })
                 : request.target.kind === 'file'
-                  ? createFileSurface({
+                  ? (previewEnabled ? createFilePreviewSurface : createFileSurface)({
                       worktreeId: request.target.worktreeId,
                       path: request.target.path,
                       scrollToLine: request.target.line ?? null,
@@ -203,28 +222,82 @@ function useExplicitWorkspaceNavigation({
                         repoRoot: request.target.repoRoot,
                       })
                     : createWorkspaceModeSurface(request.target.mode, threadId);
+    const chat = useChatStore.getState();
+    const source =
+      request.target.kind === 'message-publication'
+        ? request.target.source
+        : request.target.kind === 'publication'
+          ? request.target.messagePublicationSource
+          : undefined;
+    const messages =
+      source?.threadId === chat.currentThreadId
+        ? chat.messages
+        : source
+          ? (chat.threadStates[source.threadId]?.messages ?? [])
+          : [];
+    const entryTitle = workspaceEntryTitle(
+      request.target,
+      messages,
+      (id) => resolveCatDisplayName(id, getCatById),
+      entryCopy.image,
+    );
+    if (entryTitle) surface.title = entryTitle;
     consumedRevision.current = request.revision;
-    const existing = layout.surfaces.find((candidate) => candidate.id === surface.id);
+    const fileTarget = previewEnabled && request.target.kind === 'file' ? resolveFileTarget(surface) : null;
+    const existing = layout.surfaces.find((candidate) => {
+      if (candidate.id === surface.id) return true;
+      if (!fileTarget) return false;
+      const file = resolveFileTarget(candidate);
+      return !!file && file.worktreeId === fileTarget.worktreeId && file.path === fileTarget.path;
+    });
+    // Reopening an exact old root-scoped file updates its coordinates without migrating its permanent identity.
+    if (fileTarget && existing) {
+      surface.id = existing.id;
+      surface.objectRef = existing.objectRef;
+    }
     // A reveal is an action on the tree, so asking again re-runs it even when the same tree is showing.
     const alreadyFocused =
       request.target.kind !== 'reveal' &&
       layout.activeSurfaceId === surface.id &&
       existing?.ownerStateRef.key === surface.ownerStateRef.key &&
       existing?.resultTargetRef?.owner === surface.resultTargetRef?.owner &&
-      existing?.resultTargetRef?.key === surface.resultTargetRef?.key;
+      existing?.resultTargetRef?.key === surface.resultTargetRef?.key &&
+      JSON.stringify(existing?.navigationOrigin) === JSON.stringify(surface.navigationOrigin) &&
+      JSON.stringify(existing?.returnTargetRef) === JSON.stringify(surface.returnTargetRef);
     if (!alreadyFocused) {
       dispatch({
-        type: 'open-surface',
+        type:
+          previewEnabled &&
+          request.disposition === 'preview' &&
+          (request.target.kind === 'file' ||
+            request.target.kind === 'artifact' ||
+            request.target.kind === 'publication' ||
+            request.target.kind === 'message-publication')
+            ? 'open-preview-surface'
+            : 'open-surface',
         surface,
         entitlement: { kind: 'user', reason: 'open-from-chat' },
       });
     }
+    rememberWorkspaceForeground();
     setHomeOpen(false);
     if (request.target.kind === 'evolution-program') {
       useF307ExperienceWorkbenchStore.getState().enterMainAreaAttention(surface.id);
     }
     onConsumed?.(request.revision);
-  }, [dispatch, hydrated, layout.activeSurfaceId, layout.surfaces, onConsumed, request, setHomeOpen, threadId]);
+  }, [
+    dispatch,
+    hydrated,
+    layout.activeSurfaceId,
+    layout.surfaces,
+    onConsumed,
+    request,
+    setHomeOpen,
+    threadId,
+    previewEnabled,
+    getCatById,
+    entryCopy.image,
+  ]);
 }
 
 function ownerSurfaceVisible(
@@ -246,6 +319,8 @@ function ownerSidecarVisible(
 }
 
 export function F307ExperienceWorkbench({
+  foregroundSurfaceId,
+  onOpenHome,
   threadId,
   defaultCatId = 'opus',
   visible = true,
@@ -254,6 +329,7 @@ export function F307ExperienceWorkbench({
   onSelectDevSurface,
   f284WorkspaceState,
   worktreeId,
+  canonicalWorktreeId,
   worktreeLoading = false,
   worktreeError = null,
   openFilePath,
@@ -267,6 +343,8 @@ export function F307ExperienceWorkbench({
   onReturnToChatMessage,
   onOpenAppRoute,
 }: {
+  foregroundSurfaceId?: string | null;
+  onOpenHome?: () => void;
   threadId?: string;
   defaultCatId?: string;
   visible?: boolean;
@@ -275,6 +353,7 @@ export function F307ExperienceWorkbench({
   onSelectDevSurface: (surface: WorkspaceDevSurface) => void;
   f284WorkspaceState?: F284WorkspaceSnapshot;
   worktreeId: string | null;
+  canonicalWorktreeId?: string | null;
   worktreeLoading?: boolean;
   worktreeError?: string | null;
   openFilePath: string | null;
@@ -293,6 +372,7 @@ export function F307ExperienceWorkbench({
   onOpenAppRoute: (href: string) => void;
 }) {
   const isDesktop = useIsDesktop();
+  const t = useShellCopy(workspaceChromeCopy);
   const [homeOpen, setHomeOpen] = useState(false);
   const [homeSearchQuery, setHomeSearchQuery] = useState('');
   const layout = useF307ExperienceWorkbenchStore((state) => state.layout);
@@ -329,9 +409,15 @@ export function F307ExperienceWorkbench({
     threadId,
   });
 
+  const isV2 = useShellPresentation() === 'v2';
   const projection = projectWorkbench(layout, isDesktop ? 1024 : 390);
   const zeroTopology = projection.visibleSurfaceIds.length === 0;
-  const homeFocused = homeOpen || zeroTopology;
+  const foregroundUnavailable =
+    foregroundSurfaceId != null && !layout.surfaces.some((surface) => surface.id === foregroundSurfaceId);
+  const homeFocused = homeOpen || zeroTopology || foregroundSurfaceId === null || foregroundUnavailable;
+  useEffect(() => {
+    if (foregroundSurfaceId != null) setHomeOpen(false);
+  }, [foregroundSurfaceId]);
   const topologyContract = zeroTopologyContract(hydrated, zeroTopology, homeFocused);
   const visibleSurfaceIds = new Set(
     focusSurfaceId !== null
@@ -347,8 +433,34 @@ export function F307ExperienceWorkbench({
   const openSurfaceIds = new Set(layout.surfaces.map((surface) => surface.id));
   const hostedSurfaces = [
     ...layout.surfaces,
-    ...layout.recentlyClosed.filter((surface) => !openSurfaceIds.has(surface.id)),
+    ...layout.recentlyClosed.filter((surface) => surface.type !== 'thread-replay' && !openSurfaceIds.has(surface.id)),
   ];
+  const openSurfaceFromOwner = (
+    nextSurface: WorkspaceSurfaceDescriptor,
+    sourceSurfaceId: string,
+    reason: 'workspace-home-selection' | 'return-origin',
+  ) => {
+    const keepFocus = useF307ExperienceWorkbenchStore.getState().focusSurfaceId === sourceSurfaceId;
+    const fileTarget = isV2 && reason !== 'return-origin' ? resolveFileTarget(nextSurface) : null;
+    const opened = fileTarget
+      ? {
+          ...nextSurface,
+          ...createFilePreviewSurface({
+            ...fileTarget,
+            navigationOrigin: nextSurface.navigationOrigin,
+            rootSelection: nextSurface.rootSelection,
+          }),
+        }
+      : nextSurface;
+    dispatch({
+      type: fileTarget ? 'open-preview-surface' : 'open-surface',
+      surface: opened,
+      entitlement: { kind: 'user', reason },
+    });
+    // Preview open can retain an existing permanent identity instead of the requested one.
+    const activeSurfaceId = useF307ExperienceWorkbenchStore.getState().layout.activeSurfaceId;
+    if (keepFocus && activeSurfaceId !== null) enterFocusMode(activeSurfaceId);
+  };
   const renderOwnerSurface = (surface: (typeof hostedSurfaces)[number], surfaceVisible: boolean) => (
     <F307OwnerSurfaceRenderer
       surface={surface}
@@ -356,11 +468,7 @@ export function F307ExperienceWorkbench({
       focusMode={focusSurfaceId === surface.id}
       statusSurface={statusSurface}
       onOpenSurface={(nextSurface) => {
-        dispatch({
-          type: 'open-surface',
-          surface: nextSurface,
-          entitlement: { kind: 'user', reason: 'workspace-home-selection' },
-        });
+        openSurfaceFromOwner(nextSurface, surface.id, 'workspace-home-selection');
       }}
       onOpenArtifactWithReturn={({ artifact, returnSurface }) => {
         dispatch({
@@ -373,6 +481,16 @@ export function F307ExperienceWorkbench({
       }}
       onRefreshSurface={(nextSurface) => dispatch({ type: 'refresh-surface', surface: nextSurface })}
       onReturnToFileOrigin={(fileSurface, origin) => {
+        if (origin.kind === 'workspace-changes') {
+          const changes = createWorkspaceDestinationSurface(
+            canonicalLauncherDestination('surface', 'changes'),
+            origin.threadId ?? undefined,
+            origin.worktreeId,
+          );
+          if (changes) openSurfaceFromOwner(changes, fileSurface.id, 'return-origin');
+          exitMainAreaAttention();
+          return;
+        }
         if (origin.kind === 'artifact-list') {
           const list = createWorkspaceModeSurface('artifacts', origin.threadId);
           dispatch({
@@ -396,6 +514,26 @@ export function F307ExperienceWorkbench({
           onReturnToChatMessage?.({ threadId: origin.threadId, messageId: origin.messageId });
           return;
         }
+        if (origin.kind === 'meeting-transcript') {
+          // C 3480: the minimal contract promises only the same-thread stopped-result round trip. A meeting origin
+          // from another thread never switches that thread's panel and never silently succeeds — the person is
+          // told to go back to the source conversation instead (in the current shell language, like the v2 meeting
+          // journey that produced this origin).
+          const chat = useChatStore.getState();
+          if (origin.threadId !== chat.currentThreadId) {
+            const t = resolveShellCopy(voiceMeetingCopy, readShellLanguage());
+            useToastStore.getState().addToast({
+              type: 'info',
+              title: t.capture.otherThreadToastTitle,
+              message: t.capture.otherThreadToastBody,
+              duration: 6000,
+            });
+            return;
+          }
+          exitMainAreaAttention();
+          chat.setRightPanelMode('transcript');
+          return;
+        }
         // A Settings or status card entry returns to its page; it needs no file target, so a files
         // surface opened from such an entry (a revealed directory) returns the same way.
         if (origin.kind === 'settings' || origin.kind === 'workspace-card') {
@@ -409,19 +547,19 @@ export function F307ExperienceWorkbench({
         const action = workspaceFileReturnAction(origin, target.worktreeId);
         if (action.kind === 'artifact-list') return;
         if (action.kind === 'workspace-document') {
-          dispatch({
-            type: 'open-surface',
-            surface: createFileSurface({ worktreeId: action.worktreeId, path: action.path, scrollToLine: action.line }),
-            entitlement: { kind: 'user', reason: 'return-origin' },
-          });
+          openSurfaceFromOwner(
+            createFileSurface({ worktreeId: action.worktreeId, path: action.path, scrollToLine: action.line }),
+            fileSurface.id,
+            'return-origin',
+          );
           return;
         }
         if (action.kind === 'file-tree') {
-          dispatch({
-            type: 'open-surface',
-            surface: createFilesSurface(action.worktreeId, action.repoRoot ? { repoRoot: action.repoRoot } : {}),
-            entitlement: { kind: 'user', reason: 'return-origin' },
-          });
+          openSurfaceFromOwner(
+            createFilesSurface(action.worktreeId, action.repoRoot ? { repoRoot: action.repoRoot } : {}),
+            fileSurface.id,
+            'return-origin',
+          );
           return;
         }
         if (action.kind === 'workspace-home-search') {
@@ -476,16 +614,20 @@ export function F307ExperienceWorkbench({
       data-focus-surface={focusSurfaceId ?? ''}
     >
       <ListenModePlayer />
-      {!zeroTopology && focusSurfaceId === null && (
+      {(!zeroTopology || isV2) && focusSurfaceId === null && (
         <F307WorkbenchTabs
           layout={layout}
           dispatch={dispatch}
           onAddSurface={() => {
+            onOpenHome?.();
             exitMainAreaAttention();
             setHomeSearchQuery('');
             setHomeOpen(true);
           }}
-          onActivateSurface={() => setHomeOpen(false)}
+          onActivateSurface={() => {
+            if (isV2) rememberWorkspaceForeground();
+            setHomeOpen(false);
+          }}
           homeFocused={homeFocused}
           isDesktop={isDesktop}
           artifactWorkHostAvailable={artifactWorkHostAvailable}
@@ -497,12 +639,16 @@ export function F307ExperienceWorkbench({
 
       {!homeFocused && focusSurfaceId === null && <WorkbenchActivity layout={layout} dispatch={dispatch} />}
 
+      {homeFocused && foregroundUnavailable && (
+        <output className="shrink-0 px-4 py-3 text-xs text-cafe-muted">{t.unavailable}</output>
+      )}
       {homeFocused && (
         <F307WorkspaceHomePage
           threadId={threadId}
           defaultCatId={defaultCatId}
           onSelectDevSurface={onSelectDevSurface}
           worktreeId={worktreeId}
+          canonicalWorktreeId={canonicalWorktreeId}
           worktreeLoading={worktreeLoading}
           worktreeError={worktreeError}
           openFilePath={openFilePath}
@@ -512,11 +658,14 @@ export function F307ExperienceWorkbench({
           workspaceSearch={workspaceSearch}
           workspaceSearchQuery={homeSearchQuery}
           onSelectSurface={(surface) => {
+            if (surface.type === 'thread-replay' && !layout.surfaces.some((item) => item.id === surface.id))
+              captureChatReadingBeforeLayoutChange();
             dispatch({
               type: 'open-surface',
               surface,
               entitlement: { kind: 'user', reason: 'workspace-home-selection' },
             });
+            rememberWorkspaceForeground();
             setHomeOpen(false);
           }}
         />
@@ -545,7 +694,7 @@ export function F307ExperienceWorkbench({
                 isDesktop &&
                 threadId &&
                 layout.activeSurfaceId === surface.id &&
-                isArtifactWorkSurface(surface)
+                isWorkspaceFullWindowSurface(surface, isV2 ? 'v2' : 'classic')
                   ? () => {
                       toggleArtifactWorkFullWindow(threadId, surface);
                     }

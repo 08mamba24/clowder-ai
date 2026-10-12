@@ -161,3 +161,92 @@ test('a user ticket consumed by a busy recovery boundary is re-woken after cance
   releaseRead(page(1, undefined));
   host.close();
 });
+
+test('an empty filtered recovery page cannot start another native reply and still advances its raw cursor', async () => {
+  const cursor = {
+    binding: 'scope-epoch-1',
+    tasks: { complete: true },
+    decisions: { complete: true },
+    inbox: { after: 'raw-exposed-8', complete: false },
+  };
+  const requests = [];
+  let writes = 0;
+  let valid = true;
+  const host = new LiveRecoveryHost({
+    scope,
+    reader: {
+      read: async (_scope, request) => {
+        requests.push(request.cursor);
+        const result = page(0, cursor);
+        result.tasks.hasMore = false;
+        result.inbox.hasMore = true;
+        if (request.cursor) return page(1, undefined);
+        return result;
+      },
+    },
+    validate: async () => valid,
+    deliver: async () => {
+      writes++;
+      return 'accepted';
+    },
+  });
+  assert.equal(await host.atBoundary(), 'idle');
+  assert.equal(writes, 0, 'no source body exists to attach; a recovery trigger would cause an unsolicited deep reply');
+  assert.equal(host.hasPendingWake(), false, 'hasMore cannot page itself');
+  host.onUserTurn();
+  assert.equal(await host.atBoundary(), 'accepted');
+  assert.deepEqual(requests, [undefined, cursor]);
+  assert.equal(writes, 1, 'a subsequent real source page still reaches native execution');
+  host.signalSourceChange();
+  valid = false;
+  assert.equal(await host.atBoundary(), 'unavailable');
+  assert.equal(requests.at(-1), undefined, 'source invalidation resets the ephemeral raw cursor');
+  assert.equal(writes, 1);
+  host.close();
+});
+
+test('cancelling during empty-page validation cannot move a later user ticket past that raw page', async () => {
+  const cursors = [];
+  let enter;
+  const entered = new Promise((resolve) => {
+    enter = resolve;
+  });
+  let release;
+  const paused = new Promise((resolve) => {
+    release = resolve;
+  });
+  let first = true;
+  const cursor = {
+    binding: 'scope-epoch-1',
+    tasks: { complete: true },
+    decisions: { complete: true },
+    inbox: { after: 'raw-8', complete: false },
+  };
+  const host = new LiveRecoveryHost({
+    scope,
+    reader: {
+      read: async (_scope, request) => {
+        cursors.push(request.cursor);
+        return page(0, cursor);
+      },
+    },
+    validate: async () => {
+      if (first) {
+        first = false;
+        enter();
+        await paused;
+      }
+      return true;
+    },
+    deliver: async () => assert.fail('empty pages never submit provider input'),
+  });
+  const pending = host.atBoundary();
+  await entered;
+  host.cancel('user_speaking');
+  host.onUserTurn();
+  release();
+  assert.equal(await pending, 'cancelled');
+  assert.equal(await host.atBoundary(), 'idle');
+  assert.deepEqual(cursors, [undefined, undefined]);
+  host.close();
+});

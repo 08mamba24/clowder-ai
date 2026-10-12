@@ -135,6 +135,14 @@ export interface QueueSourceResponseConsumptionWitness {
   outputMessageIds: string[];
 }
 
+/** A Service event accepted for this exact public source; never a local MessageStore output. */
+export interface QueueCollectivePublicReplyWitness {
+  kind: 'collective_public_reply';
+  sourceMessageId: string;
+  sourceEventId: string;
+  acceptedEventId: string;
+}
+
 /** Existing structured tools consumed one managed wake by establishing its successor condition. */
 export interface QueueManagedHoldContinuationWitness {
   kind: 'managed_hold_continued';
@@ -159,6 +167,7 @@ export interface QueueDispatchHandledContinuationWitness {
 export type QueueTerminalConsumptionWitness =
   | QueueTerminalSilentConsumptionWitness
   | QueueSourceResponseConsumptionWitness
+  | QueueCollectivePublicReplyWitness
   | QueueManagedHoldContinuationWitness
   | QueueDispatchHandledContinuationWitness;
 

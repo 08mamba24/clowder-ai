@@ -80,7 +80,9 @@ export function MemoryBrakes() {
           ))}
         </div>
         {current && (
-          <div className="xl:sticky xl:top-0">
+          <aside aria-label="所选拉闸详情" className="space-y-3 xl:sticky xl:top-0">
+            <h2 className="text-base font-medium">拉闸详情</h2>
+            <p className="text-compact text-cafe-muted">所选记录的完整原话。</p>
             <MemoryBrakeCard
               key={current.key}
               row={current}
@@ -88,7 +90,7 @@ export function MemoryBrakes() {
               onSelect={() => setSelected(current.key)}
               detail
             />
-          </div>
+          </aside>
         )}
       </div>
       {data.hasMore && (

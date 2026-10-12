@@ -47,8 +47,9 @@
     "worktree:new": "node ./scripts/worktree-new.mjs",
     "worktree:reap": "node ./scripts/worktree-reaper.mjs",
     "worktree:check": "node ./scripts/worktree-reaper.mjs --check",
-    "check:worktree-reaper": "node --test scripts/lib/worktree-reaper-core.test.mjs scripts/worktree-reaper.test.mjs scripts/worktree-reaper-closure.test.mjs",
+    "check:worktree-reaper": "node --test scripts/lib/worktree-reaper-core.test.mjs scripts/worktree-reaper.test.mjs scripts/worktree-reaper-closure.test.mjs scripts/worktree-finish.test.mjs scripts/worktree-finish-disk.test.mjs scripts/worktree-finish-open-file.test.mjs scripts/worktree-finish-process.test.mjs scripts/worktree-finish-recovery.test.mjs",
     "preview:process": "node ./scripts/preview-process.mjs",
+    "test:preview-lifecycle": "node --test --test-concurrency=1 scripts/preview-process.test.mjs scripts/preview-process-stop.test.mjs scripts/preview-process-cleanup.test.mjs scripts/preview-named-alpha-cleanup.test.mjs",
     "threads:sync": "./scripts/thread-exports-sync.sh sync",
     "threads:status": "./scripts/thread-exports-sync.sh status",
     "threads:export:redis": "node ./scripts/export-threads-from-redis.mjs",
@@ -139,7 +140,8 @@
     "check:site-integrity": "node --test site/site-integrity.test.mjs",
     "check:site-css": "node scripts/build-site-css.mjs --check",
     "build:site-css": "node scripts/build-site-css.mjs",
-    "check:design-md": "node --test scripts/check-design-md.test.mjs && node scripts/check-design-md.mjs"
+    "check:design-md": "node --test scripts/check-design-md.test.mjs && node scripts/check-design-md.mjs",
+    "worktree:finish": "node ./scripts/worktree-finish.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.1",

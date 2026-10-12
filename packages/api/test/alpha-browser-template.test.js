@@ -1,81 +1,63 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { executeTaskPipeline } from '../dist/infrastructure/scheduler/execute-pipeline.js';
-import { createAlphaBrowserTemplate } from '../src/infrastructure/scheduler/templates/alpha-browser.ts';
+import {
+  createAlphaBrowserTemplate,
+  supportsAlphaBrowserVerification,
+} from '../dist/infrastructure/scheduler/templates/alpha-browser.js';
+import { fixture } from './helpers/alpha-browser-template-fixture.js';
 
-function fixture() {
-  const tasks = new Map(),
-    delivered = [],
-    triggered = [];
-  const runtime = {
-    async runAlphaBrowserRevision(input) {
-      assert.equal(input.originTaskId, 'alpha-subscription');
-      assert.equal(input.ownerPrincipal, 'schedule:owner:alpha-subscription');
-      assert.equal(input.targetSha, 'b'.repeat(40));
-      const refs = await input.reportFailure({ verificationPlan: { testedHeadSha: 'b'.repeat(40) }, receipt: {} });
-      return { status: 'red', headSha: 'b'.repeat(40), failureTaskRefs: refs };
-    },
-    async alphaBrowserFailureTasks() {
-      return [
-        {
-          subjectKey: 'alpha-browser-failure:exact',
-          kind: 'journey-failed',
-          severity: 'P1',
-          ownerCatId: 'fixture-cat',
-          ownership: 'verified',
-          ownerSourceRef: 'git:head:docs/feature.md',
-          testedHeadSha: 'b'.repeat(40),
-          jobId: 'exact-job',
-          generation: 1,
-          unitIds: ['browser:feature'],
-        },
-      ];
-    },
-    withAlphaBrowserCheckout: async () => assert.fail('runner owns this invocation'),
-    executionApi: { GATE_EXECUTION_API_VERSION: 1 },
-  };
-  const options = {
-    repoRoot: '/repo',
-    ownerUserId: 'owner',
-    resolveCat: (id) => (id === 'fixture-cat' ? id : null),
-    tasks: {
-      getBySubject: (key) => tasks.get(key) ?? null,
-      upsertBySubject: (input) => {
-        const task = { id: 'task-p1', ...input };
-        tasks.set(input.subjectKey, task);
-        return task;
-      },
-    },
-    loadRuntime: async () => runtime,
-    inspectMain: async () => ({ targetSha: 'b'.repeat(40), databasePath: '/gate.sqlite', legacyLockPath: '/legacy' }),
-  };
-  const params = {
-    trigger: { type: 'cron', expression: '*/5 * * * *' },
-    deliveryThreadId: 'gate-owner',
-    params: { baselineSha: 'a'.repeat(40), guardianCatId: 'fixture-cat' },
-  };
-  return {
-    options,
-    params,
-    tasks,
-    delivered,
-    triggered,
-    runtime,
-    context: {
-      signal: new AbortController().signal,
-      deliver: async (input) => {
-        delivered.push(input);
-        return 'message';
-      },
-      invokeTrigger: {
-        trigger: async (...args) => {
-          triggered.push(args);
-          return 'enqueued';
-        },
-      },
-    },
-  };
+for (const restriction of ['scarce', 'unavailable', 'unregistered']) {
+  test(`historical ${restriction} owner is preserved but only the subscription guardian is awakened`, async () => {
+    const f = fixture();
+    f.params.params.guardianCatId = 'guardian';
+    f.options.resolveCat = (id) => (restriction === 'unregistered' && id === 'fixture-cat' ? null : id);
+    f.options.isAvailable = (id) => restriction !== 'unavailable' || id !== 'fixture-cat';
+    f.options.getEngagementPolicy = (id) =>
+      restriction === 'scarce' && id === 'fixture-cat' ? { quota: 'weekly_subscription_scarce' } : undefined;
+    const spec = createAlphaBrowserTemplate(f.options).createSpec('alpha-subscription', f.params);
+    for (let i = 0; i < 2; i++) await spec.run.execute('alpha', 'alpha', f.context);
+    assert.equal(f.tasks.size, 1);
+    assert.equal([...f.tasks.values()][0].ownerCatId, 'fixture-cat', 'historical ownership must not be rewritten');
+    assert.deepEqual(
+      f.triggered.map((args) => args[1]),
+      ['guardian', 'guardian'],
+    );
+    assert.match(f.delivered[0].content, /guardian.*fixture-cat/u, 'the routing decision must be visible');
+  });
 }
+
+test('owner eligibility is rechecked at dispatch, then replay uses the current guardian without another Task', async () => {
+  const f = fixture();
+  f.params.params.guardianCatId = 'guardian';
+  f.options.resolveCat = (id) => id;
+  let scarce = false;
+  f.options.getEngagementPolicy = (id) =>
+    scarce && id === 'fixture-cat' ? { quota: 'weekly_subscription_scarce' } : undefined;
+  const deliver = f.context.deliver;
+  f.context.deliver = async (input) => {
+    const source = await deliver(input);
+    scarce = true;
+    return source;
+  };
+  const spec = createAlphaBrowserTemplate(f.options).createSpec('alpha-subscription', f.params);
+  await assert.rejects(spec.run.execute('alpha', 'alpha', f.context), /triage target changed/u);
+  assert.equal(f.triggered.length, 0);
+  await spec.run.execute('alpha', 'alpha', f.context);
+  assert.equal(f.tasks.size, 1);
+  assert.equal(f.triggered[0][1], 'guardian');
+});
+
+test('an explicitly configured scarce guardian is preserved; an unavailable guardian cannot be awakened', async () => {
+  const f = fixture();
+  f.options.getEngagementPolicy = () => ({ quota: 'weekly_subscription_scarce' });
+  const spec = createAlphaBrowserTemplate(f.options).createSpec('alpha-subscription', f.params);
+  await spec.run.execute('alpha', 'alpha', f.context);
+  assert.equal(f.triggered[0][1], 'fixture-cat', 'explicit schedule selection is not an inferred owner');
+  f.options.isAvailable = () => false;
+  await assert.rejects(spec.run.execute('alpha', 'alpha', f.context), /guardian unavailable/u);
+  assert.equal(f.triggered.length, 1);
+});
 
 test('alpha failure replay keeps one Task while allowing at-least-once owner notification', async () => {
   const f = fixture(),
@@ -193,4 +175,30 @@ test('incomplete execution is a failed scheduler run, not a delivered verificati
   assert.equal(rows.at(-1).outcome, 'RUN_FAILED');
   assert.match(rows.at(-1).error_summary, /incomplete.*bbbbbbbb/u);
   assert.equal(f.tasks.size, 0);
+});
+
+test('Alpha browser verification is unavailable without the complete installed home runtime', async (t) => {
+  const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const root = mkdtempSync(join(tmpdir(), 'alpha-browser-support-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const library = join(root, 'scripts', 'lib');
+  mkdirSync(library, { recursive: true });
+  const files = [
+    'alpha-browser-runner.mjs',
+    'alpha-browser-process.mjs',
+    'alpha-browser-worker.mjs',
+    'alpha-browser-checkout.mjs',
+    'alpha-browser-failures.mjs',
+    'gate-execution-api.mjs',
+  ];
+  assert.equal(supportsAlphaBrowserVerification(root), false);
+  for (const file of files) writeFileSync(join(library, file), '');
+  assert.equal(supportsAlphaBrowserVerification(root), true);
+  for (const file of files) {
+    rmSync(join(library, file));
+    assert.equal(supportsAlphaBrowserVerification(root), false, `${file} is required`);
+    writeFileSync(join(library, file), '');
+  }
 });

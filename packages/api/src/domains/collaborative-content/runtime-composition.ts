@@ -1,5 +1,9 @@
 import type { DormantPluginRuntimeComposition } from '../plugin/runtime-composition.js';
 import { ProjectContentOwnerService } from '../video-studio/content-owner/service.js';
+import type { AuthorizeVideoProjectCat } from '../video-studio/project/access.js';
+import { VideoProjectAssetIndex } from '../video-studio/project/asset-index.js';
+import { VideoProjectService } from '../video-studio/project/service.js';
+import { resolveWorkspaceContentRoot } from '../workspace/workspace-content-source-factory.js';
 import { readWorkspaceOfficeImport } from '../workspace/workspace-office-import.js';
 import { EditorBridgeService } from './editor-bridge/service.js';
 import { EditorSessionService } from './editor-session-service.js';
@@ -17,10 +21,18 @@ export function createCollaborativeContentComposition(options: {
   readonly plugins: Pick<DormantPluginRuntimeComposition, 'inventoryStore' | 'contentEditors' | 'contentMaterializers'>;
   readonly materializer?: ContentPatchMaterializerPort;
   readonly readSource?: (worktreeId: string, path: string) => Promise<Buffer>;
+  /** Trusted invocation/delegation port; omission deliberately denies Cat project access. */
+  readonly authorizeVideoProjectCat?: AuthorizeVideoProjectCat;
 }) {
   const runtime = options.plugins.contentEditors;
   if (!runtime) throw new Error('F202 content editor runtime is required');
   const owner = new ProjectContentOwnerService({ dataDir: options.dataDir });
+  const projects = new VideoProjectService({
+    owner,
+    ownerUserId: options.ownerUserId,
+    assets: new VideoProjectAssetIndex({ resolveRoot: resolveWorkspaceContentRoot }),
+    ...(options.authorizeVideoProjectCat ? { authorizeCat: options.authorizeVideoProjectCat } : {}),
+  });
   const bindings = new OfficeProviderBindingStore({ dataDir: options.dataDir });
   const { authority, surfaces } = createPluginEditorAuthority(runtime);
   const sessions = new EditorSessionService({ dataDir: options.dataDir, owner, bindings, authority });
@@ -49,5 +61,5 @@ export function createCollaborativeContentComposition(options: {
     inspector: semantic,
     workspace,
   });
-  return { owner, bindings, sessions, patches, bridge, surfaces, workspace, namedCats };
+  return { owner, projects, bindings, sessions, patches, bridge, surfaces, workspace, namedCats };
 }

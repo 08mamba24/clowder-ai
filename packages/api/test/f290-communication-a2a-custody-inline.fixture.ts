@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
+import { _resetCachedConfig } from '../src/config/cat-config-loader.js';
 import { InvocationQueue } from '../src/domains/cats/services/agents/invocation/InvocationQueue.js';
 import { InvocationTracker } from '../src/domains/cats/services/agents/invocation/InvocationTracker.js';
+import { QueueSourceCustodyAdmissionService } from '../src/domains/cats/services/agents/invocation/QueueSourceCustodyAdmission.js';
 import { AgentRegistry } from '../src/domains/cats/services/agents/registry/AgentRegistry.js';
 import { AgentRouter } from '../src/domains/cats/services/agents/routing/AgentRouter.js';
 import { routeSerial } from '../src/domains/cats/services/agents/routing/route-serial.js';
@@ -11,9 +15,40 @@ import { callbacksRoutes } from '../src/routes/callbacks.js';
 import { callbackCustodyFixture, DELEGATE, NEXT_CAT } from './f290-communication-a2a-custody-callback.fixture.js';
 import type { DeferCase } from './f290-communication-a2a-custody-route.fixture.js';
 import { CAT } from './f290-communication-validation.host.js';
+import { createIsolatedTemplateRoot } from './helpers/isolated-template-root.js';
+import { scriptedSessionInit } from './helpers/scoped-test-sessions.js';
 
 /** Real no-Queue callback consumer pushes the live production worklist; no manual worklist mutation. */
 export async function inlineCustodyFixture(scope: 'private' | 'home', defer: DeferCase) {
+  const config = createIsolatedTemplateRoot(
+    tmpdir(),
+    fileURLToPath(new URL('../../../cat-template.json', import.meta.url)),
+  );
+  const env = {
+    CAT_CAFE_CONFIG_ROOT: config.root,
+    CAT_CAFE_GLOBAL_CONFIG_ROOT: config.root,
+    CAT_TEMPLATE_PATH: config.templatePath,
+  };
+  const before = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  _resetCachedConfig();
+  const restoreConfig = () => {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    _resetCachedConfig();
+    config.cleanup();
+  };
+  try {
+    return await createInlineCustodyFixture(scope, defer, restoreConfig);
+  } catch (error) {
+    restoreConfig();
+    throw error;
+  }
+}
+
+async function createInlineCustodyFixture(scope: 'private' | 'home', defer: DeferCase, restoreConfig: () => void) {
   const f = await callbackCustodyFixture();
   const queue = new InvocationQueue();
   const tracker = new InvocationTracker();
@@ -42,6 +77,7 @@ export async function inlineCustodyFixture(scope: 'private' | 'home', defer: Def
     supportsToolExecutionPolicy: () => true,
     async *invoke(_prompt, options) {
       calls.push({ catId: CAT, policy: options?.toolExecutionPolicy?.mode });
+      yield* scriptedSessionInit(CAT, _prompt, options);
       const env = options?.callbackEnv;
       assert.ok(env?.CAT_CAFE_INVOCATION_ID && env.CAT_CAFE_CALLBACK_TOKEN);
       const response = await app.inject({
@@ -66,6 +102,7 @@ export async function inlineCustodyFixture(scope: 'private' | 'home', defer: Def
     supportsToolExecutionPolicy: () => true,
     async *invoke(_prompt, options) {
       calls.push({ catId: DELEGATE, policy: options?.toolExecutionPolicy?.mode });
+      yield* scriptedSessionInit(DELEGATE, _prompt, options);
       yield {
         type: 'text',
         catId: DELEGATE,
@@ -81,15 +118,18 @@ export async function inlineCustodyFixture(scope: 'private' | 'home', defer: Def
   agents.register(DELEGATE, second);
   agents.register(NEXT_CAT, {
     supportsToolExecutionPolicy: () => true,
-    async *invoke() {
+    async *invoke(_prompt, options) {
       calls.push({ catId: NEXT_CAT });
+      yield* scriptedSessionInit(NEXT_CAT, _prompt, options);
       yield { type: 'done', catId: NEXT_CAT, timestamp: Date.now() };
     },
   });
   const router = new AgentRouter({
+    ...f.sessionPorts,
     registry: f.registry,
     agentRegistry: agents,
     messageStore: f.messages,
+    queueSourceCustodyAdmission: new QueueSourceCustodyAdmissionService({ queue, messageStore: f.messages }),
     threadStore: f.threads,
     taskStore: f.tasks,
     collectiveContext: () => f.context,
@@ -113,7 +153,9 @@ export async function inlineCustodyFixture(scope: 'private' | 'home', defer: Def
     calls,
     threadId,
     async run() {
-      for await (const _event of routeSerial(
+      const terminalCats = new Set<string>();
+      const errors: string[] = [];
+      for await (const event of routeSerial(
         router.getStrategyDeps(),
         [CAT],
         'Fixture inline relay',
@@ -133,14 +175,23 @@ export async function inlineCustodyFixture(scope: 'private' | 'home', defer: Def
           },
         },
       )) {
+        if (event.type === 'done' && event.catId) terminalCats.add(event.catId);
+        if (event.type === 'error' || event.errorCode)
+          errors.push(`${event.catId}: ${String(event.error ?? event.errorCode)}`.slice(0, 1000));
       }
+      assert.deepEqual(errors, [], `Inline callback route failed: ${errors.join('; ')}`);
+      assert.ok(terminalCats.has(DELEGATE), 'Delegate must emit a real terminal route event before teardown');
       assert.ok(delegatedSourceId);
       return f.messages.getById(delegatedSourceId);
     },
     async close() {
-      tracker.cancelAll(threadId);
-      await app.close();
-      await f.close();
+      try {
+        tracker.cancelAll(threadId);
+        await app.close();
+        await f.close();
+      } finally {
+        restoreConfig();
+      }
     },
   };
 }

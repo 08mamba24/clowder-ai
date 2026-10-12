@@ -1,14 +1,28 @@
 import { CONCIERGE_CONFIG_DEFAULTS, clampBallSize } from '@cat-cafe/shared';
 import { type CompanionCommand, type CompanionReply, validateCompanionReply } from '@clowder-ai/plugin-contract-beta23';
+import { validateCompanionReply as validateWorkReply } from '@clowder-ai/plugin-contract-beta25';
 import { z } from 'zod';
+import type { HostCompanionReply } from '../../../plugin/desktop-window-runtime/companion-private-wire.js';
+import type { CompanionArchiveContract } from '../../../plugin/desktop-window-runtime/published-companion-v2.js';
 import type { CompanionOwnerClient } from '../companion-owner-client.js';
 
 const unavailable = () => ({ kind: 'settings', status: 'unavailable', reason: 'temporarily_unavailable' }) as const;
 type Update = Extract<CompanionCommand, { kind: 'settings.update' }>;
 const settledCall = z.enum(['unchanged', 'stopped']);
+// Published beta.23/24 archives reject smaller replies. Keep the saved owner
+// preference intact, but project a value their public contract can consume.
+const publishedModernBallSizeMin = 48;
+
+function publishedBallSize(size: number | null | undefined, contract: CompanionArchiveContract['contract']) {
+  const clamped = clampBallSize(size);
+  return contract === '0.1.0-beta.25' ? clamped : Math.max(publishedModernBallSizeMin, clamped);
+}
 
 /** Read the same owner record, applying only its canonical legacy defaults. */
-export async function readModernCompanionSettings(client: CompanionOwnerClient): Promise<CompanionReply> {
+export async function readModernCompanionSettings(
+  client: CompanionOwnerClient,
+  contract: CompanionArchiveContract['contract'] = '0.1.0-beta.23',
+): Promise<HostCompanionReply> {
   const response = await client.requestResponse('/api/concierge/config?view=settings');
   if (response.statusCode === 401 || response.statusCode === 403) return { kind: 'error', code: 'permission_required' };
   if (response.statusCode !== 200 || response.body.status !== 'available')
@@ -28,7 +42,7 @@ export async function readModernCompanionSettings(client: CompanionOwnerClient):
     values: {
       dutyCatProfileId: config.dutyCatProfileId,
       skin: config.skin,
-      ballSize: clampBallSize(size),
+      ballSize: publishedBallSize(size, contract),
       behaviorEnabled: config.behaviorEnabled ?? true,
       proactivePolicy: config.proactivePolicy,
       personaTone: config.personaTone,
@@ -37,6 +51,7 @@ export async function readModernCompanionSettings(client: CompanionOwnerClient):
     companions: response.body.companions,
     selectedCompanionStatus: response.body.selectedCompanionStatus,
   };
+  if (contract === '0.1.0-beta.25') return validateWorkReply(candidate) ? candidate : unavailable();
   return validateCompanionReply(candidate) ? candidate : unavailable();
 }
 

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { CollectiveServiceStore, startCollectiveServer } from '../../../collective-service/dist/index.js';
 import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
+import { openChannelFromCollectiveHome } from './f290-channel-entry.harness.mjs';
 import { verifyFirstCatOwnerControls } from './f290-first-cat-owner.harness.mjs';
 import { verifyFirstEntryGuide } from './f290-first-entry-guide.harness.mjs';
 import { availablePort } from './f290-runtime-journey.harness.mjs';
@@ -79,7 +80,7 @@ test(
         owner.sessionToken,
       );
       await page.goto(`${url}/?collectiveId=${collective.collectiveId}`, { waitUntil: 'networkidle' });
-      await page.getByRole('heading', { name: '# general' }).waitFor();
+      await openChannelFromCollectiveHome(page, 'general');
       assert.equal(await page.getByText('WORKSHOP_CANARY', { exact: true }).count(), 0);
       const selectMention = async (scope, connection, placeholder = '在 #general 里说点什么……') => {
         await scope.getByPlaceholder(placeholder).fill('@Astra');

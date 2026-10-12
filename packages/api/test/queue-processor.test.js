@@ -3065,6 +3065,97 @@ describe('QueueProcessor', () => {
       );
     });
 
+    for (const status of ['succeeded', 'failed', 'canceled', 'canceled_by_user']) {
+      it(
+        status === 'succeeded'
+          ? 'settles an accepted public reply after exposed true recall'
+          : `does not consume a public reply witness after exposed recall and ${status} parent`,
+        async () => {
+          const durableStore = new MessageStore();
+          const durableDeps = stubDeps({ messageStore: durableStore });
+          const coordinator = new QueuedMessageCustodyCoordinator({ messageStore: durableStore });
+          durableDeps.queueCustodyCoordinator = coordinator;
+          const { entry, message } = enqueueCustodiedEntry(durableDeps.queue, durableStore, {
+            source: 'connector',
+            executionScope: 'collective-participation',
+            messageSource: {
+              connector: 'collective',
+              label: 'Collective',
+              icon: '🌐',
+              meta: {
+                participation: {
+                  serviceInstanceId: 'svc_aaaaaaaa',
+                  collectiveId: 'col_aaaaaaaa',
+                  connectionId: 'con_aaaaaaaa',
+                  catId: 'opus',
+                  eventId: 'evt_aaaaaaaa',
+                  participationRevision: 1,
+                  location: { channelId: 'general' },
+                  actor: { kind: 'human', humanId: 'human_aaaaaaaa', displayName: 'Fixture Human' },
+                },
+              },
+            },
+          });
+          const childInvocationId = 'child-public-reply-before-recall';
+          const seenAt = entry.createdAt + 100;
+          assert.equal(durableDeps.queue.markQueuedSeen('t1', 'u1', entry.id, 'opus', childInvocationId, seenAt), true);
+          const exposedEntry = durableDeps.queue.getEntrySnapshot('t1', 'u1', entry.id);
+          await coordinator.persistEntry(exposedEntry);
+          const acceptedWitness = {
+            kind: 'collective_public_reply',
+            sourceMessageId: message.id,
+            sourceEventId: 'evt_aaaaaaaa',
+            acceptedEventId: 'evt_bbbbbbbb',
+          };
+          assert.equal(durableDeps.queue.removeEntrySnapshotIfUnchanged(exposedEntry), true);
+          const recalled = durableStore.recallMessageToComposerDraft(message.id, {
+            ownerUserId: 'u1',
+            threadId: 't1',
+            expectedDraftRevision: 0,
+            merge: 'replace',
+            recalledAt: seenAt + 200,
+          });
+          assert.equal(recalled.kind, 'recalled');
+          assert.equal(recalled.verdict, 'exposed');
+          const complete = (processor) =>
+            processor.onInvocationComplete(
+              't1',
+              'opus',
+              status,
+              'parent-public-reply-before-recall',
+              ['opus'],
+              false,
+              { opus: childInvocationId },
+              [entry.id],
+              { [childInvocationId]: [acceptedWitness] },
+            );
+          await complete(new QueueProcessor(durableDeps));
+          await complete(new QueueProcessor(durableDeps));
+
+          const settled = durableStore.getById(message.id);
+          if (status === 'succeeded') {
+            assert.deepEqual(settled.queueCustody.handledByCatIds, ['opus']);
+            assert.equal(settled.queueCustody.targetOutcomeByCatId.opus.disposition, 'responded');
+            assert.deepEqual(settled.queueCustody.targetOutcomeByCatId.opus.consumption, acceptedWitness);
+          } else {
+            assert.deepEqual(settled.queueCustody.handledByCatIds, []);
+            assert.equal(settled.queueCustody.targetOutcomeByCatId?.opus, undefined);
+          }
+          assert.equal(settled.content, '');
+          assert.equal(settled.deliveryStatus, 'canceled');
+          assert.equal(durableDeps.queue.list('t1', 'u1').length, 0);
+          assert.equal(durableDeps.router.routeExecution.mock.calls.length, 0, 'recall completion never invokes again');
+          assert.equal(
+            durableDeps.socketManager.broadcastToRoom.mock.calls.filter(
+              (call) => call.arguments[1] === 'message_receipt_updated' && call.arguments[2]?.messageId === message.id,
+            ).length,
+            status === 'succeeded' ? 1 : 0,
+            'only successful completion settles once; failed/canceled aggregate rules stay unchanged',
+          );
+        },
+      );
+    }
+
     it('settles the exact child after exposed true recall removed its Queue carrier', async () => {
       const durableStore = new MessageStore();
       const durableDeps = stubDeps({ messageStore: durableStore });

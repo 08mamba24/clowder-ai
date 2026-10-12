@@ -6,7 +6,9 @@ import { useChatStore } from '@/stores/chatStore';
 import { AppTooltip } from '../AppTooltip';
 import { BootcampIcon } from '../icons/BootcampIcon';
 import { MemoryBookStarIcon, ShellGlyph, type ShellGlyphName, WorksIcon } from '../shell/ShellIcons';
+import { useShellCopy } from '../shell/shell-copy';
 import { resolveShellNavTarget, type ShellDestination } from '../shell/shell-navigation';
+import { sidebarHeaderCopy } from './sidebar-header.shell-copy';
 
 interface ThreadSidebarV2HeaderProps {
   creationPhase: 'idle' | 'submitting' | 'reconciling';
@@ -25,8 +27,6 @@ interface ThreadSidebarV2HeaderProps {
   /** The Café destination that is the current page, if any (today: 记忆). */
   activeDestination?: ShellDestination | null;
 }
-
-const CAFE_TITLE = '我的 Café';
 
 function NavRow({
   icon,
@@ -91,7 +91,7 @@ function IconButton({
   children: React.ReactNode;
 }) {
   return (
-    <AppTooltip label={label} side="bottom">
+    <AppTooltip label={label} side="right" intent="content" onlyWhenTruncated>
       <button
         type="button"
         onClick={onClick}
@@ -128,6 +128,7 @@ export function ThreadSidebarV2Header({
   onMarkAllRead,
   activeDestination = null,
 }: ThreadSidebarV2HeaderProps) {
+  const copy = useShellCopy(sidebarHeaderCopy);
   const pathname = usePathname() ?? '/';
   const router = useRouter();
   const setWorkspaceMode = useChatStore((s) => s.setWorkspaceMode);
@@ -175,13 +176,13 @@ export function ThreadSidebarV2Header({
     menuItems.push(
       {
         id: 'organize-cat',
-        label: `猫猫帮你分类（${uncategorizedCount} 未分类）`,
+        label: copy.organizeCat(uncategorizedCount),
         icon: 'sparkles',
         onSelect: onOrganizeWithCat,
       },
       {
         id: 'organize-manual',
-        label: `手动批量分类（${uncategorizedCount} 未分类）`,
+        label: copy.organizeManual(uncategorizedCount),
         icon: 'grid',
         onSelect: onOpenOrganizer,
       },
@@ -189,7 +190,7 @@ export function ThreadSidebarV2Header({
   }
   menuItems.push({
     id: 'bootcamp',
-    label: '猫猫训练营',
+    label: copy.bootcamp,
     icon: 'bootcamp',
     onSelect: onOpenBootcamp,
     testId: 'sidebar-bootcamp',
@@ -198,7 +199,7 @@ export function ThreadSidebarV2Header({
   if (unreadCount > 0) {
     menuItems.push({
       id: 'mark-all-read',
-      label: isMarkingAllRead ? '正在标为已读…' : `全部标为已读（${unreadCount}）`,
+      label: isMarkingAllRead ? copy.markingRead : copy.markAllRead(unreadCount),
       icon: 'checkSquare',
       onSelect: onMarkAllRead,
       testId: 'mark-all-read-btn',
@@ -209,10 +210,10 @@ export function ThreadSidebarV2Header({
     <div data-testid="sidebar-v2-header">
       <div className="flex h-[52px] flex-none items-center gap-0.5 pl-[18px] pr-2.5">
         <h2 className="m-0 min-w-0 flex-1 truncate text-sm font-semibold" style={{ color: 'var(--shell-ink)' }}>
-          {CAFE_TITLE}
+          {copy.cafe}
         </h2>
         <IconButton
-          label="搜索对话"
+          label={copy.search}
           pressed={showSearch}
           testId="sidebar-search-toggle"
           onClick={() => (showSearch ? closeSearch() : setSearchOpen(true))}
@@ -221,7 +222,7 @@ export function ThreadSidebarV2Header({
         </IconButton>
         <div ref={menuRef} className="relative">
           <IconButton
-            label="更多"
+            label={copy.more}
             pressed={menuOpen}
             testId="sidebar-more-menu"
             onClick={() => setMenuOpen((wasOpen) => !wasOpen)}
@@ -231,7 +232,7 @@ export function ThreadSidebarV2Header({
           {menuOpen && (
             <div
               role="menu"
-              aria-label="对话栏更多操作"
+              aria-label={copy.moreActions}
               className="absolute right-0 top-[34px] z-[60] w-[240px] rounded-xl p-1.5"
               style={{
                 background: 'var(--shell-paper)',
@@ -255,7 +256,11 @@ export function ThreadSidebarV2Header({
                   style={{ color: 'var(--shell-body)' }}
                 >
                   <span className="flex-none" style={{ color: 'var(--shell-muted)' }}>
-                    {item.icon === 'bootcamp' ? <BootcampIcon className="h-4 w-4" /> : <ShellGlyph name={item.icon} />}
+                    {item.icon === 'bootcamp' ? (
+                      <BootcampIcon className="h-4 w-4" title={copy.bootcamp} />
+                    ) : (
+                      <ShellGlyph name={item.icon} />
+                    )}
                   </span>
                   <span className="min-w-0 flex-1 truncate">{item.label}</span>
                 </button>
@@ -264,7 +269,7 @@ export function ThreadSidebarV2Header({
           )}
         </div>
         {onCollapse ? (
-          <IconButton label="收起侧栏" testId="sidebar-collapse" onClick={onCollapse}>
+          <IconButton label={copy.collapse} testId="sidebar-collapse" onClick={onCollapse}>
             <ShellGlyph name="panelLeft" />
           </IconButton>
         ) : null}
@@ -292,8 +297,8 @@ export function ThreadSidebarV2Header({
             onKeyDown={(event) => {
               if (event.key === 'Escape') closeSearch();
             }}
-            placeholder="搜索对话、项目或 ID…"
-            aria-label="搜索对话"
+            placeholder={copy.searchPlaceholder}
+            aria-label={copy.search}
             data-testid="sidebar-search-input"
             className="shell-focusable h-8 w-full rounded-lg px-2.5 text-sm"
             style={{
@@ -308,8 +313,8 @@ export function ThreadSidebarV2Header({
       <nav aria-label="Café" className="flex flex-col px-2.5 pb-2.5 pt-0.5">
         <NavRow
           icon={<ShellGlyph name="newchat" />}
-          label="新对话"
-          note={creationPhase === 'reconciling' ? '请求超时，核对中…' : isCreating ? '…' : undefined}
+          label={copy.newConversation}
+          note={creationPhase === 'reconciling' ? copy.reconciling : isCreating ? '…' : undefined}
           onClick={onNewThread}
           disabled={isCreating}
           testId="sidebar-new-thread"
@@ -317,14 +322,17 @@ export function ThreadSidebarV2Header({
         />
         <NavRow
           icon={<WorksIcon />}
-          label="全部作品"
+          label={copy.allWorks}
           onClick={() => setWorkspaceMode('artifacts')}
           testId="sidebar-all-works"
         />
         <NavRow
           icon={<MemoryBookStarIcon />}
-          label="记忆"
-          onClick={() => router.push(resolveShellNavTarget('/memory', pathname))}
+          label={copy.memory}
+          onClick={() => {
+            if (typeof window !== 'undefined' && window.innerWidth < 768) onCollapse?.();
+            router.push(resolveShellNavTarget('/memory', pathname));
+          }}
           current={activeDestination === 'memory'}
           testId="sidebar-memory"
         />

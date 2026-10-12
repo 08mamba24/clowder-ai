@@ -74,6 +74,48 @@ describe('MCP Callback Tools', () => {
     assert.equal(body.takeaway, '我们以为 You 喜欢清楚的来源。');
   });
 
+  test('propose_taste forwards a revision-bound correction target without synthetic creation fields', async () => {
+    const { handleProposeTaste, proposeTasteInputSchema } = await import('../dist/tools/callback-tools.js');
+    const target = {
+      sourceAnchor: 'taste-vignette:docs/taste/vignettes/example.md',
+      expectedRevision: `sha256:${'a'.repeat(64)}`,
+      reason: 'outdated',
+      suggestedPatch: { takeaway: '更新后的判断。' },
+    };
+    assert.equal(proposeTasteInputSchema.target.safeParse(target).success, true);
+    let body;
+    globalThis.fetch = async (_url, options) => {
+      body = JSON.parse(options.body);
+      return { ok: true, json: async () => ({ proposalId: 'proposal-correction', status: 'pending' }) };
+    };
+    const result = await handleProposeTaste({ target });
+    assert.notEqual(result.isError, true);
+    assert.deepEqual(body.target, target);
+    assert.match(body.clientRequestId, /^[0-9a-f-]{36}$/);
+    assert.equal('scene' in body, false);
+  });
+
+  test('propose_taste rejects mixed creation and correction coordinates before callback transport', async () => {
+    const { handleProposeTaste } = await import('../dist/tools/callback-tools.js');
+    let fetchCalls = 0;
+    globalThis.fetch = async () => {
+      fetchCalls++;
+      return { ok: true, json: async () => ({ status: 'unexpected' }) };
+    };
+    const result = await handleProposeTaste({
+      scene: 'must not be mixed into correction mode',
+      target: {
+        sourceAnchor: 'taste-vignette:docs/taste/vignettes/example.md',
+        expectedRevision: `sha256:${'a'.repeat(64)}`,
+        reason: 'outdated',
+        suggestedPatch: { takeaway: '更新后的判断。' },
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /Expected either create fields.*or correction fields/u);
+    assert.equal(fetchCalls, 0);
+  });
+
   test('handlePostMessage calls API with correct body', async () => {
     const { handlePostMessage } = await import('../dist/tools/callback-tools.js');
 
@@ -99,6 +141,41 @@ describe('MCP Callback Tools', () => {
     assert.equal(body.callbackToken, undefined, 'creds must NOT be dual-written to body');
     assert.equal(capturedOptions.headers['x-invocation-id'], 'test-invocation');
     assert.equal(capturedOptions.headers['x-callback-token'], 'test-token');
+  });
+
+  test('handlePostMessage forwards version-bound ContextAttachments without accepting caller identity', async () => {
+    const { handlePostMessage, postMessageInputSchema } = await import('../dist/tools/callback-tools.js');
+    const attachment = {
+      v: 1,
+      id: 'ctx-cat-quote-1',
+      kind: 'quote',
+      text: 'A precise source line.',
+      source: {
+        kind: 'workspace_file',
+        path: 'docs/guide.md',
+        worktreeId: 'worktree-a',
+        revision: `sha256:${'a'.repeat(64)}`,
+        lineStart: 4,
+        lineEnd: 4,
+      },
+    };
+    assert.equal(postMessageInputSchema.contextAttachments.safeParse([attachment]).success, true);
+    assert.equal(
+      postMessageInputSchema.contextAttachments.safeParse([
+        { ...attachment, source: { ...attachment.source, revision: undefined } },
+      ]).success,
+      false,
+    );
+
+    let capturedOptions;
+    globalThis.fetch = async (_url, options) => {
+      capturedOptions = options;
+      return { ok: true, json: async () => ({ status: 'ok' }) };
+    };
+
+    const result = await handlePostMessage({ content: 'The file says this.', contextAttachments: [attachment] });
+    assert.equal(result.isError, undefined, result.content[0]?.text);
+    assert.deepEqual(JSON.parse(capturedOptions.body).contextAttachments, [attachment]);
   });
 
   test('handlePostMessage forwards only the exact F247 source anchor', async () => {
@@ -290,6 +367,51 @@ describe('MCP Callback Tools', () => {
     assert.match(result.content[0].text, /event_log_read_failed/);
   });
 
+  test('handleCompleteEventWait exposes only the invocation-bound disposition input', async () => {
+    const { handleCompleteEventWait, callbackTools } = await import('../dist/tools/callback-tools.js');
+    const tool = callbackTools.find((candidate) => candidate.name === 'cat_cafe_complete_event_wait');
+    assert.deepEqual(Object.keys(tool.inputSchema), ['disposition'], 'no wait, outcome, message or thread input');
+    assert.equal(tool.inputSchema.disposition.safeParse('handled').success, true);
+    assert.equal(tool.inputSchema.disposition.safeParse('completed').success, true);
+    assert.equal(tool.inputSchema.disposition.safeParse('done').success, false);
+
+    let capturedUrl;
+    let capturedOptions;
+    globalThis.fetch = async (url, options) => {
+      capturedUrl = url;
+      capturedOptions = options;
+      return { ok: true, json: async () => ({ outcome: 'applied' }) };
+    };
+
+    const result = await handleCompleteEventWait({ disposition: 'completed' });
+
+    assert.equal(result.isError, undefined);
+    assert.ok(capturedUrl.endsWith('/api/callbacks/complete-event-wait'));
+    assert.equal(capturedOptions.method, 'POST');
+    assert.deepEqual(JSON.parse(capturedOptions.body), { disposition: 'completed' });
+    assert.equal(capturedOptions.headers['x-invocation-id'], 'test-invocation');
+    assert.equal(capturedOptions.headers['x-callback-token'], 'test-token');
+
+    await handleCompleteEventWait({ disposition: 'handled' });
+    assert.deepEqual(JSON.parse(capturedOptions.body), { disposition: 'handled' }, "the caller's choice is forwarded");
+  });
+
+  test('handleCompleteEventWait hands a typed 409 refusal back as an error with its code', async () => {
+    const { handleCompleteEventWait } = await import('../dist/tools/callback-tools.js');
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 409,
+      text: async () =>
+        JSON.stringify({ error: 'Event wait disposition rejected', code: 'event_wait_disposition_not_event_wait' }),
+    });
+
+    const result = await handleCompleteEventWait({ disposition: 'handled' });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /409/);
+    assert.match(result.content[0].text, /event_wait_disposition_not_event_wait/);
+  });
+
   test('handleCompleteA2ADispatch forwards adoptSourceMessageId in POST body for adopted dispatch', async () => {
     const { handleCompleteA2ADispatch } = await import('../dist/tools/callback-tools.js');
     let capturedOptions;
@@ -401,7 +523,7 @@ describe('MCP Callback Tools', () => {
     });
   });
 
-  test('handlePostMessage forwards an ordinary typed local verdict with agent-key identity', async () => {
+  test('handlePostMessage forwards an owned-thread typed local verdict with agent-key identity', async () => {
     const { handlePostMessage } = await import('../dist/tools/callback-tools.js');
     delete process.env.CAT_CAFE_INVOCATION_ID;
     delete process.env.CAT_CAFE_CALLBACK_TOKEN;
@@ -410,6 +532,8 @@ describe('MCP Callback Tools', () => {
     delete process.env.CAT_CAFE_AGENT_KEY_FILES;
     delete process.env.CAT_CAFE_AGENT_KEY_BOUND_CAT_ID;
     process.env.CAT_CAFE_AGENT_KEY_SECRET = 'agent-key-only';
+    const acceptedRevision = '0001791598700391-000402-89cbfc69';
+    const acceptedSourceRef = `thread_owned_a8449d074903c72c0011dfa9b2ba891330f6bbc8#${acceptedRevision}`;
     let attempts = 0;
     let capturedOptions;
     globalThis.fetch = async (_url, options) => {
@@ -426,8 +550,8 @@ describe('MCP Callback Tools', () => {
       localReviewVerdict: 'approved',
       reviewedHeadSha: 'b'.repeat(40),
       reviewSubjectRef: 'pr:zts212653/cat-cafe#4255',
-      acceptedSourceRef: 'docs/features/F314-development-episode-alignment-experiment.md',
-      acceptedRevision: 'a'.repeat(40),
+      acceptedSourceRef,
+      acceptedRevision,
     });
 
     assert.equal(result.isError, undefined, result.content[0]?.text);
@@ -441,8 +565,8 @@ describe('MCP Callback Tools', () => {
       localReviewVerdict: 'approved',
       reviewedHeadSha: 'b'.repeat(40),
       reviewSubjectRef: 'pr:zts212653/cat-cafe#4255',
-      acceptedSourceRef: 'docs/features/F314-development-episode-alignment-experiment.md',
-      acceptedRevision: 'a'.repeat(40),
+      acceptedSourceRef,
+      acceptedRevision,
     });
   });
 

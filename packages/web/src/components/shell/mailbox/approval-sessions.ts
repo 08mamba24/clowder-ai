@@ -18,20 +18,10 @@ import {
 } from './read-evidence';
 
 /**
- * F322 S3-2b-1c: the driver that follows an approval hosted in the 待办 panel from the press of a button to a result it can
- * stand behind. The reconciler (pure) decides what may be said; this makes its inputs true:
- *
- *  - it follows only attempts made after the session opened, against this exact item (producer and version);
- *  - when a write has ended it starts one new unified read AND one Approval Hub store refresh, and judges only a read that
- *    began after the write ended (a generation of the panel's own reads, not a clock), and only after the store refresh
- *    has finished, because alignment compares the read with the store's copy;
- *  - it never declares "已处理" from the store's optimistic removal or from absence from a page: only a settled row for this
- *    owner, producer and proposal does that (see `buildReadEvidence`);
- *  - an answer that is no longer for the read now current is dropped, whichever finishes first;
- *  - it is asked synchronously, right before each producer write, whether the displayed read and the store still agree.
- *
- * A session lives here, not in a component: the row it belongs to leaves the list the moment the decision is made, and the
- * result must outlive that. Framework-free on purpose, so the dependencies are plain functions.
+ * Follows original producer attempts and judges only owner-matching reads started after each write ended.
+ * The pending store is refreshed alongside attention; an exact settled history row proves the decision.
+ * Each press synchronously checks the displayed version, credentials and current availability.
+ * Sessions retain only presentation snapshots and request observations, outliving a disappearing row.
  */
 export interface SessionSeed {
   /** The verified owner the card was shown to (the read's identity). */
@@ -60,6 +50,8 @@ export interface SessionsDeps {
   /** Refresh the Approval Hub store's pending list. May reject; the outcome is judged on what the store then holds. */
   refreshStore(): Promise<unknown>;
   storeItems(): readonly ApprovalHubItem[];
+  /** Optional for framework-free callers; the real host observes the original pending GET's own outcome. */
+  storeAvailable?(): boolean;
   attempts(): Readonly<Record<string, DecisionAttempt>>;
   /** The read now current and its generation (null while one is in flight). */
   latestRead(): { result: MailboxRead; generation: number | null };
@@ -216,7 +208,9 @@ export function createApprovalSessions(deps: SessionsDeps): ApprovalSessions {
     const { result, generation } = deps.latestRead();
     const current =
       result.kind === 'ok' &&
+      deps.storeAvailable?.() !== false &&
       generation !== null &&
+      result.read.sources.approvals.status === 'available' &&
       result.read.identity.ownerUserId === session.ownerUserId &&
       listedCopiesAligned(result.read, session.address, deps.storeItems(), deps.now());
     return current ? generation : null;
@@ -321,6 +315,11 @@ export function createApprovalSessions(deps: SessionsDeps): ApprovalSessions {
     },
 
     reread(key) {
+      const session = sessions.get(key);
+      if (session?.model.state.kind === 'idle' || session?.model.state.kind === 'refused_before_send') {
+        startConfirmation(key);
+        return;
+      }
       apply(key, { type: 'reread', readGeneration: deps.readsStarted() });
     },
 

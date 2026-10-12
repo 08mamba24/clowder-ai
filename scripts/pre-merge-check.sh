@@ -17,6 +17,8 @@
 
 set -euo pipefail
 
+GATE_ENTRYPOINT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -35,6 +37,8 @@ GATE_ORIGINAL_ARG_COUNT=$#
 GATE_IDENTITY_ARGS=()
 GATE_IDENTITY_ARG_COUNT=0
 GATE_RESUME_RUN_ID=""
+GATE_RESUME_CONTROLLER_RUN_ID=""
+GATE_RESUME_CONTROLLER_CANDIDATE_ROOT=""
 GATE_CONTINUITY_CLAIM_ID=""
 GATE_CONTINUITY_BASE_SHA=""
 GATE_RESUME_MODE=""
@@ -116,7 +120,7 @@ esac
 
 usage() {
   cat <<'EOF'
-Usage: scripts/pre-merge-check.sh [--source-full <exact-sha>] [--no-rebase] [--skip-install] [--auto-fix] [--risk <axis>] [--resume <run-id>] [--continuity-claim <hash>] [--]
+Usage: scripts/pre-merge-check.sh [--source-full <exact-sha>] [--no-rebase] [--skip-install] [--auto-fix] [--risk <axis>] [--resume <run-id>] [--resume-controller <run-id> --candidate-root <absolute-path>] [--continuity-claim <hash>] [--]
 
 Default behavior:
   1. Fail if the worktree is dirty
@@ -131,6 +135,8 @@ Flags:
   --auto-fix     Run allowlisted auto-fix (biome format) before gate, auto-commit changes as [qc-bot]
   --risk <axis>  Declare behavior/data/security/contract/irreversible assurance; coverage is classified independently
   --resume <id>  Continue one frozen non-green gate run without fetching or selecting a new base
+  --resume-controller <id> Use this committed control plane to inspect an older frozen candidate
+  --candidate-root <path> Exact clean candidate checkout used with --resume-controller
   --continuity-claim <hash>  Source checkout only: consume C2 as targeted/unverified without fetch/rebase; public exports reject it
   --             pnpm passthrough separator (consumed; subsequent flags still parsed)
 EOF
@@ -175,6 +181,22 @@ while [[ $# -gt 0 ]]; do
       GATE_RESUME_RUN_ID="$2"
       shift 2
       ;;
+    --resume-controller)
+      if [ $# -lt 2 ] || [ -n "$GATE_RESUME_CONTROLLER_RUN_ID" ] || ! [[ "$2" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+        echo "--resume-controller requires one canonical gate run id" >&2
+        exit 1
+      fi
+      GATE_RESUME_CONTROLLER_RUN_ID="$2"
+      shift 2
+      ;;
+    --candidate-root)
+      if [ $# -lt 2 ] || [ -n "$GATE_RESUME_CONTROLLER_CANDIDATE_ROOT" ] || [[ "$2" != /* ]]; then
+        echo "--candidate-root requires one absolute path" >&2
+        exit 1
+      fi
+      GATE_RESUME_CONTROLLER_CANDIDATE_ROOT="$2"
+      shift 2
+      ;;
     --continuity-claim)
       if [ $# -lt 2 ] || [ -n "$GATE_CONTINUITY_CLAIM_ID" ]; then
         echo "--continuity-claim requires one claim hash" >&2
@@ -208,13 +230,49 @@ fi
 # Preserve every other byte of the original invocation so risk/mode semantics
 # still participate in the exact-tree fingerprint.
 for ((GATE_ARG_INDEX = 0; GATE_ARG_INDEX < GATE_ORIGINAL_ARG_COUNT; GATE_ARG_INDEX += 1)); do
-  if [ "${GATE_ORIGINAL_ARGS[$GATE_ARG_INDEX]}" = "--resume" ] || [ "${GATE_ORIGINAL_ARGS[$GATE_ARG_INDEX]}" = "--continuity-claim" ]; then
+  if [ "${GATE_ORIGINAL_ARGS[$GATE_ARG_INDEX]}" = "--resume" ] ||
+    [ "${GATE_ORIGINAL_ARGS[$GATE_ARG_INDEX]}" = "--resume-controller" ] ||
+    [ "${GATE_ORIGINAL_ARGS[$GATE_ARG_INDEX]}" = "--candidate-root" ] ||
+    [ "${GATE_ORIGINAL_ARGS[$GATE_ARG_INDEX]}" = "--continuity-claim" ]; then
     GATE_ARG_INDEX=$((GATE_ARG_INDEX + 1))
     continue
   fi
   GATE_IDENTITY_ARGS+=("${GATE_ORIGINAL_ARGS[$GATE_ARG_INDEX]}")
 done
 GATE_IDENTITY_ARG_COUNT=${#GATE_IDENTITY_ARGS[@]}
+
+if [ -n "$GATE_RESUME_CONTROLLER_RUN_ID" ] || [ -n "$GATE_RESUME_CONTROLLER_CANDIDATE_ROOT" ]; then
+  if [ -z "$GATE_RESUME_CONTROLLER_RUN_ID" ] || [ -z "$GATE_RESUME_CONTROLLER_CANDIDATE_ROOT" ]; then
+    echo "--resume-controller and --candidate-root must be supplied together" >&2
+    exit 1
+  fi
+  if [ -n "$GATE_RESUME_RUN_ID" ] || [ -n "$GATE_CONTINUITY_CLAIM_ID" ] ||
+    [ "$NO_REBASE" = "true" ] || [ "$AUTO_FIX" = "true" ]; then
+    echo "Trusted resume control cannot be combined with another resume, continuity, --no-rebase or --auto-fix" >&2
+    exit 1
+  fi
+  if [ ! -f "$GATE_ENTRYPOINT_ROOT/scripts/gate-resume-controller.mjs" ]; then
+    echo "Trusted cross-version resume is unavailable in this distribution" >&2
+    exit 1
+  fi
+  GATE_RESUME_CONTROLLER_IDENTITY_ARGS=()
+  GATE_RESUME_CONTROLLER_BOUNDARY_CONSUMED=false
+  for GATE_RESUME_CONTROLLER_ARG in "${GATE_IDENTITY_ARGS[@]}"; do
+    if [ "$GATE_RESUME_CONTROLLER_BOUNDARY_CONSUMED" = "false" ] && [ "$GATE_RESUME_CONTROLLER_ARG" = "--" ]; then
+      GATE_RESUME_CONTROLLER_BOUNDARY_CONSUMED=true
+      continue
+    fi
+    GATE_RESUME_CONTROLLER_IDENTITY_ARGS+=("$GATE_RESUME_CONTROLLER_ARG")
+  done
+  if [ "$GATE_RESUME_CONTROLLER_BOUNDARY_CONSUMED" = "false" ]; then
+    echo "Trusted resume control requires -- before the original gate identity" >&2
+    exit 1
+  fi
+  exec node "$GATE_ENTRYPOINT_ROOT/scripts/gate-resume-controller.mjs" \
+    --candidate-root "$GATE_RESUME_CONTROLLER_CANDIDATE_ROOT" \
+    --run-id "$GATE_RESUME_CONTROLLER_RUN_ID" \
+    -- "${GATE_RESUME_CONTROLLER_IDENTITY_ARGS[@]}"
+fi
 
 if [ -n "${CAT_CAFE_MANAGED_GATE_RESUME_EPOCH:-}" ]; then
   if [ -z "${CAT_CAFE_MANAGED_GATE_FROZEN_IDENTITY_JSON:-}" ]; then

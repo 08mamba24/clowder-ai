@@ -65,6 +65,52 @@ describe('Thread API', () => {
     assert.deepEqual(body.participants, []);
   });
 
+  it('POST /api/threads replays one owner-scoped conversation for the same idempotency key', async () => {
+    const request = {
+      method: 'POST',
+      url: '/api/threads',
+      headers: { 'x-cat-cafe-user': 'alice' },
+      payload: {
+        idempotencyKey: '11111111-1111-4111-8111-111111111111',
+        projectPath: 'default',
+      },
+    };
+
+    const first = await app.inject(request);
+    const replay = await app.inject(request);
+    assert.equal(first.statusCode, 201);
+    assert.equal(replay.statusCode, 201);
+    assert.equal(replay.json().id, first.json().id);
+    assert.equal(replay.json().title, null);
+
+    const listed = await app.inject({
+      method: 'GET',
+      url: '/api/threads',
+      headers: { 'x-cat-cafe-user': 'alice' },
+    });
+    assert.equal(listed.json().threads.filter((thread) => thread.id === first.json().id).length, 1);
+  });
+
+  it('POST /api/threads scopes the same idempotency key to the authenticated owner', async () => {
+    const payload = { idempotencyKey: '22222222-2222-4222-8222-222222222222' };
+    const alice = await app.inject({
+      method: 'POST',
+      url: '/api/threads',
+      headers: { 'x-cat-cafe-user': 'alice' },
+      payload,
+    });
+    const bob = await app.inject({
+      method: 'POST',
+      url: '/api/threads',
+      headers: { 'x-cat-cafe-user': 'bob' },
+      payload,
+    });
+
+    assert.equal(alice.statusCode, 201);
+    assert.equal(bob.statusCode, 201);
+    assert.notEqual(bob.json().id, alice.json().id);
+  });
+
   it('POST /api/threads atomically persists the preferred cat and pin for a new meeting destination', async () => {
     const res = await app.inject({
       method: 'POST',
@@ -927,6 +973,93 @@ describe('Thread API', () => {
     const body = JSON.parse(res.body);
     assert.equal(body.pinned, false);
     assert.equal(body.pinnedAt, null);
+  });
+
+  it('PATCH /api/threads/:id links and clears an owner-validated backlog item after creation', async () => {
+    const { BacklogStore } = await import('../dist/domains/cats/services/stores/ports/BacklogStore.js');
+    const { threadsRoutes } = await import('../dist/routes/threads.js');
+    const { ThreadStore } = await import('../dist/domains/cats/services/stores/ports/ThreadStore.js');
+    const backlogStore = new BacklogStore();
+    const localThreadStore = new ThreadStore();
+    const item = backlogStore.create({
+      userId: 'alice',
+      title: 'F322 post-create metadata',
+      summary: 'Move feature choice out of first-message admission',
+      priority: 'medium',
+      tags: ['F322'],
+      createdBy: 'user',
+    });
+    const thread = localThreadStore.create('alice', 'Real conversation');
+    const localApp = Fastify();
+    await localApp.register(threadsRoutes, { threadStore: localThreadStore, backlogStore });
+    await localApp.ready();
+
+    const linked = await localApp.inject({
+      method: 'PATCH',
+      url: `/api/threads/${thread.id}`,
+      headers: { 'x-cat-cafe-user': 'alice' },
+      payload: { backlogItemId: item.id },
+    });
+    assert.equal(linked.statusCode, 200, linked.body);
+    assert.equal(linked.json().backlogItemId, item.id);
+
+    const cleared = await localApp.inject({
+      method: 'PATCH',
+      url: `/api/threads/${thread.id}`,
+      headers: { 'x-cat-cafe-user': 'alice' },
+      payload: { backlogItemId: null },
+    });
+    assert.equal(cleared.statusCode, 200, cleared.body);
+    assert.equal(cleared.json().backlogItemId, undefined);
+    await localApp.close();
+  });
+
+  it('PATCH /api/threads/:id refuses foreign backlog items and foreign threads without mutating either', async () => {
+    const { BacklogStore } = await import('../dist/domains/cats/services/stores/ports/BacklogStore.js');
+    const { threadsRoutes } = await import('../dist/routes/threads.js');
+    const { ThreadStore } = await import('../dist/domains/cats/services/stores/ports/ThreadStore.js');
+    const backlogStore = new BacklogStore();
+    const localThreadStore = new ThreadStore();
+    const aliceItem = backlogStore.create({
+      userId: 'alice',
+      title: 'Alice Feature',
+      summary: 'Alice only',
+      priority: 'medium',
+      tags: [],
+      createdBy: 'user',
+    });
+    const bobItem = backlogStore.create({
+      userId: 'bob',
+      title: 'Bob Feature',
+      summary: 'Bob only',
+      priority: 'medium',
+      tags: [],
+      createdBy: 'user',
+    });
+    const aliceThread = localThreadStore.create('alice', 'Alice Thread');
+    const bobThread = localThreadStore.create('bob', 'Bob Thread');
+    const localApp = Fastify();
+    await localApp.register(threadsRoutes, { threadStore: localThreadStore, backlogStore });
+    await localApp.ready();
+
+    const foreignItem = await localApp.inject({
+      method: 'PATCH',
+      url: `/api/threads/${aliceThread.id}`,
+      headers: { 'x-cat-cafe-user': 'alice' },
+      payload: { backlogItemId: bobItem.id },
+    });
+    assert.equal(foreignItem.statusCode, 400);
+    assert.equal((await localThreadStore.get(aliceThread.id)).backlogItemId, undefined);
+
+    const foreignThread = await localApp.inject({
+      method: 'PATCH',
+      url: `/api/threads/${bobThread.id}`,
+      headers: { 'x-cat-cafe-user': 'alice' },
+      payload: { backlogItemId: aliceItem.id },
+    });
+    assert.equal(foreignThread.statusCode, 404);
+    assert.equal((await localThreadStore.get(bobThread.id)).backlogItemId, undefined);
+    await localApp.close();
   });
 
   it('PATCH /api/threads/:id sets favorited=true', async () => {

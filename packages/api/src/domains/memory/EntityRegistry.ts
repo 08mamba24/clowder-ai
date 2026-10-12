@@ -19,7 +19,11 @@ import type {
 } from './interfaces.js';
 
 export { EntityConflictInvalidResolutionError, EntityConflictStaleError } from './entity-conflict-mutation.js';
-export { EntitySurfaceConflictError, normalizeEntityAlias } from './entity-registry-mutation.js';
+export {
+  EntityHardForgottenError,
+  EntitySurfaceConflictError,
+  normalizeEntityAlias,
+} from './entity-registry-mutation.js';
 
 interface EntityRow {
   entity_id: string;
@@ -52,7 +56,7 @@ interface CompiledAliasRow extends AliasRow {
   matchesNormalizedText: (textNorm: string) => boolean;
 }
 
-type StoredEntityRecord = EntityRecord &
+export type StoredEntityRecord = EntityRecord &
   Required<Pick<EntityRecord, 'stance' | 'visibilityScope' | 'status' | 'createdAt'>>;
 
 export interface EntityMentionDocFilters {
@@ -408,7 +412,9 @@ export class EntityRegistryStore {
 
   private loadAliases(options: { includeCanonical?: boolean; entityIds?: string[] } = {}): AliasRow[] {
     const entityIds = options.entityIds?.length ? [...new Set(options.entityIds)] : undefined;
-    const entityFilter = entityIds ? ' WHERE a.entity_id IN (SELECT value FROM json_each(?))' : '';
+    const entityFilter = entityIds
+      ? " WHERE r.status = 'active' AND a.entity_id IN (SELECT value FROM json_each(?))"
+      : " WHERE r.status = 'active'";
     const rows = this.db
       .prepare(
         `SELECT r.*, a.alias, a.alias_norm, a.provenance_json
@@ -423,7 +429,9 @@ export class EntityRegistryStore {
     const seen = new Set(
       rows.map((row) => `${row.entity_id}\u0000${normalizeEntityAlias(row.alias_norm || row.alias)}`),
     );
-    const registryFilter = entityIds ? ' WHERE entity_id IN (SELECT value FROM json_each(?))' : '';
+    const registryFilter = entityIds
+      ? " WHERE status = 'active' AND entity_id IN (SELECT value FROM json_each(?))"
+      : " WHERE status = 'active'";
     const entityRows = this.db
       .prepare(`SELECT * FROM entity_registry${registryFilter}`)
       .all(...(entityIds ? [JSON.stringify(entityIds)] : [])) as EntityRow[];

@@ -4,7 +4,7 @@ import {
   type ReturnedActionSuccessorProof,
   reattachReturnedActionSuccessor,
 } from './action-successor-return-state-machine.js';
-import type { ActionSuccessorLease } from './action-successor-state-machine.js';
+import type { ActionSuccessorLease, ActionSuccessorReplacementTransition } from './action-successor-state-machine.js';
 
 export type ReplaceActionSuccessorResult = {
   outcome:
@@ -20,8 +20,21 @@ export type ReplaceActionSuccessorResult = {
   lease: ActionSuccessorLease;
 };
 
+/**
+ * Server-derived proof that THIS generation's direct carrier was interrupted by a runtime restart after a holder had
+ * already read the action, so its effects are unknown and it can never continue implicitly. It is derived from durable
+ * custody when the issuer explicitly asks to replace that exact generation; a request body can never supply it.
+ */
+export interface InterruptedGenerationEvidence {
+  leaseId: string;
+  generation: number;
+  evidenceRef: string;
+}
+
 type ReplaceActionSuccessorInputBase = {
   expectedGeneration: number;
+  /** The one way an explicit replace may move a still-active generation: see InterruptedGenerationEvidence. */
+  interruptedGeneration?: Pick<InterruptedGenerationEvidence, 'generation' | 'evidenceRef'>;
   holderCatIds: string[];
   holderThreadId: string;
   dispatchId: string;
@@ -102,6 +115,68 @@ function replaceReturnedActionSuccessor(
   });
 }
 
+/**
+ * An active generation may be replaced without a terminal holder outcome only when the server proved it was
+ * interrupted after a read: same generation, structured transfer, and nothing about it has settled yet. It does not
+ * record any outcome for the interrupted holders, because what they did before the restart is unknown.
+ */
+function isInterruptedGenerationReplacement(
+  current: ActionSuccessorLease,
+  input: ReplaceActionSuccessorInput,
+): boolean {
+  const proof = input.interruptedGeneration;
+  return (
+    proof !== undefined &&
+    proof.generation === current.generation &&
+    proof.evidenceRef.trim().length > 0 &&
+    current.status === 'active' &&
+    current.claimOrigin === 'structured_transfer' &&
+    Object.keys(current.holderOutcomes).length === 0 &&
+    Object.keys(current.completionCandidates).length === 0
+  );
+}
+
+function createReplacementTransition(
+  current: ActionSuccessorLease,
+  input: ReplaceActionSuccessorInput,
+  holderCatIds: string[],
+  holderThreadId: string,
+  interrupted: boolean,
+): ActionSuccessorReplacementTransition {
+  const claimOrigin = input.claimOrigin ?? 'structured_transfer';
+  const outcomeEvidence = Object.values(current.holderOutcomes).map((entry) => entry.evidenceRef);
+  const interruptedEvidence = interrupted ? input.interruptedGeneration?.evidenceRef : undefined;
+  const issuerEvidence = input.issuerStandingEvidenceRef ?? input.evidenceRef;
+  return {
+    fromGeneration: current.generation,
+    toGeneration: current.generation + 1,
+    reason: interrupted ? 'interrupted' : 'holder_terminal',
+    fromHolderCatIds: [...current.holderCatIds],
+    fromHolderThreadId: current.holderThreadId,
+    toHolderCatIds: [...holderCatIds],
+    toHolderThreadId: holderThreadId,
+    ...(claimOrigin === 'structured_transfer'
+      ? { issuerCatId: input.predecessorCatId, issuerThreadId: input.predecessorThreadId }
+      : {}),
+    holderOutcomes: Object.fromEntries(
+      Object.entries(current.holderOutcomes).map(([catId, outcome]) => [catId, { ...outcome }]),
+    ),
+    evidenceRefs: [
+      ...new Set(
+        [
+          ...outcomeEvidence,
+          interruptedEvidence,
+          input.evidenceRef,
+          issuerEvidence,
+          input.freshnessEvidenceRef,
+          input.delegateEvidenceRef,
+        ].filter(Boolean),
+      ),
+    ] as string[],
+    at: input.now,
+  };
+}
+
 export function replaceActionSuccessor(
   current: ActionSuccessorLease,
   input: ReplaceActionSuccessorInput,
@@ -109,7 +184,8 @@ export function replaceActionSuccessor(
   if (input.expectedGeneration !== current.generation) return { outcome: 'stale_generation', lease: current };
   const returnedReplacement = replaceReturnedActionSuccessor(current, input);
   if (returnedReplacement) return returnedReplacement;
-  if (current.status !== 'replaceable') return { outcome: 'proof_required', lease: current };
+  const interruptedReplacement = isInterruptedGenerationReplacement(current, input);
+  if (current.status !== 'replaceable' && !interruptedReplacement) return { outcome: 'proof_required', lease: current };
   if (!input.terminalPredicate) {
     throw new Error('terminal predicate is required for a replacement action successor generation');
   }
@@ -139,6 +215,13 @@ export function replaceActionSuccessor(
             'issuerStandingEvidenceRef',
           ),
         };
+  const replacementTransition = createReplacementTransition(
+    current,
+    input,
+    holderCatIds,
+    holderThreadId,
+    interruptedReplacement,
+  );
   return {
     outcome: 'replaced',
     lease: {
@@ -163,12 +246,15 @@ export function replaceActionSuccessor(
             current.issuerStandingEvidenceRef,
             evidenceRef,
             provenance.issuerStandingEvidenceRef,
+            input.freshnessEvidenceRef,
             input.delegateEvidenceRef,
+            interruptedReplacement ? input.interruptedGeneration?.evidenceRef : undefined,
           ].filter((r): r is string => !!r),
         ),
       ],
       returnDeliveryState: undefined,
       returnDeliveryEvidenceRef: undefined,
+      replacementTransitions: [...(current.replacementTransitions ?? []), replacementTransition],
       revision: current.revision + 1,
       updatedAt: input.now,
     },

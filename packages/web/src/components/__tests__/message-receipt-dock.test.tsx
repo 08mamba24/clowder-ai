@@ -114,6 +114,43 @@ describe('MessageReceiptDock', () => {
     vi.restoreAllMocks();
   });
 
+  it('renders an accepted public reply after socket receipt hydration without losing its handled target', () => {
+    const normalized = normalizeQueueMessageReceiptProjections([
+      {
+        messageId: 'public-source',
+        queueReceipt: {
+          version: 1,
+          entryId: 'public-entry',
+          reminderAttempts: [],
+          targets: [
+            {
+              catId: 'codex-sol',
+              state: 'handled',
+              outcome: {
+                invocationId: 'public-child',
+                disposition: 'responded',
+                evidenceRef: { kind: 'turn_execution', invocationId: 'public-child' },
+                handledAt: 2100,
+                consumption: {
+                  kind: 'collective_public_reply',
+                  sourceMessageId: 'public-source',
+                  sourceEventId: 'evt_request',
+                  acceptedEventId: 'evt_accepted',
+                },
+              },
+            },
+          ],
+        },
+      },
+    ])[0]?.queueReceipt;
+    act(() => {
+      root.render(<MessageReceiptDock receipt={normalized} messages={[]} getCatLabel={() => '小太阳'} />);
+    });
+    const target = container.querySelector('[data-receipt-target="codex-sol"]');
+    expect(target).not.toBeNull();
+    expect(target?.textContent).toContain('已由回复明确处理');
+  });
+
   it('renders a normalized AGY receipt with its queued transport and next-work intent', () => {
     const normalized = normalizeQueueMessageReceiptProjections([
       {

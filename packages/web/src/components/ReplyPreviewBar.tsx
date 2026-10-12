@@ -1,5 +1,6 @@
 'use client';
 
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import type { CatData } from '@/hooks/useCatData';
 import { useCoCreatorConfig } from '@/hooks/useCoCreatorConfig';
 import { tintOf } from '@/lib/hex-color';
@@ -15,14 +16,16 @@ interface ReplyPreviewBarProps {
 /**
  * #699: Input-area reply preview — shows who you're replying to with their theme color.
  * Click scrolls to original message; ✕ dismisses the quote.
- * Styled to match ReplyPill in the chat timeline.
+ * Styled to match ReplyPill in the chat timeline. F322 B: in the new shell the text (arrow, line, close) is the cat's readable
+ * name role, as on the pill; the tint stays the identity colour, and classic keeps the hex (frozen).
  */
 export function ReplyPreviewBar({ replyToMessage, cats, onClear }: ReplyPreviewBarProps) {
   const coCreator = useCoCreatorConfig();
+  const nameRole = useShellPresentation() === 'v2';
   const { senderCatId, content, id: replyToId } = replyToMessage;
 
   const getCatById = (id: string) => cats.find((c) => c.id === id);
-  const sender = resolveSender(senderCatId, getCatById, coCreator);
+  const sender = resolveSender(senderCatId, getCatById, coCreator, { nameRole });
 
   const handleClick = () => {
     scrollToMessage(replyToId);

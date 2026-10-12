@@ -1,4 +1,6 @@
 import type { InvocationTrajectorySummary } from '@cat-cafe/shared';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
+import { InvocationTrajectoryListV2 } from './InvocationTrajectoryListV2';
 import {
   copyInvocationRef,
   formatTrajectoryDuration,
@@ -21,7 +23,9 @@ export function InvocationTrajectoryList({
   onRetry: () => void;
   targetInvocationId?: string;
 }) {
-  if (loading) return <div className="p-6 text-sm text-cafe-muted">正在召回 invocation 轨迹…</div>;
+  const isV2 = useShellPresentation() === 'v2';
+  if (loading)
+    return <div className="p-6 text-sm text-cafe-muted">{isV2 ? '正在读取轨迹…' : '正在召回 invocation 轨迹…'}</div>;
   if (error) {
     return (
       <div className="m-4 rounded-lg bg-conn-red-bg p-3 text-sm text-conn-red-text">
@@ -48,11 +52,14 @@ export function InvocationTrajectoryList({
   if (invocations.length === 0) {
     return (
       <div className="m-4 rounded-xl border border-dashed border-cafe-subtle p-8 text-center">
-        <p className="text-sm font-semibold text-cafe">这段对话还没有 invocation 轨迹</p>
+        <p className="text-sm font-semibold text-cafe">
+          {isV2 ? '这段对话还没有轨迹' : '这段对话还没有 invocation 轨迹'}
+        </p>
         <p className="mt-1 text-xs text-cafe-secondary">猫猫开始工作后，当前轮和封存轮都会出现在这里。</p>
       </div>
     );
   }
+  if (isV2) return <InvocationTrajectoryListV2 invocations={invocations} onOpen={onOpen} />;
   return (
     <div className="space-y-2 p-3" data-testid="invocation-trajectory-list">
       {invocations.map((summary) => (

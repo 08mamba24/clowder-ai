@@ -1,15 +1,17 @@
 import { createHash } from 'node:crypto';
-import { access } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { RichMediaGalleryBlock } from '@cat-cafe/shared';
 import {
   copyImageFileToUploadDir,
+  MAX_IMAGE_FILE_SIZE,
   mimeToImageExt,
   type SavedImageAsset,
   type SupportedImageMime,
   sanitizeFilenameStem,
 } from '../../../../../utils/image-storage.js';
 import { getDefaultUploadDir } from '../../../../../utils/upload-paths.js';
+import type { CodexNativeImageOrigin } from './codex-native-image-origin.js';
 
 export interface GeneratedImagePublicationInput {
   sourcePath: string;
@@ -21,6 +23,7 @@ export interface GeneratedImagePublicationInput {
   uploadDir?: string;
   title?: string;
   alt?: string;
+  nativeOrigin?: CodexNativeImageOrigin;
 }
 
 export interface GeneratedImagePublicationProvenance {
@@ -30,6 +33,7 @@ export interface GeneratedImagePublicationProvenance {
   originalPath: string;
   publishedPath: string;
   publicationKey: string;
+  nativeOrigin?: CodexNativeImageOrigin;
 }
 
 export interface PublishedGeneratedImage extends SavedImageAsset {
@@ -61,6 +65,14 @@ export async function publishGeneratedImage(input: GeneratedImagePublicationInpu
     filenameStem: publicationStem,
     onExists: 'reuse',
   });
+  if (
+    input.nativeOrigin &&
+    ((await stat(stored.absPath)).size > MAX_IMAGE_FILE_SIZE ||
+      `sha256:${createHash('sha256')
+        .update(await readFile(stored.absPath))
+        .digest('hex')}` !== input.nativeOrigin.blobDigest)
+  )
+    throw new Error('Published image bytes do not match their native generation');
 
   const provenance: GeneratedImagePublicationProvenance = {
     provider: input.provider,
@@ -69,6 +81,7 @@ export async function publishGeneratedImage(input: GeneratedImagePublicationInpu
     originalPath: input.sourcePath,
     publishedPath: stored.urlPath,
     publicationKey: input.publicationKey,
+    ...(input.nativeOrigin ? { nativeOrigin: input.nativeOrigin } : {}),
   };
 
   return {
@@ -87,6 +100,16 @@ export async function publishGeneratedImage(input: GeneratedImagePublicationInpu
     } as RichMediaGalleryBlock,
     provenance,
   };
+}
+
+export function generatedImagePublicationLocation(
+  publicationKey: string,
+  mimeType: SupportedImageMime,
+  uploadDir?: string,
+) {
+  const directory = getDefaultUploadDir(uploadDir ?? process.env.UPLOAD_DIR);
+  const filename = `${sanitizeFilenameStem(buildPublicationStem(publicationKey))}${mimeToImageExt(mimeType)}`;
+  return { absPath: join(directory, filename), urlPath: `/uploads/${filename}` as const };
 }
 
 function buildPublicationStem(publicationKey: string): string {

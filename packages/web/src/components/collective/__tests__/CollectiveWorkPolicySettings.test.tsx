@@ -128,3 +128,86 @@ it('changes only current channel listening and leaves work permissions alone', a
       .mock.calls.some(([url, init]) => String(url).includes('work-policy') && init?.method === 'POST'),
   ).toBe(false);
 });
+
+it.each([
+  'poll',
+  'retry',
+] as const)('clears a failed initial read after a successful %s without changing authority', async (via) => {
+  let unavailable = true;
+  let refresh = () => {};
+  vi.spyOn(window, 'setInterval').mockImplementation((callback) => {
+    refresh = callback as () => void;
+    return 123 as unknown as ReturnType<typeof window.setInterval>;
+  });
+  vi.mocked(apiFetch).mockImplementation(async (url) =>
+    unavailable
+      ? response({ code: 'CONNECTOR_OWNER_MISMATCH' }, 403)
+      : response(
+          String(url).endsWith('/listening')
+            ? { attentionRevision: 0, channelListening: {} }
+            : { policy: null, localAdoption: null },
+        ),
+  );
+  await act(async () => root.render(<Harness />));
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain('暂时无法读取授权设置');
+  unavailable = false;
+  await act(async () => {
+    if (via === 'poll') refresh();
+    else container.querySelector<HTMLButtonElement>('[role="alert"] button')?.click();
+  });
+  expect(container.textContent).toContain('尚无授权规则');
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  expect(vi.mocked(apiFetch).mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
+});
+
+it('keeps the read error until both policy and listening recover', async () => {
+  let listeningUnavailable = true;
+  let refresh = () => {};
+  vi.spyOn(window, 'setInterval').mockImplementation((callback) => {
+    refresh = callback as () => void;
+    return 123 as unknown as ReturnType<typeof window.setInterval>;
+  });
+  vi.mocked(apiFetch).mockImplementation(async (url) =>
+    String(url).endsWith('/listening')
+      ? listeningUnavailable
+        ? response({}, 403)
+        : response({ attentionRevision: 0, channelListening: {} })
+      : response({ policy: null, localAdoption: null }),
+  );
+  await act(async () => root.render(<Harness />));
+  await act(async () => refresh());
+  expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  listeningUnavailable = false;
+  await act(async () => refresh());
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('recovers a snapshot failure after a confirmed setting change without claiming that the change failed', async () => {
+  let unavailable = false;
+  let refresh = () => {};
+  vi.spyOn(window, 'setInterval').mockImplementation((callback) => {
+    refresh = callback as () => void;
+    return 123 as unknown as ReturnType<typeof window.setInterval>;
+  });
+  vi.mocked(apiFetch).mockImplementation(async (url) => {
+    return unavailable
+      ? response({}, 503)
+      : response(
+          String(url).endsWith('/listening')
+            ? { attentionRevision: 0, channelListening: {} }
+            : { policy, localAdoption: local },
+        );
+  });
+  await act(async () => root.render(<Harness />));
+  // Directly exercise a successful mutation whose following reads are unavailable.
+  const listening = container.querySelectorAll<HTMLInputElement>('input[name="collective-listening"]');
+  vi.mocked(apiFetch).mockImplementationOnce(async () => {
+    unavailable = true;
+    return response({ attentionRevision: 1, channelListening: { general: { mode: 'all', dutyCatId: 'codex-sol' } } });
+  });
+  await act(async () => listening[1]?.click());
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain('暂时无法读取授权设置');
+  unavailable = false;
+  await act(async () => refresh());
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+});

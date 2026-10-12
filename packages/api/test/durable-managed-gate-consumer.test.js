@@ -109,6 +109,25 @@ describe('durable managed gate consumer', () => {
     assert.equal(isResumableDurableManagedGateCommand('pnpm gate'), true);
     assert.equal(isResumableDurableManagedGateCommand('pnpm run gate -- --risk contract'), true);
     assert.equal(isResumableDurableManagedGateCommand(`pnpm gate --risk contract -- --resume ${RUN_ID}`), true);
+    assert.equal(
+      isResumableDurableManagedGateCommand(
+        `pnpm gate --resume-controller ${RUN_ID} --candidate-root /tmp/frozen-candidate -- --risk contract`,
+      ),
+      true,
+    );
+    assert.equal(isResumableDurableManagedGateCommand(`pnpm gate --resume-controller ${RUN_ID}`), false);
+    assert.equal(
+      isResumableDurableManagedGateCommand(
+        `pnpm gate --resume-controller ${RUN_ID} --candidate-root /tmp/frozen-candidate`,
+      ),
+      false,
+    );
+    assert.equal(
+      isResumableDurableManagedGateCommand(
+        `pnpm gate --resume ${RUN_ID} --resume-controller ${RUN_ID} --candidate-root /tmp/frozen-candidate`,
+      ),
+      false,
+    );
     assert.equal(isResumableDurableManagedGateCommand('REDIS_URL=redis://127.0.0.1:6398 pnpm gate'), true);
     assert.equal(isResumableDurableManagedGateCommand('REDIS_URL=redis://localhost:6398/2 pnpm gate'), true);
     assert.equal(
@@ -340,6 +359,153 @@ describe('durable managed gate consumer', () => {
         durationMs: 60_000,
       });
       assert.equal(timedOut.resumeCommand, `pnpm gate --resume ${RUN_ID}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('routes outer-timeout plus inner-cancelled through the trusted cross-version controller', () => {
+    const root = mkdtempSync(`${os.tmpdir()}/durable-gate-consumer-cancelled-timeout-`);
+    const job = fixture(root, { wallSlaMs: 25 });
+    try {
+      initializeDurableGateRecovery(job, OWNER, 1_000);
+      writeFileSync(
+        job.gateReceiptPath,
+        `${JSON.stringify({
+          version: 1,
+          jobId: job.jobId,
+          runId: RUN_ID,
+          terminalStatus: 'cancelled',
+          recovery: { protocolVersion: 2, frozenIdentity: FROZEN_IDENTITY },
+        })}\n`,
+      );
+      synchronizeDurableGateFrozenIdentity(job, 1_001);
+      assert.equal(
+        projectDurableManagedGateConsumer(
+          job,
+          'pnpm gate --risk security',
+          { exitCode: null, timedOut: true, cancelled: false, durationMs: 60_000 },
+          { candidateRoot: '/tmp/frozen-candidate', controllerRoot: '/tmp/trusted-controller' },
+        ).resumeCommand,
+        null,
+      );
+      assert.deepEqual(
+        evaluateDurableGateMutation(job, {
+          ownerIdentity: OWNER,
+          mutation: 'heartbeat',
+          now: 1_026,
+          readPowerEvidence: () => ({ status: 'unavailable', reason: 'offline' }),
+        }),
+        { action: 'terminal_intent', pauseEpoch: 0, intent: 'timed_out' },
+      );
+      const projection = projectDurableManagedGateConsumer(
+        job,
+        'REDIS_URL=redis://127.0.0.1:6398 pnpm gate --risk security',
+        { exitCode: null, timedOut: true, cancelled: false, durationMs: 60_000 },
+        { candidateRoot: '/tmp/frozen-candidate', controllerRoot: '/tmp/trusted-controller' },
+      );
+      assert.deepEqual(projection, {
+        pauseEpoch: 0,
+        resumeCount: 0,
+        recoveryState: 'terminal_intent',
+        blockReason: null,
+        resumeCommand:
+          `REDIS_URL=redis://127.0.0.1:6398 pnpm gate --resume-controller ${RUN_ID} ` +
+          '--candidate-root /tmp/frozen-candidate -- --risk security',
+        resumeControl: 'trusted_cross_version',
+        resumeCwd: '/tmp/trusted-controller',
+      });
+      assert.deepEqual(durableManagedGateConsumerLines(projection), [
+        `可执行受信控制面续办入口（cwd=/tmp/trusted-controller）：\`${projection.resumeCommand}\``,
+      ]);
+      for (const unsafePath of [
+        'relative/path',
+        '/tmp/../escape',
+        '/tmp//double',
+        '/tmp/unsafe path',
+        '/tmp/unsafe;command',
+        '/tmp/$(command)',
+        '/tmp/`command`',
+        '/tmp/line\nbreak',
+      ]) {
+        assert.equal(
+          projectDurableManagedGateConsumer(
+            job,
+            'pnpm gate --risk security',
+            { exitCode: null, timedOut: true, cancelled: false, durationMs: 60_000 },
+            { candidateRoot: unsafePath, controllerRoot: '/tmp/trusted-controller' },
+          ).resumeCommand,
+          null,
+          `unsafe candidate root must reject: ${JSON.stringify(unsafePath)}`,
+        );
+        assert.equal(
+          projectDurableManagedGateConsumer(
+            job,
+            'pnpm gate --risk security',
+            { exitCode: null, timedOut: true, cancelled: false, durationMs: 60_000 },
+            { candidateRoot: '/tmp/frozen-candidate', controllerRoot: unsafePath },
+          ).resumeCommand,
+          null,
+          `unsafe controller root must reject: ${JSON.stringify(unsafePath)}`,
+        );
+      }
+      const separatedProjection = projectDurableManagedGateConsumer(
+        job,
+        'pnpm run gate -- --risk security',
+        { exitCode: null, timedOut: true, cancelled: false, durationMs: 60_000 },
+        { candidateRoot: '/tmp/frozen-candidate', controllerRoot: '/tmp/trusted-controller' },
+      );
+      assert.equal(
+        separatedProjection.resumeCommand,
+        `pnpm run gate --resume-controller ${RUN_ID} --candidate-root /tmp/frozen-candidate -- -- --risk security`,
+      );
+      assert.equal(isResumableDurableManagedGateCommand(separatedProjection.resumeCommand), true);
+      assert.equal(
+        projectDurableManagedGateConsumer(
+          job,
+          'pnpm gate --risk security',
+          { exitCode: null, timedOut: true, cancelled: true, durationMs: 60_000 },
+          { candidateRoot: '/tmp/frozen-candidate', controllerRoot: '/tmp/trusted-controller' },
+        ).resumeCommand,
+        null,
+      );
+
+      const successorRunId = '22222222-3333-4333-8444-666666666666';
+      const successorJob = fixture(root);
+      initializeDurableGateRecovery(successorJob, OWNER, 2_000);
+      writeFileSync(
+        successorJob.gateReceiptPath,
+        `${JSON.stringify({
+          version: 1,
+          jobId: successorJob.jobId,
+          runId: successorRunId,
+          terminalStatus: 'failed',
+          recovery: { protocolVersion: 2, frozenIdentity: FROZEN_IDENTITY },
+        })}\n`,
+      );
+      synchronizeDurableGateFrozenIdentity(successorJob, 2_001);
+      const repeated = projectDurableManagedGateConsumer(
+        successorJob,
+        projection.resumeCommand,
+        { exitCode: 1, timedOut: false, cancelled: false, durationMs: 1_000 },
+        { candidateRoot: '/tmp/wrong-controller-cwd', controllerRoot: '/tmp/trusted-controller' },
+      );
+      assert.equal(
+        repeated.resumeCommand,
+        `REDIS_URL=redis://127.0.0.1:6398 pnpm gate --resume-controller ${successorRunId} ` +
+          '--candidate-root /tmp/frozen-candidate -- --risk security',
+      );
+      assert.equal(repeated.resumeCwd, '/tmp/trusted-controller');
+      const repeatedSeparated = projectDurableManagedGateConsumer(
+        successorJob,
+        separatedProjection.resumeCommand,
+        { exitCode: 1, timedOut: false, cancelled: false, durationMs: 1_000 },
+        { candidateRoot: '/tmp/wrong-controller-cwd', controllerRoot: '/tmp/trusted-controller' },
+      );
+      assert.equal(
+        repeatedSeparated.resumeCommand,
+        `pnpm run gate --resume-controller ${successorRunId} --candidate-root /tmp/frozen-candidate -- -- --risk security`,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

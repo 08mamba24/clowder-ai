@@ -5,6 +5,7 @@ import { type EvolutionMediaReadPort, readEvolutionReview } from './evolution-re
 import { type PublicationReviewPort, readPublicationReview } from './publication-review-source.js';
 import type { WorkspaceReviewPrincipal } from './service.js';
 import type { WorkspaceContentReviewStore } from './store.js';
+import { readVideoProjectReview, type VideoProjectReviewPort } from './video-project-review-source.js';
 import { assertWorkspaceReviewHuman } from './workspace-review-anchors.js';
 
 /** Internal task-delegated evidence read. No HTTP action accepts the verifier; mutation APIs remain human-only. */
@@ -30,12 +31,14 @@ export async function readRetainedWorkspaceReview(
     source: WorkspaceContentSourceService;
     publications?: PublicationReviewPort;
     evolution?: EvolutionMediaReadPort;
+    projects?: VideoProjectReviewPort;
   },
   principal: WorkspaceReviewPrincipal,
   retained: WorkspaceContentReview,
 ): Promise<WorkspaceContentReview> {
   if (retained.source.kind === 'publication') await readPublicationReview(owners.publications, retained, principal);
   else if (retained.source.kind === 'evolution') await readEvolutionReview(owners.evolution, retained, principal);
+  else if (retained.source.kind === 'video-project') await readVideoProjectReview(owners.projects, retained, principal);
   else {
     const current = await owners.source.describe({
       principal: { userId: principal.userId },

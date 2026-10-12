@@ -1,7 +1,12 @@
-import { inspectContentModificationSchema, respondContentTextSchema } from '@cat-cafe/shared';
+import {
+  contentModificationTakeoverSchema,
+  inspectContentModificationSchema,
+  respondContentTextSchema,
+} from '@cat-cafe/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { IThreadStore } from '../domains/cats/services/stores/ports/ThreadStore.js';
+import type { ContentModificationChatProjection } from '../domains/collaborative-content/modification/chat-projection.js';
 import { inspectContentModification } from '../domains/collaborative-content/modification/inspection.js';
 import type { ContentModificationService } from '../domains/collaborative-content/modification/service.js';
 import type { ModificationSourceDiscussions } from '../domains/collaborative-content/modification/source-discussions.js';
@@ -19,7 +24,8 @@ export async function registerCallbackContentModificationRoutes(
   app: FastifyInstance,
   deps: {
     text: ContentTextModificationService;
-    requests?: Pick<ContentModificationService, 'controlForCat'>;
+    receipts?: Pick<ContentModificationChatProjection, 'projectCandidate'>;
+    requests?: Pick<ContentModificationService, 'controlForCat' | 'takeOver'>;
     sourceDiscussions?: Pick<ModificationSourceDiscussions, 'forRequest'>;
     threads: Pick<IThreadStore, 'get' | 'list'>;
     registry: CallbackAuthRegistry;
@@ -27,7 +33,7 @@ export async function registerCallbackContentModificationRoutes(
     changed: (userId: string, requestId: string) => void;
   },
 ) {
-  for (const operation of ['read', 'respond'] as const)
+  for (const operation of ['read', 'respond', 'take-over'] as const)
     await app.register(async (scope) => {
       registerCallbackAuthHook(scope, deps.registry, {
         ...(deps.agentKeyRegistry ? { agentKeyRegistry: deps.agentKeyRegistry } : {}),
@@ -41,7 +47,12 @@ export async function registerCallbackContentModificationRoutes(
           const auth = requireCallbackPrincipal(request, reply);
           if (!auth) return;
           try {
-            const schema = operation === 'read' ? inspectContentModificationSchema : respondContentTextSchema;
+            const schema =
+              operation === 'read'
+                ? inspectContentModificationSchema
+                : operation === 'respond'
+                  ? respondContentTextSchema
+                  : contentModificationTakeoverSchema;
             const { threadId, ...input } = schema
               .extend({ threadId: z.string().min(1).max(128).optional() })
               .parse(request.body);
@@ -51,6 +62,7 @@ export async function registerCallbackContentModificationRoutes(
               userId: auth.userId,
               threadId: thread.threadId,
               actor: { kind: 'cat' as const, actorId: auth.catId },
+              ...(auth.kind === 'invocation' ? { invocationId: auth.invocationId } : {}),
             };
             if (operation === 'read')
               return await inspectContentModification(
@@ -60,7 +72,14 @@ export async function registerCallbackContentModificationRoutes(
                 deps.sourceDiscussions,
                 deps.requests,
               );
+            if (operation === 'take-over') {
+              if (!deps.requests) return reply.code(503).send({ error: 'modification_takeover_unavailable' });
+              const result = await deps.requests.takeOver(input, principal);
+              deps.changed(auth.userId, result.record.requestId);
+              return result;
+            }
             const result = await deps.text.respond(input, principal);
+            await deps.receipts?.projectCandidate(result.record, result.proposal);
             deps.changed(auth.userId, result.proposal.requestId);
             return {
               proposalRef: result.proposal.proposalRef,

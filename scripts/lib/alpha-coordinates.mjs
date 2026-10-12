@@ -87,9 +87,11 @@ function assertMain(root) {
     'scripts/alpha-worktree.sh',
     'scripts/start-dev.sh',
     'scripts/lib/alpha-coordinates.mjs',
+    'scripts/lib/alpha-launch-contract.mjs',
     'scripts/lib/alpha-named-launch.sh',
     'scripts/lib/alpha-redis-process.mjs',
     'scripts/lib/alpha-redis-leases.mjs',
+    'scripts/lib/alpha-identity-diagnostics.mjs',
   ];
   try {
     git(root, ['ls-files', '--error-unmatch', '--', ...controls]);

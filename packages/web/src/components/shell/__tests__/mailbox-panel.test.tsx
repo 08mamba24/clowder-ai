@@ -451,15 +451,15 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
       expect(rows()[0].textContent).toContain('F999');
     });
 
-    it('keeps conflicting variants of one decision and several decisions of one task — none is swallowed', () => {
+    it('shows an approval once while keeping each work variant for its own decision', () => {
       const twin = { ...approvalItem('a'), summary: '同一个决定的另一个版本' };
       show(
         ok({ items: [approvalItem('a'), twin, judgmentItem('same-task'), judgmentItem('same-task')], totalCount: 4 }),
       );
       render();
       open();
-      expect(rows()).toHaveLength(4);
-      expect(new Set(rows().map((row) => row.getAttribute('data-row-key'))).size).toBe(4);
+      expect(rows()).toHaveLength(3);
+      expect(new Set(rows().map((row) => row.getAttribute('data-row-key'))).size).toBe(3);
     });
 
     describe('opening a row', () => {
@@ -483,7 +483,7 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
       });
 
       it('keeps one row open at a time, and so only one primary button on screen', () => {
-        show(ok({ items: [approvalItem('a'), judgmentItem('j'), judgmentItem('r', 'repair')], totalCount: 3 }));
+        show(ok({ items: [judgmentItem('a'), judgmentItem('j'), judgmentItem('r', 'repair')], totalCount: 3 }));
         render();
         open();
         act(() => toggle(0)?.click());
@@ -556,19 +556,18 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
         expect(openOriginal()).toHaveLength(1);
       });
 
-      it('an approval row that cannot be located says so and offers only the approval list', () => {
+      it('omits the link and placeholder when an approval has no reliable original place', () => {
         show(ok({ items: [approvalItem('a')], totalCount: 1 }));
         render();
         open();
         act(() => toggle(0)?.click());
-        expect(text('mailbox-place-note')).toBe('原处暂不可定位');
-        expect(body(0)?.querySelectorAll('button')).toHaveLength(1);
-        expect(openOriginal()[0].textContent).toBe('打开审批列表');
-        expect(openOriginal()[0].getAttribute('data-place')).toBe('list');
+        expect(text('mailbox-place-note')).toBeNull();
+        expect(openOriginal()).toHaveLength(0);
+        expect(text('mailbox-history')).toBe('已处理的');
+        expect(text('mailbox-filter-batch')).toBe('筛选与批量处理');
       });
 
       it.each([
-        ['approval', approvalItem('a'), 'approval', 1, '打开审批列表'],
         ['judgment', judgmentItem('j'), 'needs-me', 0, '打开待处理列表'],
         ['repair', judgmentItem('r', 'repair'), 'needs-me', 0, '打开待处理列表'],
       ] as const)('a %s row whose place cannot be located opens its list, named as the list', (_kind, item, mode, approvalRefreshes, label) => {

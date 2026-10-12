@@ -2,9 +2,21 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { InvocationQueue } from '../src/domains/cats/services/agents/invocation/InvocationQueue.js';
 import { createInitialQueuedMessageCustody } from '../src/domains/cats/services/agents/invocation/QueuedMessageCustodyCoordinator.js';
-import { LivePageActionApprovalLedger } from '../src/domains/concierge/live/host/live-page-action-approval-ledger.js';
-import { LivePageActionAuthority } from '../src/domains/concierge/live/host/live-page-action-authority.js';
+import { LivePageActionApprovalLedger } from '../src/domains/concierge/live/host/page-action/live-page-action-approval-ledger.js';
+import { LivePageActionAuthority } from '../src/domains/concierge/live/host/page-action/live-page-action-authority.js';
 import { appendUser, fixture, issueFixtureApproval, scope } from './helpers/f317-page-action-fixture.js';
+
+test('earlier long history does not invalidate the newest direct page request', async () => {
+  const f = fixture(Date.now(), 300);
+  try {
+    const id = await f.authority.stage({ requestMessageId: f.source.id, approval: f.approval, port: f.port });
+    assert.equal((await f.authority.execute(id, f.selector)).status, 'applied');
+    assert.equal(f.effects(), 1);
+  } finally {
+    f.authority.close();
+    await f.authority.drain();
+  }
+});
 
 test('Host stages only the current direct owner request and uses its canonical revision', async () => {
   const f = fixture();

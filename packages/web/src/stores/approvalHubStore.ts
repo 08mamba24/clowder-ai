@@ -41,6 +41,8 @@ interface ApprovalHubState {
   items: ApprovalHubItem[];
   count: number;
   isLoading: boolean;
+  /** Last pending GET observation; a POST error does not change read availability or approval truth. */
+  pendingReadAvailable: boolean;
   isOpen: boolean;
   error: string | null;
   /** Map of proposalId → 'approving' | 'rejecting' for optimistic UI feedback */
@@ -94,6 +96,7 @@ export const useApprovalHubStore = create<ApprovalHubState>((set, get) => ({
   items: [],
   count: 0,
   isLoading: false,
+  pendingReadAvailable: false,
   isOpen: false,
   error: null,
   deciding: {},
@@ -105,14 +108,18 @@ export const useApprovalHubStore = create<ApprovalHubState>((set, get) => ({
   settledError: null,
 
   fetchPending: async () => {
-    set({ isLoading: true, error: null });
+    set({ isLoading: true, pendingReadAvailable: false, error: null });
     try {
       const res = await apiFetch('/api/approval-hub/pending');
       if (!res.ok) throw new Error(`Failed to fetch: ${res.status}`);
       const data = (await res.json()) as { items: ApprovalHubItem[]; count: number };
-      set({ items: data.items, count: data.count, isLoading: false });
+      set({ items: data.items, count: data.count, isLoading: false, pendingReadAvailable: true });
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : 'Unknown error', isLoading: false });
+      set({
+        error: err instanceof Error ? err.message : 'Unknown error',
+        isLoading: false,
+        pendingReadAvailable: false,
+      });
     }
   },
 

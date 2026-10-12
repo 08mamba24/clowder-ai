@@ -414,8 +414,12 @@ test('zero idle TTL closes the host before another same-turn lease can reuse it'
 test('signature mismatch closes the old host completely before resuming on a replacement', async () => {
   const { pool, hosts } = createHarness();
   let releaseClose;
+  let signalCloseStarted;
   const closeGate = new Promise((resolve) => {
     releaseClose = resolve;
+  });
+  const closeStarted = new Promise((resolve) => {
+    signalCloseStarted = resolve;
   });
   try {
     const first = await pool.createSession(sessionOptions());
@@ -424,6 +428,7 @@ test('signature mismatch closes the old host completely before resuming on a rep
 
     hosts[0].close = async () => {
       hosts[0].closeCalls++;
+      signalCloseStarted();
       await closeGate;
       hosts[0].alive = false;
     };
@@ -435,7 +440,10 @@ test('signature mismatch closes the old host completely before resuming on a rep
         return session;
       });
 
-    await delay(0);
+    await Promise.race([
+      closeStarted,
+      delay(1_000, undefined, { ref: false }).then(() => assert.fail('signature mismatch must start retirement')),
+    ]);
     assert.equal(hosts[0].closeCalls, 1, 'signature mismatch must retire the source host');
     assert.equal(replacementSettled, false, 'resume must wait for source host close completion');
     assert.equal(hosts.length, 1, 'no new host may start while the source host is still alive');

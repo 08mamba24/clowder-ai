@@ -2,6 +2,7 @@
 
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { ChatVoiceFeatureControls } from '@/components/ChatVoiceFeatureControls';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import { openTheaterReplay } from '@/components/ThreadSidebar/theater-navigation';
 import { WORKSPACE_MODE_META, type WorkspaceMode } from '@/lib/workspace-modes';
 import type { WorkspaceSurface } from '@/stores/chat-types';
@@ -127,6 +128,27 @@ function modeDestination(mode: Exclude<WorkspaceMode, 'dev'>): WorkspaceLauncher
   };
 }
 
+/**
+ * The canonical destination object this launcher hands to the host for `kind:id`. The new shell's Workspace home hands the
+ * host these very objects (its rows only choose their own words), so what a destination becomes — its surface descriptor,
+ * title and context included — has one definition, here.
+ */
+export function canonicalLauncherDestination(
+  kind: WorkspaceLauncherDestination['kind'],
+  id: string,
+): WorkspaceLauncherDestination {
+  const found =
+    kind === 'mode'
+      ? modeDestination(id as Exclude<WorkspaceMode, 'dev'>)
+      : [...WORK_DESTINATIONS, ...THREAD_DESTINATIONS].find(
+          (destination) => destination.kind === kind && destination.id === id,
+        );
+  if (!found || found.kind !== kind || found.id !== id) {
+    throw new Error(`No canonical launcher destination ${kind}:${id}`);
+  }
+  return found;
+}
+
 function DestinationCard({
   destination,
   onSelect,
@@ -222,7 +244,12 @@ export function WorkspaceLauncher({
     !normalizedQuery ||
     '陪伴 语音陪伴 会议伴随 朗读 录音 转写 voice companion meeting transcript'.includes(normalizedQuery);
 
+  const presentation = useShellPresentation();
   const selectDestination = (destination: WorkspaceLauncherDestination) => {
+    if (presentation === 'v2' && destination.kind === 'action' && onSelectDestination) {
+      onSelectDestination(destination);
+      return;
+    }
     if (destination.kind === 'surface') {
       setWorkspaceMode('dev');
       onSelectDevSurface?.(destination.id);

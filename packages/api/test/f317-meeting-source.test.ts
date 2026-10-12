@@ -63,13 +63,37 @@ function source(root: string, status?: () => Promise<Response>) {
     audioServiceUrl: 'http://audio.test',
     fetchFn: async () =>
       status?.() ??
-      new Response(JSON.stringify({ running: true, meeting_id: 'mtg-1', thread_id: 'thread-1' }), {
-        status: 200,
-      }),
+      new Response(
+        JSON.stringify({ running: true, lifecycle_state: 'running', meeting_id: 'mtg-1', thread_id: 'thread-1' }),
+        {
+          status: 200,
+        },
+      ),
   });
 }
 
 const binding = { threadId: 'thread-1', meetingId: 'mtg-1', callId: 'call-1', generation: 7 };
+
+test('transcript replay does not advance on old or non-running lifecycle snapshots', async () => {
+  const { root } = await fixture([line(1)]);
+  for (const phase of [undefined, 'starting', 'finalizing', 'stopped']) {
+    let lifecycle = phase;
+    const received: unknown[] = [];
+    const subscription = source(root, async () =>
+      Response.json({
+        running: true,
+        lifecycle_state: lifecycle,
+        meeting_id: 'mtg-1',
+        thread_id: 'thread-1',
+      }),
+    ).bind(binding, { onContext: (item) => received.push(item) });
+    assert.deepEqual(await subscription.refresh(), { state: 'unavailable', cursor: 0, delivered: 0 });
+    assert.deepEqual(received, []);
+    lifecycle = 'running';
+    assert.deepEqual(await subscription.refresh(), { state: 'ready', cursor: 1, delivered: 1 });
+    subscription.close();
+  }
+});
 
 test('replays exact F195 artifact lines, then deduplicates SSE wakes and emits corrections as revisions', async () => {
   const { root, artifact } = await fixture([line(1), line(2)]);
@@ -110,7 +134,10 @@ test('rejects a different capture binding and a different artifact meeting', asy
   const { root } = await fixture([line(1)]);
   const mismatch = source(
     root,
-    async () => new Response(JSON.stringify({ running: true, meeting_id: 'mtg-2', thread_id: 'thread-1' })),
+    async () =>
+      new Response(
+        JSON.stringify({ running: true, lifecycle_state: 'running', meeting_id: 'mtg-2', thread_id: 'thread-1' }),
+      ),
   );
   const subscription = mismatch.bind(binding, { onContext: () => assert.fail('must not deliver') });
   assert.deepEqual(await subscription.refresh(), { state: 'binding_mismatch', cursor: 0, delivered: 0 });
@@ -129,7 +156,11 @@ test('close rejects late artifact and status completions from the old call epoch
   const subscription = source(root, () => waiting).bind(binding, { onContext: (item) => received.push(item) });
   const refresh = subscription.refresh();
   subscription.close();
-  release(new Response(JSON.stringify({ running: true, meeting_id: 'mtg-1', thread_id: 'thread-1' })));
+  release(
+    new Response(
+      JSON.stringify({ running: true, lifecycle_state: 'running', meeting_id: 'mtg-1', thread_id: 'thread-1' }),
+    ),
+  );
   assert.deepEqual(await refresh, { state: 'closed', cursor: 0, delivered: 0 });
   assert.deepEqual(await subscription.refresh(), { state: 'closed', cursor: 0, delivered: 0 });
   assert.deepEqual(received, []);

@@ -159,7 +159,7 @@ describe('F325 native stream boundary', () => {
     }
   });
 
-  test('keeps a final answer after a failed read is recovered by a later successful read', () => {
+  test('keeps the final and failed result when a missing-file observation precedes a successful read', () => {
     const lines = [
       JSON.stringify(init),
       JSON.stringify({
@@ -199,5 +199,146 @@ describe('F325 native stream boundary', () => {
     assert.equal(messages.at(-1).errorCode, undefined);
     assert.equal(messages.find((message) => message.type === 'text').content, 'Found the source.');
     assert.equal(messages.find((message) => message.type === 'tool_result').toolResultStatus, 'error');
+  });
+});
+
+function projectReadSteps(calls, overrides = {}) {
+  const turn = summarizeAgyStreamJsonTurn([
+    JSON.stringify(init),
+    ...calls.map((call, index) =>
+      JSON.stringify({
+        event: 'step_update',
+        step_update: {
+          conversation_id: 'session-1',
+          step_index: index + 1,
+          step_type: 'tool',
+          ...call,
+        },
+      }),
+    ),
+    JSON.stringify({
+      event: 'result',
+      result: { conversation_id: 'session-1', status: 'SUCCESS', response: 'Read observations.', ...overrides.result },
+    }),
+  ]);
+  return projectAgyNativeTurn(
+    'gemini38',
+    { provider: 'google', model: expected.model },
+    { sessionId: 'session-1', turn, transportError: overrides.transportError ?? null },
+    overrides.cancelled ?? false,
+    ['cat-cafe-collab/cat_cafe_get_thread_context'],
+  );
+}
+
+const readSuccess = { state: 'DONE', tool_name: 'view_file', tool_info: { output: '4 lines, 153 bytes' } };
+const mcpParameters = { ServerName: 'cat-cafe-collab', ToolName: 'cat_cafe_get_thread_context' };
+const alphaMissingRead = {
+  state: 'ERROR',
+  tool_name: 'view_file',
+  tool_info: {
+    parameters: { AbsolutePath: '/tmp/f325-profile/cwd/hash/README.md' },
+    error: {
+      message:
+        'declaring permissions: cortex tool view_file: convert tool call for permissions: model output error: ' +
+        'invalid tool call error (invalid_args) failed to read file: stat /tmp/f325-profile/cwd/hash/README.md: no such file or directory',
+    },
+  },
+};
+
+describe('F325 native missing-file observations', () => {
+  test('delivers the final answer with an honest missing-file result regardless of read order', () => {
+    for (const calls of [[readSuccess, alphaMissingRead], [alphaMissingRead], [alphaMissingRead, readSuccess]]) {
+      const messages = projectReadSteps(calls);
+      assert.equal(messages.at(-1).errorCode, undefined);
+      assert.equal(messages.find((message) => message.type === 'text')?.content, 'Read observations.');
+      const missing = messages.find(
+        (message) => message.type === 'tool_result' && message.toolResultStatus === 'error',
+      );
+      assert.equal(missing.content, alphaMissingRead.tool_info.error.message);
+      assert.deepEqual(messages.at(-1).metadata.diagnostics.agyNative.readObservations, [
+        { stepIndex: calls.indexOf(alphaMissingRead) + 1, toolName: 'view_file', outcome: 'not_found' },
+      ]);
+    }
+  });
+
+  test('a later successful read cannot pardon permission, unknown or mismatched-path errors', () => {
+    for (const message of [
+      'permission denied',
+      'EACCES: failed to read file',
+      'invalid_args: unsafe path',
+      alphaMissingRead.tool_info.error.message.replace('/tmp/f325-profile/cwd/hash/README.md', '/tmp/other-file'),
+      `${alphaMissingRead.tool_info.error.message}; permission denied`,
+    ]) {
+      const error = { ...alphaMissingRead, tool_info: { ...alphaMissingRead.tool_info, error: { message } } };
+      const messages = projectReadSteps([error, readSuccess]);
+      assert.equal(messages.at(-1).errorCode, 'AGY_TOOL_FAILED', message);
+      assert.ok(!messages.some((entry) => entry.type === 'text'));
+    }
+  });
+
+  test('missing-file text without its path or with contradictory file output stays a failure', () => {
+    for (const tool_info of [
+      { ...alphaMissingRead.tool_info, parameters: {} },
+      { ...alphaMissingRead.tool_info, output: 'unexpected file content' },
+      { parameters: {}, error: { message: 'File not found' } },
+      { parameters: { AbsolutePath: '' }, error: { message: 'File not found' } },
+      { parameters: { AbsolutePath: '  ' }, error: { message: 'File not found' } },
+    ]) {
+      const messages = projectReadSteps([{ ...alphaMissingRead, tool_info }, readSuccess]);
+      assert.equal(messages.at(-1).errorCode, 'AGY_TOOL_FAILED');
+      assert.ok(!messages.some((entry) => entry.type === 'text'));
+    }
+  });
+
+  test('missing-file wording does not pardon writes, MCP or other native read tools', () => {
+    for (const tool_name of [
+      'write_to_file',
+      'replace_file_content',
+      'call_mcp_tool',
+      'list_dir',
+      'find_by_name',
+      'grep_search',
+    ]) {
+      for (const message of ['File not found', alphaMissingRead.tool_info.error.message]) {
+        const messages = projectReadSteps([
+          {
+            ...alphaMissingRead,
+            tool_name,
+            tool_info: {
+              parameters: {
+                AbsolutePath: alphaMissingRead.tool_info.parameters.AbsolutePath,
+                TargetFile: alphaMissingRead.tool_info.parameters.AbsolutePath,
+                ...mcpParameters,
+              },
+              error: { message },
+            },
+          },
+          { ...readSuccess, tool_name, tool_info: { ...readSuccess.tool_info, parameters: mcpParameters } },
+        ]);
+        assert.equal(messages.at(-1).errorCode, 'AGY_TOOL_FAILED', `${tool_name}: ${message}`);
+        assert.ok(!messages.some((entry) => entry.type === 'text'));
+      }
+    }
+  });
+
+  test('an ERROR tool state without an error message still blocks the final answer', () => {
+    for (const tool_name of ['view_file', 'list_dir', 'write_to_file']) {
+      const messages = projectReadSteps([{ state: 'ERROR', tool_name, tool_info: {} }, readSuccess]);
+      assert.equal(messages.at(-1).errorCode, 'AGY_TOOL_FAILED');
+      assert.ok(!messages.some((entry) => entry.type === 'text'));
+    }
+  });
+
+  test('missing-file observations never override denial, cancellation, transport or protocol failure', () => {
+    for (const [overrides, code] of [
+      [{ result: { denied_actions: [{ action: 'view_file', display_name: 'view_file' }] } }, 'AGY_PERMISSION_DENIED'],
+      [{ cancelled: true }, 'AGY_CANCELLED'],
+      [{ transportError: 'fixture transport failure' }, 'AGY_NATIVE_FAILED'],
+      [{ result: { status: 'ERROR', error: 'fixture provider failure' } }, 'AGY_NATIVE_FAILED'],
+    ]) {
+      const messages = projectReadSteps([alphaMissingRead], overrides);
+      assert.equal(messages.at(-1).errorCode, code);
+      assert.ok(!messages.some((entry) => entry.type === 'text'));
+    }
   });
 });

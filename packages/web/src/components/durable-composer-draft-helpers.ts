@@ -11,6 +11,16 @@ export interface DurableDraftSnapshot {
   replyTo?: string;
 }
 
+export function durableDraftSnapshotFromOwner(draft: OwnerComposerDraft | null): DurableDraftSnapshot {
+  return {
+    text: draft?.text ?? '',
+    imageUrls: imageUrlsFromDraft(draft),
+    contextAttachments: contextAttachmentsFromDraft(draft),
+    preservedBlocks: preservedBlocksFromDraft(draft),
+    ...(draft?.replyTo ? { replyTo: draft.replyTo } : {}),
+  };
+}
+
 export type DurableDraftWriteResult =
   | { kind: 'saved'; revision: number }
   | { kind: 'conflict'; draft: OwnerComposerDraft | null; revision: number }

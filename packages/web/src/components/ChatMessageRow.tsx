@@ -6,6 +6,7 @@ import type { ChatMessage as ChatMessageData } from '@/stores/chat-types';
 import { ChatMessage } from './ChatMessage';
 import { MessageActions } from './MessageActions';
 import { MessageViewportBoundary } from './MessageViewportBoundary';
+import type { ReplyHandoffTimelineProjection } from './reply-layers/reply-handoff';
 import type { CardConfirmationEntry } from './rich/CardBlock';
 
 interface ChatMessageRowProps {
@@ -13,6 +14,7 @@ interface ChatMessageRowProps {
   compact?: boolean;
   threadId: string;
   timelineMessages: readonly ChatMessageData[];
+  replyHandoffTimeline?: ReplyHandoffTimelineProjection;
   activeInvocationIds?: ReadonlySet<string>;
   settlingInvocationIds?: ReadonlySet<string>;
   getCatById: (id: string) => CatData | undefined;
@@ -43,6 +45,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
   compact = false,
   threadId,
   timelineMessages,
+  replyHandoffTimeline,
   activeInvocationIds,
   settlingInvocationIds,
   getCatById,
@@ -83,6 +86,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
           compact={compact}
           threadId={threadId}
           timelineMessages={timelineMessages}
+          replyHandoffTimeline={replyHandoffTimeline}
           activeInvocationIds={activeInvocationIds}
           settlingInvocationIds={settlingInvocationIds}
           getCatById={getCatById}

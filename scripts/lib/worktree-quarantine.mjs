@@ -15,6 +15,7 @@ import { dirname, join, relative } from 'node:path';
 import { git } from './worktree-reaper-probes.mjs';
 
 export const QUARANTINE_DIRNAME = '.reaper-quarantine';
+const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 
 export function quarantineRoot(parent) {
   return join(parent, QUARANTINE_DIRNAME);
@@ -99,8 +100,8 @@ export function moveToQuarantine({ repo, root, entry, clock = Date.now }) {
   const startedAt = clock();
   const dest = freshDestination(root, entry.name, startedAt, txn);
   const restore = entry.registered
-    ? `git -C ${JSON.stringify(repo)} worktree move ${JSON.stringify(dest)} ${JSON.stringify(entry.path)}`
-    : `mv ${JSON.stringify(dest)} ${JSON.stringify(entry.path)}`;
+    ? `git -C ${shellQuote(repo)} worktree move ${shellQuote(dest)} ${shellQuote(entry.path)}`
+    : `mv ${shellQuote(dest)} ${shellQuote(entry.path)}`;
   const base = {
     action: 'quarantine',
     txn,
@@ -109,6 +110,9 @@ export function moveToQuarantine({ repo, root, entry, clock = Date.now }) {
     kind: entry.kind,
     reason: entry.reason,
     restore,
+    ...(entry.finishSourceRef
+      ? { owner: entry.lifecycle.owner, head: entry.head, sourceRef: entry.finishSourceRef }
+      : {}),
   };
   appendLedger(root, { ...base, state: 'pending' }, startedAt);
   try {
@@ -127,7 +131,13 @@ export function moveToQuarantine({ repo, root, entry, clock = Date.now }) {
   }
   // Sampled AFTER the move succeeded: the restore window starts when the directory is actually in quarantine,
   // not when the batch started (review round 7).
-  appendLedger(root, { ...base, state: 'done' }, clock());
+  try {
+    appendLedger(root, { ...base, state: 'done' }, clock());
+  } catch (cause) {
+    const error = new Error(`quarantine moved but completion receipt failed: txn=${txn}`, { cause });
+    error.recovery = { state: 'pending', txn, quarantinePath: dest, restore };
+    throw error;
+  }
   return dest;
 }
 

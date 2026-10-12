@@ -8,6 +8,7 @@ import Fastify from 'fastify';
 import { InvocationRegistry } from '../src/domains/cats/services/agents/invocation/InvocationRegistry.js';
 import { EventAuditLog } from '../src/domains/cats/services/orchestration/EventAuditLog.js';
 import { createContentModificationIntegration } from '../src/domains/collaborative-content/modification/composition.js';
+import { modificationMessageRequestId } from '../src/domains/collaborative-content/modification/journal.js';
 import { WorkspaceContentReviewService } from '../src/domains/collaborative-content/workspace-review/service.js';
 import { WorkspaceContentReviewStore } from '../src/domains/collaborative-content/workspace-review/store.js';
 import { createWorkspaceContentSource } from '../src/domains/workspace/workspace-content-source-factory.js';
@@ -52,6 +53,7 @@ test('production modification composition admits a direct human, the scoped name
   await app.register(workspaceRoutes, { auditLog: new EventAuditLog({ auditDir: join(root, 'audit') }) });
   await registerCallbackContentModificationRoutes(app, {
     text: deps.text,
+    receipts: deps.receipts,
     sourceDiscussions: deps.sourceDiscussions,
     threads: f.threads,
     registry,
@@ -163,11 +165,70 @@ test('production modification composition admits a direct human, the scoped name
   );
   assert.equal((await selection('Guide', {} as typeof headers)).statusCode, 401);
   assert.equal(f.tasks.listByThread(f.thread.id).length, 1, 'resolving a selection never admits a Task');
+  const wrongSelectionBase = await app.inject({
+    method: 'POST',
+    url: '/api/content-modifications',
+    headers,
+    payload: {
+      ...payload,
+      operationId: randomUUID(),
+      intent: {
+        body: 'This stale selection must not reach admission.',
+        selections: [
+          {
+            id: 'selection-1',
+            selection: { ...selected.json().selection, baseRevision: `sha256:${'f'.repeat(64)}` },
+          },
+        ],
+      },
+    },
+  });
+  assert.equal(wrongSelectionBase.statusCode, 400, wrongSelectionBase.body);
+  assert.equal(f.tasks.listByThread(f.thread.id).length, 1, 'invalid selection revisions never reach admission');
   const submitted = await app.inject({ method: 'POST', url: '/api/content-modifications', headers, payload });
   assert.equal(submitted.statusCode, 200, submitted.body);
   const request = submitted.json();
   assert.equal(request.stage, 'queued');
   assert.deepEqual(failures, []);
+  const sourceMessageId = 'human-message-with-request';
+  const messageRecord = f.store.requests.reserveFromMessage(
+    'operator',
+    { ...payload, operationId: randomUUID() },
+    {
+      messageId: sourceMessageId,
+      messageRevision: `sha256:${'c'.repeat(64)}`,
+      visibility: { visibility: 'public' },
+    },
+  );
+  const messageRequestId = modificationMessageRequestId('operator', sourceMessageId);
+  assert.equal(messageRecord.requestId, messageRequestId);
+  const beforeMessageRead = structuredClone(messageRecord);
+  const tasksBeforeMessageRead = f.tasks.listByThread(f.thread.id).length;
+  const byMessage = (messageId: string, userId = 'operator') =>
+    app.inject({
+      method: 'GET',
+      url: `/api/content-modifications/by-message/${encodeURIComponent(messageId)}`,
+      headers: { 'x-cat-cafe-user': userId },
+    });
+  const ownedMessageRequest = await byMessage(sourceMessageId);
+  assert.equal(ownedMessageRequest.statusCode, 200, ownedMessageRequest.body);
+  assert.equal(ownedMessageRequest.headers['cache-control'], 'private, no-store');
+  assert.equal(ownedMessageRequest.json().record.requestId, messageRequestId);
+  assert.equal(ownedMessageRequest.json().record.progress.sourceMessageId, sourceMessageId);
+  assert.equal(
+    (await app.inject({ method: 'GET', url: `/api/content-modifications/by-message/${sourceMessageId}`, headers: cat }))
+      .statusCode,
+    401,
+  );
+  const missingMessageRequest = await byMessage('message-with-no-request');
+  assert.equal(missingMessageRequest.statusCode, 404, missingMessageRequest.body);
+  assert.equal(missingMessageRequest.json().error, 'not_found');
+  const foreignMessageRequest = await byMessage(sourceMessageId, 'other');
+  assert.equal(foreignMessageRequest.statusCode, 404, foreignMessageRequest.body);
+  assert.equal(foreignMessageRequest.json().error, 'not_found');
+  assert.deepEqual(f.store.requests.get(messageRequestId, 'operator'), beforeMessageRead);
+  assert.equal(f.tasks.listByThread(f.thread.id).length, tasksBeforeMessageRead);
+  assert.equal(await readFile(path, 'utf8'), base);
   const catalogue = await app.inject({
     method: 'POST',
     url: '/api/content-modifications/context',

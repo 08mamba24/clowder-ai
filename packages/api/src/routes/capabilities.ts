@@ -1037,9 +1037,7 @@ export const capabilitiesRoutes: FastifyPluginAsync = async (app) => {
     const catCafeRoot = getProjectRoot();
     const { GovernanceRegistry } = await import('../config/governance/governance-registry.js');
     const registry = new GovernanceRegistry(catCafeRoot);
-    const entries = await registry.listAll();
-
-    const healthResults = await Promise.all(entries.map((entry) => registry.checkHealth(entry.projectPath)));
+    const healthResults = await registry.listHealth();
 
     return { projects: healthResults };
   });

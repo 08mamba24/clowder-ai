@@ -55,8 +55,9 @@ import type { VectorStore } from './VectorStore.js';
  *  11 — F287: approved Taste vignettes materialize complete decision passages
  *  12 — external-knowledge artifact roles, study tags, and authority backfill
  *  13 — pathToAuthority normalizes Windows backslash source paths (re-derive authority)
+ *  14 — F321: quote text and owner comments backfill into canonical message passages
  */
-export const INDEXING_VERSION = 13;
+export const INDEXING_VERSION = 14;
 
 /** Higher number = higher priority for anchor ownership */
 const KIND_PRIORITY: Record<EvidenceKind, number> = {
@@ -1473,7 +1474,8 @@ export class IndexBuilder implements IIndexBuilder {
         ON CONFLICT(thread_id) DO UPDATE SET
           pending_message_count = pending_message_count + 1,
           pending_token_count = pending_token_count + ?,
-          pending_signal_flags = pending_signal_flags | ?
+          pending_signal_flags = pending_signal_flags | ?,
+          pending_input_revision = pending_input_revision + 1
       `).run(threadId, tokenEstimate, signalFlags, tokenEstimate, signalFlags);
       })
       .catch(() => {

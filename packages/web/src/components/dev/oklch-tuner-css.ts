@@ -3,10 +3,10 @@
 import type { CatTier, HcOverride, Mode, ModeP, NeutralP, SemanticP, SurfaceP, TunerState } from './oklch-tuner-engine';
 import { CAT_TIERS, INIT, SURF_FACTORS } from './oklch-tuner-engine';
 import { lineageRingLightness } from './oklch-tuner-lineage-ring';
-import { drawnNameLightness } from './oklch-tuner-name-role';
+import { type ActualColours, resolveTunerNameAndPlate } from './oklch-tuner-name-role';
 
 /* ── CSS generation ── */
-export function buildCSS(p: TunerState, hc: HcOverride): string {
+export function buildCSS(p: TunerState, hc: HcOverride, actual?: ActualColours): string {
   const ok = (m: ModeP, t: CatTier, h: string, c: string) => `oklch(${m[t].L} calc(${c} * ${m[t].Cmul}) ${h})`;
   const it = (m: ModeP) => `oklch(${m.insetText.L} ${m.insetText.C} 250)`;
   /* Defensive: old persisted data may lack msgText (added mid-PR) */
@@ -30,13 +30,14 @@ export function buildCSS(p: TunerState, hc: HcOverride): string {
      * This avoids fragile source-order override of final --color-{slug}-text.
      * H and C are the user's. L is the saved lightness when it reads against what this theme draws names over, otherwise
      * the nearest one that does (F322: the saved value itself is never rewritten). */
-    const nameL = drawnNameLightness(p, dark);
+    const role = resolveTunerNameAndPlate(p, dark, actual);
+    const nameL = role.l;
     /* The lineage ring (globals.css `[data-lineage-focus]`) is drawn in the human colour at the bubble lightness, floored at 3:1. */
-    const ringL = lineageRingLightness(p, dark).l;
+    const ringL = lineageRingLightness(p, dark, actual, role.plateL).l;
     return (
       `${sel}{` +
       `--cat-bubble-l:${m.primary.L};--cat-bubble-cmul:${m.primary.Cmul};` +
-      `--cat-surface-l:${m.surface.L};--cat-surface-cmul:${m.surface.Cmul};` +
+      `--cat-surface-l:${role.plateL};--cat-surface-cmul:${m.surface.Cmul};` +
       `--cat-text-l:${m.text.L};--cat-text-cmul:${m.text.Cmul};` +
       `--cat-ring-l:${m.ring.L};--cat-ring-cmul:${m.ring.Cmul};` +
       `--cat-inset-l:${m.inset.L};--cat-inset-cmul:${m.inset.Cmul};` +

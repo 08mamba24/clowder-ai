@@ -297,6 +297,7 @@ export {
   realtimeCompanionStopInputSchema,
   realtimeCompanionTools,
 } from './realtime-companion-tools.js';
+export { recallMetricsTools } from './recall-metrics-tool.js';
 export {
   handleListRecent,
   listRecentInputSchema,

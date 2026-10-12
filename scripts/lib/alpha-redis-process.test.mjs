@@ -64,7 +64,6 @@ test('replacement listener or stale same PID refuses before any Redis protocol o
     { ...identity, cwd: '/foreign' },
     { ...identity, command: 'redis-server fake-alias' },
     { ...identity, ucomm: 'node' },
-    { ...identity, argvAvailable: false },
   ])
     assert.throws(() => verifyNamedAlphaRedisIdentity(raw, proof, { ...deps, capture: () => changed }), /incarnation/);
 });
@@ -89,4 +88,51 @@ test('pidfile aliases, unrelated PIDs and forged command aliases cannot mint own
   unlinkSync(linked.pidFile);
   symlinkSync(other, linked.pidFile);
   assert.throws(() => captureNamedAlphaRedisIdentity(linked.raw, linked.deps), /regular file/);
+});
+
+test('Redis capture and verification distinguish unreadable argv from a replaced process', (t) => {
+  const { raw, deps, identity } = redisFixture(t);
+  const proof = captureNamedAlphaRedisIdentity(raw, deps);
+  const unavailable = { ...identity, command: '(redis-server)', argvAvailable: false };
+  const capture = () => unavailable;
+  assert.throws(() => captureNamedAlphaRedisIdentity(raw, { ...deps, capture }), /process identity unreadable/);
+  assert.throws(() => verifyNamedAlphaRedisIdentity(raw, proof, { ...deps, capture }), /process identity unreadable/);
+  assert.throws(
+    () => verifyNamedAlphaRedisIdentity(raw, { ...proof, process: unavailable }, deps),
+    /process identity unreadable/,
+  );
+  for (const delta of [
+    { startedAtEpochMs: identity.startedAtEpochMs + 1000 },
+    { cwd: '/foreign' },
+    { ucomm: 'node' },
+  ]) {
+    assert.throws(
+      () => verifyNamedAlphaRedisIdentity(raw, proof, { ...deps, capture: () => ({ ...unavailable, ...delta }) }),
+      /incarnation changed/,
+    );
+  }
+  assert.throws(
+    () => captureNamedAlphaRedisIdentity(raw, { ...deps, capture: () => ({ ...unavailable, cwd: '/foreign' }) }),
+    /does not match its new home/,
+  );
+});
+
+test('failed Redis captures preserve their cause and remain unproven', (t) => {
+  const { raw, deps } = redisFixture(t);
+  const proof = captureNamedAlphaRedisIdentity(raw, deps);
+  const cause = new Error('fixture process read failed');
+  const capture = () => {
+    throw cause;
+  };
+  for (const action of [
+    () => captureNamedAlphaRedisIdentity(raw, { ...deps, capture }),
+    () => verifyNamedAlphaRedisIdentity(raw, proof, { ...deps, capture }),
+  ]) {
+    assert.throws(action, (error) => {
+      assert.match(error.message, /process identity unreadable/);
+      assert.equal(error.cause, cause);
+      assert.ok(error.message.includes(cause.message), error.message);
+      return true;
+    });
+  }
 });

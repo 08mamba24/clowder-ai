@@ -141,13 +141,14 @@ export async function collectiveOwnerParticipationView(options: ViewOptions, aut
 
 function hasUnavailableEndpoints(
   route: HostRouteConfig,
-  ownerThreads: ReadonlyMap<string, { readonly participants: readonly string[] }>,
+  ownerThreads: ReadonlyMap<string, { readonly participants: readonly string[]; readonly systemKind?: string }>,
 ) {
   if ([route.defaultIngressThreadId, route.humanNotificationThreadId].some((id) => !ownerThreads.has(id))) return true;
   return Object.values(route.channelRoutes ?? {}).some((endpoint) => {
     const thread = ownerThreads.get(endpoint.threadId);
     return (
       !thread ||
+      thread.systemKind !== 'collective_channel' ||
       Object.keys(endpoint.participants).some(
         (catId) => !thread.participants.some((participant) => participant === catId),
       )

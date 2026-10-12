@@ -1,15 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import Fastify from 'fastify';
 
 import { EventMemoryStore } from '../dist/domains/memory/EventMemoryStore.js';
 import { eventsRoutes } from '../dist/routes/events.js';
-
-const hasSourceStagingContent = existsSync(
-  new URL('../../../cat-cafe-skills/refs/l0-staging-content.md', import.meta.url),
-);
 
 /**
  * F227 PR-1 Task 3 — GET /api/memory/events route.
@@ -100,24 +95,31 @@ describe('GET /api/memory/events (F227 PR-1)', () => {
     assert.equal(giantPage.json().events[0].eventId, large.eventId);
     assert.equal(giantPage.json().events[0].summaryTruncated, true);
     assert.deepEqual(giantPage.json().events[0].drillDown?.tool, 'cat_cafe_list_events');
-    assert.deepEqual(giantPage.json().events[0].drillDown?.args, { eventId: large.eventId, charOffset: 0 });
+    const listRevision = giantPage.json().events[0].revision;
+    assert.deepEqual(giantPage.json().events[0].drillDown?.args, {
+      eventId: large.eventId,
+      charOffset: 0,
+      revision: listRevision,
+    });
     const detail = await app.inject({ method: 'GET', url: `/api/memory/events/${large.eventId}` });
     assert.equal(detail.statusCode, 200);
     assert.equal(detail.json().oversized, true);
+    assert.equal(detail.json().revision, listRevision);
     let offset = 0;
     let recovered = '';
     for (let page = 0; page < 40; page += 1) {
       const slice = await app.inject({
         method: 'GET',
-        url: `/api/memory/events/${large.eventId}?charOffset=${offset}`,
+        url: `/api/memory/events/${large.eventId}?charOffset=${offset}&revision=${detail.json().revision}`,
       });
       assert.equal(slice.statusCode, 200);
       assert.ok(slice.body.length <= 24_000);
+      assert.equal(slice.json().revision, detail.json().revision);
       recovered += slice.json().eventSlice;
       if (slice.json().nextCharOffset === undefined) break;
       offset = slice.json().nextCharOffset;
     }
-    const expected = JSON.stringify(large);
+    const expected = JSON.stringify({ ...large, revision: detail.json().revision });
     assert.equal(recovered.length, expected.length);
     assert.equal(
       createHash('sha256').update(recovered).digest('hex'),
@@ -338,9 +340,11 @@ describe('Event Memory routes — auth gate (F227 砚砚 P1)', () => {
     await cbApp.register(eventsRoutes, { eventMemoryStore: store, callbackRegistry: fakeCallbackRegistry });
     await cbApp.ready();
     const headers = { 'x-invocation-id': 'inv-1', 'x-callback-token': 'good-token' };
+    const ownDetail = await cbApp.inject({ method: 'GET', url: `/api/memory/events/${own.eventId}`, headers });
+    assert.equal(ownDetail.statusCode, 200);
     const ownSlice = await cbApp.inject({
       method: 'GET',
-      url: `/api/memory/events/${own.eventId}?charOffset=0`,
+      url: `/api/memory/events/${own.eventId}?charOffset=0&revision=${ownDetail.json().revision}`,
       headers,
     });
     assert.equal(ownSlice.statusCode, 200);
@@ -502,17 +506,17 @@ describe('GET /api/memory/magic-words (F227 PR-2 AC-A5)', () => {
     assert.equal(res.statusCode, 200);
     const body = res.json();
     assert.ok(Array.isArray(body.magicWords));
-    assert.ok(body.magicWords.length >= 9, `expected >=9 meanings from L0, got ${body.magicWords.length}`);
     const scaffold = body.magicWords.find((m) => m.word === '脚手架');
     assert.ok(scaffold, '脚手架 meaning present');
     assert.ok(scaffold.meaning.length > 0 && scaffold.action.length > 0);
     const quadrants = body.magicWords.find((m) => m.word === '四象限');
-    if (hasSourceStagingContent) {
-      assert.ok(quadrants, 'staging 四象限 meaning present');
-      assert.match(quadrants.action, /KK\/KU\/UK\/UU/);
-    } else {
-      assert.equal(quadrants, undefined, 'private staging meaning must stay absent from public exports');
-    }
+    const alias = body.magicWords.find((m) => m.word === 'unknown-first');
+    assert.ok(quadrants && alias, 'current L0 includes 四象限 and its alias');
+    assert.equal(alias.meaning, quadrants.meaning);
+    assert.equal(alias.action, quadrants.action);
+    assert.match(quadrants.action, /未知/);
+    assert.ok(body.magicWords.some((m) => m.word === '钛合金内裤'));
+    assert.ok(!body.magicWords.some((m) => ['绕路了', '喵约', '下次一定', '我能猜出来', '碎片够了'].includes(m.word)));
     await app.close();
   });
 

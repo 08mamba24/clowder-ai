@@ -11,7 +11,7 @@ import {
 } from '@cat-cafe/shared';
 import type { StoredMessage } from '../../../cats/services/stores/ports/MessageStore.js';
 import { collectiveSource, ingressIdempotencyKey } from '../collective-ingress-routing.js';
-import type { CollectiveWorkAuthority, CollectiveWorkAuthorityOptions } from '../collective-work-authority.js';
+import type { CollectiveWorkAuthority, CollectiveWorkAuthorityOptions } from './collective-work-authority.js';
 import {
   executionError,
   findTaskForImmutableAssignment,

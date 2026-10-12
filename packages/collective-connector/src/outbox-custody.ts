@@ -281,6 +281,27 @@ export async function prepareReplyOperation(input: PrepareReplyInput): Promise<C
   });
 }
 
+/** Snapshot-only read: absence never creates a prepared operation or runs an outbox sync. */
+export function readPublicReplyOperation(
+  persistence: ConnectorPersistence,
+  source: CollectiveSourceIdentity,
+  sourceRef: string,
+): ConnectorOutboxItem | undefined {
+  const state = persistence.snapshot();
+  const { connection } = requireParticipation(state, source);
+  const { operationKey } = replyOperationKeys({ source, sourceRef, resultKey: 'request' }, 1);
+  const item = connection.outbox.find((candidate) => candidate.operationKey === operationKey);
+  if (!item) return undefined;
+  if (
+    item.sourceRef !== sourceRef ||
+    item.workPurpose ||
+    !isDeepStrictEqual(item.replySource, source) ||
+    item.replyToEventId !== source.eventId
+  )
+    throw participationError('RETURN_UNAVAILABLE', 'Existing public reply does not belong to this source');
+  return structuredClone(item);
+}
+
 export async function submitReplyOperation(
   input: PrepareReplyInput & {
     operationId: string;

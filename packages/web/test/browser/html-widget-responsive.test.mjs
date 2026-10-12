@@ -5,8 +5,8 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import sharp from 'sharp';
 import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
+import { countMagentaPixels, runF294HtmlWidgetExportContract } from './f294-html-widget-export.harness.mjs';
 import { createNextDevTestEnvironment } from './next-dev-test-environment.mjs';
 
 await import('tsx/esm');
@@ -55,15 +55,6 @@ async function waitForWidgetMeasurement(page) {
     return widget?.getAttribute('data-html-widget-layout-state') === 'ready';
   });
   return page.locator('[data-html-widget]');
-}
-
-async function countMagentaPixels(png) {
-  const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-  let matches = 0;
-  for (let offset = 0; offset < data.length; offset += info.channels) {
-    if (data[offset] === 255 && data[offset + 1] === 0 && data[offset + 2] === 255) matches++;
-  }
-  return matches;
 }
 
 // Share the read-only fixture compilation; each case owns its exporter/pages.
@@ -304,61 +295,6 @@ test(
         );
       });
 
-      await t.test('viewport-bound documentElement generated overflow rejects instead of clipping', async () => {
-        await assert.rejects(
-          () =>
-            exporter.capture(`${url}?fixture=root-pseudo-feedback`, 'browser-test-user', {
-              selectionMessageIds: [FIXTURE_MESSAGE_ID],
-            }),
-          /HTML widget layout failed/,
-          'root generated overflow that moves with the iframe viewport must fail closed',
-        );
-      });
-
-      await t.test('fixed generated paint outside every scroll extent rejects instead of clipping', async () => {
-        await assert.rejects(
-          () =>
-            exporter.capture(`${url}?fixture=fixed-root-pseudo`, 'browser-test-user', {
-              selectionMessageIds: [FIXTURE_MESSAGE_ID],
-            }),
-          /HTML widget layout failed/,
-          'a generated fixed box outside descendant/body/root extents must fail closed',
-        );
-      });
-
-      await t.test('CSSOM-generated fixed paint revokes stale readiness before screenshot', async () => {
-        await assert.rejects(
-          () =>
-            exporter.capture(`${url}?fixture=cssom-fixed-root-pseudo`, 'browser-test-user', {
-              selectionMessageIds: [FIXTURE_MESSAGE_ID],
-            }),
-          /HTML widget layout failed/,
-          'a fixed pseudo inserted through CSSOM during the stable-height window must fail closed',
-        );
-      });
-
-      await t.test('CSSOM paint inserted after the final pre-capture proof invalidates the candidate PNG', async () => {
-        await assert.rejects(
-          () =>
-            exporter.capture(`${url}?fixture=cssom-final-proof-race`, 'browser-test-user', {
-              selectionMessageIds: [FIXTURE_MESSAGE_ID],
-            }),
-          /HTML widget layout failed/,
-          'a fixed pseudo inserted after the final proof ack must discard the candidate screenshot',
-        );
-      });
-
-      await t.test('measurable CSSOM-generated flow refreshes proof and enters the PNG', async () => {
-        const cssomPseudoPng = await exporter.capture(`${url}?fixture=cssom-root-pseudo-content`, 'browser-test-user', {
-          selectionMessageIds: [FIXTURE_MESSAGE_ID],
-        });
-        const cssomPseudoMagentaPixels = await countMagentaPixels(cssomPseudoPng);
-        assert.ok(
-          cssomPseudoMagentaPixels > 100_000,
-          `fresh proof lost measurable CSSOM generated content (${cssomPseudoMagentaPixels} magenta pixels)`,
-        );
-      });
-
       await t.test('viewport-dependent overflow rejects instead of capturing a clipped sentinel', async () => {
         await assert.rejects(
           () =>
@@ -391,3 +327,14 @@ test(
     }
   },
 );
+
+test('F294 CSSOM export fixture contracts stay deterministic', { timeout: 120_000 }, async (t) => {
+  const exporter = new ImageExporter();
+  const browser = await chromium.launch({ headless: true });
+  try {
+    await runF294HtmlWidgetExportContract({ browser, exporter, fixtureMessageId: FIXTURE_MESSAGE_ID, t, url });
+  } finally {
+    await exporter.close();
+    await browser.close();
+  }
+});

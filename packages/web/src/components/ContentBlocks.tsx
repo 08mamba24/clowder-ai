@@ -4,11 +4,8 @@ import { useState } from 'react';
 import type { MessageContent } from '@/stores/chatStore';
 import { API_URL } from '@/utils/api-client';
 import { ContextAttachmentView } from './ContextAttachmentView';
-import {
-  messagePublicationSource,
-  type PublishedMessageCoordinate,
-  usePublishedContent,
-} from './content-review/usePublishedContent';
+import { useChatArtworkEntry } from './content-review/useChatArtworkEntry';
+import type { PublishedMessageCoordinate } from './content-review/usePublishedContent';
 import { Lightbox } from './Lightbox';
 import { MarkdownContent } from './MarkdownContent';
 
@@ -28,29 +25,38 @@ function fileIcon(mimeType: string): string {
   return '📎';
 }
 
-function resolveUrl(url: string): string {
-  if (url.startsWith('/uploads/')) return `${API_URL}${url}`;
+function resolveUrl(url: string, isV2: boolean): string {
+  if (url.startsWith('/uploads/') || (isV2 && url.startsWith('/api/workspace/file/raw?'))) return `${API_URL}${url}`;
   return url;
 }
 
 export function ContentBlocks({
   blocks,
   publication,
+  fallbackText,
 }: {
   blocks: MessageContent[];
   publication?: PublishedMessageCoordinate;
+  /** Callback posts store their spoken body separately from attachment-only blocks. */
+  fallbackText?: string;
 }) {
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
-  const published = usePublishedContent();
+  const [previewReason, setPreviewReason] = useState<string | undefined>();
+  const [previewMediaType, setPreviewMediaType] = useState<'image' | 'video'>('image');
+  const published = useChatArtworkEntry(publication);
+  let fileQuoteNumber = 0;
   return (
     <>
+      {fallbackText?.trim() && !blocks.some((block) => block.type === 'text') ? (
+        <MarkdownContent content={fallbackText} />
+      ) : null}
       {blocks.map((block, i) => {
         if (block.type === 'text') {
           return <MarkdownContent key={i} content={block.text} />;
         }
         if (block.type === 'image') {
-          const src = resolveUrl(block.url);
-          const source = messagePublicationSource(publication, { kind: 'content-block', index: i }, block.url);
+          const src = resolveUrl(block.url, published.isV2);
+          const source = published.source(block.url, { kind: 'content-block', index: i });
           return (
             <button
               type="button"
@@ -58,7 +64,18 @@ export function ContentBlocks({
               disabled={published.busy}
               aria-label={source ? '打开作品 图片' : '查看附件'}
               className="block max-w-full sm:max-w-sm rounded-lg mt-2 border border-cafe hover:opacity-90 transition-opacity"
-              onClick={() => (source ? void published.open(source, '图片') : setLightboxSrc(src))}
+              onClick={async () => {
+                if (!source && !published.isV2) {
+                  setLightboxSrc(src);
+                  return;
+                }
+                const result = await published.open(source, '图片');
+                if (result.status === 'preview' && published.isV2) {
+                  setPreviewReason(result.reason);
+                  setPreviewMediaType('image');
+                  setLightboxSrc(src);
+                }
+              }}
             >
               {/* biome-ignore lint/performance/noImgElement: original uploaded dimensions are unknown at the chat entry */}
               <img src={src} alt="附件" className="max-w-full rounded-lg" />
@@ -66,20 +83,27 @@ export function ContentBlocks({
           );
         }
         if (block.type === 'file') {
-          const src = resolveUrl(block.url);
-          const source = messagePublicationSource(publication, { kind: 'content-block', index: i }, block.url);
-          if (source)
+          const src = resolveUrl(block.url, published.isV2);
+          const source = published.source(block.url, { kind: 'content-block', index: i });
+          if (source || (published.isV2 && block.mimeType.startsWith('video/')))
             return (
               <button
                 key={i}
                 type="button"
                 disabled={published.busy}
-                onClick={() => void published.open(source, block.fileName)}
+                onClick={async () => {
+                  const result = await published.open(source, block.fileName);
+                  if (result.status === 'preview' && published.isV2) {
+                    setPreviewReason(result.reason);
+                    setPreviewMediaType(block.mimeType.startsWith('video/') ? 'video' : 'image');
+                    setLightboxSrc(src);
+                  }
+                }}
                 className="mt-2 flex max-w-sm items-center gap-2 rounded-lg border border-cafe bg-cafe-surface px-3 py-2 text-left hover:border-cafe-accent"
               >
                 <span aria-hidden="true">{fileIcon(block.mimeType)}</span>
                 <span className="min-w-0 truncate">{block.fileName}</span>
-                <span className="shrink-0 text-xs text-cafe-muted">打开作品</span>
+                <span className="shrink-0 text-xs text-cafe-muted">{source ? '打开作品' : '查看视频'}</span>
               </button>
             );
           return (
@@ -101,7 +125,13 @@ export function ContentBlocks({
           );
         }
         if (block.type === 'context_attachment') {
-          return <ContextAttachmentView key={block.attachment.id} attachment={block.attachment} />;
+          const quoteNumber =
+            block.attachment.kind === 'quote' && block.attachment.source.kind === 'workspace_file'
+              ? ++fileQuoteNumber
+              : undefined;
+          return (
+            <ContextAttachmentView key={block.attachment.id} attachment={block.attachment} quoteNumber={quoteNumber} />
+          );
         }
         return null;
       })}
@@ -115,7 +145,15 @@ export function ContentBlocks({
           {published.error}
         </p>
       ) : null}
-      {lightboxSrc && <Lightbox url={lightboxSrc} alt="attached image" onClose={() => setLightboxSrc(null)} />}
+      {lightboxSrc && (
+        <Lightbox
+          url={lightboxSrc}
+          alt={previewMediaType === 'video' ? '视频预览' : 'attached image'}
+          annotationUnavailableReason={previewReason}
+          mediaType={previewMediaType}
+          onClose={() => setLightboxSrc(null)}
+        />
+      )}
     </>
   );
 }

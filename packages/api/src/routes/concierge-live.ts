@@ -36,6 +36,8 @@ interface Options {
   recovery: Pick<LiveRecoveryOptions, 'tasks' | 'approvals' | 'epochs'>;
   progressOwnedCarrier(entry: QueueEntry, catId: string): Promise<unknown>;
   mcpDistDir: string;
+  /** Host-only readiness switch; the owner request schema never accepts it. Defaults off. */
+  meetingToolsEnabled?: boolean;
   desktopRoot?: string;
   allowedDirectories: readonly string[];
   publish(message: StoredMessage): void;
@@ -159,6 +161,7 @@ export const conciergeLiveRoutes: FastifyPluginAsync<Options> = async (app, opti
         ...(options.desktopRoot ? { desktopRoot: options.desktopRoot } : {}),
         allowedDirectories: options.allowedDirectories,
         householdToolsEnabled: parsed.data.allowHomeReads,
+        meetingToolsEnabled: options.meetingToolsEnabled === true,
         companion,
         identitySnapshot: createCompanionIdentitySnapshot({
           ...companion,

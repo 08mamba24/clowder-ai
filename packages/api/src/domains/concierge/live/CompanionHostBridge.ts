@@ -21,6 +21,11 @@ import { readCompanionConversation } from './host/companion-conversation-read.js
 import { readModernCompanionTranscript, sendCompanionText } from './host/companion-modern-live.js';
 import { readModernCompanionSettings, updateModernCompanionSettings } from './host/companion-modern-settings.js';
 import {
+  type CompanionWorkPort,
+  companionWorkNavigationFailure,
+  readCompanionWorkPort,
+} from './host/companion-work-port.js';
+import {
   type CompanionDecisionDestination,
   CompanionUnifiedDecisions,
 } from './host/unified/companion-unified-decisions.js';
@@ -30,6 +35,7 @@ type Options = ConstructorParameters<typeof CompanionOwnerClient>[0] & {
   /** Exact published archive admission from the installed package digest. */
   readonly publicCompanionV2: boolean;
   readonly companionContract?: CompanionArchiveContract['contract'];
+  readonly work?: CompanionWorkPort;
   readonly disableCompanion?: () => Promise<void>;
   readonly openConversation: (threadId: string) => Promise<boolean>;
   readonly canOpenDecision?: (destination: CompanionDecisionDestination) => Promise<boolean>;
@@ -62,10 +68,14 @@ export class CompanionHostBridge {
 
   private async assertCurrent(): Promise<void> {
     if (this.closed) throw new CompanionBridgeError('cancelled');
-    await this.options.assertCurrent();
+    try {
+      await this.options.assertCurrent();
+    } catch (error) {
+      this.options.work?.reset();
+      throw error;
+    }
     if (this.closed) throw new CompanionBridgeError('cancelled');
   }
-
   async request(input: unknown): Promise<CompanionReply> {
     if (!validateCompanionCommand(input, this.options.companionContract))
       return { kind: 'error', code: 'invalid_request' };
@@ -77,6 +87,7 @@ export class CompanionHostBridge {
         ? reply
         : { kind: 'error', code: 'unavailable' };
     } catch (error) {
+      if (input.kind === 'work.open') return companionWorkNavigationFailure(error);
       return {
         kind: 'error',
         code:
@@ -88,17 +99,20 @@ export class CompanionHostBridge {
       };
     }
   }
-
   async close(): Promise<void> {
     this.closed = true;
     this.unified.reset();
+    this.options.work?.reset();
     await this.stop();
   }
-
   private async execute(command: CompanionCommand): Promise<CompanionReply> {
     switch (command.kind) {
       case 'settings.read':
-        return readModernCompanionSettings(this.client);
+        return readModernCompanionSettings(this.client, this.options.companionContract);
+      case 'work.read':
+        return readCompanionWorkPort(this.options.work);
+      case 'work.open':
+        return { kind: 'navigation', delivery: (await this.options.work?.open(command.entryRef)) ?? 'blocked' };
       case 'settings.update':
         return updateModernCompanionSettings(this.client, command, () => {
           ++this.generation;
@@ -131,7 +145,7 @@ export class CompanionHostBridge {
         return { kind: 'navigation', delivery: opened ? 'requested' : 'unconfirmed' };
       }
       case 'decisions.read':
-        return this.options.companionContract === '0.1.0-beta.24'
+        return ['0.1.0-beta.24', '0.1.0-beta.25'].includes(this.options.companionContract ?? '')
           ? this.unified.read(command.offset, command.limit)
           : readCompanionDecisions(this.client, command.offset, command.limit);
       case 'decision.open':
@@ -144,7 +158,11 @@ export class CompanionHostBridge {
       case 'f221.confirm-trial':
         return this.f221.confirm(command.nonce, command.action);
       case 'conversation.read':
-        return this.readConversation();
+        return readCompanionConversation({
+          client: this.client,
+          includeSavedIdentity: this.options.publicCompanionV2,
+          conversationThread: () => this.conversationThread(),
+        });
       case 'offer': {
         const generation = this.generation;
         const result = await this.client.request(`${this.callPath()}/start`, 'POST', { offer: command.sdp });
@@ -198,32 +216,18 @@ export class CompanionHostBridge {
         throw new CompanionBridgeError('invalid_request');
     }
   }
-
   private async conversationThread(): Promise<string> {
     const result = await this.client.request('/api/concierge/thread', 'POST');
     if (typeof result.threadId !== 'string') throw new CompanionBridgeError('unavailable');
     return result.threadId;
   }
-
-  private readConversation(): Promise<CompanionReply> {
-    return readCompanionConversation({
-      client: this.client,
-      includeSavedIdentity: this.options.publicCompanionV2,
-      conversationThread: () => this.conversationThread(),
-    });
-  }
-
-  private async config(): Promise<ConciergeConfig> {
-    return (await this.configSource()).config;
-  }
-
   private async configSource(): Promise<{ config: ConciergeConfig; behaviorEnabled: boolean }> {
     const result = await this.client.request('/api/concierge/config?view=native');
     if (!result.config || typeof result.config !== 'object') throw new CompanionBridgeError('unavailable');
     const config = result.config as ConciergeConfig;
     if (!isModernCompanionContract(this.options.companionContract))
       return { config, behaviorEnabled: result.behaviorEnabled === true };
-    const settings = await readModernCompanionSettings(this.client);
+    const settings = await readModernCompanionSettings(this.client, this.options.companionContract);
     if (settings.kind === 'error') throw new CompanionBridgeError(settings.code);
     if (
       settings.kind !== 'settings' ||
@@ -236,7 +240,6 @@ export class CompanionHostBridge {
       behaviorEnabled: result.behaviorEnabled === true && settings.values.behaviorEnabled,
     };
   }
-
   private async state(): Promise<HostCompanionState> {
     const { config, behaviorEnabled } = await this.configSource();
     const selection = resolveLiveCompanionSelection(config, Object.values(catRegistry.getAllConfigs()));
@@ -281,7 +284,6 @@ export class CompanionHostBridge {
       liveTransport: { kind: 'gpt_live_v3', verifiedModel: null },
     };
   }
-
   private prepare(): Promise<CompanionReply> {
     if (this.changingDocuments) return Promise.reject(new CompanionBridgeError('busy'));
     if (this.pending) return this.pending;
@@ -295,9 +297,8 @@ export class CompanionHostBridge {
       .catch(() => undefined);
     return operation;
   }
-
   private async initialize(generation: number): Promise<CompanionReply> {
-    const config = await this.config();
+    const { config } = await this.configSource();
     this.assertGeneration(generation);
     const prepared = await this.client.request('/api/concierge/live', 'POST', {
       allowHomeReads: config.householdReadsAllowed !== false,
@@ -327,7 +328,6 @@ export class CompanionHostBridge {
       throw error;
     }
   }
-
   private async stop(): Promise<void> {
     ++this.generation;
     this.f221.reset();

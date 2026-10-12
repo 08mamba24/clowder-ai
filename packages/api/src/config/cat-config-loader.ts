@@ -97,6 +97,7 @@ const agyProfileSchema = z
       .strict()
       .optional(),
   })
+  .nullable()
   .optional();
 
 /** F32-b: mentionPatterns must start with @ */

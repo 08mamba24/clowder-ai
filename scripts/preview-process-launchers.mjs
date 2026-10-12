@@ -20,7 +20,7 @@ const SENSITIVE_ENV_KEYS = [
   'CAT_CAFE_AGENT_KEY_FILES',
 ];
 
-function readProcessIdentity(pid) {
+export function readProcessIdentity(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   const started = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' });
   const command = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
@@ -69,7 +69,17 @@ export function ownsLaunchdJob(config, record) {
 export function ownsLaunchdProcess(config, record) {
   if (!matchesLaunchdRecord(config, record)) return false;
   const job = readLaunchdJob(config);
-  return Boolean(job?.pid && job.pid === record.pid);
+  return Boolean(job?.pid && job.pid === record.pid && ownsProcess(record));
+}
+
+export function hasRunningLaunchdJob(config, record) {
+  return matchesLaunchdRecord(config, record) && Boolean(readLaunchdJob(config)?.pid);
+}
+
+export function hasConflictingLaunchdProcess(config, record) {
+  if (!matchesLaunchdRecord(config, record)) return false;
+  const job = readLaunchdJob(config);
+  return Boolean(job?.pid && job.pid !== record.pid);
 }
 
 function cleanChildEnv() {

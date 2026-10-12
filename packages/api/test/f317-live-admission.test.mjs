@@ -51,6 +51,7 @@ test('Live surface enters ordinary messages with a real owner session and cannot
   let sourceMessage;
   let startupItems;
   let startupPrompt;
+  let startupMcpConfig;
   const router = {
     resolveTargetsAndIntent: async () => ({
       targetCats: ['codex'],
@@ -61,7 +62,7 @@ test('Live surface enters ordinary messages with a real owner session and cannot
     routeExecution: async function* (userId, _content, threadId, messageId, targets, _intent, options) {
       passedPort = options.liveCompanion;
       sourceMessage = await messageStore.getById(messageId);
-      await passedPort.configure({
+      startupMcpConfig = await passedPort.configure({
         CAT_CAFE_API_URL: 'http://localhost:3012',
         CAT_CAFE_USER_ID: userId,
         CAT_CAFE_THREAD_ID: threadId,
@@ -186,6 +187,13 @@ test('Live surface enters ordinary messages with a real owner session and cannot
     payload: { ...payload, catId: 'opus' },
   });
   assert.equal(unsupported.statusCode, 400, 'the surface cannot supply an execution identity');
+  const forgedMeetingAdmission = await app.inject({
+    method: 'POST',
+    url: '/api/concierge/live',
+    headers,
+    payload: { ...payload, meetingToolsEnabled: true },
+  });
+  assert.equal(forgedMeetingAdmission.statusCode, 400, 'meeting exposure is a Host composition option');
   const prepared = await app.inject({ method: 'POST', url: '/api/concierge/live', headers, payload });
   assert.equal(prepared.statusCode, 202, prepared.body);
   const status = prepared.json();
@@ -193,6 +201,11 @@ test('Live surface enters ordinary messages with a real owner session and cannot
   assert.equal(status.companion.duty.catId, 'opus');
   assert.equal(status.companion.displayName, '宪宪');
   await passedPort.initialized.promise;
+  assert.deepEqual(
+    startupMcpConfig.mcp_servers['cat-cafe-collab'].disabled_tools,
+    ['sources', 'start', 'attach', 'status', 'stop'].map((name) => `cat_cafe_meeting_${name}`),
+    'ordinary owner admission keeps meeting tools disabled by default',
+  );
   const ready = await app.inject({ method: 'GET', url: `/api/concierge/live/${status.callId}`, headers });
   assert.equal(ready.json().state, 'ready');
   const remote = await app.inject({

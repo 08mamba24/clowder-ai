@@ -18,7 +18,6 @@
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
@@ -36,7 +35,11 @@ import {
 import { canonicalLinkedRootId, readLinkedRootState } from '../domains/workspace/roots/workspace-linked-root-store.js';
 import { guessMime, readWorkspaceFilePreview } from '../domains/workspace/workspace-file-read.js';
 import type { WorkspaceNavigationEmitter } from '../domains/workspace/workspace-navigation-delivery.js';
-import { resolveWorkspaceDocumentHref } from '../domains/workspace/workspace-path-resolution.js';
+import {
+  resolveWorkspacePathLinkHref,
+  WorkspacePathNotFoundError,
+  WorkspacePathNotRegisteredError,
+} from '../domains/workspace/workspace-path-resolution.js';
 import {
   addLinkedRoot,
   getLinkedRootsAsync,
@@ -58,6 +61,7 @@ import { resolvePrincipalThread } from './callback-scope-helpers.js';
 import { parseWorkspaceChangedFiles } from './workspace-diff.js';
 import { workspaceDirectHuman } from './workspace-direct-human.js';
 import { registerWorkspaceFileSourceRoutes } from './workspace-file-source-routes.js';
+import { sendWorkspaceMedia } from './workspace-media-response.js';
 import {
   handleWorkspaceNavigateBody,
   parseWorkspaceNavigateBody,
@@ -68,7 +72,7 @@ import { registerWorkspaceRootConnectionRoutes } from './workspace-root-connecti
 
 const execFileAsync = promisify(execFile);
 const MAX_FILE_SIZE = 1024 * 1024; // 1 MB text preview
-const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10 MB image preview
+const MAX_IMAGE_AUDIO_SIZE = 10 * 1024 * 1024; // 10 MB image/audio preview
 const MAX_SEARCH_RESULTS = 100;
 const MAX_TREE_DEPTH = 5;
 const MAX_CONTENT_SEARCH_FILE_SIZE = 10 * 1024 * 1024; // 10 MB per searchable text file
@@ -78,19 +82,23 @@ async function resolveDocumentLinkRouteResult(href: string): Promise<{
   body: unknown;
 }> {
   try {
-    return { statusCode: 200, body: await resolveWorkspaceDocumentHref(href) };
+    return { statusCode: 200, body: await resolveWorkspacePathLinkHref(href) };
   } catch (error) {
     if (!(error instanceof WorkspaceSecurityError)) {
-      return { statusCode: 500, body: { error: 'Internal error' } };
+      return { statusCode: 500, body: { code: 'PATH_RESOLUTION_FAILED' } };
+    }
+    if (error instanceof WorkspacePathNotRegisteredError) {
+      return { statusCode: 404, body: { code: 'PATH_NOT_IN_REGISTERED_WORKSPACE' } };
+    }
+    if (error instanceof WorkspacePathNotFoundError) {
+      return { statusCode: 404, body: { code: 'PATH_NOT_FOUND' } };
+    }
+    if (error.code === 'DENIED' || error.code === 'TRAVERSAL') {
+      return { statusCode: 403, body: { code: 'PATH_ACCESS_DENIED' } };
     }
     return {
-      statusCode: error.code === 'NOT_FOUND' ? 404 : 403,
-      body: {
-        error:
-          error.code === 'NOT_FOUND'
-            ? 'Document is not in a registered workspace'
-            : 'Document is not safe to open in Workspace',
-      },
+      statusCode: error.code === 'NOT_FOUND' ? 404 : 500,
+      body: { code: 'PATH_RESOLUTION_FAILED' },
     };
   }
 }
@@ -491,12 +499,12 @@ export const workspaceRoutes: FastifyPluginAsync<WorkspaceRouteOpts> = async (ap
   app.post<{ Body: { href?: unknown } }>('/api/workspace/resolve-document-link', async (request, reply) => {
     if (!resolveWorkspaceInteractiveUserId(request)) {
       reply.status(401);
-      return { error: 'Authentication required' };
+      return { code: 'AUTHENTICATION_REQUIRED' };
     }
     const { href } = request.body ?? {};
     if (typeof href !== 'string' || href.trim().length === 0) {
       reply.status(400);
-      return { error: 'href required' };
+      return { code: 'INVALID_HREF' };
     }
     const result = await resolveDocumentLinkRouteResult(href);
     reply.status(result.statusCode);
@@ -578,14 +586,11 @@ export const workspaceRoutes: FastifyPluginAsync<WorkspaceRouteOpts> = async (ap
         reply.status(400);
         return { error: 'Raw endpoint only serves image, audio, and video files' };
       }
-      if (fileStat.size > MAX_IMAGE_SIZE) {
+      if (!mime.startsWith('video/') && fileStat.size > MAX_IMAGE_AUDIO_SIZE) {
         reply.status(413);
         return { error: `File too large (${Math.round(fileStat.size / 1024 / 1024)}MB, max 10MB)` };
       }
-      reply.header('Content-Type', mime);
-      reply.header('Content-Length', fileStat.size);
-      reply.header('Cache-Control', 'private, max-age=60');
-      return reply.send(createReadStream(resolved));
+      return sendWorkspaceMedia(request, reply, resolved, fileStat.size, mime);
     } catch (e) {
       if (e instanceof WorkspaceSecurityError) {
         reply.status(e.code === 'NOT_FOUND' ? 404 : 403);

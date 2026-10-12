@@ -1,6 +1,7 @@
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { kernelPath, unfoldedJoin } from './lib/shell-directory.mjs';
 import { withoutInterpreterSource } from './native-effect-interpreter-source.mjs';
+import { invocationTargetView } from './native-effect-invocation-targets.mjs';
 import { commandName, shellInvocation, shellWords } from './native-effect-shell-tokenizer.mjs';
 import { fileProgramAnalysis } from './native-effect-write-effects.mjs';
 
@@ -20,7 +21,7 @@ import { fileProgramAnalysis } from './native-effect-write-effects.mjs';
  * Whatever is not read with certainty -- a `-C` value with a variable, a tilde or a
  * substitution, `-C` after another global option -- leaves the segment unchanged.
  */
-export function segmentView(segment, location) {
+export function segmentView(segment, location, roleSource = segment) {
   const program = shellInvocation(segment).words[0];
   const named =
     program && /^\/(?:usr\/)?s?bin\/[^/]+$/.test(program.value)
@@ -31,7 +32,16 @@ export function segmentView(segment, location) {
   // File roles parsed from text do not attest the executing shell/program.
   // Keep cwd for sort/sed writes until the executor supplies that missing fact.
   const targetCwd = actsOnlyOnAbsoluteOperands(command) ? undefined : context.location;
-  return { command, location: context.location, targetCwd, targetText: withObservedWriteAliases(command) };
+  // Read the original code/argv evidence before the legacy source mask. A mask
+  // must not turn generated interpreter source into a literal execution fact.
+  const roles = invocationTargetView(roleSource, location);
+  return {
+    command,
+    location: roles?.call.cwd ?? context.location,
+    targetCwd: roles ? roles.call.cwd : targetCwd,
+    roles,
+    targetText: withObservedWriteAliases(roles?.text ?? command),
+  };
 }
 
 function withObservedWriteAliases(command) {

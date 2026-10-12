@@ -21,7 +21,7 @@ mcp_admission_claims:
 
 # F323: Runtime Restart Coordination｜等待登记、优雅重启与自动回访
 
-> **Status**: in-progress；Phase A 实现已合入 #4853（`3f39bc101b55`），runtime 尚未加载；真实合入等待登记（AC-A11）、Alpha/运行验收与后续 Phase 未完成 | **Owner**: 本 thread 指挥责任猫 Astra（@codex-astra, gpt-6-astra）与 Opus55（@opus55, claude-opus-5-5） | **Priority**: P1
+> **Status**: in-progress；Phase A #4853 已合入、双 owner 隔离回访已验、日常 runtime 已加载；原 Task 已取得 gen1 真实即时匹配回执，AC-A11 清单/存量核实及用户现场收尾中，Phase B/C 尚未交付 | **Owner**: 本 thread 指挥责任猫 Astra（@codex-astra, gpt-6-astra）与 Opus55（@opus55, claude-opus-5-5） | **Priority**: P1
 >
 > **operator kickoff**: `[thread-id]#private-source-id`（2026-09-26 PT / 2026-09-27 UTC）：“我们正式立项一下？”；最大痛点是“不知道有多少猫工作干完了要重启”，数小时后重启完需要自动唤醒当时等待的猫。
 > **Original scope**: 同 thread 的 `private-source-id`（通知工作猫、重启后续办）、`private-source-id`（同位置三态按钮）、`private-source-id`（自然收尾、意外中断、主动直接 stop）、`private-source-id`（重启来源审计、异构消息通道）。

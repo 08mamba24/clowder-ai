@@ -7,6 +7,7 @@ import type {
   WorkspaceContentVisualMark,
 } from '@cat-cafe/shared';
 import type { ReactNode } from 'react';
+import type { MediaChatTarget } from '@/components/content-review/media-chat-selection';
 import type { WorkspaceAnnotationTarget } from './workspace-review-draft';
 import type { LegacyTextNotes } from './workspace-review-legacy-text';
 
@@ -48,7 +49,7 @@ export interface ContentLandingCapabilities {
   annotate: ContentCapability;
   reply: ContentCapability;
   markup: ContentCapability;
-  requestModification: ContentCapability & { medium: 'image' | 'video' | 'text' };
+  requestModification: ContentCapability & { medium: 'image' | 'video' | 'text' | 'project' };
   versions: ContentCapability;
   decide: ContentCapability;
   historyReadOnly: boolean;
@@ -58,6 +59,11 @@ export interface ContentReviewWorkflow {
   panel?: ReactNode;
   annotationMaxLength?: number;
   modification?: ReactNode;
+  /**
+   * The work and version 「引用到聊天」 names, when the surface knows it better than the file view does (a media round
+   * with a Task). Null: this surface cannot name one yet. Omitted: the workspace default.
+   */
+  chatMedia?: MediaChatTarget | null;
   status?: ReactNode;
   canvasDraftKey?: string;
   discussion?: (controls: {

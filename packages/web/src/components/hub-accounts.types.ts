@@ -1,10 +1,16 @@
+import type { AccountQuotaObservation, CodexManagedAccount } from '@cat-cafe/shared';
+
 export type ProfileMode = 'subscription' | 'api_key';
 export type ProfileAuthType = 'oauth' | 'api_key';
-export type ProfileKind = 'builtin' | 'api_key';
+export type ProfileKind = 'builtin' | 'api_key' | 'oauth';
 export type BuiltinAccountClient = 'anthropic' | 'openai' | 'google' | 'kimi' | 'opencode' | 'acp';
 
 export interface ProfileItem {
   id: string;
+  quota?: AccountQuotaObservation;
+  /** Read-only canonical default-home readiness; this does not make the default managed. */
+  codexLoginStatus?: 'ready' | 'not_logged_in';
+  codex?: CodexManagedAccount & { status: 'not_prepared' | 'not_logged_in' | 'ready' | 'identity_changed' };
   provider?: string;
   displayName: string;
   name: string;

@@ -1,6 +1,6 @@
 import { basename } from 'node:path';
 import type { ArtifactReviewAction, ContentModificationRequest, ReviewedMediaAsset } from '@cat-cafe/shared';
-import { contentModificationOutcome } from '@cat-cafe/shared';
+import { artifactReviewActionSchema, contentModificationOutcome } from '@cat-cafe/shared';
 import type { MediaReviewPrincipal } from '../../video-studio/content-owner/published-media-access.js';
 import type { PublishedMediaService } from '../../video-studio/content-owner/published-media-service.js';
 import { ArtifactReviewError } from '../artifact-review/errors.js';
@@ -23,6 +23,7 @@ import {
   modificationOperationKeys,
 } from './journal.js';
 import { inspectLegacyModification } from './legacy-review-binding.js';
+import { modificationMediaAnnotationNamespace } from './media-message/media-selection-projection.js';
 import type { ModificationContentPort } from './service.js';
 
 type MediaPrepared = Extract<NonNullable<ContentModificationProgress['prepared']>, { kind: 'media' }>;
@@ -247,17 +248,21 @@ export class ModificationMediaBinding implements ModificationContentPort {
     asset: ReviewedMediaAsset,
     intent: ContentModificationRequest['intent'],
   ): ArtifactReviewAction {
-    if (intent.selection?.kind === 'text_quote') throw new ArtifactReviewError('invalid_action');
-    const annotationId = `modify-${record.requestId.slice('f309-modification-'.length)}`;
+    if (
+      intent.selection?.kind === 'text_quote' ||
+      intent.selections?.some((item) => item.selection.kind === 'text_quote')
+    )
+      throw new ArtifactReviewError('invalid_action');
+    const annotationId = modificationMediaAnnotationNamespace(record.requestId);
     if (intent.imageEdit)
       return { kind: 'request_image_edit', annotationId, edit: intent.imageEdit, note: intent.body };
-    return {
+    return artifactReviewActionSchema.parse({
       kind: 'request_media_edit',
       mediaType: asset.mediaType,
       annotationId,
       body: contentModificationOutcome(intent),
-      ...(intent.selection ? { anchor: intent.selection } : {}),
-    };
+      ...(intent.selections ? { selections: intent.selections } : intent.selection ? { anchor: intent.selection } : {}),
+    });
   }
 
   private async assertTaskContext(

@@ -10,6 +10,12 @@ import {
   targetIdentityFingerprint,
   uniqueVisible,
 } from './CdpPageBrowserTask.js';
+import {
+  currentControlLabel,
+  currentControlOperation,
+  currentControlVisible,
+  permittedCurrentControl,
+} from './jev/CurrentPageControlTask.js';
 import type { LivePageActionPort } from './LivePageAction.js';
 import type { PageActionFence, PageActionFenceState, PageSnapshot } from './PageActionLoop.js';
 
@@ -26,6 +32,7 @@ function frozenSpec(spec: CdpPageActionSpec): CdpPageActionSpec {
   return Object.freeze({
     targets: Object.freeze(spec.targets.map((target) => Object.freeze({ ...target }))),
     readback: Object.freeze({ ...spec.readback }),
+    ...(spec.currentControls ? { currentControls: true as const } : {}),
   });
 }
 
@@ -58,6 +65,10 @@ async function evaluateTask(session: CDPSession, contextId: number, task: CdpPag
   const actor = task.mode === 'inspect' ? inspectCdpPageTask : performCdpPageTask;
   const expression = `(() => {
     const __name = (fn) => fn;
+    const currentControlVisible = ${currentControlVisible.toString()};
+    const currentControlOperation = ${currentControlOperation.toString()};
+    const currentControlLabel = ${currentControlLabel.toString()};
+    const permittedCurrentControl = ${permittedCurrentControl.toString()};
     const uniqueVisible = ${uniqueVisible.toString()};
     const targetFingerprint = ${targetFingerprint.toString()};
     const targetIdentityFingerprint = ${targetIdentityFingerprint.toString()};
@@ -138,8 +149,13 @@ async function resolveCommitFence(
 }
 
 /** Uses a Host-approved Puppeteer page; this module never attaches to a browser or grants access. */
-export function createCdpPageActionPort(page: Page, sourceSpec: CdpPageActionSpec): LivePageActionPort {
-  const spec = frozenSpec(sourceSpec);
+export function createCdpPageActionPort(
+  page: Page,
+  sourceSpec: CdpPageActionSpec,
+): LivePageActionPort & {
+  setReadback(readback: CdpPageActionSpec['readback']): void;
+} {
+  let spec = frozenSpec(sourceSpec);
   // A grant issued from this actor must not authorize an identically shaped node in a rebuilt actor.
   const actorId = randomUUID().replaceAll('-', '');
   let opened: Promise<{ session: CDPSession; contextId: number }> | undefined;
@@ -166,6 +182,12 @@ export function createCdpPageActionPort(page: Page, sourceSpec: CdpPageActionSpe
     return opened;
   };
   return {
+    setReadback(readback) {
+      if (closed) throw new Error('Page action port is closed');
+      if (!spec.targets.some((target) => target.selector === readback.selector))
+        throw new Error('Readback must belong to an inspected target');
+      spec = frozenSpec({ ...spec, readback });
+    },
     async inspect() {
       const { session, contextId } = await context();
       if (closed) throw new Error('Page action port closed before inspection');

@@ -108,6 +108,7 @@ export interface ManagedCommandWakeTrigger {
 }
 
 export interface ManagedCommandWakeDynamicTaskStore {
+  reconcileRetainedManagedCommand?(task: DynamicTaskDef): 'absent' | 'pending' | 'not_started' | 'conflict';
   getAll(): DynamicTaskDef[];
   listManagedCommandCandidates?(): DynamicTaskDef[];
   getById(id: string): DynamicTaskDef | null;

@@ -13,13 +13,22 @@
 import type { ActiveExecutionNonCancelableReason, ActiveExecutionProjection } from '@cat-cafe/shared';
 import { activeExecutionKey } from '@/stores/activeExecutionStore';
 import type { QueueEntry } from '@/stores/chat-types';
-import { managedCommandActivityLabel } from '../managed-command-activity-label';
+import { type ExecutionRowWords, executionRowCopy } from './execution-row.shell-copy';
 import type { QueueWaitInfo } from './queue-view';
 
 /** Why the row offers 强制重置. Exactly the three abnormal classes of the design; the normal reset lives in the title menu. */
 export type ForceResetReason = 'silent_turn' | 'unverified_legacy' | 'processing_stuck';
 
-export type RowStatus = 'working' | 'stopping' | 'blocked' | 'silent' | 'unverified' | 'stuck' | 'paused' | 'waiting';
+export type RowStatus =
+  | 'working'
+  | 'stopping'
+  | 'blocked'
+  | 'silent'
+  | 'confirming'
+  | 'unverified'
+  | 'stuck'
+  | 'paused'
+  | 'waiting';
 
 /** What the single ■ slot shows. `none` = nothing to stop here (several runs: each has its own ■ in the panel). */
 export type StopSlot =
@@ -42,6 +51,8 @@ export interface ExecutionRowInput {
   silent: Readonly<Record<string, { since: number | null }>>;
   /** The canonical projection failed its last refresh for this thread. */
   hydrationStale: boolean;
+  /** The legacy socket says live while canonical truth is still inside its neutral loading grace. */
+  hasConfirmingLegacyExecution: boolean;
   /** The legacy socket still reports a live turn while the canonical projection has none and is not ready. */
   hasUnverifiedLegacyExecution: boolean;
   queue: {
@@ -109,6 +120,7 @@ interface Counts {
   running: number;
   silent: number;
   stuck: number;
+  confirming: boolean;
   unverified: boolean;
   paused: boolean;
 }
@@ -119,6 +131,7 @@ function statusFor(counts: Counts, stop: StopSlot): RowStatus {
     if (counts.silent > 0) return 'silent';
     return stop.kind === 'blocked' ? 'blocked' : 'working';
   }
+  if (counts.confirming) return 'confirming';
   if (counts.unverified) return 'unverified';
   if (counts.stuck > 0) return 'stuck';
   return counts.paused ? 'paused' : 'waiting';
@@ -148,6 +161,7 @@ export function deriveExecutionRow(input: ExecutionRowInput): ExecutionRowModel 
     running: executions.length,
     silent: executions.filter((execution) => input.silent[activeExecutionKey(execution)] !== undefined).length,
     stuck: queue.entries.filter((entry) => entry.status === 'processing').length,
+    confirming: executions.length === 0 && input.hasConfirmingLegacyExecution,
     unverified: executions.length === 0 && input.hasUnverifiedLegacyExecution,
     paused,
   };
@@ -157,7 +171,13 @@ export function deriveExecutionRow(input: ExecutionRowInput): ExecutionRowModel 
   const resume = paused ? 'continue' : queue.canRecoverOrphaned ? 'recover' : null;
 
   return {
-    visible: counts.running > 0 || counts.unverified || counts.stuck > 0 || paused || visibleQueueCount > 0,
+    visible:
+      counts.running > 0 ||
+      counts.confirming ||
+      counts.unverified ||
+      counts.stuck > 0 ||
+      paused ||
+      visibleQueueCount > 0,
     status,
     runningCount: counts.running,
     queuedCount: queue.entries.filter((entry) => entry.status === 'queued').length,
@@ -185,71 +205,91 @@ export function formatClock(ms: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
-const BLOCKED_COPY: Record<ActiveExecutionNonCancelableReason, string> = {
-  control_plane_unavailable: '控制面暂不可用，无法安全停止',
-  cancellation_pending: '正在停止',
-  terminalizing: '正在收尾，已不可停止',
-  // The projection says "another principal started this" (the scheduler is only one example): do not claim more.
-  foreign_principal: '不是你发起的，你不能停',
-};
-
 /** A reason this code has never heard of still gets words. */
-export function blockedReasonCopy(reason: string): string {
-  return BLOCKED_COPY[reason as ActiveExecutionNonCancelableReason] ?? '暂时不能停';
+export function blockedReasonCopy(reason: string, copy: ExecutionRowWords = executionRowCopy.zh): string {
+  return copy.blockedReason[reason as ActiveExecutionNonCancelableReason] ?? copy.blockedReason.unknown;
 }
 
-export const FORCE_RESET_REASON_COPY: Record<ForceResetReason, string> = {
-  silent_turn: '这一轮已经一段时间没有动静',
-  unverified_legacy: '本轮没有留下可核对的终态，可能已经结束',
-  processing_stuck: '有一条消息的处理卡住了，没有猫在接它',
-};
+export const FORCE_RESET_REASON_COPY: Record<ForceResetReason, string> = executionRowCopy.zh.forceResetReason;
 
-export const PAUSE_REASON_COPY = { canceled: '当前调用已取消', failed: '当前调用失败' } as const;
+export const PAUSE_REASON_COPY = executionRowCopy.zh.pauseReason;
 
-function queueTailOf(model: ExecutionRowModel): string {
-  if (model.queuePaused) return ' · 排队已暂停';
-  return model.queuedCount > 0 ? ` · 排队 ${model.queuedCount}` : '';
+function queueTailOf(model: ExecutionRowModel, copy: ExecutionRowWords): string {
+  if (model.queuePaused) return copy.status.queuePausedTail;
+  return model.queuedCount > 0 ? copy.status.queueTail(model.queuedCount) : '';
 }
 
-function silentText(model: ExecutionRowModel, clock: string, tail: string): string {
-  if (!model.single) return `${model.silentCount} 件没动静${tail}`;
+function silentText(model: ExecutionRowModel, clock: string, tail: string, copy: ExecutionRowWords): string {
+  if (!model.single) return copy.status.silentMany(model.silentCount, tail);
   const quiet =
-    model.silentForMs !== null ? `${Math.max(1, Math.floor(model.silentForMs / 60_000))} 分钟没有动静` : '没有动静';
-  return `${quiet}${clock}${tail}`;
+    model.silentForMs !== null
+      ? copy.status.quietMinutes(Math.max(1, Math.floor(model.silentForMs / 60_000)))
+      : copy.status.quietUnknown;
+  return copy.status.silentOne(quiet, clock, tail);
 }
 
-function blockedText(model: ExecutionRowModel, who: string, clock: string): string {
+function blockedText(model: ExecutionRowModel, who: string, clock: string, copy: ExecutionRowWords): string {
   const single = model.single;
-  const lead = single?.kind === 'managed_command' ? managedCommandActivityLabel(single.activity) : who;
-  const reason = model.stop.kind === 'blocked' ? blockedReasonCopy(model.stop.reason) : '暂时不能停';
-  return `${lead} · ${reason}${clock}`;
+  const lead = single?.kind === 'managed_command' ? copy.activity[single.activity ?? 'command'] : who;
+  const reason =
+    model.stop.kind === 'blocked' ? blockedReasonCopy(model.stop.reason, copy) : copy.blockedReason.unknown;
+  return copy.status.blocked(lead, reason, clock);
 }
 
 /**
  * The words of the row. `nameOf` resolves a cat id to the name the user knows it by.
  * Never returns an empty string for a visible row.
  */
-export function rowStatusText(model: ExecutionRowModel, nameOf: (catId: string) => string): string {
-  const tail = queueTailOf(model);
+export function rowStatusText(
+  model: ExecutionRowModel,
+  nameOf: (catId: string) => string,
+  copy: ExecutionRowWords = executionRowCopy.zh,
+): string {
+  const tail = queueTailOf(model, copy);
   const who = model.single ? nameOf(model.single.catId) : '';
   const clock = model.elapsedMs !== null ? ` ${formatClock(model.elapsedMs)}` : '';
 
   switch (model.status) {
     case 'working':
-      return model.single ? `${who} 正在工作${clock}${tail}` : `${model.runningCount} 件在跑${tail}`;
+      return model.single ? copy.status.working(who, clock, tail) : copy.status.running(model.runningCount, tail);
     case 'stopping':
-      return `正在停止${clock}`;
+      return copy.status.stopping(clock);
     case 'blocked':
-      return blockedText(model, who, clock);
+      return blockedText(model, who, clock, copy);
     case 'silent':
-      return silentText(model, clock, tail);
+      return silentText(model, clock, tail, copy);
+    case 'confirming':
+      return copy.status.confirming;
     case 'unverified':
-      return '运行状态待确认';
+      return copy.status.unverified;
     case 'stuck':
-      return `${model.stuckCount} 件处理卡住${tail}`;
+      return copy.status.stuck(model.stuckCount, tail);
     case 'paused':
-      return `排队已暂停 · ${model.visibleQueueCount} 条`;
+      return copy.status.paused(model.visibleQueueCount);
     case 'waiting':
-      return `排队 ${model.queuedCount > 0 ? model.queuedCount : model.visibleQueueCount}`;
+      return copy.status.waiting(model.queuedCount > 0 ? model.queuedCount : model.visibleQueueCount);
+  }
+}
+
+/** The narrow row keeps a whole, useful state after action labels yield. */
+export function rowCompactStatusText(model: ExecutionRowModel, copy: ExecutionRowWords = executionRowCopy.zh): string {
+  switch (model.status) {
+    case 'working':
+    case 'blocked':
+      return copy.compact.working;
+    case 'stopping':
+      return copy.compact.stopping;
+    case 'silent':
+      return copy.compact.silent;
+    case 'confirming':
+      return copy.compact.confirming;
+    case 'unverified':
+      return copy.compact.unverified;
+    case 'stuck':
+      return copy.compact.stuck;
+    case 'paused':
+      return copy.compact.paused;
+    case 'waiting':
+      return copy.compact.waiting(model.queuedCount > 0 ? model.queuedCount : model.visibleQueueCount);
   }
 }

@@ -214,7 +214,7 @@ test('start-dev cloud cleanup uses an owner manifest instead of global cloud sto
 test('start-dev cleanup consumes a published owner manifest while helper startup is still in flight', () => {
   const scriptPath = resolve(process.cwd(), '../../scripts/start-dev.sh');
   const scriptText = readFileSync(scriptPath, 'utf8');
-  const cleanupSource = scriptText.match(/cleanup\(\) \{[\s\S]*?\n\}\n\ntrap cleanup EXIT/)?.[0];
+  const cleanupSource = scriptText.match(/^cleanup\(\) \{[\s\S]*?^\}/m)?.[0];
 
   assert.ok(cleanupSource, 'cleanup function must remain discoverable');
   assert.match(cleanupSource, /\[ -n "\$F247_CLOUD_OWNER_FILE" \]/);

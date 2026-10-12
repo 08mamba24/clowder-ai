@@ -35,6 +35,9 @@ export interface VerifiedPluginPackage {
   readonly manifest: PluginManifest;
   /** Re-check the launchable tree against the in-memory snapshot derived from the admitted archive. */
   verifyIntegrity(): Promise<void>;
+  /** Revalidate this private generation's sealed tree identity for already
+   * snapshotted static assets. Never substitutes for executable admission. */
+  verifyStaticIntegrity?(): Promise<void>;
   /** Release the private per-runtime staging directory after the process is gone. */
   release(): Promise<void>;
 }

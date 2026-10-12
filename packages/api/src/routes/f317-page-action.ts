@@ -6,6 +6,7 @@ import { requirePluginOwnerLocalAccess } from './plugin-access-guards.js';
 const id = z.string().uuid();
 const inspectBody = z.object({ requestMessageId: z.string().regex(/^[A-Za-z0-9_-]{1,160}$/) }).strict();
 const previewBody = z.object({ previewId: id }).strict();
+const selectBody = inspectBody.extend({ pageId: id }).strict();
 
 export interface F317PageActionRouteOptions {
   ownerUserId: string;
@@ -21,6 +22,29 @@ export const f317PageActionRoutes: FastifyPluginAsync<F317PageActionRouteOptions
   });
 
   app.get('/api/concierge/page-action', () => options.service.view());
+
+  app.post('/api/concierge/page-action/pages', async (request, reply) => {
+    const parsed = inspectBody.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Direct request required' });
+    try {
+      return { pages: await options.service.listPages(parsed.data.requestMessageId) };
+    } catch {
+      return reply.code(409).send({ error: 'Current browser or request unavailable' });
+    }
+  });
+
+  app.post('/api/concierge/page-action/select', async (request, reply) => {
+    const parsed = selectBody.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Exact owner page choice required' });
+    try {
+      return {
+        kind: 'awaiting_consent',
+        preview: await options.service.selectPage(parsed.data.requestMessageId, parsed.data.pageId),
+      };
+    } catch {
+      return reply.code(409).send({ error: 'Page choice or request changed; choose again' });
+    }
+  });
 
   app.post('/api/concierge/page-action/inspect', async (request, reply) => {
     const parsed = inspectBody.safeParse(request.body);

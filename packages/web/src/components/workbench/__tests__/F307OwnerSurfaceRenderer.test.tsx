@@ -1,6 +1,9 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MAILBOX_NAVIGATE_EVENT } from '@/components/shell/mailbox/mailbox-navigation';
+import { writeShellPresentation } from '@/components/shell/shell-presentation';
+import { fileReturnLabel } from '@/components/workspace/V2WorkspaceFileChrome';
 import { createCapabilityEvolutionWorkspaceSurface } from '../capability-evolution-workspace-adapter';
 import {
   createApprovalActionSurface,
@@ -8,6 +11,7 @@ import {
   createContentEditorSurface,
   createEvolutionProgramSurface,
   createWorkspaceDestinationSurface,
+  resolveFileTarget,
 } from '../real-surface-adapters';
 
 vi.mock('@/components/workspace/BrowserPanel', () => ({
@@ -31,8 +35,20 @@ const ARTIFACT_COORDINATE = {
 };
 
 vi.mock('@/components/workspace/ChangesPanel', () => ({
-  ChangesPanel: ({ worktreeId, threadId }: { worktreeId: string | null; threadId?: string | null }) => (
-    <div data-testid="changes-owner" data-worktree-id={worktreeId} data-thread-id={threadId} />
+  ChangesPanel: ({
+    worktreeId,
+    threadId,
+    onOpenFile,
+  }: {
+    worktreeId: string | null;
+    threadId?: string | null;
+    onOpenFile?: (path: string) => void;
+  }) => (
+    <div data-testid="changes-owner" data-worktree-id={worktreeId} data-thread-id={threadId}>
+      <button type="button" data-testid="changes-open-file" onClick={() => onOpenFile?.('src/owner.ts')}>
+        打开文件
+      </button>
+    </div>
   ),
 }));
 
@@ -56,25 +72,32 @@ vi.mock('@/components/capability-evolution/CapabilityEvolutionWorkspace', () => 
 }));
 
 const artifactFixture = vi.hoisted(() => ({ revision: 7, threadId: 'thread-f310' }));
-vi.mock('@/hooks/useGlobalArtifacts', () => ({
-  useGlobalArtifacts: () => ({
-    artifacts: [
-      {
-        type: 'file',
-        name: 'Tomorrow presentation',
-        catId: 'codex-sol',
-        createdAt: artifactFixture.revision,
-        sourceMessageId: null,
-        url: 'artifact:ppt:tomorrows-ppt',
-        threadId: artifactFixture.threadId,
-        threadTitle: 'PPT source',
-      },
-    ],
-    loading: false,
-    error: false,
-    refetch: vi.fn(),
-  }),
-}));
+vi.mock('@/utils/api-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/utils/api-client')>();
+  return {
+    ...actual,
+    apiFetch: (path: string, ...args: Parameters<typeof actual.apiFetch> extends [string, ...infer R] ? R : never) =>
+      path === '/api/threads/thread-f310/artifacts'
+        ? Promise.resolve(
+            new Response(
+              JSON.stringify({
+                threadId: artifactFixture.threadId,
+                artifacts: [
+                  {
+                    type: 'file',
+                    name: 'Tomorrow presentation',
+                    catId: 'codex-sol',
+                    createdAt: artifactFixture.revision,
+                    sourceMessageId: 'published',
+                    url: 'artifact:ppt:tomorrows-ppt',
+                  },
+                ],
+              }),
+            ),
+          )
+        : actual.apiFetch(path, ...args),
+  };
+});
 
 vi.mock('@/components/growing/ProductSchedulePanel', () => ({
   ProductSchedulePanel: ({
@@ -118,6 +141,40 @@ vi.mock('@/components/growing/NeedsMePanel', () => ({
 import { F307OwnerSurfaceRenderer } from '../F307OwnerSurfaceRenderer';
 
 describe('F307 owner surface renderer', () => {
+  it('opens a Changes file through the ordinary F063 owner with a scoped return origin', () => {
+    const surface = createWorkspaceDestinationSurface(
+      { kind: 'surface', id: 'changes', label: '变更', description: 'Diff', searchTerms: 'changes' },
+      'thread-a',
+      'listed-worktree',
+    );
+    expect(surface).not.toBeNull();
+    if (!surface) return;
+    const onOpenSurface = vi.fn();
+    const onOpenArtifactWithReturn = vi.fn();
+    act(() =>
+      root.render(
+        <F307OwnerSurfaceRenderer
+          surface={surface}
+          onOpenSurface={onOpenSurface}
+          onOpenArtifactWithReturn={onOpenArtifactWithReturn}
+          onRefreshSurface={() => undefined}
+          onRequestDetach={() => undefined}
+        />,
+      ),
+    );
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="changes-open-file"]')?.click());
+    expect(onOpenSurface).toHaveBeenCalledTimes(1);
+    const file = onOpenSurface.mock.calls[0]?.[0];
+    expect(resolveFileTarget(file)).toMatchObject({ worktreeId: 'listed-worktree', path: 'src/owner.ts' });
+    expect(file.navigationOrigin).toEqual({
+      kind: 'workspace-changes',
+      worktreeId: 'listed-worktree',
+      threadId: 'thread-a',
+    });
+    expect(fileReturnLabel(file.navigationOrigin)).toBe('‹ 变更');
+    expect(onOpenArtifactWithReturn).not.toHaveBeenCalled();
+  });
+
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
 
@@ -285,7 +342,7 @@ describe('F307 owner surface renderer', () => {
     ).toBe('none');
   });
 
-  it('promotes the exact F232 Artifact selected from product Schedule', () => {
+  it('promotes the exact F232 Artifact selected from product Schedule', async () => {
     const surface = createWorkspaceDestinationSurface(
       {
         kind: 'mode',
@@ -310,7 +367,7 @@ describe('F307 owner surface renderer', () => {
       ),
     );
 
-    act(() => {
+    await act(async () => {
       container
         .querySelector('[data-testid="schedule-open-owner-artifact"]')
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -335,7 +392,7 @@ describe('F307 owner surface renderer', () => {
   it.each([
     { revision: 8, threadId: 'thread-f310' },
     { revision: 7, threadId: 'other-thread' },
-  ])('does not substitute a matching URL from another revision or thread: %j', (changed) => {
+  ])('does not substitute a matching URL from another revision or thread: %j', async (changed) => {
     Object.assign(artifactFixture, changed);
     const surface = createWorkspaceDestinationSurface(
       {
@@ -360,7 +417,7 @@ describe('F307 owner surface renderer', () => {
         />,
       ),
     );
-    act(() =>
+    await act(async () =>
       container
         .querySelector('[data-testid="schedule-open-owner-artifact"]')
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true })),
@@ -423,6 +480,47 @@ describe('F307 owner surface renderer', () => {
       }),
     );
     expect(onRefreshSurface).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens v2 Needs Me approval actions directly in the mailbox and preserves the return item', () => {
+    const surface = createWorkspaceDestinationSurface({
+      kind: 'mode',
+      id: 'needs-me',
+      label: 'Needs Me',
+      description: 'Needs Me',
+      searchTerms: 'needs me',
+    });
+    if (!surface) throw new Error('Expected the Needs Me destination');
+    const navigate = vi.fn();
+    const open = vi.fn();
+    const refresh = vi.fn();
+    window.addEventListener(MAILBOX_NAVIGATE_EVENT, navigate);
+    try {
+      act(() => writeShellPresentation('v2'));
+      act(() =>
+        root.render(
+          <F307OwnerSurfaceRenderer
+            surface={surface}
+            onOpenSurface={open}
+            onOpenArtifactWithReturn={() => undefined}
+            onRefreshSurface={refresh}
+            onRequestDetach={() => undefined}
+          />,
+        ),
+      );
+      expect(navigate).not.toHaveBeenCalled();
+      act(() => container.querySelector<HTMLButtonElement>('[data-testid="needs-me-open-inline-approval"]')?.click());
+      expect(navigate).toHaveBeenCalledOnce();
+      expect((navigate.mock.calls[0][0] as CustomEvent).detail).toEqual({
+        section: 'pending',
+        proposalId: 'proposal/one',
+      });
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(MAILBOX_NAVIGATE_EVENT, navigate);
+      act(() => writeShellPresentation('classic'));
+    }
   });
 
   it('renders a Needs Me inline Approval descriptor through the Approval owner', () => {

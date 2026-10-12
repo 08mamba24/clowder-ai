@@ -3,8 +3,10 @@ import {
   subexecutionMessageLabel,
   subexecutionStatusLabel,
 } from '@/components/SubexecutionActivity';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import type { InvocationTimelineRow } from './invocation-trajectory-model';
 import { formatTrajectoryDuration } from './invocation-trajectory-ui';
+import { TrajectoryCatIdentity } from './TrajectoryCatIdentity';
 
 type SemanticRole = 'user' | 'assistant' | 'system' | 'context' | 'tool' | 'error';
 
@@ -74,14 +76,24 @@ function SemanticIcon({ semanticRole }: { semanticRole: SemanticRole }) {
   );
 }
 
-export function SemanticBadge({ semanticRole }: { semanticRole: SemanticRole }) {
+export function SemanticBadge({ semanticRole, catId }: { semanticRole: SemanticRole; catId?: string }) {
+  const isV2 = useShellPresentation() === 'v2';
   const visual = ROLE_VISUAL[semanticRole];
+  const label = { user: '你', assistant: '猫', system: '系统', context: '状态', tool: '工具', error: '出错' }[
+    semanticRole
+  ];
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-micro font-semibold ${visual.badge}`}
     >
       <SemanticIcon semanticRole={semanticRole} />
-      {visual.label}
+      {isV2 && semanticRole === 'assistant' && catId ? (
+        <TrajectoryCatIdentity catId={catId} />
+      ) : isV2 ? (
+        label
+      ) : (
+        visual.label
+      )}
     </span>
   );
 }
@@ -118,22 +130,30 @@ function sourceLabel(source: Extract<InvocationTimelineRow, { kind: 'tool' }>['s
 }
 
 function ToolRow({ row }: { row: Extract<InvocationTimelineRow, { kind: 'tool' }> }) {
+  const isV2 = useShellPresentation() === 'v2';
   const resultStatus = row.resultStatus ?? (row.result !== undefined ? 'unknown' : 'running');
+  const source = { host_cli: '本机', mcp: 'MCP', plugin_connector: '插件', unknown: '来源未知' }[row.source];
+  const channel = { analysis: '分析', commentary: '过程', final: '最终回复', unknown: '通道未知' }[row.channel];
+  const status = { ok: '完成', error: '出错', unknown: '结果未知', running: '运行中' }[resultStatus];
   return (
     <SemanticFrame semanticRole="tool" tone={resultStatus === 'error' ? 'error' : 'tool'}>
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <SemanticBadge semanticRole="tool" />
-        <strong className="font-mono text-cafe">{row.toolName}</strong>
+        <strong className={isV2 ? 'min-w-0 break-all font-mono text-cafe' : 'font-mono text-cafe'}>
+          {row.toolName}
+        </strong>
         <span className="rounded border border-cafe-subtle px-1.5 py-0.5 text-micro text-cafe-secondary">
-          {sourceLabel(row.source)}
+          {isV2 ? source : sourceLabel(row.source)}
         </span>
-        <span className="rounded border border-cafe-subtle px-1.5 py-0.5 text-micro text-cafe-secondary">
-          {row.channel}
-        </span>
+        {(!isV2 || row.source !== 'unknown' || row.channel !== 'unknown') && (
+          <span className="rounded border border-cafe-subtle px-1.5 py-0.5 text-micro text-cafe-secondary">
+            {isV2 ? channel : row.channel}
+          </span>
+        )}
         <span
           className={`ml-auto text-micro font-semibold ${resultStatus === 'error' ? 'text-conn-red-text' : 'text-cafe-muted'}`}
         >
-          {resultStatus}
+          {isV2 ? status : resultStatus}
           {row.durationMs != null ? ` · ${formatTrajectoryDuration(row.durationMs)}` : ''}
         </span>
       </div>
@@ -216,7 +236,14 @@ function SubexecutionTimelineRow({ row }: { row: Extract<InvocationTimelineRow, 
   );
 }
 
-export function SemanticTimelineRow({ row }: { row: InvocationTimelineRow }) {
+function semanticContent(row: InvocationTimelineRow, isV2: boolean): string {
+  if (!('content' in row)) return '';
+  if (isV2 && row.kind === 'terminal' && row.content === 'done') return '完成';
+  return row.content;
+}
+
+export function SemanticTimelineRow({ row, catId }: { row: InvocationTimelineRow; catId?: string }) {
+  const isV2 = useShellPresentation() === 'v2';
   switch (row.kind) {
     case 'status-group':
       return <StatusGroupRow row={row} />;
@@ -229,17 +256,28 @@ export function SemanticTimelineRow({ row }: { row: InvocationTimelineRow }) {
   }
   const role: SemanticRole =
     row.kind === 'error' ? 'error' : row.kind === 'session' ? 'context' : row.kind === 'message' ? row.role : 'system';
-  const content = 'content' in row ? row.content : '';
+  const content = semanticContent(row, isV2);
   return (
     <SemanticFrame semanticRole={role}>
       <div className="flex items-start gap-2 text-xs text-cafe-secondary">
-        <SemanticBadge semanticRole={role} />
+        <SemanticBadge semanticRole={role} catId={catId} />
         <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{content}</span>
       </div>
+      {isV2 && row.kind === 'message' && row.channel && (
+        <p className="mt-1 text-micro text-cafe-muted">
+          {{ analysis: '分析', commentary: '过程', final: '最终回复' }[row.channel]}
+        </p>
+      )}
       {row.kind === 'message' && row.role === 'assistant' && (row.fragmentCount ?? 1) > 1 && (
         <p className="mt-2 text-micro text-conn-purple-text">
-          已合并 {row.fragmentCount} 个 stream fragments · append {row.appendCount ?? 0} / replace{' '}
-          {row.replaceCount ?? 0}
+          {isV2 ? (
+            `由 ${row.fragmentCount} 段流式输出拼成`
+          ) : (
+            <>
+              已合并 {row.fragmentCount} 个 stream fragments · append {row.appendCount ?? 0} / replace{' '}
+              {row.replaceCount ?? 0}
+            </>
+          )}
         </p>
       )}
     </SemanticFrame>

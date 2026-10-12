@@ -19,8 +19,10 @@ import {
 } from '@/utils/sidebar-thread-snapshot';
 import { BootcampListModal } from '../BootcampListModal';
 import { BootcampIcon } from '../icons/BootcampIcon';
+import { resolveShellCopy, useShellCopy } from '../shell/shell-copy';
+import { readShellLanguage } from '../shell/shell-language';
 import type { ShellDestination } from '../shell/shell-navigation';
-import { useShellPresentation } from '../shell/shell-presentation';
+import { readShellPresentation, useShellPresentation } from '../shell/shell-presentation';
 import { AttentionArrangeToolbar } from './AttentionArrangeToolbar';
 import { AttentionClusterHeader, AttentionClusterMember } from './AttentionCluster';
 import { AttentionGroupableThreadRow } from './AttentionGroupableThreadRow';
@@ -46,6 +48,8 @@ import { SectionGroup } from './SectionGroup';
 import { SidebarTabIcon } from './SidebarTabIcon';
 import { SidebarViewBarV2 } from './SidebarViewBarV2';
 import type { SearchGroupRequest } from './search-group-types';
+import { useSidebarRowHeight } from './sidebar-draft-decoration';
+import { sidebarHeaderCopy } from './sidebar-header.shell-copy';
 import {
   createSidebarTabState,
   readBrowserSidebarTabPreference,
@@ -58,6 +62,7 @@ import { ThreadSidebarV2Header } from './ThreadSidebarV2Header';
 import { openTheaterReplay } from './theater-navigation';
 import { pushThreadRouteWithHistory } from './thread-navigation';
 import { isGroupableThread, matchesThreadSearch } from './thread-search';
+import { threadSignalsCopy } from './thread-signals.shell-copy';
 import {
   buildSidebarTabContent,
   buildSidebarTabs,
@@ -69,6 +74,7 @@ import {
 } from './thread-utils';
 import { useAttentionClusters } from './use-attention-clusters';
 import { useAttentionListOrder } from './use-attention-list-order';
+import { useAttentionPreview } from './use-attention-preview';
 import { useCollapseState } from './use-collapse-state';
 import { useProjectPins } from './use-project-pins';
 import { useScrollAnchor } from './use-scroll-anchor';
@@ -92,13 +98,15 @@ interface TrashedThread {
   title: string | null;
 }
 
-function notifyThreadCreate(type: 'success' | 'error' | 'info', title: string, message: string) {
-  useToastStore.getState().addToast({
-    type,
-    title,
-    message,
-    duration: 6000,
-  });
+function notifySidebarFeedback(
+  type: 'success' | 'error' | 'info',
+  key: keyof typeof sidebarHeaderCopy.zh.feedback,
+  duration = 6000,
+) {
+  // Read the current presentation at delivery, including a language switch while the request was pending.
+  // Classic always uses its original Chinese text, independent of the persisted v2 language.
+  const copy = resolveShellCopy(sidebarHeaderCopy, readShellPresentation() === 'v2' ? readShellLanguage() : 'zh');
+  useToastStore.getState().addToast({ type, ...copy.feedback[key], duration });
 }
 
 function isTimeoutError(error: unknown): boolean {
@@ -141,6 +149,8 @@ function forOpenableProject<T>(projectPath: string | undefined, build: (projectP
 export function ThreadSidebar({ onClose, className, routeThreadId, activeDestination = null }: ThreadSidebarProps) {
   const [showBootcampList, setShowBootcampList] = useState(false);
   const isV2 = useShellPresentation() === 'v2';
+  const rowCopy = useShellCopy(threadSignalsCopy);
+  const sidebarCopy = useShellCopy(sidebarHeaderCopy);
   const { currentThreadId, setCurrentProject } = useChatStore(
     useShallow((s) => ({
       currentThreadId: s.currentThreadId,
@@ -165,7 +175,10 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
   const [showPicker, setShowPicker] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [labelFilter, setLabelFilter] = useState<string | null>(null);
-  const [bindWarning, setBindWarning] = useState<string | null>(null);
+  const [bindFailure, setBindFailure] = useState<{ failed: number; total: number } | null>(null);
+  const bindWarning = bindFailure
+    ? (isV2 ? sidebarCopy : sidebarHeaderCopy.zh).sessionBindWarning(bindFailure.failed, bindFailure.total)
+    : null;
   // I-1: Thread to confirm deletion (null = no dialog)
   const [deleteTarget, setDeleteTarget] = useState<SidebarSnapshotRow | null>(null);
   // F095 Phase D: Trash bin state
@@ -247,6 +260,12 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
     pushThreadRouteWithHistory(threadId, typeof window !== 'undefined' ? window : undefined);
   }, []);
 
+  const openNewConversationPage = useCallback(() => {
+    setShowPicker(false);
+    navigateToThread('default');
+    if (typeof window !== 'undefined' && window.innerWidth < 768) onClose?.();
+  }, [navigateToThread, onClose]);
+
   const createInProject = useCallback(
     async (opts: NewThreadOptions) => {
       console.log('[createInProject] called with opts=', JSON.stringify(opts));
@@ -272,12 +291,12 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
         if (!res.ok) {
           const errBody = await res.text().catch(() => '(no body)');
           console.error('[createInProject] POST /api/threads failed:', res.status, errBody);
-          notifyThreadCreate('error', '创建线程失败', '这次创建对话没有成功，请稍后重试。');
+          notifySidebarFeedback('error', 'createRejected');
           return;
         }
         const thread = (await res.json()) as { id?: unknown };
         if (typeof thread.id !== 'string' || thread.id.length === 0) {
-          notifyThreadCreate('error', '创建线程失败', '服务器没有返回有效的对话标识，请稍后重试。');
+          notifySidebarFeedback('error', 'createInvalidId');
           return;
         }
         createdThreadId = thread.id;
@@ -295,8 +314,8 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
           );
           const failed = results.filter((r) => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.ok));
           if (failed.length > 0) {
-            setBindWarning(`Session 绑定部分失败（${failed.length}/${results.length}），可在 Session 面板重试`);
-            setTimeout(() => setBindWarning(null), 6000);
+            setBindFailure({ failed: failed.length, total: results.length });
+            setTimeout(() => setBindFailure(null), 6000);
           }
         }
 
@@ -323,18 +342,14 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
             refreshed && canReconcileByDifference ? findReconciledThread(beforeThreadIds, opts) : null;
           if (reconciledThread) {
             if (reconciledThread.projectPath !== 'default') setCurrentProject(reconciledThread.projectPath);
-            notifyThreadCreate('success', '创建已确认', '请求虽然超时，但服务器已确认创建完成；没有重复提交。');
+            notifySidebarFeedback('success', 'createConfirmed');
             navigateToThread(reconciledThread.id);
             if (typeof window !== 'undefined' && window.innerWidth < 768) onClose?.();
           } else {
-            notifyThreadCreate(
-              'info',
-              '创建结果未确认',
-              '请求已超时；已核对服务器，但仍无法确认是否创建。我们没有自动重试，请先检查侧栏。',
-            );
+            notifySidebarFeedback('info', 'createUnconfirmed');
           }
         } else {
-          notifyThreadCreate('error', '创建线程失败', '创建请求没有完成，请稍后重试。');
+          notifySidebarFeedback('error', 'createRequestFailed');
         }
       } finally {
         setCreationPhase('idle');
@@ -426,12 +441,7 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
         }),
     });
     if (!ok) {
-      useToastStore.getState().addToast({
-        type: 'error',
-        title: '重命名失败',
-        message: '服务器没有接受这次修改，已恢复权威标题。',
-        duration: 5000,
-      });
+      notifySidebarFeedback('error', 'renameFailed', 5000);
     }
   }, []);
 
@@ -449,12 +459,7 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
         }),
     }).then((ok) => {
       if (!ok) {
-        useToastStore.getState().addToast({
-          type: 'error',
-          title: '置顶失败',
-          message: '服务器没有接受这次修改，已恢复权威状态。',
-          duration: 5000,
-        });
+        notifySidebarFeedback('error', 'pinFailed', 5000);
       }
     });
   }, []);
@@ -796,9 +801,7 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
         body: JSON.stringify({ content: buildTriggerContent(), threadId }),
       });
       if (!triggerRes.ok) {
-        useToastStore
-          .getState()
-          .addToast({ type: 'error', title: '发送失败', message: '触发消息发送失败，请重试', duration: 5000 });
+        notifySidebarFeedback('error', 'organizerSendFailed', 5000);
         return;
       }
 
@@ -825,9 +828,7 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
         }
       }
     } catch {
-      useToastStore
-        .getState()
-        .addToast({ type: 'error', title: '分析失败', message: '猫猫无法分析，请重试', duration: 5000 });
+      notifySidebarFeedback('error', 'organizerAnalysisFailed', 5000);
     } finally {
       setSuggestLoading(false);
     }
@@ -980,8 +981,8 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
   const flatAttentionItems = useMemo(() => {
     if (activeTabContent.kind !== 'flat' || (activeTab !== 'pinned' && activeTab !== 'recent')) return null;
     const arranged = arrangeAttentionRows(activeTabContent.threads, liveThreads, attentionClusters, activeTab);
-    return arranged.some((item) => item.kind === 'cluster') ? arranged : null;
-  }, [activeTab, activeTabContent, attentionClusters, liveThreads]);
+    return isV2 || arranged.some((item) => item.kind === 'cluster') ? arranged : null;
+  }, [activeTab, activeTabContent, attentionClusters, liveThreads, isV2]);
   const recentThreadIds = useMemo(
     () =>
       new Set(
@@ -1036,15 +1037,57 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
     }
     return lists;
   }, [activeTab, attentionClusters, flatAttentionItems, isCollapsed, projectThreadGroups]);
-  const attentionListRows = useAttentionListOrder(
+  const orderedAttentionRows = useAttentionListOrder(
     attentionLists,
     isAttentionClusterOpen,
     attentionMemberSort,
     JSON.stringify([activeTab, normalizedQuery, labelFilter, attentionArrangeMode]),
     normalizedQuery,
     attentionArrangeMode,
+    scrollContainerRef,
   );
+  const {
+    lists: attentionListRows,
+    reveal: revealAttentionPreview,
+    projectRows: previewAttentionRows,
+  } = useAttentionPreview(
+    orderedAttentionRows,
+    currentConversationId,
+    isV2 && !normalizedQuery && !attentionArrangeMode,
+  );
+  const previewFocusRef = useRef<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Published preview rows determine when the new title exists in the DOM.
+  useEffect(() => {
+    if (!previewFocusRef.current) return;
+    const next = [...(scrollContainerRef.current?.querySelectorAll<HTMLElement>('[data-thread-id]') ?? [])].find(
+      (element) => element.dataset.threadId === previewFocusRef.current,
+    );
+    const title = next?.querySelector<HTMLElement>('[role="link"]');
+    if (title) {
+      previewFocusRef.current = null;
+      title.focus({ preventScroll: true });
+    }
+  }, [attentionListRows]);
   const flatAttentionRows = attentionListRows.flat ?? null;
+  const plainV2Rows = useMemo<AttentionListRow[]>(
+    () =>
+      activeTabContent.threads.map((thread) => ({
+        kind: 'thread',
+        key: `thread:${thread.id}`,
+        thread,
+      })),
+    [activeTabContent.threads],
+  );
+  const threadRowHeight = useSidebarRowHeight(liveThreads, currentConversationId, isV2);
+  const attentionRowHeight = useCallback(
+    (row: AttentionListRow) => {
+      if (!isV2) return 80;
+      if (row.kind === 'cluster-header') return row.expanded ? 32 : 56;
+      if (row.kind === 'cluster-remainder') return 32;
+      return threadRowHeight(row.kind === 'thread' ? row.thread : row.member);
+    },
+    [isV2, threadRowHeight],
+  );
 
   const filterKey =
     normalizedQuery.length === 0 && labelFilter === null ? '' : JSON.stringify([normalizedQuery, labelFilter]);
@@ -1184,25 +1227,47 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
     const needsGroupExpand = collapsedOwnerKeys.length > 0;
     for (const ownerKey of collapsedOwnerKeys) toggleGroup(ownerKey);
 
+    const targetCluster = isV2
+      ? attentionClusters.find((cluster) => cluster.memberIds.includes(currentThreadId))
+      : undefined;
+    if (targetCluster) {
+      if (!isAttentionClusterOpen(targetCluster)) toggleAttentionCluster(targetCluster);
+      revealAttentionPreview(targetCluster.anchor);
+    }
+
     const targetTab = naturalTabForThread(activeThread, unfilteredRecentThreadIds);
     const targetFlatThreads =
       targetTab === 'project'
         ? null
         : buildSidebarTabContent(targetTab, liveThreads, pinnedProjects, unreadIds).threads;
-    const targetAttentionRows =
-      activeTab === targetTab && !needsFilterClear && flatAttentionRows
-        ? flatAttentionRows
+    const currentFullAttentionRows = isV2 ? orderedAttentionRows.flat : flatAttentionRows;
+    const targetFullAttentionRows =
+      activeTab === targetTab &&
+      !needsFilterClear &&
+      currentFullAttentionRows &&
+      (!isV2 ||
+        !targetCluster ||
+        currentFullAttentionRows.some(
+          (row) => row.kind === 'cluster-header' && row.cluster.anchor === targetCluster.anchor && row.expanded,
+        ))
+        ? currentFullAttentionRows
         : targetFlatThreads && (targetTab === 'pinned' || targetTab === 'recent')
           ? flattenAttentionRows(
               orderAttentionList(
                 arrangeAttentionRows(targetFlatThreads, liveThreads, attentionClusters, targetTab),
                 isAttentionClusterOpen,
                 attentionArrangeMode ? {} : attentionMemberSort,
+                undefined,
+                isV2 && !attentionArrangeMode,
               ).items,
               isAttentionClusterOpen,
               '',
             )
           : null;
+    const targetAttentionRows =
+      isV2 && !attentionArrangeMode && targetFullAttentionRows
+        ? previewAttentionRows(targetFullAttentionRows, currentThreadId)
+        : targetFullAttentionRows;
     const needsTabSwitch = activeTab !== targetTab;
     if (needsTabSwitch) handleSelectTab(targetTab);
 
@@ -1215,6 +1280,7 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
           const attentionIndex = targetAttentionRows?.findIndex((row) => {
             if (row.kind === 'thread') return row.thread.id === currentThreadId;
             if (row.kind === 'cluster-member') return row.member.id === currentThreadId;
+            if (isV2 && row.kind === 'cluster-header' && row.expanded) return false;
             return row.cluster.memberIds.includes(currentThreadId);
           });
           const index =
@@ -1233,16 +1299,21 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
       setTimeout(() => element.classList.remove('ring-2', 'ring-cafe-accent', 'ring-opacity-60'), 1200);
     };
 
-    if (needsFilterClear || needsGroupExpand || needsTabSwitch) {
+    if (needsFilterClear || needsGroupExpand || needsTabSwitch || targetCluster) {
       requestAnimationFrame(() => requestAnimationFrame(() => scrollAndHighlight()));
     } else {
       scrollAndHighlight();
     }
   }, [
+    isV2,
+    previewAttentionRows,
+    revealAttentionPreview,
+    toggleAttentionCluster,
     activeTab,
     attentionArrangeMode,
     attentionMemberSort,
     flatAttentionRows,
+    orderedAttentionRows,
     attentionClusters,
     currentThreadId,
     handleSelectTab,
@@ -1385,9 +1456,25 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
     (row: AttentionListRow) => {
       if (row.kind === 'thread') {
         return (
-          <div key={row.key} className="h-20">
+          <div key={row.key} className={isV2 ? undefined : 'h-20'}>
             {renderThreadItem(row.thread)}
           </div>
+        );
+      }
+      if (row.kind === 'cluster-remainder') {
+        return (
+          <button
+            key={row.key}
+            type="button"
+            className="shell-focusable ml-12 h-8 rounded px-1 text-xs"
+            style={{ color: 'var(--shell-muted)' }}
+            onClick={() => {
+              previewFocusRef.current = row.nextThreadId;
+              revealAttentionPreview(row.cluster.anchor);
+            }}
+          >
+            {rowCopy.remaining(row.remainingCount)}
+          </button>
         );
       }
       if (row.kind === 'cluster-member') {
@@ -1406,8 +1493,12 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
         <div
           key={row.key}
           role="group"
-          className="h-20"
-          aria-label={`对话组：${attentionClusterTitle(row.cluster)}`}
+          className={isV2 ? 'min-h-8' : 'h-20'}
+          aria-label={
+            isV2
+              ? sidebarCopy.groupAccessibleName(attentionClusterTitle(row.cluster))
+              : `对话组：${attentionClusterTitle(row.cluster)}`
+          }
           data-attention-drop-group={row.cluster.anchor}
           onDragOver={(event) => {
             if (!draggedAttentionThreadId || row.cluster.memberIds.includes(draggedAttentionThreadId)) return;
@@ -1431,9 +1522,12 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
             onToggle={() => toggleAttentionCluster(row.cluster)}
             onRename={(alias) => renameAttentionCluster(row.cluster, alias)}
             onAdd={() => openSearchGroup({ query: '', groupId: row.cluster.groupId })}
-            memberSort={attentionArrangeMode ? 'manual' : (attentionMemberSort[row.cluster.anchor] ?? 'manual')}
+            memberSort={attentionArrangeMode ? 'manual' : attentionMemberSort[row.cluster.anchor]}
             onMemberSort={(mode) => {
               void changeAttentionMemberSort(row.cluster, mode);
+            }}
+            onResetMemberSort={() => {
+              void changeAttentionMemberSort(row.cluster, null);
             }}
             sortingDisabled={
               attentionArrangeMode || attentionLoadState !== 'ready' || attentionPendingSort.has(row.cluster.anchor)
@@ -1443,6 +1537,10 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
       );
     },
     [
+      isV2,
+      rowCopy,
+      sidebarCopy,
+      revealAttentionPreview,
       attentionArrangeMode,
       attentionMemberSort,
       attentionPendingSort,
@@ -1530,7 +1628,7 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
         {isV2 ? (
           <ThreadSidebarV2Header
             creationPhase={creationPhase}
-            onNewThread={() => setShowPicker(true)}
+            onNewThread={openNewConversationPage}
             onCollapse={onClose}
             searchQuery={searchQuery}
             onSearchQueryChange={setSearchQuery}
@@ -1623,11 +1721,12 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
 
         <div
           ref={scrollContainerRef}
+          data-testid="sidebar-thread-list"
           onScroll={handleScrollAnchor}
           className="flex-1 overflow-y-auto [scrollbar-width:thin] [scrollbar-color:color-mix(in_srgb,var(--cafe-text-muted)_72%,transparent)_transparent] [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-[3px] [&::-webkit-scrollbar-thumb]:border-solid [&::-webkit-scrollbar-thumb]:border-transparent [&::-webkit-scrollbar-thumb]:bg-clip-content [&::-webkit-scrollbar-thumb]:[background-color:color-mix(in_srgb,var(--cafe-text-muted)_72%,transparent)]"
         >
           {isLoadingThreads && threads.length === 0 && (
-            <div className="text-center py-4 text-xs text-cafe-muted">加载中...</div>
+            <div className="text-center py-4 text-xs text-cafe-muted">{isV2 ? sidebarCopy.loading : '加载中...'}</div>
           )}
 
           {showTabRow && isV2 && (
@@ -1788,7 +1887,11 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
                       data-testid="flat-toolbar"
                     >
                       <span>
-                        {activeTabContent.threads.length} {normalizedQuery ? '条匹配' : '个对话'}
+                        {isV2
+                          ? (normalizedQuery ? sidebarCopy.matchCount : sidebarCopy.conversationCount)(
+                              activeTabContent.threads.length,
+                            )
+                          : `${activeTabContent.threads.length} ${normalizedQuery ? '条匹配' : '个对话'}`}
                       </span>
                       {searchGroupAction}
                       <button
@@ -1796,8 +1899,8 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
                         onClick={scrollToActiveThread}
                         className="flex items-center justify-center rounded p-1 text-cafe-muted transition-colors hover:bg-[var(--console-hover-bg)] hover:text-cafe-accent"
                         data-testid="select-open-session-btn"
-                        aria-label="定位当前对话"
-                        title="定位当前对话"
+                        aria-label={isV2 ? sidebarCopy.locate : '定位当前对话'}
+                        title={isV2 ? sidebarCopy.locate : '定位当前对话'}
                       >
                         <LocateThreadIcon />
                       </button>
@@ -1814,10 +1917,11 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
                       </div>
                     )}
                     {activeTabContent.threads.length >= VIRTUAL_THREAD_LIST_THRESHOLD ? (
-                      flatAttentionRows ? (
+                      flatAttentionRows || isV2 ? (
                         <VirtualAttentionList
                           ref={virtualThreadListRef}
-                          rows={flatAttentionRows}
+                          rows={flatAttentionRows ?? plainV2Rows}
+                          getRowHeight={isV2 ? attentionRowHeight : undefined}
                           scrollContainerRef={scrollContainerRef}
                           renderItem={renderAttentionRow}
                         />
@@ -1842,7 +1946,9 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
                     className="flex items-center justify-between px-3 py-1 text-micro text-cafe-muted"
                     data-testid="project-toolbar"
                   >
-                    <span>{threadGroups.length} 个项目</span>
+                    <span>
+                      {isV2 ? sidebarCopy.projectCount(threadGroups.length) : `${threadGroups.length} 个项目`}
+                    </span>
                     {searchGroupAction}
                     <div className="flex items-center gap-0.5">
                       <button
@@ -1850,8 +1956,8 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
                         onClick={scrollToActiveThread}
                         className="flex items-center justify-center rounded p-1 text-cafe-muted transition-colors hover:bg-[var(--console-hover-bg)] hover:text-cafe-accent"
                         data-testid="project-select-open-session-btn"
-                        aria-label="定位当前对话"
-                        title="定位当前对话"
+                        aria-label={isV2 ? sidebarCopy.locate : '定位当前对话'}
+                        title={isV2 ? sidebarCopy.locate : '定位当前对话'}
                       >
                         <LocateThreadIcon />
                       </button>
@@ -1860,8 +1966,8 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
                         onClick={expandAll}
                         className="flex items-center justify-center rounded p-1 text-cafe-muted transition-colors hover:bg-[var(--console-hover-bg)] hover:text-cafe-accent"
                         data-testid="expand-all-btn"
-                        aria-label="展开全部项目"
-                        title="展开全部"
+                        aria-label={isV2 ? sidebarCopy.expandProjects : '展开全部项目'}
+                        title={isV2 ? sidebarCopy.expandAll : '展开全部'}
                       >
                         <svg
                           aria-hidden="true"
@@ -1880,8 +1986,8 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
                         onClick={collapseAll}
                         className="flex items-center justify-center rounded p-1 text-cafe-muted transition-colors hover:bg-[var(--console-hover-bg)] hover:text-cafe-accent"
                         data-testid="collapse-all-btn"
-                        aria-label="折叠全部项目"
-                        title="折叠全部"
+                        aria-label={isV2 ? sidebarCopy.collapseProjects : '折叠全部项目'}
+                        title={isV2 ? sidebarCopy.collapseAll : '折叠全部'}
                       >
                         <svg
                           aria-hidden="true"
@@ -1905,7 +2011,9 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
                 {activeTabContent.kind === 'project' && threadGroups.map((group) => renderProjectTabGroup(group))}
 
                 {(normalizedQuery.length > 0 || labelFilter) && activeTabIsEmpty && (
-                  <div className="px-3 py-4 text-xs text-cafe-muted">没有匹配的对话</div>
+                  <div className="px-3 py-4 text-xs text-cafe-muted">
+                    {isV2 ? sidebarCopy.noMatches : '没有匹配的对话'}
+                  </div>
                 )}
               </>
             )}
@@ -1931,7 +2039,8 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
               <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
             </svg>
             <span className="flex-1 text-left">
-              回收站{trashedThreads.length > 0 ? ` (${trashedThreads.length})` : ''}
+              {isV2 ? sidebarCopy.trash : '回收站'}
+              {trashedThreads.length > 0 ? ` (${trashedThreads.length})` : ''}
             </span>
             <svg
               aria-hidden="true"
@@ -1946,23 +2055,27 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
           </button>
           {showTrash && (
             <div className="max-h-48 overflow-y-auto mt-1">
-              {isLoadingTrash && <div className="px-3 py-2 text-micro text-cafe-muted">加载中...</div>}
+              {isLoadingTrash && (
+                <div className="px-3 py-2 text-micro text-cafe-muted">{isV2 ? sidebarCopy.loading : '加载中...'}</div>
+              )}
               {!isLoadingTrash && trashedThreads.length === 0 && (
-                <div className="px-3 py-2 text-micro text-cafe-muted">回收站是空的</div>
+                <div className="px-3 py-2 text-micro text-cafe-muted">
+                  {isV2 ? sidebarCopy.trashEmpty : '回收站是空的'}
+                </div>
               )}
               {trashedThreads.map((t) => (
                 <div
                   key={t.id}
                   className="flex items-center gap-2 px-3 py-1.5 text-xs text-cafe-secondary hover:bg-[var(--console-hover-bg)] rounded-lg group"
                 >
-                  <span className="truncate flex-1">{t.title ?? '未命名对话'}</span>
+                  <span className="truncate flex-1">{t.title ?? (isV2 ? sidebarCopy.untitled : '未命名对话')}</span>
                   <button
                     type="button"
                     onClick={() => handleRestore(t.id)}
                     className="sm:opacity-0 sm:group-hover:opacity-100 text-micro text-cafe-accent hover:text-cafe-interactive transition-all shrink-0"
                     data-testid={`restore-btn-${t.id}`}
                   >
-                    恢复
+                    {isV2 ? sidebarCopy.restore : '恢复'}
                   </button>
                 </div>
               ))}

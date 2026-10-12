@@ -164,6 +164,7 @@ import { formatDegradationMessage } from '../../orchestration/DegradationPolicy.
 import { AuditEventTypes, getEventAuditLog } from '../../orchestration/EventAuditLog.js';
 import { mergePresentationCounts, type PresentationCounts } from '../../session/context/context-surface-projection.js';
 import { buildSessionBootstrap, MAX_SESSION_BOOTSTRAP_TOKENS } from '../../session/SessionBootstrap.js';
+import { isDisplayOnlySystemMessage } from '../../stores/host-message-policy.js';
 import { createMessageDeliveryBoundary } from '../../stores/message-delivery-boundary.js';
 import {
   type AppendMessageInput,
@@ -193,6 +194,7 @@ import {
 } from '../../types.js';
 import { buildCapsuleFromRouteState } from '../invocation/CollaborationContinuityCapsule.js';
 import { resolveInvocationOrigin } from '../invocation/context-continuity.js';
+import type { EnqueueResult } from '../invocation/InvocationQueue.js';
 import {
   applyActiveSessionCapacityPin,
   resolveInvocationCapacitySnapshot,
@@ -200,6 +202,7 @@ import {
 } from '../invocation/invocation-capacity-snapshot.js';
 import { type InvocationParams, invokeSingleCat } from '../invocation/invoke-single-cat.js';
 import { buildMcpCallbackInstructions, needsMcpInjection } from '../invocation/McpPromptInjector.js';
+import { queueSourceCustodyAdmissionId } from '../invocation/QueueSourceCustodyAdmission.js';
 import { getRichBlockBuffer } from '../invocation/RichBlockBuffer.js';
 import { resolveManagedSessionPolicySnapshot } from '../invocation/session-policy-snapshot.js';
 import { resolveDefaultClaudeMcpServerPath } from '../providers/ClaudeAgentService.js';
@@ -223,10 +226,12 @@ import {
   parseCallbackPostResult,
   readCallbackStreamDisposition,
 } from './callback-final-replacement.js';
+import { readCollectivePublicReplyTerminal } from './collective-public-reply-terminal.js';
 import { extractContextEvalSignals } from './context-eval.js';
 import { validateRoutingSyntax } from './final-routing-slot.js';
 import { buildBriefingMessage } from './format-briefing.js';
 import { isDirectOwnerDispositionOrigin } from './human-disposition-invocation-origin.js';
+import { outputLayoutExtra, RoutingMessageOutputProjection } from './message-output-projection.js';
 import { persistUserFacingSystemInfoNotices } from './persist-system-info-warnings.js';
 import { extractRichFromText, isValidRichBlock } from './rich-block-extract.js';
 import type { RouteOptions, RouteStrategyDeps } from './route-helpers.js';
@@ -237,6 +242,7 @@ import {
   contextProjectionFromEpochDecision,
   createIdempotentPendingProjectionQueue,
   createLeakedToolCallStreamStripper,
+  createRoutingMessageTransform,
   detectContextDegradation,
   explicitApprovedTasteCueSeeds,
   explicitPromptForIncrementalContext,
@@ -304,6 +310,13 @@ export function buildTurnCustodyStopGateRemedialPrompt(wake: TurnCustodyWakeProv
     return (
       '[F167 球权停止门] 当前普通 A2A dispatch 尚未发生可验证状态迁移。\n' +
       '若本次 A2A 工作已经处理完成，只调用 cat_cafe_complete_a2a_dispatch，并选择 handled 或 completed；工具会从当前 invocation 自动绑定 source message、前手与当前 holder，不能手填 subject。\n' +
+      '若工作尚未结束，只使用与下一条件匹配的 hold_ball、已注册 eventWait 或结构化传球。不要用纯文本 @、礼貌 ACK、command exit、测试/merge truth 代替 disposition。'
+    );
+  }
+  if (wake.kind === 'structured' && wake.protocol === 'event_wait') {
+    return (
+      '[F167 球权停止门] 当前 event-wait wake（matched）尚未发生可验证状态迁移。\n' +
+      '若本次 wake 要你处理的工作已经做完，只调用 cat_cafe_complete_event_wait，并选择 handled 或 completed；工具会从当前 invocation 自动绑定 wake 消息、carrier 与持球者，不能手填 subject。\n' +
       '若工作尚未结束，只使用与下一条件匹配的 hold_ball、已注册 eventWait 或结构化传球。不要用纯文本 @、礼貌 ACK、command exit、测试/merge truth 代替 disposition。'
     );
   }
@@ -676,6 +689,14 @@ export async function* routeSerial(
   let handoffEmitted = targetCats.length; // Original targets don't get handoff events
   const activeTrackedA2ASlots = new Set<CatId>();
   const pendingRoutingPreflightNotices: AgentMessage[] = [];
+  const pendingDeferredA2AAdmissions: Array<{
+    entry: NonNullable<EnqueueResult['entry']>;
+    sourceMessageId: string;
+    pendingCat: CatId;
+    fromCat: CatId;
+    source: 'occupied_slot' | 'seal_abort' | 'fairness';
+    onDurablyDeferred?: (targetCatId: CatId, triggerMessageId: string) => void;
+  }> = [];
   const preflightA2ATarget = async (targetCatId: CatId): Promise<'allowed' | 'warned' | 'rejected'> => {
     if (!deps.routingDispatchPreflight) return 'allowed';
     const decision = await preflightRoutingDispatch(deps.routingDispatchPreflight, {
@@ -693,6 +714,105 @@ export async function* routeSerial(
       });
     }
     return receipt.target.disposition;
+  };
+  const admissionFenceFor = (pendingCat: CatId, triggerMessageId: string | undefined): string | undefined => {
+    if (!triggerMessageId) return undefined;
+    if (!deps.queueSourceCustodyAdmission) {
+      throw new Error(`durable A2A custody unavailable for ${pendingCat}: source admission unavailable`);
+    }
+    return queueSourceCustodyAdmissionId(triggerMessageId);
+  };
+  const discardPendingDeferredA2AAdmissions = (): void => {
+    if (pendingDeferredA2AAdmissions.length === 0) return;
+    const groups = new Map<string, typeof pendingDeferredA2AAdmissions>();
+    for (const pending of pendingDeferredA2AAdmissions) {
+      const group = groups.get(pending.sourceMessageId) ?? [];
+      group.push(pending);
+      groups.set(pending.sourceMessageId, group);
+    }
+    pendingDeferredA2AAdmissions.length = 0;
+    for (const [sourceMessageId, group] of groups) {
+      deps.queueSourceCustodyAdmission?.discardDeferredBatch(
+        group.map((pending) => pending.entry),
+        sourceMessageId,
+      );
+    }
+  };
+  const requireDeferredA2ACustody = (
+    pendingCat: CatId,
+    fromCat: CatId,
+    triggerMessageId: string | undefined,
+    enqueueResult: EnqueueResult | undefined,
+    source: 'occupied_slot' | 'seal_abort' | 'fairness',
+    onDurablyDeferred?: (targetCatId: CatId, triggerMessageId: string) => void,
+  ): void => {
+    if (enqueueResult?.outcome !== 'enqueued') {
+      discardPendingDeferredA2AAdmissions();
+      log.error(
+        {
+          threadId,
+          toCat: pendingCat,
+          triggerMessageId,
+          enqueueOutcome: enqueueResult?.outcome ?? 'missing',
+          source,
+        },
+        'A2A deferred Queue custody was not accepted',
+      );
+      throw new Error(
+        `durable A2A custody unavailable for ${pendingCat}: enqueue outcome ${enqueueResult?.outcome ?? 'missing'}`,
+      );
+    }
+    if (!triggerMessageId) return;
+    if (!deps.queueSourceCustodyAdmission) {
+      discardPendingDeferredA2AAdmissions();
+      throw new Error(`durable A2A custody unavailable for ${pendingCat}: source admission unavailable`);
+    }
+    if (!enqueueResult.entry) {
+      discardPendingDeferredA2AAdmissions();
+      throw new Error(`durable A2A custody unavailable for ${pendingCat}: enqueued carrier identity missing`);
+    }
+    pendingDeferredA2AAdmissions.push({
+      entry: enqueueResult.entry,
+      sourceMessageId: triggerMessageId,
+      pendingCat,
+      fromCat,
+      source,
+      ...(onDurablyDeferred ? { onDurablyDeferred } : {}),
+    });
+  };
+  const flushDeferredA2ACustody = async (): Promise<void> => {
+    while (pendingDeferredA2AAdmissions.length > 0) {
+      const sourceMessageId = pendingDeferredA2AAdmissions[0]!.sourceMessageId;
+      const group = pendingDeferredA2AAdmissions.filter((pending) => pending.sourceMessageId === sourceMessageId);
+      try {
+        await deps.queueSourceCustodyAdmission!.admitDeferredBatch(
+          group.map((pending) => pending.entry),
+          sourceMessageId,
+        );
+      } catch (error) {
+        for (const pending of group) {
+          const index = pendingDeferredA2AAdmissions.indexOf(pending);
+          if (index >= 0) pendingDeferredA2AAdmissions.splice(index, 1);
+        }
+        discardPendingDeferredA2AAdmissions();
+        throw error;
+      }
+      for (const pending of group) {
+        const index = pendingDeferredA2AAdmissions.indexOf(pending);
+        if (index >= 0) pendingDeferredA2AAdmissions.splice(index, 1);
+        pending.onDurablyDeferred?.(pending.pendingCat, pending.sourceMessageId);
+        const message =
+          pending.source === 'occupied_slot'
+            ? 'A2A target owned by another active route; deferred to InvocationQueue'
+            : pending.source === 'seal_abort'
+              ? '#813: A2A mention recovered after signal abort — deferred to queue'
+              : 'A2A text-scan deferred: enqueued behind non-agent entries (F185-B)';
+        log.info(
+          { threadId, catId: pending.pendingCat, fromCat: pending.fromCat, triggerMessageId: pending.sourceMessageId },
+          message,
+        );
+      }
+    }
   };
   const claimOrDeferA2ATarget = async (
     pendingCat: CatId,
@@ -746,7 +866,7 @@ export async function* routeSerial(
         }`,
       );
     }
-
+    const queueCustodyAdmissionId = admissionFenceFor(pendingCat, triggerMessageId);
     const enqueueResult = deferA2AEnqueue({
       threadId,
       userId,
@@ -757,31 +877,12 @@ export async function* routeSerial(
       targetCats: [pendingCat],
       callerCatId: fromCat,
       ...(triggerMessageId ? { messageId: triggerMessageId, a2aTriggerMessageId: triggerMessageId } : {}),
+      ...(queueCustodyAdmissionId ? { queueCustodyAdmissionId } : {}),
       autoExecute: true,
       priority: 'normal',
       intent: 'execute',
     });
-    if (enqueueResult?.outcome !== 'enqueued') {
-      log.error(
-        {
-          threadId,
-          fromCat,
-          toCat: pendingCat,
-          triggerMessageId,
-          enqueueOutcome: enqueueResult?.outcome ?? 'missing',
-        },
-        'A2A target owned by another active route; durable enqueue was not accepted',
-      );
-      throw new Error(
-        `durable A2A custody unavailable for ${pendingCat}: enqueue outcome ${enqueueResult?.outcome ?? 'missing'}`,
-      );
-    }
-
-    log.info(
-      { threadId, fromCat, toCat: pendingCat, triggerMessageId },
-      'A2A target owned by another active route; deferred to InvocationQueue',
-    );
-    if (triggerMessageId) onDurablyDeferred?.(pendingCat, triggerMessageId);
+    requireDeferredA2ACustody(pendingCat, fromCat, triggerMessageId, enqueueResult, 'occupied_slot', onDurablyDeferred);
     return false;
   };
   // F042 Wave 3: Fetch thread participant activity once before loop (threadId doesn't change).
@@ -2137,7 +2238,8 @@ export async function* routeSerial(
         { catId: catId as string, threadId, promptLength: prompt.length, index, worklistSize: worklist.length },
         'Invoking cat via invokeSingleCat',
       );
-      const leakedPayloadStripper = createLeakedToolCallStreamStripper();
+      const outputTransform = createRoutingMessageTransform(catId);
+      let outputProjection: RoutingMessageOutputProjection | undefined;
       const invocationSpanRef: { current?: Span } = {};
       const invocationStartedAt = Date.now();
       // F215 AC-C3: flag set when invokeSingleCat emits malformed_toolcall_relay_46 signal
@@ -2359,25 +2461,8 @@ export async function* routeSerial(
           if (pendingMessage) yield pendingMessage;
         }
 
-        const effectiveMsgs: AgentMessage[] = [];
-        if (msg.type === 'text' && msg.content) {
-          effectiveMsgs.push({ ...msg, content: leakedPayloadStripper.push(msg.content) });
-        } else if (msg.type === 'done') {
-          const flushedText = leakedPayloadStripper.flush();
-          if (flushedText) {
-            effectiveMsgs.push({
-              type: 'text',
-              catId,
-              content: flushedText,
-              timestamp: msg.timestamp,
-            });
-          }
-          effectiveMsgs.push(msg);
-        } else {
-          effectiveMsgs.push(msg);
-        }
-
-        for (const effectiveMsg of effectiveMsgs) {
+        const effectiveMsgs = outputTransform.transform(msg);
+        for (let effectiveMsg of effectiveMsgs) {
           observePostDispositionProgress(effectiveMsg);
           // F22 R2 P1-1: Capture invocationId from the initial system_info.
           // Keep forwarding this boundary event so frontend can reset stale task progress.
@@ -2390,6 +2475,11 @@ export async function* routeSerial(
                 parsed.invocationId.length > 0
               ) {
                 ownInvocationId = parsed.invocationId;
+                outputProjection = new RoutingMessageOutputProjection({
+                  threadId,
+                  catId,
+                  turnInvocationId: parsed.invocationId,
+                });
                 unregisterTurnCustodyAdoption = turnCustodyAdoptionRegistry.register(
                   parsed.invocationId,
                   prepareTurnCustodyAdoption,
@@ -2418,13 +2508,15 @@ export async function* routeSerial(
             }
           }
 
-          if (effectiveMsg.type === 'text' && effectiveMsg.content) {
-            textContent = accumulateTextAggregate(
-              textContent,
-              effectiveMsg.content,
-              (effectiveMsg as { textMode?: 'append' | 'replace' }).textMode,
-            );
-            voiceChunker?.feed(effectiveMsg.content);
+          if (effectiveMsg.type === 'text') {
+            const fragment = effectiveMsg.content;
+            if (outputProjection) {
+              effectiveMsg = outputProjection.text(effectiveMsg, outputTransform.outputFactsFor(effectiveMsg));
+              textContent = outputProjection.snapshot().content;
+            } else if (fragment) {
+              textContent = accumulateTextAggregate(textContent, fragment, effectiveMsg.textMode);
+            }
+            if (fragment) voiceChunker?.feed(fragment);
           }
           // F045: Accumulate thinking blocks for persistence (F5 recovery)
           if (effectiveMsg.type === 'system_info' && effectiveMsg.content) {
@@ -2472,9 +2564,10 @@ export async function* routeSerial(
             continue; // 46 will take over — don't surface error to user
           }
           // Accumulate tool events for persistence (before draft flush so current event is available)
-          const toolEvt = toStoredToolEvent(effectiveMsg);
+          const toolEvt = toStoredToolEvent(effectiveMsg, ownInvocationId);
           if (toolEvt) {
             collectedToolEvents.push(toolEvt);
+            outputProjection?.tool(toolEvt);
           }
           verifiedConciergeToolTargets.observe(effectiveMsg);
 
@@ -2616,19 +2709,24 @@ export async function* routeSerial(
             }
           }
 
+          if (effectiveMsg.metadata) {
+            persistedMetadata = mergeMessageMetadataSnapshots(persistedMetadata, effectiveMsg.metadata);
+          }
           // #80: Draft flush — fire-and-forget periodic persistence for F5 recovery
           if (deps.draftStore && ownInvocationId) {
             const now = Date.now();
             const charDelta = textContent.length - lastFlushLen;
             const isReplaceText = (effectiveMsg as { textMode?: 'append' | 'replace' }).textMode === 'replace';
             const neverFlushed = lastFlushLen === 0 && lastFlushToolLen === 0;
+            const childUpdate = effectiveMsg.semanticEvent?.kind === 'subexecution';
             if (
-              effectiveMsg.type === 'text' &&
-              charDelta !== 0 &&
-              (neverFlushed ||
-                isReplaceText ||
-                now - lastFlushTime >= FLUSH_INTERVAL_MS ||
-                charDelta >= FLUSH_CHAR_DELTA)
+              childUpdate ||
+              (effectiveMsg.type === 'text' &&
+                charDelta !== 0 &&
+                (neverFlushed ||
+                  isReplaceText ||
+                  now - lastFlushTime >= FLUSH_INTERVAL_MS ||
+                  charDelta >= FLUSH_CHAR_DELTA))
             ) {
               deps.draftStore
                 .upsert({
@@ -2637,12 +2735,16 @@ export async function* routeSerial(
                   invocationId: ownInvocationId,
                   catId,
                   content: textContent,
+                  ...(persistedMetadata ? { metadata: persistedMetadata } : {}),
+                  ...(outputProjection
+                    ? { extra: { outputLayout: outputProjection.snapshot(textContent).layout } }
+                    : {}),
                   ...(collectedToolEvents.length > 0 ? { toolEvents: collectedToolEvents } : {}),
                   ...(thinkingChunks.length > 0 ? { thinking: renderThinkingChunks(thinkingChunks) } : {}),
                   updatedAt: now,
                 })
                 ?.catch?.(noop);
-              emitThrottledBallInvocationHeartbeat(now);
+              if (!childUpdate) emitThrottledBallInvocationHeartbeat(now);
               lastFlushTime = now;
               lastFlushLen = textContent.length;
               lastFlushToolLen = collectedToolEvents.length;
@@ -2663,6 +2765,10 @@ export async function* routeSerial(
                     invocationId: ownInvocationId,
                     catId,
                     content: textContent,
+                    ...(persistedMetadata ? { metadata: persistedMetadata } : {}),
+                    ...(outputProjection
+                      ? { extra: { outputLayout: outputProjection.snapshot(textContent).layout } }
+                      : {}),
                     ...(collectedToolEvents.length > 0 ? { toolEvents: collectedToolEvents } : {}),
                     ...(thinkingChunks.length > 0 ? { thinking: renderThinkingChunks(thinkingChunks) } : {}),
                     updatedAt: now,
@@ -2694,9 +2800,6 @@ export async function* routeSerial(
             if (meta?.cliDiagnostics && !collectedCliDiagnostics) {
               collectedCliDiagnostics = meta.cliDiagnostics;
             }
-          }
-          if (effectiveMsg.metadata) {
-            persistedMetadata = mergeMessageMetadataSnapshots(persistedMetadata, effectiveMsg.metadata);
           }
           if (effectiveMsg.type === 'done') {
             doneMsg = effectiveMsg; // Buffer — yield after A2A detection
@@ -2836,6 +2939,18 @@ export async function* routeSerial(
         });
         pendingTurnCustodyShadowCloses.push(async (closeCheckpoint) => {
           const rawDecision = await deps.turnCustodyProjectionService!.close(projection);
+          const publicReply = await readCollectivePublicReplyTerminal({
+            executionScope: options.executionScope,
+            wake: turnCustodyWake,
+            invocationId: ownInvocationId,
+            source: turnTriggerMessage,
+            userId,
+            threadId,
+            catId,
+            registry: deps.invocationDeps?.registry,
+            collectiveContext: deps.invocationDeps?.collectiveContext,
+          });
+          if (publicReply) recordTurnCustodyTerminalWitness(publicReply);
           const primaryHold =
             turnCustodyWake.kind === 'structured' && turnCustodyWake.protocol === 'hold' ? turnCustodyWake : undefined;
           const primaryReceiptState = primaryHold
@@ -2864,14 +2979,24 @@ export async function* routeSerial(
                 primaryHold?.taskId,
               )
             : undefined;
-          const newDecision = verifiedEventWait
+          const newDecision = publicReply
             ? {
                 ...rawDecision,
                 shouldBlock: false,
                 transitionObserved: true,
-                evidenceRefs: [...rawDecision.evidenceRefs, 'event_wait:verified'],
+                evidenceRefs: [
+                  ...rawDecision.evidenceRefs,
+                  `collective_public_reply:${publicReply.sourceMessageId}:${publicReply.acceptedEventId}`,
+                ],
               }
-            : rawDecision;
+            : verifiedEventWait
+              ? {
+                  ...rawDecision,
+                  shouldBlock: false,
+                  transitionObserved: true,
+                  evidenceRefs: [...rawDecision.evidenceRefs, 'event_wait:verified'],
+                }
+              : rawDecision;
           const primaryContinuation = verifiedEventWait ? 'event_wait' : primaryTransition;
           const primaryDispositionBlocked = primaryHold
             ? primaryReceiptState !== 'settled' && !primaryContinuation
@@ -3088,6 +3213,7 @@ export async function* routeSerial(
           const originalOwnInvocationId = ownInvocationId;
           const originalDoneMsg = doneMsg;
           const originalTextContent = textContent;
+          const originalOutputProjection = outputProjection;
           const originalPersistedMetadata = persistedMetadata;
           try {
             await runTurnCustodyStopGateRemedial('', [], []);
@@ -3110,6 +3236,7 @@ export async function* routeSerial(
             ownInvocationId = originalOwnInvocationId;
             doneMsg = originalDoneMsg;
             textContent = originalTextContent;
+            outputProjection = originalOutputProjection;
             persistedMetadata = originalPersistedMetadata;
           }
         });
@@ -3160,6 +3287,7 @@ export async function* routeSerial(
         }
         stopGateRemedialAttempted = true;
         const originalVisibleInvocationIdBeforeRemedial = ownInvocationId;
+        const originalOutputProjectionBeforeRemedial = outputProjection;
         const originalDeferredVoiceInvocationIdBeforeRemedial = deferredVoiceInvocationId;
         const originalDeferredVoiceTextChunksBeforeRemedial = [...deferredVoiceTextChunks];
         const originalToolNamesBeforeRemedial = [...collectedToolNames];
@@ -3170,6 +3298,7 @@ export async function* routeSerial(
         }
 
         textContent = '';
+        outputProjection = undefined;
         thinkingChunks.splice(0, thinkingChunks.length);
         persistedMetadata = undefined;
         doneMsg = undefined;
@@ -3364,7 +3493,7 @@ export async function* routeSerial(
               }
             }
 
-            const toolEvt = toStoredToolEvent(effectiveMsg);
+            const toolEvt = toStoredToolEvent(effectiveMsg, ownInvocationId);
             if (toolEvt) {
               collectedToolEvents.push(toolEvt);
             }
@@ -3483,6 +3612,8 @@ export async function* routeSerial(
           );
         }
         textContent = remedialStoredContent;
+        outputProjection = preservesOriginalVisibleContent ? originalOutputProjectionBeforeRemedial : undefined;
+        if (outputProjection) for (const event of collectedToolEvents) outputProjection.tool(event);
         // When preserving first-pass content, always clear remedial voice chunks so
         // hidden remedial prose (e.g. "好的，我来传球") is never spoken. Then restore
         // original voice chunks if the first pass had any text to speak.
@@ -3617,7 +3748,7 @@ export async function* routeSerial(
           cursorStore: deps.deliveryCursorStore!,
           messageStore: deps.messageStore,
           messageFilter: (msg: Record<string, unknown>) => {
-            if (msg.userId === 'system') return false;
+            if (isDisplayOnlySystemMessage(msg)) return false;
             if (msg.origin === 'briefing') return false;
             const viewer =
               (thinkingMode ?? 'play') === 'play'
@@ -3721,9 +3852,7 @@ export async function* routeSerial(
         const persistedContent = conciergeActionSourceContent
           ? projectConciergeStoredContent(storedContent)
           : storedContent;
-        if (conciergeActionSourceContent !== undefined) {
-          persistedDoneContent = persistedContent;
-        }
+        persistedDoneContent = persistedContent;
 
         // A2A mention detection (缅因猫 P1-3: only after full text accumulated)
         // Line-start @mention = always actionable (no keyword gate)
@@ -4233,6 +4362,7 @@ export async function* routeSerial(
               ...(collectedToolEvents.length > 0 ? { toolEvents: collectedToolEvents } : {}),
               ...(streamReplyTo ? { replyTo: streamReplyTo } : {}),
               extra: {
+                ...(outputProjection ? { outputLayout: outputProjection.snapshot(persistedContent).layout } : {}),
                 ...(allRichBlocks.length > 0 ? { rich: { v: 1 as const, blocks: allRichBlocks } } : {}),
                 ...(deliveryBoundary ? { deliveryBoundary } : {}),
                 // F194 Phase Z3: dual id — invocationId=parent (legacy SoT for liveness/queue/cancel),
@@ -4553,7 +4683,7 @@ export async function* routeSerial(
                 { threadId, catId: nextCat, fromCat: catId, count: streak.count },
                 'F167 L1: A2A ping-pong terminated (streak >= 4)',
               );
-              yield {
+              pendingRoutingPreflightNotices.push({
                 type: 'system_info' as AgentMessageType,
                 catId,
                 content: JSON.stringify({
@@ -4563,7 +4693,7 @@ export async function* routeSerial(
                   pairCount: streak.count,
                 }),
                 timestamp: Date.now(),
-              } as AgentMessage;
+              } as AgentMessage);
               continue;
             }
 
@@ -4577,10 +4707,6 @@ export async function* routeSerial(
               storedMsgId,
               noteAcceptedTurnCustodyHandoff,
             );
-            while (pendingRoutingPreflightNotices.length > 0) {
-              const notice = pendingRoutingPreflightNotices.shift();
-              if (notice) yield notice;
-            }
             if (!claimed) {
               worklistEntry.a2aCount++;
               continue;
@@ -4659,12 +4785,9 @@ export async function* routeSerial(
                 continue;
               }
               const routingDisposition = await preflightA2ATarget(nextCat);
-              while (pendingRoutingPreflightNotices.length > 0) {
-                const notice = pendingRoutingPreflightNotices.shift();
-                if (notice) yield notice;
-              }
               if (routingDisposition === 'rejected') continue;
-              deferA2AEnqueue({
+              const queueCustodyAdmissionId = admissionFenceFor(nextCat, storedMsgId);
+              const enqueueResult = deferA2AEnqueue({
                 threadId,
                 userId,
                 ownerAuthProvenance,
@@ -4675,15 +4798,18 @@ export async function* routeSerial(
                 callerCatId: catId,
                 messageId: storedMsgId,
                 a2aTriggerMessageId: storedMsgId,
+                ...(queueCustodyAdmissionId ? { queueCustodyAdmissionId } : {}),
                 autoExecute: true,
                 priority: 'normal',
                 intent: 'execute',
               });
+              requireDeferredA2ACustody(nextCat, catId, storedMsgId, enqueueResult, 'seal_abort');
               worklistEntry.a2aCount++;
-              log.info(
-                { threadId, catId: nextCat, fromCat: catId },
-                '#813: A2A mention recovered after signal abort — deferred to queue',
-              );
+            }
+            await flushDeferredA2ACustody();
+            while (pendingRoutingPreflightNotices.length > 0) {
+              const notice = pendingRoutingPreflightNotices.shift();
+              if (notice) yield notice;
             }
           }
         } else if (a2aMentions.length > 0 && queuedMessagesPending && deferA2AEnqueue && !catSignal?.aborted) {
@@ -4746,7 +4872,7 @@ export async function* routeSerial(
                 { threadId, catId: nextCat, fromCat: catId, count: streakDeferred.count },
                 'F167 L1: A2A ping-pong terminated in deferred path (streak >= 4)',
               );
-              yield {
+              pendingRoutingPreflightNotices.push({
                 type: 'system_info' as AgentMessageType,
                 catId,
                 content: JSON.stringify({
@@ -4756,15 +4882,11 @@ export async function* routeSerial(
                   pairCount: streakDeferred.count,
                 }),
                 timestamp: Date.now(),
-              } as AgentMessage;
+              } as AgentMessage);
               continue;
             }
             // decision.action === 'defer_queue'
             const routingDisposition = await preflightA2ATarget(nextCat);
-            while (pendingRoutingPreflightNotices.length > 0) {
-              const notice = pendingRoutingPreflightNotices.shift();
-              if (notice) yield notice;
-            }
             if (routingDisposition === 'rejected') continue;
             // F153 Phase I: create dispatch span on first real enqueue and capture its trace
             // context for cross-route causality.
@@ -4793,6 +4915,7 @@ export async function* routeSerial(
                 };
               }
             }
+            const queueCustodyAdmissionId = admissionFenceFor(nextCat, storedMsgId);
             const enqueueResult = deferA2AEnqueue({
               threadId,
               userId,
@@ -4804,19 +4927,26 @@ export async function* routeSerial(
               callerCatId: catId,
               messageId: storedMsgId,
               a2aTriggerMessageId: storedMsgId,
+              ...(queueCustodyAdmissionId ? { queueCustodyAdmissionId } : {}),
               autoExecute: true,
               priority: 'normal',
               intent: 'execute',
               ...(deferredDispatchCtx ? { callerTraceContext: deferredDispatchCtx } : {}),
             });
-            if (enqueueResult?.outcome === 'enqueued' && storedMsgId) {
-              noteAcceptedTurnCustodyHandoff(nextCat, storedMsgId);
-            }
-            worklistEntry.a2aCount++;
-            log.info(
-              { threadId, catId: nextCat, fromCat: catId },
-              'A2A text-scan deferred: enqueued behind non-agent entries (F185-B)',
+            requireDeferredA2ACustody(
+              nextCat,
+              catId,
+              storedMsgId,
+              enqueueResult,
+              'fairness',
+              noteAcceptedTurnCustodyHandoff,
             );
+            worklistEntry.a2aCount++;
+          }
+          await flushDeferredA2ACustody();
+          while (pendingRoutingPreflightNotices.length > 0) {
+            const notice = pendingRoutingPreflightNotices.shift();
+            if (notice) yield notice;
           }
         }
 
@@ -4840,7 +4970,12 @@ export async function* routeSerial(
         // batch, which the drain loop claims on its following pass. Late arrivals are therefore
         // late, not unadmitted.
         let sealGuard = maxDepth + targetCats.length + 2;
-        while (handoffEmitted < worklist.length && sealGuard-- > 0) {
+        while (
+          (handoffEmitted < worklist.length ||
+            pendingDeferredA2AAdmissions.length > 0 ||
+            pendingRoutingPreflightNotices.length > 0) &&
+          sealGuard-- > 0
+        ) {
           for (let wi = handoffEmitted; wi < worklist.length; wi++) {
             if (wi < targetCats.length) continue;
             const claimed = await claimOrDeferA2ATarget(
@@ -4850,14 +4985,15 @@ export async function* routeSerial(
               storedMsgId,
               noteAcceptedTurnCustodyHandoff,
             );
-            while (pendingRoutingPreflightNotices.length > 0) {
-              const notice = pendingRoutingPreflightNotices.shift();
-              if (notice) yield notice;
-            }
             if (!claimed) {
               worklist.splice(wi, 1);
               wi--;
             }
+          }
+          await flushDeferredA2ACustody();
+          while (pendingRoutingPreflightNotices.length > 0) {
+            const notice = pendingRoutingPreflightNotices.shift();
+            if (notice) yield notice;
           }
           if (handoffEmitted >= worklist.length) break;
           const batchStart = handoffEmitted;
@@ -4905,6 +5041,13 @@ export async function* routeSerial(
               timestamp: Date.now(),
             } as AgentMessage;
           }
+        }
+        if (
+          handoffEmitted < worklist.length ||
+          pendingDeferredA2AAdmissions.length > 0 ||
+          pendingRoutingPreflightNotices.length > 0
+        ) {
+          throw new Error('A2A sealed admission drain exhausted before every pending carrier was published');
         }
         // F086/F216 requirement 4: multi-target inline @ is normalized to serial (the semantics
         // the runtime already executes) and SAID OUT LOUD. No NLP over the body, no silent
@@ -5619,8 +5762,23 @@ export async function* routeSerial(
         const isFinal = index === worklist.length - 1;
         const ownStampedDone =
           ownInvocationId && !doneMsg.invocationId ? { ...doneMsg, invocationId: ownInvocationId } : doneMsg;
+        // Only server-produced close witnesses can escape this route. Provider DTOs are not authority.
+        const {
+          turnCustodyTerminalWitness: _providerWitness,
+          turnCustodyTerminalWitnesses: _providerWitnesses,
+          ...serverDone
+        } = ownStampedDone;
         yield projectLiveTurnExecution({
-          ...ownStampedDone,
+          ...serverDone,
+          ...(outputProjection
+            ? {
+                content: persistedDoneContent ?? textContent,
+                extra: {
+                  ...serverDone.extra,
+                  outputLayout: outputProjection.snapshot(persistedDoneContent ?? textContent).layout,
+                },
+              }
+            : {}),
           ...(persistedDoneContent !== undefined ? { content: persistedDoneContent } : {}),
           ...(turnStoredMessageId ? { messageId: turnStoredMessageId } : {}),
           ...(await storedMessageTimestamp(deps.messageStore, turnStoredMessageId)),
@@ -5643,6 +5801,7 @@ export async function* routeSerial(
       index++;
     }
   } finally {
+    discardPendingDeferredA2AAdmissions();
     // Provider/route failure after system_info must revoke callback ownership
     // before any adopted projections are closed or the route exits.
     await releaseTurnCustodyAdoption();

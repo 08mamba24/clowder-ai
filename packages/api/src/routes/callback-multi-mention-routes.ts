@@ -53,6 +53,7 @@ import {
   resolveFreshnessDescriptorProvider,
 } from '../domains/cats/services/freshness/RuntimeCapabilityDescriptor.js';
 import type { AgentRouter } from '../domains/cats/services/index.js';
+import { isDisplayOnlySystemMessage } from '../domains/cats/services/stores/host-message-policy.js';
 import type { DeliveryCursorStore } from '../domains/cats/services/stores/ports/DeliveryCursorStore.js';
 import type { IInvocationRecordStore } from '../domains/cats/services/stores/ports/InvocationRecordStore.js';
 import {
@@ -1003,10 +1004,10 @@ export function registerMultiMentionRoutes(app: FastifyInstance, deps: MultiMent
           // Baseline visibility (applies in ALL modes):
           if (msg.deletedAt) return false;
           if (!isDelivered(msg as unknown as Parameters<typeof isDelivered>[0])) return false;
-          // #1200 codex R12 P1: system-generated messages (persisted error badges)
-          // are display-only — route-helpers.ts:744-745 excludes them from freshness.
+          // #1200 codex R12 P1: generic system badges are display-only; validated
+          // Host records share the prompt/freshness contract.
           // All 4 freshness filter sites now consistent.
-          if (msg.userId === 'system') return false;
+          if (isDisplayOnlySystemMessage(msg)) return false;
           if (msg.origin === 'briefing') return false;
           // Play-mode visibility:
           if (needsFreshnessPlayFilter) {

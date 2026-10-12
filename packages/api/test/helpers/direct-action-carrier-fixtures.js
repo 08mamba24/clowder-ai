@@ -73,15 +73,20 @@ export function childInvocationId(catId) {
 }
 
 export function attemptFor(catId, state) {
-  const attemptState = { failed: 'failed', handled: 'handled', queued: 'queued' }[state] ?? 'cancelled';
-  const terminalReason = { failed: 'invocation_failed', withdrawn: 'source_withdrawn' }[state];
+  const attemptState =
+    { failed: 'failed', handled: 'handled', queued: 'queued', interrupted: 'interrupted' }[state] ?? 'cancelled';
+  const terminalReason = {
+    failed: 'invocation_failed',
+    withdrawn: 'source_withdrawn',
+    interrupted: 'runtime_restart',
+  }[state];
   return {
     id: `entry-${catId}:${catId}:1`,
     targetCatId: catId,
     sequence: 1,
     state: attemptState,
     ...(terminalReason ? { terminalReason } : {}),
-    ...(state === 'handled' ? { invocationId: childInvocationId(catId) } : {}),
+    ...(state === 'handled' || state === 'interrupted' ? { invocationId: childInvocationId(catId) } : {}),
     createdAt: 100,
     updatedAt: 120,
   };
@@ -93,7 +98,9 @@ export function carrier(current, catId, state) {
   const live = state === 'queued';
   const handled = state === 'handled';
   const withdrawn = state === 'withdrawn';
-  const failed = state === 'failed';
+  // Restart interruption is recorded like the queue does it: the target leaves pending as failed and its latest
+  // attempt is `interrupted`, which is what the receipt projects.
+  const failed = state === 'failed' || state === 'interrupted';
   return {
     id: `message-${catId}-${state}`,
     threadId: current.holderThreadId,

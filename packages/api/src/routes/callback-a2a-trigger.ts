@@ -118,7 +118,7 @@ export interface A2ATriggerDeps {
     | 'commitQueueCustodyAdmission'
     | 'getEntrySnapshot'
     | 'list'
-    | 'rollbackEnqueue'
+    | 'removeEntrySnapshotIfUnchanged'
     | 'restoreDurableEntry'
     | 'restoreEntrySnapshotIfUnchanged'
     // F216 c3: removeProcessed clears the superseded processing entry so it cannot re-run.
@@ -424,14 +424,22 @@ export async function enqueueA2ATargets(
     const stagedCustodyEntryIds = new Set<string>();
     const acceptedEntryByCatId = new Map<CatId, QueueEntry>();
     const restoredEntryByCatId = new Map<CatId, QueueEntry>();
-    const newlyEnqueuedEntryIds: string[] = [];
+    const newlyEnqueuedSnapshots: QueueEntry[] = [];
     const coalescedEntryRollbacks = new Map<string, { before: QueueEntry; after: QueueEntry }>();
     const rollbackDurableAdmissions = (): void => {
-      for (const entryId of newlyEnqueuedEntryIds) {
-        deps.invocationQueue?.rollbackEnqueue(threadId, opts.userId, entryId);
+      for (const snapshot of newlyEnqueuedSnapshots) {
+        const removed =
+          deps.invocationQueue?.removeEntrySnapshotIfUnchanged(snapshot, snapshot.queueCustodyAdmissionId) ?? false;
+        if (!removed) {
+          log.error(
+            { threadId, entryId: snapshot.id, triggerMessageId },
+            'durable A2A Queue rollback lost its exact compare-and-swap owner',
+          );
+        }
       }
       for (const { before, after } of coalescedEntryRollbacks.values()) {
-        const restored = deps.invocationQueue?.restoreEntrySnapshotIfUnchanged(after, before) ?? false;
+        const restored =
+          deps.invocationQueue?.restoreEntrySnapshotIfUnchanged(after, before, after.queueCustodyAdmissionId) ?? false;
         if (!restored) {
           log.error(
             { threadId, entryId: before.id, triggerMessageId },
@@ -673,9 +681,13 @@ export async function enqueueA2ATargets(
         enqueued.push(catId);
         if (result.entry) {
           acceptedEntryByCatId.set(catId, result.entry);
-          if (!result.deduped) newlyEnqueuedEntryIds.push(result.entry.id);
           if (queueCustodyAdmissionId) stagedCustodyEntryIds.add(result.entry.id);
           deps.invocationQueue.backfillMessageId(threadId, opts.userId, result.entry.id, triggerMessageId);
+          if (persistedQueueTrigger && !result.deduped) {
+            const snapshot = deps.invocationQueue.getEntrySnapshot(threadId, opts.userId, result.entry.id);
+            if (!snapshot) throw new Error('enqueued A2A target lost its exact Queue snapshot');
+            newlyEnqueuedSnapshots.push(snapshot);
+          }
         }
       }
     }

@@ -30,6 +30,9 @@ export function memoryLibraryFeed(markers: readonly Marker[], manifests: readonl
       content: marker.content.replace(/\b(?:thread_|thread-thread_)[a-z0-9_-]+\b/gi, '来源对话'),
       kind: marker.targetKind ?? 'lesson',
       createdAt: marker.createdAt,
+      sourceCollectionId: marker.sourceCollectionId ?? null,
+      sourceVisibility:
+        marker.sourceSensitivity ?? manifests.find((m) => m.id === marker.sourceCollectionId)?.sensitivity ?? null,
       collectionName: manifests.find((m) => m.id === marker.sourceCollectionId)?.displayName ?? null,
       state: PENDING.has(marker.status)
         ? '待收录'

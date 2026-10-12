@@ -41,6 +41,11 @@ unset CAT_CAFE_WORKSPACE_ROOT
 unset CAT_CAFE_CODEX_CARRIER
 unset CAT_CAFE_CLAUDE_CARRIER
 
+# Account fixtures must resolve inside the isolated HOME rather than inheriting
+# the invoking agent's live Codex roots. A child fixture can set its own roots.
+unset CODEX_HOME
+unset CODEX_SQLITE_HOME
+
 # API_SERVER_HOST is a runtime binding choice. LAN/dev invocations commonly set
 # it to 0.0.0.0, but capability write tests expect localhost-only defaults unless
 # an individual test explicitly sets the host under test.

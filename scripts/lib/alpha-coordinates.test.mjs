@@ -128,3 +128,9 @@ test('uploads, transcripts and story annotation destinations cannot escape throu
     assert.throws(() => coordinates(f), /symlink/);
   }
 });
+
+test('uncommitted Alpha identity diagnostics cannot supply launcher authority', (t) => {
+  const f = namedAlphaFixture(t);
+  writeFileSync(join(f.mainRoot, 'scripts/lib/alpha-identity-diagnostics.mjs'), '// uncommitted capture substitution');
+  assert.throws(() => coordinates(f), /committed unchanged launcher controls/);
+});

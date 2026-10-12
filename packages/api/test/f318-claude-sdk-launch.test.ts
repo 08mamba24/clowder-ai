@@ -1,6 +1,52 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createCatId } from '@cat-cafe/shared';
+import { CLI_EXECUTION_ID_ENV, CLI_EXECUTION_OWNER_BINDING_ENV } from '../src/utils/cli-process-ownership.js';
+
+test('SDK child strips API-owned credentials and owner capabilities from inherited and account env', async (t) => {
+  const { spawnSync } = await import('node:child_process');
+  const { prepareClaudeSdkLaunch } = await import('../src/domains/cats/services/agents/providers/claude-sdk-launch.js');
+  const keys = [
+    'TYPESAFE_API_KEY',
+    'TYPESAFE_API_KEY_FILE',
+    'CAT_CAFE_JEV_PAGE_CONFIG',
+    'CAT_CAFE_HOOK_TOKEN',
+    CLI_EXECUTION_OWNER_BINDING_ENV,
+    CLI_EXECUTION_ID_ENV,
+  ];
+  const saved = keys.map((key) => [key, process.env[key]] as const);
+  for (const key of keys) process.env[key] = 'inherited-sentinel';
+  t.after(() => {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const prepared = await prepareClaudeSdkLaunch({
+    catId: createCatId('opus'),
+    model: 'claude-opus-4-6',
+    prompt: 'check',
+    l0CompilerFn: async () => 'identity',
+    abortController: new AbortController(),
+    options: {
+      accountEnv: {
+        ...Object.fromEntries(keys.map((key) => [key, 'override-sentinel'])),
+        ANTHROPIC_API_KEY: 'selected-account',
+      },
+      callbackEnv: { CAT_CAFE_INVOCATION_ID: 'bound-invocation', CAT_CAFE_CALLBACK_TOKEN: 'bound-callback' },
+    },
+  });
+  const child = spawnSync(
+    process.execPath,
+    [
+      '-e',
+      `process.stdout.write(JSON.stringify({stripped:${JSON.stringify(keys)}.every(k=>process.env[k]===undefined),account:process.env.ANTHROPIC_API_KEY==='selected-account',callback:process.env.CAT_CAFE_CALLBACK_TOKEN==='bound-callback'}))`,
+    ],
+    { env: prepared.sdkOptions.env, encoding: 'utf8' },
+  );
+  assert.equal(child.status, 0);
+  assert.deepEqual(JSON.parse(child.stdout), { stripped: true, account: true, callback: true });
+});
 
 test('launch preserves resume, account isolation, native identity and managed F296 settings', async () => {
   const { prepareClaudeSdkLaunch } = await import('../src/domains/cats/services/agents/providers/claude-sdk-launch.js');

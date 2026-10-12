@@ -15,6 +15,7 @@ import { useActiveExecutionStore } from '@/stores/activeExecutionStore';
 import type { CatStatusType, QueueEntry } from '@/stores/chat-types';
 import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
+import { writeShellLanguage } from '../../shell/shell-language';
 import { ExecutionRow } from '../ExecutionRow';
 
 const mocks = vi.hoisted(() => ({ apiFetch: vi.fn() }));
@@ -110,6 +111,7 @@ describe('ExecutionRow (F322 original-B)', () => {
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   });
   beforeEach(() => {
+    writeShellLanguage('zh');
     useActiveExecutionStore.getState().reset();
     useToastStore.setState({ toasts: [] });
     mocks.apiFetch.mockReset();
@@ -121,6 +123,8 @@ describe('ExecutionRow (F322 original-B)', () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    writeShellLanguage('zh');
+    vi.useRealTimers();
   });
 
   const $ = (testId: string) => container.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
@@ -137,10 +141,41 @@ describe('ExecutionRow (F322 original-B)', () => {
     expect($('execution-row')).toBeNull();
   });
 
+  it('keeps legacy liveness neutral while canonical execution truth is still loading, then exposes recovery', async () => {
+    vi.useFakeTimers();
+    useActiveExecutionStore.getState().beginHydration(THREAD, null);
+    useChatStore.setState({
+      currentThreadId: THREAD,
+      threads: [{ id: THREAD, projectPath: '/project/cafe' }],
+      activeInvocations: { legacy: { catId: 'opus', startedAt: NOW } },
+      hasActiveInvocation: true,
+      catStatuses: { opus: 'streaming' },
+      catInvocations: {},
+      threadStates: {},
+      queue: [],
+      queuePaused: false,
+    } as never);
+
+    await render();
+    expect($('execution-row')?.getAttribute('data-status')).toBe('confirming');
+    expect($('execution-row')?.getAttribute('data-tone')).toBe('neutral');
+    expect($('execution-row-text')?.textContent).toBe('正在确认运行状态…');
+    expect($('execution-row-force-reset')).toBeNull();
+
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect($('execution-row')?.getAttribute('data-status')).toBe('unverified');
+    expect($('execution-row-text')?.textContent).toBe('运行状态待确认');
+    expect($('execution-row-force-reset')).not.toBeNull();
+  });
+
   it('1  ■ stops the single live run through the same cancel endpoint and body, then re-reads executions', async () => {
     seed({ executions: [run('opus')] });
     await render();
     expect($('execution-row-text')?.textContent).toMatch(/^opus 正在工作 \d+:\d{2}$/);
+    expect($('execution-row')?.getAttribute('data-tone')).toBe('info');
+    expect($('execution-row-surface')?.style.background).toBe('var(--semantic-info-surface)');
+    expect($('execution-row-avatars')).not.toBeNull();
+    expect($('execution-row-stop')?.textContent).toContain('停止');
     await click($('execution-row-stop')?.querySelector('button') ?? null);
     const cancel = mocks.apiFetch.mock.calls.find((c) => String(c[0]).endsWith('/cancel'));
     expect(cancel?.[0]).toBe(`/api/threads/${THREAD}/executions/live/exec-opus/cancel`);
@@ -180,6 +215,8 @@ describe('ExecutionRow (F322 original-B)', () => {
     seed({ executions: [run('opus')], catStatuses: { opus: 'suspected_stall' } });
     await render();
     expect($('execution-row')?.getAttribute('data-status')).toBe('silent');
+    expect($('execution-row')?.getAttribute('data-tone')).toBe('warning');
+    expect($('execution-row-avatars')).not.toBeNull();
     await click($('execution-row-force-reset'));
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain('会保留什么');
     await click(dialogConfirm() ?? null);
@@ -221,7 +258,8 @@ describe('ExecutionRow (F322 original-B)', () => {
     });
     seed({ queue: [stuck] });
     await render();
-    expect($('execution-row-text')?.textContent).toBe('1 件处理卡住');
+    expect($('execution-row-text')?.textContent).toBe('1 项处理受阻');
+    expect($('execution-row')?.getAttribute('data-tone')).toBe('critical');
     await click($('execution-row-force-reset'));
     await click(dialogConfirm() ?? null);
     expect(calls()).toContain(`POST /api/threads/${THREAD}/force-reset`);
@@ -326,7 +364,7 @@ describe('ExecutionRow (F322 original-B)', () => {
   it('3  several runs: no single ■ on the row; each run has its own in the panel', async () => {
     seed({ executions: [run('opus'), run('codex')] });
     await render();
-    expect($('execution-row-text')?.textContent).toBe('2 件在跑');
+    expect($('execution-row-text')?.textContent).toBe('2 项运行中');
     expect($('execution-row-stop')).toBeNull();
     await click($('execution-row-toggle'));
     const rows = container.querySelectorAll('[data-testid="execution-row-run"]');
@@ -346,5 +384,15 @@ describe('ExecutionRow (F322 original-B)', () => {
     expect(bar().className).toBe(before);
     // The panel is out of flow (absolute), so it cannot push the conversation.
     expect($('execution-row-panel')?.className).toContain('absolute');
+  });
+
+  it('switches the v2 execution row itself to English without remounting it', async () => {
+    seed({ executions: [run('opus')] });
+    await render();
+    const row = $('execution-row');
+    act(() => writeShellLanguage('en'));
+    expect($('execution-row')).toBe(row);
+    expect($('execution-row-text')?.textContent).toMatch(/^opus working \d+:\d{2}$/);
+    expect($('execution-row-stop')?.textContent).toContain('Stop');
   });
 });

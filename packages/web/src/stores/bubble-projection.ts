@@ -46,6 +46,7 @@
  */
 
 import { getBubbleInvocationId } from '@/debug/bubbleIdentity';
+import { outputLayoutForCanonicalBubble, withoutUnprovenOutputLayout } from './bubble-output-layout';
 import { retainPublicationOrigin, retainRichPublicationOrigins } from './bubble-publication-origins';
 import type { ChatMessage } from './chat-types';
 
@@ -287,6 +288,9 @@ function projectGroup(records: ChatMessage[]): ChatMessage {
     projected.extra = extra;
   }
 
+  const outputLayout = outputLayoutForCanonicalBubble(sorted, projected);
+  if (outputLayout) projected.extra = { ...projected.extra, outputLayout };
+  else if (projected.extra?.outputLayout) delete projected.extra.outputLayout;
   return projected;
 }
 
@@ -305,14 +309,15 @@ export function projectCanonicalBubbles({ records }: ProjectionInput): Projectio
 
   for (const r of records) {
     const k = bubbleGroupKey(r, streamSegmentsByBaseKey, turnSegmentByRecord);
+    const safeRecord = withoutUnprovenOutputLayout(r);
     if (!k) {
-      passthrough.push(r);
+      passthrough.push(safeRecord);
       continue;
     }
     const keyStr = `${k.originBucket}::${k.catId}::${k.invocationId}`;
     const list = groupedKeys.get(keyStr);
-    if (list) list.push(r);
-    else groupedKeys.set(keyStr, [r]);
+    if (list) list.push(safeRecord);
+    else groupedKeys.set(keyStr, [safeRecord]);
   }
 
   const projected: ChatMessage[] = [];

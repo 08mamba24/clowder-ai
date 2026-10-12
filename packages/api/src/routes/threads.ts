@@ -7,23 +7,28 @@
  * DELETE /api/threads/:id  - 删除对话
  */
 
-import type { CatId } from '@cat-cafe/shared';
+import type { CatId, GlobalArtifactDTO, GlobalArtifactsResponse } from '@cat-cafe/shared';
 import { catIdSchema } from '@cat-cafe/shared';
+import { projectRecentWorks } from '@cat-cafe/shared/recent-works';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import type { InvocationQueue } from '../domains/cats/services/agents/invocation/InvocationQueue.js';
 import type { InvocationTracker } from '../domains/cats/services/agents/invocation/InvocationTracker.js';
 import type { QueueProcessor } from '../domains/cats/services/agents/invocation/QueueProcessor.js';
 import type { TaskProgressStore } from '../domains/cats/services/agents/invocation/TaskProgressStore.js';
+import { collectRecentGlobalWorkCandidates } from '../domains/cats/services/agents/routing/recent-global-work-reader.js';
 import {
+  aggregateProjectedThreadArtifacts,
   aggregateThreadArtifacts,
   collectAllThreadMessages,
+  collectThreadMessageArtifacts,
 } from '../domains/cats/services/agents/routing/thread-artifacts-aggregator.js';
 import { resolveBootcampWorkspaceRoot } from '../domains/cats/services/bootcamp/workspace-root.js';
 import { recordFreshnessClosureTransition } from '../domains/cats/services/freshness/closure/freshness-closure-telemetry.js';
 import { projectFreshnessClosure } from '../domains/cats/services/freshness/glass-box/FreshnessOutputCommitCoordinator.js';
 import { projectFreshnessSupplementForHistory } from '../domains/cats/services/freshness/glass-box/freshness-supplement-history-projection.js';
 import { AuditEventTypes, getEventAuditLog } from '../domains/cats/services/orchestration/EventAuditLog.js';
+import { isHomeSession } from '../domains/cats/services/session/session-scope.js';
 import type { TranscriptWriter } from '../domains/cats/services/session/TranscriptWriter.js';
 import { compareCursors, parseCursor } from '../domains/cats/services/stores/cursor.js';
 import { gateForDurableSlot } from '../domains/cats/services/stores/cursor-activation.js';
@@ -52,6 +57,7 @@ import {
   SYSTEM_USER_IDS,
 } from '../domains/cats/services/stores/visibility.js';
 import { projectThreadRelations } from '../domains/thread-navigation/thread-relation-projection.js';
+import type { GlobalArtifactWorkLineageResolverHolder } from '../domains/video-studio/content-owner/global-artifact-work-lineage.js';
 import { createModuleLogger } from '../infrastructure/logger.js';
 import { visibilityCursorUnresolvedRepair } from '../infrastructure/telemetry/instruments.js';
 import type { SocketManager } from '../infrastructure/websocket/index.js';
@@ -69,6 +75,12 @@ import { createThreadProjectPathResolver, mapThreadList } from './thread-list-pr
 
 const log = createModuleLogger('routes/threads');
 const WRITE_OPS = new Set(['edit', 'create', 'delete']);
+const recentWorksQuerySchema = z
+  .object({
+    view: z.literal('recent-works'),
+    limit: z.coerce.number().int().min(1).max(12).default(3),
+  })
+  .strict();
 
 type StoredReadCoordinateAssessment =
   | { kind: 'valid'; primary: NonNullable<ReturnType<typeof parseCursor>> }
@@ -413,12 +425,82 @@ export interface ThreadsRoutesOptions {
   sessionChainStore?: ISessionChainStore;
   /** F232: in-memory transcript buffer reader for pre-seal file artifact visibility. */
   transcriptWriter?: TranscriptWriter;
+  /** F309: late-bound owner-backed batch projection for GET /api/artifacts. */
+  artifactWorkLineage?: GlobalArtifactWorkLineageResolverHolder;
   /**
    * F229: Reserved — no longer used by GET /api/threads.
    * createdBy=userId (P1 fix) means threadStore.list(userId) already returns concierge threads;
    * threadKind='concierge' filter keeps only the owner's canonical carrier in the default list.
    */
   conciergeThreadService?: import('../domains/concierge/ConciergeThreadService.js').ConciergeThreadService;
+}
+
+async function projectGlobalArtifactWorkLineage(
+  holder: GlobalArtifactWorkLineageResolverHolder | undefined,
+  ownerUserId: string,
+  artifacts: GlobalArtifactDTO[],
+): Promise<{
+  artifacts: GlobalArtifactDTO[];
+  total: number;
+  workLineage: 'resolved' | 'unavailable';
+}> {
+  const resolver = holder?.current;
+  if (!resolver) return { artifacts, total: artifacts.length, workLineage: 'unavailable' };
+  try {
+    const works = await resolver.resolve({ ownerUserId, artifacts });
+    if (works.length !== artifacts.length) throw new Error('Artifact work lineage result length mismatch');
+    const projected = artifacts.map((artifact, index) => {
+      const work = works[index];
+      return work ? { ...artifact, work } : artifact;
+    });
+    return { artifacts: projected, total: projected.length, workLineage: 'resolved' };
+  } catch (error) {
+    log.warn({ err: error }, 'F309 artifact work lineage unavailable');
+    return { artifacts, total: artifacts.length, workLineage: 'unavailable' };
+  }
+}
+
+async function readRecentWorksView(input: {
+  userId: string;
+  limit: number;
+  threadStore: IThreadStore;
+  messageStore: IMessageStore | undefined;
+  artifactWorkLineage: GlobalArtifactWorkLineageResolverHolder | undefined;
+}): Promise<GlobalArtifactsResponse & { complete: boolean }> {
+  const userThreads = await input.threadStore.list(input.userId);
+  const scan = input.messageStore
+    ? await collectRecentGlobalWorkCandidates({
+        store: input.messageStore,
+        userId: input.userId,
+        threadTitles: new Map(userThreads.map((thread) => [thread.id, thread.title ?? thread.id])),
+        limit: input.limit,
+      })
+    : { artifacts: [], complete: false, scannedMessages: 0 };
+  const projected = await projectGlobalArtifactWorkLineage(input.artifactWorkLineage, input.userId, scan.artifacts);
+  const artifacts = projectRecentWorks(projected.artifacts, projected.workLineage, input.limit);
+  return {
+    artifacts,
+    total: artifacts.length,
+    workLineage: projected.workLineage,
+    complete: scan.complete,
+  };
+}
+
+function filterGlobalArtifacts(
+  artifacts: readonly GlobalArtifactDTO[],
+  query: { type?: string; cat?: string; q?: string | string[] },
+): GlobalArtifactDTO[] {
+  let filtered = [...artifacts];
+  if (query.type) filtered = filtered.filter((artifact) => artifact.type === query.type);
+  if (query.cat) filtered = filtered.filter((artifact) => (artifact.catId ?? '—') === query.cat);
+  const search = Array.isArray(query.q) ? query.q[0] : query.q;
+  if (typeof search === 'string') {
+    const lower = search.toLowerCase();
+    filtered = filtered.filter(
+      (artifact) => typeof artifact.name === 'string' && artifact.name.toLowerCase().includes(lower),
+    );
+  }
+  return filtered;
 }
 
 async function collectLiveFileLedger(
@@ -431,7 +513,9 @@ async function collectLiveFileLedger(
 
   try {
     const sessions = await Promise.resolve(sessionChainStore.getChainByThread(threadId));
-    const activeSessions = sessions.filter((session) => session.status === 'active' && session.userId === userId);
+    const activeSessions = sessions.filter(
+      (session) => isHomeSession(session) && session.status === 'active' && session.userId === userId,
+    );
     const fileArrays = await Promise.all(
       activeSessions.map(async (session) => {
         const files = await transcriptWriter.getFilesTouched(session.id, {
@@ -491,6 +575,8 @@ const createThreadSchema = z
   .object({
     /** Legacy fallback only; preferred identity source is X-Cat-Cafe-User header. */
     userId: z.string().min(1).max(100).optional(),
+    /** Owner-scoped first-send replay key. Same owner + key resolves the same thread. */
+    idempotencyKey: z.string().uuid().optional(),
     title: z.string().min(1).max(200).optional(),
     projectPath: z.string().min(1).max(500).optional(),
     /** F32-b Phase 2: Thread-level cat preference (validated against catRegistry) */
@@ -654,6 +740,8 @@ const updateThreadSchema = z
     title: z.string().trim().min(1).max(200).optional(),
     pinned: z.boolean().optional(),
     favorited: z.boolean().optional(),
+    /** F322: post-create Feature association. null clears. */
+    backlogItemId: z.string().trim().min(1).max(100).nullable().optional(),
     thinkingMode: z.enum(['debug', 'play']).optional(),
     /** F32-b Phase 2: Update thread-level cat preference. Empty array clears. */
     preferredCats: z.array(catIdSchema()).max(10).optional(),
@@ -692,6 +780,7 @@ const updateThreadSchema = z
       data.title !== undefined ||
       data.pinned !== undefined ||
       data.favorited !== undefined ||
+      data.backlogItemId !== undefined ||
       data.thinkingMode !== undefined ||
       data.preferredCats !== undefined ||
       data.routingPolicy !== undefined ||
@@ -719,6 +808,7 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
 
     const {
       userId: legacyUserId,
+      idempotencyKey,
       title,
       projectPath,
       preferredCats,
@@ -738,7 +828,26 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       return { error: resolvedProjectPath.error };
     }
 
-    let thread: Thread = await threadStore.create(userId, title, resolvedProjectPath.projectPath);
+    let thread: Thread;
+    if (idempotencyKey) {
+      try {
+        thread = await threadStore.ensureOwnedThread({
+          userId,
+          idempotencyKey,
+          title: title ?? null,
+          participants: [],
+          projectPath: resolvedProjectPath.projectPath,
+        });
+      } catch (error) {
+        if ((error as { code?: unknown }).code === 'OWNER_ADMISSION_UNAVAILABLE') {
+          reply.status(409);
+          return { error: 'Conversation replay is unavailable', code: 'THREAD_REPLAY_UNAVAILABLE' };
+        }
+        throw error;
+      }
+    } else {
+      thread = await threadStore.create(userId, title, resolvedProjectPath.projectPath);
+    }
 
     // F32-b Phase 2: Set preferred cats if provided at creation time
     if (preferredCats && preferredCats.length > 0) {
@@ -1103,9 +1212,9 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       reply.status(404);
       return { error: 'Thread not found' };
     }
-    const ownerUserId = resolveUserId(request, { defaultUserId: 'default-user' }) ?? 'default-user';
-    if (isConciergeThread(thread) && thread.createdBy !== ownerUserId) {
-      const canonicalId = await opts.conciergeThreadService?.findThreadId(ownerUserId);
+    const patchUserId = resolveUserId(request, { defaultUserId: 'default-user' }) ?? 'default-user';
+    if (isConciergeThread(thread) && thread.createdBy !== patchUserId) {
+      const canonicalId = await opts.conciergeThreadService?.findThreadId(patchUserId);
       if (canonicalId !== id) {
         reply.status(404);
         return { error: 'Thread not found' };
@@ -1116,6 +1225,7 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       title,
       pinned,
       favorited,
+      backlogItemId,
       thinkingMode,
       preferredCats,
       routingPolicy,
@@ -1126,6 +1236,25 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       preferredWorkspaceMode,
       labels,
     } = parseResult.data;
+    // Feature association is owner-only and validated before ANY mutation so a
+    // combined PATCH cannot partially apply title/pin when the Feature is invalid.
+    if (backlogItemId !== undefined) {
+      if (thread.createdBy !== patchUserId) {
+        reply.status(404);
+        return { error: 'Thread not found' };
+      }
+      if (backlogItemId !== null) {
+        if (!opts.backlogStore) {
+          reply.status(503);
+          return { error: 'Backlog store unavailable' };
+        }
+        const item = await opts.backlogStore.get(backlogItemId, patchUserId);
+        if (!item) {
+          reply.status(400);
+          return { error: 'Invalid backlogItemId: backlog item not found or not owned by user' };
+        }
+      }
+    }
     if (title !== undefined) {
       await threadStore.updateTitle(id, title);
       try {
@@ -1137,6 +1266,15 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
     }
     if (pinned !== undefined) await threadStore.updatePin(id, pinned);
     if (favorited !== undefined) await threadStore.updateFavorite(id, favorited);
+    if (backlogItemId !== undefined) {
+      await threadStore.updateBacklogItem(id, backlogItemId);
+      try {
+        opts.indexBuilder?.markThreadDirty(id);
+        await opts.indexBuilder?.flushDirtyThreads?.();
+      } catch (err) {
+        log.warn({ err, threadId: id }, 'failed to refresh thread evidence index after Feature update');
+      }
+    }
     if (thinkingMode !== undefined) await threadStore.updateThinkingMode(id, thinkingMode);
     if (preferredCats !== undefined) await threadStore.updatePreferredCats(id, preferredCats as CatId[]);
     if (routingPolicy !== undefined) {
@@ -1170,7 +1308,6 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       reply.status(404);
       return { error: 'Thread not found' };
     }
-    const patchUserId = resolveUserId(request, { defaultUserId: 'default-user' }) ?? 'default-user';
     return sanitizeThreadForResponse(updated, patchUserId);
   });
 
@@ -1455,7 +1592,7 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
   });
 
   // F232 Phase B: GET /api/artifacts — global artifact aggregation across all user threads (AC-B1, AC-B2).
-  // Iterates all threads calling aggregateThreadArtifacts() per thread (reuses Phase A pipeline).
+  // Projects each historical page, reusing the full Phase A artifact aggregation contract.
   app.get('/api/artifacts', async (request, reply) => {
     const userId = resolveUserId(request, {});
     if (!userId) {
@@ -1463,53 +1600,65 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       return { error: 'Identity required' };
     }
 
+    const rawQuery = request.query as Record<string, unknown>;
+    if (Object.hasOwn(rawQuery, 'view')) {
+      const parsed = recentWorksQuerySchema.safeParse(rawQuery);
+      if (!parsed.success) {
+        reply.status(400);
+        return { error: 'Invalid recent works query' };
+      }
+      return readRecentWorksView({
+        userId,
+        limit: parsed.data.limit,
+        threadStore,
+        messageStore,
+        artifactWorkLineage: opts.artifactWorkLineage,
+      });
+    }
+
     const userThreads = await threadStore.list(userId);
 
-    // Parallel aggregation across all threads (AC-B2: reuse pipeline)
-    const perThread = await Promise.all(
-      userThreads.map(async (thread) => {
-        const messages = messageStore ? await collectAllThreadMessages(messageStore, thread.id, userId) : [];
-        const allTasks = taskStore ? await taskStore.listByThread(thread.id) : [];
-        const prTasks = allTasks.filter((t) => t.kind === 'pr_tracking' && t.userId === userId);
-        const mem = await threadStore.getThreadMemory(thread.id);
-        const fileLedger = (mem?.recentArtifacts ?? []).filter(
-          (a) => a.type === 'file' || a.type === 'plan' || a.type === 'feature-doc',
-        );
-        const artifacts = aggregateThreadArtifacts({
-          messages,
-          prTasks,
-          fileLedger,
-        });
-        return artifacts.map((a) => ({
-          ...a,
-          threadId: thread.id,
-          threadTitle: thread.title ?? thread.id,
-        }));
-      }),
-    );
+    // Bound raw-message reads while retaining the original thread order for equal-time ties.
+    const perThread = new Array<GlobalArtifactDTO[]>(userThreads.length);
+    const threadEntries = userThreads.entries();
+    let scanFailed = false;
+    const workers = Array.from({ length: Math.min(4, userThreads.length) }, async () => {
+      for (const [index, thread] of threadEntries) {
+        if (scanFailed) break;
+        try {
+          const messageArtifacts = messageStore
+            ? await collectThreadMessageArtifacts(messageStore, thread.id, userId)
+            : [];
+          const allTasks = taskStore ? await taskStore.listByThread(thread.id) : [];
+          const prTasks = allTasks.filter((t) => t.kind === 'pr_tracking' && t.userId === userId);
+          const mem = await threadStore.getThreadMemory(thread.id);
+          const fileLedger = (mem?.recentArtifacts ?? []).filter(
+            (a) => a.type === 'file' || a.type === 'plan' || a.type === 'feature-doc',
+          );
+          const artifacts = aggregateProjectedThreadArtifacts({ messageArtifacts, prTasks, fileLedger });
+          perThread[index] = artifacts.map((a) => ({
+            ...a,
+            threadId: thread.id,
+            threadTitle: thread.title ?? thread.id,
+          }));
+        } catch (error) {
+          scanFailed = true;
+          throw error;
+        }
+      }
+    });
+    // A failed request admits no new work; already-started reads settle before returning.
+    const settled = await Promise.allSettled(workers);
+    const failed = settled.find((result) => result.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
 
     // Flatten + sort descending by createdAt
-    let all = perThread.flat().sort((a, b) => b.createdAt - a.createdAt);
+    const all = filterGlobalArtifacts(
+      perThread.flat().sort((a, b) => b.createdAt - a.createdAt),
+      rawQuery as { type?: string; cat?: string; q?: string | string[] },
+    );
 
-    // F232 Phase B: server-side query param filtering (AC-B1)
-    const { type, cat, q } = request.query as { type?: string; cat?: string; q?: string };
-    if (type) {
-      all = all.filter((a) => a.type === type);
-    }
-    if (cat) {
-      // Normalize null catId → '—' sentinel (same as client-side extractCatChips)
-      all = all.filter((a) => (a.catId ?? '—') === cat);
-    }
-    if (q) {
-      // Normalize: Fastify may expose duplicate ?q= as array; take first element
-      const qStr = Array.isArray(q) ? q[0] : q;
-      if (typeof qStr === 'string') {
-        const lower = qStr.toLowerCase();
-        all = all.filter((a) => a.name && a.name.toLowerCase().includes(lower));
-      }
-    }
-
-    return { artifacts: all, total: all.length };
+    return projectGlobalArtifactWorkLineage(opts.artifactWorkLineage, userId, all);
   });
 
   // F35: PATCH /api/threads/:id/reveal — reveal all whispers in a thread

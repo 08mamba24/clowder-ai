@@ -44,6 +44,9 @@ export interface Terminal {
   resolution: 'accepted' | 'rejected' | 'closed_without_decision';
   decidedAt?: number;
   decidedBy?: string;
+  /** Transient proof from the original producer and the exact created Thread, never from a POST response. */
+  threadId?: string;
+  effectUnknown?: boolean;
 }
 
 /** The settled lookup: a row for exactly this proposal and producer, or nothing that can be relied on. */
@@ -120,6 +123,10 @@ function readTerminal(value: unknown): Terminal | null {
     resolution,
     ...(typeof value.decidedAt === 'number' && Number.isFinite(value.decidedAt) ? { decidedAt: value.decidedAt } : {}),
     ...(decidedBy ? { decidedBy } : {}),
+    ...(resolution === 'accepted' && typeof value.threadId === 'string' && value.threadId.trim()
+      ? { threadId: value.threadId }
+      : {}),
+    ...(resolution === 'accepted' && value.effectUnknown === true ? { effectUnknown: true } : {}),
   };
 }
 
@@ -201,10 +208,17 @@ function onRead(model: ReconcileModel, read: ReadEvidence): ReconcileModel {
   return { ...model, state: outcomeOfRead(read, state.write) };
 }
 
-const REREADABLE = new Set<ReconcileState['kind']>(['unconfirmed', 'needs_login', 'no_permission', 'still_open']);
+const REREADABLE = new Set<ReconcileState['kind']>([
+  'unconfirmed',
+  'needs_login',
+  'no_permission',
+  'still_open',
+  'decided',
+]);
 
 function onReread(model: ReconcileModel, readGeneration: number): ReconcileModel {
   if (!REREADABLE.has(model.state.kind)) return model;
+  if (model.state.kind === 'decided' && !model.state.terminal?.effectUnknown) return model;
   const write = model.lastWrite ?? { outcome: 'unknown' as const };
   return {
     ...model,
@@ -236,7 +250,7 @@ export interface ReconcileView {
 }
 
 const RESOLUTION_TEXT: Record<Terminal['resolution'], string> = {
-  accepted: '已批准',
+  accepted: '已同意',
   rejected: '已拒绝',
   closed_without_decision: '已结束，没有做决定',
 };
@@ -257,6 +271,8 @@ function decidedLine(terminal: Terminal): string {
   const resolution = readTerminal(terminal)?.resolution;
   if (!resolution) return UNKNOWN_LINE;
   const parts = [RESOLUTION_TEXT[resolution]];
+  if (terminal.threadId) parts.push('对话已开');
+  if (terminal.effectUnknown) parts.push('效果暂未确认');
   const { decidedAt, decidedBy } = readTerminal(terminal) as Terminal;
   if (decidedAt !== undefined) parts.push(decidedAtText(decidedAt));
   if (decidedBy) parts.push(decidedBy);
@@ -291,9 +307,19 @@ export function describeReconcile(state: ReconcileState): ReconcileView {
     case 'confirming':
       return { line: confirmingLine(state.write), actions: 'held', canReread: false };
     case 'still_open':
-      return { line: stillOpenLine(state.write), actions: 'allowed', canReread: true };
+      return {
+        line: stillOpenLine(state.write),
+        actions:
+          !state.write ||
+          state.write.outcome === 'unknown' ||
+          state.write.outcome === 'ended' ||
+          (state.write.outcome === 'errored' && state.write.status >= 500)
+            ? 'held'
+            : 'allowed',
+        canReread: true,
+      };
     case 'decided':
-      return { line: decidedLine(state.terminal), actions: 'gone', canReread: false };
+      return { line: decidedLine(state.terminal), actions: 'gone', canReread: state.terminal?.effectUnknown === true };
     case 'unconfirmed':
       return { line: UNCONFIRMED_LINE[state.why] ?? UNKNOWN_LINE, actions: 'held', canReread: true };
     case 'needs_login':

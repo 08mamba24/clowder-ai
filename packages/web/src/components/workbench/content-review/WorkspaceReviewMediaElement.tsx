@@ -1,6 +1,6 @@
 import type { ImmutableMedia } from '@cat-cafe/shared';
 import Image from 'next/image';
-import type { RefObject } from 'react';
+import { type RefObject, useCallback } from 'react';
 
 export function WorkspaceReviewMediaElement({
   src,
@@ -23,6 +23,8 @@ export function WorkspaceReviewMediaElement({
   onSeconds: (seconds: number) => void;
   onError: (error: string) => void;
 }) {
+  // Next/Image reassigns src when its error callback changes; keep ordinary canvas renders from restarting pixels.
+  const imageError = useCallback(() => onError('此浏览器无法显示这张图片，请重新读取或下载原文件查看。'), [onError]);
   if (!src) return <p className="p-4 text-sm text-cafe-muted">{error ?? '正在核对并读取原版媒体…'}</p>;
   if (media.kind === 'image')
     return (
@@ -34,7 +36,7 @@ export function WorkspaceReviewMediaElement({
         unoptimized
         className="absolute inset-0 h-full w-full object-contain"
         data-testid="workspace-content-review-media"
-        onError={() => onError('此浏览器无法显示这张图片，请重新读取或下载原文件查看。')}
+        onError={imageError}
       />
     );
   return (

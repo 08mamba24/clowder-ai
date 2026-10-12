@@ -76,6 +76,16 @@ export const openEvolutionRoundInputSchema = {
   agentKeyCatId,
 };
 
+export const rebindEvolutionProgramMeasurementInputSchema = {
+  programId: programId.describe('Exact canonical Evolution Program id.'),
+  expectedSequence: expectedSequence.describe('Current Program sequence for CAS.'),
+  clientMessageId: clientMessageId.describe('Stable idempotency id for this measurement constitution rebind.'),
+  evidenceProofRef: ownerRef.describe(
+    'Canonical F267 decision-proof identity whose trusted-main publication supplies the certificate and four roles.',
+  ),
+  agentKeyCatId,
+};
+
 const attributionCandidate = z
   .object({
     layer: z.enum(['execution', 'harness', 'rubric', 'observation']),
@@ -159,6 +169,14 @@ export interface OpenEvolutionRoundInput {
   agentKeyCatId?: string;
 }
 
+export interface RebindEvolutionProgramMeasurementInput {
+  programId: string;
+  expectedSequence: number;
+  clientMessageId: string;
+  evidenceProofRef: z.infer<typeof ownerRef>;
+  agentKeyCatId?: string;
+}
+
 export interface RecordEvolutionEvaluationInput {
   programId: string;
   expectedSequence: number;
@@ -195,6 +213,20 @@ export function handleOpenEvolutionRound(input: OpenEvolutionRoundInput): Promis
   );
 }
 
+export function handleRebindEvolutionProgramMeasurement(
+  input: RebindEvolutionProgramMeasurementInput,
+): Promise<ToolResult> {
+  return callbackPost(
+    at(input.programId, 'measurement-constitution'),
+    {
+      expectedSequence: input.expectedSequence,
+      clientMessageId: input.clientMessageId,
+      evidenceProofRef: input.evidenceProofRef,
+    },
+    { agentKeyCatId: input.agentKeyCatId },
+  );
+}
+
 export function handleRecordEvolutionEvaluation(input: RecordEvolutionEvaluationInput): Promise<ToolResult> {
   return callbackPost(
     at(input.programId, 'evaluations'),
@@ -220,6 +252,24 @@ export const capabilityEvolutionRoundTools = [
     handler: handleConstituteEvolutionProgram,
     governance: {
       implementationExport: 'handleConstituteEvolutionProgram',
+      action: 'update',
+      risk: { level: 'write', openWorld: false },
+      runtimeProfiles: ['full', 'agent-key'],
+      standaloneReason: admissionReason,
+    },
+  }),
+  defineTool({
+    name: 'cat_cafe_rebind_evolution_program_measurement',
+    description:
+      'Atomically rebind one active/instrumenting Evolution Program to a newer F267 measurement certificate and its four published role records. ' +
+      'Use when a versioned F267 proof publication is immutable on trusted main; pass only the proof identity and current Program sequence. ' +
+      'NOT for: changing the value owner, stage, Cycle, source data, role occupants, measurement verdict, or opening an evaluation round; certificate and role refs are resolved server-side from F267. ' +
+      'Output: appended/duplicate/conflict plus the canonical Program projection, or typed owner-evidence unavailable with zero state change. ' +
+      'GOTCHA: the Program must still be active/instrumenting and shared persistent MCP callers pass agentKeyCatId.',
+    inputSchema: rebindEvolutionProgramMeasurementInputSchema,
+    handler: handleRebindEvolutionProgramMeasurement,
+    governance: {
+      implementationExport: 'handleRebindEvolutionProgramMeasurement',
       action: 'update',
       risk: { level: 'write', openWorld: false },
       runtimeProfiles: ['full', 'agent-key'],

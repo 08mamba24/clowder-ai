@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { CollectiveWorldRail } from './CollectiveWorldRail.js';
 import type { CollectiveMembership } from './client-types.js';
 
 function connectionLabel(
@@ -17,11 +18,27 @@ function connectionLabel(
   return canPair ? '共同家园在线 · 这台 Café 还没连接' : '共同家园在线';
 }
 
+function DestinationTitle({
+  collective,
+  onHome,
+}: {
+  readonly collective?: CollectiveMembership;
+  readonly onHome?: () => void;
+}) {
+  if (!onHome || !collective) return <h1>{collective?.name ?? '共同家园'}</h1>;
+  return (
+    <button type="button" className="destination-home" aria-label={`打开${collective.name}首页`} onClick={onHome}>
+      <h1>{collective.name}</h1>
+    </button>
+  );
+}
+
 export function ProductShell({
   embedded,
   collective,
   collectives,
   onSelectCollective,
+  onHome,
   connection,
   canSteward,
   canPair,
@@ -42,6 +59,7 @@ export function ProductShell({
   readonly collective?: CollectiveMembership;
   readonly collectives?: readonly CollectiveMembership[];
   readonly onSelectCollective?: (collectiveId: string) => void;
+  readonly onHome?: () => void;
   readonly connection: 'online' | 'offline';
   readonly canSteward: boolean;
   readonly canPair: boolean;
@@ -67,34 +85,19 @@ export function ProductShell({
       data-world-rail={hasWorldRail}
       data-navigation-open={navigationOpen}
     >
-      {hasWorldRail && (
-        <aside className="global-rail" data-spatial-role="global-rail" aria-label="选择共同家园">
-          <div className="brand-mark" role="img" aria-label="Clowder AI Collective">
-            C
-          </div>
-          <nav>
-            {collectives?.map((item) => (
-              <button
-                key={item.collectiveId}
-                type="button"
-                className={`rail-button ${item.collectiveId === collective?.collectiveId ? 'rail-button-active' : ''}`}
-                aria-label={item.name}
-                aria-current={item.collectiveId === collective?.collectiveId ? 'page' : undefined}
-                onClick={() => onSelectCollective?.(item.collectiveId)}
-              >
-                <span className="world-mark">{item.name.slice(0, 1)}</span>
-                <span>{item.name}</span>
-              </button>
-            ))}
-          </nav>
-        </aside>
-      )}
+      <CollectiveWorldRail
+        activeCollective={collective}
+        collectives={collectives}
+        onHome={onHome}
+        onSelectCollective={onSelectCollective}
+        visible={!embedded}
+      />
       {navigationOpen && (
         <button type="button" className="navigation-scrim" aria-label="关闭频道导航" onClick={onCloseNavigation} />
       )}
       <aside className="destination-pane" data-spatial-role="destination-pane" aria-label="共同家园导航">
         <header className="destination-header">
-          <h1>{collective?.name ?? '共同家园'}</h1>
+          <DestinationTitle collective={collective} onHome={onHome} />
           {headerMeta ? (
             <p>{headerMeta}</p>
           ) : (

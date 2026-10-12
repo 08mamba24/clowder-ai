@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import { ensureWorkspaceOpen } from './f307-workspace-open.mjs';
+import { EVIDENCE } from './f309-ordinary-workspace-journey-chat-progress.mjs';
 import { routeThroughRealOwner, startRealWorkspaceOwner } from './f309-ordinary-workspace-real-owner.mjs';
 
 const FILE_NAME = 'f309-text-quote-journey.md';
@@ -13,7 +15,7 @@ const TO = 'salt on the window';
 const COMMENT = ['这里的灯塔意象要保留 · keep the lighthouse', '第二行：换一个动词 / change the verb'];
 
 /** The model-facing text the cat receives, through the API's own send schema and routing projection. */
-async function modelProjection(body) {
+export async function modelProjection(body) {
   const { sendMessageSchema, buildMessageContentBlocks } = await import('../../../api/dist/routes/messages.schema.js');
   const { appendContextAttachmentsToPrompt } = await import(
     '../../../api/dist/domains/cats/services/agents/routing/context-attachment-prompt.js'
@@ -122,6 +124,30 @@ export function registerOrdinaryTextQuoteJourney(suite) {
     return editor;
   }
 
+  /** One more place of the same file, added to the same draft with its own words. */
+  async function addPlace(page, posts, from, to, words) {
+    const before = posts.length;
+    const addButton = page.getByTestId('workspace-content-review-text-add-to-chat');
+    const editor = page.getByTestId('context-annotation-comment');
+    // A synthetic selection here was observed, now and then, to produce no add button (the cause was not traced; a
+    // second selection of the same words does). A person would select again, so this does too, a bounded number of
+    // times: what is asserted afterwards is the state the page ended up in, not that the first try worked.
+    for (let attempt = 1; ; attempt += 1) {
+      await selectRendered(page, from, to);
+      try {
+        await addButton.click({ timeout: 4000 });
+        await editor.waitFor({ timeout: 4000 });
+        break;
+      } catch (error) {
+        if (attempt === 4) throw error;
+      }
+    }
+    await editor.fill(words);
+    await editor.press('Enter');
+    await page.getByTestId('context-annotations-summary').waitFor({ state: 'attached' });
+    assert.deepEqual(posts.slice(before), [], 'adding a place writes nothing');
+  }
+
   test(
     'text: a rendered selection → card → chat chip → explicit send, as the original chain',
     { timeout: 120_000 },
@@ -129,11 +155,12 @@ export function registerOrdinaryTextQuoteJourney(suite) {
       await openFromHome({
         viewport: { width: 1280, height: 900 },
         prefix: 'f309-text-quote',
-        run: async ({ page, surface, errors, posts, sent, evidence }) => {
+        run: async ({ page, surface, errors, posts, sent }) => {
           assert.equal(await surface.getByText('已选文本', { exact: false }).count(), 0);
           assert.equal(await surface.getByPlaceholder('写下这条批注…').count(), 0);
           await addToChat(page, posts);
-          await page.screenshot({ path: `${evidence}/text-quote-chip.png` });
+          await mkdir(EVIDENCE, { recursive: true });
+          await page.screenshot({ path: `${EVIDENCE}/text-quote-chip.png` });
 
           // Return to where the file was opened from, then reload: the chip is the chat draft and survives both.
           await surface.getByRole('button', { name: '返回来源', exact: true }).click();
@@ -160,6 +187,14 @@ export function registerOrdinaryTextQuoteJourney(suite) {
           assert.equal(quote.source.kind, 'workspace_file');
           assert.equal(quote.source.path, FILE_PATH);
           assert.ok(quote.source.worktreeId, 'the quote names its real worktree');
+          // The version is the owner's own revision of the very bytes on disk, in the form a cat's takeover compares
+          // it in: without it the cat could not take the request over at all (it answers "source changed").
+          const onDisk = await readFile(new URL(`./fixtures/${FILE_NAME}`, import.meta.url));
+          assert.equal(
+            quote.source.revision,
+            `sha256:${createHash('sha256').update(onDisk).digest('hex')}`,
+            'the quote names the exact version of the file it was selected in',
+          );
           assert.equal(quote.source.lineStart, undefined, 'rendered Markdown claims no file lines it does not have');
 
           const prompt = await modelProjection(sent[0]);
@@ -175,20 +210,73 @@ export function registerOrdinaryTextQuoteJourney(suite) {
   );
 
   test(
+    'text: two places in the same file go as one message, each with its own words and the one version they were made in',
+    { timeout: 120_000 },
+    async () => {
+      await openFromHome({
+        viewport: { width: 1280, height: 900 },
+        prefix: 'f309-text-quote-two',
+        run: async ({ page, errors, posts, sent }) => {
+          await addPlace(page, posts, '暮色里的灯塔', '暮色里的灯塔', '这一处保留');
+          await addPlace(page, posts, 'salt on the window', 'salt on the window', '这一处换个说法');
+          const summary = page.getByTestId('context-annotations-summary');
+          assert.match((await summary.textContent()) ?? '', /2 annotations/);
+          await summary.click();
+          const items = page.locator('[data-testid^="context-annotation-item-"]');
+          assert.equal(await items.count(), 2, 'both places are in the draft, none replaced the other');
+          assert.match((await items.nth(0).innerText()) ?? '', /^第\s*1\s*处[\s\S]*暮色里的灯塔[\s\S]*这一处保留/);
+          assert.match(
+            (await items.nth(1).innerText()) ?? '',
+            /^第\s*2\s*处[\s\S]*salt on the window[\s\S]*这一处换个说法/,
+          );
+          // Both were made in a version the owner named: nothing here says "cannot confirm where this place is".
+          assert.equal(await page.getByText('无法确认当前位置').count(), 0);
+          await mkdir(EVIDENCE, { recursive: true });
+          await page.screenshot({ path: `${EVIDENCE}/text-quote-two-places.png` });
+
+          await page.getByRole('button', { name: 'Send message', exact: true }).click();
+          await page.waitForFunction(() => !document.querySelector('[data-testid="context-annotations-summary"]'));
+          assert.equal(sent.length, 1, 'one send');
+          const quotes = sent[0].contextAttachments;
+          assert.equal(quotes.length, 2);
+          assert.deepEqual(
+            quotes.map((quote) => quote.comment),
+            ['这一处保留', '这一处换个说法'],
+            'the order the person made them in',
+          );
+          assert.equal(new Set(quotes.map((quote) => quote.id)).size, 2, 'each place has its own id');
+          const onDisk = await readFile(new URL(`./fixtures/${FILE_NAME}`, import.meta.url));
+          const revision = `sha256:${createHash('sha256').update(onDisk).digest('hex')}`;
+          assert.deepEqual(
+            quotes.map((quote) => [quote.source.path, quote.source.revision]),
+            [
+              [FILE_PATH, revision],
+              [FILE_PATH, revision],
+            ],
+            'the same file, the same version',
+          );
+          assert.deepEqual(errors, []);
+        },
+      });
+    },
+  );
+
+  test(
     'text: at 390px the card opens inside the screen and still only adds the chip',
     { timeout: 120_000 },
     async () => {
       await openFromHome({
         viewport: { width: 390, height: 844 },
         prefix: 'f309-text-quote-390',
-        run: async ({ page, posts, errors, evidence }) => {
+        run: async ({ page, posts, errors }) => {
           await selectRendered(page, FROM, TO);
           await page.getByTestId('workspace-content-review-text-add-to-chat').click();
           const card = page.getByTestId('context-annotation-editor');
           await card.waitFor();
           const box = await card.boundingBox();
           assert.ok(box && box.x >= 0 && box.x + box.width <= 390 && box.y >= 0, JSON.stringify(box));
-          await page.screenshot({ path: `${evidence}/text-quote-390-card.png` });
+          await mkdir(EVIDENCE, { recursive: true });
+          await page.screenshot({ path: `${EVIDENCE}/text-quote-390-card.png` });
           const before = posts.length;
           await page.getByTestId('context-annotation-comment').fill('390 宽也能写 · narrow');
           await page.getByTestId('context-annotation-comment').press('Enter');

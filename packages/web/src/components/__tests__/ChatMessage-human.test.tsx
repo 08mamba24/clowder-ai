@@ -175,12 +175,12 @@ describe('ChatMessage: your own message', () => {
       expect(time('a')?.textContent).toBe(timeText(T));
     });
 
-    it('keeps what you could do with the message: the action anchor, the copy-id control, the whisper mark', () => {
+    it('keeps the action anchor and whisper mark, with copy-id owned by the transient actions', () => {
       configure({ primary: '#6B5443', secondary: '#E9DCCF' });
       render(own('a', { visibility: 'whisper', whisperTo: ['codex'] }), {}, true);
 
       expect(wrapper('a').querySelector('[data-message-action-slot]')).not.toBeNull();
-      expect(wrapper('a').querySelector('button[aria-label^="复制消息 ID"]')).not.toBeNull();
+      expect(wrapper('a').querySelector('button[aria-label^="复制消息 ID"]')).toBeNull();
       expect(wrapper('a').textContent).toContain('悄悄话');
       // An unrevealed whisper keeps its own warning look instead of the human fill.
       expect(bubble('a').className).toContain('border-dashed');

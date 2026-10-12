@@ -3,6 +3,31 @@ import { join, resolve } from 'node:path';
 import type { CodexAppServerJsonObject } from '../../cats/services/agents/providers/CodexAppServerEventMapper.js';
 import type { LiveNativeCredentials } from './live-native-credentials.js';
 
+export const LIVE_MEETING_TOOL_NAMES = [
+  'cat_cafe_meeting_sources',
+  'cat_cafe_meeting_start',
+  'cat_cafe_meeting_attach',
+  'cat_cafe_meeting_status',
+  'cat_cafe_meeting_stop',
+] as const;
+
+function collabToolPolicy(household: boolean, meeting: boolean): CodexAppServerJsonObject {
+  const tools: CodexAppServerJsonObject = {};
+  if (household)
+    Object.assign(tools, {
+      cat_cafe_page_action_inspect: { approval_mode: 'approve' },
+      cat_cafe_home_action: { approval_mode: 'approve' },
+    });
+  if (meeting)
+    Object.assign(
+      tools,
+      Object.fromEntries(LIVE_MEETING_TOOL_NAMES.map((name) => [name, { approval_mode: 'approve' }])),
+    );
+  if (!household) return { tools, enabled_tools: [...LIVE_MEETING_TOOL_NAMES] };
+  if (!meeting) return { tools, disabled_tools: [...LIVE_MEETING_TOOL_NAMES] };
+  return { tools };
+}
+
 /** Construct only the accepted household surface; unrelated configured MCP servers are disabled by the native client. */
 export async function buildLiveMcpConfig(input: {
   credentials: LiveNativeCredentials;
@@ -11,12 +36,16 @@ export async function buildLiveMcpConfig(input: {
   allowedDirectories: readonly string[];
   screenServer?: CodexAppServerJsonObject;
   householdToolsEnabled?: boolean;
+  /** Enabled by the composition only after the meeting bundle and governed tools are loaded. */
+  meetingToolsEnabled?: boolean;
 }): Promise<CodexAppServerJsonObject> {
   await input.credentials.bind(input.callbackEnv);
   if (!input.callbackEnv.CAT_CAFE_API_URL || input.allowedDirectories.length === 0)
     throw new Error('Live scope unavailable');
   const servers: CodexAppServerJsonObject = {};
-  for (const family of input.householdToolsEnabled === false ? [] : ['collab', 'memory']) {
+  const families =
+    input.householdToolsEnabled === false ? (input.meetingToolsEnabled ? ['collab'] : []) : ['collab', 'memory'];
+  for (const family of families) {
     const entry = join(input.mcpDistDir, `${family}.js`);
     if (!existsSync(entry)) throw new Error('Live MCP runtime is not built');
     servers[`cat-cafe-${family}`] = {
@@ -26,6 +55,11 @@ export async function buildLiveMcpConfig(input: {
       args: [entry],
       // Search returns repository-relative docs paths; file authority remains the explicit roots below.
       cwd: resolve(input.mcpDistDir, '../../..'),
+      // Codex otherwise asks for approval of truthful open-world inspection, which Live cannot prompt for.
+      // This only permits selection; the Host still requires a separate owner confirmation before any page effect.
+      ...(family === 'collab'
+        ? collabToolPolicy(input.householdToolsEnabled !== false, input.meetingToolsEnabled === true)
+        : {}),
       env: {
         ...input.credentials.environment(),
         CAT_CAFE_API_URL: input.callbackEnv.CAT_CAFE_API_URL,

@@ -492,6 +492,57 @@
         "matchedFileCount": 2,
         "matchedFilesHash": "5156289dd54012e2deb82e432e13df85d39af2bbdc967e4499a266a82a95547a"
       }
+    },
+    {
+      "id": "alpha-browser-source-runtime",
+      "match": "^test/alpha-browser-template-source\\.test\\.js$",
+      "category": "source_only",
+      "reason": "Only the two production home integrations require the installation dossier and private Alpha/gate execution runtime omitted from the public allowlist. The sibling portable scheduler file stays selected, including the complete-runtime advertisement boundary.",
+      "owner": "@codex61-sol",
+      "introducedBy": "a6a1140779415695c0c3e20c0859901e45126aff",
+      "expiresOn": "2027-12-31",
+      "audit": {
+        "reviewedOn": "2026-10-10",
+        "sourceHead": "a6a1140779415695c0c3e20c0859901e45126aff",
+        "publicHead": "3e70e1d6805be24672e8f841861f180d20b184c2",
+        "status": "source_dependency_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "addae13e45ac129c6bbeea903b55702ecdaa598a9fa59779ca82026f45c95dba"
+      }
+    },
+    {
+      "id": "taste-takeaway-house-drafts",
+      "match": "^test/taste\\-takeaway\\-house\\-drafts\\.test\\.js$",
+      "category": "private_fixture",
+      "reason": "The exact 75-entry household draft inventory reads non-exported Taste vignettes and F321 evidence. Synthetic 75-public/2-private revision-bound importer and absent-main startup contracts remain in the public suite.",
+      "owner": "@codex61-sol",
+      "introducedBy": "9628408cca9e0fbc983d050425109f0d9207d721",
+      "expiresOn": "2026-12-31",
+      "audit": {
+        "reviewedOn": "2026-10-10",
+        "sourceHead": "9628408cca9e0fbc983d050425109f0d9207d721",
+        "publicHead": "3e70e1d6805be24672e8f841861f180d20b184c2",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "ba5e8da5d51452ab71c86fda0c6247475ebce1d805e4a46bcf0d4da541dbd950"
+      }
+    },
+    {
+      "id": "capability-evolution-landed-owner-binding",
+      "match": "^test/harness\\-eval/capability\\-evolution\\-measurement\\-binding\\-resolver\\.test\\.js$",
+      "category": "private_fixture",
+      "reason": "This historical publication regression reads the installation-owner ba0f measurement-source manifest, decision proofs and internal Git revision f11039c, all outside the public export. It remains in source-full; the newly exported resolver currently has no synthetic public test coverage, so source-full guards this historical integration.",
+      "owner": "@codex61-sol",
+      "introducedBy": "9628408cca9e0fbc983d050425109f0d9207d721",
+      "expiresOn": "2026-12-31",
+      "audit": {
+        "reviewedOn": "2026-10-10",
+        "sourceHead": "9628408cca9e0fbc983d050425109f0d9207d721",
+        "publicHead": "3e70e1d6805be24672e8f841861f180d20b184c2",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "be8312fd69ae044424851a10a45309ac91a35f1064747effd386574806ce5051"
+      }
     }
   ]
 }

@@ -112,7 +112,7 @@ export function ReviewRoundDecision({
               这段说明尚未保存到浏览器，请保留页面。
             </p>
           ) : null}
-          <p className="text-micro leading-5 text-cafe-muted">
+          <p className="text-micro leading-5 text-cafe-secondary">
             结论会连同这一版的讨论交还原任务；后续工作继续由原来的猫完成。
           </p>
         </div>

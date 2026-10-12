@@ -11,7 +11,12 @@ const tailwindConfigPath = resolve(webRoot, 'tailwind.config.js');
 
 describe('kimi theme regression', () => {
   it('CatHueInjector generates tokens dynamically for ALL cats (no hardcoded slug map)', () => {
-    const src = readFileSync(catHueInjectorPath, 'utf8');
+    // The injector walks lib/theme-colour-sources, the one list the name role, the plate and the lineage ring are checked
+    // against too (F322 B, Opus 5.5 3619): the cat-id / hexToOklch guards below apply to the pair.
+    const injector = readFileSync(catHueInjectorPath, 'utf8');
+    const sources = readFileSync(resolve(webRoot, 'src/lib/theme-colour-sources.ts'), 'utf8');
+    const src = `${injector}\n${sources}`;
+    expect(injector).toContain('themeColourSources');
     // Post-Option B: no hardcoded CAT_ID_TO_SLUG mapping — all cats get tokens via cat.id
     expect(src).not.toMatch(/CAT_ID_TO_SLUG/);
     // Dynamic injection uses cat.id directly as CSS key

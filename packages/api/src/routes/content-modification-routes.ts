@@ -1,9 +1,10 @@
-import { contentModificationRequestSchema, contentModificationSourceSchema } from '@cat-cafe/shared';
+import { contentModificationRequestContractSchema, contentModificationSourceSchema } from '@cat-cafe/shared';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { createContentModificationIntegration } from '../domains/collaborative-content/modification/composition.js';
 import {
   ContentModificationJournalError,
+  modificationMessageRequestId,
   modificationRequestId,
 } from '../domains/collaborative-content/modification/journal.js';
 import { ModificationTargetError } from '../domains/collaborative-content/modification/target-service.js';
@@ -14,6 +15,7 @@ import { resolveDirectLocalAuthorizationUserId } from '../utils/request-identity
 import { replyArtifactReviewError } from './artifact-review-route-errors.js';
 
 const params = z.object({ requestId: z.string().regex(/^f309-modification-[a-f0-9]{64}$/) }).strict();
+const messageParams = z.object({ messageId: z.string().min(1).max(256) }).strict();
 type Services = ReturnType<typeof createContentModificationIntegration>;
 
 export function directContentHuman(request: FastifyRequest) {
@@ -35,6 +37,17 @@ export function registerContentModificationRoutes(app: FastifyInstance, deps: Se
     try {
       const { operationId } = z.object({ operationId: z.string().uuid() }).strict().parse(request.params);
       return await deps.requests.read(modificationRequestId(principal.userId, operationId), principal);
+    } catch (error) {
+      return replyContentModificationError(reply, error);
+    }
+  });
+  app.get('/api/content-modifications/by-message/:messageId', async (request, reply) => {
+    reply.header('Cache-Control', 'private, no-store');
+    const principal = directContentHuman(request);
+    if (!principal) return reply.code(401).send({ error: 'identity_required' });
+    try {
+      const { messageId } = messageParams.parse(request.params);
+      return await deps.requests.read(modificationMessageRequestId(principal.userId, messageId), principal);
     } catch (error) {
       return replyContentModificationError(reply, error);
     }
@@ -82,7 +95,7 @@ export function registerContentModificationRoutes(app: FastifyInstance, deps: Se
     const principal = directContentHuman(request);
     if (!principal) return reply.code(401).send({ error: 'identity_required' });
     try {
-      return await deps.requests.submit(contentModificationRequestSchema.parse(request.body), principal);
+      return await deps.requests.submit(contentModificationRequestContractSchema.parse(request.body), principal);
     } catch (error) {
       return replyContentModificationError(reply, error);
     }

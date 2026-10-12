@@ -13,7 +13,7 @@ import {
 } from '../src/domains/plugin/builtin-runtime/collective-ingress-routing.js';
 import { resolveCollectiveStandingGrant } from '../src/domains/plugin/builtin-runtime/collective-standing-grant.js';
 import { CollectiveWorkAdmission } from '../src/domains/plugin/builtin-runtime/collective-work/collective-work-admission.js';
-import { CollectiveWorkAuthority } from '../src/domains/plugin/builtin-runtime/collective-work-authority.js';
+import { CollectiveWorkAuthority } from '../src/domains/plugin/builtin-runtime/collective-work/collective-work-authority.js';
 import { CollectiveWorkDispatcher } from '../src/domains/plugin/builtin-runtime/collective-work-dispatcher.js';
 import { resolveCollectiveWorkThread } from '../src/domains/plugin/builtin-runtime/collective-work-thread.js';
 import {

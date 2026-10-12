@@ -130,6 +130,7 @@ import {
   createInitialQueuedMessageCustody,
   type QueuedMessageCustodyCoordinator,
 } from './QueuedMessageCustodyCoordinator.js';
+import { type QueueHandledRestoreOutcome, QueueSourceCustodyAdmissionService } from './QueueSourceCustodyAdmission.js';
 import { type QueueEntryDurableTerminalOwner, resolveQueueEntrySettlement } from './queue-entry-settlement.js';
 import {
   type ContinuationOutcome,
@@ -158,6 +159,7 @@ import {
 import {
   normalizeQueueTerminalConsumptions,
   type QueueTerminalConsumptionCollection,
+  resolveQueueTargetDisposition,
 } from './queue-terminal-consumption.js';
 import { requireInvocationRecordUpdate } from './require-invocation-record-update.js';
 import {
@@ -308,7 +310,9 @@ function queueTerminalConsumptionForMessage(
   return (
     consumptions.find(
       (candidate) =>
-        (candidate.kind === 'managed_hold_continued' || candidate.kind === 'dispatch_handled_continuation') &&
+        (candidate.kind === 'managed_hold_continued' ||
+          candidate.kind === 'dispatch_handled_continuation' ||
+          candidate.kind === 'collective_public_reply') &&
         candidate.sourceMessageId === messageId,
     ) ?? consumptions.find((candidate) => candidate.kind === 'terminal_silent' || candidate.kind === 'source_response')
   );
@@ -510,6 +514,8 @@ export interface QueueProcessorDeps {
   messageStore: IMessageStore;
   /** F254: durable owner for ordinary queued-user lifecycle transitions. */
   queueCustodyCoordinator?: QueuedMessageCustodyCoordinator;
+  /** Serializes late terminal rollback with ordinary source recovery. */
+  queueSourceCustodyAdmission?: Pick<QueueSourceCustodyAdmissionService, 'restoreHandledCarrier'>;
   log: LoggerLike;
   /** F088 fix: optional outbound delivery hook (late-bound after gateway bootstrap). */
   outboundHook?: OutboundDeliveryHookLike;
@@ -568,6 +574,7 @@ interface AutoResumeSuppression {
 
 export class QueueProcessor {
   private deps: QueueProcessorDeps;
+  private readonly queueSourceCustodyAdmission: Pick<QueueSourceCustodyAdmissionService, 'restoreHandledCarrier'>;
   /** F108: Per-slot mutex — prevents concurrent double-start per (thread, cat) pair.
    *  F118 D4: startedAt supports bounded zombie detection.
    *  F194: the reservation object is the exact pre-start owner; invocationId is
@@ -723,6 +730,13 @@ export class QueueProcessor {
 
   constructor(deps: QueueProcessorDeps, opts?: { processingSlotTtlMs?: number }) {
     this.deps = deps;
+    this.queueSourceCustodyAdmission =
+      deps.queueSourceCustodyAdmission ??
+      new QueueSourceCustodyAdmissionService({
+        queue: deps.queue,
+        messageStore: deps.messageStore,
+        queueCustodyCoordinator: deps.queueCustodyCoordinator,
+      });
     this.processingSlotTtlMs = opts?.processingSlotTtlMs ?? DEFAULT_INVOCATION_SLOT_TTL_MS;
     this.sessionContinuationCoordinator =
       deps.sessionContinuationCoordinator ?? QueueProcessor.createSessionContinuationCoordinator(deps.threadStore);
@@ -1961,8 +1975,7 @@ export class QueueProcessor {
     handledAt: number,
     consumption?: QueueTerminalConsumptionWitness,
   ): Promise<QueueTargetOutcome> {
-    let disposition: QueueTargetOutcome['disposition'] =
-      consumption?.kind === 'managed_hold_continued' ? 'managed_hold_disposition' : 'completed_with_turn';
+    let hasExplicitReply = false;
     let hasPersistedLineage = false;
     try {
       const getByThreadAfter = this.deps.messageStore.getByThreadAfter?.bind(this.deps.messageStore);
@@ -1970,13 +1983,12 @@ export class QueueProcessor {
         const messages = await getByThreadAfter(threadId, undefined, undefined, handled.userId);
         const handledMessageIds = new Set(handled.messageIds);
         hasPersistedLineage = messages.some((message) => ownsPersistedInvocationLineage(message, invocationId));
-        const hasExplicitReply = messages.some((message) => {
+        hasExplicitReply = messages.some((message) => {
           const sameInvocation = ownsPersistedInvocationLineage(message, invocationId);
           return (
             message.catId === catId && sameInvocation && !!message.replyTo && handledMessageIds.has(message.replyTo)
           );
         });
-        if (hasExplicitReply && consumption?.kind !== 'managed_hold_continued') disposition = 'responded';
       }
     } catch (err) {
       this.deps.log.warn(
@@ -1986,7 +1998,7 @@ export class QueueProcessor {
     }
     return {
       invocationId,
-      disposition,
+      disposition: resolveQueueTargetDisposition(consumption, hasExplicitReply),
       evidenceRef: { kind: hasPersistedLineage ? 'invocation_lineage' : 'turn_execution', invocationId },
       handledAt,
       ...(consumption ? { consumption } : {}),
@@ -2380,12 +2392,7 @@ export class QueueProcessor {
         );
         const outcome: QueueTargetOutcome = {
           invocationId: input.invocationId,
-          disposition:
-            exactTerminalConsumption?.kind === 'managed_hold_continued'
-              ? 'managed_hold_disposition'
-              : sourceResponse
-                ? 'responded'
-                : 'completed_with_turn',
+          disposition: resolveQueueTargetDisposition(exactTerminalConsumption, sourceResponse !== undefined),
           evidenceRef: {
             kind: sourceResponse || hasPersistedLineage ? 'invocation_lineage' : 'turn_execution',
             invocationId: input.invocationId,
@@ -2447,6 +2454,20 @@ export class QueueProcessor {
     return exposed.some((message) => requiresDispatchDisposition(message, catId, invocationId, record));
   }
 
+  private async restoreQueuedHandledCarrier(
+    result: QueuedHandledResult,
+  ): Promise<QueueHandledRestoreOutcome | 'unavailable'> {
+    try {
+      return await this.queueSourceCustodyAdmission.restoreHandledCarrier(result);
+    } catch (err) {
+      this.deps.log.error(
+        { err, threadId: result.threadId, catId: result.catId, queueEntryId: result.entryId },
+        '[QueueProcessor] queued handled rollback could not resolve current source ownership',
+      );
+      return 'unavailable';
+    }
+  }
+
   private async markQueuedHandledOnSuccess(
     threadId: string,
     catId: string,
@@ -2489,22 +2510,22 @@ export class QueueProcessor {
         (await this.resolveQueueTargetOutcome(threadId, h, catId, invocationId, deliveredAt));
       let durablyCustodied = false;
       try {
-        durablyCustodied = h.entrySnapshot ? await this.hasDurableMessageCustody(h.entrySnapshot) : false;
+        durablyCustodied = await this.hasDurableMessageCustody(h.entrySnapshot);
       } catch (err) {
-        this.deps.queue.restoreQueuedHandledResult(h);
+        const restoration = await this.restoreQueuedHandledCarrier(h);
         this.deps.log.error(
-          { err, threadId, catId, queueEntryId: h.entryId },
-          '[QueueProcessor] queue custody binding invalid; restored queued entry',
+          { err, threadId, catId, queueEntryId: h.entryId, restoration },
+          '[QueueProcessor] queue custody binding invalid; reconciled rollback with current source owner',
         );
         continue;
       }
 
       if (durablyCustodied) {
-        if (!h.entrySnapshot || !this.deps.queueCustodyCoordinator) {
-          this.deps.queue.restoreQueuedHandledResult(h);
+        if (!this.deps.queueCustodyCoordinator) {
+          const restoration = await this.restoreQueuedHandledCarrier(h);
           this.deps.log.error(
-            { threadId, catId, queueEntryId: h.entryId },
-            '[QueueProcessor] durable Queue custody coordinator unavailable; restored queued entry',
+            { threadId, catId, queueEntryId: h.entryId, restoration },
+            '[QueueProcessor] durable Queue custody coordinator unavailable; reconciled rollback',
           );
           continue;
         }
@@ -2521,7 +2542,7 @@ export class QueueProcessor {
           );
           const handledMessages = settlement.perMessage.filter((message) => message.handledTargetCats.includes(catId));
           if (handledMessages.length !== settlement.perMessage.length) {
-            this.deps.queue.restoreQueuedHandledResult(h);
+            const restoration = await this.restoreQueuedHandledCarrier(h);
             await this.reconcileQueueCarrierAfterSourceSettlement(h.entrySnapshot);
             this.deps.log.error(
               {
@@ -2532,8 +2553,9 @@ export class QueueProcessor {
                 unmatchedMessageIds: settlement.perMessage
                   .filter((message) => !message.handledTargetCats.includes(catId))
                   .map((message) => message.messageId),
+                restoration,
               },
-              '[QueueProcessor] exact success evidence did not cover the complete Queue carrier; restored queued entry',
+              '[QueueProcessor] exact success evidence did not cover the complete Queue carrier; reconciled rollback',
             );
             continue;
           }
@@ -2556,7 +2578,7 @@ export class QueueProcessor {
             }
           }
         } catch (err) {
-          this.deps.queue.restoreQueuedHandledResult(h);
+          const restoration = await this.restoreQueuedHandledCarrier(h);
           // A multi-source commit may have succeeded partially, or a later
           // publication may have failed. Never restore already-consumed bodies.
           try {
@@ -2568,18 +2590,21 @@ export class QueueProcessor {
             );
           }
           this.deps.log.error(
-            { err, threadId, catId, queueEntryId: h.entryId },
-            '[QueueProcessor] Queue custody success commit failed; restored queued entry',
+            { err, threadId, catId, queueEntryId: h.entryId, restoration },
+            '[QueueProcessor] Queue custody success commit failed; reconciled rollback',
           );
           continue;
         }
       } else if (h.fullyConsumed && h.messageIds.length > 0) {
         const delivery = await this.markDeliveredAndEmit(h.userId, threadId, h.messageIds, deliveredAt);
         if (delivery.failedIds.length > 0) {
-          this.deps.queue.restoreQueuedHandledResult(h);
+          // This branch was classified as source-unmanaged before delivery.
+          // There is no durable Queue owner to project; restore only through the
+          // exact post-consume Queue CAS, which still refuses a replacement row.
+          const restoration = this.deps.queue.restoreQueuedHandledResult(h) ? 'restored' : 'state_changed';
           this.deps.log.warn(
-            { threadId, catId, queueEntryId: h.entryId, failedIds: delivery.failedIds },
-            '[QueueProcessor] F254 D1.2b delivery persistence failed; restored queued entry',
+            { threadId, catId, queueEntryId: h.entryId, failedIds: delivery.failedIds, restoration },
+            '[QueueProcessor] F254 D1.2b delivery persistence failed; reconciled rollback',
           );
           continue;
         }
@@ -2599,7 +2624,7 @@ export class QueueProcessor {
     if (committedHandled.length === 0) return;
 
     for (const h of committedHandled) {
-      const reservationId = h.entrySnapshot?.exactSteerBatch?.reservationId;
+      const reservationId = h.entrySnapshot.exactSteerBatch?.reservationId;
       if (reservationId) this.deps.queue.pruneExactUserBatchReservation(reservationId);
     }
 
@@ -3440,6 +3465,7 @@ export class QueueProcessor {
     if (
       !entry ||
       entry.status !== 'queued' ||
+      entry.queueCustodyAdmissionId !== undefined ||
       !entry.targetCats.includes(catId) ||
       !entry.queuedFailedByCatIds?.includes(catId)
     ) {

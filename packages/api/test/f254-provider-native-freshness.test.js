@@ -66,6 +66,12 @@ class FakeAppServerWire {
         id: message.id,
         result: { userAgent: 'fake', platformFamily: 'unix', platformOs: 'test', codexHome: '/tmp' },
       });
+    } else if (message.method === 'config/read') {
+      this.inbox.push({ id: message.id, result: { config: { model_provider: 'openai' } } });
+    } else if (message.method === 'configRequirements/read') {
+      this.inbox.push({ id: message.id, result: { requirements: null } });
+    } else if (message.method === 'account/read') {
+      this.inbox.push({ id: message.id, result: { account: { type: 'chatgpt' } } });
     } else if (message.method === 'thread/start') {
       this.inbox.push({ id: message.id, result: { thread: { id: 'thread-1', turns: [] } } });
     } else if (message.method === 'turn/start') {

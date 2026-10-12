@@ -32,6 +32,19 @@ function useNow(active: boolean): number {
   return now;
 }
 
+const EXECUTION_CONFIRMATION_GRACE_MS = 30_000;
+
+function useConfirmationGrace(active: boolean): boolean {
+  const [expired, setExpired] = useState(false);
+  useEffect(() => {
+    setExpired(false);
+    if (!active) return;
+    const timer = window.setTimeout(() => setExpired(true), EXECUTION_CONFIRMATION_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [active]);
+  return active && !expired;
+}
+
 type ForceResetAction = Extract<QueueRecoveryAction, { kind: 'force_reset' }>;
 
 export function useExecutionRow(threadId: string) {
@@ -42,7 +55,9 @@ export function useExecutionRow(threadId: string) {
   // The ONE shared answer to "is what this thread shows still verified?": the project-wide snapshot covers this thread
   // when it is anchored here OR belongs to the same project, so a failed re-read is stale for a same-project thread
   // that is not the anchor too. (An anchor-only test here missed that case; the classic composer already gets it right.)
-  const { canonicalProjectionStale, hasUnverifiedLegacyExecution } = useExecutionRecoveryVerification(threadId);
+  const { canonicalProjectionLoading, canonicalProjectionStale, hasUnverifiedLegacyExecution } =
+    useExecutionRecoveryVerification(threadId);
+  const hasConfirmingLegacyExecution = useConfirmationGrace(canonicalProjectionLoading && hasUnverifiedLegacyExecution);
 
   const view = useQueueView(threadId);
   // The new shell's row reports a reset that went through as done even when the re-read after it fails.
@@ -77,7 +92,8 @@ export function useExecutionRow(threadId: string) {
         cancelPendingKeys,
         silent,
         hydrationStale: canonicalProjectionStale,
-        hasUnverifiedLegacyExecution,
+        hasConfirmingLegacyExecution,
+        hasUnverifiedLegacyExecution: hasUnverifiedLegacyExecution && !hasConfirmingLegacyExecution,
         queue: {
           total: view.queue.length,
           paused: view.queuePaused,
@@ -87,7 +103,16 @@ export function useExecutionRow(threadId: string) {
           waitInfo: view.waitInfo,
         },
       }),
-    [canonicalProjectionStale, cancelPendingKeys, executions, hasUnverifiedLegacyExecution, now, silent, view],
+    [
+      canonicalProjectionStale,
+      cancelPendingKeys,
+      executions,
+      hasConfirmingLegacyExecution,
+      hasUnverifiedLegacyExecution,
+      now,
+      silent,
+      view,
+    ],
   );
 
   const stuckAction = useMemo(

@@ -16,6 +16,7 @@ import {
   ConnectorImage,
   GitHubIcon,
   HoldBallIcon,
+  RefreshCwIcon,
   ReturnArrowIcon,
   RobotIcon,
   SchedulerIcon,
@@ -41,6 +42,7 @@ const SVG_ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> 
   search: SearchIcon,
   robot: RobotIcon,
   'return-arrow': ReturnArrowIcon,
+  'refresh-cw': RefreshCwIcon,
 };
 
 function formatTime(ts: number): string {

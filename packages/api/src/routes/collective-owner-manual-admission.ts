@@ -9,11 +9,11 @@ import {
 import type { IMessageStore, StoredMessage } from '../domains/cats/services/stores/ports/MessageStore.js';
 import type { ITaskStore } from '../domains/cats/services/stores/ports/TaskStore.js';
 import { classifyEntrustedWorkSourceTime } from '../domains/growing/EntrustedWorkSourceSignals.js';
+import type { CollectiveWorkAuthority } from '../domains/plugin/builtin-runtime/collective-work/collective-work-authority.js';
 import {
   opaqueHostAdmission,
   taskForImmutableAssignment,
 } from '../domains/plugin/builtin-runtime/collective-work/collective-work-execution-receipt.js';
-import type { CollectiveWorkAuthority } from '../domains/plugin/builtin-runtime/collective-work-authority.js';
 
 /** The strict owner click admits only an existing Service commitment; it cannot manufacture public Work. */
 interface ManualCollectiveAdmissionInput {

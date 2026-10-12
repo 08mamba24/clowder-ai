@@ -134,7 +134,7 @@ describe('F287 owner-authenticated memory cue callbacks', () => {
     return {
       cueId: 'cue-1',
       opportunityId: 'opportunity-1',
-      catalogVersion: 5,
+      catalogVersion: 6,
       resolverFamily: 'person_entity',
       resolverVersion: 1,
       family: 'person_memory',

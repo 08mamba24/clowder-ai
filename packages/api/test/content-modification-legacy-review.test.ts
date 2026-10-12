@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { contentModificationRequestSchema } from '@cat-cafe/shared';
+import { contentModificationRequestContractSchema } from '@cat-cafe/shared';
 import Fastify from 'fastify';
 import sharp from 'sharp';
 import { inspectArtifactReview } from '../src/domains/collaborative-content/artifact-review/inspection.js';
@@ -152,7 +152,7 @@ test('legacy modification uses the existing inline round and Task through the du
     },
     intent: { body: '保留原讨论，修改选中的区域', selection: { kind: 'image-point', x: 4, y: 5 } },
   };
-  const payload = contentModificationRequestSchema.parse(raw);
+  const payload = contentModificationRequestContractSchema.parse(raw);
   const sent = await integration.requests.submit(payload, f.human);
   assert.equal(sent.stage, 'queued', JSON.stringify(sent.record.issue));
   assert.equal(sent.record.progress.task?.taskId, f.taskId);

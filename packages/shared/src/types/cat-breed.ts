@@ -11,6 +11,7 @@
  * CLI invocation config for a variant
  */
 import type { CliEffortValue } from '../cli-effort.js';
+import type { AccountQuotaObservation, CodexManagedAccount } from '../codex-account.js';
 import type { CodexSpeedValue } from '../codex-speed.js';
 import type { AgyProfileConfig, CatColor, ClientId } from './cat.js';
 import type { CatId } from './ids.js';
@@ -70,7 +71,8 @@ export interface CatVariant {
   readonly mcpSupport: boolean;
   readonly cli: CliConfig;
   /** F210 Phase G: optional isolated Antigravity CLI profile binding. */
-  readonly agyProfile?: AgyProfileConfig;
+  /** null explicitly clears a template profile in a runtime catalog overlay. */
+  readonly agyProfile?: AgyProfileConfig | null;
   /** F127: explicit CLI args for bridge-style members such as Antigravity. */
   readonly commandArgs?: readonly string[];
   /** Optional per-variant override for roleDescription; falls back to breed.roleDescription. */
@@ -223,6 +225,8 @@ export type AccountProtocol = 'anthropic' | 'openai' | 'openai-responses' | 'goo
  * Maps an accountRef to its LLM endpoint metadata (no secrets).
  */
 export interface AccountConfig {
+  readonly codex?: CodexManagedAccount;
+  readonly quota?: AccountQuotaObservation;
   readonly authType: 'oauth' | 'api_key';
   /** F171: Explicit client identity for API key accounts (e.g. 'anthropic', 'openai'). */
   readonly clientId?: string;

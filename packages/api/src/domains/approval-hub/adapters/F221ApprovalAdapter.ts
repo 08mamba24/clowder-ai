@@ -49,7 +49,7 @@ function toItem(p: TasteProposal): ApprovalItem | null {
     requesterCatId: p.catId,
     ownerUserId: p.userId,
     status: p.status,
-    summary: `Taste [${p.dimension}]: ${(p.takeaway ?? p.quote).slice(0, 60)}`,
+    summary: `${p.correctionTarget ? 'Taste correction' : 'Taste'} [${p.dimension}]: ${(p.takeaway ?? p.quote).slice(0, 60)}`,
     detail: {
       scene: p.scene,
       quote: p.quote,
@@ -57,6 +57,15 @@ function toItem(p: TasteProposal): ApprovalItem | null {
       dimension: p.dimension,
       tags: p.tags,
       privacy: p.privacy,
+      ...(p.correctionTarget
+        ? {
+            correction: {
+              expectedRevision: p.correctionTarget.expectedRevision,
+              reason: p.correctionTarget.reason,
+              suggestedPatch: structuredClone(p.correctionTarget.suggestedPatch),
+            },
+          }
+        : {}),
     },
     navigation,
     inlineApprovable: true,
@@ -81,7 +90,7 @@ function toSettledItem(p: TasteProposal): SettledApprovalItem | null {
     requesterCatId: p.catId,
     ownerUserId: p.userId,
     status: p.status,
-    summary: `Taste [${p.dimension}]: ${(p.takeaway ?? p.quote).slice(0, 60)}`,
+    summary: `${p.correctionTarget ? 'Taste correction' : 'Taste'} [${p.dimension}]: ${(p.takeaway ?? p.quote).slice(0, 60)}`,
     detail: {
       scene: p.scene,
       quote: p.quote,
@@ -89,6 +98,15 @@ function toSettledItem(p: TasteProposal): SettledApprovalItem | null {
       dimension: p.dimension,
       tags: p.tags,
       privacy: p.privacy,
+      ...(p.correctionTarget
+        ? {
+            correction: {
+              expectedRevision: p.correctionTarget.expectedRevision,
+              reason: p.correctionTarget.reason,
+              suggestedPatch: structuredClone(p.correctionTarget.suggestedPatch),
+            },
+          }
+        : {}),
     },
     navigation,
     decidedAt: p.approvedAt ?? p.rejectedAt ?? 0,

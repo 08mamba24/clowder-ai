@@ -37,6 +37,11 @@ mcp_admission_claims:
     boundaryKind: resource-entry
     decision: accepted
   - ref: "file:docs/features/F311-capability-evolution-workspace.md"
+    toolName: cat_cafe_rebind_evolution_program_measurement
+    resourceFamily: evolution-program
+    boundaryKind: resource-entry
+    decision: accepted
+  - ref: "file:docs/features/F311-capability-evolution-workspace.md"
     toolName: cat_cafe_open_evolution_round
     resourceFamily: evolution-program
     boundaryKind: resource-entry
@@ -103,7 +108,7 @@ mcp_admission_claims:
 > **F100 owner loop landed (2026-09-12)**: 原 reader Task `private-source-id` 已由 PR #4435 / `fce8043d0e16b90fe6f94b2e2757b785832378ec` 完成；接口 child Task `private-source-id` 随 PR #4517 merge 与重启前后 Alpha 同源消费验收转为 done。Terra 对 exact implementation HEAD `b8994347eaf2e083d008f8c87c6fb3c0c2f8a94e` 批准且无 P1/P2。该交付只证明 F100 owner 的版本、受治理动作、证据/use/fresh-outcome/rollback 与恢复接口及 F307 consumer；生产 runtime 未重启，`adoption_proof_unavailable`、`applied_use_proof_unavailable` 和六项 observation gap 保持可见。F314 parent Task `private-source-id` 与 observation Task `private-source-id` 继续持有业务闭环，旧 guardian 的 `accepted_then_retired` 不变。
 
 Architecture cell: capability-evolution-control
-Map delta: new cell landed via Gate 0A（薄控制面）——它**只拥有**：Program identity/lifecycle、Goal/claim/经济页、各领域资产的 **owner refs**、调度与阶段投影、keep/tune/rollback/sunset 编排状态。上述用户可见生命周期是 **TTL=0、跨重启恢复的 canonical Program truth**；瞬时 scheduler/cache 只能重建投影，不能决定生命周期。**不拥有**：rubric 内容、原始轨迹、verdict lifecycle、资产版本、写回结果、通用 feedback/证据消费账本。
+Map delta: new cell landed via Gate 0A（薄控制面）——它**只拥有**：Program identity/lifecycle、Goal/claim/经济页、各领域资产的 **owner refs**、调度与阶段投影、keep/tune/rollback/sunset 编排状态；版本化量具只新增一个由 F267 trusted-main truth 驱动的原子 refs-only rebind event。上述用户可见生命周期是 **TTL=0、跨重启恢复的 canonical Program truth**；瞬时 scheduler/cache 只能重建投影，不能决定生命周期。**不拥有**：rubric 内容、原始轨迹、verdict lifecycle、资产版本、写回结果、通用 feedback/证据消费账本。
 Why: "一个被进化对象的完整进化回合"这个绑定当前无 cell 拥有；但绑定的实现是引用与编排，禁止在 F311 内私造 TraceStore/Queue/审批状态机/第二套版本系统。
 
 F311 复用 `harness-eval`（F192 registry/trigger/verdict + F266 closure + F267 validity）。**纠正 v0 错误：`memory` 不是 trace owner**（memory 只负责索引/检索；invocation trajectory 归 F299 所在链路）。
@@ -305,6 +310,8 @@ F311：keep / tune / rollback / sunset；不接管 OfficeAce 真相
 ### Phase 1: 建制与可见（Start & See）
 
 交付用户从第一天就会使用、以后不会拆掉的正式入口：用户在任意聊天页说“我们来进化 X”，猫自动起草一个 durable Evolution Program。Program 持有对象身份、单 Goal/claim、经济页、双证/四角色/owner refs、生命周期与当前阶段；F307 Workbench 同时显示 Program 列表、建制进度、阻塞原因和下一步。正常路径零表单，只有价值歧义、必要角色缺失或治理边界才浮出最小确认。
+
+量具或四角色发布新版本时，不覆盖旧建制事件，也不重新创建 Program：只有 `active/instrumenting` 可凭一个 F267 decision-proof identity 追加原子 rebind 事件。证书与四角色 refs 必须由 F267 trusted-main resolver 推导，value owner、Goal/economic certificate、stage 与 Cycle 原样保留；调用方自报 owner refs、在 observing/evaluating 中途换尺或把 `insufficient` 当可用结果均 fail closed。
 
 Program canonical truth 从第一次创建起 active/terminal 均 `TTL=0`、跨重启恢复；pause/resume/needs_expert/withdraw/retention 选择可审计。UI、MCP/猫动作与 API 读取同一 truth，不允许先做一张静态卡片再重写后台。
 

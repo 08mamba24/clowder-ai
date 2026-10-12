@@ -3,10 +3,9 @@
 /**
  * F322 AppTooltip — the one hover/focus name tip for shell controls (DESIGN.md "图标与悬停提示").
  *
- *  - Pointer: appears ~150ms after the pointer settles; once one tip has been shown, moving to an
- *    adjacent control shows the next tip with no extra wait (native `title` waits ~1s and can't be tuned).
+ *  - Icons appear after 150ms and share a warm run; content waits 600ms without joining that run.
  *  - Keyboard: keyboard focus (`:focus-visible`) shows the tip immediately; mouse-click focus does not.
- *  - Escape dismisses it (WCAG 1.4.13); the pointer may move onto the tip without it disappearing.
+ *  - Escape dismisses it; tips never take pointer input and leaving the trigger closes them immediately.
  *  - Touch: a long press shows the tip (the following tap is swallowed so it doesn't also act).
  *  - The tip is an aid, never the only name: callers still give the control its own `aria-label`,
  *    and never a native `title` (this component never sets one, so there's no double pop).
@@ -28,6 +27,7 @@ import {
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { useActionOwnerReset, useActionSurfaceRef } from './message-v2/message-action-ownership';
 
 export type AppTooltipSide = 'right' | 'bottom' | 'top';
 
@@ -35,8 +35,7 @@ export type AppTooltipSide = 'right' | 'bottom' | 'top';
 export const APP_TOOLTIP_DELAY_MS = 150;
 /** After a tip closes, moving to a neighbour within this window shows it instantly. */
 export const APP_TOOLTIP_WARM_MS = 500;
-/** Grace to travel from the control onto the tip itself without it closing. */
-const HIDE_GRACE_MS = 120;
+export const APP_TOOLTIP_CONTENT_DELAY_MS = 600;
 const LONG_PRESS_MS = 450;
 const TOUCH_AUTOHIDE_MS = 2200;
 const GAP_PX = 8;
@@ -46,7 +45,8 @@ const VIEWPORT_PAD_PX = 8;
  * Shared across instances so "adjacent control = no re-wait" works: while any tip is open, or for a moment after
  * one closed, the next control's tip is instant. Only one tip is ever visible — opening one closes the previous.
  */
-const warm: { until: number; active: { close: () => void } | null } = { until: 0, active: null };
+type TooltipOwner = { close: () => void; warmsIcons: boolean };
+const warm: { until: number; active: TooltipOwner | null } = { until: 0, active: null };
 export function resetAppTooltipWarmState(): void {
   warm.until = 0;
   warm.active = null;
@@ -67,7 +67,18 @@ interface AppTooltipProps {
    * single 28px bar, and put the detail on its own lines. Everything else stays one line.
    */
   multiline?: boolean;
+  /** Visible content needs a deliberate pause; the default is an icon's name. */
+  intent?: 'icon' | 'content';
+  /** Recover clipped text only; a fully visible title or menu name needs no extra card. */
+  onlyWhenTruncated?: boolean;
   children: ReactElement;
+}
+
+function isTruncated(anchor: HTMLElement | null): boolean {
+  if (!anchor) return false;
+  return [anchor, ...anchor.querySelectorAll<HTMLElement>('.truncate, .line-clamp-2')].some(
+    (element) => element.scrollWidth > element.clientWidth || element.scrollHeight > element.clientHeight,
+  );
 }
 
 function matchesFocusVisible(target: EventTarget | null): boolean {
@@ -86,13 +97,15 @@ export function AppTooltip({
   side = 'right',
   disabled = false,
   multiline = false,
+  intent = 'icon',
+  onlyWhenTruncated = false,
   children,
 }: AppTooltipProps) {
   const id = useId();
   const wrapperRef = useRef<HTMLSpanElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
+  const ownedTipRef = useActionSurfaceRef<HTMLDivElement>(undefined, undefined, tipRef);
   const showTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const touchHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const swallowClick = useRef(false);
@@ -101,52 +114,52 @@ export function AppTooltip({
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
 
   const clearTimers = useCallback(() => {
-    for (const ref of [showTimer, hideTimer, longPressTimer, touchHideTimer]) {
+    for (const ref of [showTimer, longPressTimer, touchHideTimer]) {
       if (ref.current) clearTimeout(ref.current);
       ref.current = null;
     }
   }, []);
 
-  const self = useRef<{ close: () => void }>({ close: () => {} });
+  const self = useRef<TooltipOwner>({ close: () => {}, warmsIcons: intent === 'icon' });
+  self.current.warmsIcons = intent === 'icon';
 
   const close = useCallback(() => {
     clearTimers();
     if (warm.active === self.current) {
       warm.active = null;
-      warm.until = Date.now() + APP_TOOLTIP_WARM_MS;
+      if (self.current.warmsIcons) warm.until = Date.now() + APP_TOOLTIP_WARM_MS;
     }
     setOpen(false);
     setPosition(null);
   }, [clearTimers]);
   self.current.close = close;
+  useActionOwnerReset(close, undefined, undefined, true);
 
   const openNow = useCallback(() => {
-    if (disabled || dismissed.current) return;
+    if (disabled || dismissed.current) return false;
+    if (onlyWhenTruncated && !isTruncated(wrapperRef.current?.firstElementChild as HTMLElement | null)) return false;
     clearTimers();
     if (warm.active && warm.active !== self.current) warm.active.close();
     warm.active = self.current;
     setOpen(true);
-  }, [clearTimers, disabled]);
+    return true;
+  }, [clearTimers, disabled, onlyWhenTruncated]);
 
   const scheduleOpen = useCallback(() => {
     if (disabled || dismissed.current) return;
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-    hideTimer.current = null;
     if (showTimer.current) clearTimeout(showTimer.current);
-    const wait = warm.active !== null || Date.now() < warm.until ? 0 : APP_TOOLTIP_DELAY_MS;
+    const wait =
+      intent === 'content'
+        ? APP_TOOLTIP_CONTENT_DELAY_MS
+        : warm.active?.warmsIcons || Date.now() < warm.until
+          ? 0
+          : APP_TOOLTIP_DELAY_MS;
     if (wait === 0) {
       openNow();
       return;
     }
     showTimer.current = setTimeout(openNow, wait);
-  }, [disabled, openNow]);
-
-  const scheduleClose = useCallback(() => {
-    if (showTimer.current) clearTimeout(showTimer.current);
-    showTimer.current = null;
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(close, HIDE_GRACE_MS);
-  }, [close]);
+  }, [disabled, intent, openNow]);
 
   useEffect(
     () => () => {
@@ -184,9 +197,10 @@ export function AppTooltip({
       let left: number;
       let top: number;
       if (side === 'right') {
-        left = a.right + GAP_PX;
+        const edge = anchor.closest('[data-shell-sidebar="v2"]')?.getBoundingClientRect() ?? a;
+        left = edge.right + GAP_PX;
         top = a.top + (a.height - t.height) / 2;
-        if (left + t.width > window.innerWidth - VIEWPORT_PAD_PX) left = a.left - GAP_PX - t.width;
+        if (left + t.width > window.innerWidth - VIEWPORT_PAD_PX) left = edge.left - GAP_PX - t.width;
       } else {
         left = a.left + (a.width - t.width) / 2;
         top = side === 'bottom' ? a.bottom + GAP_PX : a.top - GAP_PX - t.height;
@@ -214,15 +228,15 @@ export function AppTooltip({
   const onPointerLeave = (event: ReactPointerEvent) => {
     if (event.pointerType === 'touch') return;
     dismissed.current = false;
-    scheduleClose();
+    close();
   };
   const onPointerDown = (event: ReactPointerEvent) => {
     if (event.pointerType === 'touch') {
       swallowClick.current = false;
       if (longPressTimer.current) clearTimeout(longPressTimer.current);
       longPressTimer.current = setTimeout(() => {
+        if (!openNow()) return;
         swallowClick.current = true;
-        openNow();
         touchHideTimer.current = setTimeout(close, TOUCH_AUTOHIDE_MS);
       }, LONG_PRESS_MS);
       return;
@@ -264,6 +278,13 @@ export function AppTooltip({
       style={{ display: 'contents' }}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
+      onPointerMove={
+        intent === 'content'
+          ? (event) => {
+              if (event.pointerType !== 'touch' && !open) scheduleOpen();
+            }
+          : undefined
+      }
       onPointerDownCapture={onPointerDown}
       onPointerUp={cancelLongPress}
       onPointerCancel={cancelLongPress}
@@ -277,12 +298,12 @@ export function AppTooltip({
         typeof document !== 'undefined' &&
         createPortal(
           <div
-            ref={tipRef}
+            ref={ownedTipRef}
             id={id}
             role="tooltip"
             data-testid="app-tooltip"
             data-side={side}
-            className={`pointer-events-auto fixed z-[100] flex max-w-[320px] rounded-lg px-2.5 text-xs font-medium ${
+            className={`pointer-events-none fixed z-[100] flex max-w-[320px] rounded-lg px-2.5 text-xs font-medium ${
               multiline ? 'flex-col items-start py-1.5 leading-[1.5]' : 'items-center'
             }`}
             style={{
@@ -294,11 +315,6 @@ export function AppTooltip({
               color: 'var(--shell-tip-fg, var(--cafe-surface-canvas))',
               boxShadow: 'var(--shell-tip-shadow, 0 4px 10px rgb(20 20 19 / 0.1))',
             }}
-            onPointerEnter={() => {
-              if (hideTimer.current) clearTimeout(hideTimer.current);
-              hideTimer.current = null;
-            }}
-            onPointerLeave={scheduleClose}
           >
             <span className={multiline ? 'break-words' : 'whitespace-nowrap'}>
               {label}

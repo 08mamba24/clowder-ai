@@ -92,9 +92,11 @@ export const useF307ExperienceWorkbenchStore = create<ExperienceWorkbenchStore>(
     set((current) => {
       const layout = reduceWorkbench(current.layout, action);
       persistLayout(layout);
+      // Transient focus/attention belongs to the active node; canonical resolution may retain
+      // an existing identity or reject the request, so the reducer result is authoritative.
       const remappedFocusSurfaceId =
         action.type === 'resolve-content-surface' && current.focusSurfaceId === action.sourceSurfaceId
-          ? action.surface.id
+          ? layout.activeSurfaceId
           : current.focusSurfaceId;
       return {
         layout,
@@ -103,7 +105,7 @@ export const useF307ExperienceWorkbenchStore = create<ExperienceWorkbenchStore>(
             ? retainMainAreaAttention(
                 layout,
                 current.mainAreaAttentionSurfaceId === action.sourceSurfaceId
-                  ? action.surface.id
+                  ? layout.activeSurfaceId
                   : current.mainAreaAttentionSurfaceId,
               )
             : detachedAnySurface(current.layout, layout)

@@ -57,6 +57,29 @@ html[data-shell="v2"] {
   --shell-tip-shadow: 0 0 0 1px rgb(255 255 255 / 0.1) inset, 0 4px 10px rgb(0 0 0 / 0.35);
 }
 
+/* Chat chrome responds to its own pane, including narrow desktop split views.
+ * Keep navigation and work actions intact instead of overflowing the shared
+ * scroll host, which lets keyboard focus pan the entire conversation sideways. */
+[data-shell-header="v2"] {
+  container: chat-header / inline-size;
+}
+
+@container chat-header (max-width: 420px) {
+  .shell-chat-header-layout {
+    height: auto;
+    min-height: 52px;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    gap: 4px;
+  }
+
+  .shell-chat-header-navigation,
+  .shell-chat-header-actions {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+}
+
 /* One focus ring for every shell control: external 2px solid ring + 2px gap (DESIGN.md Elevation). */
 [data-shell="v2"] .shell-focusable:focus-visible {
   outline: 2px solid var(--cafe-accent);
@@ -108,6 +131,11 @@ html[data-shell="v2"] {
  */
 [data-shell="v2"] div:has(> [data-testid="chat-input-composer-row"]) {
   background: var(--shell-work);
+}
+
+/* The landing composer overlaps the hero fade; its host must not paint a rectangular work-surface behind the card. */
+[data-shell="v2"] [data-testid="new-conversation-page"] div:has(> [data-testid="chat-input-composer-row"]) {
+  background: transparent;
 }
 
 [data-shell="v2"] [data-testid="chat-input-composer-row"] {

@@ -288,6 +288,7 @@ interface AgentMsg {
   errorCode?: string;
   isFinal?: boolean;
   metadata?: {
+    executionAccount?: import('@cat-cafe/shared').ExecutionAccountSnapshot;
     provider: string;
     model: string;
     sessionId?: string;
@@ -298,6 +299,9 @@ interface AgentMsg {
     cliDiagnostics?: CliDiagnostics;
   };
   /** Tool name (for 'tool_use' events from backend) */
+  toolEventId?: string;
+  toolUseId?: string;
+  toolExecutionRef?: string;
   toolName?: string;
   /** Tool input params (for 'tool_use' events from backend) */
   toolInput?: Record<string, unknown>;
@@ -318,6 +322,7 @@ interface AgentMsg {
   mentionsUser?: boolean;
   /** F52: Cross-thread origin metadata */
   extra?: {
+    outputLayout?: import('@cat-cafe/shared').MessageOutputLayoutV1;
     crossPost?: { sourceThreadId: string; sourceInvocationId?: string };
     a2aRouting?: { fromCatId?: string; targetCatId?: string; invocationId?: string; routing?: A2ARoutingProjection };
     /** #814: True when message originated from an explicit post_message callback */
@@ -523,6 +528,9 @@ export interface BackgroundAgentMessage {
   /** F309: the stored message's own timestamp, sent with done once persistence completed. */
   messageTimestamp?: number;
   origin?: 'stream' | 'callback';
+  toolEventId?: string;
+  toolUseId?: string;
+  toolExecutionRef?: string;
   toolName?: string;
   toolInput?: Record<string, unknown>;
   error?: string;
@@ -530,6 +538,7 @@ export interface BackgroundAgentMessage {
   errorCode?: string;
   isFinal?: boolean;
   metadata?: {
+    executionAccount?: import('@cat-cafe/shared').ExecutionAccountSnapshot;
     provider: string;
     model: string;
     sessionId?: string;
@@ -542,6 +551,7 @@ export interface BackgroundAgentMessage {
   };
   /** F52: Cross-thread origin metadata */
   extra?: {
+    outputLayout?: import('@cat-cafe/shared').MessageOutputLayoutV1;
     crossPost?: { sourceThreadId: string; sourceInvocationId?: string };
     /** #814: True when message originated from an explicit post_message callback */
     isExplicitPost?: boolean;
@@ -1491,6 +1501,9 @@ export function consumeBackgroundSystemInfo(
           options.store.setThreadMessageMetadata(msg.threadId, existingRef.id, {
             model: parsed.model as string,
             provider: parsed.provider as string,
+            ...(parsed.executionAccount
+              ? { executionAccount: parsed.executionAccount as import('@cat-cafe/shared').ExecutionAccountSnapshot }
+              : {}),
           });
         }
         options.store.setThreadMessageUsage(msg.threadId, existingRef.id, parsed.usage);
@@ -3176,7 +3189,9 @@ export function handleBackgroundAgentMessage(
       bgActiveRef?.id === messageId &&
       isCurrentFreshParentSeed(bgActiveRef, msg.timestamp, msg.seq);
     const toolUseEventData: ToolEvent = {
-      id: `bg-tool-use-${msg.timestamp}-${options.nextBgSeq()}`,
+      id: msg.toolEventId ?? `bg-tool-use-${msg.timestamp}-${options.nextBgSeq()}`,
+      ...(msg.toolUseId ? { toolUseId: msg.toolUseId } : {}),
+      ...(msg.toolExecutionRef ? { executionRef: msg.toolExecutionRef } : {}),
       type: 'tool_use',
       label: `${msg.catId} → ${toolName}`,
       ...(detail ? { detail } : {}),
@@ -3234,7 +3249,9 @@ export function handleBackgroundAgentMessage(
       bgActiveRef?.id === messageId &&
       isCurrentFreshParentSeed(bgActiveRef, msg.timestamp, msg.seq);
     const toolResultEventData: ToolEvent = {
-      id: `bg-tool-result-${msg.timestamp}-${options.nextBgSeq()}`,
+      id: msg.toolEventId ?? `bg-tool-result-${msg.timestamp}-${options.nextBgSeq()}`,
+      ...(msg.toolUseId ? { toolUseId: msg.toolUseId } : {}),
+      ...(msg.toolExecutionRef ? { executionRef: msg.toolExecutionRef } : {}),
       type: 'tool_result',
       label: `${msg.catId} ← result`,
       detail,
@@ -5195,7 +5212,9 @@ export function useAgentMessages() {
         // 跟 ensureActiveAssistantMessage 创建的 id 无关）。recoveryAction !== 'none'
         // 或 invocationless 回退 legacy appendToolEvent。
         const toolUseEventData: ToolEvent = {
-          id: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: msg.toolEventId ?? `tool-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          ...(msg.toolUseId ? { toolUseId: msg.toolUseId } : {}),
+          ...(msg.toolExecutionRef ? { executionRef: msg.toolExecutionRef } : {}),
           type: 'tool_use',
           label: `${msg.catId} → ${toolName}`,
           ...(detail ? { detail } : {}),
@@ -5277,7 +5296,9 @@ export function useAgentMessages() {
         const resultMeta = extractRecallMetaDetail(rawContent);
         // F183 Phase B1.6 — tool_result wire-up via reducer (same pattern as tool_use).
         const toolResultEventData: ToolEvent = {
-          id: `toolr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: msg.toolEventId ?? `toolr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          ...(msg.toolUseId ? { toolUseId: msg.toolUseId } : {}),
+          ...(msg.toolExecutionRef ? { executionRef: msg.toolExecutionRef } : {}),
           type: 'tool_result',
           label: `${msg.catId} ← result`,
           detail,
@@ -5992,6 +6013,12 @@ export function useAgentMessages() {
                 setMessageMetadata(ref.id, {
                   model: parsed.model as string,
                   provider: parsed.provider as string,
+                  ...(parsed.executionAccount
+                    ? {
+                        executionAccount:
+                          parsed.executionAccount as import('@cat-cafe/shared').ExecutionAccountSnapshot,
+                      }
+                    : {}),
                 });
               }
               setMessageUsage(ref.id, parsed.usage);

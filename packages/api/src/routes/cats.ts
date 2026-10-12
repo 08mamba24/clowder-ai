@@ -35,6 +35,11 @@ import {
   validateRuntimeProviderBinding,
 } from '../config/account-resolver.js';
 import {
+  agyNativeMemberSettingsSchema,
+  publicAgyProfile,
+  resolveAgyNativeMemberPatch,
+} from '../config/agy-native-member-settings.js';
+import {
   inheritFullyBlockedMcpCapabilitiesForNewCat,
   removeDeletedCatFromBlockedMcps,
 } from '../config/capabilities/capability-orchestrator.js';
@@ -48,6 +53,7 @@ import {
   toAllCatConfigs,
 } from '../config/cat-config-loader.js';
 import { getCatModel } from '../config/cat-models.js';
+import { reconcileCatRegistry } from '../config/cat-registry-reconciliation.js';
 import { resolveCodexCarrierTruth } from '../config/codex-cli.js';
 import { configEventBus, createChangeSetId } from '../config/config-event-bus.js';
 import { getConfiguredMemberWindowSetting, resolveContextCapacity } from '../config/context-capacity.js';
@@ -191,9 +197,11 @@ const createNormalCatSchema = baseCatSchema.extend({
   cliConfigArgs: z.array(z.string().min(1)).optional(),
   provider: z.string().min(1).optional(),
   acp: acpConfigSchema.optional(), // F161: optional ACP transport for any client
+  agyProfile: agyNativeMemberSettingsSchema.optional(),
 });
 
 const createAntigravityCatSchema = baseCatSchema.extend({
+  agyProfile: z.never().optional(),
   clientId: z.literal('antigravity'),
   defaultModel: modelSchema,
   mcpSupport: z.boolean().optional(),
@@ -202,6 +210,7 @@ const createAntigravityCatSchema = baseCatSchema.extend({
 
 /** F161: Generic ACP client — acp section required (it's the only transport). */
 const createAcpCatSchema = baseCatSchema.extend({
+  agyProfile: z.never().optional(),
   clientId: z.literal('acp'),
   defaultModel: modelSchema,
   mcpSupport: z.boolean().optional(),
@@ -247,6 +256,7 @@ const updateCatSchema = z.object({
   restoreBuiltinCloudIdentity: z.literal(true).optional(),
   voiceConfig: voiceConfigSchema.nullable().optional(),
   acp: acpConfigSchema.nullable().optional(), // F161: nullable to allow removing ACP transport
+  agyProfile: agyNativeMemberSettingsSchema.nullable().optional(),
 });
 
 type UpdateCatRequestBody = z.infer<typeof updateCatSchema>;
@@ -725,6 +735,7 @@ async function toCatResponse(
     breedDisplayName: cat.breedDisplayName ?? undefined,
     mcpSupport: cat.mcpSupport,
     ...(acpConfig ? { acp: acpConfig } : {}),
+    ...(cat.agyProfile ? { agyProfile: publicAgyProfile(cat.agyProfile) } : {}),
     ...(identityProtection ? { identityProtection } : {}),
     roster: metadata.roster
       ? {
@@ -736,21 +747,8 @@ async function toCatResponse(
         }
       : null,
     // F161: adapterMode is now provider-agnostic — any clientId can have ACP config
-    adapterMode: acpConfig ? 'acp' : 'cli',
+    adapterMode: acpConfig ? 'acp' : cat.agyProfile?.carrier === 'native' ? 'agy-native' : 'cli',
   };
-}
-
-async function reconcileCatRegistry(projectRoot: string, managedIdsBefore: ReadonlySet<string>) {
-  const runtimeCats = toAllCatConfigs(loadResolvedCatConfig(resolveProjectTemplatePath(projectRoot)));
-  const extraCats = catRegistry.getAllConfigs();
-  catRegistry.reset();
-  for (const [id, config] of Object.entries(runtimeCats)) {
-    catRegistry.register(id, config);
-  }
-  for (const [id, config] of Object.entries(extraCats)) {
-    if (!runtimeCats[id] && !managedIdsBefore.has(id)) catRegistry.register(id, config);
-  }
-  return catRegistry.getAllConfigs();
 }
 
 function getManagedCatalogIds(projectRoot: string): Set<string> {
@@ -1021,6 +1019,15 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         });
       } else {
         // F247 KD-17: cloud-only providers (Remote MCP) skip local CLI dispatch.
+        const agyProfile = resolveAgyNativeMemberPatch({
+          projectRoot,
+          requested: body.agyProfile,
+          clientId: body.clientId,
+          acp: body.acp,
+          model: body.defaultModel,
+          accountRef: accountRef ?? undefined,
+          cliConfigArgs: body.cliConfigArgs,
+        });
         // Caller signals cloud-only via provider="openai-chatgpt-pro" (future: more cloud markers).
         const explicitProviderForCloud = 'provider' in body ? body.provider : undefined;
         const isCloudOnlyProvider = explicitProviderForCloud === 'openai-chatgpt-pro';
@@ -1070,6 +1077,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
             : {}),
           ...(body.voiceConfig ? { voiceConfig: body.voiceConfig } : {}),
           ...(body.acp ? { acp: body.acp } : {}),
+          ...(agyProfile ? { agyProfile } : {}),
         });
       }
     } catch (err) {
@@ -1336,6 +1344,17 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
 
     const managedIdsBefore = getManagedCatalogIds(projectRoot);
     try {
+      const agyProfilePatch = resolveAgyNativeMemberPatch({
+        projectRoot,
+        requested: body.agyProfile,
+        current: currentCat.agyProfile,
+        clientId: effectiveClient,
+        acp: effectiveAcpConfig,
+        model: effectiveDefaultModel,
+        accountRef: effectiveAccountRef,
+        previousAccountRef: currentEffectiveAccountRef,
+        cliConfigArgs: body.cliConfigArgs ?? currentCat.cliConfigArgs,
+      });
       const hasCommandArgsPatch = body.commandArgs !== undefined;
       const nextCommandArgs = body.commandArgs ?? [];
       const nextCli = resolveNextCli({
@@ -1373,6 +1392,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
       })();
 
       updateRuntimeCat(projectRoot, request.params.id, {
+        ...(agyProfilePatch !== undefined ? { agyProfile: agyProfilePatch } : {}),
         ...(body.breedId !== undefined ? { breedId: body.breedId } : {}),
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),

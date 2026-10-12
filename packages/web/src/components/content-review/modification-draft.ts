@@ -1,4 +1,8 @@
-import { type ContentModificationRequest, contentModificationRequestSchema } from '@cat-cafe/shared';
+import {
+  type ContentModificationRequest,
+  contentModificationRequestContractSchema,
+  contentModificationRequestSchema,
+} from '@cat-cafe/shared';
 
 export interface ModificationDraft {
   v: 1;
@@ -47,7 +51,7 @@ export function readModificationDraft(key: string): ModificationDraft | null {
     Array.isArray(value.acceptOperations)
   )
     throw new Error('draft_unavailable');
-  if (value.operation) contentModificationRequestSchema.parse(value.operation);
+  if (value.operation) contentModificationRequestContractSchema.parse(value.operation);
   if (value.previousScopes !== undefined) {
     if (!Array.isArray(value.previousScopes)) throw new Error('draft_unavailable');
     for (const scope of value.previousScopes) {

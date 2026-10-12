@@ -12,7 +12,7 @@ import { buildQueueEntry } from '../src/domains/cats/services/agents/invocation/
 import { authRecordFromRedisHash } from '../src/domains/cats/services/agents/invocation/RedisAuthInvocationRecord.js';
 import { BacklogStore } from '../src/domains/cats/services/stores/ports/BacklogStore.js';
 import { MessageStore } from '../src/domains/cats/services/stores/ports/MessageStore.js';
-import { projectCollectiveWorkDelegation } from '../src/domains/plugin/builtin-runtime/collective-work-delegation.js';
+import { projectCollectiveWorkDelegation } from '../src/domains/plugin/builtin-runtime/collective-work/collective-work-delegation.js';
 import { registerCallbackAuthHook } from '../src/routes/callback-auth-prehandler.js';
 import { registerCallbackWorkflowSopRoutes } from '../src/routes/callback-workflow-sop-routes.js';
 

@@ -13,6 +13,7 @@ import {
 } from '../../domains/cats/services/owner-auth-provenance.js';
 import { assertDevelopmentReturnChain } from './development-return/DevelopmentReturnChain.js';
 import { MANAGED_COMMAND_CANDIDATE_FILTER } from './managed-command-candidate-schema.js';
+import { type RetainedManagedCommandState, reconcileRetainedManagedCommand } from './retained-managed-command.js';
 import type { TaskDisplayMeta, TriggerSpec } from './types.js';
 
 function returnIdentity(state: DevelopmentReturnRegistrationV1): string {
@@ -41,18 +42,26 @@ export interface DynamicTaskDef {
   createdAt: string;
 }
 
+export type DevelopmentReturnStorage = 'direct' | 'reviewed' | 'successor';
+
 /** CRUD store for dynamic task definitions (Phase 3A AC-G3) */
 export class DynamicTaskStore {
   constructor(private db: Database.Database) {}
+
+  reconcileRetainedManagedCommand(task: DynamicTaskDef): RetainedManagedCommandState {
+    return reconcileRetainedManagedCommand(this.db, task);
+  }
 
   insert(
     def: DynamicTaskDef,
     privateOwnerAuthProvenance?: OwnerAuthProvenance,
     privateReturn?: DevelopmentReturnRegistrationV1,
-    reviewedSource = false,
+    returnStorage: DevelopmentReturnStorage = 'direct',
   ): void {
     const registration = privateReturn ? developmentReturnRegistrationV1Schema.parse(privateReturn) : null;
-    if (reviewedSource && !registration) throw new Error('Reviewed return requires its private registration');
+    if (returnStorage !== 'direct' && !registration) {
+      throw new Error('Fenced return storage requires its private registration');
+    }
     if (
       registration &&
       (def.templateId !== DEVELOPMENT_RETURN_TEMPLATE_ID ||
@@ -70,8 +79,8 @@ export class DynamicTaskStore {
           assertDevelopmentReturnChain(registration, this.findPrivateExecutionReturns(registration.ownerThreadId));
         this.db
           .prepare(
-            `INSERT INTO dynamic_task_defs (id, template_id, trigger_json, params_json, entrusted_work_reevaluation_json, display_json, delivery_thread_id, enabled, created_by, created_at, owner_auth_provenance, development_return_json, reviewed_development_return_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO dynamic_task_defs (id, template_id, trigger_json, params_json, entrusted_work_reevaluation_json, display_json, delivery_thread_id, enabled, created_by, created_at, owner_auth_provenance, development_return_json, reviewed_development_return_json, successor_development_return_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             def.id,
@@ -81,12 +90,13 @@ export class DynamicTaskStore {
             def.entrustedWorkReevaluation ? JSON.stringify(def.entrustedWorkReevaluation) : null,
             JSON.stringify(def.display),
             def.deliveryThreadId,
-            def.enabled && !reviewedSource ? 1 : 0,
+            def.enabled && returnStorage === 'direct' ? 1 : 0,
             def.createdBy,
             def.createdAt,
             ownerAuthProvenance,
-            registration && !reviewedSource ? JSON.stringify(registration) : null,
-            reviewedSource ? JSON.stringify(registration) : null,
+            registration && returnStorage === 'direct' ? JSON.stringify(registration) : null,
+            returnStorage === 'reviewed' ? JSON.stringify(registration) : null,
+            returnStorage === 'successor' ? JSON.stringify(registration) : null,
           );
       })
       .immediate();
@@ -236,7 +246,7 @@ export class DynamicTaskStore {
 
   getPrivateExecutionReturn(id: string): DevelopmentReturnRegistrationV1 | null {
     const row = this.db
-      .prepare(`SELECT COALESCE(reviewed_development_return_json, development_return_json)
+      .prepare(`SELECT COALESCE(successor_development_return_json, reviewed_development_return_json, development_return_json)
       AS development_return_json FROM dynamic_task_defs WHERE id = ?`)
       .get(id) as { development_return_json: string | null } | undefined;
     return row?.development_return_json
@@ -267,19 +277,32 @@ export class DynamicTaskStore {
     return (
       this.db
         .prepare(`UPDATE dynamic_task_defs SET
-          development_return_json = CASE WHEN reviewed_development_return_json IS NULL THEN ? ELSE NULL END,
+          development_return_json = CASE
+            WHEN reviewed_development_return_json IS NULL AND successor_development_return_json IS NULL
+            THEN ? ELSE NULL END,
           reviewed_development_return_json = CASE WHEN reviewed_development_return_json IS NOT NULL THEN ? ELSE NULL END,
-          enabled = CASE WHEN reviewed_development_return_json IS NOT NULL THEN 0 ELSE ? END
-      WHERE id = ? AND COALESCE(reviewed_development_return_json, development_return_json) = ?`)
-        .run(JSON.stringify(parsed), JSON.stringify(parsed), enabled, id, JSON.stringify(parsedCurrent)).changes > 0
+          successor_development_return_json = CASE
+            WHEN successor_development_return_json IS NOT NULL THEN ? ELSE NULL END,
+          enabled = CASE
+            WHEN reviewed_development_return_json IS NOT NULL OR successor_development_return_json IS NOT NULL
+            THEN 0 ELSE ? END
+      WHERE id = ? AND COALESCE(successor_development_return_json, reviewed_development_return_json, development_return_json) = ?`)
+        .run(
+          JSON.stringify(parsed),
+          JSON.stringify(parsed),
+          JSON.stringify(parsed),
+          enabled,
+          id,
+          JSON.stringify(parsedCurrent),
+        ).changes > 0
     );
   }
 
   findPrivateExecutionReturns(executionThreadId: string): DevelopmentReturnRegistrationV1[] {
     const rows = this.db
       .prepare(`SELECT id FROM dynamic_task_defs WHERE template_id = ?
-      AND (json_extract(COALESCE(reviewed_development_return_json, development_return_json), '$.executionThreadId') = ?
-        OR json_extract(COALESCE(reviewed_development_return_json, development_return_json), '$.ownerThreadId') = ?)`)
+      AND (json_extract(COALESCE(successor_development_return_json, reviewed_development_return_json, development_return_json), '$.executionThreadId') = ?
+        OR json_extract(COALESCE(successor_development_return_json, reviewed_development_return_json, development_return_json), '$.ownerThreadId') = ?)`)
       .all(DEVELOPMENT_RETURN_TEMPLATE_ID, executionThreadId, executionThreadId) as { id: string }[];
     return rows.flatMap(({ id }) => {
       const value = this.getPrivateExecutionReturn(id);
@@ -300,10 +323,12 @@ interface RawRow {
   created_by: string;
   created_at: string;
   reviewed_development_return_json: string | null;
+  successor_development_return_json: string | null;
 }
 
 function todef(row: RawRow): DynamicTaskDef {
   const params = JSON.parse(row.params_json) as Record<string, unknown>;
+  const fencedReturn = row.successor_development_return_json ?? row.reviewed_development_return_json;
   return {
     id: row.id,
     templateId: row.template_id,
@@ -318,10 +343,8 @@ function todef(row: RawRow): DynamicTaskDef {
       : {}),
     display: JSON.parse(row.display_json),
     deliveryThreadId: row.delivery_thread_id,
-    enabled: row.reviewed_development_return_json
-      ? !['delivered', 'retired'].includes(
-          developmentReturnRegistrationV1Schema.parse(JSON.parse(row.reviewed_development_return_json)).status,
-        )
+    enabled: fencedReturn
+      ? !['delivered', 'retired'].includes(developmentReturnRegistrationV1Schema.parse(JSON.parse(fencedReturn)).status)
       : row.enabled === 1,
     createdBy: row.created_by,
     createdAt: row.created_at,

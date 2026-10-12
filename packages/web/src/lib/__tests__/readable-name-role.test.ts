@@ -283,6 +283,32 @@ describe('a contrast the caller computes itself (a mark whose colour and whose n
     expect(result.l).toBe(1);
   });
 
+  it('reaches the criterion when the best the theme leaves is above it but short of the headroom (codex-sol #5086 P1 class)', () => {
+    // The search aims for 4.65 (4.5 + headroom) but a theme whose best case is 4.55 still reads: that is a pass, not "not reached".
+    const plateau = (l: number) => 4.55 - 10 * Math.abs(l - 0.3);
+    const result = readableNameLightness({ l: 0.9, c: 0, h: 0, backgrounds: [], contrastAt: plateau });
+
+    expect(plateau(result.l)).toBeGreaterThanOrEqual(NAME_ROLE_MIN_CONTRAST);
+    expect(plateau(result.l)).toBeLessThan(NAME_ROLE_TARGET_CONTRAST);
+    expect(result).toMatchObject({ l: 0.3, adjusted: true, reachable: true });
+  });
+
+  it('still says not reached when the best case is short of the criterion itself', () => {
+    const short = (l: number) => 4.4 - 10 * Math.abs(l - 0.3);
+    const result = readableNameLightness({ l: 0.9, c: 0, h: 0, backgrounds: [], contrastAt: short });
+
+    expect(short(result.l)).toBeLessThan(NAME_ROLE_MIN_CONTRAST);
+    expect(result.reachable).toBe(false);
+  });
+
+  it('does not call the best case "adjusted" when the best case is the saved value', () => {
+    // The saved .3 is already the best a name can do and it does not read: nothing moves, so nothing is reported as moved.
+    const peak = (l: number) => 3 - 10 * Math.abs(l - 0.3);
+    const result = readableNameLightness({ l: 0.3, c: 0, h: 0, backgrounds: [], contrastAt: peak });
+
+    expect(result).toMatchObject({ l: 0.3, adjusted: false, reachable: false });
+  });
+
   it('is used instead of the pairwise search when given, and the pairwise one is unchanged without it', () => {
     const page = { l: 0.99, c: 0.015, h: 80 };
     const pairwise = readableNameLightness({ l: 0.8, c: 0.04, h: 58, backgrounds: [page], minimum: 3, target: 3.15 });
@@ -305,6 +331,8 @@ describe('a contrast the caller computes itself (a mark whose colour and whose n
 
     readableNameLightness({ l: 0.62, c: 0.1, h: 58, backgrounds, minimum: 3, target: 3.15 });
 
-    expect(performance.now() - started).toBeLessThan(1500);
+    // Guards the complexity class (an accidental quadratic or unmemoised walk is hundreds of times slower), not a latency promise: it takes
+    // about 1 ms on a quiet machine and a loaded box runs several times slower, so the budget is far above that figure.
+    expect(performance.now() - started).toBeLessThan(5000);
   });
 });

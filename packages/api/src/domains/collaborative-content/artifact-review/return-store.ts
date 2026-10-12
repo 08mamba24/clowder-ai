@@ -1,5 +1,6 @@
 import type { ArtifactReview, ArtifactReviewReceipt } from '@cat-cafe/shared';
 import type Database from 'better-sqlite3';
+import type { MediaPublicationReturnIntent } from '../modification/media-publication/media-publication-return.js';
 import type { ReviewMutation } from './store.js';
 
 export interface ReviewReturnTarget {
@@ -43,7 +44,7 @@ export interface TextModificationReturnIntent extends ReviewReturnTarget {
   messageId?: string;
   retirementReason?: string;
 }
-export type ContentReturnIntent = ReviewReturnIntent | TextModificationReturnIntent;
+export type ContentReturnIntent = ReviewReturnIntent | TextModificationReturnIntent | MediaPublicationReturnIntent;
 
 export class ArtifactReviewReturnStore {
   constructor(private readonly database: Database.Database) {
@@ -94,6 +95,30 @@ export class ArtifactReviewReturnStore {
       .run(intent.receiptRef, intent.state, intent.createdAt, JSON.stringify(intent));
   }
 
+  /** Native publication registration, not a forged human review receipt. Shares the original owner outbox. */
+  recordPublication(intent: MediaPublicationReturnIntent): void {
+    if (!this.database.inTransaction) throw new Error('Publication return must share request validation transaction');
+    const existing = this.get(intent.receiptRef);
+    if (existing) {
+      const { state: _state, messageId: _message, retirementReason: _reason, ...prior } = existing;
+      const { state: _nextState, messageId: _nextMessage, retirementReason: _nextReason, ...next } = intent;
+      if (JSON.stringify(prior) !== JSON.stringify(next)) throw new Error('Publication return binding reused');
+      return;
+    }
+    this.database
+      .prepare('INSERT INTO artifact_review_returns(receipt_ref,state,created_at,body) VALUES(?,?,?,?)')
+      .run(intent.receiptRef, intent.state, intent.createdAt, JSON.stringify(intent));
+  }
+
+  publicationForRequest(requestId: string): MediaPublicationReturnIntent | null {
+    const row = this.database
+      .prepare(
+        "SELECT body FROM artifact_review_returns WHERE json_extract(body,'$.kind')='resume_media_publication' AND json_extract(body,'$.requestId')=? ORDER BY created_at DESC,receipt_ref DESC LIMIT 1",
+      )
+      .get(requestId) as { body: string } | undefined;
+    return row ? (JSON.parse(row.body) as MediaPublicationReturnIntent) : null;
+  }
+
   pending(limit = 100): ContentReturnIntent[] {
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid return batch limit');
     const rows = this.database
@@ -114,7 +139,7 @@ export class ArtifactReviewReturnStore {
   latest(reviewId: string): ReviewReturnIntent | null {
     const row = this.database
       .prepare(
-        "SELECT body FROM artifact_review_returns WHERE json_extract(body, '$.reviewId') = ? ORDER BY json_extract(body, '$.reviewRevision') DESC LIMIT 1",
+        "SELECT body FROM artifact_review_returns WHERE json_extract(body, '$.reviewId') = ? AND json_extract(body,'$.kind')!='resume_media_publication' ORDER BY json_extract(body, '$.reviewRevision') DESC LIMIT 1",
       )
       .get(reviewId) as { body: string } | undefined;
     return row ? (JSON.parse(row.body) as ReviewReturnIntent) : null;

@@ -108,3 +108,21 @@ export async function persistLiveTranscriptItem(
     throw new Error('Live transcript identity conflict');
   return result.idempotent ? null : result.message;
 }
+
+/** Record exposure only after durable commit, then notify the source fence before publishing the message. */
+export async function recordLiveTranscript(input: {
+  store: Pick<IMessageStore, 'appendIdempotent'>;
+  binding: LiveTranscriptBinding;
+  envelope: unknown;
+  identity?: CompanionIdentitySnapshotV1;
+  exposedMessages: Map<string, { kind: 'text' | 'voice'; digest: string }>;
+  publish(message: StoredMessage): void;
+  onOwnerVoice(messageId: string, message: StoredMessage): void;
+}): Promise<void> {
+  const stored = await persistLiveTranscriptItem(input.store, input.binding, input.envelope, input.identity);
+  if (!stored) return;
+  const voice = stored.extra?.liveCompanion?.modality === 'voice';
+  input.exposedMessages.set(stored.id, { kind: voice ? 'voice' : 'text', digest: liveMessageDigest(stored) });
+  if (voice && stored.catId === null) input.onOwnerVoice(stored.id, stored);
+  input.publish(stored);
+}

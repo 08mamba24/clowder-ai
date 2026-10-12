@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { type PublishedTasteSnapshot, publishedTasteSnapshot } from './PublishedTasteSnapshot.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -10,6 +11,7 @@ export interface TasteRepository {
   canonicalRoot(): string;
   canonicalRootAsync?(): Promise<string>;
   approvalLockKey(): string;
+  publishedSnapshot?(): Promise<PublishedTasteSnapshot | null>;
 }
 
 export interface PublishableTasteRepository extends TasteRepository {
@@ -97,6 +99,10 @@ export class FileTasteRepository implements PublishableTasteRepository {
 
   gitCheckoutRoot(): string {
     return resolve(runGit(this.projectRoot, ['rev-parse', '--show-toplevel']));
+  }
+
+  publishedSnapshot(): Promise<PublishedTasteSnapshot | null> {
+    return publishedTasteSnapshot(this.gitCheckoutRoot());
   }
 
   approvalLockKey(): string {

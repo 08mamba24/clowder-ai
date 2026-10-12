@@ -26,7 +26,7 @@ export const developmentReturnInputSchema = {
     'Approved final-only child thread associated with the exact original human source.',
   ),
   sourceActionRef: developmentReturnActionV1Schema.shape.sourceActionRef.describe(
-    'Exact message:<id> authorization shared by the Task admission and approved execution proposal.',
+    'Proposal-source return (the first registration, or a newly approved execution after a terminal predecessor): exact message:<id> authorization shared by the Task and that proposal. Same-child lineage after the initial explicit delegate return, including later server-terminal replacements: exact action-lease:<leaseId>:<generation> from the admitted replacement receipt, plus predecessorRegistrationId.',
   ),
   expectedSignal: developmentReturnActionV1Schema.shape.expectedSignal.describe(
     'terminal_report, required for register.',
@@ -65,7 +65,7 @@ export const developmentReturnTools = [
       'Use when: an approved execution child is doing accepted scoped development and its original Task owner needs a terminal result or bounded fact review across invocations. ' +
       'Not for: creating work, business reminders, replacing a human decision, generic cross-thread messages, or reading another thread’s Task. ' +
       'Output: private owner registration, child-safe reporting coordinates, or actual report delivery state. ' +
-      'GOTCHA: register in the original owner thread before waiting; the child reads/report coordinates only. Persist the final result first, then report its source message. Event and timeout share one wake, and the original owner must reread current work and act. A wake is not evidence that development continued.',
+      'GOTCHA: register in the original owner thread before waiting; the child reads/report coordinates only. A returned-delegate lineage reuses the same approved child and exact action-lease generation across explicit returns or server-terminal replacements; it never edits the old proposal or revives an old reporter. Persist the final result first, then report its source message. Event and timeout share one wake, and the original owner must reread current work and act. A wake is not evidence that development continued.',
     inputSchema: developmentReturnInputSchema,
     handler: handleDevelopmentReturn,
     sourceFile: 'development-return-tools.ts',

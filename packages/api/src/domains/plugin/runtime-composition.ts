@@ -379,7 +379,17 @@ export function createDormantPluginRuntimeComposition(
         resumeRequested: inventoryRecovery.resumeRequested,
       };
     },
-    shutdown: (reason = 'host_shutdown') => runtimeSupervisor.stopAll(reason),
+    async shutdown(reason = 'host_shutdown') {
+      lifecycle.cancelRestartRecovery();
+      try {
+        await runtimeSupervisor.stopAll(reason);
+      } finally {
+        await lifecycle.drainRestartRecovery();
+        // An admitted start can acquire ownership after the first stop snapshot.
+        // Recovery is now closed and drained, so this final stop has a stable set.
+        await runtimeSupervisor.stopAll(reason);
+      }
+    },
   };
 }
 

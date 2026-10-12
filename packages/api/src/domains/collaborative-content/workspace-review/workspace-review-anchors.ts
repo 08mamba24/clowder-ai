@@ -43,7 +43,7 @@ export function toWorkspaceReviewSource(
 }
 
 export function assertWorkspaceMediaAnchor(
-  source: Exclude<WorkspaceContentSource, { kind: 'text' }>,
+  source: Exclude<WorkspaceContentSource, { kind: 'text' | 'video-project' }>,
   anchor: ArtifactReviewAnchor,
 ): void {
   try {

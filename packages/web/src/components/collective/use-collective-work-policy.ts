@@ -28,32 +28,35 @@ export function useCollectiveWorkPolicy(connectionId: string, bridge?: Collectiv
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<string>();
   const [error, setError] = useState<string>();
+  const [readError, setReadError] = useState<string>();
   const [newDecisionAvailable, setNewDecisionAvailable] = useState(false);
   const running = useRef(false);
   const current = useRef(connectionId);
   current.current = connectionId;
   const base = `/api/plugins/collective-connector/${encodeURIComponent(connectionId)}`;
-  const read = useCallback(async () => {
-    const [policy, attention] = await Promise.all([
-      hostRequest<WorkPolicyStatus>(`${base}/work-policy`),
-      hostRequest<ListeningStatus>(`${base}/listening`),
-    ]);
-    if (current.current !== connectionId) return;
-    setStatus(policy);
-    setListening(attention);
+  const readSnapshot = useCallback(async () => {
+    try {
+      const [policy, attention] = await Promise.all([
+        hostRequest<WorkPolicyStatus>(`${base}/work-policy`),
+        hostRequest<ListeningStatus>(`${base}/listening`),
+      ]);
+      if (current.current !== connectionId) return;
+      setStatus(policy);
+      setListening(attention);
+      setReadError(undefined);
+    } catch (cause) {
+      if (current.current === connectionId) setReadError('暂时无法读取授权设置。');
+      throw cause;
+    }
   }, [base, connectionId]);
+  const read = useCallback(() => readSnapshot().catch(() => undefined), [readSnapshot]);
   useEffect(() => {
-    let closed = false;
     const refresh = () => {
-      if (!running.current)
-        void read().catch(() => {
-          if (!closed) setError('暂时无法读取授权设置。');
-        });
+      if (!running.current) void read();
     };
     refresh();
     const timer = window.setInterval(refresh, 5000);
     return () => {
-      closed = true;
       window.clearInterval(timer);
     };
   }, [read]);
@@ -70,7 +73,7 @@ export function useCollectiveWorkPolicy(connectionId: string, bridge?: Collectiv
     } catch (cause) {
       setNewDecisionAvailable(cause instanceof CollectiveWorkPolicyConflict);
       setError(cause instanceof Error ? cause.message : '更改未成功。');
-      await read().catch(() => undefined);
+      await read();
     } finally {
       running.current = false;
       setBusy(false);
@@ -114,7 +117,7 @@ export function useCollectiveWorkPolicy(connectionId: string, bridge?: Collectiv
     listening,
     busy,
     phase,
-    error,
+    error: error ?? readError,
     newDecisionAvailable,
     read,
     change,

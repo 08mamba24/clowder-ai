@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
 import type { DevelopmentReturnRegistrationV1, TaskItem, ThreadProposal } from '@cat-cafe/shared';
+import { sameDevelopmentScopeSnapshot } from '../../../domains/ball-custody/action-subject-delegate-contract.js';
+import {
+  delegateLineageGenerationWasSuperseded,
+  isCurrentDelegateLineageGeneration,
+  replacementTransitionMatchesDelegateLineage,
+} from '../../../domains/ball-custody/action-successor-delegate-lineage.js';
 import { readDurableLocalReviewFact } from '../../../domains/cats/services/local-review-artifact.js';
 import type { DevelopmentWorkActor } from '../../../domains/cats/services/stores/ports/DevelopmentWorkTransition.js';
 import {
@@ -10,6 +16,19 @@ import {
 import type { DevelopmentReturnDeps } from './DevelopmentReturnService.js';
 
 type Deps = Pick<DevelopmentReturnDeps, 'tasks' | 'messages' | 'readReviewProvenance'>;
+
+const actionLeaseSourcePattern = /^action-lease:([A-Za-z0-9_-]{1,200}):([1-9]\d*)$/;
+
+export function parseDevelopmentReturnActionLeaseRef(
+  sourceActionRef: string,
+): { leaseId: string; generation: number } | null {
+  const match = actionLeaseSourcePattern.exec(sourceActionRef);
+  if (!match) return null;
+  const leaseId = match[1];
+  if (!leaseId) return null;
+  const generation = Number(match[2]);
+  return Number.isSafeInteger(generation) ? { leaseId, generation } : null;
+}
 
 function currentOriginal(message: StoredMessage | null, actor: DevelopmentWorkActor): message is StoredMessage {
   return (
@@ -91,6 +110,155 @@ export async function resolveDevelopmentReturnSource(
           fact,
           provenance,
           proposalApprovedAt: proposal.approvedAt,
+        }),
+      )
+      .digest('hex')}`,
+  };
+}
+
+/**
+ * Resolve a returned ActionSuccessor generation as the reporter authority for
+ * a sequential final-only return. The action lease does not replace the Task or
+ * proposal: it proves that the original approved delegate returned this exact
+ * child to the canonical owner, who then attached one successor in that child.
+ */
+export async function resolveReturnedActionSuccessorReturnSource(
+  deps: Deps & Pick<DevelopmentReturnDeps, 'actionSuccessors'>,
+  actor: DevelopmentWorkActor,
+  task: TaskItem,
+  proposal: ThreadProposal,
+  executionThreadId: string,
+  sourceActionRef: string,
+  originalTrigger: StoredMessage | null,
+): Promise<{ sourceMessageRevision: string; reporterCatIds: string[] } | null> {
+  const resolution = await resolveReturnedActionSuccessorReturnStatus(
+    deps,
+    actor,
+    task,
+    proposal,
+    executionThreadId,
+    sourceActionRef,
+    originalTrigger,
+  );
+  return resolution?.kind === 'current'
+    ? {
+        sourceMessageRevision: resolution.sourceMessageRevision,
+        reporterCatIds: resolution.reporterCatIds,
+      }
+    : null;
+}
+
+export type ReturnedActionSuccessorReturnStatus =
+  | { kind: 'current'; sourceMessageRevision: string; reporterCatIds: string[] }
+  | { kind: 'superseded' };
+
+/**
+ * Resolve the exact active reporter, or prove that the bound reporter explicitly
+ * returned that generation to the same owner/child lineage. A merely stale or
+ * missing generation is not supersession proof.
+ */
+export async function resolveReturnedActionSuccessorReturnStatus(
+  deps: Deps & Pick<DevelopmentReturnDeps, 'actionSuccessors'>,
+  actor: DevelopmentWorkActor,
+  task: TaskItem,
+  proposal: ThreadProposal,
+  executionThreadId: string,
+  sourceActionRef: string,
+  originalTrigger: StoredMessage | null,
+  expectedReporterCatIds?: readonly string[],
+): Promise<ReturnedActionSuccessorReturnStatus | null> {
+  const coordinate = parseDevelopmentReturnActionLeaseRef(sourceActionRef);
+  if (!coordinate || !deps.actionSuccessors) return null;
+  if (
+    proposal.status !== 'approved' ||
+    proposal.subjectTaskId !== task.id ||
+    !sameDevelopmentScopeSnapshot(proposal.approvedDevelopmentScope, task.entrustedWork?.developmentScope)
+  )
+    return null;
+  const [lease, originalSource] = await Promise.all([
+    deps.actionSuccessors.get(coordinate.leaseId),
+    resolveDevelopmentReturnSource(deps, actor, task, proposal, originalTrigger),
+  ]);
+  if (!lease || !originalSource) return null;
+  const originalTransition = lease.returnTransitions[0];
+  const replacementTransitions = lease.replacementTransitions ?? [];
+  const reporterCatIds = [...new Set(lease.holderCatIds)];
+  const expectedDelegateEvidence = originalTransition
+    ? `proposal:${proposal.proposalId}:approved:thread:${executionThreadId}:cat:${originalTransition.rejectingCatId}`
+    : null;
+  const lineageRoute = {
+    ownerCatId: actor.catId,
+    ownerThreadId: actor.threadId,
+    childThreadId: executionThreadId,
+  };
+  const returnedLineageMatches = lease.returnTransitions.every(
+    (entry) =>
+      entry.rejectingThreadId === executionThreadId &&
+      entry.predecessorCatId === actor.catId &&
+      entry.predecessorThreadId === actor.threadId,
+  );
+  const replacementLineageMatches = replacementTransitions.every((entry) =>
+    replacementTransitionMatchesDelegateLineage(entry, lineageRoute),
+  );
+  if (
+    lease.tenantScope !== actor.userId ||
+    lease.subjectRef !== `subject:task:${task.id}` ||
+    lease.actionFamily !== 'implement' ||
+    lease.successorSlot !== 'implementer' ||
+    lease.mode !== 'single' ||
+    lease.claimOrigin !== 'structured_transfer' ||
+    lease.terminalPredicate?.kind !== 'task_done' ||
+    lease.terminalPredicate.subjectRef !== `subject:task:${task.id}` ||
+    !originalTransition?.rejectingThreadId ||
+    !returnedLineageMatches ||
+    !replacementLineageMatches ||
+    !proposal.preferredCats.some((catId) => catId === originalTransition.rejectingCatId) ||
+    !expectedDelegateEvidence ||
+    !lease.evidenceRefs.includes(expectedDelegateEvidence) ||
+    !lease.issuerStandingEvidenceRef.trim() ||
+    !lease.evidenceRefs.includes(lease.issuerStandingEvidenceRef)
+  )
+    return null;
+
+  if (
+    !isCurrentDelegateLineageGeneration({
+      lease,
+      route: lineageRoute,
+      generation: coordinate.generation,
+      reporterCatIds,
+    })
+  ) {
+    return delegateLineageGenerationWasSuperseded({
+      lease,
+      route: lineageRoute,
+      generation: coordinate.generation,
+      expectedReporterCatIds,
+    })
+      ? { kind: 'superseded' }
+      : null;
+  }
+
+  return {
+    kind: 'current',
+    reporterCatIds,
+    sourceMessageRevision: `sha256:${createHash('sha256')
+      .update(
+        canonicalGrowingSourceJson({
+          kind: 'returned-action-successor-v1',
+          originalSourceRevision: originalSource.sourceMessageRevision,
+          proposalId: proposal.proposalId,
+          executionThreadId,
+          sourceActionRef,
+          leaseId: lease.leaseId,
+          generation: lease.generation,
+          reporterCatIds,
+          predecessorCatId: lease.predecessorCatId,
+          predecessorThreadId: lease.predecessorThreadId,
+          issuerStandingEvidenceRef: lease.issuerStandingEvidenceRef,
+          returnTransitions: lease.returnTransitions,
+          replacementTransitions,
+          terminalPredicateDigest: lease.terminalPredicate.digest,
+          delegateEvidenceRef: expectedDelegateEvidence,
         }),
       )
       .digest('hex')}`,

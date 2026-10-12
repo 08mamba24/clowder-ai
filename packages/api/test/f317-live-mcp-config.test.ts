@@ -30,7 +30,86 @@ test('voice-only admission binds its own call but exposes no household MCP serve
     });
     assert.deepEqual(config.mcp_servers, {});
     assert.equal(config['features.shell_tool'], false);
+    assert.equal(config['features.apply_patch_freeform'], false);
     assert.equal(config['apps._default.enabled'], false);
+  } finally {
+    await credentials.close();
+  }
+});
+
+test('Live approves only the admitted page inspection while execution still requires owner consent', async () => {
+  const credentials = await LiveNativeCredentials.create({
+    userId: 'owner',
+    threadId: 'home',
+    catId: 'codex61-sol',
+    callId: 'page-approval',
+  });
+  try {
+    const config = await buildLiveMcpConfig({
+      credentials,
+      mcpDistDir: resolve('../mcp-server/dist'),
+      allowedDirectories: [resolve('../../docs')],
+      screenServer: { enabled: true, command: process.execPath, args: [], env: {} },
+      callbackEnv: {
+        CAT_CAFE_API_URL: 'http://localhost:3012',
+        CAT_CAFE_USER_ID: 'owner',
+        CAT_CAFE_THREAD_ID: 'home',
+        CAT_CAFE_CAT_ID: 'codex61-sol',
+        CAT_CAFE_INVOCATION_ID: 'page-approval',
+        CAT_CAFE_CALLBACK_TOKEN: 'fixture-token',
+      },
+    });
+    const servers = config.mcp_servers as Record<string, Record<string, unknown>>;
+    assert.deepEqual(servers['cat-cafe-collab'].tools, {
+      cat_cafe_page_action_inspect: { approval_mode: 'approve' },
+      cat_cafe_home_action: { approval_mode: 'approve' },
+    });
+    assert.deepEqual(
+      servers['cat-cafe-collab'].disabled_tools,
+      ['sources', 'start', 'attach', 'status', 'stop'].map((name) => `cat_cafe_meeting_${name}`),
+    );
+    for (const [name, server] of Object.entries(servers)) {
+      assert.equal(server.default_tools_approval_mode, undefined, `${name} must not approve its whole surface`);
+      if (name !== 'cat-cafe-collab') assert.equal(server.tools, undefined, `${name} gets no new approval`);
+    }
+    assert.equal(config['features.shell_tool'], false);
+    assert.equal(config['features.apply_patch_freeform'], false);
+    assert.equal(config['apps._default.enabled'], false);
+    assert.equal(servers['cat-cafe-collab'].required, true);
+  } finally {
+    await credentials.close();
+  }
+});
+
+test('explicit meeting admission without household reads exposes exactly the five meeting tools', async () => {
+  const credentials = await LiveNativeCredentials.create({
+    userId: 'owner',
+    threadId: 'home',
+    catId: 'codex61-sol',
+    callId: 'meeting-only',
+  });
+  try {
+    const config = await buildLiveMcpConfig({
+      credentials,
+      householdToolsEnabled: false,
+      meetingToolsEnabled: true,
+      mcpDistDir: resolve('../mcp-server/dist'),
+      allowedDirectories: [resolve('../../docs')],
+      callbackEnv: {
+        CAT_CAFE_API_URL: 'http://localhost:3012',
+        CAT_CAFE_USER_ID: 'owner',
+        CAT_CAFE_THREAD_ID: 'home',
+        CAT_CAFE_CAT_ID: 'codex61-sol',
+        CAT_CAFE_INVOCATION_ID: 'meeting-only',
+        CAT_CAFE_CALLBACK_TOKEN: 'fixture-token',
+      },
+    });
+    const servers = config.mcp_servers as Record<string, Record<string, unknown>>;
+    assert.deepEqual(Object.keys(servers), ['cat-cafe-collab']);
+    const names = ['sources', 'start', 'attach', 'status', 'stop'].map((name) => `cat_cafe_meeting_${name}`);
+    assert.deepEqual(servers['cat-cafe-collab'].enabled_tools, names);
+    assert.deepEqual(Object.keys(servers['cat-cafe-collab'].tools as object), names);
+    assert.equal(servers['cat-cafe-collab'].default_tools_approval_mode, undefined);
   } finally {
     await credentials.close();
   }

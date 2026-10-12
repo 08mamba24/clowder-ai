@@ -8,6 +8,7 @@ import { catRegistry } from '@cat-cafe/shared';
 import { InvocationRegistry } from '../dist/domains/cats/services/agents/invocation/InvocationRegistry.js';
 import { invokeSingleCat } from '../dist/domains/cats/services/agents/invocation/invoke-single-cat.js';
 import { InMemoryTurnExecutionStore } from '../dist/domains/cats/services/stores/memory/InMemoryTurnExecutionStore.js';
+import { scopedTestSessions, scriptedSessionInit } from './helpers/scoped-test-sessions.js';
 
 const forbidden = () => {
   throw new Error('PRIVATE_CONTEXT_CONSUMER_WAS_CALLED');
@@ -72,11 +73,13 @@ test('the real invokeSingleCat lane isolates private prompt/session/recall input
       assert.equal(verified.record.ownerAuthProvenance, 'unknown');
       assert.deepEqual(verified.record.executionGrant, binding.grant);
       assert.equal((await executions.get(verified.record.invocationId)).status, 'running');
+      yield* scriptedSessionInit('codex-sol', prompt, options);
       yield { type: 'text', catId: 'codex-sol', content: 'Public answer', timestamp: Date.now() };
       yield { type: 'done', catId: 'codex-sol', timestamp: Date.now() };
     },
   };
   const deps = {
+    ...scopedTestSessions(audit),
     registry,
     turnExecutionStore: executions,
     apiUrl: 'http://127.0.0.1:3182',

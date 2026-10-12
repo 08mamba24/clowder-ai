@@ -111,9 +111,14 @@ export async function startReviewHost(
   app.get('/api/config/cat-order', async () => ({ catOrder: ['codex-astra'] }));
   const artifacts = () =>
     aggregateThreadArtifacts({ messages: f.messages.getByThread(f.thread.id), prTasks: [], fileLedger: [] });
-  app.get('/api/artifacts', async () => ({
-    artifacts: artifacts().map((artifact) => ({ ...artifact, threadId: f.thread.id, threadTitle: f.thread.title })),
-  }));
+  app.get('/api/artifacts', async () => {
+    const globalArtifacts = artifacts().map((artifact) => ({
+      ...artifact,
+      threadId: f.thread.id,
+      threadTitle: f.thread.title,
+    }));
+    return { artifacts: globalArtifacts, total: globalArtifacts.length, workLineage: 'unavailable' };
+  });
   app.get(`/api/threads/${f.thread.id}/artifacts`, async () => ({ artifacts: artifacts() }));
   app.get('/uploads/:name', async (request, reply) => {
     const { name } = request.params;

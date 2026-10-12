@@ -15,6 +15,8 @@ type Props = Parameters<typeof useContentModification>[0] & {
   onClose: () => void;
   completionRule?: ContentModificationCompletionRule;
   onRequestKnown?: (request: ContentModificationRequestView) => void;
+  /** A candidate a conversation receipt named: it is marked and brought into view among the request's results. */
+  focusCandidateRef?: string;
 };
 export function ContentModificationPanel(props: Props) {
   // An owner/object switch unmounts pending UI work; a version change on the same object preserves its draft.
@@ -75,6 +77,7 @@ function ModificationPanel(props: Props) {
           onAccept={model.accept}
           onReject={model.reject}
           pendingRejections={model.draft.rejectionPending}
+          focusCandidateRef={props.focusCandidateRef}
         />
       ) : null}
       {model.draft.requestId && status && !status.record.control && !fulfilled ? (

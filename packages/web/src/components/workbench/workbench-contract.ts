@@ -12,6 +12,7 @@ export type WorkbenchSurfaceType =
   | 'file'
   | 'review'
   | 'terminal'
+  | 'thread-replay'
   | 'workspace';
 
 export type WorkbenchRenderer =
@@ -24,6 +25,7 @@ export type WorkbenchRenderer =
   | 'file-preview'
   | 'review-summary'
   | 'terminal-session'
+  | 'thread-replay'
   | 'workspace-destination';
 
 export type WorkbenchObjectKind =
@@ -35,6 +37,7 @@ export type WorkbenchObjectKind =
   | 'preview-session'
   | 'review'
   | 'terminal-session'
+  | 'thread-replay'
   | 'workspace-destination';
 
 export interface WorkspaceSurfaceDescriptor {
@@ -104,6 +107,8 @@ export interface WorkbenchLayoutState {
   surfaces: WorkspaceSurfaceDescriptor[];
   pinnedSurfaceIds: string[];
   activeSurfaceId: string | null;
+  /** One explicitly opened preview, persisted with the original working set. */
+  previewSurfaceId: string | null;
   split: {
     primarySurfaceId: string;
     secondarySurfaceId: string;
@@ -136,6 +141,8 @@ interface EntitledAction {
 
 export type WorkbenchAction =
   | ({ type: 'open-surface'; surface: WorkspaceSurfaceDescriptor } & EntitledAction)
+  | ({ type: 'open-preview-surface'; surface: WorkspaceSurfaceDescriptor } & EntitledAction)
+  | ({ type: 'promote-preview-surface'; surfaceId: string } & EntitledAction)
   | { type: 'refresh-surface'; surface: WorkspaceSurfaceDescriptor }
   | { type: 'resolve-content-surface'; sourceSurfaceId: string; surface: WorkspaceSurfaceDescriptor }
   | ({ type: 'activate-surface'; surfaceId: string } & EntitledAction)
@@ -154,6 +161,7 @@ export type WorkbenchAction =
   | ({ type: 'promote-sidecar'; destination: 'tab' | 'split' } & EntitledAction)
   | ({ type: 'close-surface'; surfaceId: string } & EntitledAction)
   | ({ type: 'close-other-surfaces'; preserveSurfaceId: string } & EntitledAction)
+  | ({ type: 'close-all-unpinned' } & EntitledAction)
   | ({ type: 'collapse-split' } & EntitledAction)
   | ({ type: 'restore-surface'; surfaceId: string } & EntitledAction)
   | { type: 'dismiss-activity'; activityId: string };

@@ -11,6 +11,7 @@ import type {
   CrossThreadCoordination,
   FreshnessCarrierCapability,
   MessageContent,
+  ProviderOutputMessage,
   ProviderSemanticEvent,
   ProviderSubexecutionSemanticEvent,
   QueueTerminalConsumptionWitness,
@@ -20,6 +21,8 @@ import type {
   SanitizedRequestedRuntimeConfigV1,
 } from '@cat-cafe/shared';
 import type { Span } from '@opentelemetry/api';
+import type { RuntimeProviderProfile } from '../../../config/account-resolver.js';
+import type { CodexAccountLaunchDescriptor } from '../../../config/codex-account-launch.js';
 import type { CliDiagnostics } from '../../../utils/cli-diagnostics.js';
 import type { CliSpawnOptions } from '../../../utils/cli-types.js';
 import type { AntigravitySessionLifecycle } from './agents/providers/antigravity/antigravity-runtime-lifecycle.js';
@@ -32,6 +35,7 @@ import type { TurnExecutionMessageProjection } from './stores/ports/TurnExecutio
  *  so that the field has the same semantics regardless of provider.
  *  cacheReadTokens = subset of inputTokens served from cache. */
 export interface TokenUsage {
+  executionAccount?: import('@cat-cafe/shared').ExecutionAccountSnapshot;
   inputTokens?: number; // Total input (normalised across providers) — AGGREGATED across turns
   outputTokens?: number;
   totalTokens?: number; // Gemini fallback (doesn't split in/out)
@@ -117,6 +121,7 @@ export function mergeTokenUsage(existing: TokenUsage | undefined, incoming: Toke
  * Metadata about the provider/model behind an agent message
  */
 export interface MessageMetadata {
+  executionAccount?: import('@cat-cafe/shared').ExecutionAccountSnapshot;
   provider: string;
   model: string;
   sessionId?: string;
@@ -287,6 +292,8 @@ export interface AgentMessage {
   catId: CatId;
   /** Text content (for 'text' and 'tool_result' types) */
   content?: string;
+  /** Durable content blocks projected with an explicit callback message. */
+  contentBlocks?: readonly MessageContent[];
   /** Machine-readable A2A target cat for 'a2a_handoff' events. */
   targetCatId?: CatId;
   /**
@@ -301,6 +308,10 @@ export interface AgentMessage {
    * provider emits a full corrected snapshot instead of a pure suffix delta.
    */
   textMode?: 'append' | 'replace';
+  /** Provider-native output boundary; never use the canonical stored-message messageId for this. */
+  outputMessage?: ProviderOutputMessage;
+  /** Closed host-owned presentation contribution, mutually exclusive with native observation. */
+  hostOutput?: import('@cat-cafe/shared').HostSignatureOutput;
   /** Session ID (for 'session_init' type) */
   sessionId?: string;
   /** ACP transport: sessionId is per-invocation, not a persistent CLI session.
@@ -325,6 +336,10 @@ export interface AgentMessage {
    *  CatAgent tool_use_id, Codex item.id, etc). Providers without native id may omit; ToolSpanTracker treats
    *  missing id as fallback (no span open, no fake duration) per KD-41. */
   toolUseId?: string;
+  /** API-born event instance ID, distinct from the native tool pair key. */
+  toolEventId?: string;
+  /** Host-bound child execution of that tool instance. */
+  toolExecutionRef?: string;
   /** F153 Phase J AC-J1: structured tool execution outcome (for 'tool_result' type).
    *  Provider transformers MUST map from raw payload (is_error / success / exitCode / status) instead of
    *  letting downstream guess from content string. Use 'unknown' when raw signal is genuinely absent. */
@@ -357,6 +372,7 @@ export interface AgentMessage {
   messageTimestamp?: number;
   /** F52: Cross-thread origin metadata (set for cross-thread callback messages) */
   extra?: {
+    outputLayout?: import('@cat-cafe/shared').MessageOutputLayoutV1;
     crossPost?: {
       sourceThreadId: string;
       sourceInvocationId?: string;
@@ -434,6 +450,8 @@ export type SpawnCliOverride = (options: CliSpawnOptions) => AsyncGenerator<unkn
 
 /** F254 D2 duplex JSON carrier used by provider app-server protocols. */
 export interface AgentCarrierSession {
+  /** Host process identity when a direct carrier owns a process. */
+  readonly pid?: number;
   read(): AsyncIterable<unknown>;
   write(message: Record<string, unknown>): Promise<void>;
   /** True only when a resume lease was acquired from its still-healthy affinity host. */
@@ -450,6 +468,7 @@ export interface AgentCarrierSession {
 }
 
 export interface AgentCarrierSessionOptions {
+  executionAccount?: import('@cat-cafe/shared').ExecutionAccountSnapshot;
   command: string;
   args: readonly string[];
   cwd?: string;
@@ -796,6 +815,7 @@ export type ProviderNativeRealtimeEvent =
 
 /** Long-lived provider seam; capture and durable transcript ownership stay in F195. */
 export interface ProviderNativeRealtimeSession {
+  readonly executionAccount?: import('@cat-cafe/shared').ExecutionAccountSnapshot;
   readonly runtimeSessionId: string;
   readonly realtimeSessionId: string | null;
   readonly version: 'v2';
@@ -879,6 +899,7 @@ export interface AgentRouteIntent {
  * Options for invoking an agent
  */
 export interface AgentServiceOptions {
+  executionAccount?: import('@cat-cafe/shared').ExecutionAccountSnapshot;
   /** F317 Host-only continuous companion port; no model-supplied configuration. */
   liveCompanion?: import('./agents/providers/CodexLiveRunPort.js').CodexLiveRunPort;
   /** Route-owned intent. Providers may project only explicit behavior intent onto native modes. */
@@ -919,6 +940,8 @@ export interface AgentServiceOptions {
   /** F171: User-defined env vars from account config.
    *  Applied LAST to subprocess env — overrides provider-injected values. */
   accountEnv?: Record<string, string>;
+  /** F320: immutable selected account launch snapshot; independent of displayName/token refresh. */
+  codexAccountLaunch?: CodexAccountLaunchDescriptor;
   /** Rich content blocks (e.g. images) to pass to the CLI agent */
   contentBlocks?: readonly MessageContent[];
   /** Upload directory for resolving image paths */
@@ -1109,6 +1132,8 @@ export interface AgentService {
     readonly invocationId: string;
     readonly timeoutMs: number;
     readonly cwd: string;
+    readonly account?: RuntimeProviderProfile;
+    readonly cliConfigArgs?: readonly string[];
   }): Promise<ProviderNativeCapabilitySource>;
 
   /** F306: fork one exact native binding; the caller remains responsible for Clowder AI target ownership. */

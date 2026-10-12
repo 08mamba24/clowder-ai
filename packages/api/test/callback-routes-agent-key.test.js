@@ -165,6 +165,37 @@ describe('Callback routes: agent-key auth path', () => {
     assert.equal(body.status, 'ok');
   });
 
+  test('post-message with agent-key persists the same version-bound ContextAttachment contract', async () => {
+    const app = await createApp();
+    const { secret } = await issueKey();
+    const attachment = {
+      v: 1,
+      id: 'ctx-agent-key-quote',
+      kind: 'quote',
+      text: 'Exact source text.',
+      source: {
+        kind: 'workspace_file',
+        path: 'docs/guide.md',
+        worktreeId: 'worktree-a',
+        revision: `sha256:${'a'.repeat(64)}`,
+      },
+    };
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/callbacks/post-message',
+      headers: { 'x-agent-key-secret': secret },
+      payload: {
+        content: 'Quoted by the authenticated persistent cat.',
+        threadId: ownedThreadId,
+        contextAttachments: [attachment],
+      },
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    const stored = messageStore.getByThread(ownedThreadId).at(-1);
+    assert.equal(stored.catId, TEST_CAT);
+    assert.deepEqual(stored.contentBlocks, [{ type: 'context_attachment', attachment }]);
+  });
+
   test('post-message with agent-key rejects unsupported coordination instead of silently dropping it', async () => {
     const app = await createApp();
     const { secret } = await issueKey();

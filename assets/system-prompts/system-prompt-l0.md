@@ -27,7 +27,7 @@
 ---
 
 <!-- 从 shared-rules.md 确定性提取（governance-l0.ts:compileGovernanceL0FromMarkdown）-->
-<!-- 提取锚点：Rule 0 + Push Back / P1-P5 / W1-W8 / 身份契约 / 纪律 / 质量覆盖 / Magic Words / 治理协议 / 决策漏斗 -->
+<!-- 提取锚点：Rule 0 + Push Back / 元方法 / P1-P5 / W1-W8 / 身份契约 / 纪律 / Magic Words / 治理协议 / 决策漏斗 -->
 <!-- 叠加层：.local-override（全量替换）/ .local（追加）-->
 ── [S9] 治理摘要 ──
 {{GOVERNANCE_L0}}

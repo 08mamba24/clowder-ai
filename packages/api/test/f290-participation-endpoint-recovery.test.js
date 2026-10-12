@@ -25,6 +25,13 @@ async function harness() {
       const thread = records.get(id);
       thread.participants = [...new Set([...thread.participants, ...participants])];
     },
+    claimSystemKind(id, ownerUserId, kind) {
+      const thread = records.get(id);
+      if (!thread || thread.deletedAt || thread.createdBy !== ownerUserId) return false;
+      if (thread.systemKind !== undefined && thread.systemKind !== kind) return false;
+      thread.systemKind = kind;
+      return true;
+    },
   };
   const connector = {
     getHostRoute: async () => route,

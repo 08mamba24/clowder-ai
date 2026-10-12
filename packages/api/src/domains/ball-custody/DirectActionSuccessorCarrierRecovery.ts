@@ -31,14 +31,33 @@ export type DirectActionSuccessorCarrierUnavailableReason =
   | 'execution_unconfirmed'
   /** The lease moved under this request (cancelled, completed, replaced, or still being refreshed). */
   | 'lease_changed'
-  | 'lookup_failed';
+  | 'lookup_failed'
+  /**
+   * A runtime restart interrupted every holder, but at least one had already been shown the action, so its provider
+   * may have partly run it. Running it again is a decision for the predecessor (an explicit `replace`), never a
+   * side effect of re-sending the same request.
+   */
+  | 'interrupted_after_read';
+
+/** A durable read of the action by one holder, recorded on this exact carrier generation before the interruption. */
+export interface InterruptedCarrierRead {
+  readonly catId: string;
+  readonly invocationId: string;
+  readonly seenAt: number;
+}
 
 export type DirectActionSuccessorCarrierDecision =
   | { disposition: 'live'; fence: ActionSuccessorFence }
+  /** Every holder was interrupted before any of them was shown the action: replaying it cannot repeat any work. */
   | { disposition: 'restart_interrupted'; fence: ActionSuccessorFence }
   /** The handled generation's execution ended; `fence` names that OLD generation, not the next one. */
   | { disposition: 'refresh_handled'; fence: ActionSuccessorFence }
-  | { disposition: 'unavailable'; reason: DirectActionSuccessorCarrierUnavailableReason };
+  | {
+      disposition: 'unavailable';
+      reason: DirectActionSuccessorCarrierUnavailableReason;
+      /** Set only for `interrupted_after_read`: which holders read the action, and when. */
+      interruptedReads?: readonly InterruptedCarrierRead[];
+    };
 
 function sameMembers(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) return false;
@@ -131,12 +150,27 @@ function handledChildInvocationIdsOf(custody: QueuedMessageCustody, holder: stri
   return [...ids];
 }
 
+/**
+ * Every durable read of this carrier by `holder`: a prompt body exposure or a full-read witness. Either one means the
+ * holder's provider was shown the action. Earliest read per invocation.
+ */
+function actionReadsOf(custody: QueuedMessageCustody, holder: string): InterruptedCarrierRead[] {
+  const earliest = new Map<string, number>();
+  for (const read of [...(custody.bodyExposures ?? []), ...(custody.readEvidenceWitnesses ?? [])]) {
+    if (read.targetCatId !== holder || !Number.isFinite(read.seenAt)) continue;
+    const previous = earliest.get(read.invocationId);
+    if (previous === undefined || read.seenAt < previous) earliest.set(read.invocationId, read.seenAt);
+  }
+  return [...earliest].map(([invocationId, seenAt]) => ({ catId: holder, invocationId, seenAt }));
+}
+
 function observeCustody(
   message: StoredMessage,
   holders: readonly string[],
   fence: ActionSuccessorFence,
   observed: Map<string, Set<ObservedCarrierState>>,
   handledChildInvocationIds: Map<string, Set<string>>,
+  reads: InterruptedCarrierRead[],
 ): void {
   const custody = message.queueCustody;
   if (!custody) return;
@@ -148,6 +182,7 @@ function observeCustody(
     const target = receipt.targets.find((candidate) => candidate.catId === holder);
     if (!target) continue;
     observed.get(holder)?.add(target.state);
+    reads.push(...actionReadsOf(custody, holder));
     if (target.state === 'handled') {
       for (const id of handledChildInvocationIdsOf(custody, holder)) handledChildInvocationIds.get(holder)?.add(id);
     }
@@ -170,11 +205,12 @@ function observeDirectActionSuccessorCarrier(
   const fence = buildActionSuccessorFence(lease, lease.dispatchId);
   const observed = new Map(lease.holderCatIds.map((catId) => [catId, new Set<ObservedCarrierState>()]));
   const handledChildInvocationIds = new Map(lease.holderCatIds.map((catId) => [catId, new Set<string>()]));
+  const reads: InterruptedCarrierRead[] = [];
 
   for (const message of messages) {
     if (message.threadId !== lease.holderThreadId || message.userId !== lease.tenantScope) continue;
     observeAdmission(message, lease.holderCatIds, fence, observed);
-    observeCustody(message, lease.holderCatIds, fence, observed, handledChildInvocationIds);
+    observeCustody(message, lease.holderCatIds, fence, observed, handledChildInvocationIds, reads);
   }
 
   const holderStates = lease.holderCatIds.map((catId) => observed.get(catId) ?? new Set<ObservedCarrierState>());
@@ -195,7 +231,17 @@ function observeDirectActionSuccessorCarrier(
   const everyHolderRestartInterrupted = holderStates.every(
     (states) => states.size > 0 && [...states].every((state) => state === 'interrupted'),
   );
-  if (everyHolderRestartInterrupted) return decide({ disposition: 'restart_interrupted', fence });
+  if (everyHolderRestartInterrupted) {
+    // The restart rule interrupts a holder whose body was exposed as well as one that was only awakened. Only the
+    // second never saw the work, so only it may be replayed by re-sending the same request.
+    if (reads.length > 0) {
+      const interruptedReads = [...reads].sort(
+        (a, b) => a.seenAt - b.seenAt || a.catId.localeCompare(b.catId) || a.invocationId.localeCompare(b.invocationId),
+      );
+      return decide({ disposition: 'unavailable', reason: 'interrupted_after_read', interruptedReads });
+    }
+    return decide({ disposition: 'restart_interrupted', fence });
+  }
 
   if (holderStates.some((states) => states.size === 0)) {
     return decide({ disposition: 'unavailable', reason: 'carrier_missing' });

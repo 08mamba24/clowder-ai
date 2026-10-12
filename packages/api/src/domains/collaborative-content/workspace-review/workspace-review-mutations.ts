@@ -37,10 +37,29 @@ export function appendWorkspaceSourceHistory(
 ): WorkspaceContentSource[] {
   const byRevision = new Map<string, WorkspaceContentSource>();
   for (const snapshot of [...(review.sourceHistory ?? [review.source]), source])
-    byRevision.set(snapshot.revision, snapshot);
+    byRevision.set(
+      snapshot.kind === 'video-project' ? `${snapshot.ownerRevision}:${snapshot.revision}` : snapshot.revision,
+      snapshot,
+    );
   const protectedRevisions = new Set([
     source.revision,
     ...review.annotations.map((annotation) => annotation.anchor.baseRevision),
+    ...review.annotations.flatMap((annotation) =>
+      (annotation.projectHistory ?? []).flatMap((event) => {
+        const result = event.result;
+        return [
+          ...(event.targets ?? []).map((target) => target.baseRevision),
+          ...(result && 'blobDigest' in result ? [result.blobDigest] : []),
+          ...(result && 'assetVersionRef' in result
+            ? [...byRevision.values()]
+                .filter(
+                  (snapshot) => snapshot.kind === 'video-project' && snapshot.ownerRevision === result.ownerRevision,
+                )
+                .map((snapshot) => snapshot.revision)
+            : []),
+        ];
+      }),
+    ),
     ...(review.visualMarks ?? []).map((mark) => mark.baseRevision),
   ]);
   const unique = [...byRevision.values()];

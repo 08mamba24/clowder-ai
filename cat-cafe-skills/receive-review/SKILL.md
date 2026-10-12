@@ -1,6 +1,6 @@
 ---
 name: receive-review
-tips_exempt: "Renewed 2026-10-02: feedback handling now checks original delivery intent and approval scope; this is internal author/reviewer guidance, with no new end-user operation or configuration."
+tips_exempt: "Renewed 2026-10-07 for reviewer-owned sandbox finish/check before each verdict; this is internal author/reviewer lifecycle guidance with no end-user Hub operation."
 description: "处理 reviewer 反馈：Red→Green 修复 + 按 engagement mode 收口。Use when: 收到 review 结果或 P1/P2。Not for: 发 review 请求、自检。Output: 按 iterative / one-shot 契约闭环。"
 triggers:
   - "review 结果"
@@ -278,11 +278,19 @@ Reviewer 在 review 过程中发现 author 触发以下任一条件，可直接�
 
 Reviewer 在 review 期间创建的沙盒：
 - **创建**：按 `request-review` 约定的路径 `/tmp/cat-cafe-review/{review-target-id}/{reviewer-handle}`
-- **回收**：**不由 reviewer 负责**。merge-gate 在 merge 后统一回收（Step 8.5）。
-- Reviewer 放行后**不需要**主动清理沙盒，也不需要报告沙盒路径。
+- **收尾 owner 与时点**：登记 reviewer 在交付本轮 verdict **之前**停止自己启动的预览，离开目标目录，执行下列 release/check；`changes_requested`、`commented` 与 `approved` 都适用，不等作者 merge。
+- **仍需接续**：确有未结束的复现/预览时改用 `--retain --reason ... --until ...`（单次最多30天）再 `--check`，在 verdict 中留下实际路径、owner 与 JSON 回执。后续轮次按实际需要恢复/创建，结束时再次处置。
+- **未创建沙盒**：只读 diff / archive 审查没有工位，无需为收尾创建工位。`blocked` 如实报告原因，不冒充已释放，也不代删其他猫的目录。
 
-> 为什么不让 reviewer 自己清理：reviewer session 在放行后结束，下次唤醒时 context 已换，
-> 根本不记得自己在 /tmp 留了什么。merge-gate 是唯一确定性终态。
+```bash
+# 从仓库内、沙盒之外执行；source 绑定本轮 review subject，owner 为实际 reviewer。
+pnpm worktree:finish /tmp/cat-cafe-review/{review-target-id}/{reviewer-handle} --source-ref {review-subject-ref}
+pnpm worktree:finish /tmp/cat-cafe-review/{review-target-id}/{reviewer-handle} --source-ref {同一ref} --check
+```
+
+TTL 沙盒可显式提前结束；释放会真正移除工位，分支留在共享 Git，ignored 独有原件保存在回执的 `archivePath`，用回执的 `restore` 恢复。作者 merge-gate Step8.5 只核对该 target 下仍登记的沙盒及 owner/续留，不接管 reviewer 的清理责任；TTL/reaper 是兜底，不替代本轮收尾。
+
+上述命令从持有 main 且已包含当前收尾版本的主仓执行；不要从另一份旧 feature/review 快照运行旧 CLI，把完整隔离误当磁盘回收。
 
 ## 下一步
 

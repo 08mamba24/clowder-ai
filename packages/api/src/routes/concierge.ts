@@ -15,6 +15,8 @@
 
 import { randomUUID } from 'node:crypto';
 import {
+  BALL_SIZE_MAX,
+  BALL_SIZE_MIN,
   type CatId,
   type ConciergeConfig,
   catIdSchema,
@@ -74,8 +76,8 @@ const patchConciergeConfigSchema = z
     muted: z.boolean(),
     /** PR-A3b: ball position persistence (INV-P3) */
     ballPosition: z.object({ x: z.number().finite(), y: z.number().finite() }).nullable(),
-    /** E3: ball size persistence (48-192px, see BALL_SIZE_MIN/MAX) */
-    ballSize: z.number().int().min(48).max(192),
+    /** E3: ball size persistence, shared with public and native companion geometry. */
+    ballSize: z.number().int().min(BALL_SIZE_MIN).max(BALL_SIZE_MAX),
     /** E4: autonomous behavior engine toggle */
     behaviorEnabled: z.boolean(),
     householdReadsAllowed: z.boolean(),
@@ -531,6 +533,13 @@ export const conciergeRoutes: FastifyPluginAsync<ConciergeRoutesOptions> = async
       }
     }
     return { config: updated, callStatus };
+  });
+
+  // Passive entry initialization discovers its owner carrier without creating or repairing it.
+  app.get('/api/concierge/thread', async (request, reply) => {
+    const userId = resolveStrictUserId(request);
+    if (!userId) return reply.code(401).send({ error: 'Identity required' });
+    return { threadId: await conciergeThreadService.findThreadId(userId, { repairMetadata: false }) };
   });
 
   // POST /api/concierge/thread — 懒创建/获取 per-user concierge thread

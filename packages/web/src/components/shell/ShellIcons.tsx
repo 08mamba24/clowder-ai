@@ -121,6 +121,7 @@ const GLYPHS = {
       <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
     </>
   ),
+  check: <path d="m5 12 4 4L19 6" />,
   panelRight: (
     <>
       <rect width="18" height="18" x="3" y="3" rx="2" />
@@ -170,6 +171,15 @@ const GLYPHS = {
       <path d="M16 3.13a4 4 0 0 1 0 7.75" />
     </>
   ),
+  cat: (
+    <>
+      <path d="M7 6 5 3v6" />
+      <path d="m17 6 2-3v6" />
+      <path d="M12 21c-4.42 0-8-2.69-8-6 0-4.42 3.58-8 8-8s8 3.58 8 8c0 3.31-3.58 6-8 6Z" />
+      <path d="M9 14h.01M15 14h.01" />
+      <path d="M10 17s1 1 2 1 2-1 2-1" />
+    </>
+  ),
   alert: (
     <>
       <circle cx="12" cy="12" r="10" />
@@ -183,6 +193,56 @@ const GLYPHS = {
       <circle cx="12" cy="12" r="3" />
     </>
   ),
+  // Workspace home tool rows (home-northstar mock symbols i-folder / i-filepen / i-gitpr / i-hash / i-globe / i-activity /
+  // i-hist / i-play / i-headphones / i-right, same 24-grid and stroke as the glyphs above).
+  folder: (
+    <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+  ),
+  filePen: (
+    <>
+      <path d="M12.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v9.5" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+      <path d="M13.38 15.62a1 1 0 0 1 3 3L12 23l-4 1 1-4Z" />
+    </>
+  ),
+  gitPr: (
+    <>
+      <circle cx="18" cy="18" r="3" />
+      <circle cx="6" cy="6" r="3" />
+      <path d="M13 6h3a2 2 0 0 1 2 2v7" />
+      <line x1="6" x2="6" y1="9" y2="21" />
+    </>
+  ),
+  hash: (
+    <>
+      <line x1="4" x2="20" y1="9" y2="9" />
+      <line x1="4" x2="20" y1="15" y2="15" />
+      <line x1="10" x2="8" y1="3" y2="21" />
+      <line x1="16" x2="14" y1="3" y2="21" />
+    </>
+  ),
+  globe: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
+      <path d="M2 12h20" />
+    </>
+  ),
+  activity: (
+    <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
+  ),
+  history: (
+    <>
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M12 7v5l4 2" />
+    </>
+  ),
+  play: <polygon points="6 3 20 12 6 21 6 3" />,
+  headphones: (
+    <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
+  ),
+  chevronRight: <path d="m9 18 6-6-6-6" />,
 } as const;
 
 export type ShellGlyphName = keyof typeof GLYPHS;

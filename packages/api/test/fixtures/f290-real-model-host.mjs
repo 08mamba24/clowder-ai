@@ -22,7 +22,7 @@ import { CollectiveCurrentContext } from '../../src/domains/plugin/builtin-runti
 import { CollectiveIngressDispatcher } from '../../src/domains/plugin/builtin-runtime/collective-ingress-dispatcher.ts';
 import { resolveCollectiveStandingGrant } from '../../src/domains/plugin/builtin-runtime/collective-standing-grant.ts';
 import { CollectiveWorkAdmission } from '../../src/domains/plugin/builtin-runtime/collective-work/collective-work-admission.ts';
-import { CollectiveWorkAuthority } from '../../src/domains/plugin/builtin-runtime/collective-work-authority.ts';
+import { CollectiveWorkAuthority } from '../../src/domains/plugin/builtin-runtime/collective-work/collective-work-authority.ts';
 import { CollectiveWorkDispatcher } from '../../src/domains/plugin/builtin-runtime/collective-work-dispatcher.ts';
 import { CollectiveWorkResultReconciler } from '../../src/domains/plugin/builtin-runtime/collective-work-result-reconciler.ts';
 import { CollectiveWorkRevisionReconciler } from '../../src/domains/plugin/builtin-runtime/collective-work-revision-reconciler.ts';

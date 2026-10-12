@@ -32,6 +32,7 @@ export interface WorkspaceReviewMutation {
   readonly now: string;
   readonly kind: string;
   readonly request: unknown;
+  readonly preparationSource?: WorkspaceContentReviewReceipt['preparationSource'];
 }
 
 export interface WorkspaceReviewMutationResult {
@@ -257,6 +258,7 @@ export class WorkspaceContentReviewStore {
       actor: input.actor,
       createdAt: input.now,
       replayed,
+      ...(input.preparationSource ? { preparationSource: input.preparationSource } : {}),
     };
     this.database
       .prepare(

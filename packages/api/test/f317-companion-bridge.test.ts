@@ -154,6 +154,7 @@ async function fixture() {
         privacy: 'sensitive',
         createdAt: '123',
         approvalOriginRef: '',
+        correctionTarget: '',
         publication: JSON.stringify({ state: 'anchored' }),
       },
     }));
@@ -476,6 +477,7 @@ test('F221 private trial expires and simultaneous confirmations consume one nonc
           privacy: 'public',
           createdAt: '123',
           approvalOriginRef: '',
+          correctionTarget: '',
           publication: JSON.stringify({ state: 'anchored' }),
         },
       };

@@ -4,16 +4,16 @@ import {
   freshTargetDecision,
   unavailableReason,
 } from './preflight/RoutingPreflightDecisionProjector.js';
+import {
+  RoutingPreflightObserver,
+  type RoutingPreflightTelemetryEvent,
+  type RoutingPreflightTelemetrySink,
+} from './preflight/RoutingPreflightTelemetry.js';
 import type {
   ResolveRoutingContextInput,
   RoutingContextResolution,
   RoutingContextResolver,
 } from './RoutingContextResolver.js';
-import {
-  RoutingPreflightObserver,
-  type RoutingPreflightTelemetryEvent,
-  type RoutingPreflightTelemetrySink,
-} from './RoutingPreflightTelemetry.js';
 
 export interface RoutingPreflightInput extends ResolveRoutingContextInput {
   targetCatIds: readonly string[];

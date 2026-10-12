@@ -31,7 +31,7 @@ export function decidesOnOriginCard(featureId: string): boolean {
 
 function approvalCardPlace(item: UnifiedAttentionItemV1): OriginalPlace {
   const navigation = item.approval?.navigation;
-  if (item.approval && decidesOnOriginCard(item.approval.sourceFeatureId) && navigation?.state === 'anchored') {
+  if (navigation?.state === 'anchored') {
     const { threadId, messageId } = navigation.approvalCardRef;
     return { kind: 'exact', actionRef: `message:${threadId}:${messageId}` };
   }

@@ -8,7 +8,7 @@ import { formatMessage } from '../src/domains/cats/services/context/ContextAssem
 import { MessageStore } from '../src/domains/cats/services/stores/ports/MessageStore.js';
 import { TaskStore } from '../src/domains/cats/services/stores/ports/TaskStore.js';
 import { resolveCollectiveStandingGrant } from '../src/domains/plugin/builtin-runtime/collective-standing-grant.js';
-import { CollectiveWorkAuthority } from '../src/domains/plugin/builtin-runtime/collective-work-authority.js';
+import { CollectiveWorkAuthority } from '../src/domains/plugin/builtin-runtime/collective-work/collective-work-authority.js';
 
 const configs = toAllCatConfigs(loadCatConfig(fileURLToPath(new URL('../../../cat-template.json', import.meta.url))));
 for (const [id, config] of Object.entries(configs)) if (!catRegistry.has(id)) catRegistry.register(id, config);

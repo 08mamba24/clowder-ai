@@ -31,13 +31,20 @@ import { MermaidDiagram } from './MermaidDiagram';
 import { createWorkspaceImageComponent, createWorkspaceLinkComponent } from './workspace-md-components';
 
 const BARE_MARKDOWN_LINE_HREF_RE = /^[^/:\\?#]+\.mdx?:\d+$/i;
-const WINDOWS_MARKDOWN_HREF_RE = /^[a-z]:[\\/].*\.mdx?(?::\d+)?$/i;
+const WINDOWS_ABSOLUTE_PATH_HREF_RE = /^[a-z]:[\\/].*$/i;
+const WINDOWS_UNC_PATH_HREF_RE = /^\\\\[^\\]+\\[^\\]+/;
 
 /** Preserve safe file-like forms that react-markdown mistakes for custom URI schemes. */
 export function transformChatMarkdownUrl(url: string): string {
   const transformed = defaultUrlTransform(url);
   if (transformed) return transformed;
-  if (BARE_MARKDOWN_LINE_HREF_RE.test(url) || WINDOWS_MARKDOWN_HREF_RE.test(url)) return url;
+  if (
+    BARE_MARKDOWN_LINE_HREF_RE.test(url) ||
+    WINDOWS_ABSOLUTE_PATH_HREF_RE.test(url) ||
+    WINDOWS_UNC_PATH_HREF_RE.test(url)
+  ) {
+    return url;
+  }
   return transformed;
 }
 
@@ -298,6 +305,7 @@ function FilePathLink({
         worktreeId ?? null,
         currentThreadId,
         currentThreadId && messageId ? { kind: 'chat-file-link', threadId: currentThreadId, messageId } : undefined,
+        'permanent',
       );
     },
     [currentThreadId, setOpenFile, filePath, line, worktreeId],

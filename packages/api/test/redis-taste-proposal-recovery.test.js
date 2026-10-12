@@ -12,6 +12,7 @@ const KEY_PATTERNS = [
   'taste-proposal-user-pending:*',
   'taste-proposal-user-settled:*',
   'taste-proposal-dedup:*',
+  'taste-proposal-correction-source:*',
 ];
 
 describe('Redis Taste proposal crash recovery', { skip: redisIsolationSkipReason(REDIS_URL) }, () => {
@@ -142,5 +143,64 @@ describe('Redis Taste proposal crash recovery', { skip: redisIsolationSkipReason
       null,
       'abort must atomically release its persistent retry identity',
     );
+  });
+
+  it('persists and indexes source-bound corrections until their owner decision settles', async () => {
+    const store = new RedisTasteProposalStore(redis);
+    const sourceAnchor = 'taste-vignette:docs/taste/vignettes/example.md';
+    const target = {
+      sourceAnchor,
+      expectedRevision: `sha256:${'a'.repeat(64)}`,
+      reason: 'outdated',
+      suggestedPatch: { takeaway: '更新后的判断。' },
+    };
+    const firstId = 'tp-correction-approve';
+    await store.reserveDedup('user-correction', 'request-correction-approve', firstId);
+    const first = await store.create({
+      proposalId: firstId,
+      clientRequestId: 'request-correction-approve',
+      userId: 'user-correction',
+      catId: 'codex-sol',
+      threadId: 'thread-correction',
+      scene: 'Existing vignette needs an update',
+      quote: 'Original quote',
+      takeaway: '更新后的判断。',
+      tags: ['truth'],
+      dimension: 'cognitive-honesty',
+      privacy: 'public',
+      correctionTarget: target,
+    });
+    assert.deepEqual((await store.get(first.id)).correctionTarget, target);
+    assert.deepEqual(
+      (await store.listCorrectionsBySource('user-correction', sourceAnchor)).map((p) => p.id),
+      [first.id],
+    );
+    await store.claimForApproval(first.id, 'user-correction');
+    await store.recordWriteCheckpoint(first.id, {
+      vignetteSlug: 'example',
+      vignettePath: 'docs/taste/vignettes/example.md',
+    });
+    await store.finalizeApproval(first.id, 'user-correction', 'example', 'docs/taste/vignettes/example.md');
+    assert.deepEqual(await store.listCorrectionsBySource('user-correction', sourceAnchor), []);
+    assert.deepEqual((await store.get(first.id)).correctionTarget, target);
+
+    const secondId = 'tp-correction-reject';
+    await store.reserveDedup('user-correction', 'request-correction-reject', secondId);
+    await store.create({
+      proposalId: secondId,
+      clientRequestId: 'request-correction-reject',
+      userId: 'user-correction',
+      catId: 'codex-sol',
+      threadId: 'thread-correction',
+      scene: 'Second correction',
+      quote: 'Original quote',
+      tags: ['truth'],
+      dimension: 'cognitive-honesty',
+      privacy: 'public',
+      correctionTarget: target,
+    });
+    assert.equal((await store.listCorrectionsBySource('user-correction', sourceAnchor)).length, 1);
+    await store.markRejected(secondId, 'Not applicable', 'user-correction');
+    assert.deepEqual(await store.listCorrectionsBySource('user-correction', sourceAnchor), []);
   });
 });

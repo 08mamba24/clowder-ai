@@ -51,13 +51,21 @@ describe('lookupSettled', () => {
     answer({ items: [row({ proposalId: 'other' }), row({ resolution })], count: 2 });
     await expect(lookupSettled(ask)).resolves.toEqual({
       kind: 'found',
-      terminal: { resolution, decidedAt: 1_700_000_000_000, decidedBy: 'owner-1' },
+      terminal: {
+        resolution,
+        decidedAt: 1_700_000_000_000,
+        decidedBy: 'owner-1',
+        ...(resolution === 'accepted' ? { effectUnknown: true } : {}),
+      },
     });
   });
 
   it('keeps only the facts the row really has', async () => {
     answer({ items: [row({ decidedAt: undefined, decidedBy: '   ' })], count: 1 });
-    await expect(lookupSettled(ask)).resolves.toEqual({ kind: 'found', terminal: { resolution: 'accepted' } });
+    await expect(lookupSettled(ask)).resolves.toEqual({
+      kind: 'found',
+      terminal: { resolution: 'accepted', effectUnknown: true },
+    });
   });
 
   it('does not take a row of another producer or another proposal for this one', async () => {

@@ -1,4 +1,5 @@
 import type { FileData, WorktreeEntry } from '@/hooks/useWorkspace';
+import type { WorkspaceFileNavigationOrigin } from '@/stores/chat-types';
 import type { WorkspaceFileSave } from './workspace-file-draft';
 
 export interface WorkspaceFileViewerProps {
@@ -37,4 +38,10 @@ export interface WorkspaceFileViewerProps {
   restoreScrollTop?: number | null;
   restoreKey?: string;
   onScrollTopChange?: (scrollTop: number) => void;
+  focusMode?: boolean;
+  navigationOrigin?: WorkspaceFileNavigationOrigin;
+  onBack?: () => void;
+  onRevealInTree?: () => void;
+  annotationCount?: number | null;
+  treeVisible?: boolean;
 }

@@ -1,6 +1,8 @@
 'use client';
 
+import type { ActiveExecutionProjection } from '@cat-cafe/shared';
 import { useEffect, useState } from 'react';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import type { WorkspaceSurfaceDescriptor } from '@/components/workbench/workbench-contract';
 import {
   type WorkspaceDevSurface,
@@ -9,6 +11,8 @@ import {
 } from '@/components/workspace/WorkspaceLauncher';
 import type { LauncherWorkspaceSearch } from '@/components/workspace/WorkspaceLauncherSearch';
 import { WorkspaceNowSurface } from '@/components/workspace/WorkspaceNowSurface';
+import { WorkspaceHomeV2 } from '@/components/workspace-home/WorkspaceHomeV2';
+import { useChatStore } from '@/stores/chatStore';
 import { createAgentRunSurface, createFileSurface } from './real-surface-adapters';
 import { workspaceHomeDestinationToSurface } from './workspace-home-adapter';
 
@@ -22,6 +26,7 @@ export function F307WorkspaceHomePage({
   onSelectDevSurface,
   onSelectSurface,
   worktreeId,
+  canonicalWorktreeId,
   worktreeLoading = false,
   worktreeError = null,
   openFilePath,
@@ -36,6 +41,7 @@ export function F307WorkspaceHomePage({
   onSelectDevSurface: (surface: WorkspaceDevSurface) => void;
   onSelectSurface: (surface: WorkspaceSurfaceDescriptor) => void;
   worktreeId: string | null;
+  canonicalWorktreeId?: string | null;
   worktreeLoading?: boolean;
   worktreeError?: string | null;
   openFilePath: string | null;
@@ -46,13 +52,19 @@ export function F307WorkspaceHomePage({
   /** F307 host restores this transient value after an ordinary Home-origin return. */
   workspaceSearchQuery?: string;
 }) {
+  const presentation = useShellPresentation();
+  const threadTitle = useChatStore((state) => state.threads.find((thread) => thread.id === threadId)?.title);
   const [pendingDestination, setPendingDestination] = useState<WorkspaceLauncherDestination | null>(null);
   const [destinationMessage, setDestinationMessage] = useState<string | null>(null);
 
   const selectDestination = (destination: WorkspaceLauncherDestination) => {
+    // The classic Launcher has already opened the original replay overlay.
+    if (presentation === 'classic' && destination.kind === 'action') return;
     const surface = workspaceHomeDestinationToSurface(destination, {
       threadId,
+      threadTitle,
       worktreeId,
+      canonicalWorktreeId,
       openFilePath,
       preview,
     });
@@ -83,7 +95,9 @@ export function F307WorkspaceHomePage({
     }
     const surface = workspaceHomeDestinationToSurface(pendingDestination, {
       threadId,
+      threadTitle,
       worktreeId,
+      canonicalWorktreeId,
       openFilePath,
       preview,
     });
@@ -92,25 +106,63 @@ export function F307WorkspaceHomePage({
     setDestinationMessage(null);
     onSelectSurface(surface);
   }, [
+    canonicalWorktreeId,
     onSelectSurface,
     openFilePath,
     pendingDestination,
     preview,
     threadId,
+    threadTitle,
     worktreeError,
     worktreeId,
     worktreeLoading,
   ]);
 
+  const launcherSearch: LauncherWorkspaceSearch | undefined = workspaceSearch
+    ? {
+        ...workspaceSearch,
+        onOpenResult: (path, line) => {
+          workspaceSearch.onOpenResult(path, line);
+          if (presentation !== 'v2' && worktreeId)
+            onSelectSurface(
+              createFileSurface({
+                worktreeId,
+                path,
+                scrollToLine: line,
+                navigationOrigin: workspaceSearch.fileNavigationOrigin?.(),
+                ...(rootSelection ? { rootSelection } : {}),
+              }),
+            );
+        },
+      }
+    : undefined;
+  const openRunningObject = (execution: ActiveExecutionProjection) => {
+    const surface = createAgentRunSurface({ execution });
+    if (surface) onSelectSurface(surface);
+  };
+
+  // The new shell's home reads the same sources and chooses through the same callbacks above; the classic home below is
+  // the other branch and is the markup it always was.
+  if (presentation === 'v2') {
+    return (
+      <WorkspaceHomeV2
+        threadId={threadId}
+        defaultCatId={defaultCatId}
+        worktreeId={worktreeId}
+        repository={repository}
+        workspaceSearch={launcherSearch}
+        workspaceSearchQuery={workspaceSearchQuery}
+        destinationMessage={destinationMessage}
+        onSelectDevSurface={onSelectDevSurface}
+        onSelectDestination={selectDestination}
+        onSelectExecution={openRunningObject}
+      />
+    );
+  }
+
   return (
     <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--console-panel-bg)]" data-testid="f307-workspace-home-page">
-      <WorkspaceNowSurface
-        repository={repository}
-        onSelectExecution={(execution) => {
-          const surface = createAgentRunSurface({ execution });
-          if (surface) onSelectSurface(surface);
-        }}
-      />
+      <WorkspaceNowSurface repository={repository} onSelectExecution={openRunningObject} />
       {destinationMessage && (
         <div className="mx-auto w-full max-w-4xl px-5 pt-3">
           <div
@@ -128,26 +180,7 @@ export function F307WorkspaceHomePage({
         defaultCatId={defaultCatId}
         initialSearchQuery={workspaceSearchQuery}
         onSelectDevSurface={onSelectDevSurface}
-        workspaceSearch={
-          workspaceSearch
-            ? {
-                ...workspaceSearch,
-                onOpenResult: (path, line) => {
-                  workspaceSearch.onOpenResult(path, line);
-                  if (worktreeId)
-                    onSelectSurface(
-                      createFileSurface({
-                        worktreeId,
-                        path,
-                        scrollToLine: line,
-                        navigationOrigin: workspaceSearch.fileNavigationOrigin?.(),
-                        ...(rootSelection ? { rootSelection } : {}),
-                      }),
-                    );
-                },
-              }
-            : undefined
-        }
+        workspaceSearch={launcherSearch}
         onSelectDestination={selectDestination}
       />
     </div>

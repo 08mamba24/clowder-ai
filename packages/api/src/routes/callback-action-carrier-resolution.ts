@@ -7,9 +7,12 @@ import {
   refreshHandledActionSuccessorCarrier,
 } from '../domains/ball-custody/ActionSuccessorCarrierRefresh.js';
 import type { ActionSuccessorLeaseStore } from '../domains/ball-custody/ActionSuccessorLeaseStore.js';
+import type { InterruptedGenerationEvidence } from '../domains/ball-custody/action-successor-replacement-state-machine.js';
 import type { ActionSuccessorLease } from '../domains/ball-custody/action-successor-state-machine.js';
 import {
+  classifyDirectActionSuccessorCarrier,
   type DirectActionSuccessorCarrierUnavailableReason,
+  type InterruptedCarrierRead,
   readCarrierAdmissionEvidence,
   resolveDirectActionSuccessorCarrier,
 } from '../domains/ball-custody/DirectActionSuccessorCarrierRecovery.js';
@@ -19,6 +22,60 @@ import type {
 } from '../domains/ball-custody/DirectActionSuccessorExecutionEvidence.js';
 import type { ActionSuccessorCarrierAdmissionOutcome } from '../domains/ball-custody/reconcile-action-successor-enqueue.js';
 import type { IMessageStore } from '../domains/cats/services/stores/ports/MessageStore.js';
+
+function interruptedGenerationEvidenceRef(
+  lease: Pick<ActionSuccessorLease, 'leaseId' | 'generation'>,
+  reads: readonly InterruptedCarrierRead[],
+): string {
+  const readers = reads.map((read) => `${read.catId}@${read.invocationId}`).join(',');
+  return `carrier-interrupted-after-read:${lease.leaseId}:g${lease.generation}:${readers}`;
+}
+
+/**
+ * When an issuer explicitly asks to replace a generation, re-derive from durable custody (never from the request)
+ * whether that exact generation was interrupted after a holder read the action. Only that proof lets an explicit
+ * replace move a still-active lease. Any read failure, a moved lease, or a different carrier state yields nothing,
+ * and the replace keeps its ordinary `proof_required` guard.
+ */
+export async function resolveInterruptedGenerationEvidence(input: {
+  messageStore: Pick<IMessageStore, 'getByThreadAfter'>;
+  leaseStore: Pick<ActionSuccessorLeaseStore, 'get'> | undefined;
+  replace: { leaseId: string; expectedGeneration: number };
+  tenantScope: string;
+}): Promise<InterruptedGenerationEvidence | undefined> {
+  if (!input.leaseStore) return undefined;
+  try {
+    const lease = await input.leaseStore.get(input.replace.leaseId);
+    if (
+      !lease ||
+      lease.tenantScope !== input.tenantScope ||
+      lease.status !== 'active' ||
+      lease.generation !== input.replace.expectedGeneration
+    ) {
+      return undefined;
+    }
+    const messages = await input.messageStore.getByThreadAfter(
+      lease.holderThreadId,
+      undefined,
+      undefined,
+      lease.tenantScope,
+      { includeQueuedCatMessages: true, includeQueuedUserMessages: true },
+    );
+    const decision = classifyDirectActionSuccessorCarrier(lease, messages);
+    const reads =
+      decision.disposition === 'unavailable' && decision.reason === 'interrupted_after_read'
+        ? decision.interruptedReads
+        : undefined;
+    if (!reads?.length) return undefined;
+    return {
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      evidenceRef: interruptedGenerationEvidenceRef(lease, reads),
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 /** Stable append identity of one generation's replacement carrier; a retry converges on one message. */
 export function actionCarrierRecoveryKey(fence: Pick<ActionSuccessorFence, 'leaseId' | 'generation'>): string {
@@ -165,6 +222,18 @@ export async function resolveSafeWaitCarrier(
     };
   }
   if (carrier.disposition === 'unavailable') {
+    if (carrier.reason === 'interrupted_after_read') {
+      // The holder may have partly run the action before the restart. Say who read it and leave the decision to
+      // run it again with the caller: an explicit replace of this exact generation, after checking what was done.
+      return unavailable('interrupted_after_read', {
+        interruptedReads: carrier.interruptedReads ?? [],
+        nextStep:
+          'A runtime restart interrupted this action after a holder had already read it, so it may have partly run. ' +
+          "Check the holder's thread for work already done. To run it again on purpose, send the same action with " +
+          `replace: { leaseId: "${lease.leaseId}", expectedGeneration: ${lease.generation} }. That starts generation ` +
+          `${lease.generation + 1}; it does not undo anything the interrupted attempt already did.`,
+      });
+    }
     // On a re-read the request already passed the authority check against the lease it observed, so
     // failing it now means the lease itself changed (cancelled, completed, replaced), not the caller.
     return unavailable(attempt > 1 && carrier.reason === 'authority_mismatch' ? 'lease_changed' : carrier.reason);

@@ -98,6 +98,11 @@ export interface CodexAppServerRunInput {
   /** Server-qualified (`serverName::toolName`) dependencies checked against the effective thread inventory before turn/start. */
   requiredTools?: readonly string[];
   config?: JsonObject;
+  /** Same-host account/configuration fence, before any thread/model/turn operation. */
+  validateConfiguration?: (
+    request: (method: string, params: JsonObject) => Promise<unknown>,
+    config: JsonObject,
+  ) => Promise<void>;
   /** F291: omitted inherits Codex config; null explicitly requests Standard. */
   serviceTier?: string | null;
   /**
@@ -282,14 +287,36 @@ export class CodexAppServerClient {
       yield this.lifecycle.event(this.lifecycle.transition('initialized'));
       this.lifecycle.armInactivityTimeout(timeoutMs, timeoutHandler);
 
+      await input.validateConfiguration?.((method, params) => this.request(method, params), input.config ?? {});
+      await validateCodexAccountConfiguration(
+        this.deps.wire,
+        (method, params) => this.request(method, params),
+        input.config ?? {},
+      );
+
       if (input.live) {
-        // Thread config overlays user config; explicitly disable every ambient MCP server.
-        const loaded = asCodexAppServerRecord(await this.request('config/read', { includeLayers: false }));
+        // config/read without cwd sees global servers, while a resumed thread
+        // also loads project servers at its persisted cwd. Fence the exact scope.
+        let liveCwd = input.cwd;
+        if (!liveCwd && input.thread.kind === 'resume') {
+          const stored = asCodexAppServerRecord(
+            await this.request('thread/read', { threadId: input.thread.threadId, includeTurns: false }),
+          );
+          const thread = asCodexAppServerRecord(stored?.thread);
+          if (thread?.id !== input.thread.threadId || typeof thread.cwd !== 'string' || !thread.cwd.trim())
+            throw new Error('Live native cwd unavailable');
+          liveCwd = thread.cwd;
+        }
+        liveCwd ??= process.cwd();
+        const loaded = asCodexAppServerRecord(
+          await this.request('config/read', { cwd: liveCwd, includeLayers: false }),
+        );
         if (!asCodexAppServerRecord(loaded?.config)) throw new Error('Live native config unavailable');
         const configured = asCodexAppServerRecord(asCodexAppServerRecord(loaded?.config)?.mcp_servers) ?? {};
         const allowed = asCodexAppServerRecord(input.config?.mcp_servers) ?? {};
         input = {
           ...input,
+          cwd: liveCwd,
           config: {
             ...input.config,
             mcp_servers: {
@@ -445,7 +472,7 @@ export class CodexAppServerClient {
         await input.live.ready(threadId, {
           request: (method, params) => this.request(method, params),
           submitText: (text, sourceMessageId) => liveInputs.submitText(text, sourceMessageId),
-          submitContextAtBoundary: async (text, sourceRefs, contextKind, signal, authorize) => {
+          submitContextAtBoundary: async (text, sourceRefs, contextKind, signal, authorize, clientUserMessageId) => {
             if (!boundaryOpen) throw new Error('Live context outside native safe boundary');
             const accepted = await liveInputs.submitContextAtBoundary(
               text,
@@ -455,6 +482,7 @@ export class CodexAppServerClient {
               authorize,
               threadId,
               activeTurnId,
+              clientUserMessageId,
             );
             await bindAcceptedLiveTurn(accepted);
             return accepted;
@@ -481,7 +509,12 @@ export class CodexAppServerClient {
         const isIdleTick = liveInputs.consumeTick(envelope);
         if (isText || isIdleTick) {
           if (isText) acceptedLiveTurn = await liveInputs.sendText(envelope, threadId, activeTurnId);
-          else if (!activeTurnId && input.live?.hasPendingInboxWake?.()) await deliverAtBoundary('idle');
+          else if (
+            (!activeTurnId && input.live?.hasPendingInboxWake?.()) ||
+            input.live?.hasPendingPageResultWake?.() ||
+            input.live?.hasPendingOwnerVoiceWake?.()
+          )
+            await deliverAtBoundary('idle');
           else if (
             !activeTurnId &&
             canSubmitLiveInput() &&
@@ -843,3 +876,5 @@ export class CodexAppServerClient {
     this.pending.clear();
   }
 }
+
+import { validateCodexAccountConfiguration } from './codex-app-server-account-configuration.js';

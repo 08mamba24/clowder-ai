@@ -80,13 +80,13 @@ beforeEach(() => {
   const browser = { parent: undefined as unknown };
   browser.parent = browser;
   vi.stubGlobal('window', browser);
-  vi.stubGlobal('location', new URL('http://localhost:5272/'));
+  vi.stubGlobal('location', new URL('http://localhost:5272/?channelId=general'));
 });
 afterEach(() => vi.unstubAllGlobals());
 
 describe('F290 default product entry', () => {
   it('renders Service messages even when an old experienceGate bookmark is opened', () => {
-    vi.stubGlobal('location', new URL('http://localhost:5272/?experienceGate=f290-assembly'));
+    vi.stubGlobal('location', new URL('http://localhost:5272/?experienceGate=f290-assembly&channelId=general'));
     const html = renderToStaticMarkup(<CollectiveClient />);
     expect(html).toContain(message.body);
     expect(html).not.toContain('演示数据');

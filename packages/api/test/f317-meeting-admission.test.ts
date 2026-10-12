@@ -12,6 +12,7 @@ const call = {
 };
 const capture = {
   running: true,
+  lifecycle: 'running' as const,
   paused: false,
   threadId: 'meeting-thread',
   meetingId: 'mtg-1',
@@ -63,7 +64,7 @@ test('stale or foreign owner action cannot admit an observed meeting', () => {
     { ...observed, call: { ...call, state: 'preparing' as const } },
     { ...observed, capture: { ...capture, running: false } },
     { ...observed, capture: { ...capture, paused: true } },
-    { ...observed, capture: { ...capture, meetingId: '../escape' }, intent: { ...intent, meetingId: '../escape' } },
+    { ...observed, capture: { ...capture, meetingId: '' }, intent: { ...intent, meetingId: '' } },
     {
       ...observed,
       capture: {

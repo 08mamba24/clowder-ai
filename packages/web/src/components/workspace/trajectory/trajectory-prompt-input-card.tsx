@@ -1,4 +1,5 @@
 import type { InvocationPromptInputProjection } from '@cat-cafe/shared';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import { HubIcon } from '../../hub-icons';
 import { SemanticBadge, SemanticFrame } from './trajectory-semantic-cards';
 
@@ -15,6 +16,7 @@ export function PromptInputCard({
   promptInput: InvocationPromptInputProjection | undefined;
   onOpenMessage: (messageId: string) => void;
 }) {
+  const isV2 = useShellPresentation() === 'v2';
   const semanticRole =
     promptInput?.status === 'available'
       ? (promptInput.messages.find((message) => message.status === 'available')?.author ?? 'user')
@@ -26,7 +28,9 @@ export function PromptInputCard({
         <SemanticBadge semanticRole={semanticRole} />
       </div>
       {!promptInput || promptInput.status === 'unavailable' ? (
-        <p className="mt-2 text-xs text-cafe-muted">canonical promptMessageIds 不可用</p>
+        <p className="mt-2 text-xs text-cafe-muted">
+          {isV2 ? '触发消息记录不可用' : 'canonical promptMessageIds 不可用'}
+        </p>
       ) : (
         <div className="mt-2 space-y-2">
           {promptInput.messages.map((message) =>

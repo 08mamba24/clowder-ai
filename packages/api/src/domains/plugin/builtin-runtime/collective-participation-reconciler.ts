@@ -9,6 +9,7 @@ import {
   type ObservedCatEligibility,
 } from '@cat-cafe/collective-connector';
 import type { CatId } from '@cat-cafe/shared';
+import type { ThreadSystemKind } from '../../cats/services/stores/ports/ThreadStore.js';
 import { collectiveAvatarRoots, publicCollectiveAvatar } from './collective-public-avatar.js';
 
 export interface ParticipationCat {
@@ -23,12 +24,23 @@ export interface ParticipationCat {
 interface ReconcileOptions {
   readonly connector: Pick<CollectiveConnector, 'setHostRoute' | 'publishParticipation'>;
   readonly threads: {
-    get(
-      threadId: string,
-    ):
-      | { id: string; createdBy: string; participants: readonly string[]; deletedAt?: number | null }
+    claimSystemKind(threadId: string, ownerUserId: string, kind: ThreadSystemKind): boolean | Promise<boolean>;
+    get(threadId: string):
+      | {
+          id: string;
+          createdBy: string;
+          participants: readonly string[];
+          deletedAt?: number | null;
+          systemKind?: ThreadSystemKind;
+        }
       | null
-      | Promise<{ id: string; createdBy: string; participants: readonly string[]; deletedAt?: number | null } | null>;
+      | Promise<{
+          id: string;
+          createdBy: string;
+          participants: readonly string[];
+          deletedAt?: number | null;
+          systemKind?: ThreadSystemKind;
+        } | null>;
     create(
       userId: string,
       title?: string,
@@ -234,9 +246,13 @@ async function endpointThread(
 ) {
   const existing = existingId ? await options.threads.get(existingId) : undefined;
   const thread =
-    existing && !existing.deletedAt && existing.createdBy === options.ownerUserId
+    existing &&
+    !existing.deletedAt &&
+    existing.createdBy === options.ownerUserId &&
+    (!existing.systemKind || existing.systemKind === 'collective_channel')
       ? existing
       : await options.threads.create(options.ownerUserId, `Collective #${channelId} 公共参与`);
+  if (!(await options.threads.claimSystemKind(thread.id, options.ownerUserId, 'collective_channel'))) throw conflict();
   const missing = participantIds.filter((catId) => !thread.participants?.includes(catId));
   if (missing.length) await options.threads.addParticipants(thread.id, missing as CatId[]);
   return thread.id;

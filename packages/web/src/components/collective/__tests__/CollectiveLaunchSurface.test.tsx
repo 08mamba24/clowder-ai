@@ -216,7 +216,6 @@ describe('CollectiveLaunchSurface', () => {
     expect(iframe?.src).toBe('http://localhost:5201/?hostOrigin=http%3A%2F%2Flocalhost%3A3000');
     expect(iframe?.title).toBe('Collective');
     expect(iframe?.getAttribute('sandbox')).toContain('allow-popups-to-escape-sandbox');
-    expect(container.querySelector('[data-concierge-reserved-rect="collective-message-actions"]')).not.toBeNull();
     expect(container.textContent).not.toContain('canonical client');
     expect(container.textContent).not.toContain('ACK #');
 

@@ -265,7 +265,7 @@ describe('the 待办 panel and the approvals it can host', () => {
       await openPanel();
       const retained = $('mailbox-retained-result');
       expect(retained).not.toBeNull();
-      expect(retained?.textContent).toContain('已批准');
+      expect(retained?.textContent).toContain('已同意');
       // Named the way its row was named.
       expect(retained?.textContent).toContain('记一条品味');
     });

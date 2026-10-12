@@ -402,6 +402,7 @@ async function enrichProjectedQueueEntries(
   entries: QueueEntry[],
   messageStore: IMessageStore | null | undefined,
 ): Promise<EnrichedQueueEntry[]> {
+  entries = entries.filter((entry) => !entry.queueCustodyAdmissionId);
   if (entries.length === 0) return [];
   if (!messageStore) return entries.map(projectPublicQueueEntry).map(failClosedMessageBackedRetry);
 

@@ -5,7 +5,16 @@ import { isDeepStrictEqual } from 'node:util';
 export const BROWSER_IMPACT_POLICY_PATH = 'scripts/lib/browser-impact-policy.json';
 
 const POLICY_KEYS = new Set(['schemaVersion', 'version', 'retirements', 'groups']);
-const GROUP_KEYS = new Set(['id', 'kind', 'ownerRef', 'rationale', 'unitIds', 'selectionInputs', 'dependencyInputs']);
+const GROUP_KEYS = new Set([
+  'id',
+  'kind',
+  'ownerRef',
+  'rationale',
+  'unitIds',
+  'selectionInputs',
+  'dependencyInputs',
+  'manifestInputs',
+]);
 
 function assertKnownFields(value, keys, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !keys.has(key))) {
@@ -44,7 +53,16 @@ function policyGroups(policy) {
       group.unitIds.some((id) => typeof id !== 'string' || !id.startsWith('browser:')) ||
       new Set(group.unitIds).size !== group.unitIds.length ||
       !Array.isArray(group.selectionInputs) ||
-      group.selectionInputs.some((input) => typeof input !== 'string')
+      group.selectionInputs.some((input) => typeof input !== 'string') ||
+      (group.manifestInputs !== undefined &&
+        (!Array.isArray(group.manifestInputs) ||
+          group.manifestInputs.some(
+            (input) =>
+              !input ||
+              typeof input.importer !== 'string' ||
+              typeof input.field !== 'string' ||
+              typeof input.key !== 'string',
+          )))
     ) {
       throw new Error('impact group has an invalid or duplicate shape');
     }

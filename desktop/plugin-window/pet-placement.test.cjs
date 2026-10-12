@@ -82,7 +82,7 @@ test('the full living-body union stays inside the native surface at every displa
 });
 
 test('saved ball size scales the hit target and full art union on a negative-origin display', () => {
-  for (const ballSize of [48, 72, 192]) {
+  for (const ballSize of [43, 48, 72, 192]) {
     const metrics = petMetrics(ballSize);
     const result = placePetPanel({
       area,
@@ -101,8 +101,12 @@ test('saved ball size scales the hit target and full art union on a negative-ori
   }
 });
 
+test('the compact saved size is the approved 72 by 78 desktop cat', () => {
+  assert.deepEqual(petMetrics(43).pet, { width: 72, height: 78 });
+});
+
 test('invalid native size input fails closed to the reviewed default geometry', () => {
   assert.deepEqual(petMetrics(Number.NaN), petMetrics(72));
-  assert.deepEqual(petMetrics(47), petMetrics(72));
+  assert.deepEqual(petMetrics(42), petMetrics(72));
   assert.deepEqual(petMetrics(193), petMetrics(72));
 });

@@ -18,6 +18,7 @@ export * from './capability-tips.js';
 // Export shared CLI effort helpers
 export * from './cli-effort.js';
 export * from './cli-tool-label.js';
+export * from './codex-account.js';
 // F291: OAuth Codex Standard/Fast semantic contract
 export * from './codex-speed.js';
 export * from './collective-participation-scope.js';
@@ -39,6 +40,8 @@ export {
 } from './concierge/pet-skin-projection.js';
 // #1343: Context window catalog (API Auto-mode fallback + Web draft preview)
 export * from './context-window-catalog.js';
+// F322: shared wire validation for the owner-private conversation presentation preference.
+export * from './conversation-view-preference.js';
 export { CORE_COMMANDS } from './core-commands.js';
 // Export Eval Hub metric reference normalization (F248 B3)
 export * from './eval-metric-ref.js';
@@ -46,11 +49,19 @@ export * from './eval-metric-ref.js';
 export * from './explicit-stop-intent.js';
 // Export shared text helpers
 export * from './markdown-readable-text.js';
-export type { MessageSearchInput, MessageSearchResponse, MessageSearchResult } from './message-search.js';
+export * from './message-output-layout.js';
+export type {
+  MessageNavigationAdmission,
+  MessageNavigationReference,
+  MessageSearchInput,
+  MessageSearchResponse,
+  MessageSearchResult,
+} from './message-search.js';
 // Browser Preview Gateway request identity shared by API and Web.
 export * from './preview-gateway.js';
 export * from './preview-visible-page-admission.js';
 export * from './provider-semantic-projection.js';
+export { RECALL_DISPLAY_DOC_KINDS } from './recall-display-contract.js';
 // Export recall-result sidecar contract (producer → parser → persistence → UI)
 export * from './recall-outcome.js';
 // Dossier profile parser: import from '@cat-cafe/shared/dossier' (F208 KD-10)
@@ -78,6 +89,7 @@ export * from './types/collective-work-acceptance.js';
 export * from './types/collective-work-matter.js';
 export * from './types/collective-work-policy.js';
 export * from './types/content-modification.js';
+export * from './types/content-modification-carrier.js';
 export * from './types/content-modification-control.js';
 export * from './types/content-modification-view.js';
 export * from './types/deployment-wait.js';
@@ -93,7 +105,11 @@ export * from './types/local-review.js';
 export * from './types/media-publication-source.js';
 // F287 bounded opportunity/cue contract (kept explicit for API/MCP consumers).
 export * from './types/memory-cue.js';
+export * from './types/message-output-layout.js';
 export * from './types/message-publication-landing.js';
+export * from './types/output-message.js';
+export * from './types/video-project.js';
+export * from './types/video-project-review.js';
 export * from './types/workspace-content-review.js';
 // Export subject key utilities (#320)
 export * from './utils/subject-key.js';

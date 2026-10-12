@@ -13,7 +13,7 @@ export function ChannelNavigation({
   guideCatCount,
 }: {
   readonly channels: ReturnType<typeof channelDestinations>;
-  readonly channelId: string;
+  readonly channelId?: string;
   readonly query: string;
   readonly onQuery: (value: string) => void;
   readonly onSelect: (id: string) => void;

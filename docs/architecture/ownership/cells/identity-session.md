@@ -2,10 +2,29 @@
 cell_id: identity-session
 title: Identity / Session
 summary: Agent identity、connector session binding、bubble identity、runtime session binding、context continuity、thread access policy 与 user profile 等 subcell 的边界。
-canonical_features: [F032, F088, F183, F211, F231, F262, F291, F296, F299]
+canonical_features: [F032, F088, F136, F171, F183, F211, F231, F262, F291, F296, F299, F320]
 code_anchors:
   - cat-config.json
   - packages/api/src/config/cat-config-loader.ts
+  - packages/api/src/config/account-resolver.ts
+  - packages/api/src/config/account-store-snapshot.ts
+  - packages/api/src/config/codex-account-launch.ts
+  - packages/api/src/config/codex-login-manager.ts
+  - packages/api/src/config/codex-managed-layout.ts
+  - packages/api/src/config/codex-shared-state.ts
+  - packages/api/src/config/codex-account-reuse.ts
+  - packages/api/src/config/codex-managed-support.ts
+  - packages/api/src/config/codex-account-binding.ts
+  - packages/api/src/config/cat-registry-reconciliation.ts
+  - packages/api/src/config/codex-account-duplicates.ts
+  - packages/shared/src/codex-account.ts
+  - packages/api/src/config/codex-account-environment.ts
+  - packages/api/src/config/codex-launch-config.ts
+  - packages/api/src/config/codex-project-config-projection.ts
+  - packages/api/src/config/codex-account-native-validation.ts
+  - packages/api/src/domains/cats/services/agents/providers/codex-app-server-account-configuration.ts
+  - packages/api/src/domains/cats/services/agents/providers/CodexUnixWebSocketSession.ts
+  - packages/api/src/domains/cats/services/agents/providers/codex-app-server-control-options.ts
   - packages/shared/src/cli-effort.ts
   - packages/shared/src/codex-speed.ts
   - packages/shared/src/types/thread-speed.ts
@@ -38,8 +57,8 @@ code_anchors:
   - packages/api/src/domains/cats/services/session/context/ledger-key.ts
   - packages/api/src/domains/cats/services/session/thread-access-policy.ts
   - packages/api/src/domains/cats/services/session/CanonicalInvocationTrajectoryResolver.ts
-  - packages/api/src/domains/cats/services/session/RequestGenerationProjector.ts
-  - packages/api/src/domains/cats/services/session/request-generation-source-policy.ts
+  - packages/api/src/domains/cats/services/session/transcript-index/RequestGenerationProjector.ts
+  - packages/api/src/domains/cats/services/session/transcript-index/request-generation-source-policy.ts
   - packages/api/src/domains/cats/services/session/TranscriptWriter.ts
   - packages/api/src/routes/session-chain.ts
   - packages/api/src/routes/session-transcript.ts
@@ -66,6 +85,8 @@ code_anchors:
   - packages/api/src/routes/callback-read-profile-routes.ts
   - packages/api/src/scripts/migrate-f231-profile.ts
 doc_anchors:
+  - docs/features/F320-multi-oauth-account-switching.md
+  - feature-specs/2026-10-06-f320-codex-backend.md
   - docs/features/F032-agent-plugin-architecture.md
   - docs/features/F088-multi-platform-chat-gateway.md
   - docs/decisions/033-bubble-pipeline-identity-contract.md
@@ -82,6 +103,7 @@ doc_anchors:
   - feature-discussions/2026-07-10-f231-profile-topology-convergence.md
 static_scan_hints: [catId, relationshipKey, AgentRegistry, cat-config, roster, ConnectorThreadBindingStore, bubbleIdentity, session, SessionChainStore, ContextEpochOwner, PresentationLedger, cliSessionId, cascadeId, runtimeSession, runtimeInteractionPort, interactionId, serviceTier, CodexSpeed, memberSpeed, capsule, CAT_CAFE_DATA_DIR, cat-cafe-profile, "private/profile"]
 cited_by:
+  - {feature: F320, date: 2026-10-06, delta: "P2a provider-account boundary: existing resolver/store supplies a credential-free launch snapshot; final OAuth environment and native capability launch share selected account input; original host/resource owners retain control authority. Managed layout remains disabled pending P2b fixture blockers."}
   - {feature: F325, date: 2026-09-29, delta: "P1 compiles owner-bound native L0 through the existing shared compiler on each turn, keeps dynamic pack prepend out of that slot, and scopes operator coding grants to the exact live entrusted Task"}
   - {feature: F191, date: 2026-05-07, delta: new cell}
   - {feature: F193, date: 2026-05-08, delta: Phase B — typed crossThreadReplyHint field on InvocationContext + render block in buildInvocationContext (receiver-side reply hint hydrated from trigger message id)}
@@ -113,6 +135,7 @@ This is a top-level routing cell with explicit, separately owned subcells. It ex
 
 - `identity-agent`: F032 owns dynamic CatId, roster, AgentRegistry, roles, and reviewer matching.
 - `identity-agent config`: F127 owns per-cat runtime defaults and provider/model capability; F262 extends that chain with raw `(threadId, catId)` effort overrides, and F291 adds OAuth Codex speed intent with carrier-specific projection. The thread store owns persistence, but effective effort/speed are derived after actual-cat routing at invocation time and are not navigation or session-strategy state.
+- `provider-account`: F136/F171 own the existing account store snapshot and client/account resolver; F320 extends their consumption with a credential-free Codex launch descriptor. Account selection comes from `resolveForClient` and `readAccountStoreSnapshot`, with canonical home/state paths fixed for that invocation. Display names and token renewal are not account identity revisions. Final OAuth env/actual-carrier argv and RPC overlays are checked after composition. A bounded sensitive-field projection retains layer/path origin; the same initialized app-server supplies native config, requirements and read-only account observations before business RPC. This does not prove safe authentication access before bootstrap and does not enable unknown managed-policy/carrier combinations. `prepareCodexHostLaunch`, the original host leases remain the owners of execution, control and recovery authority; the descriptor cannot grant resource access. No second account store or routing authority is introduced.
 - `identity-connector`: F088 owns connector principal link and external chat/thread binding.
 - `identity-bubble`: F183 / ADR-033 own frontend bubble identity within a thread.
 - `identity-runtime-session`: F211 owns runtime session identity and binding for long-lived or external runtimes: cascade/conversation IDs, SessionChainStore bridge records, lifecycle registration, hidden external-runtime anchor threads, seal reason, and per-session identity history.
@@ -127,6 +150,7 @@ F209's entity registry is adjacent but not canonical for agent identity. Its `en
 ## Use This When
 
 - Changing who a cat is, how cats are loaded from roster/config, or how cat IDs are validated.
+- Changing provider account selection, canonical credential/state paths, launch env or the account snapshot consumed by native probes and controls.
 - Changing connector user/chat/thread binding, connector permission ownership, or external sender mapping.
 - Changing frontend bubble identity, canonical invocation ID, or bubble kind identity rules.
 - Changing runtime session binding, external conversation registration, cascade/session ownership, runtime-session list/read surfaces, or how `cliSessionId` maps to runtime-specific session IDs.
@@ -139,6 +163,7 @@ F209's entity registry is adjacent but not canonical for agent identity. Its `en
 ## Extend By
 
 - For agent identity, update roster/config/schema contracts and keep CatId runtime-dynamic.
+- For provider accounts, resolve through the existing account store, pass one launch snapshot into the existing execution boundary, and finalize authentication env after all overlays. Control and reconnect reuse the accepted launch options and validate the same initialized connection before business RPC. API/custom probes and calls share a stable account/config/private execution root; Collective remains separately isolated. Collective keeps its isolated instructions, skills, history and SQLite root while projecting only the selected existing file login. Managed account layout is not enabled by P2a; its remaining continuity/configuration checks are in the F320 plan and fixture evidence.
 - For thread-scoped agent runtime config, persist only raw intent and project it through the current roster/provider/model capability after actual-cat routing; keep typed invocation options and provider argv validation as the execution boundary.
 - For connector binding, use `ConnectorThreadBindingStore` and connector binding keys instead of ad hoc thread maps.
 - For bubble identity, follow ADR-033 and route through `bubble-pipeline` contracts and tests.
@@ -153,6 +178,7 @@ F209's entity registry is adjacent but not canonical for agent identity. Its `en
 ## Do NOT Unify With
 
 - `identity-agent` is not `identity-connector`. A roster cat ID does not prove an external user owns a connector binding.
+- Provider account configuration is not proof of the account that executed a historical reply. Actual execution evidence owns that attribution. A display name is user text, and neither renaming nor token renewal changes the launch identity. Sharing native session state does not authorize sharing secrets or changing the native same-thread single-writer contract.
 - `identity-connector` is not `identity-bubble`. External chat/thread binding does not decide frontend bubble grouping.
 - `identity-bubble` is not `identity-agent`. Bubble identity uses `(catId, canonicalInvocationId, bubbleKind)` inside a thread; it is not the source of roster truth.
 - `identity-runtime-session` is not `identity-agent`. A runtime can switch model/profile inside one cascade; the session records identity history but does not decide roster truth.
@@ -169,3 +195,9 @@ F209's entity registry is adjacent but not canonical for agent identity. Its `en
 ## Static Scan Hints
 
 Watch for new or renamed `catId`, `relationshipKey`, `ProfileRepository`, `CAT_CAFE_DATA_DIR`, `cat-cafe-profile`, `AgentRegistry`, `cat-config`, `roster`, `ReviewerMatcher`, `ConnectorThreadBindingStore`, `Binding`, `bubbleIdentity`, `canonicalInvocationId`, `session`, `SessionChainStore`, `cliSessionId`, `cascadeId`, `runtimeSession`, and agent-facing `entity_id` code.
+
+### Codex account journey
+
+The existing account store now owns managed account metadata, immutable principal coordinates, notes, login attempt revisions and per-account read-only quota observations. Official Codex owns PKCE, callback validation and credential writing; `CodexLoginManager` only retains live carrier cancellation handles and persists facts through the existing store. Staged results require current attempt identity before adoption, and cannot replace an established principal silently. One confirmed catalog transaction switches a local member/family, excluding cloud Pro; invocation, usage and realtime transcripts retain their accepted execution snapshot.
+
+The measured first managed combination is macOS + official native Codex 0.159.0 + private file authentication, without forced MDM or legacy managed/requirements policy and without cloud-eligible enterprise/business/education plans. Native personal and team-like plans remain eligible. Unsupported combinations are rejected before credential-bearing launch; no policy is disabled. Shared session/SQLite/memory/image/config state has explicit roots, while auth, secrets, temporary/control state and plugin/browser authentication stay private. Installed-native layout and source-consumer fixtures cover this implementation; real OAuth and cross-account server compaction require owner authorization and remain unclaimed until exercised.

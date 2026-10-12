@@ -1,6 +1,8 @@
 import {
   type ArtifactReview,
   type ArtifactReviewActor,
+  type MessageMediaPublicationSource,
+  messageMediaPublicationSourceSchema,
   type RespondWithMediaVersion,
   respondWithMediaVersionSchema,
 } from '@cat-cafe/shared';
@@ -18,6 +20,12 @@ type MediaOwner = Pick<
   PublishedMediaService,
   'access' | 'publishVersion' | 'operationReceipt' | 'read' | 'currentRevision'
 >;
+
+// Server-derived source selection is stored with the accepted intent; it is not a callback payload field.
+const acceptedVersionSchema = respondWithMediaVersionSchema.extend({
+  publicationSource: messageMediaPublicationSourceSchema.optional(),
+});
+type AcceptedVersion = RespondWithMediaVersion & { publicationSource?: MessageMediaPublicationSource };
 
 /** A durable intent fences the review while F138 commits. Recovery projects its exact receipt, never guesses. */
 export class ArtifactVersionResponseService {
@@ -46,6 +54,10 @@ export class ArtifactVersionResponseService {
     raw: RespondWithMediaVersion,
     principal: MediaReviewPrincipal,
     review: ArtifactReview,
+    publicationSource?: () =>
+      | MessageMediaPublicationSource
+      | undefined
+      | Promise<MessageMediaPublicationSource | undefined>,
   ): Promise<ReviewMutationResult> {
     const command = respondWithMediaVersionSchema.parse(raw);
     const last = review.rounds.at(-1);
@@ -55,6 +67,13 @@ export class ArtifactVersionResponseService {
     const mutation = this.mutation(command, principal.actor, base.number);
     const replay = this.deps.store.replay(mutation);
     if (replay) return replay;
+    const pending = this.deps.store.pendingVersion(review.reviewId);
+    if (pending?.input.operationId === command.operationId) {
+      // Reuse the accepted selector only after the existing reservation checks this actor and exact request fingerprint.
+      this.deps.store.reserveVersion(mutation, pending.payload);
+      const resumed = await this.recover(review, principal);
+      if (resumed) return resumed;
+    }
     const task = await this.deps.media.access.authorize(review.task.taskId, principal, {
       expectedRevision: command.expectedTaskRevision,
     });
@@ -66,14 +85,16 @@ export class ArtifactVersionResponseService {
     const currentRevision = await this.deps.media.currentRevision(review.contentRef, principal);
     if (currentRevision !== command.expectedOwnerRevision) throw new ArtifactReviewError('asset_changed');
     assertVersionResponses(last, command.responses);
-    this.deps.store.reserveVersion(mutation, command);
-    return this.resume(review, mutation, command, principal);
+    const source = await publicationSource?.();
+    const accepted = source ? { ...command, publicationSource: source } : command;
+    this.deps.store.reserveVersion(mutation, accepted);
+    return this.resume(review, mutation, accepted, principal);
   }
 
   async recover(review: ArtifactReview, viewer: MediaReviewPrincipal): Promise<ReviewMutationResult | null> {
     const pending = this.deps.store.pendingVersion(review.reviewId);
     if (!pending) return null;
-    const command = respondWithMediaVersionSchema.parse(pending.payload);
+    const command = acceptedVersionSchema.parse(pending.payload);
     if (
       command.reviewId !== review.reviewId ||
       command.operationId !== pending.input.operationId ||
@@ -100,7 +121,7 @@ export class ArtifactVersionResponseService {
   private async resume(
     review: ArtifactReview,
     mutation: ReviewMutation,
-    command: RespondWithMediaVersion,
+    command: AcceptedVersion,
     principal: MediaReviewPrincipal,
   ): Promise<ReviewMutationResult> {
     const operationId = this.ownerOperationId(review.reviewId, command.operationId);
@@ -114,6 +135,7 @@ export class ArtifactVersionResponseService {
         expectedOwnerRevision: command.expectedOwnerRevision,
         artifactRef: command.artifactRef,
         expectedArtifactRevision: command.expectedArtifactRevision,
+        ...(command.publicationSource ? { publicationSource: command.publicationSource } : {}),
         operationId,
         principal,
       });

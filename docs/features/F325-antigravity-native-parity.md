@@ -1,6 +1,6 @@
 ---
 feature_ids: [F325]
-tips_exempt: "PR1 is merged; native coding and its Task-bound test tool require explicit carrier selection and an operator-issued live Task grant. Native authentication, parity and migration still require actual production acceptance before capability tips advertise the entry; the accepted spec and legacy consolidation do not establish a generally available job action."
+tips_exempt: "Renewed 2026-10-10: Task-bound native coding, notification and test-runner scope remain explicit operator grants; production authentication, parity and migration still require acceptance before advertising a general user entry."
 related_features: [F053, F061, F143, F149, F161, F174, F178, F194, F201, F203, F210, F211, F241, F254, F261, F286, F296, F299, F306, F318, F320, F323, F324]
 topics: [antigravity, acp, native-carrier, parity, migration, managed-job]
 doc_kind: spec
@@ -21,7 +21,7 @@ description_updated_at: 2026-09-29T06:01:16Z
 
 # F325: Antigravity Native Parity｜Siamese的新猫爬架与旧接入收归
 
-> **Status**: spec | **Owner**: 小星星·Maine Coon (@codex-astra, gpt-6-astra) | **Priority**: P1
+> **Status**: in-progress | **Owner**: 小星星·Maine Coon (@codex-astra, gpt-6-astra) | **Priority**: P1
 
 Architecture cell: `identity-session`, `transport`, `callback-auth`, `bubble-pipeline`, `action-plane`, `mcp-surface-governance`, `dispatch`
 

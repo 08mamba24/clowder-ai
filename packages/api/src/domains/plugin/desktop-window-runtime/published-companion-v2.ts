@@ -9,7 +9,7 @@ export const PUBLISHED_COMPANION_V2 = {
 export interface CompanionArchiveContract {
   readonly version: string;
   readonly packageDigest: string;
-  readonly contract: '0.1.0-beta.21' | '0.1.0-beta.23' | '0.1.0-beta.24';
+  readonly contract: '0.1.0-beta.21' | '0.1.0-beta.23' | '0.1.0-beta.24' | '0.1.0-beta.25';
 }
 
 /** Host-owned archive catalog, never negotiated by bridgeVersion or renderer input. */
@@ -30,10 +30,20 @@ export const COMPANION_ARCHIVE_CONTRACTS: readonly CompanionArchiveContract[] = 
     packageDigest: 'sha512-8z1dZ4qLtSMBw9vEwpXY4xDOfO2tjD+SXeY5QkusMQRu1/vIErf9y5osR1KjT5UdsHkaosS/H48XoJxW+iD/FA==',
     contract: '0.1.0-beta.24',
   },
+  {
+    version: '0.1.0-alpha.20',
+    packageDigest: 'sha512-R7KbX0EZAvE3Ll4S7d9lSrk5zIkBe8jnIHpdh82lE7v+mqoXtkDUifbXCYuEdMoDcEgkq/r49M9VBHnx9vtk6A==',
+    contract: '0.1.0-beta.24',
+  },
+  {
+    version: '0.1.0-alpha.21',
+    packageDigest: 'sha512-YMfQcRHdn/F99FbfGDgbQlIHURA/RJvyh/4mNSVlK/dAa2Egx30WVD2YuWuClNH7mVypnK22q7LWoFKm48f4lA==',
+    contract: '0.1.0-beta.25',
+  },
 ];
 
 export function isModernCompanionContract(contract: CompanionArchiveContract['contract'] | undefined): boolean {
-  return contract === '0.1.0-beta.23' || contract === '0.1.0-beta.24';
+  return contract === '0.1.0-beta.23' || contract === '0.1.0-beta.24' || contract === '0.1.0-beta.25';
 }
 
 export function resolveCompanionArchiveContract(

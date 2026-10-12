@@ -22,6 +22,7 @@ import {
   normalizeMentionAlias,
 } from './template-variant-backfill.js';
 import { isTemplateVariantTombstoned } from './template-variant-tombstones.js';
+import { readRepairedVoiceRefTexts } from './voice-ref-text-repair.js';
 
 const CONFIG_SUBDIR = '.cat-cafe';
 const CAT_CATALOG_FILENAME = 'cat-catalog.json';
@@ -81,6 +82,10 @@ function migrateLegacyGeminiConsumerCarrier(
 ): boolean {
   const clientId = typeof variant.clientId === 'string' ? variant.clientId : variant.provider;
   if (clientId !== 'google') return false;
+  // An explicit Native selection or editor clear tombstone supersedes the one-time legacy migration.
+  // Otherwise every read changes the Native model back to a display label or deletes a selected ACP transport.
+  if (variant.agyProfile === null || (isRecord(variant.agyProfile) && variant.agyProfile.carrier === 'native'))
+    return false;
 
   const resolvedCatId = typeof variant.catId === 'string' ? variant.catId : breedDefaultCatId;
   if (!resolvedCatId) return false;
@@ -765,6 +770,9 @@ export function bootstrapCatCatalog(projectRoot: string, templatePath: string): 
     readCatCatalogRaw(projectRoot);
     // Strip legacy source field from variants (obsolete after F171).
     stripLegacySourceField(catalogPath);
+    // Repair reference transcripts seeded wrong for known clips (exact clip + wrong text only).
+    const repairedVoiceRefTexts = readRepairedVoiceRefTexts(catalogPath);
+    if (repairedVoiceRefTexts !== null) writeFileAtomic(catalogPath, repairedVoiceRefTexts);
     // Ensure owner is always present in roster.
     ensureOwnerInRoster(catalogPath);
     // Persist allowlisted template-added breeds so promoted house cats become

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { openChannelFromCollectiveHome } from './f290-channel-entry.harness.mjs';
+import { disableMockHostPwa } from './f290-mock-host-context.harness.mjs';
 import { startNext, stopChild, waitForHttp } from './f290-runtime-journey.harness.mjs';
 
 /** Actual Next owner controls over explicit Host DTO fixtures; the embedded Client uses the real test Service. */
@@ -17,7 +19,11 @@ export async function verifyFirstCatOwnerControls({
   let page;
   try {
     await waitForHttp(`${hostUrl}/collective`, next);
-    page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+    // Host reload must keep Playwright API fixtures in control of each request.
+    page = await browser.newPage({ viewport: { width: 1440, height: 960 }, serviceWorkers: 'block' });
+    await disableMockHostPwa(page.context(), hostUrl);
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
     await page.addInitScript(
       ({ token, origin }) => {
         if (location.origin === origin) sessionStorage.setItem(`collective-session:${origin}`, token);
@@ -137,6 +143,7 @@ export async function verifyFirstCatOwnerControls({
       .filter({ hasText: connections[1].endpointId.slice(-6) })
       .click();
     const frame = page.frameLocator('iframe[title="Collective"]');
+    await openChannelFromCollectiveHome(frame, 'general');
     await frame.getByRole('button', { name: '我的 Café', exact: true }).click();
     const cafe = page.getByRole('complementary', { name: '我的 Café', exact: true });
     await page.getByText('家里的可参与伙伴已自动接入。', { exact: true }).waitFor();
@@ -175,7 +182,13 @@ export async function verifyFirstCatOwnerControls({
     entryMode = true;
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.reload({ waitUntil: 'networkidle' });
+    assert.equal(
+      await page.evaluate(() => 'serviceWorker' in navigator),
+      false,
+      'Host API fixtures must remain controlled by Playwright after reload',
+    );
     const entryFrame = page.frameLocator('iframe[title="Collective"]');
+    await openChannelFromCollectiveHome(entryFrame, 'general');
     await entryFrame.getByRole('button', { name: '连接此 Café', exact: true }).click();
     const entry = page.getByRole('complementary', { name: '带入伙伴前确认' });
     await entry.getByText('小星星·砚砚').waitFor();
@@ -193,6 +206,7 @@ export async function verifyFirstCatOwnerControls({
     await page.getByRole('complementary', { name: '带入伙伴前确认' }).waitFor({ state: 'hidden' });
     assert.deepEqual(entryPair.excludedCatIds, ['codex-astra']);
     assert.equal(entryPair.rosterFingerprint, 'a'.repeat(64));
+    assert.deepEqual(errors, []);
   } finally {
     await page?.close();
     await stopChild(next);

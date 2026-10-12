@@ -1,10 +1,11 @@
 'use client';
 import type { ArtifactReviewAnnotation, ArtifactReviewRound, ArtifactReviewView } from '@cat-cafe/shared';
-import { type ReactNode, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useRef, useState } from 'react';
 import { ContentReviewSurface } from '@/components/workbench/content-review/ContentReviewSurface';
 import type { ContentReviewController } from '@/components/workbench/content-review/content-review-contract';
 import type { useWorkspaceContentReview } from '@/components/workbench/content-review/useWorkspaceContentReview';
 import { ArtifactModificationEntry } from './ArtifactModificationEntry';
+import { artifactRoundChatTarget } from './artifact-modification-source';
 import { artifactLandingCapabilities, artifactReviewProjection } from './artifact-review-adapter';
 import { ArtifactMediaCompare } from './media-compare/ArtifactMediaCompare';
 import { reviewAuthorityMessages } from './media-compare/review-authority-messages';
@@ -12,6 +13,7 @@ import { ReviewComments } from './ReviewComments';
 import { ReviewDiscussionPanel } from './ReviewDiscussionPanel';
 import { ReviewVersionDetails } from './ReviewVersionDetails';
 import type { useArtifactReview } from './useArtifactReview';
+import { useArtifactRoundComparison } from './useArtifactRoundComparison';
 import { useReviewDraft } from './useReviewDraft';
 import { useReviewMediaSource } from './useReviewMediaSource';
 
@@ -42,8 +44,16 @@ export function ArtifactRoundLanding({
   const source = useReviewMediaSource(view.review.reviewId, round.number, controller.revokeAccess);
   const [active, setActive] = useState<string | null>(null);
   const [panel, setPanel] = useState<'decision' | 'details' | null>(null);
-  const [comparing, setComparing] = useState(false);
   const originalSurface = useRef<HTMLDivElement>(null);
+  // Opening the comparison, by hand or because a receipt asked, puts the round's own panel and any video aside.
+  const stepAside = useCallback(() => {
+    originalSurface.current?.querySelectorAll('video').forEach((video) => {
+      video.pause();
+    });
+    setPanel(null);
+  }, []);
+  const comparison = useArtifactRoundComparison(view, round, stepAside);
+  const comparing = comparison.comparing;
   const projection = artifactReviewProjection(view, round);
   const capabilities = artifactLandingCapabilities(view, round);
   const history = capabilities.historyReadOnly;
@@ -138,13 +148,7 @@ export function ArtifactRoundLanding({
                   type="button"
                   aria-label="对比版本"
                   className="shrink-0 text-xs text-cafe-accent"
-                  onClick={() => {
-                    originalSurface.current?.querySelectorAll('video').forEach((video) => {
-                      video.pause();
-                    });
-                    setPanel(null);
-                    setComparing(true);
-                  }}
+                  onClick={comparison.open}
                 >
                   对比
                 </button>
@@ -191,6 +195,8 @@ export function ArtifactRoundLanding({
             mediaSource: source,
             canvasDraftKey: linked ? undefined : `${prefix}round:${round.number}:markup`,
             annotationMaxLength: 8000,
+            // 「引用到聊天」 names the same round (or ledger) and Task a modification request does.
+            chatMedia: artifactRoundChatTarget(view, round),
             modification: (
               <ArtifactModificationEntry
                 view={view}
@@ -290,7 +296,7 @@ export function ArtifactRoundLanding({
           recovery={effective}
           prefix={prefix}
           canWrite={canWrite && !history}
-          onClose={() => setComparing(false)}
+          onClose={comparison.close}
           onBack={onBack}
         />
       ) : null}

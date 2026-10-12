@@ -749,8 +749,13 @@ export class RedisThreadStore implements IThreadStore {
   }
 
   async linkBacklogItem(threadId: string, backlogItemId: string): Promise<void> {
+    await this.updateBacklogItem(threadId, backlogItemId);
+  }
+
+  async updateBacklogItem(threadId: string, backlogItemId: string | null): Promise<void> {
     const key = ThreadKeys.detail(threadId);
-    await this.setDetailFields(key, 'backlogItemId', backlogItemId);
+    if (backlogItemId) await this.setDetailFields(key, 'backlogItemId', backlogItemId);
+    else await this.deleteDetailFields(key, 'backlogItemId');
   }
 
   async setMentionRoutingFeedback(
@@ -858,6 +863,27 @@ export class RedisThreadStore implements IThreadStore {
     } else {
       await this.setDetailFields(key, 'systemKind', kind);
     }
+  }
+
+  async claimSystemKind(threadId: string, ownerUserId: string, kind: ThreadSystemKind): Promise<boolean> {
+    const result = await this.redis.eval(
+      `
+      if redis.call('HGET', KEYS[1], 'id') ~= ARGV[1] then return 0 end
+      if redis.call('HGET', KEYS[1], 'createdBy') ~= ARGV[2] then return 0 end
+      local deleted = redis.call('HGET', KEYS[1], 'deletedAt')
+      if deleted and deleted ~= '' and deleted ~= '0' then return 0 end
+      local previous = redis.call('HGET', KEYS[1], 'systemKind')
+      if previous and previous ~= '' and previous ~= ARGV[3] then return 0 end
+      redis.call('HSET', KEYS[1], 'systemKind', ARGV[3])
+      return 1
+    `,
+      1,
+      ThreadKeys.detail(threadId),
+      threadId,
+      ownerUserId,
+      kind,
+    );
+    return Number(result) === 1;
   }
 
   /** F229 / F167: Set or clear threadKind marker for concierge / gate-keeping thread. */
@@ -1544,7 +1570,8 @@ export class RedisThreadStore implements IThreadStore {
       (data.systemKind === 'connector_hub' ||
         data.systemKind === 'eval_domain' ||
         data.systemKind === 'cat_bedroom' ||
-        data.systemKind === 'memory_ops')
+        data.systemKind === 'memory_ops' ||
+        data.systemKind === 'collective_channel')
     ) {
       result.systemKind = data.systemKind as ThreadSystemKind;
     }

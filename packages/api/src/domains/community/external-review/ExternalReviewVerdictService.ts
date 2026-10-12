@@ -16,6 +16,7 @@ import {
   externalReviewVerdictAuthorizationFailure,
   isReadyForVerdict,
 } from './external-review-aggregate.js';
+import { loadExternalReviewEventReceipt } from './external-review-event-receipt.js';
 import {
   type ExternalPendingVerdictSettlementResult,
   type ExternalReviewVerdict,
@@ -23,7 +24,6 @@ import {
   type ExternalReviewVerdictRecordInput,
   type ExternalReviewVerdictRecordResult,
   type ExternalReviewVerdictServiceOptions,
-  loadCanonicalReviewDelivery,
   materializeExternalReviewDelivery,
   PENDING_VERIFICATION_REASONS,
   recordPendingExternalReviewVerdict,
@@ -118,6 +118,7 @@ export class ExternalReviewVerdictService {
       principal: input.principal,
       actionLease,
       submissionFingerprint,
+      assignmentRevision: aggregate.reviewerAssignmentRevision ?? 0,
       recordedAt,
     });
   }
@@ -185,6 +186,7 @@ export class ExternalReviewVerdictService {
       delivery: pending.delivery,
       principal: pending.principal,
       actionLease,
+      assignmentRevision: aggregate.reviewerAssignmentRevision ?? 0,
       submissionFingerprint: pending.fingerprint,
       recordedAt: this.now(),
     });
@@ -202,6 +204,7 @@ export class ExternalReviewVerdictService {
     principal: { readonly catId: string; readonly threadId: string };
     actionLease: PreflightedActionLease | null;
     submissionFingerprint: string;
+    assignmentRevision: number;
     recordedAt: number;
   }): Promise<ExternalReviewVerdictRecordResult> {
     const {
@@ -215,6 +218,7 @@ export class ExternalReviewVerdictService {
       principal,
       actionLease,
       submissionFingerprint,
+      assignmentRevision,
       recordedAt,
     } = input;
     if (delivery.kind === 'delivered' && actionLease) {
@@ -233,8 +237,9 @@ export class ExternalReviewVerdictService {
       }
     }
 
+    const assignmentSuffix = assignmentRevision > 0 ? `:r${assignmentRevision}` : '';
     const event: CommunityEvent = {
-      sourceEventId: `f168:review-verdict:${subjectKey}:g${headGeneration}:${submissionFingerprint}`,
+      sourceEventId: `f168:review-verdict:${subjectKey}:g${headGeneration}${assignmentSuffix}:${submissionFingerprint}`,
       subjectKey,
       kind: 'case.review_verdict_recorded',
       classification: 'informational',
@@ -245,24 +250,26 @@ export class ExternalReviewVerdictService {
         summary,
         userNudgeRequired,
         delivery,
+        principal,
+        reviewerAssignmentRevision: assignmentRevision,
       },
       at: recordedAt,
     };
     const { appended } = await this.opts.eventLog.append(event);
     if (appended) {
       await this.opts.projector.apply(event);
+    }
+
+    if (!appended) await this.opts.projector.rebuild(subjectKey);
+    const receipt = await loadExternalReviewEventReceipt(this.opts.eventLog, event);
+    const canonicalDelivery = receipt.delivery;
+    if (!canonicalDelivery) throw new ExternalReviewVerdictError('projection_unavailable', 'Verdict delivery missing');
+    if (appended) {
       externalCaseVerdictRecorded.add(1);
       if (userNudgeRequired) {
         (this.opts.recordUserNudgeRequired ?? (() => externalCaseUserNudgeRequired.add(1)))();
       }
     }
-
-    const canonicalDelivery = await loadCanonicalReviewDelivery({
-      objectStore: this.opts.objectStore,
-      projector: this.opts.projector,
-      subjectKey,
-      delivery,
-    });
     return {
       subjectKey,
       headSha: currentHeadSha,

@@ -15,6 +15,17 @@ import { createPublicationSurface, type PublicationTarget } from './publication-
 import type { WorkspaceSurfaceDescriptor } from './workbench-contract';
 
 export { contentContextSelectionKey } from './publication-context';
+
+/**
+ * What a read of the owner's contexts is an answer to. A target bound to a review asks a different question from the
+ * generic entry for the same work and version, and the host keeps one resolver for the work whatever opened it: what
+ * was read for one is not the answer to the other, however fresh it is.
+ */
+const scopeOf = (contentRef: string, ownerRevision: number, boundReviewId: string | undefined) =>
+  JSON.stringify([contentRef, ownerRevision, boundReviewId ?? null]);
+
+const BOUND_REVIEW_NOT_HELD =
+  '这份修改所属的审阅当前不可访问，或已不再包含这一版；没有改去打开这件作品的其他任务审阅。';
 export function publicationContextSurface(
   target: PublicationTarget,
   title: string,
@@ -57,9 +68,10 @@ export function PublicationLandingResolver({
   // F309 parent 102: once the work itself is on screen, a review that appears later is offered
   // beside it; it neither takes the work away nor is entered on its own.
   const showingWork = useRef<string | null>(null);
-  const { contentRef, ownerRevision } = target;
+  const { contentRef, ownerRevision, reviewId: boundReviewId } = target;
   const targetKey = JSON.stringify([contentRef, ownerRevision]);
-  const catalogue = storedCatalogue?.targetKey === targetKey ? storedCatalogue : null;
+  const scope = scopeOf(contentRef, ownerRevision, boundReviewId);
+  const catalogue = storedCatalogue?.targetKey === scope ? storedCatalogue : null;
   useEffect(() => {
     const refresh = () => setAttempt((n) => n + 1);
     window.addEventListener('cat-cafe:artifact-review-changed', refresh);
@@ -71,6 +83,9 @@ export function PublicationLandingResolver({
   }, []);
   useEffect(() => {
     const abort = new AbortController();
+    const readScope = scopeOf(contentRef, ownerRevision, boundReviewId);
+    // A bound target replaces what the generic entry showed: the work is not on screen for it to protect.
+    if (boundReviewId) showingWork.current = null;
     setError(null);
     void apiFetch('/api/content-reviews/resolve', { ...json({ contentRef, ownerRevision }), signal: abort.signal })
       .then(checked<unknown>)
@@ -88,14 +103,21 @@ export function PublicationLandingResolver({
         // A review on the work's own canonical ledger (ledgerRef) is the same discussion: Step1 keeps
         // entering it. Only an independent Task review is continued by name from a generic entry.
         const enterOnly = only && !(confirmSingleContext && !only.ledgerRef) && !workOnScreen;
-        const next = saved
-          ? result.contexts.some((item) => item.reviewId === saved)
-            ? saved
+        // A target bound to a review (a Host receipt for a request committed to it) is entered in that review or not
+        // at all: what the generic entry remembered, or the only other review there is, says nothing about it.
+        const next = boundReviewId
+          ? result.contexts.some((item) => item.reviewId === boundReviewId)
+            ? boundReviewId
             : null
-          : enterOnly
-            ? only.reviewId
-            : null;
-        if (saved && !next && result.contexts.length) setError('上次选择的讨论当前不可用，请明确选择要继续的委托。');
+          : saved
+            ? result.contexts.some((item) => item.reviewId === saved)
+              ? saved
+              : null
+            : enterOnly
+              ? only.reviewId
+              : null;
+        if (!boundReviewId && saved && !next && result.contexts.length)
+          setError('上次选择的讨论当前不可用，请明确选择要继续的委托。');
         if (next)
           try {
             localStorage.setItem(contentContextSelectionKey(result.ownerUserId, contentRef), next);
@@ -103,7 +125,7 @@ export function PublicationLandingResolver({
             setError('选择尚未保存到浏览器，请保留页面。');
           }
         setSelection(next);
-        setCatalogue({ ...result, targetKey: JSON.stringify([contentRef, ownerRevision]) });
+        setCatalogue({ ...result, targetKey: readScope });
       })
       .catch((failure) => {
         if (!abort.signal.aborted) {
@@ -112,10 +134,13 @@ export function PublicationLandingResolver({
         }
       });
     return () => abort.abort();
-  }, [contentRef, ownerRevision, attempt, confirmSingleContext]);
+  }, [contentRef, ownerRevision, boundReviewId, attempt, confirmSingleContext]);
   const chosen = catalogue?.contexts.find((item) => item.reviewId === selection);
+  // A bound target is entered in its review or not at all, so what is chosen must be exactly that review. When it is
+  // not one of this work's reviews, the work is not shown in its place, nor a sibling's review.
+  const boundMissing = Boolean(boundReviewId && catalogue && chosen?.reviewId !== boundReviewId);
   const resolved =
-    catalogue && (catalogue.contexts.length === 0 || chosen)
+    catalogue && !boundMissing && (catalogue.contexts.length === 0 || chosen)
       ? publicationContextSurface({ contentRef, ownerRevision }, sourceSurface.title, chosen)
       : null;
   const resolvedKey = resolved ? JSON.stringify(resolved) : null;
@@ -152,7 +177,11 @@ export function PublicationLandingResolver({
           {error}
         </p>
       ) : null}
-      {!catalogue ? (
+      {boundMissing ? (
+        <p role="alert" className="my-2 text-sm text-cafe-error">
+          {BOUND_REVIEW_NOT_HELD}
+        </p>
+      ) : !catalogue ? (
         <>
           <p role="status" className="text-xs text-cafe-muted">
             正在核对作品的原讨论…

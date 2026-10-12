@@ -11,6 +11,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { isHomeSession } from '../../session/session-scope.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -46,6 +47,8 @@ import { AccountStoreVerdictError } from '../../../../../config/account-store-fo
 import { resolveBoundAccountRefForCat } from '../../../../../config/cat-account-binding.js';
 import { buildCatGitIdentityEnv } from '../../../../../config/cat-git-identity.js';
 import { getCatModel } from '../../../../../config/cat-models.js';
+import { resolveCodexAccountLaunch } from '../../../../../config/codex-account-launch.js';
+import { codexExecutionAccountSnapshot } from '../../../../../config/codex-execution-account.js';
 import { parseOpenCodeModel, resolveEffectiveOpenCodeModel } from '../../../../../config/opencode-model.js';
 import { shouldTakeAction } from '../../../../../config/session-strategy.js';
 import { assertSafeTestConfigRoot } from '../../../../../config/test-config-write-guard.js';
@@ -135,7 +138,7 @@ import {
 import {
   CAT_CAFE_SYSTEM_PROMPT_SOURCE_REF,
   encodeMemoryCueSourceRef,
-} from '../../session/request-generation-source-policy.js';
+} from '../../session/transcript-index/request-generation-source-policy.js';
 import { AgyNativeAgentService } from '../providers/agy-native/AgyNativeAgentService.js';
 import { resolveAgyNativeCodingGrant } from '../providers/agy-native/agy-native-coding-grant.js';
 import { callbackPolicyForAgyNativeMcpTools } from '../providers/agy-native/agy-native-policy.js';
@@ -159,6 +162,7 @@ import {
 } from '../providers/opencode-config-writer.js';
 import { appendTranscriptPathHints } from '../providers/transcript-path-hints.js';
 import { invokeCollectivePublic } from './collective-public-invocation.js';
+import { recordCollectiveScopedSession } from './collective-scoped-session.js';
 import {
   continuityDispositionFromProviderEvidence,
   resolveContextContinuity,
@@ -1242,6 +1246,7 @@ export interface InvocationDeps {
   /** F312: lane-owned standing predicate for an unconsumed canonical Profile revision. */
   readonly profileCueOpportunitySource?: import('../../../../memory/cue/sources/ProfileMemoryCueSource.js').ProfileMemoryCueSource;
   /** F312: lane-owned temporal/subject predicate for one unconsumed F227 Event revision. */
+  readonly threadOverviewOpportunitySource?: import('../../../../memory/cue/sources/ThreadOverviewMemoryCueSource.js').ThreadOverviewMemoryCueSource;
   readonly eventCueOpportunitySource?: import('../../../../memory/cue/sources/EventMemoryCueSource.js').EventMemoryCueSource;
   /** F231 canonical owner used only to bind embedded L0 profile bytes to their source lifecycle. */
   readonly profileRepository?: import('../../profile/ProfileRepository.js').FileProfileRepository;
@@ -1800,6 +1805,25 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
         log.warn({ err, invocationId, threadId, catId }, '[F312] Event cue predicate failed closed');
       }
     }
+    if (
+      deps.threadOverviewOpportunitySource &&
+      params.invocationOrigin === 'interactive' &&
+      params.ownerAuthProvenance === 'strict'
+    ) {
+      try {
+        const seed = await deps.threadOverviewOpportunitySource.prepareOpportunity({
+          ownerUserId: userId,
+          threadId,
+          consumerCatId: catId as string,
+          sourceMessageId: params.executionCausal?.triggerMessageId,
+          occurredAt: Date.now(),
+          signal,
+        });
+        if (seed) seeds = [...seeds, seed];
+      } catch (err) {
+        log.warn({ err, invocationId, threadId }, '[F321] thread opening predicate failed closed');
+      }
+    }
     if (!deps.memoryCuePromptService || seeds.length === 0) return;
     try {
       const cueResolution = await deps.memoryCuePromptService.resolve({
@@ -1807,6 +1831,7 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
         serverScope,
         now: Date.now(),
         consumerCatId: catId as string,
+        signal,
       });
       const typedEnvelopes = cueResolution.presentationEnvelopes ?? [];
       if (cueResolution.promptSegment && typedEnvelopes.length === 0) {
@@ -2192,11 +2217,24 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
     // only after the epoch decision below. Legacy/cloud paths still expose here.
     if (participation) {
       await exposeCurrentPromptMessages();
-      for await (const message of invokeCollectivePublic({
-        source: participation,
-        service,
-        callbackEnv,
+      for await (const message of recordCollectiveScopedSession({
+        sessions: deps.sessionChainStore,
+        transcript: deps.transcriptWriter,
+        sealer: deps.sessionSealer,
+        catId,
+        userId,
+        threadId,
+        startedAt: executionStartedAt,
         signal: signal!,
+        scope: { executionScope: 'collective-participation', invocationId, originMessageId: originTriggerMessageId! },
+        stream: (beforeProviderLaunch) =>
+          invokeCollectivePublic({
+            source: participation,
+            service,
+            callbackEnv,
+            signal: signal!,
+            beforeProviderLaunch,
+          }),
       })) {
         resetInvocationTimeout();
         if (message.type === 'error') hadError = true;
@@ -2207,17 +2245,38 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
     }
     if (privateWork && privatePolicy) {
       await exposeCurrentPromptMessages();
-      for await (const message of invokeCollectivePrivate({
-        work: privateWork,
-        policy: privatePolicy,
-        service,
-        callbackEnv,
+      for await (const message of recordCollectiveScopedSession({
+        sessions: deps.sessionChainStore,
+        transcript: deps.transcriptWriter,
+        sealer: deps.sessionSealer,
+        catId,
+        userId,
+        threadId,
+        startedAt: executionStartedAt,
         signal: signal!,
-        originMessage,
-        revalidate: async () => {
-          const verified = await registry.verify(invocationId, callbackToken);
-          if (!verified.ok) throw new Error('collective_work_authority_unavailable');
+        scope: {
+          executionScope: 'collective-work',
+          invocationId,
+          originMessageId: originTriggerMessageId!,
+          taskId: privateWork.work.task.id,
+          executionRevision: privatePolicy.executionRevision,
+          executionRef: privatePolicy.executionRef,
+          authorityRef: privateWork.work.authorityRef,
         },
+        stream: (beforeProviderLaunch) =>
+          invokeCollectivePrivate({
+            beforeProviderLaunch,
+            work: privateWork,
+            policy: privatePolicy,
+            service,
+            callbackEnv,
+            signal: signal!,
+            originMessage,
+            revalidate: async () => {
+              const verified = await registry.verify(invocationId, callbackToken);
+              if (!verified.ok) throw new Error('collective_work_authority_unavailable');
+            },
+          }),
       })) {
         resetInvocationTimeout();
         if (message.type === 'error') hadError = true;
@@ -2446,7 +2505,7 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
           signal,
         );
         if (chain.length > 0) {
-          const activeRec = chain.find((s) => s.status === 'active');
+          const activeRec = chain.find((s) => isHomeSession(s) && s.status === 'active');
           if (!activeRec) {
             // Chain exists but no active session → previous was sealed; don't resume
             sessionId = undefined;
@@ -3791,12 +3850,14 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
           userId,
           deps.tmuxGateway,
           deps.agentPaneRegistry,
+          catId as string,
         );
         agentCarrierSessionFactory = createTmuxAgentCarrierSessionFactory({
           worktreeId,
           userId,
           tmuxGateway: deps.tmuxGateway,
           ...(deps.agentPaneRegistry ? { agentPaneRegistry: deps.agentPaneRegistry } : {}),
+          catId: catId as string,
         });
       } catch {
         log.warn({ workingDirectory }, 'resolveWorktreeIdByPath failed — skipping tmux pane');
@@ -3901,6 +3962,14 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
       await deps.registry.setExpectedCompactionCarrier(invocationId, compactionLaunchPlan.carrierIdentity);
     }
 
+    const codexAccountLaunch =
+      provider === 'openai' && resolvedAccount
+        ? resolveCodexAccountLaunch(resolvedAccount, { cwd: workingProjectRoot })
+        : undefined;
+    const executionAccount =
+      resolvedAccount && codexAccountLaunch
+        ? codexExecutionAccountSnapshot(resolvedAccount, codexAccountLaunch)
+        : undefined;
     const baseOptions: AgentServiceOptions = {
       ...(params.routeIntent ? { routeIntent: params.routeIntent } : {}),
       callbackEnv,
@@ -3916,6 +3985,7 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
       ...(reasoningEffortOverride ? { reasoningEffortOverride } : {}),
       ...(requestedServiceTier ? { requestedServiceTier } : {}),
       ...(accountEnv ? { accountEnv } : {}),
+      ...(codexAccountLaunch ? { codexAccountLaunch } : {}),
       auditContext: {
         invocationId,
         executionId: params.parentInvocationId ?? invocationId,
@@ -3964,6 +4034,7 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
       // F118: Keep liveness warnings visible, but leave termination to explicit user cancel.
       livenessProbe: { stallAutoKill: false, stallWarningMs: CAT_INVOCATION_STALL_WARNING_MS },
       ...(catConfig?.cliConfigArgs?.length ? { cliConfigArgs: catConfig.cliConfigArgs } : {}),
+      ...(executionAccount ? { executionAccount } : {}),
       parentSpan: invocationSpan,
       ...(effectiveToolExecutionPolicy ? { toolExecutionPolicy: effectiveToolExecutionPolicy } : {}),
       ...(nativeScope ? { agyNativeScope: nativeScope } : {}),
@@ -4014,6 +4085,15 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
     };
 
     const processMessage = async (msg: AgentMessage): Promise<AgentMessage[]> => {
+      if (executionAccount && msg.metadata)
+        msg = {
+          ...msg,
+          metadata: {
+            ...msg.metadata,
+            executionAccount,
+            ...(msg.metadata.usage ? { usage: { ...msg.metadata.usage, executionAccount } } : {}),
+          },
+        };
       const outputs: AgentMessage[] = [];
 
       // clowder#915 (cloud P1): F8/F24 usage + context_health block extracted so
@@ -4090,6 +4170,7 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
             usage: msg.metadata.usage,
             model: msg.metadata.model,
             provider: msg.metadata.provider,
+            ...(msg.metadata.executionAccount ? { executionAccount: msg.metadata.executionAccount } : {}),
             // F319 Phase E.1: served facts are only known at done; carry them on the live
             // channel so the bubble shows them without a history reload. Absent = unobserved.
             ...servedFactsPayload(msg.metadata),

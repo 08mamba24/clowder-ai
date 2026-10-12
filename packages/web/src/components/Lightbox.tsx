@@ -48,11 +48,15 @@ export function Lightbox({
   url,
   alt,
   caption,
+  annotationUnavailableReason,
+  mediaType = 'image',
   onClose,
 }: {
   url: string;
   alt: string;
   caption?: string;
+  annotationUnavailableReason?: string;
+  mediaType?: 'image' | 'video';
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -92,9 +96,24 @@ export function Lightbox({
         </button>
         {/* biome-ignore lint/performance/noImgElement: data URIs from MCP cannot use next/image */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={url} alt={alt} className="max-w-full max-h-[85vh] object-contain rounded-lg" />
+        {mediaType === 'video' ? (
+          <video
+            src={url}
+            controls
+            preload="metadata"
+            aria-label={alt}
+            className="max-w-full max-h-[85vh] rounded-lg"
+          />
+        ) : (
+          <img src={url} alt={alt} className="max-w-full max-h-[85vh] object-contain rounded-lg" />
+        )}
         {caption && <p className="mt-2 text-sm text-[var(--overlay-fg-muted)]">{caption}</p>}
-        <CopyButton url={url} />
+        {annotationUnavailableReason && (
+          <p role="status" className="mt-2 text-sm text-[var(--overlay-fg-muted)]">
+            {annotationUnavailableReason}
+          </p>
+        )}
+        {mediaType === 'image' && <CopyButton url={url} />}
       </div>
     </div>,
     document.body,

@@ -2,11 +2,13 @@ import type { CodexAppServerJsonObject } from '../../cats/services/agents/provid
 import type { CodexLiveNativeClient, CodexLiveRunPort } from '../../cats/services/agents/providers/CodexLiveRunPort.js';
 import type { FreshnessReadableMessage } from '../../cats/services/freshness/checkFreshnessForPostMessage.js';
 import { LiveBoundaryContexts } from './host/live-boundary-contexts.js';
+import { recordCallTranscript } from './host/live-call-transcript.js';
 import { LiveContextGate, type LiveContextScope, type LiveControlledContext } from './host/live-controlled-context.js';
 import { startLiveRealtime } from './host/live-realtime-start.js';
+import { LiveResultReturn } from './host/live-result-return.js';
 import { type LiveScreenAction, shareLiveScreen } from './host/live-screen-actions.js';
 import { LiveSurfaceLease } from './host/live-surface-lease.js';
-import { sendLiveText } from './host/live-text-delivery.js';
+import { type LiveTextDelivery, sendLiveCallText } from './host/live-text-delivery.js';
 import { stopLiveNative } from './host/stop-live-native.js';
 import {
   LiveCarrierOperationGate,
@@ -19,11 +21,10 @@ import { type LiveCallState, liveCallStatus, liveFailureCode } from './live-call
 import { liveCompositionInstructions } from './live-companion-selection.js';
 import { liveCallExposureReason } from './live-exposure.js';
 import { buildLiveMcpConfig } from './live-mcp-config.js';
-import { LiveNativeActivity } from './live-native-activity.js';
+import { LiveNativeActivity, liveNativeToolsReady } from './live-native-activity.js';
 import { LiveNativeCredentials } from './live-native-credentials.js';
 import { LiveNativeWork } from './live-native-work.js';
 import { LiveSharedScreen } from './live-shared-screen.js';
-import { liveMessageDigest, persistLiveTranscriptItem } from './live-transcript.js';
 
 export type { LiveCompanionCallOptions } from './live-call-options.js';
 export class LiveCompanionCall implements CodexLiveRunPort {
@@ -46,9 +47,12 @@ export class LiveCompanionCall implements CodexLiveRunPort {
   private readonly carrierOperations = new LiveCarrierOperationGate();
   private readonly nativeActivity = new LiveNativeActivity();
   private readonly nativeWork: LiveNativeWork;
+  private readonly resultReturn: LiveResultReturn;
   private stopRequested = false;
   private readonly context: LiveContextGate;
   readonly boundaryContexts: LiveBoundaryContexts;
+  readonly hasPendingPageResultWake = () => this.boundaryContexts.hasPendingPageResultWake();
+  readonly hasPendingOwnerVoiceWake = () => this.boundaryContexts.ownerVoice.hasPendingWake();
   private readonly surfaceLease = new LiveSurfaceLease(() => void this.fail(new Error('Live desktop lease expired')));
   private state: LiveCallState = 'preparing';
   private failureCode?: 'native_session_conflict';
@@ -58,6 +62,14 @@ export class LiveCompanionCall implements CodexLiveRunPort {
   ) {
     this.id = options.binding.callId;
     this.nativeWork = new LiveNativeWork(this.id);
+    this.resultReturn = new LiveResultReturn({
+      client: () => this.client,
+      threadId: () => this.nativeThreadId,
+      realtimeSessionId: () => this.realtimeSessionId,
+      available: () => this.acceptsInput(),
+      verifyCompanion: () => this.hasCurrentCompanion(),
+      handed: (turnId, itemId) => this.nativeWork.resultHandedToVoice(turnId, itemId, this.options.binding.catId),
+    });
     this.context = new LiveContextGate({
       binding: options.binding,
       acceptsInput: () => this.acceptsInput(),
@@ -169,7 +181,8 @@ export class LiveCompanionCall implements CodexLiveRunPort {
       throw new Error('Live native binding unavailable');
     if (this.stopRequested) throw new Error('Live call ended during admission');
     this.nativeThreadId = nativeThreadId;
-    this.client = client;
+    this.client = this.resultReturn.bind(client);
+    this.boundaryContexts.ownerVoice.observeTurn('turn/started', this.activeTurnId);
     this.state = 'ready';
     if (this.boundaryContexts.hasPendingWake()) client.wakeBoundary?.();
     this.initialized.resolve();
@@ -198,6 +211,7 @@ export class LiveCompanionCall implements CodexLiveRunPort {
       const answer = await bounded(this.answer.promise, 30_000);
       if (this.stopRequested) throw new Error('Live call ended during connection');
       this.state = 'talking';
+      await this.resultReturn.flushOpening((message, turnId) => this.recordTranscript(message, turnId));
       if (this.boundaryContexts.hasPendingWake()) this.client.wakeBoundary?.();
       return answer;
     } catch (error) {
@@ -205,32 +219,27 @@ export class LiveCompanionCall implements CodexLiveRunPort {
       throw error;
     }
   }
-  async sendText(
-    text: string,
-    clientMessageId: string,
-  ): Promise<{ messageId: string; delivery: 'accepted' | 'unconfirmed' }> {
-    const actionEpoch = text.trim() ? this.boundaryContexts.interruptPageAction() : undefined;
-    const delivery = await sendLiveText({
+  async sendText(text: string, clientMessageId: string): Promise<LiveTextDelivery> {
+    return sendLiveCallText({
       options: this.options,
       client: this.client,
       nativeThreadId: this.nativeThreadId,
       isAvailable: () => this.acceptsInput(),
       text,
       clientMessageId,
+      contexts: this.boundaryContexts,
+      onNewOwnerText: () => this.resultReturn.ownerChanged(),
       deliveries: this.textDeliveries,
       exposedMessages: this.exposedMessages,
     });
-    if (delivery.delivery === 'accepted' && delivery.newlyPersisted && actionEpoch !== undefined)
-      this.boundaryContexts.noteAcceptedDirectText(delivery.messageId, actionEpoch);
-    if (delivery.delivery === 'accepted') this.boundaryContexts.onUserTurn();
-    return { messageId: delivery.messageId, delivery: delivery.delivery };
   }
   async observe(message: CodexAppServerJsonObject): Promise<void> {
     const params = record(message.params);
     const turn = record(params.turn);
     const native = typeof params.threadId === 'string' ? params.threadId : undefined;
     if (!native || (this.nativeThreadId && native !== this.nativeThreadId)) return;
-    if (this.nativeThreadId === native) this.boundaryContexts.observe(message);
+    const actionEpoch = this.nativeThreadId === native ? this.boundaryContexts.observe(message) : undefined;
+    const voiceEpoch = this.boundaryContexts.ownerVoice.currentEpoch();
     if (!this.nativeWork.observe(message, this.stopping && this.state !== 'failed' ? this.activeTurnId : undefined))
       return;
     if (message.method === 'turn/started' && typeof turn.id === 'string') {
@@ -247,18 +256,12 @@ export class LiveCompanionCall implements CodexLiveRunPort {
       }
     }
     this.nativeActivity.observe(message, this.activeTurnId);
-    const item = record(params.item);
-    if (
-      message.method === 'item/completed' &&
-      params.turnId === this.activeTurnId &&
-      item.type === 'mcpToolCall' &&
-      item.server === 'cat-cafe-memory' &&
-      item.status === 'completed' &&
-      !item.error &&
-      record(item.result).isError !== true
-    )
-      this.toolsReady = true;
-    if (!this.startingRealtime) return;
+    this.resultReturn.observe(message, this.activeTurnId);
+    if (liveNativeToolsReady(message, this.activeTurnId)) this.toolsReady = true;
+    if (!this.startingRealtime) {
+      await this.resultReturn.present(message, this.activeTurnId);
+      return;
+    }
     if (message.method === 'thread/realtime/started' && typeof params.realtimeSessionId === 'string') {
       if (this.realtimeSessionId && params.realtimeSessionId !== this.realtimeSessionId)
         throw new Error('Live realtime identity changed');
@@ -266,24 +269,8 @@ export class LiveCompanionCall implements CodexLiveRunPort {
     }
     if (message.method === 'thread/realtime/sdp' && typeof params.sdp === 'string') this.answer.resolve(params.sdp);
     if (this.realtimeSessionId) {
-      const stored = await persistLiveTranscriptItem(
-        this.options.messageStore,
-        {
-          ...this.options.binding,
-          nativeThreadId: native,
-          realtimeSessionId: this.realtimeSessionId,
-          ...(this.activeTurnId ? { nativeTurnId: this.activeTurnId } : {}),
-        },
-        message,
-        this.options.identitySnapshot,
-      );
-      if (stored) {
-        this.exposedMessages.set(stored.id, {
-          kind: stored.extra?.liveCompanion?.modality === 'voice' ? 'voice' : 'text',
-          digest: liveMessageDigest(stored),
-        });
-        this.options.publish(stored);
-      }
+      await this.recordTranscript(message, this.activeTurnId, actionEpoch, voiceEpoch);
+      await this.resultReturn.present(message, this.activeTurnId);
     }
     if (
       message.method === 'thread/realtime/error' ||
@@ -292,15 +279,35 @@ export class LiveCompanionCall implements CodexLiveRunPort {
       await this.fail(new Error('Live transport closed'));
     }
   }
-  stop(): Promise<void> {
+  private recordTranscript(
+    message: CodexAppServerJsonObject,
+    nativeTurnId?: string,
+    actionEpoch?: number,
+    voiceEpoch = this.boundaryContexts.ownerVoice.currentEpoch(),
+  ): Promise<void> {
+    return recordCallTranscript({
+      options: this.options,
+      nativeThreadId: this.nativeThreadId,
+      realtimeSessionId: this.realtimeSessionId,
+      nativeTurnId,
+      envelope: message,
+      exposedMessages: this.exposedMessages,
+      onOwnerVoice: (stored) => this.boundaryContexts.noteOwnerVoice(stored, actionEpoch, voiceEpoch),
+    });
+  }
+  private revokeCarrier(reason: 'stopped' | 'failed'): void {
     this.stopRequested = true;
+    this.resultReturn.close();
     this.boundaryContexts.close();
-    this.context.close('stopped');
+    this.context.close(reason);
     this.nativeActivity.clear();
     this.nativeWork.close();
     this.carrierOperations.close();
     this.screen?.stop();
     this.surfaceLease.close();
+  }
+  stop(): Promise<void> {
+    this.revokeCarrier('stopped');
     this.stopping ??= this.stopOwnedCall();
     return this.stopping;
   }
@@ -331,14 +338,7 @@ export class LiveCompanionCall implements CodexLiveRunPort {
     if (this.state === 'closed' || this.state === 'failed') return;
     this.state = 'failed';
     this.failureCode = liveFailureCode(error);
-    this.stopRequested = true;
-    this.boundaryContexts.close();
-    this.context.close('failed');
-    this.nativeActivity.clear();
-    this.nativeWork.close();
-    this.carrierOperations.close();
-    this.screen?.stop();
-    this.surfaceLease.close();
+    this.revokeCarrier('failed');
     await this.credentials.close();
     await this.screen?.close();
     await this.carrierOperations.drain();

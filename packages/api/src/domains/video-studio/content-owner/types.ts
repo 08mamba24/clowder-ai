@@ -8,6 +8,18 @@ export type ContentActorV1 =
   | { readonly kind: 'human'; readonly actorId: string }
   | { readonly kind: 'cat'; readonly actorId: string };
 
+export interface VideoProjectScopeV1 {
+  readonly kind: 'video-project';
+  readonly ownerUserId: string;
+  readonly projectId: string;
+}
+
+/** Optional domain request provenance lives on the existing owner receipt, not a second operation journal. */
+export interface ContentOperationContextV1 {
+  readonly kind: 'video-project:create' | 'video-project:save' | 'video-project:archive' | 'video-project:decision';
+  readonly requestDigest: `sha256:${string}`;
+}
+
 /** Immutable authority coordinates established by an explicit prepared-publication import. */
 export interface TaskContentPublicationScopeV1 {
   readonly ownerUserId: string;
@@ -81,6 +93,7 @@ export interface ContentSettlementReceiptV1 {
   readonly actor: ContentActorV1;
   readonly operationId: string;
   readonly outboxSequence: number;
+  readonly operationContext?: ContentOperationContextV1;
 }
 
 export interface LoadedProjectContentV1 {
@@ -91,6 +104,7 @@ export interface LoadedProjectContentV1 {
   readonly bytes: Buffer;
   readonly currentOwnerRevision: number;
   readonly publicationScope?: ContentPublicationScopeV1;
+  readonly projectScope?: VideoProjectScopeV1;
   readonly sourcePublication?: ContentSourcePublicationV1;
 }
 
@@ -101,7 +115,9 @@ export interface ImportProjectContentInputV1 {
   readonly actor: ContentActorV1;
   readonly operationId: string;
   readonly publicationScope?: ContentPublicationScopeV1;
+  readonly projectScope?: VideoProjectScopeV1;
   readonly sourcePublication?: ContentSourcePublicationV1;
+  readonly operationContext?: ContentOperationContextV1;
 }
 
 export interface SettleProjectContentInputV1 {
@@ -111,4 +127,5 @@ export interface SettleProjectContentInputV1 {
   readonly actor: ContentActorV1;
   readonly operationId: string;
   readonly sourcePublication?: ContentSourcePublicationV1;
+  readonly operationContext?: ContentOperationContextV1;
 }

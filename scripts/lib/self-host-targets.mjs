@@ -1,6 +1,7 @@
 import { commandName } from '../native-effect-shell-tokenizer.mjs';
 import { stoppedDeploymentsIn } from './self-host-deployments.mjs';
-import { executedInvocations, splitCommandLines } from './shell-invocation.mjs';
+import { executedInvocations, executionChainInvocations } from './shell-invocation.mjs';
+import { scanShellText } from './shell-lexical.mjs';
 
 /**
  * F300 -- work out what a command line would actually stop.
@@ -24,8 +25,6 @@ const PATTERN_KILLERS = new Set(['pkill', 'killall']);
 const KILL_VERBS = new Set(['kill', ...PATTERN_KILLERS]);
 const SERVICE_MANAGERS = new Set(['redis-cli', 'systemctl', 'launchctl', 'supervisorctl', 'pm2', 'docker', 'brew']);
 const SERVICE_STOP_VERBS = new Set(['shutdown', 'stop', 'restart', 'kill', 'down']);
-/** Only a bare literal probe. `kill -0 9999; pkill ...` is not one command. */
-const LIVENESS_PROBE_ONLY = /^\s*kill\s+-0\s+\d+\s*$/i;
 /**
  * The operands a signal command would act on, given everything after the verb.
  *
@@ -72,6 +71,8 @@ function signalOperands(operands) {
 function killerOperands(invocation) {
   if (KILL_VERBS.has(invocation.name ?? '')) {
     if (PATTERN_KILLERS.has(invocation.name)) return { isKiller: true, operands: undefined };
+    if (invocation.operands[0] === '-0' && invocation.operands.slice(1).every((value) => /^\d+$/.test(value)))
+      return { isKiller: false };
     return { isKiller: true, operands: invocation.operands };
   }
   if (invocation.name === 'xargs') {
@@ -174,6 +175,9 @@ function resolveStopTargets(pipelines) {
 
   for (const pipeline of pipelines) {
     for (const [index, invocation] of pipeline.entries()) {
+      // The outer xargs stage owns its stdin target set. Its child is also
+      // exposed for effect classification, not a second unconstrained target set.
+      if (invocation.inputOwner === 'xargs' && KILL_VERBS.has(invocation.name)) continue;
       const killer = killerOperands(invocation);
       if (killer.isKiller) {
         stops = true;
@@ -212,27 +216,27 @@ function resolveStopTargets(pipelines) {
  *   deployments: {deploymentId?: string, projectRoot?: string}[], text: string}[]}
  */
 export function analyseCommands(raw, cwd) {
-  return splitCommandLines(String(raw ?? '')).map((command) => {
-    const quiet = { stopClass: false, unresolved: false, pids: [], ports: [], deployments: [], text: command };
-    if (LIVENESS_PROBE_ONLY.test(command)) return quiet;
-
-    const { pipelines } = executedInvocations(command, { cwd });
-    const deployments = stoppedDeploymentsIn(pipelines.flat(), cwd);
-    const { pids, ports, unresolved, stops } = resolveStopTargets(pipelines);
-
-    // Only an identified invocation establishes a stop. An opaque program or
-    // variable mentioning "stop" is not evidence of one. Once a stop IS known,
-    // missing target facts still produce unresolved below (e.g. kill "$PID").
-    if (deployments.length === 0 && !stops) return quiet;
-
-    const namesNothing = pids.length === 0 && ports.length === 0 && deployments.length === 0;
-    return {
-      stopClass: true,
-      unresolved: unresolved || namesNothing,
-      pids,
-      ports,
-      deployments,
-      text: command,
-    };
-  });
+  raw = String(raw ?? '');
+  const observed = executedInvocations(raw, { cwd });
+  const chained = executionChainInvocations(raw, { cwd });
+  observed.pipelines.push(...chained.pipelines);
+  observed.complete &&= chained.complete;
+  const unknownProgram = observed.pipelines
+    .flat()
+    .some(({ name, generatedCode }) => name === undefined || generatedCode);
+  const partialStop =
+    !observed.complete &&
+    (!scanShellText(raw).complete || unknownProgram) &&
+    /\b(?:kill|pkill|killall|runtime:(?:stop|restart)|shutdown|restart)\b/.test(raw);
+  const quiet = { stopClass: false, unresolved: false, pids: [], ports: [], deployments: [], text: raw };
+  const deployments = stoppedDeploymentsIn(observed.pipelines.flat(), cwd);
+  const { pids, ports, unresolved, stops } = resolveStopTargets(observed.pipelines);
+  const namesNothing = pids.length === 0 && ports.length === 0 && deployments.length === 0;
+  const commands =
+    deployments.length === 0 && !stops
+      ? [quiet]
+      : [{ stopClass: true, unresolved: unresolved || namesNothing, pids, ports, deployments, text: raw }];
+  if (partialStop)
+    commands.push({ stopClass: true, unresolved: true, pids: [], ports: [], deployments: [], text: raw });
+  return commands;
 }

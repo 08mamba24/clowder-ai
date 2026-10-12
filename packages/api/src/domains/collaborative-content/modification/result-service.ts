@@ -8,6 +8,7 @@ import type { WorkspaceWritebackService, WorkspaceWritebackView } from '../../wo
 import { reviewModificationBindings } from '../artifact-review/modification-request-reference.js';
 import type { ArtifactReviewService } from '../artifact-review/service.js';
 import type { ArtifactReviewStore } from '../artifact-review/store.js';
+import type { ContentModificationChatProjection } from './chat-projection.js';
 import type { ModificationFileLineage } from './file-lineage.js';
 import type { ContentModificationRecord } from './journal.js';
 import { ContentModificationJournalError } from './journal-errors.js';
@@ -36,6 +37,7 @@ export class ContentModificationResultService {
       text: ContentTextModificationService;
       writer: WorkspaceWritebackService;
       fileLineage: ModificationFileLineage;
+      receipts?: Pick<ContentModificationChatProjection, 'projectRejection' | 'projectWriteback'>;
     },
   ) {}
 
@@ -146,7 +148,11 @@ export class ContentModificationResultService {
         .find((item) => item.acceptOperationId === command.acceptOperationId);
       if (prior && prior.candidateRef === command.candidateRef) {
         const receipt = await this.deps.writer.find(prior.fileReceiptRef, principal);
-        if (receipt?.state === 'applied') return { acceptance: prior, receipt: publicWritebackReceipt(receipt) };
+        if (receipt?.state === 'applied') {
+          const visible = publicWritebackReceipt(receipt);
+          await this.deps.receipts?.projectWriteback(record, prior, visible);
+          return { acceptance: prior, receipt: visible };
+        }
       }
       // This exact file acceptance won before our later request cancellation. Other Task closures still fence new effects.
       if (
@@ -181,7 +187,9 @@ export class ContentModificationResultService {
       { ...command, bytes },
       { userId: principal.userId, editSessionToken: command.editSessionToken },
     );
-    return { acceptance, receipt: publicWritebackReceipt(receipt) };
+    const visible = publicWritebackReceipt(receipt);
+    await this.deps.receipts?.projectWriteback(record, acceptance, visible);
+    return { acceptance, receipt: visible };
   }
 
   async reject(requestId: string, candidateRef: string, principal: MediaReviewPrincipal) {
@@ -191,13 +199,15 @@ export class ContentModificationResultService {
     if (!record || !(await this.writeback(record, principal))) throw new ModificationTextError('not_found');
     const candidate = (await this.candidates(record, principal)).find((item) => item.candidateRef === candidateRef);
     if (!candidate) throw new ModificationTextError('not_found');
-    return this.deps.store.requests.cancellations.unlessCancelled(requestId, principal.userId, () => {
+    const rejection = this.deps.store.requests.cancellations.unlessCancelled(requestId, principal.userId, () => {
       const old = this.rejections(requestId, principal.userId).find((item) => item.candidateRef === candidateRef);
       if (old) return old;
       const rejection = this.deps.store.acceptances.reject(requestId, principal.userId, candidateRef);
       this.deps.store.requests.noteHumanDecision(requestId, principal.userId);
       return rejection;
     });
+    await this.deps.receipts?.projectRejection(record, rejection);
+    return rejection;
   }
 
   rejections(requestId: string, ownerUserId: string) {

@@ -6,6 +6,7 @@ import { isAbsolute, posix, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { type PluginManifest, validateManifest } from '@clowder-ai/plugin-contract';
 import { parse as parseYaml } from 'yaml';
+import { sealStaticPackage } from './static-package-seal.js';
 import type { VerifiedPluginPackage } from './types.js';
 import { ExternalPluginRuntimeError } from './types.js';
 
@@ -219,13 +220,19 @@ export async function stageVerifiedPackageArchive(
     if (!validation.valid) throw runtimeError('installed package manifest fails the published contract');
 
     const verifyIntegrity = async () => {
+      if (released) throw runtimeError('staged package was released');
       const current = await snapshotPackageTree(readyRoot);
-      if (!sameSnapshot(admittedSnapshot, current)) {
+      if (released || !sameSnapshot(admittedSnapshot, current)) {
         throw runtimeError('launchable package bytes changed after verified staging');
       }
     };
-    await verifyIntegrity();
-    return { rootDir: readyRoot, manifest: validation.manifest, verifyIntegrity, release };
+    const verifySeal = await sealStaticPackage(readyRoot, verifyIntegrity);
+    const verifyStaticIntegrity = async () => {
+      if (released) throw runtimeError('staged package was released');
+      await verifySeal();
+      if (released) throw runtimeError('staged package was released');
+    };
+    return { rootDir: readyRoot, manifest: validation.manifest, verifyIntegrity, verifyStaticIntegrity, release };
   } catch (error) {
     await release().catch(() => undefined);
     if (error instanceof ExternalPluginRuntimeError) throw error;

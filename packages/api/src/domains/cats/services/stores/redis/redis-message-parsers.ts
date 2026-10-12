@@ -23,7 +23,9 @@ import {
   collectiveWorkDelegationV1Schema,
   collectiveWorkInvocationV1Schema,
   companionIdentitySnapshotV1Schema,
+  contentModificationReceiptV1Schema,
   contentModificationSourceMessageV1Schema,
+  createCatId,
   deliveryDecisionCueCarrierV1Schema,
   evolutionPreparationSubmissionV1Schema,
   isProviderSemanticEvent,
@@ -32,6 +34,7 @@ import {
   localReviewGitRevisionSchema,
   MessageBundleCarrierV1Schema,
   MessageContentsSchema,
+  readMessageOutputLayout,
   routingPreflightReceiptV1Schema,
   writeOpportunityPresentationRetryCarrierV1Schema,
   writeOpportunityReentryCarrierV1Schema,
@@ -188,7 +191,9 @@ type ExtraCarrierPersistenceClassification<
  * Every StoredMessage.extra key must be classified when it is introduced.
  */
 type ExtraCarrierPersistence = ExtraCarrierPersistenceClassification<{
+  outputLayout: 'parsed';
   contentModificationRequestV1: 'parsed';
+  contentModificationReceiptV1: 'parsed';
   collectiveOwnerAdmissionV1: 'parsed';
   collectiveWorkInvocationV1: 'parsed';
   collectiveWorkDelegationV1: 'parsed';
@@ -210,6 +215,7 @@ type ExtraCarrierPersistence = ExtraCarrierPersistenceClassification<{
   localReviewVerdict: 'parsed';
   callbackDedup: 'parsed';
   targetCats: 'parsed';
+  notificationDelivery: 'parsed';
   messageBundle: 'parsed';
   meetingArtifact: 'parsed';
   dynamicSceneEntries: 'parsed';
@@ -401,7 +407,11 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
     const result: StoredMessageExtra = {};
     const modification = contentModificationSourceMessageV1Schema.safeParse(parsed.contentModificationRequestV1);
     if (modification.success) result.contentModificationRequestV1 = modification.data;
-    let hasField = modification.success;
+    const modificationReceipt = contentModificationReceiptV1Schema.safeParse(parsed.contentModificationReceiptV1);
+    if (modificationReceipt.success) result.contentModificationReceiptV1 = modificationReceipt.data;
+    const outputLayout = readMessageOutputLayout(parsed.outputLayout);
+    if (outputLayout) result.outputLayout = outputLayout;
+    let hasField = modification.success || modificationReceipt.success || outputLayout !== undefined;
     if (parsed.collectiveOwnerAdmissionV1 !== undefined) {
       const admission = collectiveOwnerAdmissionV1Schema.safeParse(parsed.collectiveOwnerAdmissionV1);
       if (admission.success) result.collectiveOwnerAdmissionV1 = admission.data;
@@ -672,6 +682,13 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
       result.targetCats = parsed.targetCats;
       hasField = true;
     }
+    const withoutWakeCatIds: unknown = parsed.notificationDelivery?.withoutWakeCatIds;
+    if (Array.isArray(withoutWakeCatIds) && withoutWakeCatIds.every(isNonEmptyString)) {
+      result.notificationDelivery = {
+        withoutWakeCatIds: withoutWakeCatIds.map(createCatId),
+      };
+      hasField = true;
+    }
 
     if (parsed.isExplicitPost === true) {
       result.isExplicitPost = true;
@@ -761,7 +778,11 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
       hasField = true;
     }
 
-    if (parsed.systemKind === 'a2a_routing' || parsed.systemKind === 'context_briefing') {
+    if (
+      parsed.systemKind === 'a2a_routing' ||
+      parsed.systemKind === 'context_briefing' ||
+      parsed.systemKind === 'content_modification_receipt'
+    ) {
       result.systemKind = parsed.systemKind;
       hasField = true;
     }

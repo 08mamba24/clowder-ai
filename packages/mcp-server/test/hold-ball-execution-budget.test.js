@@ -46,3 +46,26 @@ test('hold_ball forwards the parsed budget to the authenticated callback', async
   assert.equal(result.isError, undefined);
   assert.equal(delivered.wakeWhen.executionSlaMs, 7_200_000);
 });
+
+test('hold_ball preserves tightening-only readonly mode through its registered schema and transport', async (t) => {
+  useInvocationAuth(t);
+  const previousFetch = globalThis.fetch;
+  const previousUrl = process.env.CAT_CAFE_API_URL;
+  process.env.CAT_CAFE_API_URL = 'http://127.0.0.1:1';
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    if (previousUrl === undefined) delete process.env.CAT_CAFE_API_URL;
+    else process.env.CAT_CAFE_API_URL = previousUrl;
+  });
+  let delivered;
+  globalThis.fetch = async (url, options) => {
+    if (String(url).endsWith('/api/callbacks/hold-ball')) delivered = JSON.parse(options.body);
+    return { ok: true, json: async () => ({ status: 'ok' }) };
+  };
+  const parsed = schema.parse(
+    request({ command: 'python3 -c "print(1)"', executionPolicy: 'read_only', timeoutMs: 5000 }),
+  );
+  assert.equal(schema.safeParse(request({ command: 'pwd', executionPolicy: 'dangerFullAccess' })).success, false);
+  assert.equal((await handleHoldBall(parsed)).isError, undefined);
+  assert.deepEqual(delivered.wakeWhen, parsed.wakeWhen);
+});

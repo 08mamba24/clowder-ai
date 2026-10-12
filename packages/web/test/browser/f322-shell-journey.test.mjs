@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
+import { runChatRealPageJourney } from './f322-chat-real-page.mjs';
+import { runPianoJourneys } from './f322-piano.journey.mjs';
+import { runSidebarV2Journey } from './f322-sidebar-v2.journey.mjs';
+import { registerWorkspaceMenuTests } from './f322-workspace-menu.journey.mjs';
 
 // Real rail, mailbox, tooltip, settings shell, preference/pin stores and navigation hooks.
 // Only Next routing and domain content renderers are test boundaries. Every request is
@@ -61,7 +66,14 @@ before(async () => {
 });
 after(async () => {
   process.chdir(startedIn);
+  const connectedBeforeClose = browser?.isConnected() ?? false;
   await browser?.close();
+  if (process.env.F322_MENU_EVIDENCE_DIR) {
+    writeFileSync(
+      path.join(process.env.F322_MENU_EVIDENCE_DIR, 'shared-browser-cleanup.json'),
+      JSON.stringify({ connectedBeforeClose, sharedBrowserClosed: !browser?.isConnected() }),
+    );
+  }
 });
 
 const unifiedSource = (extra = {}) => ({
@@ -104,12 +116,57 @@ const approvalRow = (id, summary) => ({
   },
   linkedNeedsMe: [],
 });
+const s5Config = (cliOutput = 'collapsed') => ({
+  cats: {},
+  perCatCapacities: {},
+  a2a: { enabled: true, maxDepth: 3 },
+  memory: { enabled: true, maxKeysPerThread: 50 },
+  governance: { degradationEnabled: true, doneTimeoutMs: 1, heartbeatIntervalMs: 1 },
+  ui: { bubbleDefaults: { thinking: 'collapsed', cliOutput } },
+});
+const installPreview = {
+  profile: {
+    os: 'darwin',
+    arch: 'arm64',
+    gpu: 'none',
+    pythonArch: 'native',
+    ramGb: 16,
+    diskFreeGb: 40,
+    detectedAt: 1,
+  },
+  recommendation: {
+    serviceId: 'fixture-service',
+    profile: {
+      os: 'darwin',
+      arch: 'arm64',
+      gpu: 'none',
+      pythonArch: 'native',
+      ramGb: 16,
+      diskFreeGb: 40,
+      detectedAt: 1,
+    },
+    models: [
+      {
+        name: 'owner/fixture-model',
+        size: '2 GB',
+        description: '服务数据保持原样',
+        requirements: { ramGb: 4, diskGb: 3, gpu: 'recommended' },
+        performance: 'Provider data',
+      },
+    ],
+    notes: ['Fixture note'],
+  },
+  suggestedPort: 18888,
+};
 
 async function openProof({
   pins = ['notify'],
   shell = 'v2',
+  language = 'zh',
   route = '/thread/thread-return',
   viewport = { width: 1440, height: 900 },
+  participantCount = 2,
+  retainedApproval = false,
   // Called once per unified read, with the 1-based attempt number; returns { status?, body, raw? } (may be async: a slow read).
   unified = () => ({ body: unifiedRead() }),
   // Offered every other /api request first; returns { status?, body, raw?, abort? } to answer it, or null to fall through.
@@ -124,11 +181,14 @@ async function openProof({
     unexpected = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.addInitScript(
-    ({ pins, shell }) => {
+    ({ pins, shell, language, participantCount, retainedApproval }) => {
       localStorage.setItem('cat-cafe:shell-presentation', shell);
+      localStorage.setItem('cat-cafe:shell-language', language);
       localStorage.setItem('cat-cafe:pinned-settings-sections', JSON.stringify(pins));
+      window.__F322_PARTICIPANT_COUNT__ = participantCount;
+      window.__F322_RETAINED_APPROVAL__ = retainedApproval;
     },
-    { pins, shell },
+    { pins, shell, language, participantCount, retainedApproval },
   );
   await page.route('**/*', async (handler) => {
     const request = handler.request(),
@@ -180,8 +240,29 @@ async function openProof({
         // A second conversation, for "open the source in another conversation".
         '/api/threads/thread-other': { id: 'thread-other', title: '另一个对话', projectPath: '/work/fixture' },
         '/api/threads/thread-other/active-pane': { active: false },
-        '/api/cats': { cats: [] },
+        '/api/cats': {
+          cats: [
+            {
+              id: 'opus',
+              displayName: '布偶猫',
+              color: { primary: '#7966a8', secondary: '#eeeaf8' },
+              avatar: '/shell/catball-E-28px.png',
+            },
+            {
+              id: 'glm52',
+              displayName: '狸花猫',
+              variantLabel: 'GLM-5.2',
+              color: { primary: '#9b744f', secondary: '#f3eadf' },
+              avatar: '/shell/catball-E-28px.png',
+            },
+          ],
+        },
         '/api/config/cat-order': { catOrder: [] },
+        '/api/config/conversation-view': {
+          stored: null,
+          effective: { mode: 'group' },
+          source: 'product',
+        },
       };
       if (!(url.pathname in bodies)) {
         unexpected.push(request.url());
@@ -209,6 +290,31 @@ async function pointAt(page, locator) {
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
 }
 
+test('background approvals cannot open the mailbox during memory or thread navigation', async () => {
+  const proof = await openProof({ retainedApproval: true });
+  const { page } = proof;
+  try {
+    assert.equal(await page.getByTestId('mailbox-panel').count(), 0);
+    await page.getByTestId('mailbox-button').click();
+    await page.getByTestId('mailbox-close').click();
+    await page.getByRole('button', { name: 'Proof: memory', exact: true }).click();
+    await page.waitForURL('**/memory?from=thread-return');
+    assert.equal(await page.getByTestId('mailbox-panel').count(), 0);
+    await page.getByRole('button', { name: 'Proof: thread', exact: true }).click();
+    await page.waitForURL('**/thread/thread-return?proof=other');
+    assert.equal(await page.getByTestId('mailbox-panel').count(), 0);
+    await page.getByRole('button', { name: 'Proof: restore visible approval', exact: true }).click();
+    assert.equal(await page.getByTestId('mailbox-panel').count(), 0);
+    await page.getByRole('button', { name: '在待办中打开', exact: true }).click();
+    await page.getByTestId('mailbox-panel').waitFor();
+    await page.getByTestId('mailbox-close').click();
+    await page.getByRole('button', { name: '在待办中打开', exact: true }).click();
+    await page.getByTestId('mailbox-panel').waitFor();
+  } finally {
+    await closeProof(proof);
+  }
+});
+
 test('shell tooltips wait 150ms once, adjacent controls are immediate, keyboard focus and Escape work', async () => {
   const proof = await openProof();
   const { page } = proof;
@@ -222,7 +328,7 @@ test('shell tooltips wait 150ms once, adjacent controls are immediate, keyboard 
     assert.match(await page.getByRole('tooltip').textContent(), /待办/);
     await pointAt(page, page.getByTestId('concierge-rail-toggle'));
     assert.equal(await page.getByRole('tooltip').count(), 1);
-    assert.match(await page.getByRole('tooltip').textContent(), /猫猫球/);
+    assert.equal(await page.getByRole('tooltip').textContent(), '打开伴随对话');
     await page.keyboard.press('Escape');
     assert.equal(await page.getByRole('tooltip').count(), 0);
     await page.mouse.move(500, 500);
@@ -678,7 +784,7 @@ test('avatar opens settings; all 14 sections remain reachable; old and dest: pin
         'voice',
       ].sort(),
     );
-    await page.getByRole('button', { name: '固定「系统」到侧栏', exact: true }).click();
+    await page.getByRole('button', { name: '固定「系统」到窄栏', exact: true }).click();
     await page.getByTestId('rail-pin-dest-system').waitFor();
     assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('cat-cafe:pinned-settings-sections'))), [
       'notify',
@@ -704,6 +810,72 @@ test('avatar opens settings; all 14 sections remain reachable; old and dest: pin
     await page.getByTestId('world-cafe').click();
     await page.getByTestId('conversation').waitFor();
     assert.equal(new URL(page.url()).pathname, '/thread/thread-return');
+  } finally {
+    await closeProof(proof);
+  }
+});
+
+test('v2 System saves Activity default and the install preview follows English while preserving service data', async () => {
+  let savedDefault = 'collapsed';
+  const proof = await openProof({
+    route: '/settings?s=system',
+    language: 'en',
+    api: ({ request, url }) => {
+      if (url.pathname === '/api/config' && request.method() === 'PATCH') {
+        savedDefault = request.postDataJSON().value;
+        return { body: { config: s5Config(savedDefault) } };
+      }
+      if (url.pathname === '/api/services/fixture-service/install-preview') return { body: installPreview };
+      return null;
+    },
+  });
+  const { page, requests } = proof;
+  try {
+    await page.getByRole('heading', { name: 'Activity default', exact: true }).waitFor();
+    assert.equal(await page.getByTestId('execution-record-default-collapsed').isChecked(), true);
+    await page.getByTestId('execution-record-default-expanded').click();
+    await page.waitForFunction(
+      () => document.querySelector('[data-testid="execution-record-default-expanded"]')?.checked === true,
+    );
+    assert.equal(savedDefault, 'expanded');
+    assert.ok(requests.includes('PATCH /api/config'));
+
+    await page.getByTestId('open-install-preview').click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('heading', { name: 'Install Fixture Service', exact: true }).waitFor();
+    await dialog.getByText('Detected environment', { exact: true }).waitFor();
+    assert.equal(await dialog.getByText('Service port', { exact: true }).count(), 1);
+    assert.equal(await dialog.getByRole('button', { name: 'Start installation', exact: true }).count(), 1);
+    assert.equal(await dialog.getByText('服务数据保持原样', { exact: true }).count(), 1);
+    assert.equal(await dialog.getByText('· Fixture note', { exact: true }).count(), 1);
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    assert.equal(await page.getByRole('dialog').count(), 0);
+  } finally {
+    await closeProof(proof);
+  }
+});
+
+test('classic System does not mount Activity default and keeps the install preview Chinese in English preference', async () => {
+  const proof = await openProof({
+    route: '/settings?s=system',
+    shell: 'classic',
+    language: 'en',
+    api: ({ url }) =>
+      url.pathname === '/api/services/fixture-service/install-preview' ? { body: installPreview } : null,
+  });
+  const { page } = proof;
+  try {
+    await page.getByTestId('settings-owner').waitFor();
+    assert.equal(await page.getByRole('heading', { name: 'Activity default', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('heading', { name: '执行记录默认', exact: true }).count(), 0);
+    await page.getByTestId('open-install-preview').click();
+    const heading = page.getByRole('heading', { name: '安装 Fixture Service', exact: true });
+    await heading.waitFor();
+    const dialog = heading.locator('xpath=../..');
+    await dialog.getByText('检测到的环境', { exact: true }).waitFor();
+    assert.equal(await dialog.getByText('服务端口', { exact: true }).count(), 1);
+    assert.equal(await dialog.getByRole('button', { name: '开始安装', exact: true }).count(), 1);
+    assert.equal(await dialog.getByRole('button', { name: '关闭', exact: true }).count(), 1);
   } finally {
     await closeProof(proof);
   }
@@ -738,11 +910,11 @@ test('the workspace-team second-level destination can be pinned like the other s
   const { page } = proof;
   try {
     assert.equal(
-      await page.getByRole('button', { name: '固定「成员能力与路由状态」到侧栏', exact: true }).count(),
+      await page.getByRole('button', { name: '固定「成员能力与路由状态」到窄栏', exact: true }).count(),
       1,
       'every second-level destination needs its pin action',
     );
-    await page.getByRole('button', { name: '固定「成员能力与路由状态」到侧栏', exact: true }).click();
+    await page.getByRole('button', { name: '固定「成员能力与路由状态」到窄栏', exact: true }).click();
     const pin = page.getByTestId('world-rail').getByRole('button', { name: '成员能力与路由状态', exact: true });
     await pin.waitFor();
     await page.getByTestId('settings-team-workspace').click();
@@ -835,13 +1007,189 @@ test('the v2 conversation header is the real one: sidebar restore, 作品, 任�
   }
 });
 
+async function captureHeaderKeyboard(page, width, language) {
+  const directory = process.env.F322_CHAT_EVIDENCE_DIR;
+  if (!directory) return;
+  mkdirSync(directory, { recursive: true });
+  await page.screenshot({ path: path.join(directory, `header-keyboard-${width}-${language}.png`), fullPage: true });
+}
+
+test('the complete header stays in its real shell pane through keyboard navigation', async (t) => {
+  for (const [width, language] of [
+    [320, 'zh'],
+    [320, 'en'],
+    [390, 'en'],
+    [1440, 'en'],
+  ]) {
+    await t.test(`${width}px ${language}`, async () => {
+      const proof = await openProof({ viewport: { width, height: 900 }, language });
+      const { page } = proof;
+      try {
+        const header = page.locator('[data-shell-header="v2"]');
+        await header.waitFor();
+        const controls = [
+          'header-sidebar-expand',
+          'conversation-view-menu-toggle',
+          'message-search-entry',
+          'header-works',
+          'header-tasks',
+          'workspace-panel-toggle',
+        ];
+        const before = await header.boundingBox();
+        const bodyBefore = await page.getByTestId('conversation').boundingBox();
+        assert.equal(before.x, 52, 'the real world rail consumes 52px of the viewport');
+        assert.equal(before.width, width - 52);
+        for (const id of controls) {
+          const button = await page.getByTestId(id).boundingBox();
+          assert.ok(button);
+          assert.ok(button.width >= 28, `${id} retains its usable width`);
+          assert.ok(
+            button.x >= before.x && button.x + button.width <= before.x + before.width,
+            `${id} fits the header`,
+          );
+        }
+        await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+        const reached = new Set();
+        for (let step = 0; step < 80 && reached.size < controls.length; step++) {
+          await page.keyboard.press('Tab');
+          const id = await page.evaluate(() => document.activeElement?.getAttribute('data-testid'));
+          if (controls.includes(id)) reached.add(id);
+          assert.equal((await header.boundingBox()).x, before.x, `Tab ${step + 1}: header must not pan`);
+          assert.equal(
+            (await page.getByTestId('conversation').boundingBox()).x,
+            bodyBefore.x,
+            `Tab ${step + 1}: body must not pan`,
+          );
+        }
+        assert.deepEqual([...reached].sort(), [...controls].sort());
+        await captureHeaderKeyboard(page, width, language);
+      } finally {
+        await closeProof(proof);
+      }
+    });
+  }
+});
+
+test('the v2 header keeps the conversation view honest and inside a narrow viewport', async () => {
+  const proof = await openProof({
+    viewport: { width: 390, height: 860 },
+    api: ({ request, url }) => {
+      if (url.pathname !== '/api/config/conversation-view') return null;
+      if (request.method() === 'PUT') {
+        assert.deepEqual(request.postDataJSON(), { threadId: 'thread-return', view: { mode: 'group' } });
+        return { body: { stored: { mode: 'group' }, effective: { mode: 'group' }, source: 'thread' } };
+      }
+      return {
+        body: {
+          stored: { mode: 'cat', catId: 'opus' },
+          effective: { mode: 'cat', catId: 'opus' },
+          source: 'thread',
+        },
+      };
+    },
+  });
+  const { page } = proof;
+  try {
+    const toggle = page.getByTestId('conversation-view-menu-toggle');
+    await toggle.waitFor();
+    assert.match(await toggle.textContent(), /群聊/);
+    assert.equal(await page.getByTestId('header-participants').count(), 0);
+    await toggle.click();
+    const menu = page.getByTestId('conversation-view-menu');
+    await menu.waitFor();
+    assert.equal(await menu.locator('[data-conversation-cat]').count(), 2);
+    assert.equal(await menu.locator('[data-conversation-cat]:disabled').count(), 2);
+    assert.match(await menu.textContent(), /布偶猫.*读取记录暂不可用.*狸花猫/);
+    const box = await menu.boundingBox();
+    assert.ok(box);
+    assert.ok(box.x >= 0);
+    assert.ok(box.x + box.width <= 390);
+
+    await page.keyboard.press('Escape');
+    assert.equal(await menu.count(), 0);
+    assert.equal(await toggle.evaluate((element) => element === document.activeElement), true);
+
+    await toggle.click();
+    await menu.locator('[data-conversation-view="group"]').click();
+    await menu.waitFor({ state: 'detached' });
+    assert.equal(await menu.count(), 0);
+    assert.ok(proof.requests.includes('PUT /api/config/conversation-view'));
+
+    await page.evaluate(() => {
+      localStorage.setItem('cat-cafe:shell-language', 'en');
+      window.dispatchEvent(new CustomEvent('cat-cafe:shell-language-sync'));
+    });
+    assert.match(await toggle.textContent(), /Group chat/);
+  } finally {
+    await closeProof(proof);
+  }
+
+  const classic = await openProof({ shell: 'classic', viewport: { width: 390, height: 860 } });
+  try {
+    assert.equal(await classic.page.getByTestId('conversation-view-menu-toggle').count(), 0);
+  } finally {
+    await closeProof(classic);
+  }
+});
+
+test('the conversation view menu stays inside a short viewport and scrolls to its final participant and status', async () => {
+  const viewport = { width: 390, height: 667 };
+  const proof = await openProof({
+    viewport,
+    participantCount: 13,
+    api: ({ request, url }) =>
+      url.pathname === '/api/config/conversation-view' && request.method() === 'GET' ? { abort: true } : null,
+  });
+  const { page } = proof;
+  try {
+    const toggle = page.getByTestId('conversation-view-menu-toggle');
+    await toggle.click();
+    const menu = page.getByTestId('conversation-view-menu');
+    const status = menu.getByRole('status');
+    await status.waitFor();
+    assert.equal(await menu.locator('[data-conversation-cat]').count(), 13);
+
+    const initial = await menu.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return {
+        bottom: box.bottom,
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+        scrollTop: element.scrollTop,
+      };
+    });
+    assert.ok(initial.bottom <= viewport.height, `menu bottom ${initial.bottom} exceeds viewport ${viewport.height}`);
+    assert.ok(initial.scrollHeight > initial.clientHeight, 'the capacity fixture must overflow the menu');
+
+    await menu.hover();
+    await page.mouse.wheel(0, 10_000);
+    await page.waitForFunction(() => document.querySelector('[data-testid="conversation-view-menu"]')?.scrollTop > 0);
+    const finalParticipant = menu.locator('[data-conversation-cat="cat-13"]');
+    const [menuBox, participantBox, statusBox] = await Promise.all([
+      menu.boundingBox(),
+      finalParticipant.boundingBox(),
+      status.boundingBox(),
+    ]);
+    assert.ok(menuBox && participantBox && statusBox);
+    assert.ok((await menu.evaluate((element) => element.scrollTop)) > 0);
+    assert.ok(participantBox.y + participantBox.height <= menuBox.y + menuBox.height);
+    assert.ok(statusBox.y + statusBox.height <= menuBox.y + menuBox.height);
+
+    await page.keyboard.press('Escape');
+    assert.equal(await menu.count(), 0);
+    assert.equal(await toggle.evaluate((element) => element === document.activeElement), true);
+  } finally {
+    await closeProof(proof);
+  }
+});
+
 // ---- S3-2b-1c: an approval decided in the 待办 panel through its ORIGINAL card ----------------------------------------------
 // The card is the Approval Hub's own, acting through its own store and endpoint. The panel only locks it while what it shows
 // may not be true, and states what a re-read of BOTH sources proved. Every request is answered by a small fake server whose
 // single switch (`decide`) is "the decision really happened"; the cells then assert on the request log as much as on the page.
 const hostableApproval = (id, summary) => ({
   proposalId: id,
-  sourceFeatureId: 'F128',
+  sourceFeatureId: 'F193',
   requesterCatId: 'opus',
   summary,
   detail: {},
@@ -857,7 +1205,7 @@ const hostableApproval = (id, summary) => ({
   },
 });
 const hostableRow = (id, summary) => ({
-  decisionRef: `approval:F128:${id}`,
+  decisionRef: `approval:F193:${id}`,
   kind: 'approval',
   summary,
   approval: hostableApproval(id, summary),
@@ -876,7 +1224,7 @@ function approvalServer({ summary = '记一条品味', storeHasIt = true } = {})
     state.settled = [
       {
         proposalId: 'p1',
-        sourceFeatureId: 'F128',
+        sourceFeatureId: 'F193',
         ownerUserId: 'owner-1',
         resolution: 'accepted',
         decidedAt: 1_700_000_100_000,
@@ -924,7 +1272,7 @@ const waitForSessionText = (page, expected) =>
 const reread = (page) =>
   page.locator('[data-testid="mailbox-row-reread"], [data-testid="mailbox-approval-reread"]').first().click();
 
-test('an approval is approved on its original card inside 待办; 已批准 is claimed only after both sources are re-read', async () => {
+test('an approval is approved on its original card inside 待办; 已同意 is claimed only after both sources are re-read', async () => {
   const server = approvalServer();
   server.state.approveReply = () => {
     server.decide();
@@ -939,7 +1287,7 @@ test('an approval is approved on its original card inside 待办; 已批准 is c
     assert.equal(await page.getByTestId('mailbox-open-original').count(), 1);
     await page.getByTestId('approve-btn').click();
     await page.getByTestId('mailbox-retained-result').waitFor();
-    assert.match(await page.getByTestId('mailbox-retained-line').textContent(), /已批准/);
+    assert.match(await page.getByTestId('mailbox-retained-line').textContent(), /已同意/);
     // One write, sent by the original store to the producer's own endpoint; the panel never repeated it.
     assert.equal(server.state.posts.length, 1);
     // After it: a new unified read, a store refresh and the settled history, in that the write came first.
@@ -971,7 +1319,7 @@ test('a lost connection is unknown, never "not approved": the user re-reads, and
     server.decide();
     await reread(page);
     await page.getByTestId('mailbox-retained-result').waitFor();
-    assert.match(await page.getByTestId('mailbox-retained-line').textContent(), /已批准/);
+    assert.match(await page.getByTestId('mailbox-retained-line').textContent(), /已同意/);
     assert.equal(server.state.posts.length, 1);
   } finally {
     await closeProof(proof);
@@ -1009,9 +1357,8 @@ test('a 409 that leaves the approval open is confirmed by a re-read, not reporte
     await page.getByTestId('approve-btn').click();
     await waitForSessionText(page, '请求返回异常，重新读取后仍待决定');
     assert.equal(server.state.posts.length, 1);
-    // The re-read closed the row; opening it again shows the same decision on both sides, so the card may act again,
-    // by the user's own press. The panel did not repeat the write.
-    await page.getByTestId('mailbox-item-toggle').click();
+    // The original row stays expanded; the fresh matching read lets the user decide again.
+    assert.equal(await page.getByTestId('mailbox-item-toggle').getAttribute('aria-expanded'), 'true');
     await page.getByTestId('approve-btn').waitFor();
     assert.equal(await page.getByTestId('approve-btn').isDisabled(), false);
     await page.getByTestId('approve-btn').click();
@@ -1064,18 +1411,19 @@ test('while the re-read is slow nothing is claimed: no card to press, no result,
     await waitForSessionText(page, '已提交，正在确认结果…');
     // The decision is on the server, but the panel has not read it: it claims nothing, and the previous read has no actions.
     assert.equal(await page.getByTestId('mailbox-retained-result').count(), 0);
-    assert.equal(await page.getByTestId('approve-btn').count(), 0);
+    assert.equal(await page.getByTestId('approve-btn').count(), 1);
+    assert.equal(await page.getByTestId('approve-btn').isDisabled(), true);
     assert.equal(await page.getByTestId('mailbox-row-reread').count(), 0);
     release();
     await page.getByTestId('mailbox-retained-result').waitFor();
-    assert.match(await page.getByTestId('mailbox-retained-line').textContent(), /已批准/);
+    assert.match(await page.getByTestId('mailbox-retained-line').textContent(), /已同意/);
     assert.equal(server.state.posts.length, 1);
   } finally {
     await closeProof(proof);
   }
 });
 
-test('an approval that left the list with no settled row is "结果待确认", never 已批准, until the history says so', async () => {
+test('an approval that left the list with no settled row is "结果待确认", never 已同意, until the history says so', async () => {
   const server = approvalServer();
   // The write is accepted and the approval is gone from the Approval Hub's pending list and the unified read, but the settled
   // history has no row for it yet. The store's optimistic removal and the page's absence both say "gone"; neither says "decided".
@@ -1093,13 +1441,13 @@ test('an approval that left the list with no settled row is "结果待确认", n
       () =>
         document.querySelector('[data-testid="mailbox-retained-line"]')?.textContent === '已不在当前待办，结果待确认',
     );
-    assert.equal((await page.getByTestId('mailbox-panel').textContent()).includes('已批准'), false);
+    assert.equal((await page.getByTestId('mailbox-panel').textContent()).includes('已同意'), false);
     // Not a result the user can wave away as done: it stays, and offers the re-read.
     assert.equal(await page.getByTestId('mailbox-retained-dismiss').count(), 1);
     server.state.settled = [
       {
         proposalId: 'p1',
-        sourceFeatureId: 'F128',
+        sourceFeatureId: 'F193',
         ownerUserId: 'owner-1',
         resolution: 'accepted',
         decidedAt: 1_700_000_100_000,
@@ -1108,10 +1456,314 @@ test('an approval that left the list with no settled row is "结果待确认", n
     ];
     await page.getByTestId('mailbox-retained-reread').click();
     await page.waitForFunction(() =>
-      /已批准/.test(document.querySelector('[data-testid="mailbox-retained-line"]')?.textContent ?? ''),
+      /已同意/.test(document.querySelector('[data-testid="mailbox-retained-line"]')?.textContent ?? ''),
     );
     assert.equal(server.state.posts.length, 1);
   } finally {
     await closeProof(proof);
   }
 });
+
+test('accepted chat real page: sidebar, composer and control ownership', async (t) => {
+  await runChatRealPageJourney(t, browser);
+});
+
+test('v2 decides a complete F128 proposal in its mailbox and retains the canonical result in the same position', async () => {
+  const proposal = {
+    proposalId: 'direct-approval',
+    status: 'pending',
+    createdBy: 'owner-1',
+    createdAt: Date.now(),
+    sourceCatId: 'opus',
+    sourceThreadId: 'thread-return',
+    title: '查清真实证据',
+    reason: '先核对原始记录，再决定下一步。\n这是提议里的原话。',
+    parentThreadId: 'thread-return',
+    preferredCats: ['glm52'],
+    initialMessage: '请核对证据',
+    projectPath: '/work/fixture',
+    declaredWorkMode: 'parallel',
+    subjectTaskId: 'task:work:isolated-approval',
+    subjectTaskTitle: '隔离审批验证',
+    approvedDevelopmentScope: {
+      featureRef: 'feature:F322',
+      phaseKey: 'S3',
+      workUnitRef: 'feature-phase:F322:S3',
+      acceptedSourceRef: 'file:docs/features/F322-everyday-work-experience.md',
+      acceptedRevision: 'a'.repeat(40),
+    },
+  };
+  const item = {
+    proposalId: proposal.proposalId,
+    sourceFeatureId: 'F128',
+    requesterCatId: proposal.sourceCatId,
+    ownerUserId: 'owner-1',
+    resolution: 'open',
+    materialization: { state: 'not_started' },
+    createdAt: proposal.createdAt,
+    summary: `New thread: ${proposal.title}`,
+    detail: {
+      title: proposal.title,
+      reason: proposal.reason,
+      parentThreadId: proposal.parentThreadId,
+      preferredCats: proposal.preferredCats,
+      initialMessage: proposal.initialMessage,
+      projectPath: proposal.projectPath,
+    },
+    inlineApprovable: false,
+    navigation: {
+      state: 'anchored',
+      originRef: { kind: 'message', threadId: 'thread-return', messageId: 'trigger' },
+      approvalCardRef: { threadId: 'thread-return', messageId: 'proposal-card' },
+    },
+  };
+  const row = {
+    decisionRef: 'approval:F128:direct-approval',
+    kind: 'approval',
+    summary: item.summary,
+    approval: Object.fromEntries(Object.entries(item).filter(([key]) => key !== 'ownerUserId')),
+    linkedNeedsMe: [],
+  };
+  const before = { decisionRef: 'work-before', kind: 'judgment', summary: '前一件工作', linkedNeedsMe: [] };
+  const after = { decisionRef: 'work-after', kind: 'judgment', summary: '后一件工作', linkedNeedsMe: [] };
+  let decided = false;
+  let releaseConfirmation = () => {};
+  const confirmation = new Promise((resolve) => {
+    releaseConfirmation = resolve;
+  });
+  const proof = await openProof({
+    ready: '待办，3 件',
+    unified: async (round) => {
+      if (round > 1) await confirmation;
+      return {
+        body: unifiedRead({ items: decided ? [before, after] : [before, row, after], totalCount: decided ? 2 : 3 }),
+      };
+    },
+    api: ({ request, url }) => {
+      if (url.pathname === '/api/approval-hub/pending')
+        return { body: { items: decided ? [] : [item], count: decided ? 0 : 1 } };
+      if (url.pathname === '/api/proposals/direct-approval/approve') {
+        assert.equal(request.method(), 'POST');
+        decided = true;
+        return { body: { ok: true } };
+      }
+      if (url.pathname === '/api/proposals/direct-approval')
+        return {
+          body: {
+            proposal: decided ? { ...proposal, status: 'approved', createdThreadId: 'thread-created' } : proposal,
+          },
+        };
+      if (url.pathname === '/api/approval-hub/settled')
+        return {
+          body: {
+            items: decided ? [{ ...item, resolution: 'accepted', decidedAt: Date.now(), decidedBy: 'owner-1' }] : [],
+            count: decided ? 1 : 0,
+          },
+        };
+      if (url.pathname === '/api/threads/thread-created')
+        return { body: { id: 'thread-created', createdBy: 'owner-1', createdFromProposalId: 'direct-approval' } };
+      if (url.pathname === '/api/threads/thread-created/active-pane') return { body: { active: false } };
+      return null;
+    },
+  });
+  const { page } = proof;
+  try {
+    await page.getByTestId('mailbox-button').click();
+    await page.getByTestId('mailbox-item-toggle').nth(1).click();
+    await page.getByTestId('mailbox-proposal-reason').waitFor();
+    await page
+      .getByTestId('approve-btn')
+      .isEnabled()
+      .then((enabled) => assert.equal(enabled, true));
+    assert.equal(await page.getByTestId('mailbox-proposal-reason').textContent(), proposal.reason);
+    assert.match(await page.getByTestId('mailbox-item-body').textContent(), /执行者：狸花猫/);
+    const contractText = await page.getByTestId('mailbox-item-body').textContent();
+    assert.match(contractText, /父对话：thread-return/);
+    assert.match(contractText, /autonomous（下游自治，无强制回报）/);
+    assert.ok(contractText.includes('隔离审批验证 (task:work:isolated-approval)'));
+    assert.ok(contractText.includes(proposal.approvedDevelopmentScope.acceptedSourceRef));
+    assert.ok(contractText.includes(proposal.approvedDevelopmentScope.acceptedRevision));
+    assert.equal(await page.getByTestId('mailbox-open-original').textContent(), '在原处看这条提议');
+    const evidenceDir = process.env.F322_MAILBOX_EVIDENCE_DIR;
+    if (evidenceDir) {
+      mkdirSync(evidenceDir, { recursive: true });
+      await page.screenshot({ path: path.join(evidenceDir, 'pending-light.png') });
+    }
+    await page.getByTestId('approve-btn').click();
+    await page.getByTestId('mailbox-approval-result').filter({ hasText: '正在确认' }).waitFor();
+    assert.equal(await page.getByTestId('approve-btn').isDisabled(), true);
+    assert.equal(await page.getByTestId('mailbox-result-open').count(), 0);
+    assert.equal(
+      proof.requests.filter((request) => request === 'POST /api/proposals/direct-approval/approve').length,
+      1,
+    );
+    releaseConfirmation();
+    await page.getByTestId('mailbox-retained-line').filter({ hasText: '对话已开' }).waitFor();
+    assert.match(await page.getByTestId('mailbox-retained-line').textContent(), /已同意 · 对话已开/);
+    const children = await page
+      .locator('#mailbox-tabpanel')
+      .locator('ul > li')
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-testid')));
+    assert.deepEqual(children, ['mailbox-item', 'mailbox-retained-result', 'mailbox-item']);
+    assert.equal(await page.getByTestId('mailbox-tab-count').textContent(), '2');
+    await page.getByTestId('mailbox-history').click();
+    await page.getByTestId('approval-tab-history').waitFor();
+    assert.equal(
+      await page
+        .getByTestId('approval-tab-history')
+        .getAttribute('class')
+        .then((s) => s.includes('bg-cafe-surface')),
+      true,
+    );
+    await page.getByRole('button', { name: '‹ 返回待办', exact: true }).click();
+    await page.getByTestId('mailbox-filter-batch').click();
+    await page.getByTestId('approval-filter-bar').waitFor();
+    await page.getByRole('button', { name: '‹ 返回待办', exact: true }).click();
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, 'result-dark.png') });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.ok(
+      await page.getByTestId('mailbox-panel').evaluate((node) => node.getBoundingClientRect().right <= innerWidth),
+    );
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, 'result-mobile.png') });
+    await page.getByTestId('mailbox-result-open').click();
+    assert.equal(new URL(page.url()).pathname, '/thread/thread-created');
+  } finally {
+    releaseConfirmation();
+    await closeProof(proof);
+  }
+});
+
+test('accepted sidebar v2: groups, cats, attention, labels and measured layout', async (t) => {
+  await runSidebarV2Journey(t, browser);
+});
+
+// Synthetic F193 source record: expiry changes write eligibility, never the displayed census.
+test('v2 second-layer 已过期 finds the canonical item without permitting a producer write', async () => {
+  const item = {
+    proposalId: 'expired-source',
+    sourceFeatureId: 'F193',
+    requesterCatId: 'opus',
+    ownerUserId: 'owner-1',
+    resolution: 'open',
+    materialization: { state: 'not_started' },
+    createdAt: Date.now() - 2 * 3600_000,
+    expiresAt: Date.now() - 1000,
+    summary: '过期但仍需看到的工作',
+    detail: { content: '过期但仍需看到的工作', targetCats: ['glm52'] },
+    inlineApprovable: true,
+    navigation: {
+      state: 'anchored',
+      originRef: { kind: 'message', threadId: 'thread-return', messageId: 'trigger' },
+      approvalCardRef: { threadId: 'thread-return', messageId: 'expired-card' },
+    },
+  };
+  const row = {
+    decisionRef: 'approval:F193:expired-source',
+    kind: 'approval',
+    summary: item.summary,
+    approval: Object.fromEntries(Object.entries(item).filter(([key]) => key !== 'ownerUserId')),
+    linkedNeedsMe: [],
+  };
+  const proof = await openProof({
+    ready: '待办，1 件',
+    unified: () => ({ body: unifiedRead({ items: [row], totalCount: 1 }) }),
+    api: ({ url }) => (url.pathname === '/api/approval-hub/pending' ? { body: { items: [item], count: 1 } } : null),
+  });
+  try {
+    await proof.page.getByTestId('mailbox-button').click();
+    await proof.page.getByTestId('mailbox-filter-batch').click();
+    await proof.page.getByTestId('approval-filter-stale').click();
+    await proof.page.getByText(item.summary, { exact: true }).waitFor();
+    assert.equal(await proof.page.getByTestId('approval-empty-state').count(), 0);
+    assert.equal(await proof.page.getByTestId('approval-empty-filtered').count(), 0);
+    assert.equal(await proof.page.getByTestId('approval-batch-bar').count(), 0);
+    assert.equal(await proof.page.getByTestId('approve-btn').count(), 0);
+    assert.equal(await proof.page.getByTestId('reject-btn').count(), 0);
+    assert.ok(proof.requests.every((request) => !request.startsWith('POST ')));
+    const evidenceDir = process.env.F322_MAILBOX_EVIDENCE_DIR;
+    if (evidenceDir) {
+      mkdirSync(evidenceDir, { recursive: true });
+      await proof.page.screenshot({ path: path.join(evidenceDir, 'expired-filter.png') });
+    }
+  } finally {
+    await closeProof(proof);
+  }
+});
+
+// Same original producer actions, isolated owner: a lost answer stays held even when both canonical readers list it.
+test('v2 safe batch excludes the unknown-result approval and submits only the idle decision', async () => {
+  const rows = [hostableRow('unknown-first', '第一件工作'), hostableRow('idle-second', '第二件工作')].map((row) => ({
+    ...row,
+    approval: { ...row.approval, detail: { content: row.summary, targetCats: ['glm52'] } },
+  }));
+  const items = rows.map((row) => ({ ...row.approval, ownerUserId: 'owner-1' }));
+  const posts = [];
+  const proof = await openProof({
+    ready: '待办，2 件',
+    unified: () => ({ body: unifiedRead({ items: rows, totalCount: 2 }) }),
+    api: ({ request, url }) => {
+      if (url.pathname === '/api/approval-hub/pending') return { body: { items, count: 2 } };
+      if (url.pathname === '/api/approval-hub/settled') return { body: { items: [], count: 0 } };
+      if (request.method() === 'POST' && url.pathname === '/api/dispatch-proposals/unknown-first/approve') {
+        posts.push(url.pathname);
+        return { abort: true };
+      }
+      if (request.method() === 'POST' && url.pathname === '/api/dispatch-proposals/idle-second/approve') {
+        posts.push(url.pathname);
+        return { body: { ok: true } };
+      }
+      return null;
+    },
+  });
+  const { page } = proof;
+  try {
+    await page.getByTestId('mailbox-button').click();
+    await page.getByTestId('mailbox-item-toggle').first().click();
+    await page.getByTestId('approve-btn').click();
+    await waitForSessionText(page, '没能确认提交结果，重新读取后仍待决定');
+    assert.deepEqual(posts, ['/api/dispatch-proposals/unknown-first/approve']);
+    await page.getByTestId('mailbox-filter-batch').click();
+    const held = page.getByTestId('mailbox-tools-item-unknown-first');
+    const idle = page.getByTestId('mailbox-tools-item-idle-second');
+    await held.getByTestId('mailbox-approval-reread').waitFor();
+    assert.match(await held.textContent(), /没能确认提交结果，重新读取后仍待决定/);
+    assert.equal(await held.getByTestId('approve-btn').isDisabled(), true);
+    assert.equal(await held.getByTestId('reject-btn').isDisabled(), true);
+    // HostedApprovalCard checks its canonical store copy after mounting the
+    // batch surface; wait for that read before asserting the idle action.
+    await page.waitForFunction(() => {
+      const action = document.querySelector(
+        '[data-testid="mailbox-tools-item-idle-second"] [data-testid="approve-btn"]',
+      );
+      return action && !action.disabled;
+    });
+    assert.equal(await idle.getByTestId('approve-btn').isDisabled(), false);
+    await page.getByTestId('approval-batch-select-toggle').click();
+    assert.equal(await page.getByTestId('approval-batch-select-toggle').textContent(), '取消选择 (1)');
+    const evidenceDir = process.env.F322_MAILBOX_EVIDENCE_DIR;
+    if (evidenceDir) {
+      mkdirSync(evidenceDir, { recursive: true });
+      await page.screenshot({ path: path.join(evidenceDir, 'unknown-batch.png') });
+    }
+    await page.getByTestId('approval-batch-approve').click();
+    await page.getByTestId('mailbox-approval-tools').waitFor({ state: 'detached' });
+    assert.deepEqual(posts, [
+      '/api/dispatch-proposals/unknown-first/approve',
+      '/api/dispatch-proposals/idle-second/approve',
+    ]);
+    // The unknown item's actual reread is the only remaining operation; no approval is retransmitted.
+    await page.getByTestId('mailbox-row-reread').first().click();
+    await waitForSessionText(page, '没能确认提交结果，重新读取后仍待决定');
+    assert.equal(posts.filter((pathname) => pathname.includes('/unknown-first/')).length, 1);
+  } finally {
+    await closeProof(proof);
+  }
+});
+
+test('piano navigation uses the real reading surface and original owner', async (t) => {
+  await runPianoJourneys(t, browser);
+});
+
+// Reuse this unit's browser: the menu regression never starts a concurrent browser.
+registerWorkspaceMenuTests(() => browser);

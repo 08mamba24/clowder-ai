@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import {
   type EvolutionMediaLocator,
   evolutionMediaLocatorSchema,
-  type ImmutableMedia,
   refIdentity,
   type WorkspaceContentReview,
   type WorkspaceContentReviewView,
@@ -11,23 +10,14 @@ import {
 } from '@cat-cafe/shared';
 import { WorkspaceContentReviewError } from './errors.js';
 import type { WorkspaceReviewPrincipal } from './service.js';
+import type { EvolutionMediaReadPort } from './workspace-review-types.js';
+
+export type { EvolutionMediaReadPort } from './workspace-review-types.js';
+
 import {
   resolveMediaWorkspaceReviewAnnotations,
   resolveWorkspaceReviewVisualMarks,
 } from './workspace-review-annotation-resolution.js';
-
-/** Read-only owner port. Opening an original never invokes F138, Task admission or a Program mutation. */
-export interface EvolutionMediaReadPort {
-  read(
-    locator: EvolutionMediaLocator,
-    principal: Pick<WorkspaceReviewPrincipal, 'userId'>,
-  ): Promise<{
-    bytes: Buffer;
-    mime: string;
-    label: string;
-    media: ImmutableMedia;
-  }>;
-}
 
 export function evolutionContentRef(input: EvolutionMediaLocator): string {
   const target = evolutionMediaLocatorSchema.parse(input);

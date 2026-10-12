@@ -77,6 +77,17 @@ test('settings view reads the saved owner selection and refuses header-only or p
     'an unrelated settings write cannot replace the saved selection',
   );
   assert.equal((await config.getSaved('settings-owner')).ballSize, 96);
+  const compact = await app.inject({ method: 'PUT', url: '/api/concierge/config', headers, payload: { ballSize: 43 } });
+  assert.equal(compact.statusCode, 200);
+  assert.equal((await config.getSaved('settings-owner')).ballSize, 43);
+  const tooSmall = await app.inject({
+    method: 'PUT',
+    url: '/api/concierge/config',
+    headers,
+    payload: { ballSize: 42 },
+  });
+  assert.equal(tooSmall.statusCode, 400);
+  assert.equal((await config.getSaved('settings-owner')).ballSize, 43);
   const opened = await app.inject({ method: 'POST', url: '/api/concierge/thread', headers });
   assert.equal(opened.statusCode, 200);
   const before = (await threadStore.get(opened.json().threadId))?.preferredCats;

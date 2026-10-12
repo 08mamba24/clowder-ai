@@ -195,7 +195,7 @@ describe('HostedApprovalCard: the original card, when it may be shown', () => {
 });
 
 describe('HostedApprovalCard: a press, and what comes back', () => {
-  it('approve → submitted → re-read of both sources → 已批准 only with a settled row', async () => {
+  it('approve → submitted → re-read of both sources → 已同意 only with a settled row', async () => {
     let release: (response: Response) => void = () => undefined;
     const network: Network = {
       pending: [item],
@@ -236,9 +236,9 @@ describe('HostedApprovalCard: a press, and what comes back', () => {
     expect(fake.refetch).toHaveBeenCalledTimes(1);
 
     await answer(gone());
-    expect(text('mailbox-approval-result')).toContain('已批准');
+    expect(text('mailbox-approval-result')).toContain('已同意');
     expect($('approve-btn')).toBeNull();
-    expect($('mailbox-approval-reread')).toBeNull();
+    expect($('mailbox-approval-reread')).not.toBeNull();
   });
 
   it('a 2xx followed by a read that does not list it and no settled row is NOT 已处理', async () => {
@@ -257,7 +257,7 @@ describe('HostedApprovalCard: a press, and what comes back', () => {
     await flush();
     await answer(gone());
     expect(text('mailbox-approval-result')).toBe('已不在当前待办，结果待确认');
-    expect(text('mailbox-approval-result')).not.toContain('已批准');
+    expect(text('mailbox-approval-result')).not.toContain('已同意');
     expect($('mailbox-approval-reread')).not.toBeNull();
   });
 
@@ -285,7 +285,7 @@ describe('HostedApprovalCard: a press, and what comes back', () => {
     await act(async () => $('mailbox-approval-reread')?.click());
     expect(fake.refetch).toHaveBeenCalledTimes(2);
     await answer(gone());
-    expect(text('mailbox-approval-result')).toContain('已批准');
+    expect(text('mailbox-approval-result')).toContain('已同意');
   });
 
   it('a 403 says no permission, holds the card, and offers a re-read', async () => {
@@ -335,4 +335,20 @@ describe('HostedApprovalCard: a press, and what comes back', () => {
     expect($('mailbox-approval-notice')).not.toBeNull();
     expect(fake.refetch).toHaveBeenCalledTimes(1);
   });
+});
+
+it('a successful pending reread restores availability without hiding the original POST error', async () => {
+  route({
+    pending: [item],
+    approve: async () => Response.json({ error: 'conflict' }, { status: 409 }),
+    settled: async () => Response.json({ items: [] }),
+  });
+  await render();
+  await flush();
+  await act(async () => $('approve-btn')?.click());
+  await flush();
+  await answer(okRead([approvalRow(item)]));
+  expect(useApprovalHubStore.getState().error).not.toBeNull();
+  expect(text('mailbox-approval-result')).toBe('请求返回异常，重新读取后仍待决定');
+  expect(($('approve-btn') as HTMLButtonElement).disabled).toBe(false);
 });

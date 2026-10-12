@@ -46,6 +46,22 @@ export interface DevelopmentScopeSnapshot {
   readonly acceptedRevision: string;
 }
 
+/** Exact immutable authorization scope equality; missing snapshots never match. */
+export function sameDevelopmentScopeSnapshot(
+  approved: DevelopmentScopeSnapshot | undefined,
+  current: DevelopmentScopeSnapshot | undefined,
+): boolean {
+  return Boolean(
+    approved &&
+      current &&
+      approved.featureRef === current.featureRef &&
+      approved.phaseKey === current.phaseKey &&
+      approved.workUnitRef === current.workUnitRef &&
+      approved.acceptedSourceRef === current.acceptedSourceRef &&
+      approved.acceptedRevision === current.acceptedRevision,
+  );
+}
+
 export interface TaskApprovedDelegateProvider {
   getForTask(
     taskId: string,

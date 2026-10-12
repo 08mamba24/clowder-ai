@@ -25,11 +25,23 @@ export class F317MeetingShareService {
   private readonly admission = new F317MeetingAdmission();
   private attachedGrantId: string | null = null;
   private pendingAttach: { grantId: string; promise: Promise<void> } | null = null;
+  private lastSharedGrant: F317MeetingGrant | null = null;
+  private revocationEpoch = 0;
 
   constructor(private readonly ports: F317MeetingSharePorts) {}
 
   current(): F317MeetingGrant | null {
     return this.admission.current();
+  }
+
+  /** Descriptive last accepted target for explicit stop after unshare; never an authorization grant. */
+  lastShared(): F317MeetingGrant | null {
+    return this.lastSharedGrant;
+  }
+
+  private rememberShared(grant: F317MeetingGrant): F317MeetingGrant {
+    this.lastSharedGrant = grant;
+    return grant;
   }
 
   private async observe(actorUserId: string) {
@@ -95,24 +107,28 @@ export class F317MeetingShareService {
   }
 
   async share(actorUserId: string, intent: F317MeetingShareIntent): Promise<F317MeetingGrant> {
+    const epoch = this.revocationEpoch;
     let observed: Awaited<ReturnType<F317MeetingShareService['observe']>>;
     try {
       observed = await this.observe(actorUserId);
     } catch {
       throw new Error('meeting_share_not_admitted');
     }
-    if (!observed || !canAdmitF317Meeting({ ...observed, intent })) throw new Error('meeting_share_not_admitted');
+    if (!observed || epoch !== this.revocationEpoch || !canAdmitF317Meeting({ ...observed, intent }))
+      throw new Error('meeting_share_not_admitted');
     const previous = this.admission.current();
     await this.rejectLostAttachment(previous);
+    if (epoch !== this.revocationEpoch) throw new Error('meeting_share_not_admitted');
     const grant = this.admission.admit({ ...observed, intent });
     if (previous && previous.grantId !== grant.grantId) {
       this.attachedGrantId = null;
       await this.ports.detach(previous);
     }
-    if (this.attachedGrantId === grant.grantId) return grant;
+    if (this.attachedGrantId === grant.grantId) return this.rememberShared(grant);
     if (this.pendingAttach?.grantId === grant.grantId) {
       await this.pendingAttach.promise;
-      if (this.admission.current()?.grantId === grant.grantId && (await this.attached(grant))) return grant;
+      if (this.admission.current()?.grantId === grant.grantId && (await this.attached(grant)))
+        return this.rememberShared(grant);
       throw new Error('meeting_share_not_admitted');
     }
     const promise = (async () => {
@@ -125,7 +141,7 @@ export class F317MeetingShareService {
     try {
       await promise;
       if (!(await this.attached(grant))) throw new Error('meeting_share_not_admitted');
-      return grant;
+      return this.rememberShared(grant);
     } catch (error) {
       await this.drop(grant).catch(() => undefined);
       throw error;
@@ -157,6 +173,7 @@ export class F317MeetingShareService {
   async revoke(actorUserId: string): Promise<void> {
     const grant = this.admission.current();
     if (grant && grant.userId !== actorUserId) throw new Error('meeting_share_not_owner');
+    this.revocationEpoch++;
     await this.drop();
   }
 }

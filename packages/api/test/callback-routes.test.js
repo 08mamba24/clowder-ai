@@ -211,6 +211,50 @@ describe('Callback Routes', () => {
     assert.equal(recent[0].extra?.isExplicitPost, true, 'default post_message remains an independent bubble');
   });
 
+  test('POST post-message persists and broadcasts version-bound ContextAttachments from the authenticated cat', async () => {
+    const app = await createApp();
+    const { invocationId, callbackToken } = await registry.create('user-1', 'opus');
+    const attachment = {
+      v: 1,
+      id: 'ctx-cat-quote-1',
+      kind: 'quote',
+      text: 'A precise source line.',
+      source: {
+        kind: 'workspace_file',
+        path: 'docs/guide.md',
+        worktreeId: 'worktree-a',
+        revision: `sha256:${'a'.repeat(64)}`,
+        lineStart: 4,
+        lineEnd: 4,
+      },
+    };
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/callbacks/post-message',
+      headers: { 'x-invocation-id': invocationId, 'x-callback-token': callbackToken },
+      payload: { content: 'The file says this.', contextAttachments: [attachment] },
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+    const [stored] = messageStore.getRecent(10);
+    assert.equal(stored.catId, 'opus');
+    assert.deepEqual(stored.contentBlocks, [{ type: 'context_attachment', attachment }]);
+    assert.deepEqual(socketManager.getMessages()[0]?.contentBlocks, stored.contentBlocks);
+
+    const unversioned = await app.inject({
+      method: 'POST',
+      url: '/api/callbacks/post-message',
+      headers: { 'x-invocation-id': invocationId, 'x-callback-token': callbackToken },
+      payload: {
+        content: 'An unversioned new reference must not be persisted.',
+        contextAttachments: [{ ...attachment, source: { ...attachment.source, revision: undefined } }],
+      },
+    });
+    assert.equal(unversioned.statusCode, 400, unversioned.body);
+    assert.equal(messageStore.getRecent(10).length, 1);
+  });
+
   test('POST post-message projects only the configured concierge duty cat', async () => {
     const conciergeConfigStore = {
       get: async () => ({ dutyCatProfileId: 'opus' }),
@@ -4848,6 +4892,66 @@ describe('Callback Routes', () => {
     assert.deepEqual(
       fresh.json().messages.map((message) => message.id),
       [arrived.id],
+    );
+  });
+
+  test('typed Host modification receipts enter unread catch-up with Host identity while generic system badges stay display-only', async () => {
+    const { DeliveryCursorStore } = await import('../dist/domains/cats/services/stores/ports/DeliveryCursorStore.js');
+    const { cursorFor } = await import('../dist/domains/cats/services/stores/cursor.js');
+    const deliveryCursorStore = new DeliveryCursorStore();
+    const threadId = 'thread-content-modification-receipt-unread';
+    const baseline = messageStore.append({
+      userId: 'user-1',
+      catId: null,
+      content: 'seen source',
+      mentions: ['opus'],
+      timestamp: 1,
+      threadId,
+    });
+    await deliveryCursorStore.ackSeenCursor('user-1', 'opus', threadId, cursorFor(baseline));
+    messageStore.append({
+      userId: 'system',
+      catId: null,
+      content: 'display-only error badge',
+      mentions: [],
+      timestamp: 2,
+      threadId,
+    });
+    const receipt = messageStore.append({
+      userId: 'system',
+      catId: null,
+      content: '[Host 作品修改回执]\n候选修改已返回',
+      mentions: [],
+      timestamp: 3,
+      threadId,
+      replyTo: baseline.id,
+      extra: {
+        systemKind: 'content_modification_receipt',
+        contentModificationReceiptV1: {
+          v: 1,
+          requestId: `f309-modification-${'a'.repeat(64)}`,
+          sourceMessageId: baseline.id,
+          targetCatId: 'opus',
+          taskId: 'task-1',
+          state: 'candidate',
+          candidateRef: 'candidate-1',
+          receiptRef: 'receipt-1',
+          observedAt: 3,
+          followUp: { kind: 'none', reason: 'not_applicable' },
+        },
+      },
+    });
+    const { invocationId, callbackToken } = await registry.create('user-1', 'opus', threadId);
+    const app = await createApp({ deliveryCursorStore });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/callbacks/thread-context?readIntent=unread&responseMode=full',
+      headers: { 'x-invocation-id': invocationId, 'x-callback-token': callbackToken },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.deepEqual(
+      response.json().messages.map((message) => ({ id: message.id, speaker: message.speaker })),
+      [{ id: receipt.id, speaker: 'Host 作品修改回执' }],
     );
   });
 

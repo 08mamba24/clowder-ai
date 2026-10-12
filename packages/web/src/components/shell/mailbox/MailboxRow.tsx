@@ -200,7 +200,7 @@ function RowBody({
           onOpen={onOpen}
         />
       ) : (
-        <PlaceAction place={place} onOpen={onOpen} />
+        <PlaceAction quiet={Boolean(item.approval)} place={place} onOpen={onOpen} />
       )}
     </section>
   );
@@ -231,7 +231,10 @@ export function MailboxRow({
   const bodyId = useId();
   const { catId, lead, title, source, time } = useRowText(item);
   const heading = lead ? `${lead} ${title}` : title;
-  const open = expanded && !stale;
+  const session =
+    hosted && item.approval ? hosted.sessions.get(sessionKey(hosted.ownerUserId, item.approval)) : undefined;
+  const retainingDecision = session !== undefined && session.model.state.kind !== 'idle';
+  const open = expanded && (!stale || retainingDecision);
   return (
     <li
       data-testid="mailbox-item"

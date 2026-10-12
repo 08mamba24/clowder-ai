@@ -8,6 +8,8 @@ import { CapabilityEvolutionWorkspace } from '@/components/capability-evolution/
 import { EvalWorkspacePanel } from '@/components/eval-workspace/EvalWorkspacePanel';
 import { RecallFeed } from '@/components/memory/RecallFeed';
 import { TeamWorkspacePanel } from '@/components/routing-context/TeamWorkspacePanel';
+import { MailboxApprovalEntry } from '@/components/shell/mailbox/MailboxApprovalEntry';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import { TaskBoardPanel } from '@/components/TaskBoardPanel';
 import type { WorkspaceSurfaceDescriptor } from '@/components/workbench/workbench-contract';
 import { ChangesPanel } from '@/components/workspace/ChangesPanel';
@@ -26,6 +28,7 @@ import { NeedsMeOwnerSurface, ProductScheduleOwnerSurface } from './GrowingOwner
 import {
   createArtifactSurface,
   createEvolutionProgramSurface,
+  createFileSurface,
   createTeamWorkspaceSurface,
   resolveApprovalActionTarget,
   resolveChangesTarget,
@@ -73,6 +76,7 @@ function WorkspaceModeOwnerSurface({
   onRefreshSurface: (surface: WorkspaceSurfaceDescriptor) => void;
   statusSurface?: ReactNode;
 }) {
+  const presentation = useShellPresentation();
   const target = resolveWorkspaceDestinationTarget(surface);
   if (!target) return <OwnerUnavailable message="Workspace destination 没有合法 owner/result target。" />;
   const { destinationRef: destination, threadId } = target;
@@ -96,6 +100,8 @@ function WorkspaceModeOwnerSurface({
   }
   if (destination === 'mode:schedule') return <SchedulePanel />;
   if (destination === 'mode:approval') {
+    if (presentation === 'v2')
+      return <MailboxApprovalEntry proposalId={resolveApprovalActionTarget(surface)?.proposalId ?? null} />;
     return <ApprovalPanel selectedProposalId={resolveApprovalActionTarget(surface)?.proposalId ?? null} />;
   }
   if (destination === 'mode:recall') return <RecallFeed />;
@@ -166,7 +172,20 @@ export function WorkspaceDestinationOwnerSurface({
   if (surface.objectRef.kind === 'workspace-destination' && surface.objectRef.id === 'surface:changes') {
     const changesTarget = resolveChangesTarget(surface);
     return changesTarget ? (
-      <ChangesPanel worktreeId={changesTarget.worktreeId} basisPct={40} threadId={changesTarget.threadId} />
+      <ChangesPanel
+        worktreeId={changesTarget.worktreeId}
+        basisPct={40}
+        threadId={changesTarget.threadId}
+        onOpenFile={(path) =>
+          onOpenSurface(
+            createFileSurface({
+              worktreeId: changesTarget.worktreeId,
+              path,
+              navigationOrigin: { kind: 'workspace-changes', ...changesTarget },
+            }),
+          )
+        }
+      />
     ) : (
       <OwnerUnavailable message="Changes descriptor 没有合法的 F063 worktree owner/result target。" />
     );

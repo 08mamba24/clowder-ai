@@ -11,6 +11,16 @@ import { JsxPreview } from './JsxPreview';
 import type { MarkdownSelectionAction } from './useMarkdownSelectionAction';
 import type { WorkspaceFileSave } from './workspace-file-draft';
 
+function scrollMarkdownToSourceLine(container: HTMLDivElement | null, isActive: boolean, line: number | null): void {
+  if (!container || !isActive || !line || line < 1) return;
+
+  const exactTarget = container.querySelector<HTMLElement>(`[data-workspace-link-line="${line}"]`);
+  const sourceLines = [...container.querySelectorAll<HTMLElement>('[data-source-line]')];
+  const target =
+    exactTarget ?? sourceLines.filter((node) => Number(node.dataset.sourceLine) <= line).at(-1) ?? sourceLines[0];
+  target?.scrollIntoView({ block: 'center', behavior: 'auto' });
+}
+
 export interface FileContentRendererProps {
   file: FileData;
   openFilePath: string | null;
@@ -26,7 +36,7 @@ export interface FileContentRendererProps {
   currentWorktree?: WorktreeEntry;
   mdContainerRef: React.RefObject<HTMLDivElement>;
   mdSelectionAction: MarkdownSelectionAction | null;
-  onMdAddToChat: (action: MarkdownSelectionAction, comment: string) => void;
+  onMdAddToChat: (action: MarkdownSelectionAction, comment: string) => void | boolean;
   onSave: WorkspaceFileSave;
   onDirtyChange?: (dirty: boolean) => void;
   rawUrl: (p: string) => string;
@@ -134,6 +144,11 @@ export function FileContentRenderer({
       onScrollTopChangeRef.current(el.scrollTop);
     }
   }, [restoreKey, onScrollTopChange, mdActive, mdContainerRef]);
+
+  useEffect(() => {
+    scrollMarkdownToSourceLine(mdContainerRef.current, mdActive, scrollToLine);
+  }, [mdActive, mdContainerRef, scrollToLine]);
+
   if (file.binary) {
     if (file.mime.startsWith('image/'))
       return (

@@ -1,5 +1,6 @@
 function toPublishedWindowReply(reply, companionContract = '0.1.0-beta.21') {
-  if (reply.kind !== 'state' || ['0.1.0-beta.23', '0.1.0-beta.24'].includes(companionContract)) return reply;
+  if (reply.kind !== 'state' || ['0.1.0-beta.23', '0.1.0-beta.24', '0.1.0-beta.25'].includes(companionContract))
+    return reply;
   const { behaviorEnabled: _nativePolicy, ...publicState } = reply;
   return publicState;
 }
@@ -17,7 +18,7 @@ function validateLaunch(input) {
   if (
     input.companionContract !== undefined &&
     (input.publicCompanionV2 !== true ||
-      !['0.1.0-beta.21', '0.1.0-beta.23', '0.1.0-beta.24'].includes(input.companionContract))
+      !['0.1.0-beta.21', '0.1.0-beta.23', '0.1.0-beta.24', '0.1.0-beta.25'].includes(input.companionContract))
   )
     throw new Error('Invalid companion contract');
   const url = new URL(input.url);

@@ -89,7 +89,7 @@ describe('ChatInput context picker', () => {
     expect(addButton).not.toBeNull();
 
     act(() => addButton?.click());
-    const contextAction = container.querySelector<HTMLButtonElement>('[data-testid="composer-add-context"]');
+    const contextAction = document.querySelector<HTMLButtonElement>('[data-testid="composer-add-context"]');
     expect(contextAction).not.toBeNull();
     act(() => contextAction?.click());
   }
@@ -102,7 +102,7 @@ describe('ChatInput context picker', () => {
 
     act(() => container.querySelector<HTMLButtonElement>('button[aria-label="添加"]')?.click());
 
-    const menu = container.querySelector('[data-testid="composer-add-menu"]');
+    const menu = document.querySelector('[data-testid="composer-add-menu"]');
     expect(menu).not.toBeNull();
     expect(menu?.textContent).toContain('引用 Thread 或文件');
     expect(menu?.textContent).toContain('上传附件');

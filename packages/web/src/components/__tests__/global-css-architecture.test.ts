@@ -55,4 +55,13 @@ describe('global css architecture', () => {
       expect(layoutSource).toContain(`/vendor/app/${sheet}`);
     }
   });
+
+  it('lets the new-conversation composer overlap its artwork without an opaque host rectangle', () => {
+    const shellCss = readFileSync(resolve(appDir, 'shell-v2.css'), 'utf8');
+    const landingComposerRule = shellCss.match(
+      /\[data-testid="new-conversation-page"\][^{]*div:has\(> \[data-testid="chat-input-composer-row"\]\)\s*\{([^}]*)\}/u,
+    );
+
+    expect(landingComposerRule?.[1]).toContain('background: transparent');
+  });
 });

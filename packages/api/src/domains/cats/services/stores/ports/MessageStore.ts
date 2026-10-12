@@ -38,6 +38,8 @@ import { normalizeJsonUnicode } from '../../../../../utils/json-unicode.js';
 import type { MessageMetadata } from '../../types.js';
 import { cursorFor, parseCursor } from '../cursor.js';
 import type { MessageDeliveryBoundary } from '../message-delivery-boundary.js';
+import { notifyMessageTimelineChange } from '../notify-message-timeline-change.js';
+import { type QueueSourceMutationWatch, QueueSourceMutationWatchRegistry } from '../queue-source-mutation-watch.js';
 import {
   getTimelineOrderTime,
   isDurableOwnerReadEvidence,
@@ -48,6 +50,7 @@ import {
   resolveThreadMessageVisibility,
 } from '../visibility.js';
 import {
+  assertCollectivePublicReplyBindings,
   assertQueueCustodyMessageBinding,
   assertQueueCustodyTransition,
   cloneQueueCustodyAdmissionIntent,
@@ -107,6 +110,10 @@ export interface ThreadMessageReadOptions {
   includeExposedQueuedUserMessagesForCatId?: CatId;
   /** Include only owner-visible, content-free tombstones whose body had a proven exposure before recall. */
   includeRecalledUserMessages?: boolean;
+  /** Filter before applying the limit: only this viewer's visible queued/recalled owner inputs. */
+  onlyUnpositionedOwnerMessages?: boolean;
+  /** Earlier recall events cannot supersede this server-stamped owner input. Queued rows remain conservative. */
+  ownerUncertaintySinceMs?: number;
   /**
    * Policy for an explicitly supplied v1 cursor whose message hash and
    * visibility-index member are both gone, or for a malformed persisted token.
@@ -189,6 +196,11 @@ export interface ThreadUnreadMessageProjection {
   hasUserMention: boolean;
 }
 
+/** Content-free timeline positions, including non-replies so reply pagination keeps its original frontier. */
+export type ThreadReplyProjection = Pick<StoredMessage, 'id' | 'catId' | 'timestamp' | 'timelineOrderAt'> & {
+  extra?: Pick<NonNullable<StoredMessage['extra']>, 'stream' | 'isExplicitPost'>;
+};
+
 /**
  * A tool event recorded during agent invocation (tool_use / tool_result).
  * Persisted alongside the assistant message so history reload can display them.
@@ -205,6 +217,8 @@ export interface ThreadUnreadMessageProjection {
  */
 export interface StoredToolEvent {
   id: string;
+  /** Real child execution that produced this event, including auxiliary executions. */
+  executionRef?: string;
   type: 'tool_use' | 'tool_result';
   label: string;
   detail?: string;
@@ -256,8 +270,12 @@ export interface StoredMessage {
   metadata?: MessageMetadata;
   /** F022+F052+F098-C1+F153-F: Extensible extra data (rich blocks, stream metadata, cross-post origin, explicit targets, tracing pointers) */
   extra?: {
+    /** Optional references into this message's one normalized full body. */
+    outputLayout?: import('@cat-cafe/shared').MessageOutputLayoutV1;
     /** F309: a confirmed human request; technical coordinates resolve through the request ref. */
     contentModificationRequestV1?: import('@cat-cafe/shared').ContentModificationSourceMessageV1;
+    /** F309: immutable Host projection of one candidate or disposition event. */
+    contentModificationReceiptV1?: import('@cat-cafe/shared').ContentModificationReceiptV1;
     /** F317: Host-persisted typed input or provider-committed speech/result. Never a task grant. */
     liveCompanion?: {
       callId: string;
@@ -355,6 +373,8 @@ export interface StoredMessage {
       coordinationKey: 'minted-active-root' | 'minted-terminal-root' | 'action-active-root';
     };
     targetCats?: string[];
+    /** F293: delivered notification recipients that intentionally received no invocation. */
+    notificationDelivery?: { withoutWakeCatIds: CatId[] };
     /** F294: refs-only durable carrier; target message id remains the Bundle identity. */
     messageBundle?: MessageBundleCarrierV1;
     /** F292: Host-authored provenance for a data-only meeting artifact queued to a cat. */
@@ -417,7 +437,7 @@ export interface StoredMessage {
     };
     scheduler?: SchedulerMessageExtra['scheduler'];
     tracing?: { traceId: string; spanId: string; parentSpanId?: string };
-    systemKind?: 'a2a_routing' | 'context_briefing';
+    systemKind?: 'a2a_routing' | 'context_briefing' | 'content_modification_receipt';
     /** Durable protocol receipt retained for the same live/history presentation. */
     systemInfo?: { v: 1; payload: Record<string, unknown>; fallbackCatId?: string };
     a2aRouting?: { fromCatId?: string; targetCatId?: string; invocationId?: string };
@@ -620,6 +640,10 @@ export type QueueCustodyInitializeResult =
   | { kind: 'not_found' }
   | { kind: 'not_queued' };
 
+export type QueueCustodyAdmissionResult =
+  | { kind: 'initialized' | 'existing'; message: StoredMessage }
+  | { kind: 'not_found' | 'conflict' };
+
 export type QueueCustodyAdmissionInitializeResult =
   | { kind: 'initialized' | 'existing'; message: StoredMessage }
   | { kind: 'not_found' | 'not_queued' | 'conflict' };
@@ -645,6 +669,17 @@ export interface BoundedThreadMessagePage {
   storageRoundTrips: number;
   exhausted: boolean;
   nextCursor?: { timestamp: number; id: string };
+}
+
+/**
+ * One raw-bounded backwards page over an owner's timeline index.
+ * `oldestTimelineGroupComplete` proves whether every index member sharing the
+ * oldest scanned score is present in this page or an earlier page. Consumers
+ * that need a canonical timestamp tie-break must not publish that group until
+ * this flag is true.
+ */
+export interface BoundedOwnerMessagePage extends BoundedThreadMessagePage {
+  oldestTimelineGroupComplete: boolean;
 }
 
 /** Canonical F288 payload stored independently from host-owned extra metadata. */
@@ -982,6 +1017,8 @@ export function applyStreamMetadataAugment(msg: StoredMessage, patch: StreamMeta
 export interface IMessageStore {
   /** F102 KD-34: Listener called after every successful append (fire-and-forget) */
   onAppend?: MessageAppendListener;
+  /** Successful delivery/cancel/recall CAS invalidates derived timeline accounting. */
+  onTimelineChanged?: MessageAppendListener;
   append(msg: AppendMessageInput): StoredMessage | Promise<StoredMessage>;
   /** Atomically append or return the durable idempotency winner with an explicit outcome. */
   appendIdempotent(msg: AppendMessageInput): IdempotentAppendResult | Promise<IdempotentAppendResult>;
@@ -1004,6 +1041,8 @@ export interface IMessageStore {
   ): ThreadObservedAppendResult | Promise<ThreadObservedAppendResult>;
   /** Get a single message by its ID. Returns null if not found. */
   getById(id: string): StoredMessage | null | Promise<StoredMessage | null>;
+  /** Fence an async source read against concurrent lifecycle/custody mutations before Queue publication. */
+  watchQueueSourceMutations(messageIds: readonly string[]): QueueSourceMutationWatch;
   /**
    * F278 source-only read path. Redis implementations may batch a narrow field
    * projection; all requested ids must receive an available/unavailable outcome.
@@ -1077,13 +1116,33 @@ export interface IMessageStore {
     limit?: number,
     userId?: string,
     beforeId?: string,
+    options?: Pick<ThreadMessageReadOptions, 'includeQueuedCatMessages'>,
   ): StoredMessage[] | Promise<StoredMessage[]>;
+  /**
+   * Read at most `min(limit, scanLimit)` raw entries from one owner's index.
+   * Unlike getBefore(), invisible rows never trigger an unbounded refill.
+   */
+  getOwnerBeforeBounded(
+    ownerUserId: string,
+    timestamp: number,
+    limit: number,
+    beforeId: string | undefined,
+    scanLimit: number,
+    options?: Pick<ThreadMessageReadOptions, 'includeQueuedCatMessages'>,
+  ): BoundedOwnerMessagePage | Promise<BoundedOwnerMessagePage>;
   getByThread(
     threadId: string,
     limit?: number,
     userId?: string,
     options?: ThreadMessageReadOptions,
   ): StoredMessage[] | Promise<StoredMessage[]>;
+  /** Storage-native reply metadata with the default owner/thread publication and deletion rules. */
+  getThreadReplyProjection?(
+    threadId: string,
+    userId: string,
+    limit?: number,
+    before?: { timestamp: number; messageId: string },
+  ): ThreadReplyProjection[] | Promise<ThreadReplyProjection[]>;
   getByThreadAfter(
     threadId: string,
     afterId?: string,
@@ -1159,6 +1218,11 @@ export interface IMessageStore {
   markDelivered(id: string, deliveredAt: number): MarkDeliveredResult | null | Promise<MarkDeliveredResult | null>;
   /** Recover one exact legacy-visible carrier into queued state before custody initialization. */
   prepareQueueAdmission(id: string): QueueAdmissionPrepareResult | Promise<QueueAdmissionPrepareResult>;
+  /** Atomically classify an ordinary persisted source as queued and bind its exact Queue custody. */
+  admitQueueCustody(
+    id: string,
+    custody: QueuedMessageCustody,
+  ): QueueCustodyAdmissionResult | Promise<QueueCustodyAdmissionResult>;
   /** Persist the complete fan-out recovery intent before staging any process-local Queue carrier. */
   initializeQueueCustodyAdmission(
     id: string,
@@ -1314,7 +1378,9 @@ function isRecallableOwnerMessage(message: StoredMessage): boolean {
 }
 
 export class MessageStore {
+  onTimelineChanged?: MessageAppendListener;
   private messages: StoredMessage[] = [];
+  private readonly queueSourceMutationWatches = new QueueSourceMutationWatchRegistry();
 
   scanCoordinationTerminalMessageIds(cursor?: MessageScanCursor): MessageIdScanPage {
     const offset = cursor?.offset ?? 0;
@@ -1345,6 +1411,19 @@ export class MessageStore {
   private readonly visibilitySeq = new Map<string, number>();
   /** F264 Gap F: persistent-by-contract in-memory mirror (no TTL or eviction). */
   private readonly ownerComposerDrafts = new Map<string, OwnerComposerDraft>();
+
+  watchQueueSourceMutations(messageIds: readonly string[]): QueueSourceMutationWatch {
+    return this.queueSourceMutationWatches.watch(messageIds);
+  }
+
+  private withQueueSourceMutation<T>(messageId: string, mutation: () => T): T {
+    const finish = this.queueSourceMutationWatches.beginMutation(messageId);
+    try {
+      return mutation();
+    } finally {
+      finish();
+    }
+  }
 
   constructor(options?: {
     maxMessages?: number;
@@ -1599,44 +1678,47 @@ export class MessageStore {
     id: string,
     input: RecallMessageToComposerDraftInput,
   ): RecallMessageToComposerDraftResult {
-    assertValidStoredMessageTimestamp(input.recalledAt);
-    const msg = this.messages.find((message) => message.id === id);
-    if (!msg) return { kind: 'not_found' };
-    if (msg.userId !== input.ownerUserId || msg.threadId !== input.threadId) return { kind: 'unauthorized' };
-    if (msg.recall) return { kind: 'already_recalled', message: structuredClone(msg) };
-    if (!isRecallableOwnerMessage(msg)) return { kind: 'not_recallable' };
+    return this.withQueueSourceMutation(id, () => {
+      assertValidStoredMessageTimestamp(input.recalledAt);
+      const msg = this.messages.find((message) => message.id === id);
+      if (!msg) return { kind: 'not_found' };
+      if (msg.userId !== input.ownerUserId || msg.threadId !== input.threadId) return { kind: 'unauthorized' };
+      if (msg.recall) return { kind: 'already_recalled', message: structuredClone(msg) };
+      if (!isRecallableOwnerMessage(msg)) return { kind: 'not_recallable' };
 
-    const draftKey = this.ownerComposerDraftKey(input.ownerUserId, input.threadId);
-    const existingDraft = this.ownerComposerDrafts.get(draftKey);
-    const actualDraftRevision = existingDraft?.revision ?? 0;
-    if (actualDraftRevision !== input.expectedDraftRevision) {
-      return { kind: 'draft_revision_mismatch', actualRevision: actualDraftRevision };
-    }
+      const draftKey = this.ownerComposerDraftKey(input.ownerUserId, input.threadId);
+      const existingDraft = this.ownerComposerDrafts.get(draftKey);
+      const actualDraftRevision = existingDraft?.revision ?? 0;
+      if (actualDraftRevision !== input.expectedDraftRevision) {
+        return { kind: 'draft_revision_mismatch', actualRevision: actualDraftRevision };
+      }
 
-    const projection = buildRecallDraft(msg, input, existingDraft, actualDraftRevision);
+      const projection = buildRecallDraft(msg, input, existingDraft, actualDraftRevision);
 
-    const custody = msg.queueCustody;
-    const exactExposures = custody?.bodyExposures ? structuredClone(custody.bodyExposures) : [];
-    const wasExposed = exactExposures.length > 0 || (custody?.seenByCatIds.length ?? 0) > 0;
-    if (custody) {
-      msg.queueCustody = terminalizeRecalledQueueCustody(custody, input.recalledAt);
-    }
-    redactRecalledMessage(msg, {
-      version: 1,
-      exposure: wasExposed ? 'seen' : 'none',
-      recalledAt: input.recalledAt,
-      ...(exactExposures.length > 0 ? { exposures: exactExposures } : {}),
+      const custody = msg.queueCustody;
+      const exactExposures = custody?.bodyExposures ? structuredClone(custody.bodyExposures) : [];
+      const wasExposed = exactExposures.length > 0 || (custody?.seenByCatIds.length ?? 0) > 0;
+      if (custody) {
+        msg.queueCustody = terminalizeRecalledQueueCustody(custody, input.recalledAt);
+      }
+      redactRecalledMessage(msg, {
+        version: 1,
+        exposure: wasExposed ? 'seen' : 'none',
+        recalledAt: input.recalledAt,
+        ...(exactExposures.length > 0 ? { exposures: exactExposures } : {}),
+      });
+      if (!wasExposed) this.visibilitySeq.delete(id);
+      this.ownerComposerDrafts.set(draftKey, projection.draft);
+      notifyMessageTimelineChange(this, msg);
+
+      return {
+        kind: 'recalled',
+        verdict: wasExposed ? 'exposed' : 'zero_exposure',
+        message: structuredClone(msg),
+        draft: structuredClone(projection.draft),
+        insertedRange: projection.insertedRange,
+      };
     });
-    if (!wasExposed) this.visibilitySeq.delete(id);
-    this.ownerComposerDrafts.set(draftKey, projection.draft);
-
-    return {
-      kind: 'recalled',
-      verdict: wasExposed ? 'exposed' : 'zero_exposure',
-      message: structuredClone(msg),
-      draft: structuredClone(projection.draft),
-      insertedRange: projection.insertedRange,
-    };
   }
 
   /**
@@ -1779,15 +1861,22 @@ export class MessageStore {
    * with id >= beforeId (composite cursor to handle same-millisecond messages).
    * Returns messages in chronological order (oldest first).
    */
-  getBefore(timestamp: number, limit?: number, userId?: string, beforeId?: string): StoredMessage[] {
+  getBefore(
+    timestamp: number,
+    limit?: number,
+    userId?: string,
+    beforeId?: string,
+    options?: Pick<ThreadMessageReadOptions, 'includeQueuedCatMessages'>,
+  ): StoredMessage[] {
     const n = limit ?? DEFAULT_LIMIT;
     const matches: StoredMessage[] = [];
+    const isVisible = options?.includeQueuedCatMessages ? isTimelinePublishedFn : isDelivered;
 
     // Walk backwards from most recent, collecting messages before the cursor
     for (let i = this.messages.length - 1; i >= 0 && matches.length < n; i--) {
       const msg = this.messages[i]!;
       if (msg.deletedAt) continue;
-      if (!isDelivered(msg)) continue; // F117: exclude queued/canceled
+      if (!isVisible(msg)) continue; // Default delivery readers still exclude queued/canceled.
       if (msg.timestamp > timestamp) continue;
       if (msg.timestamp === timestamp) {
         // Same timestamp: use id as tiebreaker (skip if id >= beforeId)
@@ -1799,6 +1888,50 @@ export class MessageStore {
 
     // Reverse so oldest first
     return matches.reverse();
+  }
+
+  getOwnerBeforeBounded(
+    ownerUserId: string,
+    timestamp: number,
+    limit: number,
+    beforeId: string | undefined,
+    scanLimit: number,
+    options?: Pick<ThreadMessageReadOptions, 'includeQueuedCatMessages'>,
+  ): BoundedOwnerMessagePage {
+    const rawLimit = Math.min(Math.max(0, Math.floor(limit)), Math.max(0, Math.floor(scanLimit)));
+    const ownerIndex = this.messages
+      .filter((message) => message.userId === ownerUserId)
+      .sort((left, right) => {
+        const leftTimestamp = getTimelineOrderTime(left);
+        const rightTimestamp = getTimelineOrderTime(right);
+        return rightTimestamp - leftTimestamp || right.id.localeCompare(left.id);
+      });
+    const eligible = ownerIndex.filter((message) => {
+      const effectiveTimestamp = getTimelineOrderTime(message);
+      if (effectiveTimestamp < timestamp) return true;
+      return effectiveTimestamp === timestamp && beforeId !== undefined && message.id < beforeId;
+    });
+    const rawCandidates = eligible.slice(0, rawLimit);
+    const lookahead = eligible[rawCandidates.length];
+    const oldestCandidate = rawCandidates.at(-1);
+    const oldestTimestamp = oldestCandidate ? getTimelineOrderTime(oldestCandidate) : undefined;
+    const nextCursor =
+      oldestCandidate && oldestTimestamp !== undefined
+        ? { timestamp: oldestTimestamp, id: oldestCandidate.id }
+        : undefined;
+    const isVisible = options?.includeQueuedCatMessages ? isTimelinePublishedFn : isDelivered;
+    const messages = rawCandidates.filter((message) => !message.deletedAt && isVisible(message));
+
+    return {
+      messages: messages.reverse(),
+      scannedCount: rawCandidates.length,
+      storageRoundTrips: 0,
+      exhausted: lookahead === undefined,
+      oldestTimelineGroupComplete:
+        lookahead === undefined ||
+        (oldestTimestamp !== undefined && getTimelineOrderTime(lookahead) !== oldestTimestamp),
+      ...(nextCursor ? { nextCursor } : {}),
+    };
   }
 
   /**
@@ -2248,115 +2381,149 @@ export class MessageStore {
    * F098-D: Mark a queued message as delivered (set deliveredAt timestamp).
    */
   markDelivered(id: string, deliveredAt: number): MarkDeliveredResult | null {
-    assertValidStoredMessageTimestamp(deliveredAt);
-    const msg = this.messages.find((m) => m.id === id);
-    if (!msg) return null;
-    if (msg.deliveryStatus !== 'queued') return { ...msg, deliveryTransitioned: false }; // only transition queued → delivered
-    if (msg.queueCustodyAdmission) return { ...msg, deliveryTransitioned: false };
-    if (msg.queueCustody && msg.queueCustody.status !== 'terminal') {
-      return { ...msg, deliveryTransitioned: false };
-    }
-    msg.timelineOrderAt = resolveDeliveryTimelineScore(msg, deliveredAt);
-    msg.deliveredAt = deliveredAt;
-    msg.deliveryStatus = 'delivered';
-    // #1269: Preserve existing visibility position for already-published speech.
-    // Timeline-published queued cat speech gets visibilitySeq at append — delivery
-    // must NOT reallocate or it would move the message after later arrivals and
-    // invalidate already-issued durable cursors. Allocate only when no canonical
-    // position exists (legacy or truly hidden queued work).
-    if (!this.visibilitySeq.has(id)) {
-      this.visibilitySeqCounter = Math.max(this.visibilitySeqCounter + 1, Date.now());
-      this.visibilitySeq.set(id, this.visibilitySeqCounter);
-    }
-    return { ...msg, deliveryTransitioned: true };
+    return this.withQueueSourceMutation(id, () => {
+      assertValidStoredMessageTimestamp(deliveredAt);
+      const msg = this.messages.find((m) => m.id === id);
+      if (!msg) return null;
+      if (msg.deliveryStatus !== 'queued') return { ...msg, deliveryTransitioned: false }; // only transition queued → delivered
+      if (msg.queueCustodyAdmission) return { ...msg, deliveryTransitioned: false };
+      if (msg.queueCustody && msg.queueCustody.status !== 'terminal') {
+        return { ...msg, deliveryTransitioned: false };
+      }
+      msg.timelineOrderAt = resolveDeliveryTimelineScore(msg, deliveredAt);
+      msg.deliveredAt = deliveredAt;
+      msg.deliveryStatus = 'delivered';
+      // #1269: Preserve existing visibility position for already-published speech.
+      // Timeline-published queued cat speech gets visibilitySeq at append — delivery
+      // must NOT reallocate or it would move the message after later arrivals and
+      // invalidate already-issued durable cursors. Allocate only when no canonical
+      // position exists (legacy or truly hidden queued work).
+      if (!this.visibilitySeq.has(id)) {
+        this.visibilitySeqCounter = Math.max(this.visibilitySeqCounter + 1, Date.now());
+        this.visibilitySeq.set(id, this.visibilitySeqCounter);
+      }
+      notifyMessageTimelineChange(this, msg);
+      return { ...msg, deliveryTransitioned: true };
+    });
   }
 
   prepareQueueAdmission(id: string): QueueAdmissionPrepareResult {
-    const msg = this.messages.find((message) => message.id === id);
-    if (!msg) return { kind: 'not_found' };
-    if (msg.deliveryStatus === 'queued') return { kind: 'existing', message: { ...msg } };
-    if (msg.deliveryStatus !== undefined || msg.queueCustody) return { kind: 'conflict' };
-    msg.deliveryStatus = 'queued';
-    return { kind: 'prepared', message: { ...msg } };
+    return this.withQueueSourceMutation(id, () => {
+      const msg = this.messages.find((message) => message.id === id);
+      if (!msg) return { kind: 'not_found' };
+      if (msg.deliveryStatus === 'queued') return { kind: 'existing', message: { ...msg } };
+      if (msg.deliveryStatus !== undefined || msg.queueCustody) return { kind: 'conflict' };
+      msg.deliveryStatus = 'queued';
+      return { kind: 'prepared', message: { ...msg } };
+    });
+  }
+
+  admitQueueCustody(id: string, custody: QueuedMessageCustody): QueueCustodyAdmissionResult {
+    return this.withQueueSourceMutation(id, () => {
+      const msg = this.messages.find((message) => message.id === id);
+      if (!msg) return { kind: 'not_found' };
+      if (msg.queueCustody) {
+        return msg.deliveryStatus === 'queued' && JSON.stringify(msg.queueCustody) === JSON.stringify(custody)
+          ? { kind: 'existing', message: { ...msg } }
+          : { kind: 'conflict' };
+      }
+      if (msg.deliveryStatus !== undefined && msg.deliveryStatus !== 'queued') return { kind: 'conflict' };
+      if (msg.queueCustodyAdmission) return { kind: 'conflict' };
+      assertQueueCustodyMessageBinding({ deliveryStatus: 'queued', queueCustody: custody });
+      msg.deliveryStatus = 'queued';
+      msg.queueCustody = cloneQueuedMessageCustody(custody);
+      return { kind: 'initialized', message: { ...msg } };
+    });
   }
 
   initializeQueueCustodyAdmission(
     id: string,
     admission: QueueCustodyAdmissionIntent,
   ): QueueCustodyAdmissionInitializeResult {
-    const msg = this.messages.find((message) => message.id === id);
-    if (!msg) return { kind: 'not_found' };
-    if (msg.deliveryStatus !== 'queued') return { kind: 'not_queued' };
-    if (msg.queueCustody) return { kind: 'conflict' };
-    if (msg.queueCustodyAdmission) {
-      return queueCustodyAdmissionIntentsMatch(msg.queueCustodyAdmission, admission)
-        ? { kind: 'existing', message: { ...msg } }
-        : { kind: 'conflict' };
-    }
-    assertQueueCustodyMessageBinding({ deliveryStatus: msg.deliveryStatus, queueCustodyAdmission: admission });
-    msg.queueCustodyAdmission = cloneQueueCustodyAdmissionIntent(admission);
-    return { kind: 'initialized', message: { ...msg } };
+    return this.withQueueSourceMutation(id, () => {
+      const msg = this.messages.find((message) => message.id === id);
+      if (!msg) return { kind: 'not_found' };
+      if (msg.deliveryStatus !== 'queued') return { kind: 'not_queued' };
+      if (msg.queueCustody) return { kind: 'conflict' };
+      if (msg.queueCustodyAdmission) {
+        return queueCustodyAdmissionIntentsMatch(msg.queueCustodyAdmission, admission)
+          ? { kind: 'existing', message: { ...msg } }
+          : { kind: 'conflict' };
+      }
+      assertQueueCustodyMessageBinding({ deliveryStatus: msg.deliveryStatus, queueCustodyAdmission: admission });
+      msg.queueCustodyAdmission = cloneQueueCustodyAdmissionIntent(admission);
+      return { kind: 'initialized', message: { ...msg } };
+    });
   }
 
   initializeQueueCustody(id: string, custody: QueuedMessageCustody): QueueCustodyInitializeResult {
-    const msg = this.messages.find((message) => message.id === id);
-    if (!msg) return { kind: 'not_found' };
-    if (msg.queueCustody) return { kind: 'existing', message: { ...msg } };
-    if (msg.deliveryStatus !== 'queued') return { kind: 'not_queued' };
-    assertQueueCustodyMessageBinding({ deliveryStatus: msg.deliveryStatus, queueCustody: custody });
-    msg.queueCustody = cloneQueuedMessageCustody(custody);
-    delete msg.queueCustodyAdmission;
-    return { kind: 'initialized', message: { ...msg } };
+    return this.withQueueSourceMutation(id, () => {
+      const msg = this.messages.find((message) => message.id === id);
+      if (!msg) return { kind: 'not_found' };
+      if (msg.queueCustody) return { kind: 'existing', message: { ...msg } };
+      if (msg.deliveryStatus !== 'queued') return { kind: 'not_queued' };
+      assertQueueCustodyMessageBinding({ deliveryStatus: msg.deliveryStatus, queueCustody: custody });
+      msg.queueCustody = cloneQueuedMessageCustody(custody);
+      delete msg.queueCustodyAdmission;
+      return { kind: 'initialized', message: { ...msg } };
+    });
   }
 
   transitionQueueCustody(id: string, input: QueueCustodyTransitionInput): QueueCustodyTransitionResult {
-    if (input.deliveredAt !== undefined) assertValidStoredMessageTimestamp(input.deliveredAt);
-    const msg = this.messages.find((message) => message.id === id);
-    if (!msg?.queueCustody) return { kind: 'not_found' };
-    if (msg.queueCustody.revision !== input.expectedRevision) {
-      return { kind: 'revision_mismatch', actualRevision: msg.queueCustody.revision };
-    }
-    const isExposedRecallSettlement =
-      msg.deliveryStatus === 'canceled' &&
-      msg.recall?.exposure === 'seen' &&
-      msg.queueCustody.status === 'terminal' &&
-      input.next.status === 'terminal' &&
-      input.deliveredAt === undefined;
-    if (msg.deliveryStatus !== 'queued' && !isExposedRecallSettlement) {
-      throw new Error('queue custody transition requires a queued message or exposed recall tombstone');
-    }
-    if (input.replacement && input.replacement.sourceMessageId !== id) {
-      throw new Error('queue custody replacement proof source message mismatch');
-    }
-    assertQueueCustodyTransition(msg.queueCustody, input);
-    assertTypedWaitCustodyBindings(msg, input.next, input.waitContinuationGuards);
-    assertMemoryTypedWaitCustody(input.waitContinuationGuards);
-    msg.queueCustody = cloneQueuedMessageCustody(input.next);
-    if (input.deliveredAt !== undefined) {
-      msg.timelineOrderAt = resolveDeliveryTimelineScore(msg, input.deliveredAt);
-      msg.deliveryStatus = 'delivered';
-      msg.deliveredAt = input.deliveredAt;
-      // #1269 P1-2: allocate visibilitySeq when hidden queued work becomes visible.
-      // Same guard as markDelivered: preserve existing position, allocate only when missing.
-      if (!this.visibilitySeq.has(id)) {
-        this.visibilitySeqCounter = Math.max(this.visibilitySeqCounter + 1, Date.now());
-        this.visibilitySeq.set(id, this.visibilitySeqCounter);
+    return this.withQueueSourceMutation(id, () => {
+      if (input.deliveredAt !== undefined) assertValidStoredMessageTimestamp(input.deliveredAt);
+      const msg = this.messages.find((message) => message.id === id);
+      if (!msg?.queueCustody) return { kind: 'not_found' };
+      if (msg.queueCustody.revision !== input.expectedRevision) {
+        return { kind: 'revision_mismatch', actualRevision: msg.queueCustody.revision };
       }
-    }
-    return { kind: 'updated', message: { ...msg }, deliveryTransitioned: input.deliveredAt !== undefined };
+      const isExposedRecallSettlement =
+        msg.deliveryStatus === 'canceled' &&
+        msg.recall?.exposure === 'seen' &&
+        msg.queueCustody.status === 'terminal' &&
+        input.next.status === 'terminal' &&
+        input.deliveredAt === undefined;
+      if (msg.deliveryStatus !== 'queued' && !isExposedRecallSettlement) {
+        throw new Error('queue custody transition requires a queued message or exposed recall tombstone');
+      }
+      if (input.replacement && input.replacement.sourceMessageId !== id) {
+        throw new Error('queue custody replacement proof source message mismatch');
+      }
+      assertQueueCustodyTransition(msg.queueCustody, input);
+      assertCollectivePublicReplyBindings(msg, input.next);
+      assertTypedWaitCustodyBindings(msg, input.next, input.waitContinuationGuards);
+      assertMemoryTypedWaitCustody(input.waitContinuationGuards);
+      msg.queueCustody = cloneQueuedMessageCustody(input.next);
+      if (input.deliveredAt !== undefined) {
+        msg.timelineOrderAt = resolveDeliveryTimelineScore(msg, input.deliveredAt);
+        msg.deliveryStatus = 'delivered';
+        msg.deliveredAt = input.deliveredAt;
+        // #1269 P1-2: allocate visibilitySeq when hidden queued work becomes visible.
+        // Same guard as markDelivered: preserve existing position, allocate only when missing.
+        if (!this.visibilitySeq.has(id)) {
+          this.visibilitySeqCounter = Math.max(this.visibilitySeqCounter + 1, Date.now());
+          this.visibilitySeq.set(id, this.visibilitySeqCounter);
+        }
+      }
+      if (input.deliveredAt !== undefined) notifyMessageTimelineChange(this, msg);
+      return { kind: 'updated', message: { ...msg }, deliveryTransitioned: input.deliveredAt !== undefined };
+    });
   }
 
   /** F117: CAS transition queued → canceled; non-queued messages return an applied=false receipt. */
   markCanceled(id: string): MarkCanceledResult | null {
-    const msg = this.messages.find((m) => m.id === id);
-    if (!msg) return null;
-    if (msg.deliveryStatus !== 'queued') return { ...msg, deliveryTransitioned: false };
-    msg.deliveryStatus = 'canceled';
-    // #1200: Remove from visibility index if present (backfill parity with Redis CANCEL_WITH_VISIBILITY_LUA)
-    this.visibilitySeq.delete(id);
-    delete msg.queueCustody;
-    delete msg.queueCustodyAdmission;
-    return { ...msg, deliveryTransitioned: true };
+    return this.withQueueSourceMutation(id, () => {
+      const msg = this.messages.find((m) => m.id === id);
+      if (!msg) return null;
+      if (msg.deliveryStatus !== 'queued') return { ...msg, deliveryTransitioned: false };
+      msg.deliveryStatus = 'canceled';
+      // #1200: Remove from visibility index if present (backfill parity with Redis CANCEL_WITH_VISIBILITY_LUA)
+      this.visibilitySeq.delete(id);
+      delete msg.queueCustody;
+      delete msg.queueCustodyAdmission;
+      notifyMessageTimelineChange(this, msg);
+      return { ...msg, deliveryTransitioned: true };
+    });
   }
 
   // #697: scanByDeliveryStatus intentionally NOT implemented for in-memory store.
@@ -2416,6 +2583,7 @@ export async function hydrateReplyPreview(store: IMessageStore, replyToId: strin
   if (parent.deletedAt || parent._tombstone) {
     return { senderCatId: parent.catId, content: '', deleted: true };
   }
+  if (parent.recall) return { senderCatId: parent.catId, content: '原话已撤回' };
 
   const truncated =
     parent.content.length > PREVIEW_MAX_LENGTH ? parent.content.slice(0, PREVIEW_MAX_LENGTH) : parent.content;

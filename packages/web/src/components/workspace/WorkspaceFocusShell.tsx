@@ -2,20 +2,39 @@
 
 import type { ReactNode } from 'react';
 import { useEffect } from 'react';
+import { useShellPresentation } from '../shell/shell-presentation';
+import { V2WorkspaceFocusControls } from './V2WorkspaceFocusControls';
 
 interface WorkspaceFocusShellProps {
   children?: ReactNode;
   onExit: () => void;
 }
 
-export function WorkspaceFocusExitButton({ onExit }: { onExit: () => void }) {
+export function WorkspaceFocusExitButton({
+  onExit,
+  onFullWindow,
+  fullWindow = false,
+}: {
+  onExit: () => void;
+  onFullWindow?: () => void;
+  fullWindow?: boolean;
+}) {
+  const isV2 = useShellPresentation() === 'v2';
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onExit();
+      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
+      if (fullWindow && onFullWindow) {
+        e.preventDefault();
+        onFullWindow();
+      } else {
+        onExit();
+      }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onExit]);
+  }, [fullWindow, onExit, onFullWindow]);
+
+  if (isV2) return <V2WorkspaceFocusControls onExit={onExit} onFullWindow={onFullWindow} fullWindow={fullWindow} />;
 
   return (
     <button

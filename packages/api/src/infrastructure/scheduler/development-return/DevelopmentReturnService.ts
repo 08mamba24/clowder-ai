@@ -3,6 +3,7 @@ import {
   type DevelopmentReturnActionV1,
   type DevelopmentReturnRegistrationV1,
 } from '@cat-cafe/shared';
+import type { ActionSuccessorLeaseStore } from '../../../domains/ball-custody/ActionSuccessorLeaseStore.js';
 import type { PersistedQueueDeliveryPort } from '../../../domains/cats/services/agents/invocation/PersistedQueueDelivery.js';
 import type { OwnerAuthProvenance } from '../../../domains/cats/services/owner-auth-provenance.js';
 import type { DevelopmentWorkActor } from '../../../domains/cats/services/stores/ports/DevelopmentWorkTransition.js';
@@ -20,9 +21,13 @@ import type { DynamicTaskStore } from '../DynamicTaskStore.js';
 import type { TaskRunnerV2 } from '../TaskRunnerV2.js';
 import { createDevelopmentReturnTemplate } from '../templates/development-return.js';
 import type { ExecuteContext } from '../types.js';
-import { developmentReturnCurrentRevision, prepareDevelopmentReturn } from './DevelopmentReturnAuthority.js';
+import {
+  developmentReturnCurrentRevision,
+  prepareDevelopmentReturn,
+  resolveDevelopmentReturnFreshness,
+} from './DevelopmentReturnAuthority.js';
 import { publishDevelopmentReturnRetirement } from './DevelopmentReturnRetirement.js';
-import { sameDevelopmentReturnSource } from './DevelopmentReturnSource.js';
+import { parseDevelopmentReturnActionLeaseRef, sameDevelopmentReturnSource } from './DevelopmentReturnSource.js';
 
 export interface DevelopmentReturnDeps {
   emit: (ownerUserId: string, event: string, data: unknown) => void;
@@ -34,9 +39,12 @@ export interface DevelopmentReturnDeps {
   proposals: Pick<IProposalStore, 'get'>;
   messages: Pick<IMessageStore, 'getById' | 'append'>;
   readReviewProvenance?: (query: RecordedReviewQuery) => Promise<RecordedReviewProof | null>;
+  /** Exact returned generation used by sequential same-child reporter recovery. */
+  actionSuccessors?: Pick<ActionSuccessorLeaseStore, 'get'>;
   now?: () => number;
 }
 type Registration = DevelopmentReturnRegistrationV1;
+type DeliveryFreshnessClaim = { kind: 'current'; revision: number } | { kind: 'terminal'; state: Registration | null };
 export class DevelopmentReturnService {
   readonly template = createDevelopmentReturnTemplate(this);
   constructor(readonly deps: DevelopmentReturnDeps) {}
@@ -53,7 +61,7 @@ export class DevelopmentReturnService {
     proof: OwnerAuthProvenance,
   ): Promise<Registration> {
     const now = this.now();
-    const { registration, reviewedSource } = await prepareDevelopmentReturn(this.deps, actor, input, now);
+    const { registration, returnStorage } = await prepareDevelopmentReturn(this.deps, actor, input, now);
     const id = registration.registrationId;
     const old = this.read(id);
     if (old) {
@@ -77,7 +85,7 @@ export class DevelopmentReturnService {
       },
       proof,
       registration,
-      reviewedSource,
+      returnStorage,
     );
     this.ensureScheduled(id);
     return registration;
@@ -127,6 +135,12 @@ export class DevelopmentReturnService {
       !state.reporterCatIds.includes(actor.catId)
     )
       throw new Error('Return registration is unavailable here');
+    if (
+      parseDevelopmentReturnActionLeaseRef(state.sourceActionRef) &&
+      (await developmentReturnCurrentRevision(this.deps, state)) === null
+    ) {
+      throw new Error('Return reporter authority is no longer current');
+    }
     const message = await this.deps.messages.getById(report.sourceMessageId);
     if (
       !message ||
@@ -177,19 +191,36 @@ export class DevelopmentReturnService {
     });
   }
 
+  private async claimDeliveryFreshness(id: string, state: Registration): Promise<DeliveryFreshnessClaim> {
+    const freshness = await resolveDevelopmentReturnFreshness(this.deps, state);
+    if (freshness.kind === 'current') return { kind: 'current', revision: freshness.revision };
+    if (freshness.kind === 'superseded') {
+      const next = {
+        ...state,
+        status: 'retired' as const,
+        reason: 'superseded' as const,
+      };
+      this.deps.definitions.replacePrivateExecutionReturn(id, state, next);
+      return { kind: 'terminal', state: null };
+    }
+    const next = {
+      ...state,
+      status: 'delivering' as const,
+      reason: 'owner_changed' as const,
+    };
+    return {
+      kind: 'terminal',
+      state: this.deps.definitions.replacePrivateExecutionReturn(id, state, next) ? next : null,
+    };
+  }
+
   private async claimDelivery(id: string): Promise<Registration | null> {
     let state = this.read(id);
     if (!state || state.status === 'retired' || state.status === 'delivered') return null;
     if (state.status === 'delivering' && state.reason === 'owner_changed') return state;
-    const currentRevision = await developmentReturnCurrentRevision(this.deps, state);
-    if (currentRevision === null) {
-      const next = {
-        ...state,
-        status: 'delivering' as const,
-        reason: 'owner_changed' as const,
-      };
-      return this.deps.definitions.replacePrivateExecutionReturn(id, state, next) ? next : null;
-    }
+    const freshness = await this.claimDeliveryFreshness(id, state);
+    if (freshness.kind === 'terminal') return freshness.state;
+    const currentRevision = freshness.revision;
     if (state.status !== 'delivering') {
       if (state.status === 'waiting' && this.now() < state.slaUntil) return null;
       const next = {

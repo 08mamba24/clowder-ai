@@ -46,6 +46,9 @@ export function resolveWorkspaceReviewVisualMarks(
 ): WorkspaceContentVisualMarkResolution[] {
   return (review.visualMarks ?? []).map((mark) => ({
     markId: mark.drawing.id,
-    status: source && source.kind !== 'text' && mark.baseRevision === source.revision ? 'attached' : 'orphaned',
+    status:
+      source && source.kind !== 'text' && source.kind !== 'video-project' && mark.baseRevision === source.revision
+        ? 'attached'
+        : 'orphaned',
   }));
 }

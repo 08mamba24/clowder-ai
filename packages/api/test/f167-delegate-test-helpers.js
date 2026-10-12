@@ -29,7 +29,7 @@ export const DEV_SCOPE = {
 export const APPROVED_DELEGATE = {
   catId: CHILD_CAT,
   threadId: CHILD_THREAD,
-  evidenceRef: `proposal:prop-f322-child:approved:thread:${CHILD_THREAD}`,
+  evidenceRef: `proposal:prop-f322-child:approved:thread:${CHILD_THREAD}:cat:${CHILD_CAT}`,
 };
 
 // ── simple helpers ──

@@ -25,6 +25,7 @@ export async function cancellationFixture(t: TestContext) {
   const fileStore = new WorkspaceContentReviewStore(join(root, 'files.sqlite'));
   const files = new WorkspaceContentReviewService({ store: fileStore, source });
   const errors: unknown[] = [];
+  const receiptEvents: { ownerUserId: string; threadId: string; messageId: string }[] = [];
   const integration = createContentModificationIntegration({
     dataDir: root,
     source,
@@ -34,7 +35,9 @@ export async function cancellationFixture(t: TestContext) {
     messages: f.messages,
     turnExecutions: f.dispatch.turns,
     queue: f.queue,
+    delivery: f.dispatch.delivery,
     changed: () => {},
+    receiptChanged: (ownerUserId, threadId, messageId) => receiptEvents.push({ ownerUserId, threadId, messageId }),
     onError: (error) => errors.push(error),
   });
   const opened = await files.prepare({
@@ -61,6 +64,7 @@ export async function cancellationFixture(t: TestContext) {
     actor = await registry.create('operator', 'codex-astra', f.thread.id);
   await registerCallbackContentModificationRoutes(app, {
     text: integration.text,
+    receipts: integration.receipts,
     requests: integration.requests,
     sourceDiscussions: integration.sourceDiscussions,
     threads: f.threads,
@@ -85,5 +89,5 @@ export async function cancellationFixture(t: TestContext) {
       headers: { 'x-invocation-id': actor.invocationId, 'x-callback-token': actor.callbackToken },
       payload: { ...options, requestId: id },
     });
-  return { ...f, integration, app, requestId, payload, cancel, catRead, root, errors };
+  return { ...f, integration, app, requestId, payload, cancel, catRead, root, errors, actor, receiptEvents };
 }

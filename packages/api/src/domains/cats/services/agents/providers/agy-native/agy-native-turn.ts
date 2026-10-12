@@ -13,7 +13,9 @@ export interface AgyNativeObservedTurn {
 
 const MAX_AGY_NATIVE_STREAM_CHARS = 8 * 1024 * 1024;
 const DECLARED_NATIVE_TOOLS = new Set<string>(AGY_NATIVE_FILE_TOOLS);
-const RECOVERABLE_NATIVE_READ_TOOLS = new Set(['view_file', 'list_dir', 'grep_search', 'find_by_name']);
+const MISSING_FILE_ERROR_PREFIX =
+  'declaring permissions: cortex tool view_file: convert tool call for permissions: model output error: ' +
+  'invalid tool call error (invalid_args) failed to read file: stat ';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -129,16 +131,16 @@ function isDeclaredTurnTool(
   return typeof server === 'string' && typeof tool === 'string' && grantedMcpTools.has(`${server}/${tool}`);
 }
 
-function isRecoveredReadError(call: AgyStreamJsonTurn['toolCalls'][number], turn: AgyStreamJsonTurn): boolean {
+/** A missing file is a read observation, not evidence that another tool repaired a failure. */
+function isMissingFileObservation(call: AgyStreamJsonTurn['toolCalls'][number]): boolean {
+  if (call.toolName !== 'view_file' || call.errorMessage === null || call.output) return false;
+  const path = call.parameters.AbsolutePath ?? call.parameters.TargetFile;
+  if (typeof path !== 'string' || !path.trim()) return false;
+  // Keep the legacy file-not-found result and the observed 1.2.14 stat failure exact.
+  // Unknown read errors, permission failures and other tools still fail closed.
   return (
-    RECOVERABLE_NATIVE_READ_TOOLS.has(call.toolName) &&
-    turn.toolCalls.some(
-      (later) =>
-        later.stepIndex > call.stepIndex &&
-        later.toolName === call.toolName &&
-        later.state === 'DONE' &&
-        later.errorMessage === null,
-    )
+    call.errorMessage === 'File not found' ||
+    call.errorMessage === `${MISSING_FILE_ERROR_PREFIX}${path}: no such file or directory`
   );
 }
 
@@ -151,10 +153,19 @@ export function projectAgyNativeTurn(
   grantedMcpTools: readonly string[] = [],
 ): AgentMessage[] {
   const { turn, transportError } = observed;
+  const readObservations = turn.toolCalls.filter(isMissingFileObservation).map((call) => ({
+    stepIndex: call.stepIndex,
+    toolName: call.toolName,
+    outcome: 'not_found' as const,
+  }));
   metadata.sessionId = observed.sessionId;
   metadata.diagnostics = {
     ...metadata.diagnostics,
-    agyNative: { upstreamStatus: turn.upstreamStatus, outcome: turn.outcome },
+    agyNative: {
+      upstreamStatus: turn.upstreamStatus,
+      outcome: turn.outcome,
+      ...(readObservations.length ? { readObservations } : {}),
+    },
   };
   if (turn.usage.totalTokens > 0) {
     metadata.usage = {
@@ -169,7 +180,7 @@ export function projectAgyNativeTurn(
   ];
   const incompleteTool = turn.toolCalls.some((call) => call.state !== 'DONE' && call.state !== 'ERROR');
   const failedTool = turn.toolCalls.find(
-    (call) => (call.state === 'ERROR' || call.errorMessage !== null) && !isRecoveredReadError(call, turn),
+    (call) => (call.state === 'ERROR' || call.errorMessage !== null) && !isMissingFileObservation(call),
   );
   const grants = new Set(grantedMcpTools);
   const unexpectedTool = turn.toolCalls.find((call) => !isDeclaredTurnTool(call, grants));

@@ -19,6 +19,7 @@ import { useArtworkViewport } from '@/components/content-review/useArtworkViewpo
 import { usePresentedVideoFrame } from '@/components/content-review/usePresentedVideoFrame';
 import { useReviewMediaSelection } from '@/components/content-review/useReviewMediaSelection';
 import { useF307ExperienceWorkbenchStore } from '@/components/workbench/experience-workbench-store';
+import { useWorkspacePreviewIntent } from '../WorkspacePreviewIntent';
 import { WorkspaceReviewMediaElement } from './WorkspaceReviewMediaElement';
 import { workspaceFrameAnchor } from './workspace-content-review-anchors';
 import { useCanvasFocus, useDiscussionVideoSeek } from './workspace-review-media-focus';
@@ -50,7 +51,9 @@ export function WorkspaceContentReviewMedia({
   draftKey,
   canMarkup = true,
   sourceError,
+  pendingChatMarks,
 }: WorkspaceReviewMediaProps) {
+  const draftStarted = useWorkspacePreviewIntent();
   const artwork = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const stage = useRef<HTMLDivElement>(null);
@@ -181,6 +184,7 @@ export function WorkspaceContentReviewMedia({
       selected={selected}
       selection={selection}
       onAnnotationActive={onAnnotationActive}
+      pendingChatMarks={pendingChatMarks}
       markup={
         mode === 'markup' && markup.canEdit
           ? {
@@ -214,7 +218,10 @@ export function WorkspaceContentReviewMedia({
                         ? '这笔正在保存，请等回执后再调整。'
                         : '一次最多保存 100 个标记；请先保存当前标注。',
                 ),
-              onDrawStart: () => setMarkupNotice(null),
+              onDrawStart: () => {
+                draftStarted?.();
+                setMarkupNotice(null);
+              },
               savedMarkIds: attachedMarks.map((mark) => mark.drawing.id),
               lockedMarkIds: savingIds,
             }

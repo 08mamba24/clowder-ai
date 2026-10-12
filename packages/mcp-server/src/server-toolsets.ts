@@ -254,7 +254,7 @@ function projectRegistrationContract(tool: ToolDef, principal: PostMessageRegist
     typeof schema.type === 'string' && typeof schema.properties === 'object' && schema.properties !== null
       ? jsonSchemaToZod(schema)
       : z.object(schema as z.ZodRawShape);
-  if ((isPostMessage && principal === 'invocation') || agentContract) {
+  if ((isPostMessage && principal === 'invocation') || agentContract || tool.name === 'cat_cafe_get_recall_metrics') {
     // Reject unsupported fields before default Zod stripping erases their evidence.
     inputSchema = (inputSchema as z.ZodObject<z.ZodRawShape>).strict();
   }
@@ -297,7 +297,14 @@ function registerTools(server: McpServer, tools: readonly ToolDef[], env: Toolse
           };
 
           // F254 B1: Piggyback freshness notice on successful read-only tool results
-          if (!typed.isError && annotations.readOnlyHint && canRequestFreshnessNotice(typed)) {
+          // The named metrics read owns a total transport budget and one fixed
+          // endpoint. A second, unbounded freshness POST would violate it.
+          if (
+            tool.name !== 'cat_cafe_get_recall_metrics' &&
+            !typed.isError &&
+            annotations.readOnlyHint &&
+            canRequestFreshnessNotice(typed)
+          ) {
             const noticeText = await maybeFreshnessNotice(tool.name, annotations.readOnlyHint);
             if (noticeText) {
               const appended = appendFreshnessNoticeWithinBudget(typed, noticeText);

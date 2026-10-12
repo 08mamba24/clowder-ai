@@ -7,11 +7,14 @@ import { connect } from 'node:net';
 import { join } from 'node:path';
 import WebSocket from 'ws';
 import { MCP_CALLBACK_ENV_KEYS } from '../../../../../config/capabilities/mcp-constants.js';
+import { assertCodexManagedCarrierSupport } from '../../../../../config/codex-managed-support.js';
+import { assertCodexSharedStateCarrier } from '../../../../../config/codex-shared-state.js';
 import { buildChildEnv } from '../../../../../utils/cli-spawn.js';
 import { buildUnixSupervisedSpawnPlan } from '../../../../../utils/cli-supervised-process.js';
 import { sanitizeCliStderr } from '../../../../../utils/sanitize-cli-stderr.js';
 import { createStderrTail, type StderrTail } from '../../../../../utils/stderr-tail.js';
 import type { AgentCarrierSession, AgentCarrierSessionOptions } from '../../types.js';
+import { readCodexHostAuthIdentity } from './codex-host-auth-identity.js';
 import { codexHostServedModels } from './codex-served-model.js';
 
 /** Bounded stderr kept per host for socket-readiness diagnostics (pre-F319 value). */
@@ -39,10 +42,13 @@ export interface CodexAppServerHostProcess {
 
 export interface PreparedCodexHostLaunch {
   signature: string;
+  authIdentity: string;
   launch: Omit<CodexAppServerHostLaunch, 'socketDirectory' | 'socketPath'>;
 }
 
-export function prepareCodexHostLaunch(options: AgentCarrierSessionOptions): PreparedCodexHostLaunch {
+export async function prepareCodexHostLaunch(options: AgentCarrierSessionOptions): Promise<PreparedCodexHostLaunch> {
+  assertCodexSharedStateCarrier(options.env);
+  assertCodexManagedCarrierSupport(options.env, options.command);
   const signatureEnv = Object.fromEntries(
     Object.entries(options.env ?? {}).filter(([key]) => !SESSION_SCOPED_ENV_KEYS.has(key)),
   );
@@ -59,6 +65,7 @@ export function prepareCodexHostLaunch(options: AgentCarrierSessionOptions): Pre
   };
   return {
     signature: createHash('sha256').update(JSON.stringify(signaturePayload)).digest('hex'),
+    authIdentity: await readCodexHostAuthIdentity(buildChildEnv(env, { workingDirectory: options.cwd }), options.cwd),
     launch: {
       command: options.command,
       args,

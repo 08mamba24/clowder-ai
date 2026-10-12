@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { LivePageActionApprovalLedger } from '../src/domains/concierge/live/host/live-page-action-approval-ledger.js';
+import { LivePageActionApprovalLedger } from '../src/domains/concierge/live/host/page-action/live-page-action-approval-ledger.js';
 import { fixture, issueFixtureApproval } from './helpers/f317-page-action-fixture.js';
 
 test('one per-call owner record verifies exact source, scope, action and expiry, then revokes', async () => {

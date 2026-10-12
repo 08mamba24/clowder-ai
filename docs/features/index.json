@@ -1401,7 +1401,7 @@
     {
       "id": "F232",
       "name": "Thread Artifacts Panel — Thread 产物视图",
-      "status": "in-progress（Phase A 全部 merged；**Phase B foundation merged PR #2285 + grouping merged PR #2288 + cat filter merged PR #2290**（AC-B1 ✅）；source-code artifact classification hardening merged PR #2362；视觉待 alpha）| **Owner**: Ragdoll Opus-4.8 | **Priority**: P1",
+      "status": "in-progress（Phase A 全部 merged；**Phase B foundation merged PR #2285 + grouping merged PR #2288 + cat filter merged PR #2290**（AC-B1 ✅）；source-code artifact classification hardening merged PR #2362；视觉待 alpha）| **Owner**: Ragdoll Opus-5.5（承 Opus-4.8；4.8 已于 2026-09-23 归档） | **Priority**: P1",
       "file": "F232-thread-artifacts-panel.md"
     },
     {
@@ -1725,7 +1725,7 @@
     {
       "id": "F293",
       "name": "— Live Routing Context",
-      "status": "Phases A–C baseline merged / Team UX M1 merged (AC-UX1–3; AC-UX6 evidence complete except Alpha) / profile feedback M2 (AC-UX4/5, AC-D4/D5) open / Phases D–E and expanded continuity remain open | **Owner**: 小太阳·Maine Coon (@codex-sol, GPT-5.6 Sol) | **Priority**: P1",
+      "status": "Phases A–C baseline merged / Phase O notification delivery merged + scoped Alpha verified (production dormant) / Team UX M1 merged (AC-UX1–3; AC-UX6 evidence complete except Alpha) / profile feedback M2 (AC-UX4/5, AC-D4/D5) open / Phases D–E and expanded continuity remain open | **Owner**: 小太阳·Maine Coon (@codex-sol, GPT-5.6 Sol) | **Priority**: P1",
       "file": "F293-live-routing-context.md"
     },
     {
@@ -1845,7 +1845,7 @@
     {
       "id": "F314",
       "name": "Development Episode Alignment Experiment｜开发交付对齐自进化实验",
-      "status": "in-progress / Phase B accepted with AC-B1's authorized delivery-budget exception and AC-B5's accepted-then-retired dogfood lifecycle; Phase C is active/instrumenting with the F100 owner-loop interface landed and its child Task done, while observation proof and natural adoption/outcome remain open | **Owner**: 小太阳·Maine Coon（@codex-sol, GPT-5.6 Sol） | **Priority**: P0",
+      "status": "in-progress / Phase B accepted with its recorded exceptions; Phase C owner binding verified, operator accepts this period's insufficient anchor-effect evidence; bounded comparison delivered with content corrections, overall acceptance remains open | **Owner**: 小星星·Maine Coon（@codex-astra, GPT-6 Astra；方向与整体结果） | **Execution**: 小太阳·Maine Coon（@codex-sol, GPT-5.6 Sol；Task197；Task143 已完成） | **Priority**: P0",
       "file": "F314-development-episode-alignment-experiment.md"
     },
     {
@@ -1881,7 +1881,7 @@
     {
       "id": "F320",
       "name": "Multi-OAuth Accounts｜同一厂商多个 OAuth 账号 + 按家族一键切换",
-      "status": "spec | **Owner**: Ragdoll (@opus55, claude-opus-5-5) | **Priority**: P1",
+      "status": "in-progress | **Owner**: Ragdoll (@opus55, claude-opus-5-5) | **Priority**: P1",
       "file": "F320-multi-oauth-account-switching.md"
     },
     {
@@ -1893,13 +1893,13 @@
     {
       "id": "F322",
       "name": "Everyday Work Experience｜看得懂、找得到、接得上",
-      "status": "in-progress / 新壳#4947、图标#4950、catalog准入#4949、记忆导航#4952及待办S3-2a #4969已合；含修复的冻结cut bf0716ba5f已补full gate绿，默认classic、当前runtime激活未核；原八项输入映射已闭，记忆导航独立Alpha、滚动C、领域接线与整段验收仍开放 | **Owner**: 小星星·Maine Coon（@codex-astra, gpt-6-astra），指挥责任由本 thread Astra 与 Opus 5.5 共同承担 | **Priority**: P1",
+      "status": "in-progress / 线程盘点2026-10-06：成员583完成；语音/工具叶页已合待组合验收；B三层回话S2 #5152已合待Alpha/组合验收，S3/S4 #5174已合且独立Alpha通过，S5持久默认与安装预览双语#5183已合待runtime/Alpha；§1.11群聊视图菜单与TTL=0偏好#5193已合，单猫读取投影待F254、合后Alpha待验；D回放#5141核心独立Alpha已过；C公共返回#5158限定独立Alpha已过、runtime未加载该批；F309前端/F290页面接入沿原域续办，整B/C/D与旧AC仍开放 | **Owner**: 小星星·Maine Coon（@codex-astra, gpt-6-astra），指挥责任由本 thread Astra 与 Opus 5.5 共同承担 | **Priority**: P1",
       "file": "F322-everyday-work-experience.md"
     },
     {
       "id": "F323",
       "name": "Runtime Restart Coordination｜等待登记、优雅重启与自动回访",
-      "status": "in-progress；Phase A 实现已合入 #4853（`3f39bc101b55`），runtime 尚未加载；真实合入等待登记（AC-A11）、Alpha/运行验收与后续 Phase 未完成 | **Owner**: 本 thread 指挥责任猫 Astra（@codex-astra, gpt-6-astra）与 Opus55（@opus55, claude-opus-5-5） | **Priority**: P1",
+      "status": "in-progress；Phase A #4853 已合入、双 owner 隔离回访已验、日常 runtime 已加载；原 Task 已取得 gen1 真实即时匹配回执，AC-A11 清单/存量核实及用户现场收尾中，Phase B/C 尚未交付 | **Owner**: 本 thread 指挥责任猫 Astra（@codex-astra, gpt-6-astra）与 Opus55（@opus55, claude-opus-5-5） | **Priority**: P1",
       "file": "F323-runtime-restart-coordination.md"
     },
     {
@@ -1911,8 +1911,14 @@
     {
       "id": "F325",
       "name": "Antigravity Native Parity｜Siamese的新猫爬架与旧接入收归",
-      "status": "spec | **Owner**: 小星星·Maine Coon (@codex-astra, gpt-6-astra) | **Priority**: P1",
+      "status": "in-progress | **Owner**: 小星星·Maine Coon (@codex-astra, gpt-6-astra) | **Priority**: P1",
       "file": "F325-antigravity-native-parity.md"
+    },
+    {
+      "id": "F326",
+      "name": "Editing Desk｜剪辑台",
+      "status": "in-progress | **Owner**: Ragdoll (@opus55, design owner) · 架构 小星星 (@codex-astra) · 执行 小太阳 (@codex61-sol) | **Priority**: P1",
+      "file": "F326-editing-desk.md"
     }
   ]
 }

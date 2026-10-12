@@ -36,6 +36,15 @@ export async function verifyStandaloneClient({ context, evidence, seeded, servic
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(serviceUrl, { waitUntil: 'networkidle' });
+  const home = page.getByTestId('collective-home');
+  await home.getByRole('heading', { name: '猫咖共创组', exact: true }).waitFor();
+  await home.getByText('这里还没有公共工作动态。', { exact: true }).waitFor();
+  assert.match(
+    await home.locator('.collective-home-hero').evaluate((element) => getComputedStyle(element).backgroundImage),
+    /collective-landing-A\.png/,
+  );
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.screenshot({ path: path.join(evidence, 'default-home-1440.png'), fullPage: true });
   await page
     .getByRole('navigation', { name: '频道', exact: true })
     .getByRole('button', { name: /产品方向/ })
@@ -44,7 +53,8 @@ export async function verifyStandaloneClient({ context, evidence, seeded, servic
   const ownerAvatar = page.locator(`[data-event-id="${seeded.first.eventId}"] .avatar img`);
   assert.equal(await ownerAvatar.count(), 1, 'the message must render the authenticated Human profile image');
   await ownerAvatar.evaluate((image) => image.decode());
-  assert.equal(new URL(page.url()).search, '', 'default product entry must not require a query gate');
+  assert.equal(new URL(page.url()).searchParams.get('channelId'), '产品方向');
+  assert.equal(new URL(page.url()).searchParams.has('experienceGate'), false, 'default entry must not require a gate');
   assert.equal(await page.getByText('演示数据', { exact: false }).count(), 0);
   await page.getByText('1 个 Café · 4 位成员', { exact: true }).waitFor();
   await page.screenshot({ path: path.join(evidence, 'default-channel-1440.png'), fullPage: true });
@@ -78,6 +88,14 @@ export async function verifyStandaloneClient({ context, evidence, seeded, servic
   await page.screenshot({ path: path.join(evidence, 'default-channel-mobile.png'), fullPage: true });
   await page.emulateMedia({ colorScheme: 'dark' });
   await page.screenshot({ path: path.join(evidence, 'default-channel-dark.png'), fullPage: true });
+  await page.getByRole('button', { name: '频道导航', exact: true }).click();
+  await page.getByRole('button', { name: '打开猫咖共创组首页', exact: true }).click();
+  await page.getByTestId('collective-home').waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.screenshot({ path: path.join(evidence, 'default-home-mobile.png'), fullPage: true });
+  await page.getByTestId('collective-home-navigation').click();
+  await page.getByRole('navigation', { name: '频道', exact: true }).waitFor();
+  await page.getByRole('button', { name: '收起频道导航', exact: true }).click();
   assert.deepEqual(errors, []);
   await page.close();
 }
@@ -141,8 +159,8 @@ export async function openNativeOwnerClient({ context, evidence, nativeOwner, se
   assert.ok(route);
   assert.deepEqual(Object.keys(route.channelRoutes).sort(), ['general', '产品方向', '插件共建']);
   assert.deepEqual(Object.keys(route.channelRoutes.general.participants).sort(), ['codex-sol', 'fable-5']);
-  assert.deepEqual(Object.keys(route.channelRoutes['产品方向'].participants).sort(), ['codex-sol', 'fable-5']);
-  assert.deepEqual(Object.keys(route.channelRoutes['插件共建'].participants).sort(), ['codex-sol', 'fable-5']);
+  assert.deepEqual(Object.keys(route.channelRoutes.产品方向.participants).sort(), ['codex-sol', 'fable-5']);
+  assert.deepEqual(Object.keys(route.channelRoutes.插件共建.participants).sort(), ['codex-sol', 'fable-5']);
   assert.equal(
     Object.values(route.agentRoutes).some((binding) => binding.standingWork),
     false,

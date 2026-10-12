@@ -11,7 +11,12 @@ import { type ChannelListeningInput, setChannelListening } from './channel-liste
 import type { CollectiveConnectorOptions } from './connector-options.js';
 import { type ConnectorSyncHooks, ConnectorSynchronization } from './connector-synchronization.js';
 import { desiredParticipationSchema } from './host-route-state.js';
-import { prepareReplyOperation, queueVerifiedAgentMessage, submitReplyOperation } from './outbox-custody.js';
+import {
+  prepareReplyOperation,
+  queueVerifiedAgentMessage,
+  readPublicReplyOperation,
+  submitReplyOperation,
+} from './outbox-custody.js';
 import { participationDeclaration, requireParticipation } from './participation-custody.js';
 import { ConnectorPersistence } from './persistence.js';
 import { type ConnectorProjection, projectConnection } from './projection.js';
@@ -436,6 +441,10 @@ export class CollectiveConnector {
       ...(resultRevision ? { resultRevision } : {}),
       ...(execution ? { execution } : {}),
     });
+  }
+
+  readPublicReply(source: CollectiveSourceIdentity, sourceRef: string) {
+    return readPublicReplyOperation(this.persistence, source, sourceRef);
   }
 
   async submitReply(

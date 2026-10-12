@@ -3,7 +3,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { APP_TOOLTIP_DELAY_MS, AppTooltip, resetAppTooltipWarmState } from '../AppTooltip';
 
-function pointer(el: Element, type: 'pointerover' | 'pointerout' | 'pointerdown' | 'pointerup', pointerType = 'mouse') {
+function pointer(
+  el: Element,
+  type: 'pointerover' | 'pointerout' | 'pointerdown' | 'pointerup' | 'pointermove',
+  pointerType = 'mouse',
+) {
   const event = new Event(type, { bubbles: true, cancelable: true });
   Object.defineProperty(event, 'pointerType', { value: pointerType });
   if (type === 'pointerout') Object.defineProperty(event, 'relatedTarget', { value: document.body });
@@ -149,5 +153,94 @@ describe('F322 AppTooltip — the shell name tip', () => {
     renderTwo();
     const wrapper = container.querySelector('span') as HTMLSpanElement;
     expect(wrapper.style.display).toBe('contents');
+  });
+
+  it('does not catch clicks and closes as soon as the pointer leaves its control', () => {
+    const { a } = renderTwo();
+    pointer(a, 'pointerover');
+    React.act(() => vi.advanceTimersByTime(APP_TOOLTIP_DELAY_MS));
+    expect(tip()?.className).toContain('pointer-events-none');
+    pointer(a, 'pointerout');
+    expect(tip()).toBeNull();
+  });
+
+  it('content waits for 600ms of stillness and neither consumes nor creates icon warmth', () => {
+    const { a } = renderTwo();
+    pointer(a, 'pointerover');
+    React.act(() => vi.advanceTimersByTime(APP_TOOLTIP_DELAY_MS));
+    pointer(a, 'pointerout');
+    React.act(() => {
+      root.render(
+        <div>
+          <AppTooltip label="完整猫名" intent="content">
+            <span data-testid="content">小太阳</span>
+          </AppTooltip>
+          <AppTooltip label="更多操作">
+            <button type="button" data-testid="icon">
+              …
+            </button>
+          </AppTooltip>
+        </div>,
+      );
+    });
+    const content = container.querySelector('[data-testid="content"]')!;
+    pointer(content, 'pointerover');
+    React.act(() => vi.advanceTimersByTime(599));
+    expect(tip()).toBeNull();
+    pointer(content, 'pointermove');
+    React.act(() => vi.advanceTimersByTime(599));
+    expect(tip()).toBeNull();
+    React.act(() => vi.advanceTimersByTime(1));
+    expect(tip()?.textContent).toContain('完整猫名');
+    pointer(content, 'pointerout');
+    const icon = container.querySelector('[data-testid="icon"]')!;
+    pointer(icon, 'pointerover');
+    expect(tip()).toBeNull();
+    React.act(() => vi.advanceTimersByTime(APP_TOOLTIP_DELAY_MS));
+    expect(tip()?.textContent).toContain('更多操作');
+  });
+
+  it('only recovers content that is actually clipped, including a two-line title', () => {
+    React.act(() => {
+      root.render(
+        <AppTooltip label="完整标题" intent="content" onlyWhenTruncated>
+          <span>完整标题</span>
+        </AppTooltip>,
+      );
+    });
+    const title = container.querySelector('span > span')!;
+    Object.defineProperties(title, {
+      clientWidth: { value: 100, configurable: true },
+      scrollWidth: { value: 100, configurable: true },
+      clientHeight: { value: 40, configurable: true },
+      scrollHeight: { value: 40, configurable: true },
+    });
+    pointer(title, 'pointerover');
+    React.act(() => vi.advanceTimersByTime(600));
+    expect(tip()).toBeNull();
+    Object.defineProperty(title, 'scrollHeight', { value: 60, configurable: true });
+    pointer(title, 'pointerout');
+    pointer(title, 'pointerover');
+    React.act(() => vi.advanceTimersByTime(600));
+    expect(tip()?.textContent).toBe('完整标题');
+  });
+
+  it('places a list content tip outside the v2 sidebar rather than over the next row', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const right = this.dataset.shellSidebar ? 240 : 100;
+      return { x: 0, y: 100, left: 0, right, top: 100, bottom: 128, width: right, height: 28, toJSON: () => ({}) };
+    });
+    React.act(() => {
+      root.render(
+        <div data-shell-sidebar="v2">
+          <AppTooltip label="补充内容" intent="content" side="right">
+            <span>内容</span>
+          </AppTooltip>
+        </div>,
+      );
+    });
+    pointer(container.querySelector('span > span')!, 'pointerover');
+    React.act(() => vi.advanceTimersByTime(600));
+    expect(tip()?.style.left).toBe('248px');
   });
 });

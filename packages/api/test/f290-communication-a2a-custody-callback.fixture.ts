@@ -5,11 +5,13 @@ import { InvocationQueue } from '../src/domains/cats/services/agents/invocation/
 import { InvocationTracker } from '../src/domains/cats/services/agents/invocation/InvocationTracker.js';
 import { QueuedMessageCustodyCoordinator } from '../src/domains/cats/services/agents/invocation/QueuedMessageCustodyCoordinator.js';
 import { QueueProcessor } from '../src/domains/cats/services/agents/invocation/QueueProcessor.js';
+import { QueueSourceCustodyAdmissionService } from '../src/domains/cats/services/agents/invocation/QueueSourceCustodyAdmission.js';
 import { AgentRegistry } from '../src/domains/cats/services/agents/registry/AgentRegistry.js';
 import { AgentRouter } from '../src/domains/cats/services/agents/routing/AgentRouter.js';
 import { InvocationRecordStore } from '../src/domains/cats/services/stores/ports/InvocationRecordStore.js';
 import { callbacksRoutes } from '../src/routes/callbacks.js';
 import { documentWriterFixture } from './f290-communication-document-writer.fixture.js';
+import { scopedTestSessions } from './helpers/scoped-test-sessions.js';
 
 export const DELEGATE = createCatId('opus');
 export const NEXT_CAT = createCatId('codex');
@@ -17,14 +19,17 @@ export const NEXT_CAT = createCatId('codex');
 /** Real HTTP handler, router, Queue/custody and current Work authority. Busy slots prevent provider dispatch. */
 export async function callbackCustodyFixture() {
   const f = await documentWriterFixture();
+  const sessionPorts = scopedTestSessions(f.cafe.dataDirectory);
   const queue = new InvocationQueue();
   const tracker = new InvocationTracker();
   const records = new InvocationRecordStore();
   const sockets = { broadcastAgentMessage() {}, broadcastToRoom() {}, emitToUser() {} };
   const router = new AgentRouter({
+    ...sessionPorts,
     registry: f.registry,
     agentRegistry: new AgentRegistry(),
     messageStore: f.messages,
+    queueSourceCustodyAdmission: new QueueSourceCustodyAdmissionService({ queue, messageStore: f.messages }),
     threadStore: f.threads,
     taskStore: f.tasks,
     collectiveContext: () => f.context,
@@ -105,6 +110,7 @@ export async function callbackCustodyFixture() {
   };
   return {
     ...f,
+    sessionPorts,
     queue,
     tracker,
     router,

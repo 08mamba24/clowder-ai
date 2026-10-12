@@ -292,6 +292,27 @@ test('compileL0ViaSubprocess invalidates cached L0 when prompt-template assets c
   assert.equal(spawnFn2.calls.length, 1, 'template changes must force a fresh L0 compiler subprocess');
 });
 
+test('compileL0ViaSubprocess invalidates all cached cats when the dossier changes', async () => {
+  clearL0Cache();
+  const root = seedRepoRoot();
+  const dossierPath = join(root, 'docs', 'team', 'cat-dossier.md');
+  mkdirSync(join(root, 'docs', 'team'), { recursive: true });
+  writeFileSync(dossierPath, 'INITIAL DOSSIER');
+  for (const catId of ['dossier-cat-a', 'dossier-cat-b']) {
+    const initial = buildFakeSpawn({ stdout: `BEFORE ${catId}` });
+    await compileL0ViaSubprocess({ catId, cwd: root, spawnFn: initial });
+    await compileL0ViaSubprocess({ catId, cwd: root, spawnFn: initial });
+    assert.equal(initial.calls.length, 1, 'unchanged dossier must keep the cache');
+  }
+  writeFileSync(dossierPath, 'UPDATED DOSSIER ROUTING');
+  for (const catId of ['dossier-cat-a', 'dossier-cat-b']) {
+    const updated = buildFakeSpawn({ stdout: `AFTER ${catId}` });
+    const result = await compileL0ViaSubprocess({ catId, cwd: root, spawnFn: updated });
+    assert.equal(result, `AFTER ${catId}`);
+    assert.equal(updated.calls.length, 1, 'shared dossier change must invalidate every cat');
+  }
+});
+
 test('compileL0ViaSubprocess invalidates cached L0 when governance rules change', async () => {
   clearL0Cache();
   const root = seedRepoRoot();

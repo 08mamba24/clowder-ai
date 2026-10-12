@@ -78,6 +78,9 @@
   font-size: var(--console-font-label);
 }
 .workspace {
+  /* The bar that brings the artwork back while a returned version is compared; the narrow layout scrolls the whole
+     workspace under it, so what the ask scrolls to leaves this much room above (see the 600px block). */
+  --comparing-bar-height: 2.75rem;
   position: relative;
   display: flex;
   flex: 1;
@@ -86,6 +89,10 @@
   flex-direction: column;
   overflow-x: hidden;
   overflow-y: auto;
+}
+.comparingBar {
+  box-sizing: border-box;
+  height: var(--comparing-bar-height);
 }
 .artwork {
   position: relative;
@@ -124,6 +131,20 @@
 .workspace:has(.modificationRegion [data-modification-open]) .media {
   flex: 1 0 auto;
   min-height: min(220px, 45vh);
+}
+/* A returned version asked for from the conversation is the main thing in the pane: the artwork steps aside
+   (it is hidden, not unmounted) and the modification region takes the room, scrolling inside itself. */
+.workspace[data-comparing="true"] .artwork {
+  display: none;
+}
+.workspace[data-comparing="true"] .modificationRegion {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+/* The region is the scroller now, so the open panel is not also a clamped scroller inside it. */
+.workspace[data-comparing="true"] [data-modification-open] {
+  max-height: none;
+  overflow: visible;
 }
 .stage {
   position: relative;
@@ -261,6 +282,11 @@
   .workspace:has(.modificationRegion [data-modification-open]) .modificationRegion {
     flex: none;
     overflow: visible;
+  }
+  /* Here the workspace itself scrolls and the bar sticks to its top, so a returned version scrolled to the top
+     would start underneath it: keep its heading clear of the bar. */
+  .workspace[data-comparing="true"] [data-focused="true"] {
+    scroll-margin-top: var(--comparing-bar-height);
   }
   .headerActions {
     gap: 2px;

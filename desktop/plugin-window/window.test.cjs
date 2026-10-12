@@ -330,7 +330,8 @@ test('a stopped Host revokes an open F221 dialog before its confirmation can be 
   }
 });
 
-test('fullscreen Space handoff preserves media while app hide and lock still revoke it', async () => {
+test('fullscreen Space handoff preserves media while app hide and lock still revoke it', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = electronFixture();
   const requests = [];
   const managed = await createManagedWindow(f.electron, input, {
@@ -365,7 +366,10 @@ test('fullscreen Space handoff preserves media while app hide and lock still rev
     f.window.allWorkspaces = true;
     await f.handlers.get('companion:request')(event, { kind: 'prepare' }, true);
     f.window.visible = false; // a persistent native window hide
+    const stopsBeforePersistentHide = requests.filter((kind) => kind === 'stop').length;
     f.window.emit('hide');
+    t.mock.timers.tick(1000);
+    assert.equal(requests.filter((kind) => kind === 'stop').length, stopsBeforePersistentHide + 1);
     assert.equal(f.sent.at(-1).value.reason, 'hidden');
     f.window.visible = true;
     await f.handlers.get('companion:request')(event, { kind: 'prepare' }, true);
@@ -415,6 +419,41 @@ test('a Space hide followed by a timely show preserves media beyond the handoff 
     await new Promise((resolve) => setTimeout(resolve, 1150));
     assert.equal(
       f.sent.some((row) => row.value.kind === 'media-stopped'),
+      false,
+    );
+  } finally {
+    managed.close();
+  }
+});
+
+test('an all-workspaces handoff may briefly report invisible before its native show without ending the call', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = electronFixture();
+  const commands = [];
+  const managed = await createManagedWindow(f.electron, input, {
+    validate: () => true,
+    request: async (command) => {
+      commands.push(command.kind);
+      return command.kind === 'prepare' ? { kind: 'state', phase: 'ready' } : { kind: 'ok' };
+    },
+  });
+  try {
+    const event = { sender: f.window.webContents, senderFrame: f.window.webContents.mainFrame };
+    await f.handlers.get('companion:request')(event, { kind: 'prepare' }, true);
+    f.window.visible = false;
+    f.window.emit('hide');
+    assert.equal(
+      commands.includes('stop'),
+      false,
+      'an unhidden app with an all-workspaces window has not issued a hide gesture',
+    );
+    t.mock.timers.tick(50);
+    f.window.visible = true;
+    f.window.emit('show');
+    t.mock.timers.tick(1100);
+    assert.equal(commands.includes('stop'), false);
+    assert.equal(
+      f.sent.some(({ value }) => value.kind === 'media-stopped'),
       false,
     );
   } finally {

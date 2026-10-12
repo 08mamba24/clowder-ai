@@ -72,8 +72,11 @@ describe('where a 待办 row can really take you, decided only from what the rea
   });
 
   describe('审批', () => {
-    it('a decision made in the approval hub opens the approval list', () => {
-      expect(resolveOriginalPlace(approval('F128', anchored))).toEqual({ kind: 'list', destination: 'approval' });
+    it('a decision made in the approval hub opens the exact original proposal', () => {
+      expect(resolveOriginalPlace(approval('F128', anchored))).toEqual({
+        kind: 'exact',
+        actionRef: 'message:card-thread:card-msg',
+      });
     });
 
     it('a decision that is only available on its origin card goes to that card in the chat', () => {
@@ -87,8 +90,11 @@ describe('where a 待办 row can really take you, decided only from what the rea
       expect(place).toEqual({ kind: 'list', destination: 'approval' });
     });
 
-    it('a feature this build does not know is the approval list, not a crash', () => {
-      expect(resolveOriginalPlace(approval('F999', anchored))).toEqual({ kind: 'list', destination: 'approval' });
+    it('a readable anchor remains reachable for an unknown producer', () => {
+      expect(resolveOriginalPlace(approval('F999', anchored))).toEqual({
+        kind: 'exact',
+        actionRef: 'message:card-thread:card-msg',
+      });
     });
   });
 });

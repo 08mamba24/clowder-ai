@@ -106,8 +106,8 @@ describe('F310 prepared Artifact loading in real owner surfaces', () => {
       finishCatalog = resolve;
     });
     mocks.fetch.mockImplementation((path: string) => {
-      if (path !== '/api/artifacts') throw new Error(`Unexpected request: ${path}`);
-      return catalog;
+      if (path !== '/api/threads/thread-source/artifacts') throw new Error(`Unexpected request: ${path}`);
+      return catalog.then((response) => response.clone());
     });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -152,15 +152,44 @@ describe('F310 prepared Artifact loading in real owner surfaces', () => {
   }
 
   async function loadCatalog(artifacts: GlobalArtifactDTO[]) {
-    await act(async () => finishCatalog(new Response(JSON.stringify({ artifacts }))));
+    await act(async () => finishCatalog(new Response(JSON.stringify({ threadId: 'thread-source', artifacts }))));
   }
 
   it.each([
     'product-schedule',
     'needs-me',
-  ] as const)('%s waits for its catalog and then opens the exact publication with the original return item', async (projection) => {
+  ] as const)('%s opens its exact publication even when the unrelated global catalog times out', async (projection) => {
+    mocks.fetch.mockImplementation((path: string) => {
+      if (path === '/api/artifacts') return Promise.reject(new Error('Request timed out'));
+      if (path === '/api/threads/thread-source/artifacts') {
+        return Promise.resolve(new Response(JSON.stringify({ threadId: 'thread-source', artifacts: [artifact] })));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    await render(projection);
+    await act(async () =>
+      button(projection === 'needs-me' ? 'needs-me-open-artifact' : 'product-schedule-open-artifact').click(),
+    );
+    expect(open).toHaveBeenCalledOnce();
+    expect(open.mock.calls[0]?.[0].artifact.ownerStateRef).toEqual({
+      owner: 'f232-thread-artifacts',
+      key: 'thread-source',
+    });
+    expect(decodeURIComponent(open.mock.calls[0]?.[0].returnSurface.resultTargetRef.key)).toContain(`${subjectRef}|2`);
+    expect(mocks.fetch.mock.calls.map(([path]) => path)).not.toContain('/api/artifacts');
+  });
+
+  it.each([
+    'product-schedule',
+    'needs-me',
+  ] as const)('%s waits only for its original thread and opens the exact publication with the original return item', async (projection) => {
     await render(projection);
     const openButton = button(projection === 'needs-me' ? 'needs-me-open-artifact' : 'product-schedule-open-artifact');
+    if (projection === 'product-schedule') {
+      expect(mocks.fetch).not.toHaveBeenCalled();
+      expect(openButton.disabled).toBe(false);
+      act(() => openButton.click());
+    }
     expect(openButton.disabled).toBe(true);
     expect(openButton.getAttribute('aria-busy')).toBe('true');
     act(() => openButton.click());
@@ -168,7 +197,7 @@ describe('F310 prepared Artifact loading in real owner surfaces', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
     await loadCatalog([artifact]);
     expect(openButton.disabled).toBe(false);
-    act(() => openButton.click());
+    if (projection === 'needs-me') await act(async () => openButton.click());
     expect(open).toHaveBeenCalledOnce();
     const result = open.mock.calls[0]?.[0];
     expect(result.artifact.ownerStateRef).toEqual({ owner: 'f232-thread-artifacts', key: 'thread-source' });
@@ -187,12 +216,36 @@ describe('F310 prepared Artifact loading in real owner surfaces', () => {
     expect(open).not.toHaveBeenCalled();
   });
 
+  it('aborts an unfinished owner read on departure and never opens its late result', async () => {
+    await render('product-schedule');
+    act(() => button('product-schedule-open-artifact').click());
+    const signal = mocks.fetch.mock.calls[0]?.[1]?.signal as AbortSignal;
+    act(() => root.render(null));
+    expect(signal.aborted).toBe(true);
+    await loadCatalog([artifact]);
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('keeps completed work in its original completed return selection', async () => {
+    const work = preparedOwnerRead();
+    work.completion = { recordedAt: 1000, evidenceRefs: ['message:accepted'] };
+    work.brief.current.state = 'done';
+    mocks.ownerReads = [work];
+    await render('product-schedule');
+    act(() => button('product-schedule-open-artifact').click());
+    await loadCatalog([artifact]);
+    expect(open).toHaveBeenCalledOnce();
+    expect(decodeURIComponent(open.mock.calls[0]?.[0].returnSurface.resultTargetRef.key)).toContain(
+      `${subjectRef}|2|completed`,
+    );
+  });
+
   it('retains compact recovery when a completed catalog has no exact publication', async () => {
     await render('product-schedule');
     await loadCatalog([{ ...artifact, createdAt: 701 }]);
     const openButton = button('product-schedule-open-artifact');
     expect(openButton.disabled).toBe(false);
-    act(() => openButton.click());
+    await act(async () => openButton.click());
     expect(open).not.toHaveBeenCalled();
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('这份内容已更新或暂时不可用');
   });
@@ -221,7 +274,7 @@ describe('F310 prepared Artifact loading in real owner surfaces', () => {
     expect(result.artifact.resultTargetRef).toEqual({ owner: 'thread', key: 'thread-source' });
     expect(decodeURIComponent(result.returnSurface.resultTargetRef.key)).toContain(`${subjectRef}|2`);
     expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(mocks.fetch).toHaveBeenCalledTimes(1);
+    expect(mocks.fetch).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -382,15 +382,27 @@ export function useWorkspaceNavigate(
       const storage = sessionNavigationStorage();
       const queuedData =
         data.threadId || !deliveryState.threadId ? data : { ...data, threadId: deliveryState.threadId };
-      const receipt = deliverWorkspaceNavigateEvent({
+      const presentationLocked = useChatStore.getState().presentationLock != null;
+      const persist = () =>
+        storage
+          ? queuePendingWorkspaceNavigation(storage, queuedData, {
+              requiresExplicitAction: presentationLocked || useChatStore.getState().presentationLock != null,
+            })
+          : false;
+      const delivery = {
         data,
         activeThreadId: deliveryState.threadId,
         isChatRoute: deliveryState.isChatRoute,
         isWorkspaceVisible: deliveryState.isWorkspaceVisible,
-        presentationLocked: useChatStore.getState().presentationLock != null,
         apply: deliveryState.applyNavigate,
-        persist: () => (storage ? queuePendingWorkspaceNavigation(storage, queuedData) : false),
-      });
+        persist,
+      };
+      let receipt = deliverWorkspaceNavigateEvent({ ...delivery, presentationLocked });
+      // The apply boundary can discover a lock that appeared after the delivery precheck.
+      // Retain that exact request too; never re-run its apply while the lock is active.
+      if (receipt.status === 'blocked' && !receipt.reason && useChatStore.getState().presentationLock != null) {
+        receipt = deliverWorkspaceNavigateEvent({ ...delivery, presentationLocked: true });
+      }
       if (acknowledge) {
         acknowledge(receipt);
       }

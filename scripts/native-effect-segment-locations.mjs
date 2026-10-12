@@ -1,6 +1,15 @@
 import { homedir } from 'node:os';
 import { cdReadings, kernelPath } from './lib/shell-directory.mjs';
-import { expandAll, FORGOTTEN, isShellBinding, OPAQUE } from './native-effect-shell-expansion.mjs';
+import { scanShellText, shellSubstitutions } from './lib/shell-lexical.mjs';
+import {
+  assignmentBindings,
+  BINDING_EVIDENCE,
+  expandAll,
+  FORGOTTEN,
+  isShellBinding,
+  loopBindings,
+  OPAQUE,
+} from './native-effect-shell-expansion.mjs';
 import { shellWords, tokenizeSimpleShellCommand } from './native-effect-shell-tokenizer.mjs';
 
 /**
@@ -18,17 +27,13 @@ import { shellWords, tokenizeSimpleShellCommand } from './native-effect-shell-to
  * - `cd`/`pushd` fork a path into success (new directory; both logical and physical
  *   readings, see lib/shell-directory.mjs) and failure (unchanged). Other commands fork
  *   into success and failure without moving; `true`/`:` succeed and `false` fails.
- * - Every `(` in a segment (subshell, `$(`) opens a frame before its command and every
- *   `)` closes one after it: the directory and bindings in force before the frame come
- *   back, so `(cd X && pwd); pwd` ends where it started. `&`/`|` stages are subshells too.
+ * - Plain grouping restores its outer directory/bindings at `)`. Substitution
+ *   boundaries belong to the shared scanner and never discard an outer assignment.
+ *   `&`/`|` stages are subshells too.
  * - A command after `then`/`else`/`elif`/`do` may or may not run (branches and loops
  *   are not evaluated), so both outcomes are kept.
- * - Assignment statements bind on the path that runs them (`false && X=1` binds
- *   nothing); `VAR=x cmd` binds for that command only; `for NAME in words` binds each
- *   word. `~`, `$HOME` and the environment fill the rest.
- * - What cannot be read -- a `cd` operand with an unknown variable or a substitution,
- *   `popd`, unbalanced grouping -- moves the path to an unknown directory: the guard
- *   judges such a segment without a working directory rather than invent one.
+ * - Assignments bind only on paths that run them; command prefixes are local, and loops
+ *   bind each word. Unknown `cd` operands, `popd` and unbalanced groups move to UNKNOWN.
  *
  * @param {{text: string, separator: string|null}[]} segments
  * @param {string|undefined} cwd
@@ -93,7 +98,7 @@ export function isShellStructure(text) {
 
 export function segmentCommandText(text) {
   // `{` and `}` group only as words of their own; `{e,x}` is brace expansion, not grouping.
-  let command = text.replace(/^\s*(?:\(\s*|\$\(\s*|\{\s+|(?:then|do|else|elif|if|while|until|!)\s+)*/, '').trimEnd();
+  let command = text.replace(/^\s*(?:\(\s*|\{\s+|(?:then|do|else|elif|if|while|until|!)\s+)*/, '').trimEnd();
   const unmatched = () => (command.match(/\)/g)?.length ?? 0) - (command.match(/\(/g)?.length ?? 0);
   for (;;) {
     if (command === '}' || /\s\}$/.test(command)) command = command.slice(0, -1).trimEnd();
@@ -115,28 +120,27 @@ function gateAdmits(separator, status) {
   return true;
 }
 
-/**
- * The segment's grouping, read so it holds even when its words hold a substitution:
- * parentheses outside quotes (subshells, `$(`), and every leading opener / trailing closer
- * word (`{ {` is two groups). A substitution is masked to one opaque word.
- */
+/** Plain groups come from lexical spans; each substitution is one opaque binding word. */
 function segmentShape(text) {
-  const unquoted = text.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, '');
-  const pushes = unquoted.split('(').length - 1;
-  const pops = unquoted.split(')').length - 1;
-  const masked = text.replace(/\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`/g, OPAQUE);
+  const facts = scanShellText(text);
+  const pushes = facts.boundaries.filter(
+    (boundary) => boundary.kind === 'group' && text[boundary.start] === '(',
+  ).length;
+  const pops = facts.boundaries.filter((boundary) => boundary.kind === 'group' && text[boundary.start] === ')').length;
+  const masked = shellSubstitutions(text, OPAQUE).text;
   // Assignment words join adjacent quoted pieces: B='a b' is one binding, not B= plus an argv.
   const tokens = isShellBinding(masked)
     ? shellWords(masked).map(({ value }) => value)
     : tokenizeSimpleShellCommand(masked);
   const words = (tokens ?? masked.trim().split(/\s+/)).filter(Boolean);
-  const openers = leadingOpeners(words);
-  const closers = trailingClosers(words);
+  const openers = leadingOpeners(words, pushes);
+  const closers = trailingClosers(words, pops);
   // Parentheses inside the command (a substitution that spans segments) open before it
   // runs and close after it, like the leading and trailing ones.
   const innerPushes = Math.max(0, pushes - openers.filter((type) => type === '(').length);
   const innerPops = Math.max(0, pops - closers.filter((type) => type === ')').length);
   return {
+    bindingSource: text,
     tokens,
     pushes,
     pops,
@@ -146,11 +150,13 @@ function segmentShape(text) {
 }
 
 /** `(`, `{`, `if`, `for`, `while` … in front of the command, in order; `then`/`do`/`!` pass. */
-function leadingOpeners(words) {
+function leadingOpeners(words, availableParens) {
   const openers = [];
   for (const word of words) {
     const [, parens, core] = word.match(/^(\(*)(.*)$/s);
-    openers.push(...Array(parens.length).fill('('));
+    const count = Math.min(parens.length, availableParens);
+    openers.push(...Array(count).fill('('));
+    availableParens -= count;
     if (core === '' || MAY_NOT_RUN.has(core) || core === '!') continue;
     if (!GROUP_OPENERS.has(core)) break;
     openers.push('kw');
@@ -159,11 +165,13 @@ function leadingOpeners(words) {
 }
 
 /** `)`, `}`, `fi`, `done` … after the command, in the order they close. */
-function trailingClosers(words) {
+function trailingClosers(words, availableParens) {
   const closers = [];
   for (let i = words.length - 1; i >= 0; i -= 1) {
     const [, core, parens] = words[i].match(/^(.*?)(\)*)$/s);
-    const closing = Array(parens.length).fill(')');
+    const count = Math.min(parens.length, availableParens);
+    const closing = Array(count).fill(')');
+    availableParens -= count;
     if (core === '') {
       closers.unshift(...closing);
     } else if (GROUP_CLOSERS.has(core)) {
@@ -199,7 +207,7 @@ function runSegment(path, shape, inSubshell, env) {
   const outcomes = [];
   const command = shape.tokens ? peel(shape.tokens) : { words: [OPAQUE], mayNotRun: false, negated: false };
   if (command.mayNotRun) outcomes.push(entry);
-  for (const outcome of execute(entry, command.words, env)) {
+  for (const outcome of execute(entry, command.words, env, shape.bindingSource)) {
     const status = command.negated ? (outcome.status === 'ok' ? 'fail' : 'ok') : outcome.status;
     // An explicit subshell group restores its state at the closing parenthesis,
     // not after its first command when the group happens to follow a pipe.
@@ -231,13 +239,17 @@ function peel(tokens) {
   return { words: bare, mayNotRun, negated };
 }
 
-function execute(path, words, env) {
+function execute(path, words, env, bindingSource) {
   const [program, ...operands] = words;
   if (program === undefined || program === 'fi' || program === 'done' || program === 'esac' || program === '}') {
     return [path];
   }
-  if (program === 'for' && operands[1] === 'in') return [bindFor(path, operands, env)];
-  if (words.every((word) => /^[A-Za-z_]\w*=/.test(word)) || program === 'export') return [assign(path, words, env)];
+  if (program === 'for' && operands[1] === 'in') return bindFor(path, operands, env, bindingSource);
+  if (words.every((word) => /^[A-Za-z_]\w*=/.test(word)) || program === 'export') {
+    const assigned = assign(path, words, env, bindingSource);
+    // A substitution can fail: its bound evidence still reaches the || path.
+    return scanShellText(bindingSource).substitutions.length ? [assigned, { ...assigned, status: 'fail' }] : [assigned];
+  }
   if (program === 'cd' || program === 'pushd') return changeDirectory(path, operands, env);
   if (program === 'popd')
     return [
@@ -266,23 +278,15 @@ function changeDirectory(path, operands, env) {
   return [...moved.map((location) => ({ ...path, location, status: 'ok' })), failed];
 }
 
-function assign(path, words, env) {
-  const bindings = new Map(path.bindings);
-  for (const word of words[0] === 'export' ? words.slice(1) : words) {
-    const index = word.indexOf('=');
-    if (index < 0) continue;
-    const values = expandAll(word.slice(index + 1), path.bindings, env);
-    if (values && values.length === 1) bindings.set(word.slice(0, index), values);
-    else bindings.set(word.slice(0, index), null);
-  }
-  return { ...path, bindings, status: 'ok' };
+function assign(path, words, env, source) {
+  return { ...path, bindings: assignmentBindings(path.bindings, words, env, source), status: 'ok' };
 }
 
-function bindFor(path, operands, env) {
-  const bindings = new Map(path.bindings);
-  const values = operands.slice(2).map((word) => expandAll(word, path.bindings, env));
-  bindings.set(operands[0], values.every((value) => value?.length === 1) ? values.flat() : null);
-  return { ...path, bindings, status: 'ok' };
+function bindFor(path, operands, env, source) {
+  const bindings = loopBindings(path.bindings, operands, env, source);
+  const bound = { ...path, bindings, status: 'ok' };
+  // An unreadable list may produce zero iterations; never erase the previous value.
+  return bindings.get(operands[0]) === null ? [path, bound] : [bound];
 }
 
 function closeFrames(path, pops) {
@@ -317,10 +321,25 @@ function dedupe(paths) {
   // Too many paths to follow exactly: keep every directory and both statuses, forget the
   // bindings (later expansions then read as unknown) rather than drop a directory.
   const merged = new Map();
+  const evidence = [
+    ...new Set(
+      distinct.flatMap((path) =>
+        [...path.bindings].flatMap(([key, value]) => (key.startsWith(BINDING_EVIDENCE) ? (value ?? []) : [])),
+      ),
+    ),
+  ];
   for (const path of distinct) {
     for (const status of ['ok', 'fail']) {
       const key = JSON.stringify([path.location, status, path.skipped, path.frames.length]);
-      if (!merged.has(key)) merged.set(key, { ...path, status, bindings: new Map([[FORGOTTEN, null]]) });
+      if (!merged.has(key))
+        merged.set(key, {
+          ...path,
+          status,
+          bindings: new Map([
+            [FORGOTTEN, null],
+            [`${BINDING_EVIDENCE}*`, evidence],
+          ]),
+        });
     }
   }
   return [...merged.values()];

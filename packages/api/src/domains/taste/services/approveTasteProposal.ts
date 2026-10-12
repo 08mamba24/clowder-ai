@@ -6,6 +6,13 @@ import type { TasteDecisionSnapshot } from './taste-decision-snapshot.js';
 
 export type VignetteWriterFn = (proposal: TasteProposal) => Promise<{ slug: string; path: string }>;
 
+export class TasteWriteConflictError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = 'TasteWriteConflictError';
+  }
+}
+
 /** One process-wide coordinator for every route that may publish the same Taste repository. */
 export interface TasteApprovalCoordinator {
   readonly lock: SessionMutex;
@@ -16,7 +23,7 @@ export type ApproveTasteProposalResult =
   | { ok: true; proposal: TasteProposal; recovered: boolean }
   | {
       ok: false;
-      reason: 'not_found' | 'rejected' | 'claim_lost' | 'write_failed';
+      reason: 'not_found' | 'rejected' | 'claim_lost' | 'write_conflict' | 'write_failed';
       error?: string;
       proposal?: TasteProposal;
     };
@@ -159,6 +166,9 @@ async function ensureWriteCheckpoint(
       return exitStage({ ok: false, reason: 'write_failed', error: errMessage(err), proposal });
     }
     await deps.store.rollbackClaim(proposalId);
+    if (err instanceof TasteWriteConflictError) {
+      return exitStage({ ok: false, reason: 'write_conflict', error: err.code });
+    }
     return exitStage({ ok: false, reason: 'write_failed', error: errMessage(err) });
   }
 

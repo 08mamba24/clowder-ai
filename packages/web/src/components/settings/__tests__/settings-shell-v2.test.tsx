@@ -135,17 +135,17 @@ describe('F322 设置与管理 shell (v2)', () => {
   it('any first-level or second-level item can be pinned; first-level pins are namespaced', () => {
     render('s=system');
     const toggles = [...host.querySelectorAll<HTMLElement>('[data-testid="settings-pin-toggle"]')];
-    act(() => host.querySelector<HTMLElement>('button[aria-label="固定「猫猫团队」到侧栏"]')?.click());
+    act(() => host.querySelector<HTMLElement>('button[aria-label="固定「猫猫团队」到窄栏"]')?.click());
     expect(pins.pin).toHaveBeenLastCalledWith('dest:team');
     // the selected second-level item (old section id) is pinnable
-    act(() => host.querySelector<HTMLElement>('button[aria-label="固定「系统配置」到侧栏"]')?.click());
+    act(() => host.querySelector<HTMLElement>('button[aria-label="固定「系统配置」到窄栏"]')?.click());
     expect(pins.pin).toHaveBeenLastCalledWith('system');
     expect(toggles.length).toBeGreaterThan(11);
   });
 
   it('the Workspace team panel is pinnable under its own identity, not as dest:team', () => {
     render('');
-    act(() => host.querySelector<HTMLElement>('button[aria-label="固定「成员能力与路由状态」到侧栏"]')?.click());
+    act(() => host.querySelector<HTMLElement>('button[aria-label="固定「成员能力与路由状态」到窄栏"]')?.click());
     expect(pins.pin).toHaveBeenLastCalledWith('dest:team-workspace');
   });
 

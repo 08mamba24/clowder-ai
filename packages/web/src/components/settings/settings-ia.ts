@@ -85,7 +85,7 @@ export const SETTINGS_IA: readonly SettingsEntry[] = [
   { id: 'starry', label: '猫猫星球', icon: 'planet', group: 3, destination: { kind: 'route', path: '/starry' } },
   {
     id: 'mission',
-    label: 'Mission Hub',
+    label: '功能看板',
     icon: 'mission',
     group: 3,
     destination: { kind: 'route', path: '/mission-hub' },

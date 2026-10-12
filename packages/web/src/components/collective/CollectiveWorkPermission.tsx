@@ -30,7 +30,6 @@ export function CollectiveWorkPermission({
       aria-modal="false"
       aria-label="授权决定"
       data-testid="collective-work-permission"
-      data-concierge-reserved-rect="collective-work-permission"
       className="absolute bottom-4 right-4 z-30 max-h-[90%] w-[min(380px,calc(100%_-_32px))] overflow-y-auto rounded-xl border border-[var(--console-border-soft)] bg-[var(--console-card-bg)] p-4 text-cafe-primary shadow-[var(--console-elevation-2)]"
     >
       <header className="flex justify-between gap-3">

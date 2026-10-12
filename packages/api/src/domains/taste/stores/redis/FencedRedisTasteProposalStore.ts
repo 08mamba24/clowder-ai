@@ -33,6 +33,7 @@ const REJECT_FENCED_LUA = `
     'rejectionReason', ARGV[5])
   redis.call('ZREM', KEYS[2], ARGV[4])
   redis.call('ZADD', KEYS[3], ARGV[3], ARGV[4])
+  redis.call('ZREM', KEYS[5], ARGV[4])
   redis.call('DEL', KEYS[4])
   return 1
 `;
@@ -76,11 +77,14 @@ export class FencedRedisTasteProposalStore extends RedisTasteProposalStore {
     const now = Date.now();
     const result = await this.authorityRedis.eval(
       REJECT_FENCED_LUA,
-      4,
+      5,
       TasteProposalKeys.detail(id),
       TasteProposalKeys.userPending(userId),
       TasteProposalKeys.userSettled(userId),
       TasteProposalKeys.decisionAuthority(userId, id),
+      proposal.correctionTarget
+        ? TasteProposalKeys.correctionSource(userId, proposal.correctionTarget.sourceAnchor)
+        : TasteProposalKeys.noCorrectionSource,
       fence.token,
       userId,
       String(now),

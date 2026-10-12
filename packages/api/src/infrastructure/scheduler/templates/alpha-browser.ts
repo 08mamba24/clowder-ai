@@ -4,7 +4,12 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { createCatId } from '@cat-cafe/shared';
+import { isCatAvailable } from '../../../config/cat-config-loader.js';
 import type { ITaskStore } from '../../../domains/cats/services/stores/ports/TaskStore.js';
+import {
+  type EngagementPolicyReader,
+  readEngagementPolicy,
+} from '../../../domains/routing-context/ScarceSeatNotificationPolicy.js';
 import type { ExecuteContext } from '../types.js';
 import type { TaskTemplate } from './types.js';
 
@@ -15,6 +20,8 @@ const EXACT_OID = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
 export function supportsAlphaBrowserVerification(repoRoot: string): boolean {
   return [
     'alpha-browser-runner.mjs',
+    'alpha-browser-process.mjs',
+    'alpha-browser-worker.mjs',
     'alpha-browser-checkout.mjs',
     'alpha-browser-failures.mjs',
     'gate-execution-api.mjs',
@@ -32,9 +39,7 @@ interface FailureDraft {
   unitIds: string[];
 }
 interface AlphaRuntime {
-  executionApi: { GATE_EXECUTION_API_VERSION: number };
   runAlphaBrowserRevision(input: Record<string, unknown>): Promise<{ status: string; headSha?: string }>;
-  withAlphaBrowserCheckout(input: Record<string, unknown>, run: unknown): Promise<unknown>;
   alphaBrowserFailureTasks(input: Record<string, unknown>): Promise<FailureDraft[]>;
 }
 interface MainProjection {
@@ -47,6 +52,8 @@ export interface AlphaBrowserOptions {
   ownerUserId: string;
   tasks: Pick<ITaskStore, 'getBySubject' | 'upsertBySubject'>;
   resolveCat(mention: string): string | null;
+  isAvailable?: (catId: string) => boolean;
+  getEngagementPolicy?: EngagementPolicyReader;
   loadRuntime?: () => Promise<AlphaRuntime>;
   inspectMain?: (signal: AbortSignal) => Promise<MainProjection>;
 }
@@ -56,14 +63,8 @@ async function git(repoRoot: string, args: string[], signal?: AbortSignal): Prom
 }
 async function loadRuntime(repoRoot: string): Promise<AlphaRuntime> {
   const load = (name: string) => import(pathToFileURL(join(repoRoot, 'scripts/lib', name)).href);
-  const [runner, checkout, failures, executionApi] = await Promise.all([
-    load('alpha-browser-runner.mjs'),
-    load('alpha-browser-checkout.mjs'),
-    load('alpha-browser-failures.mjs'),
-    load('gate-execution-api.mjs'),
-  ]);
-  if (executionApi.GATE_EXECUTION_API_VERSION !== 1) throw new Error('Unsupported alpha gate execution API');
-  return { ...runner, ...checkout, ...failures, executionApi } as AlphaRuntime;
+  const [worker, failures] = await Promise.all([load('alpha-browser-process.mjs'), load('alpha-browser-failures.mjs')]);
+  return { runAlphaBrowserRevision: worker.runAlphaBrowserProcess, ...failures } as AlphaRuntime;
 }
 async function inspectMain(repoRoot: string, signal: AbortSignal): Promise<MainProjection> {
   await git(repoRoot, ['fetch', 'origin', 'main', '--quiet'], signal);
@@ -76,20 +77,57 @@ async function inspectMain(repoRoot: string, signal: AbortSignal): Promise<MainP
   };
 }
 
+function alphaTriageTarget(options: AlphaBrowserOptions, ownerCatId: string | null, guardianCatId: string): string {
+  const available = options.isAvailable ?? isCatAvailable;
+  const policy = options.getEngagementPolicy ?? readEngagementPolicy;
+  // Historical ownership is evidence, not consent to routine automated work.
+  if (
+    ownerCatId &&
+    options.resolveCat(ownerCatId) === ownerCatId &&
+    available(ownerCatId) &&
+    policy(ownerCatId)?.quota !== 'weekly_subscription_scarce'
+  ) {
+    return ownerCatId;
+  }
+  // The guardian is the explicit selection in the owner-approved subscription.
+  if (options.resolveCat(guardianCatId) !== guardianCatId || !available(guardianCatId)) {
+    throw new Error(`Alpha guardian unavailable: ${guardianCatId}`);
+  }
+  return guardianCatId;
+}
+
 async function notifyAlphaFailure(
+  options: AlphaBrowserOptions,
   ctx: ExecuteContext,
   threadId: string,
-  ownerUserId: string,
-  targetCatId: string,
+  ownerCatId: string | null,
+  guardianCatId: string,
   content: string,
 ): Promise<void> {
   if (!ctx.deliver || !ctx.invokeTrigger) throw new Error('Alpha failure delivery and trigger are required');
+  const targetCatId = alphaTriageTarget(options, ownerCatId, guardianCatId);
+  if (ownerCatId && targetCatId !== ownerCatId) {
+    content += `\n自动核验交给订阅守护者 ${targetCatId}；历史负责人 ${ownerCatId} 当前不接自动核验，原归属记录保留。`;
+  }
   const source = await ctx.deliver({ threadId, content, userId: 'scheduler' });
-  const outcome = await ctx.invokeTrigger.trigger(threadId, targetCatId, ownerUserId, content, source, undefined, {
-    reason: 'scheduled_alpha_browser_triage',
-    sourceCategory: 'scheduled',
-    priority: 'urgent',
-  });
+  // Delivery may yield while roster/policy changes. Retry with a truthful source
+  // message instead of waking the now-ineligible cat or silently changing target.
+  if (alphaTriageTarget(options, ownerCatId, guardianCatId) !== targetCatId) {
+    throw new Error('Alpha triage target changed during delivery; retry with current policy');
+  }
+  const outcome = await ctx.invokeTrigger.trigger(
+    threadId,
+    targetCatId,
+    options.ownerUserId,
+    content,
+    source,
+    undefined,
+    {
+      reason: 'scheduled_alpha_browser_triage',
+      sourceCategory: 'scheduled',
+      priority: 'urgent',
+    },
+  );
   if (outcome !== 'dispatched' && outcome !== 'enqueued') throw new Error(`Alpha wake not accepted: ${outcome}`);
 }
 
@@ -141,7 +179,7 @@ async function reportFailures(
     // Duplicate notifications after a crash are preferable to silently losing
     // the owner/guardian wake and settling an unhandled revision.
     const content = `Alpha 浏览器验证未通过：${draft.testedHeadSha}\n内部 P1：${task.id}\n${task.why}`;
-    await notifyAlphaFailure(ctx, threadId, options.ownerUserId, draft.ownerCatId ?? guardianCatId, content);
+    await notifyAlphaFailure(options, ctx, threadId, draft.ownerCatId, guardianCatId, content);
     refs.push(`task:${task.id}`);
   }
   return refs;
@@ -196,9 +234,6 @@ export function createAlphaBrowserTemplate(options: AlphaBrowserOptions): TaskTe
               ownerPrincipal: `schedule:${options.ownerUserId}:${id}`,
               originTaskId: id,
               signal: ctx.signal,
-              executionApi: runtime.executionApi,
-              withCheckout: (revision: unknown, run: unknown) =>
-                runtime.withAlphaBrowserCheckout({ repoRoot: options.repoRoot, subscriptionId: id, revision }, run),
               reportFailure: (failure: Record<string, unknown>) =>
                 reportFailures(options, runtime, id, threadId, guardian, ctx, failure),
             });

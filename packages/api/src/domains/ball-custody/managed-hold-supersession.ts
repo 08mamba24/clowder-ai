@@ -36,7 +36,7 @@ export type ManagedHoldSupersession =
 function supersedesWake(
   event: BallCustodyEvent,
   outcome: BallEventOutcome | undefined,
-  wake: ManagedHoldWakeIdentity,
+  wakeCatId: string,
   ownReceiverHandoffSourceId: string,
 ): boolean {
   if (!outcome?.accepted) return false;
@@ -49,13 +49,33 @@ function supersedesWake(
     case 'ball.handed':
       return (
         event.sourceEventId !== ownReceiverHandoffSourceId &&
-        (event.payload.fromCatId === wake.catId || event.payload.toCatId === wake.catId)
+        (event.payload.fromCatId === wakeCatId || event.payload.toCatId === wakeCatId)
       );
     case 'ball.handed_cvo':
-      return outcome.stateChanged && event.payload.fromCatId === wake.catId;
+      return outcome.stateChanged && event.payload.fromCatId === wakeCatId;
     default:
       return false;
   }
+}
+
+/**
+ * The first event AFTER `afterIndex` (and before `scanEnd`) that took the ball away from a wake delivered to
+ * `catId`, or `undefined`.
+ *
+ * Shared by every wake protocol (hold, event wait): "was this wake replaced by a later accepted custody source?"
+ * has one answer, decided by replaying the same snapshot through the reducer, never by the projection cache.
+ */
+export function findSupersedingEvent(
+  events: readonly BallCustodyEvent[],
+  input: { afterIndex: number; scanEnd: number; catId: string; ownReceiverHandoffSourceId: string },
+): BallCustodyEvent | undefined {
+  const scanEnd = Math.min(events.length, input.scanEnd);
+  const outcomes = replayBallCustodyOutcomes(events, scanEnd);
+  for (let index = input.afterIndex + 1; index < scanEnd; index += 1) {
+    const event = events[index] as BallCustodyEvent;
+    if (supersedesWake(event, outcomes[index], input.catId, input.ownReceiverHandoffSourceId)) return event;
+  }
+  return undefined;
 }
 
 /**
@@ -86,16 +106,13 @@ export function classifyManagedHoldWake(
   );
   if (exactWakeIndex === -1) return { kind: 'wake_missing' };
 
-  const ownReceiverHandoffSourceId = handedEventSourceId(wake.sourceMessageId, wake.catId);
-  const scanEnd = Math.min(events.length, Math.max(exactWakeIndex + 1, boundarySequence));
-  const outcomes = replayBallCustodyOutcomes(events, scanEnd);
-  for (let index = exactWakeIndex + 1; index < scanEnd; index += 1) {
-    const event = events[index] as BallCustodyEvent;
-    if (supersedesWake(event, outcomes[index], wake, ownReceiverHandoffSourceId)) {
-      return { kind: 'superseded', bySourceEventId: event.sourceEventId };
-    }
-  }
-  return { kind: 'live' };
+  const superseding = findSupersedingEvent(events, {
+    afterIndex: exactWakeIndex,
+    scanEnd: Math.max(exactWakeIndex + 1, boundarySequence),
+    catId: wake.catId,
+    ownReceiverHandoffSourceId: handedEventSourceId(wake.sourceMessageId, wake.catId),
+  });
+  return superseding ? { kind: 'superseded', bySourceEventId: superseding.sourceEventId } : { kind: 'live' };
 }
 
 /**

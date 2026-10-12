@@ -140,6 +140,9 @@ async function open({
       return handler.fulfill({ contentType: 'application/json', body: JSON.stringify({ cats }) });
     if (url.pathname === '/api/config/cat-order')
       return handler.fulfill({ contentType: 'application/json', body: JSON.stringify({ catOrder: [] }) });
+    // ThemeApplier asks the server for a saved theme when this browser has none; the answer is "nothing saved".
+    if (url.pathname === '/api/config/env-summary')
+      return handler.fulfill({ contentType: 'application/json', body: JSON.stringify({ variables: [] }) });
     if (url.pathname.startsWith('/api/')) {
       unexpected.push(request.url());
       return handler.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
@@ -161,6 +164,8 @@ async function open({
   }
   await page.waitForSelector('#f056-dynamic-cat-tokens', { state: 'attached' });
   await page.evaluate(([b, v]) => window.__human.applyTheme(b, v), [base, variant]);
+  // The real ThemeApplier has put the theme on the page, resolved against the cats and the human colour in this config.
+  await page.evaluate(() => window.__human.applied());
   await page.evaluate(() =>
     Promise.all(Array.from(document.images).map((img) => (img.complete ? null : img.decode().catch(() => null)))),
   );
@@ -445,11 +450,13 @@ test('the colour follows the config through the F056 roles, and no colour set me
   const { page, context } = await open({ shell: 'v2', color: COCOA });
   const before = await measure(page, 'h-short');
   await page.evaluate((c) => window.__human.setColor(c), SAVED);
+  await page.evaluate(() => window.__human.applied());
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   const afterChange = await measure(page, 'h-short');
   assert.ok(!same(before.bubble.fill, afterChange.bubble.fill), 'config change -> the fill follows');
   assert.ok(same(afterChange.bubble.fill, afterChange.resolved.cocreatorSurface), 'to the role');
   await page.evaluate(() => window.__human.setColor(null));
+  await page.evaluate(() => window.__human.applied());
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   const removed = await measure(page, 'h-short');
   assert.ok(same(removed.bubble.fill, before.bubble.fill), 'colour taken away -> back to cocoa');
@@ -638,6 +645,7 @@ test('changing the human colour to an opaque 8-digit one at runtime moves the re
   const before = await page.evaluate(measureReplyTintsInPage());
   assert.equal(before.pill, 'rgba(102, 102, 255, 0.125)');
   await page.evaluate(() => window.__human.setColor({ primary: '#cc3333ff', secondary: '#ffffff' }));
+  await page.evaluate(() => window.__human.applied());
   await page.waitForTimeout(500);
   const after = await page.evaluate(measureReplyTintsInPage());
   await context.close();

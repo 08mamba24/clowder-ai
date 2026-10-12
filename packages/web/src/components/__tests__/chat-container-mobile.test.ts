@@ -2,6 +2,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatContainer } from '@/components/ChatContainer';
+import { writeShellPresentation } from '@/components/shell/shell-presentation';
 import { ThreadChatRuntimeProvider } from '@/components/thread-chat';
 import { createArtifactReviewSurface } from '@/components/workbench/artifact-review-surface';
 import {
@@ -9,10 +10,11 @@ import {
   reduceArtifactWorkPresentation,
 } from '@/components/workbench/artifact-work-presentation';
 import { useF307ExperienceWorkbenchStore } from '@/components/workbench/experience-workbench-store';
-import { createEvolutionProgramSurface } from '@/components/workbench/real-surface-adapters';
+import { createBrowserSurface, createEvolutionProgramSurface } from '@/components/workbench/real-surface-adapters';
 import { createInitialWorkbenchState } from '@/components/workbench/workbench-model';
 import type { ChatMessage as ChatMessageData, QueueEntry } from '@/stores/chat-types';
 import { useSidebarStore } from '@/stores/sidebarStore';
+import { CHAT_LAYOUT_CHANGED_EVENT, isChatReadingCaptureRequest } from '@/utils/chat-layout-change';
 
 function renderChatContainer(threadId: string) {
   return React.createElement(
@@ -357,6 +359,8 @@ describe('ChatContainer mobile interactions', () => {
 
   afterEach(() => {
     act(() => root.unmount());
+    writeShellPresentation('classic');
+    localStorage.removeItem('cat-cafe:chatBasis');
     container.remove();
     vi.restoreAllMocks();
   });
@@ -603,7 +607,18 @@ describe('ChatContainer mobile interactions', () => {
     expect(mockCloseRightPanel).toHaveBeenCalledOnce();
   });
 
-  it('closes the mobile Workspace overlay through a visible shell control', async () => {
+  it.each([
+    { presentation: 'classic' as const, desktop: false, foldVisible: true },
+    { presentation: 'v2' as const, desktop: false, foldVisible: true },
+    { presentation: 'v2' as const, desktop: true, foldVisible: true },
+    { presentation: 'classic' as const, desktop: true, foldVisible: false },
+  ])('keeps the $presentation host fold action correct on desktop=$desktop', async ({
+    presentation,
+    desktop,
+    foldVisible,
+  }) => {
+    writeShellPresentation(presentation);
+    mockMatchMedia(desktop);
     mockRightPanelOpen = true;
     mockRightPanelMode = 'workspace';
     await act(async () => {
@@ -611,11 +626,49 @@ describe('ChatContainer mobile interactions', () => {
     });
 
     const fold = container.querySelector<HTMLButtonElement>('[data-testid="workspace-shell-fold"]');
-    expect(fold).toBeTruthy();
-    if (!fold) throw new Error('mobile Workspace fold control is missing');
-    await act(async () => fold.click());
+    expect(Boolean(fold)).toBe(foldVisible);
+    if (foldVisible) {
+      if (!fold) throw new Error('the Workspace host fold control is missing');
+      const order: string[] = [];
+      const onCapture = (event: Event) => {
+        if (isChatReadingCaptureRequest(event)) order.push('capture');
+      };
+      mockCloseRightPanel.mockImplementation(() => order.push('close'));
+      window.addEventListener(CHAT_LAYOUT_CHANGED_EVENT, onCapture);
+      try {
+        await act(async () => fold.click());
+        expect(mockCloseRightPanel).toHaveBeenCalledOnce();
+        expect(order).toEqual(presentation === 'v2' ? ['capture', 'close'] : ['close']);
+      } finally {
+        window.removeEventListener(CHAT_LAYOUT_CHANGED_EVENT, onCapture);
+      }
+    } else {
+      expect(mockCloseRightPanel).not.toHaveBeenCalled();
+    }
+  });
 
-    expect(mockCloseRightPanel).toHaveBeenCalledOnce();
+  it.each([
+    'v2',
+    'classic',
+  ] as const)('captures the %s reading owner before opening Workspace', async (presentation) => {
+    writeShellPresentation(presentation);
+    mockMatchMedia(true);
+    await act(async () => root.render(renderChatContainer('test-thread')));
+    const order: string[] = [];
+    const onCapture = (event: Event) => {
+      if (isChatReadingCaptureRequest(event)) order.push('capture');
+    };
+    mockSetRightPanelMode.mockImplementation(() => order.push('mode'));
+    mockSetRightPanelOpen.mockImplementation(() => order.push('open'));
+    window.addEventListener(CHAT_LAYOUT_CHANGED_EVENT, onCapture);
+    try {
+      const toggle = container.querySelector<HTMLButtonElement>('[data-testid="workspace-toggle"]');
+      expect(toggle).not.toBeNull();
+      await act(async () => toggle?.click());
+      expect(order).toEqual(presentation === 'v2' ? ['capture', 'mode', 'open'] : ['mode', 'open']);
+    } finally {
+      window.removeEventListener(CHAT_LAYOUT_CHANGED_EVENT, onCapture);
+    }
   });
 
   it('keeps Workspace mounted across fold and sibling-host switches', async () => {
@@ -947,6 +1000,34 @@ describe('ChatContainer mobile interactions', () => {
       else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetWidth;
     }
   }
+
+  it('keeps a v2 browser on the original Chat split preference and resize owner', async () => {
+    mockMatchMedia(true);
+    mockRightPanelOpen = true;
+    mockRightPanelMode = 'workspace';
+    localStorage.setItem('cat-cafe:chatBasis', '62');
+    writeShellPresentation('v2');
+    const browser = createBrowserSurface({ ownerKey: 'browser-ratio', port: 5324, path: '/browser-owner-probe' });
+    useF307ExperienceWorkbenchStore.setState({
+      layout: createInitialWorkbenchState([browser]),
+      artifactWorkPresentation: createArtifactWorkPresentationState(37),
+    });
+    const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth');
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get: () => 1000 });
+    try {
+      await act(async () => root.render(renderChatContainer('test-thread')));
+      const chat = container.querySelector<HTMLElement>('[data-testid="thread-chat-host"]');
+      expect(chat?.style.flexBasis).toBe('62%');
+      const handle = container.querySelector<HTMLElement>('[role="separator"][aria-label="右侧面板分隔条"]');
+      if (!handle) throw new Error('the normal browser split needs its original resize handle');
+      await act(async () => handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })));
+      expect(chat?.style.flexBasis).not.toBe('62%');
+      expect(useF307ExperienceWorkbenchStore.getState().artifactWorkPresentation.desktopWorkChatBasis).toBe(37);
+    } finally {
+      if (widthDescriptor) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', widthDescriptor);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetWidth;
+    }
+  });
 
   it('resizes the visible Chat basis in transcript mode without an Artifact', async () => {
     const result = await dragRightPanelHandle('transcript', false);

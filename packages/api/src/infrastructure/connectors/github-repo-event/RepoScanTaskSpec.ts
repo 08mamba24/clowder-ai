@@ -21,6 +21,7 @@ import type { IConnectorThreadBindingStore } from '../ConnectorThreadBindingStor
 import { type InboxThreadStore, selfHealInboxThreadKind } from './inbox-thread-resolver.js';
 import type { ReconciliationDedup } from './ReconciliationDedup.js';
 import type { ResolveRepoInboxCatId } from './RepoInboxOwnerResolver.js';
+import { REPO_INBOX_WAKE_POLICY, type RepoInboxWakeTrigger } from './repo-inbox-wake-policy.js';
 import type { RepoInboxSignal } from './types.js';
 
 /** Minimal projector interface — only apply() needed here. */
@@ -71,15 +72,7 @@ export interface RepoScanTaskSpecOptions {
   threadStore?: Pick<InboxThreadStore, 'get' | 'updateThreadKind'>;
   deliverFn: (deps: ConnectorDeliveryDeps, input: ConnectorDeliveryInput) => Promise<ConnectorDeliveryResult>;
   deliveryDeps: ConnectorDeliveryDeps;
-  invokeTrigger: {
-    trigger(
-      threadId: string,
-      catId: CatId,
-      userId: string,
-      message: string,
-      messageId: string,
-    ): void | Promise<unknown>;
-  };
+  invokeTrigger: RepoInboxWakeTrigger;
   fetchOpenPRs: (repo: string, signal?: AbortSignal) => Promise<GhPrItem[]>;
   fetchOpenIssues: (repo: string, signal?: AbortSignal) => Promise<GhIssueItem[]>;
   log: { info(...args: unknown[]): void; warn(...args: unknown[]): void };
@@ -366,6 +359,8 @@ export function createRepoScanTaskSpec(opts: RepoScanTaskSpecOptions): TaskSpec_
               opts.defaultUserId,
               content,
               delivered.messageId,
+              undefined,
+              REPO_INBOX_WAKE_POLICY,
             ),
           );
         } catch {

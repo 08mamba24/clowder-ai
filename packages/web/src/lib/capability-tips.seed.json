@@ -94,60 +94,12 @@
     },
     "contexts": ["thinking", "feature_dev", "review"],
     "audience": ["cvo"],
-    "body": "觉得猫猫在做临时方案？试试说「脚手架」，它会停下来重新审视是不是终态设计。",
+    "body": "临时方案被当成完整交付？说「脚手架」，猫会对照原托付补齐真实使用路径；你明确要求的原型仍按原型范围交付。",
     "action": {
       "type": "open_concierge_draft",
       "label": "了解更多"
     },
     "owner": "codex"
-  },
-  {
-    "id": "magic-word-detour",
-    "kind": "magic_word",
-    "sourceRef": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "「绕路了」"
-    },
-    "structureSource": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "Magic Words"
-    },
-    "bodySource": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "「绕路了」"
-    },
-    "contexts": ["thinking", "long_running", "feature_dev"],
-    "audience": ["cvo"],
-    "body": "觉得猫猫在绕远路？说一声「绕路了」，它会停下来找最直线的路径。",
-    "action": {
-      "type": "open_concierge_draft",
-      "label": "了解更多"
-    },
-    "owner": "opus"
-  },
-  {
-    "id": "magic-word-meow-pact",
-    "kind": "magic_word",
-    "sourceRef": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "「喵约」"
-    },
-    "structureSource": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "Magic Words"
-    },
-    "bodySource": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "「喵约」"
-    },
-    "contexts": ["thinking", "long_running"],
-    "audience": ["cvo"],
-    "body": "猫猫好像忘了约定？说「喵约」，它会重新对照家规逐条检查自己的行为。",
-    "action": {
-      "type": "open_concierge_draft",
-      "label": "了解更多"
-    },
-    "owner": "opus"
   },
   {
     "id": "magic-word-star-jar",
@@ -166,7 +118,7 @@
     },
     "contexts": ["thinking", "long_running", "feature_dev"],
     "audience": ["cvo"],
-    "body": "发现不可逆风险？说「星星罐子」——猫猫会立即冻结一切操作，等你指示。",
+    "body": "发现不可逆风险？说「星星罐子」——猫会立即停止新增操作，不发命令、不写文件、不 push，等你指示。",
     "action": {
       "type": "open_concierge_draft",
       "label": "了解更多"
@@ -178,7 +130,7 @@
     "kind": "magic_word",
     "sourceRef": {
       "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "「第一性原理」"
+      "anchor": "「第一性原理／数学之美」"
     },
     "structureSource": {
       "path": "cat-cafe-skills/refs/shared-rules.md",
@@ -186,83 +138,11 @@
     },
     "bodySource": {
       "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "「第一性原理」"
+      "anchor": "「第一性原理／数学之美」"
     },
     "contexts": ["thinking", "feature_dev", "review"],
     "audience": ["cvo"],
-    "body": "方案太复杂？说「第一性原理」或「数学之美」，猫猫会砍掉多余的层只留必需的。",
-    "action": {
-      "type": "open_concierge_draft",
-      "label": "了解更多"
-    },
-    "owner": "opus"
-  },
-  {
-    "id": "magic-word-next-time-for-sure",
-    "kind": "magic_word",
-    "sourceRef": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "「下次一定」"
-    },
-    "structureSource": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "Magic Words"
-    },
-    "bodySource": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "「下次一定」"
-    },
-    "contexts": ["thinking", "long_running", "feature_dev"],
-    "audience": ["cvo"],
-    "body": "猫猫在说「已规划」但其实没做？说「下次一定」——要么现在做，要么明确说做不了。",
-    "action": {
-      "type": "open_concierge_draft",
-      "label": "了解更多"
-    },
-    "owner": "opus"
-  },
-  {
-    "id": "magic-word-i-can-guess",
-    "kind": "magic_word",
-    "sourceRef": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "「我能猜出来」"
-    },
-    "structureSource": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "Magic Words"
-    },
-    "bodySource": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "「我能猜出来」"
-    },
-    "contexts": ["thinking", "long_running", "review"],
-    "audience": ["cvo"],
-    "body": "猫猫在推理而不是查文件？说「我能猜出来」，它会停下去读源文件而不是凭记忆猜。",
-    "action": {
-      "type": "open_concierge_draft",
-      "label": "了解更多"
-    },
-    "owner": "opus"
-  },
-  {
-    "id": "magic-word-enough-fragments",
-    "kind": "magic_word",
-    "sourceRef": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "「碎片够了」"
-    },
-    "structureSource": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "Magic Words"
-    },
-    "bodySource": {
-      "path": "cat-cafe-skills/refs/shared-rules.md",
-      "anchor": "「碎片够了」"
-    },
-    "contexts": ["thinking", "long_running"],
-    "audience": ["cvo"],
-    "body": "猫猫找到一条线索就下结论了？说「碎片够了」，它会多搜几轮不同角度再判断。",
+    "body": "方案堆了太多层？说「第一性原理」或「数学之美」，猫会回到目标与必要约束，删去说不清必要性的机制。",
     "action": {
       "type": "open_concierge_draft",
       "label": "了解更多"
@@ -286,12 +166,60 @@
     },
     "contexts": ["thinking", "long_running", "feature_dev"],
     "audience": ["cvo"],
-    "body": "猫猫在逐个修补却不看全局？说「补锅匠」，它会停下来做全面审查找同类问题。",
+    "body": "猫在逐点补锅？说「补锅匠」，它会追根因，修复受影响的同类问题并验证，不无界扩成全仓重构。",
     "action": {
       "type": "open_concierge_draft",
       "label": "了解更多"
     },
     "owner": "opus"
+  },
+  {
+    "id": "magic-word-unknown-first",
+    "kind": "magic_word",
+    "sourceRef": {
+      "path": "cat-cafe-skills/refs/shared-rules.md",
+      "anchor": "「四象限／unknown-first」"
+    },
+    "structureSource": {
+      "path": "cat-cafe-skills/refs/shared-rules.md",
+      "anchor": "Magic Words"
+    },
+    "bodySource": {
+      "path": "cat-cafe-skills/refs/shared-rules.md",
+      "anchor": "「四象限／unknown-first」"
+    },
+    "contexts": ["thinking", "long_running", "feature_dev"],
+    "audience": ["cvo"],
+    "body": "担心只验证了自己知道的部分？说「四象限」或「unknown-first」，猫会先验证最可能推翻方案的未知，不只填表。",
+    "action": {
+      "type": "open_concierge_draft",
+      "label": "了解更多"
+    },
+    "owner": "codex-astra"
+  },
+  {
+    "id": "magic-word-titanium",
+    "kind": "magic_word",
+    "sourceRef": {
+      "path": "cat-cafe-skills/refs/shared-rules.md",
+      "anchor": "「钛合金裤衩子／钛合金内裤」"
+    },
+    "structureSource": {
+      "path": "cat-cafe-skills/refs/shared-rules.md",
+      "anchor": "Magic Words"
+    },
+    "bodySource": {
+      "path": "cat-cafe-skills/refs/shared-rules.md",
+      "anchor": "「钛合金裤衩子／钛合金内裤」"
+    },
+    "contexts": ["thinking", "long_running", "feature_dev"],
+    "audience": ["cvo"],
+    "body": "猫被层层防御或 blocker 困住？说「钛合金裤衩子」或「钛合金内裤」，它会去掉无必要限制、沿可用路径推进，同时把设施故障交给负责人。",
+    "action": {
+      "type": "open_concierge_draft",
+      "label": "了解更多"
+    },
+    "owner": "codex-astra"
   },
   {
     "id": "capability-rich-messaging",
@@ -671,7 +599,7 @@
     },
     "bodySource": {
       "path": "cat-cafe-skills/memory-search-best-practices/SKILL.md",
-      "anchor": "query、scope、语言或工具切片不得升级"
+      "anchor": "query、scope、语言和工具切片不得拆成"
     },
     "contexts": ["thinking", "long_running"],
     "audience": ["cvo"],
@@ -2217,6 +2145,31 @@
     "owner": "codex-sol"
   },
   {
+    "id": "feature-f322-new-conversation",
+    "kind": "feature",
+    "sourceRef": {
+      "path": "DESIGN.md",
+      "anchor": "建对话时就能起名、勾置顶"
+    },
+    "structureSource": {
+      "path": "packages/web/src/components/new-conversation/NewConversationPage.tsx",
+      "anchor": "NewConversationPage"
+    },
+    "bodySource": {
+      "path": "DESIGN.md",
+      "anchor": "建对话时就能起名、勾置顶"
+    },
+    "contexts": ["thinking", "concierge_open"],
+    "audience": ["cvo", "developer"],
+    "body": "在新对话页可以先起名、按需勾选「建好后置顶」，也能选择项目、浏览文件夹和想合作的猫；发送第一条消息后，系统才会创建真实对话，并把这些选择一起带进去。",
+    "action": {
+      "type": "open_capability_surface",
+      "label": "打开新对话",
+      "surfaceId": "new-conversation"
+    },
+    "owner": "codex-sol"
+  },
+  {
     "id": "capability-concept-demo-design",
     "kind": "capability",
     "sourceRef": {
@@ -2858,5 +2811,180 @@
       "draftPrompt": "请解释回复徽标里「请求模型 → 上游应答模型」的含义，并帮我找出最近哪些 Codex 回复被替换成了别的模型。"
     },
     "owner": "fable-5"
+  },
+  {
+    "id": "feature-f321-preview-unified-search",
+    "kind": "feature",
+    "sourceRef": {
+      "path": "docs/features/F321-memory-sky-experience-loop.md",
+      "anchor": "按星球/列表/搜索找到一条"
+    },
+    "structureSource": {
+      "path": "packages/web/src/components/memory/page/MemorySearch.tsx",
+      "anchor": "MemorySearchBox"
+    },
+    "bodySource": {
+      "path": "packages/web/src/components/memory/page/MemorySearch.tsx",
+      "anchor": "MemorySearchBox"
+    },
+    "contexts": ["thinking", "feature_dev", "concierge_open"],
+    "audience": ["cvo"],
+    "body": "想找一句原话或一条资料时，新版侧栏的“记忆”页顶栏可以一起搜记忆、文档和对话；结果旁的“⋯”能展开已接入的关系图。看到“部分可核对”时，结果不是整个索引的总数。",
+    "action": {
+      "type": "open_concierge_draft",
+      "label": "打开记忆搜索",
+      "draftPrompt": "请打开 /memory?tab=all&shell=v2，带我用顶栏搜索记忆、文档和对话，并说明本次结果的读取范围。"
+    },
+    "owner": "codex61-sol"
+  },
+  {
+    "id": "feature-f321-owner-memory-actions",
+    "kind": "feature",
+    "sourceRef": {
+      "path": "docs/features/F321-memory-sky-experience-loop.md",
+      "anchor": "AC-A3"
+    },
+    "structureSource": {
+      "path": "packages/web/src/components/memory/page/MemoryFamilyPane.tsx",
+      "anchor": "MemoryFamilyPane"
+    },
+    "bodySource": {
+      "path": "docs/features/F321-memory-sky-experience-loop.md",
+      "anchor": "AC-A3"
+    },
+    "contexts": ["feature_dev", "concierge_open"],
+    "audience": ["cvo"],
+    "body": "想核对或改掉已记住的内容，从侧栏“记忆”选品味、画像、人物、实体或事件，再打开条目看来源。概括候选可以先改再确认；“忘掉”会要求永久确认，记录引用的原始对话仍保留。",
+    "action": {
+      "type": "open_concierge_draft",
+      "label": "查看已记住的内容",
+      "draftPrompt": "请打开 /memory?tab=all&shell=v2，带我核对一条已记住的内容、出处及可用的修改操作。先浏览，不替我提交修改或遗忘。"
+    },
+    "owner": "codex61-sol"
+  },
+  {
+    "id": "feature-f321-index-recall-settings",
+    "kind": "feature",
+    "sourceRef": {
+      "path": "docs/features/F321-memory-sky-experience-loop.md",
+      "anchor": "AC-A7"
+    },
+    "structureSource": {
+      "path": "packages/web/src/components/settings/MemorySettingsContent.tsx",
+      "anchor": "MemorySettingsContent"
+    },
+    "bodySource": {
+      "path": "packages/web/src/components/settings/MemorySettingsContent.tsx",
+      "anchor": "索引与召回"
+    },
+    "contexts": ["feature_dev", "concierge_open"],
+    "audience": ["cvo"],
+    "body": "记忆页提示索引需要核对时，从资料库右栏的“索引与服务设置”直达“索引与召回”：在那里查看索引、嵌入服务和实际召回模式。读不到可重试；待维护的文档仍在资料库里查看。",
+    "action": {
+      "type": "open_concierge_draft",
+      "label": "查看索引与召回设置",
+      "draftPrompt": "请打开 /settings?s=ops&ops=memory，带我查看索引、嵌入服务和召回模式，说明哪些状态已读到、哪些需要重读。"
+    },
+    "owner": "codex61-sol"
+  },
+  {
+    "id": "capability-codex-account-notes-and-switching",
+    "kind": "capability",
+    "sourceRef": {
+      "path": "docs/features/F320-multi-oauth-account-switching.md",
+      "anchor": "AC-A5"
+    },
+    "structureSource": {
+      "path": "packages/web/src/components/HubAccountsTab.tsx",
+      "anchor": "HubAccountsTab"
+    },
+    "bodySource": {
+      "path": "packages/web/src/components/codex-accounts/CodexAccountCard.tsx",
+      "anchor": "修改备注"
+    },
+    "contexts": ["concierge_open"],
+    "audience": ["cvo"],
+    "body": "工作和私人 Codex 账号容易混淆？在设置的「账户与密钥」里给账号写备注，登录后核对官方身份；换绑前先看受影响成员，在途回复仍记录开始时的账号。",
+    "action": {
+      "type": "open_concierge_draft",
+      "label": "找到 Codex 账号设置",
+      "draftPrompt": "请带我到设置里的账户与密钥，找到 Codex 登录账号；先核对当前支持的原生版本和账号类型，再指导我添加备注、官方登录和预览换绑。不要替我授权，也不要自动更换在途调用的账号。"
+    },
+    "owner": "codex61-sol"
+  },
+  {
+    "id": "feature-f321-luna-curation",
+    "kind": "feature",
+    "sourceRef": {
+      "path": "docs/features/F321-memory-sky-experience-loop.md",
+      "anchor": "Luna v1 推进暂停，原七天试跑作废"
+    },
+    "structureSource": {
+      "path": "packages/web/src/components/settings/MemoryCurationSettings.tsx",
+      "anchor": "MemoryCurationSettings"
+    },
+    "bodySource": {
+      "path": "docs/features/F321-memory-sky-experience-loop.md",
+      "anchor": "Luna v1 推进暂停，原七天试跑作废"
+    },
+    "contexts": ["feature_dev", "concierge_open"],
+    "audience": ["cvo"],
+    "body": "到设置里的“索引与召回”查看“记忆整理”的实际开关状态。开启过整理后，可从“运行记录与花费”进入记录线程，查看每次运行的消息数与 token。",
+    "action": {
+      "type": "open_concierge_draft",
+      "label": "打开记忆整理设置",
+      "draftPrompt": "请打开 /settings?s=ops&ops=memory，带我查看记忆整理的实际开关状态和运行记录。先说明当前状态，不替我改变开关。"
+    },
+    "owner": "codex61-sol"
+  },
+  {
+    "id": "capability-learning-companion",
+    "kind": "capability",
+    "sourceRef": {
+      "path": "cat-cafe-skills/learning-companion/SKILL.md",
+      "anchor": "接住这一次共读"
+    },
+    "structureSource": {
+      "path": "cat-cafe-skills/learning-companion/SKILL.md",
+      "anchor": "按阅读方式成稿"
+    },
+    "bodySource": {
+      "path": "cat-cafe-skills/learning-companion/SKILL.md",
+      "anchor": "陪着讨论，猫也带来自己的问题"
+    },
+    "contexts": ["thinking", "concierge_open"],
+    "audience": ["all"],
+    "body": "读论文、访谈或书中一段时，把材料和想弄明白的问题交给猫一起读；可以准备带来源的阅读稿或口播稿，听完继续讨论、找反例，再从停下的地方续读。",
+    "action": {
+      "type": "open_concierge_draft",
+      "label": "一起读这份材料",
+      "draftPrompt": "请和我一起读这份材料，先围绕我关心的问题保留作者的论证和来源，再带一个反例或新问题一起讨论。"
+    },
+    "owner": "codex61-sol"
+  },
+  {
+    "id": "feature-thread-artifacts-discovery",
+    "kind": "feature",
+    "sourceRef": {
+      "path": "docs/features/F232-thread-artifacts-panel.md",
+      "anchor": "User Journey"
+    },
+    "structureSource": {
+      "path": "docs/features/F232-thread-artifacts-panel.md",
+      "anchor": "AC-A3"
+    },
+    "bodySource": {
+      "path": "docs/features/F232-thread-artifacts-panel.md",
+      "anchor": "旅程 1"
+    },
+    "contexts": ["concierge_open", "pet_waiting_for_user"],
+    "audience": ["all"],
+    "body": "忘了这条对话产物的名字？在桌面的工作区打开“产物”，按类型或名字片段查找，再查看内容或跳回原消息。",
+    "action": {
+      "type": "open_concierge_draft",
+      "label": "找这条对话的产物",
+      "draftPrompt": "请带我在桌面工作区的产物入口查找这条对话已经生成的内容，说明怎样按类型或名字片段筛选并回到原消息。"
+    },
+    "owner": "codex61-sol"
   }
 ]

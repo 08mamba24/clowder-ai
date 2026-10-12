@@ -3,7 +3,7 @@ feature_ids: [F309]
 related_features: [F063, F138, F202, F290, F307, F310, F322]
 topics: [collaborative-content, co-editing, change-awareness, selection-anchors, annotations, agent-patch, office, media]
 doc_kind: spec
-tips_exempt: "2026-09-26 Phase U artwork focus teaches each action in its mounted canvas (放大标注/圈选, 适合窗口, 完成文字, 完成并保存); a background capability tip would appear away from the artwork and cannot perform the contextual action. The parent Alpha still owns product acceptance."
+tips_exempt: "Renewed 2026-10-02 for Studio K1/K2 backend: the new takeover MCP is an authenticated Cat-internal bridge from the Human's already-sent, revision-bound message; the Human action remains the mounted Chat/candidate/receipt journey and teaches itself in context. A generic tip would expose internal sourceMessageId/operationId mechanics before the Sonnet consumer and parent Alpha are accepted. The 2026-09-26 artwork-focus in-canvas rationale remains unchanged."
 design_gate_claim_contracts:
   - docs/design-gate-claims/f309-artwork-review-real-shell.json
 created: 2026-08-27
@@ -467,8 +467,6 @@ Phase R 的具名猫入口按上述授权登记为 `cat_cafe_prepare_artifact_re
 - **两组结尾不混用。** Task作品的“通过此版本 / 要求修改”只归还该轮审阅结论，不等于整个Task完成，不写文件；workspace文件的“采用并写回 / 不采用”沿原显式接受与SHA-CAS，只有 `applied` 才显示已写回，`conflict` / `unknown` 分别照实呈现并保留结果。发送修改要求不等于采用新版。
 - **成功才结束这次编辑。** 只清理回执确认的本次提交；失败/unknown保留并核同一operation，迟到成功不覆盖后来输入或独立评论草稿。退出大画布不等于保存或取消。移除整块画布的原生长悬停提示，说明放在不遮挡操作的状态提示/帮助中，保留无障碍命名。
 
-**仍未冻结。** 过程展示三层、“召回 N”、收起聊天整窗看作品仍为讨论，不因1331或PR4965批准而生效；K1渐变名牌无气泡已选，但暗色稿未完成。聊天并排时的新版对比/决定画面仍待补；50%不是验收阈值，视频素材库也不借图片规范同步宣称交付。删除“只保存、不叫猫”入口是设计推论，不是operator逐字授权删除已有草稿/保存能力；需以真实发送与保存合同验证，不扩大执行权限。
-
 **身份。** 经 owner 证明为同一内容、精确版本和协作上下文的多个入口必须解析到同一协作会话与账本；来源页面只影响返回。不同发布副本、权限域或独立审阅轮次即使 bytes 相同，也不能按 URL、名称或 hash 猜合并。既有对象通过显式、可验证映射复用；一对多时说明上下文选择，不能静默取首项。旧链接、历史版本、刷新与重新打开都必须经过同一解析规则。
 
 **旧文件缺目录（2026-09-20父线程确认）。** 无原目录证明的旧相对路径产物，在预览前由用户一次选择具名目录；只有一个候选也不自动猜，明确打开的是当前所选文件。选择按用户/原thread/精确产物持久保留，重开核验，失效不偷偷换；可显式重新选择，不迁移或合并原讨论/草稿。绝对路径或可信新来源经F063核验直接打开，共用完整文件landing和返回。此恢复选择不授予权限、不建Task、不回填历史，不把枚举错误当不存在。完整交互及原件A消失只剩同名B的反例见计划§2/§6。
@@ -581,9 +579,9 @@ remap/rebase/conflict/orphan 旅程后再 KEEP。
 ### Phase U 文本旅程：选区批注进入同一聊天引用链
 
 - **Scope unit:** 一个普通Markdown/代码文件的真实选区与同一quote attachment；来源为child CVO095/098四图，父Astra按CVO904确认。
-- **Flow:** 从tree/Home/聊天文件链接进入共同landing → 选文并在原就地卡填写评论 → Enter/加入当前聊天 → 输入框出现可展开、移除的annotation卡片 → 人明确发送 → 猫收到同一选文/评论/workspace_file来源。加入阶段不发送、不建Task、不在F309另写新文本批注；原文件编辑和明确请猫修改→diff→接受写回继续可用。
+- **Flow:** 从tree/Home/聊天文件链接进入共同landing → 选文并在原就地卡填写评论 → Enter/加入当前聊天 → 输入框出现可展开、移除的annotation卡片，文件旁出现可操作的编号 → 点击编号重开原批注卡、修改说明或移除，并同步同一输入框草稿 → 人明确发送 → 猫收到最终选文/评论/workspace_file来源。加入与改批注阶段不发送、不建Task、不在F309另写新文本批注；原文件编辑和明确请猫修改→diff→接受写回继续可用。
 - **Compatibility:** 旧F309文本讨论继续读/回复；旧草稿与未知提交先恢复/核receipt，不静默迁移。图片/视频与DOCX不因此裁掉既有能力。
-- **Evidence required:** 真实宿主入口、陌生输入与IME/换行、390px、发送前后结构化载荷/来源回跳及旧草稿兼容；共享组件单测不证明已交付。当前为确认合同，非PASS。
+- **Evidence required:** 真实宿主入口、陌生输入与IME/换行、390px、文件侧编号重开编辑/移除与同一聊天草稿同步、发送前后结构化载荷/来源回跳及旧草稿兼容；共享组件单测不证明已交付。当前为确认合同，非PASS。
 
 ### Phase U 作品体验旅程：聊天与图片并排、发送可见与原位返回
 
@@ -644,8 +642,13 @@ remap/rebase/conflict/orphan 旅程后再 KEEP。
 | R30 | 文件引用绑定 F063 提供的确切源版本；旧引用缺版本或源漂移时诚实显示，不按旧行号/DOM 偏移猜新位置 | AC-U6, AC-U8 | F063 ContextAttachment schema、消息/草稿/模型消费兼容；同路径改内容、重复选文、旧无版本引用反例 | [ ] |
 | R31 | 同一文件同一源版本的一次发送可携带多处独立选区，合为一个修改请求，原话一份、各处稳定编号 | AC-U6, AC-U8 | 两处选区一次承接/一次候选返回/逐处核对；不合大框、不拆成多次提交；旧单选区可读 | [ ] |
 | R32 | 采用、不采用、写回冲突或结果未知的真实记录投影进原聊天，并可由原负责猫消费；候选可从聊天回到对应 diff | AC-U6, AC-U8 | 真实 accept/reject/CAS conflict/unknown → 同 request/candidate/receipt 回执；恢复不重复、不冒充人、不自动重写 | [ ] |
+| R33 | 文档旁待发送批注编号与聊天红点一样可重开编辑、移除，并同步原聊天草稿 | AC-U15 | CVO444实拍；编号点击/键盘、单条及同段多条、原附件身份、修改/移除后发送载荷与恢复 | [ ] |
 
 ### Studio K1/K2 后端补齐登记（2026-10-02）
+
+Architecture cell: `collaborative-content-plane` + `hub-action-surface`
+Map delta: updated — `collaborative-content-plane` records message takeover and immutable chat-receipt owners; `hub-action-surface` keeps the existing revision-bound ContextAttachment transport.
+Why: F309 derives request identity, Task continuation and result projection without taking F063 bytes/writeback, MessageStore source identity, F310 Task truth or Queue delivery ownership; the Hub transport gains no second attachment store or write grant.
 
 | 跟踪项 | 已核实的代码基线（main `36bc7f022d`） | 归属与兼容边界 |
 |---|---|---|
@@ -655,9 +658,11 @@ remap/rebase/conflict/orphan 旅程后再 KEEP。
 | R31 | `shared/src/types/content-modification.ts` 的 `intent.selection` 是单个 union；候选 edits 数组不等于请求已支持多选区 | 延续 Studio §0.4 已记录的“一次发送、多处独立、原话一份”；本项限同一文件同一 base，跨文件事务未由此开放 |
 | R32 | `modification/result-service.ts` accept/reject 与 F063 writeback 只返回/持久化结果，未接聊天投递；`text/text-service.ts` 与 `inspection.ts` 已允许猫主动读到 rejection | 缺的是聊天投影与主动送达，不是没有后台回执或猫完全不可读。仅 applied 说已写回，conflict/unknown 保留候选；回执用真实系统来源，不伪造人/猫发言，不把收到结果等同再次修改授权 |
 
-**已沿用的产品边界。** K1 接受“聊天引用 + 文档旁投影”，普通文本遵守 CVO095/098，不重新开放文本 ledger 的新批注。K2 普通工作区文档走修改请求、隔离候选、diff、显式采用后 F063 CAS；`artifact-review.ts` 的 PNG/MP4 round 不扩成文档轮。DOCX 继续 Office provider。接口具体形状、通知策略与任务发布文档边界见下方 OQ-4–6，不能把设计画面当已有能力。
+**已沿用的产品边界。** K1 接受“聊天引用 + 文档旁投影”，普通文本遵守 CVO095/098，不重新开放文本 ledger 的新批注。K2 普通工作区文档走修改请求、隔离候选、diff、显式采用后 F063 CAS；`artifact-review.ts` 的 PNG/MP4 round 不扩成文档轮。DOCX 继续 Office provider。PR #5019 已交付 authenticated takeover、同文件同 base 多选、唯一 request/原 Task、撤回 fencing、Host 回执与有界异常续办，并保留部署前 public carrier 的精确恢复；新 public/whisper carrier 均保持来源 audience 与 Host 身份。该文本路径继续消费 `quote.source=workspace_file`，文本选区仍使用 `workspaceTextAnchorSchema`；#5085 增加独立的 canonical `MediaContextAttachment` 路径，PNG/MP4 选区使用已有媒体 anchor，不能以文本 quote 或展示截图替代媒体身份。
 
-**一并保留的兼容检查。** `.mdx` 可按 Markdown 呈现，但 `workspace-text-policy.ts` 的可修改白名单没有它。后端补齐 R29 时须给出一致、可见的支持范围或不支持结果；本次没有擅自扩大 F063 写入白名单。
+**媒体消息后端的有界交付（Task412）。** 同一次真实 Human 发送保留原话、canonical source/version、0–12 处稳定选区与各处说明，认证猫沿 OQ4 只凭 `sourceMessageId + operationId` 接手。媒体归属由原 owner/Task/round 与 canonical directory 精确确认，重复、双猫和撤回竞争仍只形成一个原子请求；`selectionAnnotations` 返回本请求稳定选区到 opaque annotation 的映射，不按整个 round 的顺序猜 join。真实新版、本轮通过/要求修改和 F063 采用/不采用/conflict/unknown 沿持久 Host system receipt 回原 Human 消息，恢复去重、历史与 whisper/revoke 边界保留。接受前不写原文件，Task 决定不冒充 workspace 写回或整个 Task 完成。完整产品输入、Host 渲染与父线程 Alpha 由 Task414/909 继续验收；K3 Task288 保持完成，未重跑其已结且未变的17项。
+
+**一并保留的兼容检查。** `.mdx` 可按 Markdown 呈现，但 `workspace-text-policy.ts` 的可修改白名单没有它。已合入后端会返回一致、可见的 unsupported 结果，而不是把它误报成 source drift；没有擅自扩大 F063 写入白名单。
 
 ### 覆盖检查
 
@@ -742,6 +747,7 @@ remap/rebase/conflict/orphan 旅程后再 KEEP。
 - [ ] **AC-U12**：T点位后就地输入，完成当前文字后回选择；下一段不带旧文，不连点复制旧字。中文IME确认不误提交，Enter/Esc按局部编辑层处理；未提交文字可改/移，已保存与历史标记不能借此获得新写权。原446及875问题须先失败再通过。
 - [ ] **AC-U13**：图片作品模式只有同一Chat输入框和一个发送，作品工具就近；猫按原话、圈选和上下文判断批注意图，修改语境下指出问题或期望结果即可承接，不要求追加“请开工”或再次按修改按钮，不按问句形式分类。纯讨论不建修改Task，真歧义才澄清；无选区仍可改整图，真实人来源/版本/范围/具名目标/执行位置可核对。发送后原话与范围、具名回复、真实执行进度/取消在同一聊天中可见，不新建媒体讨论账本。Task“通过此版本/要求修改”只归还审阅；workspace“采用并写回/不采用”依applied/conflict/unknown分别显示，发送不隐含写回。保存/草稿/历史权限仍按原receipt，工具与提示不遮挡操作。
 - [ ] **AC-U14**：保存成功只结束该次确认的编辑；失败/unknown、保存中继续输入、迟到回执、带草稿退出/恢复均保留正确内容，重试不重复提交，不误清独立评论草稿。Sol6完成本工作单元、Sol5.6独立审查及门禁合入后一次final-only回流；父Astra在实际包含merge的Alpha亲自验U10–U14并记录结果，不能以该批PASS关闭整个Phase U。
+- [ ] **AC-U15**：普通Markdown/代码文件旁的待发送批注编号可点击或键盘打开已有批注卡，回填原选文与说明；修改或移除只作用于同一聊天草稿中的对应附件，不新增副本、不清其他输入、不自动发送。同段多条能明确选中目标，编辑期间滚动及桌面/390px均可用；中文IME与换行沿用聊天既有行为。往返/刷新保留确认后的草稿，明确发送后结构化载荷包含最终说明与准确来源，移除项不被发送；已发送引用和历史只读仍按原授权处理。保留原失败复现、非作者审查及合入后的真实Alpha操作证据，不能以显示编号或组件单测当作完成。
 
 ### Phase B — Real Open-source Owner Foundations and Contract Kernel
 
@@ -823,9 +829,9 @@ remap/rebase/conflict/orphan 旅程后再 KEEP。
 | OQ-1 | 第一切片是否用 DOCX + video | 是；两个媒介均直接走成熟开源终态集成 | ✅ operator `private-source-id` |
 | OQ-2 | 哪个 Office/video 开源组合能通过最终 host、license、部署、数据与维护 Gate | Office 顺序已裁决：GenOffice `v0.8.1039@e833fff` 是首个 plugin pre-admission，SuperDoc v2 是 DOCX 退出路径，ONLYOFFICE/Collabora 是服务型 suite 退出路径；一个 contentRef 只绑定一个 production provider。Video：Elah 是 leading pre-admission | 🟨 GenOffice alpha.1 已发布、Host #4394 已合入；合入后 Alpha 与完整两媒介 AC-A4 仍待闭合 |
 | OQ-3 | TabTin root AGPL 与 package MIT 的实际发布/复用边界 | 必须上游/法务澄清 | ⬜ 外部证据 |
-| OQ-4 | K2 从已发送消息接手的 wire contract | 归 F309 modification。建议 callback 接手操作以 `sourceMessageId`、`operationId` 定位；thread/actor/invocation 由认证上下文确定。服务端读取并核验真实人原话、引用/版本、接收目标、既有 Task 与撤回状态，原子绑定唯一 request，再绑定真实执行；重试返回同一请求，不允许 caller 填 human 身份或借引用取得写权 | 🟨 产品边界已核；API 路径/字段及身份、撤回竞争由后端合同 review 冻结，当前无此接口 |
+| OQ-4 | K2 从已发送消息接手的 wire contract | 归 F309 modification。callback 接手操作以 `sourceMessageId`、`operationId` 定位；thread/actor/invocation 由认证上下文确定。服务端读取并核验真实人原话、引用/版本、接收目标、既有 Task 与撤回状态，原子绑定唯一 request，再绑定真实执行；重试返回同一请求，不允许 caller 填 human 身份或借引用取得写权 | ✅ PR #5019 已合入并通过 exact-HEAD 独立审查；前端消费与 Alpha 仍由 Task414/父线程验收 |
 | OQ-5 | Task 发布的普通文档是否新增独立评审轮 | 本轮 K1/K2 不新增；普通工作区文本按修改请求返回候选并决定，PNG/MP4 继续原 round。只有 publication 而没有可授权的文本 owner 目标时不显示虚假的“写回原文件”；未来文档 publication review 另核 owner 合同 | 🟨 不把媒体 round 泛化列为本轮前置，后续领域范围保持开放 |
-| OQ-6 | R32 哪些结果需要另起 invocation 叫醒原猫 | 三类决定/异常均需 durable 聊天回执和原猫可消费的通知；建议纯采用/不采用只回执，不额外起一轮空 ACK；冲突/unknown 仅在该猫现有责任要求诊断时触发现有续办，显式要求再改才进入下一请求。活动执行沿正常消息摄入，不重复启动；通知本身不自动重试写入 | 🟨 回执缺口确定，唤醒策略待后端与执行消息 owner 校准；不以新增唤醒替代 receipt 真相 |
+| OQ-6 | R32 哪些结果需要另起 invocation 叫醒原猫 | 三类决定/异常均有 durable 聊天回执；纯采用/不采用只回执，不额外起一轮空 ACK。冲突/unknown 只在同一 Task 仍开放且原 owner 未改变时尝试 refs-only 续办，并且只有 Queue 已真实 started/already_processing 才记 `cat_woken`；延期、终态或证据不足保持 `unverified`。通知本身不自动重试写入 | ✅ PR #5019 已合入并通过 real Queue/replay/recovery 与 public/whisper 边界审查；产品前端呈现仍归 Task414/父线程验收 |
 
 当前唯一可授权的 dependency/runtime scope 见
 历史 Packet C 已 superseded，不得作为执行授权。

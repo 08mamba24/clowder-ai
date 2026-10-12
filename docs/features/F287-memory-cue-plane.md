@@ -22,6 +22,16 @@ Map delta: `update required`
 
 Why: 现有 memory cell 已拥有持久化、索引、检索与生命周期，但还没有声明“执行中记忆线索的机会、路由、预算、消费与失效”边界；F287 扩展该 cell，不新建第二个 MemoryStore。
 
+## F321 线程概况扩展（catalog v6）
+
+本单元按 operator `[thread-id]#private-source-id` 的授权扩展一个 closed pair：`thread_opened / owner_message`，payload 只含首条 owner 消息 ID，server 再核 owner/thread、首条身份、实际 cat 可读性和当前开启设置。resolver family / drill family 为 `thread_overview`。只有 strict owner interactive 首轮能生产此机会，不开放每轮自由文本机会判断。
+
+Luna 阅读整本可读目录，超容量分批覆盖全部条目并由模型归并，不以关键词、向量或固定相关规则预筛。选中后再读完整概况、提取带原文坐标的背景并复核当前权限与版本；缺口保留在目录，零结果合法。当前摘要、会话映射和历史补齐 cursor 均归 F102 SQLite，不创建另一份记忆权威。
+
+这一个机会的 F296 呈现为 `historical_clue / clue`，带线程、相关原因、历史背景和原文坐标；它仍是 T2，不能声明 state/directive，也不获得 Taste/Profile 审批。通用 T2 pointer 保持无正文。完整合同和机器检查见 `f321-opening-presentation.test.ts`、`f321-thread-recall.test.ts`，来源图见 `memory-cue-source-map.md`。每机会最多六条、6000 prompt token，单条 thread overview 摘要上限2000字符，其他源上限600不变。
+
+只有 actual provider 收到该代 prompt 后记 presented，认证 drill 后记 drilled，实际改变当前答复才记 applied；选择和后台生成不算消费。更正、权限变化、撤回、owner/thread/cat 错配及超时沿现有失效与非阻断路径处理。
+
 ## Why
 
 家里的记忆写入、索引、人物/品味 lane、反馈回流和主动候选生产已经分别存在，但**“猫正在执行任务时，为什么现在该想起哪类记忆”没有 owner**。结果是：文件写成功却搜不到、搜得到却不在判断时刻出现、各 feature 都完成一段仍拼不成一条可用旅程，甚至完成状态散落后继续显示成未完成。

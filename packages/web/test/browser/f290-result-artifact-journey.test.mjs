@@ -179,9 +179,10 @@ test(
       assert.equal(await exactResult.getAttribute('data-highlighted'), 'true');
       assert.equal(await exactResult.evaluate((element) => document.activeElement === element), true);
       await host.screenshot({ path: path.join(evidence, 'needs-me-exact-result-1440.png'), fullPage: true });
-      await host.reload({ waitUntil: 'networkidle' });
+      await host.reload({ waitUntil: 'domcontentloaded' });
       await topic.waitFor();
       await exactResult.getByText(resultBody, { exact: true }).waitFor();
+      await topic.locator(`[data-event-id="${resultReady.resultEventId}"][data-highlighted="true"]:focus`).waitFor();
       assert.equal(await exactResult.getAttribute('data-highlighted'), 'true');
       assert.equal(await exactResult.evaluate((element) => document.activeElement === element), true);
       await host.setViewportSize({ width: 390, height: 844 });

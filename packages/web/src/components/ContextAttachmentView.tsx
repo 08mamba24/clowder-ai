@@ -1,42 +1,30 @@
 'use client';
 
-import type { ContextAttachment } from '@cat-cafe/shared';
+import type { ContextAttachment, WorkspaceFileQuoteSource } from '@cat-cafe/shared';
 import { useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
+import { apiFetch } from '@/utils/api-client';
+import { ContextMediaSelections } from './ContextMediaSelections';
+import { useContextAttachmentPresentation } from './context-attachment-presentation';
+import { replyBodyCopy } from './reply-body.shell-copy';
+import { useShellCopy } from './shell/shell-copy';
+import { useShellPresentation } from './shell/shell-presentation';
 import { pushThreadRouteWithHistory } from './ThreadSidebar/thread-navigation';
 
 interface ContextAttachmentViewProps {
   attachment: ContextAttachment;
   compact?: boolean;
   onRemove?: () => void;
+  quoteNumber?: number;
 }
 
-function attachmentPresentation(attachment: ContextAttachment): { title: string; detail: string } {
-  switch (attachment.kind) {
-    case 'thread':
-      return { title: attachment.title, detail: attachment.threadId };
-    case 'workspace_file':
-      return {
-        title: attachment.path.split('/').pop() || attachment.path,
-        detail: [attachment.path, attachment.branch ?? attachment.worktreeId].filter(Boolean).join(' · '),
-      };
-    case 'quote': {
-      const source =
-        attachment.source.kind === 'workspace_file'
-          ? attachment.source.path
-          : attachment.source.kind === 'cli_output'
-            ? 'CLI Output'
-            : 'Message quote';
-      return { title: source, detail: attachment.text };
-    }
-  }
+/**
+ * A quote of a place in a file that names no version of it, an old one: the text is kept as it was said, but where
+ * that place is in the file now cannot be confirmed. Only a file quote has a version to lack.
+ */
+function isUnversionedFileQuote(attachment: ContextAttachment): boolean {
+  return attachment.kind === 'quote' && attachment.source.kind === 'workspace_file' && !attachment.source.revision;
 }
-
-const ATTACHMENT_KIND_LABELS: Record<ContextAttachment['kind'], string> = {
-  thread: 'THREAD',
-  workspace_file: 'FILE',
-  quote: 'QUOTE',
-};
 
 /** The file a chip leads back to: a file attachment itself, or the file a quote was taken from. */
 function attachmentFileTarget(
@@ -47,11 +35,40 @@ function attachmentFileTarget(
   return null;
 }
 
-export function ContextAttachmentView({ attachment, compact = false, onRemove }: ContextAttachmentViewProps) {
-  const presentation = attachmentPresentation(attachment);
+/** A historical line is useful only after the owner confirms that the same bytes are still in that file. */
+async function confirmQuotedLine(
+  source: WorkspaceFileQuoteSource,
+): Promise<{ state: 'current' | 'changed' | 'unlocated'; line: number | null }> {
+  if (!source.revision || !source.worktreeId) return { state: 'unlocated', line: null };
+  try {
+    const query = new URLSearchParams({ worktreeId: source.worktreeId, path: source.path });
+    const response = await apiFetch(`/api/workspace/file?${query}`);
+    if (!response.ok) throw new Error('File location unavailable');
+    const file = await response.json();
+    if (file.path !== source.path || typeof file.sha256 !== 'string' || !/^(?:sha256:)?[a-f0-9]{64}$/.test(file.sha256))
+      throw new Error('File version unavailable');
+    return `sha256:${file.sha256.replace(/^sha256:/, '')}` === source.revision
+      ? { state: 'current', line: source.lineStart ?? null }
+      : { state: 'changed', line: null };
+  } catch {
+    return { state: 'unlocated', line: null };
+  }
+}
+
+export function ContextAttachmentView({
+  attachment,
+  compact = false,
+  onRemove,
+  quoteNumber,
+}: ContextAttachmentViewProps) {
+  const isV2 = useShellPresentation() === 'v2';
+  const t = useShellCopy(replyBodyCopy);
+  const presentation = useContextAttachmentPresentation(attachment, isV2);
   const fileTarget = attachmentFileTarget(attachment);
   const actionable = attachment.kind === 'thread' || fileTarget !== null;
-  const openAttachment = (event: React.MouseEvent<HTMLButtonElement>) => {
+  const [location, setLocation] = useState<'changed' | 'unlocated' | null>(null);
+  const [opening, setOpening] = useState(false);
+  const openAttachment = async (event: React.MouseEvent<HTMLButtonElement>) => {
     if (attachment.kind === 'thread') {
       pushThreadRouteWithHistory(attachment.threadId, typeof window === 'undefined' ? undefined : window);
       return;
@@ -59,10 +76,26 @@ export function ContextAttachmentView({ attachment, compact = false, onRemove }:
     if (fileTarget) {
       const state = useChatStore.getState();
       const messageId = event.currentTarget.closest<HTMLElement>('[data-message-id]')?.dataset.messageId;
+      let line = fileTarget.lineStart ?? null;
+      if (attachment.kind === 'quote' && attachment.source.kind === 'workspace_file') {
+        // Historical lines refer to historical bytes. Confirm the owner version before using one now.
+        setOpening(true);
+        const result = await confirmQuotedLine(attachment.source);
+        setOpening(false);
+        setLocation(result.state === 'current' ? null : result.state);
+        const current = useChatStore.getState();
+        if (
+          current.currentThreadId !== state.currentThreadId ||
+          current.workspaceOpenRevision !== state.workspaceOpenRevision
+        )
+          return;
+        line = result.line;
+      }
+
       state.setWorkspaceMode('dev');
       state.setWorkspaceOpenFile(
         fileTarget.path,
-        fileTarget.lineStart ?? null,
+        line,
         fileTarget.worktreeId ?? null,
         state.currentThreadId,
         state.currentThreadId && messageId
@@ -80,18 +113,29 @@ export function ContextAttachmentView({ attachment, compact = false, onRemove }:
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-1.5">
           <span className="shrink-0 rounded bg-cafe-surface-sunken px-1 py-0.5 text-micro font-semibold tracking-wide text-cafe-muted">
-            {ATTACHMENT_KIND_LABELS[attachment.kind]}
+            {presentation.kindLabel}
           </span>
           <span className="block min-w-0 truncate text-xs font-medium text-cafe-secondary">{presentation.title}</span>
+          {quoteNumber ? <span className="shrink-0 text-xs text-cafe-secondary">{t.place(quoteNumber)}</span> : null}
         </span>
         <span
           className={`block text-micro text-cafe-muted ${attachment.kind === 'quote' ? 'line-clamp-3 whitespace-pre-wrap' : 'truncate font-mono'}`}
         >
           {presentation.detail}
         </span>
+        {(isUnversionedFileQuote(attachment) || location) && (
+          <span className="mt-0.5 block text-micro text-cafe-secondary">
+            {location === 'changed' ? t.changedFileQuote : t.unversionedFileQuote}
+          </span>
+        )}
+        {attachment.kind === 'media' && (
+          <ContextMediaSelections attachment={attachment} compact={compact} removable={Boolean(onRemove)} />
+        )}
         {attachment.kind === 'quote' && attachment.comment && (
           <span className="mt-1.5 block border-l-2 border-cafe-accent/50 pl-2 text-xs leading-relaxed text-cafe-primary">
-            <span className="mr-1 text-micro font-semibold uppercase tracking-wide text-cafe-muted">Comment</span>
+            <span className={`mr-1 text-micro font-semibold ${isV2 ? '' : 'uppercase '}tracking-wide text-cafe-muted`}>
+              {presentation.commentLabel}
+            </span>
             {attachment.comment}
           </span>
         )}
@@ -106,7 +150,12 @@ export function ContextAttachmentView({ attachment, compact = false, onRemove }:
       className={`flex min-w-0 items-center gap-2 rounded-lg border border-cafe-subtle bg-cafe-surface-elevated ${compact ? 'px-2 py-1.5' : 'my-2 px-3 py-2'}`}
     >
       {actionable ? (
-        <button type="button" onClick={openAttachment} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+        <button
+          type="button"
+          disabled={opening}
+          onClick={(event) => void openAttachment(event)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
           {body}
         </button>
       ) : (
@@ -115,7 +164,7 @@ export function ContextAttachmentView({ attachment, compact = false, onRemove }:
       {onRemove && (
         <button
           type="button"
-          aria-label={`移除上下文 ${presentation.title}`}
+          aria-label={presentation.removeLabel}
           onClick={onRemove}
           className="rounded p-1 text-cafe-muted hover:bg-cafe-surface-sunken hover:text-cafe-secondary"
         >
@@ -143,6 +192,11 @@ export function ContextAttachmentList({
       attachment.kind === 'quote' && Boolean(attachment.comment),
   );
   const annotationIds = new Set(annotations.map((attachment) => attachment.id));
+  const quoteNumbers = new Map(
+    attachments
+      .filter((attachment) => attachment.kind === 'quote' && attachment.source.kind === 'workspace_file')
+      .map((attachment, index) => [attachment.id, index + 1]),
+  );
   let annotationSummaryRendered = false;
   return (
     <div
@@ -159,6 +213,7 @@ export function ContextAttachmentList({
               annotations={annotations}
               compact={compact}
               onRemove={onRemove}
+              quoteNumbers={quoteNumbers}
             />
           );
         }
@@ -167,6 +222,7 @@ export function ContextAttachmentList({
             key={attachment.id}
             attachment={attachment}
             compact={compact}
+            quoteNumber={quoteNumbers.get(attachment.id)}
             onRemove={onRemove ? () => onRemove(attachment.id) : undefined}
           />
         );
@@ -179,11 +235,14 @@ function ContextAnnotationSummary({
   annotations,
   compact,
   onRemove,
+  quoteNumbers,
 }: {
   annotations: readonly Extract<ContextAttachment, { kind: 'quote' }>[];
   compact: boolean;
   onRemove?: (id: string) => void;
+  quoteNumbers: ReadonlyMap<string, number>;
 }) {
+  const t = useShellCopy(replyBodyCopy);
   const [expanded, setExpanded] = useState(false);
   return (
     <div className="relative min-w-0">
@@ -221,11 +280,16 @@ function ContextAnnotationSummary({
               className="border-b border-cafe-subtle px-4 py-3 last:border-b-0"
             >
               <div className="mb-1 text-micro font-semibold uppercase tracking-[0.14em] text-cafe-muted">
-                {index + 1}. Selected text
+                {quoteNumbers.has(annotation.id)
+                  ? t.place(quoteNumbers.get(annotation.id) ?? index + 1)
+                  : `${index + 1}. Selected text`}
               </div>
               <blockquote className="line-clamp-5 whitespace-pre-wrap text-sm leading-relaxed text-cafe-secondary">
                 {annotation.text}
               </blockquote>
+              {isUnversionedFileQuote(annotation) && (
+                <p className="mt-1 text-micro text-cafe-secondary">{t.unversionedFileQuote}</p>
+              )}
               <div className="mb-1 mt-3 text-micro font-semibold uppercase tracking-[0.14em] text-cafe-muted">
                 User comment
               </div>

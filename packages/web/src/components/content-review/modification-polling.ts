@@ -16,3 +16,13 @@ export function isSettledModification(view: ContentModificationRequestView): boo
   const control = view.record.control;
   return view.stage === 'cancelled' && control?.taskResolution === 'closed';
 }
+
+/**
+ * Whether something can still change in front of the reader within seconds: a live run, or a request
+ * still on its way to the first run. A quiet request (finished, failed, cancelled) is read once and then
+ * only re-read on demand, so a conversation full of historic requests does not poll them all.
+ */
+export function isMovingModification(view: ContentModificationRequestView): boolean {
+  if (view.execution) return MOVING_EXECUTION.has(view.execution.state);
+  return view.stage !== 'cancelled' && view.stage !== 'retired';
+}

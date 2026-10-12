@@ -13,7 +13,10 @@ import { RunLedger } from '../../src/infrastructure/scheduler/RunLedger.js';
 import { TaskRunnerV2 } from '../../src/infrastructure/scheduler/TaskRunnerV2.js';
 import { createPersistedQueueFixture } from './persisted-queue-fixture.js';
 
-export async function createDevelopmentReturnFixture(t: TestContext) {
+export async function createDevelopmentReturnFixture(
+  t: TestContext,
+  options: { proposalDelegateCatId?: string; ownerCatId?: string } = {},
+) {
   const db = new Database(':memory:');
   applyMigrations(db);
   t.after(() => db.close());
@@ -22,7 +25,8 @@ export async function createDevelopmentReturnFixture(t: TestContext) {
     messages = new MessageStore(),
     proposals = new InMemoryProposalStore();
   const original = threads.create('human', 'Original', process.cwd());
-  const actor = { userId: 'human', catId: 'codex-sol', threadId: original.id };
+  const ownerCatId = options.ownerCatId ?? 'codex-sol';
+  const actor = { userId: 'human', catId: ownerCatId, threadId: original.id };
   let now = Date.now();
   const source = messages.append({
     userId: 'human',
@@ -32,27 +36,6 @@ export async function createDevelopmentReturnFixture(t: TestContext) {
     mentions: [],
     timestamp: now,
   });
-  const proposal = proposals.create({
-    sourceThreadId: original.id,
-    sourceInvocationId: 'inv',
-    sourceMessageId: source.id,
-    sourceCatId: 'codex-sol',
-    title: 'Execution',
-    reason: 'Authorized sub-work',
-    parentThreadId: original.id,
-    preferredCats: ['codex-sol'],
-    projectPath: process.cwd(),
-    createdBy: 'human',
-    reportingMode: 'final-only',
-  });
-  const child = threads.create('human', 'Execution', process.cwd(), original.id, {
-    createdFromProposalId: proposal.proposalId,
-    sourceThreadId: original.id,
-    approvedBy: 'human',
-    approvedAt: now,
-  });
-  proposals.claimForApproval({ proposalId: proposal.proposalId, approvedBy: 'human' });
-  proposals.finalizeApproval({ proposalId: proposal.proposalId, createdThreadId: child.id });
   const admitted = tasks.transitionDevelopmentWork({
     action: 'admit',
     actor,
@@ -82,6 +65,30 @@ export async function createDevelopmentReturnFixture(t: TestContext) {
     },
   });
   assert.ok('task' in admitted);
+  const proposal = proposals.create({
+    sourceThreadId: original.id,
+    sourceInvocationId: 'inv',
+    sourceMessageId: source.id,
+    sourceCatId: ownerCatId,
+    title: 'Execution',
+    reason: 'Authorized sub-work',
+    parentThreadId: original.id,
+    preferredCats: [options.proposalDelegateCatId ?? actor.catId],
+    subjectTaskId: admitted.task.id,
+    subjectTaskTitle: admitted.task.title,
+    approvedDevelopmentScope: admitted.task.entrustedWork.developmentScope,
+    projectPath: process.cwd(),
+    createdBy: 'human',
+    reportingMode: 'final-only',
+  });
+  const child = threads.create('human', 'Execution', process.cwd(), original.id, {
+    createdFromProposalId: proposal.proposalId,
+    sourceThreadId: original.id,
+    approvedBy: 'human',
+    approvedAt: now,
+  });
+  proposals.claimForApproval({ proposalId: proposal.proposalId, approvedBy: 'human' });
+  proposals.finalizeApproval({ proposalId: proposal.proposalId, createdThreadId: child.id });
   const definitions = new DynamicTaskStore(db),
     events = [],
     wakes = [],
@@ -154,7 +161,7 @@ export async function createDevelopmentReturnFixture(t: TestContext) {
     report() {
       return messages.append({
         userId: 'human',
-        catId: 'codex-sol',
+        catId: ownerCatId,
         threadId: child.id,
         content: 'Accepted development result and validation',
         mentions: [],

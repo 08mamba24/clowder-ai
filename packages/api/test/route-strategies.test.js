@@ -57,6 +57,13 @@ function createMockService(catId, text = 'hello') {
   };
 }
 
+function captureDeferredEnqueue(entries) {
+  return (entry) => {
+    entries.push(entry);
+    return { outcome: 'enqueued', entry: { ...entry, id: `deferred-${entries.length}` } };
+  };
+}
+
 // Mock service that captures the prompt it receives
 function createCapturingService(catId, text = 'hello') {
   const calls = [];
@@ -250,6 +257,11 @@ function createMockDeps(services, appendCalls, threadStore = null, guideSessionS
     : null;
   return {
     services,
+    queueSourceCustodyAdmission: {
+      admitDeferred: async () => {},
+      admitDeferredBatch: async () => {},
+      discardDeferredBatch: () => {},
+    },
     invocationDeps: {
       registry: {
         create: () => ({ invocationId: `inv-${++counter}`, callbackToken: `tok-${counter}` }),
@@ -1768,9 +1780,10 @@ describe('incremental current-message fallback integration', () => {
 });
 
 describe('routeSerial', () => {
-  it('executes single cat and yields text + done', async () => {
+  it('executes a single cat and returns its persisted canonical content in done', async () => {
     const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
-    const deps = createMockDeps({ opus: createMockService('opus', 'serial response') });
+    const appendCalls = [];
+    const deps = createMockDeps({ opus: createMockService('opus', 'serial response') }, appendCalls);
 
     const messages = [];
     for await (const msg of routeSerial(deps, ['opus'], 'test message', 'user1', 'thread1')) {
@@ -1782,12 +1795,14 @@ describe('routeSerial', () => {
     assert.ok(textMsgs.length > 0, 'should have text messages');
     assert.ok(doneMsgs.length > 0, 'should have done message');
     assert.equal(textMsgs[0].content, 'serial response');
-    assert.equal(doneMsgs[0].content, undefined, 'ordinary serial done must not acquire a content contract');
+    assert.equal(doneMsgs[0].content, 'serial response');
+    assert.equal(doneMsgs[0].content, appendCalls.find((message) => message.catId === 'opus').content);
   });
 
-  it('keeps ordinary parallel done events free of persisted content', async () => {
+  it('returns persisted canonical content in ordinary parallel done events', async () => {
     const { routeParallel } = await import('../dist/domains/cats/services/agents/routing/route-parallel.js');
-    const deps = createMockDeps({ opus: createMockService('opus', 'parallel response') });
+    const appendCalls = [];
+    const deps = createMockDeps({ opus: createMockService('opus', 'parallel response') }, appendCalls);
 
     const messages = [];
     for await (const msg of routeParallel(deps, ['opus'], 'test message', 'user1', 'thread1')) {
@@ -1796,7 +1811,8 @@ describe('routeSerial', () => {
 
     const done = messages.find((message) => message.type === 'done' && message.catId === 'opus');
     assert.ok(done, 'parallel route should yield a done event');
-    assert.equal(done.content, undefined, 'ordinary parallel done must not acquire a content contract');
+    assert.equal(done.content, 'parallel response');
+    assert.equal(done.content, appendCalls.find((message) => message.catId === 'opus').content);
   });
 
   it('persists toolEvents when agent yields tool_use and tool_result', async () => {
@@ -2180,7 +2196,7 @@ describe('routeSerial A2A worklist', () => {
     const messages = [];
     for await (const msg of routeSerial(deps, ['opus'], 'test', 'user1', 'thread1', {
       queueHasQueuedMessages: () => true,
-      deferA2AEnqueue: (entry) => deferredEntries.push(entry),
+      deferA2AEnqueue: captureDeferredEnqueue(deferredEntries),
     })) {
       messages.push(msg);
     }
@@ -2219,7 +2235,7 @@ describe('routeSerial A2A worklist', () => {
     const messages = [];
     for await (const msg of routeSerial(deps, ['opus'], 'test', 'user1', 'thread1', {
       queueHasQueuedMessages: () => true,
-      deferA2AEnqueue: (entry) => deferredEntries.push(entry),
+      deferA2AEnqueue: captureDeferredEnqueue(deferredEntries),
       signal: ac.signal,
     })) {
       messages.push(msg);
@@ -2246,7 +2262,7 @@ describe('routeSerial A2A worklist', () => {
     const messages = [];
     for await (const msg of routeSerial(deps, ['opus'], 'test', 'user1', 'thread1', {
       queueHasQueuedMessages: () => true,
-      deferA2AEnqueue: (entry) => deferredEntries.push(entry),
+      deferA2AEnqueue: captureDeferredEnqueue(deferredEntries),
       signal: ac.signal,
     })) {
       messages.push(msg);
@@ -2267,7 +2283,7 @@ describe('routeSerial A2A worklist', () => {
     // codex is already in targetCats → it's in pendingTail when opus runs
     for await (const msg of routeSerial(deps, ['opus', 'codex'], 'test', 'user1', 'thread1', {
       queueHasQueuedMessages: () => true,
-      deferA2AEnqueue: (entry) => deferredEntries.push(entry),
+      deferA2AEnqueue: captureDeferredEnqueue(deferredEntries),
     })) {
       messages.push(msg);
     }
@@ -2295,7 +2311,7 @@ describe('routeSerial A2A worklist', () => {
       'thread1',
       withClaimedA2ASlot({
         queueHasQueuedMessages: () => false,
-        deferA2AEnqueue: (entry) => deferredEntries.push(entry),
+        deferA2AEnqueue: captureDeferredEnqueue(deferredEntries),
       }),
     )) {
       messages.push(msg);

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useActionSurfaceRef } from './message-v2/message-action-ownership';
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -30,6 +31,7 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const [inputValue, setInputValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const actionSurfaceRef = useActionSurfaceRef<HTMLDivElement>();
 
   useEffect(() => {
     if (open) {
@@ -54,6 +56,7 @@ export function ConfirmDialog({
 
   return (
     <div
+      ref={actionSurfaceRef}
       className="fixed inset-0 bg-[var(--console-overlay-backdrop)] backdrop-blur-sm flex items-center justify-center z-[100]"
       onClick={onCancel}
     >

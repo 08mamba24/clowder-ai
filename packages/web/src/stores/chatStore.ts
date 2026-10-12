@@ -30,6 +30,7 @@ import type {
   ComposerDraftInsert,
   GameState,
   PresentationLockSnapshot,
+  PresentationLockView,
   PresentationSurfaceState,
   QueueEntry,
   RichBlock,
@@ -250,6 +251,7 @@ function snapshotActive(s: ChatState): ThreadState {
     workspaceMode: s.workspaceMode,
     teamWorkspaceSubject: s.teamWorkspaceSubject,
     workspaceSurface: s.workspaceSurface,
+    workspaceForegroundSurfaceId: s.workspaceForegroundSurfaceId,
     workspacePreview: s.workspacePreview,
     rightPanelMode: s.rightPanelMode,
     rightPanelOpen: s.rightPanelOpen,
@@ -422,6 +424,7 @@ function restoreWorkspaceView(
     ThreadState,
     | 'workspaceMode'
     | 'workspaceSurface'
+    | 'workspaceForegroundSurfaceId'
     | 'workspacePreview'
     | 'teamWorkspaceSubject'
     | 'rightPanelMode'
@@ -431,6 +434,7 @@ function restoreWorkspaceView(
   ChatState,
   | 'workspaceMode'
   | 'workspaceSurface'
+  | 'workspaceForegroundSurfaceId'
   | 'workspacePreview'
   | 'teamWorkspaceSubject'
   | 'rightPanelMode'
@@ -439,6 +443,8 @@ function restoreWorkspaceView(
   return {
     workspaceMode: resolveWorkspaceMode(ts),
     workspaceSurface: ts.workspaceSurface ?? 'home',
+    // Undefined preserves pre-reference snapshots' original F307 projection; null is an explicit Home.
+    workspaceForegroundSurfaceId: ts.workspaceForegroundSurfaceId,
     workspacePreview: ts.workspacePreview ?? { port: undefined, path: '/' },
     teamWorkspaceSubject: ts.teamWorkspaceSubject ?? null,
     rightPanelMode: ts.rightPanelMode ?? 'status',
@@ -470,6 +476,10 @@ export function captureThreadWorkspaceState(state: ChatState, threadId: string):
       workspaceMode: state.workspaceMode,
       teamWorkspaceSubject: state.teamWorkspaceSubject,
       workspaceSurface: state.workspaceSurface,
+      workspaceForegroundSurfaceId: state.workspaceForegroundSurfaceId,
+      workspaceOpenFilePath: state.workspaceOpenFilePath,
+      workspaceOpenFileLine: state.workspaceOpenFileLine,
+      workspaceOpenTabs: state.workspaceOpenTabs,
       workspacePreview: { ...state.workspacePreview },
       rightPanelMode: state.rightPanelMode,
       rightPanelOpen: state.rightPanelOpen,
@@ -479,6 +489,9 @@ export function captureThreadWorkspaceState(state: ChatState, threadId: string):
   return {
     revision: readWorkspaceRevision(threadId),
     workspaceWorktreeId: saved.workspaceWorktreeId,
+    workspaceOpenFilePath: saved.workspaceOpenFilePath,
+    workspaceOpenFileLine: saved.workspaceOpenFileLine,
+    workspaceOpenTabs: saved.workspaceOpenTabs,
     ...restoreWorkspaceView(saved),
     workspacePreview: { ...(saved.workspacePreview ?? { port: undefined, path: '/' }) },
   };
@@ -489,6 +502,10 @@ function workspaceStateContentEqual(a: PersistedThreadWorkspaceState, b: Persist
     a.workspaceWorktreeId === b.workspaceWorktreeId &&
     resolveWorkspaceMode(a) === resolveWorkspaceMode(b) &&
     a.workspaceSurface === b.workspaceSurface &&
+    a.workspaceForegroundSurfaceId === b.workspaceForegroundSurfaceId &&
+    a.workspaceOpenFilePath === b.workspaceOpenFilePath &&
+    a.workspaceOpenFileLine === b.workspaceOpenFileLine &&
+    JSON.stringify(a.workspaceOpenTabs ?? []) === JSON.stringify(b.workspaceOpenTabs ?? []) &&
     a.workspacePreview.port === b.workspacePreview.port &&
     a.workspacePreview.path === b.workspacePreview.path &&
     JSON.stringify(a.teamWorkspaceSubject ?? null) === JSON.stringify(b.teamWorkspaceSubject ?? null) &&
@@ -1210,6 +1227,7 @@ export interface ChatState {
   updateThreadTitle: (threadId: string, title: string) => void;
   updateThreadParticipants: (threadId: string, participants: string[]) => void;
   updateThreadPin: (threadId: string, pinned: boolean) => void;
+  updateThreadBacklogItem: (threadId: string, backlogItemId: string | null) => void;
   updateThreadFavorite: (threadId: string, favorited: boolean) => void;
   updateThreadThinkingMode: (threadId: string, mode: 'debug' | 'play') => void;
 
@@ -1334,6 +1352,15 @@ export interface ChatState {
   workspaceOpenFileLine: number | null;
   /** F284: current Workspace object; survives panel folds and route unmounts. */
   workspaceSurface: WorkspaceSurface;
+  workspaceForegroundSurfaceId: string | null | undefined;
+  setWorkspaceForegroundSurfaceId: (
+    surfaceId: string | null,
+    coordinate?: {
+      file?: { worktreeId: string; path: string; scrollToLine: number | null };
+      preview?: WorkspacePreviewState;
+    },
+  ) => void;
+  setWorkspaceViewport: (scrollTop: number) => void;
   /** Explicit user navigation: select the surface and reveal Workspace. */
   setWorkspaceSurface: (surface: WorkspaceSurface) => void;
   /** Passive thread restoration: select the surface without changing panel visibility. */
@@ -1370,7 +1397,16 @@ export interface ChatState {
   workspaceEditTokenExpiry: number | null;
   /** @internal Last workspace-file-set event context (timestamp + threadId).
    * Used by WorkspacePanel to distinguish fresh navigate from stale leftovers on mount. */
-  _workspaceFileSetAt: { ts: number; threadId: string | null; navigationOrigin?: WorkspaceFileNavigationOrigin };
+  _workspaceFileSetAt: {
+    ts: number;
+    threadId: string | null;
+    navigationOrigin?: WorkspaceFileNavigationOrigin;
+    disposition?: WorkspaceOpenRequest['disposition'];
+    revision?: number;
+    consumed?: boolean;
+  };
+  /** Acknowledge the exact transient file event after its topology is admitted. */
+  consumeWorkspaceFileSetAt: (stamp: ChatState['_workspaceFileSetAt']) => void;
   setRightPanelMode: (mode: 'status' | 'workspace' | 'transcript') => void;
   /** F284 × F120 review P1: canonical right panel visibility (orthogonal to
    * rightPanelMode). Snapshotted per thread — see ThreadState.rightPanelOpen. */
@@ -1387,6 +1423,7 @@ export interface ChatState {
     worktreeId?: string | null,
     originThreadId?: string | null,
     navigationOrigin?: WorkspaceFileNavigationOrigin,
+    disposition?: WorkspaceOpenRequest['disposition'],
   ) => void;
   closeWorkspaceTab: (path: string) => void;
   restoreWorkspaceTabs: (tabs: string[], openFile: string | null) => void;
@@ -1394,7 +1431,7 @@ export interface ChatState {
 
   // F063: Presentation Lock — freeze workspace during demos
   presentationLock: PresentationLockSnapshot | null;
-  enablePresentationLock: () => void;
+  enablePresentationLock: (visible?: PresentationLockView) => void;
   disablePresentationLock: () => void;
   replacePresentationLockTarget: (snapshot: PresentationLockSnapshot) => void;
   setPresentationLockViewport: (scrollTop: number) => void;
@@ -1698,6 +1735,65 @@ export const useChatStore = create<ChatState>((set, get) => ({
   workspaceOpenFilePath: null,
   workspaceOpenFileLine: null,
   workspaceSurface: 'home' as const,
+  workspaceForegroundSurfaceId: null,
+  setWorkspaceForegroundSurfaceId: (surfaceId, coordinate) =>
+    set((state) => {
+      const file = coordinate?.file;
+      const worktreeId = file
+        ? resolveNavigateTargetWorktreeId(
+            state.workspaceWorktreeId,
+            file.worktreeId,
+            scopeWorktreeAliases(
+              state.workspaceWorktreeAliases,
+              state.workspaceWorktreeAliasesProjectPath,
+              state.currentProjectPath,
+            ),
+          )
+        : state.workspaceWorktreeId;
+      if (worktreeId === undefined) return state;
+      const fileChanged =
+        file &&
+        (worktreeId !== state.workspaceWorktreeId ||
+          file.path !== state.workspaceOpenFilePath ||
+          file.scrollToLine !== state.workspaceOpenFileLine);
+      const preview = coordinate?.preview;
+      const previewChanged =
+        preview && (preview.port !== state.workspacePreview.port || preview.path !== state.workspacePreview.path);
+      if (state.workspaceForegroundSurfaceId === surfaceId && !fileChanged && !previewChanged) return state;
+      const patch: Partial<ThreadState> = {
+        workspaceForegroundSurfaceId: surfaceId,
+        ...(file && {
+          workspaceWorktreeId: worktreeId,
+          workspaceOpenFilePath: file.path,
+          workspaceOpenFileLine: file.scrollToLine,
+          workspaceOpenTabs: state.workspaceOpenTabs.includes(file.path)
+            ? state.workspaceOpenTabs
+            : [...state.workspaceOpenTabs, file.path],
+          workspaceSurface: 'files',
+        }),
+        ...(preview && { workspacePreview: preview, workspaceSurface: 'browser' }),
+      };
+      if (!state.presentationLock) {
+        return { ...patch, ...mirrorActiveFlat(state, patch), workspaceScrollTop: null };
+      }
+      const lock = state.presentationLock;
+      return {
+        ...patch,
+        workspaceScrollTop: null,
+        presentationLock: {
+          ...lock,
+          surfaceId,
+          ...(file && {
+            worktreeId: file.worktreeId,
+            filePath: file.path,
+            line: file.scrollToLine,
+            tabs: patch.workspaceOpenTabs ?? lock.tabs,
+          }),
+          scrollTop: null,
+        },
+      };
+    }),
+  setWorkspaceViewport: (scrollTop) => set({ workspaceScrollTop: scrollTop }),
   setWorkspaceSurface: (surface) => set({ workspaceSurface: surface, rightPanelMode: 'workspace' }),
   restoreWorkspaceSurface: (surface) => set({ workspaceSurface: surface }),
   workspacePreview: { port: undefined, path: '/' },
@@ -1742,6 +1838,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         workspaceOpenRevision: revision,
         workspaceOpenRequest: {
           revision,
+          disposition: 'preview' as const,
           threadId,
           target: { kind: 'artifact' as const, artifact, ...(navigationOrigin ? { navigationOrigin } : {}) },
         },
@@ -1757,7 +1854,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ...patch,
       ...mirrorActiveFlat(state, patch),
       workspaceOpenRevision: revision,
-      workspaceOpenRequest: { revision, threadId, target },
+      workspaceOpenRequest: { revision, threadId, target, disposition: 'preview' },
     });
     return true;
   },
@@ -1766,6 +1863,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   workspaceEditToken: null,
   workspaceEditTokenExpiry: null,
   _workspaceFileSetAt: { ts: 0, threadId: null },
+  consumeWorkspaceFileSetAt: (stamp) =>
+    set((state) => (state._workspaceFileSetAt === stamp ? { _workspaceFileSetAt: { ...stamp, consumed: true } } : {})),
   setRightPanelMode: (mode) => set({ rightPanelMode: mode }),
   rightPanelOpen: false,
   setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
@@ -1827,15 +1926,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
       workspaceWorktreeAliases: aliases,
       workspaceWorktreeAliasesProjectPath: projectPath ?? get().currentProjectPath,
     }),
-  setWorkspaceOpenFile: (path, line, targetWorktreeId, originThreadId, navigationOrigin) => {
+  setWorkspaceOpenFile: (path, line, targetWorktreeId, originThreadId, navigationOrigin, disposition) => {
     if (path) {
+      const state = get();
+      const navigationRevision = state.workspaceOpenRevision + 1;
       const stamp = {
         ts: Date.now(),
-        threadId: originThreadId ?? get().currentThreadId,
+        threadId: originThreadId ?? state.currentThreadId,
+        revision: navigationRevision,
         ...(navigationOrigin ? { navigationOrigin } : {}),
+        ...(disposition ? { disposition } : {}),
       };
       const currentWorktreeId = get().workspaceWorktreeId;
-      const state = get();
       const scopedAliases = scopeWorktreeAliases(
         state.workspaceWorktreeAliases,
         state.workspaceWorktreeAliasesProjectPath,
@@ -1846,6 +1948,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         targetWorktreeId,
         scopedAliases,
       );
+      // An ordinary file navigation supersedes every earlier Workspace navigation, so it advances the same revision
+      // the explicit open requests use: whatever tied itself to an earlier navigation can then see it was replaced.
+      // An earlier request the Workbench has not consumed yet (not hydrated or mounted) is retired in the same update,
+      // otherwise it would arrive late and reopen the old file over the one the person just opened.
       // Switch worktree if a different one is specified
       if (effectiveTargetWorktreeId && effectiveTargetWorktreeId !== currentWorktreeId) {
         set({
@@ -1858,6 +1964,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           workspaceSurface: 'files',
           rightPanelMode: 'workspace',
           _workspaceFileSetAt: stamp,
+          workspaceOpenRevision: navigationRevision,
+          workspaceOpenRequest: null,
         });
       } else {
         const tabs = get().workspaceOpenTabs;
@@ -1869,6 +1977,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           workspaceSurface: 'files',
           rightPanelMode: 'workspace',
           _workspaceFileSetAt: stamp,
+          workspaceOpenRevision: navigationRevision,
+          workspaceOpenRequest: null,
         });
       }
       const lock = get().presentationLock;
@@ -1937,7 +2047,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // F063: Presentation Lock
   presentationLock: null,
-  enablePresentationLock: () =>
+  enablePresentationLock: (visible) =>
     set((state) => ({
       presentationLock: {
         ownerThreadId: state.currentThreadId,
@@ -1946,12 +2056,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
           filePath: state.workspaceOpenFilePath,
           line: state.workspaceOpenFileLine,
           tabs: state.workspaceOpenTabs,
+          ...(state.workspaceForegroundSurfaceId !== undefined && {
+            workspaceForegroundSurfaceId: state.workspaceForegroundSurfaceId,
+          }),
+          ...restoreWorkspaceView(state),
         },
         worktreeId: state.workspaceWorktreeId,
         filePath: state.workspaceOpenFilePath,
         line: state.workspaceOpenFileLine,
         tabs: state.workspaceOpenTabs,
         scrollTop: null,
+        ...(state.workspaceForegroundSurfaceId != null && { surfaceId: state.workspaceForegroundSurfaceId }),
+        ...visible,
       },
     })),
   disablePresentationLock: () =>
@@ -1966,6 +2082,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           workspaceOpenTabs: ow.tabs,
           workspaceOpenFilePath: ow.filePath,
           workspaceOpenFileLine: ow.line,
+          workspaceForegroundSurfaceId: ow.workspaceForegroundSurfaceId,
+          ...(ow.workspaceSurface !== undefined && restoreWorkspaceView(ow)),
         };
       }
       const threadState = state.threadStates[state.currentThreadId];
@@ -2110,7 +2228,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         ...patch,
         workspaceOpenRevision: revision,
-        workspaceOpenRequest: { revision, threadId: hostThreadId, target },
+        workspaceOpenRequest: { revision, threadId: hostThreadId, target, disposition: 'preview' },
         ...mirrorActiveFlat(state, patch),
       };
     });
@@ -2811,6 +2929,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ),
     })),
 
+  updateThreadBacklogItem: (threadId, backlogItemId) =>
+    set((state) => ({
+      threads: state.threads.map((thread) =>
+        thread.id === threadId ? { ...thread, backlogItemId: backlogItemId ?? undefined } : thread,
+      ),
+    })),
+
   updateThreadFavorite: (threadId, favorited) =>
     set((state) => ({
       threads: state.threads.map((t) =>
@@ -2879,6 +3004,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             workspaceOpenTabs: lock.ownerWorkspace.tabs,
             workspaceOpenFilePath: lock.ownerWorkspace.filePath,
             workspaceOpenFileLine: lock.ownerWorkspace.line,
+            workspaceForegroundSurfaceId: lock.ownerWorkspace.workspaceForegroundSurfaceId,
+            ...(lock.ownerWorkspace.workspaceSurface !== undefined && restoreWorkspaceView(lock.ownerWorkspace)),
           };
         } else {
           const prevThreadState = state.threadStates[state.currentThreadId];
@@ -2914,6 +3041,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         flattened.workspaceOpenFilePath = lock.filePath;
         flattened.workspaceOpenFileLine = lock.line;
         flattened.workspaceScrollTop = lock.scrollTop;
+        flattened.workspaceForegroundSurfaceId = lock.surfaceId;
         // F284 × F120: surface/preview/panel are part of the frozen demo view —
         // keep the current (locked) values instead of restoring the target's.
         flattened.workspaceSurface = state.workspaceSurface;
@@ -3795,6 +3923,12 @@ export function hydrateThreadWorkspaceState(
         workspaceMode: resolveWorkspaceMode(snapshot, resolveWorkspaceMode(current)),
         teamWorkspaceSubject: snapshot.teamWorkspaceSubject ?? null,
         workspaceSurface: snapshot.workspaceSurface,
+        workspaceForegroundSurfaceId: snapshot.workspaceForegroundSurfaceId,
+        ...(snapshot.workspaceOpenFilePath !== undefined && {
+          workspaceOpenFilePath: snapshot.workspaceOpenFilePath,
+          workspaceOpenFileLine: snapshot.workspaceOpenFileLine ?? null,
+          workspaceOpenTabs: snapshot.workspaceOpenTabs ?? [],
+        }),
         workspacePreview: { ...snapshot.workspacePreview },
         rightPanelMode: snapshot.rightPanelMode,
         rightPanelOpen: snapshot.rightPanelOpen,

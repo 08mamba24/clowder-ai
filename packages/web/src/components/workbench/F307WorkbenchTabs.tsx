@@ -1,19 +1,10 @@
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import { F307WorkbenchControlRail } from './F307WorkbenchControlRail';
 import { F307WorkbenchTab } from './F307WorkbenchTab';
+import { V2WorkbenchChrome } from './V2WorkbenchChrome';
 import type { WorkbenchAction, WorkbenchLayoutState } from './workbench-contract';
 
-export function F307WorkbenchTabs({
-  layout,
-  dispatch,
-  onAddSurface,
-  onActivateSurface,
-  homeFocused,
-  isDesktop,
-  artifactWorkHostAvailable,
-  mainAreaAttentionSurfaceId,
-  onEnterMainAreaAttention,
-  onExitMainAreaAttention,
-}: {
+export interface F307WorkbenchTabsProps {
   layout: WorkbenchLayoutState;
   dispatch: (action: WorkbenchAction) => void;
   onAddSurface: () => void;
@@ -24,7 +15,23 @@ export function F307WorkbenchTabs({
   mainAreaAttentionSurfaceId: string | null;
   onEnterMainAreaAttention: (surfaceId: string) => void;
   onExitMainAreaAttention: () => void;
-}) {
+}
+
+export function F307WorkbenchTabs(props: F307WorkbenchTabsProps) {
+  const isV2 = useShellPresentation() === 'v2';
+  const {
+    layout,
+    dispatch,
+    onAddSurface,
+    onActivateSurface,
+    homeFocused,
+    isDesktop,
+    artifactWorkHostAvailable,
+    mainAreaAttentionSurfaceId,
+    onEnterMainAreaAttention,
+    onExitMainAreaAttention,
+  } = props;
+  if (isV2) return <V2WorkbenchChrome {...props} />;
   return (
     <div
       className="flex min-h-10 shrink-0 items-stretch border-b border-cafe-subtle bg-cafe-surface"

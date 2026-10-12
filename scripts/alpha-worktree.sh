@@ -108,12 +108,13 @@ require_git_repo() {
 }
 
 worktree_exists() {
-  git -C "$PROJECT_DIR" worktree list --porcelain | awk '/^worktree / {print substr($0, 10)}' | grep -Fxq "$ALPHA_DIR"
+  # Drain the registry: grep -q can SIGPIPE awk/git after a match under pipefail.
+  git -C "$PROJECT_DIR" worktree list --porcelain | awk '/^worktree / {print substr($0, 10)}' | grep -Fx "$ALPHA_DIR" >/dev/null
 }
 
 legacy_worktree_exists() {
   [ "$LEGACY_ALPHA_DIR" != "$ALPHA_DIR" ] || return 1
-  git -C "$PROJECT_DIR" worktree list --porcelain | awk '/^worktree / {print substr($0, 10)}' | grep -Fxq "$LEGACY_ALPHA_DIR"
+  git -C "$PROJECT_DIR" worktree list --porcelain | awk '/^worktree / {print substr($0, 10)}' | grep -Fx "$LEGACY_ALPHA_DIR" >/dev/null
 }
 
 ensure_remote_exists() {
@@ -538,6 +539,8 @@ start_alpha_worktree() {
   local selected_preview_port="$ALPHA_PREVIEW_GATEWAY_PORT" selected_redis_port="$ALPHA_REDIS_PORT"
   local selected_redis_profile="$ALPHA_REDIS_PROFILE" selected_audio_port="$ALPHA_AUDIO_PORT"
   local selected_allow_empty="$ALPHA_EMPTY_REDIS_ALLOWED"
+  local selected_preview_expiry="${CAT_CAFE_PREVIEW_EXPIRES_AT-}"
+  local selected_cleanup_result="${CAT_CAFE_PREVIEW_CLEANUP_RESULT-}"
   source_env_if_present
   PROJECT_DIR="$selected_project_dir"
   ALPHA_DIR="$selected_alpha_dir"
@@ -548,6 +551,8 @@ start_alpha_worktree() {
   ALPHA_REDIS_PROFILE="$selected_redis_profile"
   ALPHA_AUDIO_PORT="$selected_audio_port"
   ALPHA_EMPTY_REDIS_ALLOWED="$selected_allow_empty"
+  export CAT_CAFE_PREVIEW_EXPIRES_AT="$selected_preview_expiry"
+  export CAT_CAFE_PREVIEW_CLEANUP_RESULT="$selected_cleanup_result"
   apply_alpha_env
   assert_alpha_redis_isolated
   assert_alpha_redis_seeded
@@ -571,6 +576,12 @@ else
   ensure_supported_node_runtime "$SCRIPT_DIR/alpha-worktree.sh" "$@"
   COMMAND="${1:-status}"
   shift || true
+fi
+MANAGED_ALPHA_ARGS=("$@")
+if [ "$SOURCE_ONLY" != true ] && [ "$COMMAND" = start ] && [ -n "${CAT_CAFE_PREVIEW_EXPIRES_AT:-}" ]; then
+  node "$SCRIPT_DIR/lib/alpha-launch-contract.mjs" ${MANAGED_ALPHA_ARGS[@]+"${MANAGED_ALPHA_ARGS[@]}"} >/dev/null || die "invalid managed Alpha launch contract"
+  # pnpm may forward a separator. The bounded contract has already excluded child overrides.
+  if [ "${1:-}" = -- ]; then shift; fi
 fi
 
 while [ "$SOURCE_ONLY" != "true" ] && [ $# -gt 0 ]; do
@@ -652,6 +663,13 @@ fi
 if [ -n "$NAMED_ALPHA_INSTANCE" ] || [ -n "$NAMED_ALPHA_PORTS" ]; then
   source "$SCRIPT_DIR/lib/alpha-named-launch.sh"
   select_named_alpha
+elif [ "$COMMAND" = start ] && [ -n "${CAT_CAFE_PREVIEW_EXPIRES_AT:-}" ]; then
+  managed_alpha_ports="$(node "$SCRIPT_DIR/lib/alpha-launch-contract.mjs" --standard-ports)" || die "cannot resolve managed Alpha ports"
+  IFS=$'\t' read -r ALPHA_FRONTEND_PORT ALPHA_API_PORT ALPHA_PREVIEW_GATEWAY_PORT ALPHA_COLLECTIVE_SERVICE_PORT ALPHA_REDIS_PORT <<< "$managed_alpha_ports"
+  ALPHA_DIR="$DEFAULT_ALPHA_DIR"
+  ALPHA_BRANCH="$DEFAULT_ALPHA_BRANCH"
+  REMOTE_NAME=origin
+  ENV_SOURCE_FILE="$PROJECT_DIR/.env"
 fi
 
 case "$COMMAND" in

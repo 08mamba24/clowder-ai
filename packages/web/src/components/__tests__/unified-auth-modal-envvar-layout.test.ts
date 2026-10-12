@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const source = readFileSync(resolve(__dirname, '../UnifiedAuthModal.tsx'), 'utf-8');
+const source = readFileSync(resolve(__dirname, '../AccountConnectionFields.tsx'), 'utf-8');
 const catTemplate = JSON.parse(readFileSync(resolve(__dirname, '../../../../../cat-template.json'), 'utf-8')) as {
   clientDefaults: Record<string, { models: string[] }>;
 };

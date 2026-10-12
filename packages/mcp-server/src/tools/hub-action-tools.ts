@@ -189,7 +189,7 @@ export const hubActionTools = [
       implementationExport: 'handlePreviewOpen',
       action: 'derive',
       risk: { level: 'write', openWorld: false },
-      runtimeProfiles: ['full', 'agent-key'],
+      runtimeProfiles: ['full', 'agent-key', 'desktop:live-companion'],
     },
   }),
 ] as const;

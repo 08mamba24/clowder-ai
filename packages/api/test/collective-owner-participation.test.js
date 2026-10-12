@@ -9,7 +9,7 @@ import { TaskStore } from '../dist/domains/cats/services/stores/ports/TaskStore.
 import { ThreadStore } from '../dist/domains/cats/services/stores/ports/ThreadStore.js';
 import { EntrustedWorkLifecycleService } from '../dist/domains/growing/EntrustedWorkLifecycleService.js';
 import { CollectiveCurrentContext } from '../dist/domains/plugin/builtin-runtime/collective-current-context.js';
-import { CollectiveWorkAuthority } from '../dist/domains/plugin/builtin-runtime/collective-work-authority.js';
+import { CollectiveWorkAuthority } from '../dist/domains/plugin/builtin-runtime/collective-work/collective-work-authority.js';
 import { CollectiveWorkDispatcher } from '../dist/domains/plugin/builtin-runtime/collective-work-dispatcher.js';
 import { CollectiveWorkResultReconciler } from '../dist/domains/plugin/builtin-runtime/collective-work-result-reconciler.js';
 import { registerCollectiveOwnerParticipationRoutes } from '../dist/routes/collective-owner-participation-routes.js';
@@ -120,6 +120,7 @@ async function harness(delayThreadWrites = false, initialExcludedCatIds = []) {
     threads: {
       get: (...args) => threads.get(...args),
       list: (...args) => threads.list(...args),
+      claimSystemKind: (...args) => threads.claimSystemKind(...args),
       addParticipants: (...args) => threads.addParticipants(...args),
       create: async (...args) => {
         if (delayThreadWrites) await new Promise(setImmediate);

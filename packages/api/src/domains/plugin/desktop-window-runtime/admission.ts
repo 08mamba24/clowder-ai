@@ -2,6 +2,7 @@ import type { DesktopWindowContribution, PluginManifest } from '@clowder-ai/plug
 import { validateCompanionCommand as validateLegacyCommand } from '@clowder-ai/plugin-contract';
 import { validateCompanionCommand as validateModernCommand } from '@clowder-ai/plugin-contract-beta23';
 import { validateCompanionCommand as validateUnifiedCommand } from '@clowder-ai/plugin-contract-beta24';
+import { validateCompanionCommand as validateWorkCommand } from '@clowder-ai/plugin-contract-beta25';
 import type { CompanionArchiveContract } from './published-companion-v2.js';
 
 // The trusted CJS desktop kernel imports this compiled ESM Host boundary. Package
@@ -12,6 +13,7 @@ export function companionCommandValidator(contract: CompanionArchiveContract['co
   if (contract === '0.1.0-beta.21') return validateLegacyCommand;
   if (contract === '0.1.0-beta.23') return validateModernCommand;
   if (contract === '0.1.0-beta.24') return validateUnifiedCommand;
+  if (contract === '0.1.0-beta.25') return validateWorkCommand;
   throw new Error('Unsupported companion contract');
 }
 

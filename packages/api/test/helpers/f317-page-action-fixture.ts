@@ -4,11 +4,11 @@ import { resolve } from 'node:path';
 import { createCatId } from '@cat-cafe/shared';
 import { MessageStore, type StoredMessage } from '../../src/domains/cats/services/stores/ports/MessageStore.js';
 import { type LivePageActionPort, pageActionGrantSha256 } from '../../src/domains/concierge/action/LivePageAction.js';
-import { LivePageActionApprovalLedger } from '../../src/domains/concierge/live/host/live-page-action-approval-ledger.js';
+import { LivePageActionApprovalLedger } from '../../src/domains/concierge/live/host/page-action/live-page-action-approval-ledger.js';
 import {
   LivePageActionAuthority,
   type TrustedPageActionApproval,
-} from '../../src/domains/concierge/live/host/live-page-action-authority.js';
+} from '../../src/domains/concierge/live/host/page-action/live-page-action-authority.js';
 import { LiveCompanionCall } from '../../src/domains/concierge/live/LiveCompanionCall.js';
 
 export const scope = {
@@ -32,8 +32,17 @@ export function appendUser(store: MessageStore, content: string, idempotencyKey:
   }).message;
 }
 
-export function fixture(sourceTimestamp = Date.now()) {
+export function fixture(sourceTimestamp = Date.now(), prior = 0) {
   const store = new MessageStore();
+  for (let i = 0; i < prior; i++)
+    store.append({
+      userId: 'owner',
+      threadId: 'home',
+      catId: scope.catId,
+      content: 'earlier conversation',
+      mentions: [],
+      timestamp: sourceTimestamp - 10_000 + i,
+    });
   const source = appendUser(store, 'Fill the approved note', 'owner-request-1', sourceTimestamp);
   let currentScope = scope;
   let approvalCurrent = true;
@@ -126,7 +135,7 @@ export async function issueFixtureApproval(
   source: StoredMessage = f.source,
   approval: TrustedPageActionApproval = f.approval,
 ): Promise<
-  import('../../src/domains/concierge/live/host/live-page-action-approval-ledger.js').PageActionApprovalRecord
+  import('../../src/domains/concierge/live/host/page-action/live-page-action-approval-ledger.js').PageActionApprovalRecord
 > {
   const snapshot = await f.port.inspect();
   const target = snapshot.candidates.find((candidate) => candidate.id === approval.targetId);

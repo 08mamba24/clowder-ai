@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { InvocationTrajectorySummary } from '@cat-cafe/shared';
 import Database from 'better-sqlite3';
 import { normalizeTranscriptEvent } from '../TranscriptEventEnvelope.js';
+import type { TranscriptEvent } from '../TranscriptReader.js';
 import { materializeFilesTouched, type TranscriptFileTouch } from '../transcript-file-touches.js';
 import { updateCanonicalInvocationIndex } from './transcript-invocation-canonical-index.js';
 import {
@@ -36,38 +37,93 @@ function collectLatest(db: Database.Database, limit: number, output: InvocationI
   }
 }
 
-async function readInvocationPage(
+type EventPageQuery = Extract<InvocationIndexRequest['query'], { kind: 'invocation' | 'events' }>;
+
+function selectEventPage(
   db: Database.Database,
-  input: SessionIndexInput,
-  sources: IndexedSource[],
-  query: Extract<InvocationIndexRequest['query'], { kind: 'invocation' }>,
-  diagnostics: InvocationIndexDiagnostics,
-): Promise<IndexedInvocationPage> {
+  sessionId: string,
+  query: EventPageQuery,
+): { page: IndexedInvocationPage; rows: Iterable<IndexedEventPointer> } {
+  const invocationId = query.kind === 'invocation' ? query.invocationId : undefined;
+  const bindings = invocationId === undefined ? [] : [invocationId];
+  const scope = invocationId === undefined ? '' : 'invocation_id = ? AND ';
   const total = (
-    db.prepare('SELECT COUNT(*) AS count FROM canonical WHERE invocation_id = ?').get(query.invocationId) as {
-      count: number;
-    }
+    db
+      .prepare(`SELECT COUNT(*) AS count FROM canonical${invocationId === undefined ? '' : ' WHERE invocation_id = ?'}`)
+      .get(...bindings) as { count: number }
   ).count;
-  const page: IndexedInvocationPage = { sessionId: input.session.id, events: [], total };
-  const summary = db.prepare('SELECT projection FROM summaries WHERE invocation_id = ?').get(query.invocationId) as
-    | { projection: string }
-    | undefined;
-  if (summary) page.summary = JSON.parse(summary.projection) as InvocationTrajectorySummary;
+  const page: IndexedInvocationPage = { sessionId, events: [], total };
+  if (invocationId !== undefined) {
+    const summary = db.prepare('SELECT projection FROM summaries WHERE invocation_id = ?').get(invocationId) as
+      | { projection: string }
+      | undefined;
+    if (summary) page.summary = JSON.parse(summary.projection) as InvocationTrajectorySummary;
+  }
   const start = db
     .prepare(`SELECT MIN(logical_no) AS start FROM canonical
-    WHERE invocation_id = ? AND event_no >= ?`)
-    .get(query.invocationId, query.cursor ?? 0) as { start: number | null };
-  if (start.start === null) return page;
+    WHERE ${scope}event_no >= ?`)
+    .get(...bindings, query.cursor ?? 0) as { start: number | null };
+  if (start.start === null) return { page, rows: [] };
   const rows = db
     .prepare(`SELECT source, seq, event_no, byte_offset, byte_length FROM canonical
-    WHERE invocation_id = ? AND logical_no >= ? ORDER BY logical_no LIMIT ?`)
+    WHERE ${scope}logical_no >= ? ORDER BY logical_no LIMIT ?`)
     .iterate(
-      query.invocationId,
+      ...bindings,
       start.start,
       query.limit === undefined ? -1 : query.limit + 1,
     ) as Iterable<IndexedEventPointer>;
+  return { page, rows };
+}
+
+async function hydrateDiskEvent(
+  row: IndexedEventPointer,
+  input: SessionIndexInput,
+  sources: IndexedSource[],
+  diagnostics: InvocationIndexDiagnostics,
+  invocationId?: string,
+): Promise<TranscriptEvent> {
+  const file = sources[row.source]?.file;
+  if (!file) throw new Error('Transcript source disappeared during indexed read');
+  const bytes = Buffer.alloc(row.byte_length);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const { bytesRead } = await file.read(bytes, offset, bytes.length - offset, row.byte_offset + offset);
+    if (bytesRead === 0) throw new Error('Transcript changed during indexed read');
+    offset += bytesRead;
+  }
+  diagnostics.hydratedBytes += bytes.length;
+  const event = normalizeTranscriptEvent(JSON.parse(bytes.toString('utf8')));
+  if (!event || (invocationId !== undefined && event.invocationId !== invocationId))
+    throw new Error('Transcript index no longer matches its source');
+  if (row.source !== 1) return { ...event, eventNo: row.event_no };
+  const { cliSessionId: _, ...rest } = event;
+  return {
+    ...rest,
+    v: 1,
+    threadId: input.session.threadId,
+    catId: input.session.catId,
+    sessionId: input.session.id,
+    eventNo: row.event_no,
+    ...(input.session.cliSessionId ? { cliSessionId: input.session.cliSessionId } : {}),
+  };
+}
+
+async function readEventPage(
+  db: Database.Database,
+  input: SessionIndexInput,
+  sources: IndexedSource[],
+  query: EventPageQuery,
+  diagnostics: InvocationIndexDiagnostics,
+): Promise<IndexedInvocationPage> {
+  const { page, rows } = selectEventPage(db, input.session.id, query);
+  let hydratedPageBytes = 0;
   for (const row of rows) {
-    if (query.limit !== undefined && page.events.length === query.limit) {
+    // A Raw page stops before hydrating another large record. The first record
+    // remains reachable through the existing exact-event character drill.
+    if (
+      (query.limit !== undefined && page.events.length === query.limit) ||
+      (query.kind === 'events' && page.events.length > 0 && hydratedPageBytes + row.byte_length > 64 * 1024)
+    ) {
       page.nextCursor = { eventNo: row.event_no };
       break;
     }
@@ -75,33 +131,15 @@ async function readInvocationPage(
       page.events.push({ bufferIndex: row.seq, eventNo: row.event_no });
       continue;
     }
-    const file = sources[row.source]?.file;
-    if (!file) throw new Error('Transcript source disappeared during indexed read');
-    const bytes = Buffer.alloc(row.byte_length);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const { bytesRead } = await file.read(bytes, offset, bytes.length - offset, row.byte_offset + offset);
-      if (bytesRead === 0) throw new Error('Transcript changed during indexed read');
-      offset += bytesRead;
-    }
-    diagnostics.hydratedBytes += bytes.length;
-    const event = normalizeTranscriptEvent(JSON.parse(bytes.toString('utf8')));
-    if (!event || event.invocationId !== query.invocationId)
-      throw new Error('Transcript index no longer matches its source');
-    if (row.source === 1) {
-      const { cliSessionId: _, ...rest } = event;
-      page.events.push({
-        event: {
-          ...rest,
-          v: 1,
-          threadId: input.session.threadId,
-          catId: input.session.catId,
-          sessionId: input.session.id,
-          eventNo: row.event_no,
-          ...(input.session.cliSessionId ? { cliSessionId: input.session.cliSessionId } : {}),
-        },
-      });
-    } else page.events.push({ event: { ...event, eventNo: row.event_no } });
+    const event = await hydrateDiskEvent(
+      row,
+      input,
+      sources,
+      diagnostics,
+      query.kind === 'invocation' ? query.invocationId : undefined,
+    );
+    hydratedPageBytes += row.byte_length;
+    page.events.push({ event });
   }
   return page;
 }
@@ -157,7 +195,7 @@ async function readSessionIndex(
         output.diagnostics,
       );
       if (query.kind === 'list') collectLatest(db, query.limit, output);
-      else output.pages.push(await readInvocationPage(db, input, sources, query, output.diagnostics));
+      else output.pages.push(await readEventPage(db, input, sources, query, output.diagnostics));
     }
     db.exec('COMMIT');
     return output;

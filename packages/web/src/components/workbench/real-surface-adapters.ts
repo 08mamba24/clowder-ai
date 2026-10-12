@@ -13,8 +13,11 @@ import { WORKSPACE_MODE_META, type WorkspaceMode } from '@/lib/workspace-modes';
 import type { TeamWorkspaceSubject } from '@/stores/chat-types';
 import { resolveArtifactReviewTarget } from './artifact-review-surface';
 import { resolveEvolutionMediaTarget } from './evolution-media-surface';
+import { fileObjectIdentity, matchesFileObjectIdentity } from './file-object-identity';
 import { resolveMessagePublicationSource } from './message-publication-surface';
 import { resolvePublicationTarget } from './publication-surface';
+
+import { resolveThreadReplayThreadId, THREAD_REPLAY_OWNER } from './thread-replay-surface';
 
 export const REAL_SURFACE_OWNERS = {
   agentRun: 'f299-invocation-trajectory',
@@ -29,6 +32,7 @@ export const REAL_SURFACE_OWNERS = {
   needsMe: 'f310-needs-me-navigation',
   productSchedule: 'f310-product-schedule-navigation',
   terminal: 'f089-terminal-session',
+  threadReplay: THREAD_REPLAY_OWNER,
   team: 'f293-routing-context',
   workspace: 'f284-workspace-launcher',
 } as const;
@@ -59,6 +63,7 @@ function isCodePath(path: string): boolean {
 }
 
 export function isRealSurfaceOwnerAvailable(surface: WorkspaceSurfaceDescriptor): boolean {
+  if (surface.type === 'thread-replay') return resolveThreadReplayThreadId(surface) !== null;
   if (
     resolvePublicationTarget(surface) ||
     resolveEvolutionMediaTarget(surface) ||
@@ -119,6 +124,13 @@ export function createBrowserSurface(input: {
     resultTargetRef: { owner: REAL_SURFACE_OWNERS.browser, key: `${port}:${path}` },
     capabilities: SURFACE_CAPABILITIES,
   };
+}
+
+/** v2 preview and permanent file tabs share a stable per-file identity without creating a new owner. */
+export function createFilePreviewSurface(input: Parameters<typeof createFileSurface>[0]): WorkspaceSurfaceDescriptor {
+  const surface = createFileSurface(input);
+  const identity = fileObjectIdentity(input.worktreeId, input.path);
+  return { ...surface, id: `file-preview:${identity}`, objectRef: { kind: 'file', id: identity } };
 }
 
 export interface ContentEditorTarget {
@@ -745,7 +757,7 @@ function decodeFileTarget(key: string): { worktreeId: string; path: string; scro
 }
 
 export function resolveFileTarget(
-  surface: WorkspaceSurfaceDescriptor,
+  surface: Pick<WorkspaceSurfaceDescriptor, 'objectRef' | 'ownerStateRef' | 'resultTargetRef'>,
 ): { worktreeId: string; path: string; scrollToLine: number | null } | null {
   if (
     surface.objectRef.kind !== 'file' ||
@@ -755,7 +767,12 @@ export function resolveFileTarget(
     return null;
   }
   const target = decodeFileTarget(surface.resultTargetRef.key);
-  if (!target || target.worktreeId !== surface.ownerStateRef.key || surface.objectRef.id !== target.worktreeId) {
+  if (
+    !target ||
+    target.worktreeId !== surface.ownerStateRef.key ||
+    (surface.objectRef.id !== target.worktreeId &&
+      !matchesFileObjectIdentity(surface.objectRef.id, target.worktreeId, target.path))
+  ) {
     return null;
   }
   return target;

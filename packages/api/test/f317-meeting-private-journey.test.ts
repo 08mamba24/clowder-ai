@@ -15,6 +15,7 @@ test('durable F195 transcript reaches only the explicitly shared private Live us
   const root = await mkdtemp(join(tmpdir(), 'f317-private-journey-'));
   const capture: F195CaptureObservation = {
     running: true,
+    lifecycle: 'running' as const,
     paused: false,
     threadId: 'thread-1',
     meetingId: 'mtg-1',
@@ -36,7 +37,12 @@ test('durable F195 transcript reaches only the explicitly shared private Live us
     audioServiceUrl: 'http://audio.test',
     fetchFn: async () =>
       new Response(
-        JSON.stringify({ running: capture.running, meeting_id: capture.meetingId, thread_id: capture.threadId }),
+        JSON.stringify({
+          running: capture.running,
+          lifecycle_state: capture.lifecycle,
+          meeting_id: capture.meetingId,
+          thread_id: capture.threadId,
+        }),
       ),
   });
   const sessions = new LiveCompanionSessions({

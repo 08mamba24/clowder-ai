@@ -71,6 +71,37 @@ describe('GET /api/messages', () => {
     assert.equal(res.json().messages[0].content, '请保留手写文字');
   });
 
+  it('projects an immutable modification receipt as a system message through real history hydration', async () => {
+    const receipt = {
+      v: 1,
+      requestId: 'f309-modification-' + 'a'.repeat(64),
+      sourceMessageId: 'human-source-1',
+      targetCatId: 'codex-astra',
+      taskId: 'task-1',
+      state: 'conflict',
+      candidateRef: 'content-patch:request:1',
+      receiptRef: 'workspace-writeback:1',
+      observedAt: 2000,
+      followUp: { kind: 'none', reason: 'task_closed' },
+    };
+    messageStore.append({
+      userId: 'system',
+      catId: null,
+      content: '[Host 作品修改回执]',
+      mentions: [],
+      timestamp: 2000,
+      threadId: 'thread-receipt',
+      replyTo: 'human-source-1',
+      extra: { systemKind: 'content_modification_receipt', contentModificationReceiptV1: receipt },
+    });
+    const res = await app.inject({ method: 'GET', url: '/api/messages?threadId=thread-receipt' });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().messages[0].type, 'system');
+    assert.equal(res.json().messages[0].replyTo, 'human-source-1');
+    assert.equal(res.json().messages[0].extra.systemKind, 'content_modification_receipt');
+    assert.deepEqual(res.json().messages[0].extra.contentModificationReceiptV1, receipt);
+  });
+
   it('returns messages with correct format', async () => {
     messageStore.append({
       userId: 'default-user',

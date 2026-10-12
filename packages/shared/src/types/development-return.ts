@@ -35,7 +35,9 @@ export const developmentReturnRegistrationV1Schema = z
     registeredAt: z.number().int().nonnegative(),
     status: z.enum(['waiting', 'ready', 'delivering', 'delivered', 'retired']),
     report: report.extend({ sourceMessageRevision: sourceRevision }).optional(),
-    reason: z.enum(['terminal_report', 'deadline_review', 'cancelled', 'owner_changed', 'delivery_failed']).optional(),
+    reason: z
+      .enum(['terminal_report', 'deadline_review', 'cancelled', 'owner_changed', 'delivery_failed', 'superseded'])
+      .optional(),
     wakeMessageId: ref.optional(),
   })
   .strict();

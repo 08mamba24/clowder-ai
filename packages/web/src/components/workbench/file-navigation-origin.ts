@@ -41,6 +41,15 @@ export function parseFileNavigationOrigin(value: unknown): WorkspaceSurfaceDescr
       ? { kind: 'file-tree', worktreeId: origin.worktreeId, repoRoot: origin.repoRoot }
       : { kind: 'file-tree', worktreeId: origin.worktreeId };
   }
+  if (origin.kind === 'workspace-changes') {
+    if (
+      !isNonEmptyString(origin.worktreeId) ||
+      origin.worktreeId.length > 256 ||
+      (origin.threadId !== null && (!isNonEmptyString(origin.threadId) || origin.threadId.length > 256))
+    )
+      return null;
+    return { kind: 'workspace-changes', worktreeId: origin.worktreeId, threadId: origin.threadId };
+  }
   if (origin.kind === 'workspace-document') {
     if (
       !isNonEmptyString(origin.worktreeId) ||
@@ -61,6 +70,11 @@ export function parseFileNavigationOrigin(value: unknown): WorkspaceSurfaceDescr
   if (origin.kind === 'chat-file-link') {
     if (!isNonEmptyString(origin.threadId) || !isNonEmptyString(origin.messageId)) return null;
     return { kind: 'chat-file-link', threadId: origin.threadId, messageId: origin.messageId };
+  }
+  if (origin.kind === 'meeting-transcript') {
+    // C 3480: same-thread meeting-panel origin; invalid threadId fails closed, never degrades into another kind.
+    if (!isNonEmptyString(origin.threadId) || origin.threadId.length > 256) return null;
+    return { kind: 'meeting-transcript', threadId: origin.threadId };
   }
   return null;
 }

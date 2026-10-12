@@ -40,8 +40,11 @@ const CODE_OPTIONS = [
   { family: /^osascript$/, separate: ['-e'] },
 ];
 
-/** The segment with each code argument replaced by `''`; unchanged when unsure. */
-export function withoutInterpreterSource(segment) {
+/** Source-only by default. A proven caller may also project Node/Python
+ * application arguments after the exact inline-code/option boundary. Loader
+ * options and other interpreters' file operands remain visible.
+ */
+export function withoutInterpreterSource(segment, { opaqueArguments = false } = {}) {
   // Redirection syntax ends argv, not the already-read code argument. Its raw
   // suffix stays in the segment and is still judged as a shell write target.
   const words = shellWords(segment, { prefixOnly: true });
@@ -49,7 +52,8 @@ export function withoutInterpreterSource(segment) {
   const programIndex = words.findIndex((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word.value));
   if (programIndex < 0) return segment;
   const program = commandName(words[programIndex].value) ?? '';
-  const spans = program === 'deno' ? denoEvalSpans(words, programIndex) : codeSpans(words, programIndex, program);
+  const spans =
+    program === 'deno' ? denoEvalSpans(words, programIndex) : codeSpans(words, programIndex, program, opaqueArguments);
   if (spans.length === 0) return segment;
   let text = '';
   let cursor = 0;
@@ -60,9 +64,19 @@ export function withoutInterpreterSource(segment) {
   return text + segment.slice(cursor);
 }
 
-function codeSpans(words, programIndex, program) {
+function codeSpans(words, programIndex, program, opaqueArguments) {
   const options = CODE_OPTIONS.find((entry) => entry.family.test(program));
   if (!options) return [];
+  const spans = sourceCodeSpans(words, programIndex, options);
+  const positionalData = opaqueArguments && /^(?:node|nodejs|python\d*(?:\.\d+)?|pypy\d*)$/.test(program);
+  if (!positionalData || spans.length === 0) return spans;
+  const argumentIndex = opaqueArgumentIndex(words, programIndex, options);
+  if (argumentIndex === null) return [];
+  if (words[argumentIndex]) spans.push({ start: words[argumentIndex].start, end: words.at(-1).end });
+  return spans;
+}
+
+function sourceCodeSpans(words, programIndex, options) {
   const spans = [];
   for (let index = programIndex + 1; index < words.length; index += 1) {
     if (words[index].value === '--') return spans;
@@ -75,11 +89,46 @@ function codeSpans(words, programIndex, program) {
       continue;
     }
     const consumed = nonCodeOptionArity(options, words[index].value, words[index + 1]);
-    // A script/argument or unknown option arity ends our readable option prefix.
     if (consumed === undefined) return spans;
     index += consumed;
   }
   return spans;
+}
+
+/** Node keeps parsing known options after -e/-p; Python -c terminates them.
+ * Unknown option arity cannot establish where application data begins.
+ */
+function opaqueArgumentIndex(words, programIndex, options) {
+  let sawCode = false;
+  for (let index = programIndex + 1; index < words.length; index += 1) {
+    const step = interpreterPrefixStep(options, words[index], words[index + 1]);
+    switch (step.kind) {
+      case 'separator':
+        return sawCode ? index + 1 : null;
+      case 'unknown':
+        return null;
+      case 'positional':
+        return sawCode ? index : null;
+      case 'code':
+        sawCode = true;
+        index += step.consumed;
+        if (options.terminates) return index + 1;
+        break;
+      case 'option':
+        index += step.consumed;
+        break;
+    }
+  }
+  return words.length;
+}
+
+function interpreterPrefixStep(options, word, next) {
+  if (word.value === '--') return { kind: 'separator' };
+  const code = codeArgument(options, word, next);
+  if (code) return code.span ? { kind: 'code', consumed: code.consumed } : { kind: 'unknown' };
+  const consumed = nonCodeOptionArity(options, word.value, next);
+  if (consumed !== undefined) return { kind: 'option', consumed };
+  return word.value.startsWith('-') ? { kind: 'unknown' } : { kind: 'positional' };
 }
 
 function codeArgument(options, word, next) {

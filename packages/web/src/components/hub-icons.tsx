@@ -86,6 +86,8 @@ const ICON_PATHS: Record<string, string> = {
     'M16.5 12a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zM3.4 14.7c1.8 2.2 6.6 1.7 10.8-.5 4.2-2.1 7.1-5.1 6.4-6.7-.5-1.1-2.7-1.2-5.5-.4',
   signal: 'M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7',
   mission: 'M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8zM15 3v4a1 1 0 0 0 1 1h4M9 13h6M9 17h3',
+  // F322 界面语言: 文 A, the same drawing in both languages. The globe is already 页面预览 — one drawing, one meaning.
+  languages: 'M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6',
 };
 
 export function HubIcon({ name, className = 'w-5 h-5' }: { name: string; className?: string }) {

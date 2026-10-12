@@ -13,13 +13,15 @@ import { CatAvatar } from '../CatAvatar';
 import { ExportButton } from '../ExportButton';
 import { HubIcon } from '../icons/HubIcon';
 import { PawIcon } from '../icons/PawIcon';
-import { knownCatName, UNKNOWN_CAT_NAME } from '../shell/ShellCatAvatar';
+import { useShellCopy } from '../shell/shell-copy';
 import { useShellPresentation } from '../shell/shell-presentation';
 import { ThreadCatStatus } from '../ThreadCatStatus';
 import { useSidebarDraftDecoration } from './sidebar-draft-decoration';
+import { ThreadPinV2 } from './ThreadPinV2';
 import { ThreadRowSignals } from './ThreadRowSignals';
 import { RowTip, RowTitleTip } from './ThreadRowTips';
 import { ThreadSettingsPanel } from './ThreadSettingsPanel';
+import { threadSignalsCopy } from './thread-signals.shell-copy';
 import { formatRelativeTime, formatSidebarStatusTime } from './thread-utils';
 
 export interface ThreadItemProps {
@@ -82,6 +84,7 @@ function ThreadItemComponent({
   const hasDraftDecoration = useSidebarDraftDecoration(id);
   // F322 v2: one soft selection fill (no accent tint); the empty-participants note only matters as a hover fact.
   const isV2 = useShellPresentation() === 'v2';
+  const copy = useShellCopy(threadSignalsCopy);
   const { getCatById } = useCatData();
   const canDelete = id !== 'default' && onDelete;
   const canRename = id !== 'default' && onRename;
@@ -161,22 +164,13 @@ function ThreadItemComponent({
 
   // Build hover tooltip: full title + participants + time (clowder-ai#29)
   const displayTitle = title ?? (id === 'default' ? '大厅' : '未命名对话');
-  const hasDraft = !isActive && hasDraftDecoration;
+  const hasDraft = hasDraftDecoration && (isV2 || !isActive);
   const participantNames = participants.map((catId) => resolveCatDisplayName(catId, getCatById)).join(', ');
   const tooltipLines = [displayTitle];
   if (participantNames) tooltipLines.push(`参与: ${participantNames}`);
   if (projectPath && projectPath !== 'default') tooltipLines.push(`路径: ${projectPath}`);
   tooltipLines.push(formatRelativeTime(lastActiveAt, false));
   const tooltip = tooltipLines.join('\n');
-  // v2: same facts as the old native title, but unknown cats never show their raw id.
-  const v2TipLines: string[] = [];
-  if (participants.length > 0) {
-    v2TipLines.push(
-      `参与：${participants.map((catId) => knownCatName(catId, getCatById) ?? UNKNOWN_CAT_NAME).join('、')}`,
-    );
-  }
-  if (projectPath && projectPath !== 'default') v2TipLines.push(`路径：${projectPath}`);
-  v2TipLines.push(formatRelativeTime(lastActiveAt, false));
   const hasMoreActions = id !== 'default' && !isEditing;
   const compactStatusTime = formatSidebarStatusTime(presence, lastActiveAt);
 
@@ -217,7 +211,7 @@ function ThreadItemComponent({
     <div
       data-thread-id={id}
       aria-current={isActive ? 'page' : undefined}
-      className={`group relative mx-2 ${isV2 ? 'rounded-lg' : 'rounded-xl'} ${indented ? 'pl-5 pr-3' : 'px-3'} py-2.5 transition-colors cursor-pointer ${
+      className={`group relative mx-2 ${isV2 ? 'rounded-lg py-1.5' : 'rounded-xl py-2.5'} ${indented ? 'pl-5 pr-3' : 'px-3'} transition-colors cursor-pointer ${
         isV2
           ? isActive
             ? 'bg-[var(--shell-selected)]'
@@ -237,7 +231,7 @@ function ThreadItemComponent({
       }}
     >
       {/* Title row */}
-      <div className={`${isV2 ? '' : 'mb-1.5 '}flex items-start justify-between gap-1`}>
+      <div className={`flex justify-between gap-1 ${isV2 ? 'min-h-5 items-start' : 'mb-1.5 items-start'}`}>
         {isEditing ? (
           <input
             ref={inputRef}
@@ -262,11 +256,12 @@ function ThreadItemComponent({
             }}
             disabled={isSaving}
             maxLength={200}
-            className="text-sm px-1.5 py-0.5 rounded border border-cafe-subtle focus:outline-none focus:border-cafe-accent w-full mr-2 disabled:opacity-70"
+            className={`text-sm px-1.5 ${isV2 ? 'h-5 py-0' : 'py-0.5'} rounded border border-cafe-subtle focus:outline-none focus:border-cafe-accent w-full mr-2 disabled:opacity-70`}
           />
         ) : (
           <span className="flex min-w-0 flex-1 items-center gap-1">
-            {canPin && (
+            {isV2 && <ThreadPinV2 id={id} title={displayTitle} pinned={isPinned} onToggle={onTogglePin} />}
+            {!isV2 && canPin && (
               <RowTip enabled={isV2} label={isPinned ? '取消置顶' : '置顶'}>
                 <button
                   type="button"
@@ -287,7 +282,7 @@ function ThreadItemComponent({
                 </button>
               </RowTip>
             )}
-            {isPinned && !canPin && (
+            {!isV2 && isPinned && !canPin && (
               <span className="inline-flex flex-shrink-0 text-cafe-accent" role="img" aria-label="已置顶">
                 <PinIcon />
               </span>
@@ -312,10 +307,10 @@ function ThreadItemComponent({
                 猫卧室
               </span>
             )}
-            <RowTitleTip enabled={isV2} title={displayTitle} lines={v2TipLines}>
+            <RowTitleTip enabled={isV2} title={displayTitle}>
               <span
                 title={isV2 ? undefined : tooltip}
-                // v2: a keyboard stop that reveals the full title / roster and opens the conversation on Enter.
+                // v2: a keyboard stop that recovers a clipped title and opens the conversation on Enter.
                 role={isV2 ? 'link' : undefined}
                 tabIndex={isV2 ? 0 : undefined}
                 onKeyDown={
@@ -328,21 +323,25 @@ function ThreadItemComponent({
                       }
                     : undefined
                 }
-                className={`min-w-0 flex-1 line-clamp-2 text-sm leading-normal ${isActive ? 'font-medium text-cafe-black' : 'text-cafe-secondary'} ${isV2 ? 'shell-focusable rounded-sm' : ''}`}
+                className={`min-w-0 flex-1 line-clamp-2 ${isV2 ? 'break-words' : ''} text-sm ${isV2 ? 'leading-5' : 'leading-normal'} ${isV2 ? `${unreadCount > 0 || hasUserMention || presence.status === 'error' ? 'font-semibold' : 'font-normal'} text-[var(--shell-ink)]` : isActive ? 'font-medium text-cafe-black' : 'text-cafe-secondary'} ${isV2 ? 'shell-focusable rounded-sm' : ''}`}
               >
                 {title ?? (id === 'default' ? '大厅' : '未命名对话')}
               </span>
             </RowTitleTip>
           </span>
         )}
-        <div className="flex items-center gap-0.5 flex-shrink-0 mt-0.5">
+        <div className={`flex items-center gap-0.5 flex-shrink-0 ${isV2 ? '' : 'mt-0.5'}`}>
           {isV2 && !isEditing && (
-            <span className="pr-0.5 text-label leading-5 tabular-nums" style={{ color: 'var(--shell-muted)' }}>
+            <span
+              data-testid="thread-row-time"
+              className="order-last text-label leading-5 tabular-nums"
+              style={{ color: 'var(--shell-muted)' }}
+            >
               {formatRelativeTime(lastActiveAt, true)}
             </span>
           )}
           {hasMoreActions && (
-            <div className="relative">
+            <div className={isV2 ? 'relative flex h-5 items-center' : 'relative'}>
               <RowTip enabled={isV2} label="更多操作">
                 <button
                   type="button"
@@ -352,7 +351,7 @@ function ThreadItemComponent({
                     setIsSettingsOpen(false);
                     setIsMoreOpen((open) => !open);
                   }}
-                  className={`p-0.5 rounded transition-all ${
+                  className={`p-0.5 rounded transition-all ${isV2 ? 'flex h-5 w-5 items-center justify-center' : ''} ${
                     isMoreOpen
                       ? 'text-cafe-secondary bg-cafe-surface-elevated'
                       : 'text-cafe-muted hover:text-cafe-secondary'
@@ -378,6 +377,17 @@ function ThreadItemComponent({
                   {onOrganize && (
                     <ThreadActionMenuItem icon={<OrganizeIcon />} onClick={startOrganize}>
                       整理 Group
+                    </ThreadActionMenuItem>
+                  )}
+                  {isV2 && canPin && (
+                    <ThreadActionMenuItem
+                      icon={<PinIcon />}
+                      onClick={() => {
+                        setIsMoreOpen(false);
+                        void onTogglePin(id, !isPinned);
+                      }}
+                    >
+                      {isPinned ? copy.unpin : copy.pin}
                     </ThreadActionMenuItem>
                   )}
                   {canRename && (
@@ -476,6 +486,7 @@ function ThreadItemComponent({
         open={isSettingsOpen}
         threadId={id}
         threadTitle={displayTitle}
+        projectPath={isV2 ? projectPath : undefined}
         currentCats={[...(preferredCats ?? [])]}
         currentLabels={[...(threadLabels ?? [])]}
         onSavePreferredCats={onUpdatePreferredCats}

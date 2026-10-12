@@ -6,6 +6,7 @@ import { rankToMatchRank } from '../domains/memory/f163-types.js';
 import type { IEvidenceStore, IMarkerQueue, IReflectionService } from '../domains/memory/interfaces.js';
 import { MessageSearchService } from '../domains/memory/MessageSearchService.js';
 import { requireCallbackAuth } from './callback-auth-prehandler.js';
+import { registerCallbackRecallMetrics } from './callback-recall-metrics.js';
 import { mapKindToSourceType } from './evidence-helpers.js';
 import { executeMessageSearch, messageSearchQuerySchema, toMessageSearchInput } from './message-search-handler.js';
 
@@ -34,6 +35,7 @@ export async function registerCallbackMemoryRoutes(
   app: FastifyInstance,
   deps: CallbackMemoryRoutesDeps,
 ): Promise<void> {
+  await registerCallbackRecallMetrics(app);
   const messageSearchService =
     deps.messageSearchService ??
     (deps.messageStore && deps.threadStore

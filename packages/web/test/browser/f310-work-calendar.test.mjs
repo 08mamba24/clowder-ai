@@ -40,6 +40,15 @@ registerDefaultEntryJourney(
     const browser = await chromium.launch({ headless: true });
     t.after(() => browser.close());
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    let globalCatalogReads = 0;
+    await page.route('**/api/artifacts', (route) => {
+      globalCatalogReads++;
+      return route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: '{"error":"Global catalog unavailable"}',
+      });
+    });
     page.on('pageerror', (error) => t.diagnostic(`browser error: ${error.message}`));
     page.on('response', async (response) => {
       if (response.url().includes('/api/entrusted-work/') && !response.ok())
@@ -107,8 +116,10 @@ registerDefaultEntryJourney(
     fixture.unavailable(false);
     await panel.getByRole('button', { name: '刷新', exact: true }).click();
     await work.waitFor();
+    assert.equal(globalCatalogReads, 0, 'opening a known work result must not depend on scanning all user artifacts');
     t.diagnostic(
       JSON.stringify({
+        baseUrl: base,
         defaultEntry: true,
         chatFileOpen: true,
         exactHistory: true,

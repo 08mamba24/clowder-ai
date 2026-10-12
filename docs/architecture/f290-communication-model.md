@@ -165,7 +165,7 @@ J8/AC-C4 的跨频道汇总设计场景。**当前优先完成 UI/UX 北极星�
 
 | 代码入口 | 已核实 / 不可外推 |
 |---|---|
-| [standing-grant](../../packages/api/src/domains/plugin/builtin-runtime/collective-standing-grant.ts)、[work-authority](../../packages/api/src/domains/plugin/builtin-runtime/collective-work-authority.ts) | `resolveCollectiveStandingGrant` 校验来源/范围后返回 `scope.threadId`，`admitStanding` 传给 Task 准入；证实授权与地址耦合，没有据此证明每次 prompt 都装载全部历史 |
+| [standing-grant](../../packages/api/src/domains/plugin/builtin-runtime/collective-standing-grant.ts)、[work-authority](../../packages/api/src/domains/plugin/builtin-runtime/collective-work/collective-work-authority.ts) | `resolveCollectiveStandingGrant` 校验来源/范围后返回 `scope.threadId`，`admitStanding` 传给 Task 准入；证实授权与地址耦合，没有据此证明每次 prompt 都装载全部历史 |
 | [participant-identity](../../packages/collective-client/src/participant-identity.ts) | 当前公共 key 使用 `serviceInstanceId:connectionId:catId`；沿用这套 provenance，不从本页发明全局身份 store |
 | [ingress-dispatcher](../../packages/api/src/domains/plugin/builtin-runtime/collective-ingress-dispatcher.ts) | 公共调用保留 unknown owner provenance / collective-participation scope；具名请求与无 @ 路径有实际分流，不等于两个设置轴已完整交付 |
 | [current-context](../../packages/api/src/domains/plugin/builtin-runtime/collective-current-context.ts) | 现有读/回能力围绕精确 source、Thread、owner 和当前参与关系；不能外推为跨全部频道的授权汇总 API 已存在 |

@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { SessionEventsViewer } from '@/components/audit/SessionEventsViewer';
 import { SessionSearchTab } from '@/components/audit/SessionSearchTab';
 import { SessionChainPanel } from '@/components/SessionChainPanel';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import { useChatStore } from '@/stores/chatStore';
 import { apiFetch } from '@/utils/api-client';
 import { type ResolvedTrajectoryTarget, useCanonicalTrajectoryTarget } from './canonical-trajectory-resolution';
@@ -88,6 +89,7 @@ export function TrajectoryPanel({
   threadId?: string;
   targetOverride?: TrajectoryTarget;
 }) {
+  const isV2 = useShellPresentation() === 'v2';
   const currentThreadId = useChatStore((state) => state.currentThreadId);
   const catInvocations = useChatStore((state) => state.catInvocations);
   const activeInvocations = useChatStore((state) => state.activeInvocations);
@@ -280,7 +282,15 @@ export function TrajectoryPanel({
               onClick={() => setTab(item)}
               className={`px-3 py-2.5 text-xs font-semibold ${tab === item ? 'border-b-2 border-cafe-accent text-cafe-accent' : 'text-cafe-muted'}`}
             >
-              {item === 'trajectory' ? 'Invocations' : item === 'sessions' ? 'Sessions' : '搜索'}
+              {item === 'trajectory'
+                ? isV2
+                  ? '每一轮'
+                  : 'Invocations'
+                : item === 'sessions'
+                  ? isV2
+                    ? '会话'
+                    : 'Sessions'
+                  : '搜索'}
             </button>
           ))}
         </div>

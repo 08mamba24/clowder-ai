@@ -1,6 +1,9 @@
 import { setTimeout } from 'node:timers/promises';
 import type Database from 'better-sqlite3';
 
+/** Derived projections only. Version changes re-read JSONL instead of upgrading a clipped cache. */
+export const TRANSCRIPT_INVOCATION_PROJECTION_VERSION = 'output-evidence-v3';
+
 export const TRANSCRIPT_INVOCATION_INDEX_SCHEMA = `
   CREATE TABLE IF NOT EXISTS sources (
     source INTEGER PRIMARY KEY, signature TEXT NOT NULL, inode TEXT NOT NULL,

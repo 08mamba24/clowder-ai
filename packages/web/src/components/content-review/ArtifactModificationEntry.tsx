@@ -1,5 +1,6 @@
 import type { ArtifactReviewRound, ArtifactReviewView } from '@cat-cafe/shared';
 import { useState } from 'react';
+import { artifactRoundRequestSource } from './artifact-modification-source';
 import { ContentModificationLanding } from './ContentModificationLanding';
 import { modificationSourceVersion } from './modification-draft';
 import type { ReviewDraft } from './useReviewDraft';
@@ -20,34 +21,14 @@ export function ArtifactModificationEntry({
   onRegionHandedOff?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  if (round.ledgerRef && round.ledgerRevision === undefined)
+  const named = artifactRoundRequestSource(view, round);
+  if (!named)
     return (
       <p role="alert" className="p-3 text-xs text-cafe-error">
         原讨论版本尚未核对，请刷新后继续修改。
       </p>
     );
-  const source = round.ledgerRef
-    ? {
-        kind: 'publication' as const,
-        contentRef: round.asset.contentRef,
-        ownerRevision: round.asset.ownerRevision,
-        ledgerRef: round.ledgerRef,
-        expectedLedgerRevision: round.ledgerRevision ?? 0,
-      }
-    : {
-        kind: 'artifact-review' as const,
-        reviewId: view.review.reviewId,
-        round: round.number,
-        expectedReviewRevision: view.review.revision,
-      };
-  const taskContext = {
-    kind: 'media' as const,
-    taskId: view.review.task.taskId,
-    expectedTaskRevision: view.authority.taskRevision,
-    reviewId: view.review.reviewId,
-    expectedReviewRevision: view.review.revision,
-    round: round.number,
-  };
+  const { source, taskContext } = named;
   return (
     <>
       <div className="flex justify-end px-3 py-2">

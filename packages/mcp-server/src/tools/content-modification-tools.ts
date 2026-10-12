@@ -1,4 +1,8 @@
-import { inspectContentModificationSchema, respondContentTextSchema } from '@cat-cafe/shared';
+import {
+  contentModificationTakeoverSchema,
+  inspectContentModificationSchema,
+  respondContentTextSchema,
+} from '@cat-cafe/shared';
 import { z } from 'zod';
 import { defineMcpCanonicalFactory } from '../tool-governance-migration.js';
 import { callbackPost } from './callback-tools.js';
@@ -56,10 +60,20 @@ export const respondContentModificationInputSchema = {
     'Exact sha256: digest of the immutable original text. Edits always address this base, not the mutable original file.',
   ),
   edits: respondContentTextSchema.shape.edits.describe(
-    'Sorted non-overlapping UTF-16 [start,end) ranges in the original text, exact expectedText and replacement. Insertions use start=end. Every prior nonzero range must end before the next start; no guessed anchors.',
+    'Sorted non-overlapping UTF-16 [start,end) ranges in the original text, exact expectedText and replacement. Set optional selectionId only to an id from the request selections; omit it for an additional unscoped change, never infer it from overlap. Insertions use start=end. Every prior nonzero range must end before the next start; no guessed anchors.',
   ),
   response: respondContentTextSchema.shape.response.describe(
     'Named explanation of how this candidate addresses the human request; up to 8000 characters.',
+  ),
+};
+export const takeOverContentModificationInputSchema = {
+  ...contentModificationTakeoverSchema.shape,
+  ...common,
+  sourceMessageId: contentModificationTakeoverSchema.shape.sourceMessageId.describe(
+    'Exact id of the delivered Human message addressed to this authenticated cat, carrying version-bound workspace-file quotes or a canonical PNG/MP4 media attachment.',
+  ),
+  operationId: contentModificationTakeoverSchema.shape.operationId.describe(
+    'UUID for this takeover attempt. Source-message identity owns the request, so retries or competing addressed cats reuse one request.',
   ),
 };
 function post(operation: string, input: { agentKeyCatId?: string }) {
@@ -74,12 +88,31 @@ export function handleRespondContentModification(
 ) {
   return post('respond', input);
 }
+export function handleTakeOverContentModification(
+  input: z.infer<z.ZodObject<typeof takeOverContentModificationInputSchema>>,
+) {
+  return post('take-over', input);
+}
 const admission = {
   disposition: 'accepted-boundary',
   kind: 'resource-entry',
   admissionRef: 'file:docs/architecture/f309-text-modification-contract.md',
 } as const;
 export const contentModificationTools = [
+  defineTool({
+    name: 'cat_cafe_take_over_content_modification',
+    description:
+      'Take over one delivered Human message addressed to this authenticated cat as one durable text or media modification request. Use when: the Human asks the named cat to modify exact-revision workspace quotes from the same file/base, or one canonical PNG/MP4 work with named media ranges or a whole-work attachment. Not for: caller-supplied identities/body/anchors, screenshots as source identity, unversioned or mixed sources, recalled messages, DOCX changes, human acceptance, or writing the original file. Input supplies only source message id and attempt UUID (plus permitted thread selection for agent-key auth); the server rereads owner identity, targets, version, ranges and withdrawal, reuses original media Task custody, and atomically gives competing addressed cats one request. Output: actual request/Task/execution state and server media selection-to-annotation ids. For media content and candidates use read_artifact_review/respond_artifact_review. Reusing a Human source never creates another request.',
+    inputSchema: takeOverContentModificationInputSchema,
+    handler: handleTakeOverContentModification,
+    governance: {
+      implementationExport: 'handleTakeOverContentModification',
+      action: 'update',
+      risk: { level: 'write', openWorld: false },
+      runtimeProfiles: ['full', 'agent-key'],
+      standaloneReason: { ...admission, admissionRef: 'file:docs/architecture/f309-media-message-contract.md' },
+    },
+  }),
   defineTool({
     name: 'cat_cafe_read_content_modification',
     description:

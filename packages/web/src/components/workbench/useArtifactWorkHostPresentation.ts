@@ -1,14 +1,15 @@
 'use client';
 
 import { useCallback, useEffect } from 'react';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import {
   type ArtifactWorkInvalidationReason,
   type ArtifactWorkPresentationSession,
   DEFAULT_ARTIFACT_WORK_CHAT_BASIS,
-  isArtifactWorkSurface,
 } from './artifact-work-presentation';
 import { useF307ExperienceWorkbenchStore } from './experience-workbench-store';
 import type { WorkbenchLayoutState } from './workbench-contract';
+import { projectWorkspaceWorkHost } from './workspace-work-host-projection';
 
 interface ArtifactWorkHostInput {
   threadId: string;
@@ -41,13 +42,12 @@ export function useArtifactWorkHostPresentation({
   const layout = useF307ExperienceWorkbenchStore((state) => state.layout);
   const presentation = useF307ExperienceWorkbenchStore((state) => state.artifactWorkPresentation);
   const dispatch = useF307ExperienceWorkbenchStore((state) => state.dispatchArtifactWorkPresentation);
-  const activeSurface = layout.surfaces.find((surface) => surface.id === layout.activeSurfaceId) ?? null;
-  const surfaceActive = isArtifactWorkSurface(activeSurface);
-  const hostEligible =
-    viewMode === 'single' && isDesktop && statusPanelOpen && rightPanelMode === 'workspace' && surfaceActive;
-  const sessionMatchesHost =
-    presentation.session?.threadId === threadId && presentation.session.surfaceId === activeSurface?.id;
-  const fullWindowActive = hostEligible && sessionMatchesHost && presentation.session?.mode === 'full-window';
+  const { activeSurface, surfaceActive, hostEligible, fullWindowActive, splitPreferenceActive } =
+    projectWorkspaceWorkHost(
+      { threadId, viewMode, isDesktop, statusPanelOpen, rightPanelMode, shellPresentation: useShellPresentation() },
+      layout,
+      presentation,
+    );
 
   const invalidateHost = useCallback(
     (reason: ArtifactWorkInvalidationReason = 'host-ineligible') => {
@@ -123,6 +123,7 @@ export function useArtifactWorkHostPresentation({
   return {
     surfaceActive,
     hostEligible,
+    splitPreferenceActive,
     fullWindowActive,
     chatBasis: presentation.desktopWorkChatBasis,
     invalidateHost,

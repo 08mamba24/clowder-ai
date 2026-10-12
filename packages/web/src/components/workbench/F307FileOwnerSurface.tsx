@@ -1,17 +1,24 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { modificationFocusStanding, usePendingModificationFocus } from '@/components/content-review/modification-focus';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import type { WorkspaceSurfaceDescriptor } from '@/components/workbench/workbench-contract';
 import { WorkspaceFileViewer } from '@/components/workspace/WorkspaceFileViewer';
 import { useFileEditing } from '@/hooks/useFileEditing';
 import type { FileData } from '@/hooks/useWorkspace';
 import { useWorkspaceFileChange } from '@/hooks/useWorkspaceFileChange';
 import type { WorkspaceFileNavigationOrigin } from '@/stores/chat-types';
+import { useChatStore } from '@/stores/chatStore';
 import { apiFetch } from '@/utils/api-client';
+import { isWorkspaceArtworkPath } from './artifact-work-presentation';
 import { WorkspaceOfficeSurface } from './content-editor/WorkspaceOfficeSurface';
 import { ContentLandingHeader } from './content-review/ContentLandingHeader';
 import { WorkspaceContentReviewSurface } from './content-review/WorkspaceContentReviewSurface';
-import { resolveFileTarget } from './real-surface-adapters';
+import { useF307ExperienceWorkbenchStore } from './experience-workbench-store';
+import { createFilesSurface, resolveFileTarget } from './real-surface-adapters';
+import { useWorkspaceFileViewport } from './useWorkspaceFileViewport';
+import { promoteWorkspacePreview } from './WorkspacePreviewIntent';
 
 interface FileOwnerTarget {
   worktreeId: string;
@@ -37,24 +44,50 @@ function FileOwnerUnavailable({ message }: { message: string }) {
 }
 
 function ResolvedFileOwnerSurface({
+  surfaceId,
   target,
   onRequestDetach,
   navigationOrigin,
   onBack,
+  onRevealInTree,
+  focusMode = false,
 }: {
+  surfaceId: string;
   target: FileOwnerTarget;
   onRequestDetach: () => void;
   navigationOrigin?: WorkspaceFileNavigationOrigin;
   onBack: () => void;
+  onRevealInTree: () => void;
+  focusMode?: boolean;
 }) {
+  const isV2 = useShellPresentation() === 'v2';
+  const viewport = useWorkspaceFileViewport(surfaceId, target);
   const [file, setFile] = useState<FileData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [markdownRendered, setMarkdownRendered] = useState(true);
   const [htmlPreview, setHtmlPreview] = useState(false);
   const [jsxPreview, setJsxPreview] = useState(false);
-  const [collaborationOpen, setCollaborationOpen] = useState(true);
+  const [collaborationOpen, setCollaborationOpen] = useState<boolean | null>(null);
   const requestSeq = useRef(0);
+  const pendingFocus = usePendingModificationFocus();
+  const currentThreadId = useChatStore((state) => state.currentThreadId);
+  const openRevision = useChatStore((state) => state.workspaceOpenRevision);
+
+  useEffect(() => {
+    if (!pendingFocus) return;
+    if (modificationFocusStanding(pendingFocus, { threadId: currentThreadId, revision: openRevision }) !== 'ours')
+      return;
+    const source = pendingFocus.record.payload.source;
+    if (
+      source.kind !== 'workspace' ||
+      source.locator.worktreeId !== target.worktreeId ||
+      source.locator.path !== target.path
+    )
+      return;
+    // Mount the review consumer even on a cold/ordinary file tab. It alone verifies owner/version and takes the focus.
+    setCollaborationOpen(true);
+  }, [pendingFocus, currentThreadId, openRevision, target.worktreeId, target.path]);
 
   const fetchFile = useCallback(
     async (path: string, afterCurrentGet = false) => {
@@ -109,7 +142,9 @@ function ResolvedFileOwnerSurface({
     [target.worktreeId],
   );
 
-  if (loading || error || !file)
+  // Refresh this file in place: unmounting its collaboration surface loses the confirmed result and selection.
+  // A different file or a denied read still has no cached preview to show.
+  if (error || !file || file.path !== target.path)
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         <ContentLandingHeader
@@ -140,7 +175,7 @@ function ResolvedFileOwnerSurface({
   const isCollaborativeText = isMarkdown || /\.txt$/i.test(target.path) || canEdit;
   const collaborationAvailable =
     (isCollaborativeText && !file.truncated) || file.mime === 'image/png' || file.mime === 'video/mp4';
-  if (collaborationOpen && collaborationAvailable)
+  if ((collaborationOpen ?? (!isV2 || isWorkspaceArtworkPath(target.path))) && collaborationAvailable)
     return (
       <WorkspaceContentReviewSurface
         worktreeId={target.worktreeId}
@@ -157,6 +192,7 @@ function ResolvedFileOwnerSurface({
   return (
     <div className="flex min-h-0 flex-1" data-owner-worktree={target.worktreeId} data-owner-path={target.path}>
       <WorkspaceFileViewer
+        {...viewport}
         file={file}
         openFilePath={target.path}
         openTabs={[target.path]}
@@ -177,18 +213,28 @@ function ResolvedFileOwnerSurface({
           setEditMode(false);
           onRequestDetach();
         }}
-        onToggleEdit={handleToggleEdit}
+        onToggleEdit={() => {
+          promoteWorkspacePreview(surfaceId);
+          handleToggleEdit();
+        }}
         onToggleMarkdownRendered={() => setMarkdownRendered((current) => !current)}
         onToggleHtmlPreview={() => setHtmlPreview((current) => !current)}
         onToggleJsxPreview={() => setJsxPreview((current) => !current)}
         collaborationAvailable={collaborationAvailable}
-        onOpenCollaboration={() => setCollaborationOpen(true)}
+        onOpenCollaboration={() => {
+          promoteWorkspacePreview(surfaceId);
+          setCollaborationOpen(true);
+        }}
         onSave={handleSave}
         onDirtyChange={onDirtyChange}
         pendingExternalSha={pendingExternalSha}
         onApplyExternalChange={applyExternalChange}
         onDismissExternalChange={dismissExternalChange}
         revealInFinder={revealInFinder}
+        focusMode={focusMode}
+        navigationOrigin={navigationOrigin}
+        onBack={onBack}
+        onRevealInTree={onRevealInTree}
       />
     </div>
   );
@@ -198,10 +244,12 @@ export function F307FileOwnerSurface({
   surface,
   onRequestDetach,
   onReturnToNavigationOrigin,
+  focusMode = false,
 }: {
   surface: WorkspaceSurfaceDescriptor;
   onRequestDetach: () => void;
   onReturnToNavigationOrigin?: (origin: WorkspaceFileNavigationOrigin) => void;
+  focusMode?: boolean;
 }) {
   const target = resolveFileTarget(surface);
   if (!target)
@@ -211,6 +259,26 @@ export function F307FileOwnerSurface({
         <FileOwnerUnavailable message="文件引用已不可用，请返回来源重新打开。" />
       </div>
     );
+  const onRevealInTree = () => {
+    const origin = surface.navigationOrigin;
+    // File resolution may re-key its owner; the browsed tree keeps the coordinate that listed it.
+    const treeWorktreeId = origin?.kind === 'file-tree' ? (origin.worktreeId ?? target.worktreeId) : target.worktreeId;
+    const files = createFilesSurface(treeWorktreeId, {
+      ...(origin?.kind === 'file-tree' && origin.repoRoot ? { repoRoot: origin.repoRoot } : {}),
+    });
+    const workbench = useF307ExperienceWorkbenchStore.getState();
+    const previousRequest =
+      workbench.layout.surfaces.find((current) => current.id === files.id)?.filesReveal?.request ?? 0;
+    workbench.dispatch({
+      type: 'open-surface',
+      surface: {
+        ...files,
+        filesReveal: { path: target.path, request: previousRequest + 1 },
+        ...(surface.rootSelection ? { rootSelection: surface.rootSelection } : {}),
+      },
+      entitlement: { kind: 'user', reason: 'workspace-home-selection' },
+    });
+  };
   const onBack = () =>
     surface.returnTargetRef
       ? onRequestDetach()
@@ -229,11 +297,14 @@ export function F307FileOwnerSurface({
     );
   return (
     <ResolvedFileOwnerSurface
+      surfaceId={surface.id}
       key={`${target.worktreeId}:${target.path}`}
       target={target}
       onRequestDetach={onRequestDetach}
       navigationOrigin={surface.navigationOrigin}
       onBack={onBack}
+      onRevealInTree={onRevealInTree}
+      focusMode={focusMode}
     />
   );
 }

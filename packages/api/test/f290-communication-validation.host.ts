@@ -31,7 +31,7 @@ import { CollectiveCurrentContext } from '../src/domains/plugin/builtin-runtime/
 import { CollectiveIngressDispatcher } from '../src/domains/plugin/builtin-runtime/collective-ingress-dispatcher.js';
 import { resolveCollectiveStandingGrant } from '../src/domains/plugin/builtin-runtime/collective-standing-grant.js';
 import { CollectiveWorkAdmission } from '../src/domains/plugin/builtin-runtime/collective-work/collective-work-admission.js';
-import { CollectiveWorkAuthority } from '../src/domains/plugin/builtin-runtime/collective-work-authority.js';
+import { CollectiveWorkAuthority } from '../src/domains/plugin/builtin-runtime/collective-work/collective-work-authority.js';
 import { CollectiveWorkDispatcher } from '../src/domains/plugin/builtin-runtime/collective-work-dispatcher.js';
 import { CollectiveWorkResultReconciler } from '../src/domains/plugin/builtin-runtime/collective-work-result-reconciler.js';
 import { CollectiveWorkRevisionReconciler } from '../src/domains/plugin/builtin-runtime/collective-work-revision-reconciler.js';

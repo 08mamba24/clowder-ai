@@ -1,8 +1,15 @@
 'use client';
 
-import type { CliDiagnostics, ProviderSemanticEvent, ReplyPreview, SchedulerMessageExtra } from '@cat-cafe/shared';
-import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import {
+  type CliDiagnostics,
+  type ProviderSemanticEvent,
+  type ReplyPreview,
+  readMessageOutputLayout,
+  type SchedulerMessageExtra,
+} from '@cat-cafe/shared';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import { readShellPresentation } from '@/components/shell/shell-presentation';
 import { useThreadChatHistoryAdmission } from '@/components/thread-chat/ThreadChatRuntimeProvider';
 import { getBubbleInvocationId, shouldForceReplaceHydrationForCachedMessages } from '@/debug/bubbleIdentity';
 import { recordDebugEvent } from '@/debug/invocationEventDebug';
@@ -21,11 +28,24 @@ import type { TaskItem } from '@/stores/taskStore';
 import { useTaskStore } from '@/stores/taskStore';
 import { crossesUserTurnBoundary } from '@/stores/turn-boundary';
 import { apiFetch } from '@/utils/api-client';
-import { CHAT_LAYOUT_CHANGED_EVENT, readChatLayoutViewportAnchor } from '@/utils/chat-layout-change';
 import {
+  CHAT_LAYOUT_CHANGED_EVENT,
+  isChatReadingCaptureRequest,
+  readChatLayoutViewportAnchor,
+  readChatReadingInputTime,
+} from '@/utils/chat-layout-change';
+import { type ChatReadingInputFence, requestChatReadingInputFence } from '@/utils/chat-reading-input-fence';
+import { ChatRestoreWriteCheckpoint, chatReadingClock } from '@/utils/chat-restore-write-checkpoint';
+import {
+  type CapturedChatReadingRef,
+  type ChatReadingRef,
+  type ChatReadingSnapshot,
+  captureChatReadingRef,
   describeChatReadingAnchor,
   findChatReadingSuccessor,
+  readChatReadingRef,
   readChatScrollState,
+  releaseChatReadingRef,
   resolveChatReadingAnchor,
   type SavedScrollState,
   saveChatScrollState,
@@ -45,14 +65,20 @@ import {
 import {
   captureMessageScrollAnchor,
   captureMessageScrollAnchorForMessage,
+  highlightMessage,
   MESSAGE_VIEWPORT_MOUNTED_EVENT,
   type MessageScrollAnchor,
+  resolveMessageElements,
   restoreMessageScrollAnchor,
   scrollToMessage,
 } from '@/utils/scrollToMessage';
 import {
+  consumePendingTeleport,
+  kickTeleportResolve,
+  type PendingTeleport,
   peekPendingTeleport,
   resolvePendingTeleport,
+  setPendingTeleport,
   shouldLoadOlderForTeleport,
   TELEPORT_RESOLVE_EVENT,
 } from '@/utils/teleport';
@@ -60,9 +86,9 @@ import { resumeInvocationReconciliationAfterHydration } from './invocation-timeo
 import { hydrateQueueActiveInvocationSlots, type QueueActiveInvocationSlot } from './queue-active-invocation-hydration';
 
 type RestoreFrameKind = 'restore' | 'navigation' | 'correction';
-type NavigationSettleSample = { top: number; messageAnchor: MessageScrollAnchor };
+type NavigationSettleSample = { top: number; messageAnchor: MessageScrollAnchor; fullyOffscreen: boolean };
 type NavigationSettleState = {
-  framesRemaining: number;
+  expiresAt: number;
   stableFrames: number;
   previousSample?: NavigationSettleSample;
 };
@@ -70,6 +96,23 @@ type NavigationSettleResult =
   | { kind: 'retry' }
   | { kind: 'settled'; sample: NavigationSettleSample }
   | { kind: 'expired' };
+
+export type { CapturedChatReadingRef, ChatReadingRef, ChatReadingSnapshot } from '@/utils/chat-scroll-memory';
+
+export type ChatReadingRestoreReceipt =
+  | { status: 'settled'; exact: boolean; position: SavedScrollState }
+  | { status: 'interrupted' | 'unavailable' };
+
+export type ChatMessageNavigationReceipt =
+  | { status: 'settled'; threadId: string; messageId: string; position: SavedScrollState }
+  | { status: 'interrupted' | 'unavailable' };
+
+function bindReadingAbort<T>(receipt: Promise<T>, signal: AbortSignal | undefined, cancel: () => void): Promise<T> {
+  if (!signal) return receipt;
+  signal.addEventListener('abort', cancel, { once: true });
+  if (signal.aborted) cancel();
+  return receipt.finally(() => signal.removeEventListener('abort', cancel));
+}
 
 export interface ChatUserScrollGesture {
   scrollTo(top: number): boolean;
@@ -79,6 +122,8 @@ export interface ChatUserScrollGesture {
 const taskCacheByThread = new Map<string, TaskItem[]>();
 const SCROLL_BOTTOM_THRESHOLD_PX = 24;
 const MAX_RESTORE_FRAMES = 90;
+// Native smooth scroll can exceed 90 frames on high-refresh displays; bound elapsed time instead.
+const MAX_NAVIGATION_SETTLE_MS = 3000;
 const NAVIGATION_STABLE_FRAMES = 2;
 
 export function __resetTaskCacheForTest() {
@@ -123,7 +168,12 @@ export function resolveScrollAnchor(
 
 function rememberScrollState(threadId: string, el: HTMLElement, userScrolledUp = false, preserveOffsetAnchor = false) {
   const previous = readChatScrollState(threadId) ?? null;
-  const anchor = resolveScrollAnchor(el, previous, userScrolledUp);
+  // Layout/clamping can put an explicit target at the bottom. Only new
+  // reading input can replace that target with bottom-follow intent.
+  const anchor =
+    preserveOffsetAnchor && previous?.anchor === 'offset' && previous.messageAnchor
+      ? 'offset'
+      : resolveScrollAnchor(el, previous, userScrolledUp);
   if (anchor === 'bottom') {
     saveChatScrollState(threadId, { top: el.scrollTop, anchor });
     return;
@@ -153,9 +203,34 @@ function tryRestoreSavedScrollState(el: HTMLElement, saved: SavedScrollState): b
   return canSettle && Math.abs(el.scrollTop - targetTop) <= 1;
 }
 
+function captureRestoreWritePosition(el: HTMLElement, messages: ChatMessageData[]): SavedScrollState {
+  const anchor = captureMessageScrollAnchor(el);
+  return {
+    top: el.scrollTop,
+    anchor: 'offset',
+    ...(anchor ? { messageAnchor: describeChatReadingAnchor(anchor, messages) } : {}),
+  };
+}
+
+function readingSettlementStillMatches(el: HTMLElement, position: SavedScrollState): boolean {
+  if (el.scrollTop !== position.top) return false;
+  if (position.anchor === 'bottom') return el.scrollTop === Math.max(0, el.scrollHeight - el.clientHeight);
+  if (!position.messageAnchor) return true;
+  const anchor = captureMessageScrollAnchorForMessage(el, position.messageAnchor.messageId);
+  return anchor?.viewportOffsetPx === position.messageAnchor.viewportOffsetPx;
+}
+
 function captureNavigationSettleSample(el: HTMLElement, messageId: string): NavigationSettleSample | undefined {
   const messageAnchor = captureMessageScrollAnchorForMessage(el, messageId);
-  return messageAnchor ? { top: el.scrollTop, messageAnchor } : undefined;
+  const target = resolveMessageElements([messageId], el)[0];
+  if (!messageAnchor || !target) return undefined;
+  const rect = (target.closest<HTMLElement>('[data-message-viewport-id]') ?? target).getBoundingClientRect();
+  const viewport = el.getBoundingClientRect();
+  return {
+    top: el.scrollTop,
+    messageAnchor,
+    fullyOffscreen: rect.bottom <= viewport.top || rect.top >= viewport.bottom,
+  };
 }
 
 function isStableNavigationSample(previous: NavigationSettleSample, current: NavigationSettleSample): boolean {
@@ -174,16 +249,26 @@ function advanceNavigationSettle(
 ): NavigationSettleResult {
   if (stale) return { kind: 'expired' };
 
-  state.framesRemaining -= 1;
-  const sample = el ? captureNavigationSettleSample(el, messageId) : undefined;
-  if (!sample) return state.framesRemaining > 0 ? { kind: 'retry' } : { kind: 'expired' };
+  if (performance.now() >= state.expiresAt) return { kind: 'expired' };
+  let sample = el ? captureNavigationSettleSample(el, messageId) : undefined;
+  // Deferred messages/images can shift the target after the first smooth scroll.
+  // A stationary offscreen offset is not a completed navigation.
+  if (
+    el &&
+    sample &&
+    state.previousSample &&
+    isStableNavigationSample(state.previousSample, sample) &&
+    sample.fullyOffscreen
+  ) {
+    restoreMessageScrollAnchor(el, { ...sample.messageAnchor, viewportOffsetPx: 0 });
+    sample = captureNavigationSettleSample(el, messageId);
+  }
+  if (!sample) return { kind: 'retry' };
 
   state.stableFrames =
     state.previousSample && isStableNavigationSample(state.previousSample, sample) ? state.stableFrames + 1 : 0;
   state.previousSample = sample;
-  return state.stableFrames >= NAVIGATION_STABLE_FRAMES || state.framesRemaining <= 0
-    ? { kind: 'settled', sample }
-    : { kind: 'retry' };
+  return state.stableFrames >= NAVIGATION_STABLE_FRAMES ? { kind: 'settled', sample } : { kind: 'retry' };
 }
 
 const HISTORY_PAGE_SIZE = 50;
@@ -307,9 +392,12 @@ function mergeMessageExtra(
   // immutable/additive projections, so the selected message wins and the other
   // side only fills a missing field. `rich` remains the sole structural merge.
   const fields: RequiredMessageExtraFields = {
+    // No fallback inheritance: this layout belongs to the selected full body.
+    outputLayout: preferred?.outputLayout,
     liveCompanion: pick('liveCompanion'),
     custodyOfferV1: pick('custodyOfferV1'),
     contentModificationRequestV1: pick('contentModificationRequestV1'),
+    contentModificationReceiptV1: pick('contentModificationReceiptV1'),
     semanticEvent: pick('semanticEvent'),
     crossPost: pick('crossPost'),
     stream: pick('stream'),
@@ -903,7 +991,46 @@ export function useChatHistory(threadId: string) {
   const restoreFrameRef = useRef<number | null>(null);
   const restoreFrameKindRef = useRef<RestoreFrameKind | null>(null);
   const restoreGenerationRef = useRef(0);
+  const restoreWritesRef = useRef(new ChatRestoreWriteCheckpoint());
+  const readingSettlementRef = useRef<ChatReadingInputFence | null>(null);
+  const navigationHighlightRef = useRef<(() => void) | undefined>(undefined);
+  const readingReceiptRef = useRef<{
+    snapshot: ChatReadingSnapshot;
+    resolve: (receipt: ChatReadingRestoreReceipt) => void;
+  } | null>(null);
+  const navigationReceiptRef = useRef<{
+    threadId: string;
+    messageId: string;
+    teleport?: PendingTeleport;
+    resolve: (receipt: ChatMessageNavigationReceipt) => void;
+  } | null>(null);
+  const finishMessageNavigation = useCallback((forThread: string, messageId: string, position?: SavedScrollState) => {
+    const pending = navigationReceiptRef.current;
+    if (!pending || pending.threadId !== forThread || pending.messageId !== messageId) return;
+    navigationReceiptRef.current = null;
+    pending.resolve(
+      position ? { status: 'settled', threadId: forThread, messageId, position } : { status: 'unavailable' },
+    );
+  }, []);
+  const finishReadingRestore = useCallback((position?: SavedScrollState) => {
+    const pending = readingReceiptRef.current;
+    if (!pending) return;
+    readingReceiptRef.current = null;
+    const original = pending.snapshot.position;
+    const exact =
+      position?.anchor === original.anchor &&
+      (original.anchor === 'bottom' ||
+        (position.anchor === 'offset' &&
+          original.messageAnchor !== undefined &&
+          position.messageAnchor !== undefined &&
+          (position.messageAnchor?.messageId === original.messageAnchor?.messageId ||
+            (Boolean(original.messageAnchor?.bubbleKey) &&
+              position.messageAnchor?.bubbleKey === original.messageAnchor?.bubbleKey)) &&
+          position.messageAnchor?.viewportOffsetPx === original.messageAnchor?.viewportOffsetPx));
+    pending.resolve(position ? { status: 'settled', exact, position } : { status: 'unavailable' });
+  }, []);
   const readingRestoreRef = useRef<{ threadId: string; saved: SavedScrollState; cursor?: string } | null>(null);
+  const [readingRestoreRequest, setReadingRestoreRequest] = useState(0);
   const historyPhaseRef = useRef({ hasMore, isOfflineSnapshot, isLoadingHistory });
   historyPhaseRef.current = { hasMore, isOfflineSnapshot, isLoadingHistory };
   const userScrollUpRef = useRef(false);
@@ -923,9 +1050,10 @@ export function useChatHistory(threadId: string) {
     return controller.signal.aborted || abortRef.current !== controller || threadIdRef.current !== capturedThreadId;
   }, []);
 
-  const cancelPendingRestore = useCallback((preserveUserGesture = false) => {
+  const cancelPendingFrame = useCallback(() => {
+    readingSettlementRef.current?.cancel();
+    readingSettlementRef.current = null;
     restoreGenerationRef.current += 1;
-    if (!preserveUserGesture) userScrollGestureRef.current = null;
     restoreFrameKindRef.current = null;
     if (restoreFrameRef.current !== null) {
       cancelAnimationFrame(restoreFrameRef.current);
@@ -933,12 +1061,43 @@ export function useChatHistory(threadId: string) {
     }
   }, []);
 
+  const cancelPendingRestore = useCallback(
+    (
+      preserveUserGesture = false,
+      preserveReadingReceipt = false,
+      preserveNavigationReceipt = false,
+      preserveRestoreWrites = false,
+    ) => {
+      if (!preserveRestoreWrites) restoreWritesRef.current.invalidate();
+      navigationHighlightRef.current?.();
+      navigationHighlightRef.current = undefined;
+      if (!preserveReadingReceipt && readingReceiptRef.current) {
+        readingReceiptRef.current.resolve({ status: 'interrupted' });
+        readingReceiptRef.current = null;
+      }
+      if (!preserveNavigationReceipt && navigationReceiptRef.current) {
+        const pending = navigationReceiptRef.current;
+        if (pending.teleport && peekPendingTeleport(pending.threadId) === pending.teleport)
+          consumePendingTeleport(pending.threadId);
+        pending.resolve({ status: 'interrupted' });
+        navigationReceiptRef.current = null;
+      }
+      if (!preserveUserGesture) {
+        userScrollGestureRef.current = null;
+        userScrollIntentRef.current = false;
+        userScrollUpRef.current = false;
+      }
+      cancelPendingFrame();
+    },
+    [cancelPendingFrame],
+  );
+
   const markScrollIntent = useCallback(
     (upward: boolean) => {
       readingRestoreRef.current = null;
+      cancelPendingRestore();
       userScrollIntentRef.current = true;
       if (upward) userScrollUpRef.current = true;
-      cancelPendingRestore();
     },
     [cancelPendingRestore],
   );
@@ -974,8 +1133,9 @@ export function useChatHistory(threadId: string) {
   }, [cancelPendingRestore]);
 
   const scheduleRestore = useCallback(
-    (saved: SavedScrollState) => {
-      cancelPendingRestore();
+    (initialSaved: SavedScrollState) => {
+      let saved = initialSaved;
+      cancelPendingRestore(false, true, false, true);
       restoreFrameKindRef.current = 'restore';
       const generation = restoreGenerationRef.current;
       let framesRemaining = MAX_RESTORE_FRAMES;
@@ -995,22 +1155,93 @@ export function useChatHistory(threadId: string) {
         if (!el) {
           restoreFrameRef.current = null;
           restoreFrameKindRef.current = null;
+          finishReadingRestore();
           return;
         }
 
+        // Formalization can change the DOM id while this intent is pending.
+        // Only the existing bubble owner may resolve that identity, uniquely.
+        if (saved.anchor === 'offset' && saved.messageAnchor) {
+          const resolved = resolveChatReadingAnchor(
+            saved.messageAnchor,
+            useChatStore.getState().getThreadState(scheduledForThread).messages,
+          );
+          if (resolved && resolved.messageId !== saved.messageAnchor.messageId) {
+            saved = { ...saved, messageAnchor: resolved };
+            if (readingRestoreRef.current?.threadId === scheduledForThread) readingRestoreRef.current.saved = saved;
+          }
+        }
+
         const phase = historyPhaseRef.current;
+        const savedAnchor = saved.anchor === 'offset' ? saved.messageAnchor : undefined;
         const missingAnchor =
-          saved.anchor === 'offset' &&
-          saved.messageAnchor &&
+          savedAnchor &&
           !useChatStore
             .getState()
             .getThreadState(scheduledForThread)
-            .messages.some((m) => m.id === saved.messageAnchor?.messageId);
+            .messages.some((m) => m.id === savedAnchor.messageId);
         const waitingForHistory = missingAnchor && (phase.hasMore || phase.isOfflineSnapshot || phase.isLoadingHistory);
-        if (!waitingForHistory && tryRestoreSavedScrollState(el, saved)) {
-          if (!phase.isOfflineSnapshot && !phase.isLoadingHistory) readingRestoreRef.current = null;
-          saveChatScrollState(scheduledForThread, { ...saved, top: el.scrollTop });
+        if (waitingForHistory) {
+          // Missing messages wait for the history owner, without spending the
+          // layout budget. Available cached anchors can already restore visually.
           restoreFrameRef.current = null;
+          return;
+        }
+        const beforeRestore = captureRestoreWritePosition(
+          el,
+          useChatStore.getState().getThreadState(scheduledForThread).messages,
+        );
+        const restored = tryRestoreSavedScrollState(el, saved);
+        restoreWritesRef.current.record(el, beforeRestore, el.scrollTop, chatReadingClock());
+        if (restored) {
+          const settledPosition = { ...saved, top: el.scrollTop };
+          saveChatScrollState(scheduledForThread, settledPosition);
+          restoreFrameRef.current = null;
+          // Cache/IDB geometry is useful immediately, but cannot certify a
+          // return. Keep this intent (and its layout ownership) until the
+          // history effect revalidates the anchor against the fresh page.
+          if (phase.isLoadingHistory || phase.isOfflineSnapshot) return;
+          const inputFence = readingReceiptRef.current ? requestChatReadingInputFence(el) : null;
+          if (inputFence) {
+            const receipt = readingReceiptRef.current;
+            readingSettlementRef.current = inputFence;
+            const ownsSettlement = () =>
+              generation === restoreGenerationRef.current &&
+              readingSettlementRef.current === inputFence &&
+              readingReceiptRef.current === receipt;
+            const authoritativeHistory = () =>
+              threadIdRef.current === scheduledForThread &&
+              useChatStore.getState().currentThreadId === scheduledForThread &&
+              !historyPhaseRef.current.isLoadingHistory &&
+              !historyPhaseRef.current.isOfflineSnapshot;
+            const finish = (confirmed: boolean) => {
+              if (!ownsSettlement()) return;
+              readingSettlementRef.current = null;
+              inputFence.cancel();
+              if (restoreFrameRef.current !== null) cancelAnimationFrame(restoreFrameRef.current);
+              restoreFrameRef.current = null;
+              restoreFrameKindRef.current = null;
+              readingRestoreRef.current = null;
+              finishReadingRestore(
+                confirmed && authoritativeHistory() && readingSettlementStillMatches(el, settledPosition)
+                  ? settledPosition
+                  : undefined,
+              );
+              window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+            };
+            // Keep the original restore budget. No additional writer or arbitrary
+            // timeout may convert an unacknowledged child's queue into exact success.
+            const waitForInputQueue = () => {
+              if (generation !== restoreGenerationRef.current || readingSettlementRef.current !== inputFence) return;
+              if (--framesRemaining <= 0) finish(false);
+              else restoreFrameRef.current = requestAnimationFrame(waitForInputQueue);
+            };
+            void inputFence.result.then(finish);
+            restoreFrameRef.current = requestAnimationFrame(waitForInputQueue);
+            return;
+          }
+          readingRestoreRef.current = null;
+          finishReadingRestore(settledPosition);
           restoreFrameKindRef.current = null;
           window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
           return;
@@ -1019,7 +1250,11 @@ export function useChatHistory(threadId: string) {
         framesRemaining -= 1;
         if (framesRemaining <= 0) {
           restoreFrameRef.current = null;
+          // Even a layout miss cannot certify absence from a tentative page.
+          // The authoritative history transition retries with a fresh budget.
+          if (phase.isLoadingHistory || phase.isOfflineSnapshot) return;
           restoreFrameKindRef.current = null;
+          finishReadingRestore();
           return;
         }
         restoreFrameRef.current = requestAnimationFrame(apply);
@@ -1027,12 +1262,79 @@ export function useChatHistory(threadId: string) {
 
       restoreFrameRef.current = requestAnimationFrame(apply);
     },
-    [cancelPendingRestore],
+    [cancelPendingRestore, finishReadingRestore],
+  );
+
+  // Product navigation captures this surface; it never reads another container's pixels.
+  const captureReadingPosition = useCallback((): ChatReadingSnapshot | null => {
+    const currentThread = threadIdRef.current;
+    const el = scrollContainerRef.current;
+    if (!el || currentThread !== threadId || useChatStore.getState().currentThreadId !== currentThread) return null;
+    rememberScrollState(currentThread, el, userScrollUpRef.current);
+    const saved = readChatScrollState(currentThread);
+    return saved ? { threadId: currentThread, position: structuredClone(saved) } : null;
+  }, [threadId]);
+
+  const restoreReadingPosition = useCallback(
+    (snapshot: ChatReadingSnapshot): Promise<ChatReadingRestoreReceipt> => {
+      if (
+        snapshot.threadId !== threadIdRef.current ||
+        snapshot.threadId !== threadId ||
+        !scrollContainerRef.current ||
+        useChatStore.getState().currentThreadId !== snapshot.threadId
+      ) {
+        return Promise.resolve({ status: 'unavailable' });
+      }
+      cancelPendingRestore();
+      const saved = structuredClone(snapshot.position);
+      userScrollUpRef.current = saved.anchor === 'offset';
+      userScrollIntentRef.current = false;
+      readingRestoreRef.current = { threadId, saved };
+      setReadingRestoreRequest((request) => request + 1);
+      saveChatScrollState(threadId, saved);
+      return new Promise((resolve) => {
+        readingReceiptRef.current = { snapshot: { threadId, position: saved }, resolve };
+        scheduleRestore(saved);
+      });
+    },
+    [threadId, cancelPendingRestore, scheduleRestore],
+  );
+
+  const captureReadingRef = useCallback((): CapturedChatReadingRef | null => {
+    const snapshot = captureReadingPosition();
+    return snapshot ? captureChatReadingRef(snapshot) : null;
+  }, [captureReadingPosition]);
+
+  const restoreCapturedReadingRef = useCallback(
+    (ref: ChatReadingRef, signal?: AbortSignal): Promise<ChatReadingRestoreReceipt> => {
+      if (signal?.aborted) return Promise.resolve({ status: 'interrupted' });
+      const snapshot = readChatReadingRef(ref);
+      if (!snapshot) return Promise.resolve({ status: 'unavailable' });
+      const receipt = restoreReadingPosition(snapshot);
+      const owned = readingReceiptRef.current;
+      return bindReadingAbort(receipt, signal, () => {
+        if (!owned || readingReceiptRef.current !== owned) return;
+        readingRestoreRef.current = null;
+        cancelPendingRestore();
+        const el = scrollContainerRef.current;
+        if (el && useChatStore.getState().currentThreadId === threadId)
+          rememberScrollState(threadId, el, userScrollUpRef.current);
+      });
+    },
+    [restoreReadingPosition, cancelPendingRestore, threadId],
+  );
+
+  const releaseReadingRef = useCallback(
+    (ref: ChatReadingRef): boolean =>
+      useChatStore.getState().currentThreadId === threadId && releaseChatReadingRef(ref, threadId),
+    [threadId],
   );
 
   const scheduleCurrentAnchorCorrection = useCallback(() => {
     if (restoreFrameKindRef.current === 'restore' || restoreFrameKindRef.current === 'navigation') return;
-    cancelPendingRestore(true);
+    // Passive reflow replaces scheduled pixels, not the user's navigation
+    // intent or its already-started hint. User input still cancels both.
+    cancelPendingFrame();
     const scheduledForThread = threadIdRef.current;
     const saved = readChatScrollState(scheduledForThread);
     if (!saved) return;
@@ -1050,33 +1352,44 @@ export function useChatHistory(threadId: string) {
 
       const el = scrollContainerRef.current;
       if (!el || useChatStore.getState().currentThreadId !== scheduledForThread) return;
+      const beforeCorrection = captureRestoreWritePosition(
+        el,
+        useChatStore.getState().getThreadState(scheduledForThread).messages,
+      );
       if (saved.anchor === 'bottom') {
         followBottomAnchor('auto');
+        restoreWritesRef.current.record(el, beforeCorrection, el.scrollTop, chatReadingClock());
         return;
       }
       if (saved.messageAnchor && restoreMessageScrollAnchor(el, saved.messageAnchor)) {
         saveChatScrollState(scheduledForThread, { ...saved, top: el.scrollTop });
       }
+      restoreWritesRef.current.record(el, beforeCorrection, el.scrollTop, chatReadingClock());
     });
-  }, [cancelPendingRestore, followBottomAnchor]);
+  }, [cancelPendingFrame, cancelPendingRestore, followBottomAnchor]);
 
   // F052: after a cross-post jump, retry scrolling to the source bubble until the message
   // DOM has rendered (thread switch remounts + paginates async). Gives up after
   // MAX_RESTORE_FRAMES so a paged-out source can't spin forever — the caller already fell
   // back to default scroll-restore in that case. Stale-guarded by threadIdRef like scheduleRestore.
   const scheduleScrollToMessage = useCallback(
-    (messageId: string) => {
+    (messageId: string, preserveMessageReceipt = false, behavior: ScrollBehavior = 'smooth') => {
       // A cross-post jump preempts the default scroll-restore so the two raf loops don't fight
       // over scrollTop (restore pulls to cached offset, this pulls to the target bubble).
-      cancelPendingRestore();
+      const pending = navigationReceiptRef.current;
+      const preserve =
+        preserveMessageReceipt && pending?.threadId === threadIdRef.current && pending.messageId === messageId;
+      cancelPendingRestore(false, false, preserve);
       restoreFrameKindRef.current = 'navigation';
       readingRestoreRef.current = null;
       const generation = restoreGenerationRef.current;
       const scheduledForThread = threadIdRef.current;
       let framesRemaining = MAX_RESTORE_FRAMES;
-      const finishNavigation = () => {
+      const highlightOnArrival = readShellPresentation() === 'v2';
+      const finishNavigation = (position?: SavedScrollState) => {
         restoreFrameKindRef.current = null;
         restoreFrameRef.current = null;
+        finishMessageNavigation(scheduledForThread, messageId, position);
       };
       const tick = () => {
         if (generation !== restoreGenerationRef.current) return;
@@ -1089,9 +1402,11 @@ export function useChatHistory(threadId: string) {
           finishNavigation();
           return;
         }
-        if (scrollToMessage(messageId, el)) {
+        // An explicit reading receipt must describe the final position, not a
+        // paused intermediate frame of native smooth scrolling.
+        if (scrollToMessage(messageId, el, preserve ? 'instant' : behavior, !highlightOnArrival)) {
           const settleState: NavigationSettleState = {
-            framesRemaining,
+            expiresAt: performance.now() + MAX_NAVIGATION_SETTLE_MS,
             stableFrames: 0,
           };
           const settle = () => {
@@ -1111,14 +1426,20 @@ export function useChatHistory(threadId: string) {
               return;
             }
             if (result.kind === 'settled') {
-              saveChatScrollState(scheduledForThread, {
+              if (highlightOnArrival && !result.sample.fullyOffscreen && scrollContainerRef.current) {
+                navigationHighlightRef.current = highlightMessage(messageId, scrollContainerRef.current);
+              }
+              const position: SavedScrollState = {
                 top: result.sample.top,
                 anchor: 'offset',
                 messageAnchor: describeChatReadingAnchor(
                   result.sample.messageAnchor,
                   useChatStore.getState().getThreadState(scheduledForThread).messages,
                 ),
-              });
+              };
+              saveChatScrollState(scheduledForThread, position);
+              finishNavigation(position);
+              return;
             }
             finishNavigation();
           };
@@ -1134,7 +1455,7 @@ export function useChatHistory(threadId: string) {
       };
       restoreFrameRef.current = requestAnimationFrame(tick);
     },
-    [cancelPendingRestore],
+    [cancelPendingRestore, finishMessageNavigation],
   );
 
   // Foreground controls use the same reading owner as cross-posts/teleports.
@@ -1151,14 +1472,54 @@ export function useChatHistory(threadId: string) {
       ) {
         return false;
       }
+      // V2 keys can span hundreds of deferred rows. Move directly to the
+      // loaded target instead of animating through/mounting the whole history.
+      // Settlement, hints and memory still belong to this reading owner.
+      const behavior = readShellPresentation() === 'v2' ? 'instant' : 'smooth';
       if (useChatStore.getState().currentThreadId === threadId) {
-        scheduleScrollToMessage(messageId);
+        scheduleScrollToMessage(messageId, false, behavior);
         return true;
       }
       cancelPendingRestore();
-      return scrollToMessage(messageId, scrollContainerRef.current);
+      return scrollToMessage(messageId, scrollContainerRef.current, behavior);
     },
     [threadId, scheduleScrollToMessage, cancelPendingRestore],
+  );
+
+  /** Exact arrival receipt; unloaded targets use the existing teleport/history resolver. */
+  const beginMessageNavigation = useCallback(
+    (messageId: string, signal?: AbortSignal): Promise<ChatMessageNavigationReceipt> => {
+      if (signal?.aborted) return Promise.resolve({ status: 'interrupted' });
+      if (
+        !messageId ||
+        !scrollContainerRef.current ||
+        threadIdRef.current !== threadId ||
+        useChatStore.getState().currentThreadId !== threadId
+      )
+        return Promise.resolve({ status: 'unavailable' });
+      cancelPendingRestore();
+      const receipt = new Promise<ChatMessageNavigationReceipt>((resolve) => {
+        const loaded = useChatStore
+          .getState()
+          .getThreadState(threadId)
+          .messages.some((message) => message.id === messageId);
+        const teleport = { threadId, messageId };
+        navigationReceiptRef.current = { threadId, messageId, teleport: loaded ? undefined : teleport, resolve };
+        if (loaded) {
+          scheduleScrollToMessage(messageId, true);
+          return;
+        }
+        setPendingTeleport(teleport);
+        restoreFrameKindRef.current = 'navigation';
+        readingRestoreRef.current = null;
+        kickTeleportResolve();
+      });
+      const owned = navigationReceiptRef.current;
+      return bindReadingAbort(receipt, signal, () => {
+        if (owned && navigationReceiptRef.current === owned) cancelPendingRestore();
+      });
+    },
+    [threadId, cancelPendingRestore, scheduleScrollToMessage],
   );
 
   // Fix: /queue returns before /messages. If /queue says idle it clears
@@ -1239,6 +1600,7 @@ export function useChatHistory(threadId: string) {
               origin?: 'stream' | 'callback' | 'briefing';
               thinking?: string;
               extra?: {
+                outputLayout?: unknown;
                 liveCompanion?: NonNullable<ChatMessageData['extra']>['liveCompanion'];
                 rich?: { v: number; blocks: unknown[] };
                 crossPost?: { sourceThreadId: string; sourceInvocationId?: string };
@@ -1246,7 +1608,8 @@ export function useChatHistory(threadId: string) {
                 turnExecution?: NonNullable<ChatMessageData['extra']>['turnExecution'];
                 auxiliaryTurnExecutions?: NonNullable<ChatMessageData['extra']>['auxiliaryTurnExecutions'];
                 scheduler?: SchedulerMessageExtra['scheduler'];
-                systemKind?: 'a2a_routing' | 'context_briefing';
+                systemKind?: NonNullable<ChatMessageData['extra']>['systemKind'];
+                a2aRouting?: NonNullable<ChatMessageData['extra']>['a2aRouting'];
                 systemInfo?: NonNullable<ChatMessageData['extra']>['systemInfo'];
                 /** #814: explicit post_message bypass — survives hydration so F5/thread-switch
                  *  preserves the "don't merge by invocation" semantic. */
@@ -1262,6 +1625,7 @@ export function useChatHistory(threadId: string) {
                 freshnessSupplement?: NonNullable<ChatMessageData['extra']>['freshnessSupplement'];
                 queueReceipt?: NonNullable<ChatMessageData['extra']>['queueReceipt'];
                 contentModificationRequestV1?: NonNullable<ChatMessageData['extra']>['contentModificationRequestV1'];
+                contentModificationReceiptV1?: NonNullable<ChatMessageData['extra']>['contentModificationReceiptV1'];
                 messageBundle?: NonNullable<ChatMessageData['extra']>['messageBundle'];
                 semanticEvent?: ProviderSemanticEvent;
               };
@@ -1315,7 +1679,9 @@ export function useChatHistory(threadId: string) {
                 // metadata.cliDiagnostics (api-persisted authoritative copy).
                 ...(() => {
                   const cliDiag = m.extra?.cliDiagnostics ?? m.metadata?.cliDiagnostics;
+                  const outputLayout = readMessageOutputLayout(m.extra?.outputLayout);
                   const hasExtraField =
+                    outputLayout ||
                     m.extra?.liveCompanion ||
                     m.extra?.rich ||
                     m.extra?.crossPost ||
@@ -1324,6 +1690,7 @@ export function useChatHistory(threadId: string) {
                     m.extra?.auxiliaryTurnExecutions ||
                     m.extra?.scheduler ||
                     m.extra?.systemKind ||
+                    m.extra?.a2aRouting ||
                     m.extra?.systemInfo ||
                     m.extra?.isExplicitPost ||
                     m.extra?.targetCats ||
@@ -1333,12 +1700,14 @@ export function useChatHistory(threadId: string) {
                     m.extra?.freshnessSupplement ||
                     m.extra?.queueReceipt ||
                     m.extra?.contentModificationRequestV1 ||
+                    m.extra?.contentModificationReceiptV1 ||
                     m.extra?.messageBundle ||
                     m.extra?.semanticEvent ||
                     cliDiag;
                   if (!hasExtraField) return {};
                   return {
                     extra: {
+                      ...(outputLayout ? { outputLayout } : {}),
                       ...(m.extra?.liveCompanion ? { liveCompanion: m.extra.liveCompanion } : {}),
                       ...(m.extra?.rich ? { rich: m.extra.rich } : {}),
                       ...(m.extra?.crossPost ? { crossPost: m.extra.crossPost } : {}),
@@ -1349,6 +1718,7 @@ export function useChatHistory(threadId: string) {
                         : {}),
                       ...(m.extra?.scheduler ? { scheduler: m.extra.scheduler } : {}),
                       ...(m.extra?.systemKind ? { systemKind: m.extra.systemKind } : {}),
+                      ...(m.extra?.a2aRouting ? { a2aRouting: m.extra.a2aRouting } : {}),
                       ...(m.extra?.systemInfo ? { systemInfo: m.extra.systemInfo } : {}),
                       ...(m.extra?.isExplicitPost ? { isExplicitPost: true as const } : {}),
                       ...(m.extra?.targetCats ? { targetCats: m.extra.targetCats } : {}),
@@ -1359,6 +1729,9 @@ export function useChatHistory(threadId: string) {
                       ...(m.extra?.queueReceipt ? { queueReceipt: m.extra.queueReceipt } : {}),
                       ...(m.extra?.contentModificationRequestV1
                         ? { contentModificationRequestV1: m.extra.contentModificationRequestV1 }
+                        : {}),
+                      ...(m.extra?.contentModificationReceiptV1
+                        ? { contentModificationReceiptV1: m.extra.contentModificationReceiptV1 }
                         : {}),
                       ...(m.extra?.messageBundle ? { messageBundle: m.extra.messageBundle } : {}),
                       ...(m.extra?.semanticEvent ? { semanticEvent: m.extra.semanticEvent } : {}),
@@ -1498,6 +1871,59 @@ export function useChatHistory(threadId: string) {
       }
     },
     [historyAdmission, historyConsumerId, isStaleThreadRequest, performFetchHistory, threadId],
+  );
+
+  // A search admission checks authority; this original reader still refreshes the
+  // actual transcript before choosing a DOM target from its cache.
+  const refreshReadingHistory = useCallback(
+    async (signal?: AbortSignal): Promise<'ready' | 'unavailable' | 'interrupted'> => {
+      if (signal?.aborted) return 'interrupted';
+      if (threadIdRef.current !== threadId || useChatStore.getState().currentThreadId !== threadId)
+        return 'unavailable';
+      cancelPendingRestore();
+      readingRestoreRef.current = null;
+      restoreFrameKindRef.current = 'navigation';
+      const generation = restoreGenerationRef.current;
+      let refreshed: boolean | undefined;
+      try {
+        refreshed = await fetchHistory(undefined, { replace: true });
+      } catch {
+        refreshed = false;
+      }
+      if (generation !== restoreGenerationRef.current || threadIdRef.current !== threadId) return 'interrupted';
+      restoreFrameKindRef.current = null;
+      return signal?.aborted ? 'interrupted' : refreshed === true ? 'ready' : 'unavailable';
+    },
+    [cancelPendingRestore, fetchHistory, threadId],
+  );
+
+  const navigateToMessage = useCallback(
+    async (
+      messageId: string,
+      signal?: AbortSignal,
+      options?: { refresh?: boolean },
+    ): Promise<ChatMessageNavigationReceipt> => {
+      if (options?.refresh) {
+        const status = await refreshReadingHistory(signal);
+        if (status !== 'ready') return { status };
+      }
+      return beginMessageNavigation(messageId, signal);
+    },
+    [beginMessageNavigation, refreshReadingHistory],
+  );
+  const restoreReadingRef = useCallback(
+    async (
+      ref: ChatReadingRef,
+      signal?: AbortSignal,
+      options?: { refresh?: boolean },
+    ): Promise<ChatReadingRestoreReceipt> => {
+      if (options?.refresh) {
+        const status = await refreshReadingHistory(signal);
+        if (status !== 'ready') return { status };
+      }
+      return restoreCapturedReadingRef(ref, signal);
+    },
+    [restoreCapturedReadingRef, refreshReadingHistory],
   );
 
   const fetchTasks = useCallback(async () => {
@@ -2023,6 +2449,7 @@ export function useChatHistory(threadId: string) {
     // effect run (after store sync) still sees prevCount=0 and does the restore.
     const storeThreadId = useChatStore.getState().currentThreadId;
     if (storeThreadId !== threadId) return;
+    if (restoreFrameKindRef.current === 'navigation' && !navigationReceiptRef.current) return;
 
     const prevCount = prevCountRef.current;
     const prevFirstId = prevFirstIdRef.current;
@@ -2090,16 +2517,22 @@ export function useChatHistory(threadId: string) {
   // no older history remains. Reused by the messages-effect (cross-thread nav + the
   // auto-load chain) and an explicit kick (same-thread teleport, where no route changes).
   const resolveTeleport = useCallback(() => {
-    if (messages.length === 0) return;
     if (useChatStore.getState().currentThreadId !== threadId) return;
-    if (loadingRef.current) return;
+    if (loadingRef.current || isLoadingHistory) return;
+    if (restoreFrameKindRef.current === 'navigation' && !navigationReceiptRef.current) return;
+    const pending = peekPendingTeleport(threadId);
     const targetId = resolvePendingTeleport(
       threadId,
       messages.map((m) => m.id),
       { authoritative: !isOfflineSnapshot && !hasMore },
     );
     if (targetId) {
-      scheduleScrollToMessage(targetId);
+      scheduleScrollToMessage(targetId, true);
+      return;
+    }
+    if (pending && navigationReceiptRef.current?.teleport === pending && !peekPendingTeleport(threadId)) {
+      restoreFrameKindRef.current = null;
+      finishMessageNavigation(threadId, pending.messageId);
       return;
     }
     if (
@@ -2114,7 +2547,16 @@ export function useChatHistory(threadId: string) {
       const oldest = messages.find((m) => !m.id.startsWith('draft-'));
       if (oldest) void fetchHistory(`${getMessageTimelineOrderTime(oldest)}:${oldest.id}`);
     }
-  }, [messages, threadId, isOfflineSnapshot, hasMore, isLoadingHistory, scheduleScrollToMessage, fetchHistory]);
+  }, [
+    messages,
+    threadId,
+    isOfflineSnapshot,
+    hasMore,
+    isLoadingHistory,
+    scheduleScrollToMessage,
+    fetchHistory,
+    finishMessageNavigation,
+  ]);
 
   useEffect(() => {
     resolveTeleport();
@@ -2148,9 +2590,21 @@ export function useChatHistory(threadId: string) {
           (oldestOrderAt === anchor.timelineOrderAt && oldest.id > anchor.messageId));
       if (needsOlder) {
         const cursor = `${getMessageTimelineOrderTime(oldest)}:${oldest.id}`;
-        if (pending.cursor === cursor) return;
+        if (pending.cursor === cursor) {
+          // A completed page did not advance the authoritative cursor. Do not
+          // loop, or manufacture an exact return over the newest page.
+          readingRestoreRef.current = null;
+          cancelPendingRestore(false, true);
+          finishReadingRestore();
+          return;
+        }
         pending.cursor = cursor;
-        void fetchHistory(cursor);
+        void fetchHistory(cursor).then((fetched) => {
+          if (fetched !== false || readingRestoreRef.current !== pending) return;
+          readingRestoreRef.current = null;
+          cancelPendingRestore(false, true);
+          finishReadingRestore();
+        });
         return;
       }
       // The viewport is newly mounted, so its current top is not a reading
@@ -2167,7 +2621,18 @@ export function useChatHistory(threadId: string) {
       return;
     }
     scheduleRestore(pending.saved);
-  }, [messages, threadId, hasMore, isOfflineSnapshot, isLoadingHistory, fetchHistory, scheduleRestore]);
+  }, [
+    messages,
+    threadId,
+    hasMore,
+    isOfflineSnapshot,
+    isLoadingHistory,
+    fetchHistory,
+    scheduleRestore,
+    readingRestoreRequest,
+    cancelPendingRestore,
+    finishReadingRestore,
+  ]);
 
   // Same-thread teleport doesn't change the route, so the effect above never re-fires;
   // the kick (cat_cafe_teleport / timeline same-thread click) re-runs the SAME resolver.
@@ -2179,16 +2644,39 @@ export function useChatHistory(threadId: string) {
 
   useEffect(() => {
     const handler = (event: Event) => {
+      if (isChatReadingCaptureRequest(event)) {
+        const inputAt = readChatReadingInputTime(event);
+        const el = scrollContainerRef.current;
+        if (inputAt === null || (inputAt !== undefined && !restoreWritesRef.current.acceptsInput(inputAt))) return;
+        if (!el || threadIdRef.current !== threadId || useChatStore.getState().currentThreadId !== threadId) return;
+        const recovery = inputAt === undefined ? undefined : restoreWritesRef.current.recoveryPosition(el, inputAt);
+        if (recovery && !tryRestoreSavedScrollState(el, recovery)) return;
+        if (captureReadingPosition()) {
+          cancelPendingRestore(false, false, false, inputAt !== undefined);
+          readingRestoreRef.current = null;
+          if (inputAt !== undefined) restoreWritesRef.current.consumeInput(inputAt);
+        }
+        return;
+      }
       const viewportAnchor = readChatLayoutViewportAnchor(event);
       if (!viewportAnchor) {
-        scheduleCurrentAnchorCorrection();
+        const pending = readingRestoreRef.current;
+        // Automatic measurement/mounting keeps the saved intent. A widget's
+        // user-click viewport hint instead takes the interrupting path below.
+        if (pending && restoreFrameKindRef.current === 'restore') scheduleRestore(pending.saved);
+        else scheduleCurrentAnchorCorrection();
         return;
       }
 
       const currentThread = threadIdRef.current;
       const el = scrollContainerRef.current;
       if (!el || useChatStore.getState().currentThreadId !== currentThread) return;
-      cancelPendingRestore();
+      if (
+        viewportAnchor.inputOccurredAt !== undefined &&
+        !restoreWritesRef.current.ownsMeasurement(viewportAnchor.inputOccurredAt)
+      )
+        return;
+      cancelPendingRestore(false, false, false, viewportAnchor.inputOccurredAt !== undefined);
       readingRestoreRef.current = null;
 
       if (el.contains(viewportAnchor.element)) {
@@ -2205,13 +2693,25 @@ export function useChatHistory(threadId: string) {
           : undefined,
       });
     };
+    // Native content-visibility and responsive reflow can settle after the
+    // mounted-message event. Reuse this reading owner's correction when the
+    // actual viewport or content geometry changes, without recapturing intent.
+    const viewport = scrollContainerRef.current;
+    const content = messagesEndRef.current?.parentElement;
+    const resizeObserver =
+      typeof window.ResizeObserver === 'function'
+        ? new window.ResizeObserver(() => handler(new Event(CHAT_LAYOUT_CHANGED_EVENT)))
+        : null;
+    if (viewport) resizeObserver?.observe(viewport);
+    if (content && content !== viewport) resizeObserver?.observe(content);
     window.addEventListener(CHAT_LAYOUT_CHANGED_EVENT, handler);
     window.addEventListener(MESSAGE_VIEWPORT_MOUNTED_EVENT, handler);
     return () => {
+      resizeObserver?.disconnect();
       window.removeEventListener(CHAT_LAYOUT_CHANGED_EVENT, handler);
       window.removeEventListener(MESSAGE_VIEWPORT_MOUNTED_EVENT, handler);
     };
-  }, [cancelPendingRestore, scheduleCurrentAnchorCorrection]);
+  }, [cancelPendingRestore, captureReadingPosition, scheduleCurrentAnchorCorrection, scheduleRestore, threadId]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -2240,6 +2740,10 @@ export function useChatHistory(threadId: string) {
     };
     const clearPointer = () => {
       pointerY = null;
+    };
+    const finishNativeScroll = () => {
+      userScrollIntentRef.current = false;
+      userScrollUpRef.current = false;
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target;
@@ -2273,6 +2777,7 @@ export function useChatHistory(threadId: string) {
     el.addEventListener('pointermove', handlePointerMove, { passive: true });
     el.addEventListener('pointerup', clearPointer, { passive: true });
     el.addEventListener('pointercancel', clearPointer, { passive: true });
+    el.addEventListener('scrollend', finishNativeScroll, { passive: true });
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       el.removeEventListener('wheel', handleWheel);
@@ -2283,6 +2788,7 @@ export function useChatHistory(threadId: string) {
       el.removeEventListener('pointermove', handlePointerMove);
       el.removeEventListener('pointerup', clearPointer);
       el.removeEventListener('pointercancel', clearPointer);
+      el.removeEventListener('scrollend', finishNativeScroll);
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [markScrollIntent]);
@@ -2300,7 +2806,6 @@ export function useChatHistory(threadId: string) {
     if (!restoring) {
       rememberScrollState(threadIdRef.current, el, userScrollUpRef.current, !userScrollIntentRef.current);
       userScrollUpRef.current = false;
-      userScrollIntentRef.current = false;
     }
 
     if (!hasMore || isLoadingHistory || restoreFrameKindRef.current === 'navigation') return;
@@ -2361,6 +2866,12 @@ export function useChatHistory(threadId: string) {
   }, [threadId, markScrollIntent, cancelPendingRestore]);
 
   return {
+    captureReadingPosition,
+    navigateToMessage,
+    restoreReadingPosition,
+    captureReadingRef,
+    restoreReadingRef,
+    releaseReadingRef,
     handleScroll,
     beginUserScroll,
     jumpToMessage,

@@ -20,23 +20,27 @@ const SIMPLE_ABSOLUTE_PATH = /^\/[A-Za-z0-9._/-]+$/u;
 const UNSUPPORTED_SHELL_WHITESPACE = /[^\S \t]/u;
 
 interface GateOptionState {
+  candidateRoot: boolean;
   risk: boolean;
   resume: boolean;
+  resumeController: boolean;
   sourceFull: boolean;
-  separator: boolean;
+  separators: number;
 }
 
 const GATE_VALUE_OPTIONS = {
   '--risk': { key: 'risk', valid: (value: string) => RISK_AXES.has(value) },
   '--resume': { key: 'resume', valid: (value: string) => UUID.test(value) },
+  '--resume-controller': { key: 'resumeController', valid: (value: string) => UUID.test(value) },
+  '--candidate-root': { key: 'candidateRoot', valid: isSafeGateDataRoot },
   '--source-full': { key: 'sourceFull', valid: (value: string) => /^[0-9a-f]{40}$/u.test(value) },
 } as const;
 
 function consumeGateOption(tokens: readonly string[], index: number, state: GateOptionState): number | null {
   const flag = tokens[index];
   if (flag === '--') {
-    if (state.separator) return null;
-    state.separator = true;
+    if (state.separators >= 2) return null;
+    state.separators += 1;
     return index + 1;
   }
   if (!Object.hasOwn(GATE_VALUE_OPTIONS, flag)) return null;
@@ -81,6 +85,15 @@ function consumeSafeGatePrefix(tokens: readonly string[]): number | null {
   return tokens[index] === 'env' ? consumeSafeEnvPrefix(tokens, index + 1) : index;
 }
 
+function validGateOptionState(state: GateOptionState): boolean {
+  return (
+    state.resumeController === state.candidateRoot &&
+    !(state.resumeController && state.resume) &&
+    !(state.resumeController && state.separators === 0) &&
+    state.separators <= (state.resumeController ? 2 : 1)
+  );
+}
+
 function resumableGateTokens(command: string): string[] | null {
   // ManagedRunner executes through a shell. The durable surface intentionally
   // accepts only whitespace-delimited tokens so the persisted command can be
@@ -94,12 +107,20 @@ function resumableGateTokens(command: string): string[] | null {
   let index = tokens[executableIndex + 1] === 'run' ? executableIndex + 2 : executableIndex + 1;
   if (tokens[index] !== 'gate') return null;
   index += 1;
-  const state: GateOptionState = { risk: false, resume: false, sourceFull: false, separator: false };
+  const state: GateOptionState = {
+    candidateRoot: false,
+    risk: false,
+    resume: false,
+    resumeController: false,
+    sourceFull: false,
+    separators: 0,
+  };
   while (index < tokens.length) {
     const next = consumeGateOption(tokens, index, state);
     if (next === null) return null;
     index = next;
   }
+  if (!validGateOptionState(state)) return null;
   return tokens;
 }
 
@@ -135,6 +156,86 @@ function withResumeCheckpoint(
   return [...tokens, '--resume', runId].join(' ');
 }
 
+function withoutResumeLocators(tokens: readonly string[], gateIndex: number): string[] {
+  const result = tokens.slice(0, gateIndex + 1);
+  for (let index = gateIndex + 1; index < tokens.length; index += 1) {
+    if (['--resume', '--resume-controller', '--candidate-root'].includes(tokens[index] ?? '')) {
+      index += 1;
+      continue;
+    }
+    result.push(tokens[index]);
+  }
+  return result;
+}
+
+function existingTrustedCandidateRoot(tokens: readonly string[], gateIndex: number): string | null {
+  const controllerIndex = tokens.indexOf('--resume-controller', gateIndex + 1);
+  if (controllerIndex < 0) return null;
+  const candidateIndex = tokens.indexOf('--candidate-root', gateIndex + 1);
+  const candidateRoot = candidateIndex >= 0 ? tokens[candidateIndex + 1] : null;
+  return candidateRoot && isSafeGateDataRoot(candidateRoot) ? candidateRoot : null;
+}
+
+function withTrustedResumeController(command: string, runId: string, fallbackCandidateRoot?: string): string | null {
+  const tokens = resumableGateTokens(command);
+  if (!tokens || !UUID.test(runId)) return null;
+  const gateIndex = tokens.indexOf('gate');
+  if (gateIndex < 0) return null;
+  const existingCandidateRoot = existingTrustedCandidateRoot(tokens, gateIndex);
+  const candidateRoot = existingCandidateRoot ?? fallbackCandidateRoot;
+  if (!candidateRoot || !isSafeGateDataRoot(candidateRoot)) return null;
+  const withoutLocators = withoutResumeLocators(tokens, gateIndex);
+  const identityTokens = withoutLocators.slice(gateIndex + 1);
+  if (existingCandidateRoot) {
+    const boundaryIndex = identityTokens.indexOf('--');
+    if (boundaryIndex < 0) return null;
+    identityTokens.splice(boundaryIndex, 1);
+  }
+  return [
+    ...withoutLocators.slice(0, gateIndex + 1),
+    '--resume-controller',
+    runId,
+    '--candidate-root',
+    candidateRoot,
+    '--',
+    ...identityTokens,
+  ].join(' ');
+}
+
+interface TrustedResumeProjection {
+  readonly command: string;
+  readonly cwd: string;
+}
+
+function projectTrustedResume(
+  command: string,
+  runId: string | null,
+  mayStart: boolean,
+  mayContinue: boolean,
+  control?: { readonly candidateRoot?: string; readonly controllerRoot?: string },
+): TrustedResumeProjection | null {
+  const tokens = resumableGateTokens(command);
+  const gateIndex = tokens?.indexOf('gate') ?? -1;
+  const existingCandidateRoot = tokens && gateIndex >= 0 ? existingTrustedCandidateRoot(tokens, gateIndex) : null;
+  const eligible = mayStart || (existingCandidateRoot !== null && mayContinue);
+  if (!eligible || !runId || !control?.controllerRoot || !isSafeGateDataRoot(control.controllerRoot)) return null;
+  const projected = withTrustedResumeController(command, runId, existingCandidateRoot ?? control.candidateRoot);
+  return projected ? { command: projected, cwd: control.controllerRoot } : null;
+}
+
+function projectOrdinaryResume(
+  command: string,
+  runId: string | null,
+  frozenIdentity: DurableGateFrozenIdentity | null | undefined,
+  mayResume: boolean,
+): string | null {
+  if (!mayResume || !runId || !frozenIdentity) return null;
+  const tokens = resumableGateTokens(command);
+  const gateIndex = tokens?.indexOf('gate') ?? -1;
+  if (tokens && gateIndex >= 0 && existingTrustedCandidateRoot(tokens, gateIndex)) return null;
+  return withResumeCheckpoint(command, runId, frozenIdentity);
+}
+
 function gateReceipt(job: DurableManagedGateJob): Record<string, unknown> | null {
   try {
     const value = JSON.parse(readFileSync(job.gateReceiptPath, 'utf8')) as Record<string, unknown>;
@@ -150,6 +251,8 @@ export interface DurableManagedGateConsumerProjection {
   readonly recoveryState: string;
   readonly blockReason: string | null;
   readonly resumeCommand: string | null;
+  readonly resumeCwd?: string;
+  readonly resumeControl?: 'trusted_cross_version';
 }
 
 function blockReasonLabel(reason: string | null): string {
@@ -172,6 +275,20 @@ function canOfferExplicitResume(
   if (recovery.terminalIntent === 'timed_out' && terminalStatus !== 'timed_out') return false;
   if (result.timedOut && terminalStatus !== 'timed_out') return false;
   return terminalStatus === null || MANUALLY_RESUMABLE_TERMINALS.has(terminalStatus);
+}
+
+function canOfferTrustedManagedTimeoutResume(
+  recovery: ReturnType<typeof readDurableGateRecovery>,
+  runId: string | null,
+  terminalStatus: string | null,
+  result: ManagedCommandTerminalResult,
+): boolean {
+  if (!recovery?.frozenIdentity || runId === null || result.cancelled || !result.timedOut || result.exitCode === 0) {
+    return false;
+  }
+  if (recovery.terminalIntent !== 'timed_out' || terminalStatus !== 'cancelled') return false;
+  if (['cleanup_unproven', 'child_protocol_unavailable'].includes(recovery.blockReason ?? '')) return false;
+  return recovery.state !== 'blocked' || recovery.blockReason === 'ambiguous_result';
 }
 
 function recoveryProgressLine(projection: DurableManagedGateConsumerProjection): string | null {
@@ -197,6 +314,7 @@ export function projectDurableManagedGateConsumer(
   job: DurableManagedGateJob,
   command: string,
   result: ManagedCommandTerminalResult,
+  control?: { readonly candidateRoot?: string; readonly controllerRoot?: string },
 ): DurableManagedGateConsumerProjection | null {
   if (job.kind !== 'resumable_full_gate_v2' || job.recovery?.protocolVersion !== 2) return null;
   const recovery = readDurableGateRecovery(job);
@@ -205,15 +323,15 @@ export function projectDurableManagedGateConsumer(
   const terminalStatus = typeof receipt?.terminalStatus === 'string' ? receipt.terminalStatus : null;
   const recoveryReady = recovery !== null && recovery.frozenIdentity !== null;
   const mayResume = canOfferExplicitResume(recovery, runId, terminalStatus, result);
+  const mayUseTrustedController = canOfferTrustedManagedTimeoutResume(recovery, runId, terminalStatus, result);
+  const trusted = projectTrustedResume(command, runId, mayUseTrustedController, mayResume, control);
   return {
     pauseEpoch: recovery?.pauseEpoch ?? 0,
     resumeCount: recovery?.resumeCount ?? 0,
     recoveryState: recoveryReady ? recovery.state : 'unavailable',
     blockReason: recovery?.blockReason ?? null,
-    resumeCommand:
-      mayResume && runId && recovery?.frozenIdentity
-        ? withResumeCheckpoint(command, runId, recovery.frozenIdentity)
-        : null,
+    resumeCommand: trusted?.command ?? projectOrdinaryResume(command, runId, recovery?.frozenIdentity, mayResume),
+    ...(trusted ? { resumeControl: 'trusted_cross_version' as const, resumeCwd: trusted.cwd } : {}),
   };
 }
 
@@ -228,6 +346,12 @@ export function durableManagedGateConsumerLines(projection: DurableManagedGateCo
   if (projection.recoveryState === 'blocked') {
     lines.push(`恢复状态：已阻塞（${blockReasonLabel(projection.blockReason)}）`);
   }
-  if (projection.resumeCommand) lines.push(`可执行续办入口：\`${projection.resumeCommand}\``);
+  if (projection.resumeCommand) {
+    lines.push(
+      projection.resumeControl === 'trusted_cross_version' && projection.resumeCwd
+        ? `可执行受信控制面续办入口（cwd=${projection.resumeCwd}）：\`${projection.resumeCommand}\``
+        : `可执行续办入口：\`${projection.resumeCommand}\``,
+    );
+  }
   return lines;
 }

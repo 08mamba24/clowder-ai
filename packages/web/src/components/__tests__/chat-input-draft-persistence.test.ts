@@ -461,6 +461,23 @@ describe('ChatInput draft persistence', () => {
 
   // F309 text quotes: a chip added from a file must survive a reload without breaking hydration (the server has
   // no browser session; sessionStorage restores the chip only on the client).
+  it('preserves the session text draft through the initial SSR hydration commit', async () => {
+    const threadId = 'thread-TEXT-HYDRATE';
+    const element = React.createElement(ChatInput, { threadId, onSend: vi.fn() });
+    act(() => root.unmount());
+    container.innerHTML = renderToString(element);
+    threadDrafts.set(threadId, 'local text before refresh');
+    window.sessionStorage.setItem('cat-cafe:thread-drafts', JSON.stringify([...threadDrafts.entries()]));
+    const errors: unknown[] = [];
+    await act(async () => {
+      root = hydrateRoot(container, element, { onRecoverableError: (error) => errors.push(error) });
+    });
+    expect(errors).toEqual([]);
+    expect(getTextarea().value).toBe('local text before refresh');
+    expect(threadDrafts.get(threadId)).toBe('local text before refresh');
+    expect(window.sessionStorage.getItem('cat-cafe:thread-drafts')).toContain('local text before refresh');
+  });
+
   it('shows a session-restored context chip after hydration, not inside it', async () => {
     const attachment = {
       v: 1 as const,
@@ -1180,6 +1197,32 @@ describe('ChatInput draft persistence', () => {
     });
 
     expect(getPreviewImage('photo.png')).toBeTruthy();
+  });
+
+  it('publishes the live draft snapshot for a persistent pre-thread owner', async () => {
+    const onDraftChange = vi.fn();
+    const file = makeImageFile('recoverable.png');
+    act(() => {
+      root.render(
+        React.createElement(ChatInput, {
+          threadId: 'default',
+          onSend: vi.fn(),
+          onDraftChange,
+        }),
+      );
+    });
+
+    await act(async () => {
+      typeInto(getTextarea(), '刷新后还在');
+      await Promise.resolve();
+    });
+    await attachFiles([file]);
+
+    expect(onDraftChange).toHaveBeenLastCalledWith({
+      text: '刷新后还在',
+      files: [file],
+      contextAttachments: [],
+    });
   });
 
   it('maintains independent image previews per thread across switches', async () => {

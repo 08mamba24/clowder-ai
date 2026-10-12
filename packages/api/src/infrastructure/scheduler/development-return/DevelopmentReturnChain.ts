@@ -19,7 +19,8 @@ export function assertDevelopmentReturnChain(
   const previous = scope.find((state) => state.registrationId === next.predecessorRegistrationId);
   if (
     !previous ||
-    (previous.status !== 'delivered' && !(previous.status === 'retired' && previous.reason === 'delivery_failed'))
+    (previous.status !== 'delivered' &&
+      !(previous.status === 'retired' && ['delivery_failed', 'superseded'].includes(previous.reason ?? '')))
   ) {
     throw new Error('A terminal predecessor in this exact owner/Task return scope is required');
   }

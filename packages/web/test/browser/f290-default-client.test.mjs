@@ -89,33 +89,10 @@ test(
       await linkedWorkArticle.hover();
       await linkedWorkArticle.getByRole('button', { name: '更多消息动作', exact: true }).click();
       const workAction = linkedWorkArticle.getByRole('menuitem', { name: '整理为工作', exact: true });
-      const ball = host.getByTestId('concierge-ball-wrapper');
-      const reserved = host.locator('[data-concierge-reserved-rect="collective-message-actions"]');
-      await host.getByRole('button', { name: '猫猫球 — 待机中', exact: true }).waitFor();
-      const [actionBox, ballBox, reservedBox] = await Promise.all([
-        workAction.boundingBox(),
-        ball.boundingBox(),
-        reserved.boundingBox(),
-      ]);
-      assert.ok(
-        actionBox && ballBox && reservedBox,
-        'append-position action, Host reservation and default concierge ball must all be visible',
-      );
       assert.equal(
-        actionBox.x < reservedBox.x + reservedBox.width &&
-          actionBox.x + actionBox.width > reservedBox.x &&
-          actionBox.y < reservedBox.y + reservedBox.height &&
-          actionBox.y + actionBox.height > reservedBox.y,
-        true,
-        'the Collective Host reservation must cover the real append-position action',
-      );
-      assert.equal(
-        actionBox.x < ballBox.x + ballBox.width &&
-          actionBox.x + actionBox.width > ballBox.x &&
-          actionBox.y < ballBox.y + ballBox.height &&
-          actionBox.y + actionBox.height > ballBox.y,
-        false,
-        'the default concierge ball must not cover the append-position message action',
+        await host.getByTestId('concierge-ball-wrapper').count(),
+        0,
+        'the retired web body cannot cover the real append-position work action',
       );
       await workAction.click();
       await linkedWorkArticle.getByText('工作提议 · 来自这条消息', { exact: true }).waitFor();
@@ -328,6 +305,7 @@ test(
           evidence,
           entry: '/',
           tested: [
+            'collective-home',
             'channel',
             'topic',
             'refresh',

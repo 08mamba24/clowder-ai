@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useCallback, useContext, useEffect, useRef } from 'react';
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef } from 'react';
 
 /**
  * The contract between an original approval card (F246 producers' own renderers) and whatever hosts it.
@@ -43,6 +43,9 @@ export interface AuthorizeOptions {
 }
 
 export interface ApprovalHost {
+  /** Presentation only; the classic permissive host supplies no variant. */
+  readonly presentation?: 'mailbox';
+  readonly originalPlaceAction?: ReactNode;
   /** Writes are locked for this card. Editing, cancel and Escape stay available. */
   readonly writesLocked: boolean;
   /** Asked immediately before every producer write. `false` means nothing is sent. */

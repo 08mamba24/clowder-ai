@@ -20,6 +20,11 @@
 
 import type { CatId, CatRoutingError, MessageContent } from '@cat-cafe/shared';
 import { catRegistry, escapeRegExp } from '@cat-cafe/shared';
+import type {
+  RoutingPreviewReason,
+  RoutingPreviewReasonKind,
+  RoutingPreviewResponse,
+} from '@cat-cafe/shared/routing-preview';
 import type { SessionStore } from '@cat-cafe/shared/utils';
 import { context as ctxApi, SpanStatusCode, trace } from '@opentelemetry/api';
 import { getDefaultCatId, isCatAvailable } from '../../../../../config/cat-config-loader.js';
@@ -619,9 +624,12 @@ export interface AgentRouterOptions {
   /** F287: invocation-bound Cue Plane adapter. */
   memoryCuePromptService?: import('../../../../memory/cue/MemoryCueInvocationPromptService.js').MemoryCueInvocationPromptResolver;
   profileCueOpportunitySource?: import('../../../../memory/cue/sources/ProfileMemoryCueSource.js').ProfileMemoryCueSource;
+  threadOverviewOpportunitySource?: import('../../../../memory/cue/sources/ThreadOverviewMemoryCueSource.js').ThreadOverviewMemoryCueSource;
   eventCueOpportunitySource?: import('../../../../memory/cue/sources/EventMemoryCueSource.js').EventMemoryCueSource;
   /** F231 canonical profile owner for F299 source-lifecycle binding. */
   profileRepository?: import('../../profile/ProfileRepository.js').FileProfileRepository;
+  /** Durable source admission for route-serial occupied-slot Queue fallback. */
+  queueSourceCustodyAdmission?: import('../invocation/QueueSourceCustodyAdmission.js').QueueSourceCustodyAdmissionService;
 }
 
 /**
@@ -723,8 +731,10 @@ export class AgentRouter {
   /** F287 */
   private memoryCuePromptService?: import('../../../../memory/cue/MemoryCueInvocationPromptService.js').MemoryCueInvocationPromptResolver;
   private profileCueOpportunitySource?: import('../../../../memory/cue/sources/ProfileMemoryCueSource.js').ProfileMemoryCueSource;
+  private threadOverviewOpportunitySource?: import('../../../../memory/cue/sources/ThreadOverviewMemoryCueSource.js').ThreadOverviewMemoryCueSource;
   private eventCueOpportunitySource?: import('../../../../memory/cue/sources/EventMemoryCueSource.js').EventMemoryCueSource;
   private profileRepository?: import('../../profile/ProfileRepository.js').FileProfileRepository;
+  private queueSourceCustodyAdmission?: import('../invocation/QueueSourceCustodyAdmission.js').QueueSourceCustodyAdmissionService;
   private speechMentionRe: RegExp;
 
   /**
@@ -862,7 +872,9 @@ export class AgentRouter {
     this.memoryCuePromptService = options.memoryCuePromptService;
     this.profileCueOpportunitySource = options.profileCueOpportunitySource;
     this.eventCueOpportunitySource = options.eventCueOpportunitySource;
+    this.threadOverviewOpportunitySource = options.threadOverviewOpportunitySource;
     this.profileRepository = options.profileRepository;
+    this.queueSourceCustodyAdmission = options.queueSourceCustodyAdmission;
   }
 
   refreshFromRegistry(agentRegistry: AgentRegistry): void {
@@ -1330,146 +1342,128 @@ export class AgentRouter {
     return this.parseMentions(message);
   }
 
-  /**
-   * Read-only target resolution: mentions → last-replier (scoped to preferredCats) → default cat.
-   * F32-b Phase 2 + #58: preferredCats is a candidate scope, not a dispatch list.
-   * Does NOT mutate thread participants.
-   */
-  private async peekTargets(message: string, threadId: string): Promise<CatId[]> {
-    const { mentions: mentionedCats } = await this.parseAllMentions(message, threadId);
-    if (mentionedCats.length > 0) return mentionedCats;
-
-    if (this.threadStore) {
-      const thread = await this.threadStore.get(threadId);
-
-      // F32-b Phase 2 + #58: preferredCats = candidate scope, not dispatch list
-      // R5: Object.hasOwn + dedupe; Cloud P1: Array.isArray guard for corrupted data
-      const rawPref = Array.isArray(thread?.preferredCats) ? thread.preferredCats : [];
-      const validPreferred = this.filterRoutableCats(rawPref);
-      const preferredSet = new Set(validPreferred.map(String));
-
-      // #58: explicit #ideate with multiple preferred cats → dispatch all (user requested parallel)
-      const hasExplicitIdeate = /#ideate\b/i.test(message);
-      if (hasExplicitIdeate && validPreferred.length > 1) {
-        return this.applyThreadRoutingPolicy(thread, message, validPreferred);
-      }
-
-      // F229: Concierge threads always route to the configured duty cat (preferredCats).
-      // Placed BEFORE findRecentUserMentionFallback: a previous @mention in the concierge
-      // thread must not re-route follow-up messages to a non-duty cat. The front-desk duty
-      // cat is the always-on responder; explicit @mentions in the current message (parsed
-      // above) still override this, but implicit mention carry-over does not.
-      if (thread?.threadKind === 'concierge' && validPreferred.length > 0) {
-        return this.applyThreadRoutingPolicy(thread, message, validPreferred);
-      }
-
-      // F194 Phase Z5 AC-Z16: 优先用上一条 user message 的 mentions 作 fallback 候选集，
-      // 不让 thread 里其他猫的发言（vision guard / cross-post）抢路由。
-      // co-creator原话："明明 at 的最后一只猫是 47 or 55 但是召唤出来的却是 46"
-      const userMentionFallback = await this.findRecentUserMentionFallback(threadId);
-      if (userMentionFallback && userMentionFallback.length > 0) {
-        return this.applyThreadRoutingPolicy(thread, message, userMentionFallback);
-      }
-
-      // F078: last-replier takes absolute priority over preferredCats.
-      // User mental model: "no @ = continue with whoever I was talking to".
-      // preferredCats only kicks in when there's no conversation history at all.
-      // #267: three-tier fallback — (1) any healthy replier (unscoped),
-      //   (2) preferred non-errored participant, (3) any non-errored participant.
-      const participantsWithActivity = await this.threadStore.getParticipantsWithActivity(threadId);
-      const isRoutable = (p: { catId: CatId }) => this.isRoutableCat(p.catId);
-      const isHealthy = (p: { lastResponseHealthy?: boolean }) => p.lastResponseHealthy !== false;
-      const healthyReplier = participantsWithActivity.find((p) => p.messageCount > 0 && isHealthy(p) && isRoutable(p));
-      if (healthyReplier) {
-        return this.applyThreadRoutingPolicy(thread, message, [healthyReplier.catId]);
-      }
-      const preferredFallback = participantsWithActivity.find(
-        (p) => isHealthy(p) && isRoutable(p) && preferredSet.has(p.catId as string),
-      );
-      const anyFallback = participantsWithActivity.find((p) => isHealthy(p) && isRoutable(p));
-      const fallbackParticipant = preferredFallback ?? anyFallback;
-      if (fallbackParticipant) {
-        return this.applyThreadRoutingPolicy(thread, message, [fallbackParticipant.catId]);
-      }
-
-      // No healthy participant at all: use first preferred cat
-      if (validPreferred.length > 0) {
-        return this.applyThreadRoutingPolicy(thread, message, [validPreferred[0]]);
-      }
-
-      return this.applyThreadRoutingPolicy(thread, message, [getDefaultCatId()]);
-    }
-
-    return [getDefaultCatId()];
+  private applyRoutingPolicyForPreview(
+    thread: { routingPolicy?: ThreadRoutingPolicyV1 } | null | undefined,
+    message: string,
+    candidates: CatId[],
+    reasonKind: Exclude<RoutingPreviewReasonKind, 'thread_policy'>,
+  ): RoutingPreviewResponse {
+    const targetCats = this.applyThreadRoutingPolicy(thread, message, candidates);
+    const unchanged =
+      targetCats.length === candidates.length && targetCats.every((catId, index) => catId === candidates[index]);
+    const reason: RoutingPreviewReason = unchanged
+      ? { kind: reasonKind }
+      : { kind: 'thread_policy', baseKind: reasonKind };
+    return { targetCats, reason };
   }
 
-  /** Resolve target cats and persist new mentions as thread participants */
-  private async resolveTargets(message: string, threadId: string): Promise<CatId[]> {
+  /**
+   * One read-only resolver shared by the composer preview and the real send path.
+   * A prospective preference represents a not-yet-created conversation: it has no
+   * prior mentions or repliers and never writes a synthetic thread.
+   */
+  private async resolveTargetPreview(
+    message: string,
+    threadId: string,
+    options?: { prospectivePreferredCats?: readonly CatId[] },
+  ): Promise<RoutingPreviewResponse> {
     const { mentions: mentionedCats } = await this.parseAllMentions(message, threadId);
-
     if (mentionedCats.length > 0) {
-      if (this.threadStore) {
-        await this.threadStore.addParticipants(threadId, mentionedCats);
-      }
-      return mentionedCats;
+      return { targetCats: mentionedCats, reason: { kind: 'current_message_mentions' } };
     }
 
-    if (this.threadStore) {
-      const thread = await this.threadStore.get(threadId);
+    const prospective = options?.prospectivePreferredCats !== undefined;
+    if (!prospective && !this.threadStore) {
+      // Preserve the pre-existing no-store fallback used by narrow tests and
+      // compatibility callers; production routing always has a ThreadStore.
+      return { targetCats: [getDefaultCatId()], reason: { kind: 'default_cat' } };
+    }
+    const thread:
+      | {
+          preferredCats?: readonly CatId[];
+          routingPolicy?: ThreadRoutingPolicyV1;
+          threadKind?: string;
+        }
+      | null
+      | undefined = prospective
+      ? { preferredCats: [...(options?.prospectivePreferredCats ?? [])] }
+      : await this.threadStore?.get(threadId);
+    const rawPref = Array.isArray(thread?.preferredCats) ? thread.preferredCats : [];
+    const validPreferred = this.filterRoutableCats(rawPref);
+    const preferredSet = new Set(validPreferred.map(String));
 
-      // F32-b Phase 2 + #58: preferredCats = candidate scope, not dispatch list
-      // R5: Object.hasOwn + dedupe; Cloud P1: Array.isArray guard for corrupted data
-      const rawPref = Array.isArray(thread?.preferredCats) ? thread.preferredCats : [];
-      const validPreferred = this.filterRoutableCats(rawPref);
-      const preferredSet = new Set(validPreferred.map(String));
+    // #58: explicit #ideate with multiple preferred cats → dispatch all.
+    if (/#ideate\b/i.test(message) && validPreferred.length > 1) {
+      return this.applyRoutingPolicyForPreview(thread, message, validPreferred, 'preferred_parallel');
+    }
 
-      // #58: explicit #ideate with multiple preferred cats → dispatch all (user requested parallel)
-      const hasExplicitIdeate = /#ideate\b/i.test(message);
-      if (hasExplicitIdeate && validPreferred.length > 1) {
-        return this.applyThreadRoutingPolicy(thread, message, validPreferred);
-      }
+    // F229: a concierge duty cat overrides implicit history, while an explicit
+    // mention in the current message still won above.
+    if (!prospective && thread?.threadKind === 'concierge' && validPreferred.length > 0) {
+      return this.applyRoutingPolicyForPreview(thread, message, validPreferred, 'concierge_preferred');
+    }
 
-      // F229: Concierge threads always route to the configured duty cat (preferredCats).
-      // Placed BEFORE findRecentUserMentionFallback — see matching comment in peekTargets.
-      if (thread?.threadKind === 'concierge' && validPreferred.length > 0) {
-        return this.applyThreadRoutingPolicy(thread, message, validPreferred);
-      }
-
-      // F194 Phase Z5 AC-Z16: 优先用上一条 user message 的 mentions 作 fallback 候选集，
-      // 不让 thread 里其他猫的发言（vision guard / cross-post）抢路由。
-      // co-creator原话："明明 at 的最后一只猫是 47 or 55 但是召唤出来的却是 46"
+    if (!prospective && this.threadStore) {
       const userMentionFallback = await this.findRecentUserMentionFallback(threadId);
       if (userMentionFallback && userMentionFallback.length > 0) {
-        return this.applyThreadRoutingPolicy(thread, message, userMentionFallback);
+        return this.applyRoutingPolicyForPreview(thread, message, userMentionFallback, 'previous_user_mentions');
       }
 
-      // F078 + #58: last-replier takes priority over preferred cats (user mental model)
-      // #267: three-tier fallback (same as peekTargets)
       const participantsWithActivity = await this.threadStore.getParticipantsWithActivity(threadId);
-      const isRoutable = (p: { catId: CatId }) => this.isRoutableCat(p.catId);
-      const isHealthy = (p: { lastResponseHealthy?: boolean }) => p.lastResponseHealthy !== false;
-      const healthyReplier = participantsWithActivity.find((p) => p.messageCount > 0 && isHealthy(p) && isRoutable(p));
+      const isRoutable = (participant: { catId: CatId }) => this.isRoutableCat(participant.catId);
+      const isHealthy = (participant: { lastResponseHealthy?: boolean }) => participant.lastResponseHealthy !== false;
+      const healthyReplier = participantsWithActivity.find(
+        (participant) => participant.messageCount > 0 && isHealthy(participant) && isRoutable(participant),
+      );
       if (healthyReplier) {
-        return this.applyThreadRoutingPolicy(thread, message, [healthyReplier.catId]);
+        return this.applyRoutingPolicyForPreview(thread, message, [healthyReplier.catId], 'recent_replier');
       }
       const preferredFallback = participantsWithActivity.find(
-        (p) => isHealthy(p) && isRoutable(p) && preferredSet.has(p.catId as string),
+        (participant) =>
+          isHealthy(participant) && isRoutable(participant) && preferredSet.has(participant.catId as string),
       );
-      const anyFallback = participantsWithActivity.find((p) => isHealthy(p) && isRoutable(p));
-      const fallbackParticipant = preferredFallback ?? anyFallback;
-      if (fallbackParticipant) {
-        return this.applyThreadRoutingPolicy(thread, message, [fallbackParticipant.catId]);
+      if (preferredFallback) {
+        return this.applyRoutingPolicyForPreview(thread, message, [preferredFallback.catId], 'preferred_cat');
       }
-
-      // No healthy participant at all: use first preferred cat
-      if (validPreferred.length > 0) {
-        return this.applyThreadRoutingPolicy(thread, message, [validPreferred[0]]);
+      const anyFallback = participantsWithActivity.find(
+        (participant) => isHealthy(participant) && isRoutable(participant),
+      );
+      if (anyFallback) {
+        return this.applyRoutingPolicyForPreview(thread, message, [anyFallback.catId], 'available_participant');
       }
-
-      return this.applyThreadRoutingPolicy(thread, message, [getDefaultCatId()]);
     }
 
-    return [getDefaultCatId()];
+    if (validPreferred.length > 0) {
+      return this.applyRoutingPolicyForPreview(thread, message, [validPreferred[0]], 'preferred_cat');
+    }
+
+    return this.applyRoutingPolicyForPreview(thread, message, [getDefaultCatId()], 'default_cat');
+  }
+
+  /** Read-only projection for the v2 composer; never mutates participants. */
+  async previewTargets(
+    message: string,
+    options: { threadId: string; prospectivePreferredCats?: readonly CatId[] },
+  ): Promise<RoutingPreviewResponse> {
+    return this.resolveTargetPreview(message, options.threadId, {
+      ...(options.prospectivePreferredCats === undefined
+        ? {}
+        : { prospectivePreferredCats: options.prospectivePreferredCats }),
+    });
+  }
+
+  /** Read-only target resolution used before route admission. */
+  private async peekTargets(message: string, threadId: string): Promise<CatId[]> {
+    return (await this.resolveTargetPreview(message, threadId)).targetCats;
+  }
+
+  /** Resolve target cats and persist only explicit mentions as thread participants. */
+  private async resolveTargets(message: string, threadId: string): Promise<CatId[]> {
+    const preview = await this.resolveTargetPreview(message, threadId);
+    if (preview.reason.kind === 'current_message_mentions' && this.threadStore) {
+      await this.threadStore.addParticipants(threadId, preview.targetCats);
+    }
+    return preview.targetCats;
   }
 
   /** Build shared strategy dependencies (public for ModeOrchestrator) */
@@ -1531,6 +1525,9 @@ export class AgentRouter {
         ...(this.runtimeInteractionPort ? { runtimeInteractionPort: this.runtimeInteractionPort } : {}),
         ...(this.memoryCuePromptService ? { memoryCuePromptService: this.memoryCuePromptService } : {}),
         ...(this.profileCueOpportunitySource ? { profileCueOpportunitySource: this.profileCueOpportunitySource } : {}),
+        ...(this.threadOverviewOpportunitySource
+          ? { threadOverviewOpportunitySource: this.threadOverviewOpportunitySource }
+          : {}),
         ...(this.eventCueOpportunitySource ? { eventCueOpportunitySource: this.eventCueOpportunitySource } : {}),
         ...(this.profileRepository ? { profileRepository: this.profileRepository } : {}),
       },
@@ -1561,6 +1558,7 @@ export class AgentRouter {
       ...(this.personMemoryProposalStatusContextResolver
         ? { personMemoryProposalStatusContextResolver: this.personMemoryProposalStatusContextResolver }
         : {}),
+      ...(this.queueSourceCustodyAdmission ? { queueSourceCustodyAdmission: this.queueSourceCustodyAdmission } : {}),
     };
   }
 

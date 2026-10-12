@@ -1,6 +1,6 @@
 'use client';
 import type { CollectiveClientContext } from '@cat-cafe/shared';
-import { type ComponentProps, useEffect, useRef } from 'react';
+import { type ComponentProps, type ReactNode, useEffect, useRef } from 'react';
 import { CatAvatar } from '@/components/CatAvatar';
 import { CollectiveCafePanel } from './CollectiveCafePanel';
 import { CollectiveWorkPermission } from './CollectiveWorkPermission';
@@ -50,27 +50,30 @@ export function CollectiveCafeHost({
       <section className={styles.activity} aria-label="家里近况">
         <h3>猫猫动态</h3>
         {latestNamedRequest && latestNamedCatId ? (
-          <button type="button" onClick={onOpen}>
+          <ActivityDestination threadId={latestNamedRequest.privateThread?.id} onOpen={onOpen}>
             <CatAvatar catId={latestNamedCatId} size={30} />
             <span>
               <strong>
                 点名 {state.view?.cats.find((cat) => cat.id === latestNamedCatId)?.displayName ?? latestNamedCatId}
               </strong>
-              <small>{requestStatus(latestNamedRequest)} · 点开查看</small>
+              <small>
+                {requestStatus(latestNamedRequest)} ·{' '}
+                {latestNamedRequest.privateThread ? '在私人 Thread 查看' : '打开我的 Café'}
+              </small>
             </span>
-          </button>
+          </ActivityDestination>
         ) : work.length ? (
           work.slice(-2).map((task) => {
             const request = requests.find((item) => task.sourceRefs.includes(`message:${item.messageId}`));
             const catId = request?.event.recipient?.kind === 'agent' ? request.event.recipient.agentId : undefined;
             return (
-              <button key={task.id} type="button" onClick={onOpen}>
+              <ActivityDestination key={task.id} threadId={task.threadId} onOpen={onOpen}>
                 {catId && <CatAvatar catId={catId} size={30} />}
                 <span>
                   <strong>{task.title}</strong>
-                  <small>{task.closure === 'open' ? '私人工作有后续' : '私人工作已收口'} · 点开查看</small>
+                  <small>{task.closure === 'open' ? '私人工作有后续' : '私人工作已收口'} · 查看私人工作</small>
                 </span>
-              </button>
+              </ActivityDestination>
             );
           })
         ) : cats.length ? (
@@ -93,6 +96,11 @@ export function CollectiveCafeHost({
             </span>
           </button>
         )}
+        {!latestNamedRequest && !work.length && cats.length > 0 && state.view?.published && (
+          <p>
+            本频道共 {cats.length} 只猫可回应 · 此处预览 {Math.min(cats.length, 2)} 只
+          </p>
+        )}
         <p>家里的对话仍然只属于你</p>
       </section>
       {context.openCafe && (
@@ -106,5 +114,23 @@ export function CollectiveCafeHost({
         />
       )}
     </>
+  );
+}
+
+function ActivityDestination({
+  threadId,
+  onOpen,
+  children,
+}: {
+  readonly threadId?: string;
+  readonly onOpen: () => void;
+  readonly children: ReactNode;
+}) {
+  return threadId ? (
+    <a href={`/thread/${encodeURIComponent(threadId)}`}>{children}</a>
+  ) : (
+    <button type="button" onClick={onOpen}>
+      {children}
+    </button>
   );
 }

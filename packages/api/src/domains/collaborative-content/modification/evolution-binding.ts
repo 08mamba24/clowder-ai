@@ -15,15 +15,23 @@ export async function derivedModificationIntent(
 ) {
   const intent = { ...record.payload.intent },
     source = record.payload.source;
-  if (source.kind !== 'evolution' || !intent.selection) return intent;
+  if (source.kind !== 'evolution' || (!intent.selection && !intent.selections)) return intent;
   const original = await ledgers.retainedRevision({
     principal,
     reviewId: source.reviewId,
     revision: source.expectedReviewRevision,
   });
   if (original.source.kind !== 'evolution') throw new ArtifactReviewError('asset_changed');
-  if (intent.selection.kind === 'text_quote') throw new ArtifactReviewError('invalid_action');
-  intent.selection = mapDerivedMediaAnchor(intent.selection, original.source.media, asset.media);
+  const originalMedia = original.source.media;
+  if (intent.selection) {
+    if (intent.selection.kind === 'text_quote') throw new ArtifactReviewError('invalid_action');
+    intent.selection = mapDerivedMediaAnchor(intent.selection, originalMedia, asset.media);
+  }
+  if (intent.selections)
+    intent.selections = intent.selections.map((item) => {
+      if (item.selection.kind === 'text_quote') throw new ArtifactReviewError('invalid_action');
+      return { ...item, selection: mapDerivedMediaAnchor(item.selection, originalMedia, asset.media) };
+    });
   return intent;
 }
 

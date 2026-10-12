@@ -12,6 +12,7 @@ import {
   managedHoldRetiredReason,
   retiredReasonField,
 } from './ball-custody-events.js';
+import { repairProjectionIfTerminalNotApplied } from './custody-terminal-projection-repair.js';
 import { ManagedHoldReceiptError, type ManagedHoldReceiptService } from './ManagedHoldReceiptService.js';
 import {
   type ManagedHoldDispositionAuth,
@@ -313,23 +314,7 @@ export class ManagedHoldDispositionService {
     events: readonly BallCustodyEvent[],
     dispositionEvent: BallCustodyEvent,
   ): Promise<void> {
-    if (!this.deps.repairProjection) return;
-    const dispositionIndex = events.findIndex((event) => event.sourceEventId === dispositionEvent.sourceEventId);
-    const reopenedAfterDisposition = events
-      .slice(dispositionIndex + 1)
-      .some((event) => event.kind === 'ball.handed' || event.kind === 'ball.held');
-    const projection = await this.deps.ballCustodyProjectionStore.get(subjectKey);
-    // Retired terminals leave the successor's state intact. A healthy active
-    // projection is not evidence of a failed retirement; rebuilding it can
-    // overwrite a successor transition that races the receipt retry.
-    const rejectedDisposition = projection?.lastRejectedEvent?.sourceEventId === dispositionEvent.sourceEventId;
-    if (
-      !projection ||
-      rejectedDisposition ||
-      (dispositionEvent.payload.retired !== true && !reopenedAfterDisposition && projection.state !== 'resolved')
-    ) {
-      await this.deps.repairProjection(subjectKey);
-    }
+    await repairProjectionIfTerminalNotApplied(this.deps, subjectKey, events, dispositionEvent);
   }
 
   private async completeReceipt(

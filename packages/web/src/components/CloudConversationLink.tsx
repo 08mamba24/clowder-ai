@@ -48,7 +48,7 @@ function bindingStatus(binding: BindingState) {
   return null;
 }
 
-export function CloudConversationLink({ threadId }: { threadId: string }) {
+export function CloudConversationLink({ threadId, compact = false }: { threadId: string; compact?: boolean }) {
   const [threadBinding, setThreadBinding] = useState<ThreadBindingState>(() => ({
     threadId,
     value: LOADING_BINDING,
@@ -121,6 +121,40 @@ export function CloudConversationLink({ threadId }: { threadId: string }) {
 
   const status = bindingStatus(binding);
   const settingsHref = personalChromeSettingsHref(threadId);
+
+  if (compact) {
+    return (
+      <div className="status-v2-info-row" data-testid="cloud-conversation-link">
+        <span className="status-v2-muted">ChatGPT</span>
+        {binding.kind === 'bound' ? (
+          <code className="status-v2-cloud-id" title={binding.chatUrl}>
+            {binding.conversationId}
+          </code>
+        ) : (
+          <span>{status}</span>
+        )}
+        {(binding.kind === 'bound' || binding.kind === 'empty') && (
+          <a
+            href={binding.kind === 'bound' ? binding.chatUrl : 'https://chatgpt.com/'}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            打开 ChatGPT
+          </a>
+        )}
+        {binding.kind === 'bound' && (
+          <button type="button" aria-label="复制 ChatGPT 会话链接" onClick={() => void copyLink()} aria-live="polite">
+            {copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : '复制链接'}
+          </button>
+        )}
+        {binding.kind !== 'loading' && binding.kind !== 'unauthorized' && (
+          <a href={settingsHref} title="先在目标会话点击扩展的「授权此会话」，再为当前对话选择它。">
+            {binding.kind === 'bound' ? '更换绑定' : binding.kind === 'empty' ? '选会话' : '检查绑定'}
+          </a>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="console-list-card mt-2 min-w-0 rounded-xl p-2.5" data-testid="cloud-conversation-link">

@@ -40,7 +40,9 @@ async function inspectCapture(
     if (signal.aborted) return 'closed';
     if (!status) return 'unavailable';
     if (status.thread_id !== binding.threadId || status.meeting_id !== binding.meetingId) return 'binding_mismatch';
-    return status.running === true ? 'ready' : 'stopped';
+    if (status.running === true && status.lifecycle_state === 'running') return 'ready';
+    if (status.running === false && status.lifecycle_state === 'stopped') return 'stopped';
+    return 'unavailable';
   } catch {
     return signal.aborted ? 'closed' : 'unavailable';
   }

@@ -10,6 +10,7 @@ import { ApprovalHistoryList } from './ApprovalHistoryList';
 export type ApprovalHistoryOutcomeFilter = 'all' | 'accepted' | 'rejected' | 'closed_without_decision';
 
 interface ApprovalHistoryPaneProps {
+  ownerUserId?: string;
   featureFilters: ReadonlySet<ApprovalFeatureId>;
   onFeatureFiltersChange: (features: Set<ApprovalFeatureId>) => void;
   outcomeFilter: ApprovalHistoryOutcomeFilter;
@@ -17,12 +18,18 @@ interface ApprovalHistoryPaneProps {
 }
 
 export function ApprovalHistoryPane({
+  ownerUserId,
   featureFilters,
   onFeatureFiltersChange,
   outcomeFilter,
   onOutcomeFilterChange,
 }: ApprovalHistoryPaneProps) {
-  const settledItems = useApprovalHubStore((state) => state.settledItems);
+  const rawSettledItems = useApprovalHubStore((state) => state.settledItems);
+  const settledItems = useMemo(
+    () =>
+      ownerUserId === undefined ? rawSettledItems : rawSettledItems.filter((item) => item.ownerUserId === ownerUserId),
+    [rawSettledItems, ownerUserId],
+  );
   const isLoading = useApprovalHubStore((state) => state.settledIsLoading);
   const error = useApprovalHubStore((state) => state.settledError);
   const fetchSettled = useApprovalHubStore((state) => state.fetchSettled);

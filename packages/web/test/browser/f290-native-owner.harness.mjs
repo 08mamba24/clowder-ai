@@ -12,7 +12,7 @@ import { CollectiveCurrentContext } from '../../../api/dist/domains/plugin/built
 import { CollectiveIngressDispatcher } from '../../../api/dist/domains/plugin/builtin-runtime/collective-ingress-dispatcher.js';
 import { resolveCollectiveStandingGrant } from '../../../api/dist/domains/plugin/builtin-runtime/collective-standing-grant.js';
 import { CollectiveWorkAdmission } from '../../../api/dist/domains/plugin/builtin-runtime/collective-work/collective-work-admission.js';
-import { CollectiveWorkAuthority } from '../../../api/dist/domains/plugin/builtin-runtime/collective-work-authority.js';
+import { CollectiveWorkAuthority } from '../../../api/dist/domains/plugin/builtin-runtime/collective-work/collective-work-authority.js';
 import { CollectiveWorkDispatcher } from '../../../api/dist/domains/plugin/builtin-runtime/collective-work-dispatcher.js';
 import { CollectiveWorkResultReconciler } from '../../../api/dist/domains/plugin/builtin-runtime/collective-work-result-reconciler.js';
 import { CollectiveWorkRevisionReconciler } from '../../../api/dist/domains/plugin/builtin-runtime/collective-work-revision-reconciler.js';

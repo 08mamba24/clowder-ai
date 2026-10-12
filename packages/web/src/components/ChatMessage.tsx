@@ -1,6 +1,6 @@
 'use client';
 
-import { companionIdentitySnapshotV1Schema, isCrossThreadProvenance } from '@cat-cafe/shared';
+import { isCrossThreadProvenance } from '@cat-cafe/shared';
 import { type CSSProperties, memo, type ReactNode, useState } from 'react';
 import { formatSessionSealRequested, formatVisibleSystemInfo } from '@/hooks/system-info-visible';
 import { type CatData, formatCatName } from '@/hooks/useCatData';
@@ -33,22 +33,39 @@ import {
   projectCloudBindingRecovery,
 } from './cloud-binding-recovery';
 import { CompanionMessageAvatar, CompanionMessageIdentity } from './concierge/CompanionMessageIdentity';
+import { ContentModificationReceiptCard } from './content-review/ContentModificationReceiptCard';
 import { ContentModificationSourceMessage } from './content-review/ContentModificationSourceMessage';
+import { MediaMessageRequestStatus } from './content-review/MediaMessageRequestStatus';
+import { contentModificationReceiptOf } from './content-review/modification-receipt-copy';
+import { TextMessageRequestStatus } from './content-review/TextMessageRequestStatus';
 import { DirectionPill } from './DirectionPill';
 import { EvidencePanel } from './EvidencePanel';
 import { GovernanceBlockedCard } from './GovernanceBlockedCard';
 import { ExternalLinkIcon } from './HubConfigIcons';
 import { describeMessageInvocationTrajectory, InvocationTrajectoryAnchor } from './InvocationTrajectoryAnchor';
-import { MessageActionSlot } from './MessageActionSlot';
+import { MessageActionSlot, MessageAuthorDetails } from './MessageActionSlot';
 import { MessageBubble } from './MessageBubble';
 import { MessageBundleCard } from './MessageBundleCard';
 import { focusTurnAbsorptionSummary, MessageReceiptDock } from './MessageReceiptDock';
 import { MetadataBadge } from './MetadataBadge';
 import { buildMessageDisclosureKey, buildRichHtmlDisclosureKey } from './message-disclosure-state';
 import { isConnectorSystemNotice, projectedExecutionIds } from './message-render-visibility';
+import { CrossThreadLetter } from './message-v2/CrossThreadLetter';
 import { isLastOfOwnRun } from './own-message-run';
 import { PawFeelDispositionDock } from './paw-feel/PawFeelDispositionDock';
 import { ReplyPill } from './ReplyPill';
+import { NativeReplyText } from './reply-layers/NativeReplyText';
+import { ReplyHandoffs } from './reply-layers/ReplyHandoffs';
+import { ReplyLayers } from './reply-layers/ReplyLayers';
+import { useReplyRecallProjection } from './reply-layers/ReplyRecallContext';
+import { REPLY_BODY_CLASS } from './reply-layers/reply-body';
+import { projectReplyHandoffs, type ReplyHandoffTimelineProjection } from './reply-layers/reply-handoff';
+import {
+  canRenderReplyLayers,
+  canRenderReplyNameplate,
+  resolveReplyCompanionIdentity,
+} from './reply-layers/reply-presentation';
+import { useReplyOutput } from './reply-layers/use-reply-output';
 import { BriefingCard } from './rich/BriefingCard';
 import type { CardConfirmationEntry } from './rich/CardBlock';
 import { CustodyOfferCard } from './rich/CustodyOfferCard';
@@ -146,6 +163,7 @@ interface ChatMessageProps {
   compact?: boolean;
   threadId?: string;
   timelineMessages?: readonly ChatMessageType[];
+  replyHandoffTimeline?: ReplyHandoffTimelineProjection;
   activeInvocationIds?: ReadonlySet<string>;
   settlingInvocationIds?: ReadonlySet<string>;
   getCatById: (id: string) => CatData | undefined;
@@ -186,6 +204,7 @@ export const ChatMessage = memo(function ChatMessage({
   compact = false,
   threadId,
   timelineMessages,
+  replyHandoffTimeline,
   activeInvocationIds,
   settlingInvocationIds,
   getCatById,
@@ -200,10 +219,23 @@ export const ChatMessage = memo(function ChatMessage({
   // The Café 1.6 cat reply (nameplate, no outer bubble) is a presentation of the same message, switched by the one shell
   // switch. Read it with the other hooks, before any early return.
   const shellPresentation = useShellPresentation();
+  const replyRecall = useReplyRecallProjection(message.id);
   const coCreator = useCoCreatorConfig();
   const { state: ttsState, synthesize: ttsSynthesize, activeMessageId } = useTts();
   const currentThreadId = useChatStore((s) => s.currentThreadId);
   const renderThreadId = threadId ?? currentThreadId;
+  const replyLayersPresentation = { shellPresentation, compact, getCatById, currentThreadId: renderThreadId };
+  const nativeReplyOutput = useReplyOutput(
+    message,
+    renderThreadId,
+    canRenderReplyLayers(message, replyLayersPresentation),
+  );
+  const handoffTimeline =
+    replyHandoffTimeline ??
+    projectReplyHandoffs(timelineMessages ?? EMPTY_TIMELINE_MESSAGES, (candidate) =>
+      canRenderReplyLayers(candidate, replyLayersPresentation),
+    );
+  const replyHandoffs = handoffTimeline.renderByMessageId.get(message.id) ?? [];
   const publication =
     renderThreadId && !message.isStreaming
       ? {
@@ -256,14 +288,7 @@ export const ChatMessage = memo(function ChatMessage({
     : message.content;
 
   const catData = message.catId ? getCatById(message.catId) : undefined;
-  const parsedCompanionIdentity = companionIdentitySnapshotV1Schema.safeParse(message.extra?.liveCompanion?.identity);
-  const companionIdentity =
-    message.type === 'assistant' &&
-    parsedCompanionIdentity.success &&
-    (message.catId === parsedCompanionIdentity.data.live.catId ||
-      message.catId === parsedCompanionIdentity.data.deep.catId)
-      ? parsedCompanionIdentity.data
-      : undefined;
+  const companionIdentity = resolveReplyCompanionIdentity(message);
   const companionAuthorName =
     companionIdentity && message.catId === companionIdentity.live.catId
       ? companionIdentity.live.displayName
@@ -437,6 +462,16 @@ export const ChatMessage = memo(function ChatMessage({
   }
 
   if (isSystem) {
+    if (shellPresentation === 'v2' && message.extra?.a2aRouting) {
+      if (handoffTimeline.hiddenRoutingMessageIds.has(message.id)) {
+        // The carrier remains a separate persisted message and keeps a DOM anchor for navigation;
+        // only its v2 presentation moves into the emitting reply.
+        return <div data-message-id={message.id} data-projected-a2a-routing aria-hidden="true" className="h-0" />;
+      }
+      if (replyHandoffs.length > 0) {
+        return <ReplyHandoffs handoffs={replyHandoffs} getCatById={getCatById} standaloneMessageId={message.id} />;
+      }
+    }
     // F148 ContextBriefing and F233 duty briefing are user-visible, collapsed cards.
     // F148 remains distinguishable via extra.systemKind='context_briefing'.
     if (message.origin === 'briefing' && message.extra?.rich?.blocks?.length) {
@@ -446,6 +481,19 @@ export const ChatMessage = memo(function ChatMessage({
             <BriefingCard block={message.extra.rich.blocks[0]} messageId={message.id} />
           </div>
         </div>
+      );
+    }
+
+    // F309: a Host receipt of a content modification is one plain line, not its stored text with coordinates.
+    // An invalid carrier falls through to the plain system line below, so nothing is lost.
+    const contentModificationReceipt = contentModificationReceiptOf(message.extra);
+    if (contentModificationReceipt) {
+      return (
+        <ContentModificationReceiptCard
+          receipt={contentModificationReceipt}
+          messageId={message.id}
+          getCatById={getCatById}
+        />
       );
     }
 
@@ -682,9 +730,6 @@ export const ChatMessage = memo(function ChatMessage({
         data-testid="human-message-header"
         className={`relative flex w-full justify-end items-center gap-2${humanHasMarks ? ' mb-1' : ''}`}
       >
-        <span className="absolute right-full top-0 mr-1">
-          <CopyIdButton messageId={message.id} />
-        </span>
         <MessageActionSlot />
         {isWhisper && (
           <span
@@ -723,7 +768,7 @@ export const ChatMessage = memo(function ChatMessage({
           <ReplyPill replyPreview={message.replyPreview} replyToId={message.replyTo} getCatById={getCatById} />
         )}
         <span className="text-xs text-cafe-muted">{formatDualTime(message.timestamp, message.deliveredAt)}</span>
-        <CopyIdButton messageId={message.id} />
+        {shellPresentation === 'classic' && <CopyIdButton messageId={message.id} />}
         <span className="text-xs font-semibold" style={{ color: 'var(--color-cocreator-primary)' }}>
           {coCreator.name}
         </span>
@@ -761,7 +806,13 @@ export const ChatMessage = memo(function ChatMessage({
       <MessageBubble
         messageId={message.id}
         align="right"
-        presentation={humanPresentation ? 'human' : 'bubble'}
+        presentation={
+          humanPresentation
+            ? message.extra?.messageBundle && !recalledAfterExposure
+              ? 'forwarded'
+              : 'human'
+            : 'bubble'
+        }
         maxWidth={compact ? 'max-w-[86%]' : undefined}
         avatar={userAvatar}
         header={userHeader}
@@ -828,6 +879,18 @@ export const ChatMessage = memo(function ChatMessage({
         {message.extra?.custodyOfferV1 ? (
           <CustodyOfferCard sourceMessageId={message.id} expectedOffer={message.extra.custodyOfferV1} />
         ) : null}
+        {recalledAfterExposure ? null : (
+          <>
+            <MediaMessageRequestStatus
+              message={message}
+              resolveCatName={(catId) => resolveCatDisplayName(catId, getCatById)}
+            />
+            <TextMessageRequestStatus
+              message={message}
+              resolveCatName={(catId) => resolveCatDisplayName(catId, getCatById)}
+            />
+          </>
+        )}
         {messageReceiptDock}
       </MessageBubble>
     );
@@ -849,7 +912,8 @@ export const ChatMessage = memo(function ChatMessage({
   /* F322 B segment 1: in the Café 1.6 presentation a cat's ordinary reply is a nameplate over unframed text.
    * Everything that already has its own look stays on the old path: compact replies, the live companion's identity, and
    * a message whose cat the registry does not know. The user, connector and system branches returned above. */
-  const showsNameplate = shellPresentation === 'v2' && !compact && !companionIdentity && !!catStyle;
+  const showsNameplate = canRenderReplyNameplate(message, replyLayersPresentation);
+  const isCrossThreadLetter = shellPresentation === 'v2' && Boolean(crossThreadSourceThreadId);
 
   /* ── Cat (assistant) header ── */
   const catHeader =
@@ -859,19 +923,26 @@ export const ChatMessage = memo(function ChatMessage({
     message.extra?.supplement ||
     message.extra?.turnExecution ||
     message.extra?.auxiliaryTurnExecutions?.length ||
-    subexecutionEvents.length ? (
+    subexecutionEvents.length ||
+    (shellPresentation === 'v2' && crossThreadSourceThreadId) ? (
       <div
         className="mb-1 flex flex-col gap-1 min-w-0"
         data-testid="message-header"
         data-turn-execution-owner={message.extra?.turnExecution?.invocationId}
       >
-        <div className="flex items-center gap-2 min-w-0">
+        <div
+          className={
+            shellPresentation === 'v2'
+              ? 'flex flex-wrap items-center gap-x-2 gap-y-4 min-w-0'
+              : 'flex items-center gap-2 min-w-0'
+          }
+          data-message-author-row={shellPresentation === 'v2' ? '' : undefined}
+        >
           {showsNameplate && message.catId && catStyle ? (
             <>
               <CatNameplate
                 catId={message.catId}
                 name={catStyle.label}
-                streaming={message.isStreaming}
                 onEditCat={onEditCat ? () => onEditCat(message.catId!) : undefined}
               />
               <span
@@ -900,111 +971,116 @@ export const ChatMessage = memo(function ChatMessage({
               <span className="text-xs text-cafe-muted shrink-0">{formatTime(message.timestamp)}</span>
             </>
           )}
-          <CopyIdButton messageId={message.id} />
-          <InvocationTrajectoryAnchor message={message} threadId={renderThreadId} />
-          {message.extra?.recovery?.kind === 'f254_withheld_message' && (
-            <span
-              className="shrink-0 rounded-full border border-conn-blue-ring bg-conn-blue-bg px-1.5 py-0.5 text-micro font-semibold text-[var(--semantic-info)]"
-              title="事故恢复：此消息曾被 F254 错误收起，现已按原作者、原时间和原文恢复"
-            >
-              事故恢复
-            </span>
-          )}
-          {message.extra?.turnExecution?.executionKind === 'routing_guard' && (
-            <span
-              className="shrink-0 rounded-full border border-conn-amber-ring bg-conn-amber-bg px-1.5 py-0.5 text-micro font-semibold text-conn-amber-text"
-              title={`系统因上一轮缺少合法路由出口而执行了一次补路由；child ${message.extra.turnExecution.invocationId}`}
-              data-turn-execution-kind="routing_guard"
-            >
-              系统补路由
-            </span>
-          )}
-          {message.extra?.turnExecution?.executionKind === 'freshness_supplement' && (
-            <span
-              className="shrink-0 rounded-full border border-conn-blue-ring bg-conn-blue-bg px-1.5 py-0.5 text-micro font-semibold text-[var(--semantic-info)]"
-              title={`针对真正相关的后到消息执行补充；child ${message.extra.turnExecution.invocationId}`}
-              data-turn-execution-kind="freshness_supplement"
-            >
-              后到消息补充{message.extra.supplement ? ` ${message.extra.supplement.seq}` : ''}
-            </span>
-          )}
-          {message.extra?.auxiliaryTurnExecutions?.map((execution) => {
-            const label =
-              execution.executionKind === 'routing_guard'
-                ? '系统补路由'
-                : execution.executionKind === 'freshness_supplement'
-                  ? '后到消息补充'
-                  : '普通执行（无正文）';
-            const title =
-              execution.executionKind === 'routing_guard'
-                ? `系统为这条普通回复补了一次路由出口；child ${execution.invocationId}`
-                : execution.executionKind === 'freshness_supplement'
-                  ? `针对真正相关的后到消息执行补充；child ${execution.invocationId}`
-                  : `本轮普通执行未产生独立正文；child ${execution.invocationId}`;
-            return (
+          {shellPresentation === 'v2' ? <MessageActionSlot /> : <CopyIdButton messageId={message.id} />}
+          <MessageAuthorDetails>
+            {/* New shell: the trajectory moved to the last line of the reply (ReplyLayers), and "running" is the status there. */}
+            {showsNameplate ? null : <InvocationTrajectoryAnchor message={message} threadId={renderThreadId} />}
+            {message.extra?.recovery?.kind === 'f254_withheld_message' && (
               <span
-                key={execution.invocationId}
-                className={
-                  execution.executionKind === 'routing_guard'
-                    ? 'shrink-0 rounded-full border border-conn-amber-ring bg-conn-amber-bg px-1.5 py-0.5 text-micro font-semibold text-conn-amber-text'
-                    : 'shrink-0 rounded-full border border-conn-blue-ring bg-conn-blue-bg px-1.5 py-0.5 text-micro font-semibold text-[var(--semantic-info)]'
-                }
-                title={title}
-                data-auxiliary-turn-execution={execution.invocationId}
-                data-turn-execution-kind={execution.executionKind}
+                className="shrink-0 rounded-full border border-conn-blue-ring bg-conn-blue-bg px-1.5 py-0.5 text-micro font-semibold text-[var(--semantic-info)]"
+                title="事故恢复：此消息曾被 F254 错误收起，现已按原作者、原时间和原文恢复"
               >
-                {label}
+                事故恢复
               </span>
-            );
-          })}
-          {message.extra?.supplement && message.extra?.turnExecution?.executionKind !== 'freshness_supplement' && (
-            <span
-              className="shrink-0 rounded-full border border-conn-blue-ring bg-conn-blue-bg px-1.5 py-0.5 text-micro font-semibold text-[var(--semantic-info)]"
-              title="这条消息补充上方关联的原回复"
-            >
-              对上条回复的补充
-            </span>
-          )}
-          {subexecutionEvents.length > 0 && (
-            <span
-              data-agent-role="root"
-              className="shrink-0 rounded-full border border-conn-purple-ring bg-conn-purple-bg px-1.5 py-0.5 text-micro font-semibold text-conn-purple-text"
-              title="这条普通回复由主 agent 持有；下方子 agent 记录保留各自身份"
-            >
-              主 agent
-            </span>
-          )}
-          {isWhisper && (
-            <span
-              className={`text-xs px-1.5 py-0.5 rounded ${isRevealed ? 'bg-cafe-surface-elevated text-cafe-secondary' : 'bg-semantic-warning-surface text-semantic-warning'}`}
-            >
-              {isRevealed
-                ? '已揭秘'
-                : `悄悄话 → ${
-                    message.whisperTo
-                      ?.map((id) => {
-                        const cat = getCatById(id);
-                        return cat ? cat.displayName : id;
-                      })
-                      .join(', ') ?? ''
-                  }`}
-            </span>
-          )}
-          {!isWhisper && direction && <DirectionPill direction={direction} getCatById={getCatById} />}
-          {message.replyTo && message.replyPreview && !isSchedulerReply && (
-            <ReplyPill replyPreview={message.replyPreview} replyToId={message.replyTo} getCatById={getCatById} />
-          )}
-          {hasTextContent && !message.isStreaming && (
-            <TtsPlayButton
-              messageId={message.id}
-              text={message.content}
-              catId={message.catId!}
-              ttsState={ttsState}
-              activeMessageId={activeMessageId}
-              onSynthesize={ttsSynthesize}
-            />
-          )}
-          <MessageActionSlot />
+            )}
+            {message.extra?.turnExecution?.executionKind === 'routing_guard' && (
+              <span
+                className="shrink-0 rounded-full border border-conn-amber-ring bg-conn-amber-bg px-1.5 py-0.5 text-micro font-semibold text-conn-amber-text"
+                title={`系统因上一轮缺少合法路由出口而执行了一次补路由；child ${message.extra.turnExecution.invocationId}`}
+                data-turn-execution-kind="routing_guard"
+              >
+                系统补路由
+              </span>
+            )}
+            {message.extra?.turnExecution?.executionKind === 'freshness_supplement' && (
+              <span
+                className="shrink-0 rounded-full border border-conn-blue-ring bg-conn-blue-bg px-1.5 py-0.5 text-micro font-semibold text-[var(--semantic-info)]"
+                title={`针对真正相关的后到消息执行补充；child ${message.extra.turnExecution.invocationId}`}
+                data-turn-execution-kind="freshness_supplement"
+              >
+                后到消息补充{message.extra.supplement ? ` ${message.extra.supplement.seq}` : ''}
+              </span>
+            )}
+            {message.extra?.auxiliaryTurnExecutions?.map((execution) => {
+              const label =
+                execution.executionKind === 'routing_guard'
+                  ? '系统补路由'
+                  : execution.executionKind === 'freshness_supplement'
+                    ? '后到消息补充'
+                    : '普通执行（无正文）';
+              const title =
+                execution.executionKind === 'routing_guard'
+                  ? `系统为这条普通回复补了一次路由出口；child ${execution.invocationId}`
+                  : execution.executionKind === 'freshness_supplement'
+                    ? `针对真正相关的后到消息执行补充；child ${execution.invocationId}`
+                    : `本轮普通执行未产生独立正文；child ${execution.invocationId}`;
+              return (
+                <span
+                  key={execution.invocationId}
+                  className={
+                    execution.executionKind === 'routing_guard'
+                      ? 'shrink-0 rounded-full border border-conn-amber-ring bg-conn-amber-bg px-1.5 py-0.5 text-micro font-semibold text-conn-amber-text'
+                      : 'shrink-0 rounded-full border border-conn-blue-ring bg-conn-blue-bg px-1.5 py-0.5 text-micro font-semibold text-[var(--semantic-info)]'
+                  }
+                  title={title}
+                  data-auxiliary-turn-execution={execution.invocationId}
+                  data-turn-execution-kind={execution.executionKind}
+                >
+                  {label}
+                </span>
+              );
+            })}
+            {message.extra?.supplement && message.extra?.turnExecution?.executionKind !== 'freshness_supplement' && (
+              <span
+                className="shrink-0 rounded-full border border-conn-blue-ring bg-conn-blue-bg px-1.5 py-0.5 text-micro font-semibold text-[var(--semantic-info)]"
+                title="这条消息补充上方关联的原回复"
+              >
+                对上条回复的补充
+              </span>
+            )}
+            {!showsNameplate && subexecutionEvents.length > 0 && (
+              <span
+                data-agent-role="root"
+                className="shrink-0 rounded-full border border-conn-purple-ring bg-conn-purple-bg px-1.5 py-0.5 text-micro font-semibold text-conn-purple-text"
+                title="这条普通回复由主 agent 持有；下方子 agent 记录保留各自身份"
+              >
+                主 agent
+              </span>
+            )}
+            {isWhisper && (
+              <span
+                className={`text-xs px-1.5 py-0.5 rounded ${isRevealed ? 'bg-cafe-surface-elevated text-cafe-secondary' : 'bg-semantic-warning-surface text-semantic-warning'}`}
+              >
+                {isRevealed
+                  ? '已揭秘'
+                  : `悄悄话 → ${
+                      message.whisperTo
+                        ?.map((id) => {
+                          const cat = getCatById(id);
+                          return cat ? cat.displayName : id;
+                        })
+                        .join(', ') ?? ''
+                    }`}
+              </span>
+            )}
+            {!isWhisper && direction && !isCrossThreadLetter && (
+              <DirectionPill direction={direction} getCatById={getCatById} />
+            )}
+            {message.replyTo && message.replyPreview && !isSchedulerReply && (
+              <ReplyPill replyPreview={message.replyPreview} replyToId={message.replyTo} getCatById={getCatById} />
+            )}
+            {shellPresentation === 'classic' && hasTextContent && !message.isStreaming && (
+              <TtsPlayButton
+                messageId={message.id}
+                text={message.content}
+                catId={message.catId!}
+                ttsState={ttsState}
+                activeMessageId={activeMessageId}
+                onSynthesize={ttsSynthesize}
+              />
+            )}
+            {shellPresentation === 'classic' && <MessageActionSlot />}
+          </MessageAuthorDetails>
         </div>
         {companionIdentity && companionAuthorName && (
           <CompanionMessageIdentity identity={companionIdentity} authorName={companionAuthorName} />
@@ -1015,7 +1091,8 @@ export const ChatMessage = memo(function ChatMessage({
             <span>定时提醒</span>
           </div>
         )}
-        {crossThreadSourceThreadId &&
+        {shellPresentation === 'classic' &&
+          crossThreadSourceThreadId &&
           (() => {
             const sourceId = crossThreadSourceThreadId;
             const sourceName = crossThreadSourceName ?? '未命名对话';
@@ -1054,10 +1131,56 @@ export const ChatMessage = memo(function ChatMessage({
       </div>
     ) : undefined;
 
+  /* F322 B §1.16 layer 1 in the new shell: what the cat said is drawn as body text under the nameplate, never inside the dark CLI
+   * block. A streamed reply's text is the stream's own text (the CLI block was fed the same); a callback reply, or the spoken part
+   * of a merged one, is its own content. The tool calls, thinking and model line are not here: they are the record (ReplyLayers). */
+  const replyBody = !showsNameplate ? null : nativeReplyOutput ? (
+    <div data-testid="native-reply-answer" className="space-y-3">
+      {nativeReplyOutput.answers.map((run) => (
+        <NativeReplyText key={run.id} run={run} className={REPLY_BODY_CLASS} disclosureKey={bodyDisclosureKey} />
+      ))}
+    </div>
+  ) : isStreamOrigin ? (
+    cliStdoutContent?.trim() ? (
+      <CollapsibleMarkdown content={cliStdoutContent} className={REPLY_BODY_CLASS} disclosureKey={bodyDisclosureKey} />
+    ) : null
+  ) : hasBlocks ? (
+    <ContentBlocks
+      blocks={message.contentBlocks!}
+      publication={publication}
+      fallbackText={mergedSpeechContent ?? message.content}
+    />
+  ) : hasTextContent ? (
+    <CollapsibleMarkdown
+      content={mergedSpeechContent ?? message.content}
+      className={REPLY_BODY_CLASS}
+      disclosureKey={bodyDisclosureKey}
+    />
+  ) : null;
+
+  const assistantBody = showsNameplate ? (
+    replyBody
+  ) : hasCliBlock && isStreamOrigin ? null : !isStreamOrigin && hasBlocks ? (
+    <ContentBlocks
+      blocks={message.contentBlocks!}
+      publication={publication}
+      fallbackText={mergedSpeechContent ?? message.content}
+    />
+  ) : !isStreamOrigin && hasTextContent ? (
+    <CollapsibleMarkdown
+      content={mergedSpeechContent ?? message.content}
+      className={catStyle?.font}
+      disclosureKey={bodyDisclosureKey}
+    />
+  ) : message.isStreaming ? (
+    <span className="text-xs text-cafe-secondary">Thinking...</span>
+  ) : null;
+
   return (
     <MessageBubble
       messageId={message.id}
-      presentation={showsNameplate ? 'nameplate' : 'bubble'}
+      presentation={showsNameplate || isCrossThreadLetter ? 'nameplate' : 'bubble'}
+      railColor={showsNameplate && !isCrossThreadLetter ? catColorVar(message.catId, 'primary') : undefined}
       avatar={
         companionIdentity ? (
           <CompanionMessageAvatar identity={companionIdentity} />
@@ -1071,7 +1194,7 @@ export const ChatMessage = memo(function ChatMessage({
         ) : null
       }
       header={catHeader}
-      maxWidth={compact ? 'max-w-[86%]' : undefined}
+      maxWidth={isCrossThreadLetter ? 'w-full max-w-full' : compact ? 'max-w-[86%]' : undefined}
       /* F056: always add cat-persona-derived so nested ThinkingContent/CliOutputBlock
        * have valid --cat-msg-{inset,inset-text,...} tokens even when catData is
        * undefined (e.g. stream messages without resolved catId). */
@@ -1081,45 +1204,58 @@ export const ChatMessage = memo(function ChatMessage({
       }
       bubbleRadius={catStyle ? catStyle.radius : 'rounded-2xl'}
       bubbleClassName={
-        compact
-          ? `w-fit max-w-full border border-[var(--conn-emerald-bubble-border)] ${catStyle?.font ?? ''}`
-          : showsNameplate
-            ? /* No breed voice: DESIGN.md keeps mono for machine output, and the reply is plain working text.
-               * `pl-2` is the only inset: it lines the text (and the cards under it) up with the plate's avatar. */
-              'pl-2'
-            : catStyle
-              ? (catStyle.font ?? '')
-              : 'bg-cafe-surface'
+        isCrossThreadLetter
+          ? 'pl-2'
+          : compact
+            ? `w-fit max-w-full border border-[var(--conn-emerald-bubble-border)] ${catStyle?.font ?? ''}`
+            : showsNameplate
+              ? /* No breed voice: DESIGN.md keeps mono for machine output, and the reply is plain working text.
+                 * `pl-2` is the only inset: it lines the text (and the cards under it) up with the plate's avatar. */
+                'pl-2'
+              : catStyle
+                ? (catStyle.font ?? '')
+                : 'bg-cafe-surface'
       }
       bubbleStyle={
-        compact
-          ? {
-              backgroundColor: 'color-mix(in oklch, var(--cafe-surface-elevated) 48%, var(--conn-emerald-bubble-bg))',
-              color: 'var(--cafe-text)',
-            }
-          : showsNameplate
-            ? { color: 'var(--cat-msg-text)' }
-            : catStyle
-              ? { backgroundColor: catStyle.bgColor, color: 'var(--cat-msg-text)' }
-              : { color: 'var(--cat-msg-text)' }
+        isCrossThreadLetter
+          ? { color: 'var(--shell-ink)' }
+          : compact
+            ? {
+                backgroundColor: 'color-mix(in oklch, var(--cafe-surface-elevated) 48%, var(--conn-emerald-bubble-bg))',
+                color: 'var(--cafe-text)',
+              }
+            : showsNameplate
+              ? { color: 'var(--cat-msg-text)' }
+              : catStyle
+                ? { backgroundColor: catStyle.bgColor, color: 'var(--cat-msg-text)' }
+                : { color: 'var(--cat-msg-text)' }
       }
-      footer={!message.isStreaming && message.metadata ? <MetadataBadge metadata={message.metadata} /> : undefined}
+      /* New shell: the model / usage / cost line is the last row of the opened record (ReplyLayers). */
+      footer={
+        !showsNameplate && !message.isStreaming && message.metadata ? (
+          <MetadataBadge metadata={message.metadata} />
+        ) : undefined
+      }
     >
-      {hasCliBlock && isStreamOrigin ? null : !isStreamOrigin && hasBlocks ? (
-        <ContentBlocks blocks={message.contentBlocks!} publication={publication} />
-      ) : !isStreamOrigin && hasTextContent ? (
-        <CollapsibleMarkdown
-          content={mergedSpeechContent ?? message.content}
-          className={showsNameplate ? undefined : catStyle?.font}
-          disclosureKey={bodyDisclosureKey}
-        />
-      ) : message.isStreaming ? (
-        <span className="text-xs text-cafe-secondary">Thinking...</span>
-      ) : null}
-      {message.thinking && (
+      {isCrossThreadLetter && crossThreadSourceThreadId ? (
+        <CrossThreadLetter
+          sourceThreadId={crossThreadSourceThreadId}
+          sourceInvocationId={message.extra?.crossPost?.sourceInvocationId}
+          senderCatId={message.catId}
+          content={message.content}
+          targetCats={message.extra?.targetCats}
+          mentionsUser={message.mentionsUser}
+          getCatById={getCatById}
+        >
+          {assistantBody}
+        </CrossThreadLetter>
+      ) : (
+        assistantBody
+      )}
+      {!showsNameplate && message.thinking && (
         <ThinkingContent
           content={message.thinking}
-          className={showsNameplate ? undefined : catStyle?.font}
+          className={catStyle?.font}
           label="Thinking"
           defaultExpanded={
             bubbleRestorePending
@@ -1131,7 +1267,7 @@ export const ChatMessage = memo(function ChatMessage({
           disclosureKey={thinkingDisclosureKey}
         />
       )}
-      {hasCliBlock && (
+      {!showsNameplate && hasCliBlock && (
         <CliOutputBlock
           events={cliEvents}
           status={cliStatus}
@@ -1158,7 +1294,7 @@ export const ChatMessage = memo(function ChatMessage({
           confirmations={confirmations}
         />
       )}
-      <SubexecutionActivity events={subexecutionEvents} />
+      {!showsNameplate ? <SubexecutionActivity events={subexecutionEvents} /> : null}
       {freshnessNotice && !message.extra?.supplement && (
         <div
           data-testid="freshness-supplement-status"
@@ -1175,6 +1311,21 @@ export const ChatMessage = memo(function ChatMessage({
       {message.isStreaming && !isStreamOrigin && (
         <span className="inline-block w-1.5 h-4 bg-current animate-pulse ml-0.5 rounded-full opacity-50" />
       )}
+      {showsNameplate && renderThreadId ? (
+        <ReplyLayers
+          message={message}
+          threadId={renderThreadId}
+          disclosureKey={cliDisclosureKey}
+          defaultExpanded={
+            bubbleRestorePending ? false : resolveBubbleExpanded(currentThreadBubbleCli, globalBubbleDefaults.cliOutput)
+          }
+          workingText={!isStreamOrigin && mergedCliStdout?.trim() ? mergedCliStdout : undefined}
+          handoffs={replyHandoffs}
+          getCatById={getCatById}
+          recall={replyRecall}
+          nativeOutput={nativeReplyOutput}
+        />
+      ) : null}
     </MessageBubble>
   );
 });

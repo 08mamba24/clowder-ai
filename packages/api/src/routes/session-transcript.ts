@@ -10,6 +10,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { projectInvocationPromptInput } from '../domains/cats/services/session/InvocationPromptInputProjector.js';
+import { resolveScopedSessionTrajectory } from '../domains/cats/services/session/scoped-session-trajectory.js';
 import { formatEventsChat } from '../domains/cats/services/session/TranscriptFormatter.js';
 import {
   canReadThreadRecord,
@@ -59,7 +60,16 @@ export async function sessionTranscriptRoutes(
 
   registerInvocationTrajectoryRoutes(app, {
     stores: { invocationRecordStore, turnExecutionStore, sessionChainStore, threadStore },
-    listInvocationSummaries: invocationReader.list.bind(invocationReader),
+    listInvocationSummaries: async (sessions, limit, signal) => {
+      const page = await invocationReader.list(sessions, limit, signal);
+      const invocations = await Promise.all(
+        page.invocations.map(async (summary) => {
+          const session = await sessionChainStore.get(summary.sessionId);
+          return session ? resolveScopedSessionTrajectory(summary, session, turnExecutionStore) : summary;
+        }),
+      );
+      return { ...page, invocations };
+    },
     readInvocationEvents,
     ...(messageStore ? { messageStore } : {}),
     ...(transcriptWriter ? { keyedContentDigest: transcriptWriter.keyedContentDigest.bind(transcriptWriter) } : {}),
@@ -132,12 +142,8 @@ export async function sessionTranscriptRoutes(
         reply.status(400);
         return { error: 'charOffset requires raw view, exact cursor eventNo and limit=1' };
       }
-      const one = await transcriptReader.readEvents(
-        sessionId,
-        session.threadId,
-        session.catId,
-        { eventNo: cursorNum },
-        1,
+      const one = await withTranscriptReadSignal(request, reply, (signal) =>
+        invocationReader.readEvents(session, { cursor: cursorNum, limit: 1 }, signal),
       );
       const event = one.events.find((candidate) => candidate.eventNo === cursorNum);
       if (!event) return reply.status(404).send({ error: 'Event not found' });
@@ -165,8 +171,9 @@ export async function sessionTranscriptRoutes(
     }
 
     // Raw and chat views: paginate by raw event number
-    const cursor = cursorNum != null ? { eventNo: cursorNum } : undefined;
-    const result = await transcriptReader.readEvents(sessionId, session.threadId, session.catId, cursor, limit);
+    const result = await withTranscriptReadSignal(request, reply, (signal) =>
+      invocationReader.readEvents(session, { cursor: cursorNum, limit }, signal),
+    );
 
     if (view === 'chat') {
       const boundedRaw = projectRawTranscriptPage(result, sessionId);
@@ -328,7 +335,9 @@ export async function sessionTranscriptRoutes(
       });
     }
 
-    const summary = page.summary;
+    const summary = page.summary
+      ? await resolveScopedSessionTrajectory(page.summary, session, turnExecutionStore)
+      : page.summary;
     const promptInput = await projectInvocationPromptInput(
       { messageStore, turnExecutionStore },
       session,

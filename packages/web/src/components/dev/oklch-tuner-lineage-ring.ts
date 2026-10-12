@@ -13,9 +13,10 @@
  * 2 degree / five-chroma grid whose extremes a 1 degree / 0.01 grid does not exceed by more than a tenth of a contrast point
  * (oklch-tuner-lineage-ring.test.ts), over the whole range the Tuner allows for the chroma multiplier (0 to 2). */
 import { linearRgbLuminance, oklchToClippedLinearRgb } from '@/lib/color-utils';
+import { platesOf } from '@/lib/readable-name-plate';
 import { NAME_ROLE_MIN_CONTRAST, NAME_ROLE_TARGET_CONTRAST, readableNameLightness } from '@/lib/readable-name-role';
 import type { TunerState } from './oklch-tuner-engine';
-import { pageLayers } from './oklch-tuner-name-role';
+import { type ActualColours, pageLayers, resolveTunerNameAndPlate } from './oklch-tuner-name-role';
 
 /** WCAG 1.4.11: the mark against what is next to it. */
 export const LINEAGE_RING_MIN_CONTRAST = 3;
@@ -76,7 +77,33 @@ export function lineageRingWorstContrast(p: TunerState, dark: boolean, l: number
   return Math.min(...landingRanges(p, dark).map((landing) => rangeContrast(ring, landing)));
 }
 
-export function lineageRingLightness(p: TunerState, dark: boolean) {
+/**
+ * The ring in a room whose colours are known (Opus 5.5 3619): the human's own hue and chroma at the bubble multiplier, over
+ * the plate of every cat, connector and the human that really exist (as the plate is drawn — after it has given way, if it
+ * had to) and over the page layers. Not the whole legal range: a colour nobody has does not decide what everyone sees.
+ */
+function actualRingLightness(p: TunerState, dark: boolean, actual: ActualColours, resolvedPlateL?: number) {
+  const mode = dark ? p.dark : p.light;
+  // The plate lightness this mode resolved to: the caller that has already resolved the nameplate hands it in (the resolver is
+  // the expensive call, cloud review #5086 round 4); a caller that has not asks for it.
+  const plateL = resolvedPlateL ?? resolveTunerNameAndPlate(p, dark, actual).plateL;
+  return readableNameLightness({
+    l: mode.primary.L,
+    c: actual.human.c * ringCmul(p, dark),
+    h: actual.human.h,
+    backgrounds: [
+      ...platesOf({ l: plateL, cmul: mode.surface.Cmul }, [...actual.cats, actual.human]),
+      ...pageLayers(p, dark),
+    ],
+    prefer: dark ? 'lighter' : 'darker',
+    minimum: LINEAGE_RING_MIN_CONTRAST,
+    target: LINEAGE_RING_TARGET_CONTRAST,
+  });
+}
+
+/** Without a catalogue (`actual` omitted) the legal range stands in, as the fallback only. */
+export function lineageRingLightness(p: TunerState, dark: boolean, actual?: ActualColours, resolvedPlateL?: number) {
+  if (actual) return actualRingLightness(p, dark, actual, resolvedPlateL);
   const mode = dark ? p.dark : p.light;
   const landings = landingRanges(p, dark);
   const cmul = ringCmul(p, dark);

@@ -47,6 +47,11 @@ export interface WhisperOptions {
   whisperTo: string[];
 }
 
+export interface SendMessageAdmissionOptions {
+  /** Stable owner-generated key for a recoverable admission retry. */
+  idempotencyKey?: string;
+}
+
 /**
  * Hook for sending messages (text + optional images + optional whisper).
  * Handles both JSON and multipart form data modes.
@@ -101,6 +106,7 @@ export function useSendMessage(activeThreadId?: string) {
       replyToId?: string,
       messageDisposition?: MessageWorkDisposition,
       contextAttachments?: ContextAttachment[],
+      admissionOptions?: SendMessageAdmissionOptions,
     ) => {
       const threadId = overrideThreadId ?? activeThreadId ?? useChatStore.getState().currentThreadId;
       const hasImages = Boolean(images && images.length > 0);
@@ -119,7 +125,7 @@ export function useSendMessage(activeThreadId?: string) {
       const wasCommand = await processCommand(content, threadId);
       if (wasCommand) return false;
 
-      const clientMessageId = createClientId();
+      const clientMessageId = admissionOptions?.idempotencyKey ?? createClientId();
       const optimisticMessageId = `user-${clientMessageId}`;
 
       // #699: Build optimistic replyPreview from captured data (not store — already cleared)

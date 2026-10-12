@@ -8,6 +8,60 @@ import { describe, expect, it } from 'vitest';
 import { normalizeQueueMessageReceiptProjections } from '../queue-message-receipt-normalizer';
 
 describe('normalizeQueueMessageReceiptProjections', () => {
+  const publicReplyWitness = {
+    kind: 'collective_public_reply',
+    sourceMessageId: 'public-source',
+    sourceEventId: 'evt_request',
+    acceptedEventId: 'evt_accepted',
+  };
+  function normalizePublicReplyReceipt(consumption: unknown, disposition = 'responded') {
+    return normalizeQueueMessageReceiptProjections([
+      {
+        messageId: 'public-source',
+        queueReceipt: {
+          version: 1,
+          entryId: 'public-entry',
+          reminderAttempts: [],
+          targets: [
+            {
+              catId: 'codex-sol',
+              state: 'handled',
+              outcome: {
+                invocationId: 'public-child',
+                disposition,
+                evidenceRef: { kind: 'turn_execution', invocationId: 'public-child' },
+                handledAt: 2100,
+                consumption,
+              },
+            },
+          ],
+        },
+      },
+    ])[0]?.queueReceipt.targets;
+  }
+
+  it('preserves an accepted public reply target and its Service event witness through receipt hydration', () => {
+    expect(normalizePublicReplyReceipt(publicReplyWitness)).toEqual([
+      expect.objectContaining({
+        catId: 'codex-sol',
+        state: 'handled',
+        outcome: expect.objectContaining({ disposition: 'responded', consumption: publicReplyWitness }),
+      }),
+    ]);
+  });
+
+  it.each(
+    ['sourceMessageId', 'sourceEventId', 'acceptedEventId'].flatMap((field) =>
+      [undefined, '', ' ', 42].map((value) => ({ ...publicReplyWitness, [field]: value })),
+    ),
+  )('drops a malformed public reply target rather than claiming a completed source: %j', (witness) => {
+    expect(normalizePublicReplyReceipt(witness)).toEqual([]);
+  });
+
+  it('drops a public reply witness with a disposition that is not responded', () => {
+    expect(normalizePublicReplyReceipt(publicReplyWitness, 'completed_with_turn')).toEqual([]);
+  });
+
   const agyCapability = {
     provider: 'google',
     carrier: 'agy_stream_json',

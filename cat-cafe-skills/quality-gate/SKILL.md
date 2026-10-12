@@ -59,12 +59,14 @@ Step 1: FIND — 找 spec/plan 文档
   - the active feature spec or implementation plan
   - 同时找 Discussion/Interview（operator experience所在）
 
-Step 2: CREATE — 建检查清单
-  - 列出每一个 AC / 功能点 / 边界条件
-  - 列出 Discussion 里的 UX 描述和场景
+Step 2: CREATE — 先确定完整旅程，再组织检查
+  - 从原始需求写清本次约定的完整路径：从哪进、做什么、拿到什么结果，以及需要时怎样回到原处或再次打开
+  - 将 AC / 功能点 / 关键边界挂在这条旅程下面；检查组合操作与真实接线，不把各按钮分别点通当作旅程走通
+  - 按风险将计算、组件事件等局部分支交给单测或集成测试；浏览器检查真实入口、导航、渲染和跨步骤状态，不为每个内部切片重复验整套按钮
+  - 非交互交付按其真实使用场景写输入、处理与最终结果；不为纯文档或内部计算虚构页面旅程
 
 Step 2.5: CLOSE GATE MATRIX + FOLLOW-UP TAIL SCAN（F177 Phase A）🔴
-  - **下面 CloseGateReport / unmet AC 处置 / tail scan / cvo_signoff 四项仅在本次交付声称关闭 Feature（feat close）时执行；普通 PR / Phase 内交付跳过这四项、不生成 CloseGateReport。本步其余按作者/家族触发的检查（包装未做作者的 close 复核、Siamese edit scope、Ragdoll search→Read）不受此门线影响，仍按各自条件执行**
+  - **下面 CloseGateReport / unmet AC 处置 / tail scan / cvo_signoff 四项仅在本次交付声称关闭 Feature（feat close）时执行；普通 PR / Phase 内交付跳过这四项、不生成 CloseGateReport。本步其余按作者/家族触发的检查（包装未做作者的 close 复核、Siamese edit scope）不受此门线影响，仍按各自条件执行**
   - 检查 CloseGateReport 是否已生成（schema: `../.cat-cafe-shared-refs/close-gate.md`）
   - 每个 unmet AC 是否三选一处置（immediate / delete / cvo_signoff）
   - **Follow-up tail scan**：扫以下文本来源，命中关键词 = **线索（进入语义判定），不是自动 BLOCKED**——判定标准只有一条：该词是否在把 **unmet AC 包装成已完成 / 偷偷延期**（close 借口）。正常阶段描述（"X 属 next phase 的 scope"）、风险讨论、路线图引用不触发（2026-07-15 修订：raw keyword 自动 BLOCK 误杀正常文本）：
@@ -75,14 +77,8 @@ Step 2.5: CLOSE GATE MATRIX + FOLLOW-UP TAIL SCAN（F177 Phase A）🔴
       `out of scope`（作为 close 借口时）`MVP 先上`（作为 close 借口时）
     - 豁免：spec 的 Why/Risk/History 章节中引用历史上下文时使用这些词不触发
   - cvo_signoff 四件套完整性验证（proposal + cvo message + quote + scope）
-  - 🔴 **包装未做作者的 close 复核**（F177 Phase B，原为针对单只已退役猫的规则）：仅当 PR 作者的 dossier「翻车熔断信号」写有「包装未做 / 过早收口」类失败模式时，其 feat close PR 的 quality-gate 由非作者猫重跑，跨族优先；审核者由 reviewer/系统按当前 roster 指定，作者无选择权。其他作者照常自检。通用底线不变：作者自评不能替代已选择的独立 review（reviewer ≠ author）
+  - 🔴 **包装未做作者的 close 复核**（F177 Phase B，原为针对单只已退役猫的规则）：仅当 PR 作者的 dossier「翻车熔断信号」写有「包装未做 / 过早收口」类失败模式时，其 feat close PR 的 quality-gate 由非作者猫重跑，按风险默认只选一只，同族也行；审核者由 reviewer/系统按当前 roster 指定，作者无选择权。其他作者照常自检。通用底线不变：作者自评不能替代已选择的独立 review（reviewer ≠ author）
   - **hotfix**（F177 Phase E）：执行 `node scripts/check-hotfix-pattern.mjs` 识别 hotfix 模式；其"自我说服"风险由跨个体 review 铁律承接（reviewer ≠ author，merge-gate 校验），作者照常自检，不再额外安排另一只猫重跑 quality-gate
-  - 🔴 **Ragdoll search→Read 检查**（F177 Phase F）：若执行者是Ragdoll家族（任一在役个体，以 roster 为准），检查本次 session 的 search 行为：
-    1. 有 `search_evidence` 调用命中 doc anchor（高/中置信度）吗？
-    2. 命中后有对应的 `Read` 调用去读源文件吗？
-    3. 输出中包含精确数字/版本号/日期但没有 Read 证据吗？
-    → 三条件同时满足 = **BLOCKED**："这个精确结论你 Read 源文件了吗？摘要是索引不是答案。"
-    → 豁免：架构方案/假设性讨论（不含精确数字的推理不触发）；通过 Grep/LSP 获取的精确信息不触发
   - 🔴 **Siamese edit scope 检查**（F177 Phase C）：若 PR 作者是Siamese，检查改动文件是否超出白名单（designs/ docs/ assets/ 根目录.md）。碰 packages/ src/ 的改动必须有对应 handoff 记录或 Dry Run Gate 通过证据（build + test pass）
 
 Step 2.6: FALLBACK LAYER CHECK（F177 Phase D）🔴
@@ -122,9 +118,10 @@ Step 4: RUNTIME GUARD — 前端证据采集前先做运行态保护
   - 确需重启时，先获operator明确授权，再执行 `pnpm runtime:restart`；shell 参数与环境变量都不是授权证明
   - **Alpha 优先**：验证已合入 main 的改动时，优先用 `pnpm alpha:start`（3011/3012/4111/6397）取证，而非 runtime。Alpha 环境每次启动自动同步 origin/main
 
-Step 4.5: DOGFOOD-YOUR-SLICE — 用一次自己刚做的功能（F209 教训 2026-05-23）🔴
+Step 4.5: DOGFOOD — 实际走通本次约定的完整旅程（F209 / F314）🔴
   对 user-visible / runtime feature，author 必须在请求 review 前：
-    ① 跑一条**真实端到端 query / 路径**，涵盖该 slice 的核心交付能力
+    ① 实际走 Step 2 的完整旅程，从真实入口与输入到最终结果，覆盖需要的返回、保存与重进；不能用当前 slice 的局部成功代替原约定
+      旅程的输入用需求方原话里的真实例子和真实数据（原话说"打开 backlog"，就打开那份 backlog），不用作者自己挑的样例。原话里的核心动作用真实数据做不到，记"没走通"，不记成小缺口或下一阶段。给猫用的功能，由一只猫在真实任务里实际调用一次；人和猫都用的能力，两边各走一遍，确认调用的是同一个底层操作。
     ② 把命令 + 输出 / 截图证据写进 Quality Gate Report 的 "Dogfood" 块
     ③ 抓到的任何 dogfood bug 必须当轮修，不允许"post-merge 再说"
     ④ **结构性例外**（2026-07-15）：验证路径只在合入后才存在（需 main/alpha 环境或真实外部案例，AC-F7 型）→ pre-merge 验证到能验的边界即可，剩余由**带 owner + 触发条件的持久 post-merge task** 接走，**不阻塞 pre-merge review / merge**；若它是 required AC，则 task 在 terminal PASS（或 `delete` / `cvo_signoff`）前仍阻塞 **feature close**。例外理由写进 review packet
@@ -146,11 +143,12 @@ Step 4.5: DOGFOOD-YOUR-SLICE — 用一次自己刚做的功能（F209 教训 20
 
   报告写法（在 Quality Gate Report 里加 "### Dogfood" 块）：
     ```markdown
-    ### Dogfood-Your-Slice
+    ### 完整旅程（Dogfood）
+    完整旅程：走通 / 没走通（断点：...）/ 不适用（本次交付与验证方式：...）
     Scope verdict: ✅ 必做 / 🆗 可豁免（理由：xxx）
 
     （必做时）
-    端到端路径: search_evidence("operator") → drillDown → cat_cafe_get_thread_context
+    实际使用路径: search_evidence("operator") → drillDown → cat_cafe_get_thread_context → 读到能回答原问题的原文
     实际命令 / 输出（粘贴）: ...
     发现的 bug: 无 / 列表（含修复 commit SHA）
     ```
@@ -205,6 +203,7 @@ Step 8: REPORT — 输出合规报告 + 证据
 ```markdown
 ## Quality Gate Report
 
+完整旅程：走通 / 没走通（断点：...）/ 不适用（本次交付与验证方式：...）
 Spec: feature spec or implementation note
 原始需求: feature-discussions/YYYY-MM-DD-xxx/README.md
 检查时间: YYYY-MM-DD HH:MM
@@ -214,10 +213,11 @@ Spec: feature spec or implementation note
 |---|---------------|-----------|--------|
 | 1 | "我要 XXX"    | AC#3      | ✅     |
 
-### 功能验收
-| # | 要求 | 状态 | 代码位置 | 测试覆盖 |
-|---|------|------|----------|----------|
-| 1 | XXX  | ✅   | file.ts:L10 | test.spec.ts |
+### 旅程与支撑检查
+约定路径：<真实入口、组合操作、最终结果；需要时包含返回与重进>
+| 旅程环节 | 要求 / 关键边界 | 状态 | 代码位置 | 验证证据 |
+|----------|-----------------|------|----------|----------|
+| XXX      | XXX             | ✅   | file.ts:L10 | test.spec.ts / 实际操作 |
 
 ### 参考与实物对照（适用时）
 已接受参考与实际路径：<来源 / 本次观察>
@@ -232,9 +232,9 @@ Map delta: none
 Why: 只扩展现有 InvocationQueue 行为，不改变 dispatch cell 边界
 Diff mismatch scan: 无新增并行 Store/Queue/Router/Adapter ✅
 
-### Dogfood-Your-Slice（Step 4.5）
+### 完整旅程（Step 4.5 Dogfood）
 Scope verdict: ✅ 必做 / 🆗 可豁免（理由）
-（必做时）端到端路径: search_evidence("...") → drillDown → reader(...)
+（必做时）实际路径与结果: <Step 2 的完整旅程，哪一步走通或断开>
 实际命令 / 输出 / 截图: ...
 发现的 bug: 无 / 列表（含修复 commit SHA）
 
@@ -264,7 +264,7 @@ pnpm gate → exit 0 ✅（仅影响范围要求 full 时填写）
 | Redis 改动用默认测试命令 | 必须跑 `test:redis`，禁止直连 6399 |
 | 产出了 skill/MCP 但没审查质量 | 加载 `writing-skills`，用 T0 六要素审查（软硬同检） |
 | 只看 spec checkbox 就声称完成/未完成 | 核实 `git log --grep` + `gh pr list` + 实际 commit（LL-029）|
-| AC 全 ✅ 就声明 phase close（机制 ship 但用户感受不到）| Step 4.5 Dogfood-Your-Slice：必做 feature 跑一条真实端到端 query 写进报告；豁免必须显式写理由（F209 反思 2026-05-23）|
+| 功能项全绿，却没走通原来的事 | Step 2 先确定完整旅程，Step 4.5 真正走一遍；局部成功不代替完整结果，按实际风险复用仍有效的证据 |
 
 **Red flags — 立刻 STOP**：
 - 用 "should"、"probably"、"seems to"

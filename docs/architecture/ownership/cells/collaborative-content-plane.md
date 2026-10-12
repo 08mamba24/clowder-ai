@@ -21,14 +21,20 @@ code_anchors:
   - packages/api/src/domains/collaborative-content/named-cat-content-service.ts
   - packages/api/src/domains/collaborative-content/modification/composition.ts
   - packages/api/src/domains/collaborative-content/modification/journal.ts
+  - packages/api/src/domains/collaborative-content/modification/message-takeover.ts
+  - packages/api/src/domains/collaborative-content/modification/chat-projection.ts
   - packages/api/src/domains/collaborative-content/modification/request-authority.ts
   - packages/api/src/domains/collaborative-content/modification/result-service.ts
   - packages/api/src/domains/collaborative-content/modification/control/runtime-control-service.ts
   - packages/api/src/domains/collaborative-content/workspace-review/service.ts
   - packages/api/src/domains/collaborative-content/artifact-review/version-response-service.ts
   - packages/api/src/routes/content-modification-routes.ts
+  - packages/api/src/routes/callback-content-modification-routes.ts
   - packages/api/src/routes/callback-content-editor-routes.ts
   - packages/api/src/domains/video-studio/content-owner/service.ts
+  - packages/api/src/domains/video-studio/content-owner/state/manifest.ts
+  - packages/api/src/domains/video-studio/project/service.ts
+  - packages/api/src/domains/collaborative-content/workspace-review/video-project-review-service.ts
   - packages/mcp-server/src/tools/content-editor-tools.ts
   - packages/mcp-server/src/tools/content-modification-tools.ts
   - packages/web/src/components/workbench/content-review/ContentReviewSurface.tsx
@@ -41,12 +47,16 @@ doc_anchors:
   - docs/features/F307-composable-workbench.md
   - docs/features/F063-hub-workspace-explorer.md
   - docs/features/F138-video-studio.md
+  - docs/features/F326-editing-desk.md
+  - feature-specs/2026-10-07-f326-phase-a-contract.md
 static_scan_hints: [SelectionAnchor, AuthorizationDecisionRef, AnnotationThread, PatchProposal, Disposition, ContentChangeReceipt, receiptId, causal checkpoint, replay, PresenceProjection, change awareness, proposal state CAS, applyReceipt, coordinate space, timebase, table range, reanchor, orphaned, content adapter]
 cited_by:
   - {feature: F309, date: 2026-08-27, delta: new cell — extract cross-media collaboration mechanics from F290 and keep F307/content-owner boundaries explicit}
   - {feature: F309, date: 2026-09-06, delta: DOCX owner session and independent authenticated cat operation vertical; materialization stays F202-owned and canonical bytes/receipts stay F138-owned}
   - {feature: F309, date: 2026-09-13, delta: record the missing two-Human canonical Markdown slice for F290 W4 and keep bytes/auth in the content owner, lifecycle in F309, and mount in F307}
   - {feature: F309, date: 2026-09-20, delta: "Phase U — shared landing and canonical discussion, explicit request saga, file candidate decisions, and native control receipts; no second file/media/Task/Queue owner"}
+  - {feature: F309, date: 2026-10-02, delta: "Studio K1/K2 — revision-bound Cat ContextAttachments enter through Hub action transport; F309 derives one request from the current Human message and projects immutable Host receipts; F063 remains source/writeback owner and Queue only carries verified conflict/unknown continuation"}
+  - {feature: F326, date: 2026-10-07, delta: "Phase A consumer — F138 owns immutable project scope and JSON/CAS/receipts; F309 extends the shared artifact ledger with project targets and append-only history; renderer stays external"}
 ---
 
 # Collaborative Content Plane
@@ -107,6 +117,20 @@ those historical acknowledgements never replace current child truth or retarget 
 
 The implementation and verification cut is tracked in the Phase U packet. These boundaries are not a claim
 of browser acceptance, real model completion, Alpha availability or production activation.
+
+Cat-authored workspace `ContextAttachment`s use the existing Hub action/message transport, but the attachment
+format version is never a file revision or write grant. F063 supplies and revalidates the exact owner revision;
+F309 may resolve its rendered quote into raw anchors only while that same revision remains current. A Cat-side
+takeover supplies only the authenticated Human source message and an idempotency attempt: MessageStore remains
+the source owner, F309 derives the addressed Cat/thread/intent/selections, and the existing F310 Task continues
+when exactly one compatible open responsibility exists. Recall, revocation, ambiguity and unsupported file
+types fail before request or Task creation.
+
+Candidate and disposition events remain canonical in the F309 journal and F063 writeback receipt. Their chat
+representation is one immutable Host-authored, content-free message that points back to the original Human
+source; it is neither Human/Cat speech nor another authorization. Ordinary candidate/applied/rejected receipts
+do not start acknowledgement work. Conflict/unknown may use the existing Queue delivery owner only after the
+exact Task is still open and owned by the original target Cat; that carrier never retries writeback.
 
 ## Use This When
 
@@ -201,3 +225,26 @@ sequence is:
 
 Acceptance requires two distinct Human identities, restart readback, and a real revoke replay. A successful
 single-owner DOCX session, local worktree Markdown CAS, read-only projection, or fixture cannot satisfy it.
+
+## Editing Desk Phase A Consumer
+
+Architecture cell: collaborative-content-plane, plugin
+Map delta: extend existing cells — F138 project scope/document facade and F309 project-source/anchor branches; no new content or ledger owner.
+Why: preserve one editable project head and its shared durable review history, while renderer mappings stay outside Host.
+
+F326 consumes the existing F138 content owner through `VideoProjectService`: one immutable project scope,
+canonical JSON, owner revisions/CAS and the original operation receipts. Project listing derives from primary
+owner manifests. Asset versions index registered F063 roots with byte digests; a changed or missing source
+never becomes the old version. Indexing does not copy or back up media. Check pages/results and decisions
+remain in the same versioned JSON, with old definitions/results/answers readable after restart.
+
+Project review is a new source branch in the same `ArtifactReviewStore.ledgers` database, not another store.
+The original anchor is retained while locating, addressing, replying, resolving and reopening append history.
+Project/segment/moment/artwork targets bind exact owner versions; unproven image/time transforms become
+orphaned rather than being transplanted. F138 result receipts are checked before the separate F309 transaction.
+
+The project service accepts trusted Host principals; a Cat also needs the explicitly injected invocation/
+delegation authorizer. Runtime composition defaults to denial for that Cat port. The existing Human-only
+file/media routes retain their checks. Phase A defines callable domain ports and tests; it adds no project
+HTTP/MCP entry, editing surface, rendering execution or production activation. Renderer-specific mappings
+remain in the external `remotion-studio` adapter, with only generic frozen JSON fixtures in this repository.

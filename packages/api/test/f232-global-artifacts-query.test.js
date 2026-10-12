@@ -28,6 +28,7 @@ describe('GET /api/artifacts — server-side query params (F232 Phase B)', () =>
     threadMemory = {},
     sessionChainStore,
     transcriptWriter,
+    artifactWorkLineage,
   } = {}) {
     const threadStore = {
       get: async (id) => threads.find((t) => t.id === id) ?? null,
@@ -46,6 +47,7 @@ describe('GET /api/artifacts — server-side query params (F232 Phase B)', () =>
       },
       ...(sessionChainStore ? { sessionChainStore } : {}),
       ...(transcriptWriter ? { transcriptWriter } : {}),
+      ...(artifactWorkLineage ? { artifactWorkLineage: { current: artifactWorkLineage } } : {}),
     });
     return a;
   }
@@ -137,6 +139,53 @@ describe('GET /api/artifacts — server-side query params (F232 Phase B)', () =>
     const body = JSON.parse(res.body);
     assert.equal(body.artifacts.length, 4);
     assert.equal(body.total, 4);
+    assert.equal(body.workLineage, 'unavailable');
+  });
+
+  it('projects optional work coordinates and reports a resolved batch', async () => {
+    let calls = 0;
+    app = await makeApp({
+      threads: [T1],
+      threadMessages: { T1: messagesT1 },
+      artifactWorkLineage: {
+        resolve: async ({ ownerUserId, artifacts }) => {
+          calls += 1;
+          assert.equal(ownerUserId, 'alice');
+          assert.equal(artifacts.length, 2);
+          return [{ contentRef: 'work:image', ownerRevision: 1, currentOwnerRevision: 2 }, undefined];
+        },
+      },
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/artifacts', headers: AUTH });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(calls, 1);
+    assert.equal(body.workLineage, 'resolved');
+    assert.deepEqual(body.artifacts[0].work, {
+      contentRef: 'work:image',
+      ownerRevision: 1,
+      currentOwnerRevision: 2,
+    });
+    assert.equal('work' in body.artifacts[1], false);
+  });
+
+  it('fails the lineage projection closed when the owner batch read is incomplete', async () => {
+    app = await makeApp({
+      threads: [T1],
+      threadMessages: { T1: messagesT1 },
+      artifactWorkLineage: {
+        resolve: async () => {
+          throw new Error('owner manifest read incomplete');
+        },
+      },
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/artifacts', headers: AUTH });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.workLineage, 'unavailable');
+    assert.ok(body.artifacts.every((candidate) => !('work' in candidate)));
   });
 
   // --- ?cat= filter ---

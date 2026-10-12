@@ -248,6 +248,45 @@ describe('F321 A1c owner-scoped Taste observatory read model', () => {
     assert.equal(item.namedDelivery.trigger, 'f315_review');
     assert.equal(item.namedDelivery.counts.presented, 1);
   });
+  it('counts a visible multi-dimension source bundle once and excludes foreign or private-only hints', async () => {
+    const { TasteObservatoryReader } = await import('../dist/domains/memory/taste/TasteObservatoryReader.js');
+    writeFileSync(
+      join(root, 'docs/taste/vignettes/honesty.md'),
+      vignette('public', 'PUBLIC HONESTY').replace('dimension: visual-quality', 'dimension: cognitive-honesty'),
+    );
+    writeFileSync(
+      join(root, PRIVATE_PATH),
+      vignette('sensitive', 'PRIVATE DIMENSION').replace('dimension: visual-quality', 'dimension: relationship-stance'),
+    );
+    store.append(
+      cue('presented', { cueId: 'multi', sourceAnchor: 'taste-dimensions:visual-quality,cognitive-honesty' }),
+    );
+    store.append(cue('drilled', { cueId: 'multi', sourceAnchor: 'taste-dimensions:visual-quality,cognitive-honesty' }));
+    store.append(cue('presented', { cueId: 'private', sourceAnchor: 'taste-dimensions:relationship-stance' }));
+    store.append(
+      cue('presented', {
+        cueId: 'foreign',
+        sourceAnchor: 'taste-dimensions:visual-quality',
+        scope: { ownerUserId: 'other', threadId: 'foreign', invocationId: 'foreign' },
+      }),
+    );
+    const reader = new TasteObservatoryReader(
+      db,
+      { canonicalRoot: () => root },
+      'owner',
+      { get: async () => null },
+      { get: async () => null },
+      { get: async () => null },
+    );
+    const body = await reader.read('owner', { includePrivate: false, includeDimensionHints: true });
+    assert.deepEqual(body.dimensionHints, { presented: 1, drilled: 1, applied: 0, dismissed: 0 });
+    assert.equal(body.constellations.length, 2);
+    assert.ok(body.constellations.every((item) => item.hints.presented === 1));
+    assert.deepEqual(
+      (await reader.read('owner', { includePrivate: true, includeDimensionHints: true })).dimensionHints,
+      { presented: 2, drilled: 1, applied: 0, dismissed: 0 },
+    );
+  });
 
   it('does not trust a child turn whose parent belongs to another owner', async () => {
     children.set('child-foreign-parent', {

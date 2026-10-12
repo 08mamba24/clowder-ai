@@ -6,6 +6,7 @@ import type {
   QueueTargetOutcome,
 } from '@cat-cafe/shared';
 import {
+  collectiveSourceIdentitySchema,
   FRESHNESS_CARRIER_DELIVERY_SEMANTICS,
   FRESHNESS_CARRIER_PROVIDERS,
   FRESHNESS_CARRIERS,
@@ -17,8 +18,34 @@ import {
 } from '../../../../ball-custody/ActionSuccessorAdmissionContract.js';
 import type { TypedWaitCustodyGuard } from '../../../../ball-custody/TypedWaitCustodyGuard.js';
 import { normalizeOwnerAuthProvenance, type OwnerAuthProvenance } from '../../owner-auth-provenance.js';
+import type { StoredMessage } from './MessageStore.js';
 
 export type QueuedMessageCustodyStatus = 'queued' | 'processing' | 'terminal';
+
+/** Shared persistent boundary: a Service reply is usable only for its public durable source. */
+export function assertCollectivePublicReplyBindings(
+  message: Pick<StoredMessage, 'id' | 'userId' | 'catId' | 'source'>,
+  custody: QueuedMessageCustody,
+): void {
+  for (const [catId, outcome] of Object.entries(custody.targetOutcomeByCatId ?? {})) {
+    const witness = outcome.consumption;
+    if (witness?.kind !== 'collective_public_reply') continue;
+    const source = collectiveSourceIdentitySchema.safeParse(message.source?.meta?.participation);
+    if (
+      custody.executionScope !== 'collective-participation' ||
+      custody.ownerUserId !== message.userId ||
+      message.catId !== null ||
+      message.source?.connector !== 'collective' ||
+      !source.success ||
+      source.data.catId !== catId ||
+      witness.sourceMessageId !== message.id ||
+      witness.sourceEventId !== source.data.eventId ||
+      !witness.acceptedEventId?.trim() ||
+      outcome.disposition !== 'responded'
+    )
+      throw new Error('public reply witness must bind the exact durable source');
+  }
+}
 
 export interface QueueBodyExposure {
   targetCatId: string;
@@ -579,6 +606,15 @@ function assertTargetOutcomes(
         ) {
           throw new Error('invalid target terminal consumption witness');
         }
+      } else if (outcome.consumption.kind === 'collective_public_reply') {
+        if (
+          custody.executionScope !== 'collective-participation' ||
+          outcome.disposition !== 'responded' ||
+          !outcome.consumption.sourceMessageId?.trim() ||
+          !outcome.consumption.sourceEventId?.trim() ||
+          !outcome.consumption.acceptedEventId?.trim()
+        )
+          throw new Error('invalid source-bound public reply witness');
       } else if (outcome.consumption.kind === 'source_response') {
         const outputMessageIds = outcome.consumption.outputMessageIds;
         if (
@@ -1155,7 +1191,19 @@ export function assertQueueCustodyTransition(current: QueuedMessageCustody, inpu
   if (input.next.status === 'terminal' && input.deliveredAt === undefined) {
     const withdrawn = new Set<string>(input.next.withdrawnByCatIds ?? []);
     const handled = new Set<string>(input.next.handledByCatIds);
-    const allTargetsSettled = input.next.allTargetCats.every((catId) => withdrawn.has(catId) || handled.has(catId));
+    const allTargetsSettled = input.next.allTargetCats.every(
+      (catId) =>
+        withdrawn.has(catId) ||
+        handled.has(catId) ||
+        // An explicit immutable map proves this existing failure never had a
+        // carrier to withdraw. Legacy or admitted failures still need settlement.
+        (current.carrierByTargetCatId !== undefined &&
+          current.carrierByTargetCatId[catId] === undefined &&
+          current.failedByCatIds.includes(catId) &&
+          !current.pendingTargetCats.includes(catId) &&
+          input.next.failedByCatIds.includes(catId) &&
+          !input.next.pendingTargetCats.includes(catId)),
+    );
     const exactLateHandled = input.next.handledByCatIds.filter(
       (catId) =>
         !current.handledByCatIds.includes(catId) &&

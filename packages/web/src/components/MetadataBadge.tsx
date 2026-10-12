@@ -135,6 +135,16 @@ export function MetadataBadge({ metadata }: MetadataBadgeProps) {
       className="mt-1 text-micro text-cafe-muted hover:text-cafe-secondary transition-colors cursor-pointer select-none flex items-center gap-0 flex-wrap text-left"
     >
       <ModelLabel metadata={metadata} />
+      {metadata.executionAccount && (
+        <span
+          className="ml-1"
+          title={`${metadata.executionAccount.identity?.email ?? ''} · ${metadata.executionAccount.accountRef}`}
+          data-execution-account={metadata.executionAccount.accountRef}
+        >
+          {' '}
+          · {metadata.model === 'realtime' ? 'Realtime 执行账号' : '执行账号'}：{metadata.executionAccount.displayName}
+        </span>
+      )}
 
       {hasTokens && (
         <span className="ml-1 animate-fade-in">

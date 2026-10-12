@@ -52,3 +52,23 @@ test('V51 survives restart, rolls back atomically on failure, and leaves canonic
   assert.equal(new DynamicTaskStore(db).getAll().length, 1, 'older read path still accepts the database');
   db.close();
 });
+
+test('no-spawn admission recovery updates an existing index without rewriting task bytes', () => {
+  const db = new Database(':memory:');
+  try {
+    applyMigrations(db);
+    db.exec(`DROP INDEX idx_dynamic_managed_candidates;
+      DELETE FROM schema_version WHERE version > 62;
+      CREATE INDEX idx_dynamic_managed_candidates ON dynamic_task_defs(created_at DESC)
+        WHERE template_id = 'reminder' AND json_extract(params_json, '$.holdLifecycle.managedCommand.state') = 'command_running';`);
+    const before = db.prepare('SELECT * FROM dynamic_task_defs').all();
+    applyMigrations(db);
+    assert.match(
+      db.prepare("SELECT sql FROM sqlite_master WHERE name='idx_dynamic_managed_candidates'").get().sql,
+      /not_started/,
+    );
+    assert.deepEqual(db.prepare('SELECT * FROM dynamic_task_defs').all(), before);
+  } finally {
+    db.close();
+  }
+});

@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import Fastify from 'fastify';
+import { makeQueueCancellationFixture } from './helpers/queue-cancellation-fixture.js';
 import { makeQueuedMessageCustody } from './helpers/queued-message-custody.js';
 
 const { InvocationQueue } = await import('../dist/domains/cats/services/agents/invocation/InvocationQueue.js');
@@ -156,6 +157,48 @@ describe('Queue Management API', () => {
   afterEach(async () => {
     if (app) await app.close();
   });
+
+  for (const operation of ['withdraw', 'clear']) {
+    it(`${operation} preserves an unadmitted failure while withdrawing the real failed carrier`, async () => {
+      const fixture = makeQueueCancellationFixture();
+      const entry = fixture.entries[0];
+      fixture.queue.markQueuedFailedForCatAcrossUsers('t1', 'codex', 'failed-invocation', new Set([entry.id]));
+      await fixture.coordinator.persistEntry(fixture.queue.getEntrySnapshot('t1', 'user-a', entry.id));
+      const before = fixture.store.getById(fixture.message.id).queueCustody;
+      const failedAttempt = before.targetAttempts.find((attempt) => attempt.targetCatId === 'opus');
+      assert.equal(failedAttempt.state, 'failed');
+      assert.ok(before.failedByCatIds.includes('codex'));
+      await app.close();
+      deps = buildDeps({
+        messageStore: fixture.store,
+        invocationQueue: fixture.queue,
+        queueCustodyCoordinator: fixture.coordinator,
+      });
+      const { queueRoutes } = await import('../dist/routes/queue.js');
+      app = Fastify();
+      await app.register(queueRoutes, deps);
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/api/threads/t1/queue${operation === 'withdraw' ? `/${entry.id}` : ''}`,
+        headers: { 'x-cat-cafe-user': 'user-a' },
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.equal(fixture.queue.getEntrySnapshot('t1', 'user-a', entry.id), null);
+      const stored = fixture.store.getById(fixture.message.id);
+      assert.equal(stored.content, fixture.message.content);
+      assert.equal(stored.deliveryStatus, 'queued');
+      assert.equal(stored.queueCustody.status, 'terminal');
+      assert.deepEqual(stored.queueCustody.pendingTargetCats, []);
+      assert.deepEqual(stored.queueCustody.withdrawnByCatIds, ['codex']);
+      assert.deepEqual(stored.queueCustody.failedByCatIds, ['opus']);
+      assert.deepEqual(stored.queueCustody.carrierByTargetCatId, before.carrierByTargetCatId);
+      assert.deepEqual(
+        stored.queueCustody.targetAttempts.find((attempt) => attempt.targetCatId === 'opus'),
+        failedAttempt,
+      );
+    });
+  }
 
   // ── Auth ──
 

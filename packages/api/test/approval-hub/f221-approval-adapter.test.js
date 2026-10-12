@@ -115,6 +115,25 @@ describe('F221ApprovalAdapter', () => {
     assert.match(buildTasteProposalCardBlock(proposal).bodyMarkdown, /猫的判断（假设）：/);
   });
 
+  it('labels a source-bound correction distinctly and exposes its revision-bound patch', async () => {
+    const correctionTarget = {
+      sourceAnchor: 'taste-vignette:docs/taste/vignettes/example.md',
+      expectedRevision: `sha256:${'a'.repeat(64)}`,
+      reason: 'outdated',
+      suggestedPatch: { takeaway: '更新后的判断。' },
+    };
+    const proposal = createAnchored({ correctionTarget });
+    const [item] = await adapter.listPending('user-1');
+    assert.match(item.summary, /^Taste correction/u);
+    assert.deepEqual(item.detail.correction, {
+      expectedRevision: correctionTarget.expectedRevision,
+      reason: correctionTarget.reason,
+      suggestedPatch: correctionTarget.suggestedPatch,
+    });
+    const { buildTasteProposalCardBlock } = await import('../../dist/routes/taste-proposal-card-block.js');
+    assert.equal(buildTasteProposalCardBlock(proposal).title, '提议更正品味记忆');
+  });
+
   it('summary includes dimension and truncated quote', async () => {
     createAnchored();
     const [item] = await adapter.listPending('user-1');

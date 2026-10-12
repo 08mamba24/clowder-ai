@@ -15,30 +15,27 @@ export function RowTip({
 }): ReactElement {
   if (!enabled) return children;
   return (
-    <AppTooltip label={label} side="bottom">
+    <AppTooltip label={label} side="right">
       {children}
     </AppTooltip>
   );
 }
 
 /**
- * The row shows a clamped title; the tip is how the FULL title, the roster, the path and the time stay
- * recoverable by keyboard focus, long-press and hover (AC-A2 / B2) once the native `title` is gone.
+ * Recover only a clipped title. Visible row facts do not need a second metadata card.
  */
 export function RowTitleTip({
   enabled,
   title,
-  lines,
   children,
 }: {
   enabled: boolean;
   title: string;
-  lines: readonly string[];
   children: ReactElement;
 }): ReactElement {
   if (!enabled) return children;
   return (
-    <AppTooltip label={title} detail={lines.join('\n')} side="bottom" multiline>
+    <AppTooltip label={title} side="right" intent="content" onlyWhenTruncated multiline>
       {children}
     </AppTooltip>
   );

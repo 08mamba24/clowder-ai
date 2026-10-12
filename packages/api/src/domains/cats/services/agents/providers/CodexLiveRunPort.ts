@@ -2,15 +2,23 @@ import type { FreshnessReadableMessage } from '../../freshness/checkFreshnessFor
 import type { CodexAppServerJsonObject } from './CodexAppServerEventMapper.js';
 import type { CodexAppServerNativeRpcClient } from './CodexAppServerNativeRpc.js';
 
+export type CodexLiveContextKind =
+  | 'inbox_notice'
+  | 'meeting_context'
+  | 'recovery_context'
+  | 'page_action_result'
+  | 'owner_voice_context';
+
 export interface CodexLiveNativeClient extends CodexAppServerNativeRpcClient {
   submitText(text: string, sourceMessageId: string): Promise<string>;
   /** Only callable while the native notification loop owns a verified safe boundary. */
   submitContextAtBoundary?(
     text: string,
     sourceRefs: readonly string[],
-    contextKind: 'inbox_notice' | 'meeting_context' | 'recovery_context',
+    contextKind: CodexLiveContextKind,
     signal: AbortSignal,
     authorize: () => Promise<boolean>,
+    clientUserMessageId?: string,
   ): Promise<string>;
   wakeBoundary?(): void;
 }
@@ -39,6 +47,10 @@ export interface CodexLiveRunPort {
   /** Exact native events drive credential projections and segment receipts, not a new task ledger. */
   observe(message: CodexAppServerJsonObject): Promise<void>;
   hasPendingInboxWake?(): boolean;
+  /** Only a Host-owned settled page receipt can request a wake while its native turn is active. */
+  hasPendingPageResultWake?(): boolean;
+  /** A Host-persisted current owner utterance may update active deep work; it cannot start new work. */
+  hasPendingOwnerVoiceWake?(): boolean;
   onSafeBoundary?(kind: 'idle' | 'tool_complete' | 'turn_complete'): Promise<void>;
 }
 

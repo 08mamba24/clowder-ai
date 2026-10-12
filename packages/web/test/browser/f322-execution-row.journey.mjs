@@ -26,16 +26,41 @@ const measurements = [];
 let browser, script, css;
 const startedIn = process.cwd();
 
-const cats = ['opus', 'codex', 'gemini'].map((id, n) => ({
-  id,
-  displayName: ['宪宪', '砚砚', '烁烁'][n],
-  breedId: ['ragdoll', 'maine-coon', 'siamese'][n],
-  avatar: `/avatars/${id}.png`,
-  color: { primary: ['#9B7EBD', '#5B8C5A', '#5B9BD5'][n], secondary: '#eeeeee' },
-  mentionPatterns: [`@${id}`],
-  clientId: 'fixture',
-  defaultModel: 'fixture',
-}));
+const dispositionSnapshot = (thread = null) => ({
+  productDefault: 'next_work',
+  global: null,
+  thread,
+  effective: thread ?? 'next_work',
+  source: thread ? 'thread' : 'product',
+  onboardingSeen: true,
+});
+
+const cats = [
+  ...['opus', 'codex', 'gemini'].map((id, n) => ({
+    id,
+    displayName: ['宪宪', '砚砚', '烁烁'][n],
+    nickname: ['宪宪', '砚砚', '烁烁'][n],
+    ...(id === 'opus' ? { variantLabel: 'Opus 5.5' } : {}),
+    breedId: ['ragdoll', 'maine-coon', 'siamese'][n],
+    avatar: `/avatars/${id}.png`,
+    color: { primary: ['#9B7EBD', '#5B8C5A', '#5B9BD5'][n], secondary: '#eeeeee' },
+    mentionPatterns: [`@${id}`, `@${['宪宪', '砚砚', '烁烁'][n]}`],
+    clientId: 'fixture',
+    defaultModel: 'fixture',
+  })),
+  {
+    id: 'sonnet',
+    displayName: '宪宪',
+    nickname: '宪宪',
+    variantLabel: 'Sonnet 5.5',
+    breedId: 'ragdoll',
+    avatar: '/avatars/sonnet.png',
+    color: { primary: '#7C3AED', secondary: '#eeeeee' },
+    mentionPatterns: ['@sonnet', '@宪宪'],
+    clientId: 'fixture',
+    defaultModel: 'fixture',
+  },
+];
 
 before(async () => {
   process.chdir(webRoot);
@@ -93,6 +118,7 @@ async function open(
     shell = 'v2',
     mount = false,
     ready = '[data-testid="execution-row"]',
+    catalog = cats,
   } = {},
 ) {
   const page = await browser.newPage({ viewport: { width, height: 640 } });
@@ -122,7 +148,7 @@ async function open(
       return handler.fulfill({ contentType: 'image/png', body: readFileSync(existsSync(file) ? file : fallback) });
     }
     if (url.pathname === '/api/cats')
-      return handler.fulfill({ contentType: 'application/json', body: JSON.stringify({ cats }) });
+      return handler.fulfill({ contentType: 'application/json', body: JSON.stringify({ cats: catalog }) });
     // Ambient answers the app asks for on boot; they are not part of what the row does, so they are not recorded.
     if (url.pathname === '/api/session')
       return handler.fulfill({ contentType: 'application/json', body: JSON.stringify({ userId: 'owner-1' }) });
@@ -179,14 +205,15 @@ function finish({ errors, unexpected }) {
 
 test('every state of the design renders its words in a fixed 36px row', async () => {
   const expected = {
-    working: /^宪宪 正在工作 \d+:\d{2}$/,
-    queue: /^宪宪 正在工作 \d+:\d{2} · 排队 2$/,
-    several: /^3 件在跑 · 排队 5$/,
+    working: /^宪宪（Opus 5\.5） 正在工作 \d+:\d{2}$/,
+    queue: /^宪宪（Opus 5\.5） 正在工作 \d+:\d{2} · 排队 2$/,
+    several: /^3 项运行中 · 排队 5$/,
     silent: /^没有动静 \d+:\d{2}$/,
     stopping: /^正在停止 \d+:\d{2}$/,
     blocked: /^全量门禁 · 不是你发起的，你不能停 \d+:\d{2}$/,
+    confirming: /^正在确认运行状态…$/,
     unverified: /^运行状态待确认$/,
-    stuck: /^1 件处理卡住 · 排队 2$/,
+    stuck: /^1 项处理受阻 · 排队 2$/,
     paused: /^排队已暂停 · 3 条$/,
   };
   for (const [scene, pattern] of Object.entries(expected)) {
@@ -344,8 +371,10 @@ test('paused: 继续 on the row posts queue/next; the reason is kept', async () 
  */
 const composerControls = (page) =>
   page.evaluate(() => {
-    const stops = [...document.querySelectorAll('button[aria-label="Stop generation"]')];
-    const mics = [...document.querySelectorAll('button[aria-label^="Start voice input"]')];
+    const stops = [...document.querySelectorAll('button[aria-label="Stop generation"], button[aria-label="停止生成"]')];
+    const mics = [
+      ...document.querySelectorAll('button[aria-label^="Start voice input"], button[aria-label="语音输入"]'),
+    ];
     const before = mics.length
       ? stops.filter((stop) => Boolean(stop.compareDocumentPosition(mics[0]) & Node.DOCUMENT_POSITION_FOLLOWING)).length
       : -1;
@@ -369,6 +398,9 @@ test('mounted, new shell, a cat running, empty draft: the one row and the title 
   assert.equal(await page.locator('[data-testid="thread-title-menu-toggle"]').count(), 1, 'the title ⌄');
   assert.equal(await page.locator('[data-testid="active-invocation-banner"]').count(), 0, 'no "replying… cancel" bar');
   assert.equal(await page.getByText('执行中', { exact: true }).count(), 0, 'no old execution bar');
+  await page.focus('textarea');
+  await page.waitForSelector('button[aria-label="语音输入"]');
+  await page.waitForSelector('button[aria-label="停止生成"]');
   assert.deepEqual(await composerControls(page), { stop: 1, mic: 1, stopsBeforeMic: 0 }, 'mic, then the stop last');
   // The row and its ■ sit in the composer card's column (same left edge and width), not across the whole pane.
   const columns = await page.evaluate(() => {
@@ -380,9 +412,9 @@ test('mounted, new shell, a cat running, empty draft: the one row and the title 
   });
   assert.deepEqual(columns.row, columns.composer, `the row shares the composer's column: ${JSON.stringify(columns)}`);
   // The stop is a live control, not a faded one: it is enabled by the time the shot is taken.
-  await page.waitForSelector('button[aria-label="Stop generation"]:not([disabled])');
+  await page.waitForSelector('button[aria-label="停止生成"]:not([disabled])');
   await shot(page, 'v2-mounted-empty');
-  await page.click('button[aria-label="Stop generation"]');
+  await page.click('button[aria-label="停止生成"]');
   await waitForCall(session, (c) => c.key === `POST /api/threads/${THREAD}/executions/live/exec-opus/cancel`);
   assert.deepEqual(session.calls.find((c) => c.key.endsWith('/exec-opus/cancel')).body, { catId: 'opus' });
   finish(session);
@@ -394,10 +426,391 @@ test('mounted, new shell, text in the draft: the composer has no stop; queue-sen
   const { page } = session;
   await page.fill('textarea', '下一件工作：看一下这个');
   await page.waitForSelector('button[aria-label="排队发送"]');
-  assert.equal(await page.locator('button[aria-label="Stop generation"]').count(), 0, 'no composer stop with text');
+  assert.equal(
+    await page.locator('button[aria-label="Stop generation"], button[aria-label="停止生成"]').count(),
+    0,
+    'no composer stop with text',
+  );
   await shot(page, 'v2-mounted-typed');
   await page.click('[data-testid="execution-row-stop"] button');
   await waitForCall(session, (c) => c.key === `POST /api/threads/${THREAD}/executions/live/exec-opus/cancel`);
+  finish(session);
+  await page.close();
+});
+
+test('mounted, new shell: recipient preview follows visible @ text and preferred cat lives only in +', async () => {
+  const snapshotNow = Date.now();
+  let preferredCats = ['opus'];
+  const session = await open('working', {
+    mount: true,
+    respond: (call) => {
+      if (call.key === `GET /api/config/conversation-view?threadId=${THREAD}`) {
+        return { status: 200, body: { stored: null, effective: { mode: 'group' }, source: 'product' } };
+      }
+      if (call.key === 'POST /api/routing/preview') {
+        const explicit = call.body.content.startsWith('@砚砚 ');
+        return {
+          status: 200,
+          body: {
+            targetCats: [explicit ? 'codex' : 'opus'],
+            reason: { kind: explicit ? 'current_message_mentions' : 'recent_replier' },
+          },
+        };
+      }
+      if (call.key === `PATCH /api/threads/${THREAD}`) {
+        preferredCats = [...call.body.preferredCats];
+        return { status: 200, body: { id: THREAD, preferredCats } };
+      }
+      if (call.key === 'GET /api/threads?view=sidebar') {
+        return {
+          status: 200,
+          body: {
+            threads: [
+              {
+                id: THREAD,
+                title: 'preview',
+                projectPath: '/preview',
+                preferredCats,
+                participants: ['opus'],
+                labels: [],
+                createdBy: 'owner-1',
+                createdAt: snapshotNow - 300_000,
+                lastActiveAt: snapshotNow,
+                pinned: false,
+                favorited: false,
+              },
+            ],
+          },
+        };
+      }
+      return null;
+    },
+  });
+  const { page } = session;
+  await waitForCall(session, (call) => call.key === 'POST /api/routing/preview');
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="composer-routing-preview"]')?.textContent?.includes('宪宪'),
+  );
+  assert.match(
+    (await page.locator('[data-testid="composer-routing-preview"]').getAttribute('aria-label')) ?? '',
+    /宪宪 · Opus 5\.5最近回过你/,
+  );
+
+  await page.click('[data-testid="composer-routing-preview"]');
+  await page.click('[data-testid="composer-recipient-codex"]');
+  await page.waitForFunction(() => document.querySelector('textarea')?.value === '@砚砚 ');
+  await waitForCall(session, (call) => call.key === 'POST /api/routing/preview' && call.body.content === '@砚砚 ');
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="composer-routing-preview"]')?.textContent?.includes('砚砚'),
+  );
+  assert.match(
+    (await page.locator('[data-testid="composer-routing-preview"]').getAttribute('aria-label')) ?? '',
+    /这条里 @ 了砚砚/,
+  );
+
+  const routingCallCount = () => session.calls.filter((call) => call.key === 'POST /api/routing/preview').length;
+  const beforeTyping = routingCallCount();
+  await page.fill('textarea', '@砚砚 a');
+  assert.match(
+    (await page.locator('[data-testid="composer-routing-preview"]').textContent()) ?? '',
+    /砚砚/,
+    'ordinary typing keeps the last resolved recipient instead of flashing Checking',
+  );
+  await waitForCall(session, () => routingCallCount() === beforeTyping + 1);
+
+  await page.dispatchEvent('textarea', 'compositionstart');
+  await page.fill('textarea', '@砚砚 ab');
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(routingCallCount(), beforeTyping + 1, 'IME composition does not refresh routing');
+  assert.match(
+    (await page.locator('[data-testid="composer-routing-preview"]').textContent()) ?? '',
+    /砚砚/,
+    'IME composition keeps the resolved recipient and avatar stable',
+  );
+  await page.dispatchEvent('textarea', 'compositionend');
+  await waitForCall(session, () => routingCallCount() === beforeTyping + 2);
+
+  await page.click('button[aria-controls="composer-add-menu"]');
+  await page.waitForSelector('[data-testid="composer-preferred-cat-section"]');
+  assert.match(await text(page, 'composer-preferred-cat-section'), /这条对话 · 没 @ 时先找谁/);
+  assert.match(await text(page, 'composer-preferred-cat-section'), /只在还没有猫回过话时用上/);
+  await page.click('[data-testid="composer-preferred-cat-toggle"]');
+  await page.click('[data-testid="composer-preferred-cat-codex"]');
+  await waitForCall(session, (call) => call.key === `PATCH /api/threads/${THREAD}`);
+  assert.deepEqual(session.calls.find((call) => call.key === `PATCH /api/threads/${THREAD}`).body, {
+    preferredCats: ['opus', 'codex'],
+  });
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="composer-preferred-cat-toggle"]')?.textContent === '首选猫 · 2',
+  );
+  assert.equal(await page.locator('[data-testid="composer-preferred-cat-toggle"]').textContent(), '首选猫 · 2');
+  assert.equal(await page.locator('[data-testid="composer-preferred-cat-opus"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('[data-testid="composer-preferred-cat-codex"]').getAttribute('aria-pressed'), 'true');
+  await page.click('[data-testid="composer-preferred-cat-gemini"]');
+  await waitForCall(
+    session,
+    () => session.calls.filter((call) => call.key === `PATCH /api/threads/${THREAD}`).length === 2,
+  );
+  const preferredCatWrites = session.calls.filter((call) => call.key === `PATCH /api/threads/${THREAD}`);
+  assert.deepEqual(preferredCatWrites[1].body, { preferredCats: ['opus', 'codex', 'gemini'] });
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="composer-preferred-cat-toggle"]')?.textContent === '首选猫 · 3',
+  );
+  assert.equal(await page.locator('[data-testid="composer-preferred-cat-toggle"]').textContent(), '首选猫 · 3');
+  assert.equal(
+    await page.locator('[data-testid="composer-preferred-cat-gemini"]').getAttribute('aria-pressed'),
+    'true',
+  );
+  assert.equal(
+    await page.locator('[data-testid="thread-cat-pill"]').count(),
+    0,
+    'composer has no old preferred-cat pill',
+  );
+  await shot(page, 'v2-recipient-preview');
+  if (evidenceDir) {
+    writeFileSync(
+      path.join(evidenceDir, 'v2-recipient-preview-requests.json'),
+      `${JSON.stringify(session.calls, null, 2)}\n`,
+    );
+  }
+  finish(session);
+  await page.close();
+});
+
+test('the complete multi-recipient identity is measured and hidden atomically when it does not fit', async () => {
+  for (const width of [900, 462]) {
+    const session = await open('working', {
+      mount: true,
+      width,
+      respond: (call) => {
+        if (call.key === `GET /api/config/conversation-view?threadId=${THREAD}`) {
+          return { status: 200, body: { stored: null, effective: { mode: 'group' }, source: 'product' } };
+        }
+        if (call.key === 'POST /api/routing/preview') {
+          return {
+            status: 200,
+            body: { targetCats: ['opus', 'sonnet'], reason: { kind: 'current_message_mentions' } },
+          };
+        }
+        return null;
+      },
+    });
+    await waitForCall(session, (call) => call.key === 'POST /api/routing/preview');
+    await session.page.waitForFunction(() =>
+      document
+        .querySelector('[data-testid="composer-routing-preview"]')
+        ?.getAttribute('aria-label')
+        ?.includes('Sonnet 5.5'),
+    );
+
+    const identity = await session.page.evaluate(() => {
+      const name = document.querySelector('[data-testid="composer-routing-name"]');
+      const style = name ? getComputedStyle(name) : null;
+      return {
+        available: name?.clientWidth ?? 0,
+        required: name?.scrollWidth ?? 0,
+        visible: style?.display !== 'none' && style?.visibility !== 'hidden',
+        aria: document.querySelector('[data-testid="composer-routing-preview"]')?.getAttribute('aria-label') ?? '',
+        avatarCount: document.querySelectorAll('[data-testid="composer-routing-preview"] img').length,
+      };
+    });
+    assert.ok(identity.required > identity.available, `${width}px: fixture must exercise an overflowing full identity`);
+    assert.equal(identity.visible, false, `${width}px: the full identity is hidden instead of clipped`);
+    assert.match(identity.aria, /宪宪 · Opus 5\.5、宪宪 · Sonnet 5\.5/);
+    assert.equal(identity.avatarCount, 2, `${width}px: avatars still identify the recipients`);
+
+    await session.page.hover('[data-testid="composer-routing-preview"]');
+    const tooltip = session.page.locator('[data-testid="app-tooltip"]');
+    await tooltip.waitFor();
+    assert.match((await tooltip.textContent()) ?? '', /宪宪 · Opus 5\.5、宪宪 · Sonnet 5\.5/);
+    await shot(session.page, `multiple-recipient-${width}`);
+    finish(session);
+    await session.page.close();
+  }
+});
+
+test('the recipient menu disables a catalog entry that has no unique registered mention', async () => {
+  const ambiguousCatalog = cats
+    .filter((cat) => cat.id === 'opus' || cat.id === 'sonnet')
+    .map((cat) => ({ ...cat, mentionPatterns: ['@宪宪'] }));
+  const session = await open('working', {
+    mount: true,
+    catalog: ambiguousCatalog,
+    respond: (call) => {
+      if (call.key === `GET /api/config/conversation-view?threadId=${THREAD}`) {
+        return { status: 200, body: { stored: null, effective: { mode: 'group' }, source: 'product' } };
+      }
+      if (call.key === 'POST /api/routing/preview') {
+        return { status: 200, body: { targetCats: ['opus'], reason: { kind: 'recent_replier' } } };
+      }
+      return null;
+    },
+  });
+  await waitForCall(session, (call) => call.key === 'POST /api/routing/preview');
+  await session.page.click('[data-testid="composer-routing-preview"]');
+
+  const opus = session.page.locator('[data-testid="composer-recipient-opus"]');
+  assert.equal(await opus.isDisabled(), true);
+  assert.match((await opus.textContent()) ?? '', /没有唯一 @ 名称/);
+  await opus.evaluate((button) => button.click());
+  assert.equal(await session.page.locator('textarea').inputValue(), '', 'a disabled row cannot insert a guessed token');
+  await shot(session.page, 'recipient-no-unique-mention');
+  finish(session);
+  await session.page.close();
+});
+
+test('a 430px chat column keeps one useful status, icon actions, and no partial recipient name', async () => {
+  for (const [scene, compact, action] of [
+    ['working', '在工作', 'stop'],
+    ['paused', '已暂停', 'resume'],
+    ['silent', '没动静', 'force-reset'],
+  ]) {
+    const session = await open(scene, { width: 462 });
+    const layout = await session.page.evaluate((actionName) => {
+      const full = document.querySelector('[data-testid="execution-row-text"]');
+      const compactNode = document.querySelector('[data-testid="execution-row-text-compact"]');
+      const label = document.querySelector(`[data-testid="execution-row-${actionName}-label"]`);
+      const icon = document.querySelector(`[data-testid="execution-row-${actionName}-icon"]`);
+      const surface = document.querySelector('[data-testid="execution-row-surface"]');
+      return {
+        fullDisplay: getComputedStyle(full).display,
+        compactDisplay: getComputedStyle(compactNode).display,
+        compactText: compactNode.textContent.trim(),
+        actionLabelDisplay: getComputedStyle(label).display,
+        actionIconDisplay: getComputedStyle(icon).display,
+        noOverflow: surface.scrollWidth <= surface.clientWidth,
+      };
+    }, action);
+    assert.equal(layout.fullDisplay, 'none', `${scene}: long status yields first`);
+    assert.notEqual(layout.compactDisplay, 'none', `${scene}: compact status stays visible`);
+    assert.equal(layout.compactText, compact, `${scene}: compact status still explains the state`);
+    assert.equal(layout.actionLabelDisplay, 'none', `${scene}: action words yield before status`);
+    assert.notEqual(layout.actionIconDisplay, 'none', `${scene}: action remains reachable as an icon`);
+    assert.equal(layout.noOverflow, true, `${scene}: row stays inside the narrow column`);
+    await shot(session.page, `narrow-${scene}`);
+    finish(session);
+    await session.page.close();
+  }
+
+  const recipient = await open('working', {
+    mount: true,
+    width: 462,
+    respond: (call) => {
+      if (call.key === `GET /api/config/conversation-view?threadId=${THREAD}`) {
+        return { status: 200, body: { stored: null, effective: { mode: 'group' }, source: 'product' } };
+      }
+      if (call.key === 'POST /api/routing/preview') {
+        return { status: 200, body: { targetCats: ['opus'], reason: { kind: 'recent_replier' } } };
+      }
+      return null;
+    },
+  });
+  await waitForCall(recipient, (call) => call.key === 'POST /api/routing/preview');
+  await recipient.page.waitForFunction(() =>
+    document
+      .querySelector('[data-testid="composer-routing-preview"]')
+      ?.getAttribute('aria-label')
+      ?.includes('Opus 5.5'),
+  );
+  const recipientLayout = await recipient.page.evaluate(() => {
+    const name = document.querySelector('[data-testid="composer-routing-name"]');
+    const trigger = document.querySelector('[data-testid="composer-routing-preview"]');
+    const context = document.querySelector('[data-testid="chat-composer-context"]');
+    const composer = document.querySelector('[data-testid="chat-input-composer-row"]');
+    const nameBox = name?.getBoundingClientRect();
+    const triggerBox = trigger?.getBoundingClientRect();
+    return {
+      nameDisplay: name ? getComputedStyle(name).display : null,
+      nameVisibility: name ? getComputedStyle(name).visibility : null,
+      nameText: name?.textContent?.trim() ?? '',
+      nameFits:
+        Boolean(name && nameBox && triggerBox) &&
+        name.scrollWidth <= name.clientWidth &&
+        nameBox.left >= triggerBox.left &&
+        nameBox.right <= triggerBox.right,
+      triggerNoOverflow: trigger ? trigger.scrollWidth <= trigger.clientWidth : false,
+      contextNoOverflow: context ? context.scrollWidth <= context.clientWidth : false,
+      composerNoOverflow: composer ? composer.scrollWidth <= composer.clientWidth : false,
+    };
+  });
+  assert.equal(recipientLayout.nameText, '宪宪 · Opus 5.5', 'recipient keeps the canonical whole label');
+  assert.equal(
+    recipientLayout.nameDisplay === 'none' || recipientLayout.nameVisibility === 'hidden' || recipientLayout.nameFits,
+    true,
+    'recipient name is either wholly visible or wholly absent',
+  );
+  assert.equal(recipientLayout.triggerNoOverflow, true, 'recipient control stays inside its own box');
+  assert.equal(recipientLayout.contextNoOverflow, true, 'project and recipient controls stay inside the context row');
+  assert.equal(recipientLayout.composerNoOverflow, true, 'the complete composer stays inside the narrow chat column');
+  await shot(recipient.page, 'narrow-recipient');
+  finish(recipient);
+  await recipient.page.close();
+});
+
+test('mounted, new shell: send mode lives first in +, saves for this conversation, and the row keeps its visual status cues', async () => {
+  let savedDisposition = null;
+  const session = await open('working', {
+    mount: true,
+    respond: (call) => {
+      if (call.key === `GET /api/config/message-disposition?threadId=${THREAD}`) {
+        return { status: 200, body: dispositionSnapshot(savedDisposition) };
+      }
+      if (call.key === 'PUT /api/config/message-disposition') {
+        savedDisposition = call.body.disposition;
+        return { status: 200, body: dispositionSnapshot(savedDisposition) };
+      }
+      return null;
+    },
+  });
+  const { page } = session;
+
+  await page.waitForSelector('textarea[placeholder="继续输入，成为下一件工作…"]');
+  assert.equal(
+    await page.locator('[data-testid="message-disposition-selector"]').count(),
+    0,
+    'v2 has no standalone chip',
+  );
+
+  const rowPresentation = await page.evaluate(() => {
+    const row = document.querySelector('[data-testid="execution-row"]');
+    const surface = document.querySelector('[data-testid="execution-row-surface"]');
+    const dot = document.querySelector('[data-testid="execution-row-dot"]');
+    const composer = document.querySelector('[data-testid="chat-input-composer-row"]');
+    return {
+      tone: row?.getAttribute('data-tone'),
+      surface: surface ? getComputedStyle(surface).backgroundColor : null,
+      composer: composer ? getComputedStyle(composer).backgroundColor : null,
+      dot: dot ? getComputedStyle(dot).backgroundColor : null,
+      avatars: document.querySelectorAll('[data-testid="execution-row-avatars"] img').length,
+      action: document.querySelector('[data-testid="execution-row-stop"]')?.textContent?.trim(),
+    };
+  });
+  assert.equal(rowPresentation.tone, 'info');
+  assert.notEqual(rowPresentation.surface, 'rgba(0, 0, 0, 0)', 'status surface is visibly tinted');
+  assert.notEqual(rowPresentation.surface, rowPresentation.composer, 'status surface differs from the composer paper');
+  assert.notEqual(rowPresentation.dot, 'rgba(0, 0, 0, 0)', 'status dot is visible');
+  assert.equal(rowPresentation.avatars, 1, 'the working cat stays visible');
+  assert.match(rowPresentation.action ?? '', /停止/, 'the live action stays visible');
+
+  await page.click('button[aria-controls="composer-add-menu"]');
+  await page.waitForSelector('[data-testid="message-disposition-menu-section"]');
+  const sectionComesFirst = await page.evaluate(() => {
+    const section = document.querySelector('[data-testid="message-disposition-menu-section"]');
+    const context = document.querySelector('[data-testid="composer-add-context"]');
+    return Boolean(section && context && section.compareDocumentPosition(context) & Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+  assert.equal(sectionComesFirst, true, 'send mode is the first + menu section');
+  assert.match(await text(page, 'message-disposition-menu-section'), /这条发出去后/);
+  await shot(page, 'v2-send-mode-menu');
+
+  await page.click('[data-disposition-option="continue_current"]');
+  await waitForCall(session, (call) => call.key === 'PUT /api/config/message-disposition');
+  const write = session.calls.find((call) => call.key === 'PUT /api/config/message-disposition');
+  assert.deepEqual(write.body, { scope: 'thread', threadId: THREAD, disposition: 'continue_current' });
+  await page.waitForSelector('textarea[placeholder="接着当前工作补充…"]');
+  assert.equal(await page.locator('[data-testid="composer-add-menu"]').count(), 0, 'a saved choice closes the menu');
+
+  measurements.push({ scene: 'v2-send-mode-menu', rowPresentation, write: write.body });
   finish(session);
   await page.close();
 });
@@ -435,6 +848,11 @@ test('mounted, classic shell, the same cat running: nothing moved — the old ba
   await page.waitForSelector('[data-testid="active-invocation-banner"]');
   assert.equal(await page.locator('[data-testid="execution-row"]').count(), 0, 'no new row in classic');
   assert.equal(await page.locator('[data-testid="thread-title-menu-toggle"]').count(), 0, 'no ⌄ in classic');
+  assert.equal(
+    await page.locator('[data-testid="message-disposition-selector"]').count(),
+    1,
+    'classic keeps its old chip',
+  );
   assert.deepEqual(
     await composerControls(page),
     { stop: 2, mic: 1, stopsBeforeMic: 2 },

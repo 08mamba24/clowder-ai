@@ -10,6 +10,7 @@ const registryPath = resolve(packageRoot, 'config/public-test-exclusions.json');
 const resolverModuleUrl = pathToFileURL(resolve(packageRoot, 'scripts/resolve-public-test-files.mjs')).href;
 
 const RECONCILED_EXCLUSIONS = [
+  '^test/alpha-browser-template-source\\.test\\.js$',
   '^(?:test/approval\\-hub/approval\\-publication\\-redis\\-contract\\.test\\.js|test/approval\\-hub/redis\\-dispatch\\-proposal\\-store\\.test\\.js|test/approval\\-hub/redis\\-entity\\-proposal\\-dedup\\.test\\.js|test/dossier\\-distillation\\-redis\\-store\\.test\\.js|test/dossier\\-observation\\-redis\\-store\\.test\\.js|test/f254\\-freshness\\-closure\\-redis\\-store\\.test\\.js|test/f254\\-freshness\\-supplement\\-redis\\-store\\.test\\.js|test/f254\\-output\\-commit\\-redis\\-race\\.test\\.js|test/issue1371\\-redis\\-convergence\\.test\\.js|test/person\\-memory\\-redis\\-store\\.test\\.js|test/plugin\\-messaging\\-redis\\-event\\-fencing\\.test\\.js|test/plugin\\-messaging\\-redis\\-snapshot\\.test\\.js|test/plugin\\-messaging\\-redis\\-stores\\.test\\.js|test/redis\\-action\\-successor\\-lease\\-store\\.test\\.js|test/redis\\-action\\-successor\\-task\\-lifecycle\\.test\\.js|test/redis\\-backlog\\-store\\.test\\.js|test/redis\\-community\\-bootstrap\\.test\\.js|test/redis\\-community\\-event\\-log\\.test\\.js|test/redis\\-community\\-pr\\-lifecycle\\.test\\.js|test/redis\\-community\\-projector\\.test\\.js|test/redis\\-concierge\\-config\\-store\\.test\\.js|test/redis\\-connector\\-binding\\-store\\.test\\.js|test/redis\\-f168\\-phase\\-b\\-awaiting\\-external\\.test\\.js|test/redis\\-grounding\\-sample\\-store\\.test\\.js|test/redis\\-invocation\\-record\\-store\\.test\\.js|test/redis\\-label\\-store\\.test\\.js|test/redis\\-limb\\-pairing\\-persistence\\.test\\.js|test/redis\\-message\\-delivery\\-atomicity\\.test\\.js|test/redis\\-message\\-delivery\\-contracts\\.test\\.js|test/redis\\-message\\-store\\.test\\.js|test/redis\\-pr\\-tracking\\-store\\.test\\.js|test/redis\\-profile\\-update\\-proposal\\-store\\.test\\.js|test/redis\\-proposal\\-store\\-finalize\\.test\\.js|test/redis\\-proposal\\-withdraw\\.test\\.js|test/redis\\-read\\-state\\-store\\.test\\.js|test/redis\\-repo\\-comment\\-cursor\\.test\\.js|test/redis\\-runtime\\-interaction\\-store\\.test\\.js|test/redis\\-runtime\\-session\\-store\\.test\\.js|test/redis\\-session\\-chain\\-store\\.test\\.js|test/redis\\-session\\-handoff\\-disposition\\.test\\.js|test/redis\\-session\\-handoff\\-proposal\\-store\\.test\\.js|test/redis\\-summary\\-store\\.test\\.js|test/redis\\-task\\-progress\\-store\\.test\\.js|test/redis\\-task\\-store\\.test\\.js|test/redis\\-taste\\-proposal\\-recovery\\.test\\.js|test/redis\\-test\\-db\\-namespace\\.test\\.js|test/redis\\-thread\\-store\\.test\\.js|test/redis\\-tip\\-telemetry\\-sink\\.test\\.js|test/redis\\-turn\\-execution\\-store\\.test\\.js|test/redis\\-unread\\-summary\\-visibility\\-cursor\\.test\\.js|test/signal\\-intake/redis\\-signal\\-intake\\.test\\.js|test/stores/redis\\-frustration\\-issue\\-store\\-window\\.test\\.js)$',
   '^test/redis-restore-script\\.test\\.js$',
   'workflow-sop-store',
@@ -38,6 +39,8 @@ const RECONCILED_EXCLUSIONS = [
   'harness-eval/measurement-decision-proof(?:-resolver)?\\.test',
   'harness-eval/publish-verdict-(?:capability-wakeup(?:-owner-scope)?|freshness|friction|measurement-validity-gate|memory|pipeline|task-outcome(?:-writeback-guard)?)\\.test',
   'harness-eval/legacy-reeval-case-(?:hub|migration)\\.test',
+  '^test/taste\\-takeaway\\-house\\-drafts\\.test\\.js$',
+  '^test/harness\\-eval/capability\\-evolution\\-measurement\\-binding\\-resolver\\.test\\.js$',
 ];
 
 async function listTestFiles(rootDir, relDir = '') {
@@ -68,6 +71,12 @@ test('registry retains only audited exclusions and drops re-admitted cases', asy
 
   assert.equal(registry.version, 2);
   assert.equal(registry.entries.length, RECONCILED_EXCLUSIONS.length);
+  const redisEntry = registry.entries.find((entry) => entry.id === 'redis');
+  assert.equal(
+    redisEntry.publicAudit.matchedFileCount,
+    redisEntry.audit.matchedFileCount + 1,
+    'public audit also counts the target-owned test/redis-task-progress-store.test.js',
+  );
   for (const entry of registry.entries) {
     assert.match(entry.audit.sourceHead, /^[a-f0-9]{40}$/);
     assert.match(entry.audit.publicHead, /^[a-f0-9]{40}$/);
@@ -342,4 +351,15 @@ test('portable synthetic memory regressions stay in the public selection', async
     assert.ok(resolved.selectedFiles.includes(file), `${file} needs no private memory fixtures`);
     assert.ok(!resolved.excludedFiles.includes(file), `${file} must remain public`);
   }
+});
+
+test('Alpha browser home integrations are classified precisely while portable scheduler contracts remain public', async () => {
+  const { resolvePublicTestFiles } = await import(resolverModuleUrl);
+  const resolved = await resolvePublicTestFiles({ packageRoot, configPath: registryPath });
+  const entry = resolved.registry.compiledEntries.find((item) => item.id === 'alpha-browser-source-runtime');
+  assert.equal(entry.category, 'source_only');
+  assert.equal(entry.audit.status, 'source_dependency_failure');
+  assert.deepEqual(entry.matchedFiles, ['test/alpha-browser-template-source.test.js']);
+  assert.ok(resolved.excludedFiles.includes('test/alpha-browser-template-source.test.js'));
+  assert.ok(resolved.selectedFiles.includes('test/alpha-browser-template.test.js'));
 });
