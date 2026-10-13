@@ -40,6 +40,8 @@ import { contentModificationReceiptOf } from './content-review/modification-rece
 import { TextMessageRequestStatus } from './content-review/TextMessageRequestStatus';
 import { DirectionPill } from './DirectionPill';
 import { EvidencePanel } from './EvidencePanel';
+import { getFreshnessNotice } from './freshness-notice';
+import { freshnessNoticeCopy } from './freshness-notice.shell-copy';
 import { GovernanceBlockedCard } from './GovernanceBlockedCard';
 import { ExternalLinkIcon } from './HubConfigIcons';
 import { describeMessageInvocationTrajectory, InvocationTrajectoryAnchor } from './InvocationTrajectoryAnchor';
@@ -74,6 +76,7 @@ import { RoutingPreflightActions } from './routing-context/RoutingPreflightActio
 import { SubexecutionActivity } from './SubexecutionActivity';
 import { SummaryCard } from './SummaryCard';
 import { SystemNoticeBar } from './SystemNoticeBar';
+import { useShellCopy } from './shell/shell-copy';
 import { useShellPresentation } from './shell/shell-presentation';
 import { ThinkingContent } from './ThinkingContent';
 import { pushThreadRouteWithHistory } from './ThreadSidebar/thread-navigation';
@@ -113,49 +116,6 @@ function formatDualTime(timestamp: number, deliveredAt?: number): string {
 
 function isSchedulerReplyPreview(replyPreview?: ChatMessageType['replyPreview']): boolean {
   return replyPreview?.senderCatId === 'system' && replyPreview.kind === 'scheduler_trigger';
-}
-
-function getFreshnessNotice(message: ChatMessageType): { text: string; title?: string } | null {
-  const projection = message.extra?.freshnessSupplement;
-  const annotation = message.extra?.freshness;
-  if (projection) {
-    let text: string;
-    switch (projection.status) {
-      case 'pending':
-        text = `生成期间有 ${projection.requiredCount} 条新消息，等待补充检查`;
-        break;
-      case 'running':
-        text = `正在核对生成期间的 ${projection.requiredCount} 条新消息…`;
-        break;
-      case 'committed':
-        text = '已核对，并在下方追加了补充';
-        break;
-      case 'declined':
-        text = '已核对，无需补充';
-        break;
-      case 'failed':
-        text = '补充检查未完成';
-        break;
-    }
-    if (projection.budgetExhaustedCount) {
-      text += `；另有 ${projection.budgetExhaustedCount} 条更新超出自动检查上限`;
-    }
-    return {
-      text,
-      ...(projection.terminalReason ? { title: `状态原因：${projection.terminalReason}` } : {}),
-    };
-  }
-  if (annotation?.kind === 'published_with_unseen') {
-    const fact = `此回复生成期间有 ${annotation.generatedWithUnseen.length} 条新消息`;
-    return annotation.supplementFailureReason
-      ? { text: `${fact}；补充检查未能安排`, title: '状态原因：基础设施暂不可用' }
-      : { text: fact };
-  }
-  if (annotation?.kind === 'freshness_unknown') {
-    return { text: '未能确认此回复生成期间的消息边界', title: `状态原因：${annotation.reason}` };
-  }
-  if (annotation?.kind === 'scan_pending') return { text: '正在核对生成期间的消息边界…' };
-  return null;
 }
 
 interface ChatMessageProps {
@@ -371,7 +331,11 @@ export const ChatMessage = memo(function ChatMessage({
       }
       return candidate.id < message.id;
     });
-  const freshnessNotice = getFreshnessNotice(message);
+  const selectedFreshnessCopy = useShellCopy(freshnessNoticeCopy);
+  const freshnessNotice = getFreshnessNotice(
+    message,
+    shellPresentation === 'v2' ? selectedFreshnessCopy : freshnessNoticeCopy.zh,
+  );
   const subexecutionEvents = message.metadata?.subexecutionEvents ?? [];
   // Fetch optimization only: the API reuses the canonical parser and decides
   // whether this exact message owns a signal. Never use this sentinel as intake.
@@ -1298,11 +1262,17 @@ export const ChatMessage = memo(function ChatMessage({
       {freshnessNotice && !message.extra?.supplement && (
         <div
           data-testid="freshness-supplement-status"
-          role="status"
-          title={freshnessNotice.title}
-          className="mt-2 rounded-md border border-conn-blue-ring/60 bg-conn-blue-bg/60 px-2 py-1 text-xs text-[var(--semantic-info)]"
+          role={freshnessNotice.failed ? 'alert' : 'status'}
+          className={
+            freshnessNotice.failed
+              ? 'mt-2 flex items-start gap-2 rounded-md border border-cafe-subtle bg-cafe-surface px-2 py-1 text-xs text-cafe-primary'
+              : 'mt-2 rounded-md border border-conn-blue-ring/60 bg-conn-blue-bg/60 px-2 py-1 text-xs text-[var(--semantic-info)]'
+          }
         >
-          {freshnessNotice.text}
+          {freshnessNotice.failed && (
+            <span aria-hidden="true" className="mt-1 h-2 w-2 flex-none rounded-full bg-[var(--semantic-critical)]" />
+          )}
+          <span>{freshnessNotice.text}</span>
         </div>
       )}
       {messageReceiptDock}

@@ -27,7 +27,10 @@ import {
 import { BallotIcon } from './icons/VoteIcons';
 import { MarkdownContent } from './MarkdownContent';
 import { MessageBubble } from './MessageBubble';
+import { frustrationHistoryCopy } from './rich/frustration-history.shell-copy';
+import { trustedFrustrationMeta, useFrustrationVisibility } from './rich/frustration-visibility';
 import { RichBlocks } from './rich/RichBlocks';
+import { useShellCopy } from './shell/shell-copy';
 
 /** SVG icon component lookup — maps definition `iconId` to React component.
  *  Single source of truth: add new SVG icons here + in ConnectorIcons.tsx. */
@@ -228,6 +231,15 @@ interface ConnectorBubbleProps {
  */
 export function ConnectorBubble({ message, threadId, timelineMessages }: ConnectorBubbleProps) {
   const source = message.source;
+  const t = useShellCopy(frustrationHistoryCopy);
+  const visibility = useFrustrationVisibility(message.extra?.rich?.blocks ?? [], source?.connector);
+  const feedbackOnly =
+    visibility.length > 0 && visibility.every(({ block }) => trustedFrustrationMeta(block, source?.connector));
+  const retiredOnly = feedbackOnly && visibility.every((entry) => entry.visibility === 'retired');
+  const unknownFeedback = visibility.some((entry) => entry.visibility === 'unknown');
+  const withdrawnFeedback = visibility.some((entry) => entry.visibility !== 'allowed');
+  if (retiredOnly && !message.contentBlocks?.length)
+    return <div data-message-id={message.id} aria-hidden="true" className="h-0" />;
   if (!source) return null;
   if (message.extra?.scheduler?.hiddenTrigger) return null;
 
@@ -236,7 +248,11 @@ export function ConnectorBubble({ message, threadId, timelineMessages }: Connect
   const connDef = getConnectorDefinition(connId);
   const themeHex = connDef?.themeColor;
   const hasBlocks = message.contentBlocks && message.contentBlocks.length > 0;
-  const richBlocks = message.extra?.rich?.blocks;
+  const richBlocks = visibility
+    .filter((entry) => entry.visibility === 'allowed')
+    .map(({ block, signal }) =>
+      signal && block.kind === 'card' ? { ...block, meta: { ...block.meta, signalType: signal } } : block,
+    );
   const rawUrl = source.url;
   const srcUrl = rawUrl && /^https?:\/\//.test(rawUrl) ? rawUrl : undefined;
   const sourceCatId = typeof source.meta?.catId === 'string' ? source.meta.catId : undefined;
@@ -268,14 +284,14 @@ export function ConnectorBubble({ message, threadId, timelineMessages }: Connect
           className="text-xs font-semibold hover:underline"
           style={{ color: `var(--color-${themeToken}-bubble, var(--cafe-text))` }}
         >
-          {source.label}
+          {withdrawnFeedback ? t.title : source.label}
         </a>
       ) : (
         <span
           className="text-xs font-semibold"
           style={{ color: `var(--color-${themeToken}-bubble, var(--cafe-text))` }}
         >
-          {source.label}
+          {withdrawnFeedback ? t.title : source.label}
         </span>
       )}
       {source.sender && (
@@ -297,7 +313,9 @@ export function ConnectorBubble({ message, threadId, timelineMessages }: Connect
     >
       {hasBlocks ? (
         <ContentBlocks blocks={message.contentBlocks!} publication={publication} />
-      ) : source.connector === HOST_CONTENT_REVIEW_CONNECTOR ? (
+      ) : unknownFeedback ? (
+        <p className="text-xs text-cafe-muted">{t.unknown}</p>
+      ) : withdrawnFeedback ? null : source.connector === HOST_CONTENT_REVIEW_CONNECTOR ? (
         <HostReturnBody content={message.content} />
       ) : source.connector === 'development-return' ? (
         <DevelopmentReturnBody

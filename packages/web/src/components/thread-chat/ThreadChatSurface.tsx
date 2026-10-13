@@ -22,6 +22,7 @@ import { PawIcon } from '../icons/PawIcon';
 import { MessageSelectionToolbar } from '../MessageSelectionToolbar';
 import { messageMountPolicy } from '../message-mount-policy';
 import { isMessageSelectableForBundle, MAX_SELECTED_MESSAGES } from '../message-selection';
+import { ImportedSessionNotice } from '../new-conversation/ImportedSessionNotice';
 import { collectExactLiveInvocationIds, collectSettlingInvocationIds } from '../queue-receipt-projection';
 import { ReplyRecallRuntimeProvider } from '../reply-layers/ReplyRecallRuntimeProvider';
 import { projectReplyHandoffs } from '../reply-layers/reply-handoff';
@@ -242,6 +243,7 @@ export function ThreadChatSurface({
               checkedAt={connectionStatus.checkedAt}
               isOfflineSnapshot={isOfflineSnapshot}
             />
+            {composerPresentation === 'v2' && !compact && <ImportedSessionNotice threadId={threadId} />}
             {timelineLead}
             {!hasMore && messages.length > 0 && (
               <div className="py-3 text-center text-xs text-cafe-muted">没有更多消息了</div>
@@ -345,6 +347,7 @@ export function ThreadChatSurface({
                   replyToId,
                   messageDisposition,
                   contextAttachments,
+                  { consumeComposerDraft: true },
                 )
               }
               disabled={connectionStatus.isReadonly}

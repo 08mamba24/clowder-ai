@@ -12,8 +12,8 @@ import { projectQueueReceipt } from '../../cats/services/stores/ports/queued-mes
 import type { ITurnExecutionStore, TurnExecutionStatus } from '../../cats/services/stores/ports/TurnExecutionStore.js';
 import type { ContentReturnIntent } from '../artifact-review/return-store.js';
 import type { ArtifactReviewStore } from '../artifact-review/store.js';
+import { isBoundMediaModificationReturn } from './bindings/media-return-binding.js';
 import { mediaPublicationProjection } from './media-publication/media-publication-return.js';
-import { isBoundMediaModificationReturn } from './media-return-binding.js';
 
 const executionStates: Record<TurnExecutionStatus, NonNullable<ContentModificationRequestView['execution']>['state']> =
   {

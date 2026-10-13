@@ -6,8 +6,8 @@ import type {
 import type { ActionSuccessorLeaseStore } from './ActionSuccessorLeaseStore.js';
 import type { CanonicalActionTerminalPredicate } from './ActionTerminalPredicateCatalog.js';
 import {
+  currentDelegateLineageGenerationHasExactEntry,
   isTerminalDelegateLineageOutcome,
-  replacementTransitionMatchesDelegateLineage,
 } from './action-successor-delegate-lineage.js';
 import {
   type ActionSuccessorLease,
@@ -117,16 +117,10 @@ function isDelegateLineageReplacement(
   interruptedGeneration: ReturnType<typeof interruptedGenerationFor>,
 ): boolean {
   if (returnedReplacement.kind === 'authorized') return true;
-  const returnTransitions = current.returnTransitions ?? [];
-  const rootReturn = returnTransitions[0];
-  const latestReturn = returnTransitions.at(-1);
   if (
     claimOrigin !== 'structured_transfer' ||
     current.mode !== 'single' ||
-    !rootReturn?.rejectingThreadId ||
-    !latestReturn?.rejectingThreadId ||
     current.holderCatIds.length !== 1 ||
-    current.holderThreadId !== latestReturn.rejectingThreadId ||
     current.predecessorCatId !== input.actorCatId ||
     current.predecessorThreadId !== input.sourceThreadId
   ) {
@@ -135,13 +129,9 @@ function isDelegateLineageReplacement(
   const lineageRoute = {
     ownerCatId: input.actorCatId,
     ownerThreadId: input.sourceThreadId,
-    childThreadId: latestReturn.rejectingThreadId,
+    childThreadId: current.holderThreadId,
   };
-  if (
-    !(current.replacementTransitions ?? []).every((transition) =>
-      replacementTransitionMatchesDelegateLineage(transition, lineageRoute),
-    )
-  ) {
+  if (!currentDelegateLineageGenerationHasExactEntry(current, lineageRoute)) {
     return false;
   }
   if (interruptedGeneration) {

@@ -65,6 +65,9 @@ importers:
       '@clowder-ai/plugin-contract-beta25':
         specifier: npm:@clowder-ai/plugin-contract@0.1.0-beta.25
         version: '@clowder-ai/plugin-contract@0.1.0-beta.25'
+      '@clowder-ai/plugin-contract-beta27':
+        specifier: npm:@clowder-ai/plugin-contract@0.1.0-beta.27
+        version: '@clowder-ai/plugin-contract@0.1.0-beta.27'
       '@clowder-ai/plugin-sdk':
         specifier: 0.1.0-beta.17
         version: 0.1.0-beta.17
@@ -213,6 +216,9 @@ importers:
       '@clowder-ai/plugin-contract-beta20':
         specifier: npm:@clowder-ai/plugin-contract@0.1.0-beta.20
         version: '@clowder-ai/plugin-contract@0.1.0-beta.20'
+      '@clowder-ai/plugin-sdk-beta23':
+        specifier: npm:@clowder-ai/plugin-sdk@0.1.0-beta.23
+        version: '@clowder-ai/plugin-sdk@0.1.0-beta.23'
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
@@ -1265,8 +1271,16 @@ packages:
     resolution: {integrity: sha512-LWdCIjpSkJaVoqzBLgDvfeq+ZNuiwB+CiTlv45layRYsAK7M3YWRK4SR7yGfDOZRewOTMRRaOSvr/g46/kyeoQ==}
     engines: {node: '>=20.0.0'}
 
+  '@clowder-ai/plugin-contract@0.1.0-beta.27':
+    resolution: {integrity: sha512-9OUPBpJXcIcHXVaUCi90l8shJEVFhA1+bpLVwvwqmGPlJovLjVeAqql2D+vxG7Qpc2/CYlsOa0jdpvgu2gIiSQ==}
+    engines: {node: '>=20.0.0'}
+
   '@clowder-ai/plugin-sdk@0.1.0-beta.17':
     resolution: {integrity: sha512-rDQIJKYziKN5BNGsSJqwBP27pzQkBGLqHT4s+h+BERyCdT1VOzn8zYaE1r3AceoJ2veo7jd7eKf2Lww0rqcIYQ==}
+    engines: {node: '>=20.0.0'}
+
+  '@clowder-ai/plugin-sdk@0.1.0-beta.23':
+    resolution: {integrity: sha512-LhdJecUUvrBnzqEP82blpw24Fx9ahU277J6zntkoDj/ACDByo5WtRzlSDm7IX8LL1Hnbwr/kMzSNLrr6AxweLg==}
     engines: {node: '>=20.0.0'}
 
   '@codemirror/autocomplete@6.20.1':
@@ -7791,9 +7805,18 @@ snapshots:
       ajv: 8.17.1
       ajv-formats: 3.0.1(ajv@8.17.1)
 
+  '@clowder-ai/plugin-contract@0.1.0-beta.27':
+    dependencies:
+      ajv: 8.17.1
+      ajv-formats: 3.0.1(ajv@8.17.1)
+
   '@clowder-ai/plugin-sdk@0.1.0-beta.17':
     dependencies:
       '@clowder-ai/plugin-contract': 0.1.0-beta.21
+
+  '@clowder-ai/plugin-sdk@0.1.0-beta.23':
+    dependencies:
+      '@clowder-ai/plugin-contract': 0.1.0-beta.27
 
   '@codemirror/autocomplete@6.20.1':
     dependencies:

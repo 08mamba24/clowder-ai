@@ -2128,8 +2128,13 @@ export async function* routeParallel(
           (catTools?.length ?? 0) > 0 ||
           Boolean(thinking && renderThinkingChunks(thinking).trim().length > 0);
         const isFreshnessClosureSuccessor = Boolean(options.freshnessClosureRequiredMessageIds?.length);
+        const wasCanceled = (signalForCat?.(msg.catId) ?? signal)?.aborted ?? false;
         const shouldEmitSilentCompletion =
-          (catTools?.length ?? 0) > 0 && !hasRichBlocks && !sawUserFacingSystemInfo && !isFreshnessClosureSuccessor;
+          !wasCanceled &&
+          (catTools?.length ?? 0) > 0 &&
+          !hasRichBlocks &&
+          !sawUserFacingSystemInfo &&
+          !isFreshnessClosureSuccessor;
 
         // Diagnostic: if cat ran tools but produced no text, emit a system_info so the
         // user sees *something* instead of a silent vanish (bugfix: silent-exit P1).
@@ -2282,7 +2287,7 @@ export async function* routeParallel(
               });
             }
           }
-        } else if (!sawUserFacingSystemInfo && !isFreshnessClosureSuccessor) {
+        } else if (!wasCanceled && !sawUserFacingSystemInfo && !isFreshnessClosureSuccessor) {
           yield {
             type: 'system_info' as AgentMessageType,
             catId: msg.catId,

@@ -562,6 +562,18 @@ export {
   registeredCustodyGrantV1Schema,
 } from './entrusted-work-actions.js';
 export {
+  type EntrustedWorkHumanDecisionV1,
+  type EntrustedWorkHumanTerminalReceiptV1,
+  type EntrustedWorkTaskExecutionStopV1,
+  type EntrustedWorkTaskExecutionV1,
+  type EntrustedWorkTerminalV1,
+  entrustedWorkHumanDecisionV1Schema,
+  entrustedWorkHumanTerminalReceiptV1Schema,
+  entrustedWorkTaskExecutionStopV1Schema,
+  entrustedWorkTaskExecutionV1Schema,
+  entrustedWorkTerminalV1Schema,
+} from './entrusted-work-human-terminal.js';
+export {
   type EntrustedWorkBriefV1,
   type EntrustedWorkOwnerReadV1,
   entrustedWorkBriefV1Schema,
@@ -1734,6 +1746,9 @@ export type {
   UserPreferences,
 } from './user-preferences.js';
 export * from './video-project.js';
+// Workflow SOP types (F073 告示牌)
+export * from './video-project-command.js';
+export * from './video-project-message.js';
 export * from './video-project-review.js';
 // F280: canonical wait termination event consumed by F281 feedback adapters.
 export {
@@ -1746,7 +1761,6 @@ export {
   waitTerminationEventSchema,
   waitTerminationReasonSchema,
 } from './wait-termination.js';
-// Workflow SOP types (F073 告示牌)
 export type {
   CheckStatus,
   ResumeCapsule,

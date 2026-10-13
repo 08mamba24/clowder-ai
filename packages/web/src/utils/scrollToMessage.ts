@@ -72,6 +72,12 @@ export function resolveMessageElements(messageIds: Iterable<string>, root: Paren
   });
 }
 
+/** The existing scroll writer accepts the browser's one-pixel quantization; confirmation uses the same contract. */
+export function matchesMessageScrollAnchor(container: HTMLElement, anchor: MessageScrollAnchor): boolean {
+  const current = captureMessageScrollAnchorForMessage(container, anchor.messageId);
+  return current !== undefined && Math.abs(current.viewportOffsetPx - anchor.viewportOffsetPx) <= 1;
+}
+
 /** Reapply a saved message anchor after placeholder or content geometry changes. */
 export function restoreMessageScrollAnchor(container: HTMLElement, anchor: MessageScrollAnchor): boolean {
   const target = resolveMessageElements([anchor.messageId], container)[0];
@@ -82,8 +88,7 @@ export function restoreMessageScrollAnchor(container: HTMLElement, anchor: Messa
   container.scrollTop = targetTop;
   // A mounted row can still sit behind a temporarily short layout. Do not
   // declare restoration complete when the browser clamps the requested offset.
-  const restoredOffset = boundary.getBoundingClientRect().top - container.getBoundingClientRect().top;
-  return Math.abs(container.scrollTop - targetTop) <= 1 && Math.abs(restoredOffset - anchor.viewportOffsetPx) <= 1;
+  return Math.abs(container.scrollTop - targetTop) <= 1 && matchesMessageScrollAnchor(container, anchor);
 }
 
 const messageHighlights = new WeakMap<HTMLElement, () => void>();

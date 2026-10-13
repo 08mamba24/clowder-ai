@@ -51,6 +51,7 @@ vi.mock('@/stores/chatStore', () => ({
   ),
 }));
 
+import { registerComposerDraftObserver } from '@/components/composer-draft-flush-registry';
 import { useSendMessage } from '@/hooks/useSendMessage';
 
 function SendRunner({
@@ -60,6 +61,7 @@ function SendRunner({
   messageDisposition,
   contextAttachments,
   idempotencyKey,
+  consumeComposerDraft,
   onDone,
 }: {
   activeThreadId?: string;
@@ -68,6 +70,7 @@ function SendRunner({
   messageDisposition?: 'continue_current' | 'next_work';
   contextAttachments?: ContextAttachment[];
   idempotencyKey?: string;
+  consumeComposerDraft?: boolean;
   onDone: () => void;
 }) {
   const { handleSend } = useSendMessage(activeThreadId);
@@ -85,9 +88,18 @@ function SendRunner({
       undefined,
       messageDisposition,
       contextAttachments,
-      idempotencyKey ? { idempotencyKey } : undefined,
+      { idempotencyKey, consumeComposerDraft },
     ).then(onDone);
-  }, [contextAttachments, deliveryMode, handleSend, idempotencyKey, messageDisposition, onDone, overrideThreadId]);
+  }, [
+    consumeComposerDraft,
+    contextAttachments,
+    deliveryMode,
+    handleSend,
+    idempotencyKey,
+    messageDisposition,
+    onDone,
+    overrideThreadId,
+  ]);
 
   return null;
 }
@@ -153,6 +165,43 @@ describe('useSendMessage thread source', () => {
     expect(payload.threadId).not.toBe('thread-stale');
     expect(mockAddMessageToThread).toHaveBeenCalledWith('thread-route', expect.objectContaining({ type: 'user' }));
     expect(mockAddMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('a non-composer send cannot consume the mounted draft (ready=%s)', async (ready) => {
+    const unregister = registerComposerDraftObserver('thread-route', () => ({
+      text: '未发送的真正草稿',
+      revision: 69,
+      ready,
+    }));
+    try {
+      await act(async () =>
+        root.render(React.createElement(SendRunner, { activeThreadId: 'thread-route', onDone: () => {} })),
+      );
+      const payload = JSON.parse(String(mockApiFetch.mock.calls[0]?.[1]?.body));
+      expect(payload.content).not.toBe('未发送的真正草稿');
+      expect(payload.composerDraftRevision).toBeUndefined();
+    } finally {
+      unregister();
+    }
+  });
+
+  it('an explicit composer send carries the mounted revision before its pending admission settles', async () => {
+    const unregister = registerComposerDraftObserver('thread-route', () => ({ text: '', revision: 69, ready: false }));
+    try {
+      await act(async () =>
+        root.render(
+          React.createElement(SendRunner, {
+            activeThreadId: 'thread-route',
+            consumeComposerDraft: true,
+            onDone: () => {},
+          }),
+        ),
+      );
+      const payload = JSON.parse(String(mockApiFetch.mock.calls[0]?.[1]?.body));
+      expect(payload.composerDraftRevision).toBe(69);
+    } finally {
+      unregister();
+    }
   });
 
   it('sends the typed author disposition in the JSON admission payload', async () => {

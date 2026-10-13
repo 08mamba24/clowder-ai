@@ -3,6 +3,11 @@
 import type { ContextAttachment, MessageContent, MessageWorkDisposition } from '@cat-cafe/shared';
 import { useCallback, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import {
+  acknowledgeSendComposerDraftConsumption,
+  type ComposerDraftConsumption,
+} from '@/components/composer-draft-consumption';
+import { observeComposerDraft } from '@/components/composer-draft-flush-registry';
 import { useAgentMessages } from '@/hooks/useAgentMessages';
 import { useChatCommands } from '@/hooks/useChatCommands';
 import type { DeliveryMode } from '@/stores/chat-types';
@@ -23,6 +28,7 @@ interface SendResponseBody {
   userMessageId?: string;
   userMessage?: UserMessageReceipt;
   gameThreadId?: string;
+  composerDraftConsumption?: ComposerDraftConsumption;
 }
 
 /**
@@ -50,6 +56,8 @@ export interface WhisperOptions {
 export interface SendMessageAdmissionOptions {
   /** Stable owner-generated key for a recoverable admission retry. */
   idempotencyKey?: string;
+  /** Set by the ChatInput admission adapter; domain/interactive sends preserve the mounted draft. */
+  consumeComposerDraft?: boolean;
 }
 
 /**
@@ -109,6 +117,9 @@ export function useSendMessage(activeThreadId?: string) {
       admissionOptions?: SendMessageAdmissionOptions,
     ) => {
       const threadId = overrideThreadId ?? activeThreadId ?? useChatStore.getState().currentThreadId;
+      const composerDraftRevision = admissionOptions?.consumeComposerDraft
+        ? observeComposerDraft(threadId)?.revision
+        : undefined;
       const hasImages = Boolean(images && images.length > 0);
       const isQueueSend = deliveryMode === 'queue';
       const hasContextAttachments = Boolean(contextAttachments?.length);
@@ -193,6 +204,7 @@ export function useSendMessage(activeThreadId?: string) {
       }
 
       const reconcileSuccessfulResponse = (body: SendResponseBody | null) => {
+        acknowledgeSendComposerDraftConsumption(threadId, body);
         // Game started in independent thread — remove optimistic message from source
         // and clear loading/invocation flags (game runs in its own thread, source is idle).
         // Always use thread-scoped APIs here: by the time the HTTP response arrives,
@@ -224,6 +236,8 @@ export function useSendMessage(activeThreadId?: string) {
           formData.append('content', content);
           formData.append('threadId', threadId);
           formData.append('idempotencyKey', clientMessageId);
+          if (composerDraftRevision !== undefined)
+            formData.append('composerDraftRevision', String(composerDraftRevision));
           if (deliveryMode) formData.append('deliveryMode', deliveryMode);
           if (messageDisposition) formData.append('messageDisposition', messageDisposition);
           if (whisper) {
@@ -257,6 +271,7 @@ export function useSendMessage(activeThreadId?: string) {
               content,
               threadId,
               idempotencyKey: clientMessageId,
+              ...(composerDraftRevision !== undefined ? { composerDraftRevision } : {}),
               ...(whisper ? { visibility: whisper.visibility, whisperTo: whisper.whisperTo } : {}),
               ...deliveryModePayload,
               ...(replyToId ? { replyTo: replyToId } : {}),

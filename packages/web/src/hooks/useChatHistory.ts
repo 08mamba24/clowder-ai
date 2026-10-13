@@ -68,6 +68,7 @@ import {
   highlightMessage,
   MESSAGE_VIEWPORT_MOUNTED_EVENT,
   type MessageScrollAnchor,
+  matchesMessageScrollAnchor,
   resolveMessageElements,
   restoreMessageScrollAnchor,
   scrollToMessage,
@@ -216,8 +217,7 @@ function readingSettlementStillMatches(el: HTMLElement, position: SavedScrollSta
   if (el.scrollTop !== position.top) return false;
   if (position.anchor === 'bottom') return el.scrollTop === Math.max(0, el.scrollHeight - el.clientHeight);
   if (!position.messageAnchor) return true;
-  const anchor = captureMessageScrollAnchorForMessage(el, position.messageAnchor.messageId);
-  return anchor?.viewportOffsetPx === position.messageAnchor.viewportOffsetPx;
+  return matchesMessageScrollAnchor(el, position.messageAnchor);
 }
 
 function captureNavigationSettleSample(el: HTMLElement, messageId: string): NavigationSettleSample | undefined {

@@ -39,6 +39,8 @@ vi.mock('@/stores/chatStore', () => ({
   ),
 }));
 
+import { registerComposerDraftConsumption } from '@/components/composer-draft-consumption';
+import { registerComposerDraftObserver } from '@/components/composer-draft-flush-registry';
 import { useSendMessage } from '@/hooks/useSendMessage';
 
 type Send = ReturnType<typeof useSendMessage>['handleSend'];
@@ -144,5 +146,49 @@ describe('useSendMessage settles a sent message into its stored receipt', () => 
     expect(mockReplaceThreadMessageId).toHaveBeenCalledTimes(1);
     expect(mockPatchThreadMessage).not.toHaveBeenCalled();
     expect(mockRevokeObjectURL).not.toHaveBeenCalled();
+  });
+
+  it('publishes the server consumption to this mounted thread before returning its accepted admission', async () => {
+    const consume = vi.fn();
+    const release = registerComposerDraftConsumption('thread-1', consume);
+    const receipt = { threadId: 'thread-1', expectedRevision: 69, revision: 70 };
+    try {
+      respond({ status: 'processing', userMessageId: 'msg-consumed', composerDraftConsumption: receipt });
+      await act(async () => {
+        expect(await send('已接受')).toBe(true);
+        expect(consume).toHaveBeenCalledWith(receipt);
+      });
+      consume.mockClear();
+      respond({
+        status: 'processing',
+        userMessageId: 'msg-foreign',
+        composerDraftConsumption: { ...receipt, threadId: 'other-thread' },
+      });
+      await act(async () => {
+        await send('同页再发送');
+      });
+      expect(consume).not.toHaveBeenCalled();
+    } finally {
+      release();
+    }
+  });
+
+  it('carries the mounted composer revision in a send with images', async () => {
+    const release = registerComposerDraftObserver('thread-1', () => ({ text: '看图', revision: 3, ready: true }));
+    try {
+      respond({ status: 'processing', userMessageId: 'image-message' });
+      await act(async () => {
+        await send('看图', [image()], undefined, undefined, undefined, undefined, undefined, undefined, {
+          consumeComposerDraft: true,
+        });
+      });
+      const form = mockApiFetch.mock.calls[0]?.[1]?.body as FormData;
+      expect(form).toBeInstanceOf(FormData);
+      expect(form.get('composerDraftRevision')).toBe('3');
+      expect(form.get('threadId')).toBe('thread-1');
+      expect(form.getAll('images')).toHaveLength(1);
+    } finally {
+      release();
+    }
   });
 });

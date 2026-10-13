@@ -1,4 +1,15 @@
-import { withOwnerUncertaintyIndex } from './owner-uncertainty-lua.js';
+import { withOwnerUncertaintyIndex as withUncertaintyIndex } from './owner-uncertainty-lua.js';
+import { withUserMentionIndex } from './user-mention-index-lua.js';
+
+function withMessagePublicationIndexes(
+  script: string,
+  hashKey = 1,
+  indexExpression?: string,
+  newKeysExpression?: string,
+): string {
+  return withUserMentionIndex(withUncertaintyIndex(script, hashKey, indexExpression), hashKey, newKeysExpression);
+}
+
 /**
  * Lua scripts for the #1200 visibility index.
  *
@@ -54,7 +65,7 @@ export const MAX_BACKFILL_MEMBERS = 50_000;
  *   - string (existing msgId) → idempotency replay, concurrent winner
  *   - number (visibilitySeq) → new message, allocated seq (0 for queued)
  */
-export const APPEND_WITH_VISIBILITY_LUA = withOwnerUncertaintyIndex(
+export const APPEND_WITH_VISIBILITY_LUA = withMessagePublicationIndexes(
   `
 local hash = KEYS[1]
 local kp = ARGV[1]
@@ -189,6 +200,7 @@ return seq
 `,
   1,
   "ARGV[1] .. 'msg:owner-uncertainty:' .. ARGV[3]",
+  "{ARGV[1] .. 'msg:user-requests:latest:' .. ARGV[5], ARGV[1] .. 'msg:user-requests:pending:' .. ARGV[5], ARGV[1] .. 'msg:user-requests:closed:' .. ARGV[5], ARGV[1] .. 'msg:user-request-signals:' .. ARGV[5] .. ':' .. ARGV[3]}",
 );
 
 /**
@@ -209,7 +221,7 @@ return seq
  *
  * Returns: 0 on CAS no-op, or HGETALL flat array on CAS win.
  */
-export const DELIVER_WITH_VISIBILITY_LUA = withOwnerUncertaintyIndex(
+export const DELIVER_WITH_VISIBILITY_LUA = withMessagePublicationIndexes(
   `
 local hash = KEYS[1]
 local msgId = ARGV[1]
@@ -326,7 +338,7 @@ return redis.call('HGETALL', hash)
  *
  * Returns: 0 on CAS no-op, or HGETALL flat array on CAS win.
  */
-export const CANCEL_WITH_VISIBILITY_LUA = withOwnerUncertaintyIndex(
+export const CANCEL_WITH_VISIBILITY_LUA = withMessagePublicationIndexes(
   `
 local hash = KEYS[1]
 local kp = ARGV[1]

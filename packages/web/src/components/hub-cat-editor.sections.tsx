@@ -4,6 +4,7 @@ import type { BuiltinCloudIdentityProtectedField, BuiltinCloudIdentityProtection
 import { useMemo, useRef } from 'react';
 import type { CatData } from '@/hooks/useCatData';
 import { AvatarImageWithFallback } from './AvatarImageWithFallback';
+import { MemberAccountFollowing } from './accounts/MemberAccountFollowing';
 import type { ProfileItem } from './hub-accounts.types';
 import { usesAgyNative } from './hub-cat-editor.agy';
 import {
@@ -649,7 +650,7 @@ export function AccountSection({
         ) : (
           <>
             <SelectField
-              label="认证信息"
+              label="用哪个号"
               ariaLabel={page ? 'Account' : undefined}
               value={form.accountRef}
               options={[
@@ -664,6 +665,10 @@ export function AccountSection({
                   })
                   .map((profile) => ({
                     value: profile.id,
+                    disabled:
+                      profile.clientId === 'openai' &&
+                      profile.authType === 'oauth' &&
+                      (profile.codex ? profile.codex.status !== 'ready' : profile.codexLoginStatus !== 'ready'),
                     label: page
                       ? copy.accountLabel(profile.displayName, profile.builtin ? 'builtin' : profile.authType)
                       : profile.builtin
@@ -673,10 +678,24 @@ export function AccountSection({
                           : `${profile.displayName}（API Key）`,
                   })),
               ]}
-              onChange={(value) => onChange({ accountRef: value, defaultModel: '', provider: '' })}
+              onChange={(value) =>
+                onChange({
+                  accountRef: value,
+                  accountBindingMode: form.clientId === 'openai' ? 'override' : undefined,
+                  defaultModel: '',
+                  provider: '',
+                })
+              }
               disabled={loadingProfiles}
               required
             />
+            {page && form.clientId === 'openai' && codexLocalCapable && (
+              <MemberAccountFollowing
+                accountRef={form.accountRef}
+                accounts={availableProfiles}
+                onFollow={(ref) => onChange({ accountRef: ref, accountBindingMode: 'follow' })}
+              />
+            )}
             <ComboField
               label="Model"
               ariaLabel="Model"

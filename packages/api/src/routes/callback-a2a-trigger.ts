@@ -205,6 +205,7 @@ export async function enqueueA2ATargets(
   const triggerMessageId = opts.triggerMessage.id;
   const { deliveryCursorStore } = deps;
   const requestedTargetCats = opts.targetCats;
+  const dotAskRecipients = opts.triggerMessage.extra?.dotAsk?.recipientCatIds;
   const routingContextIntent = inferRoutingContextIntent(opts.content);
   const routingPreflight = deps.routingDispatchPreflight
     ? await preflightRoutingDispatch(deps.routingDispatchPreflight, {
@@ -234,6 +235,13 @@ export async function enqueueA2ATargets(
       )
     : requestedTargetCats;
   const routingPreflightResult = routingPreflight ? { routingPreflight } : {};
+  if (
+    dotAskRecipients &&
+    (!deps.invocationQueue ||
+      dotAskRecipients.length !== requestedTargetCats.length ||
+      dotAskRecipients.some((catId) => !targetCats.includes(catId as CatId)))
+  )
+    throw new Error('dot_ask_delivery_pending');
   if (targetCats.length === 0) {
     return { enqueued: [], fallback: false, ...routingPreflightResult };
   }
@@ -329,6 +337,8 @@ export async function enqueueA2ATargets(
           throw new Error('A2A fan-out Queue custody admission requested-target mismatch');
         }
         admittedTargetCats = new Set(existingAdmission.targetCats.filter((catId) => targetCats.includes(catId)));
+        if (dotAskRecipients?.some((catId) => !admittedTargetCats?.has(catId as CatId)))
+          throw new Error('dot_ask_delivery_pending');
       } else {
         const acceptedTargetCats: CatId[] = [];
         let predictedDepth = deps.invocationQueue.countAgentEntriesForThread(threadId);
@@ -350,6 +360,10 @@ export async function enqueueA2ATargets(
           acceptedTargetCats.push(catId);
           if (!inFlight) predictedDepth += 1;
         }
+        // A dot retry keeps one exact request. Never freeze a rejected prefix:
+        // once capacity/policy permits, the same source can admit every recipient.
+        if (dotAskRecipients?.some((catId) => !acceptedTargetCats.includes(catId as CatId)))
+          throw new Error('dot_ask_delivery_pending');
         const admission = createFanoutQueueCustodyAdmission(triggerMessageId, {
           ownerUserId: opts.userId,
           ownerAuthProvenance,
@@ -653,24 +667,30 @@ export async function enqueueA2ATargets(
         : persistedQueueTrigger
           ? fanoutQueueCarrierIdempotencyKey(triggerMessageId, catId)
           : undefined;
-      const result = deps.invocationQueue.enqueue({
-        threadId,
-        userId: opts.userId,
-        ownerAuthProvenance,
-        content: opts.content,
-        source: 'agent',
-        sourceCategory: 'a2a',
-        targetCats: [catId],
-        intent: 'execute',
-        autoExecute: true,
-        queueCustodyAdmissionId,
-        callerCatId: fromCatId,
-        a2aParentInvocationId: opts.parentInvocationId,
-        callerTraceContext: ensureDispatchTraceContext(),
-        a2aTriggerMessageId: triggerMessageId,
-        ...(carrierIdempotencyKey ? { idempotencyKey: carrierIdempotencyKey } : {}),
-        ...(opts.actionSuccessorFence ? { actionSuccessorFence: opts.actionSuccessorFence } : {}),
-      });
+      let result: ReturnType<InvocationQueue['enqueue']>;
+      try {
+        result = deps.invocationQueue.enqueue({
+          threadId,
+          userId: opts.userId,
+          ownerAuthProvenance,
+          content: opts.content,
+          source: 'agent',
+          sourceCategory: 'a2a',
+          targetCats: [catId],
+          intent: 'execute',
+          autoExecute: true,
+          queueCustodyAdmissionId,
+          callerCatId: fromCatId,
+          a2aParentInvocationId: opts.parentInvocationId,
+          callerTraceContext: ensureDispatchTraceContext(),
+          a2aTriggerMessageId: triggerMessageId,
+          ...(carrierIdempotencyKey ? { idempotencyKey: carrierIdempotencyKey } : {}),
+          ...(opts.actionSuccessorFence ? { actionSuccessorFence: opts.actionSuccessorFence } : {}),
+        });
+      } catch (error) {
+        rollbackDurableAdmissions();
+        throw error;
+      }
       queueDiagnostics.push({
         catId,
         outcome: result.outcome,
@@ -696,6 +716,10 @@ export async function enqueueA2ATargets(
     // (merged into an existing queued entry), so its cursor must advance too, otherwise the
     // merged-away mention lingers as a phantom pending backlog.
     const handled = [...enqueued, ...coalesced];
+    if (dotAskRecipients?.some((catId) => !handled.includes(catId as CatId))) {
+      rollbackDurableAdmissions();
+      throw new Error('dot_ask_delivery_pending');
+    }
     if (persistedQueueTrigger && targetCats.length > 0) {
       const messageStore = deps.messageStore;
       if (!messageStore) throw new Error('A2A Queue dispatch requires durable message custody');

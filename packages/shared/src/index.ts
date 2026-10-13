@@ -15,6 +15,7 @@ export * from './avatar-limits.js';
 export * from './capability-tip-telemetry.js';
 // Export capability tips contract (F244 waiting-state Knowledge Feed projection)
 export * from './capability-tips.js';
+export * from './chatgpt-cloud-presentation.js';
 // Export shared CLI effort helpers
 export * from './cli-effort.js';
 export * from './cli-tool-label.js';
@@ -43,6 +44,8 @@ export * from './context-window-catalog.js';
 // F322: shared wire validation for the owner-private conversation presentation preference.
 export * from './conversation-view-preference.js';
 export { CORE_COMMANDS } from './core-commands.js';
+// F247: one contract for the shared Remote entry and the source-bound Host.
+export * from './dot-mcp.js';
 // Export Eval Hub metric reference normalization (F248 B3)
 export * from './eval-metric-ref.js';
 // First-party WebSocket Stop intent contract (API + Web single source).
@@ -74,6 +77,7 @@ export * from './schemas/index.js';
 // Export shared source-code extension helpers (F232 artifact classification + preview)
 export * from './source-code-extensions.js';
 export * from './text-utils.js';
+export * from './thread-works.js';
 export * from './types/artifact-review.js';
 export * from './types/artifact-review-drawing.js';
 // F255 runtime schemas are exported directly while their source remains grouped
@@ -111,5 +115,6 @@ export * from './types/output-message.js';
 export * from './types/video-project.js';
 export * from './types/video-project-review.js';
 export * from './types/workspace-content-review.js';
+export * from './utils/pull-request-changes-target.js';
 // Export subject key utilities (#320)
 export * from './utils/subject-key.js';

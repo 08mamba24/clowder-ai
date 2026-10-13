@@ -127,18 +127,20 @@ describe('background thread socket handling', () => {
       expect(toast.message).toBe('缅因猫（sol） 已完成处理');
     });
 
-    it('text with isFinal also transitions to done', () => {
+    it('text with isFinal completes and preserves the whole answer in its recovery toast', () => {
+      const fullAnswer = '完整内容。'.repeat(80) + 'TAIL';
       simulateBackgroundMessage({
         type: 'text',
         catId: 'opus',
         threadId: 'thread-bg',
-        content: 'final answer',
+        content: fullAnswer,
         isFinal: true,
         timestamp: Date.now(),
       });
 
       const ts = useChatStore.getState().getThreadState('thread-bg');
       expect(ts.catStatuses.opus).toBe('done');
+      expect(useToastStore.getState().toasts.at(-1)?.message).toBe(fullAnswer);
     });
 
     it('done rekeys a background live bubble to its persisted message ID', () => {

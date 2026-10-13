@@ -27,6 +27,8 @@ import {
   contentModificationSourceMessageV1Schema,
   createCatId,
   deliveryDecisionCueCarrierV1Schema,
+  dotAskMetadataSchema,
+  entrustedWorkHumanTerminalReceiptV1Schema,
   evolutionPreparationSubmissionV1Schema,
   isProviderSemanticEvent,
   isValidAcceptedSource,
@@ -41,6 +43,7 @@ import {
 } from '@cat-cafe/shared';
 import { parsePluginMessageExtra } from '../../../../messaging/envelope.js';
 import { MAX_PERSISTED_SUBEXECUTION_EVENTS, type MessageMetadata } from '../../types.js';
+import { liveResultNoticeSchema, liveReturnProjectionSchema } from '../live-result-carriers.js';
 import { parseMessageDeliveryBoundary } from '../message-delivery-boundary.js';
 import type {
   MessageRecallMarker,
@@ -202,9 +205,11 @@ type ExtraCarrierPersistence = ExtraCarrierPersistenceClassification<{
   realtimeCompanion: 'parsed';
   liveCompanion: 'parsed';
   rich: 'parsed';
+  callbackRichRequestDigest: 'parsed';
   isExplicitPost: 'parsed';
   stream: 'parsed';
   causal: 'parsed';
+  dotAsk: 'parsed';
   deliveryBoundary: 'parsed';
   proactive: 'parsed';
   memoryCue: 'parsed';
@@ -233,6 +238,7 @@ type ExtraCarrierPersistence = ExtraCarrierPersistenceClassification<{
   queueReceipt: 'derived';
   pluginMessage: 'parsed';
   custodyOfferV1: 'derived';
+  entrustedWorkHumanTerminalReceiptV1: 'parsed';
   evolutionPreparationSubmissionV1: 'parsed';
 }>;
 
@@ -315,6 +321,7 @@ function parseLiveCompanionCarrier(value: unknown): StoredMessageExtra['liveComp
   const candidate = value as Record<string, unknown>;
   const validId = (id: unknown): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(id);
   const identity = companionIdentitySnapshotV1Schema.safeParse(candidate.identity);
+  const projection = liveReturnProjectionSchema.safeParse(candidate.returnProjection);
   if (candidate.modality === 'typed') {
     if (
       !validId(candidate.callId) ||
@@ -349,6 +356,7 @@ function parseLiveCompanionCarrier(value: unknown): StoredMessageExtra['liveComp
     modality: candidate.modality,
     ...(candidate.role === 'user' || candidate.role === 'assistant' ? { role: candidate.role } : {}),
     ...(candidate.modality === 'result' ? { nativeTurnId: candidate.nativeTurnId as string } : {}),
+    ...(candidate.modality === 'result' && projection.success ? { returnProjection: projection.data } : {}),
     ...(identity.success ? { identity: identity.data } : {}),
   };
 }
@@ -412,6 +420,13 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
     const outputLayout = readMessageOutputLayout(parsed.outputLayout);
     if (outputLayout) result.outputLayout = outputLayout;
     let hasField = modification.success || modificationReceipt.success || outputLayout !== undefined;
+    const entrustedWorkTerminalReceipt = entrustedWorkHumanTerminalReceiptV1Schema.safeParse(
+      parsed.entrustedWorkHumanTerminalReceiptV1,
+    );
+    if (entrustedWorkTerminalReceipt.success) {
+      result.entrustedWorkHumanTerminalReceiptV1 = entrustedWorkTerminalReceipt.data;
+      hasField = true;
+    }
     if (parsed.collectiveOwnerAdmissionV1 !== undefined) {
       const admission = collectiveOwnerAdmissionV1Schema.safeParse(parsed.collectiveOwnerAdmissionV1);
       if (admission.success) result.collectiveOwnerAdmissionV1 = admission.data;
@@ -540,6 +555,12 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
     const deliveryBoundary = parseMessageDeliveryBoundary(parsed.deliveryBoundary);
     if (deliveryBoundary) {
       result.deliveryBoundary = deliveryBoundary;
+      hasField = true;
+    }
+
+    const dotAsk = dotAskMetadataSchema.safeParse(parsed.dotAsk);
+    if (dotAsk.success) {
+      result.dotAsk = dotAsk.data;
       hasField = true;
     }
 
@@ -690,6 +711,13 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
       hasField = true;
     }
 
+    if (
+      typeof parsed.callbackRichRequestDigest === 'string' &&
+      /^[0-9a-f]{64}$/.test(parsed.callbackRichRequestDigest)
+    ) {
+      result.callbackRichRequestDigest = parsed.callbackRichRequestDigest;
+      hasField = true;
+    }
     if (parsed.isExplicitPost === true) {
       result.isExplicitPost = true;
       hasField = true;
@@ -791,6 +819,12 @@ export function safeParseExtra(raw: string | undefined): StoredMessage['extra'] 
       if (receipt.success) {
         result.systemInfo = { v: 1, payload: receipt.data, fallbackCatId: receipt.data.target.targetCatId };
         hasField = true;
+      } else if (parsed.systemKind === 'context_briefing') {
+        const notice = liveResultNoticeSchema.safeParse(parsed.systemInfo.payload);
+        if (notice.success) {
+          result.systemInfo = { v: 1, payload: notice.data };
+          hasField = true;
+        }
       }
     }
 

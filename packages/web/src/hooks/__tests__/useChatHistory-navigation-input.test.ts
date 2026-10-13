@@ -1025,6 +1025,98 @@ describe('useChatHistory navigation input owner', () => {
     }
   });
 
+  it.each([0.5, -0.5])('keeps the original anchor contract after browser scroll quantization (%spx)', async (shift) => {
+    const threadId = `widget-receipt-quantized-${shift}`;
+    const { el, top } = await openThread(threadId);
+    const boundary = el.querySelector<HTMLElement>('[data-message-viewport-id="first"]')!;
+    boundary.getBoundingClientRect = () =>
+      ({ top: 100 + shift - top.get(), bottom: 500 + shift - top.get() }) as DOMRect;
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      get: () => top.get(),
+      set: (value: number) => top.set(Math.round(value)),
+    });
+    const fixture = await mountReceiptWidget(el);
+    try {
+      let receipt!: ReturnType<ReturnType<typeof useChatHistory>['restoreReadingPosition']>;
+      const completed = vi.fn();
+      act(() => {
+        receipt = capturedHook!.restoreReadingPosition({
+          threadId,
+          position: { top: 200, anchor: 'offset', messageAnchor: { messageId: 'first', viewportOffsetPx: -200 } },
+        });
+        void receipt.then(completed);
+      });
+      await act(async () => flushAnimationFrames());
+      expect(top.get()).toBe(Math.round(200 + shift));
+      expect(completed).not.toHaveBeenCalled();
+      expect(fixture.requests()[0]).toBeDefined();
+      await act(async () => fixture.acknowledge(fixture.requests()[0]!));
+      expect(await receipt).toMatchObject({
+        status: 'settled',
+        exact: true,
+        position: { messageAnchor: { messageId: 'first', viewportOffsetPx: -200 } },
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it.each([2, -2])('rejects a real anchor displacement while its acknowledgement is pending (%spx)', async (reflow) => {
+    const threadId = `widget-receipt-displaced-${reflow}`;
+    const { el, top } = await openThread(threadId);
+    let shift = 0;
+    const boundary = el.querySelector<HTMLElement>('[data-message-viewport-id="first"]')!;
+    boundary.getBoundingClientRect = () =>
+      ({ top: 100 + shift - top.get(), bottom: 500 + shift - top.get() }) as DOMRect;
+    const fixture = await mountReceiptWidget(el);
+    try {
+      let receipt!: ReturnType<ReturnType<typeof useChatHistory>['restoreReadingPosition']>;
+      act(() => {
+        receipt = capturedHook!.restoreReadingPosition({
+          threadId,
+          position: { top: 200, anchor: 'offset', messageAnchor: { messageId: 'first', viewportOffsetPx: -200 } },
+        });
+      });
+      await act(async () => flushAnimationFrames());
+      shift = reflow;
+      await act(async () => fixture.acknowledge(fixture.requests()[0]!));
+      expect(await receipt).toEqual({ status: 'unavailable' });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it('preserves interruption even when the acknowledged input leaves the quantized position unchanged', async () => {
+    const threadId = 'widget-receipt-quantized-input';
+    const { el, top } = await openThread(threadId);
+    const boundary = el.querySelector<HTMLElement>('[data-message-viewport-id="first"]')!;
+    boundary.getBoundingClientRect = () => ({ top: 100.5 - top.get(), bottom: 500.5 - top.get() }) as DOMRect;
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      get: () => top.get(),
+      set: (value: number) => top.set(Math.round(value)),
+    });
+    const fixture = await mountReceiptWidget(el);
+    try {
+      let receipt!: ReturnType<ReturnType<typeof useChatHistory>['restoreReadingPosition']>;
+      act(() => {
+        receipt = capturedHook!.restoreReadingPosition({
+          threadId,
+          position: { top: 200, anchor: 'offset', messageAnchor: { messageId: 'first', viewportOffsetPx: -200 } },
+        });
+      });
+      await act(async () => flushAnimationFrames());
+      await act(async () =>
+        fixture.acknowledge(fixture.requests()[0]!, { inputOccurredAt: performance.timeOrigin + performance.now() }),
+      );
+      expect(top.get()).toBe(201);
+      expect(await receipt).toEqual({ status: 'interrupted' });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it('cannot let a stale child acknowledgement settle or interrupt a newer restore receipt', async () => {
     const threadId = 'widget-receipt-new-generation';
     const { el, top } = await openThread(threadId);

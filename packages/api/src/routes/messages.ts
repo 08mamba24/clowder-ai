@@ -114,6 +114,11 @@ import { normalizeJsonUnicode } from '../utils/json-unicode.js';
 import { getDefaultUploadDir } from '../utils/upload-paths.js';
 import { persistA2ARoutingMessage } from './a2a-routing-projection.js';
 import { collectTerminalStreamInvocationIds } from './message-terminal-stream-ids.js';
+import { importStoredProjectMessage } from './messages-project-review.js';
+import {
+  captureSentComposerDraftConsumption,
+  type SentComposerDraftConsumptionReceipt,
+} from './sent-composer-draft-consumption.js';
 import { admitThreadParticipants } from './thread-participant-admission.js';
 import { readUserMessageReceipt, userMessageReceipt } from './user-message-receipt.js';
 
@@ -247,6 +252,7 @@ function bundleAdmissionErrorMessage(reason: MessageBundleAdmissionFailureReason
 const routeChainTracker = new RouteChainCompletionTracker();
 
 export interface MessagesRoutesOptions {
+  onStoredProjectMessage?: (message: StoredMessage) => Promise<void>;
   liveCompanionSessions?: import('../domains/concierge/live/LiveCompanionSessions.js').LiveCompanionSessions;
   /** Shared owner-preference root. Optional test harnesses retain product-default behavior. */
   projectRoot?: string;
@@ -651,6 +657,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
     let threadId: string | undefined;
     let contentBlocks: MessageContent[] | undefined;
     let idempotencyKey: string | undefined;
+    let composerDraftRevision: number | undefined;
     // F35: Whisper fields
     let whisperVisibility: 'whisper' | undefined;
     let whisperRecipients: readonly CatId[] | undefined;
@@ -671,6 +678,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
         return { error: parsed.error };
       }
       ({ content, userId: legacyUserId, threadId, contentBlocks } = parsed);
+      composerDraftRevision = parsed.composerDraftRevision;
       if ('idempotencyKey' in parsed && parsed.idempotencyKey) {
         idempotencyKey = parsed.idempotencyKey;
       }
@@ -696,6 +704,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
         return { error: 'Invalid request body', details: parseResult.error.issues };
       }
       ({ content, userId: legacyUserId, threadId, idempotencyKey } = parseResult.data);
+      composerDraftRevision = parseResult.data.composerDraftRevision;
       if (parseResult.data.contextAttachments?.length) {
         contentBlocks = buildMessageContentBlocks(content, parseResult.data.contextAttachments);
       }
@@ -724,6 +733,12 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
     // Default to 'default' thread for lobby (prevents global broadcast)
     const resolvedThreadId = threadId ?? 'default';
     const receiptOwner = { userId, threadId: resolvedThreadId };
+    const consumeSentDraft = await captureSentComposerDraftConsumption(
+      opts.messageStore,
+      userId,
+      resolvedThreadId,
+      ownerAuthProvenance === 'strict' ? composerDraftRevision : undefined,
+    );
 
     let admittedMessageBundle: ResolvedBundleAdmission | undefined;
     let explicitBundleTargetCats: CatId[] | undefined;
@@ -797,11 +812,12 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
       } else if (thread.title === null) {
         // Auto-title existing untitled thread
         const autoTitle = deriveAutoThreadTitle(content || '上下文附件') ?? '上下文附件';
-        await opts.threadStore.updateTitle(resolvedThreadId, autoTitle);
-        opts.socketManager.broadcastToRoom(`thread:${resolvedThreadId}`, 'thread_updated', {
-          threadId: resolvedThreadId,
-          title: autoTitle,
-        });
+        const titleApplied = await opts.threadStore.setAutomaticTitle(resolvedThreadId, autoTitle, 'temporary');
+        if (titleApplied)
+          opts.socketManager.broadcastToRoom(`thread:${resolvedThreadId}`, 'thread_updated', {
+            threadId: resolvedThreadId,
+            title: autoTitle,
+          });
       }
     }
 
@@ -1172,6 +1188,9 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
           });
           storedUserMessageId = userMessage.id;
           appendedUserMessage = userMessage;
+          await importStoredProjectMessage(userMessage, opts.onStoredProjectMessage, (error) =>
+            request.log.warn({ err: error }, 'Saved project opinion awaits ledger synchronization'),
+          );
 
           // F192 Phase G AC-G12 / F227: detect magic words → Event Memory (queued path)
           void tryDetectMagicWords(
@@ -1226,6 +1245,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
         merged: false,
         ...(storedUserMessageId ? { userMessageId: storedUserMessageId } : {}),
         ...(await readUserMessageReceipt(opts.messageStore, storedUserMessageId, receiptOwner, appendedUserMessage)),
+        ...(await consumeSentDraft(appendedUserMessage)),
         ...(admittedMessageBundle && storedUserMessageId ? { messageBundleId: storedUserMessageId } : {}),
       };
     }
@@ -1330,6 +1350,9 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
                 });
                 toctouUserMessageId = toctouUserMessage.id;
                 toctouAppendedMessage = toctouUserMessage;
+                await importStoredProjectMessage(toctouUserMessage, opts.onStoredProjectMessage, (error) =>
+                  request.log.warn({ err: error }, 'Saved project opinion awaits ledger synchronization'),
+                );
                 const queueEntryId = enqueueResult.entry?.id;
                 if (queueEntryId) {
                   opts.invocationQueue.backfillMessageId(resolvedThreadId, userId, queueEntryId, toctouUserMessage.id);
@@ -1365,6 +1388,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
                 receiptOwner,
                 toctouAppendedMessage,
               )),
+              ...(await consumeSentDraft(toctouAppendedMessage)),
               ...(admittedMessageBundle && toctouUserMessageId ? { messageBundleId: toctouUserMessageId } : {}),
             };
           }
@@ -1454,6 +1478,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
       // F122 R1 P1 cont: wrap message write + update before background coroutine.
       // If any of these throw, release the slot to prevent "假忙" leak.
       let storedUserMessage: StoredMessage;
+      let sentDraftReceipt: SentComposerDraftConsumptionReceipt;
       try {
         // F39: only publish force-cleared after the replacement owner is installed. An explicit
         // acquisition refusal must have zero queue/UI side effects.
@@ -1485,10 +1510,15 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
         });
 
         // ③ Backfill InvocationRecord.userMessageId
+        await importStoredProjectMessage(storedUserMessage, opts.onStoredProjectMessage, (error) =>
+          request.log.warn({ err: error }, 'Saved project opinion awaits ledger synchronization'),
+        );
         await opts.invocationRecordStore.update(createResult.invocationId, {
           userMessageId: storedUserMessage.id,
         });
         if (admittedMessageBundle) await publishAdmittedBundleParticipants();
+
+        sentDraftReceipt = await consumeSentDraft(storedUserMessage);
 
         // F192 Phase G AC-G12 / F227: detect magic words → Event Memory (immediate path)
         void tryDetectMagicWords(
@@ -1517,6 +1547,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
         invocationId: createResult.invocationId,
         userMessageId: storedUserMessage.id,
         ...userMessageReceipt(storedUserMessage, receiptOwner),
+        ...sentDraftReceipt,
         ...(admittedMessageBundle ? { messageBundleId: storedUserMessage.id } : {}),
         timestamp: Date.now(),
       });
@@ -1831,7 +1862,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
             if (msg.type === 'done' && msg.catId && msg.metadata?.usage) {
               collectedUsage.set(msg.catId, mergeTokenUsage(collectedUsage.get(msg.catId), msg.metadata.usage));
             }
-            if (msg.type === 'done' && msg.errorCode) {
+            if (msg.type === 'done' && msg.errorCode && msg.errorCode !== 'INVOCATION_CANCELLED') {
               governanceErrorCode = msg.errorCode;
             }
             terminalDispositions.observe(msg);
@@ -1926,12 +1957,13 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
                   ? 'canceled_by_user'
                   : 'canceled'
                 : 'succeeded';
+          const hostCanceled = aggFinalStatus === 'succeeded' && terminalDispositions.areAllTargetsCanceled();
           const primaryTerminalError = terminalDispositions.getPrimaryTerminalError();
           const successfulCatIds = terminalDispositions.getSuccessfulCatIds() as CatId[];
           if (aggFinalStatus === 'failed') {
             await markStartupTimeoutFailed();
-          } else if (aggFinalStatus !== 'succeeded') {
-            finalStatus = aggFinalStatus;
+          } else if (aggFinalStatus !== 'succeeded' || hostCanceled) {
+            finalStatus = hostCanceled ? 'canceled' : aggFinalStatus;
             await opts.invocationRecordStore?.update(createResult.invocationId, {
               status: 'canceled',
             });

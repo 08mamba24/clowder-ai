@@ -11,20 +11,27 @@ import type { createArtifactReviewIntegration } from '../../growing/artifact-rev
 import { EntrustedWorkLifecycleService } from '../../growing/EntrustedWorkLifecycleService.js';
 import { MediaOwnerError } from '../../video-studio/content-owner/media-errors.js';
 import type { MediaReviewPrincipal } from '../../video-studio/content-owner/published-media-access.js';
+import type { VideoProjectReadPort } from '../../video-studio/project/types.js';
 import type { WorkspaceContentSourceService } from '../../workspace/workspace-content-source.js';
 import { WorkspaceWritebackService } from '../../workspace/writeback/service.js';
 import { reviewModificationBindings } from '../artifact-review/modification-request-reference.js';
+import type { VideoProjectMessageAuthority } from '../workspace-review/project-message/types.js';
 import type { WorkspaceContentReviewService } from '../workspace-review/service.js';
+import { AcceptedWorkspaceArtifactReader } from './accepted-workspace-artifacts.js';
+import { ModificationContentBinding } from './bindings/content-binding.js';
+import { ModificationMediaBinding } from './bindings/media-binding.js';
 import { ContentModificationChatProjection } from './chat-projection.js';
-import { ModificationContentBinding } from './content-binding.js';
 import { ContentModificationContextService } from './context-service.js';
 import { ModificationRuntimeControlService } from './control/runtime-control-service.js';
 import { ModificationFileLineage } from './file-lineage.js';
-import { ModificationMediaBinding } from './media-binding.js';
 import { mediaModificationEvents } from './media-message/media-chat-events.js';
 import { MediaPublicationBinding } from './media-publication/media-publication-binding.js';
+import { witnessedPublicationCaller } from './media-publication/media-publication-caller.js';
 import { MediaPublicationContinuation } from './media-publication/media-publication-continuation.js';
 import { resolveMessageTakeover } from './message-takeover.js';
+import { ProjectMessageTakeoverService } from './project/service.js';
+import { publicationResponseFingerprint } from './publication-recovery-contract.js';
+import { PublicationResponseRecoveryService } from './publication-response-recovery.js';
 import { requireModificationSourceMessage } from './request-authority.js';
 import { ContentModificationResultService } from './result-service.js';
 import { ContentModificationService } from './service.js';
@@ -40,6 +47,7 @@ export function createContentModificationIntegration(deps: {
   tasks: ITaskStore;
   messages: IMessageStore;
   turnExecutions?: Pick<ITurnExecutionStore, 'get'>;
+  project?: { projects: VideoProjectReadPort; authority: VideoProjectMessageAuthority };
   queue?: Pick<InvocationQueue, 'getEntrySnapshot'>;
   delivery?: PersistedQueueDeliveryPort;
   changed: (userId: string) => void;
@@ -64,16 +72,28 @@ export function createContentModificationIntegration(deps: {
     dispatcher,
   });
   dispatcher.setPublicationOwner(async (intent) => Boolean(await publicationBinding.validate(intent)));
-  reviews.setPublicationResponseGuard(async (requestId, artifactRef, principal) => {
-    const intent = store.returns.publicationForRequest(requestId);
+  const publicationRecovery = new PublicationResponseRecoveryService({
+    binding: publicationBinding,
+    media,
+    dispatcher,
+  });
+  reviews.setPublicationResponseGuard(async (command, principal, mode) => {
+    const intent = command.requestId ? store.returns.publicationForRequest(command.requestId) : null;
     if (!intent) return;
+    if (mode === 'replay' && !intent.recovery) return;
+    if (intent.recovery && publicationResponseFingerprint(command) !== intent.recovery.responseFingerprint)
+      throw new MediaOwnerError('access_denied');
     if (
       principal.actor.kind !== 'cat' ||
       principal.userId !== intent.ownerUserId ||
       principal.actor.actorId !== intent.targetCatId ||
       principal.threadId !== intent.threadId ||
-      artifactRef !== intent.source.artifactRef ||
-      !(await publicationBinding.currentCaller(intent, principal.invocationId))
+      command.artifactRef !== intent.source.artifactRef ||
+      !(mode === 'replay'
+        ? principal.invocationId &&
+          (await witnessedPublicationCaller(publicationBinding.deps, intent, principal.invocationId))?.status ===
+            'running'
+        : await publicationBinding.currentCaller(intent, principal.invocationId))
     )
       throw new MediaOwnerError('access_denied');
     const publication = await deps.messages.getById(intent.source.publicationMessageId);
@@ -99,6 +119,21 @@ export function createContentModificationIntegration(deps: {
     media: new ModificationMediaBinding({ store, media, reviews, ledgers, files: deps.files, fileLineage }),
     text: new ModificationTextBinding({ store, source: deps.source, files: deps.files, access: media.access }),
   });
+  const projectTakeover =
+    deps.project && deps.turnExecutions && deps.artifacts.projectMessages
+      ? new ProjectMessageTakeoverService({
+          store,
+          messages: deps.messages,
+          tasks: deps.tasks,
+          turns: deps.turnExecutions,
+          lifecycle,
+          projects: deps.project.projects,
+          authority: deps.project.authority,
+          importer: deps.artifacts.projectMessages,
+          authorizeTarget: (payload, userId) => targets.authorize(payload, userId),
+          onError: deps.onError,
+        })
+      : undefined;
   const requests = new ContentModificationService({
     store,
     messages: deps.messages,
@@ -106,6 +141,7 @@ export function createContentModificationIntegration(deps: {
     ...(deps.turnExecutions ? { turnExecutions: deps.turnExecutions } : {}),
     lifecycle,
     content,
+    ...(projectTakeover ? { project: projectTakeover } : {}),
     authorizeTarget: (payload, userId) => targets.authorize(payload, userId),
     resolveTakeover: (input, principal, existing) =>
       resolveMessageTakeover(
@@ -115,6 +151,7 @@ export function createContentModificationIntegration(deps: {
           files: deps.files,
           requests: store.requests,
           tasks: deps.tasks,
+          ...(projectTakeover ? { project: projectTakeover } : {}),
           media: { content, reviews, media, files: deps.files, ledgers, store, tasks: deps.tasks },
         },
         input,
@@ -260,6 +297,9 @@ export function createContentModificationIntegration(deps: {
   };
   return {
     requests,
+    workspaceArtifacts: new AcceptedWorkspaceArtifactReader({ store, messages: deps.messages, writer }),
+    publicationRecovery,
+    projectTakeover,
     results,
     targets,
     text,

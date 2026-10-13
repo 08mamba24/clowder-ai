@@ -24,7 +24,9 @@ import {
   modificationRequestId,
 } from './journal.js';
 import { mediaSelectionAnnotations } from './media-message/media-selection-projection.js';
-import type { ResolvedMessageTakeover } from './message-takeover.js';
+import type { ResolvedMessageTakeover } from './message/types.js';
+import { projectModificationView } from './project/service.js';
+import type { ProjectMessageTakeoverPort } from './project/types.js';
 import { requireModificationSourceMessage } from './request-authority.js';
 import { type ModificationLabels, persistModificationSource } from './request-source.js';
 import { admitModificationTask, ModificationAdmissionError } from './task-admission.js';
@@ -59,6 +61,7 @@ export class ContentModificationService {
       tasks: ITaskStore;
       lifecycle: EntrustedWorkLifecycleService;
       content: ModificationContentPort;
+      project?: ProjectMessageTakeoverPort;
       authorizeTarget: (
         payload: ContentModificationRequest,
         ownerUserId: string,
@@ -101,6 +104,7 @@ export class ContentModificationService {
   async submit(raw: unknown, principal: MediaReviewPrincipal): Promise<ModificationRequestView> {
     this.assertHuman(principal);
     const payload = contentModificationRequestContractSchema.parse(raw);
+    if (payload.source.kind === 'video-project') throw new ContentModificationJournalError('invalid_progress');
     const existing = this.deps.store.requests.get(
       modificationRequestId(principal.userId, payload.operationId),
       principal.userId,
@@ -124,16 +128,25 @@ export class ContentModificationService {
       messageRevision: resolved.sourceMessageRevision,
       visibility: resolved.sourceVisibility,
     });
-    return this.resume(record, {
+    if (record.payload.source.kind === 'video-project' && record.payload.targetCatId !== principal.actor.actorId)
+      throw new ContentModificationJournalError('not_found');
+    const result = await this.resume(record, {
       userId: principal.userId,
       actor: { kind: 'human', actorId: principal.userId },
     });
+    if (record.payload.source.kind !== 'video-project') return result;
+    if (!this.deps.project) throw new ContentModificationJournalError('invalid_progress');
+    return this.deps.project.viewForCat(result.record, principal);
   }
 
   async read(requestId: string, principal: MediaReviewPrincipal): Promise<ModificationRequestView> {
     this.assertHuman(principal);
     const record = this.deps.store.requests.get(requestId, principal.userId);
     if (!record) throw new ContentModificationJournalError('not_found');
+    if (record.payload.source.kind === 'video-project') {
+      if (!this.deps.project) throw new ContentModificationJournalError('invalid_progress');
+      return this.deps.project.read(record, principal);
+    }
     await this.deps.content.inspect(record.payload, principal, true);
     return this.project(record);
   }
@@ -163,6 +176,10 @@ export class ContentModificationService {
     initial: ContentModificationRecord,
     principal: MediaReviewPrincipal,
   ): Promise<ModificationRequestView> {
+    if (initial.payload.source.kind === 'video-project') {
+      if (!this.deps.project) throw new ContentModificationJournalError('invalid_progress');
+      return this.deps.project.resume(initial, principal);
+    }
     const journal = this.deps.store.requests;
     const durationMs = this.deps.leaseDurationMs ?? 30000;
     const lease = journal.acquire(initial.requestId, principal.userId, Date.now(), durationMs);
@@ -235,6 +252,7 @@ export class ContentModificationService {
 
   private async project(record: ContentModificationRecord): Promise<ModificationRequestView> {
     const progress = record.progress;
+    if (record.progress.prepared?.kind === 'project') return projectModificationView(record);
     const selectionAnnotations = mediaSelectionAnnotations(this.deps.store, record);
     if (record.control) {
       const execution = await readModificationExecution(this.deps, record);

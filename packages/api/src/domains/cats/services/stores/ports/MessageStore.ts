@@ -15,6 +15,7 @@ import type {
   ConnectorSource,
   CrossThreadCoordination,
   CustodyOfferV1,
+  EntrustedWorkHumanTerminalReceiptV1,
   EvolutionPreparationSubmissionV1,
   MessageBundleCarrierV1,
   MessageContent,
@@ -31,6 +32,7 @@ import {
   collectiveWorkDelegationV1Schema,
   collectiveWorkInvocationV1Schema,
   custodyOfferV1Schema,
+  entrustedWorkHumanTerminalReceiptV1Schema,
   evolutionPreparationSubmissionV1Schema,
   isCrossThreadProvenance,
 } from '@cat-cafe/shared';
@@ -40,6 +42,7 @@ import { cursorFor, parseCursor } from '../cursor.js';
 import type { MessageDeliveryBoundary } from '../message-delivery-boundary.js';
 import { notifyMessageTimelineChange } from '../notify-message-timeline-change.js';
 import { type QueueSourceMutationWatch, QueueSourceMutationWatchRegistry } from '../queue-source-mutation-watch.js';
+import { UserMentionIndex } from '../user-mention-index.js';
 import {
   getTimelineOrderTime,
   isDurableOwnerReadEvidence,
@@ -143,6 +146,13 @@ export interface OwnerComposerDraft {
   contentBlocks?: readonly MessageContent[];
   replyTo?: string;
   updatedAt: number;
+}
+
+export interface LiveReturnProjection {
+  presentationEligibility: 'current' | 'deferred';
+  requestRefs: readonly string[];
+  /** A newly committed reminder's original result refs, never mere native input acceptance. */
+  reminderForMessageIds?: readonly string[];
 }
 
 export interface PutOwnerComposerDraftInput {
@@ -295,6 +305,8 @@ export interface StoredMessage {
           /** Explicit source role; legacy records without it remain in complete chat. */
           role?: 'user' | 'assistant';
           nativeTurnId?: string;
+          /** Source qualification only; current does not prove visible or audible presentation. */
+          returnProjection?: LiveReturnProjection;
         }
     );
     /** F290: canonical owner receipt and exact Task execution trigger; written by owner admission routes only. */
@@ -311,6 +323,8 @@ export interface StoredMessage {
       invocationId: string;
     };
     rich?: RichMessageExtra;
+    /** Server-written pre-resolution rich input digest for exact local-review retry recovery. */
+    callbackRichRequestDigest?: string;
     /** #814/F224: explicit post_message callback bubble; history hydration must not merge it into stream output. */
     isExplicitPost?: boolean;
     /** F081 + F194 Phase Z3 dual id:
@@ -328,6 +342,16 @@ export interface StoredMessage {
     };
     /** Typed causal origin for cat output; freshness must never infer this from prose or timing. */
     causal?: { kind: 'invocation_reply'; triggerMessageId: string };
+    /** Host-admitted proactive dot request. The root message owns its reply scope. */
+    dotAsk?: {
+      v: 1;
+      ownerUserId: string;
+      attemptId: string;
+      subscriptionId: string;
+      recipientCatIds: readonly string[];
+      requestKey: string;
+      requestDigest: string;
+    };
     /** #1371: immutable prompt boundary written with initial formal output; generic patches cannot replace it. */
     deliveryBoundary?: MessageDeliveryBoundary;
     /** F272: one canonical home message projected from a durable proactive visit. */
@@ -339,6 +363,8 @@ export interface StoredMessage {
     };
     /** F310: source-owned custody offer/disposition. Generic extra patches cannot mutate this field. */
     custodyOfferV1?: CustodyOfferV1;
+    /** F310: immutable Host receipt for one authenticated human Task terminal decision. */
+    entrustedWorkHumanTerminalReceiptV1?: EntrustedWorkHumanTerminalReceiptV1;
     /** F311: immutable F117-owned preparation body. Generic extra/stream patches cannot mutate it. */
     evolutionPreparationSubmissionV1?: EvolutionPreparationSubmissionV1;
     /** Durable child execution projection used to distinguish guard/supplement turns after F5. */
@@ -688,7 +714,11 @@ export type StoredPluginMessage = NonNullable<NonNullable<StoredMessage['extra']
 /** Host-owned metadata patch. Owner payload revisions use their dedicated transition methods. */
 export type HostMessageExtra = Omit<
   NonNullable<StoredMessage['extra']>,
-  'pluginMessage' | 'custodyOfferV1' | 'evolutionPreparationSubmissionV1'
+  | 'pluginMessage'
+  | 'custodyOfferV1'
+  | 'evolutionPreparationSubmissionV1'
+  | 'dotAsk'
+  | 'entrustedWorkHumanTerminalReceiptV1'
 >;
 
 /**
@@ -707,6 +737,11 @@ export type AppendMessageInput = Omit<
    */
   idempotencyKey?: string;
 };
+
+/** Host-only dot requests share an owner/attempt namespace across target threads. */
+export function messageIdempotencyScope(msg: AppendMessageInput): string {
+  return msg.extra?.dotAsk ? `dot-ask:${msg.extra.dotAsk.attemptId}` : (msg.threadId ?? DEFAULT_THREAD_ID);
+}
 
 /**
  * Enforce delivery lifecycle ownership for JavaScript callers that can bypass
@@ -737,9 +772,47 @@ function assertValidPreparationSubmission(msg: AppendMessageInput): void {
   }
 }
 
+function assertValidEntrustedWorkHumanTerminalReceipt(msg: AppendMessageInput): void {
+  const raw = msg.extra?.entrustedWorkHumanTerminalReceiptV1;
+  if (!raw) return;
+  const parsed = entrustedWorkHumanTerminalReceiptV1Schema.safeParse(raw);
+  if (!parsed.success) throw new TypeError('append() entrusted-work terminal receipt is invalid');
+  const receipt = parsed.data;
+  const expectedContent = receipt.decision.state === 'satisfied' ? '我确认这件已经完成。' : '我不再继续这件。';
+  const expectedIdempotencyKey = `entrusted-work-human-terminal:${receipt.task.taskId}:${receipt.decision.decisionId}`;
+  if (
+    msg.catId !== null ||
+    msg.source !== undefined ||
+    msg.userId !== receipt.ownerUserId ||
+    msg.threadId !== receipt.originalThreadId ||
+    msg.timestamp !== receipt.recordedAt ||
+    msg.content !== expectedContent ||
+    msg.mentions.length !== 0 ||
+    msg.idempotencyKey !== expectedIdempotencyKey
+  ) {
+    throw new TypeError('append() entrusted-work terminal receipt requires exact Host-authenticated coordinates');
+  }
+}
+
 /** Validate every caller-controlled field that affects persistent message order. */
 export function assertValidAppendMessageInput(msg: AppendMessageInput): void {
   assertValidAppendDeliveryMetadata(msg);
+  if (msg.extra?.dotAsk) {
+    const ask = msg.extra.dotAsk;
+    if (
+      msg.catId !== 'gpt-dot' ||
+      ask.v !== 1 ||
+      ask.ownerUserId !== msg.userId ||
+      !ask.attemptId ||
+      !ask.subscriptionId ||
+      !ask.requestKey ||
+      !/^[a-f0-9]{64}$/.test(ask.requestDigest) ||
+      !ask.recipientCatIds.length ||
+      ask.recipientCatIds.includes('gpt-dot')
+    )
+      throw new TypeError('dot ask requires Host-admitted author and request coordinates');
+  }
+
   assertValidStoredMessageTimestamp(msg.timestamp);
   const ownerAdmission = msg.extra?.collectiveOwnerAdmissionV1;
   const workInvocation = msg.extra?.collectiveWorkInvocationV1;
@@ -785,6 +858,7 @@ export function assertValidAppendMessageInput(msg: AppendMessageInput): void {
     }
   }
   assertValidPreparationSubmission(msg);
+  assertValidEntrustedWorkHumanTerminalReceipt(msg);
 }
 
 export function canonicalGrowingSourceJson(value: unknown): string {
@@ -957,7 +1031,9 @@ export function mergeMessageExtra(
   const {
     pluginMessage: _stripPlugin,
     custodyOfferV1: _stripCustody,
+    entrustedWorkHumanTerminalReceiptV1: _stripEntrustedWorkTerminal,
     evolutionPreparationSubmissionV1: _stripPreparation,
+    dotAsk: _stripDotAsk,
     deliveryBoundary: _stripBoundary,
     collectiveOwnerAdmissionV1: _stripCollectiveAdmission,
     collectiveWorkInvocationV1: _stripCollectiveInvocation,
@@ -1014,7 +1090,49 @@ export function applyStreamMetadataAugment(msg: StoredMessage, patch: StreamMeta
  * Common interface for message stores (in-memory and Redis).
  * Methods that may hit Redis are async; in-memory returns immediately.
  */
+export interface UserMentionHandlingRef {
+  expectedRevision?: number;
+  threadId: string;
+  messageId: string;
+}
+export interface UserMentionHandlingResult {
+  handled: number;
+  undoId: string;
+}
+
+export interface UserMentionHandlingReceipt extends UserMentionHandlingResult {
+  remaining: number;
+}
+
 export interface IMessageStore {
+  getLastUserMentionHandling(
+    userId: string,
+  ): UserMentionHandlingReceipt | null | Promise<UserMentionHandlingReceipt | null>;
+  getUserMentionStateRevisions(userId: string): Record<string, number> | Promise<Record<string, number>>;
+  restoreUserMentionRequest(
+    userId: string,
+    threadId: string,
+    messageId: string,
+    expectedRevision: number,
+  ): boolean | Promise<boolean>;
+  initializeUserMentionInbox(startedAt: number): number | Promise<number>;
+  listHandledUserMentions(userId: string): StoredMessage[] | Promise<StoredMessage[]>;
+  handleUserMentionRequests(
+    userId: string,
+    refs: UserMentionHandlingRef[],
+  ): UserMentionHandlingResult | null | Promise<UserMentionHandlingResult | null>;
+  undoUserMentionHandling(
+    userId: string,
+    undoId: string,
+  ): { restored: number } | null | Promise<{ restored: number } | null>;
+  /** Message-owned explicit requests: one current source per owner/thread. */
+  listUserMentionRequests(userId: string): StoredMessage[] | Promise<StoredMessage[]>;
+  resolveUserMentionRequest(
+    userId: string,
+    threadId: string,
+    expectedMessageId: string,
+    expectedRevision?: number,
+  ): boolean | Promise<boolean>;
   /** F102 KD-34: Listener called after every successful append (fire-and-forget) */
   onAppend?: MessageAppendListener;
   /** Successful delivery/cancel/recall CAS invalidates derived timeline accounting. */
@@ -1378,6 +1496,52 @@ function isRecallableOwnerMessage(message: StoredMessage): boolean {
 }
 
 export class MessageStore {
+  private readonly userMentionIndex = new UserMentionIndex();
+  private mentionCutover: number | undefined;
+
+  getLastUserMentionHandling(userId: string) {
+    return this.userMentionIndex.lastHandling(userId, (id) => this.getById(id));
+  }
+  getUserMentionStateRevisions(userId: string) {
+    return this.userMentionIndex.revisions(userId);
+  }
+  restoreUserMentionRequest(userId: string, threadId: string, messageId: string, expectedRevision: number) {
+    this.listUserMentionRequests(userId);
+    return this.userMentionIndex.restore(userId, threadId, messageId, expectedRevision, (id) => this.getById(id));
+  }
+
+  initializeUserMentionInbox(startedAt: number): number {
+    if (!Number.isSafeInteger(startedAt) || startedAt < 0) throw new Error('Invalid mention cutover');
+    return (this.mentionCutover ??= startedAt);
+  }
+
+  listHandledUserMentions(userId: string): StoredMessage[] {
+    return this.userMentionIndex.handled(userId, (id) => this.getById(id));
+  }
+
+  handleUserMentionRequests(userId: string, refs: UserMentionHandlingRef[]) {
+    this.listUserMentionRequests(userId);
+    return this.userMentionIndex.handle(userId, refs);
+  }
+
+  undoUserMentionHandling(userId: string, undoId: string) {
+    return this.userMentionIndex.undoHandling(userId, undoId, (id) => this.getById(id));
+  }
+
+  listUserMentionRequests(userId: string): StoredMessage[] {
+    return this.userMentionIndex.list(userId, (id) => this.getById(id));
+  }
+
+  resolveUserMentionRequest(
+    userId: string,
+    threadId: string,
+    expectedMessageId: string,
+    expectedRevision?: number,
+  ): boolean {
+    this.listUserMentionRequests(userId);
+    return this.userMentionIndex.resolve(userId, threadId, expectedMessageId, expectedRevision);
+  }
+
   onTimelineChanged?: MessageAppendListener;
   private messages: StoredMessage[] = [];
   private readonly queueSourceMutationWatches = new QueueSourceMutationWatchRegistry();
@@ -1458,7 +1622,7 @@ export class MessageStore {
     const threadId = normalizedMessage.threadId ?? DEFAULT_THREAD_ID;
     const idempotencyIndexKey = this.buildIdempotencyIndexKey(
       normalizedMessage.userId,
-      threadId,
+      messageIdempotencyScope(normalizedMessage),
       normalizedMessage.idempotencyKey,
     );
     if (idempotencyIndexKey) {
@@ -1484,6 +1648,7 @@ export class MessageStore {
       threadId,
     };
     this.messages.push(stored);
+    this.userMentionIndex.observe(stored);
     if (idempotencyIndexKey) {
       this.idempotencyIndex.set(idempotencyIndexKey, stored.id);
     }
@@ -1530,9 +1695,12 @@ export class MessageStore {
   appendIdempotent(msg: AppendMessageInput): IdempotentAppendResult {
     const normalizedMessage = normalizeJsonUnicode(msg);
     assertValidAppendMessageInput(normalizedMessage);
-    const threadId = normalizedMessage.threadId ?? DEFAULT_THREAD_ID;
     if (normalizedMessage.idempotencyKey) {
-      const existing = this.getByIdempotencyKey(normalizedMessage.userId, threadId, normalizedMessage.idempotencyKey);
+      const existing = this.getByIdempotencyKey(
+        normalizedMessage.userId,
+        messageIdempotencyScope(normalizedMessage),
+        normalizedMessage.idempotencyKey,
+      );
       if (existing) return { message: existing, idempotent: true };
     }
     return { message: this.append(normalizedMessage), idempotent: false };
@@ -1558,7 +1726,11 @@ export class MessageStore {
     assertValidAppendMessageInput(normalizedMessage);
     const threadId = normalizedMessage.threadId ?? DEFAULT_THREAD_ID;
     if (normalizedMessage.idempotencyKey) {
-      const existing = this.getByIdempotencyKey(normalizedMessage.userId, threadId, normalizedMessage.idempotencyKey);
+      const existing = this.getByIdempotencyKey(
+        normalizedMessage.userId,
+        messageIdempotencyScope(normalizedMessage),
+        normalizedMessage.idempotencyKey,
+      );
       if (existing) return { kind: 'committed', message: existing };
     }
     const actualLatestMessageId = this.getLatestThreadMessageIdIncludingQueued(threadId);
@@ -1573,7 +1745,11 @@ export class MessageStore {
     assertValidAppendMessageInput(normalizedMessage);
     const threadId = normalizedMessage.threadId ?? DEFAULT_THREAD_ID;
     if (normalizedMessage.idempotencyKey) {
-      const existing = this.getByIdempotencyKey(normalizedMessage.userId, threadId, normalizedMessage.idempotencyKey);
+      const existing = this.getByIdempotencyKey(
+        normalizedMessage.userId,
+        messageIdempotencyScope(normalizedMessage),
+        normalizedMessage.idempotencyKey,
+      );
       if (existing) {
         const freshness = existing.extra?.freshness;
         return {
@@ -2260,6 +2436,7 @@ export class MessageStore {
     if (!msg) return null;
     msg.deletedAt = Date.now();
     msg.deletedBy = deletedBy;
+    notifyMessageTimelineChange(this, msg);
     return msg;
   }
 
@@ -2281,6 +2458,7 @@ export class MessageStore {
     msg.deletedBy = deletedBy;
     msg._tombstone = true;
     this.pruneIdempotencyIndexForMessageIds([id]);
+    notifyMessageTimelineChange(this, msg);
     return msg;
   }
 
@@ -2293,6 +2471,8 @@ export class MessageStore {
     if (!msg || !msg.deletedAt || msg._tombstone) return null;
     delete msg.deletedAt;
     delete msg.deletedBy;
+    this.userMentionIndex.observe(msg);
+    notifyMessageTimelineChange(this, msg);
     return msg;
   }
 
@@ -2326,7 +2506,9 @@ export class MessageStore {
     const {
       pluginMessage: _stripPlugin,
       custodyOfferV1: _stripCustody,
+      entrustedWorkHumanTerminalReceiptV1: _stripEntrustedWorkTerminal,
       evolutionPreparationSubmissionV1: _stripPreparation,
+      dotAsk: _stripDotAsk,
       deliveryBoundary: _stripBoundary,
       collectiveOwnerAdmissionV1: _stripCollectiveAdmission,
       collectiveWorkInvocationV1: _stripCollectiveInvocation,
@@ -2374,7 +2556,10 @@ export class MessageStore {
   augmentStreamMetadata(id: string, patch: StreamMetadataAugmentInput): StoredMessage | null {
     const msg = this.messages.find((m) => m.id === id);
     if (!msg) return null;
-    return applyStreamMetadataAugment(msg, patch);
+    const updated = applyStreamMetadataAugment(msg, patch);
+    this.userMentionIndex.observe(updated);
+    if (patch.mentionsUser) notifyMessageTimelineChange(this, updated);
+    return updated;
   }
 
   /**
@@ -2393,6 +2578,7 @@ export class MessageStore {
       msg.timelineOrderAt = resolveDeliveryTimelineScore(msg, deliveredAt);
       msg.deliveredAt = deliveredAt;
       msg.deliveryStatus = 'delivered';
+      this.userMentionIndex.observe(msg);
       // #1269: Preserve existing visibility position for already-published speech.
       // Timeline-published queued cat speech gets visibilitySeq at append — delivery
       // must NOT reallocate or it would move the message after later arrivals and
@@ -2497,6 +2683,7 @@ export class MessageStore {
       if (input.deliveredAt !== undefined) {
         msg.timelineOrderAt = resolveDeliveryTimelineScore(msg, input.deliveredAt);
         msg.deliveryStatus = 'delivered';
+        this.userMentionIndex.observe(msg);
         msg.deliveredAt = input.deliveredAt;
         // #1269 P1-2: allocate visibilitySeq when hidden queued work becomes visible.
         // Same guard as markDelivered: preserve existing position, allocate only when missing.

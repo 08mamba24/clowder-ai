@@ -5,6 +5,7 @@ import { writeShellPresentation } from '@/components/shell/shell-presentation';
 import { subscribeTheaterReplay } from '@/components/ThreadSidebar/theater-navigation';
 import type { WorkspaceSurfaceDescriptor } from '@/components/workbench/workbench-contract';
 import type { LauncherWorkspaceSearch } from '@/components/workspace/WorkspaceLauncherSearch';
+import type { WorkspaceHomeV2 } from '../WorkspaceHomeV2';
 
 const mocks = vi.hoisted(() => ({
   setWorkspaceMode: vi.fn(),
@@ -30,6 +31,28 @@ vi.mock('@/components/CatAvatar', () => ({ CatAvatar: () => null }));
 vi.mock('@/components/ChatVoiceFeatureControls', () => ({ ChatVoiceFeatureControls: () => null }));
 vi.mock('@/components/workspace/RecentTrajectoryRecall', () => ({ RecentTrajectoryRecall: () => null }));
 vi.mock('@/components/workspace/WorkspaceNowSurface', () => ({ WorkspaceNowSurface: () => null }));
+// Exercise the new picker through the original Home admission callbacks. The real + host mount is a browser journey.
+vi.mock('@/components/workspace-home/WorkspaceHomeV2', async () => {
+  const { WorkspaceToolsContent } = await import('../WorkspaceToolsContent');
+  return {
+    WorkspaceHomeV2: (props: React.ComponentProps<typeof WorkspaceHomeV2>) => (
+      <div data-home-presentation="v2">
+        <WorkspaceToolsContent
+          onSelectDevSurface={props.onSelectDevSurface}
+          onSelectDestination={props.onSelectDestination}
+          workspaceSearch={props.workspaceSearch}
+          onOpenSettings={vi.fn()}
+          onClose={vi.fn()}
+          onSelectRecentSurface={vi.fn()}
+          recentSurfaces={[]}
+        />
+        {props.destinationMessage && (
+          <output data-testid="f307-destination-admission-status">{props.destinationMessage}</output>
+        )}
+      </div>
+    ),
+  };
+});
 vi.mock('@/components/workspace/WorkspaceLauncherSearch', () => ({
   WorkspaceLauncherSearch: ({
     workspaceSearch,

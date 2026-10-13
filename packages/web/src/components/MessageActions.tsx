@@ -20,6 +20,7 @@ import { createQuoteContextAttachment } from './chat-context-reference';
 import { describeMessageInvocationTrajectory, openMessageInvocationTrajectory } from './InvocationTrajectoryAnchor';
 import { LiveSelectionAnnotationAction } from './LiveSelectionAnnotationAction';
 import { MessageActionSlotProvider } from './MessageActionSlot';
+import { MessageAnnotationActions } from './MessageAnnotationActions';
 import { MessageActionsDock, MessageOverflowItems } from './message-v2/MessageActionsDock';
 import { MessageActionsOverlay } from './message-v2/MessageActionsOverlay';
 import {
@@ -29,7 +30,6 @@ import {
   useMessageActionOwnership,
 } from './message-v2/message-action-ownership';
 import { messageActionsCopy } from './message-v2/message-actions-copy';
-import { SelectionAnnotationAction } from './SelectionAnnotationAction';
 import { useShellCopy } from './shell/shell-copy';
 import { useShellPresentation } from './shell/shell-presentation';
 import { pushThreadRouteWithHistory } from './ThreadSidebar/thread-navigation';
@@ -760,21 +760,14 @@ export function MessageActions({
           />
         )}
 
-        {!selectionMode &&
-          annotationMarkers.map((marker) => (
-            <SelectionAnnotationAction
-              key={marker.attachment.id}
-              selectedText={marker.attachment.text}
-              initialComment={marker.attachment.comment}
-              position={marker.position}
-              positionMode="fixed"
-              actionTestId={`context-annotation-marker-${marker.attachment.id}`}
-              triggerContent={marker.number}
-              triggerClassName="fixed z-[65] grid h-7 w-7 place-items-center rounded-full border-2 border-[var(--cafe-surface)] bg-cafe-accent text-xs font-bold text-[var(--cafe-surface)] shadow-lg transition-transform hover:scale-110"
-              onSave={(comment) => updateAnnotation(marker.attachment, comment)}
-              onDelete={() => deleteAnnotation(marker.attachment)}
-            />
-          ))}
+        {!selectionMode && (
+          <MessageAnnotationActions
+            key={message.id}
+            markers={annotationMarkers}
+            onSave={updateAnnotation}
+            onDelete={deleteAnnotation}
+          />
+        )}
 
         {canReply && !selectionMode && !actionSlot && (compactActions ? compactEntry() : actionToolbar(false))}
         {canReply && !selectionMode && actionSlot && presentation === 'v2' && (

@@ -9,8 +9,19 @@ import type {
 import { assertValidAppendMessageInput, DEFAULT_THREAD_ID, generateSortableId } from '../ports/MessageStore.js';
 import { assertQueueCustodyMessageBinding } from '../ports/queued-message-custody.js';
 import { MessageKeys } from '../redis-keys/message-keys.js';
-import { withOwnerUncertaintyIndex } from './owner-uncertainty-lua.js';
+import { withOwnerUncertaintyIndex as withUncertaintyIndex } from './owner-uncertainty-lua.js';
 import { serializeExtra } from './redis-message-parsers.js';
+import { withUserMentionIndex } from './user-mention-index-lua.js';
+
+function withOwnerUncertaintyIndex(script: string, hashKey: number, indexExpression: string): string {
+  const fields = 'cjson.decode(ARGV[6])';
+  const prefix = `string.sub(KEYS[2], 1, #KEYS[2] - #${fields}.id - 4)`;
+  return withUserMentionIndex(
+    withUncertaintyIndex(script, hashKey, indexExpression),
+    hashKey,
+    `{${prefix} .. 'msg:user-requests:latest:' .. ${fields}.userId, ${prefix} .. 'msg:user-requests:pending:' .. ${fields}.userId, ${prefix} .. 'msg:user-requests:closed:' .. ${fields}.userId, ${prefix} .. 'msg:user-request-signals:' .. ${fields}.userId .. ':' .. ${fields}.threadId}`,
+  );
+}
 
 const APPEND_IF_THREAD_FRONTIER_LUA = withOwnerUncertaintyIndex(
   `
