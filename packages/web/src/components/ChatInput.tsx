@@ -69,6 +69,7 @@ import {
   threadReplyDrafts,
 } from './thread-drafts';
 import { useDurableComposerDraft } from './useDurableComposerDraft';
+import { useTextareaAutosize } from './useTextareaAutosize';
 import { WhisperCatSelector } from './WhisperCatSelector';
 
 /** Module-level draft storage — survives component unmount/remount across thread switches */
@@ -967,15 +968,7 @@ export function ChatInput({
     setGhostSuggestion(match);
   }, [input, findHistoryMatch]);
 
-  // Auto-resize textarea based on content
-  useEffect(() => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    ta.style.height = 'auto';
-    const isMobile = typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 767px)').matches : false;
-    const maxH = isMobile ? 120 : 200; // ~5 lines mobile, ~8 lines desktop
-    ta.style.height = `${Math.min(ta.scrollHeight, maxH)}px`;
-  }, [input]);
+  useTextareaAutosize(textareaRef, input);
 
   useEffect(() => {
     if (!activeMenu) return;
