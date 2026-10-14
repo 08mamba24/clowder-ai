@@ -3,7 +3,8 @@ import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { CANONICAL_TOOL_REGISTRY } from './canonical-server-tools.js';
-import { type AtomicCutoverManifest, FIXED_CUTOVER_CONSUMER_ROOTS, validateAtomicCutovers } from './tool-cutover.js';
+import { type AtomicCutoverManifest, validateAtomicCutovers } from './tool-cutover.js';
+import { scanRetiredNames } from './tool-cutover-consumer-scan.js';
 import {
   createBootstrapAttestation,
   digestGovernanceValue,
@@ -151,28 +152,6 @@ async function readManifests(repoRoot: string): Promise<readonly AtomicCutoverMa
   if (!(await exists(directory))) return [];
   const names = (await readdir(directory)).filter((name) => name.endsWith('.json')).sort();
   return Promise.all(names.map((name) => readJson<AtomicCutoverManifest>(resolve(directory, name))));
-}
-
-async function scanRetiredNames(repoRoot: string, names: readonly string[]) {
-  return Promise.all(
-    names.map(async (retiredName) => {
-      const matches: { root: string; path: string; line: number }[] = [];
-      for (const root of FIXED_CUTOVER_CONSUMER_ROOTS) {
-        const absoluteRoot = resolve(repoRoot, root);
-        if (!(await exists(absoluteRoot))) continue;
-        const entries = await readdir(absoluteRoot, { recursive: true, withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.isFile()) continue;
-          const path = resolve(entry.parentPath, entry.name);
-          const content = await readFile(path, 'utf8').catch(() => '');
-          content.split(/\r?\n/).forEach((line, index) => {
-            if (line.includes(retiredName)) matches.push({ root, path, line: index + 1 });
-          });
-        }
-      }
-      return { retiredName, scannedRoots: FIXED_CUTOVER_CONSUMER_ROOTS, matches, resolvedConsumers: [] };
-    }),
-  );
 }
 
 function report(before: McpSurfaceSnapshot, after: McpSurfaceSnapshot): string {

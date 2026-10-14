@@ -8,7 +8,7 @@ description: "Govern the Clowder AI MCP surface as typed resource lifecycles wit
 description_source: human
 description_author: codex-sol
 description_updated_at: 2026-08-01T10:03:45Z
-tips_exempt: "Renewed 2026-10-13 for AC-B4: exported bootstrap lineage, the target-owned public baseline projection, and claim-only evidence stubs are internal MCP governance and sync verification; they add no user-invokable workflow or discovery moment."
+tips_exempt: "Renewed 2026-10-14 for AC-B4 and KD-12: exported bootstrap lineage, target-owned public baselines, claim-only evidence stubs, and manifest-bound absence/rejection test references are maintainer-facing MCP governance and verification. Negative-test classification preserves existing retirement assertions; it adds no Human-invokable tool, workflow, or discovery action."
 ---
 
 # F286: MCP Surface Lifecycle Governance
@@ -182,7 +182,7 @@ Why: existing cells own capability execution (`hub-action-surface`), plugin reso
 
 - [x] AC-B1: All 130 registered semantics carry a canonical certificate derived through `defineMcpTool()` / the protected migration factory; the registry, annotations, profiles, SDK registration, and implementation bindings are executable projections rather than parallel inventories.
 - [x] AC-B2: RED→GREEN tests reject an unjustified existing-family verb, unrelated admission evidence, mixed authority/risk lifecycle variants, unresolved handler bindings, and a same-schema handler swap; exact subject-bound accepted evidence passes.
-- [x] AC-B3: `pnpm check:mcp-surface-governance` regenerates the committed protected-base witness, verifies exact protocol/handler parity, reports identity/resource-action/profile/description deltas, and requires exact atomic manifests for semantic or profile projection removal with fixed-root stale-reference, no-overlap, rollback, and layer guards.
+- [x] AC-B3: `pnpm check:mcp-surface-governance` regenerates the committed protected-base witness, verifies exact protocol/handler parity, reports identity/resource-action/profile/description deltas, and requires exact atomic manifests for semantic or profile projection removal with fixed-root stale-reference, manifest-bound negative-test evidence, no-overlap, rollback, and layer guards.
 - [x] AC-B4: A clean public checkout validates the source-issued bootstrap through exact public Git/provenance coordinates, accepts only the attested initial public baseline projection, rejects forged/stale/cross-lineage proof, and then retains a normal reviewed public write/check lifecycle without exporting bootstrap authority or private Feature narrative.
 
 ### Phase C（Pilot Migration）
@@ -220,6 +220,7 @@ Why: existing cells own capability execution (`hub-action-surface`), plugin reso
 | Low-ranked usage is mistaken for zero | F150 top-20 caveat is a hard provenance field; absence alone cannot authorize deletion |
 | Registry becomes a second stale list | Derive it from canonical tool definitions and fail registration drift mechanically |
 | A removed surface is resurrected by another layer | Cross-layer absence guard covers registration, lazy discovery, catalogs/provisioning, L0/skills, deterministic fixtures, and declared eval consumers |
+| A real retirement assertion is deleted or its literal is hidden merely to satisfy the stale-reference scan | Preserve the raw literal and subtract only an exact same-line `absence`/`rejection` marker under a fixed test root whose file is bound by the cutover manifest; every malformed or unbound case fails closed |
 | Source bootstrap SHA is unavailable in an exported repository | Attest the exact source→public history mapping and initial projection digest; never guess a public ancestor, export home history, or skip ancestry |
 
 ## Key Decisions
@@ -237,6 +238,7 @@ Why: existing cells own capability execution (`hub-action-surface`), plugin reso
 | KD-9 | Phase D separates availability from schema delivery and uses provider-native discovery; current host delivery is version-attested rather than stored as a universal per-tool fact | Claude/Codex carriers already deliver MCP schemas differently, so the old exposure enum cannot truthfully encode both authorization and context delivery | 2026-08-29 |
 | KD-10 | Natural Claude/Codex history is a discovery prior only; Signals is the bounded controlled family, and 57/111 candidates stay out of scope | Provider/model/task confounds and F150 rank censoring make no-signal evidence too weak to waive deterministic profile/discovery proof | 2026-08-29 |
 | KD-11 | Exported repositories keep the home protected-source SHA but prove their own lineage through source-attested public introduction/projection commits; the generated public baseline becomes target-owned after the exact first projection | Re-signing to an invented public ancestor loses source authority, while replaying home implementation digests makes public sanitization unverifiable | 2026-10-13 |
+| KD-12 | Negative retirement tests keep retired literals visible and receive only coordinate-level, manifest-bound classification | A raw-string ban confuses proof of absence/rejection with an active consumer; unrestricted test exemptions would hide stale callers. Same-line markers + fixed test roots + exact fixture manifest paths preserve both safety properties | 2026-10-13 |
 
 ## Review Gate
 
