@@ -1245,6 +1245,11 @@ export const ChatMessage = memo(function ChatMessage({
       )}
       {message.extra?.rich?.blocks && message.extra.rich.blocks.length > 0 && (
         <RichBlocks
+          runtimeInteractionCard={
+            message.extra.runtimeInteractionCard?.requestKind === 'conversation_decision'
+              ? { ...message.extra.runtimeInteractionCard, requestKind: 'conversation_decision' }
+              : undefined
+          }
           blocks={message.extra.rich.blocks}
           publication={publication}
           catId={message.catId}

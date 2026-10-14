@@ -7,12 +7,17 @@ import {
 import { normalizeOwnerAuthProvenance } from '../cats/services/owner-auth-provenance.js';
 import type { InvocationRecord } from '../cats/services/stores/ports/InvocationRecordStore.js';
 import { classifyInvocationRecoveryStatus } from '../cats/services/stores/ports/invocation-state-machine.js';
+import { readDurableGateRecord } from '../managed-job/durable-managed-gate-job-store.js';
+import { ManagedJobService } from '../managed-job/ManagedJobService.js';
+import { legacyManagedJobOrigins } from '../managed-job/managed-job-legacy-census.js';
+import { buildWakeConditionMetEvent } from './ball-custody-events.js';
 import { durableManagedGateConsumerLines, projectDurableManagedGateConsumer } from './durable-managed-gate-consumer.js';
 import {
   cancelDurableManagedGateJob,
   inspectDurableManagedGateJob,
   validateDurableManagedGateJob,
 } from './durable-managed-gate-job.js';
+import { resolveManagedCommandJob } from './managed-command-job-reference.js';
 import { settleNoSpawnDurableGate } from './managed-command-no-spawn-terminal.js';
 import { ManagedCommandWakeActionLeaseAdmissionError } from './managed-command-wake-action-lease-admission.js';
 import {
@@ -103,13 +108,24 @@ export class ManagedCommandWakeRecoverySweep {
   private async reconcileDurableGateJobs(tasks: DynamicTaskDef[]): Promise<ManagedCommandWakeRecoveryStats> {
     let recovered = 0;
     let pending = 0;
-    const running = tasks.flatMap((task) => {
+    // Action Plane reconciles EVERY producer, even if its F167 carrier was force-reset or already consumed.
+    const legacyJobs = legacyManagedJobOrigins().flatMap(({ jobId, taskId }) => {
+      const task = this.deps.dynamicTaskStore.getById(taskId);
+      const descriptor = task ? resolveManagedCommandJob(task) : undefined;
+      return descriptor?.jobId === jobId && validateDurableManagedGateJob(descriptor, taskId) ? [descriptor] : [];
+    });
+    const jobs = await new ManagedJobService().reconcile(legacyJobs, this.now());
+    const observed = new Map(jobs.map(({ job, inspection }) => [job.jobId, inspection]));
+    const allTasks = new Map(tasks.map((task) => [task.id, task]));
+    for (const { job } of jobs) {
+      const task = this.deps.dynamicTaskStore.getById(job.originTaskId);
+      if (task) allTasks.set(task.id, task);
+    }
+    const running = [...allTasks.values()].flatMap((task) => {
       const command = readManagedCommandWakeProjection(task);
       if (!command || command.state !== 'command_running') return [];
-      const durableJob = command.durableJob;
-      return durableJob?.kind === 'full_gate' || durableJob?.kind === 'resumable_full_gate_v2'
-        ? [{ task, durableJob, command }]
-        : [];
+      const durableJob = resolveManagedCommandJob(task);
+      return durableJob ? [{ task, durableJob, command }] : [];
     });
     for (const { task, durableJob, command } of running) {
       if (!validateDurableManagedGateJob(durableJob, task.id)) {
@@ -131,7 +147,10 @@ export class ManagedCommandWakeRecoverySweep {
           now: this.now(),
         });
       }
-      const inspection = inspectDurableManagedGateJob(durableJob);
+      const inspection =
+        readDurableGateRecord(durableJob)?.state === 'terminal'
+          ? inspectDurableManagedGateJob(durableJob, { now: this.now() })
+          : (observed.get(durableJob.jobId) ?? inspectDurableManagedGateJob(durableJob, { now: this.now() }));
       if (!('result' in inspection)) {
         pending += 1;
         continue;
@@ -145,7 +164,7 @@ export class ManagedCommandWakeRecoverySweep {
       const completion = {
         taskId: task.id,
         wakeContent:
-          `持球唤醒（durable full gate 终态）：${inspection.result.tailOutput ?? inspection.state}` +
+          `持球唤醒（命令完成）：${inspection.result.tailOutput ?? inspection.state}` +
           (consumerLines.length > 0 ? `\n${consumerLines.join('\n')}` : ''),
         result: inspection.result,
       };
@@ -169,12 +188,13 @@ export class ManagedCommandWakeRecoverySweep {
       const idempotencyKey = buildAdmissionFactIdempotencyKey(task.id);
       try {
         if (parsed.command.state === 'not_started') {
+          const durableJob = resolveManagedCommandJob(task);
           // Recover the exact params-written / enabled-not-yet-written crash window.
           // The explicit lifecycle fact is proof; pid=null is never used as proof.
           if (
-            (parsed.command.durableJob &&
+            (durableJob &&
               !settleNoSpawnDurableGate(
-                parsed.command.durableJob,
+                durableJob,
                 task.id,
                 parsed.command.notStartedDetail ?? 'admission_rejected',
               )) ||
@@ -199,7 +219,19 @@ export class ManagedCommandWakeRecoverySweep {
               connector: 'hold-ball',
               label: '持球通知',
               icon: '🏓',
-              meta: { wakeWhen: true, taskId: task.id, recoverySource: 'startup_sweep' },
+              meta: {
+                wakeWhen: true,
+                taskId: task.id,
+                recoverySource: 'startup_sweep',
+                ...(parsed.command.jobId
+                  ? {
+                      jobId: parsed.command.jobId,
+                      managedJobReceipt: 'admission',
+                      catId: parsed.catId,
+                      threadId: parsed.threadId,
+                    }
+                  : {}),
+              },
             },
           });
           this.deps.socketManager.broadcastToRoom(`thread:${parsed.threadId}`, 'connector_message', {
@@ -328,6 +360,30 @@ export class ManagedCommandWakeRecoverySweep {
   async recoverTask(taskId: string): Promise<ManagedCommandWakeRecoveryResult> {
     let parsed = parseWakeTask(this.deps.dynamicTaskStore.getById(taskId));
     if (!parsed) return 'missing';
+    // Live completion and API recovery must publish the same dischargeable wake.
+    // Replays also repair a crash between message publication and custody write.
+    if (
+      parsed.command.result &&
+      (parsed.command.state === 'condition_met' || isDispatchableManagedCommandWakeState(parsed.command.state))
+    ) {
+      try {
+        await this.deps.ballCustody?.record(
+          buildWakeConditionMetEvent({
+            threadId: parsed.threadId,
+            catId: parsed.catId,
+            taskId,
+            command: parsed.command.command,
+            exitCode: parsed.command.result.exitCode,
+            timedOut: parsed.command.result.timedOut,
+            durationMs: parsed.command.result.durationMs,
+            at: parsed.command.conditionMetAt ?? parsed.command.startedAt,
+          }),
+        );
+      } catch (error) {
+        log.warn({ taskId, error }, 'Managed completion waiting for wake custody persistence');
+        return 'pending';
+      }
+    }
     parsed = recordManagedCommandWakeSlaBreach(this.deps, parsed, this.now, this.wakeSlaMs);
     if (parsed.command.state === 'condition_met') {
       const published = await this.publishCompletion(parsed);

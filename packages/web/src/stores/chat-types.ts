@@ -17,6 +17,14 @@ import type {
   ThreadArtifactDTO,
   TurnExecutionMessageProjection,
 } from '@cat-cafe/shared';
+export interface RuntimeConversationAnswerContext {
+  interactionId: string;
+  expectedRevision: number;
+  operationId: string;
+  ownerUserId: string;
+  cardRef: import('@cat-cafe/shared').RuntimeInteractionCardRef;
+}
+
 import type { WorkspaceMode } from '@/lib/workspace-modes';
 import type { EvidenceSourceType } from '@/types/evidence';
 
@@ -327,6 +335,13 @@ export interface ChatMessage {
     /** F306 durable projection input shared by live, hydration, callback and replay. */
     semanticEvent?: ProviderSemanticEvent;
     rich?: { v: 1; blocks: RichBlock[] };
+    /** Server-owned binding: arbitrary interactive/card metadata never grants admission. */
+    runtimeInteractionCard?: {
+      version: 1;
+      interactionId: string;
+      blockId: string;
+      requestKind: 'approval' | 'question' | 'elicitation' | 'conversation_decision';
+    };
     /** F310 source-owner projection; the card rehydrates canonical state before acting. */
     custodyOfferV1?: CustodyOfferV1;
     contentModificationRequestV1?: import('@cat-cafe/shared').ContentModificationSourceMessageV1;

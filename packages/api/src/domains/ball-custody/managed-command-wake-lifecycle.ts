@@ -3,6 +3,7 @@ import type { DynamicTaskDef } from '../../infrastructure/scheduler/DynamicTaskS
 import type { OwnerAuthProvenance } from '../cats/services/owner-auth-provenance.js';
 import type { InvocationRecord } from '../cats/services/stores/ports/InvocationRecordStore.js';
 import type { IMessageStore, StoredMessage } from '../cats/services/stores/ports/MessageStore.js';
+import type { IBallCustodyIngest } from './BallCustodyIngest.js';
 import {
   isPlainRecord,
   type ManagedCommandTerminalResult,
@@ -119,6 +120,7 @@ export interface ManagedCommandWakeDynamicTaskStore {
 }
 
 export interface ManagedCommandWakeRecoveryDeps {
+  readonly ballCustody?: IBallCustodyIngest;
   readonly dynamicTaskStore: ManagedCommandWakeDynamicTaskStore;
   readonly messageStore: Pick<IMessageStore, 'append' | 'getByIdempotencyKey' | 'markCanceled'> &
     Partial<Pick<IMessageStore, 'getById'>>;

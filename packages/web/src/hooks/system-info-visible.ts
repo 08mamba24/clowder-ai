@@ -156,6 +156,12 @@ export function formatSessionSealRequested(
 
   const catId = typeof parsed.catId === 'string' ? parsed.catId : 'unknown';
   const sessionSeq = typeof parsed.sessionSeq === 'number' ? parsed.sessionSeq : '?';
+  if (parsed.reason === 'native_binding_changed') {
+    return {
+      content: `${resolveCatName(catId)} 的原生配置已更新，会话 #${sessionSeq} 已封存；正在带上历史继续`,
+      variant: 'info',
+    };
+  }
   const continuityDiagnostics =
     typeof parsed.continuityDiagnostics === 'object' && parsed.continuityDiagnostics !== null
       ? (parsed.continuityDiagnostics as Record<string, unknown>)

@@ -529,18 +529,26 @@ export function AccountSection({
         <SelectField
           label="Client"
           value={form.clientId}
-          options={CLIENT_OPTIONS}
+          options={
+            form.clientId === 'antigravity'
+              ? [...CLIENT_OPTIONS, { value: 'antigravity', label: 'Antigravity IDE（已退役）' }]
+              : CLIENT_OPTIONS
+          }
           onChange={(value) => {
             const nextClient = value as HubCatEditorFormState['clientId'];
             const forceAcp = isAcpOnlyClient(nextClient);
-            const nextAcpEnabled = forceAcp || (showTransportSelector(nextClient) && form.acpEnabled);
+            const nextAcpEnabled =
+              nextClient !== 'google' && (forceAcp || (showTransportSelector(nextClient) && form.acpEnabled));
             onChange({
               clientId: nextClient,
               provider: '',
               cliEffort: '',
               codexCarrier: '',
               acpEnabled: nextAcpEnabled,
-              agyNativeEnabled: false,
+              agyNativeEnabled: nextClient === 'google',
+              ...(nextClient === 'google'
+                ? { agyProfileEnabled: true, agyProfileId: form.agyProfileId || form.catId }
+                : {}),
               ...(nextAcpEnabled ? acpDefaultsForClientSwitch(form, nextClient) : {}),
             });
           }}
@@ -551,10 +559,13 @@ export function AccountSection({
           <SelectField
             label="Transport"
             ariaLabel="Transport"
-            value={form.acpEnabled ? 'acp' : native ? 'agy-native' : 'cli'}
+            value={form.clientId === 'google' ? (native ? 'agy-native' : 'retired') : form.acpEnabled ? 'acp' : 'cli'}
             options={
               form.clientId === 'google'
-                ? [...ACP_TRANSPORT_OPTIONS, { value: 'agy-native', label: 'AGY Native' }]
+                ? [
+                    ...(!native ? [{ value: 'retired', label: '旧入口已退役，请配置 Native' }] : []),
+                    { value: 'agy-native', label: 'AGY Native' },
+                  ]
                 : ACP_TRANSPORT_OPTIONS
             }
             onChange={(value) => {
@@ -631,22 +642,9 @@ export function AccountSection({
         ) : null}
 
         {form.clientId === 'antigravity' ? (
-          <>
-            <TextField
-              label="CLI Command"
-              value={form.commandArgs}
-              onChange={(value) => onChange({ commandArgs: value })}
-              required
-              placeholder="启动命令参数"
-            />
-            <TextField
-              label="Model"
-              value={form.defaultModel}
-              onChange={(value) => onChange({ defaultModel: value })}
-              required
-              placeholder="模型标识符"
-            />
-          </>
+          <p className="text-sm text-cafe-secondary">
+            IDE 执行入口已退役。选择 Google / AGY Native 并保存隔离 Profile 后可继续使用；成员身份与历史消息保留。
+          </p>
         ) : (
           <>
             <SelectField

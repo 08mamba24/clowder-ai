@@ -2,9 +2,12 @@
 cell_id: bubble-pipeline
 title: Bubble Pipeline
 summary: Provider-normalized semantic event 到用户可见 bubble 的单一投影边界；覆盖气泡 identity、reducer single-writer、structured payload fail-closed、live/hydration convergence、诊断、cache invalidation、typed execution/freshness projection，以及 F264 原消息上的 durable per-target receipt 与整条 lineage 导航。
-canonical_features: [F177, F183, F254, F264]
+canonical_features: [F177, F183, F254, F264, F322]
 code_anchors:
   - packages/api/src/domains/cats/services/types.ts
+  - packages/api/src/domains/runtime-interaction/RuntimeInteractionCardPublisher.ts
+  - packages/api/src/domains/runtime-interaction/MessageQueueRuntimeConversationReturnGateway.ts
+  - packages/api/src/domains/cats/services/stores/ports/MessageStore.ts
   - packages/shared/src/types/bubble-pipeline.ts
   - packages/shared/src/types/turn-execution.ts
   - packages/web/src/stores/bubble-reducer.ts
@@ -50,6 +53,7 @@ cited_by:
   - {feature: F264-terminal-consumption, date: 2026-07-31, delta: the original cross-thread message renders delivered, exact-child awakened, body-read, unsettled, and typed terminal-silent per-target states; an empty final stays system receipt only and never creates a cat bubble}
   - {feature: F264-author-disposition, date: 2026-08-04, delta: composer exposes inherited current-work/next-work intent only while a live target makes the choice meaningful; the original message receipt distinguishes requested current work, durable fallback, exact exposure, and outcome without moving or copying bodies}
   - {feature: F280-Gate-6, date: 2026-08-13, delta: the existing queue_updated store transition consumes dispatch-owned messageReceipts beside the Queue snapshot, so an exact authored bubble reaches terminal withdrawn truth immediately even when no actionable row survives; history hydration remains the same canonical DTO}
+  - {feature: F322, date: 2026-10-14, delta: "J3 persists the original InteractiveBlock as ordinary MessageStore truth with a server-only runtimeInteractionCard binding; the winning answer/default returns through one ordinary Message/Queue carrier, while the lifecycle record stores only a redacted terminal receipt."}
 ---
 
 # Bubble Pipeline
@@ -59,6 +63,8 @@ cited_by:
 F143 provider adapters own raw wire parsing and normalize into the shared AgentService event port; this cell owns the next boundary from provider-neutral semantic event to `BubbleEvent` / human-facing projection. Provider provenance is diagnostic metadata, not the renderer's primary switch. Active foreground, background, hydration/F5, callback, and replay must consume one registry/projector. A structured protocol envelope is visible only through an explicit human-readable projector; unknown/invalid payloads and projector failures retain diagnostics but fail closed instead of becoming raw JSON bubbles. Plain human-readable system notices remain visible.
 
 F183 / ADR-033 own bubble identity and the single-writer reducer contract for frontend message rendering. This cell owns `(catId, canonicalInvocationId, bubbleKind)` identity, BubbleEvent ingress, hydration merge, IDB fallback, and diagnostics. Each visible cat body may carry one immutable `TurnExecutionMessageProjection`: ordinary replies remain visually ordinary, `routing_guard` is labeled “系统补路由”, and `freshness_supplement` is labeled as a later-message supplement. When a guard only assists preserved first-pass prose, it is attached as `auxiliaryTurnExecutions` to that original bubble and never creates or copies a second body. Terminal lifecycle remains in the ledger glass-box API. Under ADR-042, the published original remains ordinary MessageStore truth. A supplement lifecycle projection is attached by exact `originalMessageId`; pending/running/declined/failed/budget states decorate that original, and a produced supplement is a separate timestamped reply carrying `extra.supplement`. F264 attaches `QueueMessageReceipt` to the original user bubble. It shows carrier admission as delivered, exact child creation as awakened, exact `seenAt` as body read, and `handledAt` as terminal handling, never collapsing those events or calling the latter “received”. The existing `queue_updated` store transition consumes both receipts embedded in surviving Queue rows and additive dispatch-owned `messageReceipts`, keyed only by exact message ID; therefore a terminal withdrawal remains live when the actionable Queue is empty, without a second receipt store or message writer. A typed `terminal_silent` outcome renders a system-owned explanation under the original cross-thread message; empty provider text never creates a cat body or second identity. Its evidence action selects every loaded message in the exact invocation lineage, including supplements, while retaining each message's own timeline identity and position. Live socket and F5 hydration must converge without content/timestamp or log-text guessing.
+
+F322 J3 keeps a conversation decision's exact `InteractiveBlock` inside that ordinary MessageStore/hydration path. `extra.runtimeInteractionCard` binds the message and block to the F306 record without rewriting the block, and the exact block digest/liveness check fences every mutation. The single CAS winner returns through an idempotent Message/Queue carrier: owner answers retain strict owner authorship; deadline defaults and expiry notices use Host/connector authorship. Free text lives only in the returned message, while the lifecycle record retains a redacted response and exact message reference. This metadata does not create a new bubble identity or let rendered prose settle a decision.
 
 ## Use This When
 

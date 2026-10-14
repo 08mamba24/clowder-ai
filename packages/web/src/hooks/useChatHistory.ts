@@ -396,6 +396,7 @@ function mergeMessageExtra(
     outputLayout: preferred?.outputLayout,
     liveCompanion: pick('liveCompanion'),
     custodyOfferV1: pick('custodyOfferV1'),
+    runtimeInteractionCard: pick('runtimeInteractionCard'),
     contentModificationRequestV1: pick('contentModificationRequestV1'),
     contentModificationReceiptV1: pick('contentModificationReceiptV1'),
     semanticEvent: pick('semanticEvent'),
@@ -1603,6 +1604,7 @@ export function useChatHistory(threadId: string) {
                 outputLayout?: unknown;
                 liveCompanion?: NonNullable<ChatMessageData['extra']>['liveCompanion'];
                 rich?: { v: number; blocks: unknown[] };
+                runtimeInteractionCard?: NonNullable<ChatMessageData['extra']>['runtimeInteractionCard'];
                 crossPost?: { sourceThreadId: string; sourceInvocationId?: string };
                 stream?: { invocationId?: string };
                 turnExecution?: NonNullable<ChatMessageData['extra']>['turnExecution'];
@@ -1684,6 +1686,7 @@ export function useChatHistory(threadId: string) {
                     outputLayout ||
                     m.extra?.liveCompanion ||
                     m.extra?.rich ||
+                    m.extra?.runtimeInteractionCard ||
                     m.extra?.crossPost ||
                     m.extra?.stream ||
                     m.extra?.turnExecution ||
@@ -1710,6 +1713,9 @@ export function useChatHistory(threadId: string) {
                       ...(outputLayout ? { outputLayout } : {}),
                       ...(m.extra?.liveCompanion ? { liveCompanion: m.extra.liveCompanion } : {}),
                       ...(m.extra?.rich ? { rich: m.extra.rich } : {}),
+                      ...(m.extra?.runtimeInteractionCard
+                        ? { runtimeInteractionCard: m.extra.runtimeInteractionCard }
+                        : {}),
                       ...(m.extra?.crossPost ? { crossPost: m.extra.crossPost } : {}),
                       ...(m.extra?.stream ? { stream: m.extra.stream } : {}),
                       ...(m.extra?.turnExecution ? { turnExecution: m.extra.turnExecution } : {}),

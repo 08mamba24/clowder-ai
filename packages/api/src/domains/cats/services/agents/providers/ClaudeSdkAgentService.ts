@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { type Options, query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { type CatId, createCatId } from '@cat-cafe/shared';
 import { getCatModel } from '../../../../../config/cat-models.js';
+import { redactClaudeLaunchToken } from '../../../../../config/claude-token-account.js';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 import { buildCliDiagnostics } from '../../../../../utils/cli-diagnostics.js';
 import { sanitizeCliStderr } from '../../../../../utils/sanitize-cli-stderr.js';
@@ -159,7 +160,11 @@ export class ClaudeSdkAgentService implements AgentService {
           .catch((error) => log.warn({ err: error, invocationId: options?.invocationId }, 'SDK input archive failed'));
       sdkQuery = this.queryFn({ prompt: input, options: prepared.sdkOptions });
       freshness.start();
-      for await (const event of sdkQuery) {
+      for await (const rawEvent of sdkQuery) {
+        const event = redactClaudeLaunchToken(
+          rawEvent,
+          options?.claudeTokenAccount ? options.accountEnv?.CLAUDE_CODE_OAUTH_TOKEN : undefined,
+        );
         if (abortController.signal.aborted) break;
         if (typeof event !== 'object' || event === null) continue;
         const raw = event as Record<string, unknown>;

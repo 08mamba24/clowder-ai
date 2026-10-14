@@ -92,7 +92,6 @@ export async function dotProactiveFixture(
     messageStore: messages,
     threadStore: threads,
     enabled: async () => enabled,
-    allowedCats: async () => [],
     sendWebhook: async (_url, _headers, body) => {
       events.push(JSON.parse(body));
       return { status: 202, body: '{}' };

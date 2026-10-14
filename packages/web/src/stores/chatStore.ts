@@ -1478,8 +1478,20 @@ export interface ChatState {
   setShowVoteModal: (show: boolean) => void;
 
   // ── #699: Reply-to (quote) state (threadId scoped for split-pane safety) ──
-  replyToMessage: { id: string; content: string; senderCatId: string | null; threadId: string } | null;
-  setReplyTo: (msg: { id: string; content: string; senderCatId: string | null; threadId: string }) => void;
+  replyToMessage: {
+    id: string;
+    content: string;
+    senderCatId: string | null;
+    threadId: string;
+    runtimeAnswerContext?: import('./chat-types').RuntimeConversationAnswerContext;
+  } | null;
+  setReplyTo: (msg: {
+    id: string;
+    content: string;
+    senderCatId: string | null;
+    threadId: string;
+    runtimeAnswerContext?: import('./chat-types').RuntimeConversationAnswerContext;
+  }) => void;
   clearReplyTo: () => void;
 }
 

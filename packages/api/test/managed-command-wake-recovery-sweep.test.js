@@ -13,6 +13,9 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import os from 'node:os';
 import path from 'node:path';
 import { describe, test } from 'node:test';
+import { isolateManagedJobData } from './helpers/isolated-managed-job-data.js';
+
+isolateManagedJobData();
 
 function makeTask(overrides = {}) {
   return {
@@ -1408,4 +1411,63 @@ describe('F167 S.1-c ManagedCommandWakeRecoverySweep', () => {
     assert.equal(firstObservedAt, 10_000);
     assert.equal(h.tasks.get(task.id).params.holdLifecycle.managedCommand.slaBreachObservedAt, firstObservedAt);
   });
+});
+
+test('API recovery commits the exact managed-hold wake before publishing and dispatching its completion', async () => {
+  const { ManagedCommandWakeRecoverySweep } = await loadSweep();
+  const { classifyManagedHoldWake } = await import('../dist/domains/ball-custody/managed-hold-supersession.js');
+  const h = makeHarness();
+  const events = new Map();
+  h.deps.ballCustody = {
+    record: async (event) => {
+      await Promise.resolve();
+      events.set(event.sourceEventId, event);
+    },
+  };
+  h.deps.getInvokeTrigger = () => ({
+    trigger: async () => {
+      assert.equal(
+        classifyManagedHoldWake([...events.values()], {
+          taskId: 'hold-ball-task-1',
+          catId: 'codex-sol',
+          sourceMessageId: 'message-1',
+        }).kind,
+        'live',
+      );
+      return 'enqueued';
+    },
+  });
+  const sweep = new ManagedCommandWakeRecoverySweep(h.deps);
+  await sweep.recordCompletion({
+    taskId: 'hold-ball-task-1',
+    wakeContent: 'actual command failed',
+    result: { exitCode: 1, timedOut: false, durationMs: 5000 },
+  });
+  assert.equal(events.size, 1);
+  const wake = [...events.values()][0];
+  assert.equal(wake.kind, 'ball.wake_condition_met');
+  assert.equal(wake.payload.taskId, 'hold-ball-task-1');
+  assert.equal(wake.payload.exitCode, 1);
+  assert.equal(h.appended.length, 1);
+  await new ManagedCommandWakeRecoverySweep(h.deps).recoverTask('hold-ball-task-1');
+  assert.equal(events.size, 1, 'restart repairs the same idempotent custody event');
+  assert.equal(h.appended.length, 1, 'repair must not duplicate the visible terminal');
+});
+
+test('a failed wake custody write leaves completion pending without an undischargeable message', async () => {
+  const { ManagedCommandWakeRecoverySweep } = await loadSweep();
+  const h = makeHarness();
+  h.deps.ballCustody = {
+    record: async () => {
+      throw new Error('custody storage unavailable');
+    },
+  };
+  const outcome = await new ManagedCommandWakeRecoverySweep(h.deps).recordCompletion({
+    taskId: 'hold-ball-task-1',
+    wakeContent: 'done',
+    result: { exitCode: 0, timedOut: false, durationMs: 5000 },
+  });
+  assert.equal(outcome, 'pending');
+  assert.equal(h.appended.length, 0);
+  assert.equal(h.triggerCalls.length, 0);
 });
