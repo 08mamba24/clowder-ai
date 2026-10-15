@@ -34,13 +34,13 @@ function resolveMcpWorkspaceRoot(workingDirectory?: string): string {
   return process.cwd();
 }
 
-export async function resolveProviderMcpConfig(input: {
+export async function resolveProviderMcpConfigResolution(input: {
   callbackEnv: Record<string, string>;
   workingDirectory?: string;
   mcpServerPath: string;
   credentialFile?: string;
   provider?: string;
-}): Promise<Record<string, Record<string, unknown>>> {
+}): Promise<{ servers: Record<string, Record<string, unknown>>; source: 'capabilities.json' | 'fallback' }> {
   const distDir = dirname(input.mcpServerPath);
   const binaryProjectRoot = resolve(distDir, '../../..');
   const capabilitiesProjectRoot = await resolveInvokeCapabilityRoot(binaryProjectRoot);
@@ -171,5 +171,11 @@ export async function resolveProviderMcpConfig(input: {
     }),
     '#712: MCP invoke-time injection',
   );
-  return mcpServers;
+  return { servers: mcpServers, source: resolved ? 'capabilities.json' : 'fallback' };
+}
+
+export async function resolveProviderMcpConfig(
+  input: Parameters<typeof resolveProviderMcpConfigResolution>[0],
+): Promise<Record<string, Record<string, unknown>>> {
+  return (await resolveProviderMcpConfigResolution(input)).servers;
 }

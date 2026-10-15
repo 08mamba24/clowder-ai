@@ -13,12 +13,12 @@ describe('F325 Alpha: completed command receipts do not declare a new hold', () 
       '### 3. 托管回执',
       `- **Task ID**: \`${taskId}\``,
       '- **Job ID**: `managed-job-a406ce6c5a4acea2accfa7351f17af0fbd522d48`',
-      '- **生命周期状态**: 已调用 `cat_cafe_complete_managed_hold` 成功标记为 `completed`（状态已终态化收口）。',
+      '- **生命周期状态**: 原消息的执行结果已持久化为 completed。',
       '- **隔离约定**: 本轮为独立的 Alpha 验收回归，未触碰原现场 Task2347，未触碰正式 runtime，未引入其他猫。',
       '',
       '[烁烁/Gemini 3.8 Flash🐾]',
     ].join('\n');
-    assert.deepEqual(evaluateVoidHold({ ...noExit, text: reply, toolNames: ['cat_cafe_complete_managed_hold'] }), {
+    assert.deepEqual(evaluateVoidHold({ ...noExit, text: reply, toolNames: [] }), {
       shouldEmit: false,
       matchedPattern: null,
     });

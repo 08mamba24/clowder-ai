@@ -97,7 +97,12 @@ export class AgyNativeAgentService implements AgentService {
   }
 
   freshnessCarrierCapability(): AgentFreshnessCarrierCapability {
-    return { provider: 'google', carrier: 'agy_stream_json', deliverySemantics: 'queued_internal_turn' };
+    return {
+      provider: 'google',
+      carrier: 'agy_stream_json',
+      deliverySemantics: 'queued_internal_turn',
+      activeInvocationGuidance: 'unsupported',
+    };
   }
 
   contextCapability(): import('../../../types.js').AgentContextCapability {

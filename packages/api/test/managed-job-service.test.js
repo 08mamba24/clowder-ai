@@ -454,13 +454,13 @@ test(
       },
       getEventCarrier: ({ messageId }) =>
         deliveries.has(messageId) ? { state: 'handled', invocationId: `delivered-${messageId}` } : { state: 'missing' },
-      getInvokeTrigger: () => ({
-        async trigger(threadId, catId, userId, _content, messageId) {
-          assert.deepEqual({ threadId, catId, userId }, principal);
-          deliveries.set(messageId, (deliveries.get(messageId) ?? 0) + 1);
-          return 'enqueued';
-        },
-      }),
+      async admitWake(input) {
+        assert.deepEqual({ threadId: input.threadId, catId: input.catId, userId: input.userId }, principal);
+        const prior = messages.get(input.message.idempotencyKey);
+        const stored = prior ?? (await deps.messageStore.append(input.message));
+        if (!prior) deliveries.set(stored.id, 1);
+        return { messageId: stored.id };
+      },
     };
     let completed = 0;
     try {

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { RuntimeInteractionCardRef, RuntimeInteractionRecord, RuntimeInteractionRequest } from '@cat-cafe/shared';
+import type {
+  MessageFrom,
+  RuntimeInteractionCardRef,
+  RuntimeInteractionRecord,
+  RuntimeInteractionRequest,
+} from '@cat-cafe/shared';
 import {
   RuntimeInteractionError,
   RuntimeInteractionService,
@@ -58,7 +63,7 @@ class FakeConversationReturnGateway {
     {
       userId: string;
       threadId: string;
-      catId: string | null;
+      from: MessageFrom;
       ownerAuthProvenance?: 'strict' | 'compatibility_fallback' | 'unknown';
       timestamp: number;
       deletedAt?: number;
@@ -504,57 +509,64 @@ describe('conversation-backed runtime interactions', () => {
     gateway.sourceMessages.set('valid-answer', {
       userId: 'user-1',
       threadId: 'thread-1',
-      catId: null,
+      from: { kind: 'user', userId: 'user-1' },
       timestamp: 1_500,
     });
     gateway.sourceMessages.set('foreign-answer', {
       userId: 'user-2',
       threadId: 'thread-1',
-      catId: null,
+      from: { kind: 'user', userId: 'user-1' },
       ownerAuthProvenance: 'strict',
       timestamp: 1_500,
     });
     gateway.sourceMessages.set('host-answer', {
       userId: 'user-1',
       threadId: 'thread-1',
-      catId: null,
+      from: { kind: 'system', service: 'runtime-interaction' },
       ownerAuthProvenance: 'unknown',
       timestamp: 1_500,
     });
     gateway.sourceMessages.set('cat-answer', {
       userId: 'user-1',
       threadId: 'thread-1',
-      catId: 'codex-sol',
+      from: { kind: 'agent', catId: 'codex-sol' },
       timestamp: 1_500,
     });
     gateway.sourceMessages.set('cross-thread-answer', {
       userId: 'user-1',
       threadId: 'thread-2',
-      catId: null,
+      from: { kind: 'user', userId: 'user-1' },
       timestamp: 1_500,
     });
     gateway.sourceMessages.set('deleted-answer', {
       userId: 'user-1',
       threadId: 'thread-1',
-      catId: null,
+      from: { kind: 'user', userId: 'user-1' },
       timestamp: 1_500,
       deletedAt: 1_501,
     });
     gateway.sourceMessages.set('tombstone-answer', {
       userId: 'user-1',
       threadId: 'thread-1',
-      catId: null,
+      from: { kind: 'user', userId: 'user-1' },
       timestamp: 1_500,
       tombstone: true,
     });
     gateway.sourceMessages.set('pre-publication-answer', {
       userId: 'user-1',
       threadId: 'thread-1',
-      catId: null,
+      from: { kind: 'user', userId: 'user-1' },
       timestamp: 1_000,
     });
 
+    gateway.sourceMessages.set('wrong-canonical-owner', {
+      userId: 'user-1',
+      threadId: 'thread-1',
+      from: { kind: 'user', userId: 'user-2' },
+      timestamp: 1500,
+    });
     for (const responseMessageId of [
+      'wrong-canonical-owner',
       'missing-answer',
       'foreign-answer',
       'host-answer',
@@ -569,7 +581,7 @@ describe('conversation-backed runtime interactions', () => {
           interactionId: 'conversation-1',
           requester,
           ownerMessageAuth: {
-            ownerAuthProvenance: responseMessageId === 'host-answer' ? 'unknown' : 'strict',
+            ownerAuthProvenance: 'strict',
             originTriggerMessageId: responseMessageId,
           },
           expectedRevision: pending.revision,
@@ -602,7 +614,7 @@ describe('conversation-backed runtime interactions', () => {
     gateway.sourceMessages.set('answer-at-1700', {
       userId: 'user-1',
       threadId: 'thread-1',
-      catId: null,
+      from: { kind: 'user', userId: 'user-1' },
       ownerAuthProvenance: 'strict',
       timestamp: 1_700,
     });
@@ -623,7 +635,7 @@ describe('conversation-backed runtime interactions', () => {
     gateway.sourceMessages.set('answer-at-1900', {
       userId: 'user-1',
       threadId: 'thread-1',
-      catId: null,
+      from: { kind: 'user', userId: 'user-1' },
       ownerAuthProvenance: 'strict',
       timestamp: 1_900,
     });

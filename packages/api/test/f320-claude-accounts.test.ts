@@ -87,6 +87,7 @@ test('local Claude binding is atomic, fences stale previews and updates only ena
   const { writeFileSync, mkdirSync } = await import('node:fs');
   const { toAllCatConfigs } = await import('../src/config/cat-config-loader.js');
   const { readRuntimeAccountMembers, updateRuntimeCat } = await import('../src/config/runtime-cat-catalog.js');
+  process.env.CAT_CAFE_CONFIG_ROOT = root;
   process.env.CAT_CAFE_RUNTIME_ROOT = root;
   process.env.CAT_CAFE_WORKSPACE_ROOT = root;
   process.env.CAT_TEMPLATE_PATH = join(root, 'cat-template.json');

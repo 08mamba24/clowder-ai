@@ -19,9 +19,6 @@ test('ordinary Native callbacks share owner authentication without a provider to
     ['GET', '/api/callbacks/thread-context'],
     ['GET', '/api/callbacks/search-evidence'],
     ['POST', '/api/callbacks/post-message'],
-    ['POST', '/api/callbacks/complete-a2a-dispatch'],
-    ['POST', '/api/callbacks/complete-managed-hold'],
-    ['POST', '/api/callbacks/complete-event-wait'],
   ];
   for (const [method, url] of routes)
     app.route({

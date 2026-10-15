@@ -47,7 +47,7 @@ export async function createInboxProposalFixture({ readStateStore, configureRunt
       const origin = messages.append({
         userId: owner,
         threadId: CALENDAR_THREAD,
-        catId: null,
+        from: { kind: 'user', userId: owner },
         content: `Controlled ${action} authorization sample`,
         timestamp: Date.now(),
       });
@@ -70,7 +70,7 @@ export async function createInboxProposalFixture({ readStateStore, configureRunt
       const card = messages.append({
         userId: owner,
         threadId: CALENDAR_THREAD,
-        catId: record.sourceCatId,
+        from: { kind: 'agent', catId: record.sourceCatId },
         content: record.reason,
         timestamp: Date.now(),
         extra: { rich: { blocks: [buildProposalCardBlock(record)] } },
@@ -134,6 +134,7 @@ export async function createInboxProposalFixture({ readStateStore, configureRunt
           nickname: '小太阳·砚砚',
           defaultModel: 'gpt-6.1-sol',
           clientId: 'openai',
+          carrier: 'cli',
           avatar: '/avatars/family/codex61-sol.png',
           color: { primary: 'var(--color-codex-primary)', secondary: 'var(--color-codex-bg)' },
           mentionPatterns: ['@codex61-sol'],

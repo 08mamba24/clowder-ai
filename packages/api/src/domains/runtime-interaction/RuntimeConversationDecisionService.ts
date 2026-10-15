@@ -136,7 +136,8 @@ export class RuntimeConversationDecisionService {
       !message ||
       message.userId !== record.request.owner.userId ||
       message.threadId !== record.request.owner.threadId ||
-      message.catId !== null ||
+      message.from?.kind !== 'user' ||
+      message.from.userId !== record.request.owner.userId ||
       message.deletedAt !== undefined ||
       message.tombstone ||
       message.timestamp <= publishedAt

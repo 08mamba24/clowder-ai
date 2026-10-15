@@ -34,8 +34,8 @@ export class MessageRuntimeInteractionCardPublisher implements RuntimeInteractio
     if (!stored) {
       try {
         stored = await this.deps.messageStore.append({
+          from: { kind: 'agent', catId: request.owner.catId as CatId },
           userId: request.owner.userId,
-          catId: request.owner.catId as CatId,
           content: cardContent(request),
           mentions: [],
           timestamp: request.createdAt,
@@ -95,6 +95,7 @@ export class MessageRuntimeInteractionCardPublisher implements RuntimeInteractio
         threadId: request.owner.threadId,
         message: {
           id: stored.id,
+          from: stored.from,
           type: 'cat',
           catId: request.owner.catId,
           content: stored.content,
@@ -193,7 +194,8 @@ function isLiveCanonicalCard(
       !stored._tombstone &&
       stored.userId === request.owner.userId &&
       stored.threadId === request.owner.threadId &&
-      stored.catId === request.owner.catId &&
+      stored.from?.kind === 'agent' &&
+      stored.from.catId === request.owner.catId &&
       blocks.length === 1 &&
       matchingBlocks.length === 1 &&
       liveBlock &&

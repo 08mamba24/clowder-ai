@@ -56,7 +56,7 @@ describe('runtime interaction card publisher', () => {
       id: 'message-conversation',
       threadId: conversationRequest.owner.threadId,
       userId: conversationRequest.owner.userId,
-      catId: conversationRequest.owner.catId,
+      from: { kind: 'agent' as const, catId: conversationRequest.owner.catId },
       content: '需要你决定：Choose a release',
       timestamp: conversationRequest.createdAt,
       extra: {
@@ -112,7 +112,7 @@ describe('runtime interaction card publisher', () => {
       id: 'message-card',
       threadId: 'thread-1',
       userId: 'user-1',
-      catId: 'codex-sol',
+      from: { kind: 'agent' as const, catId: 'codex-sol' },
       content: '需要你回答：Need deployment answers',
       mentions: [],
       timestamp: 1000,
@@ -171,7 +171,7 @@ describe('runtime interaction card publisher', () => {
       id: 'message-recovered',
       threadId: 'thread-1',
       userId: 'user-1',
-      catId: 'codex-sol',
+      from: { kind: 'agent' as const, catId: 'codex-sol' },
       content: '需要你回答：Need deployment answers',
       timestamp: 1000,
       extra: { rich: { v: 1, blocks: [block] } },
@@ -198,7 +198,7 @@ describe('runtime interaction card publisher', () => {
       id: 'message-owner-bound',
       threadId: request.owner.threadId,
       userId: request.owner.userId,
-      catId: request.owner.catId,
+      from: { kind: 'agent' as const, catId: request.owner.catId },
       content: '需要你回答：Need deployment answers',
       mentions: [],
       timestamp: request.createdAt,
@@ -214,9 +214,9 @@ describe('runtime interaction card publisher', () => {
     });
     const ref = await publisher.prepare(request);
 
-    stored.catId = 'other-cat';
+    stored.from.catId = 'other-cat';
     assert.equal(await publisher.isLive(request, ref), false);
-    stored.catId = request.owner.catId;
+    stored.from.catId = request.owner.catId;
     stored.timestamp += 1;
     assert.equal(await publisher.isLive(request, ref), false);
   });
@@ -227,7 +227,7 @@ describe('runtime interaction card publisher', () => {
       id: 'message-immediate-answer',
       threadId: 'thread-1',
       userId: 'user-1',
-      catId: 'codex-sol',
+      from: { kind: 'agent' as const, catId: 'codex-sol' },
       content: '需要你回答：Need deployment answers',
       mentions: [],
       timestamp: 1000,
@@ -283,4 +283,23 @@ describe('runtime interaction card publisher', () => {
     });
     assert.equal((await store.get(request.interactionId))?.status, 'answered');
   });
+});
+
+it('rejects a system card that spoofs the legacy catId field', async () => {
+  const stored = {
+    id: 'spoofed-card',
+    userId: request.owner.userId,
+    threadId: request.owner.threadId,
+    catId: request.owner.catId,
+    from: { kind: 'system' as const, service: 'not-the-requester' },
+    content: 'spoofed',
+    mentions: [],
+    timestamp: request.createdAt,
+    extra: { rich: { v: 1 as const, blocks: [buildRuntimeInteractionCard(request)] } },
+  };
+  const publisher = new MessageRuntimeInteractionCardPublisher({
+    messageStore: { append: async () => stored, getById: async () => stored, getByIdempotencyKey: async () => stored },
+    socketManager: { broadcastToRoom: () => {} },
+  });
+  await assert.rejects(publisher.prepare(request), /canonical owner/);
 });

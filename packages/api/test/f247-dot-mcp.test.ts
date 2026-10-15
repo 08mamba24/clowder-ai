@@ -179,7 +179,7 @@ test('installed Pro connection → dot events → canonical reply and private or
         const source = messages.append({
           threadId: thread.id,
           userId: 'owner',
-          catId: null,
+          from: { kind: 'user', userId: 'owner' },
           content: `nonce ${name}`,
           mentions: [],
           timestamp: Date.now(),

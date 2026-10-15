@@ -178,8 +178,15 @@ for (const language of ['zh', 'en'])
       assert.equal(returns[0].content, 'Use Alpha for this verification.');
       const queued = f.queue.list(f.conversationThread.id, 'default-user');
       assert.equal(queued.length, 2);
+      for (const entry of queued) {
+        assert.equal(entry.kind, 'message_wake');
+        assert.deepEqual(entry.owner, { kind: 'user', userId: 'default-user' });
+        assert.deepEqual(entry.from, { kind: 'user', userId: 'default-user' });
+        assert.deepEqual(entry.targets, ['codex61-sol']);
+        assert.equal(entry.payload.sourceRecordId, entry.payload.messageId);
+      }
       assert.deepEqual(
-        queued.map((entry) => entry.messageId).sort(),
+        queued.map((entry) => entry.payload.messageId).sort(),
         [chatAfter.terminal.responseMessageId, textAfter.terminal.responseMessageId].sort(),
       );
       await page.reload();

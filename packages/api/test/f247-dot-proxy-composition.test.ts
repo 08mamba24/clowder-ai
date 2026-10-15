@@ -59,7 +59,7 @@ test('shared proxy sender admits a verified subscription, preserves failure stat
       const thread = threads.create('owner', title);
       const source = messages.append({
         userId: 'owner',
-        catId: null,
+        from: { kind: 'user', userId: 'owner' },
         threadId: thread.id,
         content: `nonce ${title}`,
         mentions: [],

@@ -149,7 +149,7 @@ test('the owner route returns exact group counts for a full vector larger than i
   for (let index = 0; index < 26; index++) {
     store.append({
       userId: 'owner',
-      catId: 'codex61-sol',
+      from: { kind: 'agent', catId: 'codex61-sol' },
       threadId: `thread-${index}`,
       content: `@co-creator request ${index}`,
       mentions: [],
