@@ -1,63 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CodexAppServerClient } from '../src/domains/cats/services/agents/providers/CodexAppServerClient.ts';
-
-function wireFixture() {
-  const queue = [];
-  let waiting;
-  let closed = false;
-  const writes = [];
-  let starts = 0;
-  const push = (value) => {
-    if (waiting) {
-      const resolve = waiting;
-      waiting = undefined;
-      resolve({ value, done: false });
-    } else queue.push(value);
-  };
-  const completed = (id, threadId = 'native') => ({
-    method: 'turn/completed',
-    params: { threadId, turn: { id, status: 'completed' } },
-  });
-  return {
-    writes,
-    push,
-    completed,
-    wire: {
-      read: () => ({
-        [Symbol.asyncIterator]: () => ({
-          next: () =>
-            queue.length
-              ? Promise.resolve({ value: queue.shift(), done: false })
-              : closed
-                ? Promise.resolve({ done: true })
-                : new Promise((resolve) => {
-                    waiting = resolve;
-                  }),
-        }),
-      }),
-      write: async (message) => {
-        writes.push(message);
-        if (message.method === 'config/read')
-          push({ id: message.id, result: { config: { mcp_servers: { unapproved: { command: 'external' } } } } });
-        if (message.method === 'initialize') push({ id: message.id, result: {} });
-        if (message.method === 'thread/start') push({ id: message.id, result: { thread: { id: 'native' } } });
-        if (message.method === 'turn/start') {
-          const id = ++starts === 1 ? 'first' : `turn-${starts}`;
-          push({ id: message.id, result: { turn: { id } } });
-          push(completed(id));
-        }
-        if (message.method === 'turn/steer')
-          push({ id: message.id, result: { turnId: message.params.expectedTurnId } });
-        if (message.method === 'thread/realtime/appendText') push({ id: message.id, result: {} });
-      },
-      close: async () => {
-        closed = true;
-        waiting?.({ done: true });
-      },
-    },
-  };
-}
+import { wireFixture } from './helpers/f317-live-wire-fixture.mjs';
 
 test('a live call accepts subsequent root turns and ends the Host stream only once', async () => {
   const f = wireFixture();

@@ -76,10 +76,10 @@ export class CodexAppServerHostPool {
   }
   private async createReservedSession(options: AgentCarrierSessionOptions): Promise<AgentCarrierSession> {
     this.ensureOpen();
-    const prepared = prepareCodexHostLaunch(options);
+    const prepared = await prepareCodexHostLaunch(options);
     await this.reapDeadEntries();
     this.ensureOpen();
-    let resolved = resolveHostEntry(this.entries, this.sessionOwners, prepared.signature, options.sessionId);
+    let resolved = resolveHostEntry(this.entries, this.sessionOwners, prepared, options.sessionId);
     if (resolved.retirement && options.sessionId) {
       await retireCodexSessionHost({
         ...resolved.retirement,
@@ -88,7 +88,7 @@ export class CodexAppServerHostPool {
         close: (entry) => this.closeEntry(entry, 'session_migration'),
       });
       this.ensureOpen();
-      resolved = resolveHostEntry(this.entries, this.sessionOwners, prepared.signature, options.sessionId);
+      resolved = resolveHostEntry(this.entries, this.sessionOwners, prepared, options.sessionId);
     }
     let entry = resolved.entry;
     let reusedSessionHost = resolved.reusedSessionHost;
@@ -129,7 +129,7 @@ export class CodexAppServerHostPool {
 
     try {
       const connection = await this.connectEntry(entry);
-      return wrapReservedHostConnection({
+      const connectionWithLease = wrapReservedHostConnection({
         connection,
         reusedSessionHost,
         abortObserved: () => lease.abortObserved,
@@ -138,6 +138,7 @@ export class CodexAppServerHostPool {
         terminateHost: () => this.closeEntry(entry, 'forced'),
         rememberSession: (sessionId) => this.rememberSession(entry, lease, sessionId),
       });
+      return { ...connectionWithLease, hostAcquisitionMode: reused ? 'warm' : 'cold' };
     } catch (error) {
       await this.closeEntry(entry, 'connect_failed');
       throw error;
@@ -209,6 +210,7 @@ export class CodexAppServerHostPool {
       const host = await this.deps.spawnHost(launch);
       const entry: HostEntry = {
         signature: prepared.signature,
+        authIdentity: prepared.authIdentity,
         host,
         socketDirectory,
         state: 'ready',

@@ -80,7 +80,12 @@ export async function executeMessageSearch(
     }
     reply.log.warn({ err: error }, 'Message search unavailable');
     reply.status(503);
-    return { error: 'Message search unavailable', degraded: true, degradeReason: 'message_search_unavailable' };
+    return {
+      error: 'Message search unavailable',
+      degraded: true,
+      degradeReason:
+        error instanceof Error && error.name === 'TimeoutError' ? 'message_search_timeout' : 'message_search_error',
+    };
   } finally {
     clearTimeout(timeout);
     reply.raw.removeListener('close', disconnect);

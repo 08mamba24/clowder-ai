@@ -75,7 +75,7 @@ describe('F322 设置与管理 shell (v2)', () => {
 
   it('old /settings?s= links and extra positioning params keep working, including deep-linked cat editing', () => {
     render('s=accounts&cat=opus');
-    expect(host.querySelector('[data-testid="settings-entry-connect"]')?.getAttribute('aria-current')).toBe('page');
+    expect(host.querySelector('[data-testid="settings-entry-team"]')?.getAttribute('aria-current')).toBe('page');
     const content = host.querySelector('[data-testid="content"]');
     expect(content?.getAttribute('data-section')).toBe('accounts');
     render('s=members&cat=opus');
@@ -90,7 +90,7 @@ describe('F322 设置与管理 shell (v2)', () => {
     click('settings-entry-connect');
     expect(nav.replace).toHaveBeenCalledTimes(1);
     const url = String(nav.replace.mock.calls[0]?.[0]);
-    expect(url).toContain('s=accounts');
+    expect(url).toContain('s=im');
     expect(url).toContain('from=thread-1');
     expect(url).toContain('cat=opus');
   });
@@ -135,17 +135,17 @@ describe('F322 设置与管理 shell (v2)', () => {
   it('any first-level or second-level item can be pinned; first-level pins are namespaced', () => {
     render('s=system');
     const toggles = [...host.querySelectorAll<HTMLElement>('[data-testid="settings-pin-toggle"]')];
-    act(() => host.querySelector<HTMLElement>('button[aria-label="固定「猫猫团队」到侧栏"]')?.click());
+    act(() => host.querySelector<HTMLElement>('button[aria-label="固定「猫猫团队」到窄栏"]')?.click());
     expect(pins.pin).toHaveBeenLastCalledWith('dest:team');
     // the selected second-level item (old section id) is pinnable
-    act(() => host.querySelector<HTMLElement>('button[aria-label="固定「系统配置」到侧栏"]')?.click());
+    act(() => host.querySelector<HTMLElement>('button[aria-label="固定「系统配置」到窄栏"]')?.click());
     expect(pins.pin).toHaveBeenLastCalledWith('system');
     expect(toggles.length).toBeGreaterThan(11);
   });
 
   it('the Workspace team panel is pinnable under its own identity, not as dest:team', () => {
     render('');
-    act(() => host.querySelector<HTMLElement>('button[aria-label="固定「成员能力与路由状态」到侧栏"]')?.click());
+    act(() => host.querySelector<HTMLElement>('button[aria-label="固定「成员能力与路由状态」到窄栏"]')?.click());
     expect(pins.pin).toHaveBeenLastCalledWith('dest:team-workspace');
   });
 

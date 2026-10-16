@@ -4,7 +4,7 @@ import './helpers/setup-cat-registry.js';
 
 import { MessageStore } from '../dist/domains/cats/services/stores/ports/MessageStore.js';
 import { TaskStore } from '../dist/domains/cats/services/stores/ports/TaskStore.js';
-import { CollectiveWorkAuthority } from '../dist/domains/plugin/builtin-runtime/collective-work-authority.js';
+import { CollectiveWorkAuthority } from '../dist/domains/plugin/builtin-runtime/collective-work/collective-work-authority.js';
 import { CollectiveWorkRevisionReconciler } from '../dist/domains/plugin/builtin-runtime/collective-work-revision-reconciler.js';
 
 async function fixture() {
@@ -23,7 +23,11 @@ async function fixture() {
   const source = messages.append({
     userId: 'owner',
     threadId: 'thread_public',
-    catId: null,
+    from: {
+      kind: 'external',
+      connectorId: 'collective',
+      sender: { id: sourceIdentity.actor.humanId, name: sourceIdentity.actor.displayName },
+    },
     content: '完成第一版并沿同一 Work 接住反馈。',
     mentions: ['codex-sol'],
     timestamp: 1,

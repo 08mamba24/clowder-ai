@@ -1,7 +1,9 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { type ReactNode, useRef, useState } from 'react';
+import { TextWorkProgress } from '@/components/content-review/TextWorkProgress';
 import type { WorkspaceFileNavigationOrigin } from '@/stores/chat-types';
+import { useWorkspacePreviewIntent } from '../WorkspacePreviewIntent';
 import { ContentLandingHeader } from './ContentLandingHeader';
 import { contentReviewCapabilities } from './content-review-capabilities';
 import type {
@@ -9,7 +11,14 @@ import type {
   ContentReviewController,
   ContentReviewWorkflow,
 } from './content-review-contract';
+import { type PublicationDisplayRequest, usePublicationDisplay } from './usePublicationDisplay';
 import { WorkspaceContentReviewProjection } from './WorkspaceContentReviewProjection';
+
+export interface ContentFileReaderControls {
+  readonly onRequestModification: () => void;
+  readonly modificationDisabled: boolean;
+  readonly onQuoteSelected: (quote: string) => void;
+}
 
 export function ContentReviewSurface({
   review,
@@ -22,9 +31,14 @@ export function ContentReviewSurface({
   onApplied,
   onOpenFileTools,
   versionControl,
+  leadingAction,
+  fullWindowAction,
   title,
+  titleInHost = false,
   capabilities,
   workflow,
+  publication,
+  fileReader,
 }: {
   readonly review: ContentReviewController;
   readonly path: string;
@@ -36,24 +50,53 @@ export function ContentReviewSurface({
   readonly onApplied?: (writtenRevision?: string) => Promise<void> | void;
   readonly onOpenFileTools?: () => void;
   readonly versionControl?: ReactNode;
+  readonly leadingAction?: ReactNode;
+  readonly fullWindowAction?: { active: boolean; onToggle: () => void };
   readonly title?: string;
+  /** The active Workspace host already names this work; retain only its version and return controls here. */
+  readonly titleInHost?: boolean;
   readonly capabilities?: ContentLandingCapabilities;
   readonly workflow?: ContentReviewWorkflow;
+  readonly publication?: PublicationDisplayRequest;
+  readonly fileReader?: (controls: ContentFileReaderControls) => ReactNode;
 }) {
+  const draftStarted = useWorkspacePreviewIntent();
+  const root = useRef<HTMLElement>(null);
+  const [openRequest, setOpenRequest] = useState(0);
+  const [selection, setSelection] = useState<{ revision: string; quote: string } | null>(null);
+  const currentCapabilities = review.view ? (capabilities ?? contentReviewCapabilities(review.view)) : null;
+  const modificationDisabled =
+    !review.view?.canWrite ||
+    review.busy ||
+    review.view.sourceState !== 'current' ||
+    currentCapabilities?.requestModification.state !== 'available' ||
+    (review.view.currentSource ?? review.view.review.source).revision !== sourceTextRevision;
+  const textSource = review.view?.currentSource ?? review.view?.review.source;
+  usePublicationDisplay(root, publication, review.view, review.error);
   return (
     <section
+      ref={root}
       className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
       data-testid="workspace-content-review-surface"
       data-navigation-origin={navigationOrigin?.kind ?? 'unknown'}
     >
-      <ContentLandingHeader
-        title={title ?? (path.split('/').at(-1) || path)}
-        navigationOrigin={navigationOrigin}
-        onBack={onBack}
-        onOpenFileTools={onOpenFileTools}
-        versionControl={versionControl}
-      />
+      {!fileReader && (
+        <ContentLandingHeader
+          title={titleInHost ? undefined : (title ?? (path.split('/').at(-1) || path))}
+          navigationOrigin={navigationOrigin}
+          onBack={onBack}
+          onOpenFileTools={onOpenFileTools}
+          versionControl={versionControl}
+          leadingAction={leadingAction}
+          fullWindowAction={fullWindowAction}
+        />
+      )}
       {workflow?.status}
+      {review.view?.sourceState === 'current' &&
+      textSource?.kind === 'text' &&
+      textSource.revision === sourceTextRevision ? (
+        <TextWorkProgress locator={textSource.locator} revision={textSource.revision} />
+      ) : null}
       {review.error ? (
         <p role="alert" className="rounded bg-[var(--semantic-critical-surface)] p-2 text-xs text-cafe-error">
           {review.error}
@@ -72,7 +115,16 @@ export function ContentReviewSurface({
           </button>
         </div>
       ) : null}
-      {!review.view && !review.error ? <p className="p-4 text-sm text-cafe-muted">正在打开作品…</p> : null}
+      {fileReader?.({
+        onRequestModification: () => {
+          if (!modificationDisabled) setOpenRequest((request) => request + 1);
+        },
+        modificationDisabled,
+        onQuoteSelected: (quote) => setSelection(quote ? { revision: sourceTextRevision, quote } : null),
+      })}
+      {!fileReader && !review.view && !review.error ? (
+        <p className="p-4 text-sm text-cafe-muted">正在打开作品…</p>
+      ) : null}
       {review.view ? (
         <WorkspaceContentReviewProjection
           capabilities={capabilities ?? contentReviewCapabilities(review.view)}
@@ -82,12 +134,19 @@ export function ContentReviewSurface({
           sourceText={sourceText}
           sourceTextRevision={sourceTextRevision}
           scrollToLine={scrollToLine}
+          fileReader={fileReader ? { selection, openRequest, modificationDisabled } : undefined}
           draft={review.draft}
           target={review.target}
           busy={review.busy}
           activeAnnotationId={review.activeAnnotationId}
-          setDraft={review.setDraft}
-          setTarget={review.setTarget}
+          setDraft={(body) => {
+            review.setDraft(body);
+            if (body.length > 0) draftStarted?.();
+          }}
+          setTarget={(target) => {
+            review.setTarget(target);
+            if (target !== null) draftStarted?.();
+          }}
           setActiveAnnotationId={review.setActiveAnnotationId}
           submitAnnotation={review.submitAnnotation}
           legacyText={review.legacyText}

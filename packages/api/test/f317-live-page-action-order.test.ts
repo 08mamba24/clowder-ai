@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { InvocationQueue } from '../src/domains/cats/services/agents/invocation/InvocationQueue.js';
-import { createInitialQueuedMessageCustody } from '../src/domains/cats/services/agents/invocation/QueuedMessageCustodyCoordinator.js';
 import { MessageStore, type ThreadMessageReadOptions } from '../src/domains/cats/services/stores/ports/MessageStore.js';
-import { LivePageActionApprovalLedger } from '../src/domains/concierge/live/host/live-page-action-approval-ledger.js';
-import { LivePageActionAuthority } from '../src/domains/concierge/live/host/live-page-action-authority.js';
+import { LivePageActionApprovalLedger } from '../src/domains/concierge/live/host/page-action/live-page-action-approval-ledger.js';
+import { LivePageActionAuthority } from '../src/domains/concierge/live/host/page-action/live-page-action-authority.js';
 import { appendUser, fixture, issueFixtureApproval, scope } from './helpers/f317-page-action-fixture.js';
 
 function timestampOrderedMessages(store: MessageStore) {
@@ -50,26 +49,33 @@ test('a later persisted owner correction supersedes a source despite an older ti
 
 test('a later queued owner correction with a backdated timeline score never permits the old action', async () => {
   const f = fixture();
-  const entry = new InvocationQueue().enqueue({
-    userId: scope.userId,
-    threadId: scope.threadId,
-    source: 'user',
-    ownerAuthProvenance: 'strict',
-    content: 'Wait, do something else',
-    targetCats: [scope.catId],
-    intent: 'coordinate',
-  }).entry;
-  assert.ok(entry);
-  const correction = f.store.append({
-    userId: scope.userId,
-    threadId: scope.threadId,
-    catId: null,
-    content: 'Wait, do something else',
-    mentions: [scope.catId],
-    timestamp: f.source.timestamp - 1_000,
-    deliveryStatus: 'queued',
-    queueCustody: createInitialQueuedMessageCustody(entry),
-  });
+  const queue = new InvocationQueue();
+  const content = 'Wait, do something else';
+  const from = { kind: 'user' as const, userId: scope.userId };
+  const admitted = await queue.send(
+    f.store,
+    {
+      userId: scope.userId,
+      threadId: scope.threadId,
+      from,
+      content,
+      mentions: [scope.catId],
+      timestamp: f.source.timestamp - 1_000,
+      deliveryStatus: 'queued',
+    },
+    {
+      kind: 'conversation_input',
+      userId: scope.userId,
+      threadId: scope.threadId,
+      from,
+      ownerAuthProvenance: 'strict',
+      content,
+      targetCats: [scope.catId],
+      intent: 'coordinate',
+    },
+  );
+  assert.ok(admitted.message);
+  const correction = admitted.message;
   const messages = timestampOrderedMessages(f.store);
   assert.equal(
     messages.getByThread(scope.threadId, 256, scope.userId, { includeQueuedUserMessages: true }).at(-1)?.id,
@@ -133,13 +139,13 @@ test('a backdated recalled owner turn cannot leave an older direct action curren
   assert.equal(f.effects(), 0);
 });
 
-test('a saturated owner timeline scan refuses to infer that no unseen queued correction exists', async () => {
+test('a saturated after-source scan refuses to infer that no later owner correction exists', async () => {
   const f = fixture();
-  for (let i = 0; i < 255; i++)
+  for (let i = 0; i < 256; i++)
     f.store.append({
       userId: scope.userId,
       threadId: scope.threadId,
-      catId: scope.catId,
+      from: { kind: 'agent', catId: scope.catId },
       content: `unrelated assistant message ${i}`,
       mentions: [],
       timestamp: Date.now(),

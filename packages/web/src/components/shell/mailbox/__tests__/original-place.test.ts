@@ -35,6 +35,28 @@ const anchored = {
 
 describe('where a 待办 row can really take you, decided only from what the read carries', () => {
   describe('等你判断 / 需要修复', () => {
+    it('a standalone native question opens its canonical Thread card', () => {
+      const item: UnifiedAttentionItemV1 = {
+        decisionRef: 'f306.runtime_interaction:standalone-1',
+        kind: 'judgment',
+        summary: '在哪里验收？',
+        choiceRequest: {
+          interactionId: 'standalone-1',
+          revision: 20,
+          requesterCatId: 'codex-sol',
+          createdAt: 10,
+          title: '选择环境',
+          questions: [{ id: 'env', header: '环境', question: '在哪里验收？' }],
+          cardRef: { threadId: 'source-thread', messageId: 'source-message', blockId: 'source-card' },
+        },
+        linkedNeedsMe: [],
+      };
+      expect(resolveOriginalPlace(item)).toEqual({
+        kind: 'exact',
+        actionRef: 'message:source-thread:source-message#source-card',
+      });
+    });
+
     it('a message action is an exact place: the source message itself', () => {
       expect(resolveOriginalPlace(work('judgment', { action: { actionRef: 'message:t1:m1#b1' } }))).toEqual({
         kind: 'exact',
@@ -72,8 +94,11 @@ describe('where a 待办 row can really take you, decided only from what the rea
   });
 
   describe('审批', () => {
-    it('a decision made in the approval hub opens the approval list', () => {
-      expect(resolveOriginalPlace(approval('F128', anchored))).toEqual({ kind: 'list', destination: 'approval' });
+    it('a decision made in the approval hub opens the exact original proposal', () => {
+      expect(resolveOriginalPlace(approval('F128', anchored))).toEqual({
+        kind: 'exact',
+        actionRef: 'message:card-thread:card-msg',
+      });
     });
 
     it('a decision that is only available on its origin card goes to that card in the chat', () => {
@@ -87,8 +112,11 @@ describe('where a 待办 row can really take you, decided only from what the rea
       expect(place).toEqual({ kind: 'list', destination: 'approval' });
     });
 
-    it('a feature this build does not know is the approval list, not a crash', () => {
-      expect(resolveOriginalPlace(approval('F999', anchored))).toEqual({ kind: 'list', destination: 'approval' });
+    it('a readable anchor remains reachable for an unknown producer', () => {
+      expect(resolveOriginalPlace(approval('F999', anchored))).toEqual({
+        kind: 'exact',
+        actionRef: 'message:card-thread:card-msg',
+      });
     });
   });
 });

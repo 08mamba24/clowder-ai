@@ -67,6 +67,11 @@ async function desktopManager(
     routes: new MemorySignalRouteStore(),
     intakes: new MemoryMeetingIntakeStore(),
     messageStore: new MessageStore(),
+    processes: {
+      spawn: async () => {
+        assert.fail('desktop packages must not spawn a stdio runtime');
+      },
+    },
     desktopExecutor: {
       open: async () => {
         observed.opens++;
@@ -118,6 +123,14 @@ async function eventually(check, message) {
   assert.fail(message);
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 async function enabledDesktopThenRestart(t) {
   const before = await desktopManager(t);
   const installed = await before.composition.officialRouteInstaller.install(before.entry.catalogId, before.entry);
@@ -160,8 +173,9 @@ test('restart recovery holds an enabled desktop window, and its leases, until th
 
 test('shutdown while a desktop window is held keeps enabled intent for the next boot', async (t) => {
   const { after, instance } = await enabledDesktopThenRestart(t);
+  const hostListening = deferred();
 
-  await after.runtime.recoverAfterRestart({ desktopWindowsAfter: new Promise(() => {}) });
+  await after.runtime.recoverAfterRestart({ desktopWindowsAfter: hostListening.promise });
   await after.runtime.shutdown('api_shutdown');
 
   assert.equal(after.observed.opens, 0);
@@ -169,6 +183,99 @@ test('shutdown while a desktop window is held keeps enabled intent for the next 
   assert.equal(current.activationState, 'enabled');
   assert.equal(current.runtimeState, 'stopped');
   assert.equal(current.lastRuntimeError, undefined);
+
+  try {
+    hostListening.resolve();
+    // The gate's reaction queues first; prepare joins that same instance queue
+    // without changing an already-ready configuration.
+    await Promise.resolve();
+    const resumed = await after.runtime.lifecycle.prepare(current.pluginInstanceId, current.lifecycleRevision);
+    assert.equal(after.observed.opens, 0, 'shutdown cancels the old Host gate');
+    assert.equal(resumed.activationState, 'enabled');
+    assert.equal(resumed.runtimeState, 'stopped');
+    assert.equal(resumed.lastRuntimeError, undefined);
+  } finally {
+    await after.runtime.shutdown('test_complete');
+  }
+});
+
+test('shutdown drains an admitted restart failure without overwriting enabled intent', async (t) => {
+  const { after, instance } = await enabledDesktopThenRestart(t);
+  const startEntered = deferred();
+  const releaseStart = deferred();
+  const supervisorStopped = deferred();
+  const stopped = await instance();
+  const originalStopAll = after.runtime.supervisor.stopAll.bind(after.runtime.supervisor);
+  after.runtime.supervisor.stopAll = async (reason) => {
+    await originalStopAll(reason);
+    supervisorStopped.resolve();
+  };
+  after.runtime.supervisor.start = async () => {
+    startEntered.resolve();
+    await releaseStart.promise;
+    throw new Error('restart was cancelled during Host shutdown');
+  };
+  await after.runtime.recoverAfterRestart();
+  await startEntered.promise;
+  const completion = after.runtime.shutdown('api_shutdown');
+
+  try {
+    await supervisorStopped.promise;
+    const settled = await Promise.race([
+      completion.then(() => 'shutdown-completed'),
+      new Promise((resolve) => setImmediate(() => resolve('restart-still-pending'))),
+    ]);
+    assert.equal(settled, 'restart-still-pending', 'shutdown must join the admitted restart operation');
+    // Cancellation must precede the deferred failure; completing shutdown must
+    // also join its inventory projection before a fixture can remove the root.
+    releaseStart.resolve();
+    await completion;
+    const current = await after.runtime.lifecycle.prepare(stopped.pluginInstanceId, stopped.lifecycleRevision);
+    assert.equal(current.activationState, 'enabled');
+    assert.equal(current.runtimeState, 'stopped');
+    assert.equal(current.lastRuntimeError, undefined);
+  } finally {
+    releaseStart.resolve();
+    await completion;
+  }
+});
+
+test('shutdown closes a recovered desktop that acquires ownership during the restart drain', async (t) => {
+  const { after, instance } = await enabledDesktopThenRestart(t);
+  const startEntered = deferred();
+  const releaseStart = deferred();
+  const supervisorStopped = deferred();
+  const originalStart = after.runtime.supervisor.start.bind(after.runtime.supervisor);
+  const originalStopAll = after.runtime.supervisor.stopAll.bind(after.runtime.supervisor);
+  after.runtime.supervisor.start = async (id) => {
+    startEntered.resolve();
+    await releaseStart.promise;
+    return originalStart(id);
+  };
+  after.runtime.supervisor.stopAll = async (reason) => {
+    await originalStopAll(reason);
+    supervisorStopped.resolve();
+  };
+  await after.runtime.recoverAfterRestart();
+  await startEntered.promise;
+  const completion = after.runtime.shutdown('api_shutdown');
+
+  try {
+    await supervisorStopped.promise;
+    releaseStart.resolve();
+    await completion;
+    assert.equal(after.observed.opens, 1, 'the admitted start completes through the real desktop runtime');
+    assert.equal(after.observed.closes, 1, 'shutdown must stop ownership acquired after its first snapshot');
+    assert.equal(await after.runtime.desktopWindows.presence(), null);
+    const current = await instance();
+    assert.equal(current.activationState, 'enabled');
+    assert.equal(current.runtimeState, 'stopped');
+    assert.equal(current.lastRuntimeError, undefined);
+  } finally {
+    releaseStart.resolve();
+    await completion;
+    await after.runtime.shutdown('test_complete');
+  }
 });
 
 test('Manager preserves official desktop preparation and routes enable/disable to the existing desktop authority', async (t) => {

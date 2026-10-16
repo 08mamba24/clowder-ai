@@ -62,7 +62,7 @@ function entry(id: string, createdAt: number, over: Partial<QueueEntry> = {}): Q
     content: `请帮我看看这个 PR 的第 ${id} 处改动是否合理`,
     messageId: `m-${id}`,
     mergedMessageIds: [],
-    source: 'user',
+    from: { kind: 'user', userId: 'u' },
     targetCats: ['opus'],
     intent: 'execute',
     status: 'queued',
@@ -80,7 +80,6 @@ function entry(id: string, createdAt: number, over: Partial<QueueEntry> = {}): Q
 }
 
 const STUCK = entry('stuck', NOW - 10_000, {
-  status: 'processing',
   recoveryActions: [
     {
       id: 'queue-force-reset:stuck:1',
@@ -98,6 +97,7 @@ interface Scene {
   status?: Record<string, string>;
   pending?: boolean;
   legacy?: boolean;
+  hydrationError?: boolean;
 }
 
 const SCENES: Record<string, () => Scene> = {
@@ -119,7 +119,8 @@ const SCENES: Record<string, () => Scene> = {
     ],
     queue: [],
   }),
-  unverified: () => ({ runs: [], queue: [], legacy: true }),
+  confirming: () => ({ runs: [], queue: [], legacy: true }),
+  unverified: () => ({ runs: [], queue: [], legacy: true, hydrationError: true }),
   stuck: () => ({ runs: [], queue: [STUCK, entry('a', NOW - 3), entry('b', NOW - 2)] }),
   paused: () => ({ runs: [], queue: [entry('1', NOW - 3), entry('2', NOW - 2), entry('3', NOW - 1)], paused: true }),
 };
@@ -128,7 +129,10 @@ function seed(name: string) {
   const scene = (SCENES[name] ?? SCENES.working)();
   const executions = useActiveExecutionStore.getState();
   executions.reset();
-  if (!scene.legacy) {
+  if (scene.hydrationError) {
+    const version = executions.beginHydration(THREAD, '/preview');
+    executions.failHydration(THREAD, version, new Error('fixture execution read failed'));
+  } else if (!scene.legacy) {
     const version = executions.beginHydration(THREAD, '/preview');
     useActiveExecutionStore
       .getState()
@@ -142,9 +146,35 @@ function seed(name: string) {
   const live = scene.runs.filter((r) => r.kind === 'live_invocation');
   useChatStore.setState({
     currentThreadId: THREAD,
+    threads: [
+      {
+        id: THREAD,
+        title: 'preview',
+        projectPath: '/preview',
+        preferredCats: ['opus'],
+        participants: ['opus'],
+        createdBy: 'owner-1',
+        createdAt: NOW - 300_000,
+        lastActiveAt: NOW,
+        pinned: false,
+        favorited: false,
+      },
+    ],
     messages: [],
     threadStates: {},
-    catInvocations: {},
+    catInvocations: Object.fromEntries(
+      live.map((execution) => [
+        execution.catId,
+        {
+          invocationId: execution.executionId,
+          freshnessCarrierCapability: {
+            provider: 'openai_codex',
+            carrier: 'codex_app_server',
+            deliverySemantics: 'exact_active_turn',
+          },
+        },
+      ]),
+    ),
     catStatuses: scene.status ?? {},
     activeInvocations: scene.legacy
       ? { legacy: { catId: 'opus', startedAt: NOW } }
@@ -165,7 +195,15 @@ seed(new URLSearchParams(window.location.search).get('s') ?? 'working');
 
 function Preview() {
   return (
-    <div data-testid="column" style={{ width: 720, margin: '24px auto', border: '1px solid #8884', borderRadius: 12 }}>
+    <div
+      data-testid="column"
+      style={{
+        width: 'min(720px, calc(100vw - 32px))',
+        margin: '24px auto',
+        border: '1px solid #8884',
+        borderRadius: 12,
+      }}
+    >
       <div data-testid="thread-header" style={{ padding: '8px 16px', fontSize: 12, opacity: 0.6 }}>
         组件预览（隔离夹具）· thread header
       </div>
@@ -185,7 +223,13 @@ function MountedPreview() {
   return (
     <div
       data-testid="column"
-      style={{ width: 760, margin: '16px auto', border: '1px solid #8884', borderRadius: 12, overflow: 'hidden' }}
+      style={{
+        width: 'min(760px, calc(100vw - 32px))',
+        margin: '16px auto',
+        border: '1px solid #8884',
+        borderRadius: 12,
+        overflow: 'hidden',
+      }}
     >
       <div data-testid="thread-header">
         <ChatContainerHeader

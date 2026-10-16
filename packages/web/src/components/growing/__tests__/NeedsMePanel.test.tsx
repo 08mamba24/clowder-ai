@@ -18,6 +18,10 @@ vi.mock('@/utils/api-client', async (importOriginal) => ({
   apiFetch: api.apiFetch,
 }));
 
+vi.mock('@/hooks/useThreadArtifacts', () => ({
+  useThreadArtifacts: () => ({ artifacts, loading: false, error: false, refetch: vi.fn() }),
+}));
+
 vi.mock('@/hooks/useEntrustedWorkProjection', () => ({
   useEntrustedWorkProjection: (projection: string) => {
     if (projection !== 'needs-me') throw new Error(`unexpected projection: ${projection}`);
@@ -167,7 +171,7 @@ describe('F310 NeedsMePanel', () => {
 
   it('explains the quiet state in the user situation without internal design commentary', async () => {
     await act(async () => {
-      root.render(<NeedsMePanel artifacts={artifacts} />);
+      root.render(<NeedsMePanel />);
     });
 
     expect(container.textContent).toContain('猫会先把能做的做好；只有真的需要你决定时，才带着准备好的内容回来。');
@@ -185,7 +189,7 @@ describe('F310 NeedsMePanel', () => {
     const previousMode = useChatStore.getState().workspaceMode;
     try {
       await act(async () => {
-        root.render(<NeedsMePanel artifacts={artifacts} />);
+        root.render(<NeedsMePanel />);
       });
       expect(container.textContent).toContain('工作安排和进展都在工作日历。');
       const exit = container.querySelector('[data-testid="needs-me-goto-schedule"]');
@@ -204,7 +208,7 @@ describe('F310 NeedsMePanel', () => {
   it('withholds the count while the read is loading or failed instead of fabricating zero', async () => {
     mocks.loading = true;
     await act(async () => {
-      root.render(<NeedsMePanel artifacts={artifacts} />);
+      root.render(<NeedsMePanel />);
     });
     expect(container.textContent).toContain('Needs Me');
     expect(container.querySelector('[data-testid="needs-me-count"]')).toBeNull();
@@ -212,14 +216,14 @@ describe('F310 NeedsMePanel', () => {
     mocks.loading = false;
     mocks.error = true;
     await act(async () => {
-      root.render(<NeedsMePanel artifacts={artifacts} />);
+      root.render(<NeedsMePanel />);
     });
     expect(container.querySelector('[data-testid="needs-me-count"]')).toBeNull();
 
     mocks.error = false;
     mocks.ownerReads = [ownerRead({ eligible: true })];
     await act(async () => {
-      root.render(<NeedsMePanel artifacts={artifacts} />);
+      root.render(<NeedsMePanel />);
     });
     expect(container.querySelector('[data-testid="needs-me-count"]')?.textContent).toBe('1');
   });
@@ -228,7 +232,7 @@ describe('F310 NeedsMePanel', () => {
     mocks.error = true;
 
     await act(async () => {
-      root.render(<NeedsMePanel artifacts={artifacts} />);
+      root.render(<NeedsMePanel />);
     });
 
     expect(container.textContent).toContain('暂时无法读取需要你判断的事');
@@ -243,7 +247,7 @@ describe('F310 NeedsMePanel', () => {
     const onOpenAction = vi.fn();
 
     await act(async () => {
-      root.render(<NeedsMePanel artifacts={artifacts} onOpenArtifact={onOpenArtifact} onOpenAction={onOpenAction} />);
+      root.render(<NeedsMePanel onOpenArtifact={onOpenArtifact} onOpenAction={onOpenAction} />);
     });
 
     const items = container.querySelectorAll('[data-testid="needs-me-item"]');
@@ -304,7 +308,7 @@ describe('F310 NeedsMePanel', () => {
     mocks.ownerReads = [read];
 
     await act(async () => {
-      root.render(<NeedsMePanel artifacts={artifacts} />);
+      root.render(<NeedsMePanel />);
     });
 
     const item = container.querySelector('[data-testid="needs-me-item"]');
@@ -340,7 +344,7 @@ describe('F310 NeedsMePanel', () => {
     vi.stubGlobal('URL', Object.assign(URL, { createObjectURL, revokeObjectURL }));
 
     await act(async () => {
-      root.render(<NeedsMePanel artifacts={artifacts} />);
+      root.render(<NeedsMePanel />);
     });
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -369,7 +373,7 @@ describe('F310 NeedsMePanel', () => {
     mocks.ownerReads = [read];
 
     await act(async () => {
-      root.render(<NeedsMePanel artifacts={artifacts} selectedItemRef={selectedItemRef} />);
+      root.render(<NeedsMePanel selectedItemRef={selectedItemRef} />);
     });
 
     const item = container.querySelector('[data-testid="needs-me-item"]');

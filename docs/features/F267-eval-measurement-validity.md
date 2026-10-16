@@ -2,10 +2,10 @@
 feature_ids: [F267]
 related_features: [F192, F245, F263, F266, F268, F275, F311]
 topics: [eval, measurement-validity, calibration, uncertainty, repeatability, friction, work-eligibility]
-tips_exempt: "Renewed 2026-10-02: KD-11 separates internal evaluation dormancy, measurement validity and historical coordinates; existing F311 discovery is unchanged and dormancy grants no new action authority."
+tips_exempt: "Renewed 2026-10-03: the owner-only measurement constitution rebind is discoverable through its governed F311 MCP description and has no separate end-user entry; KD-11 still separates internal evaluation dormancy, measurement validity and historical coordinates."
 doc_kind: spec
 created: 2026-07-18
-updated: 2026-09-06
+updated: 2026-10-03
 description: "为决策型 eval bundle 建立目标、边界、不确定性与重裁契约，并以 friction 通道召回为首个实证迁移。"
 description_source: human
 description_author: codex-sol
@@ -25,7 +25,7 @@ mcp_admission_claims:
 > **Status**: implementation | **Owner**: Maine Coon Sol/小太阳·Maine Coon (@codex-sol) | **Reviewer**: 狸花猫 GLM-5.2 (@glm52) | **Priority**: P1
 
 Architecture cell: `harness-eval`
-Map delta: none
+Map delta: extend the existing `harness-eval` source map with a trusted-main measurement-binding resolver; no new store or owner authority.
 Why: 本 Feature 为 F192 的 decision-bearing measurement bundle 补 validity/calibration contract，并消费各 domain 的 canonical telemetry；不搬走业务真相源，也不新建跨域总分。
 
 ## Why
@@ -68,6 +68,7 @@ eval 能稳定产出数字，不等于数字真的代表我们在乎的东西。
 - `sourceRevision` 指向包含这些 source artifacts 的既有 owner commit，必须严格早于承载 manifest 的 `origin/main` commit。F267 从 Git object database 读取 manifest 与 source bytes，验证 ancestry、regular-file mode 和 SHA-256，再以该 exact manifest commit 创建隔离发布 worktree；它不要求 manifest 写入包含自身的 commit SHA。
 - F267 写入不可覆盖的 certificate/result/role/proof artifacts；proof record 以 source manifest 的 path、bytes hash 与 exact `origin/main` commit 反向 attests target-owner source，resolver 每次消费都重验 manifest commit、prior source revision 与 source artifact hashes。任一路径、owner、hash、Program binding、角色或已声明 proof object 漂移都 fail closed。未声明 consumer/exposure/holdout proof 不阻断出生证发布，而由 resolver 签发 typed `insufficient` 与 withdrawal conditions；只有实际声明的 proof objects 才必须物理存在、hash-bound 且语义相符。
 - issuer 不写 F311 Program、不造 source data、不签 auto-promotion。source manifest 缺失时只返回 `source_owner_manifest_missing` 与七项 typed blockers；source/schema/revision 无效分别返回 typed invalid。artifact PR 可诚实携带 `measurement=insufficient` / `proof=insufficient`，measurement decision 的 `usable|insufficient` 与 proof 的 `verified|insufficient` 继续正交。
+- 版本化 publication 合入 trusted main 后，F311 只能凭 canonical F267 decision-proof identity 请求一次 `active/instrumenting` measurement constitution rebind。F267 resolver 从 proof attestation 固定的 manifest revision 重验 source ancestry/hash、certificate/result bytes 与四个 role artifact，再把证书和角色 refs 原子返回；调用方不能提交或改写这些 refs。`insufficient` publication 可以更新量具身份，但不会因此变成 usable、开轮或取得 value/metabolism authority。
 - 实例证据目录属于各部署实例：公开同步只导出 schema/runtime，不携带 Clowder AI 私有 manifest、certificate、result、proof 或 role artifacts，也不删除公开实例自己的这些目录。
 
 ### Phase C: Repeatability + Risk-Ordered Migration

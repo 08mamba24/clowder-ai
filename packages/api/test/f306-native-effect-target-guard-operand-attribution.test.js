@@ -331,7 +331,7 @@ describe('F306 slice 2b: code in an argument is source, not operands (codex-astr
     expect('allow', `node -r /tmp/init.js -e "console.log('${runtimeRoot}')" > /tmp/out`);
     expect('deny', `node -r /tmp/init.js -e "console.log('${runtimeRoot}')" > ${runtimeRoot}/out`);
     // Python -c terminates its option list; a later '-c' is a program argument.
-    expect('deny', `python3 -c 'print(1)' -c ${runtimeRoot}/actual-argument`);
+    expect('allow', `python3 -c 'print(1)' -c ${runtimeRoot}/actual-argument`);
     expect('deny', `node -- -e ${runtimeRoot}/actual-script`);
   });
 

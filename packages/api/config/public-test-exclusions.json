@@ -18,12 +18,30 @@
         "matchedFilesHash": "3280e54b7a01d83d43912c5eb4e07126c500507e5a16f06119d705c59b3ef2bd"
       },
       "publicAudit": {
-        "reviewedOn": "2026-10-02",
-        "sourceHead": "9663e789484fbf7569f1159c9779f1c9ab89375e",
-        "publicHead": "b1fe2966fa0a97d1e3cd2e174ed59fd1477b4fc4",
+        "reviewedOn": "2026-10-08",
+        "sourceHead": "adc163d5e51c40951ca219af3997f6753ab7a54b",
+        "publicHead": "3e70e1d6805be24672e8f841861f180d20b184c2",
         "status": "resource_contract",
-        "matchedFileCount": 52,
-        "matchedFilesHash": "607524b33dbe62de29f2bac9b23eff6aa9ae5f4fba94c8d59e6c7c549259c07e"
+        "matchedFileCount": 50,
+        "matchedFilesHash": "05c94617683df394d0dc42a1c03eb66c63ff318593cbef27054ac7a2779d41bb"
+      },
+      "publicAuditHistory": [
+        {
+          "reviewedOn": "2026-10-02",
+          "sourceHead": "9663e789484fbf7569f1159c9779f1c9ab89375e",
+          "publicHead": "b1fe2966fa0a97d1e3cd2e174ed59fd1477b4fc4",
+          "status": "resource_contract",
+          "matchedFileCount": 52,
+          "matchedFilesHash": "607524b33dbe62de29f2bac9b23eff6aa9ae5f4fba94c8d59e6c7c549259c07e"
+        }
+      ],
+      "inventoryRevision": {
+        "reason": "Only the already-retired F254 closure and supplement Redis suites left this existing resource inventory; no new exclusions or TTL changes.",
+        "sourceRetirement": "c94a58ac7388ba077281ab0608f2ec26a81d8551",
+        "removedFiles": [
+          "test/f254-freshness-closure-redis-store.test.js",
+          "test/f254-freshness-supplement-redis-store.test.js"
+        ]
       }
     },
     {
@@ -494,105 +512,71 @@
       }
     },
     {
-      "id": "session-strategy-phase3",
-      "match": "session-strategy-phase3",
+      "id": "alpha-browser-source-runtime",
+      "match": "^test/alpha-browser-template-source\\.test\\.js$",
       "category": "source_only",
-      "reason": "Phase 3 session strategy assertions cover internal rollout behavior outside the public gate contract.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-10-01",
+      "reason": "Only the two production home integrations require the installation dossier and private Alpha/gate execution runtime omitted from the public allowlist. The sibling portable scheduler file stays selected, including the complete-runtime advertisement boundary.",
+      "owner": "@codex61-sol",
+      "introducedBy": "a6a1140779415695c0c3e20c0859901e45126aff",
+      "expiresOn": "2027-12-31",
       "audit": {
-        "reviewedOn": "2026-09-01",
-        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
-        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "reviewedOn": "2026-10-10",
+        "sourceHead": "a6a1140779415695c0c3e20c0859901e45126aff",
+        "publicHead": "3e70e1d6805be24672e8f841861f180d20b184c2",
         "status": "source_dependency_failure",
         "matchedFileCount": 1,
-        "matchedFilesHash": "4127534522f418733c8f19179cb88aec40ce3fe4bcb1657842cd393bd5516d91"
+        "matchedFilesHash": "addae13e45ac129c6bbeea903b55702ecdaa598a9fa59779ca82026f45c95dba"
       }
     },
     {
-      "id": "codex-agent-service",
-      "match": "codex-agent-service",
-      "category": "source_only",
-      "reason": "2026-09-06 re-audit: requires the real Codex CLI on PATH; without the binary 88/94 assertions fail (PATH-strip reproducer). Public runners do not install codex, so this stays source-only until the suite is hermetic.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-09-30",
+      "id": "taste-takeaway-house-drafts",
+      "match": "^test/taste\\-takeaway\\-house\\-drafts\\.test\\.js$",
+      "category": "private_fixture",
+      "reason": "The exact 75-entry household draft inventory reads non-exported Taste vignettes and F321 evidence. Synthetic 75-public/2-private revision-bound importer and absent-main startup contracts remain in the public suite.",
+      "owner": "@codex61-sol",
+      "introducedBy": "9628408cca9e0fbc983d050425109f0d9207d721",
+      "expiresOn": "2026-12-31",
       "audit": {
-        "reviewedOn": "2026-09-01",
-        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
-        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
-        "status": "pending_bounded_recheck",
-        "matchedFileCount": 2,
-        "matchedFilesHash": "bb6f15490d1f0a407ece89b4a005c9fbea371b0d2b57e3d3ce080c9b27f08113"
+        "reviewedOn": "2026-10-10",
+        "sourceHead": "9628408cca9e0fbc983d050425109f0d9207d721",
+        "publicHead": "3e70e1d6805be24672e8f841861f180d20b184c2",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "ba5e8da5d51452ab71c86fda0c6247475ebce1d805e4a46bcf0d4da541dbd950"
       }
     },
     {
-      "id": "kimi-agent-service",
-      "match": "kimi-agent-service",
-      "category": "source_only",
-      "reason": "Kimi agent service coverage depends on internal runtime behavior outside the public gate contract.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-10-01",
+      "id": "capability-evolution-landed-owner-binding",
+      "match": "^test/harness\\-eval/capability\\-evolution\\-measurement\\-binding\\-resolver\\.test\\.js$",
+      "category": "private_fixture",
+      "reason": "This historical publication regression reads the installation-owner ba0f measurement-source manifest, decision proofs and internal Git revision f11039c, all outside the public export. It remains in source-full; the newly exported resolver currently has no synthetic public test coverage, so source-full guards this historical integration.",
+      "owner": "@codex61-sol",
+      "introducedBy": "9628408cca9e0fbc983d050425109f0d9207d721",
+      "expiresOn": "2026-12-31",
       "audit": {
-        "reviewedOn": "2026-09-01",
-        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
-        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
+        "reviewedOn": "2026-10-10",
+        "sourceHead": "9628408cca9e0fbc983d050425109f0d9207d721",
+        "publicHead": "3e70e1d6805be24672e8f841861f180d20b184c2",
+        "status": "private_fixture_failure",
+        "matchedFileCount": 1,
+        "matchedFilesHash": "be8312fd69ae044424851a10a45309ac91a35f1064747effd386574806ce5051"
+      }
+    },
+    {
+      "id": "f306-native-home-provider-hooks",
+      "match": "^test/f306-native-home-provider-hooks\\.test\\.js$",
+      "category": "source_only",
+      "reason": "Only the extracted real-provider integration requires the unexported home Claude runtime-sanctuary hook and a clean-loader process. Portable output-role and observation tests, including the shared CLI under public isolation, remain selected.",
+      "owner": "@codex-astra",
+      "introducedBy": "Task606 public CI 38355110794",
+      "expiresOn": "2026-11-13",
+      "audit": {
+        "reviewedOn": "2026-10-13",
+        "sourceHead": "fcad23f52b25d20777d377c9ceedcc06df35ceab",
+        "publicHead": "18a76aac38b686bb19d3211aed4268f565e9b416",
         "status": "source_dependency_failure",
         "matchedFileCount": 1,
-        "matchedFilesHash": "02431627c6e84d1a89123586fe6c450c068adb377918637e8eb8046fdd18d7b1"
-      }
-    },
-    {
-      "id": "thread-wiring",
-      "match": "thread-wiring\\.test",
-      "category": "source_only",
-      "reason": "Thread wiring assertions cover internal callback plumbing outside the public gate contract.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-10-01",
-      "audit": {
-        "reviewedOn": "2026-09-01",
-        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
-        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
-        "status": "source_dependency_failure",
-        "matchedFileCount": 1,
-        "matchedFilesHash": "1751f3af4a52c290eb6e669004d487bbf4b53a2325a42e50f7489b3f9a85b580"
-      }
-    },
-    {
-      "id": "integration-wiring",
-      "match": "integration/wiring\\.test",
-      "category": "source_only",
-      "reason": "Integration wiring checks depend on internal connection topology not exported to the public gate.",
-      "owner": "@zts212653",
-      "introducedBy": "78f3bc57c",
-      "expiresOn": "2026-10-01",
-      "audit": {
-        "reviewedOn": "2026-09-01",
-        "sourceHead": "b741f42fdbbb4484a54cde7eadca08b3b11652e3",
-        "publicHead": "182d8ec9abc87ff7905441dca0575aab9787ee8f",
-        "status": "source_dependency_failure",
-        "matchedFileCount": 1,
-        "matchedFilesHash": "7a1f58932ffd3615c1d498f55a647da6b1620fc35bcce76ef409817ec9bc2480"
-      }
-    },
-    {
-      "id": "f296-source-hook-contracts",
-      "match": "f296-(?:b3b3-post-compact-hook|session-hook-source-auth)\\.test",
-      "category": "source_only",
-      "reason": "F296 Claude hook byte and execution contracts require source-only root hook scripts that are deliberately absent from the public export; runtime callback composition and temp-fixture readiness remain publicly tested.",
-      "owner": "@zts212653",
-      "introducedBy": "842656205e",
-      "expiresOn": "2026-10-01",
-      "audit": {
-        "reviewedOn": "2026-09-02",
-        "sourceHead": "c4c5f828ae79ef4221c14d2c37cd6f54e3c3f04b",
-        "publicHead": "01c58feb40fab2a75016a9a8d290c87f6776d9a0",
-        "status": "source_dependency_failure",
-        "matchedFileCount": 2,
-        "matchedFilesHash": "0c4804c84ca718adb7ffd8b836ea737de5875f8daa1452d0f909e04b30e7eb46"
+        "matchedFilesHash": "2a15edf12af91760ca24a3c5c95c08b9d099bc69bcceb49ea2d3a497a01bfc90"
       }
     }
   ]

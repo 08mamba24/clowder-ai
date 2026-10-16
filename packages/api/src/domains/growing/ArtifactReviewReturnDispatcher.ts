@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
+import { type ConnectorSource, contentModificationRequestCarrierV1Schema } from '@cat-cafe/shared';
 import type { PersistedQueueDeliveryPort } from '../cats/services/agents/invocation/PersistedQueueDelivery.js';
-import { projectQueueReceipt } from '../cats/services/stores/ports/queued-message-receipt.js';
 import { ArtifactReviewError } from '../collaborative-content/artifact-review/errors.js';
 import { reviewReturnAttempt } from '../collaborative-content/artifact-review/return-attempt.js';
 import type {
@@ -10,8 +10,17 @@ import type {
 } from '../collaborative-content/artifact-review/return-store.js';
 import type { ArtifactReviewService } from '../collaborative-content/artifact-review/service.js';
 import type { ArtifactReviewStore } from '../collaborative-content/artifact-review/store.js';
+import { isBoundMediaModificationReturn } from '../collaborative-content/modification/bindings/media-return-binding.js';
+import {
+  type MediaPublicationReturnIntent,
+  mediaPublicationProjection,
+} from '../collaborative-content/modification/media-publication/media-publication-return.js';
 import type { ContentTextModificationService } from '../collaborative-content/modification/text/text-service.js';
 import { ModificationTextError } from '../collaborative-content/modification/text/text-store.js';
+import {
+  type TextWritebackCompletionIntent,
+  textWritebackCompletionProjection,
+} from '../collaborative-content/modification/text/text-writeback-completion-intent.js';
 import { MediaOwnerError } from '../video-studio/content-owner/media-errors.js';
 import { WorkspaceContentSourceError } from '../workspace/workspace-content-source.js';
 
@@ -30,6 +39,14 @@ export interface ArtifactReviewReturnDispatcherDeps {
 /** Bridges a committed human review receipt into the existing durable message queue. It owns no invocation or Task state. */
 export class ArtifactReviewReturnDispatcher {
   private running: Promise<void> | undefined;
+  private publicationCurrent?: (intent: MediaPublicationReturnIntent) => Promise<boolean>;
+  private textCompletionCurrent?: (intent: TextWritebackCompletionIntent) => Promise<boolean>;
+  setTextCompletionOwner(isCurrent: (intent: TextWritebackCompletionIntent) => Promise<boolean>): void {
+    this.textCompletionCurrent = isCurrent;
+  }
+  setPublicationOwner(isCurrent: (intent: MediaPublicationReturnIntent) => Promise<boolean>): void {
+    this.publicationCurrent = isCurrent;
+  }
   constructor(private readonly deps: ArtifactReviewReturnDispatcherDeps) {}
 
   drain(): Promise<void> {
@@ -62,7 +79,7 @@ export class ArtifactReviewReturnDispatcher {
   }
 
   private async deliver(intent: ContentReturnIntent, signal: AbortSignal): Promise<void> {
-    if (this.deps.store.requests.cancellations.isReturnCancelled(intent.receiptRef)) {
+    if (this.isCancelled(intent)) {
       this.deps.store.returns.retire(intent.receiptRef, 'request_cancelled');
       this.deps.invalidate(intent.ownerUserId);
       return;
@@ -77,31 +94,28 @@ export class ArtifactReviewReturnDispatcher {
     const idempotencyKey = `f309-return:${createHash('sha256').update(intent.receiptRef).digest('hex')}`;
     await this.deps.authorizeDelivery?.(intent);
     signal.throwIfAborted();
-    if (this.deps.store.requests.cancellations.isReturnCancelled(intent.receiptRef)) {
+    if (
+      (intent.kind === 'resume_media_publication' || intent.kind === 'text_writeback_completion') &&
+      !(await this.isCurrent(intent))
+    ) {
+      this.deps.store.returns.retire(intent.receiptRef, 'owner_coordinates_changed');
+      this.deps.invalidate(intent.ownerUserId);
+      return;
+    }
+    if (this.isCancelled(intent)) {
       this.deps.store.returns.retire(intent.receiptRef, 'request_cancelled');
       this.deps.invalidate(intent.ownerUserId);
       return;
     }
+    const projection = returnMessageProjection(this.deps.store, intent);
     const result = await this.deps.delivery.deliver({
       ownerAuthProvenance: 'strict',
       ownerUserId: intent.ownerUserId,
       threadId: intent.threadId,
       targetCatId: intent.targetCatId,
       idempotencyKey,
-      content: intent.kind === 'request_text_edit' ? textReturnEnvelope(intent) : reviewReturnEnvelope(intent),
       sourceCategory: 'producer_return',
-      source: {
-        connector: 'content-review',
-        label: '产物审阅',
-        icon: 'cat-cafe',
-        meta: {
-          reviewReceiptRef: intent.receiptRef,
-          taskId: intent.taskId,
-          ...(intent.kind === 'request_text_edit'
-            ? { requestId: intent.requestId }
-            : { reviewRevision: String(intent.reviewRevision) }),
-        },
-      },
+      ...projection,
     });
     // A late Host response may already have its durable carrier. The next attempt reads that same key;
     // an expired attempt cannot alter the outbox winner or continue into another request.
@@ -123,18 +137,26 @@ export class ArtifactReviewReturnDispatcher {
           mentions: message.mentions,
           userId: message.userId,
           source: message.source,
-          extra: {
-            ...message.extra,
-            ...(message.queueCustody ? { queueReceipt: projectQueueReceipt(message.queueCustody) } : {}),
-          },
+          extra: message.extra,
         },
       ],
     });
     this.deps.invalidate(intent.ownerUserId);
   }
 
+  private isCancelled(intent: ContentReturnIntent): boolean {
+    if (this.deps.store.requests.cancellations.isReturnCancelled(intent.receiptRef)) return true;
+    // Completion has its own return ref; only its current request owns cancellation, never the root A provenance.
+    return (
+      intent.kind === 'text_writeback_completion' &&
+      this.deps.store.requests.get(intent.requestId, intent.ownerUserId)?.control?.state === 'cancelled'
+    );
+  }
+
   private async isCurrent(intent: ContentReturnIntent): Promise<boolean> {
     try {
+      if (intent.kind === 'text_writeback_completion') return (await this.textCompletionCurrent?.(intent)) ?? false;
+      if (intent.kind === 'resume_media_publication') return (await this.publicationCurrent?.(intent)) ?? false;
       if (intent.kind === 'request_text_edit') {
         return await this.isTextCurrent(intent);
       }
@@ -169,6 +191,108 @@ export class ArtifactReviewReturnDispatcher {
     if (!this.deps.text) throw new Error('Text return owner is not composed');
     return this.deps.text.isCurrent(intent);
   }
+}
+
+type ReturnMessageProjection =
+  | {
+      content: string;
+      source: ConnectorSource;
+      visibility: 'public';
+      compatibleExistingSources?: readonly ConnectorSource[];
+    }
+  | { content: string; source: ConnectorSource; visibility: 'whisper'; whisperTo: readonly string[] };
+
+function returnMessageProjection(store: ArtifactReviewStore, intent: ContentReturnIntent): ReturnMessageProjection {
+  if (intent.kind === 'text_writeback_completion') return textWritebackCompletionProjection(intent);
+  if (intent.kind === 'resume_media_publication') return mediaPublicationProjection(intent);
+  const isText = intent.kind === 'request_text_edit';
+  const isMediaRequest =
+    intent.requestId !== undefined &&
+    (intent.kind === 'request_image_edit' ||
+      intent.kind === 'request_media_edit' ||
+      intent.kind === 'supersede_request');
+  if (!isText && !isMediaRequest) {
+    return {
+      content: reviewReturnEnvelope(intent),
+      visibility: 'public',
+      source: legacyReviewReturnSource(intent),
+    };
+  }
+  if (!intent.requestId) throw new ModificationTextError('not_found');
+  const record = store.requests.get(intent.requestId, intent.ownerUserId);
+  if (
+    !record ||
+    !record.progress.sourceMessageId ||
+    (intent.kind === 'request_text_edit'
+      ? record.progress.sourceMessageId !== intent.sourceMessageId
+      : !isBoundMediaModificationReturn(store, record, intent)) ||
+    record.progress.task?.taskId !== intent.taskId ||
+    record.progress.task.revision !== intent.expectedTaskRevision ||
+    record.progress.review?.receiptRef !== intent.receiptRef ||
+    record.payload.targetCatId !== intent.targetCatId ||
+    record.payload.threadId !== intent.threadId
+  ) {
+    throw new ModificationTextError('not_found');
+  }
+  const carrier = contentModificationRequestCarrierV1Schema.parse({
+    v: 1,
+    kind: intent.kind,
+    requestId: intent.requestId,
+    sourceMessageId: record.progress.sourceMessageId,
+    targetCatId: intent.targetCatId,
+    taskId: intent.taskId,
+    expectedTaskRevision: intent.expectedTaskRevision,
+    requestReceiptRef: intent.receiptRef,
+  });
+  const projection = {
+    content: intent.kind === 'request_text_edit' ? textReturnEnvelope(intent) : reviewReturnEnvelope(intent),
+    source: {
+      connector: 'content-review',
+      label: 'Host 作品修改请求：原任务续办',
+      icon: 'cat-cafe',
+      meta: carrier,
+    },
+  } satisfies { content: string; source: ConnectorSource };
+  return record.progress.sourceVisibility?.visibility === 'whisper'
+    ? {
+        ...projection,
+        visibility: 'whisper',
+        whisperTo: record.progress.sourceVisibility.whisperTo,
+      }
+    : {
+        ...projection,
+        visibility: 'public',
+        compatibleExistingSources: [
+          intent.kind === 'request_text_edit' ? legacyTextRequestSource(intent) : legacyReviewReturnSource(intent),
+        ],
+      };
+}
+
+function legacyReviewReturnSource(intent: ReviewReturnIntent): ConnectorSource {
+  return {
+    connector: 'content-review',
+    label: '产物审阅',
+    icon: 'cat-cafe',
+    meta: {
+      reviewReceiptRef: intent.receiptRef,
+      taskId: intent.taskId,
+      reviewRevision: String(intent.reviewRevision),
+    },
+  };
+}
+
+/** The only pre-v1 source shape that deployed code could persist for this exact public request. */
+function legacyTextRequestSource(intent: TextModificationReturnIntent): ConnectorSource {
+  return {
+    connector: 'content-review',
+    label: '产物审阅',
+    icon: 'cat-cafe',
+    meta: {
+      reviewReceiptRef: intent.receiptRef,
+      taskId: intent.taskId,
+      requestId: intent.requestId,
+    },
+  };
 }
 
 export function textReturnEnvelope(intent: TextModificationReturnIntent): string {

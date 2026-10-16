@@ -64,6 +64,7 @@ function makeFixture() {
   cpSync(SOURCE_SCRIPT, join(repoRoot, 'scripts', 'intake-from-opensource.sh'));
   mkdirSync(join(repoRoot, 'scripts', 'lib'), { recursive: true });
   cpSync(GH_RETRY_LIB, join(repoRoot, 'scripts', 'lib', 'intake-gh-retry.sh'));
+  cpSync(resolve('scripts/lib/intake-brand-paths.mjs'), join(repoRoot, 'scripts/lib/intake-brand-paths.mjs'));
   cpSync(
     resolve('scripts/lib/sync-public-export-coverage.mjs'),
     join(repoRoot, 'scripts/lib/sync-public-export-coverage.mjs'),
@@ -99,6 +100,7 @@ function makeRemoteFixture() {
   cpSync(SOURCE_SCRIPT, join(repoRoot, 'scripts', 'intake-from-opensource.sh'));
   mkdirSync(join(repoRoot, 'scripts', 'lib'), { recursive: true });
   cpSync(GH_RETRY_LIB, join(repoRoot, 'scripts', 'lib', 'intake-gh-retry.sh'));
+  cpSync(resolve('scripts/lib/intake-brand-paths.mjs'), join(repoRoot, 'scripts/lib/intake-brand-paths.mjs'));
   chmodSync(join(repoRoot, 'scripts', 'intake-from-opensource.sh'), 0o755);
 
   git(sandboxRoot, 'init', '--bare', 'clowder-ai-remote.git');
@@ -170,9 +172,7 @@ function makePlanFixture(files, pr = {}) {
     2,
   );
 
-  // gh api returns JSON array of {filename: ...} objects; with --jq '.[].filename'
-  // gh outputs one filename per line. Build both for the mock.
-  const filesOneLine = files.join('\n');
+  // Model the paginated GitHub JSON shape; never transport filenames as display lines.
 
   const mockBin = join(fixture.sandboxRoot, 'mock-bin');
   mkdirSync(mockBin, { recursive: true });
@@ -193,7 +193,7 @@ fi
 # Handle: gh api --paginate "repos/.../pulls/.../files" --jq '.[].filename'
 if [ "\${1:-}" = "api" ]; then
   cat <<'FILELIST'
-${filesOneLine}
+${JSON.stringify([files.map((filename) => ({ filename }))])}
 FILELIST
   exit 0
 fi
@@ -685,6 +685,7 @@ function makeBrandFixture(overrides = {}) {
   cpSync(SOURCE_SCRIPT, join(repoRoot, 'scripts', 'intake-from-opensource.sh'));
   mkdirSync(join(repoRoot, 'scripts', 'lib'), { recursive: true });
   cpSync(GH_RETRY_LIB, join(repoRoot, 'scripts', 'lib', 'intake-gh-retry.sh'));
+  cpSync(resolve('scripts/lib/intake-brand-paths.mjs'), join(repoRoot, 'scripts/lib/intake-brand-paths.mjs'));
   chmodSync(join(repoRoot, 'scripts', 'intake-from-opensource.sh'), 0o755);
 
   // Phase 2 dictionary-driven scan needs only the self-contained helper and dictionary YAML.
@@ -1088,7 +1089,13 @@ function makeHookFixture() {
   cpSync(SOURCE_SCRIPT, join(repoRoot, 'scripts', 'intake-from-opensource.sh'));
   mkdirSync(join(repoRoot, 'scripts', 'lib'), { recursive: true });
   cpSync(GH_RETRY_LIB, join(repoRoot, 'scripts', 'lib', 'intake-gh-retry.sh'));
+  cpSync(resolve('scripts/lib/intake-brand-paths.mjs'), join(repoRoot, 'scripts/lib/intake-brand-paths.mjs'));
   chmodSync(join(repoRoot, 'scripts', 'intake-from-opensource.sh'), 0o755);
+
+  cpSync(
+    resolve('scripts/materialize-biome-index-snapshot.mjs'),
+    join(repoRoot, 'scripts/materialize-biome-index-snapshot.mjs'),
+  );
 
   // Install pre-commit hook
   mkdirSync(join(repoRoot, '.githooks'), { recursive: true });
@@ -1415,6 +1422,27 @@ FILES
 fi
 
 if [ "\${1:-}" = "api" ]; then
+  for arg in "$@"; do
+    if [[ "$arg" =~ ^repos/zts212653/(clowder-ai|cat-cafe)/pulls/[0-9]+/files$ ]]; then
+      if [[ "$arg" == *clowder-ai* ]] && [ "${mock.targetPrFilesApiFails ? 'true' : 'false'}" = "true" ]; then exit 1; fi
+      case "$arg" in
+        *clowder-ai*) cat <<'JSON'
+${JSON.stringify([targetPrFiles.map((f) => ({ filename: fixtureFilePath(f) }))])}
+JSON
+          ;;
+        *) cat <<'JSON'
+${JSON.stringify([
+  mockAbsorbPrFileList
+    .split('\n')
+    .filter(Boolean)
+    .map((filename) => ({ filename })),
+])}
+JSON
+          ;;
+      esac
+      exit 0
+    fi
+  done
   for arg in "$@"; do
     if [[ "$arg" =~ ^repos/zts212653/clowder-ai/pulls/[0-9]+/files$ ]]; then
       if [ "${mock.targetPrFilesApiFails ? 'true' : 'false'}" = "true" ]; then

@@ -1,4 +1,4 @@
-const { petMetrics, placePetPanel } = require('./pet-placement.cjs');
+const { petMetrics, placePetPanel, validBallSize } = require('./pet-placement.cjs');
 const { createPetTravel } = require('./pet-travel.cjs');
 const inside = (p, r) => r && p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height;
 const clamp = (value, low, high) => Math.max(low, Math.min(value, high));
@@ -202,7 +202,7 @@ function createPetWindow({ win, screen, publish, motionLease, travelOptions = {}
       publish({ kind: 'view-dismiss' });
     },
     setBallSize(value) {
-      if (!Number.isInteger(value) || value < 48 || value > 192) return false;
+      if (!validBallSize(value)) return false;
       if (value === ballSize) return true;
       const before = petMetrics(ballSize).pet;
       const after = petMetrics(value).pet;

@@ -6,8 +6,20 @@ import { MediaOwnerError } from './media-errors.js';
 import { type ContentPublicationScopeV1, isTaskPublicationScope, type TaskContentPublicationScopeV1 } from './types.js';
 
 export type MediaReviewPrincipal =
-  | { userId: string; actor: Extract<ArtifactReviewActor, { kind: 'human' }>; threadId?: never; contentTaskId?: never }
-  | { userId: string; actor: Extract<ArtifactReviewActor, { kind: 'cat' }>; threadId: string; contentTaskId?: string };
+  | {
+      userId: string;
+      actor: Extract<ArtifactReviewActor, { kind: 'human' }>;
+      threadId?: never;
+      contentTaskId?: never;
+      invocationId?: never;
+    }
+  | {
+      userId: string;
+      actor: Extract<ArtifactReviewActor, { kind: 'cat' }>;
+      threadId: string;
+      contentTaskId?: string;
+      invocationId?: string;
+    };
 
 export interface PublicationTaskGrantPort {
   hasGrant(input: {
@@ -23,7 +35,13 @@ export interface PublicationTaskGrantPort {
 export function withContentTask(principal: MediaReviewPrincipal, taskId: string): MediaReviewPrincipal {
   if (principal.actor.kind === 'human') return principal;
   if (!principal.threadId) throw new MediaOwnerError('access_denied');
-  return { userId: principal.userId, actor: principal.actor, threadId: principal.threadId, contentTaskId: taskId };
+  return {
+    ...principal,
+    userId: principal.userId,
+    actor: principal.actor,
+    threadId: principal.threadId,
+    contentTaskId: taskId,
+  };
 }
 
 /** Content owner consumes canonical Task and Thread authority; it does not create another ACL. */

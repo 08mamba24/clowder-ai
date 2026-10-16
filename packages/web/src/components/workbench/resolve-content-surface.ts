@@ -16,9 +16,17 @@ export function resolveContentSurfaceIdentity(
     (!resolvePublicationTarget(target) && !resolveArtifactReviewTarget(target) && !resolveFileTarget(target))
   )
     return state;
+  const fileTarget = resolveFileTarget(target);
+  const matchesTarget = (item: WorkspaceSurfaceDescriptor) => {
+    if (item.id === target.id) return true;
+    if (!fileTarget) return false;
+    const file = resolveFileTarget(item);
+    return !!file && file.worktreeId === fileTarget.worktreeId && file.path === fileTarget.path;
+  };
   const retained =
-    state.surfaces.find((item) => item.id === target.id && item.id !== sourceId) ??
-    (state.sidecar?.id === target.id && state.sidecar.id !== sourceId ? state.sidecar : null);
+    state.surfaces.find((item) => item.id !== sourceId && matchesTarget(item)) ??
+    (state.sidecar && state.sidecar.id !== sourceId && matchesTarget(state.sidecar) ? state.sidecar : null);
+  const resolvedId = retained?.id ?? target.id;
   const messagePublicationSource =
     target.messagePublicationSource ?? resolveMessagePublicationSource(source) ?? source.messagePublicationSource;
   const resolved =
@@ -26,6 +34,7 @@ export function resolveContentSurfaceIdentity(
       ? retained
       : {
           ...target,
+          ...(retained && fileTarget ? { id: retained.id, objectRef: retained.objectRef } : {}),
           ...(messagePublicationSource ? { messagePublicationSource } : {}),
           ...(source.navigationOrigin ? { navigationOrigin: source.navigationOrigin } : {}),
           ...(source.returnTargetRef ? { returnTargetRef: source.returnTargetRef } : {}),
@@ -33,19 +42,19 @@ export function resolveContentSurfaceIdentity(
             ? { artifactFileSource: source.artifactFileSource }
             : {}),
         };
-  const alreadyOpen = state.surfaces.some((item) => item.id === target.id && item.id !== sourceId);
+  const alreadyOpen = state.surfaces.some((item) => item.id === resolvedId && item.id !== sourceId);
   const surfaces = state.surfaces.flatMap((item) =>
-    item.id === sourceId ? (alreadyOpen ? [] : [resolved]) : item.id === target.id ? [resolved] : [item],
+    item.id === sourceId ? (alreadyOpen ? [] : [resolved]) : item.id === resolvedId ? [resolved] : [item],
   );
   const sidecar =
     state.sidecar?.id === sourceId
-      ? surfaces.some((item) => item.id === target.id)
+      ? surfaces.some((item) => item.id === resolvedId)
         ? null
         : resolved
-      : state.sidecar?.id === target.id && surfaces.some((item) => item.id === target.id)
+      : state.sidecar?.id === resolvedId && surfaces.some((item) => item.id === resolvedId)
         ? null
         : state.sidecar;
-  const replace = (id: string) => (id === sourceId ? target.id : id);
+  const replace = (id: string) => (id === sourceId ? resolvedId : id);
   const split = state.split
     ? {
         primarySurfaceId: replace(state.split.primarySurfaceId),
@@ -56,14 +65,17 @@ export function resolveContentSurfaceIdentity(
     ...state,
     surfaces,
     sidecar,
+    previewSurfaceId: state.previewSurfaceId === sourceId ? (retained ? null : resolvedId) : state.previewSurfaceId,
     activeSurfaceId: state.activeSurfaceId ? replace(state.activeSurfaceId) : null,
     pinnedSurfaceIds: [...new Set(state.pinnedSurfaceIds.map(replace))].filter((id) =>
       surfaces.some((item) => item.id === id),
     ),
     split: split?.primarySurfaceId === split?.secondarySurfaceId ? null : split,
-    recentlyClosed: state.recentlyClosed.filter((item) => item.id !== sourceId && item.id !== target.id),
+    recentlyClosed: state.recentlyClosed.filter(
+      (item) => item.id !== sourceId && item.id !== resolvedId && item.id !== target.id,
+    ),
     activity: state.activity.map((item) =>
-      item.surfaceId === sourceId ? { ...item, surfaceId: target.id, surface: resolved } : item,
+      item.surfaceId === sourceId ? { ...item, surfaceId: resolvedId, surface: resolved } : item,
     ),
   };
 }

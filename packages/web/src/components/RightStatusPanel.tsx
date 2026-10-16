@@ -6,6 +6,7 @@ import { catColorVar } from '@/lib/cat-slug';
 import type { CatInvocationInfo } from '@/stores/chatStore';
 import { useChatStore } from '@/stores/chatStore';
 import { apiFetch } from '@/utils/api-client';
+import { useBubbleDisplayCycle } from './bubble-display-cycle';
 import { CatTokenUsage } from './CatTokenUsage';
 import { PlanBoardPanel } from './PlanBoardPanel';
 import { SessionIdTag } from './SessionChainInputs';
@@ -86,7 +87,7 @@ function CatInvocationCard({ catId, inv, isActive }: { catId: string; inv: CatIn
 }
 
 /** Toggle between play/debug thinking visibility mode for the thread */
-function ThinkingModeToggle({ threadId }: { threadId: string }) {
+export function ThinkingModeToggle({ threadId, v2 = false }: { threadId: string; v2?: boolean }) {
   const thread = useChatStore((s) => s.threads.find((t) => t.id === threadId));
   const updateLocal = useChatStore((s) => s.updateThreadThinkingMode);
   const mode = thread?.thinkingMode ?? 'debug';
@@ -116,16 +117,25 @@ function ThinkingModeToggle({ threadId }: { threadId: string }) {
   }, [threadId, isDebug, mode, updateLocal]);
 
   return (
-    <div className="flex items-center justify-between gap-2 min-w-0">
-      <span className="truncate min-w-0">
-        心里话: <span className="font-medium">{isDebug ? '调试' : '游戏'}</span>
-      </span>
+    <div className={v2 ? 'status-v2-visibility-row' : 'flex items-center justify-between gap-2 min-w-0'}>
+      {v2 ? (
+        <>
+          <span>心里话</span>
+          <span className="status-v2-visibility-value" title={isDebug ? '调试模式（相互可见）' : '游戏模式'}>
+            {isDebug ? '调试模式（相互可见）' : '游戏模式'}
+          </span>
+        </>
+      ) : (
+        <span className="truncate min-w-0">
+          心里话: <span className="font-medium">{isDebug ? '调试' : '游戏'}</span>
+        </span>
+      )}
       <button
         onClick={toggle}
         className="shrink-0 rounded-full px-3 py-1 text-label transition-colors hover:text-cafe"
         title={isDebug ? '切换到游戏模式（猫猫互相看不到心里话）' : '切换到调试模式（猫猫互相分享心里话）'}
       >
-        {isDebug ? '切换游戏' : '切换调试'}
+        {isDebug ? (v2 ? '切换到游戏模式' : '切换游戏') : v2 ? '切换到调试模式' : '切换调试'}
       </button>
     </div>
   );
@@ -136,14 +146,9 @@ const BUBBLE_LABELS: Record<string, string> = {
   expanded: '展开',
   collapsed: '折叠',
 };
-const BUBBLE_CYCLE: Record<string, 'expanded' | 'collapsed' | 'global'> = {
-  global: 'expanded',
-  expanded: 'collapsed',
-  collapsed: 'global',
-};
 
 /** Thread-level bubble display override (three-state: global / expanded / collapsed) */
-function BubbleDisplayToggle({
+export function BubbleDisplayToggle({
   threadId,
   label,
   field,
@@ -152,49 +157,12 @@ function BubbleDisplayToggle({
   label: string;
   field: 'bubbleThinking' | 'bubbleCli';
 }) {
-  const thread = useChatStore((s) => s.threads.find((t) => t.id === threadId));
-  const isLoadingThreads = useChatStore((s) => s.isLoadingThreads);
-  const updateLocal = useChatStore((s) => s.updateThreadBubbleDisplay);
-  const globalBubbleDefaults = useChatStore((s) => s.globalBubbleDefaults);
-  const bubbleRestorePending = isLoadingThreads && !thread;
-  const current = thread?.[field] ?? 'global';
-  const currentEffective =
-    current === 'global'
-      ? field === 'bubbleThinking'
-        ? globalBubbleDefaults.thinking
-        : globalBubbleDefaults.cliOutput
-      : current;
-  const next = bubbleRestorePending
-    ? null
-    : current === 'global'
-      ? currentEffective === 'expanded'
-        ? 'collapsed'
-        : 'expanded'
-      : BUBBLE_CYCLE[current];
-  const currentLabel = bubbleRestorePending
+  const { current, currentEffective, next, restorePending, cycle } = useBubbleDisplayCycle(threadId, field);
+  const currentLabel = restorePending
     ? '恢复中'
     : current === 'global'
       ? `${BUBBLE_LABELS.global}（当前${BUBBLE_LABELS[currentEffective]}）`
       : BUBBLE_LABELS[current];
-  const pendingRef = useRef(false);
-
-  const cycle = useCallback(async () => {
-    if (pendingRef.current || bubbleRestorePending || !next) return;
-    pendingRef.current = true;
-    updateLocal(threadId, field, next);
-    try {
-      const res = await apiFetch(`/api/threads/${threadId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [field]: next }),
-      });
-      if (!res.ok) updateLocal(threadId, field, current);
-    } catch {
-      updateLocal(threadId, field, current);
-    } finally {
-      pendingRef.current = false;
-    }
-  }, [threadId, field, next, current, updateLocal, bubbleRestorePending]);
 
   return (
     <div className="flex items-center justify-between gap-2 min-w-0">
@@ -203,17 +171,17 @@ function BubbleDisplayToggle({
       </span>
       <button
         onClick={cycle}
-        disabled={bubbleRestorePending}
+        disabled={restorePending}
         className="shrink-0 rounded-full px-3 py-1 text-label transition-colors hover:text-cafe"
       >
-        {bubbleRestorePending ? '恢复中...' : BUBBLE_LABELS[next as keyof typeof BUBBLE_LABELS]}
+        {restorePending ? '恢复中...' : BUBBLE_LABELS[next as keyof typeof BUBBLE_LABELS]}
       </button>
     </div>
   );
 }
 
 /** F35: Reveal all whispers in the thread (game-end reveal) */
-function RevealWhispersButton({ threadId }: { threadId: string }) {
+export function RevealWhispersButton({ threadId, v2 = false }: { threadId: string; v2?: boolean }) {
   const [status, setStatus] = useState<'idle' | 'pending' | 'done'>('idle');
   const [revealedCount, setRevealedCount] = useState<number | null>(null);
 
@@ -233,7 +201,9 @@ function RevealWhispersButton({ threadId }: { threadId: string }) {
         method: 'PATCH',
       });
       if (res.ok) {
+        if (v2 && useChatStore.getState().currentThreadId !== threadId) return;
         const data = await res.json();
+        if (v2 && useChatStore.getState().currentThreadId !== threadId) return;
         const count = data.revealed ?? 0;
         setRevealedCount(count);
         setStatus('done');
@@ -255,13 +225,24 @@ function RevealWhispersButton({ threadId }: { threadId: string }) {
     } catch {
       setStatus('idle');
     }
-  }, [threadId, status]);
+  }, [threadId, status, v2]);
 
   return (
-    <div className="flex items-center justify-between gap-2 min-w-0">
-      <span className="shrink-0">悄悄话:</span>
+    <div className={v2 ? 'status-v2-visibility-row' : 'flex items-center justify-between gap-2 min-w-0'}>
+      {v2 ? (
+        <>
+          <span>悄悄话</span>
+          <span className="status-v2-visibility-value" title="默认仅相关猫可见">
+            默认仅相关猫可见
+          </span>
+        </>
+      ) : (
+        <span className="shrink-0">悄悄话:</span>
+      )}
       {status === 'done' ? (
-        <span className="shrink-0 text-label text-conn-emerald-text">已揭秘 {revealedCount} 条</span>
+        <span className="shrink-0 text-label text-conn-emerald-text">
+          {v2 ? '已揭晓' : '已揭秘'} {revealedCount} 条
+        </span>
       ) : (
         <button
           onClick={handleReveal}
@@ -269,7 +250,7 @@ function RevealWhispersButton({ threadId }: { threadId: string }) {
           className="shrink-0 rounded-full px-3 py-1 text-label text-conn-amber-text transition-colors hover:opacity-90 disabled:opacity-50"
           title="揭晓本线程所有悄悄话"
         >
-          {status === 'pending' ? '揭秘中...' : '揭秘全部'}
+          {status === 'pending' ? (v2 ? '揭晓中…' : '揭秘中...') : v2 ? '全部揭晓' : '揭秘全部'}
         </button>
       )}
     </div>
@@ -286,7 +267,7 @@ function parseLogFilename(name: string): { date: string; seq: number } | null {
 }
 
 /** Exported for tests; rendered inside RightStatusPanel. */
-export function RuntimeLogsButton({ threadId }: { threadId: string }) {
+export function RuntimeLogsButton({ threadId, compact = false }: { threadId: string; compact?: boolean }) {
   const originRef = useFileCardReturn<HTMLElement>('runtime-logs', threadId);
   const setOpenFile = useChatStore((s) => s.setWorkspaceOpenFile);
 
@@ -309,6 +290,11 @@ export function RuntimeLogsButton({ threadId }: { threadId: string }) {
         useChatStore
           .getState()
           .openWorkspacePath(originThreadId, { kind: 'reveal', worktreeId: wId, path: LOGS_DIR, navigationOrigin });
+
+      if (compact) {
+        revealLogsDir();
+        return;
+      }
 
       const params = new URLSearchParams({ worktreeId: wId, path: LOGS_DIR, depth: '1' });
       const res = await apiFetch(`/api/workspace/tree?${params}`);
@@ -337,17 +323,25 @@ export function RuntimeLogsButton({ threadId }: { threadId: string }) {
     } catch {
       // Network loss before anything was recorded; the button stays usable for a retry.
     }
-  }, [setOpenFile, originRef]);
+  }, [compact, setOpenFile, originRef]);
 
   return (
-    <section ref={originRef} tabIndex={-1} className={`${SIDEBAR_CARD} flex items-center justify-between px-3 py-2`}>
-      <h3 className="text-label font-bold text-cafe">运行日志</h3>
+    <section
+      ref={originRef}
+      tabIndex={-1}
+      className={compact ? 'status-v2-info-row' : `${SIDEBAR_CARD} flex items-center justify-between px-3 py-2`}
+    >
+      {compact ? (
+        <span className="status-v2-muted">运行日志</span>
+      ) : (
+        <h3 className="text-label font-bold text-cafe">运行日志</h3>
+      )}
       <button
         onClick={handleClick}
         className="text-label font-bold text-cafe transition-colors hover:text-cafe"
         title="在 Workspace 面板中打开运行日志目录"
       >
-        查看日志
+        {compact ? '打开目录' : '查看日志'}
       </button>
     </section>
   );
@@ -367,8 +361,7 @@ export function RightStatusPanel({
 }: RightStatusPanelProps) {
   // F26: Split into active (working now) vs history (appeared before)
   // review-#784 P2 + AC-Z15: pass intentMode so deriveActiveCats preserves the
-  // full targetCats union during ideate rounds (matches ParallelStatusBar /
-  // Responsive status-host behavior; without this, finished-cat slots get demoted
+  // full targetCats union during ideate rounds. Without this, finished-cat slots get demoted
   // to history while the round is still running).
   const { activeCats, historyCats } = useMemo(() => {
     const snapshotCats = collectSnapshotActiveCats(catInvocations);

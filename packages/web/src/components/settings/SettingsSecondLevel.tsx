@@ -1,8 +1,11 @@
 'use client';
 
 import type { KeyboardEvent, ReactNode } from 'react';
+import { accountsCopy } from '../accounts/accounts.shell-copy';
 import { HubIcon } from '../hub-icons';
+import { useShellCopy } from '../shell/shell-copy';
 import { PinToggle } from './SettingsPinToggle';
+import { useSettingsDetailText } from './settings-detail.shell-copy';
 import { type SettingsEntry, sectionLabel } from './settings-ia';
 
 const PANEL_ID = 'settings-tabpanel';
@@ -20,6 +23,7 @@ export function SettingsSecondLevel({
   onOpenTeam,
   isPinned,
   onTogglePin,
+  fixedLayout = false,
   children,
 }: {
   entry: SettingsEntry;
@@ -28,8 +32,13 @@ export function SettingsSecondLevel({
   onOpenTeam: () => void;
   isPinned: (pinId: string) => boolean;
   onTogglePin: (pinId: string) => void;
+  fixedLayout?: boolean;
   children: ReactNode;
 }) {
+  const accountsText = useShellCopy(accountsCopy);
+  const sectionText = useSettingsDetailText();
+  const labelOf = (id: string) =>
+    id === 'accounts' ? accountsText.title : (sectionText(id)?.title ?? sectionLabel(id));
   if (entry.destination.kind !== 'sections') return <>{children}</>;
   const items = entry.destination.items;
   const sectionIds = items.flatMap((item) => (item.kind === 'section' ? [item.sectionId] : []));
@@ -60,7 +69,7 @@ export function SettingsSecondLevel({
 
   return (
     <>
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
         <div role="tablist" aria-label={`${entry.label}的分区`} className="flex flex-wrap items-center gap-1">
           {sectionIds.map((sectionId, index) => {
             const current = sectionId === selection;
@@ -86,7 +95,7 @@ export function SettingsSecondLevel({
                   fontWeight: current ? 500 : undefined,
                 }}
               >
-                {sectionLabel(sectionId)}
+                {labelOf(sectionId)}
               </button>
             );
           })}
@@ -95,7 +104,7 @@ export function SettingsSecondLevel({
           {selectedIsKnown && (
             <PinToggle
               pinned={isPinned(selection)}
-              label={sectionLabel(selection)}
+              label={labelOf(selection)}
               onToggle={() => onTogglePin(selection)}
             />
           )}
@@ -128,7 +137,7 @@ export function SettingsSecondLevel({
         aria-labelledby={selectedIsKnown ? tabDomId(selection) : undefined}
         aria-label={selectedIsKnown ? undefined : `${entry.label}`}
         tabIndex={-1}
-        className="space-y-5 outline-none"
+        className={`${fixedLayout ? 'flex min-h-0 flex-1 flex-col gap-5 overflow-hidden' : 'space-y-5'} outline-none`}
       >
         {children}
       </div>

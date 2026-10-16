@@ -1,13 +1,17 @@
 'use client';
 
+import type { ReplyPreview } from '@cat-cafe/shared';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import type { CatData } from '@/hooks/useCatData';
 import { useCoCreatorConfig } from '@/hooks/useCoCreatorConfig';
 import { tintOf } from '@/lib/hex-color';
-import { resolveSender } from '@/lib/resolve-sender';
-import { scrollToMessage } from '@/utils/scrollToMessage';
+import { resolveMessageSender } from '@/lib/resolve-sender';
+import { useChatStore } from '@/stores/chatStore';
+import { focusLineageMessage } from '@/utils/focusLineageMessage';
+import { SenderAvatar } from './SenderAvatar';
 
 interface ReplyPreviewBarProps {
-  replyToMessage: { id: string; content: string; senderCatId: string | null };
+  replyToMessage: ReplyPreview & { id: string; threadId?: string };
   cats: CatData[];
   onClear: () => void;
 }
@@ -15,17 +19,25 @@ interface ReplyPreviewBarProps {
 /**
  * #699: Input-area reply preview — shows who you're replying to with their theme color.
  * Click scrolls to original message; ✕ dismisses the quote.
- * Styled to match ReplyPill in the chat timeline.
+ * Styled to match ReplyPill in the chat timeline. F322 B: in the new shell the text (arrow, line, close) is the cat's readable
+ * name role, as on the pill; the tint stays the identity colour, and classic keeps the hex (frozen).
  */
 export function ReplyPreviewBar({ replyToMessage, cats, onClear }: ReplyPreviewBarProps) {
   const coCreator = useCoCreatorConfig();
-  const { senderCatId, content, id: replyToId } = replyToMessage;
+  const nameRole = useShellPresentation() === 'v2';
+  const { content, id: replyToId } = replyToMessage;
+  const parent = useChatStore((state) => {
+    const threadId = replyToMessage.threadId ?? state.currentThreadId;
+    const messages =
+      threadId === state.currentThreadId ? state.messages : (state.threadStates[threadId]?.messages ?? []);
+    return messages.find((message) => message.id === replyToId);
+  });
 
   const getCatById = (id: string) => cats.find((c) => c.id === id);
-  const sender = resolveSender(senderCatId, getCatById, coCreator);
+  const sender = resolveMessageSender(parent ?? replyToMessage, getCatById, coCreator, { nameRole });
 
   const handleClick = () => {
-    scrollToMessage(replyToId);
+    focusLineageMessage(replyToId);
   };
 
   return (
@@ -37,6 +49,7 @@ export function ReplyPreviewBar({ replyToMessage, cats, onClear }: ReplyPreviewB
       tabIndex={0}
       onKeyDown={(e) => e.key === 'Enter' && handleClick()}
     >
+      <SenderAvatar sender={sender} className="h-4 w-4" />
       <span className="shrink-0 text-sm" style={{ color: sender.textColor }}>
         ↩
       </span>

@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { CollectiveServiceStore, startCollectiveServer } from '../../../collective-service/dist/index.js';
 import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
+import { openChannelFromCollectiveHome } from './f290-channel-entry.harness.mjs';
 import { defaultHumanAuthProvider, seedDefaultCollective } from './f290-default-client.fixture.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -124,6 +125,7 @@ test(
       const errors = [];
       mobile.on('pageerror', (error) => errors.push(error.message));
       await mobile.goto(server.url, { waitUntil: 'networkidle' });
+      await openChannelFromCollectiveHome(mobile, '产品方向');
 
       const channelArticle = mobile.locator(`article.message[data-event-id="${source.eventId}"]`);
       const channelBody = channelArticle.locator('.message-markdown');
@@ -149,6 +151,7 @@ test(
       await installOwnerSession(desktopContext, server.url, seeded);
       const desktop = await desktopContext.newPage();
       await desktop.goto(server.url, { waitUntil: 'networkidle' });
+      await openChannelFromCollectiveHome(desktop, '产品方向');
       await assertSafeProjection(
         desktop.locator(`article.message[data-event-id="${source.eventId}"] .message-markdown`),
       );

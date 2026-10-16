@@ -38,6 +38,7 @@ export class PublishedMediaSource {
       artifacts: PreparedArtifactReader;
       messages: Pick<IMessageStore, 'getById'>;
       uploadDir: string;
+      readPrivateMessageImage?: (id: string, principal: MediaReviewPrincipal) => Promise<Buffer>;
       workspace?: WorkspaceMediaSourcePort;
       evolution?: EvolutionMediaReadPort;
       access: Pick<PublishedMediaAccess, 'authorizeSourceThread' | 'authorizeScope'>;
@@ -67,10 +68,14 @@ export class PublishedMediaSource {
       scope,
       publication: resolved.publication,
       load: async () => {
-        const bytes = await readBoundedFile(
-          join(this.uploadDir, resolved.fileName),
-          resolved.mediaType === 'image/png' ? 10 * 1024 * 1024 : 256 * 1024 * 1024,
-        );
+        if (resolved.privateImageId && !this.deps.readPrivateMessageImage)
+          throw new MediaOwnerError('media_unavailable');
+        const bytes = resolved.privateImageId
+          ? await this.deps.readPrivateMessageImage!(resolved.privateImageId, principal)
+          : await readBoundedFile(
+              join(this.uploadDir, resolved.fileName),
+              resolved.mediaType === 'image/png' ? 10 * 1024 * 1024 : 256 * 1024 * 1024,
+            );
         await this.assertVisible(scope, resolved.publication, principal);
         return { bytes, mediaType: resolved.mediaType };
       },
@@ -176,17 +181,28 @@ export class PublishedMediaSource {
     taskRevision: number;
     artifactRef: string;
     expectedArtifactRevision: string;
+    publicationSource?: import('@cat-cafe/shared').MessageMediaPublicationSource;
   }): Promise<{ bytes: Buffer; mediaType: 'image/png' | 'video/mp4'; publication: ContentSourcePublicationV1 }> {
     const file = /^\/uploads\/([a-zA-Z0-9][a-zA-Z0-9._-]*\.(png|mp4))$/i.exec(input.artifactRef);
     if (!file?.[1] || !file[2]) throw new MediaOwnerError('invalid_media');
-    const coordinate = await this.deps.artifacts.readPreparedArtifact({
-      artifactRef: input.artifactRef,
-      taskThreadId: input.scope.threadId,
-      taskSubjectRef: `task:work:${input.scope.taskId}`,
-      taskOwnerRef: `task:item:${input.scope.taskId}`,
-      taskRevision: input.taskRevision,
-      ownerUserId: input.scope.ownerUserId,
-    });
+    const exact = input.publicationSource;
+    const selected = exact ? await readPublishedMessageItem(this.deps.messages, exact, input.principal) : undefined;
+    if (exact && exact.threadId !== input.scope.threadId) throw new MediaOwnerError('access_denied');
+    const coordinate =
+      selected && exact
+        ? {
+            artifactRef: selected.publication.artifactRef,
+            artifactRevision: exact.messageRevision,
+            completenessRef: selected.publication.sourceRef,
+          }
+        : await this.deps.artifacts.readPreparedArtifact({
+            artifactRef: input.artifactRef,
+            taskThreadId: input.scope.threadId,
+            taskSubjectRef: `task:work:${input.scope.taskId}`,
+            taskOwnerRef: `task:item:${input.scope.taskId}`,
+            taskRevision: input.taskRevision,
+            ownerUserId: input.scope.ownerUserId,
+          });
     if (
       !coordinate ||
       coordinate.artifactRevision !== input.expectedArtifactRevision ||
@@ -204,6 +220,7 @@ export class PublishedMediaSource {
       mediaType === 'image/png' ? 10 * 1024 * 1024 : 256 * 1024 * 1024,
     );
     await this.assertVisible(input.scope, publication, input.principal);
+    if (exact) await readPublishedMessageItem(this.deps.messages, exact, input.principal);
     return { bytes, mediaType, publication };
   }
 }

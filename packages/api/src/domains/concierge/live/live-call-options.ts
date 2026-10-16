@@ -1,8 +1,8 @@
 import type { CompanionIdentitySnapshotV1 } from '@cat-cafe/shared';
 import type { CodexAppServerJsonObject } from '../../cats/services/agents/providers/CodexAppServerEventMapper.js';
 import type { IMessageStore, StoredMessage } from '../../cats/services/stores/ports/MessageStore.js';
-import type { LivePageActionApprovalLedger } from './host/live-page-action-approval-ledger.js';
-import type { LivePageActionAuthorityDeps } from './host/live-page-action-authority.js';
+import type { LivePageActionApprovalLedger } from './host/page-action/live-page-action-approval-ledger.js';
+import type { LivePageActionAuthorityDeps } from './host/page-action/live-page-action-authority.js';
 import type { LiveInboxReference, LiveInboxScope, LiveInboxSource } from './inbox/live-inbox-contract.js';
 import type { LiveCompanionSelection } from './live-companion-selection.js';
 import type { LiveTranscriptBinding } from './live-transcript.js';
@@ -11,12 +11,14 @@ import type { LiveRecoveryOptions } from './recovery/live-recovery-contract.js';
 /** Admission dependencies owned by Host, never a renderer-supplied configuration. */
 export interface LiveCompanionCallOptions {
   binding: Omit<LiveTranscriptBinding, 'nativeThreadId' | 'realtimeSessionId'>;
-  messageStore: Pick<IMessageStore, 'appendIdempotent'>;
+  messageStore: Pick<IMessageStore, 'appendIdempotent' | 'getById' | 'getByThread' | 'getByThreadAfter'>;
   mcpDistDir: string;
   allowedDirectories: readonly string[];
   screenServer?: CodexAppServerJsonObject;
   desktopRoot?: string;
   householdToolsEnabled?: boolean;
+  /** Host-only exposure after the governed meeting package is verified; omitted means off. */
+  meetingToolsEnabled?: boolean;
   companion?: LiveCompanionSelection;
   /** Immutable Host selection at prepare, reused for every committed voice/result message. */
   identitySnapshot?: CompanionIdentitySnapshotV1;

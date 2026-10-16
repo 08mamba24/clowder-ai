@@ -56,8 +56,6 @@ describe('F306 scheduled-eval native guard closure', () => {
         command:
           'sqlite3 -readonly .cat-cafe/evidence.sqlite "WITH recent AS (SELECT timestamp FROM recall_events) SELECT count(*) FROM recent"',
       },
-      { command: 'curl -fsS --max-time 5 http://127.0.0.1:3012/health' },
-      { command: 'curl --fail --silent --head http://localhost:3011/' },
       { command: 'ps -p 123 -o pid=,command=' },
       { command: 'lsof -nP -iTCP:3012 -sTCP:LISTEN' },
       { command: 'test -e /tmp/cat-cafe-pr4368' },

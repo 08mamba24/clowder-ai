@@ -113,6 +113,17 @@ describe('R2-P2: hasDossierEntry warning scope', () => {
     expect(policy?.reentry).toBe('only_for_new_architecture_or_decision_judgment_or_explicit_cvo_request');
   });
 
+  test('canonical Opus55 creative seat retains the scheduler scarcity contract', () => {
+    const profile = loadDossierProfiles(REPO_ROOT).get('opus55');
+    expect(profile?.engagementPolicy).toMatchObject({
+      quota: 'weekly_subscription_scarce',
+      defaultMode: 'one_shot_calibration',
+      routineRepairReturn: 'author_then_routine_reviewer_if_needed',
+      reentry: 'only_for_new_architecture_or_decision_judgment_or_explicit_cvo_request',
+    });
+    expect(profile?.engagementPolicy?.highValueUses).toHaveLength(4);
+  });
+
   test('hydrates identity.pronouns from the structured dossier profile', () => {
     const tempRoot = mkdtempSync(join(tmpdir(), 'dossier-pronouns-'));
     const dossierDir = join(tempRoot, 'docs', 'team');

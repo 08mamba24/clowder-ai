@@ -112,6 +112,16 @@ export class LiveRecoveryHost {
         const payload = payloadOf(snapshot, controller.signal);
         if (!withinContextBound(payload)) continue;
         if (!(await this.options.validate(snapshot, controller.signal))) return 'unavailable';
+        if (controller.signal.aborted) return 'cancelled';
+        if (
+          ![snapshot.tasks, snapshot.summaries, snapshot.decisions, snapshot.inbox].some((page) => page.items.length)
+        ) {
+          // Filtering the raw timeline can produce a page with no source bodies.
+          // Its cursor is not a seen/read/handled receipt. Move past that empty
+          // selection without turning recovery metadata into a new native reply.
+          this.cursor = snapshot.nextCursor;
+          return 'idle';
+        }
         const outcome = await whileNotAborted(controller.signal, this.options.deliver(payload));
         if (outcome !== 'accepted') return 'busy';
         if (controller.signal.aborted || !(await this.options.validate(snapshot, controller.signal)))

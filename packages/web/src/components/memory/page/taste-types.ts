@@ -1,3 +1,10 @@
+import {
+  memoryOwnerRevisionSchema,
+  type TasteMemoryCorrectionProposalView,
+  type TasteTakeawayCandidate,
+} from '@cat-cafe/shared';
+import { hasValidTasteCorrections } from './taste-correction-read';
+
 export interface TasteMemory {
   id: string;
   revision: string;
@@ -7,6 +14,10 @@ export interface TasteMemory {
   quotes: string[];
   scene: string;
   takeaway: string | null;
+  status?: 'active' | 'retired';
+  takeawayCandidate?: TasteTakeawayCandidate | null;
+  pendingCorrectionCount?: number;
+  correctionProposals?: TasteMemoryCorrectionProposalView[];
   tags: string[];
   dimension: string | null;
   catId: string | null;
@@ -30,6 +41,7 @@ export interface TasteBrowse {
   readStatus: 'ready' | 'partial';
   entries: TasteMemory[];
   coverage: { unverified: number } | null;
+  dimensionHints?: { presented: number; drilled: number; applied: number; dismissed: number } | null;
 }
 export interface TasteSource {
   status: 'ready' | 'not_recorded' | 'unavailable';
@@ -84,6 +96,17 @@ function isApproval(value: unknown) {
       (value.approvedAt == null || isTimestamp(value.approvedAt)))
   );
 }
+function isTakeawayCandidate(value: unknown) {
+  return (
+    value === undefined ||
+    value === null ||
+    (isRecord(value) &&
+      value.status === 'pending_owner_confirmation' &&
+      typeof value.takeaway === 'string' &&
+      memoryOwnerRevisionSchema.safeParse(value.basedOnRevision).success &&
+      memoryOwnerRevisionSchema.safeParse(value.candidateRevision).success)
+  );
+}
 /** Validate the fields consumed by both cards and detail before rendering either response. */
 export function isTasteMemory(value: unknown): value is TasteMemory {
   if (!isRecord(value)) return false;
@@ -93,6 +116,9 @@ export function isTasteMemory(value: unknown): value is TasteMemory {
     isTextList(value.quotes) &&
     isTextList(value.tags) &&
     isNullableText(value.takeaway) &&
+    (value.status === undefined || value.status === 'active' || value.status === 'retired') &&
+    isTakeawayCandidate(value.takeawayCandidate) &&
+    hasValidTasteCorrections(value) &&
     isNullableText(value.dimension) &&
     isNullableText(value.catId) &&
     (value.whenRemembered === undefined || typeof value.whenRemembered === 'string') &&
@@ -105,7 +131,12 @@ export function isTasteBrowse(value: unknown): value is TasteBrowse {
     isRecord(value) &&
     (value.readStatus === 'ready' || value.readStatus === 'partial') &&
     Array.isArray(value.entries) &&
-    value.entries.every(isTasteMemory)
+    value.entries.every(isTasteMemory) &&
+    (value.dimensionHints == null ||
+      (isRecord(value.dimensionHints) &&
+        ['presented', 'drilled', 'applied', 'dismissed'].every((key) =>
+          isCount((value.dimensionHints as Record<string, unknown>)[key]),
+        )))
   );
 }
 export function isTasteSource(value: unknown): value is TasteSource {

@@ -60,6 +60,27 @@ test('trusted ball size changes resize the native pet and keep settings inside o
   assert.equal(f.host.setBallSize(500), false, 'untrusted or corrupt values cannot change native geometry');
 });
 
+test('compact geometry keeps the whole top-corner badge inside the native hit target', (t) => {
+  const f = fixture();
+  t.after(() => f.host.close());
+  assert.equal(f.host.setBallSize(43), true);
+  const reply = f.host.request({ kind: 'view.layout', panel: 'none', width: 120, height: 130 });
+  assert.equal(reply.kind, 'layout');
+  assert.ok(reply.pet.x >= 0 && reply.pet.y >= 0);
+  assert.ok(reply.pet.x + 72 <= reply.width);
+  assert.ok(reply.pet.y + 78 <= reply.height);
+  f.cursor({ x: 0, y: 0 });
+  f.host.tick();
+  assert.equal(f.ignores.at(-1), true);
+  f.cursor({
+    x: f.bounds().x + reply.pet.x + 70,
+    y: f.bounds().y + reply.pet.y + 2,
+  });
+  f.host.tick();
+  assert.equal(f.ignores.at(-1), false, 'the badge corner must receive clicks instead of passing through');
+  assert.equal(f.host.setBallSize(42), false);
+});
+
 test('reset position moves the whole current layout without changing panel-relative geometry', (t) => {
   const f = fixture();
   t.after(() => f.host.close());

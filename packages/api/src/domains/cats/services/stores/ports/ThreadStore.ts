@@ -30,7 +30,7 @@ export function deriveAutoThreadTitle(content: string): string | null {
 }
 
 /** System-owned thread surfaces that stay distinct from ordinary user conversations. */
-export type ThreadSystemKind = 'connector_hub' | 'eval_domain' | 'cat_bedroom' | 'memory_ops';
+export type ThreadSystemKind = 'connector_hub' | 'eval_domain' | 'cat_bedroom' | 'memory_ops' | 'collective_channel';
 
 /**
  * F032 Phase C: Participant activity data for reviewer matching.
@@ -202,6 +202,10 @@ export interface Thread {
   id: string;
   projectPath: string;
   title: string | null;
+  titleSource?: 'user' | 'temporary' | 'cat';
+  titleCatId?: string;
+  /** Successful import coordinate; the chain record remains the origin authority. */
+  sessionImport?: { sessionId: string; catId: string };
   createdBy: string;
   participants: CatId[];
   lastActiveAt: number;
@@ -730,6 +734,13 @@ export interface IThreadStore {
   /** F032 P1-2 fix: Update participant activity on every message (not just join) */
   updateParticipantActivity(threadId: string, catId: CatId, healthy?: boolean): void | Promise<void>;
   updateTitle(threadId: string, title: string): void | Promise<void>;
+  setSessionImport(threadId: string, value: NonNullable<Thread['sessionImport']>): void | Promise<void>;
+  setAutomaticTitle(
+    threadId: string,
+    title: string,
+    source: 'temporary' | 'cat',
+    catId?: string,
+  ): boolean | Promise<boolean>;
   /** Exact title CAS used to scrub/restore message-derived copies without clobbering user edits. */
   compareAndSetTitle(threadId: string, expectedTitle: string, nextTitle: string): boolean | Promise<boolean>;
   /** ISSUE-16: backfill projectPath for threads created before the fix */
@@ -747,6 +758,8 @@ export interface IThreadStore {
   ): boolean | Promise<boolean>;
   updatePhase(threadId: string, phase: ThreadPhase): void | Promise<void>;
   linkBacklogItem(threadId: string, backlogItemId: string): void | Promise<void>;
+  /** Post-create Feature association. `null` clears the thread's association. */
+  updateBacklogItem(threadId: string, backlogItemId: string | null): void | Promise<void>;
   /**
    * F046 D3: Persist one-shot feedback for suppressed A2A mentions.
    * The next invocation of this cat in this thread should consume and clear it.
@@ -783,6 +796,8 @@ export interface IThreadStore {
   updateFirstRunQuestState(threadId: string, state: FirstRunQuestStateV1 | null): void | Promise<void>;
   /** F192 livefix: Set/clear system thread kind for sidebar "系统" section visibility. */
   updateSystemKind(threadId: string, kind: ThreadSystemKind | null): void | Promise<void>;
+  /** Atomically claim an unclassified owner thread; never overwrite another system kind. */
+  claimSystemKind(threadId: string, ownerUserId: string, kind: ThreadSystemKind): boolean | Promise<boolean>;
   /** F088 Phase G: Get/update connector hub state. */
   updateConnectorHubState(threadId: string, state: ConnectorHubStateV1 | null): void | Promise<void>;
   updatePreferredWorkspaceMode(
@@ -965,6 +980,7 @@ export class ThreadStore implements IThreadStore {
       id: generateThreadId(),
       projectPath: projectPath ?? 'default',
       title: title ?? null,
+      titleSource: title ? 'user' : 'temporary',
       createdBy: userId,
       participants: [],
       lastActiveAt: Date.now(),
@@ -1154,7 +1170,27 @@ export class ThreadStore implements IThreadStore {
 
   updateTitle(threadId: string, title: string): void {
     const thread = this.get(threadId);
-    if (thread) thread.title = title;
+    if (thread) {
+      thread.title = title;
+      thread.titleSource = 'user';
+      delete thread.titleCatId;
+    }
+  }
+
+  setSessionImport(threadId: string, value: NonNullable<Thread['sessionImport']>): void {
+    const thread = this.get(threadId);
+    if (thread) thread.sessionImport = value;
+  }
+
+  setAutomaticTitle(threadId: string, title: string, source: 'temporary' | 'cat', catId?: string): boolean {
+    const thread = this.get(threadId);
+    if (!thread || thread.deletedAt || (thread.titleSource ?? (thread.title ? 'user' : 'temporary')) !== 'temporary')
+      return false;
+    if (source === 'temporary' && thread.title !== null) return false;
+    thread.title = title;
+    thread.titleSource = source;
+    if (source === 'cat' && catId) thread.titleCatId = catId;
+    return true;
   }
 
   compareAndSetTitle(threadId: string, expectedTitle: string, nextTitle: string): boolean {
@@ -1229,8 +1265,14 @@ export class ThreadStore implements IThreadStore {
   }
 
   linkBacklogItem(threadId: string, backlogItemId: string): void {
+    this.updateBacklogItem(threadId, backlogItemId);
+  }
+
+  updateBacklogItem(threadId: string, backlogItemId: string | null): void {
     const thread = this.get(threadId);
-    if (thread) thread.backlogItemId = backlogItemId;
+    if (!thread) return;
+    if (backlogItemId) thread.backlogItemId = backlogItemId;
+    else delete thread.backlogItemId;
   }
 
   setMentionRoutingFeedback(threadId: string, catId: CatId, feedback: ThreadMentionRoutingFeedback): void {
@@ -1348,6 +1390,19 @@ export class ThreadStore implements IThreadStore {
     } else {
       thread.systemKind = kind;
     }
+  }
+
+  claimSystemKind(threadId: string, ownerUserId: string, kind: ThreadSystemKind): boolean {
+    const thread = this.get(threadId);
+    if (
+      !thread ||
+      thread.deletedAt ||
+      thread.createdBy !== ownerUserId ||
+      (thread.systemKind !== undefined && thread.systemKind !== kind)
+    )
+      return false;
+    thread.systemKind = kind;
+    return true;
   }
 
   /** F229 / F167: Set or clear threadKind marker for concierge / gate-keeping thread. */

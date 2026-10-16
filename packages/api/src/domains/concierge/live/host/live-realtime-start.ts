@@ -16,7 +16,7 @@ export function startLiveRealtime(input: {
     transport: { type: 'webrtc', sdp: input.offer },
     outputModality: 'audio',
     includeStartupContext: false,
-    clientManagedHandoffs: false,
+    clientManagedHandoffs: true,
     codexResponseHandoffMode: 'commentary',
     prompt: liveRealtimePrompt({
       catId: input.catId,

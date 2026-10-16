@@ -1,6 +1,7 @@
 import {
   type ArtifactReview,
   type ArtifactReviewActor,
+  type MessageMediaPublicationSource,
   type RespondWithMediaVersion,
   respondWithMediaVersionSchema,
 } from '@cat-cafe/shared';
@@ -9,6 +10,7 @@ import type { MediaReviewPrincipal } from '../../video-studio/content-owner/publ
 import type { PublishedMediaService } from '../../video-studio/content-owner/published-media-service.js';
 import { ContentOwnerConflictError, ContentOwnerIdempotencyError } from '../../video-studio/content-owner/service.js';
 import type { ContentSettlementReceiptV1 } from '../../video-studio/content-owner/types.js';
+import { type AcceptedVersion, acceptedVersionSchema } from './accepted-version-response.js';
 import { ArtifactReviewError } from './errors.js';
 import { assertModificationResponseReference } from './modification-request-reference.js';
 import { appendRespondedVersion, assertVersionResponses } from './reducer.js';
@@ -18,6 +20,10 @@ type MediaOwner = Pick<
   PublishedMediaService,
   'access' | 'publishVersion' | 'operationReceipt' | 'read' | 'currentRevision'
 >;
+
+export function reviewVersionOperationId(reviewId: string, operationId: string): string {
+  return `review-version:${reviewId}:${operationId}`;
+}
 
 /** A durable intent fences the review while F138 commits. Recovery projects its exact receipt, never guesses. */
 export class ArtifactVersionResponseService {
@@ -46,6 +52,9 @@ export class ArtifactVersionResponseService {
     raw: RespondWithMediaVersion,
     principal: MediaReviewPrincipal,
     review: ArtifactReview,
+    publicationSource?: (
+      mode: 'admit' | 'replay',
+    ) => MessageMediaPublicationSource | undefined | Promise<MessageMediaPublicationSource | undefined>,
   ): Promise<ReviewMutationResult> {
     const command = respondWithMediaVersionSchema.parse(raw);
     const last = review.rounds.at(-1);
@@ -54,7 +63,18 @@ export class ArtifactVersionResponseService {
     if (!base) throw new ArtifactReviewError('asset_changed');
     const mutation = this.mutation(command, principal.actor, base.number);
     const replay = this.deps.store.replay(mutation);
-    if (replay) return replay;
+    if (replay) {
+      await publicationSource?.('replay');
+      return replay;
+    }
+    const pending = this.deps.store.pendingVersion(review.reviewId);
+    if (pending?.input.operationId === command.operationId) {
+      await publicationSource?.('replay');
+      // Reuse the accepted selector only after the existing reservation checks this actor and exact request fingerprint.
+      this.deps.store.reserveVersion(mutation, pending.payload);
+      const resumed = await this.recover(review, principal);
+      if (resumed) return resumed;
+    }
     const task = await this.deps.media.access.authorize(review.task.taskId, principal, {
       expectedRevision: command.expectedTaskRevision,
     });
@@ -66,14 +86,16 @@ export class ArtifactVersionResponseService {
     const currentRevision = await this.deps.media.currentRevision(review.contentRef, principal);
     if (currentRevision !== command.expectedOwnerRevision) throw new ArtifactReviewError('asset_changed');
     assertVersionResponses(last, command.responses);
-    this.deps.store.reserveVersion(mutation, command);
-    return this.resume(review, mutation, command, principal);
+    const source = await publicationSource?.('admit');
+    const accepted = source ? { ...command, publicationSource: source } : command;
+    this.deps.store.reserveVersion(mutation, accepted);
+    return this.resume(review, mutation, accepted, principal);
   }
 
   async recover(review: ArtifactReview, viewer: MediaReviewPrincipal): Promise<ReviewMutationResult | null> {
     const pending = this.deps.store.pendingVersion(review.reviewId);
     if (!pending) return null;
-    const command = respondWithMediaVersionSchema.parse(pending.payload);
+    const command = acceptedVersionSchema.parse(pending.payload);
     if (
       command.reviewId !== review.reviewId ||
       command.operationId !== pending.input.operationId ||
@@ -83,7 +105,7 @@ export class ArtifactVersionResponseService {
     }
     const observed = await this.deps.media.operationReceipt(
       review.contentRef,
-      this.ownerOperationId(review.reviewId, command.operationId),
+      reviewVersionOperationId(review.reviewId, command.operationId),
       viewer,
     );
     if (observed !== null) return this.project(review, pending.input, command, observed, viewer);
@@ -100,10 +122,10 @@ export class ArtifactVersionResponseService {
   private async resume(
     review: ArtifactReview,
     mutation: ReviewMutation,
-    command: RespondWithMediaVersion,
+    command: AcceptedVersion,
     principal: MediaReviewPrincipal,
   ): Promise<ReviewMutationResult> {
-    const operationId = this.ownerOperationId(review.reviewId, command.operationId);
+    const operationId = reviewVersionOperationId(review.reviewId, command.operationId);
     try {
       const observed = await this.deps.media.operationReceipt(review.contentRef, operationId, principal);
       if (observed !== null) return this.project(review, mutation, command, observed, principal);
@@ -114,6 +136,7 @@ export class ArtifactVersionResponseService {
         expectedOwnerRevision: command.expectedOwnerRevision,
         artifactRef: command.artifactRef,
         expectedArtifactRevision: command.expectedArtifactRevision,
+        ...(command.publicationSource ? { publicationSource: command.publicationSource } : {}),
         operationId,
         principal,
       });
@@ -152,7 +175,7 @@ export class ArtifactVersionResponseService {
       receipt.actor.kind !== 'cat' ||
       receipt.actor.actorId !== mutation.actor.actorId ||
       receipt.contentRef !== review.contentRef ||
-      receipt.operationId !== this.ownerOperationId(review.reviewId, command.operationId) ||
+      receipt.operationId !== reviewVersionOperationId(review.reviewId, command.operationId) ||
       receipt.previousOwnerRevision !== command.expectedOwnerRevision ||
       receipt.ownerRevision !== command.expectedOwnerRevision + 1
     )
@@ -174,9 +197,5 @@ export class ArtifactVersionResponseService {
         now: mutation.now,
       }),
     );
-  }
-
-  private ownerOperationId(reviewId: string, operationId: string): string {
-    return `review-version:${reviewId}:${operationId}`;
   }
 }

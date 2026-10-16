@@ -8,12 +8,14 @@
 
 import type { SchedulerAwaitStateV1 } from '@cat-cafe/shared';
 import { readManagedCommandWakeProjection } from '../domains/ball-custody/ManagedCommandWakeRecoverySweep.js';
+import { resolveManagedCommandJob } from '../domains/ball-custody/managed-command-job-reference.js';
 import {
   isHoldBallWakeTask,
   isPendingHoldBallWakeTask,
   isRetiredWakeWithRunningManagedCommand as isRetiredWakeWithRunningManagedCommandTask,
   readHoldLifecycleProjection,
 } from '../domains/ball-custody/managed-command-wake-lifecycle.js';
+import { readDurableGateRecord } from '../domains/managed-job/durable-managed-gate-job-store.js';
 import type { DynamicTaskDef } from '../infrastructure/scheduler/DynamicTaskStore.js';
 import {
   c1HoldCancelCount,
@@ -30,6 +32,7 @@ export type HoldExpectedSignalKey =
   | 'user_message';
 
 export type HoldLifecycleStatus =
+  | 'not_started'
   | 'active'
   | 'retired_by_event'
   | 'retired_by_replacement'
@@ -71,6 +74,7 @@ export interface HoldBallCancelDeps {
   readonly dynamicTaskStore: {
     getById(id: string): DynamicTaskDef | null;
     getAll(): DynamicTaskDef[];
+    findByDeliveryThread?(threadId: string): DynamicTaskDef[];
     remove(id: string): boolean;
     setEnabled?(id: string, enabled: boolean): boolean;
     updateParams?(id: string, params: Record<string, unknown>): boolean;
@@ -104,6 +108,13 @@ export const isPendingHoldBallTask = isPendingHoldBallWakeTask;
 export const isRetiredWakeWithRunningManagedCommand = isRetiredWakeWithRunningManagedCommandTask;
 
 export function isCancelableHoldBallTask(task: DynamicTaskDef): boolean {
+  const lifecycle = task.params.holdLifecycle as Record<string, unknown> | undefined;
+  const command = lifecycle?.managedCommand as Record<string, unknown> | undefined;
+  if (command?.jobId) {
+    const job = resolveManagedCommandJob(task);
+    const record = job ? readDurableGateRecord(job) : null;
+    return !!record?.admissionMessageId && record.state !== 'terminal';
+  }
   return isPendingHoldBallTask(task) || isRetiredWakeWithRunningManagedCommand(task);
 }
 
@@ -219,10 +230,15 @@ export function cancelHoldTaskById(taskId: string, deps: HoldBallCancelDeps): Dy
   return task;
 }
 
+function readThreadTasks(threadId: string, store: HoldBallCancelDeps['dynamicTaskStore']): DynamicTaskDef[] {
+  // Preserve non-SQL adapters; the canonical SQLite provider selects before materializing payloads.
+  return store.findByDeliveryThread ? store.findByDeliveryThread(threadId) : store.getAll();
+}
+
 export function cancelPendingHoldsForThread(threadId: string, deps: HoldBallCancelDeps): DynamicTaskDef[] {
-  const pending = deps.dynamicTaskStore
-    .getAll()
-    .filter((t) => isPendingHoldBallTask(t) && t.deliveryThreadId === threadId);
+  const pending = readThreadTasks(threadId, deps.dynamicTaskStore).filter(
+    (t) => isPendingHoldBallTask(t) && t.deliveryThreadId === threadId,
+  );
   const cancelled: DynamicTaskDef[] = [];
 
   for (const task of pending) {
@@ -261,9 +277,9 @@ export function retirePendingHoldsForSatisfiedWait(
     return [];
   }
 
-  const pending = deps.dynamicTaskStore
-    .getAll()
-    .filter((t) => isPendingHoldBallTask(t) && matchesSatisfiedWait(t, event));
+  const pending = readThreadTasks(event.threadId, deps.dynamicTaskStore).filter(
+    (t) => isPendingHoldBallTask(t) && matchesSatisfiedWait(t, event),
+  );
 
   for (const task of pending) {
     deps.taskRunner.unregister(task.id);

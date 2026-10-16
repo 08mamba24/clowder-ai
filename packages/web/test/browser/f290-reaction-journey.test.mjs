@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { CollectiveServiceStore, startCollectiveServer } from '../../../collective-service/dist/index.js';
 import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
+import { openChannelFromCollectiveHome } from './f290-channel-entry.harness.mjs';
 import { defaultHumanAuthProvider, seedDefaultCollective } from './f290-default-client.fixture.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -111,7 +112,7 @@ test(
       const errors = [];
       mobile.on('pageerror', (error) => errors.push(error.message));
       await mobile.goto(server.url, { waitUntil: 'networkidle' });
-      await mobile.getByRole('heading', { name: '# 产品方向', exact: true }).waitFor();
+      await openChannelFromCollectiveHome(mobile, '产品方向');
 
       let shortArticle = mobile.locator('article.message').filter({ hasText: short.body });
       await shortArticle.waitFor();
@@ -280,7 +281,7 @@ test(
       await installOwnerSession(desktopContext, server.url, seeded);
       const desktop = await desktopContext.newPage();
       await desktop.goto(server.url, { waitUntil: 'networkidle' });
-      await desktop.getByRole('heading', { name: '# 产品方向', exact: true }).waitFor();
+      await openChannelFromCollectiveHome(desktop, '产品方向');
       const desktopShort = desktop.locator('article.message').filter({ hasText: short.body });
       const desktopToolbar = desktopShort.getByRole('toolbar', { name: '消息操作', exact: true });
       assert.equal(await desktopToolbar.evaluate((toolbar) => getComputedStyle(toolbar).opacity), '0');

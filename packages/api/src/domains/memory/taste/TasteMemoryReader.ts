@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { isAbsolute, posix, relative, resolve } from 'node:path';
+import type { TasteDimension } from '@cat-cafe/shared';
 import { parse as parseYaml } from 'yaml';
 import { resolveCanonicalTasteRoot, type TasteRepository } from '../../taste/services/TasteRepository.js';
+import type { TasteMemoryLifecycleStore } from './TasteMemoryLifecycleStore.js';
 
 export const MAX_TASTE_DECISION_PAYLOAD_CHARS = 16_384;
 export const TASTE_MEMORY_READER_CONTRACT_REF = 'packages/api/src/domains/memory/taste/TasteMemoryReader.ts';
@@ -16,7 +18,7 @@ const MAX_METADATA_CHARS = 240;
 const MAX_QUOTES = 16;
 const MAX_TAGS = 24;
 
-const TASTE_DIMENSIONS = new Set([
+const TASTE_DIMENSIONS = new Set<TasteDimension>([
   'relationship-stance',
   'cognitive-honesty',
   'architecture-aesthetics',
@@ -38,7 +40,7 @@ export interface TasteDecisionPayload {
   takeaway?: string;
   scene: string;
   tags: string[];
-  dimension?: string;
+  dimension?: TasteDimension;
   catId?: string;
   proposalId?: string;
 }
@@ -47,6 +49,7 @@ export interface TasteMemoryReadRequest {
   ownerUserId: string;
   sourcePath: string;
   revision?: string;
+  includeRetired?: boolean;
 }
 
 export interface TasteMemoryReadResult {
@@ -54,6 +57,7 @@ export interface TasteMemoryReadResult {
   visibility: TasteMemoryVisibility;
   sourcePath: string;
   revision: string;
+  status: 'active' | 'retired';
   payload: TasteDecisionPayload;
 }
 
@@ -61,8 +65,19 @@ export function parseApprovedTasteVignette(
   content: string,
   visibility: TasteMemoryVisibility,
 ): TasteDecisionPayload | null {
+  const parsed = parseTasteVignette(content, visibility, false);
+  return parsed?.status === 'active' ? parsed.payload : null;
+}
+
+export function parseTasteVignette(
+  content: string,
+  visibility: TasteMemoryVisibility,
+  includeRetired: boolean,
+): { payload: TasteDecisionPayload; status: 'active' | 'retired' } | null {
   const parsed = parseTasteFrontmatter(content);
-  if (!parsed || !hasApprovedStatus(parsed) || !matchesVisibility(parsed, visibility)) return null;
+  if (!parsed || !matchesVisibility(parsed, visibility)) return null;
+  const status = tasteStatus(parsed);
+  if (!status || (status === 'retired' && !includeRetired)) return null;
   const core = parseTasteCore(parsed);
   const metadata = parseTasteMetadata(parsed);
   if (!core || !metadata) return null;
@@ -71,7 +86,7 @@ export function parseApprovedTasteVignette(
     ...core,
     ...metadata,
   };
-  return JSON.stringify(payload).length <= MAX_TASTE_DECISION_PAYLOAD_CHARS ? payload : null;
+  return JSON.stringify(payload).length <= MAX_TASTE_DECISION_PAYLOAD_CHARS ? { payload, status } : null;
 }
 
 export function buildTasteDecisionPassage(payload: TasteDecisionPayload): string {
@@ -95,6 +110,9 @@ export class TasteMemoryReader {
   constructor(
     private readonly repository: TasteRepository,
     private readonly ownerUserId: string,
+    private readonly options: {
+      lifecycle?: Pick<TasteMemoryLifecycleStore, 'isReadable'>;
+    } = {},
   ) {
     if (!ownerUserId.trim()) throw new Error('TasteMemoryReader requires an ownerUserId');
   }
@@ -104,6 +122,13 @@ export class TasteMemoryReader {
     const visibility = classifyTasteSourcePath(request.sourcePath);
     if (!visibility) return null;
     try {
+      if (visibility === 'public' && this.repository.publishedSnapshot) {
+        const snapshot = await this.repository.publishedSnapshot();
+        if (snapshot) {
+          const content = await snapshot.read(request.sourcePath);
+          return content === null ? null : this.project(request, visibility, content);
+        }
+      }
       const root = await realpath(await resolveCanonicalTasteRoot(this.repository));
       const candidate = resolve(root, request.sourcePath);
       const canonicalFile = await realpath(candidate);
@@ -121,15 +146,38 @@ export class TasteMemoryReader {
       } finally {
         await handle.close();
       }
-      const revision = `sha256:${createHash('sha256').update(content).digest('hex')}`;
-      if (request.revision !== undefined && request.revision !== revision) return null;
-      const payload = parseApprovedTasteVignette(content, visibility);
-      return payload
-        ? { ownerUserId: this.ownerUserId, visibility, sourcePath: request.sourcePath, revision, payload }
-        : null;
+      return this.project(request, visibility, content);
     } catch {
       return null;
     }
+  }
+
+  private project(request: TasteMemoryReadRequest, visibility: TasteMemoryVisibility, content: string) {
+    const revision = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+    if (request.revision !== undefined && request.revision !== revision) return null;
+    const parsed = parseTasteVignette(content, visibility, request.includeRetired === true);
+    if (
+      parsed &&
+      this.options.lifecycle &&
+      !this.options.lifecycle.isReadable(
+        this.ownerUserId,
+        request.sourcePath,
+        revision,
+        request.includeRetired === true,
+      )
+    ) {
+      return null;
+    }
+    return parsed
+      ? {
+          ownerUserId: this.ownerUserId,
+          visibility,
+          sourcePath: request.sourcePath,
+          revision,
+          status: parsed.status,
+          payload: parsed.payload,
+        }
+      : null;
   }
 }
 
@@ -170,9 +218,9 @@ function parseTasteFrontmatter(content: string): Record<string, unknown> | null 
   }
 }
 
-function hasApprovedStatus(parsed: Record<string, unknown>): boolean {
-  if (parsed.status === undefined) return true;
-  return optionalBoundedString(parsed.status, MAX_METADATA_CHARS) === 'approved';
+function tasteStatus(parsed: Record<string, unknown>): 'active' | 'retired' | null {
+  if (parsed.status === undefined || parsed.status === 'approved') return 'active';
+  return parsed.status === 'retired' ? 'retired' : null;
 }
 
 function matchesVisibility(parsed: Record<string, unknown>, visibility: TasteMemoryVisibility): boolean {
@@ -198,10 +246,12 @@ function parseTasteCore(
 function parseTasteMetadata(
   parsed: Record<string, unknown>,
 ): Pick<TasteDecisionPayload, 'dimension' | 'catId' | 'proposalId'> | null {
-  const dimension = optionalBoundedString(parsed.dimension, MAX_METADATA_CHARS);
+  const rawDimension = optionalBoundedString(parsed.dimension, MAX_METADATA_CHARS);
+  const dimension =
+    rawDimension && TASTE_DIMENSIONS.has(rawDimension as TasteDimension) ? (rawDimension as TasteDimension) : undefined;
   const catId = optionalBoundedString(parsed.catId, MAX_METADATA_CHARS);
   const proposalId = optionalBoundedString(parsed.proposalId, MAX_METADATA_CHARS);
-  if (parsed.dimension !== undefined && (dimension === undefined || !TASTE_DIMENSIONS.has(dimension))) return null;
+  if (parsed.dimension !== undefined && dimension === undefined) return null;
   if (parsed.catId !== undefined && catId === undefined) return null;
   if (parsed.proposalId !== undefined && proposalId === undefined) return null;
   return {

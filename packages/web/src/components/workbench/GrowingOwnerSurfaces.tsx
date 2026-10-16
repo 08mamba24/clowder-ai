@@ -1,12 +1,13 @@
 'use client';
 
 import type { ArtifactReviewView } from '@cat-cafe/shared';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invalidateArtifactReviewAccess } from '@/components/content-review/review-access-invalidation';
 import { NeedsMePanel } from '@/components/growing/NeedsMePanel';
 import { type PreparedArtifactCoordinate, ProductSchedulePanel } from '@/components/growing/ProductSchedulePanel';
-import { resolvePreparedArtifact } from '@/components/growing/resolve-prepared-artifact';
-import { useGlobalArtifacts } from '@/hooks/useGlobalArtifacts';
+import { readPreparedArtifact } from '@/components/growing/read-prepared-artifact';
+import { openMailbox } from '@/components/shell/mailbox/mailbox-navigation';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import { navigateToEntrustedWorkAction, resolveEntrustedWorkActionTarget } from '@/hooks/useWorkspaceNavigate';
 import { apiFetch } from '@/utils/api-client';
 import { createArtifactReviewSurface, reviewSurfaceFromPreparedRef } from './artifact-review-surface';
@@ -40,10 +41,14 @@ function ArtifactUnavailable({ onRetry }: { onRetry: () => void }) {
 }
 
 function usePreparedArtifactReturn(onOpen: ArtifactReturnProps['onOpenArtifactWithReturn']) {
-  const { artifacts, loading, refetch } = useGlobalArtifacts(true);
+  const [loading, setLoading] = useState(false);
+  const readRef = useRef<AbortController | null>(null);
+  useEffect(() => () => readRef.current?.abort(), []);
   const [unavailable, setUnavailable] = useState(false);
   const openReview = useCallback(
     (review: ArtifactReviewView, returnSurface: WorkspaceSurfaceDescriptor | null) => {
+      readRef.current?.abort();
+      setLoading(false);
       if (!returnSurface) {
         setUnavailable(true);
         return;
@@ -73,30 +78,51 @@ function usePreparedArtifactReturn(onOpen: ArtifactReturnProps['onOpenArtifactWi
     },
     [openReview],
   );
+  const openPublication = useCallback(
+    async (coordinate: PreparedArtifactCoordinate, returnSurface: WorkspaceSurfaceDescriptor) => {
+      const controller = new AbortController();
+      readRef.current = controller;
+      setLoading(true);
+      setUnavailable(false);
+      try {
+        const artifact = await readPreparedArtifact(coordinate, controller.signal);
+        if (controller.signal.aborted) return;
+        if (!artifact) {
+          setUnavailable(true);
+          return;
+        }
+        onOpen({ artifact: createArtifactSurface({ threadId: artifact.threadId, artifact }), returnSurface });
+      } catch {
+        if (!controller.signal.aborted) setUnavailable(true);
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    },
+    [onOpen],
+  );
   const open = useCallback(
     (coordinate: PreparedArtifactCoordinate, returnSurface: WorkspaceSurfaceDescriptor | null, title?: string) => {
+      readRef.current?.abort();
+      setLoading(false);
+      if (!returnSurface) {
+        setUnavailable(true);
+        return;
+      }
       const reviewSurface = reviewSurfaceFromPreparedRef(coordinate.openInWorkspaceRef, title);
-      if (reviewSurface && returnSurface) {
+      if (reviewSurface) {
         setUnavailable(false);
         onOpen({ artifact: reviewSurface, returnSurface });
         return;
       }
-      if (loading) return;
-      const artifact = resolvePreparedArtifact(artifacts, coordinate);
-      if (!artifact || !returnSurface) {
-        setUnavailable(true);
-        return;
-      }
-      setUnavailable(false);
-      onOpen({ artifact: createArtifactSurface({ threadId: artifact.threadId, artifact }), returnSurface });
+      void openPublication(coordinate, returnSurface);
     },
-    [artifacts, loading, onOpen],
+    [onOpen, openPublication],
   );
   const retry = useCallback(() => {
-    refetch();
+    setUnavailable(false);
     window.dispatchEvent(new Event('cat-cafe:entrusted-work-projection-invalidated'));
-  }, [refetch]);
-  return { artifacts, loading, open, openReview, openReviewAction, unavailable, retry };
+  }, []);
+  return { loading, open, openReview, openReviewAction, unavailable, retry };
 }
 
 export function ProductScheduleOwnerSurface({ surface, onOpenArtifactWithReturn }: ArtifactReturnProps) {
@@ -128,6 +154,7 @@ export function NeedsMeOwnerSurface({
   onOpenSurface: (surface: WorkspaceSurfaceDescriptor) => void;
   onRefreshSurface: (surface: WorkspaceSurfaceDescriptor) => void;
 }) {
+  const presentation = useShellPresentation();
   const target = usePreparedArtifactReturn(onOpenArtifactWithReturn);
   const selectedItemRef = resolveNeedsMeReturnTarget(surface)?.itemRef ?? null;
   const returnSurface = useCallback((itemRef: string) => createNeedsMeReturnSurface(surface, itemRef), [surface]);
@@ -149,16 +176,19 @@ export function NeedsMeOwnerSurface({
         navigateToEntrustedWorkAction(actionRef);
         return;
       }
+      if (presentation === 'v2') {
+        openMailbox({ section: 'pending', proposalId: actionTarget.proposalId });
+        return;
+      }
       const approvalSurface = createApprovalActionSurface(selectedSurface, actionTarget.proposalId);
       if (approvalSurface) onOpenSurface(approvalSurface);
     },
-    [onOpenSurface, onRefreshSurface, returnSurface, target.openReviewAction],
+    [onOpenSurface, onRefreshSurface, presentation, returnSurface, target.openReviewAction],
   );
   return (
     <div className="min-w-0">
       {target.unavailable ? <ArtifactUnavailable onRetry={target.retry} /> : null}
       <NeedsMePanel
-        artifacts={target.artifacts}
         artifactsLoading={target.loading}
         selectedItemRef={selectedItemRef}
         onOpenArtifact={openArtifact}

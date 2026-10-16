@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { openGateResourcePoolReadOnly } from './gate-resource-db.mjs';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'));
@@ -74,11 +75,35 @@ export function captureManagedGateStop(job, binding, now) {
 
 // Automatic owner recovery uses the existing outer terminal-intent/CAS fence.
 // This receipt grants only the narrower manual exception for an attested timeout.
+function hasCanonicalManagedStopPaths(intent) {
+  if (
+    !intent ||
+    typeof intent !== 'object' ||
+    Array.isArray(intent) ||
+    intent.version !== 1 ||
+    typeof intent.jobId !== 'string' ||
+    !intent.jobId ||
+    !uuid.test(intent.attemptToken ?? '') ||
+    typeof intent.intentPath !== 'string' ||
+    !path.isAbsolute(intent.intentPath) ||
+    typeof intent.cancelPath !== 'string' ||
+    !path.isAbsolute(intent.cancelPath)
+  )
+    return false;
+  const root = path.dirname(intent.intentPath);
+  const readyName = `${intent.jobId}.attempt-${intent.attemptToken}.recovery-ready.json`;
+  return (
+    path.basename(intent.intentPath) === `${readyName}.stop-intent.json` &&
+    path.resolve(intent.cancelPath) === path.resolve(root, `${intent.jobId}.json.cancel-request`)
+  );
+}
+
 export function resumableManagedGateStop(job, input) {
   if (input.kind !== 'explicit_resume' || !job.managed_stop_json || job.terminal_status !== 'cancelled') return null;
   const intent = JSON.parse(job.managed_stop_json);
   const result = job.result_json ? JSON.parse(job.result_json) : null;
   if (
+    !hasCanonicalManagedStopPaths(intent) ||
     intent.intent !== 'timed_out' ||
     typeof input.sourceRunId !== 'string' ||
     !input.sourceRunId ||
@@ -88,4 +113,93 @@ export function resumableManagedGateStop(job, input) {
   )
     return null;
   return intent;
+}
+
+const FROZEN_IDENTITY_FIELDS = Object.freeze([
+  'protocolVersion',
+  'headSha',
+  'treeSha',
+  'baseSha',
+  'route',
+  'risk',
+  'mode',
+  'verificationScope',
+  'fingerprint',
+  'runnerFingerprint',
+  'toolchainFingerprint',
+]);
+
+function normalizedFrozenIdentity(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return {
+    ...value,
+    protocolVersion: value.protocolVersion ?? 2,
+    verificationScope: value.verificationScope ?? 'merge',
+  };
+}
+
+function sameFrozenIdentity(left, right) {
+  const normalizedLeft = normalizedFrozenIdentity(left);
+  const normalizedRight = normalizedFrozenIdentity(right);
+  return (
+    normalizedLeft !== null &&
+    normalizedRight !== null &&
+    FROZEN_IDENTITY_FIELDS.every((field) => normalizedLeft[field] === normalizedRight[field])
+  );
+}
+
+/**
+ * Resolve the narrow cross-layer proof for a canonical run whose browser
+ * generation settled `cancelled` only after its outer managed owner published
+ * a captured absolute-timeout stop. The canonical and browser terminals stay
+ * immutable; this is an admission read, not a status projection.
+ */
+export function readManagedGateStopResumeAuthorization({
+  databasePath,
+  executionOriginTaskId,
+  executionOwnerJobId,
+  frozenIdentity,
+  runId,
+}) {
+  if (!executionOwnerJobId || !executionOriginTaskId || !runId) return null;
+  const database = openGateResourcePoolReadOnly(databasePath);
+  try {
+    const rows = database
+      .prepare(
+        `SELECT * FROM gate_execution_jobs
+         WHERE owner_principal = ? AND origin_task_id = ? AND state = 'terminal'
+           AND terminal_status = 'cancelled' AND managed_stop_json IS NOT NULL
+         ORDER BY job_id ASC, generation ASC`,
+      )
+      .all(`managed:${executionOwnerJobId}`, executionOriginTaskId);
+    const authorized = [];
+    for (const row of rows) {
+      try {
+        const intent = resumableManagedGateStop(row, { kind: 'explicit_resume', sourceRunId: runId });
+        if (
+          !intent ||
+          intent.runId !== runId ||
+          intent.executionOwner?.jobId !== executionOwnerJobId ||
+          intent.executionOwner?.originTaskId !== executionOriginTaskId ||
+          !sameFrozenIdentity(intent.frozenIdentity, frozenIdentity)
+        ) {
+          return null;
+        }
+        authorized.push({
+          kind: 'captured_managed_timeout',
+          childJobId: row.job_id,
+          childGeneration: row.generation,
+          reconcileFrom: intent.reconcileFrom,
+          issuedAt: intent.issuedAt,
+        });
+      } catch {
+        // Every row in this owner/task/terminal proof set is part of the
+        // admission decision. A malformed sibling makes the set ambiguous.
+        return null;
+      }
+    }
+    return authorized.length === 1 ? Object.freeze(authorized[0]) : null;
+  } finally {
+    database.close();
+  }
 }

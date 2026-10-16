@@ -11,6 +11,7 @@ vi.mock('../LabelFilterBar', () => ({
   ),
 }));
 
+import { writeShellLanguage } from '../../shell/shell-language';
 import { SidebarViewBarV2 } from '../SidebarViewBarV2';
 import type { SidebarTab } from '../thread-utils';
 
@@ -51,6 +52,7 @@ describe('F322 list head: one 分组 menu over the same tab state', () => {
   });
   afterEach(() => {
     act(() => root.unmount());
+    writeShellLanguage('zh');
     host.remove();
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   });
@@ -86,6 +88,13 @@ describe('F322 list head: one 分组 menu over the same tab state', () => {
     expect(menu()).toBeNull();
   });
 
+  it('uses English grouping names without changing the tab identity or count', () => {
+    writeShellLanguage('en');
+    render('pinned');
+    expect(host.querySelector('[data-testid="sidebar-view-menu"]')?.textContent).toContain('GroupPinned');
+    act(() => host.querySelector<HTMLElement>('[data-testid="sidebar-view-menu"]')?.click());
+    expect(host.querySelector('[data-testid="sidebar-tab-favorites"]')?.textContent).toBe('Favorites3');
+  });
   it('Escape closes the menu; the trigger carries no native title', () => {
     render();
     const trigger = host.querySelector<HTMLElement>('[data-testid="sidebar-view-menu"]');

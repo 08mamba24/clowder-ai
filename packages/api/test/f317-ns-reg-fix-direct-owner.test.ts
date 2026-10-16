@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { StoredMessage } from '../src/domains/cats/services/stores/ports/MessageStore.js';
-import { directOwner } from '../src/domains/concierge/live/host/live-page-action-authority-contract.js';
+import { directOwner } from '../src/domains/concierge/live/host/page-action/live-page-action-authority-contract.js';
 import { scope } from './helpers/f317-page-action-fixture.js';
 
 let counter = 0;

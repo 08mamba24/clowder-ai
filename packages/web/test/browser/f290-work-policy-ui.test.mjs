@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { test } from 'node:test';
 import { CollectiveServiceStore, startCollectiveServer } from '../../../collective-service/dist/index.js';
 import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
 import { registerDefaultEntryJourney } from './default-entry-journey.harness.mjs';
+import { ownerActivityRecovery } from './f290-cafe-activity-recovery.fixture.mjs';
 import { defaultHumanAuthProvider, seedDefaultCollective } from './f290-default-client.fixture.mjs';
 import { reserveNativeOwnerPorts, startNativeOwner } from './f290-native-owner.harness.mjs';
 
@@ -80,30 +82,27 @@ registerDefaultEntryJourney(
         .getByRole('navigation', { name: '频道', exact: true })
         .getByRole('button', { name: /产品方向/ })
         .click();
-      await client.getByRole('button', { name: '我的 Caf\xE9', exact: true }).waitFor();
-      await client
-        .getByRole('navigation', { name: '共同家园成员', exact: true })
-        .getByRole('button', { name: /成员/ })
-        .click();
-      await client.getByRole('button', { name: '管理参与…', exact: true }).click();
-      const panel = page.getByRole('complementary', { name: '我的 Caf\xE9', exact: true });
-      await panel.getByRole('heading', { name: '授权规则', exact: true }).waitFor();
-      await journey.arrive(page);
-      await panel.getByRole('radio', { name: '值班猫把所有消息看一眼', exact: true }).click();
+      await client.getByRole('button', { name: '我的猫', exact: true }).waitFor();
+      await client.getByRole('button', { name: '我的猫', exact: true }).click();
+      const panel = page.getByRole('complementary', { name: '我的猫', exact: true });
+      await panel.getByRole('heading', { name: '我的猫', exact: true, level: 2 }).waitFor();
+      await panel.getByRole('button', { name: '频道', exact: true }).click();
+      await panel.getByRole('radio', { name: '留意所有消息', exact: true }).click();
       await poll(
         async () =>
-          (await actualOwner.connector.getHostRoute(actualOwner.connection.connectionId))?.channelListening?.[
-            '产品方向'
-          ]?.mode === 'all',
+          (await actualOwner.connector.getHostRoute(actualOwner.connection.connectionId))?.channelListening?.产品方向
+            ?.mode === 'all',
       );
-      await panel.getByRole('radio', { name: '每件都要我批准', exact: true }).click();
+      await panel.getByRole('button', { name: '授权', exact: true }).click();
+      await journey.arrive(page);
+      await panel.getByRole('switch', { name: '接工作前先问我', exact: true }).click();
       await poll(
         async () =>
           (await actualOwner.connector.readWorkPolicyStatus(actualOwner.connection.connectionId)).localAdoption
             ?.decisionMode === 'manual',
       );
       await page.screenshot({ path: path.join(evidence, 'settings-desktop.png'), fullPage: true });
-      await page.getByRole('button', { name: '关闭我的 Caf\xE9', exact: true }).click();
+      await page.getByRole('button', { name: '关闭我的猫', exact: true }).click();
       const body = `UI_SENTINEL_${randomUUID()} \xB7 请写新人接入指南。`;
       await owner.receiveRequest(body);
       const source = (await owner.connector.listInbox(owner.connection.connectionId)).find(
@@ -267,3 +266,9 @@ async function poll(predicate) {
   }
   throw new Error('Actual state did not change');
 }
+
+test(
+  'owner activity opens the exact private destination and read recovery clears a stale settings alert',
+  { timeout: 90_000 },
+  ownerActivityRecovery,
+);

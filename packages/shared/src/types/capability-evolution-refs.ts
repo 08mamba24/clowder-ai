@@ -15,8 +15,7 @@ import { z } from 'zod';
 export const bounded = (max: number) => z.string().trim().min(1).max(max);
 export const timestampSchema = z.string().datetime({ offset: true });
 /** Portable `kind:id` pattern — safe for Node Zod, Biome, and DeepSeek ACP JSON Schema `pattern`. */
-// biome-ignore lint/complexity/noUselessEscapeInRegex: Serialized MCP patterns also reach engines with nested character classes.
-export const OWNER_STATE_REF_PATTERN = /^[a-z][a-z0-9-]*:[^\s\[\]{}"']+$/;
+export const OWNER_STATE_REF_PATTERN = /^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$/;
 const ownerStateRefSchema = bounded(500).regex(
   OWNER_STATE_REF_PATTERN,
   'owner state refs must use non-payload kind:id syntax',

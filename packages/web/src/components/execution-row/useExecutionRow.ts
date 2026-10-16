@@ -8,14 +8,18 @@
  * wires the row's buttons to the very same commands the old surfaces use (cancelProjectedExecution through
  * ExecutionCancelButton, useQueueCommands, useQueueActionConvergence). The 1s clock ticks only while something runs.
  */
-import type { QueueRecoveryAction } from '@cat-cafe/shared';
-import { useEffect, useMemo, useState } from 'react';
-import { useCatNameResolver } from '@/hooks/useCatNameResolver';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCatData } from '@/hooks/useCatData';
 import { useExecutionRecoveryVerification } from '@/hooks/useExecutionRecoveryVerification';
 import { useThreadLiveness } from '@/hooks/useThreadScopedSelectors';
+import { resolveCatNameplateName } from '@/lib/cat-display-name';
 import { activeExecutionKey, useActiveExecutionStore } from '@/stores/activeExecutionStore';
+import { useToastStore } from '@/stores/toastStore';
 import { isStreamingTipSuppressed } from '../capability-tip-placement';
+import { useShellCopy } from '../shell/shell-copy';
 import { useQueueActionConvergence } from '../useQueueActionConvergence';
+import { locateExecution } from './execution-location';
+import { executionRowCopy } from './execution-row.shell-copy';
 import { deriveExecutionRow } from './row-model';
 import { useQueueCommands } from './useQueueCommands';
 import { useQueueView } from './useQueueView';
@@ -32,10 +36,10 @@ function useNow(active: boolean): number {
   return now;
 }
 
-type ForceResetAction = Extract<QueueRecoveryAction, { kind: 'force_reset' }>;
-
 export function useExecutionRow(threadId: string) {
-  const resolveCatName = useCatNameResolver();
+  const words = useShellCopy(executionRowCopy);
+  const { getCatById } = useCatData({ fetch: false });
+  const resolveCatName = useCallback((catId: string) => resolveCatNameplateName(catId, getCatById), [getCatById]);
   const { catInvocations, catStatuses } = useThreadLiveness(threadId);
   const executionsByKey = useActiveExecutionStore((state) => state.executionsByKey);
   const cancelPendingByKey = useActiveExecutionStore((state) => state.cancelPendingByKey);
@@ -46,7 +50,7 @@ export function useExecutionRow(threadId: string) {
 
   const view = useQueueView(threadId);
   // The new shell's row reports a reset that went through as done even when the re-read after it fails.
-  const convergence = useQueueActionConvergence(threadId, { resetDoneSurvivesRereadFailure: true });
+  const convergence = useQueueActionConvergence(threadId);
   const commands = useQueueCommands(threadId, view, convergence.refreshQueue);
 
   const executions = useMemo(
@@ -79,9 +83,6 @@ export function useExecutionRow(threadId: string) {
         hydrationStale: canonicalProjectionStale,
         hasUnverifiedLegacyExecution,
         queue: {
-          total: view.queue.length,
-          paused: view.queuePaused,
-          pauseReason: view.queuePauseReason,
           entries: view.visibleEntries,
           canRecoverOrphaned: view.canRecoverOrphanedQueue,
           waitInfo: view.waitInfo,
@@ -90,17 +91,14 @@ export function useExecutionRow(threadId: string) {
     [canonicalProjectionStale, cancelPendingKeys, executions, hasUnverifiedLegacyExecution, now, silent, view],
   );
 
-  const stuckAction = useMemo(
-    () =>
-      view.visibleEntries
-        .filter((entry) => entry.status === 'processing')
-        .flatMap((entry) => entry.recoveryActions ?? [])
-        .find((action): action is ForceResetAction => action.kind === 'force_reset') ?? null,
-    [view.visibleEntries],
-  );
-  const forceReset = useRowForceReset({ threadId, reasons: model.forceReset, stuckAction, convergence });
-
-  return { model, executions, now, silent, view, convergence, commands, forceReset, resolveCatName };
+  const forceReset = useRowForceReset({ threadId, convergence });
+  const locate = (execution: (typeof executions)[number]) => {
+    if (locateExecution(execution) === 'unavailable')
+      useToastStore
+        .getState()
+        .addToast({ type: 'info', title: words.actions.locate, message: words.actions.unavailable, duration: 5000 });
+  };
+  return { model, executions, now, silent, view, convergence, commands, forceReset, resolveCatName, locate };
 }
 
 export type ExecutionRowController = ReturnType<typeof useExecutionRow>;

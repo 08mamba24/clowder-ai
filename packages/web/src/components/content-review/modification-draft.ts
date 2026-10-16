@@ -1,4 +1,8 @@
-import { type ContentModificationRequest, contentModificationRequestSchema } from '@cat-cafe/shared';
+import {
+  type ContentModificationRequest,
+  contentModificationRequestContractSchema,
+  contentModificationRequestSchema,
+} from '@cat-cafe/shared';
 
 export interface ModificationDraft {
   v: 1;
@@ -22,6 +26,7 @@ export interface ModificationDraftScope {
   intent?: ModificationDraft['intent'];
 }
 export function modificationSourceVersion(source: ContentModificationRequest['source']): string {
+  if (source.kind === 'video-project') throw new Error('Project screening marks use the original Chat composer');
   return source.kind === 'publication'
     ? `${source.contentRef}:${source.ownerRevision}`
     : source.kind === 'artifact-review'
@@ -29,6 +34,7 @@ export function modificationSourceVersion(source: ContentModificationRequest['so
       : `${source.reviewId}:${source.expectedSourceRevision}`;
 }
 export function modificationStorageKey(ownerUserId: string, source: ContentModificationRequest['source']): string {
+  if (source.kind === 'video-project') throw new Error('Project screening marks use the original Chat composer');
   const object = source.kind === 'publication' ? source.contentRef : source.reviewId;
   return `cat-cafe:content-modification:${ownerUserId}:${object}`;
 }
@@ -47,7 +53,7 @@ export function readModificationDraft(key: string): ModificationDraft | null {
     Array.isArray(value.acceptOperations)
   )
     throw new Error('draft_unavailable');
-  if (value.operation) contentModificationRequestSchema.parse(value.operation);
+  if (value.operation) contentModificationRequestContractSchema.parse(value.operation);
   if (value.previousScopes !== undefined) {
     if (!Array.isArray(value.previousScopes)) throw new Error('draft_unavailable');
     for (const scope of value.previousScopes) {

@@ -72,12 +72,13 @@ async function select() {
 it('browses real memories, collapses the dome on selection, distinguishes hypotheses and absent candidate writers', async () => {
   await render();
   expect(host.textContent).toContain('品味 1');
-  expect(host.textContent).toContain('画像 · 还没接进来');
+  expect(host.textContent).toContain('会议 · 还没接进来');
   expect(host.querySelector('[data-testid="taste-dome"]')?.getAttribute('data-expanded')).toBe('true');
   await select();
   expect(host.querySelector('[data-testid="taste-dome"]')?.getAttribute('data-expanded')).toBe('false');
   expect(host.textContent).toContain('已有的做法假设');
-  expect(host.textContent).toContain('概括候选尚未接入');
+  expect(host.textContent).toContain('概括候选还没接进来');
+  expect(host.textContent).not.toContain('尚未接入');
   expect(host.textContent).toContain('明确不用 1');
   expect(host.textContent).not.toContain('忽略');
   for (const name of ['确认这句', '修改', '忘掉'])
@@ -281,12 +282,12 @@ it('both metadata and approval use the verified proposal instant in local time w
         : ok(e),
   );
   await render();
-  expect(host.querySelector('time')?.textContent).toBe('8月25日 20:26');
+  expect(host.querySelector('time')?.textContent).toBe('8 月 25 日 20:26');
   await select();
   const detail = host.querySelector('aside');
-  expect(detail?.querySelector('time')?.textContent).toBe('8月25日 20:26');
-  expect(detail?.textContent).toContain('提出于 8月25日 20:26');
-  expect(detail?.textContent).toContain('已批准 · 8月25日 20:26');
+  expect(detail?.querySelector('time')?.textContent).toBe('8 月 25 日 20:26');
+  expect(detail?.textContent).toContain('提出于 8 月 25 日 20:26');
+  expect(detail?.textContent).toContain('已批准 · 8 月 25 日 20:26');
   expect(detail?.textContent).not.toContain('20:26:');
   vi.unstubAllEnvs();
 });

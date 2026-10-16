@@ -126,3 +126,52 @@ test('one confirmed request survives restart and cross-owner gaps without changi
   );
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM ledger_effect').get() as { count: number }).count, 1);
 });
+
+test('projection recovery advances a durable cursor so requests older than one batch are eventually visited', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'f309-modification-projection-cursor-'));
+  const path = join(root, 'review.sqlite');
+  const db = new Database(path);
+  let restartedDb: InstanceType<typeof Database> | undefined;
+  t.after(async () => {
+    restartedDb?.close();
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const journal = new ContentModificationJournal(db);
+  const ids = new Set<string>();
+  for (let index = 0; index < 5; index += 1) {
+    ids.add(
+      journal.reserve(
+        'operator',
+        {
+          operationId: randomUUID(),
+          source: {
+            kind: 'publication',
+            contentRef: `media-${index}`,
+            ownerRevision: 1,
+            ledgerRef: `ledger-${index}`,
+            expectedLedgerRevision: 1,
+          },
+          targetCatId: 'codex-astra',
+          threadId: 'thread-projection',
+          intent: { body: `request ${index}` },
+        },
+        1000 + index,
+      ).requestId,
+    );
+  }
+
+  const firstCycle = [
+    ...journal.recentForProjection(2),
+    ...journal.recentForProjection(2),
+    ...journal.recentForProjection(2),
+  ];
+  assert.equal(firstCycle.length, 5);
+  assert.deepEqual(new Set(firstCycle.map((record) => record.requestId)), ids);
+
+  restartedDb = new Database(path);
+  const restarted = new ContentModificationJournal(restartedDb);
+  const wrapped = restarted.recentForProjection(2);
+  assert.equal(wrapped.length, 2, 'the persisted end cursor wraps into the next complete sweep');
+  assert.ok(wrapped.every((record) => ids.has(record.requestId)));
+});

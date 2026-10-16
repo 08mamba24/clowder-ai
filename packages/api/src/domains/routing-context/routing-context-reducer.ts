@@ -131,13 +131,6 @@ function inactiveSignalReason(signal: AssertedSignal, closer?: ClosingSignal): R
       sourceRefs: [closer.eventId, signal.eventId, closer.evidenceRef],
     };
   }
-  if (closer?.eventType === 'retracted') {
-    return {
-      code: 'routing_signal_retracted',
-      summary: closer.note ?? closer.reasonCode,
-      sourceRefs: [closer.eventId, signal.eventId, closer.evidenceRef],
-    };
-  }
   return {
     code: 'routing_signal_expired',
     summary: `${signal.reasonCode} expired without recovery evidence`,
@@ -167,7 +160,7 @@ function reduceCandidateSignals(input: {
     .filter((event) => subjectMatchesCandidate(event.subjectRef, input.candidate));
 
   const active: AssertedSignal[] = [];
-  const unknown: Array<{ signal: AssertedSignal; closer?: ClosingSignal }> = [];
+  const expired: AssertedSignal[] = [];
   const recovered: Array<{ signal: AssertedSignal; closer: ClosingSignal }> = [];
   for (const signal of matchingAssertions) {
     const closer = input.closures.get(signal.eventId);
@@ -176,14 +169,15 @@ function reduceCandidateSignals(input: {
       continue;
     }
     if (closer?.eventType === 'retracted') {
-      unknown.push({ signal, closer });
+      // Owner removal withdraws this assertion's influence, not evidence of recovery.
+      // The immutable assertion/closure remain in the read model's history.
       continue;
     }
     const boundary = Math.min(
       signal.validUntil ?? Number.POSITIVE_INFINITY,
       signal.resetAt ?? Number.POSITIVE_INFINITY,
     );
-    if (input.observedAt >= boundary) unknown.push({ signal });
+    if (input.observedAt >= boundary) expired.push(signal);
     else active.push(signal);
   }
 
@@ -213,12 +207,12 @@ function reduceCandidateSignals(input: {
         : {}),
     };
   }
-  if (unknown.length > 0) {
-    unknown.sort((left, right) => compareIdentity(left.closer ?? left.signal, right.closer ?? right.signal));
+  if (expired.length > 0) {
+    expired.sort(compareIdentity);
     return {
       availability: 'unknown',
       freshness: 'stale',
-      reasons: unknown.map(({ signal, closer }) => inactiveSignalReason(signal, closer)),
+      reasons: expired.map((signal) => inactiveSignalReason(signal)),
     };
   }
   if (recovered.length > 0) {

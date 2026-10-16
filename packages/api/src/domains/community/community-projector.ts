@@ -147,10 +147,9 @@ export class CommunityProjector {
       // identity that must be projected as top-level ownership. Without this,
       // coordinator-admitted cases (no preceding case.routed) have null ownership
       // and verdict bootstrap Case 1 fails with 503 projection_unavailable.
-      if (event.kind === 'case.external_review_assigned') {
-        const p = event.payload as Record<string, unknown>;
-        if (typeof p.reviewerThreadId === 'string') externalReviewUpdated.ownerThreadId = p.reviewerThreadId;
-        if (typeof p.reviewerCatId === 'string') externalReviewUpdated.ownerRole = p.reviewerCatId;
+      if (event.kind === 'case.external_review_assigned' || event.kind === 'case.external_review_reassigned') {
+        externalReviewUpdated.ownerThreadId = result.value.reviewerThreadId;
+        externalReviewUpdated.ownerRole = result.value.reviewerCatId;
       }
       await this.objectStore.save(externalReviewUpdated);
       return followUps;

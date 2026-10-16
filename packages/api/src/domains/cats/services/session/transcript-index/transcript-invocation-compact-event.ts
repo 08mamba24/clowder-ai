@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { compactAssistantOutput } from '../FirstAssistantOutputAccumulator.js';
 import { projectInvocationTerminalEvidence } from '../InvocationTrajectoryProjector.js';
 import { transcriptEventFingerprint } from '../TranscriptEventEnvelope.js';
 import type { TranscriptEvent } from '../TranscriptReader.js';
@@ -13,6 +14,9 @@ function record(value: unknown): Record<string, unknown> | undefined {
 export function compactTranscriptEvent(envelope: TranscriptEvent): CompactTranscriptEvent {
   const event = envelope.event;
   const projected: Record<string, unknown> = { type: event.type };
+  if (event.role !== undefined) projected.role = event.role === 'assistant' ? 'assistant' : 'non_assistant';
+  const assistantOutputFragment = compactAssistantOutput(event);
+  if (assistantOutputFragment) projected.assistantOutputFragment = assistantOutputFragment;
   const terminal = projectInvocationTerminalEvidence(event);
   if (terminal) projected.errorCode = terminal.reason;
   if (event.type === 'error' && event.errorDisposition === 'transient') projected.errorDisposition = 'transient';

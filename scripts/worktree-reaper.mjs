@@ -47,6 +47,7 @@ import {
   statusFacts,
 } from './lib/worktree-reaper-probes.mjs';
 import { riskNotes } from './lib/worktree-reaper-risk.mjs';
+import { capacityRetention, retentionMessages } from './lib/worktree-retention.mjs';
 
 const DEFAULT_SANDBOX_ROOTS = ['/tmp/cat-cafe-review'];
 
@@ -229,7 +230,7 @@ export function capacityHolders({ repo, parentDir, policy = DEFAULT_POLICY }) {
     if (isProtected(name, policy)) continue;
     const lifecycle = lifecycleConfig(path, '--worktree');
     if (lifecycle !== null && !lifecycle.policy) legacy.push({ path, name });
-    else active.push({ path, name, owner: lifecycle?.owner ?? '?' });
+    else active.push({ path, name, owner: lifecycle?.owner ?? '?', ...capacityRetention(lifecycle, r.head) });
   }
   return { active, legacy };
 }
@@ -289,6 +290,9 @@ function main(argv) {
   const policy = parsePolicyArgs(argv);
   if (argv.includes('--check')) {
     const cap = checkCapacity({ repo, max: policy.maxWorktrees });
+    retentionMessages(capacityHolders({ repo }).active).forEach((line) => {
+      console.log(line);
+    });
     const legacy = cap.legacy > 0 ? ` (+${cap.legacy} undeclared legacy, not counted)` : '';
     if (!cap.over) {
       console.log(`[worktree-reaper] OK ${cap.count}/${cap.max} active declared worktrees${legacy}`);

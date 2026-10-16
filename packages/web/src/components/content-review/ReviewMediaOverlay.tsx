@@ -2,6 +2,7 @@ import type { ArtifactReviewAnchor, ImmutableMedia } from '@cat-cafe/shared';
 import { ReviewCanvasAnnotations } from './ReviewCanvasAnnotations';
 import type { ReviewCanvasMode } from './ReviewCanvasToolbar';
 import { ReviewMarkupLayer } from './ReviewMarkupLayer';
+import { type PendingChatMark, ReviewPendingChatMarks } from './ReviewPendingChatMarks';
 import { ReviewSavedMarkupLayer } from './ReviewSavedMarkupLayer';
 import type { ReviewMarkupFrame } from './review-markup-draft';
 import type { useReviewMediaSelection } from './useReviewMediaSelection';
@@ -18,6 +19,7 @@ export function ReviewMediaOverlay({
   selection,
   onAnnotationActive,
   markup,
+  pendingChatMarks = [],
 }: {
   media: ImmutableMedia;
   frame: ReviewMarkupFrame | null | undefined;
@@ -30,6 +32,8 @@ export function ReviewMediaOverlay({
   selection: ReturnType<typeof useReviewMediaSelection>;
   onAnnotationActive: (id: string) => void;
   markup: Parameters<typeof ReviewMarkupLayer>[0] | null;
+  /** Places already waiting in the chat composer, numbered as their chips are. */
+  pendingChatMarks?: readonly PendingChatMark[];
 }) {
   const anchor = selection.drag ?? selected;
   const region = anchor?.kind === 'image-region' ? anchor : anchor?.kind === 'video-range' ? anchor.frameRegion : null;
@@ -51,6 +55,7 @@ export function ReviewMediaOverlay({
           interactive={mode !== 'markup' && (!selection.selecting || mode === 'comment')}
           onActive={onAnnotationActive}
         />
+        <ReviewPendingChatMarks marks={pendingChatMarks} media={media} />
         {region ? (
           <rect
             x={region.x}

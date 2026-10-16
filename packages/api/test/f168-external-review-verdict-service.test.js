@@ -10,6 +10,7 @@ import {
 
 class MemoryEventLog {
   events = [];
+  allEvents = [];
   failNextAppend = false;
 
   async append(event) {
@@ -20,11 +21,12 @@ class MemoryEventLog {
     const existing = this.events.find((candidate) => candidate.sourceEventId === event.sourceEventId);
     if (existing) return { appended: false, sequence: this.events.indexOf(existing) };
     this.events.push(structuredClone(event));
+    this.allEvents.push(structuredClone(event));
     return { appended: true, sequence: this.events.length - 1 };
   }
 
   async read(subjectKey) {
-    return this.events.filter((event) => event.subjectKey === subjectKey);
+    return this.allEvents.filter((event) => event.subjectKey === subjectKey);
   }
 
   async listSubjects() {
@@ -160,7 +162,7 @@ describe('F168 ExternalReviewVerdictService', () => {
     completions = [];
     completionResult = { outcome: 'committed' };
     currentHeadFetches = 0;
-    await objectStore.save(projection());
+    await saveFixtureProjection(projection());
     service = new ExternalReviewVerdictService({
       repoConfigStore: { getByRepo: async () => config },
       eventLog,
@@ -185,9 +187,51 @@ describe('F168 ExternalReviewVerdictService', () => {
     });
   });
 
+  // Fixture facts are canonical too; mutation assertions count only service/coordinator appends.
+  // A direct cache seed alone cannot establish a receipt in an append-only event system.
+  async function saveFixtureProjection(value) {
+    const a = value.externalReview;
+    if (eventLog.events.length === 0) eventLog.allEvents = [];
+    const seed = (kind, payload) =>
+      eventLog.allEvents.push({
+        subjectKey,
+        kind,
+        payload,
+        classification: 'informational',
+        sourceEventId: `fixture:${eventLog.allEvents.length}:${kind}`,
+        at: 1,
+      });
+    seed('case.external_review_assigned', {
+      mode: a.mode,
+      cloudPolicy: a.cloudPolicy,
+      reviewerCatId: a.reviewerCatId,
+      reviewerThreadId: a.reviewerThreadId,
+      actionLeaseRef: a.actionLeaseRef,
+    });
+    const previous = eventLog.events.length ? (await objectStore.get(subjectKey))?.externalReview : null;
+    for (let g = (previous?.headGeneration ?? 0) + 1; g <= a.headGeneration; g++) {
+      seed('case.head_observed', {
+        headSha: g === a.headGeneration ? a.currentHeadSha : 'b'.repeat(40),
+        headGeneration: g,
+      });
+    }
+    if (a.ci) seed('case.ci_observed', a.ci);
+    if (a.cloud) seed('case.cloud_review_observed', a.cloud);
+    if (a.lifecycle === 'rereview_required') {
+      seed('case.review_ready', { headSha: a.currentHeadSha, headGeneration: a.headGeneration });
+      if (a.wake?.status === 'delivered') seed('case.reviewer_wake_delivered', a.wake);
+    }
+    await objectStore.save(value);
+  }
+
+  function clearFixtureProjection() {
+    objectStore.values.clear();
+    eventLog.allEvents = [...eventLog.events];
+  }
+
   async function createLogAheadSubmission(inputOverrides = {}) {
     config = { ...config, cloudReviewPolicy: 'optional' };
-    objectStore.values.clear();
+    clearFixtureProjection();
     const tracking = { ...principal, userId: 'user-1' };
     const coordinator = new ExternalReviewCoordinator({
       repoConfigStore: { getByRepo: async () => config },
@@ -272,7 +316,7 @@ describe('F168 ExternalReviewVerdictService', () => {
 
   it('accepts one typed verdict during bounded canonical lag and settles it on the next collector tick', async () => {
     config = { ...config, cloudReviewPolicy: 'optional' };
-    await objectStore.save(
+    await saveFixtureProjection(
       projection({
         cloudPolicy: 'optional',
         lifecycle: 'awaiting_ci',
@@ -330,7 +374,7 @@ describe('F168 ExternalReviewVerdictService', () => {
   });
 
   it('deduplicates an identical transport replay while canonical verification is pending', async () => {
-    await objectStore.save(
+    await saveFixtureProjection(
       projection({
         lifecycle: 'awaiting_ci',
         ci: { headSha, headGeneration: 1, status: 'pending', observedAt: 9_000 },
@@ -347,7 +391,7 @@ describe('F168 ExternalReviewVerdictService', () => {
 
   it('invalidates a pending verdict when CI fails so a later rerun cannot settle stale reviewer intent', async () => {
     config = { ...config, cloudReviewPolicy: 'optional' };
-    await objectStore.save(
+    await saveFixtureProjection(
       projection({
         cloudPolicy: 'optional',
         lifecycle: 'awaiting_ci',
@@ -409,7 +453,7 @@ describe('F168 ExternalReviewVerdictService', () => {
 
   it('persists a post-invalidation resubmission so restart rebuild can settle it', async () => {
     config = { ...config, cloudReviewPolicy: 'optional' };
-    objectStore.values.clear();
+    clearFixtureProjection();
     let collectorClock = 11_000;
     const makeCoordinator = () =>
       new ExternalReviewCoordinator({
@@ -480,7 +524,7 @@ describe('F168 ExternalReviewVerdictService', () => {
 
   it('rebuilds a log-ahead submission before resubmitting after invalidation', async () => {
     config = { ...config, cloudReviewPolicy: 'optional' };
-    objectStore.values.clear();
+    clearFixtureProjection();
     let collectorClock = 12_000;
     let failFirstSubmittedApply = true;
     const repairingService = new ExternalReviewVerdictService({
@@ -651,7 +695,7 @@ describe('F168 ExternalReviewVerdictService', () => {
 
   it('fails closed when an ambiguous duplicate pending submission cannot rebuild', async () => {
     config = { ...config, cloudReviewPolicy: 'optional' };
-    objectStore.values.clear();
+    clearFixtureProjection();
     const coordinator = new ExternalReviewCoordinator({
       repoConfigStore: { getByRepo: async () => config },
       eventLog,
@@ -696,7 +740,7 @@ describe('F168 ExternalReviewVerdictService', () => {
 
   it('does not report pending verification when apply returns without projecting the durable event', async () => {
     config = { ...config, cloudReviewPolicy: 'optional' };
-    objectStore.values.clear();
+    clearFixtureProjection();
     const coordinator = new ExternalReviewCoordinator({
       repoConfigStore: { getByRepo: async () => config },
       eventLog,
@@ -730,7 +774,7 @@ describe('F168 ExternalReviewVerdictService', () => {
 
   it('converges concurrent identical resubmissions on one event or a typed retry', async () => {
     config = { ...config, cloudReviewPolicy: 'optional' };
-    objectStore.values.clear();
+    clearFixtureProjection();
     let collectorClock = 15_000;
     const coordinator = new ExternalReviewCoordinator({
       repoConfigStore: { getByRepo: async () => config },
@@ -782,7 +826,7 @@ describe('F168 ExternalReviewVerdictService', () => {
 
   it('keeps a stale pending-verdict lease as diagnosable waiting instead of an error loop', async () => {
     config = { ...config, cloudReviewPolicy: 'optional' };
-    await objectStore.save(
+    await saveFixtureProjection(
       projection({
         cloudPolicy: 'optional',
         lifecycle: 'awaiting_ci',
@@ -838,7 +882,7 @@ describe('F168 ExternalReviewVerdictService', () => {
   });
 
   it('rejects a conflicting second verdict while one typed submission awaits verification', async () => {
-    await objectStore.save(
+    await saveFixtureProjection(
       projection({
         lifecycle: 'awaiting_ci',
         ci: { headSha, headGeneration: 1, status: 'pending', observedAt: 9_000 },
@@ -856,7 +900,7 @@ describe('F168 ExternalReviewVerdictService', () => {
 
   it('repairs a pending-verdict projection when the event append won but projection apply crashed', async () => {
     config = { ...config, cloudReviewPolicy: 'optional' };
-    objectStore.values.clear();
+    clearFixtureProjection();
     const coordinator = new ExternalReviewCoordinator({
       repoConfigStore: { getByRepo: async () => config },
       eventLog,
@@ -909,7 +953,7 @@ describe('F168 ExternalReviewVerdictService', () => {
 
   it('records the same SHA verdict again when it belongs to a later HEAD generation', async () => {
     await service.record(deliveredInput());
-    await objectStore.save(
+    await saveFixtureProjection(
       projection({
         headGeneration: 3,
         currentHeadObservedAt: 20,
@@ -998,7 +1042,7 @@ describe('F168 ExternalReviewVerdictService', () => {
   });
 
   it('fails closed when the canonical action lease is missing or stale', async () => {
-    await objectStore.save(projection({ actionLeaseRef: { leaseId: 'lease-1', generation: 2 } }));
+    await saveFixtureProjection(projection({ actionLeaseRef: { leaseId: 'lease-1', generation: 2 } }));
 
     await assert.rejects(() => service.record(deliveredInput()), errorCode('action_lease_required'));
 
@@ -1010,7 +1054,7 @@ describe('F168 ExternalReviewVerdictService', () => {
   });
 
   it('turns a delivered current-HEAD verdict into typed action completion evidence', async () => {
-    await objectStore.save(projection({ actionLeaseRef: { leaseId: 'lease-1', generation: 2 } }));
+    await saveFixtureProjection(projection({ actionLeaseRef: { leaseId: 'lease-1', generation: 2 } }));
 
     await service.record(deliveredInput({ actionLeaseRef: { leaseId: 'lease-1', generation: 2 } }));
 
@@ -1030,7 +1074,7 @@ describe('F168 ExternalReviewVerdictService', () => {
   });
 
   it('does not durably record delivery when the coupled action completion is not committed', async () => {
-    await objectStore.save(projection({ actionLeaseRef: { leaseId: 'lease-1', generation: 2 } }));
+    await saveFixtureProjection(projection({ actionLeaseRef: { leaseId: 'lease-1', generation: 2 } }));
     completionResult = { outcome: 'stale' };
 
     await assert.rejects(
@@ -1043,7 +1087,7 @@ describe('F168 ExternalReviewVerdictService', () => {
   });
 
   it('retries event durability after the exact holder lease was already completed', async () => {
-    await objectStore.save(projection({ actionLeaseRef: { leaseId: 'lease-1', generation: 2 } }));
+    await saveFixtureProjection(projection({ actionLeaseRef: { leaseId: 'lease-1', generation: 2 } }));
     eventLog.failNextAppend = true;
 
     await assert.rejects(() =>
@@ -1061,7 +1105,7 @@ describe('F168 ExternalReviewVerdictService', () => {
   });
 
   it('rejects pending delivery when custody succeeded before the verdict event became durable', async () => {
-    await objectStore.save(projection({ actionLeaseRef: { leaseId: 'lease-1', generation: 2 } }));
+    await saveFixtureProjection(projection({ actionLeaseRef: { leaseId: 'lease-1', generation: 2 } }));
     eventLog.failNextAppend = true;
 
     await assert.rejects(() =>
@@ -1119,15 +1163,15 @@ describe('F168 ExternalReviewVerdictService', () => {
   });
 
   it('rejects terminal or not-ready projections', async () => {
-    await objectStore.save(projection({ lifecycle: 'terminal' }));
+    await saveFixtureProjection(projection({ lifecycle: 'terminal' }));
     await assert.rejects(() => service.record(deliveredInput()), errorCode('subject_terminal'));
 
-    await objectStore.save(projection({ lifecycle: 'awaiting_ci' }));
+    await saveFixtureProjection(projection({ lifecycle: 'awaiting_ci' }));
     await assert.rejects(() => service.record(deliveredInput()), errorCode('head_not_ready'));
   });
 
   it('rejects a submission when canonical CI already proves the HEAD insufficient', async () => {
-    await objectStore.save(
+    await saveFixtureProjection(
       projection({
         lifecycle: 'awaiting_ci',
         ci: { headSha, headGeneration: 1, status: 'fail', observedAt: 9_000 },
@@ -1145,7 +1189,7 @@ describe('F168 ExternalReviewVerdictService', () => {
     // events but externalReview is null because ExternalReviewCoordinator
     // .initialize() was never called (CI poller hasn't run for this PR yet).
     // Seed through canonical events so rebuild reconstructs proper ownership.
-    objectStore.values.clear();
+    clearFixtureProjection();
     await eventLog.append({
       sourceEventId: `routed:${subjectKey}:${principal.threadId}`,
       subjectKey,
@@ -1191,7 +1235,7 @@ describe('F168 ExternalReviewVerdictService', () => {
     // No projection = no ownerThreadId to verify caller against → fail closed.
     // This is the no-durable-authority case: bootstrap must not mint reviewer
     // identity from the submitter's own principal.
-    objectStore.values.clear();
+    clearFixtureProjection();
 
     await assert.rejects(() => service.record(deliveredInput()), errorCode('projection_unavailable'));
     // No events should be appended when failing closed before bootstrap
@@ -1202,7 +1246,7 @@ describe('F168 ExternalReviewVerdictService', () => {
     // Canonical routing event assigns ownership to a different thread/cat →
     // caller is not the case owner → wrong_principal. Seeded through events
     // so rebuild reconstructs the correct canonical ownership.
-    objectStore.values.clear();
+    clearFixtureProjection();
     await eventLog.append({
       sourceEventId: `routed:${subjectKey}:thread-other`,
       subjectKey,
@@ -1222,7 +1266,7 @@ describe('F168 ExternalReviewVerdictService', () => {
     // (ownership not yet established by routing) → no durable authority to
     // verify against → fail closed. Seeded through case.triaged event which
     // creates the projection without setting ownership fields.
-    objectStore.values.clear();
+    clearFixtureProjection();
     await eventLog.append({
       sourceEventId: `triaged:${subjectKey}`,
       subjectKey,
@@ -1242,7 +1286,7 @@ describe('F168 ExternalReviewVerdictService', () => {
     // on the same thread must not be accepted — checking only ownerThreadId
     // is insufficient. ownerRole must also match input.principal.catId.
     // Seeded through canonical events so rebuild reconstructs ownership.
-    objectStore.values.clear();
+    clearFixtureProjection();
     await eventLog.append({
       sourceEventId: `routed:${subjectKey}:same-thread-diff-cat`,
       subjectKey,
@@ -1263,6 +1307,7 @@ describe('F168 ExternalReviewVerdictService', () => {
     // Rebuild replays the routed event, producing a projection with the new
     // owner. Using pre-rebuild data would incorrectly accept the old caller.
     // Direct-save projection is stale cache; canonical event is the truth.
+    clearFixtureProjection();
     await objectStore.save({
       repo: 'acme/widgets',
       type: 'pr',
@@ -1398,7 +1443,7 @@ describe('F168 ExternalReviewVerdictService', () => {
     // When the coordinator HAS run, case.external_review_assigned is in the event log.
     // The projector fix projects ownerThreadId/ownerRole from that event, enabling
     // verdict bootstrap Case 1 to verify caller authority from durable projection fields.
-    objectStore.values.clear();
+    clearFixtureProjection();
 
     // Seed ONLY case.external_review_assigned — no case.routed, no case.triaged.
     await eventLog.append({
@@ -1447,7 +1492,7 @@ describe('F168 ExternalReviewVerdictService', () => {
     //
     // Shape: empty event log + matching tracker admission → verdict accepted as
     // pending_verification without a duplicate GitHub review.
-    objectStore.values.clear();
+    clearFixtureProjection();
 
     // Empty event log — NO case.external_review_assigned, NO case.routed, NO case.bootstrap.
     // This is the actual #1511 state: the coordinator never ran for this PR.
@@ -1505,7 +1550,7 @@ describe('F168 ExternalReviewVerdictService', () => {
   it('bootstrap Case 1 rejects mismatched tracker admission (fail-closed #1511)', async () => {
     // Same scenario as #1511 but the tracker is owned by a different cat.
     // Must fail with projection_unavailable (fail-closed).
-    objectStore.values.clear();
+    clearFixtureProjection();
     assert.equal(eventLog.events.length, 0, 'precondition: event log must be empty');
 
     service = new ExternalReviewVerdictService({
@@ -1530,7 +1575,7 @@ describe('F168 ExternalReviewVerdictService', () => {
 
   it('bootstrap Case 1 rejects when no tracker exists (fail-closed #1511)', async () => {
     // No tracker, no projection ownership — must fail with projection_unavailable.
-    objectStore.values.clear();
+    clearFixtureProjection();
     assert.equal(eventLog.events.length, 0, 'precondition: event log must be empty');
 
     service = new ExternalReviewVerdictService({
@@ -1553,7 +1598,7 @@ describe('F168 ExternalReviewVerdictService', () => {
   it('bootstrap Case 1 rejects when verifyDurableReviewerAdmission not configured (fail-closed)', async () => {
     // Backward compatibility: when verifyDurableReviewerAdmission is not provided,
     // the existing 503 behavior must be preserved for PR subjects without ownership.
-    objectStore.values.clear();
+    clearFixtureProjection();
     assert.equal(eventLog.events.length, 0, 'precondition: event log must be empty');
 
     // Use the default service (no verifyDurableReviewerAdmission)
@@ -1565,7 +1610,7 @@ describe('F168 ExternalReviewVerdictService', () => {
     // but was never admitted by register-pr-tracking's callback auth.
     // It MUST NOT pass Tier 2 — otherwise a non-callback-authorized task would
     // mint reviewer authority and reopen the Case 1 authority gap.
-    objectStore.values.clear();
+    clearFixtureProjection();
     assert.equal(eventLog.events.length, 0, 'precondition: event log must be empty');
 
     // Simulate the FIXED runtime wiring: taskStore returns a matching 'work' task,
@@ -1605,7 +1650,7 @@ describe('F168 ExternalReviewVerdictService', () => {
   it('bootstrap Case 1 accepts pr_tracking task with matching subject (#1511 happy path)', async () => {
     // A pr_tracking task registered via callback-auth register-pr-tracking
     // is the legitimate durable admission source for Tier 2.
-    objectStore.values.clear();
+    clearFixtureProjection();
     assert.equal(eventLog.events.length, 0, 'precondition: event log must be empty');
 
     const mockTaskStore = {
@@ -1654,14 +1699,14 @@ describe('F168 ExternalReviewVerdictService', () => {
   it('bootstrap preserves fail-closed for unconfigured repos', async () => {
     // No repo config at all — should still fail with not_configured
     config = null;
-    objectStore.values.clear();
+    clearFixtureProjection();
 
     await assert.rejects(() => service.record(deliveredInput()), errorCode('not_configured'));
   });
 
   it('bootstrap preserves fail-closed for stale HEAD', async () => {
     // Projection has no externalReview, but GitHub HEAD doesn't match
-    objectStore.values.clear();
+    clearFixtureProjection();
     currentHead = 'b'.repeat(40);
 
     await assert.rejects(() => service.record(deliveredInput()), errorCode('stale_head'));

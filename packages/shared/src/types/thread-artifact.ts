@@ -30,6 +30,8 @@ export interface ThreadArtifactDTO {
   ref?: string;
   /** File-ledger owner key, independent of display name/update time. Not execution-root proof. */
   fileLedgerRef?: string;
+  /** Exact, currently authorized F309 publication landing. Absent means its version is unknown. */
+  work?: GlobalArtifactWork;
 }
 
 /** GET /api/threads/:threadId/artifacts 响应 */
@@ -37,6 +39,13 @@ export interface ThreadArtifactsResponse {
   threadId: string;
   /** 时间倒序 */
   artifacts: ThreadArtifactDTO[];
+  /** Owner reads can be unavailable while the original artifacts remain readable. */
+  workLineage?: 'resolved' | 'unavailable';
+  /** Explicit delivery view; the default remains the original full file/PR/publication catalogue. */
+  view?: 'works';
+  /** Count of distinct proven sources; exact historical DTOs remain in artifacts for existing return coordinates. */
+  total?: number;
+  complete?: boolean;
 }
 
 /**
@@ -50,9 +59,20 @@ export interface GlobalArtifactDTO extends ThreadArtifactDTO {
   threadTitle: string;
 }
 
+export interface GlobalArtifactWork {
+  contentRef: string;
+  ownerRevision: number;
+  currentOwnerRevision: number;
+}
+
 /** GET /api/artifacts 响应 */
 export interface GlobalArtifactsResponse {
+  view?: 'works' | 'recent-works';
   /** 时间倒序 */
   artifacts: GlobalArtifactDTO[];
   total: number;
+  /** `unavailable` means the owner catalogue could not be read completely; no partial work fields are exposed. */
+  workLineage: 'resolved' | 'unavailable';
+  /** Present on bounded views. False means older owner history was intentionally not scanned. */
+  complete?: boolean;
 }

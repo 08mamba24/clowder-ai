@@ -6,7 +6,7 @@ import type { TasteMemoryReadResult } from '../domains/memory/taste/TasteMemoryR
 import type { ITasteProposalStore } from '../domains/taste/stores/ports/TasteProposalStore.js';
 
 export interface TasteSourceReaders {
-  proposalStore: Pick<ITasteProposalStore, 'get'>;
+  proposalStore: Pick<ITasteProposalStore, 'get'> & Partial<Pick<ITasteProposalStore, 'listCorrectionsBySource'>>;
   threadStore: Pick<IThreadStore, 'get' | 'list'>;
   messageStore: Pick<IMessageStore, 'getById'>;
 }

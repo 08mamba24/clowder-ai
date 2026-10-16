@@ -81,6 +81,10 @@ export {
 } from './action-successor-return-state-machine.js';
 
 export type ActionSuccessorHolderOutcome = 'succeeded' | 'failed' | 'canceled' | 'unavailable' | 'rejected_ownership';
+export type ActionSuccessorHolderOutcomeRecord = Record<
+  string,
+  { outcome: ActionSuccessorHolderOutcome; evidenceRef: string; at: number }
+>;
 export type ActionSuccessorLeaseStatus = 'active' | 'replaceable' | 'completed';
 export type ActionSuccessorDispatchDeliveryState = 'pending' | 'delivered' | 'failed';
 export interface ActionSuccessorDispatchDeliveryReservation {
@@ -96,6 +100,22 @@ export type ActionSuccessorDispatchFailureReason =
   | 'carrier_receipt_conflict'
   | 'terminal_predicate_mismatch';
 
+/** Durable edge for a generation replaced after a server-observed terminal or interrupted carrier. */
+export interface ActionSuccessorReplacementTransition {
+  fromGeneration: number;
+  toGeneration: number;
+  reason: 'holder_terminal' | 'interrupted';
+  fromHolderCatIds: string[];
+  fromHolderThreadId: string;
+  toHolderCatIds: string[];
+  toHolderThreadId: string;
+  issuerCatId?: string;
+  issuerThreadId?: string;
+  holderOutcomes: ActionSuccessorHolderOutcomeRecord;
+  evidenceRefs: string[];
+  at: number;
+}
+
 interface ActionSuccessorLeaseBase extends ActionSuccessorIdentity {
   leaseId: string;
   mode: ActionSuccessorMode;
@@ -109,7 +129,7 @@ interface ActionSuccessorLeaseBase extends ActionSuccessorIdentity {
   issuerStandingEvidenceRef: string;
   generation: number;
   status: ActionSuccessorLeaseStatus;
-  holderOutcomes: Record<string, { outcome: ActionSuccessorHolderOutcome; evidenceRef: string; at: number }>;
+  holderOutcomes: ActionSuccessorHolderOutcomeRecord;
   completionCandidates: Record<string, ActionCompletionCandidateSnapshot>;
   evidenceRefs: string[];
   returnDeliveryState?: ActionSuccessorReturnDeliveryState;
@@ -119,6 +139,7 @@ interface ActionSuccessorLeaseBase extends ActionSuccessorIdentity {
   returnDeliveryLastAttemptAt?: number;
   returnDeliveryOverdueObservedAt?: number;
   returnTransitions: ActionSuccessorReturnTransition[];
+  replacementTransitions: ActionSuccessorReplacementTransition[];
   /** Initial approved carrier transport; custody already exists while pending. */
   dispatchDeliveryState?: ActionSuccessorDispatchDeliveryState;
   dispatchDeliveryAttemptCount?: number;
@@ -286,6 +307,7 @@ export function claimActionSuccessor(
     completionCandidates: {},
     evidenceRefs: [...new Set([...input.evidenceRefs, provenance.issuerStandingEvidenceRef])],
     returnTransitions: [],
+    replacementTransitions: [],
     revision: 1,
     createdAt: input.now,
     updatedAt: input.now,

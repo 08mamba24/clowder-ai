@@ -22,6 +22,8 @@ export function useApprovalSessions(view: UnifiedAttentionView): ApprovalSession
       refetch: () => viewRef.current.refetch(),
       refreshStore: () => useApprovalHubStore.getState().fetchPending(),
       storeItems: () => useApprovalHubStore.getState().items,
+      storeAvailable: () =>
+        useApprovalHubStore.getState().pendingReadAvailable && !useApprovalHubStore.getState().isLoading,
       attempts: () => useApprovalHubStore.getState().decisionAttempts,
       latestRead: () => {
         const current = viewRef.current;

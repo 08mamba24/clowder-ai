@@ -1,10 +1,16 @@
 'use client';
 
 import { AppTooltip } from '../AppTooltip';
+import { useShellCopy } from '../shell/shell-copy';
+import { settingsShellCopy } from './settings-shell.shell-copy';
 
-/** Pin / unpin a 设置与管理 item above the mailbox. The accessible name carries the item's own label. */
+/**
+ * Pin / unpin a 设置与管理 item above the mailbox. The accessible name carries the item's own label; the sentence around it
+ * is in the language of the new shell (this toggle only ever appears in the v2 settings page).
+ */
 export function PinToggle({ pinned, label, onToggle }: { pinned: boolean; label: string; onToggle: () => void }) {
-  const text = pinned ? `取消固定「${label}」到侧栏` : `固定「${label}」到侧栏`;
+  const t = useShellCopy(settingsShellCopy);
+  const text = pinned ? t.unpin(label) : t.pin(label);
   return (
     <AppTooltip label={text} side="bottom">
       <button

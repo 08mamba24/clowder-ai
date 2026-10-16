@@ -26,6 +26,7 @@ import { ApprovalTechnicalDetailContent } from './ApprovalTechnicalDetails';
 import { GenericApprovalDecisionActions } from './GenericApprovalDecisionActions';
 import { GenericApprovalRecommendation } from './GenericApprovalRecommendation';
 import { HumanDispositionFeedbackDialog } from './HumanDispositionFeedbackDialog';
+import { MailboxApprovalExplanation } from './shell/mailbox/MailboxApprovalExplanation';
 
 export function GenericApprovalItemCard({ item }: { item: ApprovalHubItem }) {
   const close = useApprovalHubStore((state) => state.close);
@@ -64,7 +65,7 @@ export function GenericApprovalItemCard({ item }: { item: ApprovalHubItem }) {
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
 
   const guardedWrite = useGuardedWrite();
-  const { writesLocked } = useApprovalHost();
+  const { writesLocked, presentation } = useApprovalHost();
   // A feedback dialog that is open is a decision in progress, whether or not a word has been typed yet.
   useReportEditing('feedback-dialog', feedbackDialogOpen);
 
@@ -175,7 +176,7 @@ export function GenericApprovalItemCard({ item }: { item: ApprovalHubItem }) {
             <>审批决议已记录；后续状态只认 canonical owner receipt。</>
           )
         }
-        recommendation={recommendation}
+        recommendation={presentation === 'mailbox' ? <MailboxApprovalExplanation item={item} /> : recommendation}
         currentDecision={currentDecision}
         details={approvalDetailDisclosure(item.detail)}
       />

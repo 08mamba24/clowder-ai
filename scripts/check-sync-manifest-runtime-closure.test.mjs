@@ -427,6 +427,8 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
     const launcherFixtures = [
       '.github/scripts/check-public-test-ci-contract.mjs',
       '.github/scripts/run-public-test-distributable.sh',
+      '.github/scripts/public-test-namespace-init.py',
+      '.github/scripts/public-test-namespace-init.test.py',
     ];
     assert.ok(targetOwned.has(workflow), `${workflow} must stay target-owned per F308 KD-4`);
     for (const fixture of launcherFixtures) {
@@ -504,6 +506,17 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
       `${localEnvironment} is deployment-owned and must be backed up and restored across full sync`,
     );
     assert.ok(!isExported(localEnvironment), `${localEnvironment} must never be exported from source`);
+  });
+
+  it('preserves the generated public MCP baseline without transferring bootstrap authority', () => {
+    const targetOwned = new Set(manifest.target_owned_files ?? []);
+    const baseline = 'packages/mcp-server/governance/mcp-surface-baseline.json';
+    const attestation = 'packages/mcp-server/governance/mcp-surface-bootstrap-attestation.json';
+
+    assert.ok(isExported(baseline), 'a new public target must receive the source baseline before projection');
+    assert.ok(targetOwned.has(baseline), 'an established public target must retain its reviewed projected baseline');
+    assert.ok(isExported(attestation), 'the source attestation must remain exported');
+    assert.ok(!targetOwned.has(attestation), 'public sync must never preserve a target-authored bootstrap attestation');
   });
 
   it('preserves target-owned file metadata across backup and restore', () => {
@@ -857,8 +870,9 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
     assert.match(providerTest, /skip: provider === 'claude' && publicWithoutClaudeWrapper/);
   });
 
-  it('does not make public magic-word tests depend on private L0 staging content', () => {
+  it('keeps public magic-word tests on exported governance, independent of private staging', () => {
     const stagingRef = 'cat-cafe-skills/refs/l0-staging-content.md';
+    const sharedRulesRef = 'cat-cafe-skills/refs/shared-rules.md';
     const magicWordTest = readFileSync(
       resolve(ROOT, 'packages/api/test/harness-eval/task-outcome-magic-word-detector.test.js'),
       'utf8',
@@ -866,15 +880,24 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
     const eventsRouteTest = readFileSync(resolve(ROOT, 'packages/api/test/events-route.test.js'), 'utf8');
 
     assert.ok(excluded.has(stagingRef), 'raw L0 staging content must remain private in public exports');
+    assert.ok(
+      isExported(sharedRulesRef) && !excluded.has(sharedRulesRef),
+      'the current shared-governance definitions must remain in the public export closure',
+    );
+    assert.match(
+      readFileSync(resolve(ROOT, sharedRulesRef), 'utf8'),
+      /^\|\s*「四象限／unknown-first」\s*\|/m,
+      '四象限 and its alias now belong to exported shared governance, not private staging',
+    );
     assert.match(
       magicWordTest,
       /skip:\s*!existsSync\(STAGING_CONTENT_URL\)/,
       'the full home-governance parity assertion must skip when private L0 staging content is absent',
     );
-    assert.match(
+    assert.doesNotMatch(
       eventsRouteTest,
-      /if\s*\(hasSourceStagingContent\)[\s\S]*staging 四象限 meaning present[\s\S]*assert\.equal\(quadrants,\s*undefined/,
-      'the meanings endpoint test must require private meanings at home and require their absence publicly',
+      /hasSourceStagingContent|l0-staging-content\.md/,
+      'the meanings endpoint assertions must run unchanged when private staging is absent',
     );
   });
 

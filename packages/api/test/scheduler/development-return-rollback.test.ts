@@ -18,7 +18,7 @@ for (const phase of ['waiting', 'ready'] as const) {
     const registered = await f.service.register(f.actor, execution.input, 'strict');
     const report = f.messages.append({
       userId: f.actor.userId,
-      catId: f.actor.catId,
+      from: { kind: 'agent', catId: f.actor.catId },
       threadId: execution.child.id,
       content: 'Implementation complete',
       mentions: [],
@@ -48,7 +48,11 @@ for (const phase of ['waiting', 'ready'] as const) {
     assert.equal(await oldAuthority(oldService.deps, registered), null, 'old authority cannot handle this source');
     assert.equal(oldStore.getPrivateExecutionReturn(registered.registrationId), null);
     assert.equal(oldStore.getById(registered.registrationId)?.enabled, false);
-    assert.equal(oldRunner.hydrateDynamic(oldStore, { get: () => oldService.template }), 0);
+    // Adapt the current runner's read port; eligibility still comes from the frozen v46 decoder.
+    const oldHydrationReader = Object.assign(new OldStore(f.db), {
+      getEnabled: () => oldStore.getAll().filter((def) => def.enabled),
+    });
+    assert.equal(oldRunner.hydrateDynamic(oldHydrationReader, { get: () => oldService.template }), 0);
     f.tick(20000);
     const context = { signal: new AbortController().signal };
     await oldService.execute(registered.registrationId, context);

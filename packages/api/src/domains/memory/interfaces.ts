@@ -197,14 +197,14 @@ export interface EntityRecord {
   updatedAt: string;
 }
 
-export type EntityMutationSource = 'proposal-approval' | 'seed-sync' | 'system';
+export type EntityMutationSource = 'proposal-approval' | 'seed-sync' | 'system' | 'owner-action';
 
 export interface EntityMutationContext {
   source: EntityMutationSource;
   actorId?: string;
   proposalId?: string;
   reason?: string;
-  conflictPolicy?: 'allow-update' | 'reject-conflict';
+  conflictPolicy?: 'allow-update' | 'reject-conflict' | 'owner-correction';
 }
 
 export interface QueryEntityMatch {
@@ -465,6 +465,8 @@ export interface MaterializeOptions {
 export interface IMaterializationService {
   materialize(markerId: string, options?: MaterializeOptions): Promise<MaterializeResult>;
   canMaterialize(markerId: string): Promise<boolean>;
+  /** Parent-root targets retain this service's canonical indexer. Legacy embedders may omit this query. */
+  isDefaultTargetRoot?(targetRoot: string): boolean;
 }
 
 export interface IReflectionService {

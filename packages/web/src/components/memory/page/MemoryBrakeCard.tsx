@@ -28,6 +28,7 @@ export function MemoryBrakeCard({
   const source = useMemoryRead<BrakeSource>(`/api/memory/brakes/${encodeURIComponent(row.sourceEventId)}/source`);
   const { getCatById, isLoading: catsLoading } = useCatData();
   const router = useRouter();
+  const Container = detail ? 'div' : 'article';
   const title = source.loading
     ? '正在读取来源…'
     : source.error || (source.data !== null && !source.data.canOpen)
@@ -43,9 +44,9 @@ export function MemoryBrakeCard({
     });
   };
   return (
-    <article
+    <Container
       className={`rounded-xl border bg-[var(--console-card-bg)] p-4 ${active ? 'border-cafe-accent' : 'border-cafe-subtle'}`}
-      data-testid="brake-message"
+      data-testid={detail ? 'brake-detail' : 'brake-message'}
     >
       <button type="button" onClick={onSelect} className="w-full text-left" aria-pressed={active}>
         <div className="flex flex-wrap items-center gap-2 text-compact">
@@ -85,11 +86,11 @@ export function MemoryBrakeCard({
       {detail && (
         <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-cafe-subtle pt-4 text-compact text-cafe-muted">
           <dt>下一次同类任务</dt>
-          <dd>还没接入</dd>
+          <dd>还没接进来</dd>
           <dt>写进的规则</dt>
-          <dd>{row.rules.length ? `有 ${row.rules.length} 条关联记录 · 详情尚未接入` : '没有关联记录'}</dd>
+          <dd>{row.rules.length ? `有 ${row.rules.length} 条关联记录 · 详情还没接进来` : '没有关联记录'}</dd>
         </dl>
       )}
-    </article>
+    </Container>
   );
 }

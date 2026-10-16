@@ -6,7 +6,9 @@ import type { Thread } from './ThreadStore.js';
 export interface OwnedThreadSeed {
   readonly userId: string;
   readonly idempotencyKey: string;
-  readonly title: string;
+  /** Ordinary owner-created conversations may remain untitled until the first message. */
+  readonly title: string | null;
+  readonly titleSource?: 'user' | 'temporary';
   readonly participants: readonly CatId[];
   readonly projectPath?: string;
   readonly parentThreadId?: string;
@@ -23,6 +25,7 @@ export function ownedThreadFromSeed(seed: OwnedThreadSeed): Thread {
     id: `thread_owned_${digest.slice(0, 40)}`,
     createdBy: seed.userId,
     title: seed.title,
+    titleSource: seed.titleSource ?? (seed.title ? 'user' : 'temporary'),
     projectPath: seed.projectPath ?? 'default',
     participants: [...new Set(seed.participants)],
     createdAt: now,

@@ -64,6 +64,7 @@ export async function registerCallbackArtifactReviewRoutes(
               userId: authenticated.userId,
               threadId: thread.threadId,
               actor: { kind: 'cat', actorId: authenticated.catId },
+              ...(authenticated.kind === 'invocation' ? { invocationId: authenticated.invocationId } : {}),
             };
             const { threadId: _threadId, ...body } = parsed;
             if (operation === 'read')

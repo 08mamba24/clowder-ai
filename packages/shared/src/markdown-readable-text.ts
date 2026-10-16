@@ -165,11 +165,11 @@ function projectNode(node: MarkdownNode, source: string): Piece {
     (node.children ?? []).forEach((child, index) => {
       if (index > 0 && separator) {
         joined.text += separator;
-        joined.offsets.push(...nulls(separator).offsets);
+        for (const offset of nulls(separator).offsets) joined.offsets.push(offset);
       }
       const piece = projectNode(child, source);
       joined.text += piece.text;
-      joined.offsets.push(...piece.offsets);
+      for (const offset of piece.offsets) joined.offsets.push(offset);
     });
     return joined;
   }

@@ -7,17 +7,23 @@ const data = vi.hoisted(() => ({
   configLoaded: true,
   configFailed: false,
   enabled: true,
-  muted: false,
+  invocationStatus: 'idle' as 'idle' | 'error',
   surfaceState: 'collapsed',
-  setSurfaceState: vi.fn(),
-  setMuted: vi.fn(),
+  inputFocused: false,
+  fetchThreadId: vi.fn(async () => 'thread-concierge' as string | null),
   pinned: [] as string[],
 }));
 vi.mock('next/navigation', () => ({ usePathname: () => '/thread/current', useRouter: () => ({ push: data.push }) }));
 vi.mock('@/hooks/useApprovalHub', () => ({ useApprovalHubSync: vi.fn() }));
 vi.mock('@/hooks/useCoCreatorConfig', () => ({ useCoCreatorConfig: () => ({ name: 'You', avatar: null }) }));
 vi.mock('@/hooks/usePinnedSections', () => ({ usePinnedSections: () => ({ pinned: data.pinned }) }));
-vi.mock('@/stores/conciergeStore', () => ({ useConciergeStore: (s: (v: typeof data) => unknown) => s(data) }));
+vi.mock('@/stores/conciergeStore', () => {
+  const useConciergeStore = Object.assign((selector: (state: typeof data) => unknown) => selector(data), {
+    getState: () => data,
+    setState: (next: Partial<typeof data>) => Object.assign(data, next),
+  });
+  return { useConciergeStore };
+});
 vi.mock('@/stores/conciergeDesktopStore', () => ({
   useConciergeDesktopStore: (s: (v: { available: boolean }) => unknown) => s({ available: false }),
   showConciergeDesktop: vi.fn(),
@@ -36,11 +42,16 @@ vi.mock('../use-unified-attention', () => {
         scope: 'owner_all_projects',
         identity: { ownerUserId: 'owner-1' },
         observedAt: 3,
-        sources: { approvals: source, needsMe: source },
+        sources: {
+          approvals: source,
+          needsMe: source,
+          structuredChoices: { ...source, coverage: 'pending_f306_structured_choices' },
+        },
         readWindow: { startedAt: 1, endedAt: 3, consistency: 'independent_source_reads' },
         consistency: { state: 'verified', reasons: [] },
         items: [],
         totalCount: 0,
+        attentionCount: 0,
         page: { offset: 0, limit: 20, scope: 'known_rows', hasMore: false },
       },
     },
@@ -54,7 +65,7 @@ vi.mock('../use-unified-attention', () => {
 
 import { WorldRail } from '../WorldRail';
 
-describe('F322 rail names and original concierge gate', () => {
+describe('F322 rail names and canonical companion entry', () => {
   let host: HTMLDivElement;
   let root: Root;
   function render() {
@@ -72,10 +83,12 @@ describe('F322 rail names and original concierge gate', () => {
       configLoaded: true,
       configFailed: false,
       enabled: true,
-      muted: false,
+      invocationStatus: 'idle',
       surfaceState: 'collapsed',
+      inputFocused: false,
       pinned: [],
     });
+    window.history.replaceState({}, '', '/thread/current');
     host = document.createElement('div');
     document.body.append(host);
     root = createRoot(host);
@@ -92,7 +105,7 @@ describe('F322 rail names and original concierge gate', () => {
       ['world-cafe', '我的 Café'],
       ['world-collective', '共同体'],
       ['mailbox-button', '待办，暂无'],
-      ['concierge-rail-toggle', '打开猫猫球'],
+      ['concierge-rail-toggle', '打开伴随对话'],
       ['settings-button', '设置与管理'],
     ]) {
       expect(control(id).getAttribute('aria-label')).toBe(name);
@@ -103,21 +116,26 @@ describe('F322 rail names and original concierge gate', () => {
     act(() => control('settings-button').click());
     expect(data.push).toHaveBeenCalledWith('/settings?from=current');
   });
-  it.each([
-    [false, false, true],
-    [true, false, false],
-  ] as const)('hides concierge for loaded=%s failed=%s enabled=%s', (loaded, failed, enabled) => {
-    Object.assign(data, { configLoaded: loaded, configFailed: failed, enabled });
+  it('hides the companion entry only while config availability is unknown', () => {
+    Object.assign(data, { configLoaded: false, configFailed: false, enabled: true });
     render();
     expect(host.querySelector('[data-testid="concierge-rail-toggle"]')).toBeNull();
+
+    Object.assign(data, { configLoaded: true, configFailed: false, enabled: false });
+    render();
+    expect(host.querySelector('[data-testid="concierge-rail-toggle"]')).not.toBeNull();
+
+    Object.assign(data, { configLoaded: false, configFailed: true });
+    render();
+    expect(host.querySelector('[data-testid="concierge-rail-toggle"]')).not.toBeNull();
   });
-  it('muted recall uses the original action and does not masquerade as open', async () => {
-    data.muted = true;
+  it('opens the canonical companion conversation and never masquerades as selected', async () => {
     render();
     expect(control('concierge-rail-toggle').getAttribute('data-selected')).toBeNull();
     await act(async () => control('concierge-rail-toggle').click());
-    expect(data.setMuted).toHaveBeenCalledWith(false);
-    expect(data.setSurfaceState).toHaveBeenCalledWith('toolbar');
+    expect(data.fetchThreadId).toHaveBeenCalledWith({ refresh: true });
+    expect(window.location.pathname).toBe('/thread/thread-concierge');
+    expect(control('concierge-rail-toggle').getAttribute('data-selected')).toBeNull();
   });
   it('old pins retain their destination above the one mailbox; new users start with no pins', () => {
     render();

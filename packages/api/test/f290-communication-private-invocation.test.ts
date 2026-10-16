@@ -1,6 +1,6 @@
 import './helpers/setup-cat-registry.js';
 import assert from 'node:assert/strict';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -13,6 +13,7 @@ import {
 } from '../src/domains/cats/services/agents/invocation/invoke-single-cat.js';
 import { MessageStore } from '../src/domains/cats/services/stores/ports/MessageStore.js';
 import type { AgentService, AgentServiceOptions } from '../src/domains/cats/services/types.js';
+import { scopedTestSessions, scriptedSessionInit } from './helpers/scoped-test-sessions.js';
 
 test('real invocation composition replaces ambient private history with exact Task/source bytes and registers scoped unknown authority', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'f290-invocation-scope-'));
@@ -25,7 +26,7 @@ test('real invocation composition replaces ambient private history with exact Ta
   const origin = messages.append({
     userId: 'owner',
     threadId: 'private-A',
-    catId: null,
+    from: { kind: 'system', service: 'collective-work' },
     mentions: [catId],
     content: 'EXACT_TASK_RELAY_CANARY',
     timestamp: 1,
@@ -38,6 +39,7 @@ test('real invocation composition replaces ambient private history with exact Ta
     supportsToolExecutionPolicy: (policy) => policy.mode === 'collective_work',
     async *invoke(prompt, options) {
       launched = { prompt, options };
+      yield* scriptedSessionInit(catId, prompt, options);
       yield { type: 'done', catId, timestamp: Date.now() };
     },
   };
@@ -65,6 +67,7 @@ test('real invocation composition replaces ambient private history with exact Ta
     },
   };
   const deps = {
+    ...scopedTestSessions(directory),
     registry,
     messageStore: messages,
     threadStore: null,
@@ -132,6 +135,6 @@ test('real invocation composition replaces ambient private history with exact Ta
   } finally {
     if (previousData === undefined) delete process.env.CAT_CAFE_DATA_DIR;
     else process.env.CAT_CAFE_DATA_DIR = previousData;
-    await rm(directory, { recursive: true, force: true });
+    console.info('retained private invocation fixture data:', directory);
   }
 });

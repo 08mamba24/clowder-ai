@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { deriveNamedAlphaCoordinates } from './alpha-coordinates.mjs';
 import { NAMED_ALPHA_PORTS, namedAlphaFixture } from './alpha-named-fixture.mjs';
 import {
@@ -156,4 +158,101 @@ test('owner cleanup removes only its registration even after expiry, preserving 
   removeNamedAlphaRedisLease(file, 41020, { registryDir: f.registryDir, capture: f.deps.capture });
   assert.equal(existsSync(file), false);
   assert.equal(readFileSync(data, 'utf8'), 'persistent Alpha data');
+});
+
+test('unreadable owner argv is reported honestly at registration, recognition and removal', (t) => {
+  const f = fixture(t);
+  const unavailable = { ...f.owner, command: '(bash)', argvAvailable: false };
+  for (const observations of [
+    [unavailable, f.owner],
+    [f.owner, unavailable],
+    [f.owner, { ...unavailable, ucomm: '' }],
+    [unavailable, unavailable],
+  ]) {
+    let reads = 0;
+    const capture = (pid) => (pid === 41020 ? observations[reads++] : f.redis);
+    assert.throws(() => registerNamedAlphaRedisLease(f.input, { ...f.deps, capture }), /owner identity unreadable/);
+    assert.equal(reads, 2, 'diagnostics must not add retries or replace the original observations');
+    assert.equal(existsSync(f.registryDir), false, 'unknown ownership cannot publish a lease');
+  }
+  const file = registerNamedAlphaRedisLease(f.input, f.deps);
+  const capture = (pid) => (pid === 41020 ? unavailable : f.redis);
+  const result = readNamedAlphaRedisLeases(f.registryDir, { ...f.deps, capture });
+  assert.equal(result.live.length, 0);
+  assert.match(result.rejected[0].reason, /owner identity unreadable/);
+  assert.throws(
+    () => removeNamedAlphaRedisLease(file, 41020, { registryDir: f.registryDir, capture }),
+    /owner identity unreadable/,
+  );
+  assert.ok(existsSync(file), 'unreadable cleanup cannot delete the original record');
+});
+
+test('failed owner captures retain their cause without claiming an incarnation change', (t) => {
+  const f = fixture(t);
+  const cause = new Error('fixture OS metadata read failed');
+  const capture = () => {
+    throw cause;
+  };
+  assert.throws(
+    () => registerNamedAlphaRedisLease(f.input, { ...f.deps, capture }),
+    (error) => {
+      assert.match(error.message, /owner identity unreadable/);
+      assert.equal(error.cause, cause);
+      assert.ok(error.message.includes(cause.message), error.message);
+      return true;
+    },
+  );
+  assert.equal(existsSync(f.registryDir), false);
+  const file = registerNamedAlphaRedisLease(f.input, f.deps);
+  assert.match(
+    readNamedAlphaRedisLeases(f.registryDir, { ...f.deps, capture }).rejected[0].reason,
+    /owner identity unreadable/,
+  );
+  assert.throws(
+    () => removeNamedAlphaRedisLease(file, 41020, { registryDir: f.registryDir, capture }),
+    /owner identity unreadable/,
+  );
+  assert.ok(existsSync(file));
+});
+
+test('readable owner mismatches remain conclusive even when argv is unavailable', (t) => {
+  const f = fixture(t);
+  const file = registerNamedAlphaRedisLease(f.input, f.deps);
+  for (const delta of [{ startedAtEpochMs: f.now }, { cwd: f.mainRoot }, { ucomm: 'node' }]) {
+    const changed = { ...f.owner, ...delta, command: '(bash)', argvAvailable: false };
+    const capture = (pid) => (pid === 41020 ? changed : f.redis);
+    const result = readNamedAlphaRedisLeases(f.registryDir, { ...f.deps, capture });
+    assert.equal(result.live.length, 0);
+    assert.match(result.rejected[0].reason, /owner incarnation changed/);
+    assert.throws(
+      () => removeNamedAlphaRedisLease(file, 41020, { registryDir: f.registryDir, capture }),
+      /another Alpha owner/,
+    );
+    assert.ok(existsSync(file));
+  }
+});
+
+test('real lease CLI reports the failed OS capture cause and preserves the registration', (t) => {
+  const f = fixture(t);
+  const exited = spawnSync(process.execPath, ['-e', ''], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(exited.status, 0, exited.stderr);
+  assert.throws(() => process.kill(exited.pid, 0), { code: 'ESRCH' });
+  const original = registerNamedAlphaRedisLease(f.input, f.deps);
+  const record = JSON.parse(readFileSync(original, 'utf8'));
+  record.owner.pid = exited.pid;
+  const file = join(f.registryDir, `redis-${record.redis.port}-${record.redis.pid}-${exited.pid}.json`);
+  const contents = JSON.stringify(record);
+  writeFileSync(file, contents);
+  const result = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL('./alpha-redis-leases.mjs', import.meta.url)), 'remove', file, String(exited.pid)],
+    {
+      encoding: 'utf8',
+      timeout: 5000,
+      env: { ...process.env, CAT_CAFE_ALPHA_REDIS_REGISTRY_DIR: f.registryDir },
+    },
+  );
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /owner identity unreadable.*kill ESRCH/);
+  assert.equal(readFileSync(file, 'utf8'), contents);
 });

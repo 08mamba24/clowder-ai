@@ -89,33 +89,10 @@ test(
       await linkedWorkArticle.hover();
       await linkedWorkArticle.getByRole('button', { name: '更多消息动作', exact: true }).click();
       const workAction = linkedWorkArticle.getByRole('menuitem', { name: '整理为工作', exact: true });
-      const ball = host.getByTestId('concierge-ball-wrapper');
-      const reserved = host.locator('[data-concierge-reserved-rect="collective-message-actions"]');
-      await host.getByRole('button', { name: '猫猫球 — 待机中', exact: true }).waitFor();
-      const [actionBox, ballBox, reservedBox] = await Promise.all([
-        workAction.boundingBox(),
-        ball.boundingBox(),
-        reserved.boundingBox(),
-      ]);
-      assert.ok(
-        actionBox && ballBox && reservedBox,
-        'append-position action, Host reservation and default concierge ball must all be visible',
-      );
       assert.equal(
-        actionBox.x < reservedBox.x + reservedBox.width &&
-          actionBox.x + actionBox.width > reservedBox.x &&
-          actionBox.y < reservedBox.y + reservedBox.height &&
-          actionBox.y + actionBox.height > reservedBox.y,
-        true,
-        'the Collective Host reservation must cover the real append-position action',
-      );
-      assert.equal(
-        actionBox.x < ballBox.x + ballBox.width &&
-          actionBox.x + actionBox.width > ballBox.x &&
-          actionBox.y < ballBox.y + ballBox.height &&
-          actionBox.y + actionBox.height > ballBox.y,
-        false,
-        'the default concierge ball must not cover the append-position message action',
+        await host.getByTestId('concierge-ball-wrapper').count(),
+        0,
+        'the retired web body cannot cover the real append-position work action',
       );
       await workAction.click();
       await linkedWorkArticle.getByText('工作提议 · 来自这条消息', { exact: true }).waitFor();
@@ -140,11 +117,12 @@ test(
         .works.find((work) => work.sourceEventId === linkedWorkEvent.eventId);
       assert.ok(publicWork?.assignmentEventId);
       assert.equal((await nativeOwner.dispatchPending()).failed, 0);
-      await embedded.getByRole('button', { name: '我的 Café', exact: true }).click();
+      await embedded.getByRole('button', { name: '我的猫', exact: true }).click();
+      await cafe.getByRole('button', { name: '日程', exact: true }).click();
       const publicWorkRequest = cafe.getByRole('article').filter({ hasText: linkedWorkTalk });
       assert.equal(await publicWorkRequest.getByRole('button', { name: '交给它持续处理', exact: true }).count(), 0);
       await nativeOwner.admitCommittedWorkForEvent(publicWork.assignmentEventId);
-      await publicWorkRequest.getByRole('link', { name: '查看私人工作', exact: true }).waitFor();
+      await publicWorkRequest.getByRole('link', { name: '查看工作', exact: true }).waitFor();
       const admittedPublicTask = await nativeOwner.workTaskForEvent(publicWork.assignmentEventId);
       assert.notEqual(
         admittedPublicTask.id,
@@ -152,7 +130,7 @@ test(
         'the public assignment must resolve its exact private Task instead of the first Work item',
       );
       assert.equal(admittedPublicTask.status, 'todo');
-      await cafe.getByRole('button', { name: '关闭我的 Café', exact: true }).click();
+      await cafe.getByRole('button', { name: '关闭我的猫', exact: true }).click();
       const publicResult = '真实首页已接通，结果留在原讨论。';
       await nativeOwner.replyToEvent(publicWork.assignmentEventId, publicResult);
       await embedded.getByText(publicResult, { exact: true }).waitFor();
@@ -228,26 +206,28 @@ test(
         queuedBeforeResponse,
         'the returning Agent event must not self-awaken the endpoint',
       );
-      await embedded.getByRole('button', { name: '我的 Café', exact: true }).click();
-      await cafe.getByText('已有回应；回应已回到共同现场', { exact: true }).waitFor({ timeout: 7_000 });
-      await cafe.getByRole('button', { name: '关闭我的 Café', exact: true }).click();
+      await embedded.getByRole('button', { name: '我的猫', exact: true }).click();
+      await cafe.getByRole('button', { name: '日程', exact: true }).click();
+      await cafe.getByText('已回复', { exact: true }).waitFor({ timeout: 7_000 });
+      await cafe.getByRole('button', { name: '关闭我的猫', exact: true }).click();
       assert.equal((await nativeOwner.receiveRequest('请把这段讨论整理成可以一起审阅的首页方案。')).failed, 0);
       assert.equal((await nativeOwner.receiveRequest('再独立检查消息、话题与私人工作的边界。')).failed, 0);
       await nativeOwner.receiveRequest('插件频道的请求应当留在它自己的位置。', '插件共建');
       const requests = ['请把这段讨论整理成可以一起审阅的首页方案。', '再独立检查消息、话题与私人工作的边界。'];
-      await embedded.getByRole('button', { name: '我的 Café', exact: true }).click();
+      await embedded.getByRole('button', { name: '我的猫', exact: true }).click();
+      await cafe.getByRole('button', { name: '日程', exact: true }).click();
       await cafe.getByText(requests[0], { exact: true }).waitFor();
       const admittedRequestTaskIds = [];
       for (const body of requests) {
         const article = cafe.getByRole('article').filter({ hasText: body });
         assert.equal(await article.getByRole('button', { name: '交给它持续处理', exact: true }).count(), 0);
-        assert.equal(await article.getByRole('link', { name: '查看私人工作', exact: true }).count(), 0);
+        assert.equal(await article.getByRole('link', { name: '查看工作', exact: true }).count(), 0);
         const source = (await nativeOwner.connector.listInbox(nativeOwner.connection.connectionId)).find(
           (item) => item.event.body === body,
         );
         assert.ok(source);
         const taskCount = (await nativeOwner.tasks.listByKind('work')).length;
-        await cafe.getByRole('button', { name: '关闭我的 Café', exact: true }).click();
+        await cafe.getByRole('button', { name: '关闭我的猫', exact: true }).click();
         const proposal = await nativeOwner.proposeWorkForEvent(source.event.eventId, body);
         const proposalArticle = embedded.locator('article.message').filter({ hasText: body });
         await proposalArticle.getByRole('button', { name: '授权决定…', exact: true }).click();
@@ -273,8 +253,9 @@ test(
           'Service records the actual Host Task receipt',
         );
         admittedRequestTaskIds.push(accepted.task.id);
-        await embedded.getByRole('button', { name: '我的 Café', exact: true }).click();
-        await article.getByRole('link', { name: '查看私人工作', exact: true }).waitFor();
+        await embedded.getByRole('button', { name: '我的猫', exact: true }).click();
+        await cafe.getByRole('button', { name: '日程', exact: true }).click();
+        await article.getByRole('link', { name: '查看工作', exact: true }).waitFor();
       }
       const work = (await nativeOwner.tasks.listByKind('work')).filter((task) => task.id !== unrelatedTask.id);
       const expectedWorkTaskIds = [admittedPublicTask.id, parallelWork.task.id, ...admittedRequestTaskIds];
@@ -298,7 +279,7 @@ test(
         assert.equal(publicText.includes(task.threadId), false);
         assert.equal(await frame.locator(`a[href="/thread/${task.threadId}"]`).count(), 0);
       }
-      await cafe.getByRole('button', { name: '关闭我的 Café', exact: true }).click();
+      await cafe.getByRole('button', { name: '关闭我的猫', exact: true }).click();
       await embedded
         .locator('article.message')
         .filter({ hasText: seeded.cat.body })
@@ -308,9 +289,17 @@ test(
       assert.equal(await cafe.count(), 0);
       await host.setViewportSize({ width: 390, height: 844 });
       await embedded.getByRole('button', { name: '关闭话题', exact: true }).click();
-      await embedded.getByRole('button', { name: '我的 Café', exact: true }).click();
+      await embedded.getByRole('button', { name: '我的猫', exact: true }).click();
       await cafe.waitFor();
       assert.equal(await host.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      const rosterLabelsFit = await cafe
+        .locator('[data-testid="collective-cat-row"] strong, [data-testid="collective-cat-row"] strong + span')
+        .evaluateAll((labels) => labels.map((label) => label.scrollWidth <= label.clientWidth));
+      assert.equal(
+        rosterLabelsFit.every(Boolean),
+        true,
+        'mobile roster must show each Cat name and exact @ id without clipping',
+      );
       await host.screenshot({ path: path.join(evidence, 'default-embedded-cafe-mobile.png'), fullPage: true });
       assert.deepEqual(nativeErrors, []);
       await host.close();
@@ -328,12 +317,14 @@ test(
           evidence,
           entry: '/',
           tested: [
+            'collective-home',
             'channel',
             'topic',
             'refresh',
+            'runtime-restart-session-recovery',
             'member',
             'mobile',
-            'dark',
+            'standalone-os-dark-stays-light',
             'native-owner-routes',
             'automatic-participation',
             'bounded-no-at-response',
@@ -401,12 +392,13 @@ async function createCommittedPublicWork({
   assert.ok(publicWork?.assignmentEventId);
   assert.equal((await nativeOwner.dispatchPending()).failed, 0);
   const task = await nativeOwner.admitCommittedWorkForEvent(publicWork.assignmentEventId);
-  await embedded.getByRole('button', { name: '我的 Café', exact: true }).click();
+  await embedded.getByRole('button', { name: '我的猫', exact: true }).click();
+  await cafe.getByRole('button', { name: '日程', exact: true }).click();
   await cafe
     .getByRole('article')
     .filter({ hasText: body })
-    .getByRole('link', { name: '查看私人工作', exact: true })
+    .getByRole('link', { name: '查看工作', exact: true })
     .waitFor();
-  await cafe.getByRole('button', { name: '关闭我的 Café', exact: true }).click();
+  await cafe.getByRole('button', { name: '关闭我的猫', exact: true }).click();
   return { article, event, publicWork, task };
 }

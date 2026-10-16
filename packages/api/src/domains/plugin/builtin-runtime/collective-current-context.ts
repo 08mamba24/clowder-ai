@@ -1,24 +1,25 @@
-import { isDeepStrictEqual } from 'node:util';
 import type { CollectiveConnector, CollectiveWorkAcceptanceInput } from '@cat-cafe/collective-connector';
 import type { InvocationRecord } from '../../cats/services/agents/invocation/InvocationRegistry.js';
 import type { IMessageStore } from '../../cats/services/stores/ports/MessageStore.js';
 import type { PreparedArtifactReader } from '../../growing/EntrustedWorkOwnerReadService.js';
 import { collectiveContextError, opaqueRef, verifyRef } from './collective-context-refs.js';
+import { requireCollectiveInvocationSource } from './collective-invocation-binding.js';
 import type { CollectiveInvocationSource } from './collective-participation-source.js';
 import { resolveCollectiveParticipationSource } from './collective-participation-source.js';
 import { readCollectivePreparedResultArtifact } from './collective-prepared-result.js';
+import { readAcceptedPublicReply } from './collective-public-reply-read.js';
 import { assertReconsiderationInput, ownerWakeDecision } from './collective-work/collective-reconsideration-source.js';
 import {
   CollectiveWorkArtifactReader,
   readPreviousCollectiveWorkArtifact,
 } from './collective-work/collective-work-artifact-read.js';
+import type { CollectiveWorkAuthority } from './collective-work/collective-work-authority.js';
 import { publishCollectiveProgress } from './collective-work/collective-work-progress.js';
 import {
   type CollectiveContinueWorkInput,
   continueWorkFromSource,
   currentWorkSourceContext,
 } from './collective-work/collective-work-source-context.js';
-import type { CollectiveWorkAuthority } from './collective-work-authority.js';
 
 export { collectiveContextError } from './collective-context-refs.js';
 export type { CollectiveInvocationSource } from './collective-participation-source.js';
@@ -49,6 +50,14 @@ export class CollectiveCurrentContext {
 
   async resolvePublic(input: CollectiveInvocationSource) {
     return resolveCollectiveParticipationSource(this.options, input, input.catId);
+  }
+
+  readAcceptedPublicReply(auth: InvocationRecord) {
+    return readAcceptedPublicReply(
+      auth,
+      () => this.requireInvocationSource(auth),
+      (source, ref) => this.requireConnector().readPublicReply(source, ref),
+    );
   }
 
   async current(auth: InvocationRecord) {
@@ -265,37 +274,10 @@ export class CollectiveCurrentContext {
     return publishCollectiveProgress(this.requireConnector(), auth, binding, body);
   }
 
-  private async requireInvocationSource(auth: InvocationRecord) {
-    if (auth.collectiveWorkBinding) {
-      const binding = await this.resolvePrivate(auth, 'callback');
-      if (!binding) throw collectiveContextError('OWNER_ADMISSION_UNAVAILABLE', 'Current Task binding changed');
-      return {
-        ...binding,
-        resultKey: binding.work.resultKey,
-        refScope: `${binding.sourceRef}:work:${binding.work.task.id}:${binding.work.revision}:result:${binding.work.resultRevision}:execution:${binding.work.executionRevision}:${binding.work.executionRef ?? binding.work.authorityRef}`,
-        workRef: { subjectRef: `task:work:${binding.work.task.id}`, revision: binding.work.revision },
-        authority: 'owner_admitted_work' as const,
-      };
-    }
-    if (
-      !auth.executionGrant ||
-      auth.ownerAuthProvenance !== 'unknown' ||
-      auth.toolExecutionPolicy?.mode !== 'collective_participation'
-    ) {
-      throw collectiveContextError(
-        'NOT_COLLECTIVE_ORIGIN',
-        'Invocation has no direct Collective origin or admitted Task source',
-      );
-    }
-    const binding = await this.resolvePublic(auth);
-    if (!binding || !isDeepStrictEqual(binding.grant, auth.executionGrant))
-      throw collectiveContextError('RETURN_UNAVAILABLE', 'Invocation source changed');
-    return {
-      ...binding,
-      resultKey: 'request',
-      refScope: binding.sourceRef,
-      authority: 'public_participation' as const,
-    };
+  private requireInvocationSource(auth: InvocationRecord) {
+    return requireCollectiveInvocationSource(auth, this.resolvePublic.bind(this), (record) =>
+      this.resolvePrivate(record, 'callback'),
+    );
   }
 
   async resolvePrivate(

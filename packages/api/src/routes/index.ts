@@ -83,6 +83,7 @@ export { reflectRoutes } from './reflect.js';
 export { refluxRoutes } from './reflux-routes.js';
 export { resolutionRoutes } from './resolution-routes.js';
 export { routingContextRoutes } from './routing-context.js';
+export { routingPreviewRoutes } from './routing-preview.js';
 export { rulesRoutes } from './rules.js';
 export { runtimeInteractionRoutes } from './runtime-interaction-routes.js';
 export { servicesRoutes } from './services.js';

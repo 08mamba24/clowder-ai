@@ -12,6 +12,7 @@ test('only direct-local owner click grants exact meeting to exact call; stale st
   const meetingThread = await threads.create('default-user');
   const capture = {
     running: true,
+    lifecycle_state: 'running',
     paused: false,
     thread_id: meetingThread.id,
     meeting_id: 'mtg-1',

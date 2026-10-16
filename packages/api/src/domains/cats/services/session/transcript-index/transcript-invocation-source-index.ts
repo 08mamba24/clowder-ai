@@ -5,6 +5,7 @@ import type Database from 'better-sqlite3';
 import { normalizeTranscriptEvent } from '../TranscriptEventEnvelope.js';
 import type { TranscriptEvent } from '../TranscriptReader.js';
 import { compactTranscriptEvent } from './transcript-invocation-compact-event.js';
+import { TRANSCRIPT_INVOCATION_PROJECTION_VERSION } from './transcript-invocation-index-schema.js';
 import type { InvocationIndexDiagnostics } from './transcript-invocation-index-types.js';
 
 interface SourceCheckpoint {
@@ -93,10 +94,14 @@ export async function updateTranscriptSourceIndex(
     const stat = await file.stat({ bigint: true });
     const size = Number(stat.size);
     const inode = `${stat.dev}:${stat.ino}`;
-    const signature = `${inode}:${size}:${stat.mtimeNs}`;
+    const signature = `${TRANSCRIPT_INVOCATION_PROJECTION_VERSION}:${inode}:${size}:${stat.mtimeNs}`;
     const previous = db.prepare('SELECT * FROM sources WHERE source = ?').get(source) as SourceCheckpoint | undefined;
     if (previous?.signature === signature) return { file, signature };
-    const start = previous && (await isAppend(file, previous, source, inode, size)) ? previous.next_offset : 0;
+    const start =
+      previous?.signature.startsWith(`${TRANSCRIPT_INVOCATION_PROJECTION_VERSION}:`) &&
+      (await isAppend(file, previous, source, inode, size))
+        ? previous.next_offset
+        : 0;
     db.prepare('DELETE FROM source_events WHERE source = ? AND byte_offset >= ?').run(source, start);
     let seq = (
       db.prepare('SELECT COALESCE(MAX(seq) + 1, 0) AS next FROM source_events WHERE source = ?').get(source) as {

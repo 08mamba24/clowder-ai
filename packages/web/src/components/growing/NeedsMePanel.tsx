@@ -1,17 +1,18 @@
 'use client';
 
-import type { ArtifactReviewView, EntrustedWorkOwnerReadV1, GlobalArtifactDTO } from '@cat-cafe/shared';
+import type { ArtifactReviewView, EntrustedWorkOwnerReadV1 } from '@cat-cafe/shared';
 import { type ReactNode, useEffect, useMemo, useRef } from 'react';
 import { ReviewArtifactButton } from '@/components/content-review/ReviewArtifactButton';
 import { reviewSurfaceFromPreparedRef } from '@/components/workbench/artifact-review-surface';
 import { useEntrustedWorkProjection } from '@/hooks/useEntrustedWorkProjection';
+import { useThreadArtifacts } from '@/hooks/useThreadArtifacts';
 import { useChatStore } from '@/stores/chatStore';
 import { EntrustedWorkBrief } from './EntrustedWorkBrief';
 import { type EligibleNeedsMeReceipt, selectNeedsMeItems } from './needs-me-items';
 import { type PreparedArtifactCoordinate, PreparedArtifactPreview } from './PreparedArtifactPreview';
 import { preparedArtifactPresentation, preparedReviewCoordinate } from './prepared-artifact-presentation';
 import { usePreparedReviewTitle } from './prepared-review-presentation';
-import { resolvePreparedArtifact } from './resolve-prepared-artifact';
+import { preparedArtifactThreadId, resolvePreparedArtifact } from './resolve-prepared-artifact';
 
 export { needsMeItemRef } from './needs-me-items';
 
@@ -25,19 +26,31 @@ function whyNow(receipt: EligibleNeedsMeReceipt): string {
 function NeedsMePreparedWork({
   ownerRead,
   coordinate,
-  artifact,
   loading,
   onOpen,
   reviewAction,
 }: {
   ownerRead: EntrustedWorkOwnerReadV1;
   coordinate: PreparedArtifactCoordinate;
-  artifact?: GlobalArtifactDTO;
   loading: boolean;
   /** Receives the review title when known, so the opened tab carries the same name as the card. */
   onOpen: (title?: string) => void;
   reviewAction?: ReactNode;
 }) {
+  const threadId = preparedArtifactThreadId(coordinate);
+  const source = useThreadArtifacts(threadId);
+  useEffect(() => {
+    if (!threadId) return;
+    const refresh = () => void source.refetch();
+    window.addEventListener('cat-cafe:entrusted-work-projection-invalidated', refresh);
+    return () => window.removeEventListener('cat-cafe:entrusted-work-projection-invalidated', refresh);
+  }, [threadId, source.refetch]);
+  const artifact = threadId
+    ? resolvePreparedArtifact(
+        source.artifacts.map((item) => ({ ...item, threadId })),
+        coordinate,
+      )
+    : undefined;
   const review = artifact ? null : preparedReviewCoordinate(coordinate.previewRef);
   const reviewTitle = usePreparedReviewTitle(review?.reviewId ?? null);
   return (
@@ -51,7 +64,7 @@ function NeedsMePreparedWork({
           coordinate={coordinate}
           artifact={artifact}
           reviewTitle={reviewTitle}
-          loading={loading}
+          loading={loading || (threadId !== undefined && source.loading)}
           onOpen={() => onOpen(reviewTitle)}
           reviewAction={reviewAction}
         />
@@ -61,14 +74,12 @@ function NeedsMePreparedWork({
 }
 
 export function NeedsMePanel({
-  artifacts,
   artifactsLoading = false,
   selectedItemRef,
   onOpenArtifact,
   onOpenAction,
   onOpenReview,
 }: {
-  artifacts: GlobalArtifactDTO[];
   artifactsLoading?: boolean;
   selectedItemRef?: string | null;
   onOpenArtifact?: (artifact: PreparedArtifactCoordinate, itemRef: string, title?: string) => void;
@@ -143,7 +154,6 @@ export function NeedsMePanel({
         {items.map(({ ownerRead, receipt, itemRef }) => {
           const coordinate = ownerRead.preparedArtifact;
           if (!coordinate) return null;
-          const artifact = resolvePreparedArtifact(artifacts, coordinate);
           const selected = selectedItemRef === itemRef;
           return (
             <article
@@ -183,7 +193,6 @@ export function NeedsMePanel({
               <NeedsMePreparedWork
                 ownerRead={ownerRead}
                 coordinate={coordinate}
-                artifact={artifact}
                 loading={artifactsLoading && !reviewSurfaceFromPreparedRef(coordinate.openInWorkspaceRef)}
                 onOpen={(title) => onOpenArtifact?.(coordinate, itemRef, title)}
                 reviewAction={

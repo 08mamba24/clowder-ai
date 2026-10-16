@@ -19,6 +19,8 @@ import {
   verifySameRunGuard,
 } from './f311-exploration-recovery.journey.mjs';
 import { startExplorationBrowserFixture } from './f311-exploration-workspace.harness.mjs';
+import { waitForResponsiveWorkspaceLayout } from './f311-responsive-workspace-layout.mjs';
+import { verifyV2ExplorationReading } from './f311-v2-exploration.journey.mjs';
 import { CONTRACT_THREAD_ID } from './f311-workspace-browser.harness.mjs';
 
 await import('tsx');
@@ -84,6 +86,17 @@ const runsFor = (title) =>
   catalog.experiments.filter(
     (run) => refIdentity(run.nodeRef) === refIdentity(catalog.nodes.find((node) => node.title === title).nodeRef),
   );
+
+test(
+  'v2 Settings opens the isolated public archive, keeps counterexamples visible and links exact original videos',
+  { timeout: 120_000 },
+  async () => {
+    await verifyV2ExplorationReading({ fixture, browser, catalog, capture });
+    report.checks.push(
+      'v2 Settings/public archive reading, independent current/selected pointers, unfiltered counterexample, original paired playback/seek/pause, 416/320/dark; isolated owner Program only, not real 352afab6 source binding.',
+    );
+  },
+);
 
 test(
   'same-version runs, explicit paired scope, regressions, source traces and canvas navigation in the real F307 host',
@@ -158,13 +171,15 @@ test(
       await subset.getByText(/^仅在对照侧：/).waitFor();
       await subset.getByText(/^仅在本版侧：/).waitFor();
       await page.setViewportSize({ width: 320, height: 900 });
+      await waitForResponsiveWorkspaceLayout(page, page.getByTestId('evolution-program-surface'), 320);
       await subset.scrollIntoViewIfNeeded();
       await contained(subset);
       await contained(work);
       await capture(page, 'exploration-partial-scope-320');
       await page.setViewportSize({ width: 1360, height: 960 });
       const expand = page.getByRole('button', { name: '展开阅读 →', exact: true });
-      if (await expand.isVisible()) await expand.click();
+      // Wait for the desktop control after resize; a one-shot visibility probe can skip reopening.
+      await expand.click();
       await work.waitFor();
       await comparison.getByRole('button', { name: /^退步 [1-9]/ }).click();
       await comparison.getByRole('button', { name: /左侧 · 更远/ }).click();
@@ -317,6 +332,7 @@ test(
       assert.equal(reading[fixture.duck.program.programId].exploration.draft.binding.title, 'v8');
       for (const width of [416, 320]) {
         await page.setViewportSize({ width, height: 900 });
+        await waitForResponsiveWorkspaceLayout(page, page.getByTestId('evolution-program-surface'), width);
         await contained(work);
         await page.getByTestId('evolution-program-surface').evaluate((el) => {
           el.scrollTop = 0;

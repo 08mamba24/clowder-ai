@@ -1,4 +1,5 @@
-import type { EntrustedWorkOwnerReadV1, GlobalArtifactDTO } from '@cat-cafe/shared';
+import type { EntrustedWorkOwnerReadV1 } from '@cat-cafe/shared';
+import type { PreparedArtifactMetadata } from './resolve-prepared-artifact';
 
 type PreparedArtifactCoordinate = NonNullable<EntrustedWorkOwnerReadV1['preparedArtifact']>;
 
@@ -22,7 +23,7 @@ export function preparedReviewCoordinate(previewRef: string | undefined): Prepar
  */
 export function preparedArtifactPresentation(
   coordinate: PreparedArtifactCoordinate,
-  artifact?: GlobalArtifactDTO,
+  artifact?: PreparedArtifactMetadata,
   reviewTitle?: string,
 ) {
   const review = preparedReviewCoordinate(coordinate.previewRef);

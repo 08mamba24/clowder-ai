@@ -2,6 +2,13 @@ import { z } from 'zod';
 import { artifactReviewAnchorSchema, immutableMediaSchema, reviewedMediaAssetSchema } from './artifact-review.js';
 import { artifactReviewDrawingSchema, artifactReviewImageEditSchema } from './artifact-review-drawing.js';
 import { evolutionMediaLocatorSchema } from './evolution-media-source.js';
+import { videoProjectMessageContextSchema } from './video-project-message.js';
+import {
+  type VideoProjectReviewAnchor,
+  videoProjectReviewAnchorSchema,
+  videoProjectReviewHistorySchema,
+  videoProjectReviewSourceSchema,
+} from './video-project-review.js';
 
 const id = z.string().trim().min(1).max(256);
 const timestamp = z.string().datetime();
@@ -27,6 +34,7 @@ export const workspaceContentActorSchema = z.discriminatedUnion('kind', [
 export type WorkspaceContentActor = z.infer<typeof workspaceContentActorSchema>;
 
 export const workspaceContentSourceSchema = z.discriminatedUnion('kind', [
+  videoProjectReviewSourceSchema,
   z
     .object({
       kind: z.literal('evolution'),
@@ -87,7 +95,11 @@ export const workspaceMediaAnchorSchema = z
   .object({ baseRevision: revision, anchor: artifactReviewAnchorSchema })
   .strict();
 
-export const workspaceContentAnchorSchema = z.union([workspaceTextAnchorSchema, workspaceMediaAnchorSchema]);
+export const workspaceContentAnchorSchema = z.union([
+  workspaceTextAnchorSchema,
+  workspaceMediaAnchorSchema,
+  videoProjectReviewAnchorSchema,
+]);
 export type WorkspaceContentAnchor = z.infer<typeof workspaceContentAnchorSchema>;
 
 export const workspaceContentReplySchema = z
@@ -128,6 +140,10 @@ export const workspaceContentAnnotationSchema = z
     state: z.enum(['open', 'resolved']),
     /** Missing on legacy records; new writes always retain the durable thread. */
     replies: z.array(workspaceContentReplySchema).max(100).optional(),
+    /** F326 project-only append-only events; absent on legacy text/media annotations. */
+    projectHistory: z.array(videoProjectReviewHistorySchema).min(1).max(1000).optional(),
+    /** Original delivered Human message and frozen screening evidence; absent on Phase A direct opinions. */
+    projectMessage: videoProjectMessageContextSchema.optional(),
   })
   .strict();
 export type WorkspaceContentAnnotation = z.infer<typeof workspaceContentAnnotationSchema>;
@@ -154,6 +170,11 @@ export type WorkspaceContentReview = z.infer<typeof workspaceContentReviewSchema
 export type WorkspaceContentAnnotationResolution = {
   readonly annotationId: string;
   readonly status: 'attached' | 'moved' | 'ambiguous' | 'orphaned';
+  /** Each retained project location has its own version-bound resolution, including the original target. */
+  readonly projectTargets?: readonly {
+    readonly anchor: VideoProjectReviewAnchor;
+    readonly status: 'attached' | 'moved' | 'ambiguous' | 'orphaned';
+  }[];
 };
 
 export type WorkspaceContentVisualMarkResolution = {
@@ -179,6 +200,13 @@ export interface WorkspaceContentReviewReceipt {
   readonly actor: WorkspaceContentActor;
   readonly createdAt: string;
   readonly replayed: boolean;
+  /** Authority for an internal first-file preparation; no duplicate Human body is retained. */
+  readonly preparationSource?: {
+    readonly kind: 'human_message';
+    readonly threadId: string;
+    readonly messageId: string;
+    readonly messageRevision: `sha256:${string}`;
+  };
 }
 
 export interface WorkspaceContentReviewView {

@@ -647,7 +647,47 @@ export class RedisThreadStore implements IThreadStore {
 
   async updateTitle(threadId: string, title: string): Promise<void> {
     const key = ThreadKeys.detail(threadId);
-    await this.setDetailFields(key, 'title', title);
+    await this.setDetailFields(key, 'title', title, 'titleSource', 'user', 'titleCatId', '');
+  }
+
+  async setSessionImport(threadId: string, value: NonNullable<Thread['sessionImport']>): Promise<void> {
+    await this.setDetailFields(
+      ThreadKeys.detail(threadId),
+      'sessionImportSessionId',
+      value.sessionId,
+      'sessionImportCatId',
+      value.catId,
+    );
+  }
+
+  async setAutomaticTitle(
+    threadId: string,
+    title: string,
+    source: 'temporary' | 'cat',
+    catId?: string,
+  ): Promise<boolean> {
+    const key = ThreadKeys.detail(threadId);
+    const changed = await this.redis.eval(
+      `
+      if redis.call('HEXISTS', KEYS[1], 'id') == 0 then return 0 end
+      local deleted = redis.call('HGET', KEYS[1], 'deletedAt')
+      if deleted and deleted ~= '' and deleted ~= '0' then return 0 end
+      local current = redis.call('HGET', KEYS[1], 'title') or ''
+      local source = redis.call('HGET', KEYS[1], 'titleSource')
+      if not source then source = current == '' and 'temporary' or 'user' end
+      if source ~= 'temporary' then return 0 end
+      if ARGV[2] == 'temporary' and current ~= '' then return 0 end
+      redis.call('HSET', KEYS[1], 'title', ARGV[1], 'titleSource', ARGV[2], 'titleCatId', ARGV[3])
+      return 1
+    `,
+      1,
+      key,
+      title,
+      source,
+      catId ?? '',
+    );
+    if (changed === 1) await this.applyKeyRetention([key]);
+    return changed === 1;
   }
 
   async compareAndSetTitle(threadId: string, expectedTitle: string, nextTitle: string): Promise<boolean> {
@@ -749,8 +789,13 @@ export class RedisThreadStore implements IThreadStore {
   }
 
   async linkBacklogItem(threadId: string, backlogItemId: string): Promise<void> {
+    await this.updateBacklogItem(threadId, backlogItemId);
+  }
+
+  async updateBacklogItem(threadId: string, backlogItemId: string | null): Promise<void> {
     const key = ThreadKeys.detail(threadId);
-    await this.setDetailFields(key, 'backlogItemId', backlogItemId);
+    if (backlogItemId) await this.setDetailFields(key, 'backlogItemId', backlogItemId);
+    else await this.deleteDetailFields(key, 'backlogItemId');
   }
 
   async setMentionRoutingFeedback(
@@ -858,6 +903,27 @@ export class RedisThreadStore implements IThreadStore {
     } else {
       await this.setDetailFields(key, 'systemKind', kind);
     }
+  }
+
+  async claimSystemKind(threadId: string, ownerUserId: string, kind: ThreadSystemKind): Promise<boolean> {
+    const result = await this.redis.eval(
+      `
+      if redis.call('HGET', KEYS[1], 'id') ~= ARGV[1] then return 0 end
+      if redis.call('HGET', KEYS[1], 'createdBy') ~= ARGV[2] then return 0 end
+      local deleted = redis.call('HGET', KEYS[1], 'deletedAt')
+      if deleted and deleted ~= '' and deleted ~= '0' then return 0 end
+      local previous = redis.call('HGET', KEYS[1], 'systemKind')
+      if previous and previous ~= '' and previous ~= ARGV[3] then return 0 end
+      redis.call('HSET', KEYS[1], 'systemKind', ARGV[3])
+      return 1
+    `,
+      1,
+      ThreadKeys.detail(threadId),
+      threadId,
+      ownerUserId,
+      kind,
+    );
+    return Number(result) === 1;
   }
 
   /** F229 / F167: Set or clear threadKind marker for concierge / gate-keeping thread. */
@@ -1297,6 +1363,14 @@ export class RedisThreadStore implements IThreadStore {
       id: thread.id,
       projectPath: thread.projectPath,
       title: thread.title ?? '',
+      titleSource: thread.titleSource ?? (thread.title ? 'user' : 'temporary'),
+      titleCatId: thread.titleCatId ?? '',
+      ...(thread.sessionImport
+        ? {
+            sessionImportSessionId: thread.sessionImport.sessionId,
+            sessionImportCatId: thread.sessionImport.catId,
+          }
+        : {}),
       createdBy: thread.createdBy,
       lastActiveAt: String(thread.lastActiveAt),
       createdAt: String(thread.createdAt),
@@ -1401,6 +1475,18 @@ export class RedisThreadStore implements IThreadStore {
       id: data.id ?? '',
       projectPath: data.projectPath ?? 'default',
       title: data.title || null,
+      titleSource:
+        data.titleSource === 'cat' || data.titleSource === 'temporary'
+          ? data.titleSource
+          : data.title
+            ? 'user'
+            : 'temporary',
+      ...(data.titleCatId ? { titleCatId: data.titleCatId } : {}),
+      ...(data.sessionImportSessionId && data.sessionImportCatId
+        ? {
+            sessionImport: { sessionId: data.sessionImportSessionId, catId: data.sessionImportCatId },
+          }
+        : {}),
       createdBy: data.createdBy ?? 'unknown',
       participants: [], // Loaded separately from Set
       lastActiveAt: parseInt(data.lastActiveAt ?? '0', 10),
@@ -1544,7 +1630,8 @@ export class RedisThreadStore implements IThreadStore {
       (data.systemKind === 'connector_hub' ||
         data.systemKind === 'eval_domain' ||
         data.systemKind === 'cat_bedroom' ||
-        data.systemKind === 'memory_ops')
+        data.systemKind === 'memory_ops' ||
+        data.systemKind === 'collective_channel')
     ) {
       result.systemKind = data.systemKind as ThreadSystemKind;
     }

@@ -9,7 +9,7 @@ import { CollectiveCurrentContext } from '../src/domains/plugin/builtin-runtime/
 import { collectiveSource } from '../src/domains/plugin/builtin-runtime/collective-ingress-routing.js';
 import { resolveCollectiveStandingGrant } from '../src/domains/plugin/builtin-runtime/collective-standing-grant.js';
 import { CollectiveWorkAdmission } from '../src/domains/plugin/builtin-runtime/collective-work/collective-work-admission.js';
-import { CollectiveWorkAuthority } from '../src/domains/plugin/builtin-runtime/collective-work-authority.js';
+import { CollectiveWorkAuthority } from '../src/domains/plugin/builtin-runtime/collective-work/collective-work-authority.js';
 import { CollectiveWorkDispatcher } from '../src/domains/plugin/builtin-runtime/collective-work-dispatcher.js';
 import { resolveCollectiveWorkThread } from '../src/domains/plugin/builtin-runtime/collective-work-thread.js';
 import {
@@ -68,11 +68,6 @@ export async function fixture(options: { now?: () => number; expiresAt?: string 
     messageStore: messages,
     threadStore: threads,
     invocationQueue: queue,
-    queueProcessor: {
-      async processNext() {
-        return { started: false };
-      },
-    },
   });
   const admission = new CollectiveWorkAdmission({ connector: () => cafe.connector, authority, tasks, dispatcher });
   const persist = async (eventId: string) => {
@@ -85,7 +80,7 @@ export async function fixture(options: { now?: () => number; expiresAt?: string 
       await messages.appendIdempotent({
         userId: cafe.ownerUserId,
         threadId: endpoint.id,
-        catId: null,
+        from: { kind: 'external', connectorId: 'collective' },
         mentions: [],
         timestamp: Date.parse(event.acceptedAt),
         content: event.body,

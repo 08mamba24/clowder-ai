@@ -1,16 +1,6 @@
 'use client';
 
-/**
- * F229 PR-A4: Concierge settings page — AC-A5
- *
- * Surfaces ConciergeConfig fields in the Settings shell:
- *   enabled, displayName, personaTone, dutyCatProfileId, proactivePolicy, visibility, behavior, position.
- *
- * Backend: GET/PUT /api/concierge/config (already implemented in PR-A1).
- * Store: conciergeStore.fetchConfig/setMuted (already wired in PR-A2).
- *
- * Pattern: optimistic UI + PUT partial update, matching BubbleToggle/VoiceSettingsPanel.
- */
+/** Shared desktop preferences; the retired web visibility and coordinate values stay persisted. */
 
 import { BALL_SIZE_DEFAULT, BALL_SIZE_MAX, BALL_SIZE_MIN } from '@cat-cafe/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -100,7 +90,7 @@ export function ConciergeSettingsContent() {
       setSaving(true);
       setError(null);
 
-      // FIX-5 A4 plan: muted toggle in ball vs settings page = single-writer per-user config.
+      // Keep the shared owner snapshot synchronized with this partial preference update.
       // Concurrent writes are last-write-wins — acceptable because both write the full config
       // (partial merge on server), and the user is the only writer of their own config.
       // No state machine or conflict resolution needed (plan §Census).
@@ -167,17 +157,10 @@ export function ConciergeSettingsContent() {
         </SettingsText>
       )}
 
-      {/* Section 1: 基本开关 */}
-      <SettingsSection title="基本设置" description="控制猫猫球的显示与可用性。">
-        <div className="space-y-4">
-          <SettingsField label="启用猫猫球" hint="关闭后悬浮球不再显示。" inline>
-            <ToggleSwitch checked={state.enabled} disabled={saving} onChange={(v) => updateConfig({ enabled: v })} />
-          </SettingsField>
-
-          <SettingsField label="隐藏猫猫球" hint="隐藏后可从左侧猫图标重新显示，不影响对话历史。" inline>
-            <ToggleSwitch checked={state.muted} disabled={saving} onChange={(v) => updateConfig({ muted: v })} />
-          </SettingsField>
-        </div>
+      <SettingsSection title="伴随入口" description="左侧猫图标可唤回桌面猫猫，或打开原伴随对话。">
+        <a href="/settings?s=plugins" className="text-cafe-accent underline">
+          查看桌面插件的启停与恢复状态
+        </a>
       </SettingsSection>
 
       {/* Section 2: 皮肤 (E2: unlocked — was KD-14 locked in Phase A) */}
@@ -258,7 +241,7 @@ export function ConciergeSettingsContent() {
       </SettingsSection>
 
       {/* Section 5: 主动性 (OQ-4) */}
-      <SettingsSection title="主动性策略" description="控制猫猫球何时主动出现。">
+      <SettingsSection title="主动性策略" description="调整桌面伴随的动作和提示偏好。">
         <div className="space-y-3">
           <SettingsField label="猫猫自主活动" hint="允许猫猫在空闲时跳跃、招手和溜达。" inline>
             <ToggleSwitch
@@ -289,7 +272,7 @@ export function ConciergeSettingsContent() {
       </SettingsSection>
 
       {/* Section 6: 球大小 (E3) */}
-      <SettingsSection title="猫猫球大小" description="拖拽悬浮球右下角可直接缩放，也可以在这里精确调整。">
+      <SettingsSection title="猫猫球大小" description="调整桌面伴随的大小。">
         <div className="space-y-4">
           <SettingsField label="大小" hint={`范围 ${BALL_SIZE_MIN}–${BALL_SIZE_MAX}px，默认 ${BALL_SIZE_DEFAULT}px。`}>
             <RangeSlider
@@ -311,19 +294,6 @@ export function ConciergeSettingsContent() {
           )}
         </div>
       </SettingsSection>
-
-      {/* Section 7: 球位置重置 */}
-      {state.ballPosition && (
-        <SettingsSection title="悬浮球位置" description="拖拽悬浮球可自由放置，这里可以重置到默认位置。">
-          <SettingsField
-            label="当前位置"
-            hint={`x: ${Math.round(state.ballPosition.x)}, y: ${Math.round(state.ballPosition.y)}`}
-            inline
-          >
-            <SettingsPillButton onClick={() => updateConfig({ ballPosition: null })}>重置位置</SettingsPillButton>
-          </SettingsField>
-        </SettingsSection>
-      )}
     </div>
   );
 }

@@ -11,6 +11,7 @@ const nav = vi.hoisted(() => ({
 }));
 const sidebarProps = vi.hoisted(() => ({ last: null as null | { activeDestination?: string | null } }));
 vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn() }),
   usePathname: () => nav.pathname,
   useSearchParams: () => new URLSearchParams(nav.search),
 }));

@@ -11,6 +11,7 @@
  */
 
 import type { ApprovalOriginRef, ApprovalPublication } from './approval-hub.js';
+import type { TasteMemoryCorrectionTarget } from './memory-owner-lifecycle.js';
 
 export type TasteProposalStatus = 'pending' | 'approving' | 'approved' | 'rejected';
 
@@ -60,6 +61,9 @@ export interface TasteProposal {
   clientRequestId?: string;
   /** Canonical approval origin persisted for staged recovery retries. */
   approvalOriginRef?: ApprovalOriginRef;
+
+  /** Existing-vignette correction target. Absent means this proposal creates a new vignette. */
+  correctionTarget?: TasteMemoryCorrectionTarget;
 
   // ── Settled fields (populated on approve/reject) ──
 

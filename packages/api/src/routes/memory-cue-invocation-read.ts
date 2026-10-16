@@ -7,6 +7,7 @@ import { canAccessThread } from '../domains/guides/guide-state-access.js';
 import { MemoryCueEpisodeStore } from '../domains/memory/cue/MemoryCueEpisodeStore.js';
 import { projectInvocationCues } from '../domains/memory/cue/project-invocation-cues.js';
 import { resolveHeaderUserId } from '../utils/request-identity.js';
+import { memoryInvocationAccess } from './memory-invocation-access.js';
 
 export interface MemoryCueInvocationReadOptions {
   evidenceDb: Database.Database;
@@ -38,23 +39,8 @@ export const memoryCueInvocationReadRoutes: FastifyPluginAsync<MemoryCueInvocati
       return reply.status(403).send({ error: 'Forbidden' });
     }
 
-    // A bubble may point at a parent invocation or a per-cat child turn.
-    // Resolve canonical execution ownership before querying the cue ledger.
-    if (!opts.invocationRecordStore || !opts.turnExecutionStore) {
-      return reply.status(503).send({ error: 'Invocation resolver unavailable' });
-    }
-    const invocation = await opts.invocationRecordStore.get(invocationId);
-    const child = invocation ? null : await opts.turnExecutionStore.get(invocationId);
-    const scope = invocation ?? child;
-    if (!scope) return reply.status(404).send({ error: 'Invocation not found' });
-    if (scope.userId !== userId) return reply.status(403).send({ error: 'Forbidden' });
-    if (scope.threadId !== threadId) return reply.status(404).send({ error: 'Invocation not found in thread' });
-    if (child) {
-      const parent = await opts.invocationRecordStore.get(child.parentInvocationId);
-      if (!parent) return reply.status(404).send({ error: 'Invocation parent not found' });
-      if (parent.userId !== userId) return reply.status(403).send({ error: 'Forbidden' });
-      if (parent.threadId !== threadId) return reply.status(409).send({ error: 'Invocation parent scope mismatch' });
-    }
+    const access = await memoryInvocationAccess(opts, userId, threadId, invocationId);
+    if (access.status !== 200) return reply.status(access.status).send({ error: access.error });
 
     const events = episodeStore.listByInvocation(userId, threadId, invocationId);
     return { threadId, invocationId, cues: projectInvocationCues(events) };

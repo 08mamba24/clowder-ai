@@ -14,6 +14,11 @@ mcp_admission_status: accepted
 mcp_admission_ref: "file:docs/features/F306-codex-app-capability-parity.md"
 mcp_admission_claims:
   - ref: "file:docs/features/F306-codex-app-capability-parity.md"
+    toolName: cat_cafe_get_recall_metrics
+    resourceFamily: recall-metrics
+    boundaryKind: resource-entry
+    decision: accepted
+  - ref: "file:docs/features/F306-codex-app-capability-parity.md"
     toolName: cat_cafe_request_user_input
     resourceFamily: runtime-interaction
     boundaryKind: resource-entry

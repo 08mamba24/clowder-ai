@@ -48,7 +48,7 @@ describe('F322 selected-section pins and manual tabs', () => {
     if (!owner) throw new Error('Missing section owner');
     act(() => control(`settings-entry-${owner.id}`).click());
     act(() => control(`settings-tab-${id}`).click());
-    const toggle = host.querySelector<HTMLButtonElement>(`button[aria-label="固定「${label}」到侧栏"]`);
+    const toggle = host.querySelector<HTMLButtonElement>(`button[aria-label="固定「${label}」到窄栏"]`);
     if (!toggle) throw new Error(`Missing pin for ${id}`);
     act(() => toggle.click());
     expect(pin).toHaveBeenLastCalledWith(id);
@@ -59,7 +59,7 @@ describe('F322 selected-section pins and manual tabs', () => {
       selected.focus();
       selected.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     });
-    expect(document.activeElement).toBe(control('settings-tab-profiles'));
+    expect(document.activeElement).toBe(control('settings-tab-accounts'));
     expect(control('settings-tab-members').getAttribute('aria-selected')).toBe('true');
     expect(host.querySelector('[data-testid="owner-content"]')?.textContent).toBe('members');
     act(() => control('settings-tab-profiles').click());

@@ -150,6 +150,7 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
     assert.equal(normalized.holderThreadId, 'legacy:unknown');
     assert.equal(normalized.issuerStandingEvidenceRef, 'message:legacy-claim');
     assert.deepEqual(normalized.returnTransitions, []);
+    assert.deepEqual(normalized.replacementTransitions, []);
     assert.equal(normalized.predecessorCatId, undefined);
     assert.deepEqual(await store.preflight(legacy.leaseId, 1), { ok: true, reason: 'active' });
 
@@ -216,6 +217,13 @@ describe('RedisActionSuccessorLeaseStore', { skip: redisIsolationSkipReason(REDI
     const persisted = await store.get(claimed.lease.leaseId);
     assert.equal(persisted.generation, 2);
     assert.equal(persisted.holderCatIds.length, 1);
+    assert.equal(persisted.replacementTransitions.length, 1);
+    assert.equal(persisted.replacementTransitions[0].fromGeneration, 1);
+    assert.equal(persisted.replacementTransitions[0].toGeneration, 2);
+    assert.equal(persisted.replacementTransitions[0].reason, 'holder_terminal');
+    assert.deepEqual(persisted.replacementTransitions[0].holderOutcomes, {
+      'codex-terra': { outcome: 'unavailable', evidenceRef: 'runtime:quota-exhausted', at: 120 },
+    });
   });
 
   it('persists an existing-standing replacement without inventing a predecessor route', async () => {

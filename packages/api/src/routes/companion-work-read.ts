@@ -1,5 +1,8 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import type { IMessageStore } from '../domains/cats/services/stores/ports/MessageStore.js';
+import type { RuntimeInteractionPendingReadSource } from '../domains/runtime-interaction/ports/RuntimeInteractionStore.js';
+import { migrateStoredProjectPath } from '../utils/persistent-project-path.js';
 import { requireCallbackAuth } from './callback-auth-prehandler.js';
 import { companionDecisionWireResponse, readCompanionDecisionProjection } from './companion-decision-read-service.js';
 
@@ -73,7 +76,12 @@ export function projectCompanionRunningWork(source: unknown, expectedProjectPath
   };
 }
 
-export function registerCompanionWorkReadRoutes(app: FastifyInstance, projectPath: string): void {
+export function registerCompanionWorkReadRoutes(
+  app: FastifyInstance,
+  projectPath: string,
+  runtimeInteractionStore?: RuntimeInteractionPendingReadSource,
+  messageStore?: Pick<IMessageStore, 'getById'>,
+): void {
   app.get('/api/callbacks/companion/running-work', async (request, reply) => {
     const record = requireCallbackAuth(request, reply);
     if (!record) return;
@@ -81,14 +89,17 @@ export function registerCompanionWorkReadRoutes(app: FastifyInstance, projectPat
       return reply.code(400).send({ error: 'No selectors accepted' });
     const observedAt = Date.now();
     if (!projectPath) return unavailable(reply, 'F295', observedAt);
+    // F295 returns the persistent workspace identity, not its disposable binary checkout.
+    const canonicalProjectPath = await migrateStoredProjectPath(projectPath);
+    if (!canonicalProjectPath) return unavailable(reply, 'F295', observedAt);
     const response = await app.inject({
       method: 'GET',
-      url: `/api/executions/active?projectPath=${encodeURIComponent(projectPath)}`,
+      url: `/api/executions/active?projectPath=${encodeURIComponent(canonicalProjectPath)}`,
       headers: { 'x-cat-cafe-user': record.userId },
     });
     if (response.statusCode !== 200) return unavailable(reply, 'F295', observedAt);
     try {
-      return projectCompanionRunningWork(response.json(), projectPath, observedAt);
+      return projectCompanionRunningWork(response.json(), canonicalProjectPath, observedAt);
     } catch {
       return unavailable(reply, 'F295', observedAt);
     }
@@ -101,7 +112,16 @@ export function registerCompanionWorkReadRoutes(app: FastifyInstance, projectPat
     const page = pageSchema.safeParse(request.query);
     if (!page.success) return reply.code(400).send({ error: 'Invalid page' });
     const { offset, limit, view } = page.data;
-    const result = await readCompanionDecisionProjection(app, record.userId, { offset, limit });
+    const result = await readCompanionDecisionProjection(
+      app,
+      record.userId,
+      { offset, limit },
+      undefined,
+      undefined,
+      runtimeInteractionStore,
+      undefined,
+      messageStore,
+    );
     const response = companionDecisionWireResponse(result, view);
     return reply.code(response.statusCode).send(response.body);
   });

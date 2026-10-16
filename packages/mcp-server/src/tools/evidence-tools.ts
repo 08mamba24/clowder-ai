@@ -312,9 +312,8 @@ export async function handleSearchEvidence(
 
     const degradedBanner = formatDegradedBanner(data.degraded, data.degradeReason, data.effectiveMode);
 
-    // Hook F-3: search depth tracking runs on ALL searches including empty results
+    // Keep search-depth telemetry for measurement; the retired query-count nudge is not model-facing.
     searchCount++;
-    const depthLine = `📊 本轮第 ${searchCount} 次搜索 | 搜到 doc anchor → Read 源文件，不要用摘要推理`;
     const docHitsForTelemetry = data.results.filter(
       (r) => (r.matchRank === 'high' || r.matchRank === 'mid') && DOC_SOURCE_TYPES.has(r.sourceType),
     );
@@ -340,7 +339,6 @@ export async function handleSearchEvidence(
         filterExecutionLine,
         nudge,
         coverageNudge,
-        depthLine,
         formatRecallMeta({
           resultStatus: 'no_results',
           resultCount: 0,
@@ -485,7 +483,6 @@ export async function handleSearchEvidence(
       lines.push('');
     }
 
-    lines.push(depthLine);
     lines.push(
       formatRecallMeta({
         resultStatus: 'counted',

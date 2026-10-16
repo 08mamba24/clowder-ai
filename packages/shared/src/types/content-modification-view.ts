@@ -10,6 +10,12 @@ import type { WorkspaceContentReview } from './workspace-content-review.js';
 
 export interface ContentModificationProgress {
   sourceMessageId?: string;
+  sourceMessageRevision?: `sha256:${string}`;
+  sourceKind?: 'generated_request' | 'human_message';
+  /** Immutable audience copied from the Human source so Host receipts cannot widen a whisper. */
+  sourceVisibility?:
+    | { readonly visibility: 'public' }
+    | { readonly visibility: 'whisper'; readonly whisperTo: readonly string[] };
   prepared?:
     | {
         kind: 'media';
@@ -18,7 +24,8 @@ export interface ContentModificationProgress {
         ledgerRef?: string;
         legacyReview?: { reviewId: string; round: number };
       }
-    | { kind: 'text'; reviewId: string; sourceRevision: string };
+    | { kind: 'text'; reviewId: string; sourceRevision: string }
+    | { kind: 'project'; contentRef: string; ownerRevision: number; ledgerRef: string };
   task?: { taskId: string; revision: number; receiptRef: string };
   review?: { reviewId: string; round?: number; receiptRef: string };
 }
@@ -44,7 +51,10 @@ export interface ContentModificationCancellation {
 }
 export interface ContentModificationRequestView {
   record: ContentModificationRecord;
+  /** Server-resolved opaque ids for this request only, in the original selection order. */
+  selectionAnnotations?: { selectionId: string; annotationId: string }[];
   stage:
+    | 'accepted'
     | 'saving_source'
     | 'preparing_content'
     | 'admitting_task'

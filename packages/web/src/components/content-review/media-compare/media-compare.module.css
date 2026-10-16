@@ -88,7 +88,7 @@
 .details {
   font-size: var(--console-font-xs);
   overflow-wrap: anywhere;
-  color: var(--cafe-text-muted);
+  color: var(--cafe-text-secondary);
   padding: 8px;
 }
 .playback {

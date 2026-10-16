@@ -200,7 +200,22 @@ test('explicit owner consent uses one direct source, verifies the page effect, a
   const nextView = (await app.inject({ method: 'GET', url: route, headers })).json();
   assert.equal(nextView.requestMessageId, next.id);
   assert.equal(nextView.state, 'ready');
-  assert.equal(nextView.result, undefined);
+  assert.deepEqual(nextView.result, outcome, 'the completed restoration remains a read-only observation');
+  assert.equal(nextView.resultRequestMessageId, f.source.id, 'the new source cannot claim the old result');
+  assert.ok(Number.isSafeInteger(nextView.resultObservedAtMs));
+  assert.equal(nextView.preview, undefined, 'a retained result grants no executable consent');
+  assert.equal(
+    (
+      await app.inject({
+        method: 'POST',
+        url: `${route}/confirm`,
+        headers,
+        payload: { previewId: preview.previewId },
+      })
+    ).statusCode,
+    409,
+  );
+  assert.equal(await page.$eval('#readback', (element) => element.textContent), empty);
 });
 
 test('cancel consumes the preview and a later owner correction cannot authorize its old source', async (t) => {

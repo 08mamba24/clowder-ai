@@ -34,7 +34,7 @@ describe('F322 settings secondary navigation contracts', () => {
   });
   it('Right Arrow reaches the next settings tab', () => {
     const current = host.querySelector<HTMLElement>('[data-testid="settings-tab-members"]');
-    const next = host.querySelector<HTMLElement>('[data-testid="settings-tab-profiles"]');
+    const next = host.querySelector<HTMLElement>('[data-testid="settings-tab-accounts"]');
     if (!current || !next) throw new Error('Settings tabs are missing');
     act(() => {
       current.focus();
@@ -50,6 +50,6 @@ describe('F322 settings secondary navigation contracts', () => {
     expect(panel?.getAttribute('aria-labelledby')).toBe(tab?.id);
   });
   it('workspace-team secondary destination offers a pin action', () => {
-    expect(host.querySelector('button[aria-label="固定「成员能力与路由状态」到侧栏"]')).not.toBeNull();
+    expect(host.querySelector('button[aria-label="固定「成员能力与路由状态」到窄栏"]')).not.toBeNull();
   });
 });

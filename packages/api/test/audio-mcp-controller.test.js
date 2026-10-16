@@ -63,7 +63,12 @@ it('routes MCP start → silent PCM status → stop through the real Fastify con
         }),
       );
     assert.equal(path, '/stop');
-    return new Response(JSON.stringify({ summary: { chunks: 0, duration_s: 3 } }));
+    return new Response(
+      JSON.stringify({
+        summary: { chunks: 0, duration_s: 3 },
+        status: { running: false, lifecycle_state: 'stopped', controller_lease: null },
+      }),
+    );
   };
   try {
     const start = await handleAudioCaptureStart({

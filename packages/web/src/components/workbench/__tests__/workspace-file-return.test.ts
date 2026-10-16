@@ -3,6 +3,14 @@ import { parseFileNavigationOrigin } from '../file-navigation-origin';
 import { workspaceFileReturnAction } from '../workspace-file-return';
 
 describe('ordinary Workspace file return actions', () => {
+  it('persists a Changes origin and returns to the browsed worktree and original thread', () => {
+    const origin = { kind: 'workspace-changes', worktreeId: 'listed-worktree', threadId: 'thread-a' };
+    const parsed = parseFileNavigationOrigin(origin);
+    expect(parsed).toEqual(origin);
+    if (!parsed || parsed.kind === 'evolution-media') return;
+    expect(workspaceFileReturnAction(parsed, 'different-canonical-root')).toEqual(origin);
+  });
+
   it('returns a relative link to the original document worktree and line, irrespective of the target worktree', () => {
     const origin = {
       kind: 'workspace-document' as const,

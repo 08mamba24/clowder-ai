@@ -1,6 +1,11 @@
 'use client';
 
-import type { ContentModificationCandidate, ContentModificationDetailView } from '@cat-cafe/shared';
+import {
+  type ContentModificationCandidate,
+  type ContentModificationDetailView,
+  normalizeModificationSelections,
+} from '@cat-cafe/shared';
+import { useEffect, useRef } from 'react';
 import { ContentModificationCandidatePreview } from './ContentModificationCandidatePreview';
 import { ModificationMediaCompare } from './media-compare/ModificationMediaCompare';
 
@@ -10,12 +15,15 @@ export function ContentModificationResults({
   onAccept,
   onReject,
   pendingRejections,
+  focusCandidateRef,
 }: {
   view: ContentModificationDetailView;
   busy: boolean;
   onAccept: (candidateRef: string) => Promise<void>;
   onReject?: (candidateRef: string) => Promise<void>;
   pendingRejections?: readonly string[];
+  /** The candidate a conversation receipt named; it is marked and scrolled into view. */
+  focusCandidateRef?: string;
 }) {
   return (
     <div className="space-y-4" data-testid="content-modification-results">
@@ -28,6 +36,7 @@ export function ContentModificationResults({
           onAccept={onAccept}
           onReject={onReject}
           rejectionPending={pendingRejections?.includes(candidate.candidateRef) ?? false}
+          focused={candidate.candidateRef === focusCandidateRef}
         />
       ))}
     </div>
@@ -41,6 +50,7 @@ function ContentModificationResult({
   onAccept,
   onReject,
   rejectionPending,
+  focused,
 }: {
   candidate: ContentModificationCandidate;
   view: ContentModificationDetailView;
@@ -48,14 +58,35 @@ function ContentModificationResult({
   onAccept: (candidateRef: string) => Promise<void>;
   onReject?: (candidateRef: string) => Promise<void>;
   rejectionPending: boolean;
+  focused: boolean;
 }) {
+  const article = useRef<HTMLElement>(null);
+  const feedback = useRef<HTMLDivElement>(null);
   const acceptance = view.acceptances.find((item) => item.acceptance.candidateRef === candidate.candidateRef);
   const receipt = acceptance?.receipt;
   const applied = receipt?.state === 'applied';
-  const rejected = view.rejections?.find((item) => item.candidateRef === candidate.candidateRef);
+  const rejected = view.rejections?.some((item) => item.candidateRef === candidate.candidateRef) ?? false;
   const stateText = writebackStatus(acceptance);
+  useEffect(() => {
+    if (!focused || !article.current) return;
+    if (scrollInsideTextComparison(feedback.current ?? article.current)) return;
+    // jsdom and very old engines have no scrollIntoView; the mark alone still says which candidate was asked for.
+    // The top of the candidate goes to the top of the panel: one taller than the panel (two pictures to compare) would
+    // otherwise stay where it was, with only its header showing at the edge of the window.
+    article.current.scrollIntoView?.({ block: 'start' });
+  }, [focused]);
+  useEffect(() => {
+    if (focused && (stateText || rejected) && feedback.current) scrollInsideTextComparison(feedback.current);
+  }, [focused, stateText, rejected]);
   return (
-    <article className="space-y-3 rounded-lg border border-cafe-subtle p-3" data-testid="content-modification-result">
+    <article
+      ref={article}
+      className="space-y-3 rounded-lg border border-cafe-subtle p-3"
+      data-testid="content-modification-result"
+      data-candidate-ref={candidate.candidateRef}
+      data-focused={focused ? 'true' : undefined}
+      aria-current={focused ? 'true' : undefined}
+    >
       <p className="text-sm font-semibold">
         新版已返回 ·{' '}
         {candidate.kind === 'media' ? `v${candidate.asset.ownerRevision}` : `候选 ${candidate.proposal.revision}`}
@@ -63,10 +94,17 @@ function ContentModificationResult({
       {candidate.kind === 'media' ? (
         <ModificationMediaCompare candidate={candidate} view={view} />
       ) : (
-        <ContentModificationCandidatePreview candidate={candidate} />
+        <ContentModificationCandidatePreview
+          candidate={candidate}
+          selections={normalizeModificationSelections(view.record.payload.intent)}
+        />
       )}
-      {rejected ? <p className="text-sm text-cafe-muted">已拒绝此候选；候选和原讨论仍保留。</p> : null}
-      {stateText ? <output className="block text-sm text-cafe-muted">{stateText}</output> : null}
+      {rejected || stateText ? (
+        <div ref={feedback}>
+          {rejected ? <p className="text-sm text-cafe-secondary">已拒绝此候选；候选和原讨论仍保留。</p> : null}
+          {stateText ? <output className="block text-sm text-cafe-secondary">{stateText}</output> : null}
+        </div>
+      ) : null}
       {(view.writeback || view.record.payload.source.kind === 'workspace') &&
       (!view.record.control || acceptance) &&
       !rejected &&
@@ -93,12 +131,12 @@ function ContentModificationResult({
           data-testid="content-modification-reject"
           disabled={busy}
           onClick={() => void onReject(candidate.candidateRef)}
-          className="rounded-md px-3 py-2 text-sm text-cafe-muted underline"
+          className="rounded-md px-3 py-2 text-sm text-cafe-secondary underline"
         >
           {rejectionPending ? '核对并重试拒绝' : '不采用'}
         </button>
       ) : null}
-      <details className="break-all text-xs text-cafe-muted">
+      <details className="break-all text-xs text-cafe-secondary">
         <summary>版本详情</summary>
         <dl>
           <dt>具名返回者</dt>
@@ -117,6 +155,14 @@ function ContentModificationResult({
       </details>
     </article>
   );
+}
+
+function scrollInsideTextComparison(target: HTMLElement): boolean {
+  const viewport = target.closest<HTMLElement>('[data-workspace-text-comparison]');
+  if (!viewport) return false;
+  // Keep the file header outside the scroll, and bring a decision's actual outcome into this reading viewport.
+  viewport.scrollTop += target.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
+  return true;
 }
 
 function writebackStatus(acceptance: ContentModificationDetailView['acceptances'][number] | undefined): string | null {

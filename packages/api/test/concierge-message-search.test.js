@@ -12,7 +12,8 @@ test('concierge uses the common message projection with multiple per-thread hand
     threadId: 'original',
     messageId: id,
     threadTitle: 'Canonical discussion',
-    speaker: 'user',
+    speaker: index === 0 ? 'user' : 'connector',
+    ...(index === 1 ? { speakerLabel: 'Alpha Connector · Acceptance source' } : {}),
     timestamp: 1000 + index,
     snippet: { text: 'An original source sentence.' },
     publiclyQuotable: true,
@@ -53,6 +54,7 @@ test('concierge uses the common message projection with multiple per-thread hand
   assert.equal(actions[0].payload.threadId, 'original');
   assert.equal(actions[0].payload.messageId, 'early');
   assert.match(context.contextString, /全局/);
+  assert.match(context.contextString, /Alpha Connector · Acceptance source/);
   assert.match(context.contextString, /延迟暂无法确认/);
   assert.match(context.contextString, /词法/);
   assert.equal(context.messageSearch.searchId, 'immutable-search');

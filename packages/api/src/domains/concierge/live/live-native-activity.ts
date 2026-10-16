@@ -32,3 +32,19 @@ export class LiveNativeActivity {
     else if (target.size < 64) target.add(id);
   }
 }
+
+export function liveNativeToolsReady(message: CodexAppServerJsonObject, activeTurnId: string | undefined): boolean {
+  const params = message.params as Record<string, unknown> | undefined;
+  const item = params?.item as Record<string, unknown> | undefined;
+  if (!activeTurnId || params?.turnId !== activeTurnId || !item || typeof item !== 'object' || Array.isArray(item))
+    return false;
+  const result = item.result as Record<string, unknown> | undefined;
+  return (
+    message.method === 'item/completed' &&
+    item.type === 'mcpToolCall' &&
+    item.server === 'cat-cafe-memory' &&
+    item.status === 'completed' &&
+    !item.error &&
+    result?.isError !== true
+  );
+}

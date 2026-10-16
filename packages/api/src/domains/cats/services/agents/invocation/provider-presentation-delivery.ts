@@ -102,6 +102,21 @@ function isCurrentAdmission<TReceipt>(
   ) {
     return false;
   }
+  if (envelope.candidate.epistemicCeiling === 'historical_clue') {
+    const clue = envelope.candidate.historicalClueAdmission;
+    if (
+      !clue ||
+      admission.opportunityKind !== 'recall' ||
+      admission.producerOwner !== 'owner_message' ||
+      admission.entryVersion !== clue.entryVersion ||
+      admission.presentationPolicyRef !== clue.policyRef ||
+      !admission.sourceRefs.includes(clue.sourceAnchor) ||
+      !admission.invalidators.some(
+        (ref) => ref.owner === 'thread_overview' && ref.ref === `${clue.sourceAnchor}@${clue.sourceRevision}`,
+      )
+    )
+      return false;
+  }
   return true;
 }
 

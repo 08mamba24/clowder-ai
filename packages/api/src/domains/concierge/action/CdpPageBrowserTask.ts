@@ -1,8 +1,13 @@
+import {
+  type CurrentControlElement,
+  currentControlLabel,
+  permittedCurrentControl,
+} from './jev/CurrentPageControlTask.js';
 import type { PageChoice, PageOperation, PageSnapshot } from './PageActionLoop.js';
 
 // The API compiles against Node libraries. Only these browser globals are used
 // by the serialized isolated-world tasks; DOM lib must not enter the API build.
-interface BrowserElement {
+interface BrowserElement extends CurrentControlElement {
   readonly tagName: string;
   readonly outerHTML: string;
   readonly textContent: string | null;
@@ -19,6 +24,7 @@ declare const location: { origin: string; href: string };
 export interface CdpPageActionSpec {
   readonly targets: readonly { id: string; selector: string; operation: PageOperation }[];
   readonly readback: { selector: string; kind: 'text' | 'value' };
+  readonly currentControls?: true;
 }
 export type InspectTask = { mode: 'inspect'; spec: CdpPageActionSpec; actorId: string };
 export type PerformTask = {
@@ -35,11 +41,12 @@ export type PerformTask = {
 export type CdpPageTask = InspectTask | PerformTask;
 
 /** Serialized with the task. No closure or page-owned JavaScript is trusted. */
-export function uniqueVisible(selector: string): BrowserElement | null {
+export function uniqueVisible(selector: string, currentOperation?: PageOperation): BrowserElement | null {
   const matches = document.querySelectorAll(selector);
   if (matches.length !== 1 || !matches[0]) return null;
   const element = matches[0];
   if (element.getClientRects().length === 0 || element.matches(':disabled')) return null;
+  if (currentOperation && !permittedCurrentControl(element, currentOperation)) return null;
   return element;
 }
 
@@ -51,7 +58,12 @@ export function targetFingerprint(element: BrowserElement): string {
   ]);
 }
 
-export function targetIdentityFingerprint(element: BrowserElement, issue: boolean, actorId: string): string | null {
+export function targetIdentityFingerprint(
+  element: BrowserElement,
+  issue: boolean,
+  actorId: string,
+  currentControls = false,
+): string | null {
   const world = globalThis as unknown as Record<string, unknown>;
   type IdentityStore = { nodes: WeakMap<object, string>; next: number };
   let store = world.__catCafeActionNodeIdentities as IdentityStore | undefined;
@@ -65,13 +77,22 @@ export function targetIdentityFingerprint(element: BrowserElement, issue: boolea
     token = String(++store.next);
     store.nodes.set(element, token);
   }
-  return token ? JSON.stringify([actorId, token, targetFingerprint(element)]) : null;
+  return token
+    ? JSON.stringify([
+        actorId,
+        token,
+        targetFingerprint(element),
+        ...(currentControls ? [currentControlLabel(element)] : []),
+      ])
+    : null;
 }
 
 export function applyCdpPageChoice(
   element: BrowserElement,
   choice: Extract<PageChoice, { kind: 'act' }>,
+  currentControls = true,
 ): 'applied' | 'stale' {
+  if (currentControls && !permittedCurrentControl(element, choice.operation)) return 'stale';
   if (choice.operation === 'click') {
     if (typeof element.click !== 'function') return 'stale';
     element.click();
@@ -87,7 +108,11 @@ export function applyCdpPageChoice(
 }
 
 export function inspectCdpPageTask(input: InspectTask): PageSnapshot {
-  const readbackElement = uniqueVisible(input.spec.readback.selector);
+  const readbackTarget = input.spec.targets.find((target) => target.selector === input.spec.readback.selector);
+  const readbackElement = uniqueVisible(
+    input.spec.readback.selector,
+    input.spec.currentControls ? readbackTarget?.operation : undefined,
+  );
   if (!readbackElement) throw new Error('Canonical readback unavailable or ambiguous');
   const readback =
     input.spec.readback.kind === 'value'
@@ -101,11 +126,13 @@ export function inspectCdpPageTask(input: InspectTask): PageSnapshot {
     url: location.href,
     readback,
     candidates: input.spec.targets.flatMap((target) => {
-      const element = uniqueVisible(target.selector);
+      const element = uniqueVisible(target.selector, input.spec.currentControls ? target.operation : undefined);
       if (!element) return [];
-      const fingerprint = targetIdentityFingerprint(element, true, input.actorId);
+      const fingerprint = targetIdentityFingerprint(element, true, input.actorId, input.spec.currentControls);
       if (!fingerprint) return [];
-      const label = element.getAttribute('aria-label') || element.textContent?.trim() || '';
+      const label = input.spec.currentControls
+        ? currentControlLabel(element)
+        : element.getAttribute('aria-label') || element.textContent?.trim() || '';
       return [{ id: target.id, operation: target.operation, label, fingerprint }];
     }),
   };
@@ -123,9 +150,9 @@ export async function performCdpPageTask(
     (entry) => entry.id === input.choice.targetId && entry.operation === input.choice.operation,
   );
   if (!target) return 'denied';
-  const before = uniqueVisible(target.selector);
+  const before = uniqueVisible(target.selector, input.spec.currentControls ? target.operation : undefined);
   if (!before) return 'stale';
-  const beforeFingerprint = targetIdentityFingerprint(before, false, input.actorId);
+  const beforeFingerprint = targetIdentityFingerprint(before, false, input.actorId, input.spec.currentControls);
   if (!beforeFingerprint) return 'stale';
   const state = await new Promise<string>((resolve) => {
     world[input.resolverName] = resolve;
@@ -137,7 +164,11 @@ export async function performCdpPageTask(
     return 'denied';
   }
   if (location.href !== input.url) return 'stale';
-  const element = uniqueVisible(target.selector);
-  if (!element || targetIdentityFingerprint(element, false, input.actorId) !== beforeFingerprint) return 'stale';
-  return applyCdpPageChoice(element, input.choice);
+  const element = uniqueVisible(target.selector, input.spec.currentControls ? target.operation : undefined);
+  if (
+    !element ||
+    targetIdentityFingerprint(element, false, input.actorId, input.spec.currentControls) !== beforeFingerprint
+  )
+    return 'stale';
+  return applyCdpPageChoice(element, input.choice, Boolean(input.spec.currentControls));
 }

@@ -6,6 +6,7 @@ import type { CliExecutionOwnerRef } from '../../../../../utils/cli-process-owne
 import { buildChildEnv } from '../../../../../utils/cli-spawn.js';
 import { buildUnixSupervisedSpawnPlan } from '../../../../../utils/cli-supervised-process.js';
 import { isParseError, parseNDJSON } from '../../../../../utils/ndjson-parser.js';
+import { excerptSanitizedStderr } from '../../../../../utils/sanitize-cli-stderr.js';
 import { createStderrTail, type StderrTail } from '../../../../../utils/stderr-tail.js';
 import type { AgentCarrierSession, AgentCarrierSessionOptions } from '../../types.js';
 import { codexHostServedModels } from './codex-served-model.js';
@@ -16,6 +17,8 @@ const DIRECT_STDERR_TAIL_CHARS = 8192;
 export interface DirectAgentCarrierSessionDeps {
   /** Server-owned per-turn identity; never derive it from ambient or warm-host environment. */
   executionOwner?: CliExecutionOwnerRef;
+  /** Host-prepared complete environment; ordinary provider sessions still inherit normally. */
+  finalEnvironment?: Readonly<NodeJS.ProcessEnv>;
 }
 
 function normalizeEnv(input: Record<string, string | null> | undefined, workingDirectory: string): NodeJS.ProcessEnv {
@@ -48,7 +51,7 @@ class DirectAgentCarrierSession implements AgentCarrierSession {
       throw new Error('direct_carrier_owner_mismatch');
     }
     const childCwd = options.cwd ?? process.cwd();
-    const env = normalizeEnv(options.env, childCwd);
+    const env = deps.finalEnvironment ? { ...deps.finalEnvironment } : normalizeEnv(options.env, childCwd);
     const launch =
       process.platform === 'win32'
         ? { command: options.command, args: [...options.args], env }
@@ -107,7 +110,7 @@ class DirectAgentCarrierSession implements AgentCarrierSession {
       const exit = await this.waitForExit();
       await Promise.race([this.stdioClosed, this.drainComplete]);
       if (exit.code !== 0 && !this.options.signal?.aborted) {
-        const excerpt = this.stderr.value.trim().slice(-1000);
+        const excerpt = excerptSanitizedStderr(this.stderr.value, { edge: 'tail', maxLength: 1_000 });
         throw new Error(`Codex app-server exited with code ${String(exit.code)}${excerpt ? `: ${excerpt}` : ''}`);
       }
     } finally {
@@ -119,6 +122,10 @@ class DirectAgentCarrierSession implements AgentCarrierSession {
         this.child.stderr.destroy();
       }
     }
+  }
+
+  get pid(): number | undefined {
+    return this.child.pid;
   }
 
   async write(message: Record<string, unknown>): Promise<void> {

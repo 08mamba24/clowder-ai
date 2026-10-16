@@ -2,9 +2,11 @@ import type { ArtifactReviewView } from '@cat-cafe/shared';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { syncContextAttachmentDraftToStorage } from '@/components/thread-drafts';
 import { mediaView } from '@/components/workbench/content-review/__tests__/WorkspaceContentReviewSurface.fixture';
 import { workspaceReviewDraftKey } from '@/components/workbench/content-review/workspace-review-draft';
 import { contentContextSelectionKey } from '@/components/workbench/PublicationLandingResolver';
+import { useChatStore } from '@/stores/chatStore';
 import { ArtifactReviewSurface } from '../ArtifactReviewSurface';
 
 const mocks = vi.hoisted(() => ({ controller: vi.fn(), act: vi.fn(), apiFetch: vi.fn() }));
@@ -104,18 +106,50 @@ it('renders the common landing using original media, actor, annotation IDs and d
   expect(container.querySelector('h2')?.textContent).toBe('旧版/完整作品名');
   expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:original-owner-media');
   expect(container.querySelector('[data-annotation-id="original"]')).not.toBeNull();
-  expect(container.querySelector('textarea')?.value).toBe('原草稿');
-  const save = container.querySelector<HTMLButtonElement>('[aria-label="保存批注"]');
-  await act(async () => save?.click());
-  expect(mocks.act).toHaveBeenCalledWith(
-    expect.objectContaining({ kind: 'annotate', body: '原草稿', anchor: { kind: 'image-point', x: 8, y: 9 } }),
-    1,
-  );
+  expect(container.textContent).toContain('未发送的批注：原草稿');
+  expect(container.querySelector('textarea')).toBeNull();
+  expect(container.querySelector('[data-testid="workspace-content-review-media-add-to-chat"]')).not.toBeNull();
+  expect(mocks.act).not.toHaveBeenCalled();
   expect(JSON.parse(localStorage.getItem(draftKey)!)).toEqual({
     body: '原草稿',
     anchor: { kind: 'image-point', x: 8, y: 9 },
   });
   expect(container.querySelector('[data-testid="content-modification-entry"]')).not.toBeNull();
+});
+it('adds a circled place of a Task round to the chat under the same round and Task a modification request names', async () => {
+  useChatStore.setState({ currentThreadId: 'thread-one', pendingChatInsert: null });
+  syncContextAttachmentDraftToStorage('thread-one', []);
+  localStorage.setItem(
+    draftKey,
+    JSON.stringify({ body: '把这里的字去掉', anchor: { kind: 'image-point', x: 8, y: 9 } }),
+  );
+  await act(async () => root.render(<ArtifactReviewSurface reviewId={view.review.reviewId} onBack={vi.fn()} />));
+  const add = container.querySelector<HTMLButtonElement>('[data-testid="workspace-content-review-media-add-to-chat"]');
+  expect(add).not.toBeNull();
+  await act(async () => add?.click());
+  const queued = useChatStore.getState().pendingChatInsert;
+  expect(queued?.threadId).toBe('thread-one');
+  expect(queued?.contextAttachments).toEqual([
+    {
+      v: 1,
+      id: expect.stringMatching(/^media-[0-9a-f]{8}$/),
+      kind: 'media',
+      title: '旧版/完整作品名',
+      mediaType: 'image/png',
+      source: { kind: 'artifact-review', reviewId: view.review.reviewId, round: 1, expectedReviewRevision: 2 },
+      taskContext: {
+        kind: 'media',
+        taskId: 'task-one',
+        expectedTaskRevision: 1,
+        reviewId: view.review.reviewId,
+        expectedReviewRevision: 2,
+        round: 1,
+      },
+      selections: [{ id: '1', selection: { kind: 'image-point', x: 8, y: 9 }, instruction: '把这里的字去掉' }],
+    },
+  ]);
+  // Adding to the chat is not saving the comment: the review itself was not written.
+  expect(mocks.act).not.toHaveBeenCalled();
 });
 it('opening discussion and switching canvas modes never discards the original unsaved selection', async () => {
   const original = { body: '保留选区', anchor: { kind: 'image-point', x: 8, y: 9 } };
@@ -184,11 +218,19 @@ it('switches a named context from the open work and restores each original draft
     other.review.reviewId,
   );
   await render(other.review.reviewId);
-  expect(container.querySelector('textarea')?.value).toBe('未提交方案2');
+  expect(container.textContent).toContain('未发送的批注：未提交方案2');
+  expect(JSON.parse(localStorage.getItem(drafts[1])!).body).toBe('未提交方案2');
   await render(view.review.reviewId);
-  expect(container.querySelector('textarea')?.value).toBe('未提交方案1');
+  expect(container.textContent).toContain('未发送的批注：未提交方案1');
+  expect(JSON.parse(localStorage.getItem(drafts[0])!).body).toBe('未提交方案1');
   expect(mocks.act).not.toHaveBeenCalled();
-  expect(mocks.apiFetch.mock.calls.every(([url]) => url === '/api/content-reviews/resolve')).toBe(true);
+  expect(
+    mocks.apiFetch.mock.calls.every(
+      ([url, init]) =>
+        url === '/api/content-reviews/resolve' ||
+        (['/api/cats', '/api/config/cat-order'].includes(url) && !init?.method),
+    ),
+  ).toBe(true);
 });
 
 it('a linked Task context resumes the publication draft and its exact unknown operation instead of a second Task draft', async () => {
@@ -211,7 +253,12 @@ it('a linked Task context resumes the publication draft and its exact unknown op
       body: '消息入口没写完的评论',
       target: { kind: 'media_anchor', anchor: { kind: 'image-point', x: 8, y: 9 } },
       activeAnnotationId: null,
-      annotation: null,
+      annotation: {
+        operationId: 'original-unknown-annotation',
+        expectedRevision: ledger.review.revision,
+        body: '消息入口没写完的评论',
+        target: { kind: 'media_anchor', anchor: { kind: 'image-point', x: 8, y: 9 } },
+      },
       action: null,
       refresh: null,
     }),
@@ -226,8 +273,13 @@ it('a linked Task context resumes the publication draft and its exact unknown op
     root.render(<ArtifactReviewSurface reviewId={task.review.reviewId} onBack={vi.fn()} />);
     for (let n = 0; n < 8; n++) await Promise.resolve();
   });
-  expect(container.querySelector('textarea')?.value).toBe('消息入口没写完的评论');
-  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="保存批注"]')?.click());
+  expect(container.textContent).toContain('未发送的批注：消息入口没写完的评论');
+  expect(container.querySelector('textarea')).toBeNull();
+  const initialRetry = [...container.querySelectorAll('button')].find(
+    (button) => button.textContent === '核对并重试保存',
+  );
+  expect(initialRetry?.disabled).toBe(false);
+  await act(async () => initialRetry?.click());
   const first = mocks.apiFetch.mock.calls.find(([url]) => String(url).endsWith('/annotations'));
   expect(first).toBeTruthy();
   await act(async () => root.unmount());
@@ -241,6 +293,25 @@ it('a linked Task context resumes the publication draft and its exact unknown op
   await act(async () => retry?.click());
   const writes = mocks.apiFetch.mock.calls.filter(([url]) => String(url).endsWith('/annotations'));
   expect(writes).toHaveLength(2);
+  expect(JSON.parse(String(first?.[1]?.body)).operationId).toBe('original-unknown-annotation');
   expect(JSON.parse(String(writes[1]?.[1]?.body))).toEqual(JSON.parse(String(first?.[1]?.body)));
+  expect(mocks.act).not.toHaveBeenCalled();
+});
+
+it('uses Chat for a writable PNG round while keeping its modification records accessible', async () => {
+  useChatStore.setState({ currentThreadId: 'thread-one', pendingChatInsert: null });
+  await act(async () => root.render(<ArtifactReviewSurface reviewId={view.review.reviewId} onBack={vi.fn()} />));
+  const entry = container.querySelector<HTMLButtonElement>('[data-testid="content-modification-entry"]');
+  expect(entry?.textContent).toBe('修改记录');
+  const whole = container.querySelector<HTMLButtonElement>('[data-testid="workspace-media-chat-whole-work"]');
+  expect(whole).not.toBeNull();
+  await act(async () => whole?.click());
+  expect(useChatStore.getState().pendingChatInsert?.contextAttachments).toEqual([
+    expect.objectContaining({
+      source: { kind: 'artifact-review', reviewId: view.review.reviewId, round: 1, expectedReviewRevision: 2 },
+      taskContext: expect.objectContaining({ taskId: 'task-one', expectedTaskRevision: 1, round: 1 }),
+      selections: [],
+    }),
+  ]);
   expect(mocks.act).not.toHaveBeenCalled();
 });

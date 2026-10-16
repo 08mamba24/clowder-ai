@@ -86,7 +86,13 @@ function parseRevisionToken(token: string): SourceRevision {
   throw new Error(`ledger_key_malformed: unknown revision kind ${JSON.stringify(token)}`);
 }
 
-const PRESENTATION_KINDS: ReadonlySet<string> = new Set<PresentationKind>(['directive', 'state', 'pointer', 'omit']);
+const PRESENTATION_KINDS: ReadonlySet<string> = new Set<PresentationKind>([
+  'directive',
+  'state',
+  'clue',
+  'pointer',
+  'omit',
+]);
 
 /**
  * The scope half of the key: `scopeKey` + `contextEpoch`.

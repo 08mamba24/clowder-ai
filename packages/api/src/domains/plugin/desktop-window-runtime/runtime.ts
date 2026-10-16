@@ -36,7 +36,10 @@ export class DesktopWindowPluginRuntime implements BuiltinPluginRuntime {
         const run = this.active;
         if (!run || run.id !== id || run.digest !== digest || run.closing)
           throw new Error('desktop package unavailable');
-        await run.package.verifyIntegrity();
+        // The surface serves frozen Host buffers; mutable executable admission
+        // keeps verifyIntegrity. Every authority check still validates the seal.
+        await (run.package.verifyStaticIntegrity?.() ?? run.package.verifyIntegrity());
+        if (this.active !== run || run.closing) throw new Error('desktop ended during package verification');
       },
     });
   }
@@ -198,6 +201,25 @@ export class DesktopWindowPluginRuntime implements BuiltinPluginRuntime {
             initiator: 'executor',
           }),
         ...(run.bridge ? { request: (input: unknown) => run.bridge!.request(input) } : {}),
+        ...(run.bridge?.observeVoice
+          ? {
+              onVoiceObservation: async (observation) => {
+                if (this.active !== run || run.closing || controller.signal.aborted) return;
+                await this.features.run(pending.executionLease, async () => undefined);
+                if (this.active === run && !run.closing && !controller.signal.aborted)
+                  await run.bridge?.observeVoice?.(observation);
+              },
+            }
+          : {}),
+        ...(run.bridge?.observeTextSubmission
+          ? {
+              onTextSubmission: async (observation) => {
+                if (this.active !== run || run.closing || controller.signal.aborted) return;
+                // Bridge captures its call/generation synchronously, then authenticates this same execution lease.
+                await run.bridge?.observeTextSubmission?.(observation);
+              },
+            }
+          : {}),
       });
       controller.signal.throwIfAborted();
       run.observer = new DesktopWindowObserver({

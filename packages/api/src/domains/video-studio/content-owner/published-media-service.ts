@@ -144,7 +144,11 @@ export class PublishedMediaService {
   }
 
   async publishVersion(
-    input: PublicationInput & { contentRef: string; expectedOwnerRevision: number },
+    input: PublicationInput & {
+      contentRef: string;
+      expectedOwnerRevision: number;
+      publicationSource?: import('@cat-cafe/shared').MessageMediaPublicationSource;
+    },
   ): Promise<ReviewedMediaAsset> {
     input = { ...input, principal: withContentTask(input.principal, input.taskId) };
     const current = await this.deps.owner.describe(input.contentRef);
@@ -165,6 +169,7 @@ export class PublishedMediaService {
       taskRevision: input.expectedTaskRevision,
       artifactRef: input.artifactRef,
       expectedArtifactRevision: input.expectedArtifactRevision,
+      ...(input.publicationSource ? { publicationSource: input.publicationSource } : {}),
     });
     if (source.mediaType !== current.mediaType) throw new MediaOwnerError('invalid_media');
     const media = await probeImmutableMedia(source.bytes, source.mediaType);

@@ -5,6 +5,7 @@ import {
   type F317MeetingSharePorts,
   F317MeetingShareService,
 } from '../domains/concierge/meeting/f317-meeting-share-service.js';
+import { meetingAudioSnapshot } from '../domains/concierge/meeting/live-meeting-audio-snapshot.js';
 import { resolveAudioServiceUrl } from './audio-proxy.js';
 import { requirePluginOwnerLocalAccess } from './plugin-access-guards.js';
 
@@ -13,32 +14,12 @@ const intentSchema = z
     callId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
     generation: z.number().int().nonnegative(),
     captureThreadId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
-    meetingId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+    meetingId: z.string().min(1),
     captureStartedAt: z.number().finite().positive(),
     inputId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
     inputLabel: z.string().min(1).max(256),
   })
   .strict();
-
-const captureSchema = z
-  .object({
-    running: z.boolean(),
-    paused: z.boolean(),
-    thread_id: z.string(),
-    meeting_id: z.string(),
-    started_at: z.number(),
-    inputs: z.array(
-      z
-        .object({
-          id: z.string(),
-          source: z.enum(['app', 'mic']),
-          label: z.string(),
-          state: z.string(),
-        })
-        .passthrough(),
-    ),
-  })
-  .passthrough();
 
 export interface F317MeetingShareRouteOptions {
   ownerUserId: string;
@@ -46,34 +27,33 @@ export interface F317MeetingShareRouteOptions {
   host: Pick<F317MeetingSharePorts, 'observeCall' | 'attach' | 'detach' | 'isAttached'>;
   audioServiceUrl?: string;
   fetchFn?: typeof fetch;
+  /** UI and Live controls must use the same grant/revocation authority. */
+  service?: F317MeetingShareService;
 }
 
-export const f317MeetingShareRoutes: FastifyPluginAsync<F317MeetingShareRouteOptions> = async (app, options) => {
+export function createF317MeetingShareService(options: F317MeetingShareRouteOptions): F317MeetingShareService {
   const serviceUrl = (options.audioServiceUrl ?? resolveAudioServiceUrl()).replace(/\/$/, '');
   const fetchFn = options.fetchFn ?? fetch;
-  const service = new F317MeetingShareService({
-    ...options.host,
+  return new F317MeetingShareService({
+    observeCall: (userId) => options.host.observeCall(userId),
+    attach: (grant, verify) => options.host.attach(grant, verify),
+    detach: (grant) => options.host.detach(grant),
+    isAttached: (grant) => options.host.isAttached(grant),
     ownerOfThread: async (threadId) => (await options.threadStore.get(threadId))?.createdBy ?? null,
     observeCapture: async () => {
       try {
         const response = await fetchFn(`${serviceUrl}/status`, { signal: AbortSignal.timeout(2_000) });
         if (!response.ok) return null;
-        const parsed = captureSchema.safeParse(await response.json());
-        if (!parsed.success) return null;
-        const data = parsed.data;
-        return {
-          running: data.running,
-          paused: data.paused,
-          threadId: data.thread_id,
-          meetingId: data.meeting_id,
-          startedAt: data.started_at,
-          inputs: data.inputs,
-        };
+        return meetingAudioSnapshot(await response.json());
       } catch {
         return null;
       }
     },
   });
+}
+
+export const f317MeetingShareRoutes: FastifyPluginAsync<F317MeetingShareRouteOptions> = async (app, options) => {
+  const service = options.service ?? createF317MeetingShareService(options);
 
   app.addHook('preHandler', async (request, reply) => {
     const access = requirePluginOwnerLocalAccess(request, request.method === 'GET' ? 'read' : 'write');

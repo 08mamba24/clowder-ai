@@ -90,6 +90,7 @@ async function runMessageSearchJourney() {
     });
     const address = await app.listen({ host: '127.0.0.1', port: 0 });
     assert.ok(![3001, 3002, 3011, 3012, 4111].includes(Number(new URL(address).port)));
+    console.info('[message-search-journey] isolated API', address, 'Redis', endpoint.origin);
     const auth = await registry.create(
       'owner',
       'codex61-sol',
@@ -124,6 +125,25 @@ async function runMessageSearchJourney() {
     assert.equal(humanResponse.status, 200);
     const human = await humanResponse.json();
     assert.deepEqual(human.results, cat.results, 'same readable candidates for the shared query contract');
+    const boundedCatResult = await handleSearchEvidence({
+      query,
+      resultUnit: 'message',
+      mode: 'lexical',
+      messageSort: 'relevance',
+      limit: 1,
+    });
+    assert.equal(boundedCatResult.isError, undefined, boundedCatResult.content[0].text);
+    const boundedCat = JSON.parse(boundedCatResult.content[0].text);
+    const boundedHumanResponse = await fetch(
+      `${address}/api/evidence/search?q=${query}&resultUnit=message&mode=lexical&messageSort=relevance&limit=1`,
+      { headers: { 'x-cat-cafe-user': 'owner' } },
+    );
+    assert.equal(boundedHumanResponse.status, 200);
+    const boundedHuman = await boundedHumanResponse.json();
+    assert.equal(boundedCat.results.length, 1);
+    assert.equal(boundedCat.meta.hasMore, true);
+    assert.deepEqual(boundedHuman.results, boundedCat.results);
+    assert.equal(boundedHuman.meta.hasMore, true);
     const current = JSON.parse(
       (
         await handleSearchEvidence({

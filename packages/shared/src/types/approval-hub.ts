@@ -21,7 +21,8 @@ export type ApprovalProducerId =
   | 'F266'
   | 'F276'
   | 'F292'
-  | 'F306';
+  | 'F306'
+  | 'F321';
 
 /** @deprecated Use ApprovalProducerId. Kept as a source-compatible alias during Phase I. */
 export type ApprovalFeatureId = ApprovalProducerId;

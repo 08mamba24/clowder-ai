@@ -168,6 +168,7 @@ const TURN_CUSTODY_SOURCE_CATEGORIES = new Set([
   'continuation',
   'issue',
   'freshness',
+  'repo_inbox',
   'action_successor',
   'unknown',
 ]);

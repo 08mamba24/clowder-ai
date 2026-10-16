@@ -1,10 +1,9 @@
 'use client';
 
-import {
-  messagePublicationSource,
-  type PublishedMessageCoordinate,
-  usePublishedContent,
-} from '@/components/content-review/usePublishedContent';
+import { useState } from 'react';
+import { useChatArtworkEntry } from '@/components/content-review/useChatArtworkEntry';
+import type { PublishedMessageCoordinate } from '@/components/content-review/usePublishedContent';
+import { Lightbox } from '@/components/Lightbox';
 import type { RichFileBlock } from '@/stores/chat-types';
 import { CompactLabel } from '../content-overflow';
 import { HubIcon } from '../hub-icons';
@@ -57,28 +56,45 @@ export function FileBlock({
   const ext = block.fileName.split('.').pop()?.toLowerCase() ?? '';
   const iconName = EXT_ICON_NAMES[ext] ?? 'file-text';
   const safeHref = isSafeUrl(block.url) ? block.url : undefined;
-  const published = usePublishedContent();
-  const source = messagePublicationSource(publication, { kind: 'rich-file', blockId: block.id }, block.url);
+  const published = useChatArtworkEntry(publication);
+  const [previewReason, setPreviewReason] = useState<string | null>(null);
+  const source = published.source(block.url, { kind: 'rich-file', blockId: block.id });
   const legacyPublication = usePublishedFileOpen(block.url, sourceThreadId, messageId, sourceMessageIds);
-  if (source)
+  if (source || (published.isV2 && isVideoFile(block) && safeHref))
     return (
-      <div className="rounded-lg border border-cafe p-3">
-        <button
-          type="button"
-          disabled={published.busy}
-          onClick={() => void published.open(source, block.fileName)}
-          className="flex w-full items-center gap-3 text-left"
-        >
-          <HubIcon name={isVideoFile(block) ? 'play' : 'file-text'} className="h-5 w-5 shrink-0 text-cafe-muted" />
-          <span className="min-w-0 flex-1 truncate text-sm">{block.fileName}</span>
-          <span className="text-xs text-cafe-link">{published.busy ? '正在打开…' : '打开作品'}</span>
-        </button>
-        {published.error ? (
-          <p role="alert" className="mt-2 text-xs text-cafe-error">
-            {published.error}
-          </p>
-        ) : null}
-      </div>
+      <>
+        <div className="rounded-lg border border-cafe p-3">
+          <button
+            type="button"
+            disabled={published.busy}
+            onClick={async () => {
+              const result = await published.open(source, block.fileName);
+              if (result.status === 'preview' && published.isV2) setPreviewReason(result.reason);
+            }}
+            className="flex w-full items-center gap-3 text-left"
+          >
+            <HubIcon name={isVideoFile(block) ? 'play' : 'file-text'} className="h-5 w-5 shrink-0 text-cafe-muted" />
+            <span className="min-w-0 flex-1 truncate text-sm">{block.fileName}</span>
+            <span className="text-xs text-cafe-link">
+              {published.busy ? '正在打开…' : source ? '打开作品' : '查看视频'}
+            </span>
+          </button>
+          {published.error ? (
+            <p role="alert" className="mt-2 text-xs text-cafe-error">
+              {published.error}
+            </p>
+          ) : null}
+        </div>
+        {previewReason && (
+          <Lightbox
+            url={block.url}
+            alt={block.fileName}
+            mediaType={isVideoFile(block) ? 'video' : 'image'}
+            annotationUnavailableReason={previewReason}
+            onClose={() => setPreviewReason(null)}
+          />
+        )}
+      </>
     );
 
   // Video files: inline player with download fallback

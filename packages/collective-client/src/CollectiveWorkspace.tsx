@@ -1,32 +1,28 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChannelContent } from './ChannelContentTabs.js';
 import { ChannelNavigation } from './ChannelNavigation.js';
-import { ChannelScene } from './ChannelScene.js';
-import { channelDestinations, readChannelPosition, saveChannelPosition } from './channel-navigation.js';
-import type { CollectiveEventEnvelope, CollectiveParticipant, CollectiveWorkProjection } from './client-types.js';
+import { CollectiveChannelWorkspace } from './CollectiveChannelWorkspace.js';
+import { CollectiveHome } from './CollectiveHome.js';
+import {
+  channelDestinations,
+  readChannelEntry,
+  saveChannelPosition,
+  writeChannelTarget,
+} from './channel-navigation.js';
+import type { CollectiveEventEnvelope, CollectiveWorkProjection } from './client-types.js';
+import { type RoadmapReturn, visibleCollectiveCats } from './collective-workspace-model.js';
 import { DemoSpotlight } from './first-entry/DemoSpotlight.js';
 import { EntrySpotlight } from './first-entry/EntrySpotlight.js';
 import { useFirstEntryGuide } from './first-entry/use-first-entry-guide.js';
 import { collectiveClientNamespace } from './human-send-custody.js';
-import { MemberPanel, type MemberSelection } from './MemberPanel.js';
+import type { MemberSelection } from './MemberPanel.js';
 import { ProductShell } from './ProductShell.js';
 import type { RoadmapViewState } from './roadmap-view-model.js';
 import type { useCollectiveClient } from './use-collective-client.js';
 import { useHostContext } from './use-host-context.js';
 import { HostWorkPermissionContext } from './use-host-work-policy.js';
 
-function ownDeclaredCatCount(
-  participants: readonly CollectiveParticipant[] | undefined,
-  connectionId: string | undefined,
-) {
-  if (!participants || !connectionId) return undefined;
-  return new Set(
-    participants
-      .filter((cat) => cat.connectionId === connectionId && cat.availability === 'declared')
-      .map((cat) => cat.catId),
-  ).size;
-}
-
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This canonical coordinator owns the inherited Host, guide, roadmap, and destination transitions; the rendered Channel scene is split out so this batch reduces complexity below the main baseline without duplicating navigation state.
 export function CollectiveWorkspace({
   embedded,
   client,
@@ -36,7 +32,10 @@ export function CollectiveWorkspace({
 }) {
   const { snapshot } = client;
   const namespace = collectiveClientNamespace(snapshot) ?? '';
-  const [channelId, setChannelId] = useState(() => readChannelPosition(namespace));
+  const previousNamespace = useRef(namespace);
+  const initialEntry = readChannelEntry(namespace);
+  const [channelId, setChannelId] = useState(initialEntry.channelId);
+  const [destination, setDestination] = useState<'home' | 'channel'>(initialEntry.destination);
   const [focusEventId, setFocusEventId] = useState<string>();
   const [content, setContent] = useState<ChannelContent>('conversation');
   const [roadmapViews, setRoadmapViews] = useState<Readonly<Record<string, RoadmapViewState>>>({});
@@ -65,20 +64,29 @@ export function CollectiveWorkspace({
     participants: snapshot.participants,
     events: snapshot.events,
   });
-  useEffect(() => {
-    if (firstEntry.phase !== 'playing') return;
+  const previousFirstEntryPhase = useRef<typeof firstEntry.phase>();
+  const enterFirstEntryChannel = useCallback(() => {
+    setDestination('channel');
     setChannelId('general');
+    writeChannelTarget('general');
     setContent('conversation');
     setSelectedMember(undefined);
     setNavigationOpen(false);
     host.hide();
-  }, [firstEntry.phase, host.hide]);
+  }, [host.hide]);
+  useEffect(() => {
+    const guideStarted = firstEntry.phase === 'playing' && previousFirstEntryPhase.current !== 'playing';
+    previousFirstEntryPhase.current = firstEntry.phase;
+    if (guideStarted && destination === 'home') enterFirstEntryChannel();
+  }, [destination, enterFirstEntryChannel, firstEntry.phase]);
   useEffect(() => {
     if (!host.focusWork) return;
+    setDestination('channel');
     setFocusEventId(host.focusWork.eventId);
     setContent('conversation');
     setRoadmapReturn(undefined);
     setChannelId(host.focusWork.channelId);
+    writeChannelTarget(host.focusWork.channelId);
     setQuery('');
     setSelectedMember(undefined);
     setNavigationOpen(false);
@@ -86,33 +94,60 @@ export function CollectiveWorkspace({
   const showCafe = () => {
     setSelectedMember(undefined);
     setNavigationOpen(false);
-    host.show();
+    host.show('cats');
   };
   const replayGuide = () => {
-    setSelectedMember(undefined);
-    setNavigationOpen(false);
+    enterFirstEntryChannel();
     firstEntry.replay();
   };
   const beginPair = () => {
+    enterFirstEntryChannel();
     firstEntry.beginPair();
-    setNavigationOpen(false);
     void client.pairHost();
   };
   const selectChannel = (id: string, eventId?: string) => {
+    setDestination('channel');
     setFocusEventId(eventId);
     setContent('conversation');
     setRoadmapReturn(undefined);
     host.hide();
     setChannelId(id);
+    writeChannelTarget(id);
     setQuery('');
     setSelectedMember(undefined);
     setNavigationOpen(false);
   };
-  useEffect(() => saveChannelPosition(namespace, channelId), [namespace, channelId]);
+  const showHome = () => {
+    setDestination('home');
+    setFocusEventId(undefined);
+    setContent('conversation');
+    setRoadmapReturn(undefined);
+    setQuery('');
+    setSelectedMember(undefined);
+    setNavigationOpen(false);
+    host.hide();
+    writeChannelTarget();
+  };
   useEffect(() => {
+    if (previousNamespace.current !== namespace) return;
+    saveChannelPosition(namespace, channelId);
+  }, [namespace, channelId]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A world namespace change is the reset signal; Host callbacks must not replay this reset.
+  useEffect(() => {
+    const worldChanged = previousNamespace.current !== namespace;
+    previousNamespace.current = namespace;
     setContent('conversation');
     setRoadmapReturn(undefined);
     setRoadmapViews({});
+    if (!worldChanged) return;
+    const nextEntry = readChannelEntry(namespace);
+    setDestination(nextEntry.destination);
+    setChannelId(nextEntry.channelId);
+    setFocusEventId(undefined);
+    setQuery('');
+    setSelectedMember(undefined);
+    setNavigationOpen(false);
+    host.hide();
   }, [namespace]);
   if (!snapshot.collective || !snapshot.me) return null;
   const openMember = (event: CollectiveEventEnvelope) => {
@@ -124,10 +159,7 @@ export function CollectiveWorkspace({
     );
   };
   const members = snapshot.members;
-  const visibleCats = participants.filter(
-    (cat) => cat.availability === 'declared' && members?.cafes.some((cafe) => cafe.connectionId === cat.connectionId),
-  );
-  const ownCatCount = ownDeclaredCatCount(snapshot.participants, host.connectionId);
+  const visibleCats = visibleCollectiveCats(participants, members);
   const roadmapView = roadmapViews[channelId];
   const updateRoadmapView = (view: RoadmapViewState) =>
     setRoadmapViews((current) => ({ ...current, [channelId]: view }));
@@ -136,18 +168,22 @@ export function CollectiveWorkspace({
     setRoadmapViews((current) => ({ ...current, [channelId]: view }));
     setRoadmapReturn({ channelId, label: roadmap?.title ?? 'Roadmap', view });
     setFocusEventId(eventId);
+    setDestination('channel');
     setContent('conversation');
     host.hide();
     setSelectedMember(undefined);
     setNavigationOpen(false);
     setQuery('');
     setChannelId(work.sourceLocation.channelId);
+    writeChannelTarget(work.sourceLocation.channelId);
   };
   const returnToRoadmap = () => {
     if (!roadmapReturn) return;
     setRoadmapViews((current) => ({ ...current, [roadmapReturn.channelId]: roadmapReturn.view }));
     setFocusEventId(undefined);
+    setDestination('channel');
     setChannelId(roadmapReturn.channelId);
+    writeChannelTarget(roadmapReturn.channelId);
     setContent('roadmap');
     setRoadmapReturn(undefined);
     host.hide();
@@ -165,14 +201,10 @@ export function CollectiveWorkspace({
         collective={snapshot.collective}
         collectives={snapshot.me.collectives}
         onSelectCollective={client.selectCollective}
+        onHome={showHome}
         connection={snapshot.connection}
         canSteward={snapshot.collective.role === 'steward'}
         canPair={Boolean(snapshot.me.auth) && !host.paired}
-        cafeConnection={
-          host.paired
-            ? { catCount: firstEntry.phase === 'loading' && firstEntry.pairStarted ? undefined : ownCatCount }
-            : undefined
-        }
         pairNudge={firstEntry.phase === 'browsing'}
         canLeave={snapshot.collective.role === 'member'}
         headerMeta={
@@ -184,17 +216,22 @@ export function CollectiveWorkspace({
         onInvite={() => void client.createInvite()}
         onPair={beginPair}
         onLeave={() => void client.leaveCollective()}
+        onCafe={host.available ? showCafe : undefined}
+        onReplayGuide={firstEntry.narrator ? replayGuide : undefined}
         navigationOpen={navigationOpen || firstEntry.phase === 'entry'}
         onCloseNavigation={() => setNavigationOpen(false)}
         destinations={
           <ChannelNavigation
             channels={channels}
-            channelId={channelId}
+            channelId={destination === 'channel' ? channelId : undefined}
             query={query}
-            onQuery={setQuery}
+            onQuery={(value) => {
+              setQuery(value);
+              if (!value.trim()) return;
+              setDestination('channel');
+              writeChannelTarget(channelId);
+            }}
             onSelect={selectChannel}
-            onCafe={host.available ? showCafe : undefined}
-            onReplayGuide={firstEntry.narrator ? replayGuide : undefined}
             guideCatCount={
               firstEntry.phase === 'playing' && firstEntry.beat === 0
                 ? firstEntry.arrivalComplete
@@ -204,95 +241,54 @@ export function CollectiveWorkspace({
             }
             onMembers={() => {
               host.hide();
+              setDestination('channel');
+              writeChannelTarget(channelId);
               setSelectedMember('members');
               setNavigationOpen(false);
             }}
           />
         }
       >
-        <ChannelScene
-          key={channelId}
-          collective={snapshot.collective}
-          humanId={snapshot.me.human.humanId}
-          humanName={snapshot.me.human.displayName}
-          channelId={channelId}
-          content={content}
-          onSelectContent={(next) => {
-            setContent(next);
-            if (next === 'roadmap') setRoadmapReturn(undefined);
-          }}
-          focusEventId={focusEventId}
-          onCloseContext={() => {
-            host.hide();
-            setSelectedMember(undefined);
-          }}
-          namespace={namespace}
-          query={query}
-          events={snapshot.events}
-          collaboration={snapshot.collaboration}
-          participants={participants}
-          members={members}
-          firstEntry={firstEntry}
-          error={snapshot.error}
-          connection={snapshot.connection}
-          delivery={snapshot.delivery}
-          onSend={client.sendMessage}
-          onProposeWork={client.proposeWork}
-          onCommitWork={client.commitWork}
-          onDeclineWork={client.declineWork}
-          onAcceptWorkResult={client.acceptWorkResult}
-          onRequestWorkRevision={client.requestWorkRevision}
-          onCompleteWork={client.completeWork}
-          onCreateRoadmap={client.createRoadmap}
-          onSetRoadmapWorks={client.setRoadmapWorks}
-          onSetRoadmapStatus={client.setRoadmapStatus}
-          roadmapView={roadmapView}
-          onRoadmapViewChange={updateRoadmapView}
-          onOpenRoadmapSource={(work, view) => openRoadmapMessage(work, view, work.sourceEventId)}
-          onOpenRoadmapResult={(work, view) => {
-            if (work.resultEventId) openRoadmapMessage(work, view, work.resultEventId);
-          }}
-          roadmapReturnLabel={roadmapReturn?.label}
-          onReturnToRoadmap={roadmapReturn ? returnToRoadmap : undefined}
-          onCreateVote={client.createVote}
-          onCastVote={client.castVote}
-          onCloseVote={client.closeVote}
-          onCreateBindingVote={client.createBindingVote}
-          onCastBindingVote={client.castBindingVote}
-          onWithdrawBindingVote={client.withdrawBindingVote}
-          onSettleBindingVote={client.settleBindingVote}
-          onSetWorkDependencies={client.setWorkDependencies}
-          onSetReaction={client.setReaction}
-          onOpenNavigation={() => setNavigationOpen((value) => !value)}
-          onOpenMember={openMember}
-          onCafe={host.available ? showCafe : undefined}
-          onOpenTopic={() => {
-            host.hide();
-            setSelectedMember(undefined);
-          }}
-          onOpenChannel={selectChannel}
-          context={
-            host.open ? (
-              <div className="context-panel" aria-hidden="true" />
-            ) : (
-              selectedMember && (
-                <MemberPanel
-                  member={selectedMember}
-                  members={members}
-                  participants={participants}
-                  events={snapshot.events}
-                  onSelect={setSelectedMember}
-                  onCafe={host.available ? showCafe : undefined}
-                  onReplayGuide={firstEntry.narrator ? replayGuide : undefined}
-                  onClose={() => setSelectedMember(undefined)}
-                />
-              )
-            )
-          }
-        />
+        {destination === 'home' ? (
+          <CollectiveHome
+            collective={snapshot.collective}
+            events={snapshot.events}
+            collaboration={snapshot.collaboration}
+            connection={snapshot.connection}
+            error={snapshot.error}
+            onOpenNavigation={() => setNavigationOpen((value) => !value)}
+            onOpenEvent={selectChannel}
+          />
+        ) : (
+          <CollectiveChannelWorkspace
+            channelId={channelId}
+            client={client}
+            content={content}
+            firstEntry={firstEntry}
+            focusEventId={focusEventId}
+            host={host}
+            namespace={namespace}
+            onContent={(next) => {
+              setContent(next);
+              if (next === 'roadmap') setRoadmapReturn(undefined);
+            }}
+            onMember={openMember}
+            onNavigation={() => setNavigationOpen((value) => !value)}
+            onOpenRoadmapMessage={openRoadmapMessage}
+            onReplayGuide={replayGuide}
+            onReturnToRoadmap={roadmapReturn ? returnToRoadmap : undefined}
+            onRoadmapView={updateRoadmapView}
+            onSelectChannel={selectChannel}
+            query={query}
+            roadmapReturnLabel={roadmapReturn?.label}
+            roadmapView={roadmapView}
+            selectedMember={selectedMember}
+            setSelectedMember={setSelectedMember}
+          />
+        )}
       </ProductShell>
       {firstEntry.phase === 'entry' && <EntrySpotlight onPair={beginPair} onBrowse={firstEntry.browse} />}
-      {firstEntry.phase === 'playing' && channelId === 'general' && (
+      {firstEntry.phase === 'playing' && destination === 'channel' && channelId === 'general' && (
         <DemoSpotlight
           beat={firstEntry.beat}
           selectedCats={firstEntry.ownCats}
@@ -304,15 +300,9 @@ export function CollectiveWorkspace({
       {firstEntry.phase === 'handoff' && firstEntry.handoffCaptionVisible && firstEntry.narrator && (
         <section className="demo-caption demo-handoff-caption" data-handoff-caption aria-label="轮到你">
           <h2>换你来</h2>
-          <p>点名 {firstEntry.narrator.displayName} 试试</p>
+          <p>@ {firstEntry.narrator.displayName} 试试</p>
         </section>
       )}
     </HostWorkPermissionContext.Provider>
   );
-}
-
-interface RoadmapReturn {
-  readonly channelId: string;
-  readonly label: string;
-  readonly view: RoadmapViewState;
 }

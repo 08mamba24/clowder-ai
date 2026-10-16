@@ -12,6 +12,8 @@ export type WorkbenchSurfaceType =
   | 'file'
   | 'review'
   | 'terminal'
+  | 'thread-replay'
+  | 'video-project'
   | 'workspace';
 
 export type WorkbenchRenderer =
@@ -24,6 +26,8 @@ export type WorkbenchRenderer =
   | 'file-preview'
   | 'review-summary'
   | 'terminal-session'
+  | 'thread-replay'
+  | 'video-project-review'
   | 'workspace-destination';
 
 export type WorkbenchObjectKind =
@@ -35,6 +39,8 @@ export type WorkbenchObjectKind =
   | 'preview-session'
   | 'review'
   | 'terminal-session'
+  | 'thread-replay'
+  | 'video-project'
   | 'workspace-destination';
 
 export interface WorkspaceSurfaceDescriptor {
@@ -104,12 +110,16 @@ export interface WorkbenchLayoutState {
   surfaces: WorkspaceSurfaceDescriptor[];
   pinnedSurfaceIds: string[];
   activeSurfaceId: string | null;
+  /** One explicitly opened preview, persisted with the original working set. */
+  previewSurfaceId: string | null;
   split: {
     primarySurfaceId: string;
     secondarySurfaceId: string;
   } | null;
   sidecar: WorkspaceSurfaceDescriptor | null;
   recentlyClosed: WorkspaceSurfaceDescriptor[];
+  /** Canonical visit index, newest first per input host thread. Absent in older schema-v2 storage. */
+  recentSurfaceIdsByThread?: Record<string, string[]>;
   activity: WorkbenchActivity[];
 }
 
@@ -132,10 +142,14 @@ export interface FocusEntitlement {
 
 interface EntitledAction {
   entitlement: FocusEntitlement;
+  /** Captured only by an explicit input producer; automatic foreground restoration leaves this absent. */
+  visitThreadId?: string;
 }
 
 export type WorkbenchAction =
   | ({ type: 'open-surface'; surface: WorkspaceSurfaceDescriptor } & EntitledAction)
+  | ({ type: 'open-preview-surface'; surface: WorkspaceSurfaceDescriptor } & EntitledAction)
+  | ({ type: 'promote-preview-surface'; surfaceId: string } & EntitledAction)
   | { type: 'refresh-surface'; surface: WorkspaceSurfaceDescriptor }
   | { type: 'resolve-content-surface'; sourceSurfaceId: string; surface: WorkspaceSurfaceDescriptor }
   | ({ type: 'activate-surface'; surfaceId: string } & EntitledAction)
@@ -154,6 +168,7 @@ export type WorkbenchAction =
   | ({ type: 'promote-sidecar'; destination: 'tab' | 'split' } & EntitledAction)
   | ({ type: 'close-surface'; surfaceId: string } & EntitledAction)
   | ({ type: 'close-other-surfaces'; preserveSurfaceId: string } & EntitledAction)
+  | ({ type: 'close-all-unpinned' } & EntitledAction)
   | ({ type: 'collapse-split' } & EntitledAction)
   | ({ type: 'restore-surface'; surfaceId: string } & EntitledAction)
   | { type: 'dismiss-activity'; activityId: string };

@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3';
 import type { IInvocationRecordStore } from '../../cats/services/stores/ports/InvocationRecordStore.js';
 import type { IThreadStore } from '../../cats/services/stores/ports/ThreadStore.js';
 import type { ITurnExecutionStore } from '../../cats/services/stores/ports/TurnExecutionStore.js';
+import type { PublishedTasteSnapshot } from '../../taste/services/PublishedTasteSnapshot.js';
 import { resolveCanonicalTasteRoot, type TasteRepository } from '../../taste/services/TasteRepository.js';
 import {
   EXPLICIT_APPROVED_TASTE_SOURCE_ANCHOR_PREFIX,
@@ -11,6 +12,7 @@ import {
 } from '../cue/ExplicitApprovedTasteTriggerCatalog.js';
 import { type MemoryCueSourceSummary, MemoryCueSourceSummaryReader } from '../cue/MemoryCueSourceSummaryReader.js';
 import { F315_WORKSPACE_READABILITY_TASTE_BUNDLE_V1, tasteTaskBundleAnchor } from '../cue/TasteTaskBundleCatalog.js';
+import type { TasteMemoryLifecycleStore } from './TasteMemoryLifecycleStore.js';
 import { TasteMemoryReader, type TasteMemoryVisibility } from './TasteMemoryReader.js';
 
 type Counts = MemoryCueSourceSummary['counts'];
@@ -51,6 +53,7 @@ interface PullRecallRow {
 export interface TasteObservatorySnapshot {
   entries: TasteEntry[];
   constellations: Constellation[];
+  dimensionHints?: Counts;
   coverage: {
     scope: 'verified_invocations_and_owner_threads';
     totalUnverified: number;
@@ -108,10 +111,18 @@ function addCounts(target: Counts, source: Counts): void {
   target.dismissed += source.dismissed;
 }
 
-async function listSourcePaths(root: string, includePrivate: boolean): Promise<string[]> {
+async function listSourcePaths(
+  root: string,
+  includePrivate: boolean,
+  snapshot: PublishedTasteSnapshot | null,
+): Promise<string[]> {
   const directories = includePrivate ? ['docs/taste/vignettes', 'private/taste'] : ['docs/taste/vignettes'];
   const paths: string[] = [];
   for (const directory of directories) {
+    if (directory === 'docs/taste/vignettes' && snapshot) {
+      paths.push(...(await snapshot.list()));
+      continue;
+    }
     try {
       paths.push(...(await readdir(join(root, directory))).sort().map((name) => `${directory}/${name}`));
     } catch {
@@ -161,29 +172,44 @@ export class TasteObservatoryReader {
     private readonly invocationRecordStore: Pick<IInvocationRecordStore, 'get'>,
     private readonly turnExecutionStore: Pick<ITurnExecutionStore, 'get'>,
     private readonly threadStore: Pick<IThreadStore, 'get'>,
+    private readonly lifecycle?: Pick<TasteMemoryLifecycleStore, 'isReadable'>,
   ) {
     this.cueSummary = new MemoryCueSourceSummaryReader(db);
   }
 
-  async read(ownerUserId: string, options: { includePrivate?: boolean } = {}): Promise<TasteObservatorySnapshot> {
+  async read(
+    ownerUserId: string,
+    options: { includePrivate?: boolean; includeDimensionHints?: boolean } = {},
+  ): Promise<TasteObservatorySnapshot> {
     const entries = await this.readApprovedEntries(ownerUserId, options.includePrivate !== false);
-    const constellations = this.readConstellations(ownerUserId, entries);
+    const { constellations, dimensionHints } = this.readConstellations(ownerUserId, entries);
     const totalUnverified = await this.applyVerifiedPullRecall(ownerUserId, entries);
     return {
       entries,
       constellations,
+      ...(options.includeDimensionHints ? { dimensionHints } : {}),
       coverage: { scope: 'verified_invocations_and_owner_threads', totalUnverified, sharedUnknownPolicy: 'excluded' },
     };
   }
 
   private async readApprovedEntries(ownerUserId: string, includePrivate: boolean): Promise<TasteEntry[]> {
     const root = await resolveCanonicalTasteRoot(this.tasteRepository);
+    const snapshot = (await this.tasteRepository.publishedSnapshot?.()) ?? null;
     const reader = new TasteMemoryReader(
-      { canonicalRoot: () => root, approvalLockKey: () => this.tasteRepository.approvalLockKey() },
+      {
+        canonicalRoot: () => root,
+        approvalLockKey: () => this.tasteRepository.approvalLockKey(),
+        publishedSnapshot: async () => snapshot,
+      },
       ownerUserId,
+      { lifecycle: this.lifecycle },
     );
     const entries: TasteEntry[] = [];
-    for (const sourcePath of await listSourcePaths(root, includePrivate && ownerUserId === this.privateOwnerUserId)) {
+    for (const sourcePath of await listSourcePaths(
+      root,
+      includePrivate && ownerUserId === this.privateOwnerUserId,
+      snapshot,
+    )) {
       const result = await reader.read({ ownerUserId, sourcePath });
       if (!result) continue;
       const trigger = namedTrigger(sourcePath);
@@ -203,8 +229,12 @@ export class TasteObservatoryReader {
     return entries;
   }
 
-  private readConstellations(ownerUserId: string, entries: readonly TasteEntry[]): Constellation[] {
+  private readConstellations(
+    ownerUserId: string,
+    entries: readonly TasteEntry[],
+  ): { constellations: Constellation[]; dimensionHints: Counts } {
     const groups = new Map<string, Constellation>();
+    const dimensionHints = ZERO_COUNTS();
     for (const entry of entries) {
       if (entry.dimension && !groups.has(entry.dimension)) {
         groups.set(entry.dimension, {
@@ -221,7 +251,10 @@ export class TasteObservatoryReader {
       .all(ownerUserId) as Array<{ source_anchor: string }>;
     for (const row of rows) {
       const dimensions = new Set(row.source_anchor.slice('taste-dimensions:'.length).split(',').filter(Boolean));
+      if (![...dimensions].some((dimension) => groups.has(dimension))) continue;
       const summary = this.cueSummary.summarize(ownerUserId, 'taste', row.source_anchor);
+      // One delivery bundle may name multiple visible dimensions; count that bundle only once.
+      addCounts(dimensionHints, summary.counts);
       for (const dimension of dimensions) {
         const group = groups.get(dimension);
         if (!group) continue;
@@ -231,7 +264,10 @@ export class TasteObservatoryReader {
         }
       }
     }
-    return [...groups.values()].sort((a, b) => a.dimension.localeCompare(b.dimension));
+    return {
+      constellations: [...groups.values()].sort((a, b) => a.dimension.localeCompare(b.dimension)),
+      dimensionHints,
+    };
   }
 
   private async applyVerifiedPullRecall(ownerUserId: string, entries: TasteEntry[]): Promise<number> {

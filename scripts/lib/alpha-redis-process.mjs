@@ -3,18 +3,61 @@ import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertNamedAlphaCheckout, parseNamedAlphaCoordinates } from './alpha-coordinates.mjs';
+import { alphaIdentityRefusal, captureAlphaIdentity } from './alpha-identity-diagnostics.mjs';
 import { captureProcessIdentity, captureReadableIdentity, PROCESS_START_TIME_FORMAT } from './process-identity.mjs';
 
-function listenerPids(port) {
+const REDIS_SUBJECT = 'Alpha Redis process';
+
+function redisRefusal(expected, current, dataDirectory, mismatchMessage) {
+  return alphaIdentityRefusal({
+    subject: REDIS_SUBJECT,
+    expected,
+    current,
+    required: { cwd: dataDirectory, ucomm: 'redis-server', startedAtFormat: PROCESS_START_TIME_FORMAT },
+    mismatchMessage,
+  });
+}
+
+function listenerPids(port, timeout = 2_000) {
   const output = execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], {
     encoding: 'utf8',
-    timeout: 2_000,
+    timeout,
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
   const values = output.split('\n');
   if (!values.length || values.some((value) => !/^[1-9]\d*$/.test(value)))
     throw new Error('Redis listener identity is unreadable');
   return [...new Set(values.map(Number))];
+}
+
+// A timed-out listener read supplies no identity evidence. Reobserve the whole
+// scope once, with one fixed extra second; never replay a Redis command or reuse
+// partial identity fields. A conclusive mismatch or any other failure stops.
+function withListenerReobservation(
+  observe,
+  { readListeners = listenerPids, observationNow = () => performance.now() } = {},
+) {
+  let deadline = Number.POSITIVE_INFINITY;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let listenerFailure;
+    try {
+      const value = observe((port) => {
+        const remaining = Math.min(2_000, deadline - observationNow());
+        if (remaining <= 0) throw new Error('Alpha Redis listener observation budget exhausted');
+        try {
+          return readListeners(port, Math.max(1, Math.floor(remaining)));
+        } catch (error) {
+          listenerFailure = error;
+          throw error;
+        }
+      });
+      if (observationNow() >= deadline) throw new Error('Alpha Redis listener observation budget exhausted');
+      return value;
+    } catch (error) {
+      if (attempt !== 0 || error !== listenerFailure || error?.code !== 'ETIMEDOUT') throw error;
+      deadline = observationNow() + 1_000;
+    }
+  }
 }
 
 function redisScope(raw) {
@@ -38,10 +81,7 @@ function validRedisIdentity(identity, dataDirectory) {
 }
 
 /** Capture only the actual listener spawned into the selected new directory; never sends a Redis command. */
-export function captureNamedAlphaRedisIdentity(
-  raw,
-  { readListeners = listenerPids, capture = captureReadableIdentity } = {},
-) {
+function captureRedisIdentityOnce(raw, { readListeners = listenerPids, capture = captureReadableIdentity } = {}) {
   const scope = redisScope(raw);
   const pidFile = join(scope.dataDirectory, `redis-${scope.port}.pid`);
   const before = lstatSync(pidFile);
@@ -60,18 +100,23 @@ export function captureNamedAlphaRedisIdentity(
   const listeners = readListeners(scope.port);
   if (listeners.length !== 1 || listeners[0] !== pid)
     throw new Error('Alpha Redis listener does not match the spawned pidfile');
-  const identity = capture(pid);
+  const identity = captureAlphaIdentity(pid, capture, REDIS_SUBJECT);
   if (!validRedisIdentity(identity, scope.dataDirectory))
-    throw new Error('Alpha Redis process identity does not match its new home');
+    throw redisRefusal(
+      undefined,
+      identity,
+      scope.dataDirectory,
+      'Alpha Redis process identity does not match its new home',
+    );
   return { v: 1, ...scope, pid, process: identity };
 }
 
+export function captureNamedAlphaRedisIdentity(raw, deps = {}) {
+  return withListenerReobservation((readListeners) => captureRedisIdentityOnce(raw, { ...deps, readListeners }), deps);
+}
+
 /** OS metadata must prove the same incarnation before PING, CONFIG, BGSAVE or shutdown is considered. */
-export function verifyNamedAlphaRedisIdentity(
-  raw,
-  proof,
-  { readListeners = listenerPids, capture = captureProcessIdentity } = {},
-) {
+function verifyRedisIdentityOnce(raw, proof, { readListeners = listenerPids, capture = captureProcessIdentity } = {}) {
   const scope = redisScope(raw);
   if (
     !proof ||
@@ -86,7 +131,7 @@ export function verifyNamedAlphaRedisIdentity(
     throw new Error('Alpha Redis ownership proof is missing or changed');
   const listeners = readListeners(scope.port);
   if (listeners.length !== 1 || listeners[0] !== proof.pid) throw new Error('Alpha Redis listener was replaced');
-  const current = capture(proof.pid);
+  const current = captureAlphaIdentity(proof.pid, capture, REDIS_SUBJECT);
   if (
     !validRedisIdentity(current, scope.dataDirectory) ||
     !validRedisIdentity(proof.process, scope.dataDirectory) ||
@@ -95,8 +140,70 @@ export function verifyNamedAlphaRedisIdentity(
     current.command !== proof.process.command ||
     current.cwd !== proof.process.cwd
   )
-    throw new Error('Alpha Redis process incarnation changed');
+    throw redisRefusal(proof.process, current, scope.dataDirectory, 'Alpha Redis process incarnation changed');
   return true;
+}
+
+export function verifyNamedAlphaRedisIdentity(raw, proof, deps = {}) {
+  return withListenerReobservation(
+    (readListeners) => verifyRedisIdentityOnce(raw, proof, { ...deps, readListeners }),
+    deps,
+  );
+}
+
+function sendVerifiedRedisPing(port, run) {
+  let response;
+  try {
+    response = run('redis-cli', ['-h', '127.0.0.1', '-p', String(port), '--raw', 'ping'], {
+      encoding: 'utf8',
+      timeout: 2_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch (cause) {
+    throw new Error(`Alpha Redis PING failed after identity verification: ${cause.message}`, { cause });
+  }
+  if (response !== 'PONG') throw new Error(`Alpha Redis PING returned ${JSON.stringify(response)}`);
+  return true;
+}
+
+/** Replace the launcher's one-second settling sleep with bounded fresh identity observations.
+ * Only unavailable argv is retryable. Every observation rechecks the full scope/listener/incarnation;
+ * a capture error or a conclusive mismatch stops immediately, and no observation grants future commands.
+ * The original mandatory verification is separate from the one-second budget for extra observations.
+ * Synchronous OS reads can overrun that budget, but a late retry never sends a command.
+ */
+export function pingNamedAlphaRedis(
+  raw,
+  proof,
+  {
+    readListeners = listenerPids,
+    capture = captureProcessIdentity,
+    now = () => performance.now(),
+    sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
+    run = execFileSync,
+  } = {},
+) {
+  let deadline = Number.POSITIVE_INFINITY;
+  let refusal;
+  for (let attempt = 0; attempt < 10 && now() < deadline; attempt += 1) {
+    try {
+      verifyNamedAlphaRedisIdentity(raw, proof, { readListeners, capture });
+      refusal = undefined;
+    } catch (error) {
+      if (error.code !== 'ALPHA_IDENTITY_ARGV_UNAVAILABLE' || proof?.process?.argvAvailable !== true) throw error;
+      refusal = error;
+    }
+    if (now() >= deadline) break;
+    if (!refusal) return sendVerifiedRedisPing(proof.port, run);
+    deadline = Math.min(deadline, now() + 1_000);
+    if (attempt < 9) sleep(Math.min(20, Math.max(0, deadline - now())));
+  }
+  throw new Error(
+    `Alpha Redis startup wait budget exhausted: ${refusal?.message ?? 'identity observation finished too late'}`,
+    {
+      cause: refusal,
+    },
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
@@ -104,6 +211,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const [command, raw, proof] = process.argv.slice(2);
     if (command === 'capture') process.stdout.write(`${JSON.stringify(captureNamedAlphaRedisIdentity(raw))}\n`);
     else if (command === 'verify') verifyNamedAlphaRedisIdentity(raw, JSON.parse(proof));
+    else if (command === 'ping-ready') pingNamedAlphaRedis(raw, JSON.parse(proof));
     else throw new Error('Invalid Alpha Redis ownership operation');
   } catch (error) {
     process.stderr.write(`[alpha-redis-process] ${error.message}\n`);

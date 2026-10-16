@@ -9,13 +9,17 @@ const data = vi.hoisted(() => ({
     result: { kind: 'loading' } as unknown,
     staleRead: null as unknown,
     refetch: vi.fn(),
+    nextPage: vi.fn(),
+    previousPage: vi.fn(),
+    setPersonalView: vi.fn(),
+    setMentionPeriod: vi.fn(),
     readsStarted: () => 1,
     resultGeneration: 1 as number | null,
   },
   pathname: '/thread/current',
   push: vi.fn(),
   mode: vi.fn(),
-  approvalRefresh: vi.fn(),
+  approvalRefresh: vi.fn(async () => undefined),
   navigate: vi.fn(),
 }));
 vi.mock('next/navigation', () => ({ usePathname: () => data.pathname, useRouter: () => ({ push: data.push }) }));
@@ -54,6 +58,8 @@ const approvalItem = (id: string, summary = `审批 ${id}`): UnifiedAttentionIte
   approval: {
     proposalId: id,
     sourceFeatureId: 'F128',
+    resolution: 'open',
+    materialization: { state: 'not_started' },
     requesterCatId: 'opus',
     summary,
     detail: {},
@@ -76,10 +82,15 @@ function read(overrides: Partial<UnifiedAttentionReadV1> = {}): UnifiedAttention
     scope: 'owner_all_projects',
     identity: { ownerUserId: 'owner-1' },
     observedAt: 3,
-    sources: { approvals: source(), needsMe: source({ coverage: 'current_linked_F310_five_producers' }) },
+    sources: {
+      approvals: source(),
+      needsMe: source({ coverage: 'current_linked_F310_five_producers' }),
+      structuredChoices: source({ coverage: 'pending_f306_structured_choices' }),
+    },
     readWindow: { startedAt: 1, endedAt: 3, consistency: 'independent_source_reads' },
     consistency: { state: 'verified', reasons: [] },
     items: [],
+    attentionCount: overrides.totalCount,
     page: { offset: 0, limit: 20, scope: 'known_rows', hasMore: false },
     ...overrides,
   };
@@ -119,11 +130,105 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   });
 
+  it('separates waiting decisions from mentions without hiding other existing work', () => {
+    show(
+      ok({
+        items: [
+          approvalItem('group-approval'),
+          judgmentItem('repair', 'repair'),
+          {
+            decisionRef: 'mention:group',
+            kind: 'user_mention',
+            summary: '@you',
+            linkedNeedsMe: [],
+            userMention: {
+              threadId: 'thread_group',
+              messageId: 'message-group',
+              catId: 'codex61-sol',
+              content: 'Please look here',
+              timestamp: 2,
+              expectedRevision: 0,
+            },
+          },
+        ],
+        totalCount: 3,
+        attentionCount: 1,
+      }),
+    );
+    render();
+    open();
+    const decisions = document.querySelector('[data-testid="mailbox-group-decisions"]');
+    const mentions = document.querySelector('[data-testid="mailbox-group-mentions"]');
+    expect(decisions?.textContent).toContain('等你决定');
+    expect(mentions?.textContent).toContain('@你');
+    expect(decisions?.querySelectorAll('[data-testid="mailbox-item"]').length).toBe(1);
+    expect(document.querySelector('[data-testid="mailbox-group-other"]')?.textContent).toContain('需要修复');
+    expect(mentions?.querySelectorAll('[data-testid="mailbox-item"]').length).toBe(1);
+  });
+
+  it('puts each proven empty state inside its own group', () => {
+    show(ok({ items: [], totalCount: 0, attentionCount: 0 }));
+    render();
+    open();
+    expect(document.querySelector('[data-testid="mailbox-group-decisions"]')?.textContent).toContain(
+      '暂无等你决定的事',
+    );
+    expect(document.querySelector('[data-testid="mailbox-group-mentions"]')?.textContent).toContain('暂无 @你 请求');
+  });
+
+  it('keeps a recovery entrance even when no current item is ignored', () => {
+    show(ok({ items: [], totalCount: 0, attentionCount: 0 }));
+    render();
+    open();
+    const ignored = document.querySelector<HTMLButtonElement>('[data-testid="mailbox-open-ignored"]');
+    expect(ignored).not.toBeNull();
+    act(() => ignored?.click());
+    expect(data.view.setPersonalView).toHaveBeenCalledWith('ignored', 'week');
+    expect(text('mailbox-title')).toBe('已忽略');
+  });
+
+  it('opens Schedule from the second mailbox tab through the original Workspace destination and closes the panel', () => {
+    show(ok({ totalCount: 0 }));
+    render();
+    open();
+    const schedule = document.querySelector<HTMLButtonElement>('[data-testid="mailbox-tab-schedule"]');
+    expect(schedule).not.toBeNull();
+    expect(schedule?.textContent).toBe('日程');
+    expect(schedule?.querySelector('[data-testid*="count"]')).toBeNull();
+    act(() => schedule?.click());
+    expect(data.mode).toHaveBeenCalledWith('product-schedule');
+    expect(data.push).not.toHaveBeenCalled();
+    expect(panel()).toBeNull();
+    expect(data.navigate).not.toHaveBeenCalled();
+  });
+
+  it('keeps a mention in the panel while the decision-only badge is zero', () => {
+    show(
+      ok({
+        items: [{ decisionRef: 'mention:one', kind: 'user_mention', summary: '@你请求', linkedNeedsMe: [] }],
+        totalCount: 1,
+        attentionCount: 0,
+      }),
+    );
+    render();
+    expect(host.querySelector('[data-testid="rail-badge-count"]')).toBeNull();
+    open();
+    expect(text('mailbox-tab-count')).toBe('0');
+    expect(rows()).toHaveLength(1);
+    expect(text('mailbox-state-text')).toContain('1 件');
+  });
+
   describe('what the rail entry claims', () => {
     const badgeOf = () => host.querySelector('[data-testid^="rail-badge-"]');
-    const cases: [string, MailboxRead, string, string | null][] = [
+    const cases: [string, MailboxRead, string, string | null, string?][] = [
       ['first read in flight', { kind: 'loading' }, '读取中', 'loading'],
-      ['proven total of 3', ok({ items: [approvalItem('a'), approvalItem('b')], totalCount: 3 }), '3 件', 'count'],
+      [
+        'proven total of 3',
+        ok({ items: [approvalItem('a'), approvalItem('b')], totalCount: 3 }),
+        '3 件',
+        'count',
+        '当前范围共 3 件',
+      ],
       [
         'rows but no total',
         ok({ items: [approvalItem('a')], consistency: { state: 'uncertain', reasons: ['x'] } }),
@@ -132,14 +237,15 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
       ],
       ['proven empty', ok({ items: [], totalCount: 0 }), '暂无', null],
       [
-        'one side unread, rows from the other: "!" and confirmed-has-items, never a dot (1.6 board)',
+        'one side unread and an unqualified judgment row: "!", with no decision count claim',
         ok({
           status: 'partial',
           items: [judgmentItem('j')],
           sources: { approvals: source({ status: 'unavailable', exhaustiveness: 'unknown' }), needsMe: source() },
         }),
-        '仅部分读取 · 已确认有事',
+        '仅部分读取',
         'alert',
+        '仅部分读取 · 已确认有事',
       ],
       [
         'one side unread, nothing from the other',
@@ -166,14 +272,18 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
       ['route failure', { kind: 'failed', reason: 'unavailable' }, '暂不可用', 'alert'],
       ['explicit 401', { kind: 'failed', reason: 'unauthenticated' }, '需要登录', null],
     ];
-    it.each(cases)('%s → %s', (_name, result, state, badge) => {
+    it.each(cases)('%s → %s', (_name, result, state, badge, panelState = state) => {
       show(result);
       render();
       expect(button().getAttribute('aria-label')).toBe(`待办，${state}`);
       expect(button().getAttribute('title')).toBeNull();
       expect(badgeOf()?.getAttribute('data-testid') ?? null).toBe(badge ? `rail-badge-${badge}` : null);
       open();
-      expect(text('mailbox-state-text')).toBe(state);
+      if (panelState === '暂无')
+        expect(document.querySelector('[data-testid="mailbox-group-decisions"]')?.textContent).toContain(
+          '暂无等你决定的事',
+        );
+      else expect(text('mailbox-state-text')).toBe(panelState);
       expect(text('mailbox-title')).toBe('待办');
       expect(document.querySelector('[data-testid="mailbox-panel"] [title]')).toBeNull();
     });
@@ -271,17 +381,17 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
       expect(panel()).toBeNull();
     });
 
-    it('is one full-height panel titled 待办 with a single tab, 需要我处理, whose count is only the proven total', () => {
+    it('is one full-height panel with a plain 需要我处理 heading and only the proven count', () => {
       show(ok({ items: [approvalItem('a')], totalCount: 7 }));
       render();
       open();
       expect(panel()?.className).toMatch(/\btop-0\b/);
       expect(panel()?.className).toMatch(/\bbottom-0\b/);
       expect(panel()?.getAttribute('aria-label')).toBe('待办');
-      const tabs = [...document.querySelectorAll('[role="tab"]')];
-      expect(tabs.map((tab) => tab.textContent)).toEqual(['需要我处理7']);
-      expect(tabs[0].getAttribute('aria-selected')).toBe('true');
-      expect(document.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby')).toBe(tabs[0].id);
+      expect(document.querySelector('[role="tab"]')).toBeNull();
+      const heading = document.querySelector('[data-testid="mailbox-tab-needs-me"]');
+      expect(heading?.textContent).toBe('需要我处理7');
+      expect(document.querySelector('[role="region"]')?.getAttribute('aria-labelledby')).toBe(heading?.id);
     });
 
     it('prints no number beside the tab when the total is unconfirmed, partial, loading or failed', () => {
@@ -336,18 +446,16 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
         expect(rows()[1].style.border).not.toContain('--shell-hairline-strong');
       });
 
-      it('draws the tab as the board does: a framed track, a paper segment, the count as a primary-soft pill', () => {
-        show(ok({ items: [approvalItem('a')], totalCount: 4 }));
+      it('shows two destination buttons and keeps the proven count on Needs me alone', () => {
+        show(ok({ totalCount: 7 }));
         render();
         open();
-        const track = document.querySelector<HTMLElement>('[role="tablist"]');
-        const tab = document.querySelector<HTMLElement>('[role="tab"]');
-        const count = document.querySelector<HTMLElement>('[data-testid="mailbox-tab-count"]');
-        expect(track?.style.background).toContain('--shell-frame');
-        expect(tab?.style.background).toContain('--shell-paper');
-        expect(count?.style.background).toContain('--shell-primary-soft');
-        expect(count?.style.color).toContain('--shell-primary-text');
-        expect(count?.textContent).toBe('4');
+        expect(document.querySelector('[role="tablist"]')).toBeNull();
+        expect(document.querySelector('[data-testid="mailbox-tab-needs-me"]')?.tagName).toBe('BUTTON');
+        expect(document.querySelector('[data-testid="mailbox-tab-schedule"]')?.textContent).toBe('日程');
+        const pill = document.querySelector<HTMLElement>('[data-testid="mailbox-tab-count"]');
+        expect(pill?.style.background).toBe('var(--shell-paper)');
+        expect(pill?.style.color).toBe('var(--shell-ink)');
       });
 
       it('an approval row leads with the proposing cat’s avatar and bold name, then the title, then the feature', () => {
@@ -451,15 +559,15 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
       expect(rows()[0].textContent).toContain('F999');
     });
 
-    it('keeps conflicting variants of one decision and several decisions of one task — none is swallowed', () => {
+    it('shows an approval once while keeping each work variant for its own decision', () => {
       const twin = { ...approvalItem('a'), summary: '同一个决定的另一个版本' };
       show(
         ok({ items: [approvalItem('a'), twin, judgmentItem('same-task'), judgmentItem('same-task')], totalCount: 4 }),
       );
       render();
       open();
-      expect(rows()).toHaveLength(4);
-      expect(new Set(rows().map((row) => row.getAttribute('data-row-key'))).size).toBe(4);
+      expect(rows()).toHaveLength(3);
+      expect(new Set(rows().map((row) => row.getAttribute('data-row-key'))).size).toBe(3);
     });
 
     describe('opening a row', () => {
@@ -483,7 +591,7 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
       });
 
       it('keeps one row open at a time, and so only one primary button on screen', () => {
-        show(ok({ items: [approvalItem('a'), judgmentItem('j'), judgmentItem('r', 'repair')], totalCount: 3 }));
+        show(ok({ items: [judgmentItem('a'), judgmentItem('j'), judgmentItem('r', 'repair')], totalCount: 3 }));
         render();
         open();
         act(() => toggle(0)?.click());
@@ -556,19 +664,18 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
         expect(openOriginal()).toHaveLength(1);
       });
 
-      it('an approval row that cannot be located says so and offers only the approval list', () => {
+      it('omits the link and placeholder when an approval has no reliable original place', () => {
         show(ok({ items: [approvalItem('a')], totalCount: 1 }));
         render();
         open();
         act(() => toggle(0)?.click());
-        expect(text('mailbox-place-note')).toBe('原处暂不可定位');
-        expect(body(0)?.querySelectorAll('button')).toHaveLength(1);
-        expect(openOriginal()[0].textContent).toBe('打开审批列表');
-        expect(openOriginal()[0].getAttribute('data-place')).toBe('list');
+        expect(text('mailbox-place-note')).toBeNull();
+        expect(openOriginal()).toHaveLength(0);
+        expect(text('mailbox-history')).toBe('已处理的 @你');
+        expect(text('mailbox-records')).toBe('审批记录');
       });
 
       it.each([
-        ['approval', approvalItem('a'), 'approval', 1, '打开审批列表'],
         ['judgment', judgmentItem('j'), 'needs-me', 0, '打开待处理列表'],
         ['repair', judgmentItem('r', 'repair'), 'needs-me', 0, '打开待处理列表'],
       ] as const)('a %s row whose place cannot be located opens its list, named as the list', (_kind, item, mode, approvalRefreshes, label) => {
@@ -657,7 +764,7 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
       render();
       open();
       expect(text('mailbox-state-text')).toBe('仅部分读取');
-      expect(text('mailbox-partial-note')).toBe('审批和待处理是分开读的，这次没能确认两边对得上');
+      expect(text('mailbox-partial-note')).toBe('这次没能确认各项读取对得上');
       expect(document.querySelector('[data-testid="mailbox-empty"]')).toBeNull();
     });
 
@@ -688,7 +795,10 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
       show(ok({ items: [], totalCount: 0 }));
       render();
       open();
-      expect(text('mailbox-empty')).toBe('暂无待办');
+      expect(document.querySelector('[data-testid="mailbox-group-decisions"]')?.textContent).toContain(
+        '暂无等你决定的事',
+      );
+      expect(document.querySelector('[data-testid="mailbox-group-mentions"]')?.textContent).toContain('暂无 @你 请求');
       expect(document.querySelector('[data-testid="mailbox-retry"]')).toBeNull();
     });
 
@@ -710,7 +820,7 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
       expect(document.querySelector('[data-testid="mailbox-stale-note"]')).toBeNull();
     });
 
-    it('says the page is a prefix when more rows exist, without claiming everything was read when it is not', () => {
+    it('describes the current page and exposes real navigation when more rows exist', () => {
       show(
         ok({
           items: [approvalItem('a')],
@@ -720,7 +830,10 @@ describe('F322 待办 (the mailbox) on the unified read', () => {
       );
       render();
       open();
-      expect(text('mailbox-has-more')).toBe('还有更多事项，这里先显示前 20 件');
+      expect(text('mailbox-has-more')).toBe('还有更多事项，本页显示 1 件');
+      act(() => document.querySelector<HTMLButtonElement>('[data-testid="mailbox-next-page"]')?.click());
+      expect(data.view.nextPage).toHaveBeenCalledOnce();
+      expect(document.querySelector<HTMLButtonElement>('[data-testid="mailbox-previous-page"]')?.disabled).toBe(true);
     });
 
     it('stays quiet about paging when the page reports no more rows', () => {

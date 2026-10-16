@@ -169,7 +169,7 @@ describe('HostedApprovalCard: the meeting-intake card, reporting its own request
     expect($('mailbox-approval-unmatched')).toBeNull();
   });
 
-  it('a 2xx is "operation ended, confirming", then 已批准 only with a settled row', async () => {
+  it('a 2xx is "operation ended, confirming", then 已同意 only with a settled row', async () => {
     await render();
     await flush();
     await confirm();
@@ -181,7 +181,7 @@ describe('HostedApprovalCard: the meeting-intake card, reporting its own request
       { proposalId: 'intake-1', sourceFeatureId: 'F292', ownerUserId: OWNER, resolution: 'accepted', decidedAt: 9 },
     ];
     await answer(okRead([]));
-    expect(text('mailbox-approval-result')).toContain('已批准');
+    expect(text('mailbox-approval-result')).toContain('已同意');
     expect($('meeting-confirm')).toBeNull();
   });
 

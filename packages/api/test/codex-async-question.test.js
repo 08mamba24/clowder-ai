@@ -32,6 +32,13 @@ test('provider-native async questions stay visible and actionable in the current
     type: 'text',
     catId: CAT,
     content: 'Choose a target and explain the constraint.',
+    outputMessage: {
+      provider: 'codex',
+      nativeId: 'call-question-1',
+      channel: 'final',
+      complete: true,
+      textMode: 'replace',
+    },
     timestamp: result[0].timestamp,
   });
 

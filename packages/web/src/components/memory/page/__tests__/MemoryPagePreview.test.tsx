@@ -1,11 +1,13 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useSidebarStore } from '@/stores/sidebarStore';
 import { MemoryPagePreview } from '../MemoryPagePreview';
 
 const fetchMock = vi.hoisted(() => vi.fn());
 const routerPush = vi.hoisted(() => vi.fn());
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: routerPush }) }));
+vi.mock('@/hooks/useIsDesktop', () => ({ useIsDesktop: () => true }));
 vi.mock('@/utils/api-client', () => ({ apiFetch: fetchMock }));
 vi.mock('@/hooks/useCatData', () => ({
   useCatData: () => ({ getCatById: () => ({ nickname: '宪宪', displayName: '布偶猫' }) }),
@@ -26,6 +28,7 @@ const ok = (value: unknown) => Promise.resolve({ ok: true, json: async () => val
 let container: HTMLDivElement;
 let root: Root;
 beforeEach(() => {
+  useSidebarStore.setState({ isOpen: false, initialized: true });
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   container = document.createElement('div');
   document.body.append(container);
@@ -82,6 +85,48 @@ const render = async (tab: 'library' | 'brakes' | 'all') => {
 };
 
 describe('memory page read-only preview', () => {
+  it('all memories starts with the home study and does not read or place curation records', async () => {
+    const original = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation((path: string) =>
+      path === '/api/memory/curation'
+        ? ok({
+            enabled: false,
+            entries: [
+              {
+                id: 'saved-curation',
+                title: '已有整理',
+                summary: '已保存的线索',
+                threadId: 'thread-a',
+                generatedAt: '2026-10-08',
+                messageCount: 2,
+              },
+            ],
+          })
+        : original?.(path),
+    );
+    await render('all');
+    expect(container.querySelector('main h1, main h2')?.textContent).toBe('主星书房');
+    expect(container.querySelector('[aria-label="这段时间"]')).toBeNull();
+    expect(container.textContent).not.toContain('已有整理');
+    expect(fetchMock.mock.calls.some(([path]) => path === '/api/memory/curation')).toBe(false);
+  });
+  it('lets a collapsed memory page reopen the conversation sidebar and explicitly return to its original thread', async () => {
+    await act(async () =>
+      root.render(<MemoryPagePreview tab="library" shell="v2" basePath="/memory" from="thread-owner" />),
+    );
+    const back = container.querySelector<HTMLAnchorElement>('a[aria-label="返回原对话"]');
+    expect(back?.getAttribute('href')).toBe('/thread/thread-owner');
+    const reopen = container.querySelector<HTMLButtonElement>('button[aria-label="展开侧栏"]');
+    expect(reopen).not.toBeNull();
+    await act(async () => reopen?.click());
+    expect(useSidebarStore.getState().isOpen).toBe(true);
+    expect(container.querySelector('button[aria-label="展开侧栏"]')).toBeNull();
+    expect(fetchMock.mock.calls.every((args: unknown[]) => args.length === 1)).toBe(true);
+  });
+  it('direct entry always has a conversation return without manufacturing a previous thread', async () => {
+    await render('library');
+    expect(container.querySelector('a[aria-label="返回对话"]')?.getAttribute('href')).toBe('/');
+  });
   it('a verified source opens the full chat route from this global page', async () => {
     const original = fetchMock.getMockImplementation();
     fetchMock.mockImplementation((path: string) =>
@@ -114,7 +159,7 @@ describe('memory page read-only preview', () => {
     await act(async () => link?.click());
     expect(routerPush).toHaveBeenCalledWith('/thread/thread-a');
   });
-  it('keeps four tabs on preview routes and keeps preview writes disabled', async () => {
+  it('keeps four tabs on preview routes and restores existing library actions', async () => {
     await render('library');
     expect([...container.querySelectorAll('nav a')].map((a) => a.textContent)).toEqual([
       '全部记忆',
@@ -129,7 +174,9 @@ describe('memory page read-only preview', () => {
       ['＋ 新建资料库', '收录', '不收录'].includes(b.textContent ?? ''),
     );
     expect(writeButtons).toHaveLength(3);
-    expect(writeButtons.every((b) => b.disabled)).toBe(true);
+    expect(writeButtons.find((b) => b.textContent === '＋ 新建资料库')?.disabled).toBe(false);
+    expect(writeButtons.find((b) => b.textContent === '不收录')?.disabled).toBe(false);
+    expect(writeButtons.find((b) => b.textContent === '收录')?.disabled).toBe(true);
     expect(container.textContent).not.toContain('hidden-id');
     expect(container.textContent).toContain('主人资料库');
     expect(container.textContent).toContain('私有');
@@ -178,6 +225,6 @@ describe('memory page read-only preview', () => {
     await render('all');
     expect(container.textContent).toContain('暂时读不到品味');
     expect(container.textContent).not.toContain('品味 0');
-    expect(container.querySelector('input')?.disabled).toBe(true);
+    expect(container.querySelector('input')?.disabled).toBe(false);
   });
 });

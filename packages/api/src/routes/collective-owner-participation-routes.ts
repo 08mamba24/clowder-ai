@@ -2,6 +2,7 @@ import { type CollectiveConnector, desiredParticipationSchema } from '@cat-cafe/
 import { type CatId, collectiveSourceIdentitySchema } from '@cat-cafe/shared';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import type { QueueTargetExecutionReadPort } from '../domains/cats/services/agents/invocation/queue-ledger/QueueTargetExecutionView.js';
 import type { IMessageStore } from '../domains/cats/services/stores/ports/MessageStore.js';
 import type { ITaskStore } from '../domains/cats/services/stores/ports/TaskStore.js';
 import type { IThreadStore } from '../domains/cats/services/stores/ports/ThreadStore.js';
@@ -10,7 +11,7 @@ import {
   type ParticipationCat,
   reconcileParticipation,
 } from '../domains/plugin/builtin-runtime/collective-participation-reconciler.js';
-import type { CollectiveWorkAuthority } from '../domains/plugin/builtin-runtime/collective-work-authority.js';
+import type { CollectiveWorkAuthority } from '../domains/plugin/builtin-runtime/collective-work/collective-work-authority.js';
 import type { CollectiveWorkDispatcher } from '../domains/plugin/builtin-runtime/collective-work-dispatcher.js';
 import { sendCollectiveOwnerError } from './collective-owner-errors.js';
 import { registerCollectiveOwnerListeningRoutes } from './collective-owner-listening-routes.js';
@@ -27,8 +28,9 @@ import { pluginAccessError, requirePluginOwnerLocalAccess } from './plugin-acces
 interface OwnerParticipationOptions {
   readonly connector: () => CollectiveConnector | undefined;
   readonly cats: () => readonly ParticipationCat[];
-  readonly threads: Pick<IThreadStore, 'get' | 'list' | 'create' | 'addParticipants'>;
+  readonly threads: Pick<IThreadStore, 'get' | 'list' | 'create' | 'addParticipants' | 'claimSystemKind'>;
   readonly messages: IMessageStore;
+  readonly queue?: QueueTargetExecutionReadPort;
   readonly tasks: ITaskStore;
   readonly context: CollectiveCurrentContext;
   readonly work: CollectiveWorkAuthority;

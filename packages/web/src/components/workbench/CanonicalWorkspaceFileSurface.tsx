@@ -23,6 +23,7 @@ export function CanonicalWorkspaceFileSurface({
       {...target}
       rootSelection={surface.rootSelection}
       title={surface.title}
+      perFileIdentity={surface.objectRef.id !== target.worktreeId}
       onBack={onBack}
       onResolved={(resolved) =>
         useF307ExperienceWorkbenchStore

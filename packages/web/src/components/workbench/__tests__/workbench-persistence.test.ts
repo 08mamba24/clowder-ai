@@ -41,7 +41,10 @@ class MemoryStorage implements Storage {
   }
 }
 
-function phaseALayout(): Omit<WorkbenchLayoutState, 'schemaVersion' | 'pinnedSurfaceIds' | 'sidecar'> & {
+function phaseALayout(): Omit<
+  WorkbenchLayoutState,
+  'schemaVersion' | 'pinnedSurfaceIds' | 'sidecar' | 'previewSurfaceId'
+> & {
   schemaVersion: 1;
 } {
   const current = createInitialWorkbenchState();
@@ -57,6 +60,27 @@ function phaseALayout(): Omit<WorkbenchLayoutState, 'schemaVersion' | 'pinnedSur
 }
 
 describe('Workbench persistence boundary', () => {
+  it.each([
+    'thread-a',
+    null,
+  ])('retains a Changes origin across reload without borrowing the file owner coordinate: %s', (threadId) => {
+    const storage = new MemoryStorage();
+    const navigationOrigin = { kind: 'workspace-changes' as const, worktreeId: 'listed-source', threadId };
+    const file = createFileSurface({ worktreeId: 'canonical-target', path: 'src/owner.ts', navigationOrigin });
+    storage.setItem(WORKBENCH_STORAGE_KEY, JSON.stringify(createInitialWorkbenchState([file])));
+    expect(loadWorkbenchState({ storage }).layout.surfaces[0]?.navigationOrigin).toEqual(navigationOrigin);
+    for (const invalid of [
+      { ...navigationOrigin, worktreeId: '' },
+      { ...navigationOrigin, threadId: 'bad\u0000thread' },
+    ]) {
+      storage.setItem(
+        WORKBENCH_STORAGE_KEY,
+        JSON.stringify(createInitialWorkbenchState([{ ...file, navigationOrigin: invalid }])),
+      );
+      expect(loadWorkbenchState({ storage }).layout.surfaces).toHaveLength(0);
+    }
+  });
+
   it('retains the original document return location across reload and rejects malformed source coordinates', () => {
     const storage = new MemoryStorage();
     const navigationOrigin = {

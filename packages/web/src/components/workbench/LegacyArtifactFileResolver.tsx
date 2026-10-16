@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import { apiFetch } from '@/utils/api-client';
 import { ArtifactFileSourceResolver } from './ArtifactFileSourceResolver';
 import {
@@ -11,7 +12,7 @@ import {
   artifactFileLocationSchema,
 } from './artifact-file-source';
 import { ContentLandingHeader } from './content-review/ContentLandingHeader';
-import { createFileSurface } from './real-surface-adapters';
+import { createFilePreviewSurface, createFileSurface } from './real-surface-adapters';
 import { WorkspaceRootConnectionPanel } from './WorkspaceRootConnectionPanel';
 import type { WorkspaceSurfaceDescriptor } from './workbench-contract';
 
@@ -48,6 +49,7 @@ export function LegacyArtifactFileResolver({
   readonly onBack: () => void;
   readonly forceChoice?: boolean;
 }) {
+  const presentation = useShellPresentation();
   const [inventory, setInventory] = useState<Inventory | null>(null);
   const [saved, setSaved] = useState<ArtifactFileLocation | null>(null);
   const [choosing, setChoosing] = useState(forceChoice);
@@ -126,7 +128,7 @@ export function LegacyArtifactFileResolver({
         throw new Error('本次选择尚未保存。请重试；此前保存的位置保持不变。');
       }
       setSaved(next);
-      resolved(createFileSurface(target), next);
+      resolved((presentation === 'v2' ? createFilePreviewSurface : createFileSurface)(target), next);
     } catch (cause) {
       if (!signal.aborted && sequence === choiceSequence.current)
         setError(cause instanceof Error ? cause.message : '无法打开所选文件，请重试。');

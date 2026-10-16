@@ -3,6 +3,18 @@ import type { ContentCapability, ContentLandingCapabilities, ContentReviewView }
 /** These are owner facts, not an entrance-specific feature allowlist. */
 export function contentReviewCapabilities(view: ContentReviewView): ContentLandingCapabilities {
   const source = view.review.source;
+  if (source.kind === 'video-project') {
+    const unavailable = { state: 'unavailable' as const, reason: '当前文件视图尚不支持视频项目审阅。' };
+    return {
+      annotate: unavailable,
+      reply: unavailable,
+      markup: unavailable,
+      requestModification: { ...unavailable, medium: 'project' },
+      versions: unavailable,
+      decide: unavailable,
+      historyReadOnly: view.historyReadOnly === true,
+    };
+  }
   const medium = source.kind === 'text' ? 'text' : source.media.kind;
   const writable: ContentCapability =
     view.sourceState === 'unavailable'

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import './helpers/setup-cat-registry.js';
-import { projectCollectiveWorkDelegation } from '../dist/domains/plugin/builtin-runtime/collective-work-delegation.js';
+import { projectCollectiveWorkDelegation } from '../dist/domains/plugin/builtin-runtime/collective-work/collective-work-delegation.js';
 
 const workInvocation = { v: 1, taskId: 'task-A', observedRevision: 3 };
 const originMessage = {

@@ -69,3 +69,27 @@ test('a confirmed request persists a real human source once, preserves literal i
   source.recall = { recalledBy: 'operator', recalledAt: 1002 };
   await assert.rejects(persistModificationSource(messages, record, labels, 1003), /current user-authored Message/);
 });
+
+test('Redis extra parsing retains only a valid typed modification receipt', () => {
+  const receipt = {
+    v: 1 as const,
+    requestId: `f309-modification-${'a'.repeat(64)}`,
+    sourceMessageId: 'human-source-1',
+    targetCatId: 'codex-astra',
+    taskId: 'task-1',
+    state: 'unknown' as const,
+    candidateRef: 'content-patch:request:1',
+    receiptRef: 'workspace-writeback:1',
+    observedAt: 2_000,
+    followUp: { kind: 'unverified' as const },
+  };
+  assert.deepEqual(safeParseExtra(serializeExtra({ contentModificationReceiptV1: receipt })), {
+    contentModificationReceiptV1: receipt,
+  });
+  assert.equal(
+    safeParseExtra(
+      serializeExtra({ contentModificationReceiptV1: { ...receipt, state: 'applied', candidateRef: undefined } }),
+    )?.contentModificationReceiptV1,
+    undefined,
+  );
+});

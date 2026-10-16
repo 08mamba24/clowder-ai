@@ -199,7 +199,7 @@ describe('a write, then a re-read of both sources', () => {
     });
   });
 
-  it('says a closed-without-decision row is exactly that (a withdrawn or expired proposal is not "已批准")', async () => {
+  it('says a closed-without-decision row is exactly that (a withdrawn or expired proposal is not "已同意")', async () => {
     const h = harness();
     h.open();
     h.attempt(1, accepted200);

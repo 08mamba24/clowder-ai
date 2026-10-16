@@ -6,12 +6,13 @@ import {
   type ArtifactReviewAuditEntry,
   type ArtifactReviewReceipt,
   artifactReviewSchema,
-  respondWithMediaVersionSchema,
   type WorkspaceContentReview,
 } from '@cat-cafe/shared';
 import Database from 'better-sqlite3';
 import { ContentAcceptanceStore } from '../modification/acceptance-store.js';
 import { ContentModificationJournal } from '../modification/journal.js';
+import type { MediaPublicationReturnIntent } from '../modification/media-publication/media-publication-return.js';
+import { registerPublicationRecovery } from '../modification/publication-recovery-registration.js';
 import { ModificationTextStore } from '../modification/text/text-store.js';
 import { WorkspaceContentReviewError } from '../workspace-review/errors.js';
 import {
@@ -19,6 +20,7 @@ import {
   type WorkspaceReviewMutation,
   type WorkspaceReviewMutationResult,
 } from '../workspace-review/store.js';
+import { acceptedVersionSchema } from './accepted-version-response.js';
 import { ArtifactReviewAuditStore } from './audit-store.js';
 import {
   bindExistingPublicationLedgers,
@@ -49,6 +51,30 @@ interface ReviewRow {
 
 /** One permanent owner database; atomic CAS + audit + intent receipt, with no TTL or shadow work state. */
 export class ArtifactReviewStore {
+  registerPublicationRecovery(intent: MediaPublicationReturnIntent, requestRevision: number, fingerprint: string) {
+    return registerPublicationRecovery(this, this.database, intent, requestRevision, fingerprint);
+  }
+  registerPublicationReturn(intent: MediaPublicationReturnIntent, requestRevision: number): void {
+    this.database
+      .transaction(() => {
+        const record = this.requests.get(intent.requestId, intent.ownerUserId);
+        const review = this.get(intent.reviewId);
+        const round = review?.rounds.at(-1);
+        if (
+          !record ||
+          record.control ||
+          record.revision !== requestRevision ||
+          record.progress.review?.receiptRef !== intent.source.requestReceiptRef ||
+          review?.revision !== intent.reviewRevision ||
+          round?.number !== intent.round ||
+          round.asset.ownerRevision !== intent.ownerRevision ||
+          this.pendingVersion(intent.reviewId)
+        )
+          throw new Error('Publication return request changed before registration');
+        this.returns.recordPublication(intent);
+      })
+      .immediate();
+  }
   reviewReceipt(reviewId: string, receiptRef: string): ArtifactReviewReceipt | null {
     return this.audit.receiptByRef(reviewId, receiptRef);
   }
@@ -251,7 +277,7 @@ export class ArtifactReviewStore {
         const round = current.rounds.at(-1);
         if (round?.ledgerRef) {
           this.assertLedgerWritable(round.ledgerRef);
-          const command = respondWithMediaVersionSchema.parse(payload);
+          const command = acceptedVersionSchema.parse(payload);
           if (command.expectedLedgerRevision !== round.ledgerRevision)
             throw new ArtifactReviewError('revision_conflict');
         }

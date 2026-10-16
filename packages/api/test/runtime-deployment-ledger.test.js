@@ -14,8 +14,16 @@ const REVISION = 'a'.repeat(40);
 test('runtime composition admits the singleton before recording its boot', async () => {
   const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
   const leaseAdmission = source.indexOf('await apiInstanceLease.acquire()');
-  const beginBoot = source.indexOf('await ledger.beginBoot(');
-  assert.ok(leaseAdmission >= 0 && beginBoot > leaseAdmission);
+  const beginOwnedBoot = source.indexOf('await beginOwnedRuntimeDeployment(');
+  assert.ok(leaseAdmission >= 0 && beginOwnedBoot > leaseAdmission);
+});
+
+test('runtime composition derives deployment ownership from the loaded API entrypoint', async () => {
+  const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
+  const entrypointRoot = source.indexOf('findMonorepoRoot(dirname(fileURLToPath(import.meta.url)))');
+  const beginOwnedBoot = source.indexOf('await beginOwnedRuntimeDeployment(');
+  assert.ok(entrypointRoot >= 0 && beginOwnedBoot > entrypointRoot);
+  assert.equal(source.includes('new RuntimeDeploymentLedger('), false, 'index must use the guarded canonical writer');
 });
 
 async function fixture() {

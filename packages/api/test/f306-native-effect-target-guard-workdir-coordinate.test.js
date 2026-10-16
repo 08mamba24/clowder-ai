@@ -156,7 +156,6 @@ describe('F306 managed preview package coordinate', () => {
       'pnpm preview:process --help',
       `pnpm --dir ${worktreeRoot} preview:process start --port 5188 --cwd ${worktreeRoot} -- node child.js`,
       `pnpm --dir ${worktreeRoot} preview:process start --port 5188 --cwd ${worktreeRoot} -- ${child} extra`,
-      `pnpm --dir ${repoRoot} preview:process status --port 3011 --cwd ${repoRoot} --json`,
     ]) {
       assertUnbounded(decide(command), command);
     }
@@ -227,7 +226,7 @@ describe('F306 managed preview package coordinate', () => {
     }
   });
 
-  test('rejects composition around an otherwise canonical self-identifying preview command', async (t) => {
+  test('composes canonical preview observations and retains protected mutation denials', async (t) => {
     const { decideNativeHookPayload } = await guardModule;
     const { repoRoot, worktreeRoot } = fixture(t);
     const canonical = `pnpm --dir ${worktreeRoot} preview:process status --port 5188 --cwd ${worktreeRoot} --json`;
@@ -249,10 +248,12 @@ describe('F306 managed preview package coordinate', () => {
       `${canonical}; pwd`,
       `${canonical}\nprintf done`,
     ]) {
-      assertUnbounded(decide(command), command);
+      assert.equal(decide(command).decision, 'allow', command);
     }
 
     const legacyChain = `pnpm preview:process status --port 5188 --cwd ${worktreeRoot} --json && curl http://localhost:5188`;
-    assertUnbounded(decide(legacyChain, worktreeRoot), legacyChain);
+    assert.equal(decide(legacyChain, worktreeRoot).decision, 'allow', legacyChain);
+    const protectedWrite = `${canonical} && touch ${join(repoRoot, '..', 'cat-cafe-runtime', 'blocked')}`;
+    assert.equal(decide(protectedWrite).decision, 'deny');
   });
 });

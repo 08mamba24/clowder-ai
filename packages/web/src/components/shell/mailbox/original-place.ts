@@ -31,7 +31,7 @@ export function decidesOnOriginCard(featureId: string): boolean {
 
 function approvalCardPlace(item: UnifiedAttentionItemV1): OriginalPlace {
   const navigation = item.approval?.navigation;
-  if (item.approval && decidesOnOriginCard(item.approval.sourceFeatureId) && navigation?.state === 'anchored') {
+  if (navigation?.state === 'anchored') {
     const { threadId, messageId } = navigation.approvalCardRef;
     return { kind: 'exact', actionRef: `message:${threadId}:${messageId}` };
   }
@@ -39,6 +39,16 @@ function approvalCardPlace(item: UnifiedAttentionItemV1): OriginalPlace {
 }
 
 export function resolveOriginalPlace(item: UnifiedAttentionItemV1): OriginalPlace {
+  if (item.userMention)
+    return { kind: 'exact', actionRef: `message:${item.userMention.threadId}:${item.userMention.messageId}` };
+  if (item.runtimeInteraction) {
+    const { threadId, messageId, blockId } = item.runtimeInteraction.cardRef;
+    return { kind: 'exact', actionRef: `message:${threadId}:${messageId}#${blockId}` };
+  }
+  if (item.choiceRequest) {
+    const { threadId, messageId, blockId } = item.choiceRequest.cardRef;
+    return { kind: 'exact', actionRef: `message:${threadId}:${messageId}#${blockId}` };
+  }
   if (item.kind === 'approval') return approvalCardPlace(item);
   const actionRef = actionRefOf(item);
   const target = actionRef ? resolveEntrustedWorkActionTarget(actionRef) : null;

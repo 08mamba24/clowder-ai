@@ -26,6 +26,8 @@ export function toggleArtifactWorkFullWindow(threadId: string, surface: Workspac
       returnHandle: {
         host: { owner: 'chat-container', key: threadId },
         workbench: { owner: 'f307-experience-workbench', key: surface.id },
+        // Split/full-window keeps the original chat host mounted. Its live reader owns
+        // geometry restoration, so this projection does not allocate a second reading ref.
         chatReadingRef: null,
         client: surface.ownerStateRef,
       },

@@ -112,7 +112,6 @@ export function CollectiveLaunchSurface({
       {frameUrl && (
         <div
           aria-hidden="true"
-          data-concierge-reserved-rect="collective-message-actions"
           style={{
             position: 'absolute',
             right: 0,
@@ -142,7 +141,6 @@ export function CollectiveLaunchSurface({
           connection={connection}
           context={contextBridge.context}
           policyBridge={policyBridge}
-          onOpen={contextBridge.open}
           onParticipationReady={({ revision, catCount }) => {
             const activeContext = contextBridge.context;
             if (!activeContext) return;

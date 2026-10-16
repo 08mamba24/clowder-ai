@@ -8,7 +8,7 @@
  * server's need not agree). The rules, each pinned below:
  *  - a final 401 is "需要登录" and a 403 is "没有权限", only from an explicit status on the attempt in question;
  *  - every other answer, and no answer, is followed by one canonical re-read; the write is never repeated by the panel;
- *  - "已批准/已拒绝" appears only when a settled row for exactly this proposal says so; an item that left the list without
+ *  - "已同意/已拒绝" appears only when a settled row for exactly this proposal says so; an item that left the list without
  *    such a row is "已不在当前待办，结果待确认", and one the page cannot vouch for is "结果暂未确认";
  *  - what is not known stays unknown: no default to "已处理", no invented time or decider.
  */
@@ -166,12 +166,16 @@ describe('what the canonical re-read proved', () => {
     ]);
     for (const [status, line] of lines) {
       const model = reduceReconcile(confirmingAfter(answered(1, status as number)), readEvent(read(6)));
-      expect(describeReconcile(model.state)).toMatchObject({ line, actions: 'allowed', canReread: true });
+      expect(describeReconcile(model.state)).toMatchObject({
+        line,
+        actions: status === 500 ? 'held' : 'allowed',
+        canReread: true,
+      });
     }
     const unknown = reduceReconcile(confirmingAfter(lost(1)), readEvent(read(6)));
     expect(describeReconcile(unknown.state)).toMatchObject({
       line: '没能确认提交结果，重新读取后仍待决定',
-      actions: 'allowed',
+      actions: 'held',
     });
   });
 
@@ -196,7 +200,7 @@ describe('what the canonical re-read proved', () => {
       );
 
     it.each([
-      ['accepted', '已批准'],
+      ['accepted', '已同意'],
       ['rejected', '已拒绝'],
       ['closed_without_decision', '已结束，没有做决定'],
     ] as const)('a settled row for this proposal saying %s is the only way to say "%s"', (resolution, text) => {
@@ -212,14 +216,14 @@ describe('what the canonical re-read proved', () => {
           terminal: { resolution: 'accepted', decidedAt: Date.UTC(2026, 9, 1, 8, 30), decidedBy: 'You' },
         },
       });
-      expect(describeReconcile(withMeta.state).line).toMatch(/^已批准 · .+ · You$/);
+      expect(describeReconcile(withMeta.state).line).toMatch(/^已同意 · .+ · You$/);
       const timeOnly = gone({ settled: { kind: 'found', terminal: { resolution: 'rejected', decidedAt: 1_000_000 } } });
       expect(describeReconcile(timeOnly.state).line).toMatch(/^已拒绝 · [^·]+$/);
       const bare = gone({ settled: { kind: 'found', terminal: { resolution: 'rejected' } } });
       expect(describeReconcile(bare.state).line).toBe('已拒绝');
     });
 
-    it('left the list but no settled row for it: not "已处理", and not "已批准"', () => {
+    it('left the list but no settled row for it: not "已处理", and not "已同意"', () => {
       for (const settled of [{ kind: 'not_found' }, { kind: 'unavailable' }] as const) {
         const model = gone({ settled });
         expect(model.state).toEqual({ kind: 'unconfirmed', why: 'left_the_list' });
@@ -389,7 +393,7 @@ describe('what cannot be read is not guessed at', () => {
         }),
       ),
     );
-    expect(describeReconcile(odd.state).line).toBe('已批准');
+    expect(describeReconcile(odd.state).line).toBe('已同意');
     const nan = reduceReconcile(
       waiting(),
       readEvent(
@@ -399,7 +403,7 @@ describe('what cannot be read is not guessed at', () => {
         }),
       ),
     );
-    expect(describeReconcile(nan.state).line).toBe('已批准');
+    expect(describeReconcile(nan.state).line).toBe('已同意');
   });
 
   it('a read with no result, or a result of a kind this build does not know, is a read that could not be made', () => {
@@ -471,7 +475,7 @@ describe('a request error is not proof that nothing was written', () => {
         }),
       ),
     );
-    expect(describeReconcile(model.state)).toEqual({ line: '已批准', actions: 'gone', canReread: false });
+    expect(describeReconcile(model.state)).toEqual({ line: '已同意', actions: 'gone', canReread: false });
   });
 
   it('fences a read that had already started when the newer attempt ended', () => {
@@ -536,7 +540,7 @@ describe('an operation that ended without saying what it saw (a card that report
     expect(model.state).toMatchObject({ kind: 'still_open', write: { outcome: 'ended' } });
     expect(describeReconcile(model.state)).toMatchObject({
       line: '操作已结束，重新读取后仍待决定',
-      actions: 'allowed',
+      actions: 'held',
       canReread: true,
     });
     expect(describeReconcile(model.state).line).not.toMatch(CLAIMS_A_RESPONSE);
@@ -552,7 +556,7 @@ describe('an operation that ended without saying what it saw (a card that report
         }),
       ),
     );
-    expect(describeReconcile(model.state)).toEqual({ line: '已批准', actions: 'gone', canReread: false });
+    expect(describeReconcile(model.state)).toEqual({ line: '已同意', actions: 'gone', canReread: false });
   });
 
   it('without a settled row it is not decided, whatever the page says', () => {

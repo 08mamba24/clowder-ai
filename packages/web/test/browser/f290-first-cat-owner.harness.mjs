@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { openChannelFromCollectiveHome } from './f290-channel-entry.harness.mjs';
+import { disableMockHostPwa } from './f290-mock-host-context.harness.mjs';
 import { startNext, stopChild, waitForHttp } from './f290-runtime-journey.harness.mjs';
 
 /** Actual Next owner controls over explicit Host DTO fixtures; the embedded Client uses the real test Service. */
@@ -17,7 +19,11 @@ export async function verifyFirstCatOwnerControls({
   let page;
   try {
     await waitForHttp(`${hostUrl}/collective`, next);
-    page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+    // Host reload must keep Playwright API fixtures in control of each request.
+    page = await browser.newPage({ viewport: { width: 1440, height: 960 }, serviceWorkers: 'block' });
+    await disableMockHostPwa(page.context(), hostUrl);
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
     await page.addInitScript(
       ({ token, origin }) => {
         if (location.origin === origin) sessionStorage.setItem(`collective-session:${origin}`, token);
@@ -127,6 +133,12 @@ export async function verifyFirstCatOwnerControls({
       } else if (url.pathname.endsWith('/participation')) {
         status = 200;
         body = view;
+      } else if (url.pathname.endsWith('/work-policy')) {
+        status = 200;
+        body = { policy: null, localAdoption: null };
+      } else if (url.pathname.endsWith('/listening')) {
+        status = 200;
+        body = { attentionRevision: 0, channelListening: {} };
       }
       await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     });
@@ -137,17 +149,21 @@ export async function verifyFirstCatOwnerControls({
       .filter({ hasText: connections[1].endpointId.slice(-6) })
       .click();
     const frame = page.frameLocator('iframe[title="Collective"]');
-    await frame.getByRole('button', { name: '我的 Café', exact: true }).click();
-    const cafe = page.getByRole('complementary', { name: '我的 Café', exact: true });
+    await openChannelFromCollectiveHome(frame, 'general');
+    await frame.getByRole('button', { name: '我的猫', exact: true }).click();
+    const cafe = page.getByRole('complementary', { name: '我的猫', exact: true });
     await page.getByText('家里的可参与伙伴已自动接入。', { exact: true }).waitFor();
-    await cafe.getByText('管理参与伙伴', { exact: true }).click();
-    const astra = cafe.getByRole('checkbox', { name: 'Astra 参与 # general', exact: true });
-    const unsupported = cafe.getByRole('checkbox', {
-      name: 'Other provider 参与 # general',
+    const astra = cafe.getByRole('switch', { name: 'Astra（@codex-astra）参与这个共同体', exact: true });
+    const unsupported = cafe.getByRole('switch', {
+      name: 'Other provider（@unsupported）参与这个共同体',
       exact: true,
     });
-    assert.equal(await astra.isChecked(), true, await astra.evaluate((option) => option.outerHTML));
-    assert.equal(await unsupported.isChecked(), false, await unsupported.evaluate((option) => option.outerHTML));
+    assert.equal(await astra.getAttribute('aria-checked'), 'true', await astra.evaluate((option) => option.outerHTML));
+    assert.equal(
+      await unsupported.getAttribute('aria-checked'),
+      'false',
+      await unsupported.evaluate((option) => option.outerHTML),
+    );
     assert.equal(await unsupported.isDisabled(), true, await unsupported.evaluate((option) => option.outerHTML));
     assert.equal(mutations.length, 1);
     assert.equal(
@@ -161,21 +177,28 @@ export async function verifyFirstCatOwnerControls({
     await page.screenshot({ path: path.join(evidence, 'owner-desktop.png'), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: path.join(evidence, 'owner-mobile.png'), fullPage: true });
-    await cafe.getByText('连接设置 · 在线', { exact: true }).click();
-    for (const control of [
-      page.getByLabel('选择 Café 连接'),
-      astra,
-      unsupported,
-      cafe.getByRole('button', { name: '设置 Astra 的私人持续委托', exact: true }),
-    ]) {
+    for (const control of [astra, unsupported]) {
       const box = await control.boundingBox();
       assert.ok(box && box.x >= 0 && box.x + box.width <= 390, `owner control clipped: ${JSON.stringify(box)}`);
     }
+    await cafe.getByRole('button', { name: '连接', exact: true }).click();
+    const connectionPicker = page.getByLabel('选择 Café 连接');
+    const connectionBox = await connectionPicker.boundingBox();
+    assert.ok(
+      connectionBox && connectionBox.x >= 0 && connectionBox.x + connectionBox.width <= 390,
+      `owner connection control clipped: ${JSON.stringify(connectionBox)}`,
+    );
 
     entryMode = true;
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.reload({ waitUntil: 'networkidle' });
+    assert.equal(
+      await page.evaluate(() => 'serviceWorker' in navigator),
+      false,
+      'Host API fixtures must remain controlled by Playwright after reload',
+    );
     const entryFrame = page.frameLocator('iframe[title="Collective"]');
+    await openChannelFromCollectiveHome(entryFrame, 'general');
     await entryFrame.getByRole('button', { name: '连接此 Café', exact: true }).click();
     const entry = page.getByRole('complementary', { name: '带入伙伴前确认' });
     await entry.getByText('小星星·砚砚').waitFor();
@@ -193,6 +216,7 @@ export async function verifyFirstCatOwnerControls({
     await page.getByRole('complementary', { name: '带入伙伴前确认' }).waitFor({ state: 'hidden' });
     assert.deepEqual(entryPair.excludedCatIds, ['codex-astra']);
     assert.equal(entryPair.rosterFingerprint, 'a'.repeat(64));
+    assert.deepEqual(errors, []);
   } finally {
     await page?.close();
     await stopChild(next);

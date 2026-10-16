@@ -119,6 +119,7 @@ export function useCollectiveClient() {
       if (!collective) throw new Error('新建的 Collective 暂不可用');
       const url = new URL(location.href);
       url.searchParams.set('collectiveId', created.collectiveId);
+      url.searchParams.delete('channelId');
       history.replaceState(null, '', url);
       setSnapshot((current) => ({
         ...current,
@@ -162,6 +163,7 @@ export function useCollectiveClient() {
       const url = new URL(location.href);
       if (nextCollective) url.searchParams.set('collectiveId', nextCollective.collectiveId);
       else url.searchParams.delete('collectiveId');
+      url.searchParams.delete('channelId');
       history.replaceState(null, '', url);
       setSnapshot((current) => ({
         ...current,
@@ -186,11 +188,13 @@ export function useCollectiveClient() {
     (collectiveId: string) => {
       const collective = snapshot.me?.collectives.find((item) => item.collectiveId === collectiveId);
       if (!collective) return;
+      if (snapshot.collective?.collectiveId === collectiveId) return;
       ++refreshGeneration.current;
       refreshAbort.current?.abort();
       currentNamespace.current = collectiveClientNamespace({ ...snapshot, collective });
       const url = new URL(location.href);
       url.searchParams.set('collectiveId', collectiveId);
+      url.searchParams.delete('channelId');
       history.replaceState(null, '', url);
       setSnapshot((current) => ({
         ...current,

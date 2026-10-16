@@ -1,6 +1,7 @@
 import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { writeShellLanguage } from '../../shell/shell-language';
 import { ThreadSidebarV2Header } from '../ThreadSidebarV2Header';
 
 describe('F322 sidebar v2 recovery controls', () => {
@@ -47,6 +48,7 @@ describe('F322 sidebar v2 recovery controls', () => {
   beforeEach(() => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     vi.clearAllMocks();
+    writeShellLanguage('zh');
     host = document.createElement('div');
     document.body.append(host);
     root = createRoot(host);
@@ -54,9 +56,34 @@ describe('F322 sidebar v2 recovery controls', () => {
   afterEach(() => {
     act(() => root.unmount());
     host.remove();
+    writeShellLanguage('zh');
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   });
 
+  it('switches the production header, search and recovery actions to English without losing search state', () => {
+    render('reconciling', false, 1, 4);
+    click('sidebar-search-toggle');
+    const input = button('sidebar-search-input') as unknown as HTMLInputElement;
+    act(() => writeShellLanguage('en'));
+    expect(host.querySelector('h2')?.textContent).toBe('My Café');
+    expect(button('sidebar-new-thread').textContent).toContain('New conversation');
+    expect(button('sidebar-new-thread').textContent).toContain('Request timed out, checking…');
+    expect(button('sidebar-all-works').textContent).toBe('All works');
+    expect(button('sidebar-memory').textContent).toBe('Memory');
+    expect(input.placeholder).toBe('Search conversations, projects or ID…');
+    expect(document.activeElement).toBe(input);
+    click('sidebar-more-menu');
+    expect(host.querySelector('[role="menu"]')?.textContent).toContain('Ask a cat to organize (1 uncategorized)');
+    expect(host.querySelector('[role="menu"]')?.textContent).toContain('Organize manually (1 uncategorized)');
+    expect(button('sidebar-bootcamp').querySelector('.min-w-0')?.textContent).toBe('Cat bootcamp');
+    expect(button('sidebar-bootcamp').querySelector('svg title')?.textContent).toBe('Cat bootcamp');
+    expect(button('mark-all-read-btn').textContent).toBe('Mark all as read (4)');
+    expect(button('sidebar-collapse').getAttribute('aria-label')).toBe('Collapse sidebar');
+    expect(host.textContent).not.toMatch(/[\u4e00-\u9fff]/);
+    act(() => writeShellLanguage('zh'));
+    expect(host.querySelector('h2')?.textContent).toBe('我的 Café');
+    expect(host.querySelector('input')).toBe(input);
+  });
   it('search toggles, takes focus, and Escape restores the closed state', () => {
     render();
     click('sidebar-search-toggle');

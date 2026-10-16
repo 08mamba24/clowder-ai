@@ -32,6 +32,7 @@ test('F195 SSE is a wake hint; durable replay handles duplicate wakes and close 
         new Response(
           JSON.stringify({
             running: true,
+            lifecycle_state: 'running',
             meeting_id: 'mtg-1',
             thread_id: 'thread-1',
           }),

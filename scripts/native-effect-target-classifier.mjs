@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, matchesGlob, resolve } from 'node:path';
 import { kernelPath, unfoldedJoin } from './lib/shell-directory.mjs';
+import { fetchTargetText } from './native-effect-git-fetch.mjs';
 import { shellWords } from './native-effect-shell-tokenizer.mjs';
 
 const RUNTIME_COMPONENT = /(^|[/\s'"=])cat-cafe-runtime(?:\/|[\s'";&|()<>{}\n]|$)/i;
@@ -9,6 +10,8 @@ const REDIS_6399 =
   /(?:\b(?:redis-cli|redis-server|lsof|localhost|127\.0\.0\.1)\b[^\n;&|]*\b6399\b|\b6399\b[^\n;&|]*\b(?:redis|lsof|kill)\b)/i;
 
 export function classifyNativeTarget(raw, cwd, effect, ordinaryValueFallback) {
+  const fetchTargets = fetchTargetText(raw);
+  raw = fetchTargets ?? raw;
   const combined = `${cwd ?? ''}\n${raw}`;
   if (isBroadRootTarget(raw, cwd, effect)) return { kind: 'broad_root', value: broadRootValue(raw, cwd) };
   // A wildcard can select the runtime only for an effect we recognised. For a command we
@@ -17,7 +20,7 @@ export function classifyNativeTarget(raw, cwd, effect, ordinaryValueFallback) {
     return { kind: 'runtime_sanctuary', value: firstProtectedValue(raw, cwd) };
   }
   if (REDIS_6399.test(combined)) return { kind: 'redis_sanctuary', value: 'redis://127.0.0.1:6399' };
-  if (namesRuntimeBranch(combined) || isProtectedBranchRewrite(raw)) {
+  if (namesRuntimeBranch(combined) || isProtectedBranchRewrite(raw, fetchTargets === null)) {
     return {
       kind: 'protected_branch',
       value: namesRuntimeBranch(combined) ? 'runtime/main-sync' : protectedBranch(raw),
@@ -48,7 +51,7 @@ function isBroadRootTarget(raw, cwd, effect) {
   return effect === 'repository_rewrite' && insideMainCheckout(cwd) && /^\s*git\s+reset\s+--hard\b/i.test(raw);
 }
 
-function insideMainCheckout(cwd) {
+export function insideMainCheckout(cwd) {
   return typeof cwd === 'string' && /\/projects\/relay-station\/cat-cafe(?:\/|$)/i.test(cwd);
 }
 
@@ -118,11 +121,31 @@ function globCanSelectLiteral(pattern, literal) {
   return matchesGlob(literal.toLowerCase(), pattern.toLowerCase());
 }
 
-function isProtectedBranchRewrite(raw) {
+function isProtectedBranchRewrite(raw, unresolvedFetch) {
   const protectedName = '(?:main|master)';
   const gitCommand = String.raw`\bgit\b[^\n;&|]*`;
+  const tokens = shellWords(raw)?.map(({ value }) => value);
+  if (
+    (tokens?.[0] === 'git' && tokens[1] === 'fetch') ||
+    (unresolvedFetch && new RegExp(String.raw`${gitCommand}\bfetch\b`).test(raw))
+  ) {
+    return (tokens ?? [raw]).some((ref) =>
+      ['main', 'master'].some((protectedRef) => {
+        const normalized = ref
+          .toLowerCase()
+          .split(':')
+          .at(-1)
+          .replace(/^\+/, '')
+          .replace(/^(?:refs\/)?heads\//, '');
+        return (
+          normalized === protectedRef ||
+          (/[*?[{]/.test(normalized) && matchesGlob(protectedRef, normalized)) ||
+          (unresolvedFetch && /\b(?:main|master)\b/i.test(ref))
+        );
+      }),
+    );
+  }
   return (
-    new RegExp(String.raw`${gitCommand}\bfetch\b[^\n;&|]*\b${protectedName}\b`, 'i').test(raw) ||
     new RegExp(String.raw`${gitCommand}\bpush\b[^\n;&|]*(?:--force|-f\b)[^\n;&|]*\b${protectedName}\b`, 'i').test(
       raw,
     ) ||

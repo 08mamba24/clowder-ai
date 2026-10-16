@@ -49,8 +49,6 @@ export {
   handleAckMentions,
   handleAdmitEntrustedWork,
   handleCloseEntrustedWork,
-  handleCompleteA2ADispatch,
-  handleCompleteManagedHold,
   handleCrossPostMessage,
   handleDrillMemoryCue,
   handleFeatIndex,
@@ -247,7 +245,6 @@ export {
   drillMemoryCueInputSchema,
   recordMemoryCueOutcomeInputSchema,
 } from './memory-cue-tools.js';
-export { handleNativeTaskTest, nativeTaskTestTools } from './native-task-test-tool.js';
 export {
   handleListPawFeelInbox,
   handleTriagePawFeel,
@@ -297,6 +294,7 @@ export {
   realtimeCompanionStopInputSchema,
   realtimeCompanionTools,
 } from './realtime-companion-tools.js';
+export { recallMetricsTools } from './recall-metrics-tool.js';
 export {
   handleListRecent,
   listRecentInputSchema,

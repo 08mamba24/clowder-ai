@@ -1,9 +1,8 @@
-// F317 north-star regression harness, cross-line guard (A typed source vs F page-action authority).
-// The page-action authority accepts a request source only if directOwner(message) holds, and directOwner
-// requires "no extra.liveCompanion". Text the owner types into a Live call is written by persistLiveUserText,
-// and LiveCompanionCall.sendText notes its id (noteAcceptedDirectText) as the fresh direct request after an
-// interruption. If the typed writer starts stamping extra.liveCompanion, that request stops qualifying.
-// Only functions that exist before and after the candidate are used, so the same file runs on a control tree.
+// F317 north-star regression harness: direct typed input vs page-action source authority.
+// Typed Live sources carry the current call/user/client-message binding. sendText records
+// noteAcceptedDirectRequest after accepted native delivery. Voice metadata alone grants nothing:
+// only the Host-owned call can also supply its exact committed same-call exposure receipt.
+// This isolated authority deliberately has no voice-exposure verifier.
 // No media, no visible cat; fake page port only.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -12,8 +11,8 @@ import { MessageStore } from '../src/domains/cats/services/stores/ports/MessageS
 import {
   LivePageActionAuthority,
   type TrustedPageActionApproval,
-} from '../src/domains/concierge/live/host/live-page-action-authority.js';
-import { directOwner } from '../src/domains/concierge/live/host/live-page-action-authority-contract.js';
+} from '../src/domains/concierge/live/host/page-action/live-page-action-authority.js';
+import { directOwner } from '../src/domains/concierge/live/host/page-action/live-page-action-authority-contract.js';
 import { persistLiveTranscriptItem, persistLiveUserText } from '../src/domains/concierge/live/live-transcript.js';
 import { fixture, scope } from './helpers/f317-page-action-fixture.js';
 
@@ -61,7 +60,7 @@ test('a page action can be staged from a request the owner typed into the Live c
   assert.match(authorityId, /^[0-9a-f-]{36}$/);
 });
 
-test('spoken segments are never a direct owner request, whatever role they carry', async () => {
+test('spoken segments without the same-call Host exposure receipt cannot be direct owner requests', async () => {
   const f = fixture();
   const store = new MessageStore();
   const spoken = await persistLiveTranscriptItem(

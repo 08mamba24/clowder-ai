@@ -66,9 +66,19 @@ function assertRevision(instance: PluginInstanceRecord, expectedRevision: number
 export class ExternalPluginLifecycleService {
   private readonly queue = new InstanceOperationQueue();
   private readonly now: () => number;
+  private restartRecoveryStopped = false;
+  private readonly pendingRestartResumes = new Set<Promise<void>>();
 
   constructor(private readonly options: ExternalPluginLifecycleServiceOptions) {
     this.now = options.now ?? Date.now;
+  }
+
+  cancelRestartRecovery(): void {
+    this.restartRecoveryStopped = true;
+  }
+
+  async drainRestartRecovery(): Promise<void> {
+    await Promise.all([...this.pendingRestartResumes]);
   }
   prepare(instanceId: string, expectedRevision: number): Promise<PluginInstanceRecord> {
     return this.queue.run(instanceId, async () => {
@@ -198,6 +208,7 @@ export class ExternalPluginLifecycleService {
   async recoverAfterRestart(
     options: ExternalPluginRestartRecoveryOptions = {},
   ): Promise<ExternalPluginRestartRecovery> {
+    if (this.restartRecoveryStopped) return { recoveredInstances: 0, resumeRequested: 0 };
     const recovery = await this.options.store.transaction((transaction) => {
       let recoveredInstances = 0;
       for (const instance of transaction.instances.list()) {
@@ -219,7 +230,12 @@ export class ExternalPluginLifecycleService {
       return { recoveredInstances, resumable };
     });
     for (const instance of recovery.resumable) {
-      const resume = () => this.resumeAfterRestart(instance.pluginInstanceId).catch(() => undefined);
+      const resume = () => {
+        if (this.restartRecoveryStopped) return;
+        const pending = this.resumeAfterRestart(instance.pluginInstanceId).catch(() => undefined);
+        this.pendingRestartResumes.add(pending);
+        void pending.then(() => this.pendingRestartResumes.delete(pending));
+      };
       const gate = options.resumeGate?.(instance);
       if (gate === undefined) void resume();
       else void Promise.resolve(gate).then(resume, () => undefined);
@@ -234,6 +250,7 @@ export class ExternalPluginLifecycleService {
     return this.queue.run(instanceId, async () => {
       const current = await this.readCurrent(instanceId);
       if (
+        this.restartRecoveryStopped ||
         current.configReadiness !== 'ready' ||
         current.activationState !== 'enabled' ||
         (current.runtimeState !== 'stopped' && current.runtimeState !== 'crashed')
@@ -243,7 +260,7 @@ export class ExternalPluginLifecycleService {
       try {
         await this.options.supervisor.start(instanceId);
       } catch {
-        await this.projectResumeFailure(instanceId);
+        if (!this.restartRecoveryStopped) await this.projectResumeFailure(instanceId);
       }
     });
   }

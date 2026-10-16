@@ -30,12 +30,15 @@ test('F324: canonical Event Memory tool exposes exact giant-record continuation'
   const tool = eventMemoryTools.find((item) => item.name === 'cat_cafe_list_events');
   assert.ok(tool.inputSchema.eventId, 'MCP caller needs an eventId detail input');
   assert.ok(tool.inputSchema.charOffset, 'MCP caller needs an exact offset input');
+  assert.ok(tool.inputSchema.revision, 'MCP caller needs an exact revision fence');
   assert.doesNotMatch(tool.description, /default unbounded/);
 
   const source = JSON.stringify({ eventId: 'event-1', summary: 'x'.repeat(250_000) });
   const requests = [];
+  const revision = `sha256:${'a'.repeat(64)}`;
   globalThis.fetch = async (url) => {
     requests.push(String(url));
+    assert.equal(new URL(String(url)).searchParams.get('revision'), revision);
     const offset = Number(new URL(String(url)).searchParams.get('charOffset'));
     const eventSlice = source.slice(offset, offset + 8_000);
     const nextCharOffset = offset + eventSlice.length;
@@ -53,7 +56,7 @@ test('F324: canonical Event Memory tool exposes exact giant-record continuation'
   let offset = 0;
   let recovered = '';
   for (let page = 0; page < 40; page += 1) {
-    const result = await handleListEvents({ eventId: 'event-1', charOffset: offset });
+    const result = await handleListEvents({ eventId: 'event-1', charOffset: offset, revision });
     assert.equal(result.isError, undefined);
     assert.ok(result.content[0].text.length <= 24_000);
     const body = JSON.parse(result.content[0].text);
@@ -72,8 +75,10 @@ test('F324: Event detail and list filters are mutually exclusive at the MCP boun
   };
   const mixed = await handleListEvents({ eventId: 'event-1', cat: 'opus' });
   const missingId = await handleListEvents({ charOffset: 0 });
+  const missingRevision = await handleListEvents({ eventId: 'event-1', charOffset: 0 });
   assert.equal(mixed.isError, true);
   assert.equal(missingId.isError, true);
+  assert.equal(missingRevision.isError, true);
 });
 
 test('F324: Event detail keeps foreign-owner 404 opaque through the MCP tool', async () => {
@@ -83,7 +88,11 @@ test('F324: Event detail keeps foreign-owner 404 opaque through the MCP tool', a
     status: 404,
     text: async () => JSON.stringify({ error: 'Event not found' }),
   });
-  const result = await handleListEvents({ eventId: 'foreign', charOffset: 0 });
+  const result = await handleListEvents({
+    eventId: 'foreign',
+    charOffset: 0,
+    revision: `sha256:${'a'.repeat(64)}`,
+  });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /404/);
   assert.doesNotMatch(result.content[0].text, /summary|ownerUserId/);

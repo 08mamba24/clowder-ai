@@ -1,11 +1,14 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ThreadLabel } from '@/stores/label-store';
 import { AppTooltip } from '../AppTooltip';
 import { ShellGlyph } from '../shell/ShellIcons';
+import { useShellCopy } from '../shell/shell-copy';
 import { LabelFilterBar } from './LabelFilterBar';
+import { SidebarFilterItemV2, SidebarFilterMenuV2 } from './SidebarFilterMenuV2';
 import { SidebarTabIcon } from './SidebarTabIcon';
+import { threadSignalsCopy } from './thread-signals.shell-copy';
 import type { SidebarTab, SidebarTabId } from './thread-utils';
 
 /**
@@ -30,25 +33,26 @@ export function SidebarViewBarV2({
   onLabelFilter: (filter: string | null) => void;
   uncategorizedCount: number;
 }) {
-  const [open, setOpen] = useState(false);
+  const copy = useShellCopy(threadSignalsCopy);
+  const [menu, setMenu] = useState<'group' | 'label' | null>(null);
+  const open = menu === 'group';
+  const setOpen = (open: boolean) => setMenu(open ? 'group' : null);
+  const close = useCallback(() => setMenu(null), []);
+  const onLabelOpen = useCallback((open: boolean) => setMenu(open ? 'label' : null), []);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const current = tabs.find((tab) => tab.id === activeTab);
 
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
+      if (!rootRef.current?.contains(event.target as Node)) close();
     };
     document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open]);
+  }, [open, close]);
 
   return (
     <div
@@ -57,67 +61,53 @@ export function SidebarViewBarV2({
       data-testid="sidebar-tabs-row"
       data-scroll-occluder="true"
     >
-      <div ref={rootRef} className="relative">
-        <AppTooltip label="切换对话的分组方式" side="bottom" disabled={open}>
+      <div ref={rootRef} className="min-w-0 max-w-[55%]">
+        <AppTooltip label={copy.groupingTip} side="right" intent="content" disabled={open}>
           <button
+            ref={triggerRef}
             type="button"
-            onClick={() => setOpen((wasOpen) => !wasOpen)}
+            onClick={() => setOpen(!open)}
             aria-haspopup="menu"
             aria-expanded={open}
             data-testid="sidebar-view-menu"
-            className="shell-rail-item shell-focusable inline-flex h-7 items-center gap-1 rounded-lg px-2 text-xs"
-            style={{ color: 'var(--shell-body)' }}
+            className="shell-rail-item shell-focusable inline-flex h-7 min-w-0 max-w-full items-center gap-1 rounded-lg px-2 text-xs"
+            style={{ color: 'var(--shell-body)', background: 'var(--shell-selected)' }}
           >
-            <span>分组</span>
-            <span style={{ color: 'var(--shell-ink)' }}>{current?.label ?? ''}</span>
+            <span className="shrink-0">{copy.grouping}</span>
+            <span className="truncate" style={{ color: 'var(--shell-ink)' }}>
+              {current ? copy[current.id] : ''}
+            </span>
             <ShellGlyph name="chevronDown" className="h-3 w-3" />
           </button>
         </AppTooltip>
         {open && (
-          <div
-            role="menu"
-            aria-label="对话分组"
-            className="absolute left-0 top-8 z-[60] w-[200px] rounded-xl p-1.5"
-            style={{
-              background: 'var(--shell-paper)',
-              border: '1px solid var(--shell-hairline-strong)',
-              boxShadow: '0 4px 10px rgb(20 20 19 / 0.1)',
-            }}
-          >
-            {tabs.map((tab) => {
-              const selected = tab.id === activeTab;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={selected}
-                  data-testid={`sidebar-tab-${tab.id}`}
-                  onClick={() => {
-                    onSelectTab(tab.id);
-                    setOpen(false);
-                  }}
-                  className="shell-nav-row shell-focusable flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-sm"
-                  data-selected={selected ? 'true' : undefined}
-                  style={{
-                    background: selected ? 'var(--shell-selected)' : undefined,
-                    color: selected ? 'var(--shell-ink)' : 'var(--shell-body)',
-                  }}
-                >
-                  <span className="flex-none" style={{ color: 'var(--shell-muted)' }}>
-                    <SidebarTabIcon id={tab.id} className="h-3.5 w-3.5" />
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">{tab.label}</span>
+          <SidebarFilterMenuV2 label={copy.grouping} triggerRef={triggerRef} onClose={close}>
+            {tabs.map((tab) => (
+              <SidebarFilterItemV2
+                key={tab.id}
+                name={copy[tab.id]}
+                selected={tab.id === activeTab}
+                testId={`sidebar-tab-${tab.id}`}
+                onClick={() => {
+                  onSelectTab(tab.id);
+                  close();
+                  triggerRef.current?.focus();
+                }}
+                leading={<SidebarTabIcon id={tab.id} className="h-3.5 w-3.5 shrink-0" />}
+                trailing={
                   <span className="text-xs tabular-nums" style={{ color: 'var(--shell-muted)' }}>
                     {tab.count}
                   </span>
-                </button>
-              );
-            })}
-          </div>
+                }
+              />
+            ))}
+          </SidebarFilterMenuV2>
         )}
       </div>
       <LabelFilterBar
+        variant="v2"
+        open={menu === 'label'}
+        onOpenChange={onLabelOpen}
         labels={labels}
         selectedFilter={labelFilter}
         onSelect={onLabelFilter}

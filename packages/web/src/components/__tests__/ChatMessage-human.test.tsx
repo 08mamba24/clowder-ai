@@ -21,11 +21,19 @@ const timeText = (ts: number) =>
   new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 
 function own(id: string, overrides: Partial<ChatMessageData> = {}): ChatMessageData {
-  return { id, type: 'user', content: `内容 ${id}`, timestamp: T, ...overrides };
+  return {
+    id,
+    type: 'user',
+    from: { kind: 'user', userId: 'test-user' },
+    content: `内容 ${id}`,
+    timestamp: T,
+    ...overrides,
+  };
 }
 const catReply = (id: string): ChatMessageData => ({
   id,
   type: 'assistant',
+  from: { kind: 'agent', catId: 'opus' },
   catId: 'opus',
   content: `猫 ${id}`,
   timestamp: T + 1000,
@@ -175,12 +183,12 @@ describe('ChatMessage: your own message', () => {
       expect(time('a')?.textContent).toBe(timeText(T));
     });
 
-    it('keeps what you could do with the message: the action anchor, the copy-id control, the whisper mark', () => {
+    it('keeps the action anchor and whisper mark, with copy-id owned by the transient actions', () => {
       configure({ primary: '#6B5443', secondary: '#E9DCCF' });
       render(own('a', { visibility: 'whisper', whisperTo: ['codex'] }), {}, true);
 
       expect(wrapper('a').querySelector('[data-message-action-slot]')).not.toBeNull();
-      expect(wrapper('a').querySelector('button[aria-label^="复制消息 ID"]')).not.toBeNull();
+      expect(wrapper('a').querySelector('button[aria-label^="复制消息 ID"]')).toBeNull();
       expect(wrapper('a').textContent).toContain('悄悄话');
       // An unrevealed whisper keeps its own warning look instead of the human fill.
       expect(bubble('a').className).toContain('border-dashed');

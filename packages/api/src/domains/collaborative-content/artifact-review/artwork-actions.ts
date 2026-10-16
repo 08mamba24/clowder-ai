@@ -8,6 +8,7 @@ import {
 } from '@cat-cafe/shared';
 import { annotate } from './annotation-actions.js';
 import { ArtifactReviewError } from './errors.js';
+import { mediaEditAnnotations } from './media-edit-selections.js';
 
 interface ArtworkContext {
   actor: ArtifactReviewActor;
@@ -90,17 +91,9 @@ export function requestMediaEdit(
 ): string {
   if (context.actor.kind !== 'human') throw new ArtifactReviewError('human_required');
   if (action.mediaType !== round.asset.mediaType) throw new ArtifactReviewError('invalid_action');
-  const media = round.asset.media;
-  const anchor =
-    action.anchor ??
-    (media.kind === 'image'
-      ? { kind: 'image-region' as const, x: 0, y: 0, width: media.width, height: media.height }
-      : {
-          kind: 'video-range' as const,
-          streamId: media.streamId,
-          startTick: media.startTick,
-          endTick: media.startTick + media.durationTicks,
-        });
-  annotate(review, round, { kind: 'annotate', annotationId: action.annotationId, anchor, body: action.body }, context);
+  const annotations = mediaEditAnnotations(action, round.asset.media);
+  if (annotations.some((item) => round.annotations.some((existing) => existing.id === item.annotationId)))
+    throw new ArtifactReviewError('invalid_action');
+  for (const annotation of annotations) annotate(review, round, annotation, context);
   return action.body;
 }

@@ -73,7 +73,7 @@ describe('ContextAttachment rendering', () => {
     expect(useChatStore.getState().workspaceWorktreeId).toBe('wt-f063');
   });
 
-  it('opens the source file of a workspace-file quote, keeping the original message as the way back', () => {
+  it('opens an unversioned quote without guessing its line, keeping the original message as the way back', async () => {
     // Real page 2026-09-23 (entry 5): "Add to chat" on a Markdown selection sends a QUOTE chip
     // whose source is the file; clicking it did nothing, so the chip was a dead end.
     act(() => {
@@ -111,10 +111,10 @@ describe('ContextAttachment rendering', () => {
     expect(cards).toHaveLength(2);
     const fileQuoteButton = cards[0].querySelector('button');
     expect(fileQuoteButton).not.toBeNull();
-    act(() => (fileQuoteButton as HTMLButtonElement).click());
+    await act(async () => (fileQuoteButton as HTMLButtonElement).click());
     const state = useChatStore.getState();
     expect(state.workspaceOpenFilePath).toBe('desserts.md');
-    expect(state.workspaceOpenFileLine).toBe(3);
+    expect(state.workspaceOpenFileLine).toBeNull();
     expect(state.workspaceWorktreeId).toBe('wt-scratch');
     expect(state._workspaceFileSetAt?.navigationOrigin).toEqual({
       kind: 'chat-file-link',
@@ -127,10 +127,10 @@ describe('ContextAttachment rendering', () => {
 
   it('keeps ordinary Markdown links as links instead of promoting them to attachments', () => {
     act(() => {
-      root.render(<ContentBlocks blocks={[{ type: 'text', text: '[ordinary](/thread/thread-target)' }]} />);
+      root.render(<ContentBlocks blocks={[{ type: 'text', text: '[ordinary](/thread/thread_target)' }]} />);
     });
 
-    expect(container.querySelector('a[href="/thread/thread-target"]')?.textContent).toBe('ordinary');
+    expect(container.querySelector('a[href="/thread/thread_target"]')?.textContent).toBe('ordinary');
     expect(container.querySelector('[data-context-kind]')).toBeNull();
   });
 });

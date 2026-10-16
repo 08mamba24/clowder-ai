@@ -9,8 +9,8 @@ import {
 } from '@cat-cafe/shared';
 import type { StoredMessage } from '../../../cats/services/stores/ports/MessageStore.js';
 import type { ITaskStore } from '../../../cats/services/stores/ports/TaskStore.js';
-import type { CollectiveWorkAuthority } from '../collective-work-authority.js';
 import type { CollectiveWorkDispatcher } from '../collective-work-dispatcher.js';
+import type { CollectiveWorkAuthority } from './collective-work-authority.js';
 import { opaqueHostAdmission } from './collective-work-execution-receipt.js';
 
 /** Production Host composition: current Service assignment → actual Task → opaque factual receipt → execution. */

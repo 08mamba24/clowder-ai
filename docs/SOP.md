@@ -3,7 +3,7 @@ feature_ids: [F042, F083, F303]
 topics: [sop]
 doc_kind: note
 created: 2026-02-26
-updated: 2026-09-05
+updated: 2026-10-14
 ---
 
 # Clowder AI 开发 SOP
@@ -146,6 +146,13 @@ work、custody、completion 或 acceptance 的 canonical truth。
 `测试规范`。新增昂贵 journey 和删除覆盖在现有 PR 中说明失败故事与
 承接证据；不新增审批，不因采用规范自动跑全量。
 
+作者与已选 reviewer 同样审新增、改写和删除：真实失败是什么、最低足够层级、已有覆盖缺口及新增成本。
+清理先收齐候选、成批修改，再集中运行受影响验证；只因新失败或实质变化补跑相关项。
+完成自检时核对本次已确认的同根低价值测试是否已按规范处置，并记录承接覆盖及代表性检测力证据；
+这是一项作者与已选 reviewer 的语义判断，命令执行记录不能代替它，不新建逐例审批或全仓清理门禁。
+行数用于职责与耦合审查（200 行提醒，350 行默认拆分或说明结构理由），不单独构成产品 P1，
+也不为每个文件生成数行 UT。静态源码政策归统一 lint，产品测试观察生产行为；具体例外和证据见同一规范。
+
 默认选择**一个合适的独立验证源**，且必须是非作者：
 
 - local peer 看家里语境与 stateful diff；
@@ -154,7 +161,7 @@ work、custody、completion 或 acceptance 的 canonical truth。
 
 本次交付是否兑现原 issue / 已接受需求，由当前作者和已选 reviewer 在交付时判断，不等整个 feature close。先理解目标是否清楚且可承诺，再看实际结果，不能让局部修复批准或测试绿代替主线判断；已明确的目标不反复找 operator 确认。方法见 `cat-cafe-skills/refs/delivery-intent-judgment.md`，这是猫的判断职责，不新增自动语义门禁或固定第三棒。
 
-只有不同风险面确实需要不同视角时才叠加，并分别写明触发理由。P1/P2 修复后只回提出 finding 的 active source 覆盖真实修复 delta；不把另一个旧 reviewer 拉来续签，也不因 SHA-only / 可证明机械变化重开 reviewer。
+只有两个风险面确实需要不同的人时才加第二只，并分别写明触发理由。P1/P2 修复后只回提出 finding 的 active source 覆盖真实修复 delta；不把另一个旧 reviewer 拉来续签，也不因 SHA-only / 可证明机械变化重开 reviewer。
 
 ### Sol 测试
 
@@ -199,7 +206,7 @@ pnpm classify:co-creation-docs -- \
 风险映射：
 
 - conflict detected/unknown 或 reversibility high/unknown → PR；不会自动升级 cloud/full gate。
-- `docs/SOP.md`、VISION/lessons、decisions/canon、architecture ownership 等治理文档 → PR + 本地跨族治理 review；按 operator 既有指令跳过 context-blind cloud，纯 docs 不跑 full gate。
+- `docs/SOP.md`、VISION/lessons、decisions/canon、architecture ownership 等治理文档 → PR + 按风险选一只非作者本地治理 reviewer，同族也行；SOP 的元风险强制升档仍适用。按 operator 既有指令跳过 context-blind cloud，纯 docs 不跑 full gate。
 - `docs/ROADMAP.md` 是 main-only 共享状态，不是治理 PR 触发器：与安全 feature docs 同改仍走 direct main；若同批其他文件确需 PR，先把 BACKLOG 的机械登记单独落 main，禁止把它塞进 worktree/PR。
 - 普通 `docs/features/*.md` 内容更新不因目录名自动升级；无重叠且单 commit 可逆时 direct push，真实冲突或高/未知可逆性仍按 classifier 升到 PR。
 - `cat-cafe-skills/**`、`sop-definitions/**`、scripts、CLI、tests、packages 或其他第一方执行面 → regular development，即使文件扩展名是 `.md`。
@@ -295,12 +302,19 @@ PR-3 是 interim 方案 —— 仍开 per-run PR，只是 label + 猫自决 merg
 
 ## Reviewer 配对规则
 
-动态匹配自运行时猫配置（repo 根 `cat-template.json` + `.cat-cafe/cat-catalog.json` overlay）：
-1. 跨 family 优先 | 2. 必须有 peer-reviewer 角色 | 3. 必须 available
-4. 优先 lead | 5. 优先活跃猫
+先判断是否需要独立 review；需要时默认只找一只非作者 reviewer，按风险选：
 
-**降级**：无跨 family reviewer → 同 family 不同个体 → operator。
-**铁律**：同一个体不能 review 自己的代码。
+| 本轮要判断什么 | 选谁 |
+|---|---|
+| 测试能兜住的实现正确性 | 常规 reviewer（另一只Maine Coon或 Sonnet），同族不同个体也行 |
+| 方向和形状 | 创作位，一次给完；新界面/改版、架构模块或归属变化、做片子，动手前出稿 |
+| 安全、鉴权、生产数据、外部契约 | 优先 cloud；cloud 不可用时只换成一只本地 reviewer，不拆成两路 |
+
+只有两个风险面确实需要不同的人时才加第二只，并写明各自理由。迭代修复只请改动所在那一面的 reviewer 复审；稀缺席位不进迭代循环，按 dossier `engagementPolicy` 交付单次判断后退出。
+
+**反例**：F320 [PR #5195](https://github.com/zts212653/clowder-ai/pull/5195) 两路复审跑了 6 轮，安全面的两个 P1 都由语义 reviewer 抓到。来源 `thread:[thread-id]#private-source-id`。
+
+**铁律**：同一只猫不审自己；subagent 只出 findings，不算独立 reviewer。
 **共享 GitHub 账号澄清**：全家共用 `zts212653` 账号，"个体"判据 = catId（opus-47 / codex / gpt-5.4 等），不看 GitHub login。GitHub `dismiss_stale_reviews_on_push` 因共享账号视所有猫为同一 pusher → `mergeStateStatus=BLOCKED`；此时 `--admin --match-head-commit` 是合规 fast-path，**不是 self-review violation**，无需纠结或升级 operator。
 
 ## 代码质量工具
@@ -363,6 +377,13 @@ PR-3 是 interim 方案 —— 仍开 per-run PR，只是 label + 猫自决 merg
 > 详见 Hotfix Lane 设计 (internal)
 
 ### Full Sync Gate（Source-Owned）
+
+**每日草稿同步（2026-10-12 operator 已授权）**先走
+固定分支入口：`node scripts/daily-public-sync.mjs`。
+该路径只追加 `clowder-ai sync/daily`，维护唯一开放草稿 PR；隐私、intake、F251、导出闭包和迁移说明仍须通过。
+本机 `source_full` 与临时公开仓完整长验证不再是这条路径的前置条件，实际候选的公开 CI 承担完整行为验证；
+`--status` 读取当前 PR head 的 CI / Windows Smoke 结论，不授权合 main 或发布版本。
+以下 source-owned 默认适用于其他同步路径，不能重新叠加到已授权的每日草稿路径。
 
 全量同步到 `clowder-ai` 时，**不能只看家里的 `pnpm gate` 绿不绿**。  
 `source gate green != target/public gate green`。

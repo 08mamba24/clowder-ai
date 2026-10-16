@@ -124,6 +124,7 @@ describe('Host Collective world directory', () => {
       },
     });
     expect(parseCollectiveWorldTarget('/collective')).toEqual({ kind: 'none' });
+    expect(parseCollectiveWorldTarget('/collective?from=thread-source')).toEqual({ kind: 'none' });
     expect(parseCollectiveWorldTarget('/collective?collectiveId=col_87654321')).toEqual({ kind: 'invalid' });
     expect(
       parseCollectiveWorldTarget(

@@ -3,17 +3,12 @@
 import { usePathname, useRouter } from 'next/navigation';
 import { useCallback } from 'react';
 import { useChatStore } from '@/stores/chatStore';
+import { defaultSettingsSectionPath } from '../settings/settings-entry-path';
 import type { ResolvedPin, SettingsEntry } from '../settings/settings-ia';
+import { isSettingsRoute } from './settings-reading-bridge';
 import { resolveShellNavTarget } from './shell-navigation';
 import { useOpenInChat } from './use-open-in-chat';
-
-/** Where the first section of a first-level entry lives: the old `/settings?s=` deep link, unchanged. */
-function defaultSectionPath(entry: SettingsEntry): string | null {
-  if (entry.destination.kind === 'theme') return '/settings?s=theme';
-  if (entry.destination.kind !== 'sections') return null;
-  const first = entry.destination.items.find((item) => item.kind === 'section');
-  return first?.kind === 'section' ? `/settings?s=${first.sectionId}` : null;
-}
+import { useSettingsReadingEntry } from './useSettingsSourceReturn';
 
 /**
  * Open a 设置与管理 destination (from the settings page or from a pin on the rail) in the place that already owns it:
@@ -27,8 +22,17 @@ export function useOpenDestination(): {
 } {
   const pathname = usePathname() ?? '/';
   const router = useRouter();
+  const captureSettingsOrigin = useSettingsReadingEntry();
+  const openRoute = useCallback(
+    (path: string) => {
+      if (isSettingsRoute(path.split('?')[0])) captureSettingsOrigin();
+      router.push(resolveShellNavTarget(path, pathname));
+    },
+    [captureSettingsOrigin, router, pathname],
+  );
   const openInChat = useOpenInChat();
   const setWorkspaceMode = useChatStore((s) => s.setWorkspaceMode);
+  const openEvolutionWorkspace = useChatStore((s) => s.openEvolutionWorkspace);
   const openTeamSubject = useChatStore((s) => s.openTeamSubject);
 
   const openEntry = useCallback(
@@ -36,22 +40,21 @@ export function useOpenDestination(): {
       const destination = entry.destination;
       switch (destination.kind) {
         case 'route':
-          router.push(resolveShellNavTarget(destination.path, pathname));
+          openRoute(destination.path);
           return;
         case 'workspace-mode':
           openInChat(() => setWorkspaceMode(destination.mode));
           return;
-        case 'workspace-launcher':
-          // The evolution home has no typed open request yet (F307); the Workspace launcher is where it lives.
-          openInChat(() => setWorkspaceMode('dev'));
+        case 'evolution-home':
+          openInChat(openEvolutionWorkspace);
           return;
         default: {
-          const path = defaultSectionPath(entry);
-          if (path) router.push(resolveShellNavTarget(path, pathname));
+          const path = defaultSettingsSectionPath(entry);
+          if (path) openRoute(path);
         }
       }
     },
-    [openInChat, pathname, router, setWorkspaceMode],
+    [openInChat, openRoute, setWorkspaceMode, openEvolutionWorkspace],
   );
 
   const openTeam = useCallback(() => openInChat(() => openTeamSubject(null)), [openInChat, openTeamSubject]);
@@ -60,7 +63,7 @@ export function useOpenDestination(): {
     (pin: ResolvedPin) => {
       // Old pins are plain settings sections opened standalone, exactly as before.
       if (pin.kind === 'section') {
-        router.push(resolveShellNavTarget(`/settings?s=${pin.id}&standalone=1`, pathname));
+        openRoute(`/settings?s=${pin.id}&standalone=1`);
         return;
       }
       // The Workspace team panel keeps its own owner; it must not collapse into `dest:team` (a settings section).
@@ -70,7 +73,7 @@ export function useOpenDestination(): {
       }
       openEntry(pin.entry);
     },
-    [openEntry, openTeam, pathname, router],
+    [openEntry, openTeam, openRoute],
   );
 
   return { openEntry, openPin, openTeam };

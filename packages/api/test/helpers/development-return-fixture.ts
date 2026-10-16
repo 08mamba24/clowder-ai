@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import Database from 'better-sqlite3';
 import './setup-cat-registry.js';
-import { MessageStore } from '../../src/domains/cats/services/stores/ports/MessageStore.js';
+import { MessageStore } from '../../dist/domains/cats/services/stores/ports/MessageStore.js';
 import { InMemoryProposalStore } from '../../src/domains/cats/services/stores/ports/ProposalStore.js';
 import { TaskStore } from '../../src/domains/cats/services/stores/ports/TaskStore.js';
 import { ThreadStore } from '../../src/domains/cats/services/stores/ports/ThreadStore.js';
@@ -13,7 +13,18 @@ import { RunLedger } from '../../src/infrastructure/scheduler/RunLedger.js';
 import { TaskRunnerV2 } from '../../src/infrastructure/scheduler/TaskRunnerV2.js';
 import { createPersistedQueueFixture } from './persisted-queue-fixture.js';
 
-export async function createDevelopmentReturnFixture(t: TestContext) {
+export async function createDevelopmentReturnFixture(
+  t: TestContext,
+  options: {
+    ownerCatId?: string;
+    proposalDelegateCatId?: string;
+    separateProposalSource?: boolean;
+    catAuthoredProposalSource?: boolean;
+    proposalTriggerCatId?: string;
+    legacyReparentedChild?: boolean;
+  } = {},
+) {
+  const ownerCatId = options.ownerCatId ?? 'codex-sol';
   const db = new Database(':memory:');
   applyMigrations(db);
   t.after(() => db.close());
@@ -22,37 +33,16 @@ export async function createDevelopmentReturnFixture(t: TestContext) {
     messages = new MessageStore(),
     proposals = new InMemoryProposalStore();
   const original = threads.create('human', 'Original', process.cwd());
-  const actor = { userId: 'human', catId: 'codex-sol', threadId: original.id };
+  const actor = { userId: 'human', catId: ownerCatId, threadId: original.id };
   let now = Date.now();
   const source = messages.append({
     userId: 'human',
-    catId: null,
+    from: { kind: 'user', userId: 'human' },
     threadId: original.id,
     content: '完成这个 B 子工作',
     mentions: [],
     timestamp: now,
   });
-  const proposal = proposals.create({
-    sourceThreadId: original.id,
-    sourceInvocationId: 'inv',
-    sourceMessageId: source.id,
-    sourceCatId: 'codex-sol',
-    title: 'Execution',
-    reason: 'Authorized sub-work',
-    parentThreadId: original.id,
-    preferredCats: ['codex-sol'],
-    projectPath: process.cwd(),
-    createdBy: 'human',
-    reportingMode: 'final-only',
-  });
-  const child = threads.create('human', 'Execution', process.cwd(), original.id, {
-    createdFromProposalId: proposal.proposalId,
-    sourceThreadId: original.id,
-    approvedBy: 'human',
-    approvedAt: now,
-  });
-  proposals.claimForApproval({ proposalId: proposal.proposalId, approvedBy: 'human' });
-  proposals.finalizeApproval({ proposalId: proposal.proposalId, createdThreadId: child.id });
   const admitted = tasks.transitionDevelopmentWork({
     action: 'admit',
     actor,
@@ -82,10 +72,77 @@ export async function createDevelopmentReturnFixture(t: TestContext) {
     },
   });
   assert.ok('task' in admitted);
+  const proposalSourceThread = options.separateProposalSource
+    ? threads.create('human', 'Studio', process.cwd())
+    : original;
+  const proposalTriggerCatId = options.proposalTriggerCatId ?? ownerCatId;
+  const peerTriggerSourceThread =
+    options.catAuthoredProposalSource && proposalTriggerCatId !== ownerCatId
+      ? threads.create('human', 'Peer trigger source', process.cwd())
+      : null;
+  const proposalSource = options.catAuthoredProposalSource
+    ? messages.append({
+        userId: 'human',
+        from: proposalTriggerCatId ? { kind: 'agent', catId: proposalTriggerCatId } : { kind: 'user', userId: 'human' },
+        threadId: proposalSourceThread.id,
+        content: 'Route this accepted Task into an approved execution child',
+        mentions: [],
+        timestamp: now,
+        ...(peerTriggerSourceThread
+          ? {
+              origin: 'callback' as const,
+              extra: {
+                crossPost: {
+                  sourceThreadId: peerTriggerSourceThread.id,
+                  sourceInvocationId: 'inv-peer-proposal-trigger',
+                  effectClass: 'coordinate' as const,
+                },
+                targetCats: [ownerCatId],
+              },
+            }
+          : {}),
+      })
+    : options.separateProposalSource
+      ? messages.append({
+          userId: 'human',
+          catId: null,
+          threadId: proposalSourceThread.id,
+          content: '把这个精确子工作拆到批准 child',
+          mentions: [],
+          timestamp: now,
+        })
+      : source;
+  const proposalParentThread = options.legacyReparentedChild
+    ? threads.create('human', 'Alternate parent', process.cwd())
+    : original;
+  const proposal = proposals.create({
+    sourceThreadId: proposalSourceThread.id,
+    sourceInvocationId: 'inv',
+    sourceMessageId: proposalSource.id,
+    sourceCatId: ownerCatId,
+    title: 'Execution',
+    reason: 'Authorized sub-work',
+    parentThreadId: original.id,
+    preferredCats: [options.proposalDelegateCatId ?? ownerCatId],
+    projectPath: process.cwd(),
+    createdBy: 'human',
+    reportingMode: 'final-only',
+    subjectTaskId: admitted.task.id,
+    approvedDevelopmentScope: admitted.task.entrustedWork!.developmentScope,
+  });
+  const child = threads.create('human', 'Execution', process.cwd(), proposalParentThread.id, {
+    createdFromProposalId: proposal.proposalId,
+    sourceThreadId: proposalSourceThread.id,
+    approvedBy: 'human',
+    approvedAt: now,
+  });
+  proposals.claimForApproval({ proposalId: proposal.proposalId, approvedBy: 'human' });
+  proposals.finalizeApproval({ proposalId: proposal.proposalId, createdThreadId: child.id });
   const definitions = new DynamicTaskStore(db),
     events = [],
     wakes = [],
-    deliveries = new Map();
+    deliveries = new Map(),
+    admissions = [];
   let queueFull = false;
   const runner = new TaskRunnerV2({
     ledger: new RunLedger(db),
@@ -99,6 +156,7 @@ export async function createDevelopmentReturnFixture(t: TestContext) {
     async deliver(input) {
       if (queueFull) throw new Error('Owner queue is full');
       const result = await transport.delivery.deliver(input);
+      admissions.push({ input, result });
       if (result.message) {
         if (!deliveries.has(input.idempotencyKey))
           wakes.push([input.threadId, input.targetCatId, input.ownerUserId, input.content, result.message.id]);
@@ -125,7 +183,7 @@ export async function createDevelopmentReturnFixture(t: TestContext) {
     taskId: admitted.task.id,
     expectedRevision: 1,
     executionThreadId: child.id,
-    sourceActionRef: `message:${source.id}`,
+    sourceActionRef: `message:${options.catAuthoredProposalSource ? source.id : proposalSource.id}`,
     expectedSignal: 'terminal_report',
     slaUntil: now + 10000,
   };
@@ -136,13 +194,19 @@ export async function createDevelopmentReturnFixture(t: TestContext) {
     messages,
     proposals,
     actor,
+    source,
     child,
+    proposalSource,
+    proposalSourceThread,
+    peerTriggerSourceThread,
+    proposalParentThread,
     service,
     runner,
     definitions,
     events,
     wakes,
     deliveries,
+    admissions,
     transport,
     input,
     setQueueFull(value) {
@@ -154,7 +218,7 @@ export async function createDevelopmentReturnFixture(t: TestContext) {
     report() {
       return messages.append({
         userId: 'human',
-        catId: 'codex-sol',
+        from: { kind: 'agent', catId: ownerCatId },
         threadId: child.id,
         content: 'Accepted development result and validation',
         mentions: [],

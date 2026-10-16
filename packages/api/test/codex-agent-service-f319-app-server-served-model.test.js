@@ -51,6 +51,12 @@ class FakeAppServerWire {
     this.writes.push(message);
     if (message.method === 'initialize') {
       this.inbox.push({ id: message.id, result: { userAgent: 'fake-app-server' } });
+    } else if (message.method === 'config/read') {
+      this.inbox.push({ id: message.id, result: { config: { model_provider: 'openai' } } });
+    } else if (message.method === 'configRequirements/read') {
+      this.inbox.push({ id: message.id, result: { requirements: null } });
+    } else if (message.method === 'account/read') {
+      this.inbox.push({ id: message.id, result: { account: { type: 'chatgpt' } } });
     } else if (message.method === 'thread/start' || message.method === 'thread/resume') {
       this.inbox.push({ id: message.id, result: { thread: { id: this.threadId, turns: [] } } });
     } else if (message.method === 'turn/start') {

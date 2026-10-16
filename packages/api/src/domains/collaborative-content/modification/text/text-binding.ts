@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import type { ContentModificationRequest } from '@cat-cafe/shared';
+import { type ContentModificationRequest, normalizeModificationSelections } from '@cat-cafe/shared';
 import type {
   MediaReviewPrincipal,
   PublishedMediaAccess,
@@ -77,13 +77,15 @@ export class ModificationTextBinding implements ModificationContentPort {
       locator: input.locator,
       expectedRevision: input.expectedSourceRevision,
     });
-    const selection = record.payload.intent.selection;
-    if (
-      selection?.kind === 'text_quote' &&
-      (selection.baseRevision !== description.revision ||
-        text.slice(selection.start, selection.end) !== selection.quote)
-    )
-      throw new ModificationTextError('invalid_patch');
+    for (const item of normalizeModificationSelections(record.payload.intent)) {
+      const multi = item.selection;
+      if (
+        multi.kind !== 'text_quote' ||
+        multi.baseRevision !== description.revision ||
+        text.slice(multi.start, multi.end) !== multi.quote
+      )
+        throw new ModificationTextError('invalid_patch');
+    }
     this.deps.store.text.retain({
       requestId: record.requestId,
       ownerUserId: record.ownerUserId,

@@ -171,14 +171,16 @@ export class ConciergeThreadService {
    * Returns null if the thread has not been created yet or was deleted. A
    * generated title or missing kind may be repaired, but no thread is created.
    */
-  async findThreadId(userId: string): Promise<string | null> {
+  async findThreadId(userId: string, options: { repairMetadata?: boolean } = {}): Promise<string | null> {
     const stored = await this.getStoredThreadId(userId);
     if (!stored) return null;
     const thread = await this.threadStore.get(stored);
     // Treat soft-deleted threads as not found — caller should not surface tombstoned threads
     if (!thread || thread.deletedAt) return null;
-    if (thread.threadKind !== 'concierge') await this.threadStore.updateThreadKind(stored, 'concierge');
-    await this.repairGeneratedTitle(userId, stored);
+    if (options.repairMetadata !== false) {
+      if (thread.threadKind !== 'concierge') await this.threadStore.updateThreadKind(stored, 'concierge');
+      await this.repairGeneratedTitle(userId, stored);
+    }
     return stored;
   }
 

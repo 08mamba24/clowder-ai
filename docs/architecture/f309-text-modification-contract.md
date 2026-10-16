@@ -8,6 +8,11 @@ mcp_admission_status: accepted
 mcp_admission_ref: "file:docs/architecture/f309-text-modification-contract.md"
 mcp_admission_claims:
   - ref: "file:docs/architecture/f309-text-modification-contract.md"
+    toolName: cat_cafe_take_over_content_modification
+    resourceFamily: collaborative-content
+    boundaryKind: resource-entry
+    decision: accepted
+  - ref: "file:docs/architecture/f309-text-modification-contract.md"
     toolName: cat_cafe_read_content_modification
     resourceFamily: collaborative-content
     boundaryKind: resource-entry
@@ -27,18 +32,21 @@ description_updated_at: 2026-09-24T12:52:25Z
 
 这是已接受的 Step1 §4.2–5.1 (internal) 文本 producer 的具名工具坐标：人类来源 → 真实具名 Task → typed text return → 隔离 patch → 可见 diff → 独立人类接受 → F063 CAS。
 产品授权为父线程 source `private-source-id`；Opus5 对技术合同的批准基线是 `f4035c58cec4a25a0a04d99cc50fabd637bb1658`。
-实施团队在这个已审范围内确定下面两个工具名；本登记不代表实现 review、合入、Alpha、产品验收或生产启用。
+实施团队在这个已审范围内确定下面三个工具名；本登记不代表实现 review、合入、Alpha、产品验收或生产启用。
 
 普通文件请求以 requestId 定位，没有媒体 round、F138 媒体 contentRef、Office provider session 或 F290 多人协作 owner。
 塞入媒体工具需要伪造媒体坐标；塞入 Office 工具会把 provider 编辑权限错误套到 F063 文件上。两者保持在现有 collaborative-content family。
 
 | 入口 | 身份边界 | 真实效果 |
 |---|---|---|
+| cat_cafe_take_over_content_modification | callback 认证猫、精确执行 thread、当前真实 Human 消息；caller 只传 sourceMessageId 与幂等 operationId | 服务端重读并核验消息 owner、具名目标、F063 版本引用与撤回状态，原子复用或建立唯一请求；不接受 caller 自报 Human 身份、原话、选区或写权限 |
 | cat_cafe_read_content_modification | callback 认证猫、精确执行 thread、Task 具名 owner；正文另查 fresh F063 源权限 | 文本读取持久意图、原文快照和提案历史，只物化隔离执行副本；显式 control 页适用于媒体/文本请求，不物化或返回正文 |
 | cat_cafe_respond_content_modification | 同一身份、开放 Task/revision、proposal CAS；同 operation 重放原回执 | 保存有作者的 patch/说明和隔离候选；不写原文件，不关闭 Task |
 
 读取以精确 JSON 文本分页：保留 snapshot，依 nextCursor 拼接 json 字段再解析。Patch 使用不可变原文的 UTF-16 区间，排序、不重叠，并携带精确 expectedText。
 候选保留 baseRevision、作者、operation 和 receipt。后续提案仍针对原 base，不静默重基到已变更的文件；非法 UTF-8 不解码成可写的替换字符文本。
+
+候选、拒绝和写回结果另投影为不可变的 `contentModificationReceiptV1` Host 消息，`replyTo` 指向原 Human 请求，且不携带 mention、targetCats 或新的修改授权。Cat 读取时 speaker 固定为 `Host 作品修改回执`；私聊来源冻结并继承原 `whisperTo`，不能扩大为公共消息。首次 `request_text_edit` Queue carrier 与 conflict/unknown refs-only 续办都从同一 canonical journal 读取冻结 audience，并以各自的 typed Host source 贯穿 admission、幂等 replay、恢复、settlement、history/unread 与 prompt，不能退回公共 Human 消息。部署切换前若同一 public request 已持久化旧 `产物审阅` source、但 outbox 尚未标记，新代码只把该精确旧 source 当作既有 idempotency winner 的只读恢复版本；新 admission 始终写 typed Host source，whisper request 不接受 public 旧版本。candidate/rejected/applied 不唤醒猫；conflict/unknown 只有 Queue 已真实 started 或 already_processing 才写 `cat_woken`，延期、终态或证据不足一律写 `unverified`/具名 none。恢复轮询以持久游标分批遍历全部 request，不能只反复扫描最新一批。
 
 媒体/文本请求可按精确 requestId 读取 view=control，媒体同时传原 reviewId 作额外匹配。该页独立核对持久 Task 绑定、当前具名 owner 与执行 thread，只返回请求状态、取消/拒绝事实和 Task 坐标；来源撤回后仍能知道本请求已取消或 source_unavailable，不返回 intent/sourceRef/bytes，不授予读取其他工作的权限。独立 snapshot 防止跨状态拼页；来源正文仍走原媒体/文本 owner。新媒体 outbox 行由原事务携带 requestId 并提示这一入口，旧 pending 行不回填，不改变原 carrier 或 winner。
 

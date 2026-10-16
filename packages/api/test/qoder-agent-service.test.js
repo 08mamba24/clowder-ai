@@ -1311,6 +1311,20 @@ test(
     const root = mkdtempSync(join(tmpdir(), 'qoder-l2-path-boundary-'));
     const workspace = join(root, 'workspace');
     const controlledRuntime = makeControlledRuntime(root);
+    const { invalidateCliCommand } = await import('../dist/utils/cli-resolve.js');
+    const savedToolPath = process.env.PATH;
+    // Exercise the real sandbox with an owned toolchain, independently of the
+    // operator's pnpm installation or which Node version supplies its shim.
+    const toolchainBin = join(controlledRuntime.runtimeRoot, 'toolchain', 'bin');
+    const pnpmPackageBin = join(controlledRuntime.runtimeRoot, 'toolchain', 'node_modules', 'pnpm', 'bin');
+    mkdirSync(toolchainBin, { recursive: true });
+    mkdirSync(pnpmPackageBin, { recursive: true });
+    const pnpmEntrypoint = join(pnpmPackageBin, 'pnpm.cjs');
+    writeFileSync(pnpmEntrypoint, "#!/usr/bin/env node\nprocess.stdout.write('10.0.0-test-fixture\\n');\n");
+    chmodSync(pnpmEntrypoint, 0o755);
+    symlinkSync('../node_modules/pnpm/bin/pnpm.cjs', join(toolchainBin, 'pnpm'));
+    process.env.PATH = [toolchainBin, savedToolPath].filter(Boolean).join(':');
+    invalidateCliCommand('pnpm');
     mkdirSync(workspace, { recursive: true });
     let attempts;
     try {
@@ -1345,8 +1359,13 @@ test(
       assert.match(attempts.ghPath.stdout, /scripts\/guarded-bin\/gh\s*$/);
       assert.equal(attempts.ghVersion.status, 0, attempts.ghVersion.stderr);
       assert.equal(attempts.pnpmPath.status, 0, attempts.pnpmPath.stderr);
+      assert.equal(attempts.pnpmPath.stdout.trim(), join(toolchainBin, 'pnpm'));
       assert.equal(attempts.pnpmVersion.status, 0, attempts.pnpmVersion.stderr);
+      assert.equal(attempts.pnpmVersion.stdout.trim(), '10.0.0-test-fixture');
     } finally {
+      if (savedToolPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedToolPath;
+      invalidateCliCommand('pnpm');
       rmSync(root, { recursive: true, force: true });
     }
   },

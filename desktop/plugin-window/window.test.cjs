@@ -9,6 +9,55 @@ const input = {
   presentation: { width: 320, height: 350, frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true },
 };
 
+test('Host opens the exact decision link with macOS foreground activation, without approving', async () => {
+  const f = electronFixture();
+  const opened = [];
+  f.electron.shell.openExternal = async (...args) => opened.push(args);
+  const managed = await createManagedWindow(f.electron, input);
+  try {
+    const url = 'http://localhost:5511/thread/thread-owner?message=message-source&block=approval-card';
+    await managed.navigate({ url });
+    assert.deepEqual(opened, [[url, { activate: true }]]);
+    await managed.navigate({ url: 'http://localhost:5511/thread/thread-owner' });
+    assert.equal(opened.length, 2, 'conversation opening still works');
+    for (const url of [
+      'https://example.com/thread/thread-owner?message=source',
+      'http://owner:secret@localhost:5511/thread/thread-owner?message=source',
+      'http://localhost:5511/thread/thread-owner?message=one&message=two',
+      'http://localhost:5511/thread/thread-owner?message=source&block=one&block=two',
+      'http://localhost:5511/thread/thread-owner?block=card',
+      'http://localhost:5511/thread/thread-owner?message=source&approve=1',
+      'http://localhost:5511/thread/thread-owner?message=source&block=../card',
+      'http://localhost:5511/thread/thread-owner?message=source#foreign',
+    ])
+      await assert.rejects(managed.navigate({ url }), /Invalid conversation navigation/);
+    assert.equal(opened.length, 2, 'untrusted URLs never reach the OS');
+  } finally {
+    managed.close();
+  }
+});
+
+test('text submission observation uses only the current validated surface and carries references, never the body', async () => {
+  const f = electronFixture();
+  const observations = [];
+  const managed = await createManagedWindow(f.electron, input, {
+    validate: () => true,
+    request: async () => ({ kind: 'ok' }),
+    onTextSubmission: (value) => observations.push(value),
+  });
+  try {
+    const request = f.handlers.get('companion:request');
+    const event = { sender: f.window.webContents, senderFrame: f.window.webContents.mainFrame };
+    const now = Date.now();
+    await request(event, { kind: 'text', text: 'Private body', clientMessageId: 'request' }, false, now);
+    assert.deepEqual(observations, [{ stage: 'client_text_sent', observedAt: now, clientMessageId: 'request' }]);
+    await request({ ...event, senderFrame: {} }, { kind: 'text', clientMessageId: 'foreign' }, false, now);
+    assert.equal(observations.length, 1);
+  } finally {
+    managed.close();
+  }
+});
+
 test('Host media revocation cuts capture without closing the cat window or admitting a new offer', async () => {
   const f = electronFixture();
   const commands = [];
@@ -330,7 +379,8 @@ test('a stopped Host revokes an open F221 dialog before its confirmation can be 
   }
 });
 
-test('fullscreen Space handoff preserves media while app hide and lock still revoke it', async () => {
+test('fullscreen Space handoff preserves media while app hide and lock still revoke it', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = electronFixture();
   const requests = [];
   const managed = await createManagedWindow(f.electron, input, {
@@ -365,7 +415,10 @@ test('fullscreen Space handoff preserves media while app hide and lock still rev
     f.window.allWorkspaces = true;
     await f.handlers.get('companion:request')(event, { kind: 'prepare' }, true);
     f.window.visible = false; // a persistent native window hide
+    const stopsBeforePersistentHide = requests.filter((kind) => kind === 'stop').length;
     f.window.emit('hide');
+    t.mock.timers.tick(1000);
+    assert.equal(requests.filter((kind) => kind === 'stop').length, stopsBeforePersistentHide + 1);
     assert.equal(f.sent.at(-1).value.reason, 'hidden');
     f.window.visible = true;
     await f.handlers.get('companion:request')(event, { kind: 'prepare' }, true);
@@ -415,6 +468,41 @@ test('a Space hide followed by a timely show preserves media beyond the handoff 
     await new Promise((resolve) => setTimeout(resolve, 1150));
     assert.equal(
       f.sent.some((row) => row.value.kind === 'media-stopped'),
+      false,
+    );
+  } finally {
+    managed.close();
+  }
+});
+
+test('an all-workspaces handoff may briefly report invisible before its native show without ending the call', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = electronFixture();
+  const commands = [];
+  const managed = await createManagedWindow(f.electron, input, {
+    validate: () => true,
+    request: async (command) => {
+      commands.push(command.kind);
+      return command.kind === 'prepare' ? { kind: 'state', phase: 'ready' } : { kind: 'ok' };
+    },
+  });
+  try {
+    const event = { sender: f.window.webContents, senderFrame: f.window.webContents.mainFrame };
+    await f.handlers.get('companion:request')(event, { kind: 'prepare' }, true);
+    f.window.visible = false;
+    f.window.emit('hide');
+    assert.equal(
+      commands.includes('stop'),
+      false,
+      'an unhidden app with an all-workspaces window has not issued a hide gesture',
+    );
+    t.mock.timers.tick(50);
+    f.window.visible = true;
+    f.window.emit('show');
+    t.mock.timers.tick(1100);
+    assert.equal(commands.includes('stop'), false);
+    assert.equal(
+      f.sent.some(({ value }) => value.kind === 'media-stopped'),
       false,
     );
   } finally {

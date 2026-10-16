@@ -8,15 +8,17 @@ import { usePinnedSections } from '@/hooks/usePinnedSections';
 import { ClapperboardIcon } from '../ActivityBar';
 import { useConciergeRailToggle } from '../concierge/ConciergeRailToggle';
 import { HubIcon } from '../hub-icons';
-import { CatCafeLogo } from '../icons/CatCafeLogo';
+import { MeowClubMark } from '../icons/MeowClubMark';
 import { type ResolvedPin, resolvePin } from '../settings/settings-ia';
 import { MailboxButton } from './MailboxButton';
 import { RailButton } from './RailButton';
 import { CatBallImage, ShellGlyph } from './ShellIcons';
+import { isSettingsRoute } from './settings-reading-bridge';
 import { resolveShellNavTarget } from './shell-navigation';
 import { useOpenDestination } from './use-open-destination';
 import { usePresentationRail } from './use-presentation-rail';
 import { useWorldRailEntries } from './use-world-rail-entries';
+import { useSettingsReadingEntry } from './useSettingsSourceReturn';
 
 const CAFE_NAME = '我的 Café';
 
@@ -34,7 +36,14 @@ export function WorldRail() {
   // The one mount of the F246 approval sync for the shell (classic ActivityBar is not rendered alongside).
   useApprovalHubSync();
 
-  const go = useCallback((path: string) => router.push(resolveShellNavTarget(path, pathname)), [router, pathname]);
+  const captureSettingsOrigin = useSettingsReadingEntry();
+  const go = useCallback(
+    (path: string) => {
+      if (isSettingsRoute(path)) captureSettingsOrigin();
+      router.push(resolveShellNavTarget(path, pathname));
+    },
+    [router, pathname, captureSettingsOrigin],
+  );
 
   const inCafe = pathname === '/' || pathname.startsWith('/thread/');
   const inCollective = pathname.startsWith('/collective');
@@ -77,7 +86,7 @@ function CafeWorld({ selected, onOpen }: { selected: boolean; onOpen: () => void
       guideId="nav.home"
     >
       <span className="flex h-6 w-6 items-center justify-center" style={{ color: 'var(--shell-primary)' }}>
-        <CatCafeLogo tone="mono" className="h-6 w-6" />
+        <MeowClubMark className="h-6 w-6" />
       </span>
     </RailButton>
   );

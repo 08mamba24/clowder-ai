@@ -3,7 +3,6 @@ import { createCdpPageActionPort } from '../../action/CdpPageActionPort.js';
 import { pageActionGrantSha256 } from '../../action/LivePageAction.js';
 import type { PageActionResult } from '../../action/PageActionLoop.js';
 import { whileNotAborted } from './live-controlled-context.js';
-import type { TrustedPageActionApproval } from './live-page-action-authority-contract.js';
 import type {
   OwnerPageAction,
   OwnerPageActionOutcome,
@@ -11,6 +10,7 @@ import type {
   OwnerPageCallEntry,
   OwnerPagePreview,
 } from './owner-page-action-contract.js';
+import type { TrustedPageActionApproval } from './page-action/live-page-action-authority-contract.js';
 
 const ACTION_MS = 12_000;
 const INSPECTION_MS = 5_000;
@@ -58,6 +58,20 @@ export async function executeApprovedPageAction(input: {
   onPortTransferred?(): void;
 }): Promise<PageActionResult> {
   const { entry, preview, profile, action, port, step } = input;
+  // Admission re-inspects the target and hashes it into the ledger grant. Detect an
+  // already-replaced consent target first, so that refusal is not reported as an unknown effect.
+  // The authority and browser commit fence still repeat their checks after this observation.
+  const signal = AbortSignal.any([preview.signal, AbortSignal.timeout(INSPECTION_MS)]);
+  const current = await whileNotAborted(signal, port.inspect());
+  const target = current.candidates.find(
+    (candidate) => candidate.id === action.targetId && candidate.operation === action.operation,
+  );
+  if (
+    current.url !== preview.plan.url ||
+    current.origin !== preview.plan.origin ||
+    target?.fingerprint !== action.fingerprint
+  )
+    return { status: 'stale', before: current.readback, reason: 'target_changed_since_grant' };
   const approval = issueApproval(entry, preview, action);
   if (step === 'forward') preview.approvalId = approval.approvalId;
   else preview.rollbackApprovalId = approval.approvalId;

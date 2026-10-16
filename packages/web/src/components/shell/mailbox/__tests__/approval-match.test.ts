@@ -113,7 +113,7 @@ describe('matchHostedApproval', () => {
 
     it('finds the right one among others, and does not confuse a different producer with the same proposal id', () => {
       const lookalike: ApprovalHubItem = { ...GENERIC, sourceFeatureId: 'F193' };
-      expect(match(GENERIC, [MEETING, lookalike, PERSON, GENERIC]).kind).toBe('matched');
+      expect(match(GENERIC, [MEETING, lookalike, PERSON, GENERIC]).kind).toBe('unmatched');
       expect(match(GENERIC, [lookalike])).toMatchObject({ kind: 'unmatched', reason: 'not_in_store' });
     });
 
@@ -228,9 +228,9 @@ describe('matchHostedApproval', () => {
       expect(match(notStrings, [notStrings])).toMatchObject({ reason: 'credentials' });
     });
 
-    it('a producer with no extra credential matches on identity, lifecycle and capability alone', () => {
+    it('changed original content needs a new aligned read, even without a producer credential', () => {
       const other = withDetail(GENERIC, { anything: 'the producer keeps to itself' });
-      expect(match(GENERIC, [other]).kind).toBe('matched');
+      expect(match(GENERIC, [other]).kind).toBe('unmatched');
     });
   });
 
@@ -256,7 +256,7 @@ describe('isHostableApproval', () => {
   });
 
   it('does not host something that cannot be decided inline and is not one of the producers with its own decision card', () => {
-    expect(isHostableApproval(asRead({ ...GENERIC, inlineApprovable: false }))).toBe(false);
+    expect(isHostableApproval(asRead({ ...GENERIC, sourceFeatureId: 'F221', inlineApprovable: false }))).toBe(false);
   });
 
   it('does not host a producer whose decision belongs on its own origin card', () => {

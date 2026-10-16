@@ -1,10 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { InvocationQueue } from '../src/domains/cats/services/agents/invocation/InvocationQueue.js';
-import { createInitialQueuedMessageCustody } from '../src/domains/cats/services/agents/invocation/QueuedMessageCustodyCoordinator.js';
-import { LivePageActionApprovalLedger } from '../src/domains/concierge/live/host/live-page-action-approval-ledger.js';
-import { LivePageActionAuthority } from '../src/domains/concierge/live/host/live-page-action-authority.js';
+import { LivePageActionApprovalLedger } from '../src/domains/concierge/live/host/page-action/live-page-action-approval-ledger.js';
+import { LivePageActionAuthority } from '../src/domains/concierge/live/host/page-action/live-page-action-authority.js';
 import { appendUser, fixture, issueFixtureApproval, scope } from './helpers/f317-page-action-fixture.js';
+
+test('earlier long history does not invalidate the newest direct page request', async () => {
+  const f = fixture(Date.now(), 300);
+  try {
+    const id = await f.authority.stage({ requestMessageId: f.source.id, approval: f.approval, port: f.port });
+    assert.equal((await f.authority.execute(id, f.selector)).status, 'applied');
+    assert.equal(f.effects(), 1);
+  } finally {
+    f.authority.close();
+    await f.authority.drain();
+  }
+});
 
 test('Host stages only the current direct owner request and uses its canonical revision', async () => {
   const f = fixture();
@@ -31,26 +42,31 @@ test('a newer owner turn or revoked approval cannot commit an old action', async
     });
     if (change === 'new_request') appendUser(f.store, 'I changed my mind', 'owner-request-2');
     if (change === 'queued_request') {
-      const entry = new InvocationQueue().enqueue({
-        userId: scope.userId,
-        threadId: scope.threadId,
-        source: 'user',
-        ownerAuthProvenance: 'strict',
-        content: 'Wait, do something else first',
-        targetCats: [scope.catId],
-        intent: 'coordinate',
-      }).entry;
-      assert.ok(entry);
-      f.store.append({
-        userId: scope.userId,
-        threadId: scope.threadId,
-        catId: null,
-        content: 'Wait, do something else first',
-        mentions: [scope.catId],
-        timestamp: Date.now(),
-        deliveryStatus: 'queued',
-        queueCustody: createInitialQueuedMessageCustody(entry),
-      });
+      const queue = new InvocationQueue();
+      const content = 'Wait, do something else first';
+      const from = { kind: 'user' as const, userId: scope.userId };
+      await queue.send(
+        f.store,
+        {
+          userId: scope.userId,
+          threadId: scope.threadId,
+          from,
+          content,
+          mentions: [scope.catId],
+          timestamp: Date.now(),
+          deliveryStatus: 'queued',
+        },
+        {
+          kind: 'conversation_input',
+          userId: scope.userId,
+          threadId: scope.threadId,
+          from,
+          ownerAuthProvenance: 'strict',
+          content,
+          targetCats: [scope.catId],
+          intent: 'coordinate',
+        },
+      );
     }
     if (change === 'revoke_approval') f.revokeApproval();
     if (change === 'new_generation') f.changeScope();

@@ -1,6 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useSidebarStore } from '@/stores/sidebarStore';
 
 const nav = vi.hoisted(() => ({ pathname: '/memory', push: vi.fn() }));
 vi.mock('next/navigation', () => ({
@@ -13,12 +14,13 @@ import { ThreadSidebarV2Header } from '../ThreadSidebarV2Header';
 describe('F322 sidebar 记忆 row knows when it is the current destination', () => {
   let host: HTMLDivElement;
   let root: Root;
-  function render(activeDestination?: 'memory' | null) {
+  function render(activeDestination?: 'memory' | null, onCollapse?: () => void) {
     act(() =>
       root.render(
         <ThreadSidebarV2Header
           creationPhase="idle"
           onNewThread={vi.fn()}
+          onCollapse={onCollapse}
           searchQuery=""
           onSearchQueryChange={vi.fn()}
           uncategorizedCount={0}
@@ -41,6 +43,7 @@ describe('F322 sidebar 记忆 row knows when it is the current destination', () 
   beforeEach(() => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     nav.push.mockReset();
+    useSidebarStore.setState({ isOpen: false, initialized: false });
     nav.pathname = '/memory';
     window.history.replaceState(null, '', '/memory');
     host = document.createElement('div');
@@ -51,6 +54,8 @@ describe('F322 sidebar 记忆 row knows when it is the current destination', () 
     act(() => root.unmount());
     host.remove();
     window.history.replaceState(null, '', '/');
+    vi.restoreAllMocks();
+    useSidebarStore.setState({ isOpen: false, initialized: false });
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   });
 
@@ -80,5 +85,43 @@ describe('F322 sidebar 记忆 row knows when it is the current destination', () 
     render('memory');
     act(() => row('sidebar-memory').click());
     expect(nav.push).toHaveBeenCalledWith('/memory?from=thread-origin');
+  });
+
+  it.each([390, 767])('closes the %ipx overlay before leaving the conversation for Memory', (width) => {
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(width);
+    nav.pathname = '/thread/thread-origin';
+    window.history.replaceState(null, '', nav.pathname);
+    useSidebarStore.getState().open();
+    const openAtNavigation: boolean[] = [];
+    nav.push.mockImplementation(() => openAtNavigation.push(useSidebarStore.getState().isOpen));
+    render(null, useSidebarStore.getState().close);
+
+    act(() => row('sidebar-memory').click());
+
+    expect(nav.push).toHaveBeenCalledExactlyOnceWith('/memory?from=thread-origin');
+    expect(openAtNavigation).toEqual([false]);
+    expect(useSidebarStore.getState().isOpen).toBe(false);
+    // The same store survives Memory -> source; the return must not resurrect the old overlay.
+    nav.pathname = '/memory';
+    window.history.replaceState(null, '', '/memory?from=thread-origin');
+    render('memory', useSidebarStore.getState().close);
+    nav.pathname = '/thread/thread-origin';
+    window.history.replaceState(null, '', nav.pathname);
+    render(null, useSidebarStore.getState().close);
+    expect(useSidebarStore.getState().isOpen).toBe(false);
+  });
+
+  it.each([768, 1440])('preserves the %ipx desktop sidebar choice when navigating to Memory', (width) => {
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(width);
+    nav.pathname = '/thread/thread-origin';
+    useSidebarStore.getState().open();
+    const close = vi.fn(useSidebarStore.getState().close);
+    render(null, close);
+
+    act(() => row('sidebar-memory').click());
+
+    expect(nav.push).toHaveBeenCalledExactlyOnceWith('/memory?from=thread-origin');
+    expect(close).not.toHaveBeenCalled();
+    expect(useSidebarStore.getState().isOpen).toBe(true);
   });
 });

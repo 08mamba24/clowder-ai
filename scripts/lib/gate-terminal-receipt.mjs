@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { assertSourceFullBrowserGreen } from './gate-browser-evidence.mjs';
 import { GATE_EXECUTION_PATHS } from './gate-execution-paths.mjs';
-import { openGateResourcePool } from './gate-resource-db.mjs';
+import { openGateResourcePool, openGateResourcePoolReadOnly } from './gate-resource-db.mjs';
 import {
   assertGateStagesGreen,
   ensureGateStageReceiptTables,
@@ -402,6 +402,15 @@ export function readGateRun(databasePath, runId) {
         )
         .get(runId),
     );
+  } finally {
+    database.close();
+  }
+}
+
+export function readGateRunReadOnly(databasePath, runId) {
+  const database = openGateResourcePoolReadOnly(databasePath);
+  try {
+    return publicRun(database.prepare('SELECT * FROM gate_runs WHERE run_id = ?').get(runId));
   } finally {
     database.close();
   }

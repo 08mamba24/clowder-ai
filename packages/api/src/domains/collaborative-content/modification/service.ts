@@ -1,11 +1,16 @@
 import {
   type ContentModificationRequest,
   type ContentModificationRequestView,
-  contentModificationRequestSchema,
+  contentModificationRequestContractSchema,
+  contentModificationTakeoverSchema,
 } from '@cat-cafe/shared';
-import type { IMessageStore } from '../../cats/services/stores/ports/MessageStore.js';
+import type { QueueTargetExecutionReadPort } from '../../cats/services/agents/invocation/queue-ledger/QueueTargetExecutionView.js';
+import {
+  deriveGrowingSourceMessageRevision,
+  type IMessageStore,
+} from '../../cats/services/stores/ports/MessageStore.js';
 import type { ITaskStore } from '../../cats/services/stores/ports/TaskStore.js';
-import type { ITurnExecutionStore } from '../../cats/services/stores/ports/TurnExecutionStore.js';
+import type { TurnExecutionSourceReadPort } from '../../cats/services/stores/ports/TurnExecutionStore.js';
 import type { EntrustedWorkLifecycleService } from '../../growing/EntrustedWorkLifecycleService.js';
 import type { MediaReviewPrincipal } from '../../video-studio/content-owner/published-media-access.js';
 import type { ArtifactReviewStore } from '../artifact-review/store.js';
@@ -16,8 +21,14 @@ import {
   ContentModificationJournalError,
   type ContentModificationProgress,
   type ContentModificationRecord,
+  modificationMessageRequestId,
   modificationRequestId,
 } from './journal.js';
+import { mediaSelectionAnnotations } from './media-message/media-selection-projection.js';
+import type { ResolvedMessageTakeover } from './message/types.js';
+import { projectModificationView } from './project/service.js';
+import type { ProjectMessageTakeoverPort } from './project/types.js';
+import { requireModificationSourceMessage } from './request-authority.js';
 import { type ModificationLabels, persistModificationSource } from './request-source.js';
 import { admitModificationTask, ModificationAdmissionError } from './task-admission.js';
 
@@ -47,16 +58,27 @@ export class ContentModificationService {
     private readonly deps: {
       store: ArtifactReviewStore;
       messages: IMessageStore;
-      turnExecutions?: Pick<ITurnExecutionStore, 'get'>;
+      queue?: QueueTargetExecutionReadPort;
+      turnExecutions?: TurnExecutionSourceReadPort;
       tasks: ITaskStore;
       lifecycle: EntrustedWorkLifecycleService;
       content: ModificationContentPort;
+      project?: ProjectMessageTakeoverPort;
       authorizeTarget: (
         payload: ContentModificationRequest,
         ownerUserId: string,
       ) => Promise<Pick<ModificationLabels, 'targetName' | 'threadTitle'>>;
+      resolveTakeover: (
+        input: ReturnType<typeof contentModificationTakeoverSchema.parse>,
+        principal: Extract<MediaReviewPrincipal, { actor: { kind: 'cat' } }>,
+        existing?: ContentModificationRecord,
+      ) => Promise<ResolvedMessageTakeover>;
       dispatch: () => Promise<void>;
       onError: (error: unknown) => void;
+      hasPublicationContinuation?: (
+        record: ContentModificationRecord,
+        principal: MediaReviewPrincipal,
+      ) => Promise<boolean>;
       sourceChanged?: (ownerUserId: string, threadId: string, messageId: string) => void;
       leaseDurationMs?: number;
       attemptBudgetMs?: number;
@@ -83,7 +105,8 @@ export class ContentModificationService {
 
   async submit(raw: unknown, principal: MediaReviewPrincipal): Promise<ModificationRequestView> {
     this.assertHuman(principal);
-    const payload = contentModificationRequestSchema.parse(raw);
+    const payload = contentModificationRequestContractSchema.parse(raw);
+    if (payload.source.kind === 'video-project') throw new ContentModificationJournalError('invalid_progress');
     const existing = this.deps.store.requests.get(
       modificationRequestId(principal.userId, payload.operationId),
       principal.userId,
@@ -94,10 +117,38 @@ export class ContentModificationService {
     return this.resume(record, principal);
   }
 
+  async takeOver(raw: unknown, principal: MediaReviewPrincipal): Promise<ModificationRequestView> {
+    if (!isCatPrincipal(principal)) throw new ContentModificationJournalError('not_found');
+    const input = contentModificationTakeoverSchema.parse(raw);
+    const existing = this.deps.store.requests.get(
+      modificationMessageRequestId(principal.userId, input.sourceMessageId),
+      principal.userId,
+    );
+    const resolved = await this.deps.resolveTakeover(input, principal, existing ?? undefined);
+    const record = this.deps.store.requests.reserveFromMessage(principal.userId, resolved.payload, {
+      messageId: input.sourceMessageId,
+      messageRevision: resolved.sourceMessageRevision,
+      visibility: resolved.sourceVisibility,
+    });
+    if (record.payload.source.kind === 'video-project' && record.payload.targetCatId !== principal.actor.actorId)
+      throw new ContentModificationJournalError('not_found');
+    const result = await this.resume(record, {
+      userId: principal.userId,
+      actor: { kind: 'human', actorId: principal.userId },
+    });
+    if (record.payload.source.kind !== 'video-project') return result;
+    if (!this.deps.project) throw new ContentModificationJournalError('invalid_progress');
+    return this.deps.project.viewForCat(result.record, principal);
+  }
+
   async read(requestId: string, principal: MediaReviewPrincipal): Promise<ModificationRequestView> {
     this.assertHuman(principal);
     const record = this.deps.store.requests.get(requestId, principal.userId);
     if (!record) throw new ContentModificationJournalError('not_found');
+    if (record.payload.source.kind === 'video-project') {
+      if (!this.deps.project) throw new ContentModificationJournalError('invalid_progress');
+      return this.deps.project.read(record, principal);
+    }
     await this.deps.content.inspect(record.payload, principal, true);
     return this.project(record);
   }
@@ -127,6 +178,10 @@ export class ContentModificationService {
     initial: ContentModificationRecord,
     principal: MediaReviewPrincipal,
   ): Promise<ModificationRequestView> {
+    if (initial.payload.source.kind === 'video-project') {
+      if (!this.deps.project) throw new ContentModificationJournalError('invalid_progress');
+      return this.deps.project.resume(initial, principal);
+    }
     const journal = this.deps.store.requests;
     const durationMs = this.deps.leaseDurationMs ?? 30000;
     const lease = journal.acquire(initial.requestId, principal.userId, Date.now(), durationMs);
@@ -149,10 +204,17 @@ export class ContentModificationService {
         const target = await this.deps.authorizeTarget(record.payload, record.ownerUserId);
         const content = await this.deps.content.inspect(record.payload, principal, true);
         const labels = { ...target, ...content };
-        const source = await persistModificationSource(this.deps.messages, record, labels);
+        const source =
+          record.progress.sourceKind === 'human_message'
+            ? await requireModificationSourceMessage(this.deps.messages, record)
+            : await persistModificationSource(this.deps.messages, record, labels);
         const newlyLinked = !record.progress.sourceMessageId;
         if (!record.progress.sourceMessageId)
-          record = journal.advance(record.requestId, lease.token, { sourceMessageId: source.id });
+          record = journal.advance(record.requestId, lease.token, {
+            sourceMessageId: source.id,
+            sourceMessageRevision: deriveGrowingSourceMessageRevision(source) as `sha256:${string}`,
+            sourceKind: 'generated_request',
+          });
         if (record.progress.sourceMessageId !== source.id)
           throw new ContentModificationJournalError('operation_reused');
         if (newlyLinked) {
@@ -192,18 +254,28 @@ export class ContentModificationService {
 
   private async project(record: ContentModificationRecord): Promise<ModificationRequestView> {
     const progress = record.progress;
+    if (record.progress.prepared?.kind === 'project') return projectModificationView(record);
+    const selectionAnnotations = mediaSelectionAnnotations(this.deps.store, record);
     if (record.control) {
       const execution = await readModificationExecution(this.deps, record);
-      return { record, stage: 'cancelled', ...(execution ? { execution } : {}) };
+      return {
+        record,
+        stage: 'cancelled',
+        ...(selectionAnnotations ? { selectionAnnotations } : {}),
+        ...(execution ? { execution } : {}),
+      };
     }
     if (!progress.sourceMessageId) return { record, stage: 'saving_source' };
     if (!progress.prepared) return { record, stage: 'preparing_content' };
     if (!progress.task) return { record, stage: 'admitting_task' };
     if (!progress.review) return { record, stage: 'binding_request' };
-    const intent = this.deps.store.returns.get(progress.review.receiptRef);
+    const intent =
+      (progress.prepared.kind === 'media' ? this.deps.store.returns.publicationForRequest(record.requestId) : null) ??
+      this.deps.store.returns.get(progress.review.receiptRef);
     const execution = await readModificationExecution(this.deps, record);
     return {
       record,
+      ...(selectionAnnotations ? { selectionAnnotations } : {}),
       ...(execution ? { execution } : {}),
       stage: !intent || intent.state === 'pending' ? 'pending_delivery' : intent.state,
       ...(intent
@@ -247,6 +319,12 @@ export class ContentModificationService {
         throw leaseError;
     }
   }
+}
+
+function isCatPrincipal(
+  principal: MediaReviewPrincipal,
+): principal is Extract<MediaReviewPrincipal, { actor: { kind: 'cat' } }> {
+  return principal.actor.kind === 'cat';
 }
 
 /** A live but stuck owner call cannot renew forever. Late completions still meet the journal token fence. */

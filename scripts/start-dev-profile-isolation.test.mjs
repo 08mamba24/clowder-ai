@@ -10,10 +10,7 @@ import { buildWindowsStatus, resolveWindowsStatusPorts } from './lib/platform-st
 
 const ROOT = resolve(process.cwd());
 const localRequire = createRequire(import.meta.url);
-const BUILD_CHILD_ENV_INHERITED_CWD_EXCEPTIONS = [
-  // Antigravity never sets spawn.cwd, so its process and shell cwd intentionally inherit together.
-  'packages/api/src/domains/cats/services/agents/providers/GeminiAgentService.ts::buildChildEnv(options.callbackEnv)',
-];
+const BUILD_CHILD_ENV_INHERITED_CWD_EXCEPTIONS = [];
 
 function resolvePackageBin(packageName) {
   const pkgPath = localRequire.resolve(`${packageName}/package.json`);
@@ -91,6 +88,7 @@ function collectBuildChildEnvCallsMissingWorkingDirectory() {
   return findings.sort();
 }
 
+// Fixture commands must preserve the supplied environment and avoid host login/logout hooks.
 function runSourceOnly({ sandboxDir, env = {}, extraArgs = [], commands }) {
   const command = (
     commands ?? [
@@ -99,7 +97,7 @@ function runSourceOnly({ sandboxDir, env = {}, extraArgs = [], commands }) {
     ]
   ).join('; ');
 
-  return spawnSync('bash', ['-lc', command], {
+  return spawnSync('bash', ['-c', command], {
     cwd: sandboxDir,
     env: {
       PATH: process.env.PATH ?? '',
@@ -117,7 +115,7 @@ function runApiLaunchCommand({ sandboxDir, env = {}, extraArgs = [] }) {
     'printf "%s\\n" "$(api_launch_command)"',
   ].join('; ');
 
-  return spawnSync('bash', ['-lc', command], {
+  return spawnSync('bash', ['-c', command], {
     cwd: sandboxDir,
     env: {
       PATH: process.env.PATH ?? '',
@@ -127,6 +125,10 @@ function runApiLaunchCommand({ sandboxDir, env = {}, extraArgs = [] }) {
     },
     encoding: 'utf8',
   });
+}
+
+function shellFailureDetails(result) {
+  return `shell exit=${result.status}, signal=${result.signal ?? 'none'}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
 }
 
 describe('start-dev strict profile isolation', () => {
@@ -146,7 +148,7 @@ describe('start-dev strict profile isolation', () => {
           'printf "QUICK=%s\\n" "$QUICK_MODE"',
         ],
       });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /QUICK=true/);
     } finally {
       rmSync(sandboxDir, { recursive: true, force: true });
@@ -166,7 +168,7 @@ describe('start-dev strict profile isolation', () => {
           'wait_for_api_readiness 3102 "$$" 5',
         ],
       });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.equal(readFileSync(callsPath, 'utf8'), '2', '503 must not count as ready');
     } finally {
       rmSync(sandboxDir, { recursive: true, force: true });
@@ -194,7 +196,7 @@ describe('start-dev strict profile isolation', () => {
         extraArgs: ['--', '--profile=opensource'],
       });
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /PROFILE=opensource/);
       assert.match(result.stdout, /ASR=0/);
       assert.match(result.stdout, /PROXY=0/);
@@ -219,7 +221,7 @@ describe('start-dev strict profile isolation', () => {
         extraArgs: ['--', '--profile=production'],
       });
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /PROFILE=production/);
       assert.match(result.stdout, /ASR=0/);
       assert.match(result.stdout, /PROXY=0/);
@@ -246,7 +248,7 @@ describe('start-dev strict profile isolation', () => {
         extraArgs: ['--', '--profile=opensource'],
       });
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /PROFILE=opensource/);
       assert.match(result.stdout, /ASR=0/);
       assert.match(result.stdout, /EMBED=0/);
@@ -264,7 +266,7 @@ describe('start-dev strict profile isolation', () => {
         'source scripts/start-dev.sh --source-only -- --profile=opensource',
         'printf "ASR=%s\\nTTS=%s\\nLEGACY_ASR=%s\\nLEGACY_TTS=%s\\n" "$ASR_ENABLED" "$TTS_ENABLED" "${CAT_CAFE_SERVICE_ASR_ENABLED:-}" "${CAT_CAFE_SERVICE_TTS_ENABLED:-}"',
       ].join('; ');
-      const result = spawnSync('bash', ['-lc', command], {
+      const result = spawnSync('bash', ['-c', command], {
         cwd: sandboxDir,
         env: {
           PATH: process.env.PATH ?? '',
@@ -275,7 +277,7 @@ describe('start-dev strict profile isolation', () => {
         encoding: 'utf8',
       });
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /ASR=0/);
       assert.match(result.stdout, /TTS=0/);
       assert.match(result.stdout, /LEGACY_ASR=1/);
@@ -300,7 +302,7 @@ describe('start-dev strict profile isolation', () => {
         extraArgs: ['--', '--profile=opensource'],
       });
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /PROFILE=opensource/);
       assert.match(result.stdout, /EMBED=0/);
     } finally {
@@ -320,7 +322,7 @@ describe('start-dev strict profile isolation', () => {
         'source scripts/start-dev.sh --source-only',
         'printf "SERVICE_EMBED=%s\\n" "${CAT_CAFE_SERVICE_EMBED_ENABLED:-unset}"',
       ].join('; ');
-      const result = spawnSync('bash', ['-lc', command], {
+      const result = spawnSync('bash', ['-c', command], {
         cwd: sandboxDir,
         env: {
           PATH: process.env.PATH ?? '',
@@ -329,7 +331,7 @@ describe('start-dev strict profile isolation', () => {
         },
         encoding: 'utf8',
       });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(
         result.stdout,
         /SERVICE_EMBED=1/,
@@ -351,7 +353,7 @@ describe('start-dev strict profile isolation', () => {
         extraArgs: ['--', '--profile=opensource'],
       });
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /PROFILE=opensource/);
       assert.match(result.stdout, /EMBED=0/);
     } finally {
@@ -363,7 +365,7 @@ describe('start-dev strict profile isolation', () => {
     const sandboxDir = createSandbox();
     try {
       const result = runApiLaunchCommand({ sandboxDir });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /NODE_ENV=development/, result.stdout);
       assert.match(result.stdout, /pnpm run dev/, result.stdout);
     } finally {
@@ -401,7 +403,7 @@ describe('start-dev strict profile isolation', () => {
         env: { CAT_CAFE_STRICT_PROFILE_DEFAULTS: '1' },
         extraArgs: ['--', '--profile=opensource'],
       });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /NODE_ENV=development/, result.stdout);
     } finally {
       rmSync(sandboxDir, { recursive: true, force: true });
@@ -416,7 +418,7 @@ describe('start-dev strict profile isolation', () => {
         env: { CAT_CAFE_STRICT_PROFILE_DEFAULTS: '1' },
         extraArgs: ['--prod-web', '--', '--profile=opensource'],
       });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /NODE_ENV=production/, result.stdout);
     } finally {
       rmSync(sandboxDir, { recursive: true, force: true });
@@ -430,7 +432,7 @@ describe('start-dev strict profile isolation', () => {
         sandboxDir,
         extraArgs: ['--prod-web'],
       });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /pnpm run start/, result.stdout);
       assert.doesNotMatch(result.stdout, /pnpm run dev/, result.stdout);
     } finally {
@@ -509,7 +511,7 @@ describe('cross-platform pnpm-start profile propagation (#421)', () => {
         ],
       });
 
-      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /CONTINUED=1/);
       assert.match(result.stdout, /OWNER=empty/);
       assert.match(result.stdout, /F247 cloud supporting services degraded/i);
@@ -533,7 +535,7 @@ describe('cross-platform pnpm-start profile propagation (#421)', () => {
         ],
       });
 
-      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /F247 cloud: degraded/i);
       assert.match(result.stdout, /NODE_ARGS=.*status --summary/);
       assert.match(result.stdout, /RESULT=0/);
@@ -1147,7 +1149,7 @@ describe('Whisper sidecar startup guards', () => {
     const result = spawnSync(
       'bash',
       [
-        '-lc',
+        '-c',
         [
           `source "${helperPath}"`,
           'HTTP_PROXY=socks://127.0.0.1:7897/',
@@ -1160,7 +1162,7 @@ describe('Whisper sidecar startup guards', () => {
       { encoding: 'utf8' },
     );
 
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, 0, shellFailureDetails(result));
     assert.equal(
       result.stdout,
       ['socks5://127.0.0.1:7897/', 'socks5://127.0.0.1:7897/', 'socks5h://127.0.0.1:7897/'].join('\n') + '\n',

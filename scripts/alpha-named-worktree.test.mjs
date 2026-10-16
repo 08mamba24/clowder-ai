@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -42,17 +43,24 @@ test('canonical named Alpha launcher carries one tuple from actual main to isola
   assert.equal(f.readCalls().includes('redis-cli '), false, 'fresh named startup never queries old Redis');
 });
 
-test('named Alpha preserves managed preview expiry across dotenv and does not mint one from dotenv', (t) => {
+test('named Alpha preserves managed preview context across dotenv and does not mint it from dotenv', (t) => {
   const f = namedAlphaFixture(t);
   f.captureChild();
-  writeFileSync(join(f.mainRoot, '.env'), 'CAT_CAFE_PREVIEW_EXPIRES_AT=forged-from-dotenv\n');
+  writeFileSync(
+    join(f.mainRoot, '.env'),
+    'CAT_CAFE_PREVIEW_EXPIRES_AT=forged-from-dotenv\nCAT_CAFE_PREVIEW_CLEANUP_RESULT=forged-from-dotenv\n',
+  );
   const args = ['start', '--instance', 'f290-communication', '--ports', NAMED_ALPHA_PORTS];
   const expiry = new Date(Date.now() + 60_000).toISOString();
-  assert.equal(
-    f.childEnvironment(f.run(args, { env: { CAT_CAFE_PREVIEW_EXPIRES_AT: expiry } })).CAT_CAFE_PREVIEW_EXPIRES_AT,
-    expiry,
+  const resultPath = join(f.directory, 'owner-result.json');
+  const managed = f.childEnvironment(
+    f.run(args, { env: { CAT_CAFE_PREVIEW_EXPIRES_AT: expiry, CAT_CAFE_PREVIEW_CLEANUP_RESULT: resultPath } }),
   );
-  assert.equal(f.childEnvironment(f.run(args)).CAT_CAFE_PREVIEW_EXPIRES_AT, '');
+  assert.equal(managed.CAT_CAFE_PREVIEW_EXPIRES_AT, expiry);
+  assert.equal(managed.CAT_CAFE_PREVIEW_CLEANUP_RESULT, resultPath);
+  const direct = f.childEnvironment(f.run(args));
+  assert.equal(direct.CAT_CAFE_PREVIEW_EXPIRES_AT, '');
+  assert.equal(direct.CAT_CAFE_PREVIEW_CLEANUP_RESULT, '');
 });
 
 test('actual native guard admits only the registered main-lineage named Alpha child', (t) => {
@@ -88,6 +96,50 @@ test('actual native guard admits only the registered main-lineage named Alpha ch
   assert.equal(decide(command, f.alphaRoot).decision, 'deny', 'launcher belongs to the actual main coordinate');
   writeFileSync(join(f.alphaRoot, 'scripts/alpha-worktree.sh'), '# dirty\n');
   assert.equal(decide(command).decision, 'deny', 'tracked dirty implementation cannot start');
+});
+
+test('named status/stop consume the existing launcher record coordinates without a start preflight', (t) => {
+  const f = namedAlphaFixture(t);
+  const stateDir = join(f.directory, 'preview-records');
+  mkdirSync(stateDir);
+  const prior = process.env.CAT_CAFE_PREVIEW_PROCESS_DIR;
+  process.env.CAT_CAFE_PREVIEW_PROCESS_DIR = stateDir;
+  t.after(() => {
+    if (prior === undefined) delete process.env.CAT_CAFE_PREVIEW_PROCESS_DIR;
+    else process.env.CAT_CAFE_PREVIEW_PROCESS_DIR = prior;
+  });
+  const id = createHash('sha256').update(`${f.mainRoot}\0${5311}`).digest('hex').slice(0, 16);
+  const record = {
+    version: 1,
+    id,
+    cwd: f.mainRoot,
+    port: 5311,
+    command: ['pnpm', 'alpha:start', '--instance', 'f290-communication', '--ports', NAMED_ALPHA_PORTS],
+  };
+  writeFileSync(join(stateDir, `${id}.json`), JSON.stringify(record));
+  for (const action of ['status', 'stop']) {
+    const verdict = decideNativeHookPayload(
+      {
+        tool_name: 'exec_command',
+        cwd: '/tmp',
+        tool_input: { cmd: `pnpm --dir ${f.mainRoot} preview:process ${action} --cwd ${f.mainRoot} --port 5311` },
+      },
+      { selfHost: () => ({ confidence: 'none' }) },
+    );
+    assert.equal(verdict.decision, 'allow', JSON.stringify(verdict));
+    assert.equal(verdict.target.value, `preview://alpha${f.mainRoot}:5311`);
+  }
+  record.command[record.command.length - 1] = '5311,3002,5411,5511,6399';
+  writeFileSync(join(stateDir, `${id}.json`), JSON.stringify(record));
+  const verdict = decideNativeHookPayload(
+    {
+      tool_name: 'Bash',
+      cwd: f.mainRoot,
+      tool_input: { command: `pnpm --dir ${f.mainRoot} preview:process stop --cwd ${f.mainRoot} --port 5311` },
+    },
+    { selfHost: () => ({ confidence: 'none' }) },
+  );
+  assert.equal(verdict.decision, 'deny');
 });
 
 test('named start rejects path overrides and protected tuples before contacting any Redis', (t) => {

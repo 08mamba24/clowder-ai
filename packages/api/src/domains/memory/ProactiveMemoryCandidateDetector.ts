@@ -1,3 +1,4 @@
+import { messageFrom } from '../cats/services/stores/message-from.js';
 import type { IMessageStore, StoredMessage } from '../cats/services/stores/ports/MessageStore.js';
 import { isDelivered } from '../cats/services/stores/ports/MessageStore.js';
 import type { IThreadStore } from '../cats/services/stores/ports/ThreadStore.js';
@@ -58,6 +59,7 @@ export class ProactiveMemoryCandidateDetector {
         input.ownerUserId,
         sinceInclusive,
         untilInclusive,
+        { humanOnly: true },
       );
       const eligibleMessages = await this.filterEligibleMessages(messages, input.ownerUserId);
       if (!eligibleMessages.some((message) => message.id === currentMessage.id)) return [];
@@ -98,8 +100,7 @@ export class ProactiveMemoryCandidateDetector {
   private isEligibleMessageShape(message: StoredMessage, ownerUserId: string): boolean {
     return (
       message.userId === ownerUserId &&
-      message.catId === null &&
-      message.source === undefined &&
+      messageFrom(message).kind === 'user' &&
       isDelivered(message) &&
       !message.deletedAt &&
       !message._tombstone &&

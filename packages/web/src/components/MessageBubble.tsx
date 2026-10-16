@@ -42,6 +42,8 @@ interface MessageBubbleProps {
   /** Override max-width class for content area.
    *  Default: 'max-w-[85%] md:max-w-[75%]' (left) / 'max-w-[75%]' (right). */
   maxWidth?: string;
+  /** New-shell cat identity rail; comes from the same persona tokens as its nameplate. */
+  railColor?: string;
   /**
    * How the cat's reply is drawn. `bubble` (default) is the framed bubble with an avatar column that every message type
    * has always had. `nameplate` is the Café 1.6 cat reply (DESIGN.md「对话」): no avatar column (the identity sits in the
@@ -52,7 +54,7 @@ interface MessageBubbleProps {
    * percent of the reading column with the blank on the left. The frame is real, so overflow is still clipped to it.
    * An explicit opt-in so the shared primitive never changes for the other message types.
    */
-  presentation?: 'bubble' | 'nameplate' | 'human';
+  presentation?: 'bubble' | 'nameplate' | 'human' | 'forwarded';
 }
 
 export function MessageBubble({
@@ -68,6 +70,7 @@ export function MessageBubble({
   wrapperClassName = '',
   wrapperStyle,
   maxWidth,
+  railColor,
   presentation = 'bubble',
 }: MessageBubbleProps) {
   const isRight = align === 'right';
@@ -76,16 +79,27 @@ export function MessageBubble({
     // The cat's reply in the new presentation: the reading column's left edge is where it starts and its right edge is
     // where it may end. No avatar column (the plate carries the identity) and no frame around the body. The body div
     // keeps its testid so the message stays findable the way it always was. It is not clipped: artwork cards and
-    // receipts inside it have shadows and focus rings that the frame's `overflow-hidden` would cut off.
+    // receipts inside it have shadows and focus rings that the frame's `overflow-hidden` would cut off. A tall message is
+    // navigated with block:start; its 6px scroll margin keeps the face's 4px overhang and 2px ring inside that scrollport.
     return (
       <div
         data-message-id={messageId}
-        className={`flex mb-4 items-start ${wrapperClassName}`.trim()}
+        className={`flex mb-4 scroll-mt-1.5 items-start ${wrapperClassName}`.trim()}
         style={wrapperStyle}
       >
         <div className={`${maxWidth ?? 'max-w-full'} min-w-0`}>
           {header}
-          <div data-testid="message-bubble" className={bubbleClassName.trim()} style={bubbleStyle}>
+          <div
+            data-testid="message-bubble"
+            data-reply-color-rail={railColor ? true : undefined}
+            className={bubbleClassName.trim()}
+            style={{
+              ...bubbleStyle,
+              ...(railColor
+                ? { borderLeftWidth: 3, borderLeftStyle: 'solid', borderLeftColor: railColor, paddingLeft: 16 }
+                : {}),
+            }}
+          >
             {children}
           </div>
           {footer}
@@ -115,6 +129,23 @@ export function MessageBubble({
       </div>
     );
   }
+
+  if (presentation === 'forwarded')
+    return (
+      <div
+        data-message-id={messageId}
+        className={`flex justify-end mb-4 items-start ${wrapperClassName}`.trim()}
+        style={wrapperStyle}
+      >
+        <div className={`${maxWidth ?? 'w-full max-w-full'} min-w-0 flex flex-col items-end`}>
+          {header}
+          <div data-testid="message-bundle-surface" className="w-full min-w-0">
+            {children}
+          </div>
+          {footer}
+        </div>
+      </div>
+    );
 
   const resolvedMaxWidth = maxWidth ?? (isRight ? 'max-w-[75%]' : 'max-w-[85%] md:max-w-[75%]');
 

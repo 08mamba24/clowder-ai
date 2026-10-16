@@ -8,7 +8,13 @@ import type { IEvidenceStore, IMarkerQueue } from '../domains/memory/interfaces.
 import type { LibraryCatalog } from '../domains/memory/LibraryCatalog.js';
 import { resolveDirectLocalAuthorizationUserId, resolveSessionUserId } from '../utils/request-identity.js';
 import { type BrakeSourceReaders, readBrakeSource } from './memory-brake-source.js';
+import { defaultMemoryLibraryTarget } from './memory-library-default.js';
 import { memoryLibraryFeed, visibleMemoryCollections } from './memory-library-read.js';
+import { type RecallPageSourceReaders, readMemoryRecallPage } from './memory-recall-page.js';
+import { recallPageCursors, recallPageQuery } from './memory-recall-query.js';
+import { readMemoryRecallStats } from './memory-recall-stats.js';
+import { registerMemorySearchRoutes } from './memory-search.js';
+import type { MemorySearchSources } from './memory-search-types.js';
 
 export interface MemoryPageReadOptions {
   ownerUserId: string;
@@ -19,6 +25,8 @@ export interface MemoryPageReadOptions {
   repoRoot?: string;
   docsRoot?: string;
   brakeSources?: BrakeSourceReaders;
+  recallSources?: RecallPageSourceReaders;
+  searchSources?: MemorySearchSources;
 }
 
 export const memoryPageReadRoutes: FastifyPluginAsync<MemoryPageReadOptions> = async (app, opts) => {
@@ -28,37 +36,80 @@ export const memoryPageReadRoutes: FastifyPluginAsync<MemoryPageReadOptions> = a
     if (user !== opts.ownerUserId) return reply.code(403).send({ error: 'Owner required' });
   });
 
+  registerMemorySearchRoutes(app, {
+    ownerUserId: opts.ownerUserId,
+    catalog: opts.catalog,
+    stores: opts.stores,
+    ...opts.searchSources,
+  });
+
+  const cursors = recallPageCursors();
+  app.get('/api/memory/recall', async (request, reply) => {
+    const parsed = recallPageQuery.safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid recall query' });
+    if (!opts.recallSources?.threadStore) return reply.code(503).send({ error: 'Recall reader unavailable' });
+    const cursor = cursors.decode(opts.ownerUserId, parsed.data);
+    if (cursor === 'invalid') return reply.code(400).send({ error: 'Invalid recall cursor' });
+    try {
+      const { next, ...page } = await readMemoryRecallPage(
+        opts.evidenceDb,
+        opts.ownerUserId,
+        opts.recallSources,
+        parsed.data,
+        cursor,
+      );
+      return { ...page, nextCursor: next ? cursors.encode(next, opts.ownerUserId, parsed.data) : null };
+    } catch {
+      return reply.code(503).send({ error: 'Recall reader unavailable' });
+    }
+  });
+
+  app.get('/api/memory/recall/stats', async (request, reply) => {
+    const parsed = recallPageQuery.pick({ days: true }).safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid recall window' });
+    if (!opts.recallSources?.threadStore) return reply.code(503).send({ error: 'Recall reader unavailable' });
+    try {
+      return await readMemoryRecallStats(
+        opts.evidenceDb,
+        opts.ownerUserId,
+        opts.recallSources.threadStore,
+        Number(parsed.data.days),
+      );
+    } catch {
+      return reply.code(503).send({ error: 'Recall reader unavailable' });
+    }
+  });
+
   app.get('/api/memory/catalog', async (request) => {
     // Reuse the sensitive-read principal. A remote default-user session cannot grant private titles.
     const visible = visibleMemoryCollections(opts.catalog.list(), resolveDirectLocalAuthorizationUserId(request));
-    return {
-      collections: visible.map((manifest) => {
-        const base = {
-          id: manifest.id,
-          name: manifest.displayName,
-          kind: manifest.kind,
-          visibility: manifest.sensitivity,
-          status: manifest.status ?? 'active',
-        };
-        try {
-          const store = opts.stores.get(manifest.id) as
-            | (IEvidenceStore & { getDb?: () => Database.Database })
-            | undefined;
-          const db = store?.getDb?.();
-          if (!db) return { ...base, readStatus: 'unavailable', docCount: null, lastDocumentUpdatedAt: null };
-          const overview = CollectionReadModel.computeOverview(
-            manifest.id,
-            manifest.displayName,
-            manifest.sensitivity,
-            db,
-          );
-          const updated = db.prepare('SELECT max(updated_at) AS t FROM evidence_docs').get() as { t: string | null };
-          return { ...base, readStatus: 'ready', docCount: overview.docCount, lastDocumentUpdatedAt: updated.t };
-        } catch {
-          return { ...base, readStatus: 'unavailable', docCount: null, lastDocumentUpdatedAt: null };
-        }
-      }),
-    };
+    const collections = visible.map((manifest) => {
+      const base = {
+        id: manifest.id,
+        name: manifest.displayName,
+        kind: manifest.kind,
+        visibility: manifest.sensitivity,
+        status: manifest.status ?? 'active',
+      };
+      try {
+        const store = opts.stores.get(manifest.id) as
+          | (IEvidenceStore & { getDb?: () => Database.Database })
+          | undefined;
+        const db = store?.getDb?.();
+        if (!db) return { ...base, readStatus: 'unavailable', docCount: null, lastDocumentUpdatedAt: null };
+        const overview = CollectionReadModel.computeOverview(
+          manifest.id,
+          manifest.displayName,
+          manifest.sensitivity,
+          db,
+        );
+        const updated = db.prepare('SELECT max(updated_at) AS t FROM evidence_docs').get() as { t: string | null };
+        return { ...base, readStatus: 'ready', docCount: overview.docCount, lastDocumentUpdatedAt: updated.t };
+      } catch {
+        return { ...base, readStatus: 'unavailable', docCount: null, lastDocumentUpdatedAt: null };
+      }
+    });
+    return { collections, defaultTargetCollectionId: defaultMemoryLibraryTarget(collections, visible, opts.docsRoot) };
   });
 
   app.get('/api/memory/library-feed', async (request) => {

@@ -1,4 +1,5 @@
 import Image from 'next/image';
+import { MEMORY_FAMILIES, type MemoryFamily } from './memory-family';
 
 const TYPES = [
   { id: 'event', label: '事件' },
@@ -12,10 +13,16 @@ export function MemoryTasteSky({
   expanded,
   countText,
   toggle,
+  peopleSummary = '可查看',
+  onSelect,
+  summaries = {},
 }: {
   expanded: boolean;
   countText: string;
   toggle: () => void;
+  peopleSummary?: string;
+  onSelect?: (type: MemoryFamily) => void;
+  summaries?: Partial<Record<string, string>>;
 }) {
   return (
     <section
@@ -25,16 +32,30 @@ export function MemoryTasteSky({
       data-expanded={expanded}
       aria-label="主星书房"
     >
-      <div className="absolute inset-x-0 top-0 flex items-center justify-between gap-3 p-4 text-neutral-50 md:px-8">
+      <div className="absolute inset-x-0 top-0 flex items-center justify-between gap-3 p-4 text-[var(--cafe-image-foreground)] md:px-8">
         <h1 className="text-display-sm font-serif">主星书房</h1>
-        <button type="button" onClick={toggle} className="rounded-lg border border-neutral-50 px-3 py-1 text-compact">
+        <button
+          type="button"
+          onClick={toggle}
+          className="rounded-lg border border-[var(--cafe-image-foreground)] px-3 py-1 text-compact"
+        >
           {expanded ? '收起穹顶' : '展开穹顶'}
         </button>
       </div>
       {expanded && (
-        <div className="absolute inset-x-4 top-16 grid grid-cols-6 gap-2 text-center text-neutral-50 md:inset-x-32 md:gap-6">
+        <div className="absolute inset-x-4 top-16 grid grid-cols-6 gap-2 text-center text-[var(--cafe-image-foreground)] md:inset-x-32 md:gap-6">
           {TYPES.map((type) => (
-            <div key={type.id} className={type.id === 'taste' ? '' : 'opacity-70'}>
+            <button
+              key={type.id}
+              type="button"
+              aria-label={`${type.label}记忆`}
+              disabled={type.id === 'meeting'}
+              onClick={() => {
+                const family = MEMORY_FAMILIES.find((item) => item.sky === type.id);
+                if (family) onSelect?.(family.id);
+              }}
+              className={type.id === 'meeting' ? 'opacity-70' : ''}
+            >
               <Image
                 src={`/memory-sky/constellations/${type.id}.png`}
                 alt=""
@@ -43,8 +64,16 @@ export function MemoryTasteSky({
                 className={`mx-auto object-contain ${type.id === 'taste' ? 'h-16 w-16' : 'h-12 w-12'}`}
               />
               <p className="mt-1 text-compact">{type.label}</p>
-              <p className="text-xs">{type.id === 'taste' ? countText : '还没接进来'}</p>
-            </div>
+              <p className="text-xs">
+                {type.id === 'taste'
+                  ? countText
+                  : type.id === 'person'
+                    ? peopleSummary
+                    : type.id === 'meeting'
+                      ? '还没接进来'
+                      : summaries[type.id] || '可查看'}
+              </p>
+            </button>
           ))}
         </div>
       )}

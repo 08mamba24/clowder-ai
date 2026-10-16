@@ -1,4 +1,5 @@
 import type { ApprovalHubItem, UnifiedAttentionItemV1, UnifiedAttentionVisibleApproval } from '@cat-cafe/shared';
+import type { ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   type ApprovalHost,
@@ -9,11 +10,15 @@ import {
 } from '@/components/ApprovalHost';
 import { ApprovalItemCard } from '@/components/ApprovalItemCard';
 import { useApprovalHubStore } from '@/stores/approvalHubStore';
+import { useShellCopy } from '../shell-copy';
+import { ApprovalResultLink } from './ApprovalResultLink';
 import { type HostedApprovalMatch, matchHostedApproval } from './approval-match';
 import { describeReconcile } from './approval-reconcile';
 import { type ApprovalSessions, sessionKey } from './approval-sessions';
+import { mailboxEntryCopy } from './mailbox-entry.shell-copy';
 import type { OriginalPlace } from './original-place';
 import { PlaceAction } from './PlaceAction';
+import { ThreadProposalDecision } from './ThreadProposalDecision';
 
 const MUTED = { color: 'var(--shell-muted)' } as const;
 
@@ -34,8 +39,14 @@ const noteEditing = () => undefined;
  *    answer is being confirmed, so the last matched copy stays on screen until the result is in.
  */
 /** The store's copy is what the card acts on. Opening the row reads it afresh (a read; it changes nothing), once per approval. */
-function useStoreCopies(key: string): { storeItems: readonly ApprovalHubItem[]; storeChecked: boolean } {
+function useStoreCopies(key: string): {
+  storeItems: readonly ApprovalHubItem[];
+  storeChecked: boolean;
+  storeWaiting: boolean;
+} {
   const storeItems = useApprovalHubStore((state) => state.items);
+  const unavailable = useApprovalHubStore((state) => state.isLoading || !state.pendingReadAvailable);
+  const loading = useApprovalHubStore((state) => state.isLoading);
   const [storeChecked, setStoreChecked] = useState(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: one refresh per opened approval
   useEffect(() => {
@@ -51,7 +62,7 @@ function useStoreCopies(key: string): { storeItems: readonly ApprovalHubItem[]; 
       live = false;
     };
   }, [key]);
-  return { storeItems, storeChecked };
+  return { storeItems, storeChecked: storeChecked && !unavailable, storeWaiting: !storeChecked || loading };
 }
 
 /** What stands in the card's place when the original card may not be shown: still checking, or checked and not the same decision. */
@@ -59,7 +70,7 @@ function NoCard({ match, storeChecked }: { match: HostedApprovalMatch; storeChec
   if (!storeChecked && match.kind !== 'matched') {
     return (
       <p className="m-0 text-sm" style={MUTED} data-testid="mailbox-approval-checking">
-        正在核对审批中心里的版本…
+        正在核对这条提议…
       </p>
     );
   }
@@ -70,7 +81,9 @@ function NoCard({ match, storeChecked }: { match: HostedApprovalMatch; storeChec
       data-testid="mailbox-approval-unmatched"
       data-reason={match.kind === 'unmatched' ? match.reason : undefined}
     >
-      这件事暂时不能在这里处理（和审批中心里的版本对不上），请到原处处理。
+      {match.kind === 'unmatched' && match.reason === 'expired'
+        ? '这条提议已过期，不能提交决定。'
+        : '暂时无法核实这条提议，请重新读取。'}
     </p>
   );
 }
@@ -122,6 +135,8 @@ function Hosted({
   sessions,
   place,
   onOpen,
+  readCurrent,
+  secondaryAction,
 }: {
   item: UnifiedAttentionItemV1;
   approval: UnifiedAttentionVisibleApproval;
@@ -129,7 +144,10 @@ function Hosted({
   sessions: ApprovalSessions;
   place: OriginalPlace;
   onOpen: (place: OriginalPlace) => void;
+  readCurrent: boolean;
+  secondaryAction?: ReactNode;
 }) {
+  const t = useShellCopy(mailboxEntryCopy);
   const key = sessionKey(ownerUserId, { sourceFeatureId: approval.sourceFeatureId, proposalId: approval.proposalId });
 
   useEffect(() => {
@@ -137,7 +155,7 @@ function Hosted({
   }, [sessions, ownerUserId, item.decisionRef, approval]);
   useSyncExternalStore(sessions.subscribe, sessions.getVersion, sessions.getVersion);
   const session = sessions.get(key);
-  const { storeItems, storeChecked } = useStoreCopies(key);
+  const { storeItems, storeChecked, storeWaiting } = useStoreCopies(key);
 
   const match = matchHostedApproval({ read: approval, readOwnerUserId: ownerUserId, storeItems, now: Date.now() });
   const state = session?.model.state ?? { kind: 'idle' as const };
@@ -145,18 +163,41 @@ function Hosted({
 
   const lastMatched = useRef<ApprovalHubItem | null>(null);
   if (match.kind === 'matched') lastMatched.current = match.item;
-  const shown = match.kind === 'matched' ? match.item : state.kind !== 'idle' ? lastMatched.current : null;
+  const shown =
+    match.kind === 'matched'
+      ? match.item
+      : state.kind !== 'idle'
+        ? (lastMatched.current ?? (session ? { ...session.approval, ownerUserId } : null))
+        : null;
   const showCard = shown !== null && reconcile.actions !== 'gone';
-  const writesLocked = reconcile.actions !== 'allowed' || match.kind !== 'matched';
+  const writesLocked = !readCurrent || !storeChecked || reconcile.actions !== 'allowed' || match.kind !== 'matched';
 
   const authorizeWrite = useCallback(
-    (_kind: ApprovalWriteKind, options?: AuthorizeOptions) => sessions.authorize(key, options),
-    [sessions, key],
+    (_kind: ApprovalWriteKind, options?: AuthorizeOptions) =>
+      readCurrent && storeChecked && sessions.authorize(key, options),
+    [sessions, key, storeChecked, readCurrent],
   );
   const reportRequest = useCallback((event: ApprovalRequestEvent) => sessions.hostReport(key, event), [sessions, key]);
+  const originalPlaceAction = useMemo(
+    () => (
+      <span className="flex flex-wrap items-center justify-end gap-2">
+        {secondaryAction}
+        <PlaceAction quiet place={place} onOpen={onOpen} />
+      </span>
+    ),
+    [place, onOpen, secondaryAction],
+  );
   const host = useMemo<ApprovalHost>(
-    () => ({ writesLocked, authorizeWrite, reportEditing: noteEditing, reportRequest }),
-    [writesLocked, authorizeWrite, reportRequest],
+    () => ({
+      presentation: 'mailbox',
+      decisionWords: { approve: t.approve, reject: t.reject, clear: t.clear },
+      originalPlaceAction,
+      writesLocked,
+      authorizeWrite,
+      reportEditing: noteEditing,
+      reportRequest,
+    }),
+    [originalPlaceAction, writesLocked, authorizeWrite, reportRequest, t],
   );
 
   return (
@@ -168,18 +209,35 @@ function Hosted({
     >
       {showCard ? (
         <ApprovalHostContext.Provider value={host}>
-          <ApprovalItemCard item={shown} />
+          {shown.sourceFeatureId === 'F128' && !shown.inlineApprovable ? (
+            <ThreadProposalDecision item={shown} />
+          ) : (
+            <ApprovalItemCard item={shown} />
+          )}
         </ApprovalHostContext.Provider>
       ) : reconcile.actions === 'gone' ? null : (
-        <NoCard match={match} storeChecked={storeChecked} />
+        <NoCard match={match} storeChecked={storeChecked || !storeWaiting} />
       )}
       <SessionStatus
-        line={reconcile.line}
+        line={
+          reconcile.line ??
+          (showCard && state.kind === 'idle' && !storeChecked
+            ? storeWaiting
+              ? '正在核对这条提议…'
+              : '暂时无法读取提议，请重新读取。'
+            : null)
+        }
         notice={session?.notice ?? null}
-        canReread={reconcile.canReread}
+        canReread={
+          reconcile.canReread ||
+          (state.kind === 'idle' && !storeWaiting && (!storeChecked || match.kind === 'unmatched'))
+        }
         onReread={() => sessions.reread(key)}
       />
-      <PlaceAction quiet place={place} onOpen={onOpen} />
+      <ApprovalResultLink state={state} />
+      {showCard && shown?.decisionMode !== 'claim-select' && shown?.sourceFeatureId !== 'F292'
+        ? null
+        : originalPlaceAction}
     </div>
   );
 }
@@ -190,6 +248,8 @@ export function HostedApprovalCard({
   sessions,
   place,
   onOpen,
+  readCurrent = true,
+  secondaryAction,
 }: {
   item: UnifiedAttentionItemV1;
   /** The read's verified owner: the owner this card is shown to. */
@@ -197,6 +257,8 @@ export function HostedApprovalCard({
   sessions: ApprovalSessions;
   place: OriginalPlace;
   onOpen: (place: OriginalPlace) => void;
+  readCurrent?: boolean;
+  secondaryAction?: ReactNode;
 }) {
   const approval = item.approval;
   if (!approval) return null;
@@ -208,6 +270,8 @@ export function HostedApprovalCard({
       sessions={sessions}
       place={place}
       onOpen={onOpen}
+      readCurrent={readCurrent}
+      secondaryAction={secondaryAction}
     />
   );
 }

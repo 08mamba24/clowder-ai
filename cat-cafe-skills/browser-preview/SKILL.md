@@ -33,6 +33,7 @@ Hub 内置了嵌入式浏览器面板（F120），可以直接预览运行中的
    outer `--dir` 与 inner `--cwd` 必须解析为同一个物理 worktree。不要用 tool 的 per-call workdir 隐式代替这个坐标：provider hook 可能只看到 turn cwd。outer form 只识别这条受约束的 `dev:direct` child；它不是任意 `COMMAND` 的通行证。
    自定义 child 或外部项目的 **start** 仍用 ordinary form：从实际包含 `preview:process` package script 的 Clowder AI checkout 作为 tool cwd，执行 `pnpm preview:process start --port PORT --cwd /absolute/project/path -- COMMAND [ARGS...]`，不加 outer `--dir`。这条启动命令走 ordinary policy，不获得 typed worktree authority。后续 status/stop 按目标 `--cwd` 的身份选 grammar，而不是照抄 start：目标是 `cat-cafe-*` worktree 时必须用 bounded outer `--dir`；其他项目目标才继续用 ordinary form。
    macOS 上它会把目标直接注册为一次性 user LaunchAgent；普通 detached child、`nohup`、`setsid` 或 PTY 都不算独立托管。托管预览默认 8 小时自动到期（可用 `--lifetime-seconds N` 缩短，最长 24 小时），避免遗留 watcher 持续制造文件事件。
+   已合入代码的标准 Alpha 可从实际 main checkout 托管：`pnpm --dir /absolute/cat-cafe preview:process start --cwd /absolute/cat-cafe --port 3011 -- pnpm alpha:start -- --no-quick`。`--no-quick` 可省略；start/status/stop 共用相同 package/target cwd 和 3011。允许选项与隔离端口只由 `scripts/lib/alpha-launch-contract.mjs` 决定；named Alpha 的 instance/ports 继续由 `alpha-coordinates.mjs` 验证，不传任意 child/env/path。Alpha 启动合同和 browser VerificationPlan 分别负责启动与验证。
 2. **Hub 自动检测端口** → 弹出 toast 提示"检测到 localhost:xxxx 启动"
 3. **点击 Open Preview** → 自动打开 browser panel 并加载页面
 4. **也可以手动**：切到 workspace 的 Browser tab，输入 `localhost:port` 按 Go

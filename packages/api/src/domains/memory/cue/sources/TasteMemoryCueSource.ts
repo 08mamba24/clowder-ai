@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolveCanonicalTasteRoot, type TasteRepository } from '../../../taste/services/TasteRepository.js';
+import type { TasteMemoryLifecycleStore } from '../../taste/TasteMemoryLifecycleStore.js';
 import { TasteMemoryReader, type TasteMemoryReadResult } from '../../taste/TasteMemoryReader.js';
 import {
   EXPLICIT_APPROVED_TASTE_SOURCE_ANCHOR_PREFIX,
@@ -90,8 +91,9 @@ export class CanonicalTasteMemoryCueSource implements TasteDimensionMapSource {
   constructor(
     private readonly repository: TasteRepository,
     private readonly ownerUserId: string,
+    private readonly lifecycle?: Pick<TasteMemoryLifecycleStore, 'isReadable'>,
   ) {
-    this.reader = new TasteMemoryReader(repository, ownerUserId);
+    this.reader = new TasteMemoryReader(repository, ownerUserId, { lifecycle });
   }
 
   async resolve(input: {
@@ -119,7 +121,9 @@ export class CanonicalTasteMemoryCueSource implements TasteDimensionMapSource {
     const definition = findTasteTaskBundle(input);
     if (!definition) return null;
     const root = await resolveCanonicalTasteRoot(this.repository);
-    const reader = new TasteMemoryReader({ canonicalRoot: () => root, approvalLockKey: () => root }, this.ownerUserId);
+    const reader = new TasteMemoryReader({ canonicalRoot: () => root, approvalLockKey: () => root }, this.ownerUserId, {
+      lifecycle: this.lifecycle,
+    });
     const sources: TasteTaskBundleProjection['sources'] = [];
     for (const sourcePath of definition.sourcePaths) {
       const result = await reader.read({ ownerUserId: input.ownerUserId, sourcePath });
@@ -249,7 +253,9 @@ export class CanonicalTasteMemoryCueSource implements TasteDimensionMapSource {
   private async snapshot(ownerUserId: string, requestedDimensions: readonly string[]): Promise<TasteSnapshot | null> {
     const dimensions = [...new Set(requestedDimensions)].sort();
     const root = await resolveCanonicalTasteRoot(this.repository);
-    const reader = new TasteMemoryReader({ canonicalRoot: () => root, approvalLockKey: () => root }, this.ownerUserId);
+    const reader = new TasteMemoryReader({ canonicalRoot: () => root, approvalLockKey: () => root }, this.ownerUserId, {
+      lifecycle: this.lifecycle,
+    });
     const all: TasteMemoryReadResult[] = [];
     for (const sourcePath of (await listSourcePaths(root)).sort()) {
       const result = await reader.read({ ownerUserId, sourcePath });

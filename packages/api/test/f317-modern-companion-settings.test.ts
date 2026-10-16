@@ -52,6 +52,7 @@ async function fixture() {
   };
   return {
     modern: new CompanionHostBridge({ ...options, companionContract: '0.1.0-beta.23' }),
+    unified: new CompanionHostBridge({ ...options, companionContract: '0.1.0-beta.24' }),
     legacy: new CompanionHostBridge(options),
     store,
     mediaPreparations: () => mediaPreparations,
@@ -78,6 +79,24 @@ test('modern settings read fills canonical legacy defaults without rewriting the
   assert.equal((await f.store.getSaved('modern-settings-owner')).behaviorEnabled, undefined);
   assert.equal(f.mediaPreparations(), 0);
   assert.deepEqual(await f.legacy.request({ kind: 'settings.read' }), { kind: 'error', code: 'invalid_request' });
+});
+
+test('published modern contracts downlevel a saved compact size without losing its owner preference', async (t) => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  await f.store.put('modern-settings-owner', {
+    ...CONCIERGE_CONFIG_DEFAULTS,
+    dutyCatProfileId: 'opus',
+    ballSize: 43,
+  });
+  for (const bridge of [f.modern, f.unified]) {
+    const read = await bridge.request({ kind: 'settings.read' });
+    if (read.kind !== 'settings' || read.status !== 'available') assert.fail('published settings must stay readable');
+    assert.equal(read.values.ballSize, 48);
+    const state = await bridge.request({ kind: 'state' });
+    assert.equal(state.kind, 'state', 'the downlevel value must not break Host state/config reads');
+  }
+  assert.equal((await f.store.getSaved('modern-settings-owner')).ballSize, 43);
 });
 
 test(

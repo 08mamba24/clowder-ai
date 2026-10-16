@@ -34,6 +34,38 @@ function run(
 }
 
 describe('buildReadEvidence: the approval is still on the page', () => {
+  it.each([
+    'earlier',
+    'handled',
+  ] as const)('%s request selection cannot prove a pending approval disappeared', async (mentionPeriod) => {
+    await expect(run(readOf([], { mentionPeriod })).evidence).resolves.toMatchObject({
+      result: { kind: 'absent', exhaustive: false },
+    });
+  });
+  it.each([
+    'visible',
+    'ignored',
+  ] as const)('a personal %s partition cannot prove canonical approval absence', async (mode) => {
+    const result = readOf([], {
+      personalView: {
+        mode,
+        preferenceRevision: 3,
+        originalTotalCount: 1,
+        visibleTotalCount: 0,
+        ignoredTotalCount: 1,
+        originalAttentionCount: 1,
+        visibleAttentionCount: 0,
+        ignoredAttentionCount: 1,
+      },
+    });
+    await expect(run(result).evidence).resolves.toMatchObject({ result: { kind: 'absent', exhaustive: false } });
+  });
+  it('a last page with no approval does not prove an approval on an earlier page disappeared', async () => {
+    const result = readOf([], {
+      page: { offset: 20, limit: 20, scope: 'known_rows', hasMore: false, hasMoreApprovals: false },
+    });
+    await expect(run(result).evidence).resolves.toMatchObject({ result: { kind: 'absent', exhaustive: false } });
+  });
   it('is present and aligned when the store holds the same decision', async () => {
     const item = storeItem();
     const { evidence, lookup } = run(readOf([row(item)]), { storeItems: [item] });

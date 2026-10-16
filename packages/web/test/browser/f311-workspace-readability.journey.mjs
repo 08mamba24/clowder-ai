@@ -1,15 +1,7 @@
 import assert from 'node:assert/strict';
 import { EVOLUTION_PREPARATION_SECTIONS } from '@cat-cafe/shared';
 import { ensureWorkspaceOpen } from './f307-workspace-open.mjs';
-
-async function waitForResponsiveWorkspaceLayout(page, workspace, viewportWidth) {
-  await workspace.waitFor({ state: 'visible' });
-  await page.waitForFunction(
-    (minimum) =>
-      (document.querySelector('[data-testid="capability-evolution-workspace"]')?.clientWidth ?? 0) >= minimum,
-    Math.min(viewportWidth, 320),
-  );
-}
+import { waitForResponsiveWorkspaceLayout } from './f311-responsive-workspace-layout.mjs';
 
 /** Unnamed, unavailable-owner fixtures matching the reported shape. Never owner outcome proof. */
 export async function verifyUnnamedWorkspaceReadability({

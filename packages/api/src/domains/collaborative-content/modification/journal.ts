@@ -1,68 +1,43 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type ContentModificationRecord,
   contentModificationOutcome,
-  contentModificationRequestSchema,
+  contentModificationRequestContractSchema,
 } from '@cat-cafe/shared';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
-import { ModificationCancellationStore, modificationCancellationSchema } from './control/cancellation-store.js';
+import { ModificationCancellationStore } from './control/cancellation-store.js';
 import { ModificationRuntimeControlStore } from './control/runtime-control-store.js';
+import {
+  type ContentModificationProgress,
+  contentModificationJournalIdSchema,
+  contentModificationMessageRevisionSchema,
+  contentModificationProgressSchema,
+  modificationMessageRequestId,
+  modificationRequestId,
+  parseContentModificationRecord,
+} from './journal/journal-record.js';
+import { findContentModificationRecordsForSource } from './journal/journal-source-query.js';
+import {
+  initializeContentModificationProjectionCursor,
+  nextContentModificationProjectionBodies,
+} from './journal/projection-recovery-cursor.js';
 import { ContentModificationJournalError } from './journal-errors.js';
 
-export { ContentModificationJournalError } from './journal-errors.js';
-
-const id = z.string().min(1).max(256),
-  revision = z.number().int().positive().safe();
-const preparedSchema = z.union([
-  z
-    .object({
-      kind: z.literal('media'),
-      contentRef: id,
-      ownerRevision: revision,
-      ledgerRef: id.optional(),
-      legacyReview: z.object({ reviewId: id, round: revision }).strict().optional(),
-    })
-    .strict()
-    .refine(
-      (value) => Boolean(value.ledgerRef) !== Boolean(value.legacyReview),
-      'One canonical discussion owner is required',
-    ),
-  z
-    .object({ kind: z.literal('text'), reviewId: id, sourceRevision: z.string().regex(/^sha256:[a-f0-9]{64}$/) })
-    .strict(),
-]);
-const progressSchema = z
-  .object({
-    sourceMessageId: id.optional(),
-    prepared: preparedSchema.optional(),
-    task: z.object({ taskId: id, revision, receiptRef: id }).strict().optional(),
-    review: z
-      .object({ reviewId: id, round: revision.optional(), receiptRef: z.string().min(1).max(2048) })
-      .strict()
-      .optional(),
-  })
-  .strict();
-export type ContentModificationProgress = z.infer<typeof progressSchema>;
 export type { ContentModificationRecord } from '@cat-cafe/shared';
+export {
+  type ContentModificationProgress,
+  modificationMessageRequestId,
+  modificationOperationKeys,
+  modificationRequestId,
+} from './journal/journal-record.js';
+export { ContentModificationJournalError } from './journal-errors.js';
 
 interface Row {
   body: string;
   lease_token: string | null;
   lease_until: number | null;
-}
-
-export function modificationRequestId(ownerUserId: string, operationId: string): string {
-  return `f309-modification-${createHash('sha256')
-    .update(JSON.stringify(['f309-modification-v1', ownerUserId, operationId]))
-    .digest('hex')}`;
-}
-export function modificationOperationKeys(requestId: string) {
-  if (!/^f309-modification-[a-f0-9]{64}$/.test(requestId))
-    throw new ContentModificationJournalError('invalid_progress');
-  const base = `f309-modification:${requestId.slice('f309-modification-'.length)}`;
-  return { source: `${base}:source`, snapshot: `${base}:snapshot`, admit: `${base}:admit`, request: `${base}:request` };
 }
 
 /** Permanent confirmed intent and owner coordinates. Leases expire; user requests never do. */
@@ -76,13 +51,14 @@ export class ContentModificationJournal {
     ); CREATE INDEX IF NOT EXISTS content_modification_requests_owner ON content_modification_requests(owner_user_id);
     CREATE INDEX IF NOT EXISTS content_modification_requests_binding ON content_modification_requests(
       owner_user_id, json_extract(body,'$.progress.task.taskId'), json_extract(body,'$.progress.prepared.contentRef'));`);
+    initializeContentModificationProjectionCursor(db);
     this.cancellations = new ModificationCancellationStore(db);
     this.runtimeControls = new ModificationRuntimeControlStore(db);
   }
 
   reserve(ownerUserId: string, raw: unknown, now = Date.now()): ContentModificationRecord {
-    id.parse(ownerUserId);
-    const payload = contentModificationRequestSchema.parse(raw);
+    contentModificationJournalIdSchema.parse(ownerUserId);
+    const payload = contentModificationRequestContractSchema.parse(raw);
     contentModificationOutcome(payload.intent);
     const requestId = modificationRequestId(ownerUserId, payload.operationId);
     return this.db
@@ -99,6 +75,61 @@ export class ContentModificationJournal {
           ownerUserId,
           payload,
           progress: {},
+          revision: 1,
+          createdAt: now,
+          updatedAt: now,
+        };
+        this.db
+          .prepare('INSERT INTO content_modification_requests(request_id,owner_user_id,revision,body) VALUES(?,?,?,?)')
+          .run(requestId, ownerUserId, 1, JSON.stringify(record));
+        return record;
+      })
+      .immediate();
+  }
+
+  /** One immutable Human message owns at most one request, independent of retry or competing cat operation IDs. */
+  reserveFromMessage(
+    ownerUserId: string,
+    raw: unknown,
+    source: {
+      messageId: string;
+      messageRevision: `sha256:${string}`;
+      visibility:
+        | { readonly visibility: 'public' }
+        | { readonly visibility: 'whisper'; readonly whisperTo: readonly string[] };
+    },
+    now = Date.now(),
+  ): ContentModificationRecord {
+    contentModificationJournalIdSchema.parse(ownerUserId);
+    contentModificationJournalIdSchema.parse(source.messageId);
+    contentModificationMessageRevisionSchema.parse(source.messageRevision);
+    const payload = contentModificationRequestContractSchema.parse(raw);
+    contentModificationOutcome(payload.intent);
+    const requestId = modificationMessageRequestId(ownerUserId, source.messageId);
+    return this.db
+      .transaction(() => {
+        const existing = this.get(requestId, ownerUserId);
+        if (existing) {
+          if (
+            existing.progress.sourceMessageId !== source.messageId ||
+            existing.progress.sourceMessageRevision !== source.messageRevision ||
+            existing.progress.sourceKind !== 'human_message' ||
+            !isDeepStrictEqual(existing.progress.sourceVisibility, source.visibility)
+          )
+            throw new ContentModificationJournalError('operation_reused');
+          return existing;
+        }
+        if (payload.taskContext) this.cancellations.assertTaskAvailable(ownerUserId, payload.taskContext.taskId);
+        const record: ContentModificationRecord = {
+          requestId,
+          ownerUserId,
+          payload,
+          progress: {
+            sourceMessageId: source.messageId,
+            sourceMessageRevision: source.messageRevision,
+            sourceKind: 'human_message',
+            sourceVisibility: source.visibility,
+          },
           revision: 1,
           createdAt: now,
           updatedAt: now,
@@ -128,32 +159,7 @@ export class ContentModificationJournal {
   }
 
   forSource(ownerUserId: string, source: ContentModificationRecord['payload']['source']): ContentModificationRecord[] {
-    const rows =
-      source.kind === 'publication'
-        ? this.db
-            .prepare(`SELECT body FROM content_modification_requests WHERE owner_user_id=? AND
-        (json_extract(body,'$.payload.source.contentRef')=? OR json_extract(body,'$.progress.prepared.contentRef')=?)
-        ORDER BY json_extract(body,'$.createdAt') DESC,request_id`)
-            .all(ownerUserId, source.contentRef, source.contentRef)
-        : source.kind === 'artifact-review'
-          ? this.db
-              .prepare(`SELECT body FROM content_modification_requests WHERE owner_user_id=? AND
-          (json_extract(body,'$.payload.source.reviewId')=? OR json_extract(body,'$.progress.review.reviewId')=?)
-          ORDER BY json_extract(body,'$.createdAt') DESC,request_id`)
-              .all(ownerUserId, source.reviewId, source.reviewId)
-          : source.kind === 'evolution'
-            ? this.db
-                .prepare(`SELECT body FROM content_modification_requests WHERE owner_user_id=? AND
-          json_extract(body,'$.payload.source.kind')='evolution' AND json_extract(body,'$.payload.source.reviewId')=?
-          ORDER BY json_extract(body,'$.createdAt') DESC,request_id`)
-                .all(ownerUserId, source.reviewId)
-            : this.db
-                .prepare(`SELECT body FROM content_modification_requests WHERE owner_user_id=? AND
-        json_extract(body,'$.payload.source.kind')='workspace' AND
-        json_extract(body,'$.payload.source.locator.worktreeId')=? AND json_extract(body,'$.payload.source.locator.path')=?
-        ORDER BY json_extract(body,'$.createdAt') DESC,request_id`)
-                .all(ownerUserId, source.locator.worktreeId, source.locator.path);
-    return (rows as Row[]).map((row) => this.parse(row.body));
+    return findContentModificationRecordsForSource(this.db, ownerUserId, source);
   }
 
   /** Immutable human-request bindings, never the cat-writable Task artifact list. */
@@ -177,6 +183,12 @@ export class ContentModificationJournal {
       (lease_token IS NULL OR lease_until<=?) ORDER BY request_id LIMIT ?`)
       .all(now, limit) as Row[];
     return rows.map((row) => this.parse(row.body));
+  }
+
+  /** Durable round-robin restart sweep; every request is eventually revisited without an unbounded single run. */
+  recentForProjection(limit = 1000): ContentModificationRecord[] {
+    z.number().int().min(1).max(10_000).parse(limit);
+    return nextContentModificationProjectionBodies(this.db, limit).map(parseContentModificationRecord);
   }
 
   acquire(
@@ -291,8 +303,16 @@ export class ContentModificationJournal {
     raw: ContentModificationProgress,
     now: number,
   ): ContentModificationRecord {
-    const patch = progressSchema.parse(raw);
-    for (const key of ['sourceMessageId', 'prepared', 'task', 'review'] as const) {
+    const patch = contentModificationProgressSchema.parse(raw);
+    for (const key of [
+      'sourceMessageId',
+      'sourceMessageRevision',
+      'sourceKind',
+      'sourceVisibility',
+      'prepared',
+      'task',
+      'review',
+    ] as const) {
       if (
         patch[key] !== undefined &&
         record.progress[key] !== undefined &&
@@ -300,7 +320,7 @@ export class ContentModificationJournal {
       )
         throw new ContentModificationJournalError('operation_reused');
     }
-    const progress = progressSchema.parse({ ...record.progress, ...patch });
+    const progress = contentModificationProgressSchema.parse({ ...record.progress, ...patch });
     if (
       (progress.prepared && !progress.sourceMessageId) ||
       (progress.task && !progress.prepared) ||
@@ -317,12 +337,6 @@ export class ContentModificationJournal {
   }
 
   private parse(body: string): ContentModificationRecord {
-    const record = JSON.parse(body) as ContentModificationRecord;
-    return {
-      ...record,
-      payload: contentModificationRequestSchema.parse(record.payload),
-      progress: progressSchema.parse(record.progress),
-      ...(record.control ? { control: modificationCancellationSchema.parse(record.control) } : {}),
-    };
+    return parseContentModificationRecord(body);
   }
 }

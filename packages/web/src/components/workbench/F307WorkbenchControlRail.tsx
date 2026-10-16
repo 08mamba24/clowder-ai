@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { isArtifactWorkSurface } from './artifact-work-presentation';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
+import { isWorkspaceFullWindowSurface } from './artifact-work-presentation';
 import type { WorkbenchAction, WorkbenchLayoutState } from './workbench-contract';
 
 function SplitIcon({ collapse = false }: { collapse?: boolean }) {
@@ -64,6 +65,7 @@ export function F307WorkbenchControlRail({
   onExitMainAreaAttention: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const shellPresentation = useShellPresentation();
   const menuRoot = useRef<HTMLDivElement>(null);
   const activeSurface = layout.surfaces.find((surface) => surface.id === layout.activeSurfaceId) ?? null;
   const splitCandidate = layout.surfaces.find((surface) => surface.id !== layout.activeSurfaceId) ?? null;
@@ -92,7 +94,7 @@ export function F307WorkbenchControlRail({
   return (
     <div
       ref={menuRoot}
-      className="relative z-20 flex shrink-0 items-center border-l border-cafe-subtle bg-cafe-surface px-1"
+      className={`relative z-20 flex shrink-0 items-center border-l border-cafe-subtle bg-cafe-surface px-1 ${shellPresentation === 'v2' ? 'flex-wrap' : ''}`}
       data-testid="f307-control-rail"
     >
       <button
@@ -114,7 +116,7 @@ export function F307WorkbenchControlRail({
       {isDesktop &&
         !homeFocused &&
         activeSurface !== null &&
-        (!artifactWorkHostAvailable || !isArtifactWorkSurface(activeSurface)) && (
+        (!artifactWorkHostAvailable || !isWorkspaceFullWindowSurface(activeSurface, shellPresentation)) && (
           <button
             type="button"
             onClick={() => {
@@ -192,7 +194,11 @@ export function F307WorkbenchControlRail({
 
       {menuOpen && activeSurface !== null && (
         <div
-          className="absolute right-1 top-[calc(100%+0.25rem)] z-30 w-52 rounded-xl border border-cafe-subtle bg-cafe-surface p-1.5 shadow-lg"
+          className={
+            shellPresentation === 'v2'
+              ? 'w-full shrink-0 basis-full rounded-lg bg-cafe-surface p-1'
+              : 'absolute right-1 top-[calc(100%+0.25rem)] z-30 w-52 rounded-xl border border-cafe-subtle bg-cafe-surface p-1.5 shadow-lg'
+          }
           role="menu"
           data-testid="f307-surface-menu"
         >

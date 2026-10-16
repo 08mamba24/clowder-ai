@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { IInvocationRecordStore } from '../domains/cats/services/stores/ports/InvocationRecordStore.js';
 import type { IThreadStore } from '../domains/cats/services/stores/ports/ThreadStore.js';
 import type { ITurnExecutionStore } from '../domains/cats/services/stores/ports/TurnExecutionStore.js';
+import type { TasteMemoryLifecycleStore } from '../domains/memory/taste/TasteMemoryLifecycleStore.js';
 import { TasteObservatoryReader } from '../domains/memory/taste/TasteObservatoryReader.js';
 import type { TasteRepository } from '../domains/taste/services/TasteRepository.js';
 import { resolveDirectLocalAuthorizationUserId } from '../utils/request-identity.js';
@@ -14,6 +15,7 @@ export interface TasteObservatoryRouteOptions {
   invocationRecordStore: Pick<IInvocationRecordStore, 'get'>;
   turnExecutionStore: Pick<ITurnExecutionStore, 'get'>;
   threadStore: Pick<IThreadStore, 'get'>;
+  lifecycleStore?: Pick<TasteMemoryLifecycleStore, 'isReadable'>;
 }
 
 export const tasteObservatoryRoutes: FastifyPluginAsync<TasteObservatoryRouteOptions> = async (app, opts) => {
@@ -24,6 +26,7 @@ export const tasteObservatoryRoutes: FastifyPluginAsync<TasteObservatoryRouteOpt
     opts.invocationRecordStore,
     opts.turnExecutionStore,
     opts.threadStore,
+    opts.lifecycleStore,
   );
   app.get('/api/memory/taste/observatory', async (request, reply) => {
     const ownerUserId = resolveDirectLocalAuthorizationUserId(request);

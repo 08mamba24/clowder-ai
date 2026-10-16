@@ -34,7 +34,16 @@ test('Live replaces the old concierge whitelist in both prompt paths; ordinary d
       assert.match(output, /桌面伴随岗位/);
       assert.doesNotMatch(output, /职责：接线，不深潜|工具白名单（只许使用）|triage-plan/);
       assert.match(output, liveCompanion.householdToolsEnabled ? /search_evidence/ : /本次家内资料工具未开放/);
-      assert.match(output, /读取不等于处理完成/);
+      assert.match(output, /岗位是倾听和执行/, 'the front-desk duty reaches both prompt paths');
+      if (liveCompanion.householdToolsEnabled) {
+        assert.match(output, /读取不等于处理完成/);
+        for (const title of ['接会议、记录与停止', '记下一个想法', '交给伙伴', '问进展', '展示结果并接住改意'])
+          assert.ok(output.includes(`${title}：`), `missing scene ${title}`);
+      } else {
+        // Closed household tools mount no MCP server: unread drill and F128 relay cannot be offered.
+        assert.doesNotMatch(output, /get_thread_context|cross_post_message|complete_a2a_dispatch/);
+        assert.match(output, /没有挂载任何家内工具/);
+      }
     }
   }
   assert.match(buildInvocationContext(context), /职责：接线，不深潜/);
@@ -176,6 +185,8 @@ test('the actual serial route projects only its Host-owned Live port into duty c
     assert.match(captured, /桌面伴随岗位/);
     assert.match(captured, /HOST_COMPOSITION_CARRIER_CODEX_DUTY_OPUS/);
     assert.match(captured, householdToolsEnabled ? /search_evidence/ : /本次家内资料工具未开放/);
+    assert.match(captured, /岗位是倾听和执行/, 'the real invocation assembly carries the front-desk duty');
+    assert.match(captured, householdToolsEnabled ? /展示结果并接住改意：/ : /没有挂载任何家内工具/);
     assert.equal(searchCount, 0, 'Live must not run the ordinary concierge message prefetch');
     assert.equal(
       created.at(-1).queueCompletionPolicy,

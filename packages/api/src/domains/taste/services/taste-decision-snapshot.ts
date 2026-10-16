@@ -17,6 +17,7 @@ export const TASTE_DECISION_FIELDS = [
   'privacy',
   'createdAt',
   'approvalOriginRef',
+  'correctionTarget',
   'publication',
 ] as const;
 export type TasteDecisionField = (typeof TASTE_DECISION_FIELDS)[number];
@@ -43,6 +44,7 @@ function fieldsOf(proposal: TasteProposal, publication: string): TasteDecisionFi
     privacy: proposal.privacy,
     createdAt: String(proposal.createdAt),
     approvalOriginRef: proposal.approvalOriginRef ? JSON.stringify(proposal.approvalOriginRef) : '',
+    correctionTarget: proposal.correctionTarget ? JSON.stringify(proposal.correctionTarget) : '',
     publication,
   };
 }

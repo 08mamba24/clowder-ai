@@ -9,7 +9,7 @@ import { SHELL_PRESENTATION_STORAGE_KEY } from '../shell/shell-presentation';
 
 const registry = vi.hoisted(() => ({ cats: [] as Array<{ id: string }> }));
 
-// CatAvatar reads the same registry ChatMessage is given; a stub would hide the 16px avatar the plate must render.
+// CatAvatar reads the same registry ChatMessage is given; a stub would hide the 32px avatar the plate must render.
 vi.mock('@/hooks/useCatData', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/hooks/useCatData')>();
   return {
@@ -48,6 +48,7 @@ function catMessage(overrides: Partial<ChatMessageData> = {}): ChatMessageData {
   return {
     id: 'cat-msg-1',
     type: 'assistant',
+    from: { kind: 'agent', catId: 'opus' },
     catId: 'opus',
     content: '小太阳先把封面做三版。',
     timestamp: Date.UTC(2026, 9, 1, 12, 41),
@@ -120,7 +121,7 @@ describe('F322 B segment 1 — cat nameplate, no outer bubble', () => {
   describe('v2 presentation', () => {
     beforeEach(enableV2);
 
-    it('puts the cat in a nameplate at the head of the reply: 16px avatar and name, no separate avatar column', () => {
+    it('puts the cat in a nameplate at the head of the reply: 32px avatar and name, no separate avatar column', () => {
       render(catMessage());
 
       const p = plate();
@@ -128,7 +129,7 @@ describe('F322 B segment 1 — cat nameplate, no outer bubble', () => {
       const avatars = container.querySelectorAll('img');
       expect(avatars).toHaveLength(1);
       expect(p?.contains(avatars[0] as Node)).toBe(true);
-      expect(avatars[0]?.getAttribute('width')).toBe('16');
+      expect(avatars[0]?.getAttribute('width')).toBe('32');
       // The plate is already this cat's colour: the avatar carries no ring of its own (design owner, 2026-10-01).
       expect(avatars[0]?.parentElement?.className.split(/\s+/)).not.toContain('ring-2');
       expect(p?.textContent).toContain('布偶猫');
@@ -136,11 +137,18 @@ describe('F322 B segment 1 — cat nameplate, no outer bubble', () => {
       expect(container.querySelector('[data-testid="message-header"]')?.contains(p)).toBe(true);
     });
 
+    it('keeps a trusted legacy user record with catId on the same assistant nameplate path', () => {
+      render(catMessage({ type: 'user' }));
+
+      expect(plate()?.textContent).toContain('布偶猫');
+      expect(container.querySelector('[data-testid="reply-layers"]')).not.toBeNull();
+    });
+
     it('sizes the plate as designed and fades the cat surface to transparent from top to bottom', () => {
       render(catMessage());
       const p = plate() as HTMLElement;
 
-      expect(p.className.split(/\s+/)).toEqual(expect.arrayContaining(['h-[26px]', 'rounded-t-lg', 'pl-2', 'pr-2.5']));
+      expect(p.className.split(/\s+/)).toEqual(expect.arrayContaining(['h-[26px]', 'rounded-t-lg', 'pl-10', 'pr-2.5']));
       expect(p.style.backgroundImage).toBe('linear-gradient(to bottom, var(--color-opus-surface), transparent)');
     });
 
@@ -149,6 +157,8 @@ describe('F322 B segment 1 — cat nameplate, no outer bubble', () => {
       const name = plate()?.querySelector('[data-testid="cat-nameplate-name"]') as HTMLElement;
 
       expect(name.style.color).toBe('var(--color-opus-text)');
+      expect(name.textContent).toBe('布偶猫');
+      expect(name.textContent).not.toContain('@');
       expect(name.style.opacity).toBe('');
       expect(name.className.split(/\s+/)).toEqual(
         expect.arrayContaining(['text-compact', 'font-semibold', 'truncate']),
@@ -198,13 +208,13 @@ describe('F322 B segment 1 — cat nameplate, no outer bubble', () => {
       expect(container.querySelector('[data-testid="message-header"]')).not.toBeNull();
     });
 
-    it('keeps the streaming state on the avatar and the edit-cat action on a click', () => {
+    it('keeps the streaming avatar still and preserves the edit-cat action on a click', () => {
       const onEditCat = vi.fn();
       render(catMessage({ isStreaming: true }), { onEditCat });
 
       const avatarButton = plate()?.querySelector('button') as HTMLButtonElement;
       expect(avatarButton).not.toBeNull();
-      expect(avatarButton.className).toContain('animate-pulse');
+      expect(avatarButton.className).not.toContain('animate-pulse');
       act(() => avatarButton.click());
       expect(onEditCat).toHaveBeenCalledWith('opus');
     });
@@ -251,7 +261,13 @@ describe('F322 B segment 1 — cat nameplate, no outer bubble', () => {
     });
 
     it('does not touch the co-creator message', () => {
-      render({ id: 'u-1', type: 'user', content: '三版封面，暖一点', timestamp: Date.UTC(2026, 9, 1, 12, 40) });
+      render({
+        id: 'u-1',
+        type: 'user',
+        from: { kind: 'user', userId: 'test-user' },
+        content: '三版封面，暖一点',
+        timestamp: Date.UTC(2026, 9, 1, 12, 40),
+      });
 
       expect(plate()).toBeNull();
       expect(container.textContent).toContain('三版封面，暖一点');

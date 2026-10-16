@@ -2,26 +2,15 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const data = vi.hoisted(() => ({ mode: vi.fn(), tasks: [] as { status: string }[], participants: [] as string[] }));
+const data = vi.hoisted(() => ({ mode: vi.fn(), tasks: [] as { status: string }[] }));
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: (s: (v: { setWorkspaceMode: typeof data.mode }) => unknown) => s({ setWorkspaceMode: data.mode }),
 }));
 vi.mock('@/stores/taskStore', () => ({
   useTaskStore: (s: (v: { tasks: typeof data.tasks }) => unknown) => s({ tasks: data.tasks }),
 }));
-vi.mock('@/stores/sidebarProjectionStore', () => ({
-  useSidebarProjectionStore: (s: (v: { rows: { id: string; participants: string[] }[] }) => unknown) =>
-    s({ rows: [{ id: 'current', participants: data.participants }] }),
-}));
-vi.mock('@/hooks/useCatData', () => ({
-  useCatData: () => ({
-    getCatById: (id: string) =>
-      id.startsWith('cat-') ? { displayName: `伙伴${id.slice(4)}`, color: { primary: '#777777' } } : undefined,
-  }),
-}));
 
 import { ThreadTasksButton, ThreadWorksButton } from '../HeaderCounts';
-import { HeaderParticipants } from '../HeaderParticipants';
 
 describe('F322 thread-scoped header facts', () => {
   let host: HTMLDivElement;
@@ -32,7 +21,6 @@ describe('F322 thread-scoped header facts', () => {
         <>
           <ThreadWorksButton />
           <ThreadTasksButton />
-          <HeaderParticipants threadId="current" />
         </>,
       ),
     );
@@ -41,7 +29,6 @@ describe('F322 thread-scoped header facts', () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     vi.clearAllMocks();
     data.tasks = [];
-    data.participants = [];
     host = document.createElement('div');
     document.body.append(host);
     root = createRoot(host);
@@ -77,25 +64,5 @@ describe('F322 thread-scoped header facts', () => {
     data.tasks = [{ status: 'done' }];
     render();
     expect(host.querySelector('[data-testid="header-tasks"]')?.textContent).toBe('任务');
-  });
-  it('twelve participants remain named, including the six beyond the visible avatars', () => {
-    data.participants = Array.from({ length: 12 }, (_, i) => `cat-${i + 1}`);
-    render();
-    const group = host.querySelector<HTMLElement>('[data-testid="header-participants"]');
-    if (!group) throw new Error('Participant group is missing');
-    expect(group.textContent).toContain('+6');
-    expect(group.querySelectorAll('img')).toHaveLength(6);
-    for (let i = 1; i <= 12; i++) expect(group.getAttribute('aria-label')).toContain(`伙伴${i}`);
-    act(() => group.focus());
-    expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('伙伴12');
-    expect(group.getAttribute('title')).toBeNull();
-  });
-  it('unknown participant IDs are not exposed as human-facing header names', () => {
-    data.participants = ['cat-1', 'private-runtime-id-unknown'];
-    render();
-    expect(host.querySelector('[data-testid="header-participants"]')?.getAttribute('aria-label')).not.toContain(
-      'private-runtime-id-unknown',
-    );
-    expect([...host.querySelectorAll('img')].map((el) => el.alt).join(' ')).not.toContain('private-runtime-id-unknown');
   });
 });

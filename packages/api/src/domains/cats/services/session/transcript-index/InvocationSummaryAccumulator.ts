@@ -1,4 +1,5 @@
 import type { CatId, InvocationTrajectorySummary } from '@cat-cafe/shared';
+import { type AssistantOutputFragment, FirstAssistantOutputAccumulator } from '../FirstAssistantOutputAccumulator.js';
 import { projectInvocationTrajectories } from '../InvocationTrajectoryProjector.js';
 import type { TranscriptEvent } from '../TranscriptReader.js';
 import type { IndexedSession } from './transcript-invocation-index-types.js';
@@ -9,11 +10,18 @@ const TERMINAL_PRIORITY = { running: 0, done: 1, error: 2, cancelled: 3, timeout
 export class InvocationSummaryAccumulator {
   private readonly summaries = new Map<string, InvocationTrajectorySummary>();
   private readonly tools = new Map<string, Set<string>>();
+  private readonly outputs = new Map<string, FirstAssistantOutputAccumulator>();
 
   constructor(private readonly session: IndexedSession) {}
 
   add(event: TranscriptEvent): void {
     if (!event.invocationId) return;
+    let output = this.outputs.get(event.invocationId);
+    if (!output) {
+      output = new FirstAssistantOutputAccumulator();
+      this.outputs.set(event.invocationId, output);
+    }
+    output.add(event, event.event.assistantOutputFragment as AssistantOutputFragment | undefined);
     const [next] = projectInvocationTrajectories([event], {
       ...this.session,
       catId: this.session.catId as CatId,
@@ -22,11 +30,17 @@ export class InvocationSummaryAccumulator {
     if (!next) return;
     const current = this.summaries.get(event.invocationId);
     if (!current) {
+      const evidence = output.value();
+      if (evidence) next.firstAssistantOutputEvidence = evidence;
+      else delete next.firstAssistantOutputEvidence;
       this.summaries.set(event.invocationId, next);
       this.tools.set(event.invocationId, new Set(next.toolNames));
       return;
     }
     current.eventCount += next.eventCount;
+    const evidence = output.value();
+    if (evidence) current.firstAssistantOutputEvidence = evidence;
+    else delete current.firstAssistantOutputEvidence;
     current.statusEventCount += next.statusEventCount;
     current.toolUseCount += next.toolUseCount;
     current.toolResultCount += next.toolResultCount;

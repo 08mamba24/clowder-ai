@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkspaceContentReviewText } from '@/components/workbench/content-review/WorkspaceContentReviewText';
 import { createWorkspaceImageComponent, createWorkspaceLinkComponent } from '@/components/workspace-md-components';
+import { useChatStore } from '@/stores/chatStore';
 
 /**
  * F226 云端 P2 — a torn-off float carries its own snapshot `worktreeId`. Relative .md links
@@ -12,10 +13,7 @@ import { createWorkspaceImageComponent, createWorkspaceLinkComponent } from '@/c
  * onClick handler, so SSR markup can't assert it).
  */
 const setOpenFile = vi.fn();
-vi.mock('@/stores/chatStore', () => ({
-  useChatStore: (selector: (s: { setWorkspaceOpenFile: typeof setOpenFile }) => unknown) =>
-    selector({ setWorkspaceOpenFile: setOpenFile }),
-}));
+const originalSetOpenFile = useChatStore.getState().setWorkspaceOpenFile;
 
 describe('createWorkspaceLinkComponent worktree-scoped navigation (云端 P2)', () => {
   let container: HTMLDivElement;
@@ -31,12 +29,14 @@ describe('createWorkspaceLinkComponent worktree-scoped navigation (云端 P2)', 
   });
   beforeEach(() => {
     setOpenFile.mockClear();
+    useChatStore.setState({ messages: [], pendingChatInsert: null, setWorkspaceOpenFile: setOpenFile });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
   });
   afterEach(() => {
     act(() => root.unmount());
+    useChatStore.setState({ setWorkspaceOpenFile: originalSetOpenFile });
     container.remove();
   });
 

@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   ActionSuccessorRequestMetadata,
   CallbackAuthFailureReason,
+  ContextAttachment,
   CustodyAdmissionRequestV1,
   DispatchGateState,
   EntrustedWorkClosureSpecV1,
@@ -29,9 +30,11 @@ import {
   acceptedSourceRefSchema,
   actionSuccessorMetadataSchema,
   CALLBACK_AUTH_FAILURE_REASONS,
+  COGNITIVE_TRANSITIONS,
   custodyAdmissionRequestV1Schema,
   DEVELOPMENT_SOP_STAGE_IDS,
   dispatchProposedActionInputSchema,
+  EVENT_CONFIDENCES,
   EXECUTABLE_ACTION_SUCCESSOR_CONTRACT_DESCRIPTION,
   entrustedWorkClosureSpecV1Schema,
   entrustedWorkTerminalActionV1Schema,
@@ -50,9 +53,11 @@ import {
   reviewSubjectRefSchema,
   SOP_DEFINITION_IDS,
   taskFeatureIdSchema,
+  VersionBoundContextAttachmentsSchema,
 } from '@cat-cafe/shared';
 import { hasUsableAgentKeyCredentials, resolveAgentKeySecretFromEnv } from '@cat-cafe/shared/utils';
 import { z } from 'zod';
+import { boundedCallbackGet, boundedCallbackResult, type CallbackReadBudget } from './callback-bounded-get.js';
 import { sendCallbackRequest } from './callback-outbox.js';
 import { extractReasonTag } from './callback-retry.js';
 import { formatSuggestedCrossPostActionLines } from './cross-post-suggestion-format.js';
@@ -105,6 +110,10 @@ interface CallbackConfig {
 interface AgentKeyOptions {
   agentKeyCatId?: string;
   forceAgentKey?: boolean;
+}
+
+interface CallbackGetOptions extends AgentKeyOptions {
+  readBudget?: CallbackReadBudget;
 }
 
 interface CallbackTransportOptions {
@@ -277,7 +286,7 @@ export async function callbackPost(
 export async function callbackGet(
   path: string,
   params?: Record<string, string>,
-  options?: AgentKeyOptions,
+  options?: CallbackGetOptions,
 ): Promise<ToolResult> {
   const config = getCallbackConfig(options);
   if (!config) return errorResult(NO_CONFIG_ERROR);
@@ -287,6 +296,14 @@ export async function callbackGet(
   const url = qs ? `${config.apiUrl}${path}?${qs}` : `${config.apiUrl}${path}`;
 
   try {
+    if (options?.readBudget) {
+      const response = await boundedCallbackGet(url, buildAuthHeaders(config), options.readBudget);
+      return boundedCallbackResult(
+        response,
+        options.readBudget,
+        response.status === 401 ? extractReasonTag(response.body) : '',
+      );
+    }
     const response = await fetch(url, { headers: buildAuthHeaders(config) });
     if (!response.ok) {
       const text = await response.text();
@@ -325,14 +342,17 @@ const postMessageThreadIdSchema = z.string().min(1);
 
 export const postMessageInputSchema = {
   content: z.string().min(1).describe('The message content to post'),
-  streamDisposition: z
-    .enum(['independent', 'replace_final'])
+  effectClass: z
+    .enum(['fyi', 'coordinate', 'investigate'])
     .optional()
-    .default('independent')
     .describe(
-      'How this callback relates to the provider final response. "independent" (DEFAULT) preserves a later final as a separate durable message. ' +
-        'Use "replace_final" only when this callback is the canonical replacement for the same logical final response; route persistence then keeps one bubble and merges stream metadata into it.',
+      'Message purpose. fyi delivers to scarce dossier engagementPolicy seats without waking them and preserves unread; ' +
+        'ordinary targets still wake. Active coordination, structured actions and localReviewVerdict retain their wake. ' +
+        'Check deliveredWithoutWake in the receipt; delivery does not confirm reading.',
     ),
+  contextAttachments: VersionBoundContextAttachmentsSchema.optional().describe(
+    'Optional F063 ContextAttachments to persist on this authenticated cat message. Workspace-file references should carry the exact owner revision; attachment v:1 is only the format version and grants no write authority.',
+  ),
   threadId: postMessageThreadIdSchema
     .optional()
     .describe(
@@ -357,7 +377,9 @@ export const postMessageInputSchema = {
     .object({
       phase: z
         .enum(['active', 'terminal'])
-        .describe('active continues a direct coordination chain; terminal closes it after one final routed delivery.'),
+        .describe(
+          'active continues and wakes a direct coordination chain; terminal delivers without waking scarce engagementPolicy seats.',
+        ),
       id: z
         .string()
         .min(1)
@@ -414,14 +436,6 @@ export const postMessageInputSchema = {
         ACTION_SUBJECT_REF_DESCRIPTION,
     ),
   agentKeyCatId: agentKeyCatIdSchema,
-  // F254 Phase A: acknowledge held — force send even when there are unseen messages
-  acknowledgeHeld: z
-    .boolean()
-    .optional()
-    .describe(
-      'F254 Freshness Gate escape hatch. Set to true to force-send your message even when the thread has unseen messages. ' +
-        'Use only after you have reviewed the held envelope previews and decided your message is still appropriate.',
-    ),
 };
 
 export type PostMessageRegistrationPrincipal = 'invocation' | 'agent-key' | 'unconfigured';
@@ -509,14 +523,14 @@ export const getThreadContextInputSchema = {
     .min(0)
     .max(50)
     .optional()
-    .describe('When messageId is set, number of messages before the target to include (default: 3).'),
+    .describe('When messageId is set, number of messages before the target to include (0–50, default: 3).'),
   after: z
     .number()
     .int()
     .min(0)
     .max(50)
     .optional()
-    .describe('When messageId is set, number of messages after the target to include (default: 3).'),
+    .describe('When messageId is set, number of messages after the target to include (0–50, default: 3).'),
   catId: z.string().min(1).optional().describe("Optional: filter by speaker catId, or pass 'user' for human messages."),
   keyword: z
     .string()
@@ -532,8 +546,9 @@ export const getThreadContextInputSchema = {
       'Response projection mode. "anchor" (DEFAULT — omit for normal browsing): token-lean previews with drillDown pointers to full content. ' +
         '"full": returns complete message bodies inside a bounded aggregate page; use nextCursor when hasMore=true. A persisted message larger than the page is returned as an honest anchor with a precise drill pointer; a transient queued body without a persisted message anchor remains unseen and says to retry after persistence. ' +
         'An oversized workflow SOP is likewise returned as an honest anchor that points to cat_cafe_get_workflow_sop instead of overflowing the aggregate envelope. ' +
-        'For freshness catch-up, set readIntent="unread" and responseMode="full" with no filters, then follow nextCursor until hasMore=false; only complete bodies advance read evidence. ' +
-        'GOTCHA: anchor previews are not a freshness closure and cannot prove queued messages were handled.',
+        'For a complete catch-up, set readIntent="unread" and responseMode="full" with no filters, then follow nextCursor until hasMore=false; only complete bodies may be delivery evidence. ' +
+        'The response contextScope names that selection: contextScope="unread_delta" contains only currently unread relevant messages; hasMore=false closes that selection, not all thread history. Use history or a messageId window to inspect older messages. ' +
+        'GOTCHA: anchor previews do not consume queued bodies and cannot prove queued messages were handled.',
     ),
   agentKeyCatId: agentKeyCatIdSchema,
 };
@@ -853,6 +868,7 @@ export const crossPostMessageInputSchema = {
         'Requires explicit clientMessageId and targetCats. mode=single allows exactly one target; ' +
         'mode=parallel requires at least two targets plus parallelIntent. A duplicate active action returns safe_wait. ' +
         'Use claimOrigin=existing_standing plus groundingEvidenceRef for a verified self-claim. ' +
+        'For a canonical Task-owner replacement of an initial terminal delegate in the same approved child, groundingEvidenceRef may name the exact direct-human message:<id>; server-derived identity/revision evidence is required and prose is not parsed as authority. ' +
         'New claims require terminalPredicate typed parameters; server catalog owns completion semantics and exact revision freshness. ' +
         'Use returnToPredecessor for rejected custody: single mode returns the generation to the persisted predecessor; parallel mode records only the rejecting holder terminal and does not enqueue a whole-lease return. ' +
         EXECUTABLE_ACTION_SUCCESSOR_CONTRACT_DESCRIPTION +
@@ -870,11 +886,6 @@ export const crossPostMessageInputSchema = {
         PROPOSED_ACTION_EXECUTABLE_CONTRACT_DESCRIPTION,
     ),
   agentKeyCatId: agentKeyCatIdSchema,
-  // F254 Phase A: acknowledge held — force send even when there are unseen messages
-  acknowledgeHeld: z
-    .boolean()
-    .optional()
-    .describe('F254 Freshness Gate escape hatch. Force-send despite unseen messages in the target thread.'),
 };
 
 export const listTasksInputSchema = {
@@ -932,11 +943,11 @@ function containsPawFeelMarker(content: string): boolean {
 async function _executePostMessage(
   input: {
     content: string;
+    contextAttachments?: ContextAttachment[] | undefined;
     threadId?: string | undefined;
     replyTo?: string | undefined;
     clientMessageId?: string | undefined;
     targetCats?: string[] | undefined;
-    streamDisposition?: 'independent' | 'replace_final' | undefined;
     agentKeyCatId?: string | undefined;
     effectClass?: 'fyi' | 'coordinate' | 'investigate' | 'assign_work' | undefined;
     coordination?:
@@ -949,7 +960,6 @@ async function _executePostMessage(
     acceptedRevision?: string | undefined;
     action?: ActionSuccessorRequestMetadata | undefined;
     proposedAction?: ActionSuccessorRequestMetadata | undefined;
-    acknowledgeHeld?: boolean | undefined;
   },
   transportOptions?: CallbackTransportOptions,
 ): Promise<ToolResult> {
@@ -992,7 +1002,7 @@ async function _executePostMessage(
         '/api/callbacks/post-message',
         {
           content: input.content,
-          streamDisposition: input.streamDisposition ?? 'independent',
+          ...(input.contextAttachments?.length ? { contextAttachments: input.contextAttachments } : {}),
           ...(input.threadId ? { threadId: input.threadId } : {}),
           ...(input.replyTo ? { replyTo: input.replyTo } : {}),
           clientMessageId: input.clientMessageId ?? randomUUID(),
@@ -1006,7 +1016,6 @@ async function _executePostMessage(
           ...(input.acceptedRevision ? { acceptedRevision: input.acceptedRevision } : {}),
           ...(input.action ? { action: input.action } : {}),
           ...(input.proposedAction ? { proposedAction: input.proposedAction } : {}),
-          ...(input.acknowledgeHeld ? { acknowledgeHeld: true } : {}),
         },
         {
           enableOutbox: true,
@@ -1138,11 +1147,12 @@ async function _executePostMessage(
 export async function handlePostMessage(
   input: {
     content: string;
+    contextAttachments?: ContextAttachment[] | undefined;
     threadId?: string | undefined;
     replyTo?: string | undefined;
     clientMessageId?: string | undefined;
     targetCats?: string[] | undefined;
-    streamDisposition?: 'independent' | 'replace_final' | undefined;
+    effectClass?: 'fyi' | 'coordinate' | 'investigate' | undefined;
     coordination?:
       | { phase: 'active' | 'terminal'; id?: string | undefined; subjectRef?: string | undefined }
       | undefined;
@@ -1153,16 +1163,10 @@ export async function handlePostMessage(
     acceptedRevision?: string | undefined;
     agentKeyCatId?: string | undefined;
     action?: ActionSuccessorRequestMetadata | undefined;
-    acknowledgeHeld?: boolean | undefined;
   },
   transportOptions?: CallbackTransportOptions,
 ): Promise<ToolResult> {
   const hasInvocationCreds = getInvocationAuthSignal().hasFullCredentials;
-  if (input.streamDisposition === 'replace_final' && !hasInvocationCreds) {
-    return errorResult(
-      'post_message streamDisposition="replace_final" requires invocation-token credentials because there is no provider final stream to replace under agent-key auth.',
-    );
-  }
   if (input.threadId && hasInvocationCreds) {
     return errorResult(
       'post_message rejects threadId from invocation-token callers (F193 KD-1). ' +
@@ -1638,7 +1642,6 @@ export async function handleCrossPostMessage(input: {
   acceptedRevision?: string | undefined;
   action?: ActionSuccessorRequestMetadata | undefined;
   proposedAction?: ActionSuccessorRequestMetadata | undefined;
-  acknowledgeHeld?: boolean | undefined;
 }): Promise<ToolResult> {
   if (containsPawFeelMarker(input.content)) {
     return errorResult(
@@ -1747,7 +1750,6 @@ export async function handleCrossPostMessage(input: {
     ...(input.acceptedRevision ? { acceptedRevision: input.acceptedRevision } : {}),
     ...(input.action ? { action: input.action } : {}),
     ...(input.proposedAction ? { proposedAction: input.proposedAction } : {}),
-    ...(input.acknowledgeHeld ? { acknowledgeHeld: true } : {}),
   });
 }
 
@@ -1832,6 +1834,51 @@ export const createRichBlockInputSchema = {
     .min(1)
     .optional()
     .describe('Target thread ID. Required for agent-key auth because persistent MCP has no invocation thread.'),
+  awaitResponseV1: z
+    .object({
+      mode: z.literal('once').describe('Create exactly one durable decision lifecycle for this block.'),
+      allowTextResponse: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe('Allow a deliberately bound text answer in addition to the rendered options.'),
+      deadlineAt: z.number().int().positive().optional().describe('Optional absolute epoch-ms deadline.'),
+      defaultResponse: z
+        .discriminatedUnion('kind', [
+          z
+            .object({
+              kind: z.literal('selection').describe('Apply one declared option selection at the deadline.'),
+              selectedIds: z
+                .array(z.string().min(1))
+                .min(1)
+                .describe('One or more option IDs from the published interactive block.'),
+              customInput: z
+                .string()
+                .trim()
+                .min(1)
+                .max(100_000)
+                .optional()
+                .describe('Optional declared custom-input value for the selected option.'),
+            })
+            .strict(),
+          z
+            .object({
+              kind: z.literal('text').describe('Apply one declared free-text response at the deadline.'),
+              text: z
+                .string()
+                .trim()
+                .min(1)
+                .max(100_000)
+                .describe('Declared deadline response text, up to 100,000 characters.'),
+            })
+            .strict(),
+        ])
+        .optional()
+        .describe('Optional declared response applied by Host at deadline; requires deadlineAt.'),
+    })
+    .strict()
+    .optional()
+    .describe('Explicitly create one durable conversation decision. Never inferred from block shape or prose.'),
 };
 
 /**
@@ -1846,6 +1893,15 @@ export async function handleCreateRichBlock(input: {
   block: string;
   threadId?: string | undefined;
   agentKeyCatId?: string | undefined;
+  awaitResponseV1?: {
+    mode: 'once';
+    allowTextResponse?: boolean | undefined;
+    deadlineAt?: number | undefined;
+    defaultResponse?:
+      | { kind: 'selection'; selectedIds: string[]; customInput?: string }
+      | { kind: 'text'; text: string }
+      | undefined;
+  };
 }): Promise<ToolResult> {
   let parsed: unknown;
   try {
@@ -1866,6 +1922,21 @@ export async function handleCreateRichBlock(input: {
   const block = parsed;
   const hasInvocationCreds = getInvocationAuthSignal().hasFullCredentials;
   const hasAgentKeyCreds = hasUsableAgentKeyCredentials(process.env);
+
+  if (input.awaitResponseV1) {
+    if (!hasInvocationCreds) {
+      return errorResult('awaitResponseV1 requires the current authenticated invocation; no text fallback is allowed.');
+    }
+    return callbackPost(
+      '/api/callbacks/create-rich-block',
+      {
+        block,
+        awaitResponseV1: input.awaitResponseV1,
+        ...(input.threadId ? { threadId: input.threadId } : {}),
+      },
+      { enableOutbox: true, agentKeyCatId: input.agentKeyCatId },
+    );
+  }
 
   const ccRichText = `\`\`\`cc_rich\n${JSON.stringify({ v: 1, blocks: [block] })}\n\`\`\``;
   // Inline TTS is a long-running, non-idempotent server operation. The voice
@@ -3183,6 +3254,63 @@ export async function handleProposeEntity(input: {
 
 // ============ F221: Taste Capture Loop ============
 
+const tasteCorrectionPatchInputSchema = z
+  .object({
+    takeaway: z
+      .string()
+      .trim()
+      .min(1)
+      .max(500)
+      .nullable()
+      .optional()
+      .describe('Replacement one-sentence takeaway; use null to remove the existing takeaway.'),
+    quotes: z
+      .array(z.string().trim().min(1).max(2000))
+      .max(16)
+      .optional()
+      .describe('Replacement source-supported quotes; use [] to remove all quotes.'),
+    scene: z.string().trim().min(1).max(8000).optional().describe('Replacement scene/context.'),
+    tags: z
+      .array(z.string().trim().min(1).max(160))
+      .min(1)
+      .max(24)
+      .optional()
+      .describe('Replacement non-empty Taste tags.'),
+    dimension: z
+      .enum([
+        'relationship-stance',
+        'cognitive-honesty',
+        'architecture-aesthetics',
+        'visual-quality',
+        'authentic-expression',
+        'system-philosophy',
+        'creative-craft',
+      ])
+      .optional()
+      .describe('Replacement Taste dimension.'),
+  })
+  .strict()
+  .refine((patch) => Object.keys(patch).length > 0, { message: 'suggestedPatch must not be empty' });
+
+const tasteCorrectionTargetInputSchema = z
+  .object({
+    sourceAnchor: z
+      .string()
+      .regex(/^taste-vignette:(?:docs\/taste\/vignettes|private\/taste)\/[\p{L}\p{N}][\p{L}\p{N}._-]*\.md$/u)
+      .describe('Exact taste-vignette source anchor returned by the owner Taste read surface.'),
+    expectedRevision: z
+      .string()
+      .regex(/^sha256:[a-f0-9]{64}$/)
+      .describe('Exact sha256 revision read from the target Taste memory.'),
+    reason: z
+      .enum(['unsupported_by_source', 'outdated', 'not_applicable_here'])
+      .describe('Why the current canonical memory needs owner review.'),
+    suggestedPatch: tasteCorrectionPatchInputSchema.describe(
+      'Bounded replacement fields proposed for the existing memory.',
+    ),
+  })
+  .strict();
+
 export const proposeTasteInputSchema = {
   scene: z
     .string()
@@ -3191,7 +3319,8 @@ export const proposeTasteInputSchema = {
     .describe(
       'The situation/context where this taste signal emerged — what was happening, ' +
         'what triggered it (e.g. "operator said 太客服了 during code review feedback")',
-    ),
+    )
+    .optional(),
   quote: z
     .string()
     .min(1)
@@ -3199,7 +3328,8 @@ export const proposeTasteInputSchema = {
     .describe(
       'The exact or near-exact quote/expression that carries the taste signal — ' +
         'preserve the original language and nuance',
-    ),
+    )
+    .optional(),
   takeaway: z
     .string()
     .trim()
@@ -3211,7 +3341,8 @@ export const proposeTasteInputSchema = {
     .array(z.string().min(1).max(50))
     .min(1)
     .max(10)
-    .describe('1-10 tags capturing the taste signal essence (e.g. ["活人感", "authentic"])'),
+    .describe('1-10 tags capturing the taste signal essence (e.g. ["活人感", "authentic"])')
+    .optional(),
   dimension: z
     .enum([
       'relationship-stance',
@@ -3231,14 +3362,22 @@ export const proposeTasteInputSchema = {
         'authentic-expression: voice/tone/personality. ' +
         'system-philosophy: engineering philosophy. ' +
         'creative-craft: writing/naming/creative standards.',
-    ),
+    )
+    .optional(),
   privacy: z
     .enum(['public', 'sensitive'])
     .describe(
       'public: vignette goes to docs/taste/vignettes/ (visible in repo). ' +
         'sensitive: vignette goes to private/taste/ (gitignored, local only)',
-    ),
+    )
+    .optional(),
   sourceMessageId: z.string().min(1).optional().describe('Message ID where the taste signal was observed'),
+  target: tasteCorrectionTargetInputSchema
+    .optional()
+    .describe(
+      'To suggest a correction to an existing Taste memory, provide its exact sourceAnchor/revision and patch. ' +
+        'When target is present, scene/quote/tags/dimension/privacy are derived from the bound source and must be omitted.',
+    ),
   clientRequestId: z
     .string()
     .min(1)
@@ -3248,25 +3387,63 @@ export const proposeTasteInputSchema = {
 };
 
 export async function handleProposeTaste(input: {
-  scene: string;
-  quote: string;
+  scene?: string;
+  quote?: string;
   takeaway?: string;
-  tags: string[];
-  dimension: string;
-  privacy: 'public' | 'sensitive';
+  tags?: string[];
+  dimension?: string;
+  privacy?: 'public' | 'sensitive';
   sourceMessageId?: string;
+  target?: z.infer<typeof tasteCorrectionTargetInputSchema>;
   clientRequestId?: string;
 }): Promise<ToolResult> {
-  const result = await callbackPost('/api/callbacks/propose-taste', {
-    scene: input.scene,
-    quote: input.quote,
-    takeaway: input.takeaway,
-    tags: input.tags,
-    dimension: input.dimension,
-    privacy: input.privacy,
-    sourceMessageId: input.sourceMessageId,
-    clientRequestId: input.clientRequestId ?? randomUUID(),
-  });
+  const createSchema = z
+    .object({
+      scene: z.string().min(1).max(2000),
+      quote: z.string().min(1).max(2000),
+      takeaway: z.string().trim().min(1).max(500).optional(),
+      tags: z.array(z.string().min(1).max(50)).min(1).max(10),
+      dimension: proposeTasteInputSchema.dimension.unwrap(),
+      privacy: z.enum(['public', 'sensitive']),
+      sourceMessageId: z.string().min(1).optional(),
+      clientRequestId: z.string().min(1).max(200).optional(),
+      target: z.undefined().optional(),
+    })
+    .strict();
+  const correctionSchema = z
+    .object({
+      target: tasteCorrectionTargetInputSchema,
+      clientRequestId: z
+        .string()
+        .trim()
+        .min(32)
+        .max(200)
+        .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/)
+        .optional(),
+      scene: z.undefined().optional(),
+      quote: z.undefined().optional(),
+      takeaway: z.undefined().optional(),
+      tags: z.undefined().optional(),
+      dimension: z.undefined().optional(),
+      privacy: z.undefined().optional(),
+      sourceMessageId: z.undefined().optional(),
+    })
+    .strict();
+  const parsed = z.union([createSchema, correctionSchema]).safeParse(input);
+  if (!parsed.success) {
+    return errorResult(
+      'Invalid Taste proposal input. Expected either create fields ' +
+        '{scene, quote, tags, dimension, privacy} or correction fields ' +
+        '{target:{sourceAnchor, expectedRevision, reason, suggestedPatch}}, without mixing them. ' +
+        'Example correction: target.sourceAnchor="taste-vignette:docs/taste/vignettes/example.md", ' +
+        'target.expectedRevision="sha256:<64 lowercase hex>". ' +
+        `Details: ${parsed.error.issues.map((issue) => issue.message).join('; ')}`,
+    );
+  }
+  const request = parsed.data.target
+    ? { target: parsed.data.target, clientRequestId: parsed.data.clientRequestId ?? randomUUID() }
+    : { ...parsed.data, clientRequestId: parsed.data.clientRequestId ?? randomUUID() };
+  const result = await callbackPost('/api/callbacks/propose-taste', request);
   // Detect stale_ignored: match thread/profile/handoff pattern — a stale invocation
   // gets HTTP 200 with status='stale_ignored' but no proposal was actually created.
   if (!result.isError) {
@@ -3282,6 +3459,58 @@ export async function handleProposeTaste(input: {
     }
   }
   return result;
+}
+
+// ============ F321: source-bound Event memory correction ============
+
+const eventCorrectionPatchInputSchema = z
+  .object({
+    summary: z.string().trim().min(1).max(1_000_000).optional(),
+    cognitiveTransition: z.enum(COGNITIVE_TRANSITIONS).nullable().optional(),
+    relatedHarness: z.array(z.string().trim().min(1).max(500)).max(24).nullable().optional(),
+    confidence: z.enum(EVENT_CONFIDENCES).optional(),
+  })
+  .strict()
+  .refine((patch) => Object.keys(patch).length > 0, { message: 'suggestedPatch must not be empty' });
+
+export const proposeEventMemoryCorrectionInputSchema = {
+  eventId: z.string().trim().min(1).max(200).describe('Existing Event memory id from the owner read surface.'),
+  expectedRevision: z
+    .string()
+    .regex(/^sha256:[a-f0-9]{64}$/)
+    .describe('Exact Event revision that was read and found questionable.'),
+  reason: z
+    .enum(['unsupported_by_source', 'outdated', 'not_applicable_here'])
+    .describe('Why the current Event interpretation needs owner review.'),
+  suggestedPatch: eventCorrectionPatchInputSchema.describe(
+    'Proposed correction to interpretive Event fields. Source coordinates and identity cannot be changed.',
+  ),
+  clientRequestId: z
+    .string()
+    .trim()
+    .min(32)
+    .max(200)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/)
+    .optional()
+    .describe('Idempotency key; retries with the same request return the same proposal.'),
+};
+
+export async function handleProposeEventMemoryCorrection(input: {
+  eventId: string;
+  expectedRevision: string;
+  reason: 'unsupported_by_source' | 'outdated' | 'not_applicable_here';
+  suggestedPatch: {
+    summary?: string;
+    cognitiveTransition?: (typeof COGNITIVE_TRANSITIONS)[number] | null;
+    relatedHarness?: string[] | null;
+    confidence?: (typeof EVENT_CONFIDENCES)[number];
+  };
+  clientRequestId?: string;
+}): Promise<ToolResult> {
+  return callbackPost('/api/callbacks/propose-event-memory-correction', {
+    ...input,
+    clientRequestId: input.clientRequestId ?? randomUUID(),
+  });
 }
 
 // ============ Thread Cats Discovery ============
@@ -3354,7 +3583,14 @@ export async function handleHoldBall(input: {
   reason: string;
   nextStep: string;
   wakeAfterMs?: number;
-  wakeWhen?: { command: string; cwd?: string; timeoutMs?: number; executionSlaMs?: number };
+  wakeWhen?: {
+    command: string;
+    cwd?: string;
+    timeoutMs?: number;
+    executionSlaMs?: number;
+    idempotencyKey?: string;
+    executionPolicy?: 'read_only';
+  };
   agentKeyCatId?: string | undefined;
   waitSourceRef?: {
     kind: string;
@@ -3399,7 +3635,7 @@ export async function handleHoldBall(input: {
       isError: true,
     };
   }
-  const result = await callbackPost(
+  return callbackPost(
     '/api/callbacks/hold-ball',
     {
       reason: input.reason,
@@ -3410,37 +3646,23 @@ export async function handleHoldBall(input: {
     },
     agentKeyOptions(input),
   );
-
-  // F254 B2: Check for unresolved freshness notices after successful hold_ball.
-  // If the cat has unacknowledged notices, append a reminder to the result.
-  // Fail-open: reminder errors never block hold_ball.
-  if (!result.isError && getCallbackConfig(agentKeyOptions(input))) {
-    try {
-      const reminderResult = await callbackPost(
-        '/api/callbacks/freshness-hold-ball-reminder',
-        {},
-        agentKeyOptions(input),
-      );
-      if (!reminderResult.isError) {
-        const data = JSON.parse((reminderResult.content[0] as { text: string }).text);
-        if (data?.reminder?.text) {
-          result.content = [...result.content, { type: 'text', text: `\n\n${data.reminder.text}` }];
-        }
-      }
-    } catch {
-      // Fail-open: reminder check errors should never block hold_ball
-    }
-  }
-
-  return result;
 }
 
 /**
  * F167 #1449 Slice 1 — Task-ID-independent hold observability.
  * No input required; threadId + catId come from invocation auth.
  */
-export async function handleGetHoldStatus(): Promise<ToolResult> {
-  return callbackGet('/api/callbacks/hold-ball/current');
+export async function handleGetHoldStatus(input: { taskId?: string; tailBytes?: number } = {}): Promise<ToolResult> {
+  if (input.tailBytes !== undefined && !input.taskId)
+    return errorResult(
+      'tailBytes requires taskId; pass the hold_ball taskId, for example {"taskId":"hold-ball-...","tailBytes":16384}.',
+    );
+  return callbackGet(
+    input.taskId
+      ? `/api/callbacks/hold-ball/${encodeURIComponent(input.taskId)}/status`
+      : '/api/callbacks/hold-ball/current',
+    input.tailBytes === undefined ? undefined : { tailBytes: String(input.tailBytes) },
+  );
 }
 
 /**
@@ -3456,20 +3678,6 @@ export async function handleGetCustodyEvents(input: {
   return callbackGet('/api/callbacks/custody-events', {
     sourceMessageId: input.sourceMessageId,
     ...(input.limit !== undefined ? { limit: String(input.limit) } : {}),
-  });
-}
-
-export async function handleCompleteManagedHold(input: { disposition: 'handled' | 'completed' }): Promise<ToolResult> {
-  return callbackPost('/api/callbacks/complete-managed-hold', { disposition: input.disposition });
-}
-
-export async function handleCompleteA2ADispatch(input: {
-  disposition: 'handled' | 'completed';
-  adoptSourceMessageId?: string;
-}): Promise<ToolResult> {
-  return callbackPost('/api/callbacks/complete-a2a-dispatch', {
-    disposition: input.disposition,
-    ...(input.adoptSourceMessageId ? { adoptSourceMessageId: input.adoptSourceMessageId } : {}),
   });
 }
 
@@ -3534,6 +3742,7 @@ export async function handleGetThreadMetadata(input: AgentKeySelectable = {}): P
 }
 
 export const setThreadMetadataInputSchema = {
+  // Protected migration schema stays stable; the tool-level contract below governs title writes.
   title: z.string().min(1).optional().describe('Update thread title (replaces existing)'),
   labels: z.array(z.string()).optional().describe('Update thread labels (replaces entire array)'),
   worktrees: z.array(z.string()).optional().describe('Worktree paths to add (append + dedupe)'),
@@ -3626,14 +3835,16 @@ export const callbackTools = [
       'Use when: sharing a mid-task update, routing one ordinary @ notification, or handing one named external action to one successor with action.mode="single". ' +
       'NOT for: invocation-token delivery to another thread (use cross_post_message) or deliberate independent multi-cat review/ideation (use multi_mention with mode="parallel"). ' +
       'Output: the message is persisted in the principal-selected thread; routed targets are queued, and action conflicts return safe_wait without creating work. ' +
+      'Scarce dossier engagementPolicy seats receive effectClass=fyi or coordination.phase=terminal unread without waking; deliveredWithoutWake confirms delivery, not reading. Active coordination, actions and localReviewVerdict retain their wake. ' +
       'GOTCHA: action requires explicit clientMessageId + exactly one targetCats entry; ordinary single-cat notifications do not need action. ' +
       'For a direct Claim/Release chain, pass coordination.phase=active on work hops and terminal on the final delivery; terminal recipients may clean-stop without another @. ' +
-      'A terminal id or bound subject that conflicts with the incoming coordination fails with HTTP 409 before message persistence or wake; start genuinely new work with phase=active. ' +
+      'An unaddressed terminal transition whose id or bound subject conflicts with the incoming coordination fails with HTTP 409 before persistence. After an incoming terminal, any authored target is genuinely new active work even if the caller repeats a stale terminal label. ' +
+      'A reply after terminal is a quiet courtesy ACK only when it has no explicit routing credential; line-start @mentions and structured targetCats always start a new active routing generation and remain subject to the normal loop-streak guard. ' +
       'For a local review result, route an ordinary @author message with localReviewVerdict + exact reviewedHeadSha + reviewSubjectRef + acceptedSourceRef + acceptedRevision + clientMessageId. This durable fact needs no action lease, coordination generation, replacement, or issuer route. Public prose is never parsed. ' +
       'Existing standing uses claimOrigin="existing_standing" + groundingEvidenceRef; rejected custody uses returnToPredecessor and targets the persisted predecessor. ' +
       'GOTCHA: structured action metadata currently requires invocation-token auth; agent-key callers fail closed with the non-retryable action_agent_key_unsupported status and never send an unfenced fallback. ' +
       'F247: gpt-pro agent-key returns copy only replyTo=sourceMessageId from the runtime delta; the server admits it only when an exact server-custodied dispatch grant exists. ' +
-      'By default, a later provider final remains a separate durable message. Set streamDisposition="replace_final" only when this callback is the canonical replacement for that same final response. ' +
+      'A post_message is always its own durable message, separate from your final reply. ' +
       'To hand off without structured action identity, write @猫名 on its own line at the START of the line (sentence-internal @mention does NOT route). ' +
       'GOTCHA: This tool uses callback credentials that expire — if it fails with 401, fall back to line-start @mention in your response text. ' +
       'GOTCHA: Do NOT use this for routine replies — only for mid-task proactive messages when you need to share something before your response completes.',
@@ -3692,10 +3903,11 @@ export const callbackTools = [
     name: 'cat_cafe_get_thread_context',
     description:
       'Read messages from one thread, with token-lean anchor previews by default and optional full bodies, ranked keywords, or a bounded window around messageId. ' +
-      'Use when: browsing the current conversation, reading a different known threadId, finding relevant messages inside that thread, opening context around a known messageId, or a freshness notice asks you to catch up. ' +
+      'Use when: browsing the current conversation, reading a different known threadId, finding relevant messages inside that thread, opening context around a known messageId, or explicitly catching up. ' +
       'NOT for: finding features, decisions, plans, lessons, or unknown threads across project knowledge; use search_evidence or list_threads first. ' +
-      'Output: a bounded aggregate envelope with threadId, ordered messages, hasMore, and nextCursor when continuation is required; anchor mode includes drillDown pointers, while responseMode="full" returns complete bodies per ordinary item and includes same-target queued bodies. ' +
-      'GOTCHA: to follow nextCursor, keep the same limit, readIntent and all other read arguments; changing one requires a new read without cursor. Keyword ranking is best-effort over a bounded recent scan; scanCapped=true means older history may contain additional matches. A single item larger than the full-page budget falls back to an honest anchor; drill an oversized workflow SOP with cat_cafe_get_workflow_sop using the returned threadId. Anchor mode does not consume queued bodies or close freshness responsibility; history is the default selection even in full mode; for a freshness catch, set readIntent="unread" and responseMode="full" with no catId/keyword/messageId/before/after filters and follow nextCursor until hasMore=false. Pass threadId only to read a different thread; omit it for the current thread.',
+      'Output: a bounded aggregate envelope with threadId, ordered messages, contextScope, hasMore, and nextCursor when continuation is required; anchor mode includes drillDown pointers, while responseMode="full" returns complete bodies per ordinary item and includes same-target queued bodies. contextScope="unread_delta" contains only currently unread relevant messages; hasMore=false closes that selection, not all thread history. ' +
+      'When available, situation reports exact lifecycle-backed active runs; situation.complete=false means runtime evidence could not be fully joined, so do not infer execution from recent speech. ' +
+      'GOTCHA: keep the same limit, readIntent and other read arguments when following nextCursor; changing one requires a new read without cursor. Keyword ranking is best-effort over a bounded recent scan; scanCapped=true means older history may contain additional matches. A single item larger than the full-page budget returns an honest anchor with a precise drill pointer, not read evidence; drill an oversized workflow SOP with cat_cafe_get_workflow_sop using the returned threadId. History is the default selection even in full mode; for a complete catch-up, set readIntent="unread" and responseMode="full" without catId/keyword/messageId/before/after filters and follow nextCursor until hasMore=false. Pass threadId only for a different thread; omit it for the current thread.',
     inputSchema: getThreadContextInputSchema,
     handler: handleGetThreadContext,
     governance: {
@@ -3865,18 +4077,20 @@ export const callbackTools = [
       'Use when you need to notify a different thread about something relevant. ' +
       'NOT for: posting to your own current thread (use post_message instead). ' +
       'Output: message appears in the target thread as a new message visible to all participants. ' +
-      'ROUTING: You MUST include routing credentials to wake the target cat — either set `targetCats` array with the recipient catId(s), OR put a line-start `@handle` in content. ' +
+      'ROUTING: You MUST name recipients — either set `targetCats` array with the recipient catId(s), OR put a line-start `@handle` in content. ' +
+      'For scarce dossier engagementPolicy seats, effectClass=fyi or coordination.phase=terminal persists unread without waking; receipt deliveredWithoutWake means delivered, not read. Active coordination, actions, assign_work approval and localReviewVerdict retain their normal routing. ' +
       'Messages without routing (no targetCats, no line-start @) will be REJECTED (F193 AC-A4). ' +
       'GOTCHA: Requires threadId — use feat_index/list_threads plus thread truth to verify the exact owning thread; never guess a nearby thread. ' +
       'PAW-FEEL: The original [爪感差: ...] message is already collected. Cross-post only a marker-free sourceMessageId reference to a verified owner; if none exists, use cat_cafe_propose_thread (F128). New responsibility uses effectClass=assign_work plus proposedAction for Approval Hub review. ' +
       'GOTCHA: For Claim/Release coordination, pass coordination.phase=active on Claim/work hops and terminal on Release. ' +
-      'A terminal id or bound subject that conflicts with the incoming coordination fails with HTTP 409 before message persistence or wake; start genuinely new work with phase=active. ' +
+      'An unaddressed terminal transition whose id or bound subject conflicts with the incoming coordination fails with HTTP 409 before persistence. Cross-thread routing credentials after an incoming terminal always name genuinely new active work. ' +
       'For a local review result, route one ordinary @author cross-post with localReviewVerdict + exact reviewedHeadSha + reviewSubjectRef + acceptedSourceRef + acceptedRevision + clientMessageId. This durable fact needs no action lease, coordination generation, replacement, or issuer route; prose is never parsed. ' +
-      'The server carries a stable id across active hops; a direct courtesy ACK after terminal is recorded without waking another cat. ' +
+      'The server carries a stable id across active hops. Every cross-thread post supplies an explicit routing credential, so a line-start @mention or structured targetCats after terminal always starts a new active routing generation and remains subject to the normal loop-streak guard. ' +
       'If terminal reveals genuinely new work, start a new coordination with phase=active instead of ACKing the closed chain. ' +
       'GOTCHA: For a direct named external action, pass action + explicit clientMessageId + targetCats. For operator-gated new responsibility, pass proposedAction with effectClass=assign_work instead; action and assign_work remain mutually exclusive. ' +
       'Output: direct action admission posts and queues one fenced carrier; assign_work publishes one pending approval card and posts nothing to the target until approval atomically acquires the fence. ' +
       'Existing standing reuses the same CAS via claimOrigin="existing_standing" + groundingEvidenceRef. returnToPredecessor sends a rejected single generation to the server-persisted predecessor; parallel mode records only the rejecting holder terminal. ' +
+      'For a canonical Task-owner replacement of an initial terminal delegate in the same approved child, groundingEvidenceRef must be the exact direct-human message:<id>; server validation binds user, child, revision, and timing, and never turns prose alone into a grant. ' +
       'Structured action metadata currently requires invocation-token auth; agent-key callers fail closed with the non-retryable action_agent_key_unsupported status and never send an unfenced fallback. ' +
       'F247: gpt-pro agent-key returns carry only the exact replyTo from the runtime delta; authorization stays in server custody. ' +
       'Fallback must use replace with the active leaseId/generation after server-recorded terminal evidence. Use mode=parallel + parallelIntent only for deliberate independent review, #ideate, or explicit operator fan-out. ' +
@@ -3986,7 +4200,7 @@ export const callbackTools = [
       action: 'update',
       authority: 'callback-owner',
       risk: { level: 'write', openWorld: false },
-      runtimeProfiles: ['collective-work', 'full'],
+      runtimeProfiles: ['collective-work', 'full', 'desktop:live-companion'],
       standaloneReason: {
         disposition: 'accepted-boundary',
         kind: 'side-effect-boundary',
@@ -3998,8 +4212,11 @@ export const callbackTools = [
     name: 'cat_cafe_admit_entrusted_work',
     description:
       'Ask the canonical Task owner to admit or resume explicitly entrusted work. ' +
+      'Use when: a current user Message explicitly entrusts work, an offer was accepted, or a registered source grants admission. ' +
+      'Not for: casual mentions, a new Task for a follow-up to known work, or replacing its owner. For a known Task, read_entrusted_work and update_entrusted_work continue that Task. ' +
+      'GOTCHA: explicit_entrustment and accepted_offer require sourceRefs=["message:<messageId>"] for exactly one current user-authored Message in this authenticated thread, not thread#message links or supporting-message lists. ' +
       'The same idempotencyKey always returns the same Task coordinates; it never creates a sibling Task. ' +
-      'Accepted offers remain pending until this action returns a typed admitted/resumed/needs_clarification result. ' +
+      'Output: canonical Task coordinates and a typed admitted/resumed/needs_clarification result; accepted offers remain pending until admission succeeds. ' +
       'Authorized-source admission fails closed unless its producer grant is registered and current.',
     inputSchema: admitEntrustedWorkInputSchema,
     handler: handleAdmitEntrustedWork,
@@ -4009,7 +4226,7 @@ export const callbackTools = [
       action: 'create',
       authority: 'callback-owner',
       risk: { level: 'write', openWorld: false },
-      runtimeProfiles: ['full'],
+      runtimeProfiles: ['full', 'desktop:live-companion'],
       standaloneReason: {
         disposition: 'accepted-boundary',
         kind: 'authority-boundary',
@@ -4031,7 +4248,7 @@ export const callbackTools = [
       action: 'complete',
       authority: 'callback-owner',
       risk: { level: 'write', openWorld: false },
-      runtimeProfiles: ['full'],
+      runtimeProfiles: ['full', 'desktop:live-companion'],
       standaloneReason: {
         disposition: 'accepted-boundary',
         kind: 'destructive-boundary',
@@ -4056,7 +4273,7 @@ export const callbackTools = [
       action: 'update',
       authority: 'callback-owner',
       risk: { level: 'write', openWorld: false },
-      runtimeProfiles: ['collective-work', 'full'],
+      runtimeProfiles: ['collective-work', 'full', 'desktop:live-companion'],
       standaloneReason: {
         disposition: 'accepted-boundary',
         kind: 'authority-boundary',
@@ -4135,7 +4352,7 @@ export const callbackTools = [
       runtimeProfiles: ['full'],
     },
   }),
-  defineTool({
+  defineCanonicalTool({
     name: 'cat_cafe_create_rich_block',
     description:
       'Create a rich block (card, diff, checklist, file, media_gallery, audio, interactive, or html_widget) attached to the current message. ' +
@@ -4145,10 +4362,12 @@ export const callbackTools = [
       'Use this for long structured replies/reports with lists, tables, code blocks, diffs, status fields, or multi-step checklists; F192 rich-messaging wakeup treats plain long Markdown with these signals and no rich block as a miss. ' +
       'NOT for: persistent task tracking across sessions (use create_task for 🧶 毛线球). NOT for: document generation/export (use generate_document). ' +
       'Output: block rendered inline in the current message. ' +
+      'GOTCHA: media_gallery local absolute image paths are resolved only inside registered workspaces (existing readable image, <=10MiB) to /api/workspace/file/raw?worktreeId=...&path=...; unknown/protected/unusable local paths are rejected. This is a file view, not upload publication. Automatic upload publication only covers native image_gen/Antigravity provider results; use publish_image for durable local PNG publication. ' +
       'GOTCHA: The block JSON must use "kind" (NOT "type") and include "v": 1 and a unique "id". ' +
       "GOTCHA: Call get_rich_block_rules first if you haven't loaded the full schema yet in this session. " +
       'GOTCHA: checklist kind is ephemeral inline content — for persistent cross-session work items, use create_task (毛线球) instead. ' +
-      'If callback auth fails, falls back to cc_rich text encoding automatically.',
+      'In an ordinary conversation, when the requester explicitly needs one later owner decision, pass awaitResponseV1={mode:"once"}; the Host publishes a durable RuntimeInteraction and returns immediately. Scoped work/read-only invocations cannot use this mode. This is never inferred from interactiveType or prose, and callback/guide/action options are rejected. ' +
+      'Ordinary rich blocks fall back to cc_rich text encoding when callback auth is unavailable. awaitResponseV1 always fails closed because a text fallback cannot create the durable decision lifecycle.',
     inputSchema: createRichBlockInputSchema,
     handler: handleCreateRichBlock,
     governance: {
@@ -4586,6 +4805,7 @@ export const callbackTools = [
       'Use when: the content is a reusable judgment about what makes output, design, expression, architecture, or system behavior good or bad — including positive and negative taste signals. ' +
       'NOT for durable personal facts or relationship-specific context (use cat_cafe_propose_profile_update), repeated operational/tool/process rules (use code-as-harness), or transient reactions. ' +
       'A correction or praise does not choose the lane; semantic content does. ' +
+      'To challenge an existing Taste memory as unsupported, outdated, or not applicable here, pass target with the exact sourceAnchor, expectedRevision, reason, and suggestedPatch; that creates an attached owner approval instead of mutating canonical memory directly. ' +
       'The 7 taste dimensions cover relationship-stance, cognitive-honesty, architecture-aesthetics, ' +
       'visual-quality, authentic-expression, system-philosophy, and creative-craft. ' +
       'GOTCHA: relationship-stance stores a reusable stance such as partner-not-tool, not a personal fact about the current operator. Preserve original language in quote — taste signals lose meaning when paraphrased.' +
@@ -4599,6 +4819,31 @@ export const callbackTools = [
       authority: 'callback-owner',
       risk: { level: 'write', openWorld: false },
       runtimeProfiles: ['full'],
+    },
+  }),
+  defineCanonicalTool({
+    name: 'cat_cafe_propose_event_memory_correction',
+    description:
+      'Propose a source-bound correction to an existing Event memory after using or inspecting it. ' +
+      'Returns a pending proposal for the owner; it never mutates the Event directly. ' +
+      'Use when the current Event summary is unsupported by its original source, outdated, or not applicable in the present context. ' +
+      'Pass the exact eventId and revision you read plus a bounded patch to interpretive fields. ' +
+      'NOT for creating a new Event, changing source coordinates/identity, or bypassing owner approval. ' +
+      'GOTCHA: a stale revision or unavailable original source is rejected; reread the Event instead of guessing.',
+    inputSchema: proposeEventMemoryCorrectionInputSchema,
+    handler: handleProposeEventMemoryCorrection,
+    governance: {
+      implementationExport: 'handleProposeEventMemoryCorrection',
+      resourceFamily: 'identity-proposal',
+      action: 'create',
+      authority: 'callback-owner',
+      risk: { level: 'write', openWorld: false },
+      runtimeProfiles: ['full'],
+      standaloneReason: {
+        disposition: 'accepted-boundary',
+        kind: 'resource-entry',
+        admissionRef: 'architecture-cell:memory',
+      },
     },
   }),
   // ============ F155: Guide Engine ============
@@ -4698,21 +4943,25 @@ export const callbackTools = [
       'need review/approval → @ reviewer or @co-creator; need another cat to act → @ that cat; ' +
       '"let me think" / "I\'ll hold for now" → hesitation not hold, pick 接/退/升; ' +
       'review/analysis done → MUST @ author, conclusion ≠ endpoint; status updates → use post_message. ' +
-      'Output: system schedules a one-shot wake-up after wakeAfterMs; you get re-invoked with reason + nextStep as trigger context. ' +
+      'Output: a timed wake, or a persistent command job with taskId/jobId, visible progress, bounded logs and one terminal wake. Ordinary command jobs survive API restart and new chat messages; use get_hold_status(taskId, tailBytes) to inspect. Explicit cancellation stops the job; a replaced hold only retires its wake carrier. ' +
       'GOTCHA: max 3 holds per (thread, cat) within a true sliding 1h window — each hold has its own expiry. 4th call returns 429 with retryAt/retryAfterMs, you MUST pass (@ another cat or @co-creator). ' +
       'GOTCHA: the counter is durable (SQLite-backed, per-node) — it survives API restarts. Admission is atomic (check+insert in a single transaction). Treat the 429 as a real governance boundary. ' +
       'GOTCHA: hold is an EXCEPTION state, not a default exit. Most turns should end with @ someone, not hold. ' +
       'GOTCHA (F167 Phase M): only hold for harness-INVISIBLE waits — external conditions nothing will call you back about (cloud review verdict, remote CI, external webhook). Background work the harness already tracks (a background Bash command, a spawned task) AUTO-RE-INVOKES you on completion; holding for that just stacks a redundant wake on top. Ask "will something call me back already?" — if yes, do NOT hold. A co-creator or another cat sending a message into this thread IS such a callback (it re-invokes you), so "waiting for co-creator to answer" must be @co-creator, never a hold. ' +
-      'GOTCHA: SINGLE-SLOT per (thread, cat) — calling hold_ball again while a previous hold is pending REPLACES the prior wake (prior taskId cancelled). This is intentional (KD-23): hold = "持一个球" exception, not a queue. If you need to track multiple waiting conditions, merge them into one nextStep (e.g. "等 CI + @co-creator 确认" 合并成一句). Sliding-window counter ticks on each successful hold; rejected 429 calls do not advance the window. ' +
+      'GOTCHA: SINGLE-SLOT per (thread, cat) — calling hold_ball again while a previous hold is pending REPLACES the prior wake (prior taskId cancelled). This is intentional (KD-23): hold = "持一个球" exception, not a queue. If you need to track multiple waiting conditions, merge them into one nextStep (e.g. "等 CI + @co-creator 确认" 合并成一句). Rolling-window counter still ticks per call. ' +
       'NEW (F167 Phase Q): event-backed retirement only works when waitSourceRef.expectedSignal is one of these exact structured keys: assignment, review_posted, ci_complete, comment_posted, managed_command_complete, user_message. Free-text values like "CI pass" remain valid narrative context but will NOT retire a timer by event, by design. ' +
       'NEW (F167 Phase P): wakeWhen — instead of a timed delay, specify a shell command to run. The server spawns it, captures output, and wakes you when it completes (or times out). Use for: pnpm gate, pnpm test, build commands — anything you would run_in_background and poll. wakeWhen is for LOCAL COMMANDS ONLY — it does not turn hold_ball into a universal "smart wait": waiting on a person is still @co-creator / @ that cat, waiting on a cloud event (PR / CI / issue) is still register_pr_tracking / register_issue_tracking. wakeWhen and wakeAfterMs are MUTUALLY EXCLUSIVE — provide exactly one.',
     inputSchema: {
-      reason: z.string().min(1).max(500).describe('Why you need to hold the ball (e.g. "tests still running")'),
+      reason: z
+        .string()
+        .min(1)
+        .max(500)
+        .describe('Why you need to hold the ball (1–500 characters, e.g. "tests still running")'),
       nextStep: z
         .string()
         .min(1)
         .max(500)
-        .describe('What you will do when re-invoked (e.g. "check test results, then @ author")'),
+        .describe('What you will do when re-invoked (1–500 characters, e.g. "check test results, then @ author")'),
       wakeAfterMs: z
         .number()
         .int()
@@ -4723,6 +4972,12 @@ export const callbackTools = [
       wakeWhen: z
         .object({
           command: z.string().min(1).describe('Shell command to run (e.g. "pnpm gate", "pnpm test")'),
+          executionPolicy: z
+            .literal('read_only')
+            .optional()
+            .describe(
+              'Use for bounded Python/Node statistics without writing protected data. Host fixes native readOnly (owned temporary scratch), no network, clean environment, 60s maximum and bounded output. Returns terminal output through the existing managed wake. Not for gates or HTTP. Unsupported capability is refused without ordinary fallback.',
+            ),
           cwd: z.string().optional().describe('Working directory for the command (defaults to project root)'),
           timeoutMs: z
             .number()
@@ -4740,9 +4995,25 @@ export const callbackTools = [
             .max(3 * 60 * 60_000)
             .optional()
             .describe(
-              'Canonical durable full gates only: cumulative admitted execution budget in ms (1s–3h), excluding resource queue time. Overrides timeoutMs as the execution budget; the separate 3h total wall limit remains. Use 7200000 for an explicit 2h budget. Other commands reject this field.',
+              'Command execution deadline in ms (1s–3h), overriding timeoutMs. Full gates count admitted execution time, excluding their resource queue, with a separate 3h wall limit. Ordinary commands count elapsed worker time. Read-only commands reject this field.',
+            ),
+          idempotencyKey: z
+            .string()
+            .min(1)
+            .max(256)
+            .optional()
+            .describe(
+              'Stable key for retries of the same command (1–256 characters). Default deduplicates identical command/cwd within this invocation. Use a new key for an intentional repeat. Conflicting reuse is refused.',
+            ),
+          retryOfJobId: z
+            .string()
+            .regex(/^managed-job-[a-f0-9]{40}$/u)
+            .optional()
+            .describe(
+              'Explicitly retry a terminal job owned by this principal. Supply a new idempotencyKey; the new job records its parent and incremented retry epoch. The original result stays immutable. No automatic retry; not available for read_only execution.',
             ),
         })
+        .strict()
         .optional()
         .describe(
           'Run a shell command and wake when it completes. Mutually exclusive with wakeAfterMs. ' +
@@ -4798,10 +5069,26 @@ export const callbackTools = [
       'Covers: pending holds, retired carriers with running managed commands. ' +
       'Use when: you need to check if a prior hold is still pending before deciding whether to hold again, ' +
       'or to observe your own hold state for diagnostic/reporting purposes. ' +
-      'No input required — threadId and catId are derived from your invocation auth. ' +
+      'Output: hold state and, for a managed command, persistent job state and an optional bounded output tail. ' +
+      'NOT for: starting or replaying commands; use hold_ball with wakeWhen for a new authorized job. ' +
+      'No input required for the current hold; pass a previous taskId to inspect a completed job after restart. Thread and principal authorization still apply. ' +
       'Auth: enforces hold-access policy (same gate as GET /:taskId/status); ' +
       'lifecycle visibility is projected per access role.',
-    inputSchema: {},
+    inputSchema: {
+      taskId: z
+        .string()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe('Exact taskId returned by hold_ball; omit for your current hold.'),
+      tailBytes: z
+        .number()
+        .int()
+        .min(1)
+        .max(65536)
+        .optional()
+        .describe('Read at most this many bytes from the end of the job log (1–65536); requires taskId.'),
+    },
     handler: handleGetHoldStatus,
     governance: {
       implementationExport: 'handleGetHoldStatus',
@@ -4822,7 +5109,7 @@ export const callbackTools = [
     name: 'cat_cafe_get_custody_events',
     description:
       "Read your own thread's ball-custody ledger, read-only, starting at the first event that references a source message. " +
-      'Use when: a ball looks stuck or a terminal (complete_a2a_dispatch / complete_managed_hold) was refused and you need to see what the ledger actually recorded ' +
+      'Use when: a ball looks stuck and you need to inspect recorded protocol events without changing delivery or completion authority ' +
       '(handoff, dispatch/hold terminal and who wrote it, wake met, task done) and what the projection says now. ' +
       'Input: sourceMessageId (the message id the dispatch or wake came from) and optional limit (1-50, default 20). ' +
       'The thread is derived from your invocation auth; there is no thread parameter and an agent key is refused. ' +
@@ -4854,77 +5141,6 @@ export const callbackTools = [
       risk: { level: 'read', openWorld: false },
       runtimeProfiles: ['full'],
       targetExposure: 'lazy-discoverable',
-      standaloneReason: {
-        disposition: 'accepted-boundary',
-        kind: 'authority-boundary',
-        admissionRef: 'file:docs/features/F167-a2a-chain-quality.md',
-      },
-    },
-  }),
-  defineCanonicalTool({
-    name: 'cat_cafe_complete_managed_hold',
-    description:
-      'Terminally dispose the exact managed hold wake bound to this invocation. ' +
-      'Use when: the current turn was triggered by a managed hold wake, or a full-body read adopted one into this same invocation, and its work is actually handled/completed. ' +
-      'NOT for: ordinary holds, unfinished work, re-hold, a structured event wait, transfer, or unrelated task completion. ' +
-      'Output: marks the exact F264 target receipt handled and terminalizes the original F167 hold ball; ' +
-      'the server derives and fences threadId, holderCatId, invocationId, sourceMessageId, and taskId. ' +
-      'GOTCHA: full read, command exit, tests, merge truth, or ACK never substitute for this producer, ' +
-      'and the caller cannot select or close another subject. Full-read managedHoldDisposition guidance reports a unique pending source, ambiguity, or no obligation; never guess through ambiguity.',
-    inputSchema: {
-      disposition: z
-        .enum(['handled', 'completed'])
-        .describe(
-          'handled = wake consumed; completed = wake work completed. Both terminalize the exact original hold.',
-        ),
-    },
-    handler: handleCompleteManagedHold,
-    governance: {
-      implementationExport: 'handleCompleteManagedHold',
-      resourceFamily: 'task-workflow',
-      action: 'complete',
-      authority: 'callback-owner',
-      risk: { level: 'write', openWorld: false },
-      runtimeProfiles: ['full'],
-      standaloneReason: {
-        disposition: 'accepted-boundary',
-        kind: 'authority-boundary',
-        admissionRef: 'file:docs/features/F167-a2a-chain-quality.md',
-      },
-    },
-  }),
-  defineCanonicalTool({
-    name: 'cat_cafe_complete_a2a_dispatch',
-    description:
-      'Terminally dispose the exact ordinary A2A dispatch bound to this invocation. ' +
-      'Use when: this invocation has actually handled/completed its primary A2A request or another exact A2A source it read. ' +
-      'NOT for: user turns with no adopted A2A source, managed holds, unfinished work, re-hold, event wait, transfer, or unrelated task completion. ' +
-      'Output: terminalizes the exact F167 dispatch ball; the server derives and fences threadId, holderCatId, fromCatId, invocationId, and sourceMessageId. ' +
-      'GOTCHA: command exit, tests, merge truth, another coordination terminal, or ACK never substitute for this producer, ' +
-      'and the caller cannot supply authority for an unrelated source. If replaced, the error names the latest verified same-thread successor ' +
-      'event and any source message or coordination. ' +
-      "Exact read-source completion: pass adoptSourceMessageId from full-read a2aDispatchDisposition guidance to complete a dispatch that was not this invocation's " +
-      'own trigger. Ordinary turns require server-owned current execution and exact durable body exposure; Live keeps its carrier/read-evidence fence. Complete only the selected source after handling its work. Omit to complete the original trigger.',
-    inputSchema: {
-      disposition: z
-        .enum(['handled', 'completed'])
-        .describe('handled = exact A2A request consumed; completed = requested A2A work completed.'),
-      adoptSourceMessageId: z
-        .string()
-        .min(1)
-        .optional()
-        .describe(
-          'Exact already-read A2A source from full-read guidance. Server validates the current invocation and durable source exposure; Live also requires its carrier/read-evidence fence. Omit to complete the original trigger.',
-        ),
-    },
-    handler: handleCompleteA2ADispatch,
-    governance: {
-      implementationExport: 'handleCompleteA2ADispatch',
-      resourceFamily: 'task-workflow',
-      action: 'complete',
-      authority: 'callback-owner',
-      risk: { level: 'write', openWorld: false },
-      runtimeProfiles: ['full', 'desktop:live-companion'],
       standaloneReason: {
         disposition: 'accepted-boundary',
         kind: 'authority-boundary',
@@ -4979,10 +5195,12 @@ export const callbackTools = [
     name: 'cat_cafe_set_thread_metadata',
     description:
       'Write low-frequency metadata anchors for the current thread. Merge semantics: ' +
-      'title/labels REPLACE; worktrees/prs/issues/features APPEND with dedupe (use remove* fields to remove); ' +
+      'title names an untitled conversation once; labels REPLACE; worktrees/prs/issues/features APPEND with dedupe (use remove* fields to remove); ' +
       'notes MERGE (string sets, null deletes key). ' +
-      'WHEN: after creating a worktree, PR, or issue association — NOT for dynamic state. ' +
-      'SCOPE: current thread only (no threadId param); cross-thread writes are impossible.',
+      'Use when: naming an untitled conversation or recording a worktree, PR, or issue association. NOT for: renaming an already named conversation or dynamic state. ' +
+      'Output: updated metadata; title requests include titleApplied and titleSource. If titleApplied=false, report that the title was not changed. ' +
+      'SCOPE: current thread only (no threadId param); cross-thread writes are impossible. ' +
+      'GOTCHA: the legacy title parameter hint does not authorize replacement. User and previously cat-named titles are protected; check titleApplied.',
     inputSchema: setThreadMetadataInputSchema,
     handler: handleSetThreadMetadata,
     governance: {

@@ -10,7 +10,8 @@ export interface MaintenanceData {
 }
 
 const CONFIG_REMINDERS: Record<ConfigWarningCode, string> = {
-  docs_root_suspicious: '资料库路径需要核对：有资料库的目录不存在或为空，请到设置里重新绑定或归档。',
+  docs_root_suspicious:
+    '资料库路径需要核对：有资料库的目录不存在或为空，请检查原目录；不再使用的资料库可到资料库管理页归档。',
   embedding_disabled: '语义检索没开：没有配置嵌入模型，请到设置里启动嵌入服务。',
   vectors_empty: '语义索引为空：文档已入库但没有向量，请配置嵌入服务后重建索引。',
   graph_empty: '关系图没有关系：文档已入库但尚未生成关系，请重建关系索引。',
@@ -39,8 +40,9 @@ export function MemoryStatusLine({
       : !index.data?.healthy
         ? '索引暂不可用'
         : index.data.configWarnings.length
-          ? `索引可用 · ${index.data.configWarnings.length} 项配置提醒`
-          : '索引正常';
+          ? '可用'
+          : '正常';
+  const available = index.data?.healthy && !index.error && !index.loading;
   const debt = maintenance.loading
     ? '正在读取维护状态…'
     : maintenance.error
@@ -52,9 +54,21 @@ export function MemoryStatusLine({
       aria-live="polite"
       data-testid="memory-status-line"
     >
-      <span className={index.data?.healthy && !index.error ? 'text-semantic-success' : ''}>{status}</span>
+      <span>
+        {available ? (
+          <>
+            <span>索引</span>
+            <span className="text-semantic-success">{status}</span>
+          </>
+        ) : (
+          status
+        )}
+        {available && index.data && index.data.configWarnings.length > 0 && (
+          <span className="text-cafe-secondary"> · {index.data.configWarnings.length} 项配置提醒</span>
+        )}
+      </span>
       <span>·</span>
-      <span>{debt}</span>
+      <span className="text-cafe-secondary">{debt}</span>
     </p>
   );
 }
@@ -135,7 +149,10 @@ export function MemoryStatusCard({
           </button>
         )}
       </div>
-      <a href="/settings" className="mt-5 block border-t border-cafe-subtle pt-4 text-compact text-cafe-accent">
+      <a
+        href="/settings?s=ops&ops=memory"
+        className="mt-5 block border-t border-cafe-subtle pt-4 text-compact text-cafe-accent"
+      >
         索引与服务设置 ↗
       </a>
       <p className="mt-2 text-compact text-cafe-muted">重建索引、嵌入模型和功能开关在“设置与管理”里</p>

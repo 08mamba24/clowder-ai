@@ -1,7 +1,7 @@
 import { CatAvatar } from '@/components/CatAvatar';
 import { LockIcon } from '@/components/HubConfigIcons';
 import { useCatData } from '@/hooks/useCatData';
-import { tasteQuote, tasteRecordedDate, tasteTime } from './taste-format';
+import { currentTakeawayCandidate, tasteCardLead, tasteQuote, tasteRecordedDate, tasteTime } from './taste-format';
 import { type TasteMemory, tasteDimension } from './taste-types';
 
 export function TasteMetadata({ entry }: { entry: TasteMemory }) {
@@ -50,9 +50,14 @@ export function MemoryTasteCard({
       data-memory-id={entry.id}
     >
       <button type="button" onClick={select} aria-pressed={selected} className="w-full text-left">
-        <p className="line-clamp-3 break-words text-sm">
-          {entry.takeaway ? entry.title : entry.quotes[0] ? tasteQuote(entry.quotes[0]) : entry.title}
-        </p>
+        <span className="mb-2 block text-xs text-cafe-muted">
+          {currentTakeawayCandidate(entry)
+            ? '猫整理的一句话 · 假设 · 待你确认'
+            : entry.takeaway
+              ? '猫整理的一句话 · 假设'
+              : '还没有整理成一句话 · 原话'}
+        </span>
+        <p className="line-clamp-3 break-words text-sm">{tasteCardLead(entry)}</p>
         <p className="mt-2 line-clamp-2 break-words text-compact text-cafe-muted">
           {entry.takeaway
             ? entry.quotes[0]
@@ -63,6 +68,9 @@ export function MemoryTasteCard({
         <div className="mt-3">
           <TasteMetadata entry={entry} />
         </div>
+        {entry.pendingCorrectionCount !== undefined && entry.pendingCorrectionCount > 0 && (
+          <p className="mt-2 text-compact text-cafe-muted">{entry.pendingCorrectionCount} 条纠正建议</p>
+        )}
         <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-cafe-muted">
           {entry.recall === null ? (
             <span>暂时读不到被想起记录</span>

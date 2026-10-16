@@ -57,6 +57,58 @@ html[data-shell="v2"] {
   --shell-tip-shadow: 0 0 0 1px rgb(255 255 255 / 0.1) inset, 0 4px 10px rgb(0 0 0 / 0.35);
 }
 
+/* Chat chrome responds to its own pane, including narrow desktop split views.
+ * Keep navigation and work actions intact instead of overflowing the shared
+ * scroll host, which lets keyboard focus pan the entire conversation sideways. */
+[data-shell-header="v2"] {
+  container: chat-header / inline-size;
+}
+
+@container chat-header (max-width: 420px) {
+  .shell-chat-header-layout {
+    height: auto;
+    min-height: 52px;
+    flex-wrap: nowrap;
+    padding: 8px 12px;
+    gap: 4px;
+  }
+
+  .shell-chat-header-navigation {
+    flex: 1 1 0;
+    min-width: 0;
+    gap: 2px;
+  }
+  /* The menu already truncates its label; let its wrapper yield space to the
+   * fixed controls instead of painting over search in a narrow English pane. */
+  .shell-chat-header-navigation [data-testid="conversation-view-control"] {
+    flex: 0 1 auto;
+    min-width: 28px;
+  }
+  .shell-chat-header-navigation [data-testid="conversation-view-menu-toggle"] {
+    max-width: 100%;
+    padding-inline: 4px;
+    gap: 2px;
+  }
+  .shell-chat-header-navigation [data-testid="conversation-view-menu-toggle"] > span[aria-hidden="true"] {
+    display: none;
+  }
+  .shell-chat-header-actions {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 2px;
+  }
+  .shell-chat-header-actions button {
+    min-width: 28px;
+    padding-inline: 6px;
+    gap: 3px;
+  }
+  /* Accessible names and real counts remain on the existing controls. */
+  .shell-chat-header-actions [data-testid="header-works"] > span:nth-child(2),
+  .shell-chat-header-actions [data-testid="header-tasks"] > span:nth-child(2) {
+    display: none;
+  }
+}
+
 /* One focus ring for every shell control: external 2px solid ring + 2px gap (DESIGN.md Elevation). */
 [data-shell="v2"] .shell-focusable:focus-visible {
   outline: 2px solid var(--cafe-accent);
@@ -110,6 +162,11 @@ html[data-shell="v2"] {
   background: var(--shell-work);
 }
 
+/* The landing composer overlaps the hero fade; its host must not paint a rectangular work-surface behind the card. */
+[data-shell="v2"] [data-testid="new-conversation-page"] div:has(> [data-testid="chat-input-composer-row"]) {
+  background: transparent;
+}
+
 [data-shell="v2"] [data-testid="chat-input-composer-row"] {
   width: calc(100% - 32px);
   max-width: 720px;
@@ -122,6 +179,10 @@ html[data-shell="v2"] {
 }
 
 [data-shell="v2"] [data-testid="chat-input-composer-row"]:focus-within {
+  border-color: color-mix(in srgb, var(--shell-hairline-strong) 65%, var(--shell-body) 35%);
+}
+
+[data-shell="v2"] [data-testid="chat-input-composer-row"][data-composer-keyboard-focus="true"] {
   outline: 2px solid var(--cafe-accent);
   outline-offset: 2px;
 }
@@ -134,18 +195,24 @@ html[data-shell="v2"] {
   width: calc(100% - 32px);
   max-width: 720px;
   margin: 8px auto 0;
-  background: var(--shell-paper);
-  border: 1px solid var(--shell-hairline-strong);
-  border-radius: 12px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
 }
 
 [data-shell="v2"] [data-testid="chat-input-composer-row"] textarea {
   background: transparent;
   border-color: transparent;
   box-shadow: none;
+  outline: none;
 }
 
 [data-shell="v2"] [data-testid="chat-input-composer-row"] textarea:focus {
   background: transparent;
   box-shadow: none;
+}
+
+[data-shell="v2"] [data-testid="chat-input-composer-row"] textarea:focus-visible {
+  outline: none;
 }

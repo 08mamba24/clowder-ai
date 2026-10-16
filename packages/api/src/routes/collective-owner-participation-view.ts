@@ -3,6 +3,7 @@ import {
   defaultDesiredParticipation,
   type HostRouteConfig,
 } from '@cat-cafe/collective-connector';
+import type { QueueTargetExecutionReadPort } from '../domains/cats/services/agents/invocation/queue-ledger/QueueTargetExecutionView.js';
 import type { IMessageStore } from '../domains/cats/services/stores/ports/MessageStore.js';
 import type { ITaskStore } from '../domains/cats/services/stores/ports/TaskStore.js';
 import type { IThreadStore } from '../domains/cats/services/stores/ports/ThreadStore.js';
@@ -18,6 +19,7 @@ interface ViewOptions {
   readonly threads: Pick<IThreadStore, 'list'>;
   readonly messages: Pick<IMessageStore, 'getById'>;
   readonly tasks: Pick<ITaskStore, 'listByKind'>;
+  readonly queue?: QueueTargetExecutionReadPort;
 }
 
 interface ViewAuthority {
@@ -73,7 +75,14 @@ export async function collectiveOwnerParticipationView(options: ViewOptions, aut
               reply.actor.provenance.catId === recipient.agentId),
         );
       const execution = recentRequestIds.has(item.event.eventId)
-        ? await ownerRequestExecution(item, thread, options.messages, auth.userId, auth.connection.connectionId)
+        ? await ownerRequestExecution(
+            item,
+            thread,
+            options.messages,
+            auth.userId,
+            auth.connection.connectionId,
+            options.queue,
+          )
         : undefined;
       return {
         event: item.event,
@@ -95,6 +104,9 @@ export async function collectiveOwnerParticipationView(options: ViewOptions, aut
       return {
         id: cat.id,
         displayName: cat.displayName,
+        ...(profile?.nickname ? { nickname: profile.nickname } : {}),
+        ...(profile?.variantLabel ? { variantLabel: profile.variantLabel } : {}),
+        ...(profile?.breedDisplayName ? { breedDisplayName: profile.breedDisplayName } : {}),
         configured: cat.configured,
         eligible: cat.eligible,
         supported: cat.eligible,
@@ -141,13 +153,14 @@ export async function collectiveOwnerParticipationView(options: ViewOptions, aut
 
 function hasUnavailableEndpoints(
   route: HostRouteConfig,
-  ownerThreads: ReadonlyMap<string, { readonly participants: readonly string[] }>,
+  ownerThreads: ReadonlyMap<string, { readonly participants: readonly string[]; readonly systemKind?: string }>,
 ) {
   if ([route.defaultIngressThreadId, route.humanNotificationThreadId].some((id) => !ownerThreads.has(id))) return true;
   return Object.values(route.channelRoutes ?? {}).some((endpoint) => {
     const thread = ownerThreads.get(endpoint.threadId);
     return (
       !thread ||
+      thread.systemKind !== 'collective_channel' ||
       Object.keys(endpoint.participants).some(
         (catId) => !thread.participants.some((participant) => participant === catId),
       )

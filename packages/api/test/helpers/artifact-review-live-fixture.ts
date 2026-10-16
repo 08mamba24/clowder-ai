@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { catRegistry, createCatId, type NeedsMeProducerId } from '@cat-cafe/shared';
-import { MessageStore } from '../../src/domains/cats/services/stores/ports/MessageStore.js';
+import { MessageStore } from '../../dist/domains/cats/services/stores/ports/MessageStore.js';
 import { TaskStore } from '../../src/domains/cats/services/stores/ports/TaskStore.js';
 import { ThreadStore } from '../../src/domains/cats/services/stores/ports/ThreadStore.js';
 import type { EvolutionMediaReadPort } from '../../src/domains/collaborative-content/workspace-review/evolution-review-source.js';
@@ -12,6 +12,7 @@ import { NeedsMeProducerCatalog } from '../../src/domains/growing/NeedsMeProduce
 import { ProjectContentOwnerService } from '../../src/domains/video-studio/content-owner/service.js';
 import type { WorkspaceContentSourceService } from '../../src/domains/workspace/workspace-content-source.js';
 import './setup-cat-registry.js';
+import type { InvocationRegistry } from '../../src/domains/cats/services/agents/invocation/InvocationRegistry.js';
 import { createPersistedQueueFixture } from './persisted-queue-fixture.js';
 
 export async function createLiveReviewFixture(
@@ -20,6 +21,7 @@ export async function createLiveReviewFixture(
   onEvent?: (userId: string, event: string, data: unknown) => void,
   workspace?: WorkspaceContentSourceService,
   evolution?: EvolutionMediaReadPort,
+  registry?: Pick<InvocationRegistry, 'create'>,
 ) {
   if (!catRegistry.has('codex-astra')) {
     const base = catRegistry.getOrThrow('codex').config;
@@ -27,6 +29,7 @@ export async function createLiveReviewFixture(
       ...base,
       id: createCatId('codex-astra'),
       displayName: '小星星·砚砚',
+      mentionPatterns: ['@codex-astra'],
       defaultModel: 'gpt-6-astra',
     });
   }
@@ -36,7 +39,7 @@ export async function createLiveReviewFixture(
   const thread = threads.create('operator', '一起完成发布', root);
   const catId = createCatId('codex-astra');
   const owner = new ProjectContentOwnerService({ dataDir: root });
-  const dispatch = createPersistedQueueFixture(messages);
+  const dispatch = createPersistedQueueFixture(messages, registry ? { registry } : {});
   const { queue, starts } = dispatch;
   const events: { userId: string; event: string; data: unknown }[] = [];
   const emit = (userId: string, event: string, data: unknown) => {
@@ -50,7 +53,7 @@ export async function createLiveReviewFixture(
   function publish(name = `review-input.${extension}`) {
     return messages.append({
       userId: 'operator',
-      catId,
+      from: { kind: 'agent', catId },
       threadId: thread.id,
       mentions: [],
       timestamp: Date.now(),

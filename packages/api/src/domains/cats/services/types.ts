@@ -11,6 +11,7 @@ import type {
   CrossThreadCoordination,
   FreshnessCarrierCapability,
   MessageContent,
+  ProviderOutputMessage,
   ProviderSemanticEvent,
   ProviderSubexecutionSemanticEvent,
   QueueTerminalConsumptionWitness,
@@ -20,11 +21,13 @@ import type {
   SanitizedRequestedRuntimeConfigV1,
 } from '@cat-cafe/shared';
 import type { Span } from '@opentelemetry/api';
+import type { RuntimeProviderProfile } from '../../../config/account-resolver.js';
+import type { CodexAccountLaunchDescriptor } from '../../../config/codex-account-launch.js';
 import type { CliDiagnostics } from '../../../utils/cli-diagnostics.js';
 import type { CliSpawnOptions } from '../../../utils/cli-types.js';
-import type { AntigravitySessionLifecycle } from './agents/providers/antigravity/antigravity-runtime-lifecycle.js';
 import type { ClaudeCompactionLaunchPlanResult } from './agents/providers/claude-compaction-launch-plan.js';
 import type { CodexSessionReplacementProvenance } from './runtime-session/CodexSessionReplacementProvenance.js';
+import type { AntigravitySessionLifecycle } from './runtime-session/LegacyAntigravityLifecycle.js';
 import type { TurnExecutionMessageProjection } from './stores/ports/TurnExecutionStore.js';
 
 /** F8: Unified token usage type across all three cats.
@@ -32,6 +35,7 @@ import type { TurnExecutionMessageProjection } from './stores/ports/TurnExecutio
  *  so that the field has the same semantics regardless of provider.
  *  cacheReadTokens = subset of inputTokens served from cache. */
 export interface TokenUsage {
+  executionAccount?: import('@cat-cafe/shared').ExecutionAccountSnapshot;
   inputTokens?: number; // Total input (normalised across providers) — AGGREGATED across turns
   outputTokens?: number;
   totalTokens?: number; // Gemini fallback (doesn't split in/out)
@@ -117,6 +121,7 @@ export function mergeTokenUsage(existing: TokenUsage | undefined, incoming: Toke
  * Metadata about the provider/model behind an agent message
  */
 export interface MessageMetadata {
+  executionAccount?: import('@cat-cafe/shared').ExecutionAccountSnapshot;
   provider: string;
   model: string;
   sessionId?: string;
@@ -169,6 +174,32 @@ export interface MessageMetadata {
    *  Populated by providers when isCliError/isCliTimeout fires, consumed by Phase B folded panel.
    *  Carries `__cliError.cliDiagnostics` / `__cliTimeout.cliDiagnostics` from cli-spawn. */
   cliDiagnostics?: CliDiagnostics;
+  /** F118 AC-C3 / F117: what the provider observed when it gave up on a silent CLI. It explains
+   *  the failure of the turn's response, so it persists with that response's terminal state. */
+  timeoutDiagnostics?: TimeoutDiagnostics;
+  /** Local cancellation does not attest termination of a dispatched remote run. */
+  cancellationDiagnostics?: {
+    localWaitCancelled: true;
+    remoteTermination: 'unconfirmed';
+    remoteExecution: RemoteExecutionRef;
+  };
+}
+
+export interface RemoteExecutionRef {
+  kind: 'a2a_task' | 'antigravity_cascade';
+  id: string;
+}
+
+/** F118 AC-C3: the `timeout_diagnostics` system_info payload, reduced to its rendered fields. */
+export interface TimeoutDiagnostics {
+  silenceDurationMs: number;
+  processAlive: boolean;
+  lastEventType?: string;
+  firstEventAt?: number;
+  lastEventAt?: number;
+  cliSessionId?: string;
+  invocationId?: string;
+  rawArchivePath?: string;
 }
 
 /**
@@ -280,13 +311,15 @@ export interface AgentMessage {
         readonly preTokens?: number;
       }
     | {
-        readonly eventSource: 'codex_app_server_context_compaction';
+        readonly eventSource: 'codex_app_server_context_compaction' | 'agy_native_checkpoint';
         readonly event: ProviderCompactionObservation;
       };
   /** Which cat (agent) produced this message */
   catId: CatId;
   /** Text content (for 'text' and 'tool_result' types) */
   content?: string;
+  /** Durable content blocks projected with an explicit callback message. */
+  contentBlocks?: readonly MessageContent[];
   /** Machine-readable A2A target cat for 'a2a_handoff' events. */
   targetCatId?: CatId;
   /**
@@ -301,8 +334,14 @@ export interface AgentMessage {
    * provider emits a full corrected snapshot instead of a pure suffix delta.
    */
   textMode?: 'append' | 'replace';
+  /** Provider-native output boundary; never use the canonical stored-message messageId for this. */
+  outputMessage?: ProviderOutputMessage;
+  /** Closed host-owned presentation contribution, mutually exclusive with native observation. */
+  hostOutput?: import('@cat-cafe/shared').HostSignatureOutput;
   /** Session ID (for 'session_init' type) */
   sessionId?: string;
+  /** Verified native launch identity; the host commits this before advancing the stream. */
+  nativeSessionBinding?: import('@cat-cafe/shared').NativeSessionBinding;
   /** ACP transport: sessionId is per-invocation, not a persistent CLI session.
    *  When true, a different sessionId does NOT mean "session replaced" — skip seal. */
   ephemeralSession?: boolean;
@@ -325,6 +364,10 @@ export interface AgentMessage {
    *  CatAgent tool_use_id, Codex item.id, etc). Providers without native id may omit; ToolSpanTracker treats
    *  missing id as fallback (no span open, no fake duration) per KD-41. */
   toolUseId?: string;
+  /** API-born event instance ID, distinct from the native tool pair key. */
+  toolEventId?: string;
+  /** Host-bound child execution of that tool instance. */
+  toolExecutionRef?: string;
   /** F153 Phase J AC-J1: structured tool execution outcome (for 'tool_result' type).
    *  Provider transformers MUST map from raw payload (is_error / success / exitCode / status) instead of
    *  letting downstream guess from content string. Use 'unknown' when raw signal is genuinely absent. */
@@ -357,6 +400,7 @@ export interface AgentMessage {
   messageTimestamp?: number;
   /** F52: Cross-thread origin metadata (set for cross-thread callback messages) */
   extra?: {
+    outputLayout?: import('@cat-cafe/shared').MessageOutputLayoutV1;
     crossPost?: {
       sourceThreadId: string;
       sourceInvocationId?: string;
@@ -394,6 +438,12 @@ export interface AgentMessage {
   /** Exact durable child start time carried only by the typed invocation-created
    *  lifecycle event. Consumers must not recover it by parsing `content`. */
   turnExecutionStartedAt?: number;
+  /** Durable processing response created before provider startup for this exact child. */
+  lifecycleResponseMessageId?: string;
+  /** Raw message frontier observed before the processing response was published. */
+  lifecyclePriorFrontierMessageId?: string | null;
+  /** Exact server-owned working identity; dynamic clients must fail closed without it. */
+  activeRun?: import('@cat-cafe/shared').LifecycleActiveRun;
   /** Typed F167 Phase T proof that this exact child consumed a terminal
    *  coordination wake and correctly produced no reply. */
   turnCustodyTerminalWitness?: QueueTerminalConsumptionWitness;
@@ -434,10 +484,14 @@ export type SpawnCliOverride = (options: CliSpawnOptions) => AsyncGenerator<unkn
 
 /** F254 D2 duplex JSON carrier used by provider app-server protocols. */
 export interface AgentCarrierSession {
+  /** Host process identity when a direct carrier owns a process. */
+  readonly pid?: number;
   read(): AsyncIterable<unknown>;
   write(message: Record<string, unknown>): Promise<void>;
   /** True only when a resume lease was acquired from its still-healthy affinity host. */
   reusedSessionHost?: boolean;
+  /** Host-pool fact, independent of whether the same native session was resumed. */
+  hostAcquisitionMode?: 'cold' | 'warm';
   /** Bind a provider session id to this reusable carrier host after start/resume. */
   rememberSession?(sessionId: string): void;
   /**
@@ -450,6 +504,7 @@ export interface AgentCarrierSession {
 }
 
 export interface AgentCarrierSessionOptions {
+  executionAccount?: import('@cat-cafe/shared').ExecutionAccountSnapshot;
   command: string;
   args: readonly string[];
   cwd?: string;
@@ -485,12 +540,15 @@ export interface AgentContextCapability {
 
 /** F296 B0: concrete provider transport identity, independent of route/origin. */
 export type ProviderCarrier =
-  | { readonly provider: 'claude'; readonly carrier: 'print_sdk' | 'bg_daemon' | 'interactive_pty' | 'api_key' }
+  | {
+      readonly provider: 'claude';
+      readonly carrier: 'print_sdk' | 'agent_sdk' | 'bg_daemon' | 'interactive_pty' | 'api_key';
+    }
   | { readonly provider: 'codex'; readonly carrier: 'exec_json' | 'app_server' }
-  | { readonly provider: 'gemini'; readonly carrier: 'gemini_cli' | 'antigravity_adapter' }
+  | { readonly provider: 'gemini'; readonly carrier: 'gemini_cli' | 'antigravity_adapter' | 'agy_stream_json' }
   | { readonly provider: 'antigravity'; readonly carrier: 'cdp_bridge' }
   | { readonly provider: 'kimi'; readonly carrier: 'stream_json' }
-  | { readonly provider: 'opencode'; readonly carrier: 'run_json' }
+  | { readonly provider: 'opencode'; readonly carrier: 'run_json' | 'server' }
   | { readonly provider: 'acp'; readonly carrier: 'acp'; readonly backend: 'opencode' | 'unknown' }
   | { readonly provider: 'catagent'; readonly carrier: 'direct_api' }
   | { readonly provider: 'a2a'; readonly carrier: 'remote' }
@@ -796,6 +854,7 @@ export type ProviderNativeRealtimeEvent =
 
 /** Long-lived provider seam; capture and durable transcript ownership stay in F195. */
 export interface ProviderNativeRealtimeSession {
+  readonly executionAccount?: import('@cat-cafe/shared').ExecutionAccountSnapshot;
   readonly runtimeSessionId: string;
   readonly realtimeSessionId: string | null;
   readonly version: 'v2';
@@ -846,6 +905,56 @@ export interface AgentContextBinding {
   readonly source: 'service_spawn' | 'invocation_config';
 }
 
+/** Provider-native identity for one exact, still-open Agent Client run. */
+export interface AgentClientActiveRunHandle {
+  readonly provider: 'openai_codex' | 'anthropic' | 'anthropic_acp' | 'opencode' | 'other';
+  readonly carrier: 'codex_app_server' | 'claude_agent_sdk' | 'acp' | 'other';
+  readonly threadId: string;
+  readonly turnId: string;
+}
+
+/** Exact input that the lifecycle coordinator has already admitted durably. */
+export interface AgentClientDispatchInput {
+  readonly text: string;
+  readonly imagePaths?: readonly string[];
+  readonly messageIds: readonly string[];
+  /** Exact adapter evidence; delivery and Stop never wait for this callback. */
+  readonly onInputRead?: () => Promise<void>;
+}
+
+export interface AgentClientDispatchOptions {
+  /** Normal dispatch / Append = false; Steer = true. */
+  readonly force: boolean;
+  /** Server-owned lifecycle invocation fence, never a provider session id. */
+  readonly expectedInvocationId: string;
+}
+
+export type AgentClientDispatchResult =
+  | {
+      readonly accepted: true;
+      readonly handle: AgentClientActiveRunHandle;
+    }
+  | {
+      readonly accepted: false;
+      readonly reason: 'active_run_mismatch' | 'active_run_closed' | 'invalid_input' | 'provider_rejected';
+    };
+
+/** Live-only adapter. Durable Queue/History state must never be stored here. */
+export interface AgentClientActiveRunDispatcher {
+  readonly invocationId: string;
+  readonly capabilities: { readonly append: boolean; readonly steer: boolean; readonly inputReadReceipt?: boolean };
+  readonly handle: AgentClientActiveRunHandle;
+  /** Exact native consumption of this run’s first input; never awaited by delivery or Stop. */
+  readonly initialInputRead?: Promise<number>;
+  dispatch(input: AgentClientDispatchInput, options: AgentClientDispatchOptions): Promise<AgentClientDispatchResult>;
+}
+
+export interface AgentClientActiveRunDispatchRegistration {
+  readonly invocationId: string;
+  /** Return a release hook that removes this exact live handle from its registry. */
+  register(dispatcher: AgentClientActiveRunDispatcher): (() => void) | undefined;
+}
+
 /** ADR-042 automatic supplement execution: provider + callback layers must enforce this, not prompt prose. */
 export type ToolExecutionPolicy =
   | {
@@ -878,11 +987,64 @@ export interface AgentRouteIntent {
 /**
  * Options for invoking an agent
  */
+/**
+ * F117 K2: the Claude compaction hooks the Agent SDK carrier registers in-process. The carrier then
+ * proves its own compaction to F296 (authoritative-compaction), instead of a project hook in the
+ * workspace: the seal observation is written before the provider compacts, by this invocation.
+ */
+export interface ClaudeCompactionHooks {
+  /** Before the provider compacts: record this invocation's compression observation and apply the session policy. */
+  preCompact(input: { readonly cliSessionId: string; readonly trigger: 'manual' | 'auto' }): Promise<void>;
+  /** After the provider compacted: the cold context packet to inject, when the epoch owner projected one. */
+  postCompactContext(input: { readonly cliSessionId: string }): Promise<string | undefined>;
+}
+
+/** Builds one invocation's in-process compaction hooks; the identity names whose observation they record. */
+export type ClaudeCompactionHooksFactory = (identity: {
+  readonly invocationId: string;
+  readonly userId: string;
+  readonly catId: string;
+  readonly threadId: string;
+}) => ClaudeCompactionHooks;
+
+export interface LocalSessionMetadata {
+  sessionId: string;
+  clientId: 'openai' | 'anthropic';
+  firstPrompt: string;
+  projectPath: string;
+  lastActivityAt: number;
+  turnCount: number | null;
+}
+
+export interface LocalSessionList {
+  sessions: (LocalSessionMetadata & { recentPrompt?: string })[];
+  limited: boolean;
+}
+
+export interface LocalSessionReadInput {
+  invocationId: string;
+  timeoutMs: number;
+  cwd: string;
+  account?: RuntimeProviderProfile;
+  cliConfigArgs?: readonly string[];
+}
+
 export interface AgentServiceOptions {
   /** Host closure bound to the exact child. Only supported isolated providers consume it. */
   openGitHubReadLease?: () => Promise<
     import('../../../infrastructure/github/agent-github-read-types.js').GhReadLease | null
   >;
+  /** Binding restored from the canonical SessionRecord, including across API restarts. */
+  nativeSessionBinding?: import('@cat-cafe/shared').NativeSessionBinding;
+  /** Imported histories must never be silently replaced by a fresh native session. */
+  requireExactResume?: boolean;
+  executionAccount?: import('@cat-cafe/shared').ExecutionAccountSnapshot;
+  /** Synchronous pre-send fact: survives abort racing the provider iterator. */
+  onRemoteExecutionDispatched?: (execution: RemoteExecutionRef) => void;
+  /** Provider-neutral interaction port bound to this invocation. */
+  runtimeInteractionPort?: import('../../runtime-interaction/ports/RuntimeInteractionPort.js').RuntimeInteractionPort;
+  /** F310: source-bound Task relation resolved from canonical Task truth for an F306 question. */
+  resolveEntrustedWorkTaskRef?: () => Promise<import('@cat-cafe/shared').EntrustedWorkTaskRefV1 | undefined>;
   /** F317 Host-only continuous companion port; no model-supplied configuration. */
   liveCompanion?: import('./agents/providers/CodexLiveRunPort.js').CodexLiveRunPort;
   /** Route-owned intent. Providers may project only explicit behavior intent onto native modes. */
@@ -923,6 +1085,10 @@ export interface AgentServiceOptions {
   /** F171: User-defined env vars from account config.
    *  Applied LAST to subprocess env — overrides provider-injected values. */
   accountEnv?: Record<string, string>;
+  /** Selected token must win after alternate auth and user env merging. */
+  claudeTokenAccount?: boolean;
+  /** F320: immutable selected account launch snapshot; independent of displayName/token refresh. */
+  codexAccountLaunch?: CodexAccountLaunchDescriptor;
   /** Rich content blocks (e.g. images) to pass to the CLI agent */
   contentBlocks?: readonly MessageContent[];
   /** Upload directory for resolving image paths */
@@ -943,10 +1109,10 @@ export interface AgentServiceOptions {
   agentCarrierSessionFactory?: AgentCarrierSessionFactory;
   /** F254 D2: per-invocation two-phase provider-native freshness controller. */
   activeInvocationFreshness?: import('./freshness/FreshnessNoticeBroker.js').ActiveInvocationFreshnessController;
-  /** F306: provider-neutral, invocation-bound human interaction port. */
-  runtimeInteractionPort?: import('../../runtime-interaction/ports/RuntimeInteractionPort.js').RuntimeInteractionPort;
-  /** F310: source-bound Task relation resolved from canonical Task truth for an F306 question. */
-  resolveEntrustedWorkTaskRef?: () => Promise<import('@cat-cafe/shared').EntrustedWorkTaskRefV1 | undefined>;
+  /** #1354: expose an exact provider-native active-turn dispatcher after turn acceptance. */
+  activeRunDispatch?: AgentClientActiveRunDispatchRegistration;
+  /** F117 K2: Claude compaction hooks for a carrier that runs them in-process (the Agent SDK carrier). */
+  claudeCompactionHooks?: ClaudeCompactionHooks;
   /** F210-H1b: Override AGY --log-file path (test seam for the trajectory progress observer). */
   agyLogPathOverride?: string;
   /** F118: Invocation ID for diagnostic enrichment of __cliTimeout */
@@ -969,14 +1135,6 @@ export interface AgentServiceOptions {
   parentSpan?: Span;
   /** ADR-042 hard execution boundary for automatic supplement checks. */
   toolExecutionPolicy?: ToolExecutionPolicy;
-  /** F325: host-authored, per-turn AGY native grants. Never derive from model text or member CLI args. */
-  agyNativeScope?: {
-    readonly workspaceRoot?: string;
-    readonly taskId?: string;
-    readonly testFile?: string;
-    readonly writableFiles: readonly string[];
-    readonly mcpTools: readonly string[];
-  };
   /**
    * F299 Phase D: fail-closed recorder invoked by the concrete adapter after
    * its final message/native channels are immutable and immediately before
@@ -1078,6 +1236,10 @@ export interface AgentService {
 
   /** Request provider-native compaction on an already bound, idle runtime. */
   requestNativeCompaction?(input: {
+    readonly nativeSessionBinding?: import('@cat-cafe/shared').NativeSessionBinding;
+    readonly userId?: string;
+    /** Preserve a proven boundary even if the later control transport fails. */
+    readonly onObserved?: (event: ProviderCompactionObservation) => Promise<void>;
     readonly sessionId: string;
     readonly invocationId: string;
     readonly timeoutMs: number;
@@ -1108,11 +1270,16 @@ export interface AgentService {
     readonly cwd?: string;
   }): Promise<ProviderNativeStatus>;
 
+  inspectLocalSession?(input: LocalSessionReadInput & { sessionId: string }): Promise<LocalSessionMetadata>;
+  listLocalSessions?(input: LocalSessionReadInput & { limit: number }): Promise<LocalSessionList>;
+
   /** F306 Phase D: read provider inventory without joining or mutating a runtime thread. */
   requestNativeCapabilitySource?(input: {
     readonly invocationId: string;
     readonly timeoutMs: number;
     readonly cwd: string;
+    readonly account?: RuntimeProviderProfile;
+    readonly cliConfigArgs?: readonly string[];
   }): Promise<ProviderNativeCapabilitySource>;
 
   /** F306: fork one exact native binding; the caller remains responsible for Clowder AI target ownership. */

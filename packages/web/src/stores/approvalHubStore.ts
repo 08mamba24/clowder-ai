@@ -41,6 +41,8 @@ interface ApprovalHubState {
   items: ApprovalHubItem[];
   count: number;
   isLoading: boolean;
+  /** Last pending GET observation; a POST error does not change read availability or approval truth. */
+  pendingReadAvailable: boolean;
   isOpen: boolean;
   error: string | null;
   /** Map of proposalId → 'approving' | 'rejecting' for optimistic UI feedback */
@@ -60,6 +62,9 @@ interface ApprovalHubState {
   settledItems: SettledApprovalHubItem[];
   settledIsLoading: boolean;
   settledError: string | null;
+  /** Local request ordering, never an approval lifecycle or owner. */
+  pendingRequestVersion: number;
+  settledRequestVersion: number;
   fetchPending: () => Promise<void>;
   /** F246 Phase F: fetch normalized settled lifecycle history. */
   fetchSettled: (limit?: number) => Promise<void>;
@@ -94,6 +99,7 @@ export const useApprovalHubStore = create<ApprovalHubState>((set, get) => ({
   items: [],
   count: 0,
   isLoading: false,
+  pendingReadAvailable: false,
   isOpen: false,
   error: null,
   deciding: {},
@@ -103,27 +109,46 @@ export const useApprovalHubStore = create<ApprovalHubState>((set, get) => ({
   settledItems: [],
   settledIsLoading: false,
   settledError: null,
+  pendingRequestVersion: 0,
+  settledRequestVersion: 0,
 
   fetchPending: async () => {
-    set({ isLoading: true, error: null });
+    const requestVersion = get().pendingRequestVersion + 1;
+    const itemsAtRequest = get().items;
+    set({ pendingRequestVersion: requestVersion, isLoading: true, pendingReadAvailable: false, error: null });
     try {
-      const res = await apiFetch('/api/approval-hub/pending');
+      // A refresh can follow a proposal event or decision while an earlier
+      // read is still in flight. Join the bounded trailing generation so its
+      // pre-change snapshot cannot satisfy the new refresh.
+      const res = await apiFetch('/api/approval-hub/pending', undefined, { afterCurrentGet: true });
       if (!res.ok) throw new Error(`Failed to fetch: ${res.status}`);
       const data = (await res.json()) as { items: ApprovalHubItem[]; count: number };
-      set({ items: data.items, count: data.count, isLoading: false });
+      if (get().pendingRequestVersion !== requestVersion) return;
+      // A decision may have removed or updated an item after this GET began.
+      // Re-read canonical state rather than restoring the pre-decision snapshot.
+      if (get().items !== itemsAtRequest) return get().fetchPending();
+      set({ items: data.items, count: data.count, isLoading: false, pendingReadAvailable: true });
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : 'Unknown error', isLoading: false });
+      if (get().pendingRequestVersion !== requestVersion) return;
+      set({
+        error: err instanceof Error ? err.message : 'Unknown error',
+        isLoading: false,
+        pendingReadAvailable: false,
+      });
     }
   },
 
   fetchSettled: async (limit = 200) => {
-    set({ settledIsLoading: true, settledError: null });
+    const requestVersion = get().settledRequestVersion + 1;
+    set({ settledRequestVersion: requestVersion, settledIsLoading: true, settledError: null });
     try {
-      const res = await apiFetch(`/api/approval-hub/settled?limit=${limit}`);
+      const res = await apiFetch(`/api/approval-hub/settled?limit=${limit}`, undefined, { afterCurrentGet: true });
       if (!res.ok) throw new Error(`Failed to fetch: ${res.status}`);
       const data = (await res.json()) as { items: SettledApprovalHubItem[]; count: number };
+      if (get().settledRequestVersion !== requestVersion) return;
       set({ settledItems: data.items, settledIsLoading: false });
     } catch (err) {
+      if (get().settledRequestVersion !== requestVersion) return;
       set({ settledError: err instanceof Error ? err.message : 'Unknown error', settledIsLoading: false });
     }
   },

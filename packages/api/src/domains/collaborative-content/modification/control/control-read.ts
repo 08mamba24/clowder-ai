@@ -1,3 +1,4 @@
+import type { ContentModificationRecord } from '@cat-cafe/shared';
 import type { IMessageStore } from '../../../cats/services/stores/ports/MessageStore.js';
 import type { ITaskStore } from '../../../cats/services/stores/ports/TaskStore.js';
 import { MediaOwnerError } from '../../../video-studio/content-owner/media-errors.js';
@@ -8,7 +9,15 @@ import { assertModificationSourceAuthority } from '../request-authority.js';
 
 /** Address by request; authorize by the committed current Task binding. Never returns request text. */
 export async function readModificationControl(
-  deps: { store: ArtifactReviewStore; tasks: Pick<ITaskStore, 'get'>; messages: Pick<IMessageStore, 'getById'> },
+  deps: {
+    store: ArtifactReviewStore;
+    tasks: Pick<ITaskStore, 'get'>;
+    messages: Pick<IMessageStore, 'getById'>;
+    hasPublicationContinuation?: (
+      record: ContentModificationRecord,
+      principal: MediaReviewPrincipal,
+    ) => Promise<boolean>;
+  },
   requestId: string,
   principal: MediaReviewPrincipal,
   expectedReviewId?: string,
@@ -47,7 +56,7 @@ export async function readModificationControl(
       await assertModificationSourceAuthority(deps.messages, record);
     } catch (error) {
       if (!(error instanceof MediaOwnerError) || error.code !== 'access_denied') throw error;
-      stage = 'source_unavailable';
+      if (!(await deps.hasPublicationContinuation?.(record, principal))) stage = 'source_unavailable';
     }
   }
   return {

@@ -98,6 +98,15 @@ describe('assessSideEffect: dependency direction, not an entire descendant tree'
 });
 
 describe('assessSideEffect: C0 self-host', () => {
+  it('retains host stop commands after comment backslashes in direct and nested shells', () => {
+    for (const command of [
+      'echo ok # c\\\nkill -9 4242',
+      "bash -c 'echo a # c \\\nkill -9 4242'",
+      'echo "$(echo a # c \\\nkill -9 4242)"',
+    ]) {
+      assert.notEqual(verdictOf(command), 'allow', command);
+    }
+  });
   it('refuses stopping the deployment that is hosting this cat', () => {
     assert.equal(verdictOf('pnpm runtime:stop', SELF_WORKTREE), 'self_host');
   });
@@ -112,6 +121,24 @@ describe('assessSideEffect: C0 self-host', () => {
 
   it('refuses signalling our own api pid', () => {
     assert.equal(verdictOf('kill -TERM 4242'), 'self_host');
+  });
+
+  it('retains stop targets resolved through a positional execution frame', () => {
+    for (const command of ['set -- kill -TERM 4242; "$@"', 'set -- pnpm runtime:stop; "$@"']) {
+      assert.equal(verdictOf(command), 'self_host', command);
+    }
+    assert.notEqual(verdictOf('set -- pkill -f node; "$@"'), 'allow');
+    assert.equal(verdictOf("(echo 'kill -TERM 4242') | sh"), 'self_host');
+    assert.equal(verdictOf('set -- echo kill -TERM 4242; "$@"'), 'allow');
+  });
+
+  it('reads compact shell groups without treating quoted or escaped parentheses as execution', () => {
+    for (const command of ['(kill -TERM 4242)', '( (kill -TERM 4242))', '(lsof -ti tcp:3002 | xargs kill)']) {
+      assert.equal(verdictOf(command), 'self_host', command);
+    }
+    for (const command of ["printf '%s' '(kill -TERM 4242)'", 'echo \\(kill -TERM 4242\\)']) {
+      assert.equal(verdictOf(command), 'allow', command);
+    }
   });
 
   it('allows signalling a pid that is not one of ours', () => {

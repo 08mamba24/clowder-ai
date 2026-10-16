@@ -17,6 +17,7 @@ const SEARCHABLE_BLOCK_TEXT_FIELDS = [
   'bodyMarkdown',
   'markdown',
   'summary',
+  'comment',
 ];
 
 export function buildSearchableMessageContent(message: SearchableMessageContent): string {
@@ -46,6 +47,10 @@ function collectBlockText(block: unknown, push: (value: unknown) => void): void 
   for (const field of SEARCHABLE_BLOCK_TEXT_FIELDS) {
     push(obj[field]);
   }
+
+  // Context attachments carry the visible quote and the owner's paired comment.
+  // Do not recurse into source metadata (IDs, paths and routing are not message text).
+  if (obj.type === 'context_attachment') collectBlockText(obj.attachment, push);
 
   const items = obj.items;
   if (Array.isArray(items)) {

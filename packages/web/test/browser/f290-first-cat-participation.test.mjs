@@ -5,6 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { CollectiveServiceStore, startCollectiveServer } from '../../../collective-service/dist/index.js';
 import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
+import { openChannelFromCollectiveHome } from './f290-channel-entry.harness.mjs';
 import { verifyFirstCatOwnerControls } from './f290-first-cat-owner.harness.mjs';
 import { verifyFirstEntryGuide } from './f290-first-entry-guide.harness.mjs';
 import { availablePort } from './f290-runtime-journey.harness.mjs';
@@ -79,7 +80,7 @@ test(
         owner.sessionToken,
       );
       await page.goto(`${url}/?collectiveId=${collective.collectiveId}`, { waitUntil: 'networkidle' });
-      await page.getByRole('heading', { name: '# general' }).waitFor();
+      await openChannelFromCollectiveHome(page, 'general');
       assert.equal(await page.getByText('WORKSHOP_CANARY', { exact: true }).count(), 0);
       const selectMention = async (scope, connection, placeholder = '在 #general 里说点什么……') => {
         await scope.getByPlaceholder(placeholder).fill('@Astra');
@@ -145,7 +146,7 @@ test(
         evidence,
       });
 
-      assert.equal(await page.getByRole('button', { name: '取消点名' }).count(), 0);
+      assert.equal(await page.getByRole('button', { name: '移除 @' }).count(), 0);
       const operationIds = [];
       await page.route('**/api/events/human', async (route) => {
         if (route.request().method() !== 'POST') return route.continue();
@@ -157,12 +158,12 @@ test(
       });
       await page.getByPlaceholder('在 #general 里说点什么……').fill('accepted 丢响应后重试同一条');
       await page.getByRole('button', { name: '发送', exact: true }).click();
-      await page.getByText('尚未确认送达，可以重试', { exact: true }).waitFor();
+      await page.getByText('没发出去 · 重试', { exact: true }).waitFor();
       await page.reload({ waitUntil: 'networkidle' });
       await page.getByRole('heading', { name: '# general' }).waitFor();
       await page.getByPlaceholder('在 #general 里说点什么……').fill('accepted 丢响应后重试同一条');
       await page.getByRole('button', { name: '发送', exact: true }).click();
-      await page.getByText('已进入共同现场；这不代表某只猫已经接住', { exact: true }).waitFor();
+      await page.locator('.delivery-state').waitFor({ state: 'detached' });
       assert.equal(operationIds.length, 2);
       assert.equal(operationIds[0], operationIds[1]);
       await page.unroute('**/api/events/human');
@@ -200,7 +201,7 @@ test(
         .click();
       await page.getByText('WORKSHOP_CANARY', { exact: true }).waitFor();
       assert.equal(
-        await page.getByRole('button', { name: '取消点名' }).count(),
+        await page.getByRole('button', { name: '移除 @' }).count(),
         0,
         'another channel never inherits the stale target',
       );

@@ -403,7 +403,17 @@ test('slice2 r3: split runtime/workspace topology — durable root follows the a
 // P2-1：投影级——capability 的 provider/carrier 都必须是枚举认可值（不再 unrecognized）
 test('slice2 r3: qoder capability projects to recognized provider AND carrier', async () => {
   const contract = await import(
-    join(here, '..', 'dist', 'domains', 'cats', 'services', 'session', 'context-projection-telemetry-contract.js')
+    join(
+      here,
+      '..',
+      'dist',
+      'domains',
+      'cats',
+      'services',
+      'session',
+      'context',
+      'context-projection-telemetry-contract.js',
+    )
   );
   const providers = contract.CONTEXT_PROJECTION_ENUMS.providers;
   const carriers = contract.CONTEXT_PROJECTION_ENUMS.carriers;

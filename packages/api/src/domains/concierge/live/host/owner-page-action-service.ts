@@ -1,85 +1,40 @@
 import { randomUUID } from 'node:crypto';
-import { createCdpPageActionPort } from '../../action/CdpPageActionPort.js';
-import type { PageSnapshot } from '../../action/PageActionLoop.js';
+import type { CallbackPrincipal } from '@cat-cafe/shared';
+import { JevSelectionNotice } from '../../action/jev/JevPageSelector.js';
 import type { LiveCompanionCall } from '../LiveCompanionCall.js';
 import { whileNotAborted } from './live-controlled-context.js';
-import { LivePageActionApprovalLedger } from './live-page-action-approval-ledger.js';
-import { sameScope } from './live-page-action-authority-contract.js';
 import type {
   CurrentPageRequest,
   OwnerPageActionConsent,
   OwnerPageActionDeps,
   OwnerPageActionOutcome,
-  OwnerPageActionPlan,
-  OwnerPageActionProfile,
   OwnerPageActionView,
   OwnerPageCallEntry,
   OwnerPagePreview,
 } from './owner-page-action-contract.js';
 import { executeApprovedPageAction, forwardOutcome, restoreAppliedPageAction } from './owner-page-action-execution.js';
+import { LivePageActionApprovalLedger } from './page-action/live-page-action-approval-ledger.js';
+import { sameScope } from './page-action/live-page-action-authority-contract.js';
+import {
+  listOwnerPageChoices,
+  ownerPageInvocationView,
+  readCurrentOwnerPageRequest,
+} from './page-action/owner-page-action-access.js';
+import { prepareOwnerPageAction } from './page-action/owner-page-action-prepare.js';
+import {
+  armOwnerPagePreview,
+  canInspect,
+  closePreview,
+  closeResources,
+  consent,
+  pageResultView,
+  rememberPageOutcome,
+  settlePageOutcome,
+  validPlan,
+} from './page-action/owner-page-action-support.js';
 
-const PREVIEW_MS = 60_000;
-const INSPECTION_MS = 5_000;
-
-function validPlan(profile: OwnerPageActionProfile, snapshot: PageSnapshot, plan: OwnerPageActionPlan): boolean {
-  const target = snapshot.candidates.find((candidate) => candidate.id === plan.action.targetId);
-  const configured = profile.spec.targets.find((candidate) => candidate.id === plan.action.targetId);
-  return (
-    snapshot.url === profile.url &&
-    plan.profileId === profile.profileId &&
-    plan.url === profile.url &&
-    plan.origin === snapshot.origin &&
-    plan.consent.pageUrl === profile.url &&
-    plan.consent.field === target?.label &&
-    plan.consent.value === plan.action.value &&
-    plan.beforeReadback === snapshot.readback &&
-    configured?.operation === plan.action.operation &&
-    target?.operation === plan.action.operation &&
-    target?.fingerprint === plan.action.fingerprint
-  );
-}
-
-function canInspect(entry: OwnerPageCallEntry | undefined, signal: AbortSignal | null): boolean {
-  return Boolean(entry && signal && !entry.inspecting && (!entry.preview || entry.preview.state === 'settled'));
-}
-
-function consent(
-  preview: OwnerPagePreview,
-  profile: NonNullable<OwnerPageActionDeps['profile']>,
-): OwnerPageActionConsent {
-  const target = profile.spec.targets.find((item) => item.id === preview.plan.action.targetId);
-  if (!target) throw new Error('Named page target unavailable');
-  return {
-    previewId: preview.id,
-    pageUrl: preview.plan.consent.pageUrl,
-    field: preview.plan.consent.field,
-    fieldSelector: target.selector,
-    readbackSelector: profile.spec.readback.selector,
-    value: preview.plan.consent.value,
-    expectedReadback: preview.plan.action.expectedReadback,
-    restoreValue: preview.plan.consent.restoreValue,
-    expiresAtMs: preview.expiresAtMs,
-    permissionScope: preview.plan.profileId,
-  };
-}
-
-async function closeResources(handle: OwnerPagePreview['handle'], port?: OwnerPagePreview['port']): Promise<boolean> {
-  const completed = Promise.allSettled([
-    ...(port ? [Promise.resolve().then(() => port.close())] : []),
-    Promise.resolve().then(() => handle.close()),
-  ]);
-  const deadline = AbortSignal.timeout(1_000);
-  try {
-    const results = await whileNotAborted(deadline, completed);
-    return results.every((result) => result.status === 'fulfilled');
-  } catch {
-    return false;
-  }
-}
-
-function closePreview(preview: OwnerPagePreview, closeActor = true): Promise<boolean> {
-  return closeResources(preview.handle, closeActor ? preview.port : undefined);
-}
+const PREVIEW_MS = 60_000,
+  INSPECTION_MS = 5_000;
 
 /** One owner consent can use one current direct request and one Host-selected page. */
 export class OwnerPageActionService {
@@ -94,7 +49,7 @@ export class OwnerPageActionService {
   }
 
   get enabled(): boolean {
-    return Boolean(this.deps.profile && this.deps.connector);
+    return Boolean(this.deps.currentPages || (this.deps.profile && this.deps.connector));
   }
 
   newLedger(): LivePageActionApprovalLedger {
@@ -108,27 +63,14 @@ export class OwnerPageActionService {
       .finally(() => {
         if (this.calls.get(call.id) !== entry) return;
         this.revoke(entry);
+        this.deps.currentPages?.clear(call.id);
         this.calls.delete(call.id);
       })
       .catch(() => {});
   }
 
   private async current(requestMessageId: string): Promise<CurrentPageRequest | null> {
-    const observed = await this.deps.sessions.observeCall(this.deps.ownerUserId);
-    if (!observed) return null;
-    const entry = this.calls.get(observed.callId);
-    if (!entry || entry.call.status().state !== 'talking') return null;
-    const read = await entry.call.boundaryContexts.inspectPageActionRequest(requestMessageId);
-    if (
-      !read ||
-      read.scope.userId !== observed.userId ||
-      read.scope.threadId !== observed.threadId ||
-      read.scope.catId !== observed.catId ||
-      read.scope.callId !== observed.callId ||
-      read.scope.generation !== observed.generation
-    )
-      return null;
-    return { call: entry.call, ...read };
+    return readCurrentOwnerPageRequest(this.deps, this.calls, requestMessageId);
   }
 
   private alignPreview(entry: OwnerPageCallEntry, sourceId: string): boolean {
@@ -148,23 +90,9 @@ export class OwnerPageActionService {
     return true;
   }
 
-  private armPreview(entry: OwnerPageCallEntry, preview: OwnerPagePreview): void {
-    const onAbort = () => {
-      if (entry.preview === preview) this.revoke(entry);
-    };
-    const timer = setTimeout(onAbort, Math.max(1, preview.expiresAtMs - Date.now()));
-    timer.unref();
-    preview.disarmLifetime = () => {
-      clearTimeout(timer);
-      preview.signal.removeEventListener('abort', onAbort);
-    };
-    preview.signal.addEventListener('abort', onAbort, { once: true });
-    if (preview.signal.aborted) onAbort();
-  }
-
   async view(): Promise<OwnerPageActionView> {
     const profile = this.deps.profile;
-    if (!profile || !this.deps.connector) return { kind: 'unavailable' };
+    if (!this.enabled) return { kind: 'unavailable' };
     const observed = await this.deps.sessions.observeCall(this.deps.ownerUserId);
     if (!observed) return { kind: 'unavailable' };
     const entry = this.calls.get(observed.callId);
@@ -178,24 +106,59 @@ export class OwnerPageActionService {
     const current = await this.current(source.id);
     if (!current) return { kind: 'unavailable' };
     if (!this.alignPreview(entry, source.id)) return { kind: 'unavailable' };
+    const selected = this.deps.currentPages?.selected(current);
+    const activeProfile = (entry.preview?.state !== 'settled' ? entry.preview?.profile : undefined) ?? profile;
     return {
       kind: 'available',
       callId: observed.callId,
       generation: observed.generation,
       requestMessageId: source.id,
       requestText: current.request.text,
-      profileId: profile.profileId,
-      pageUrl: profile.url,
+      profileId: activeProfile?.profileId ?? this.deps.currentPages?.profileId ?? '',
+      pageUrl: activeProfile?.url ?? selected?.url ?? '',
+      ...(this.deps.currentPages ? { pageSelection: true } : {}),
       state: entry.inspecting ? 'inspecting' : (entry.preview?.state ?? 'ready'),
-      ...(entry.preview && entry.preview.state !== 'settled' ? { preview: consent(entry.preview, profile) } : {}),
-      ...(entry.preview?.outcome ? { result: entry.preview.outcome } : {}),
+      ...(entry.preview && activeProfile && entry.preview.state !== 'settled'
+        ? { preview: consent(entry.preview, activeProfile) }
+        : {}),
+      ...pageResultView(entry),
+      ...(entry.selectionNotice?.requestMessageId === source.id ? { selectionNotice: entry.selectionNotice } : {}),
     };
   }
 
-  async inspect(requestMessageId: string): Promise<OwnerPageActionConsent> {
-    const profile = this.deps.profile;
-    const connector = this.deps.connector;
-    if (!profile || !connector) throw new Error('Page action unavailable');
+  async forInvocation(principal: Extract<CallbackPrincipal, { kind: 'invocation' }>) {
+    return ownerPageInvocationView(this.deps, this.calls, this.enabled, principal, () => this.view());
+  }
+
+  async listPages(requestMessageId: string) {
+    const current = await this.current(requestMessageId);
+    const entry = current && this.calls.get(current.call.id);
+    if (!entry || entry.inspecting || entry.preview?.state === 'executing') throw new Error('Page selection is busy');
+    if (entry.preview) this.revoke(entry);
+    const pages = await listOwnerPageChoices(this.deps, current);
+    const verified = await this.current(requestMessageId);
+    if (
+      !current ||
+      !verified ||
+      !sameScope(verified.scope, current.scope) ||
+      verified.request.revision !== current.request.revision
+    )
+      throw new Error('Owner request changed');
+    return pages;
+  }
+
+  async selectPage(requestMessageId: string, pageId: string) {
+    const current = await this.current(requestMessageId);
+    const entry = current && this.calls.get(current.call.id);
+    if (!current || !entry || entry.inspecting || entry.preview?.state === 'executing' || !this.deps.currentPages)
+      throw new Error('Current page cannot be changed now');
+    if (entry.preview) this.revoke(entry);
+    this.deps.currentPages.choose(current, pageId);
+    return this.inspect(requestMessageId, pageId);
+  }
+
+  async inspect(requestMessageId: string, selectionId?: string): Promise<OwnerPageActionConsent> {
+    if (!this.enabled) throw new Error('Page action unavailable');
     const current = await this.current(requestMessageId);
     if (!current) throw new Error('Direct owner request unavailable');
     const entry = this.calls.get(current.call.id);
@@ -203,18 +166,32 @@ export class OwnerPageActionService {
     if (!canInspect(entry, signal) || !entry || !signal) throw new Error('Page action unavailable');
     if (entry.preview) this.revoke(entry);
     entry.inspecting = true;
+    entry.selectionNotice = undefined;
     const boundedSignal = AbortSignal.any([signal, AbortSignal.timeout(INSPECTION_MS)]);
-    const opening = connector.open(profile, boundedSignal);
     let handle: OwnerPagePreview['handle'] | undefined;
     let port: OwnerPagePreview['port'] | undefined;
     try {
-      handle = await whileNotAborted(boundedSignal, opening);
-      const created = createCdpPageActionPort(handle.page, profile.spec);
-      if (!created.close) throw new Error('Page actor cannot be closed');
-      port = created as OwnerPagePreview['port'];
-      const snapshot = await whileNotAborted(boundedSignal, port.inspect());
-      const plan = profile.prepare(snapshot);
+      const prepared = await prepareOwnerPageAction(this.deps, current, boundedSignal, selectionId);
+      const { profile, snapshot, plan } = prepared;
+      handle = prepared.handle;
+      port = prepared.port;
       if (!validPlan(profile, snapshot, plan)) throw new Error('Named page changed');
+      if (plan.selection) {
+        if (!this.deps.recordResult) throw new Error('Durable Jev receipt unavailable');
+        await whileNotAborted(
+          boundedSignal,
+          this.deps.recordResult({
+            scope: current.scope,
+            requestMessageId,
+            body: JSON.stringify({
+              kind: 'host_page_action_selection',
+              selection: plan.selection,
+              effect: 'not_executed',
+            }),
+            receiptId: plan.selection.requestId,
+          }),
+        );
+      }
       const verified = await this.current(requestMessageId);
       if (
         !verified ||
@@ -235,16 +212,39 @@ export class OwnerPageActionService {
         controller,
         expiresAtMs: Date.now() + this.timing.previewMs,
         plan,
+        profile,
         handle,
         port,
         state: 'awaiting_consent',
       };
       entry.preview = preview;
-      this.armPreview(entry, preview);
+      armOwnerPagePreview(preview, () => {
+        if (entry.preview === preview) this.revoke(entry);
+      });
       return consent(preview, profile);
     } catch (error) {
-      if (!handle) void opening.then((late) => closeResources(late)).catch(() => {});
-      else await closeResources(handle, port);
+      if (this.deps.currentPages || this.deps.profile?.restoreAfterAction === false) {
+        entry.selectionNotice = {
+          requestMessageId,
+          kind: error instanceof JevSelectionNotice ? error.choice.kind : 'unavailable',
+          reason: error instanceof JevSelectionNotice ? error.choice.reason : 'Jev 页面选择未确认；尚未操作页面。',
+          ...(error instanceof JevSelectionNotice ? { selection: error.receipt } : {}),
+        };
+        if (error instanceof JevSelectionNotice)
+          await this.deps
+            .recordResult?.({
+              scope: current.scope,
+              requestMessageId,
+              body: JSON.stringify({
+                kind: 'host_page_action_selection',
+                selection: error.receipt,
+                effect: 'not_executed',
+              }),
+              receiptId: error.receipt.requestId,
+            })
+            .catch(() => {});
+      }
+      if (handle) await closeResources(handle, port);
       throw error;
     } finally {
       entry.inspecting = false;
@@ -254,7 +254,7 @@ export class OwnerPageActionService {
   async confirm(previewId: string): Promise<OwnerPageActionOutcome> {
     const entry = [...this.calls.values()].find((item) => item.preview?.id === previewId);
     const preview = entry?.preview;
-    const profile = this.deps.profile;
+    const profile = preview?.profile ?? this.deps.profile;
     if (!entry || !preview || !profile || preview.state !== 'awaiting_consent')
       throw new Error('Page action preview unavailable');
     preview.state = 'executing';
@@ -285,7 +285,9 @@ export class OwnerPageActionService {
         },
       });
       outcome = forwardOutcome(forward);
-      if (forward.status === 'applied' && !preview.signal.aborted) {
+      if (forward.status === 'applied' && profile.restoreAfterAction === false)
+        outcome = { status: 'applied', forward };
+      if (forward.status === 'applied' && !preview.signal.aborted && profile.restoreAfterAction !== false) {
         const rollback = await restoreAppliedPageAction(entry, preview, profile, forward);
         outcome = {
           status:
@@ -302,10 +304,10 @@ export class OwnerPageActionService {
       if (preview.rollbackApprovalId) entry.ledger.revoke(preview.rollbackApprovalId);
       const closed = await closePreview(preview, !forwardPortTransferred);
       if (!closed) outcome = { ...outcome, status: 'unknown' };
-      preview.outcome = outcome;
       preview.state = 'settled';
+      rememberPageOutcome(entry, preview, outcome);
     }
-    return outcome;
+    return settlePageOutcome(this.deps, entry, preview, outcome);
   }
 
   cancel(previewId: string): void {
@@ -329,7 +331,10 @@ export class OwnerPageActionService {
   }
 
   async close(): Promise<void> {
-    for (const entry of this.calls.values()) this.revoke(entry);
+    for (const entry of this.calls.values()) {
+      this.revoke(entry);
+      this.deps.currentPages?.clear(entry.call.id);
+    }
     this.calls.clear();
   }
 }

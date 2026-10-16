@@ -175,4 +175,19 @@ describe('F306 AC-C7: each segment is judged where it runs, not against the whol
       assert.equal(decision.decision, 'deny', `${command} → ${decision.reasonCode}`);
     }
   });
+
+  test('quoted parentheses never close a coordinate frame', () => {
+    const cases = [
+      [`echo ')' ; touch zz`, runtimeRoot],
+      [`echo ')' ; rm -rf zz`, runtimeRoot],
+      [`echo ')' ; git reset --hard`, mainRoot],
+      [`echo "$(printf ')'; printf ok)" ; git reset --hard`, mainRoot],
+    ];
+    for (const [command, cwd] of cases) {
+      const locations = segmentLocations(splitShellExecutionSegmentsWithSeparators(command), cwd);
+      assert.ok(locations.at(-1).includes(cwd), command);
+      const decision = decideBoth(command, cwd);
+      assert.equal(decision.decision, 'deny', `${command} → ${decision.reasonCode}`);
+    }
+  });
 });

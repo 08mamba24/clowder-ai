@@ -476,7 +476,7 @@ describe('MCP Evidence Tools', () => {
     assert.ok(!text.includes('📌 高匹配文档命中'), 'should not show reminder for non-doc or low match-rank results');
   });
 
-  test('Hook F-3: appends invocation search count', async () => {
+  test('search results do not impose the retired search-count nudge', async () => {
     const { handleSearchEvidence } = await import('../dist/tools/evidence-tools.js');
 
     globalThis.fetch = async () => ({
@@ -498,11 +498,11 @@ describe('MCP Evidence Tools', () => {
     const result = await handleSearchEvidence({ query: 'depth test' });
     const text = result.content[0].text;
 
-    assert.ok(text.includes('📊 本轮第'), 'should include invocation search depth counter');
-    assert.ok(text.includes('次搜索'), 'should show search count');
+    assert.ok(!text.includes('📊 本轮第'), 'retired search-count nudge must be absent');
+    assert.ok(!text.includes('次搜索'), 'search count must not prescribe more queries');
   });
 
-  test('Hook F-3: empty results still show depth counter (P2-2 fix)', async () => {
+  test('empty results retain their evidence marker without a search-count nudge', async () => {
     const { handleSearchEvidence } = await import('../dist/tools/evidence-tools.js');
 
     globalThis.fetch = async () => ({
@@ -521,8 +521,8 @@ describe('MCP Evidence Tools', () => {
       'empty results should include evidence result marker',
     );
     assert.ok(text.includes('No results found'), 'should report no results');
-    assert.ok(text.includes('📊 本轮第'), 'empty results must still include depth counter');
-    assert.ok(text.includes('次搜索'), 'empty results must still show search count');
+    assert.ok(!text.includes('📊 本轮第'), 'empty results must not revive the retired nudge');
+    assert.ok(!text.includes('次搜索'), 'no count pressure on an empty result');
   });
 
   test('handleSearchEvidence includes query in error output for frontend correlation', async () => {

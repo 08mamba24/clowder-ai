@@ -75,6 +75,7 @@ const CAS_FINALIZE_LUA = `
     'vignettePath', ARGV[5])
   redis.call('ZREM', pendingKey, ARGV[3])
   redis.call('ZADD', settledKey, ARGV[2], ARGV[3])
+  if ARGV[6] == '1' then redis.call('ZREM', KEYS[4], ARGV[3]) end
   return 1
 `;
 
@@ -95,8 +96,8 @@ const CAS_REJECT_LUA = `
   local settledKey = KEYS[3]
   local status = redis.call('HGET', key, 'status')
   if status ~= 'pending' then return 0 end
-  if ARGV[5] == '1' then
-    for i = 6, #ARGV, 2 do
+  if ARGV[6] == '1' then
+    for i = 7, #ARGV, 2 do
       if (redis.call('HGET', key, ARGV[i]) or '') ~= ARGV[i + 1] then return 0 end
     end
   end
@@ -106,6 +107,7 @@ const CAS_REJECT_LUA = `
     'rejectionReason', ARGV[4])
   redis.call('ZREM', pendingKey, ARGV[3])
   redis.call('ZADD', settledKey, ARGV[2], ARGV[3])
+  if ARGV[5] == '1' then redis.call('ZREM', KEYS[4], ARGV[3]) end
   return 1
 `;
 
@@ -116,8 +118,9 @@ const CAS_REJECT_LUA = `
  */
 const CREATE_WITH_DEDUP_LUA = `
   if redis.call('GET', KEYS[3]) ~= ARGV[1] then return 0 end
-  redis.call('HSET', KEYS[1], unpack(ARGV, 4))
+  redis.call('HSET', KEYS[1], unpack(ARGV, 5))
   redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])
+  if ARGV[4] == '1' then redis.call('ZADD', KEYS[4], ARGV[2], ARGV[3]) end
   redis.call('PERSIST', KEYS[3])
   return 1
 `;
@@ -148,6 +151,7 @@ export class RedisTasteProposalStore implements ITasteProposalStore, ApprovalPub
       createdAt: now,
       clientRequestId: input.clientRequestId,
       approvalOriginRef: input.approvalOriginRef,
+      ...(input.correctionTarget ? { correctionTarget: structuredClone(input.correctionTarget) } : {}),
       publication: { state: 'staged', stagedAt: now },
     };
 
@@ -157,13 +161,15 @@ export class RedisTasteProposalStore implements ITasteProposalStore, ApprovalPub
     if (input.clientRequestId) {
       const created = await this.redis.eval(
         CREATE_WITH_DEDUP_LUA,
-        3,
+        4,
         key,
         pendingKey,
         TasteProposalKeys.dedup(input.userId, input.clientRequestId),
+        correctionSourceKey(proposal),
         id,
         String(now),
         id,
+        proposal.correctionTarget ? '1' : '0',
         ...serializeProposal(proposal),
       );
       if (created !== 1) {
@@ -175,6 +181,7 @@ export class RedisTasteProposalStore implements ITasteProposalStore, ApprovalPub
     const pipeline = this.redis.multi();
     pipeline.hset(key, ...serializeProposal(proposal));
     pipeline.zadd(pendingKey, now, id);
+    if (proposal.correctionTarget) pipeline.zadd(correctionSourceKey(proposal), now, id);
     await pipeline.exec();
 
     return proposal;
@@ -205,6 +212,18 @@ export class RedisTasteProposalStore implements ITasteProposalStore, ApprovalPub
     const ids = await this.redis.zrevrange(settledKey, 0, limit - 1);
     if (!ids.length) return [];
     return this.batchGet(ids);
+  }
+
+  async listCorrectionsBySource(userId: string, sourceAnchor: string, limit = 100): Promise<TasteProposal[]> {
+    const ids = await this.redis.zrevrange(TasteProposalKeys.correctionSource(userId, sourceAnchor), 0, limit - 1);
+    if (!ids.length) return [];
+    return this.batchGet(
+      ids,
+      (proposal) =>
+        proposal.userId === userId &&
+        proposal.correctionTarget?.sourceAnchor === sourceAnchor &&
+        (proposal.status === 'pending' || proposal.status === 'approving'),
+    );
   }
 
   async claimForApproval(id: string, userId: string, expected?: TasteDecisionSnapshot): Promise<TasteProposal | null> {
@@ -249,15 +268,17 @@ export class RedisTasteProposalStore implements ITasteProposalStore, ApprovalPub
 
     const result = await this.redis.eval(
       CAS_FINALIZE_LUA,
-      3,
+      4,
       key,
       pendingKey,
       settledKey,
+      correctionSourceKey(proposal),
       userId,
       String(now),
       id,
       vignetteSlug,
       vignettePath,
+      proposal.correctionTarget ? '1' : '0',
     );
     if (result === 0) return null;
 
@@ -294,14 +315,16 @@ export class RedisTasteProposalStore implements ITasteProposalStore, ApprovalPub
 
     const result = await this.redis.eval(
       CAS_REJECT_LUA,
-      3,
+      4,
       key,
       pendingKey,
       settledKey,
+      correctionSourceKey(proposal),
       userId,
       String(now),
       id,
       reason,
+      proposal.correctionTarget ? '1' : '0',
       ...snapshotArgs(expected),
     );
     if (result === 0) return null;
@@ -368,7 +391,12 @@ export class RedisTasteProposalStore implements ITasteProposalStore, ApprovalPub
     await abortRedisStaged(
       this.redis,
       TasteProposalKeys.detail(proposalId),
-      [TasteProposalKeys.userPending(proposal.userId)],
+      [
+        TasteProposalKeys.userPending(proposal.userId),
+        ...(proposal.correctionTarget
+          ? [TasteProposalKeys.correctionSource(proposal.userId, proposal.correctionTarget.sourceAnchor)]
+          : []),
+      ],
       proposalId,
       proposal.clientRequestId ? TasteProposalKeys.dedup(proposal.userId, proposal.clientRequestId) : undefined,
     );
@@ -428,6 +456,7 @@ function serializeProposal(p: TasteProposal): string[] {
   if (p.takeaway) fields.push('takeaway', p.takeaway);
   if (p.clientRequestId) fields.push('clientRequestId', p.clientRequestId);
   if (p.approvalOriginRef) fields.push('approvalOriginRef', JSON.stringify(p.approvalOriginRef));
+  if (p.correctionTarget) fields.push('correctionTarget', JSON.stringify(p.correctionTarget));
   if (p.approvedBy) fields.push('approvedBy', p.approvedBy);
   if (p.approvedAt) fields.push('approvedAt', String(p.approvedAt));
   if (p.rejectedBy) fields.push('rejectedBy', p.rejectedBy);
@@ -456,6 +485,7 @@ function hydrateProposal(raw: Record<string, string>): TasteProposal {
     ...(raw.sourceMessageId ? { sourceMessageId: raw.sourceMessageId } : {}),
     ...(raw.clientRequestId ? { clientRequestId: raw.clientRequestId } : {}),
     ...(raw.approvalOriginRef ? { approvalOriginRef: JSON.parse(raw.approvalOriginRef) } : {}),
+    ...(raw.correctionTarget ? { correctionTarget: JSON.parse(raw.correctionTarget) } : {}),
     ...(raw.approvedBy ? { approvedBy: raw.approvedBy } : {}),
     ...(raw.approvedAt ? { approvedAt: Number(raw.approvedAt) } : {}),
     ...(raw.rejectedBy ? { rejectedBy: raw.rejectedBy } : {}),
@@ -465,4 +495,10 @@ function hydrateProposal(raw: Record<string, string>): TasteProposal {
     ...(raw.vignettePath ? { vignettePath: raw.vignettePath } : {}),
     ...(raw.publication ? { publication: hydrateApprovalPublication(raw.publication) } : {}),
   };
+}
+
+function correctionSourceKey(proposal: Pick<TasteProposal, 'userId' | 'correctionTarget'>): string {
+  return proposal.correctionTarget
+    ? TasteProposalKeys.correctionSource(proposal.userId, proposal.correctionTarget.sourceAnchor)
+    : TasteProposalKeys.noCorrectionSource;
 }

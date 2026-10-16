@@ -262,6 +262,7 @@ export function continueActionSuccessorFreshRevision(
         ...new Set([issuerStandingEvidenceRef, evidenceRef, input.delegateEvidenceRef].filter((r): r is string => !!r)),
       ],
       returnTransitions: [],
+      replacementTransitions: [],
       revision: 1,
       createdAt: input.now,
       updatedAt: input.now,

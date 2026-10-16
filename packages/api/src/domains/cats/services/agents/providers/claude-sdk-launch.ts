@@ -1,6 +1,9 @@
 import { isAbsolute, resolve } from 'node:path';
 import type { EffortLevel, Options } from '@anthropic-ai/claude-agent-sdk';
 import type { CatId } from '@cat-cafe/shared';
+import { applyClaudeTokenAccountEnv } from '../../../../../config/claude-token-account.js';
+import { composeClaudeTokenSettingsDocument } from '../../../../../config/claude-token-settings.js';
+import { buildChildEnv } from '../../../../../utils/cli-spawn.js';
 import type { AgentServiceOptions, PreparedProviderRequestV1 } from '../../types.js';
 import {
   ANTHROPIC_PROFILE_MODE_KEY,
@@ -96,30 +99,36 @@ export async function prepareClaudeSdkLaunch(input: {
     { body: l0, injectionDecision: 'native_l0_compiled' },
     ...(options?.systemPrompt ? [{ body: options.systemPrompt, injectionDecision: 'route_append_system_prompt' }] : []),
   ];
-  const mcpServers =
+  const mcpResolution =
     !readOnly && options?.callbackEnv && input.mcpServerPath
       ? await resolveClaudeMcpConfig({
           callbackEnv: options.callbackEnv,
           workingDirectory: options.workingDirectory,
           mcpServerPath: input.mcpServerPath,
         })
-      : {};
+      : undefined;
+  const mcpServers = mcpResolution?.servers ?? {};
   const operator = sdkOperatorArgs(readOnly ? [] : (options?.cliConfigArgs ?? []));
   const additionalDirectories = [
     ...new Set([...(operator.additionalDirectories ?? []), ...collectImageAccessDirectories(imagePaths)]),
   ];
   const plan = options?.compactionLaunchPlan;
-  const settings = plan?.ready
-    ? composeManagedSettingsDocument(plan, operator.settings, options?.workingDirectory)
+  const settingSources: NonNullable<Options['settingSources']> = readOnly
+    ? []
+    : options?.callbackEnv?.[ANTHROPIC_PROFILE_MODE_KEY] === 'api_key'
+      ? ['project', 'local']
+      : ['user', 'project', 'local'];
+  const accountSettings = options?.claudeTokenAccount
+    ? await composeClaudeTokenSettingsDocument(operator.settings, options?.workingDirectory, settingSources)
     : operator.settings;
-  const env: Record<string, string | undefined> = { ...process.env };
+  const settings = plan?.ready
+    ? composeManagedSettingsDocument(plan, accountSettings, options?.workingDirectory)
+    : accountSettings;
   const overrides = { ...buildClaudeEnvOverrides(options?.callbackEnv), ...options?.accountEnv };
   if (options?.callbackEnv?.[ANTHROPIC_PROFILE_MODE_KEY] === 'subscription')
     for (const key of SUBSCRIPTION_MODE_DENY_KEYS) overrides[key] = null;
-  for (const [key, value] of Object.entries(overrides)) {
-    if (value === null) delete env[key];
-    else env[key] = value;
-  }
+  applyClaudeTokenAccountEnv(overrides, options?.claudeTokenAccount);
+  const env = buildChildEnv(overrides, { workingDirectory: options?.workingDirectory });
   if (readOnly) env.CAT_CAFE_READONLY = 'true';
   const request: PreparedProviderRequestV1 = Object.freeze({
     v: 1,
@@ -156,11 +165,7 @@ export async function prepareClaudeSdkLaunch(input: {
       ...(readOnly ? { tools: [] } : { allowDangerouslySkipPermissions: true }),
       strictMcpConfig: true,
       mcpServers: mcpServers as Options['mcpServers'],
-      settingSources: readOnly
-        ? []
-        : options?.callbackEnv?.[ANTHROPIC_PROFILE_MODE_KEY] === 'api_key'
-          ? ['project', 'local']
-          : ['user', 'project', 'local'],
+      settingSources,
       ...(options?.sessionId ? { resume: options.sessionId } : {}),
       ...(additionalDirectories.length ? { additionalDirectories } : {}),
       ...(settings
@@ -172,7 +177,9 @@ export async function prepareClaudeSdkLaunch(input: {
                 : resolve(options?.workingDirectory ?? process.cwd(), settings),
           }
         : {}),
-      extraArgs: { ...operator.extraArgs, ...(readOnly ? {} : { chrome: null }) },
+      ...(!readOnly || Object.keys(operator.extraArgs).length > 0
+        ? { extraArgs: { ...operator.extraArgs, ...(readOnly ? {} : { chrome: null }) } }
+        : {}),
     },
   };
 }

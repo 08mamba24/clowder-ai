@@ -45,6 +45,7 @@ export class InMemoryTasteProposalStore implements ITasteProposalStore, Approval
       createdAt: now,
       clientRequestId: input.clientRequestId,
       approvalOriginRef: input.approvalOriginRef,
+      ...(input.correctionTarget ? { correctionTarget: structuredClone(input.correctionTarget) } : {}),
       publication: { state: 'staged', stagedAt: now },
     };
     this.proposals.set(proposal.id, proposal);
@@ -79,6 +80,17 @@ export class InMemoryTasteProposalStore implements ITasteProposalStore, Approval
       limit,
       (a, b) =>
         (b.approvedAt ?? b.rejectedAt ?? 0) - (a.approvedAt ?? a.rejectedAt ?? 0) || this.orderOf(b) - this.orderOf(a),
+    );
+  }
+
+  listCorrectionsBySource(userId: string, sourceAnchor: string, limit: number = DEFAULT_LIST_LIMIT): TasteProposal[] {
+    return this.collect(
+      (proposal) =>
+        proposal.userId === userId &&
+        proposal.correctionTarget?.sourceAnchor === sourceAnchor &&
+        (proposal.status === 'pending' || proposal.status === 'approving'),
+      limit,
+      (left, right) => right.createdAt - left.createdAt || this.orderOf(right) - this.orderOf(left),
     );
   }
 
@@ -215,5 +227,6 @@ function clone(proposal: TasteProposal): TasteProposal {
     ...proposal,
     tags: [...proposal.tags],
     ...(proposal.approvalOriginRef ? { approvalOriginRef: { ...proposal.approvalOriginRef } } : {}),
+    ...(proposal.correctionTarget ? { correctionTarget: structuredClone(proposal.correctionTarget) } : {}),
   };
 }

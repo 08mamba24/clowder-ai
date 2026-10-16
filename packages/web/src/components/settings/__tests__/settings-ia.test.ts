@@ -23,7 +23,7 @@ describe('F322 设置与管理 information architecture', () => {
       '主题',
       '社区',
       '猫猫星球',
-      'Mission Hub',
+      '功能看板',
       '信号',
     ]);
     expect(SETTINGS_IA.map((entry) => entry.group)).toEqual([1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3]);
@@ -51,8 +51,8 @@ describe('F322 设置与管理 information architecture', () => {
     expect(SETTINGS_SECTIONS).toHaveLength(14);
   });
 
-  it('maps the decided sections: accounts (模型账户与密钥) stays under 连接与扩展', () => {
-    expect(entryForSection('accounts')?.id).toBe('connect');
+  it('places account login immediately after members under 猫猫团队', () => {
+    expect(entryForSection('accounts')?.id).toBe('team');
     expect(entryForSection('members')?.id).toBe('team');
     expect(entryForSection('concierge')?.id).toBe('team');
     expect(entryForSection('ops')?.id).toBe('system');
@@ -65,6 +65,7 @@ describe('F322 设置与管理 information architecture', () => {
     expect(findEntry('mission')?.destination).toEqual({ kind: 'route', path: '/mission-hub' });
     expect(findEntry('signals')?.destination).toEqual({ kind: 'route', path: '/signals' });
     expect(findEntry('schedule')?.destination).toEqual({ kind: 'workspace-mode', mode: 'schedule' });
+    expect(findEntry('evolution')?.destination).toEqual({ kind: 'evolution-home' });
     expect(findEntry('eval')?.destination).toEqual({ kind: 'workspace-mode', mode: 'eval' });
     expect(findEntry('community')?.destination).toEqual({ kind: 'workspace-mode', mode: 'community' });
   });

@@ -6,11 +6,14 @@ import { INIT_DARK, INIT_LIGHT, type TunerState } from '@/components/dev/oklch-t
 import { HubCoCreatorOverviewCard } from '@/components/HubMemberOverviewCard';
 import { ReplyPill } from '@/components/ReplyPill';
 import { ReplyPreviewBar } from '@/components/ReplyPreviewBar';
+import { ThemeApplier } from '@/components/ThemeApplier';
+import { ThemeProvider } from '@/components/ThemeProvider';
 import { useCatData } from '@/hooks/useCatData';
 import { primeCoCreatorConfigCache, useCoCreatorConfig } from '@/hooks/useCoCreatorConfig';
 import type { ChatMessage as ChatMessageData } from '@/stores/chat-types';
 import { useChatStore } from '@/stores/chatStore';
-import { applyThemeCSS } from '@/stores/themeStore';
+import { useThemeStore } from '@/stores/themeStore';
+import { ActualProbe, themeApplied } from './f322-theme-applied';
 import '@/app/cat-persona-tokens.css';
 import '@/app/globals.css';
 import '@/app/theme-tokens.css';
@@ -19,15 +22,17 @@ import '@/app/shell-v2.css';
 
 /**
  * F322 B segment 1 (human message) probe fixture: the REAL ChatMessage, MessageBubble, CoCreatorHueInjector and the real
- * theme builder (`applyThemeCSS`) on a column the width of the reading column or the Studio chat bar. The config the
+ * theme pipeline (theme store -> `ThemeApplier` -> `applyThemeCSS`, resolved against the cats and the human colour that
+ * exist) on a column the width of the reading column or the Studio chat bar. The config the
  * human colour comes from is set through the real co-creator cache (`primeCoCreatorConfigCache`), the way the Hub editor
  * publishes it. Nothing talks to a service.
  *
  * The cats that answer in between come from the registry request (`/api/cats`), so the conversation reads as it does in the
  * product: your blocks on the right, the cats' nameplates on the left.
  *
- * `window.__human.applyTheme` changes the theme the way the Tuner does (real tuner params through the real CSS builder, and
- * the base mode on <html>); `window.__human.setColor` publishes a config with or without a colour.
+ * `window.__human.applyTheme` changes the theme the way the Tuner does (the store's own actions, so the real ThemeApplier
+ * applies it); `window.__human.setColor` publishes a config with or without a colour; `applied()` resolves when the page shows
+ * the active theme resolved against the room as it is now.
  */
 useChatStore.setState({ currentThreadId: 'thread-human' });
 
@@ -71,22 +76,28 @@ declare global {
     __human: {
       applyTheme: (base: 'light' | 'dark', variant?: 'default' | 'tuned') => void;
       setColor: (color: Color | null) => void;
+      applied: () => Promise<void>;
     };
   }
 }
 
 window.__human = {
   applyTheme(base, variant = 'default') {
-    document.documentElement.setAttribute('data-theme', base);
-    applyThemeCSS(
+    const store = useThemeStore.getState();
+    if (variant !== 'tuned') {
+      store.setActive(base);
+      return;
+    }
+    if (!store.createCustom('Tuned', base)) throw new Error('could not create the tuned theme');
+    useThemeStore.getState().updateParams(
       params(base, (p) => {
-        if (variant !== 'tuned') return;
         // A Tuner-adjusted theme: richer surfaces, and a surface step that moves with the user's slider.
         p.surfaceChroma = 2.2;
         p[base].surface = { L: base === 'light' ? 0.78 : 0.36, Cmul: base === 'light' ? 0.9 : 0.5 };
       }),
     );
   },
+  applied: themeApplied,
   setColor(color) {
     primeCoCreatorConfigCache({
       name: 'You',
@@ -172,11 +183,12 @@ if (!root) throw new Error('Missing human-message fixture root');
 if (window.localStorage.getItem('cat-cafe:shell-presentation') === 'v2') {
   document.documentElement.setAttribute('data-shell', 'v2');
 }
-window.__human.applyTheme('light');
 createRoot(root).render(
-  <>
+  <ThemeProvider>
     <CatHueInjector />
     <CoCreatorHueInjector />
+    <ThemeApplier />
+    <ActualProbe />
     {new URLSearchParams(window.location.search).has('consumers') ? <Consumers /> : <Thread />}
-  </>,
+  </ThemeProvider>,
 );

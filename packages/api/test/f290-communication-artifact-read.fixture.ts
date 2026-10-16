@@ -7,7 +7,7 @@ import { F232PreparedArtifactReader } from '../src/domains/growing/F232PreparedA
 import { CollectiveCurrentContext } from '../src/domains/plugin/builtin-runtime/collective-current-context.js';
 import { resolveCollectiveStandingGrant } from '../src/domains/plugin/builtin-runtime/collective-standing-grant.js';
 import { CollectiveWorkAdmission } from '../src/domains/plugin/builtin-runtime/collective-work/collective-work-admission.js';
-import { CollectiveWorkAuthority } from '../src/domains/plugin/builtin-runtime/collective-work-authority.js';
+import { CollectiveWorkAuthority } from '../src/domains/plugin/builtin-runtime/collective-work/collective-work-authority.js';
 import { resolveCollectiveWorkThread } from '../src/domains/plugin/builtin-runtime/collective-work-thread.js';
 import { collectiveDocumentFileName } from '../src/infrastructure/document/collective-document-scope.js';
 import { fixture } from './f290-communication-current-execution.fixture.js';
@@ -57,7 +57,7 @@ export async function artifactFixture() {
     const message = f.messages.append({
       userId: f.cafe.ownerUserId,
       threadId: task.threadId,
-      catId: CAT,
+      from: { kind: 'agent', catId: CAT },
       mentions: [],
       timestamp: Date.now(),
       origin: 'callback',

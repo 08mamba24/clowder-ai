@@ -14,7 +14,7 @@ export function ContentSourceDiscussions({ discussions }: { discussions: Content
         <details key={`${review.reviewId}:${review.revision}`} className="rounded border border-cafe-subtle p-2">
           <summary className="cursor-pointer">提交时的原件讨论 · {title}</summary>
           <p className="my-2 text-xs text-cafe-muted">保留原意见与原位置，只读。后续讨论请在原件中查看。</p>
-          {review.source.kind !== 'publication' ? (
+          {review.source.kind !== 'publication' && review.source.kind !== 'video-project' ? (
             <button type="button" className="mb-2 text-xs underline" onClick={() => openOriginal(review.source, title)}>
               {review.source.kind === 'evolution' ? '打开实验原件' : '打开当前原文件'}
             </button>
@@ -91,8 +91,17 @@ export function ContentSourceDiscussions({ discussions }: { discussions: Content
 const markNames = { stroke: '画笔', rectangle: '矩形', ellipse: '椭圆', arrow: '箭头', text: '文字标记' } as const;
 
 function originalPosition(anchor: WorkspaceContentAnchor, source: WorkspaceContentSource): string {
-  if ('kind' in anchor) return `“${anchor.quote}”`;
-  return source.kind === 'text' ? '原媒体位置' : anchorLabel(anchor.anchor, source.media);
+  if ('kind' in anchor) {
+    if (anchor.kind === 'text_quote') return `“${anchor.quote}”`;
+    const target = anchor.target;
+    if (target.kind === 'project') return '全片';
+    if (target.kind === 'segment') return `镜头 ${target.segmentId}`;
+    if (target.kind === 'artwork') return `画稿 ${target.assetVersionRef}`;
+    return `这一刻 · ${target.tick} tick`;
+  }
+  return source.kind === 'text' || source.kind === 'video-project'
+    ? '原媒体位置'
+    : anchorLabel(anchor.anchor, source.media);
 }
 
 function openOriginal(source: WorkspaceContentSource, title: string) {

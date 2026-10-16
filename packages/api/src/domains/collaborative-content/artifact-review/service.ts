@@ -5,6 +5,7 @@ import {
   artifactReviewCommandSchema,
   type PrepareArtifactReview,
   prepareArtifactReviewSchema,
+  type RespondWithMediaVersion,
   respondWithMediaVersionSchema,
   type TaskItem,
 } from '@cat-cafe/shared';
@@ -35,6 +36,20 @@ export interface ArtifactReviewServiceDeps {
 export class ArtifactReviewService {
   readonly versions: ArtifactVersionResponseService;
   private readonly now: () => string;
+  private committedProjection?: (reviewId: string) => Promise<void>;
+  private publicationResponse?: (
+    command: RespondWithMediaVersion,
+    principal: MediaReviewPrincipal,
+    mode: 'admit' | 'replay',
+  ) => Promise<import('@cat-cafe/shared').MessageMediaPublicationSource | undefined>;
+  setPublicationResponseGuard(guard: NonNullable<ArtifactReviewService['publicationResponse']>): void {
+    this.publicationResponse = guard;
+  }
+
+  /** Composition installs the durable Host projection; canonical operations remain the authority. */
+  setCommittedProjection(project: (reviewId: string) => Promise<void>): void {
+    this.committedProjection = project;
+  }
   constructor(private readonly deps: ArtifactReviewServiceDeps) {
     this.now = deps.now ?? (() => new Date().toISOString());
     this.versions = new ArtifactVersionResponseService({ ...deps, now: this.now });
@@ -90,6 +105,7 @@ export class ArtifactReviewService {
     if (this.deps.store.pendingVersion(reviewId)) {
       try {
         await this.versions.recover(review, principal);
+        await this.committedProjection?.(reviewId);
       } catch (error) {
         if (!(error instanceof MediaOwnerError) || this.deps.store.pendingVersion(reviewId)) throw error;
       }
@@ -166,7 +182,10 @@ export class ArtifactReviewService {
       request: command,
     };
     const replay = this.deps.store.replay(input);
-    if (replay) return { view: await this.read(command.reviewId, principal), receipt: replay.receipt };
+    if (replay) {
+      await this.committedProjection?.(command.reviewId);
+      return { view: await this.read(command.reviewId, principal), receipt: replay.receipt };
+    }
     if (this.deps.store.pendingVersion(command.reviewId)) throw new ArtifactReviewError('version_pending');
     const task = await this.deps.media.access.authorize(review.task.taskId, principal, {
       expectedRevision: command.expectedTaskRevision,
@@ -213,6 +232,7 @@ export class ArtifactReviewService {
       },
       command.expectedLedgerRevision,
     );
+    await this.committedProjection?.(command.reviewId);
     return { view: await this.read(command.reviewId, principal), receipt: committed.receipt };
   }
 
@@ -225,7 +245,10 @@ export class ArtifactReviewService {
     principal = withContentTask(principal, review.task.taskId);
     const task = await this.authorizeReview(review, principal);
     if (!isLineageLinked(task, review)) throw new ArtifactReviewError('task_changed');
-    const committed = await this.versions.respond(command, principal, review);
+    const committed = await this.versions.respond(command, principal, review, (mode) =>
+      command.requestId ? this.publicationResponse?.(command, principal, mode) : undefined,
+    );
+    await this.committedProjection?.(review.reviewId);
     return { view: await this.read(review.reviewId, principal), receipt: committed.receipt };
   }
 

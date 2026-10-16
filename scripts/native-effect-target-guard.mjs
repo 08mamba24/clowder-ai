@@ -18,6 +18,7 @@ import {
 } from './native-effect-shell-classifier.mjs';
 import { decideShellHookPayload } from './native-effect-shell-decision.mjs';
 import { classifyNativeTarget as classifyTarget } from './native-effect-target-classifier.mjs';
+import { projectLocalNativeShellPayload } from './native-shell-execution-context.mjs';
 
 /** Provider-neutral policy: native-effect-policy.mjs. Re-exported for existing importers. */
 export { decideNativeEffect };
@@ -58,6 +59,10 @@ function applySelfHostPolicy(decision, raw, cwd, resolveSelfHost, observeHost = 
 
 /** Adapt Claude/Codex hook wire data, stopping provider-specific names here. */
 export function decideNativeHookPayload(payload, options = {}) {
+  if (isRecord(payload) && payload.hook_event_name === 'NativeShellSafetyCheck') {
+    payload = projectLocalNativeShellPayload(payload);
+    if (!payload) return deny(invalidCandidate(), 'invalid_native_shell_execution');
+  }
   const resolveSelfHost = options.selfHost ?? readSelfHostFacet;
   const decision = decideNativeHookPayloadWithoutSelfHost(payload);
   // Edit payloads are source data. Their file target was already classified;
@@ -148,16 +153,32 @@ async function runHookCli() {
     payload = null;
   }
   const verdict = decideNativeHookPayload(payload);
+  if (isRecord(payload) && payload.hook_event_name === 'NativeShellSafetyCheck') {
+    const fingerprint =
+      isRecord(payload.native_execution) && typeof payload.native_execution.fingerprint === 'string'
+        ? payload.native_execution.fingerprint
+        : '';
+    const output =
+      verdict.decision === 'allow'
+        ? { decision: 'accept', fingerprint }
+        : { decision: 'deny', fingerprint, reason: guardReason(verdict) };
+    process.stdout.write(`${JSON.stringify(output)}\n`);
+    return;
+  }
   if (verdict.decision === 'allow') return;
   process.stdout.write(
     `${JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: `Clowder AI native guard: ${verdict.reasonCode} (${verdict.effect} → ${verdict.target.kind})${verdict.detail ? ` — ${verdict.detail}` : ''}`,
+        permissionDecisionReason: guardReason(verdict),
       },
     })}\n`,
   );
+}
+
+function guardReason(verdict) {
+  return `Clowder AI native guard: ${verdict.reasonCode} (${verdict.effect} → ${verdict.target.kind})${verdict.detail ? ` — ${verdict.detail}` : ''}`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

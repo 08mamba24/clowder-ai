@@ -9,6 +9,11 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '../../../ppt-forge/node_modules/playwright/index.mjs';
 import { registerDefaultEntryJourney } from './default-entry-journey.harness.mjs';
+import { registerChatFileTabJourneys } from './f307-chat-file-tabs.journey.mjs';
+import { registerHomeSearchReturnJourneys } from './f307-home-search-return.journey.mjs';
+import { closeMobileSidebarIfOpen } from './f307-mobile-sidebar.harness.mjs';
+import { registerPluginScrollJourneys } from './f307-plugin-scroll.journey.mjs';
+import { registerPullRequestChangesJourneys } from './f307-pull-request-changes.journey.mjs';
 import {
   canonicalWorktreeId,
   EVOLUTION_PROGRAM_ID,
@@ -21,6 +26,7 @@ import {
   THREAD_ID,
   WORKTREE_ID,
 } from './f307-real-surface-fixtures.mjs';
+import { registerV2FocusExitJourneys } from './f307-v2-focus-exit.journey.mjs';
 import { ensureWorkspaceOpen } from './f307-workspace-open.mjs';
 
 const WEB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -114,6 +120,20 @@ async function assertOwnerRootFillsPane(surfacePane, ownerRoot) {
     `owner host must fill the pane height (${ownerBox.height}px vs ${paneBox.height - headerBox.height}px)`,
   );
   return ownerBox;
+}
+
+async function assertEmptyRecallOwner(recallOwner) {
+  await recallOwner
+    .getByText('这条对话还没有召回记录。猫检索记忆或收到系统递送后，会显示在这里。', { exact: true })
+    .waitFor();
+  assert.equal(await recallOwner.getByRole('alert').count(), 0, 'empty Recall must not be a failed read');
+  assert.equal(await recallOwner.getByRole('status').count(), 0, 'empty Recall must finish reading its empty history');
+  assert.equal(
+    await recallOwner.locator('[data-recall-group]').count(),
+    0,
+    'empty Recall must not contain event groups',
+  );
+  assert.equal(await recallOwner.locator(':scope > p').count(), 1, 'geometry regression covers the empty Recall feed');
 }
 
 async function assertOwnerSurfaceFillsPane(surfacePane, ownerRoot) {
@@ -424,6 +444,12 @@ after(async () => {
   if (testTsconfigPath) await rm(testTsconfigPath, { force: true });
 });
 
+registerHomeSearchReturnJourneys(() => ({ browser, baseUrl, evidenceDir: EVIDENCE_DIR }));
+registerPullRequestChangesJourneys(() => ({ browser, baseUrl, evidenceDir: EVIDENCE_DIR }));
+registerChatFileTabJourneys(() => ({ browser, baseUrl, evidenceDir: EVIDENCE_DIR }));
+registerV2FocusExitJourneys(() => ({ browser, baseUrl }));
+registerPluginScrollJourneys(() => ({ browser, baseUrl, evidenceDir: EVIDENCE_DIR }));
+
 test('Workspace open waits for client interactivity instead of clicking server-rendered chrome', async () => {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -458,6 +484,54 @@ test('Workspace open waits for client interactivity instead of clicking server-r
   } finally {
     await context.close();
   }
+});
+
+test('mobile sidebar close waits for the delayed overlay commit before clicking', async () => {
+  const calls = [];
+  let releaseOverlay;
+  const overlayReady = new Promise((resolve) => {
+    releaseOverlay = resolve;
+  });
+  let closed = false;
+  const backdrop = {
+    last: () => backdrop,
+    waitFor: async () => {
+      calls.push('backdrop-wait');
+      await overlayReady;
+    },
+    boundingBox: async () => ({ x: 0, y: 0, width: 390, height: 844 }),
+    click: async () => {
+      calls.push('backdrop-click');
+      closed = true;
+    },
+  };
+  const page = {
+    getByRole: (_role, { name }) =>
+      name === 'Hide sidebar'
+        ? { count: async () => 1 }
+        : {
+            waitFor: async () => {
+              calls.push('show-wait');
+              assert.equal(closed, true, 'Show sidebar cannot appear until the mounted backdrop closes the overlay');
+            },
+          },
+    locator: (selector) => {
+      assert.equal(selector, '[aria-hidden="true"][class*="console-overlay-backdrop"]');
+      return backdrop;
+    },
+    mouse: {
+      click: async () => {
+        calls.push('blind-click');
+      },
+    },
+  };
+
+  const closing = closeMobileSidebarIfOpen(page, { timeout: 1_000 }).catch((error) => error);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ['backdrop-wait'], 'the harness must observe the delayed close target before clicking');
+  releaseOverlay();
+  assert.equal(await closing, true);
+  assert.deepEqual(calls, ['backdrop-wait', 'backdrop-click', 'show-wait']);
 });
 
 // Design-gate claim evidence (docs/design-gate-claims/f307-phase-a-real-shell.json):
@@ -652,11 +726,7 @@ test('root reply keeps child identity distinct after hydration at desktop and 39
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
       if (width === 390) {
-        const hideSidebar = page.getByRole('button', { name: 'Hide sidebar' });
-        if ((await hideSidebar.count()) > 0) {
-          await page.mouse.click(350, 100);
-          await page.getByRole('button', { name: 'Show sidebar' }).waitFor();
-        }
+        await closeMobileSidebarIfOpen(page);
       }
       await rootMessage.scrollIntoViewIfNeeded();
       await rootMessage.getByText('主 agent 最终交付仍然可见。', { exact: true }).waitFor();
@@ -767,11 +837,7 @@ test(
       const recallPane = workbench.locator('[data-surface-id="workspace:mode:recall"]');
       const recallOwner = recallPane.getByTestId('recall-feed');
       await recallOwner.waitFor();
-      assert.equal(
-        await recallOwner.locator(':scope > p').count(),
-        1,
-        'geometry regression covers the empty Recall feed',
-      );
+      await assertEmptyRecallOwner(recallOwner);
       await assertOwnerRootFillsPane(recallPane, recallOwner);
       await page.screenshot({ path: path.join(EVIDENCE_DIR, '03-recall-owner-desktop.png'), fullPage: true });
       await page.getByTestId('f307-close-workspace').click();
@@ -873,12 +939,16 @@ test(
       await assertArtifactFullWindowRoundTrip(page);
 
       await page.getByTestId('f307-tab-workspace').click();
+      const artifactsSurfaceId = await workbench.getAttribute('data-active-surface');
       await artifactRows.filter({ hasText: 'PR #307 Real Surface Adapters' }).click();
-      assert.match(await workbench.getAttribute('data-active-surface'), /^review:/);
-      await page.getByTestId('f307-tab-review').waitFor();
+      const prSurfaceId = `workspace:surface:changes:pr:${encodeURIComponent(
+        JSON.stringify(['pr:owner/cat-cafe#307', WORKTREE_ID]),
+      )}`;
+      assert.equal(await workbench.getAttribute('data-active-surface'), prSurfaceId);
+      await workbench.locator(`[data-tab-surface-id="${prSurfaceId}"] [role="tab"]`).waitFor();
       assert.equal(await workbench.getAttribute('data-surface-count'), '6');
 
-      await page.getByTestId('f307-tab-workspace').click();
+      await workbench.locator(`[data-tab-surface-id="${artifactsSurfaceId}"] [role="tab"]`).click();
       await page.getByRole('button', { name: '全局', exact: true }).click();
       const ownerBArtifact = page.locator('[data-artifact-row]').filter({ hasText: 'owner-b.ts' });
       await ownerBArtifact.waitFor();
@@ -986,7 +1056,7 @@ test(
       assert.equal(await workbench.getAttribute('data-active-surface'), `browser-owner:${WORKTREE_ID}`);
       assert.match(await workbench.getAttribute('data-surface-order'), /artifact:/);
       assert.match(await workbench.getAttribute('data-surface-order'), new RegExp(`artifact:${OTHER_THREAD_ID}:`));
-      assert.match(await workbench.getAttribute('data-surface-order'), /review:/);
+      assert.ok((await workbench.getAttribute('data-surface-order')).split(',').includes(prSurfaceId));
       assert.match(await workbench.getAttribute('data-surface-order'), /agent-run:/);
       await page.getByRole('tab', { name: 'owner-b.ts', exact: true }).click();
       assert.match(await workbench.getAttribute('data-active-surface'), new RegExp(`^artifact:${OTHER_THREAD_ID}:`));
@@ -1073,6 +1143,7 @@ test(
       await home.waitFor();
       await home.getByTestId('workspace-launcher-recall').click();
       await recallOwner.waitFor();
+      await assertEmptyRecallOwner(recallOwner);
       await assertOwnerRootFillsPane(recallPane, recallOwner);
       await page.screenshot({ path: path.join(EVIDENCE_DIR, '03-recall-owner-narrow.png'), fullPage: true });
       await page.getByTestId('f307-add-surface').click();
@@ -1714,6 +1785,91 @@ test('the real Thread shell resolves invalid persisted surfaces to canonical Hom
 });
 
 test(
+  'explicit Schedule input uses the original wide owner and returns to the saved rail',
+  { timeout: 90_000 },
+  async () => {
+    for (const width of [1440, 390]) {
+      const context = await browser.newContext({ viewport: { width, height: 900 } });
+      await context.addInitScript(() => window.localStorage.clear());
+      const page = await context.newPage();
+      await page.route('**/api/**', (route) => {
+        const url = new URL(route.request().url());
+        if (url.pathname === '/api/entrusted-work/needs-me') return json(route, { ownerReads: [] });
+        const response = realSurfaceApiResponse(route.request(), false);
+        return json(route, response.body, response.status);
+      });
+      try {
+        await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+        await ensureWorkspaceOpen(page);
+        const workbench = page.getByTestId('f307-experience-workbench');
+        await page.getByTestId('workspace-launcher-needs-me').click();
+        const input = page.getByTestId('needs-me-goto-schedule');
+        await input.waitFor();
+        const railBefore = await workbench.boundingBox();
+        const composer = page.locator('textarea').last();
+        const draft = 'Schedule original Chat draft';
+        if (width === 1440) await composer.fill(draft);
+        await input.focus();
+        await input.press('Enter');
+        const panel = page.getByTestId('product-schedule-panel');
+        await panel.waitFor();
+        const surfaceId = 'workspace:mode:product-schedule';
+        await page.waitForFunction(
+          (id) =>
+            document.querySelector('[data-testid="f307-experience-workbench"]')?.getAttribute('data-active-surface') ===
+            id,
+          surfaceId,
+        );
+        if (width === 1440) {
+          await page.waitForFunction(
+            () =>
+              document.querySelector('[data-testid="contextual-workspace-host"]')?.getAttribute('data-presentation') ===
+              'wide-workspace',
+          );
+          assert.equal(await workbench.getAttribute('data-main-area-attention'), surfaceId);
+          const wide = await panel.boundingBox();
+          const chat = page.getByTestId('thread-chat-host');
+          const chatBox = await chat.boundingBox();
+          assert.ok(wide && railBefore && wide.width > railBefore.width, 'Schedule expands the original Workspace');
+          assert.ok(await chat.isVisible(), 'the signed wide layout keeps the original Chat visible');
+          assert.ok(
+            wide && chatBox && chatBox.width > 0 && chatBox.x + chatBox.width <= wide.x + 1,
+            'Chat stays to the left of the wide Workspace without overlap',
+          );
+          await page.screenshot({
+            path: path.join(EVIDENCE_DIR, 'schedule-explicit-desktop-wide.png'),
+            fullPage: true,
+          });
+          await page.getByTestId('f307-return-from-main-area').click();
+          await page.waitForFunction(
+            () =>
+              document.querySelector('[data-testid="contextual-workspace-host"]')?.getAttribute('data-presentation') ===
+              'right-rail',
+          );
+          const railAfter = await workbench.boundingBox();
+          assert.ok(
+            railBefore && railAfter && Math.abs(railBefore.width - railAfter.width) <= 1,
+            'exit restores the original rail width',
+          );
+          assert.equal(await workbench.getAttribute('data-main-area-attention'), '');
+          assert.equal(await composer.inputValue(), draft, 'attention and exit preserve the original Chat draft');
+          assert.equal(await workbench.getAttribute('data-active-surface'), surfaceId);
+        } else {
+          assert.equal(await workbench.getAttribute('data-main-area-attention'), '');
+          assert.ok(
+            await panel.evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
+            'mobile retains the original full-screen owner without horizontal overflow',
+          );
+          await page.screenshot({ path: path.join(EVIDENCE_DIR, 'schedule-explicit-mobile.png'), fullPage: true });
+        }
+      } finally {
+        await context.close();
+      }
+    }
+  },
+);
+
+test(
   'F310 exact prepared publication returns to the same Schedule/Needs Me item at desktop and 390px',
   { timeout: 180_000 },
   async () => {
@@ -1751,21 +1907,36 @@ test(
           },
         ];
         let artifactRevision = 700;
-        let releaseCatalog;
-        const catalogReady = new Promise((resolve) => {
-          releaseCatalog = resolve;
+        let globalCatalogReads = 0;
+        let threadArtifactReads = 0;
+        let holdThreadRead = false;
+        let signalThreadRead;
+        const threadReadStarted = new Promise((resolve) => {
+          signalThreadRead = resolve;
         });
-        await page.route('**/api/**', async (route) => {
+        let releaseThreadRead;
+        const threadReadReady = new Promise((resolve) => {
+          releaseThreadRead = resolve;
+        });
+        await page.route('**/api/**', (route) => {
           const url = new URL(route.request().url());
           if (url.pathname === '/api/entrusted-work/owner-reads' || url.pathname === '/api/entrusted-work/needs-me') {
             return json(route, { ownerReads: [ownerRead] });
           }
-          if (url.pathname === '/api/artifacts') await catalogReady;
-          if (url.pathname === '/api/artifacts' || url.pathname === `/api/threads/${THREAD_ID}/artifacts`) {
-            return json(route, { threadId: THREAD_ID, artifacts: [{ ...artifact, createdAt: artifactRevision }] });
-          }
           const result = realSurfaceApiResponse(route.request(), false);
           return json(route, result.body, result.status);
+        });
+        await page.route('**/api/artifacts', (route) => {
+          globalCatalogReads++;
+          return json(route, { error: 'Unrelated global catalog unavailable' }, 503);
+        });
+        await page.route(`**/api/threads/${THREAD_ID}/artifacts`, async (route) => {
+          threadArtifactReads++;
+          if (holdThreadRead) {
+            signalThreadRead();
+            await threadReadReady;
+          }
+          return json(route, { threadId: THREAD_ID, artifacts: [{ ...artifact, createdAt: artifactRevision }] });
         });
         await page.route('**/uploads/f310-prepared-review.md', (route) =>
           route.fulfill({
@@ -1782,11 +1953,20 @@ test(
           await item.waitFor();
           const itemRef = await item.getAttribute('data-item-ref');
           const openId = projection === 'needs-me' ? 'needs-me-open-artifact' : 'product-schedule-open-artifact';
-          assert.equal(await page.getByTestId(openId).first().isDisabled(), true);
+          // Needs Me may read its preview first; opening waits only on the clicked source read.
+          await page.locator(`[data-testid="${openId}"]:not(:disabled)`).first().waitFor();
+          assert.equal(await page.getByTestId(openId).first().isDisabled(), false);
+          assert.equal(globalCatalogReads, 0);
+          const readsBeforeOpen = threadArtifactReads;
+          holdThreadRead = true;
+          await page.getByTestId(openId).first().click();
+          await threadReadStarted;
+          await page.locator(`[data-testid="${openId}"]:disabled`).first().waitFor();
+          assert.equal(threadArtifactReads > readsBeforeOpen, true, 'opening must read the original thread');
           assert.equal(await page.getByTestId(openId).first().getAttribute('aria-busy'), 'true');
           assert.equal(await page.getByRole('alert').filter({ hasText: '这份内容已更新或暂时不可用' }).count(), 0);
-          releaseCatalog();
-          await page.getByTestId(openId).first().click();
+          holdThreadRead = false;
+          releaseThreadRead();
           await page.waitForFunction(() =>
             document
               .querySelector('[data-testid="f307-experience-workbench"]')
@@ -1801,7 +1981,7 @@ test(
           assert.equal(await returned.getAttribute('data-selected'), 'true');
           const panel = page.getByTestId(`${projection}-panel`).first();
           assert.equal(await panel.evaluate((node) => node.scrollWidth <= node.clientWidth + 1), true);
-          // Refresh the global Artifact owner into a newer publication while this read stays pinned.
+          // Advance the source-thread publication while the work's prepared coordinate stays pinned.
           artifactRevision = 701;
           await page.reload({ waitUntil: 'domcontentloaded' });
           await ensureWorkspaceOpen(page);
@@ -1818,9 +1998,11 @@ test(
             await page.getByTestId('f307-experience-workbench').getAttribute('data-active-surface'),
             `workspace:mode:${projection}`,
           );
+          assert.equal(globalCatalogReads, 0, 'a known prepared publication must not read the global catalog');
           await page.screenshot({ path: path.join(EVIDENCE_DIR, `f310-${projection}-${width}.png`), fullPage: true });
           process.stdout.write(`F310 browser fixture PASS ${width}px ${projection} at ${baseUrl}\n`);
         } finally {
+          releaseThreadRead();
           await context.close();
         }
       }

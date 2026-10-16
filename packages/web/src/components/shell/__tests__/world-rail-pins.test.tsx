@@ -1,6 +1,10 @@
-import { act } from 'react';
+import { act, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { captureChatReadingRef } from '@/utils/chat-scroll-memory';
+import type { ChatReadingPort } from '../../thread-chat/useThreadChatReadingPort';
+import { readSettingsReadingSession } from '../settings-reading-session';
+import { SettingsSourceReturnProvider, useSettingsReadingPort } from '../useSettingsSourceReturn';
 
 const data = vi.hoisted(() => ({ push: vi.fn(), pinned: [] as string[], pathname: '/thread/current' }));
 const openTeamSubject = vi.hoisted(() => vi.fn());
@@ -47,6 +51,29 @@ vi.mock('@/components/concierge/ConciergeRailToggle', () => ({
 }));
 
 import { WorldRail } from '../WorldRail';
+
+const entryReader: ChatReadingPort = {
+  threadId: 'current',
+  ownerId: 'original-reader',
+  captureReadingRef: vi.fn(() =>
+    captureChatReadingRef({
+      threadId: 'current',
+      position: {
+        top: 320,
+        anchor: 'offset',
+        messageAnchor: { messageId: 'real-message', viewportOffsetPx: 42 },
+      },
+    }),
+  ),
+  restoreReadingRef: vi.fn(async () => ({ status: 'unavailable' as const })),
+  releaseReadingRef: vi.fn(() => true),
+  navigateToMessage: vi.fn(async () => ({ status: 'unavailable' as const })),
+};
+function EntryReadingPort() {
+  const register = useSettingsReadingPort('Current actual title');
+  useEffect(() => register(entryReader), [register]);
+  return null;
+}
 
 describe('F322 rail: pins above the mailbox', () => {
   let host: HTMLDivElement;
@@ -118,5 +145,31 @@ describe('F322 rail: pins above the mailbox', () => {
     render();
     act(() => all()[0]?.click());
     expect(data.push).toHaveBeenCalledWith('/signals?from=current');
+  });
+  function renderReadingEntry() {
+    localStorage.clear();
+    act(() =>
+      root.render(
+        <SettingsSourceReturnProvider pathname={data.pathname} enabled>
+          <EntryReadingPort />
+          <WorldRail />
+        </SettingsSourceReturnProvider>,
+      ),
+    );
+  }
+  it('the actual avatar Settings entry captures the registered foreground checkpoint before routing', () => {
+    renderReadingEntry();
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="settings-button"]')?.click());
+    expect(entryReader.captureReadingRef).toHaveBeenCalledOnce();
+    expect(readSettingsReadingSession()?.label).toBe('Current actual title');
+    expect(data.push).toHaveBeenCalledWith('/settings?from=current');
+  });
+  it('the actual pinned section captures through the same Settings entry consumer', () => {
+    data.pinned = ['notify'];
+    renderReadingEntry();
+    act(() => all()[0]?.click());
+    expect(entryReader.captureReadingRef).toHaveBeenCalledOnce();
+    expect(readSettingsReadingSession()?.threadId).toBe('current');
+    expect(data.push).toHaveBeenCalledWith('/settings?s=notify&standalone=1&from=current');
   });
 });

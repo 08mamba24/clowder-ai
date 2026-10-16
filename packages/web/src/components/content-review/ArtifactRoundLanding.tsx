@@ -1,17 +1,24 @@
 'use client';
 import type { ArtifactReviewAnnotation, ArtifactReviewRound, ArtifactReviewView } from '@cat-cafe/shared';
-import { type ReactNode, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useRef, useState } from 'react';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import { ContentReviewSurface } from '@/components/workbench/content-review/ContentReviewSurface';
 import type { ContentReviewController } from '@/components/workbench/content-review/content-review-contract';
 import type { useWorkspaceContentReview } from '@/components/workbench/content-review/useWorkspaceContentReview';
+import type { WorkspaceFileNavigationOrigin } from '@/stores/chat-types';
 import { ArtifactModificationEntry } from './ArtifactModificationEntry';
+import { artifactRoundChatTarget } from './artifact-modification-source';
 import { artifactLandingCapabilities, artifactReviewProjection } from './artifact-review-adapter';
+import { artworkTitle } from './artwork-title';
 import { ArtifactMediaCompare } from './media-compare/ArtifactMediaCompare';
 import { reviewAuthorityMessages } from './media-compare/review-authority-messages';
 import { ReviewComments } from './ReviewComments';
 import { ReviewDiscussionPanel } from './ReviewDiscussionPanel';
+import { ReviewRoundDecision } from './ReviewRoundDecision';
 import { ReviewVersionDetails } from './ReviewVersionDetails';
+import { useArtifactChatDiscussion } from './useArtifactChatDiscussion';
 import type { useArtifactReview } from './useArtifactReview';
+import { useArtifactRoundComparison } from './useArtifactRoundComparison';
 import { useReviewDraft } from './useReviewDraft';
 import { useReviewMediaSource } from './useReviewMediaSource';
 
@@ -25,6 +32,11 @@ export type ArtifactRoundProps = {
   onReanchor?: ((annotation: ArtifactReviewAnnotation) => void) | undefined;
   onVersion: (number: number) => void;
   contextControl?: ReactNode;
+  leadingAction?: ReactNode;
+  titleInHost?: boolean;
+  title?: string;
+  navigationOrigin?: WorkspaceFileNavigationOrigin;
+  fullWindowAction?: { active: boolean; onToggle: () => void };
 };
 export function ArtifactRoundLanding({
   view,
@@ -36,14 +48,32 @@ export function ArtifactRoundLanding({
   onReanchor,
   onVersion,
   contextControl,
+  leadingAction,
+  titleInHost = false,
+  title,
+  navigationOrigin,
+  fullWindowAction,
   linked,
 }: ArtifactRoundProps & { linked?: ReturnType<typeof useWorkspaceContentReview> }) {
   const draft = useReviewDraft(`${prefix}round:${round.number}:annotation`);
+  const isV2 = useShellPresentation() === 'v2';
+  const workTitle = isV2
+    ? artworkTitle(title ?? view.review.title, round.asset.mediaType === 'image/png' ? '图片' : '作品')
+    : view.review.title;
+  const discussion = useArtifactChatDiscussion(view, round, workTitle);
   const source = useReviewMediaSource(view.review.reviewId, round.number, controller.revokeAccess);
   const [active, setActive] = useState<string | null>(null);
   const [panel, setPanel] = useState<'decision' | 'details' | null>(null);
-  const [comparing, setComparing] = useState(false);
   const originalSurface = useRef<HTMLDivElement>(null);
+  // Opening the comparison, by hand or because a receipt asked, puts the round's own panel and any video aside.
+  const stepAside = useCallback(() => {
+    originalSurface.current?.querySelectorAll('video').forEach((video) => {
+      video.pause();
+    });
+    setPanel(null);
+  }, []);
+  const comparison = useArtifactRoundComparison(view, round, stepAside);
+  const comparing = comparison.comparing;
   const projection = artifactReviewProjection(view, round);
   const capabilities = artifactLandingCapabilities(view, round);
   const history = capabilities.historyReadOnly;
@@ -126,7 +156,11 @@ export function ArtifactRoundLanding({
         <ContentReviewSurface
           review={effective}
           path={view.review.title}
-          title={view.review.title}
+          title={workTitle}
+          navigationOrigin={navigationOrigin}
+          fullWindowAction={fullWindowAction}
+          titleInHost={titleInHost}
+          leadingAction={comparing ? undefined : leadingAction}
           sourceText=""
           sourceTextRevision=""
           onBack={onBack}
@@ -138,13 +172,7 @@ export function ArtifactRoundLanding({
                   type="button"
                   aria-label="对比版本"
                   className="shrink-0 text-xs text-cafe-accent"
-                  onClick={() => {
-                    originalSurface.current?.querySelectorAll('video').forEach((video) => {
-                      video.pause();
-                    });
-                    setPanel(null);
-                    setComparing(true);
-                  }}
+                  onClick={comparison.open}
                 >
                   对比
                 </button>
@@ -161,14 +189,16 @@ export function ArtifactRoundLanding({
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                aria-label="完成审阅"
-                onClick={() => setPanel(panel === 'decision' ? null : 'decision')}
-                className="shrink-0 text-xs text-cafe-accent"
-              >
-                审阅
-              </button>
+              {!isV2 ? (
+                <button
+                  type="button"
+                  aria-label="完成审阅"
+                  onClick={() => setPanel(panel === 'decision' ? null : 'decision')}
+                  className="shrink-0 text-xs text-cafe-accent"
+                >
+                  审阅
+                </button>
+              ) : null}
               <button
                 type="button"
                 aria-label="审阅详情"
@@ -177,32 +207,37 @@ export function ArtifactRoundLanding({
               >
                 详情
               </button>
-              <button
-                type="button"
-                aria-label="刷新"
-                onClick={() => void controller.refresh()}
-                className="shrink-0 text-xs text-cafe-muted"
-              >
-                刷新
-              </button>
+              {!isV2 ? (
+                <button
+                  type="button"
+                  aria-label="刷新"
+                  onClick={() => void controller.refresh()}
+                  className="shrink-0 text-xs text-cafe-muted"
+                >
+                  刷新
+                </button>
+              ) : null}
             </>
           }
           workflow={{
             mediaSource: source,
             canvasDraftKey: linked ? undefined : `${prefix}round:${round.number}:markup`,
             annotationMaxLength: 8000,
+            // 「引用到聊天」 names the same round (or ledger) and Task a modification request does.
+            chatMedia: artifactRoundChatTarget(view, round, workTitle),
             modification: (
               <ArtifactModificationEntry
                 view={view}
                 round={round}
                 draft={selectedDraft}
                 disabled={!projection.canWrite || !canWrite}
+                allowNewRequest={round.asset.mediaType !== 'image/png'}
                 onRegionHandedOff={() => effective.setTarget(null)}
               />
             ),
             status: (
               <div className="space-y-1 px-3 text-xs text-cafe-muted">
-                {contextControl}
+                {!isV2 ? contextControl : null}
                 {view.authority.state !== 'current' ? (
                   <p role="status">{reviewAuthorityMessages[view.authority.state]}</p>
                 ) : null}
@@ -225,7 +260,7 @@ export function ArtifactRoundLanding({
                     {delivery.state === 'pending'
                       ? '意见已保存，投递尚未完成；关闭页面后仍会继续。'
                       : delivery.state === 'queued'
-                        ? '意见已交还原任务队列。'
+                        ? '意见已交还负责的猫。'
                         : '原任务或版本已变化，旧回流已撤回，历史结论保留。'}
                   </p>
                 ) : null}
@@ -254,6 +289,7 @@ export function ArtifactRoundLanding({
             panel:
               panel === 'decision' ? (
                 <ReviewDiscussionPanel
+                  title={workTitle}
                   panel="decision"
                   round={round}
                   view={view}
@@ -269,6 +305,7 @@ export function ArtifactRoundLanding({
                 />
               ) : panel === 'details' ? (
                 <ReviewVersionDetails
+                  contextControl={isV2 ? contextControl : undefined}
                   round={round}
                   reviewId={view.review.reviewId}
                   revision={view.review.revision}
@@ -281,6 +318,25 @@ export function ArtifactRoundLanding({
               ) : null,
           }}
         />
+        {isV2 ? (
+          <div className="shrink-0 border-t border-cafe-subtle px-3 py-2">
+            <ReviewRoundDecision
+              round={round}
+              ownerUserId={view.review.task.ownerUserId}
+              canWrite={canWrite && !history}
+              saving={controller.saving}
+              draftKey={`${prefix}round:${round.number}:decision`}
+              act={controller.act}
+              onDiscuss={discussion.discuss}
+              compact
+            />
+            {discussion.notice ? (
+              <p role="status" className="text-xs">
+                {discussion.notice}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       {comparing ? (
         <ArtifactMediaCompare
@@ -290,8 +346,12 @@ export function ArtifactRoundLanding({
           recovery={effective}
           prefix={prefix}
           canWrite={canWrite && !history}
-          onClose={() => setComparing(false)}
+          onClose={comparison.close}
           onBack={onBack}
+          leadingAction={leadingAction}
+          titleInHost={titleInHost}
+          fullWindowAction={fullWindowAction}
+          title={title}
         />
       ) : null}
     </section>

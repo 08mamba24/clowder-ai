@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 import { contentModificationOutcome } from '@cat-cafe/shared';
-import type { IMessageStore } from '../../cats/services/stores/ports/MessageStore.js';
+import {
+  deriveGrowingSourceMessageRevision,
+  type IMessageStore,
+  isDelivered,
+  type StoredMessage,
+} from '../../cats/services/stores/ports/MessageStore.js';
 import { EntrustedWorkLifecycleError } from '../../growing/EntrustedWorkLifecycleService.js';
 import { MediaOwnerError } from '../../video-studio/content-owner/media-errors.js';
 import type { PublicationTaskGrantPort } from '../../video-studio/content-owner/published-media-access.js';
@@ -16,6 +21,25 @@ export async function assertModificationSourceAuthority(
   messages: Pick<IMessageStore, 'getById'>,
   record: ContentModificationRecord,
 ) {
+  const source = await requireModificationSourceMessage(messages, record);
+  if (record.progress.sourceKind === 'human_message') return undefined;
+  const accepted = source.extra?.contentModificationRequestV1;
+  if (
+    !accepted ||
+    accepted.requestId !== record.requestId ||
+    accepted.targetCatId !== record.payload.targetCatId ||
+    source.content !== contentModificationOutcome(record.payload.intent) ||
+    accepted.requestFingerprint !==
+      `sha256:${createHash('sha256').update(JSON.stringify(record.payload)).digest('hex')}`
+  )
+    throw new MediaOwnerError('access_denied');
+  return accepted;
+}
+
+export async function requireModificationSourceMessage(
+  messages: Pick<IMessageStore, 'getById'>,
+  record: ContentModificationRecord,
+): Promise<StoredMessage> {
   if (!record.progress.sourceMessageId) throw new MediaOwnerError('access_denied');
   const source = await assertDirectAdmissionSourceCustody(
     messages,
@@ -30,18 +54,18 @@ export async function assertModificationSourceAuthority(
     if (error instanceof EntrustedWorkLifecycleError) throw new MediaOwnerError('access_denied');
     throw error;
   });
-  const accepted = source?.extra?.contentModificationRequestV1;
-  if (
-    !source ||
-    !accepted ||
-    accepted.requestId !== record.requestId ||
-    accepted.targetCatId !== record.payload.targetCatId ||
-    source.content !== contentModificationOutcome(record.payload.intent) ||
-    accepted.requestFingerprint !==
-      `sha256:${createHash('sha256').update(JSON.stringify(record.payload)).digest('hex')}`
-  )
-    throw new MediaOwnerError('access_denied');
-  return accepted;
+  if (!source) throw new MediaOwnerError('access_denied');
+  if (record.progress.sourceKind === 'human_message') {
+    if (
+      !record.progress.sourceMessageRevision ||
+      deriveGrowingSourceMessageRevision(source) !== record.progress.sourceMessageRevision ||
+      !isDelivered(source) ||
+      !source.mentions.some((catId) => catId === record.payload.targetCatId) ||
+      (source.visibility === 'whisper' && !source.whisperTo?.some((catId) => catId === record.payload.targetCatId))
+    )
+      throw new MediaOwnerError('access_denied');
+  }
+  return source;
 }
 
 export class ModificationPublicationGrants implements PublicationTaskGrantPort {

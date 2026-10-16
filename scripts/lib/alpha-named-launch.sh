@@ -85,12 +85,14 @@ start_named_alpha_worktree() {
   local selected_record="$NAMED_ALPHA_COORDINATES" selected_project="$PROJECT_DIR" selected_script="$SCRIPT_DIR"
   local selected_allow_empty="$ALPHA_EMPTY_REDIS_ALLOWED"
   local selected_preview_expiry="${CAT_CAFE_PREVIEW_EXPIRES_AT-}"
+  local selected_cleanup_result="${CAT_CAFE_PREVIEW_CLEANUP_RESULT-}"
   source_env_if_present
   PROJECT_DIR="$selected_project"
   SCRIPT_DIR="$selected_script"
   NAMED_ALPHA_COORDINATES="$selected_record"
   ALPHA_EMPTY_REDIS_ALLOWED="$selected_allow_empty"
   export CAT_CAFE_PREVIEW_EXPIRES_AT="$selected_preview_expiry"
+  export CAT_CAFE_PREVIEW_CLEANUP_RESULT="$selected_cleanup_result"
   read_named_alpha_selection
   apply_alpha_env
   assert_named_alpha_prepared

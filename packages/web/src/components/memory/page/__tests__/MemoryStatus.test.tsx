@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type ConfigWarningCode, parseIndexStatus } from '../../IndexStatus';
 import { type MaintenanceData, MemoryStatusCard } from '../MemoryStatus';
+import { memoryTime } from '../memory-time';
 import { formatMemoryDate, type MemoryRead } from '../use-memory-read';
 
 let container: HTMLDivElement;
@@ -52,6 +53,15 @@ const render = async (codes: ConfigWarningCode[] = [], failedMaintenance = false
   );
 };
 describe('owner memory status', () => {
+  it('directs a suspicious library path to library management instead of claiming Settings can archive', async () => {
+    await render(['docs_root_suspicious']);
+    expect(container.textContent).toContain('不再使用的资料库可到资料库管理页归档');
+    expect(container.textContent).not.toContain('请到设置里重新绑定或归档');
+  });
+  it('takes the owner directly to index and recall settings rather than the settings landing', async () => {
+    await render();
+    expect(container.querySelector('a')?.getAttribute('href')).toBe('/settings?s=ops&ops=memory');
+  });
   it('uses the explicit document clock rather than the legacy rebuild field', async () => {
     await render();
     const clock = [...container.querySelectorAll('dt')].find((item) => item.textContent === '文档最近更新');
@@ -124,4 +134,24 @@ describe('owner memory status', () => {
     expect(container.textContent).toContain('2,640 篇文档没有验证记录');
     expect(container.textContent).toContain('65 条关系指向已不存在的文档');
   });
+});
+
+it('keeps configuration reminders and maintenance debt in body colour beside the available indicator', async () => {
+  await render(['embedding_disabled']);
+  const status = container.querySelector('[data-testid="memory-status-line"]');
+  expect(status?.textContent).toContain('索引可用 · 1 项配置提醒');
+  expect([...status!.querySelectorAll('.text-semantic-success')].map((el) => el.textContent)).toEqual(['可用']);
+  expect(status?.textContent).toContain('2 项待维护');
+});
+it('uses the same product timestamp as search and Settings rather than compact or relative month-day text', () => {
+  const instant = '2026-08-01T18:22:00Z';
+  expect(formatMemoryDate(instant)).toBe(memoryTime(instant));
+  expect(formatMemoryDate(instant)).toMatch(/8 月 1 日 \d{2}:\d{2}/);
+  expect(formatMemoryDate(null)).toBe('时间没有记录下来');
+});
+
+it('preserves date-only and month-only precision without a timezone shift or invented midnight', () => {
+  const year = new Date().getFullYear();
+  expect(formatMemoryDate(`${year}-09-25`)).toBe('9 月 25 日');
+  expect(formatMemoryDate(`${year}-09`)).toBe('9 月');
 });

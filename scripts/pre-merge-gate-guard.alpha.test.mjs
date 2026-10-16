@@ -4,11 +4,14 @@ import { once } from 'node:events';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { deriveNamedAlphaCoordinates } from './lib/alpha-coordinates.mjs';
 import { NAMED_ALPHA_PORTS, namedAlphaFixture } from './lib/alpha-named-fixture.mjs';
 import { registerNamedAlphaRedisLease } from './lib/alpha-redis-leases.mjs';
 import { captureNamedAlphaRedisIdentity } from './lib/alpha-redis-process.mjs';
+import { captureProcessIdentity } from './lib/process-identity.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const redisProbe = spawnSync('redis-server', ['--version'], { stdio: 'ignore' });
@@ -20,6 +23,44 @@ async function stop(child) {
   child.kill('SIGTERM');
   await exited;
 }
+
+async function captureFixtureProof(capture, expectedCommand, deadline) {
+  let previous;
+  let current;
+  while (Date.now() < deadline) {
+    current = capture();
+    if (Date.now() >= deadline) break;
+    if (current.process.command === expectedCommand) {
+      if (isDeepStrictEqual(previous, current)) return current;
+      previous = current;
+    } else {
+      previous = undefined;
+    }
+    await delay(Math.min(25, Math.max(1, deadline - Date.now())));
+  }
+  throw new Error(
+    `isolated Redis identity readiness timeout: ${JSON.stringify({ expectedCommand, previous, current })}`,
+  );
+}
+
+test('Alpha fixture publication waits for a complete and stable Unix-socket identity', async () => {
+  const command = 'redis-server unixsocket:/fixture/redis.sock';
+  const initializing = { process: { command: 'redis-server --port 0 --unixsocket /fixture/redis.sock' } };
+  const ready = { process: { command } };
+  const observations = [initializing, ready, structuredClone(ready)];
+  let reads = 0;
+  const proof = await captureFixtureProof(() => observations[reads++], command, Date.now() + 5000);
+  assert.deepEqual(proof, ready);
+  assert.equal(reads, 3, 'the identity must remain exact across consecutive observations before publication');
+});
+
+test('Alpha fixture never publishes an incomplete identity after its readiness deadline', async () => {
+  const initializing = { process: { command: 'redis-server --port 0' } };
+  await assert.rejects(
+    captureFixtureProof(() => initializing, 'redis-server unixsocket:/fixture/redis.sock', Date.now() + 25),
+    /isolated Redis identity readiness timeout.*redis-server --port 0/,
+  );
+});
 
 test('gate admits an exact named Alpha producer but rejects expired and replacement listener evidence', async (t) => {
   if (missingRedis) {
@@ -50,6 +91,8 @@ test('gate admits an exact named Alpha producer but rejects expired and replacem
   const realLsof = execFileSync('which', ['lsof'], { encoding: 'utf8' }).trim();
   const owner = spawn('bash', ['./scripts/start-dev.sh'], { cwd: f.alphaRoot, stdio: ['pipe', 'pipe', 'ignore'] });
   let redis;
+  let proof;
+  const registrationIdentities = [];
   try {
     await once(owner.stdout, 'data');
     redis = spawn(
@@ -68,9 +111,13 @@ test('gate admits an exact named Alpha producer but rejects expired and replacem
       ],
       { cwd: dataDir, stdio: ['ignore', 'pipe', 'pipe'] },
     );
+    const readyDeadline = Date.now() + 5000;
     await new Promise((resolve, reject) => {
       let output = '';
-      const timer = setTimeout(() => reject(new Error(`isolated Redis readiness timeout: ${output}`)), 5000);
+      const timer = setTimeout(
+        () => reject(new Error(`isolated Redis readiness timeout: ${output}`)),
+        Math.max(1, readyDeadline - Date.now()),
+      );
       redis.once('error', (error) => {
         clearTimeout(timer);
         reject(error);
@@ -90,7 +137,11 @@ test('gate admits an exact named Alpha producer but rejects expired and replacem
       redis.stderr.on('data', read);
     });
     writeFileSync(join(dataDir, 'redis-15397.pid'), `${redis.pid}\n`);
-    const proof = captureNamedAlphaRedisIdentity(rawCoordinates, { readListeners: () => [redis.pid] });
+    proof = await captureFixtureProof(
+      () => captureNamedAlphaRedisIdentity(rawCoordinates, { readListeners: () => [redis.pid] }),
+      `redis-server unixsocket:${join(f.directory, 'redis.sock')}`,
+      readyDeadline,
+    );
     const registryDir = join(f.directory, 'alpha-leases');
     const leaseFile = registerNamedAlphaRedisLease(
       {
@@ -100,7 +151,14 @@ test('gate admits an exact named Alpha producer but rejects expired and replacem
         registryDir,
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
       },
-      { readListeners: () => [redis.pid] },
+      {
+        readListeners: () => [redis.pid],
+        capture: (pid) => {
+          const identity = captureProcessIdentity(pid);
+          registrationIdentities.push({ pid, identity });
+          return identity;
+        },
+      },
     );
     const bin = join(f.directory, 'bin');
     writeFileSync(
@@ -195,7 +253,7 @@ esac
       { encoding: 'utf8' },
     );
     throw new Error(
-      `${error.message}\nfixture process status: ${JSON.stringify({ ownerExit: owner.exitCode, redisExit: redis?.exitCode, redisSignal: redis?.signalCode, ps: status.stdout })}`,
+      `${error.message}\nfixture process status: ${JSON.stringify({ ownerExit: owner.exitCode, redisExit: redis?.exitCode, redisSignal: redis?.signalCode, ps: status.stdout, proof, registrationIdentities })}`,
       { cause: error },
     );
   } finally {

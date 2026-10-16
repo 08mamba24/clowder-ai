@@ -14,7 +14,7 @@ export const JOURNEYS = Object.freeze([
   'authoritative-compaction',
 ]);
 
-const CONTRACT_SHA256 = '9c0afc4cdbc487bfd4412061b15a6314b76806eeb76ddc2620b2f4a71225260a';
+const CONTRACT_SHA256 = 'ca3c68c936dd4336b93da94ce89b0265701f22c1d9a85876dde6ef5f5f8d42b3';
 const OUTCOMES = new Set(['passed', 'unsupported', 'failed']);
 const REASONS = new Set([
   'observed',
@@ -99,7 +99,7 @@ export function assertAlphaSnapshot({ expectedRevision, health, readiness, cats,
   if (readiness?.status !== 'ready') throw new UatError('failed', 'alpha_not_ready');
   const canary = cats?.cats?.find((cat) => cat?.id === catId);
   if (!canary || canary.clientId !== 'openai') throw new UatError('failed', 'canary_not_found');
-  if (canary.codexCarrier?.effective !== 'app_server') throw new UatError('failed', 'canary_not_app_server');
+  if (canary.carrier !== 'app_server') throw new UatError('failed', 'canary_not_app_server');
 }
 
 export function boundEnum(value, allowed) {

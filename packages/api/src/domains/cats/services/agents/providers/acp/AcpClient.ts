@@ -22,6 +22,7 @@ import { buildChildEnv } from '../../../../../../utils/cli-spawn.js';
 import { resolveWindowsSpawnPlan } from '../../../../../../utils/cli-spawn-win.js';
 import { buildUnixSupervisedSpawnPlan } from '../../../../../../utils/cli-supervised-process.js';
 import { AcpCwdIdentityTracker } from './acp-cwd-identity.js';
+import { type AcpPromptInput, toAcpPromptContent } from './acp-prompt-content.js';
 import type {
   AcpAgentRequest,
   AcpContentBlock,
@@ -30,6 +31,7 @@ import type {
   AcpNewSessionResult,
   AcpNotification,
   AcpPermissionRequest,
+  AcpPromptCapabilities,
   AcpPromptResult,
   AcpResponse,
   AcpSessionUpdate,
@@ -149,6 +151,14 @@ export class AcpStreamIdleError extends Error {
   }
 }
 
+export class AcpSessionCancelledError extends Error {
+  public readonly code = 'SESSION_CANCELLED';
+  constructor(public readonly sessionId: string) {
+    super(`Session ${sessionId} cancelled locally; provider termination is unconfirmed`);
+    this.name = 'AcpSessionCancelledError';
+  }
+}
+
 // ─── Client ─────────────────────���──────────────────────────���───
 
 /** Parsed capacity error detected from ACP process stderr. */
@@ -171,6 +181,7 @@ export class AcpClient {
   private readonly pending = new Map<string, PendingAcpRequest>();
   private readonly notificationListeners: Array<(n: AcpNotification) => void> = [];
   private initResult: AcpInitializeResult | null = null;
+  private negotiatedPromptCapabilities?: Readonly<AcpPromptCapabilities>;
   private closed = false;
   private exited = false;
   /** Sessions whose local prompt ended before provider completion was acknowledged. */
@@ -304,6 +315,7 @@ export class AcpClient {
     );
     const resp = await this.sendRequest(ACP_METHODS.initialize, { protocolVersion: 1 });
     this.initResult = resp.result as unknown as AcpInitializeResult;
+    this.negotiatedPromptCapabilities = Object.freeze({ ...this.initResult.agentCapabilities?.promptCapabilities });
     log.info(
       {
         agentInfo: this.initResult.agentInfo,
@@ -422,9 +434,10 @@ export class AcpClient {
    */
   async promptCollect(
     sessionId: string,
-    text: string,
+    input: AcpPromptInput,
     options?: { timeoutMs?: number },
   ): Promise<{ events: AcpSessionUpdate[]; stopReason: AcpStopReason }> {
+    const prompt = toAcpPromptContent(input, this.promptCapabilities);
     const events: AcpSessionUpdate[] = [];
     const timeoutMs = options?.timeoutMs ?? 120_000;
     let notifResolve: ((n: AcpNotification) => void) | null = null;
@@ -442,11 +455,7 @@ export class AcpClient {
     this.notificationListeners.push(listener);
 
     try {
-      const promptPromise = this.sendRequest(
-        ACP_METHODS.sessionPrompt,
-        { sessionId, prompt: [{ type: 'text', text }] },
-        timeoutMs,
-      );
+      const promptPromise = this.sendRequest(ACP_METHODS.sessionPrompt, { sessionId, prompt }, timeoutMs);
       const resp = await promptPromise;
       const result = resp.result as unknown as AcpPromptResult;
       return { events, stopReason: result.stopReason };
@@ -462,9 +471,10 @@ export class AcpClient {
    */
   async *promptStream(
     sessionId: string,
-    text: string,
+    input: AcpPromptInput,
     options?: { timeoutMs?: number; idleWarningMs?: number; idleStallMs?: number },
   ): AsyncGenerator<AcpSessionUpdate, AcpStopReason> {
+    const prompt = toAcpPromptContent(input, this.promptCapabilities);
     // KD-12: Activity-based turn budget — resets on each event.
     // If agent produces events continuously, budget never fires. Only triggers
     // after timeoutMs of SILENCE (no events). Idle stall (90s) catches true hangs
@@ -477,7 +487,7 @@ export class AcpClient {
     // Idle stall catches true hangs. Gemini CLI doesn't emit tool_call for MCP
     // tools, so pendingTool never activates. 90s covers most MCP calls (10-30s).
     const idleStallMs = options?.idleStallMs ?? 90_000;
-    const requestCeilingMs = resolveAcpPromptRequestCeilingMs(timeoutMs);
+    const requestCeilingMs = timeoutMs > 0 ? resolveAcpPromptRequestCeilingMs(timeoutMs) : 0;
     const queue: AcpSessionUpdate[] = [];
     let waitResolve: (() => void) | null = null;
     let done = false;
@@ -497,7 +507,7 @@ export class AcpClient {
      *  Called once at prompt start and again on every incoming event. */
     const resetBudget = () => {
       if (budgetTimer) clearTimeout(budgetTimer);
-      if (done) return;
+      if (done || timeoutMs <= 0) return;
       budgetTimer = setTimeout(() => {
         if (done) return;
         log.error({ sessionId, eventCount, timeoutMs }, 'Turn budget exceeded — no activity for %dms', timeoutMs);
@@ -529,7 +539,7 @@ export class AcpClient {
      *  zero-first-event, producing AcpStreamIdleError at the configured TTL. */
     const scheduleIdleCheck = () => {
       if (idleTimer) clearTimeout(idleTimer);
-      if (done) return;
+      if (done || idleStallMs <= 0) return;
       // P1-fix: stall delay is relative to lastEventAt, not relative to warning.
       // With warning at 20s and stall at 45s, the stall timer fires 25s after warning.
       // Cap initial delay at idleStallMs so short TTLs (< idleWarningMs) still fire on time.
@@ -661,12 +671,7 @@ export class AcpClient {
       // termination. The pool uses this only for single-flight retirement.
       this.unquiescedSessionIds.add(sessionId);
       log.info({ sessionId, eventCount }, 'Session cancel settled local prompt stream');
-      promptError = new AcpStreamIdleError(
-        sessionId,
-        Date.now() - (lastEventAt || Date.now()),
-        eventCount,
-        idleStallMs,
-      );
+      promptError = new AcpSessionCancelledError(sessionId);
       done = true;
       if (idleTimer) clearTimeout(idleTimer);
       if (budgetTimer) clearTimeout(budgetTimer);
@@ -697,12 +702,7 @@ export class AcpClient {
     // entry. Without this, the sendRequest promise stays alive after generator exit,
     // leaving a stale entry in `pending` that blocks safe non-multiplexed reuse.
     this.sessionPromptPendingIds.set(sessionId, promptRequestId);
-    this.sendRequest(
-      ACP_METHODS.sessionPrompt,
-      { sessionId, prompt: [{ type: 'text', text }] },
-      requestCeilingMs,
-      promptRequestId,
-    )
+    this.sendRequest(ACP_METHODS.sessionPrompt, { sessionId, prompt }, requestCeilingMs, promptRequestId)
       .then((resp) => {
         const result = resp.result as unknown as AcpPromptResult;
         stopReason = result.stopReason;
@@ -843,6 +843,11 @@ export class AcpClient {
   get mcpCredentialFile(): string | undefined {
     const path = this.config.env?.CAT_CAFE_CREDENTIAL_FILE?.trim();
     return path || undefined;
+  }
+
+  get promptCapabilities(): Readonly<AcpPromptCapabilities> | undefined {
+    const capabilities = this.negotiatedPromptCapabilities;
+    return capabilities ? { ...capabilities } : undefined;
   }
 
   isSessionSafeForReuse(sessionId: string): boolean {
@@ -996,6 +1001,7 @@ export class AcpClient {
       let timer: ReturnType<typeof setTimeout> | null = null;
       const armTimeout = () => {
         if (timer) clearTimeout(timer);
+        if (timeoutMs <= 0) return;
         timeoutStartedAt = Date.now();
         timer = setTimeout(() => {
           this.pending.delete(id);

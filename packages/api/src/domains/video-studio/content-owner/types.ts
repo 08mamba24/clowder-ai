@@ -8,6 +8,45 @@ export type ContentActorV1 =
   | { readonly kind: 'human'; readonly actorId: string }
   | { readonly kind: 'cat'; readonly actorId: string };
 
+export interface VideoProjectScopeV1 {
+  readonly kind: 'video-project';
+  readonly ownerUserId: string;
+  readonly projectId: string;
+}
+
+export interface VideoProjectMediaScopeV1 {
+  readonly kind: 'video-project-screening';
+  readonly ownerUserId: string;
+  readonly projectContentRef: string;
+  readonly screeningId: string;
+  readonly input: {
+    readonly contentRef: string;
+    readonly ownerRevision: number;
+    readonly blobDigest: `sha256:${string}`;
+  };
+  readonly source: {
+    readonly locator: { readonly worktreeId: string; readonly path: string };
+    readonly expectedSourceRevision: string;
+  };
+  readonly sourceContentRef: string;
+  readonly snapshotOperationId: string;
+  readonly requestDigest: `sha256:${string}`;
+  readonly registeredBy: ContentActorV1;
+  readonly registeredAt: string;
+}
+
+/** Optional domain request provenance lives on the existing owner receipt, not a second operation journal. */
+export interface ContentOperationContextV1 {
+  readonly kind:
+    | 'video-project:create'
+    | 'video-project:save'
+    | 'video-project:archive'
+    | 'video-project:decision'
+    | 'video-project:screening'
+    | 'video-project:self-review';
+  readonly requestDigest: `sha256:${string}`;
+}
+
 /** Immutable authority coordinates established by an explicit prepared-publication import. */
 export interface TaskContentPublicationScopeV1 {
   readonly ownerUserId: string;
@@ -81,9 +120,11 @@ export interface ContentSettlementReceiptV1 {
   readonly actor: ContentActorV1;
   readonly operationId: string;
   readonly outboxSequence: number;
+  readonly operationContext?: ContentOperationContextV1;
 }
 
 export interface LoadedProjectContentV1 {
+  readonly byteLength: number;
   readonly contentRef: string;
   readonly ownerRevision: number;
   readonly blobDigest: `sha256:${string}`;
@@ -91,6 +132,8 @@ export interface LoadedProjectContentV1 {
   readonly bytes: Buffer;
   readonly currentOwnerRevision: number;
   readonly publicationScope?: ContentPublicationScopeV1;
+  readonly projectScope?: VideoProjectScopeV1;
+  readonly projectMediaScope?: VideoProjectMediaScopeV1;
   readonly sourcePublication?: ContentSourcePublicationV1;
 }
 
@@ -101,7 +144,10 @@ export interface ImportProjectContentInputV1 {
   readonly actor: ContentActorV1;
   readonly operationId: string;
   readonly publicationScope?: ContentPublicationScopeV1;
+  readonly projectScope?: VideoProjectScopeV1;
+  readonly projectMediaScope?: VideoProjectMediaScopeV1;
   readonly sourcePublication?: ContentSourcePublicationV1;
+  readonly operationContext?: ContentOperationContextV1;
 }
 
 export interface SettleProjectContentInputV1 {
@@ -111,4 +157,5 @@ export interface SettleProjectContentInputV1 {
   readonly actor: ContentActorV1;
   readonly operationId: string;
   readonly sourcePublication?: ContentSourcePublicationV1;
+  readonly operationContext?: ContentOperationContextV1;
 }

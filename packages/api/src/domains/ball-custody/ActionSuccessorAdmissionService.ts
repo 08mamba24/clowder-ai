@@ -23,6 +23,7 @@ import {
   ActionSuccessorStandingError,
   type ActionSuccessorStandingSnapshot,
   assertActionSuccessorStanding,
+  assertDelegateLineageSuccessorStanding,
 } from './action-successor-standing.js';
 import {
   type ActionSuccessorLease,
@@ -233,10 +234,13 @@ export class ActionSuccessorAdmissionService {
     return admitActionSuccessorReplacement(identityKey, input, {
       leaseStore: this.leaseStore,
       resolveIssuerStanding: (request, claimOrigin) => this.resolveIssuerStanding(request, claimOrigin),
-      resolveVerifiedPredicate: async (request) => {
+      resolveVerifiedPredicate: async (request, current, delegateLineageReentry) => {
         const terminalPredicate = this.requireTerminalPredicate(request);
         const freshness = await this.requireVerifiedGenerationFreshness(terminalPredicate);
-        const standingAuthority = assertActionSuccessorStanding(request, freshness);
+        const standingAuthority =
+          delegateLineageReentry && terminalPredicate.kind === 'task_done'
+            ? assertDelegateLineageSuccessorStanding(current, request, freshness)
+            : assertActionSuccessorStanding(request, freshness);
         return {
           terminalPredicate,
           freshnessEvidenceRef: freshness.evidenceRef,

@@ -1,4 +1,9 @@
-import { respondContentTextSchema } from '@cat-cafe/shared';
+import {
+  type ContentModificationDetailView,
+  type ContentModificationRecord,
+  normalizeModificationSelections,
+  respondContentTextSchema,
+} from '@cat-cafe/shared';
 import type { IMessageStore } from '../../../cats/services/stores/ports/MessageStore.js';
 import type {
   MediaReviewPrincipal,
@@ -13,6 +18,13 @@ import { applyContentTextEdits, ModificationTextError } from './text-store.js';
 
 export class ContentTextModificationService {
   private readonly execution: ModificationTextExecution;
+  private acceptanceReader?: (
+    record: ContentModificationRecord,
+    principal: MediaReviewPrincipal,
+  ) => Promise<ContentModificationDetailView['acceptances']>;
+  setAcceptanceReader(read: NonNullable<ContentTextModificationService['acceptanceReader']>): void {
+    this.acceptanceReader = read;
+  }
   constructor(
     private readonly deps: {
       store: ArtifactReviewStore;
@@ -29,11 +41,13 @@ export class ContentTextModificationService {
     const { record, source, task, current } = await this.authorize(requestId, principal, true);
     const proposals = this.deps.store.text.proposals(requestId);
     const execution = principal.actor.kind === 'cat' ? await this.execution.prepare(source) : undefined;
+    const acceptances = (await this.acceptanceReader?.(record, principal)) ?? [];
     return {
       record,
       source,
       proposals,
       rejections: this.deps.store.acceptances.rejections(requestId, principal.userId),
+      acceptances,
       taskRevision: task.entrustedWork?.revision,
       currentRevision: current.revision,
       ...(execution ? { execution } : {}),
@@ -43,7 +57,7 @@ export class ContentTextModificationService {
   async respond(raw: unknown, principal: MediaReviewPrincipal) {
     const command = respondContentTextSchema.parse(raw);
     if (principal.actor.kind !== 'cat') throw new ModificationTextError('not_found');
-    const { source, task } = await this.authorize(command.requestId, principal, true);
+    const { record, source, task } = await this.authorize(command.requestId, principal, true);
     const old = this.deps.store.text
       .proposals(command.requestId)
       .find((item) => item.operationId === command.operationId);
@@ -54,9 +68,12 @@ export class ContentTextModificationService {
         task.entrustedWork.revision !== command.expectedTaskRevision)
     )
       throw new ModificationTextError('task_changed');
+    const selectionIds = new Set(normalizeModificationSelections(record.payload.intent).map((item) => item.id));
+    if (command.edits.some((edit) => edit.selectionId && !selectionIds.has(edit.selectionId)))
+      throw new ModificationTextError('invalid_patch');
     const proposal = this.deps.store.text.respond(command, principal.actor.actorId);
     const candidatePath = await this.execution.materialize(source, proposal);
-    return { proposal, candidatePath };
+    return { record, proposal, candidatePath };
   }
 
   async candidate(requestId: string, proposalRef: string, principal: MediaReviewPrincipal) {
@@ -83,6 +100,8 @@ export class ContentTextModificationService {
   private async authorize(requestId: string, principal: MediaReviewPrincipal, allowClosed: boolean) {
     const record = this.deps.store.requests.get(requestId, principal.userId),
       source = this.deps.store.text.source(requestId);
+    if (record?.payload.source.kind === 'video-project' || record?.progress.prepared?.kind === 'project')
+      throw new ModificationTextError('invalid_patch');
     const taskRef = record?.progress.task;
     if (!record || !source || source.ownerUserId !== principal.userId || !taskRef || !record.progress.review)
       throw new ModificationTextError('not_found');

@@ -150,3 +150,8 @@ export function decodeWorkspaceText(bytes: Buffer): string {
     throw new WorkspaceContentSourceError('unsupported_text');
   }
 }
+
+export function requireWorkspaceContentBytes(bytes: Buffer | undefined): Buffer {
+  if (!bytes) throw new WorkspaceContentSourceError('revision_changed');
+  return bytes;
+}

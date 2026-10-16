@@ -1,5 +1,6 @@
 import { apiFetch } from '@/utils/api-client';
 import type { SettledLookup, Terminal } from './approval-reconcile';
+import { lookupCreatedThread } from './created-thread-lookup';
 
 /**
  * F322 S3-2b-1c: the exact settled lookup the reconciler asks for.
@@ -74,7 +75,12 @@ export async function lookupSettled(input: SettledLookupInput): Promise<SettledL
   if (matching.length > 0) {
     // The newest row for this exact proposal; one that does not say a terminal resolution is not a decision we can state.
     const terminal = terminalOf(matching[0]);
-    return terminal ? { kind: 'found', terminal } : unavailable;
+    if (!terminal) return unavailable;
+    if (input.sourceFeatureId === 'F128' && terminal.resolution === 'accepted') {
+      const threadId = await lookupCreatedThread(input);
+      return { kind: 'found', terminal: { ...terminal, ...(threadId ? { threadId } : { effectUnknown: true }) } };
+    }
+    return { kind: 'found', terminal };
   }
   // Not in the window. Only a window that was not full can say the row is not there at all.
   return body.items.length >= SETTLED_LOOKUP_LIMIT ? unavailable : { kind: 'not_found' };

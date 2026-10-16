@@ -10,6 +10,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { projectInvocationPromptInput } from '../domains/cats/services/session/InvocationPromptInputProjector.js';
+import { resolveScopedSessionTrajectory } from '../domains/cats/services/session/scoped-session-trajectory.js';
 import { formatEventsChat } from '../domains/cats/services/session/TranscriptFormatter.js';
 import {
   canReadThreadRecord,
@@ -19,6 +20,8 @@ import {
   threadRecordAccessDeniedBody,
 } from '../domains/cats/services/session/thread-access-policy.js';
 import { TranscriptInvocationReader } from '../domains/cats/services/session/transcript-index/TranscriptInvocationReader.js';
+import type { TranscriptReadObserver } from '../domains/cats/services/session/transcript-index/transcript-read-observer.js';
+import { createTranscriptReadDiagnostics } from '../infrastructure/transcript-read-diagnostics.js';
 import { resolveUserId } from '../utils/request-identity.js';
 import { registerInvocationTrajectoryRoutes } from './invocation-trajectory-routes.js';
 import {
@@ -52,15 +55,34 @@ export async function sessionTranscriptRoutes(
   } = opts;
 
   const invocationReader = new TranscriptInvocationReader(transcriptReader, transcriptWriter);
-  async function readInvocationEvents(sessions: ReadableSession[], invocationId: string, signal?: AbortSignal) {
-    const pages = await invocationReader.readInvocation(sessions, invocationId, {}, signal);
+  const diagnostics = createTranscriptReadDiagnostics({
+    onEvent: (event) => app.log.info(event, '[Task229] transcript read diagnostic'),
+  });
+  app.addHook('onClose', async () => diagnostics.stop());
+  async function readInvocationEvents(
+    sessions: ReadableSession[],
+    invocationId: string,
+    signal?: AbortSignal,
+    observer?: TranscriptReadObserver,
+  ) {
+    const pages = await invocationReader.readInvocation(sessions, invocationId, {}, signal, observer);
     return new Map([...pages].map(([id, page]) => [id, page.events]));
   }
 
   registerInvocationTrajectoryRoutes(app, {
     stores: { invocationRecordStore, turnExecutionStore, sessionChainStore, threadStore },
-    listInvocationSummaries: invocationReader.list.bind(invocationReader),
+    listInvocationSummaries: async (sessions, limit, signal) => {
+      const page = await invocationReader.list(sessions, limit, signal);
+      const invocations = await Promise.all(
+        page.invocations.map(async (summary) => {
+          const session = await sessionChainStore.get(summary.sessionId);
+          return session ? resolveScopedSessionTrajectory(summary, session, turnExecutionStore) : summary;
+        }),
+      );
+      return { ...page, invocations };
+    },
     readInvocationEvents,
+    createReadObserver: diagnostics.beginRead,
     ...(messageStore ? { messageStore } : {}),
     ...(transcriptWriter ? { keyedContentDigest: transcriptWriter.keyedContentDigest.bind(transcriptWriter) } : {}),
     ...(profileRepository ? { profileRepository } : {}),
@@ -132,12 +154,8 @@ export async function sessionTranscriptRoutes(
         reply.status(400);
         return { error: 'charOffset requires raw view, exact cursor eventNo and limit=1' };
       }
-      const one = await transcriptReader.readEvents(
-        sessionId,
-        session.threadId,
-        session.catId,
-        { eventNo: cursorNum },
-        1,
+      const one = await withTranscriptReadSignal(request, reply, (signal) =>
+        invocationReader.readEvents(session, { cursor: cursorNum, limit: 1 }, signal),
       );
       const event = one.events.find((candidate) => candidate.eventNo === cursorNum);
       if (!event) return reply.status(404).send({ error: 'Event not found' });
@@ -165,8 +183,9 @@ export async function sessionTranscriptRoutes(
     }
 
     // Raw and chat views: paginate by raw event number
-    const cursor = cursorNum != null ? { eventNo: cursorNum } : undefined;
-    const result = await transcriptReader.readEvents(sessionId, session.threadId, session.catId, cursor, limit);
+    const result = await withTranscriptReadSignal(request, reply, (signal) =>
+      invocationReader.readEvents(session, { cursor: cursorNum, limit }, signal),
+    );
 
     if (view === 'chat') {
       const boundedRaw = projectRawTranscriptPage(result, sessionId);
@@ -328,7 +347,9 @@ export async function sessionTranscriptRoutes(
       });
     }
 
-    const summary = page.summary;
+    const summary = page.summary
+      ? await resolveScopedSessionTrajectory(page.summary, session, turnExecutionStore)
+      : page.summary;
     const promptInput = await projectInvocationPromptInput(
       { messageStore, turnExecutionStore },
       session,

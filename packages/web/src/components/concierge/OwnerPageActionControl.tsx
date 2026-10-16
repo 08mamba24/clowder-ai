@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '@/utils/api-client';
+import { OwnerCurrentPagePicker } from './OwnerCurrentPagePicker';
 
 interface Consent {
   previewId: string;
@@ -9,17 +10,20 @@ interface Consent {
   field: string;
   fieldSelector: string;
   readbackSelector: string;
-  value: string;
-  expectedReadback: string;
-  restoreValue: string;
+  operation?: 'click' | 'fill';
+  value?: string;
+  expectedReadback?: string;
+  restoreValue?: string;
+  selection?: { servedModel: string };
   expiresAtMs: number;
   permissionScope: string;
 }
 
 interface Outcome {
-  status: 'restored' | 'no_effect' | 'cancelled' | 'denied' | 'unknown';
+  status: 'applied' | 'restored' | 'no_effect' | 'cancelled' | 'denied' | 'unknown';
   forward: { status: string; before: string; after?: string };
   rollback?: { status: string; after?: string };
+  receiptPersistence?: 'stored' | 'unconfirmed';
 }
 
 type View =
@@ -29,15 +33,21 @@ type View =
       requestMessageId: string;
       requestText: string;
       pageUrl: string;
+      pageSelection?: boolean;
       state: 'ready' | 'inspecting' | 'awaiting_consent' | 'executing' | 'settled';
       preview?: Consent;
       result?: Outcome;
+      resultRequestMessageId?: string;
+      resultObservedAtMs?: number;
+      selectionNotice?: { kind: 'ask' | 'none' | 'unavailable'; reason: string; selection?: { servedModel: string } };
     };
 
 const ROUTE = '/api/concierge/page-action';
 
 function resultCopy(status: Outcome['status']): string {
   switch (status) {
+    case 'applied':
+      return '已核对页面修改，结果保留在原页面。';
     case 'restored':
       return '已核对写入并恢复原值。';
     case 'no_effect':
@@ -142,25 +152,43 @@ export function OwnerPageActionControl() {
           <button
             type="button"
             onClick={() => void inspect()}
-            disabled={working !== null || statusUnconfirmed}
+            disabled={working !== null || statusUnconfirmed || Boolean(view.pageSelection && !view.pageUrl)}
             className="rounded border border-cafe-divider px-2 py-1 disabled:opacity-50"
           >
-            {working === 'inspect' ? '检查中…' : '检查具名页面'}
+            {working === 'inspect' ? '检查中…' : view.pageSelection ? '重新检查当前页面' : '检查具名页面'}
           </button>
         )}
       </div>
       <p className="mt-1 break-words">当前直接请求：{view.requestText}</p>
-      <p className="break-all">目标页面：{view.pageUrl}</p>
+      <p className="break-all">目标页面：{view.pageUrl || '请先选择当前页面'}</p>
+      {view.pageSelection && (
+        <OwnerCurrentPagePicker
+          key={view.requestMessageId}
+          requestMessageId={view.requestMessageId}
+          disabled={working !== null || statusUnconfirmed || view.state === 'executing' || view.state === 'inspecting'}
+          onSelected={() => refresh(true)}
+        />
+      )}
       {preview && (
         <div className="mt-2 space-y-1 rounded border border-cafe-divider p-2">
           <p>
-            字段：{preview.field}（{preview.fieldSelector}）
+            {preview.operation === 'click' ? '点击' : '字段'}：{preview.field}
+            {!view.pageSelection && `（${preview.fieldSelector}）`}
           </p>
-          <p className="break-words">填入：{preview.value}</p>
+          {preview.selection && <p>Jev 已选择此目标，尚需你的确认。</p>}
+          {preview.value !== undefined && <p className="break-words">填入：{preview.value}</p>}
           <p className="break-all">
-            预期回读（{preview.readbackSelector}）：{preview.expectedReadback}
+            {preview.expectedReadback === undefined
+              ? '点击后读取该控件的实际状态；未能确认业务结果时不会宣称成功。'
+              : view.pageSelection
+                ? `预期字段值：${preview.expectedReadback}`
+                : `预期回读（${preview.readbackSelector}）：${preview.expectedReadback}`}
           </p>
-          <p>恢复原值：{preview.restoreValue === '' ? '空值' : preview.restoreValue}</p>
+          {preview.restoreValue !== undefined ? (
+            <p>恢复原值：{preview.restoreValue === '' ? '空值' : preview.restoreValue}</p>
+          ) : (
+            <p>这次修改会保留；改意时请提出新的请求。</p>
+          )}
           <p>
             读取范围：只检查上述字段、目标及页面回读。授权仅此一次，{new Date(preview.expiresAtMs).toLocaleTimeString()}{' '}
             失效。
@@ -173,7 +201,7 @@ export function OwnerPageActionControl() {
                 disabled={working !== null || statusUnconfirmed}
                 className="rounded bg-cafe-accent px-2 py-1 text-[var(--cafe-accent-foreground)] disabled:opacity-50"
               >
-                允许一次并恢复
+                {preview.restoreValue !== undefined ? '允许一次并恢复' : '允许这次修改'}
               </button>
             )}
             <button
@@ -187,8 +215,24 @@ export function OwnerPageActionControl() {
         </div>
       )}
       {view.state === 'inspecting' && <p className="mt-1">正在检查具名页面，尚未写入。</p>}
+      {view.selectionNotice && (
+        <p role="status" className="mt-1">
+          {view.selectionNotice.reason}
+        </p>
+      )}
       {view.state === 'executing' && <p className="mt-1">正在执行并核对回读；撤销后结果仍可能未知。</p>}
-      {view.result && <output className="mt-1 block">{resultCopy(view.result.status)}</output>}
+      {view.result && (
+        <output className="mt-1 block">
+          {view.resultRequestMessageId && view.resultRequestMessageId !== view.requestMessageId
+            ? '此前核对的结果：'
+            : ''}
+          {resultCopy(view.result.status)}
+          {view.resultObservedAtMs && `（核对时间 ${new Date(view.resultObservedAtMs).toLocaleTimeString()}）`}
+        </output>
+      )}
+      {view.result?.receiptPersistence === 'unconfirmed' && (
+        <p role="alert">回执保存尚未确认；不要重复执行页面修改。</p>
+      )}
       {statusUnconfirmed && (
         <p role="alert" className="mt-1">
           Host 状态未确认；请停止 Live 通话撤销授权。

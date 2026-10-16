@@ -6,18 +6,25 @@ import { apiFetch } from '@/utils/api-client';
 import { parseUnifiedAttentionRead } from './parse-unified-attention';
 import type { MailboxRead } from './unified-mailbox-state';
 
-/** F310's Host owner read (limit is capped at 20 by the route). Only the first page is read here. */
-export const UNIFIED_ATTENTION_PATH = '/api/concierge/work/decisions?view=unified&offset=0&limit=20';
+/** F310's Host owner read. Pages remain independent owner-fenced reads, with 20 rows per request. */
+export const UNIFIED_ATTENTION_PATH =
+  '/api/concierge/work/decisions?view=unified&includeUserMentions=true&offset=0&limit=20&personalView=visible';
 
 /** The original invalidation chain: approvals (F246) and entrusted work / runtime interactions (F310). No new subscription. */
-const INVALIDATION_EVENTS = [
+export const UNIFIED_ATTENTION_INVALIDATION_EVENTS = [
   'cat-cafe:proposal-updated',
   'cat-cafe:proposal-created',
   'cat-cafe:runtime-interaction-updated',
   'cat-cafe:entrusted-work-projection-invalidated',
+  'cat-cafe:user-mention-updated',
+  'cat-cafe:ignored-item-preferences-updated',
 ] as const;
 
+export type MentionPeriod = 'recent' | 'today' | 'week' | 'earlier' | 'handled';
+export type MailboxPersonalView = 'visible' | 'ignored';
 export interface UnifiedAttentionView {
+  setPersonalView?: (mode: MailboxPersonalView, period?: MentionPeriod) => void;
+  setMentionPeriod?: (period: MentionPeriod) => void;
   result: MailboxRead;
   /**
    * Only while a re-read is in flight after a successful one: the rows read last time. The panel may keep showing
@@ -25,6 +32,8 @@ export interface UnifiedAttentionView {
    */
   staleRead: UnifiedAttentionReadV1 | null;
   refetch: () => void;
+  nextPage?: () => void;
+  previousPage?: () => void;
   /**
    * How many reads this hook has started so far, live: the mount read is the first and every re-read adds one, the moment it
    * starts. "After a write" is judged on this count and not on a clock (the client's and the server's clocks need not agree,
@@ -51,19 +60,31 @@ async function sessionUserId(response: Response): Promise<string | null> {
  * `onPrincipal` is told the session's user (or null when it cannot be confirmed) as soon as that is known, which may be
  * before the unified read answers.
  */
-async function readOnce(signal: AbortSignal, onPrincipal: (principal: string | null) => void): Promise<MailboxRead> {
+async function readOnce(
+  signal: AbortSignal,
+  onPrincipal: (principal: string | null) => void,
+  offset: number,
+  period: MentionPeriod,
+  mode: MailboxPersonalView,
+): Promise<MailboxRead> {
   const principalRead: Promise<string | null> = apiFetch('/api/session', { signal })
     .then(sessionUserId)
     .catch(() => null);
   void principalRead.then(onPrincipal);
   try {
-    const unified = await apiFetch(UNIFIED_ATTENTION_PATH, { signal }, { afterCurrentGet: true });
+    const path =
+      UNIFIED_ATTENTION_PATH.replace('offset=0', `offset=${offset}`).replace(
+        'personalView=visible',
+        `personalView=${mode}`,
+      ) + (period === 'week' ? '' : `&mentionPeriod=${period}`);
+    const unified = await apiFetch(path, { signal }, { afterCurrentGet: true });
     if (unified.status === 401) return { kind: 'failed', reason: 'unauthenticated' };
     // 503 is the structured "every source unavailable" read; 200 is available or partial. Anything else is a refusal.
     if (unified.status !== 200 && unified.status !== 503) return { kind: 'failed', reason: 'unavailable' };
 
     const read = parseUnifiedAttentionRead(await unified.json().catch(() => null));
-    if (!read) return { kind: 'failed', reason: 'unavailable' };
+    if (!read || read.page.offset !== offset || read.page.limit !== 20 || read.personalView?.mode !== mode)
+      return { kind: 'failed', reason: 'unavailable' };
     const principal = await principalRead;
     if (principal === null || read.identity.ownerUserId !== principal) return { kind: 'failed', reason: 'unavailable' };
     return { kind: 'ok', read };
@@ -79,13 +100,17 @@ export function useUnifiedAttention(): UnifiedAttentionView {
   const lastOkRef = useRef<UnifiedAttentionReadV1 | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const startedRef = useRef(0);
+  const periodRef = useRef<MentionPeriod>('week');
+  const modeRef = useRef<MailboxPersonalView>('visible');
   const readsStarted = useCallback(() => startedRef.current, []);
 
-  const refetch = useCallback(() => {
+  const startRead = useCallback((offset: number) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     const previous = lastOkRef.current;
+    const mode = modeRef.current;
+    const period = periodRef.current;
     let settled = false;
     // Counted synchronously, before anything is awaited: a write that ends right now must see that this read has begun.
     startedRef.current += 1;
@@ -96,10 +121,23 @@ export function useUnifiedAttention(): UnifiedAttentionView {
     // The previous rows belong to whoever read them. They are shown again only once THIS round's session is confirmed and
     // is that same owner — a changed, unknown or refused session never sees them, not even while waiting for the read.
     setStaleRead(null);
-    void readOnce(controller.signal, (principal) => {
-      if (settled || controller.signal.aborted) return;
-      if (previous && principal !== null && previous.identity.ownerUserId === principal) setStaleRead(previous);
-    }).then((next) => {
+    void readOnce(
+      controller.signal,
+      (principal) => {
+        if (settled || controller.signal.aborted) return;
+        if (
+          previous &&
+          principal !== null &&
+          previous.identity.ownerUserId === principal &&
+          previous.personalView?.mode === mode &&
+          (previous.mentionPeriod ?? 'week') === period
+        )
+          setStaleRead(previous);
+      },
+      offset,
+      period,
+      mode,
+    ).then((next) => {
       // A newer read aborted this controller (or the hook is gone): this answer is no longer the current question's.
       if (controller.signal.aborted) return;
       settled = true;
@@ -110,15 +148,50 @@ export function useUnifiedAttention(): UnifiedAttentionView {
     });
   }, []);
 
+  const setPersonalView = useCallback(
+    (mode: MailboxPersonalView, period?: MentionPeriod) => {
+      modeRef.current = mode;
+      if (period !== undefined) periodRef.current = period;
+      startRead(0);
+    },
+    [startRead],
+  );
+  const setMentionPeriod = useCallback(
+    (period: MentionPeriod) => {
+      periodRef.current = period;
+      startRead(0);
+    },
+    [startRead],
+  );
+  const refetch = useCallback(() => startRead(0), [startRead]);
+  const nextPage = useCallback(() => {
+    const read = lastOkRef.current;
+    if (read?.page.hasMore) startRead(read.page.offset + read.page.limit);
+  }, [startRead]);
+  const previousPage = useCallback(() => {
+    const read = lastOkRef.current;
+    if (read && read.page.offset > 0) startRead(Math.max(0, read.page.offset - read.page.limit));
+  }, [startRead]);
+
   useEffect(() => {
     refetch();
     const onInvalidated = () => refetch();
-    for (const name of INVALIDATION_EVENTS) window.addEventListener(name, onInvalidated);
+    for (const name of UNIFIED_ATTENTION_INVALIDATION_EVENTS) window.addEventListener(name, onInvalidated);
     return () => {
-      for (const name of INVALIDATION_EVENTS) window.removeEventListener(name, onInvalidated);
+      for (const name of UNIFIED_ATTENTION_INVALIDATION_EVENTS) window.removeEventListener(name, onInvalidated);
       abortRef.current?.abort();
     };
   }, [refetch]);
 
-  return { result, staleRead, refetch, readsStarted, resultGeneration };
+  return {
+    result,
+    staleRead,
+    refetch,
+    nextPage,
+    previousPage,
+    setMentionPeriod,
+    setPersonalView,
+    readsStarted,
+    resultGeneration,
+  };
 }

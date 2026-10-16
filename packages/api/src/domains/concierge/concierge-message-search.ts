@@ -48,7 +48,7 @@ export async function buildConciergeMessageSearchContext(
     const handle = handles[index];
     const result = results[index];
     lines.push(
-      `- ${handle.label}: ${result.speaker} · ${new Date(result.timestamp).toISOString()} · 《${handle.anchor.title}》 — [跳过去 ${binding(handle.label, handle.anchor)}] — ${result.snippet.text.slice(0, 160)}`,
+      `- ${handle.label}: ${result.speaker === 'connector' ? (result.speakerLabel ?? 'connector') : result.speaker} · ${new Date(result.timestamp).toISOString()} · 《${handle.anchor.title}》 — [跳过去 ${binding(handle.label, handle.anchor)}] — ${result.snippet.text.slice(0, 160)}`,
     );
   }
   lines.push(`范围：${response.meta.scope === 'thread' ? '当前对话' : '全局可读对话'}；排序：按时间。`);

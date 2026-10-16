@@ -29,6 +29,34 @@ export function readChannelPosition(namespace: string): string {
   }
 }
 
+export function readChannelTarget(search?: string) {
+  const currentSearch =
+    search ??
+    (typeof window !== 'undefined' && window.location
+      ? window.location.search
+      : typeof location !== 'undefined'
+        ? location.search
+        : '');
+  const channelId = new URLSearchParams(currentSearch).get('channelId')?.trim();
+  return channelId && channelId.length <= 160 ? channelId : undefined;
+}
+
+export function readChannelEntry(namespace: string) {
+  const target = readChannelTarget();
+  return {
+    channelId: target ? target : readChannelPosition(namespace),
+    destination: target ? ('channel' as const) : ('home' as const),
+  };
+}
+
+export function writeChannelTarget(channelId?: string) {
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  if (channelId) url.searchParams.set('channelId', channelId);
+  else url.searchParams.delete('channelId');
+  window.history.replaceState(window.history.state, '', url);
+}
+
 export function saveChannelPosition(namespace: string, channelId: string) {
   try {
     window.localStorage.setItem(`collective-channel:${namespace}`, channelId);

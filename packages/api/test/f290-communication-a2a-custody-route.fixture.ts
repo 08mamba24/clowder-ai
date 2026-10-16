@@ -5,8 +5,11 @@ import { AgentRegistry } from '../src/domains/cats/services/agents/registry/Agen
 import { AgentRouter } from '../src/domains/cats/services/agents/routing/AgentRouter.js';
 import { routeSerial } from '../src/domains/cats/services/agents/routing/route-serial.js';
 import type { AgentMessage, AgentService, AgentServiceOptions } from '../src/domains/cats/services/types.js';
+import { commitCompletedResponseAndEnqueueA2ATargets } from '../src/routes/callback-a2a-trigger.js';
 import { callbackCustodyFixture, DELEGATE, NEXT_CAT } from './f290-communication-a2a-custody-callback.fixture.js';
 import { CAT } from './f290-communication-validation.host.js';
+import { appendTestLifecycleResponseSource } from './helpers/message-from-fixtures.js';
+import { scriptedSessionInit } from './helpers/scoped-test-sessions.js';
 
 export type ScopeCase = 'private' | 'public' | 'delegated-private' | 'home';
 export type DeferCase = 'busy' | 'pending' | 'interrupted';
@@ -41,7 +44,7 @@ export async function routeCustodyFixture(scope: ScopeCase, defer: DeferCase) {
     triggerId = f.messages.append({
       userId: f.cafe.ownerUserId,
       threadId,
-      catId: null,
+      from: { kind: 'user', userId: f.cafe.ownerUserId },
       content: 'Ordinary home request',
       mentions: [],
       timestamp: Date.now(),
@@ -55,6 +58,7 @@ export async function routeCustodyFixture(scope: ScopeCase, defer: DeferCase) {
     supportsToolExecutionPolicy: () => true,
     async *invoke(_prompt: string, options?: AgentServiceOptions) {
       calls.push({ catId, policy: options?.toolExecutionPolicy?.mode });
+      yield* scriptedSessionInit(catId, _prompt, options);
       yield {
         type: 'text',
         catId,
@@ -67,8 +71,9 @@ export async function routeCustodyFixture(scope: ScopeCase, defer: DeferCase) {
   };
   const other: AgentService = {
     supportsToolExecutionPolicy: () => true,
-    async *invoke() {
+    async *invoke(_prompt, options) {
       calls.push({ catId: NEXT_CAT });
+      yield* scriptedSessionInit(NEXT_CAT, _prompt, options);
       yield { type: 'done', catId: NEXT_CAT, timestamp: Date.now() };
     },
   };
@@ -76,6 +81,7 @@ export async function routeCustodyFixture(scope: ScopeCase, defer: DeferCase) {
   agents.register(catId, service);
   agents.register(NEXT_CAT, other);
   const router = new AgentRouter({
+    ...f.sessionPorts,
     registry: f.registry,
     agentRegistry: agents,
     messageStore: f.messages,
@@ -99,7 +105,21 @@ export async function routeCustodyFixture(scope: ScopeCase, defer: DeferCase) {
         signal: controller.signal,
         invocationController: controller,
         queueHasQueuedMessages: () => defer === 'pending',
-        deferA2AEnqueue: (entry) => queue.enqueue(entry),
+        onLifecycleInvocationStarted: async (input) => {
+          const response = appendTestLifecycleResponseSource(f.messages, { ...input, timestamp: input.startedAt });
+          return { responseMessageId: response.id, priorFrontierMessageId: triggerId };
+        },
+        commitCompletedA2AWake: (input) =>
+          commitCompletedResponseAndEnqueueA2ATargets(
+            {
+              messageStore: f.messages,
+              invocationQueue: queue,
+              invocationTracker: tracker,
+              socketManager: { broadcastAgentMessage() {}, broadcastToRoom() {}, emitToUser() {} },
+              log: { info() {}, warn() {}, error() {} },
+            },
+            input,
+          ),
         trackA2ASlot: (tid, target, user, owner) => tracker.trackExternalSlot(tid, target, owner, user, [target]),
         completeA2ASlots: (tid, cats, owner) => {
           for (const target of cats) tracker.completeSlot(tid, target, owner);

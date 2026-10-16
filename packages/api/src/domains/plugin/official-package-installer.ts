@@ -5,6 +5,7 @@ import { staticEditorContributions } from './content-editor-runtime/admission.js
 import { desktopWindowContribution } from './desktop-window-runtime/admission.js';
 import { FilesystemVerifiedPluginPackageLocator, type VerifiedPluginPackage } from './external-runtime/index.js';
 import type { PluginManifestValidator } from './external-runtime/package-staging.js';
+import { reportPackageArchiveFailure } from './external-runtime/package-staging-diagnostics.js';
 import { snapshotPluginSurfaceAssets } from './external-runtime/package-surface-assets.js';
 import type { HostInventoryControlPlane } from './host-inventory/control-plane.js';
 import { type PackageAdmissionCandidate, PluginInventoryError } from './host-inventory/types.js';
@@ -15,7 +16,7 @@ import {
 } from './manager/plugin-package-quarantine.js';
 import {
   bundledManifestDigest,
-  COLLECTIVE_CONNECTOR_PLUGIN_MANIFEST,
+  OFFICIAL_BUNDLED_MANIFESTS,
   OFFICIAL_PLUGIN_CATALOG,
   type OfficialPluginCatalogEntry,
   officialPluginPresentationMatches,
@@ -306,6 +307,7 @@ export class OfficialPluginPackageInstaller {
         ...(this.options.validateManifest === undefined ? {} : { validateManifest: this.options.validateManifest }),
       }).resolvePackageArchiveBytes(entry.packageDigest, bytes);
     } catch (error) {
+      reportPackageArchiveFailure(entry.packageDigest, error);
       throw new OfficialPluginInstallError('INVALID_PACKAGE_ARCHIVE', 'official package archive is invalid', {
         cause: error,
       });
@@ -391,10 +393,7 @@ export class OfficialPluginPackageInstaller {
     entry: OfficialPluginCatalogEntry,
     accept: (candidate: PackageAdmissionCandidate) => Promise<T>,
   ): Promise<T> {
-    const manifest =
-      entry.pluginId === COLLECTIVE_CONNECTOR_PLUGIN_MANIFEST.pluginId
-        ? COLLECTIVE_CONNECTOR_PLUGIN_MANIFEST
-        : undefined;
+    const manifest = OFFICIAL_BUNDLED_MANIFESTS.find((candidate) => candidate.pluginId === entry.pluginId);
     if (!manifest) {
       throw new OfficialPluginInstallError(
         'INVALID_PACKAGE_SCHEMA',

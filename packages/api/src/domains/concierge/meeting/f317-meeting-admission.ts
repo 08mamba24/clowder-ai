@@ -13,6 +13,7 @@ export interface F317LiveCallObservation {
 
 export interface F195CaptureObservation {
   readonly running: boolean;
+  readonly lifecycle: 'starting' | 'running' | 'finalizing' | 'stopped' | 'unknown';
   readonly paused: boolean;
   readonly threadId: string;
   readonly meetingId: string;
@@ -68,6 +69,7 @@ function observedScope(call: F317LiveCallObservation, capture: F195CaptureObserv
     Boolean(call.userId && call.threadId && call.catId) &&
     call.state === 'talking' &&
     capture.running &&
+    capture.lifecycle === 'running' &&
     !capture.paused &&
     Number.isFinite(capture.startedAt) &&
     capture.startedAt > 0 &&

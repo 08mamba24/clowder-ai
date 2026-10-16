@@ -52,6 +52,80 @@ it('hides the action when no Host-selected named page is installed', async () =>
   expect(fetchMock).toHaveBeenCalledWith(route, undefined, { afterCurrentGet: false });
 });
 
+it('shows persistent Jev consent and reports only verified applied without promising restoration', async () => {
+  const productPreview = {
+    ...preview,
+    operation: 'fill',
+    value: '带伞',
+    restoreValue: undefined,
+    selection: { servedModel: 'jev-1.13.0' },
+  };
+  fetchMock.mockResolvedValue(
+    json({
+      kind: 'available',
+      requestMessageId: 'direct-source',
+      requestText: '填入「带伞」',
+      pageUrl: preview.pageUrl,
+      state: 'awaiting_consent',
+      preview: productPreview,
+    }),
+  );
+  await act(async () => root.render(<OwnerPageActionControl />));
+  expect(container.textContent).toContain('Jev');
+  expect(container.textContent).toContain('允许这次修改');
+  expect(container.textContent).not.toContain('允许一次并恢复');
+  expect(container.textContent).not.toContain('恢复原值：空值');
+  fetchMock.mockResolvedValue(
+    json({
+      kind: 'available',
+      requestMessageId: 'direct-source',
+      requestText: '填入「带伞」',
+      pageUrl: preview.pageUrl,
+      state: 'settled',
+      result: { status: 'applied', forward: { status: 'applied', after: '带伞' } },
+    }),
+  );
+  await act(async () => root.render(<OwnerPageActionControl key="settled" />));
+  expect(container.textContent).toContain('已核对页面修改');
+  expect(container.textContent).not.toContain('恢复原值');
+});
+
+it('shows Jev clarification with no execution button or success claim', async () => {
+  fetchMock.mockResolvedValue(
+    json({
+      kind: 'available',
+      requestMessageId: 'direct-source',
+      requestText: '处理它',
+      pageUrl: preview.pageUrl,
+      state: 'ready',
+      selectionNotice: { kind: 'ask', reason: '哪个字段？', selection: { servedModel: 'jev-1.13.0' } },
+    }),
+  );
+  await act(async () => root.render(<OwnerPageActionControl />));
+  expect(container.textContent).toContain('哪个字段？');
+  expect(container.textContent).not.toContain('允许这次修改');
+});
+
+it('identifies a previous result on a new question without restoring its execution consent', async () => {
+  fetchMock.mockResolvedValue(
+    json({
+      kind: 'available',
+      requestMessageId: 'query-source',
+      requestText: '现在结果怎样？',
+      pageUrl: preview.pageUrl,
+      state: 'ready',
+      resultRequestMessageId: 'original-action-source',
+      resultObservedAtMs: 1_791_090_000_000,
+      result: { status: 'applied', forward: { status: 'applied', after: '带伞' }, receiptPersistence: 'stored' },
+    }),
+  );
+  await act(async () => root.render(<OwnerPageActionControl />));
+  expect(container.querySelector('output')?.textContent).toContain('此前核对的结果：');
+  expect(container.querySelector('output')?.textContent).toContain('核对时间');
+  expect(container.textContent).not.toContain('允许这次修改');
+  expect(container.textContent).not.toContain('允许一次并恢复');
+});
+
 it('shows exact consent before Allow once and sends only an opaque preview ID', async () => {
   let state: 'ready' | 'awaiting_consent' | 'settled' = 'ready';
   fetchMock.mockImplementation(async (url, init) => {

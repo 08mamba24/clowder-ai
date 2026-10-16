@@ -1,8 +1,10 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { writeShellPresentation } from '@/components/shell/shell-presentation';
 import { CanonicalWorkspaceFileSurface } from '../CanonicalWorkspaceFileSurface';
 import { useF307ExperienceWorkbenchStore } from '../experience-workbench-store';
+import * as adapters from '../real-surface-adapters';
 import { createFileSurface } from '../real-surface-adapters';
 import { createInitialWorkbenchState } from '../workbench-model';
 
@@ -18,7 +20,49 @@ afterEach(() => {
   act(() => root.render(null));
   useF307ExperienceWorkbenchStore.setState(original, true);
   fetch.mockReset();
+  writeShellPresentation('classic');
   delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+});
+
+it('keeps two v2 files in the same canonical root when alias B resolves beside pinned A', async () => {
+  writeShellPresentation('v2');
+  const preview = adapters.createFilePreviewSurface;
+  const canonicalRoot = `f063_root_v1_${'a'.repeat(64)}`;
+  const first = preview({ worktreeId: canonicalRoot, path: 'A.md' });
+  const second = preview({ worktreeId: 'human-worktree-name', path: 'B.md', scrollToLine: 17 });
+  useF307ExperienceWorkbenchStore.setState({
+    layout: {
+      ...createInitialWorkbenchState([first, second]),
+      activeSurfaceId: second.id,
+      pinnedSurfaceIds: [first.id],
+      previewSurfaceId: second.id,
+    },
+  });
+  fetch.mockResolvedValue({ ok: true, json: async () => ({ worktreeId: canonicalRoot, path: 'B.md', kind: 'file' }) });
+  await act(async () =>
+    root.render(
+      <CanonicalWorkspaceFileSurface surface={second} onBack={() => undefined}>
+        <input data-testid="editor-B" defaultValue="B draft" />
+      </CanonicalWorkspaceFileSurface>,
+    ),
+  );
+  const layout = useF307ExperienceWorkbenchStore.getState().layout;
+  expect(layout.surfaces).toHaveLength(2);
+  expect(layout.surfaces[0]).toBe(first);
+  const resolved = layout.surfaces[1];
+  expect(resolved?.id).not.toBe(first.id);
+  expect(resolved?.objectRef).toEqual({
+    kind: 'file',
+    id: encodeURIComponent(JSON.stringify([canonicalRoot, 'B.md'])),
+  });
+  expect(resolved && adapters.resolveFileTarget(resolved)).toEqual({
+    worktreeId: canonicalRoot,
+    path: 'B.md',
+    scrollToLine: 17,
+  });
+  expect(layout.previewSurfaceId).toBe(resolved?.id);
+  expect(layout.pinnedSurfaceIds).toEqual([first.id]);
+  expect(fetch).toHaveBeenCalledOnce();
 });
 
 it('file-tree and artifact aliases converge before mounting a second editable surface', async () => {

@@ -3,7 +3,6 @@ import { mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'n
 import { dirname, resolve } from 'node:path';
 
 const RECEIPT_VERSION = 1;
-const MAX_TERMINAL_RECEIPTS = 128;
 const WAITER_SUFFIX = '.waiter.json';
 const RECEIPT_SUFFIX = '.receipt.json';
 
@@ -32,6 +31,7 @@ function receiptPathFor(receiptDir, queueId) {
 }
 
 async function writeJsonAtomically(filePath, value) {
+  // Receipts are durable history; only ephemeral waiter/temp files are cleaned up.
   await mkdir(dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
@@ -81,34 +81,6 @@ function waitDurationFromQueuedAt(queuedAt) {
   return Number.isFinite(parsed) ? Math.max(0, Date.now() - parsed) : 0;
 }
 
-async function pruneTerminalReceipts(receiptDir) {
-  let entries;
-  try {
-    entries = (await readdir(receiptDir)).filter((entry) => entry.endsWith(RECEIPT_SUFFIX)).sort();
-  } catch (error) {
-    if (error?.code === 'ENOENT') return;
-    throw error;
-  }
-
-  const terminal = [];
-  for (const entry of entries) {
-    try {
-      const receipt = JSON.parse(await readFile(resolve(receiptDir, entry), 'utf8'));
-      if (['aborted', 'failed', 'reclaimed', 'released', 'timed_out'].includes(receipt?.status)) {
-        terminal.push(entry);
-      }
-    } catch (error) {
-      if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
-    }
-  }
-
-  await Promise.all(
-    terminal
-      .slice(0, Math.max(0, terminal.length - MAX_TERMINAL_RECEIPTS))
-      .map((entry) => rm(resolve(receiptDir, entry), { force: true })),
-  );
-}
-
 export async function createProcessResourceWaiter({ lockPath, holderPid, cwd, label }) {
   const resolvedLockPath = resolve(lockPath);
   const { queueDir, receiptDir } = queuePaths(resolvedLockPath);
@@ -148,7 +120,6 @@ export async function listLiveProcessResourceWaiters(lockPath, { stalledAfterMs 
   await Promise.all([mkdir(queueDir, { recursive: true }), mkdir(receiptDir, { recursive: true })]);
   const entries = (await readdir(queueDir)).filter((entry) => entry.endsWith(WAITER_SUFFIX)).sort();
   const live = [];
-  let reclaimedAny = false;
   const observedAt = Date.now();
 
   for (const entry of entries) {
@@ -177,7 +148,6 @@ export async function listLiveProcessResourceWaiters(lockPath, { stalledAfterMs 
         waitDurationMs: waitDurationFromQueuedAt(metadata.queuedAt),
         reclaimedAt: new Date().toISOString(),
       });
-      reclaimedAny = true;
     }
     await rm(waiterPath, { force: true });
   }
@@ -187,7 +157,6 @@ export async function listLiveProcessResourceWaiters(lockPath, { stalledAfterMs 
       left.metadata.queueOrder.localeCompare(right.metadata.queueOrder) ||
       left.metadata.queueId.localeCompare(right.metadata.queueId),
   );
-  if (reclaimedAny) await pruneTerminalReceipts(receiptDir);
   return live;
 }
 
@@ -196,9 +165,6 @@ export async function writeProcessResourceReceipt(waiter, receipt) {
     ...waiter.metadata,
     ...receipt,
   });
-  if (['aborted', 'failed', 'reclaimed', 'released', 'timed_out'].includes(receipt.status)) {
-    await pruneTerminalReceipts(waiter.receiptDir);
-  }
 }
 
 export async function removeProcessResourceWaiter(waiter) {

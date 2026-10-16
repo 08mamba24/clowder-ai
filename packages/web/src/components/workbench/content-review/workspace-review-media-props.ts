@@ -6,6 +6,7 @@ import type {
   WorkspaceContentVisualMarkResolution,
 } from '@cat-cafe/shared';
 import type { ReactNode } from 'react';
+import type { PendingChatMark } from '@/components/content-review/ReviewPendingChatMarks';
 import type { ContentReviewAnnotation, ContentReviewVisualMark } from './content-review-contract';
 import type { CanvasFocusRequest, DiscussionFocusRequest } from './workspace-review-media-focus';
 export interface WorkspaceReviewMediaProps {
@@ -16,6 +17,8 @@ export interface WorkspaceReviewMediaProps {
   /** An unsaved comment text is present (e.g. restored on return), so its composer should be showing. */
   readonly restoreComment?: boolean;
   readonly composer: ReactNode;
+  readonly imageChatPrimary?: boolean;
+  readonly wholeWorkAction?: ReactNode;
   readonly onOpenDiscussion: () => void;
   readonly reviewId: string;
   readonly sourceRevision: string;
@@ -36,4 +39,6 @@ export interface WorkspaceReviewMediaProps {
   readonly modificationOpenRequest?: number;
   readonly onSaveVisualMarks: (marks: readonly ArtifactReviewDrawing[]) => Promise<boolean>;
   readonly onDeleteVisualMark: (markId: string) => Promise<boolean>;
+  /** Places of this work already waiting in the chat composer, numbered as their chips are. */
+  readonly pendingChatMarks?: readonly PendingChatMark[];
 }

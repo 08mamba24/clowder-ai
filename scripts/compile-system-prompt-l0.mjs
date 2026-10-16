@@ -368,7 +368,9 @@ function buildWorkflowTriggers(breedId, catId, displayName) {
   const workflowTriggers = loadWorkflowTriggers();
   const direct = workflowTriggers[breedId] ?? workflowTriggers[catId];
   if (direct) return direct;
-  const familyBreed = DISPLAY_NAME_TO_BREED[displayName];
+  const familyBreed = Object.entries(DISPLAY_NAME_TO_BREED).find(([familyName]) =>
+    displayName?.startsWith(familyName),
+  )?.[1];
   if (familyBreed && workflowTriggers[familyBreed]) {
     return workflowTriggers[familyBreed];
   }

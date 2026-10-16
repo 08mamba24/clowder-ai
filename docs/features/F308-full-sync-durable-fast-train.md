@@ -8,7 +8,7 @@ description: "把 Clowder AI→开源 target 全量同步从一次性长脚本�
 description_source: human
 description_author: codex-terra
 description_updated_at: 2026-08-27T00:00:00-07:00
-tips_exempt: "Renewed 2026-09-20 for the public-test resource-scope intake (clowder-ai#1483): the change replaces lexical shard classification with resource scope and adds a runtime isolation preflight that fails closed when a distributable lane cannot prove its kernel boundary. Both surfaces are maintainer CLI / CI reliability — they add no Hub-discoverable end-user action, and operator status stays command output rather than a capability tip surface."
+tips_exempt: "Renewed 2026-10-04 for source-readiness admission and its documented stage-failure recovery limit, retaining the public-test resource-scope intake (clowder-ai#1483): these are maintainer CLI / CI reliability changes, with no Hub-discoverable end-user action; operator status stays command output rather than a capability tip surface."
 ---
 
 # F308: Full-Sync Durable Fast Train — Exact Cut、可恢复 Gate 与 CI Critical Path
@@ -57,7 +57,7 @@ F308 的终态是：维护者一次启动或恢复一个冻结 cut，就能看�
 terminal receipt。
 
 1. operator 运行单一 `launch`，CLI 在任何 install/build/full gate 前完成 remote heads、cleanliness、
-worktree registration、dependency/link、manifest/artifact/hash、reconciliation coverage 和 target metadata
+worktree registration、fresh origin/main source reachability、dependency/link、manifest/artifact/hash、reconciliation coverage 和 target metadata
 检查；首个 hard failure 带 typed next action 终止。
 2. 通过 preflight 后，CLI 显示 immutable cut fingerprint、候选 tree hash、F251 / ledger 结果和
 `no_write` disposition。source、public 或 reconciliation 任一 drift 都会明确标为不同 invalidation。
@@ -99,8 +99,9 @@ runner minutes；它不把 GitHub queue、人类 review 或外部 intake 等待�
 
 ### Phase B — Safe orchestration
 
-- [x] **AC-B1**: The dependency DAG runs heads, clean tree, worktree registration, dependency/link readiness,
-  artifact/hash, reconciliation coverage and target metadata ahead of expensive install/build/full gate.
+- [x] **AC-B1**: The dependency DAG runs heads, clean tree, worktree registration, freshly fetched source-main
+  reachability, dependency/link readiness, artifact/hash, reconciliation coverage and target metadata ahead of
+  expensive install/build/full gate.
 - [x] **AC-B2**: A stage reports only its first hard failure and a typed next action; later stages never run after a
   hard predecessor failure.
 - [x] **AC-B3**: Gate admission occurs only after readiness; same cut + gate permits one in-flight holder and exposes
@@ -164,6 +165,16 @@ runner minutes；它不把 GitHub queue、人类 review 或外部 intake 等待�
 - No silent exclusion of Linux, Windows, macOS, public tests or contract checks to manufacture a shorter number.
 
 ## Risks
+
+Known recovery limit after #5106: initial source-main refresh or ancestry failures
+are run-level prerequisite failures, so they do not create immutable cut-level
+stage receipts. The wrapper still refreshes source and target refs inside the
+stage. A transient failure at either later I/O boundary can still create a failed
+stage terminal with no same-cut retry/supersession entry. Those failed receipts
+must remain failed and intact; changing the operator state root is not a recovery
+path (overrides are only for isolated tests). This repair does not claim generic
+failed-attempt recovery. An actual public-main advance correctly supersedes the
+old cut and is distinct from this transient-I/O limitation.
 
 | Risk | Guard |
 |---|---|

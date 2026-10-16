@@ -14,6 +14,10 @@ import {
   resolvePencilCommand,
   resolveServersForCat,
 } from '../../../../../config/capabilities/capability-orchestrator.js';
+import {
+  isSameCapabilityRoot,
+  resolveInvokeCapabilityRoot,
+} from '../../../../../config/capabilities/invoke-capability-root.js';
 import { toOpenCodeMcpEntry } from '../../../../../config/capabilities/mcp-config-adapters.js';
 import { isRetiredGithubMcpConfigEntry } from '../../../../../config/capabilities/retired-github-mcp.js';
 import {
@@ -88,13 +92,12 @@ export async function writeOpenCodeRuntimeConfig(
   const safeCatId = sanitizePathSegment(catId);
   const safeInvocationId = sanitizePathSegment(invocationId);
   const configDir = join(projectRoot, '.cat-cafe', `oc-config-${safeCatId}-${safeInvocationId}`);
-  mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  chmodSync(configDir, 0o700);
   const configPath = join(configDir, 'opencode.json');
   const tempPath = `${configPath}.tmp-${process.pid}`;
-  const capabilitiesProjectRoot =
+  const capabilitiesProjectRoot = await resolveInvokeCapabilityRoot(
     options.capabilitiesProjectRoot ??
-    (options.mcpServerPath ? resolve(dirname(options.mcpServerPath), '../../..') : projectRoot);
+      (options.mcpServerPath ? resolve(dirname(options.mcpServerPath), '../../..') : projectRoot),
+  );
   const config = generateOpenCodeRuntimeConfig({
     ...options,
     catId: options.catId ?? catId,
@@ -106,16 +109,18 @@ export async function writeOpenCodeRuntimeConfig(
   if (options.mcpServerPath) {
     const effectiveCatId = options.catId ?? catId;
     let pencilEnabled = false;
+    let configSourceRoot = capabilitiesProjectRoot;
     try {
       // F249: Project config is the single truth source for MCP resolution.
       let capConfig = null;
       let accessScope: 'global' | 'project' = 'global';
-      if (workingDirectory && workingDirectory !== capabilitiesProjectRoot) {
+      if (workingDirectory && !isSameCapabilityRoot(workingDirectory, capabilitiesProjectRoot)) {
         try {
           const projectRaw = readFileSync(join(workingDirectory, '.cat-cafe', 'capabilities.json'), 'utf-8');
           const parsed = JSON.parse(projectRaw);
           if (parsed?.version === 1 || parsed?.version === 2) {
             capConfig = parsed;
+            configSourceRoot = workingDirectory;
             accessScope = 'project';
           }
         } catch {
@@ -141,7 +146,7 @@ export async function writeOpenCodeRuntimeConfig(
     }
     if (pencilEnabled) {
       try {
-        const pencil = await resolvePencilCommand({ projectRoot: capabilitiesProjectRoot });
+        const pencil = await resolvePencilCommand({ projectRoot: configSourceRoot });
         if (pencil) {
           if (!config.mcp) config.mcp = {};
           config.mcp.pencil = toOpenCodeMcpEntry({ command: pencil.command, args: pencil.args });
@@ -177,6 +182,8 @@ export async function writeOpenCodeRuntimeConfig(
     }
   }
 
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  chmodSync(configDir, 0o700);
   writeFileSync(tempPath, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: 0o600 });
   renameSync(tempPath, configPath);
   chmodSync(configPath, 0o600);

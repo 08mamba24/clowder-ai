@@ -105,6 +105,7 @@ async function runInvocation({ stderrLines = [], model = 'gpt-5.4', usage, invok
 }
 
 const OBSERVATION_DEFAULT = {
+  RUST_LOG: undefined,
   CAT_CAFE_CODEX_SERVED_MODEL_OBSERVATION: undefined,
   CAT_CAFE_CODEX_OAUTH_TRANSPORT: undefined,
 };
@@ -224,21 +225,19 @@ describe('F319 served model provenance', () => {
     });
   });
 
-  test('api_key label without a custom base URL is observed like OAuth (auth label ≠ wire)', async () => {
+  test('official API with its selected key retains served-model observation', async () => {
     await withEnv(OBSERVATION_DEFAULT, async () => {
-      // Clowder AI's account walk can label a cat `api_key` (installer account
-      // holds a key) while Codex itself signs the request with the ChatGPT
-      // login in auth.json. Either way the request reaches OpenAI's own
-      // backend, so the served model must be observed — the label is not
-      // the wire (alpha AC-B4 miss, 2026-09-21).
+      // Explicit API mode now uses an env_key provider. It still reaches OpenAI's
+      // official API, so observation must retain the actual response model.
       const { args, env, events } = await runInvocation({
         model: 'gpt-5.4',
         stderrLines: [SSE_CREATED('gpt-5.3-codex', 'resp_label')],
         invokeOptions: { callbackEnv: { OPENAI_API_KEY: 'sk-test', CODEX_AUTH_MODE: 'api_key' } },
       });
-      // Phase B.2: no transport override for any label; only the trace directives are added.
       assert.ok(!args.includes('model_provider="openai_https"'), 'observation must not force the HTTPS transport');
-      assert.ok(!args.includes('model_provider="custom"'), 'no custom base URL → not the custom provider');
+      assert.ok(args.includes('model_provider="custom"'));
+      assert.ok(args.includes('model_providers.custom.env_key="OPENAI_API_KEY"'));
+      assert.ok(args.includes('model_providers.custom.base_url="https://api.openai.com/v1"'));
       assert.match(env.RUST_LOG ?? '', /codex_api::sse::responses=trace/);
       assert.match(env.RUST_LOG ?? '', /tungstenite::protocol=trace/);
       const done = events.find((e) => e.type === 'done');
@@ -248,13 +247,29 @@ describe('F319 served model provenance', () => {
     });
   });
 
-  test('off + api_key label: launch is exactly the pre-F319 default provider', async () => {
+  test('off + official API: only tracing changes, selected env_key provider remains', async () => {
     await withEnv({ ...OBSERVATION_DEFAULT, CAT_CAFE_CODEX_SERVED_MODEL_OBSERVATION: 'off' }, async () => {
       const { args, env } = await runInvocation({
         invokeOptions: { callbackEnv: { OPENAI_API_KEY: 'sk-test', CODEX_AUTH_MODE: 'api_key' } },
       });
       assert.ok(!args.includes('model_provider="openai_https"'), 'off must not force HTTPS on api_key sessions');
       assert.ok(!args.includes('model_provider="openai"'), 'the OAuth-only builtin pin stays OAuth-only');
+      assert.ok(args.includes('model_provider="custom"'));
+      assert.equal(env.RUST_LOG, undefined);
+    });
+  });
+
+  test('auto with an explicitly configured API endpoint keeps its original observation behavior', async () => {
+    await withEnv(OBSERVATION_DEFAULT, async () => {
+      const { env } = await runInvocation({
+        invokeOptions: {
+          callbackEnv: {
+            CODEX_AUTH_MODE: 'auto',
+            OPENAI_API_KEY: 'auto-fixture',
+            OPENAI_BASE_URL: 'https://api.openai.com/v1',
+          },
+        },
+      });
       assert.equal(env.RUST_LOG, undefined);
     });
   });
