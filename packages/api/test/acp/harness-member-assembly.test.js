@@ -23,7 +23,7 @@ const { dshOmitsAcpSessionMcp } = await import(
   '../../dist/domains/cats/services/agents/providers/acp/dsh-acp-bootstrap.js'
 );
 const { resolveZcodeAcpAdapterPath, zcodeOmitsAcpSessionMcp } = await import(
-  '../../dist/domains/cats/services/agents/providers/acp/zcode-acp-bootstrap.js'
+  '../../dist/domains/cats/services/agents/providers/acp/zcode/zcode-acp-bootstrap.js'
 );
 
 const SLIM_MCP = [

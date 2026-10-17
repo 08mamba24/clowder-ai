@@ -35,7 +35,7 @@ import {
   isZcodeHarnessCommand,
   zcodeOmitsAcpSessionMcp,
   zcodeUnreadyMessage,
-} from './zcode-acp-bootstrap.js';
+} from './zcode/zcode-acp-bootstrap.js';
 
 export type AcpPoolRegistry = Map<string, AcpProcessPool>;
 

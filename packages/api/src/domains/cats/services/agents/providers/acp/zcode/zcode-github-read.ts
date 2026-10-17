@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import type { GhReadLease } from '../../../../../../infrastructure/github/agent-github-read-types.js';
-import type { AcpMcpServer } from './types.js';
+import type { GhReadLease } from '../../../../../../../infrastructure/github/agent-github-read-types.js';
+import type { AcpMcpServer } from '../types.js';
 
 function isReadEndpoint(value: string): boolean {
   try {

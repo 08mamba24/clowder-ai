@@ -44,7 +44,7 @@ import { resolveAcpMcpServers, resolveDisabledServerIds, resolveUserProjectMcpSe
 import { AcpImageInputError, type AcpPromptInput } from './acp-prompt-content.js';
 import { callbackEnvDiagnostic, materializeSessionMcpServers } from './acp-session-env.js';
 import type { AcpMcpServer, AcpNewSessionResult, AcpPromptCapabilities, AcpSessionUpdate } from './types.js';
-import { zcodeReadMcp } from './zcode-github-read.js';
+import { zcodeReadMcp } from './zcode/zcode-github-read.js';
 
 const log = createModuleLogger('acp-agent');
 

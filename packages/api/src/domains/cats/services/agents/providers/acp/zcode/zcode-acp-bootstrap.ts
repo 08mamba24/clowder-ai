@@ -7,7 +7,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { formatCliNotFoundError, resolveCliCommand } from '../../../../../../utils/cli-resolve.js';
+import { formatCliNotFoundError, resolveCliCommand } from '../../../../../../../utils/cli-resolve.js';
 import { diagnoseZcodeSpawnReady, ensureZcodeIsolatedHome, resolveZcodeIsolatedHome } from './zcode-acp-protocol.js';
 
 export { diagnoseZcodeSpawnReady, ensureZcodeIsolatedHome, resolveZcodeIsolatedHome };
