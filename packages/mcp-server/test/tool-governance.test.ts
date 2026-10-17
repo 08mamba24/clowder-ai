@@ -14,6 +14,7 @@ import {
   type McpStandaloneReason,
   type McpToolDefinition,
   type ProtectedToolSnapshot,
+  type ResolvedAdmissionClaim,
   type ResolvedEvidenceCatalog,
   type ResolvedImplementationCatalog,
   validateToolGovernance,
@@ -688,5 +689,125 @@ describe('F286 MCP governance contract', () => {
     });
 
     assert.deepEqual(compareToolRegistries([before], [after]).schemaDeliveryChanges, []);
+  });
+});
+
+describe('same-batch resource-family admission', () => {
+  function batch() {
+    const entry = makeDefinition({ name: 'cat_cafe_subject_entry' });
+    const growth = makeDefinition({
+      name: 'cat_cafe_subject_update',
+      operation: operation('update', writeBoundary),
+      standaloneReason: { disposition: 'accepted-boundary', kind: 'side-effect-boundary', admissionRef: testRef },
+    });
+    const entryClaim: ResolvedAdmissionClaim = {
+      ref: testRef,
+      subject: { toolName: entry.name, resourceFamily: 'subject', boundaryKind: 'resource-entry' },
+      decision: 'accepted',
+      sourceDigest: 'sha256:entry-evidence',
+    };
+    const growthClaim: ResolvedAdmissionClaim = {
+      ...entryClaim,
+      subject: { toolName: growth.name, resourceFamily: 'subject', boundaryKind: 'side-effect-boundary' },
+    };
+    return { entry, growth, entryClaim, growthClaim };
+  }
+
+  for (const reverse of [false, true]) {
+    it(`accepts one exact resource entry and an independently admitted side effect (${reverse ? 'growth first' : 'entry first'})`, () => {
+      const { entry, growth, entryClaim, growthClaim } = batch();
+      const definitions = reverse ? [growth, entry] : [entry, growth];
+      const evidence = evidenceCatalog(new Map([[testRef, [entryClaim, growthClaim] as const]]));
+      assert.deepEqual(validate(definitions, { evidence }), { ok: true, findings: [] });
+    });
+  }
+
+  it('still requires a resource entry when every new tool has only a side-effect claim', () => {
+    const { growth, growthClaim } = batch();
+    const evidence = evidenceCatalog(new Map([[testRef, [growthClaim] as const]]));
+    const result = validate([growth], { evidence });
+    assert.equal(result.ok, false);
+    assert.ok(result.findings.some((finding) => finding.code === 'new-family-requires-resource-entry'));
+  });
+
+  const invalidEntryClaims: readonly [string, (claim: ResolvedAdmissionClaim) => ResolvedAdmissionClaim][] = [
+    ['another tool', (claim) => ({ ...claim, subject: { ...claim.subject, toolName: 'cat_cafe_another_entry' } })],
+    ['another family', (claim) => ({ ...claim, subject: { ...claim.subject, resourceFamily: 'another' } })],
+    [
+      'another boundary',
+      (claim) => ({ ...claim, subject: { ...claim.subject, boundaryKind: 'side-effect-boundary' } }),
+    ],
+    ['another reference', (claim) => ({ ...claim, ref: architectureRef })],
+    ['an unaccepted decision', (claim) => ({ ...claim, decision: 'rejected' }) as unknown as ResolvedAdmissionClaim],
+  ];
+  for (const [name, change] of invalidEntryClaims) {
+    it(`rejects a resource-entry claim bound to ${name}`, () => {
+      const { entry, growth, entryClaim, growthClaim } = batch();
+      const evidence = evidenceCatalog(new Map([[testRef, [change(entryClaim), growthClaim] as const]]));
+      const result = validate([entry, growth], { evidence });
+      assert.equal(result.ok, false);
+      assert.ok(result.findings.some((finding) => finding.code === 'new-family-requires-resource-entry'));
+      assert.ok(
+        result.findings.some(
+          (finding) => finding.toolName === entry.name && finding.code === 'admission-subject-mismatch',
+        ),
+      );
+    });
+  }
+
+  it('rejects a missing resource-entry claim and an unresolved entry reference', () => {
+    const { entry, growth, entryClaim, growthClaim } = batch();
+    const accepted = evidenceCatalog(new Map([[testRef, [entryClaim, growthClaim] as const]]));
+    for (const evidence of [
+      evidenceCatalog(new Map([[testRef, [growthClaim] as const]])),
+      { ...accepted, existingRefs: new Set([architectureRef]) },
+    ]) {
+      const result = validate([entry, growth], { evidence });
+      assert.equal(result.ok, false);
+      assert.ok(result.findings.some((finding) => finding.code === 'new-family-requires-resource-entry'));
+    }
+  });
+
+  it('does not admit a different family using a valid entry from this batch', () => {
+    const { entry, growth, entryClaim, growthClaim } = batch();
+    const other = { ...growth, policy: { ...growth.policy, resourceFamily: 'another' } };
+    const otherClaim = { ...growthClaim, subject: { ...growthClaim.subject, resourceFamily: 'another' } };
+    const evidence = evidenceCatalog(new Map([[testRef, [entryClaim, otherClaim] as const]]));
+    const result = validate([entry, other], { evidence });
+    assert.equal(result.ok, false);
+    assert.ok(
+      result.findings.some(
+        (finding) => finding.toolName === other.name && finding.code === 'new-family-requires-resource-entry',
+      ),
+    );
+  });
+
+  it('still requires each growth tool to carry its own exact accepted boundary', () => {
+    const { entry, growth, entryClaim } = batch();
+    const evidence = evidenceCatalog(new Map([[testRef, [entryClaim] as const]]));
+    const missingClaim = validate([entry, growth], { evidence });
+    assert.equal(missingClaim.ok, false);
+    assert.ok(
+      missingClaim.findings.some(
+        (finding) => finding.toolName === growth.name && finding.code === 'admission-subject-mismatch',
+      ),
+    );
+
+    const candidate = makeDefinition({
+      name: growth.name,
+      operation: operation('update', writeBoundary),
+      standaloneReason: {
+        disposition: 'consolidation-candidate',
+        kind: 'same-resource-lifecycle',
+        evidenceRef: testRef,
+      },
+    });
+    const missingBoundary = validate([entry, candidate], { evidence });
+    assert.equal(missingBoundary.ok, false);
+    assert.ok(
+      missingBoundary.findings.some(
+        (finding) => finding.toolName === growth.name && finding.code === 'unjustified-family-growth',
+      ),
+    );
   });
 });

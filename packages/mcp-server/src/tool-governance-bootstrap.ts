@@ -55,11 +55,23 @@ export type BootstrapTargetProof =
       projectionIsTargetAncestor: boolean;
       witness: ExportedBootstrapWitness;
     }
+  | {
+      kind: 'exported-candidate-upgrade';
+      target: McpSurfaceExportedBootstrapTarget;
+      protectedTargetSha: string;
+      candidateSha: string;
+      bootstrapIsTargetAncestor: boolean;
+      protectedTargetIsCandidateAncestor: boolean;
+      projectionIsCandidateAncestor: boolean;
+      protectedTargetAttestation: unknown;
+      witness: ExportedBootstrapWitness;
+    }
   | { kind: 'unresolved' };
 
 export type BootstrapValidationContext = {
   mode: 'attest' | 'write' | 'check';
   resolvedTargetSha: string;
+  resolvedCandidateSha?: string;
   targetHasBaseline: boolean;
   currentHasBaseline: boolean;
   targetBaselineProtectedBaseSha?: string;
@@ -184,6 +196,12 @@ function readRecord(value: unknown, subject: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function validateLegacyBootstrapAttestation(value: unknown, bootstrapFrom: string, subject: string): void {
+  if (JSON.stringify(stable(value)) !== JSON.stringify(stable(createLegacyBootstrapAttestation(bootstrapFrom)))) {
+    throw new Error(`${subject} does not preserve the source attestation`);
+  }
+}
+
 export function validateExportedBootstrapWitness(
   attestation: McpSurfaceBootstrapAttestation,
   target: McpSurfaceExportedBootstrapTarget,
@@ -203,12 +221,11 @@ export function validateExportedBootstrapWitness(
   ) {
     throw new Error('Exported bootstrap provenance does not match the attested source mapping');
   }
-  if (
-    JSON.stringify(stable(witness.legacyAttestation)) !==
-    JSON.stringify(stable(createLegacyBootstrapAttestation(attestation.bootstrapFrom)))
-  ) {
-    throw new Error('Exported bootstrap introduction does not preserve the source attestation');
-  }
+  validateLegacyBootstrapAttestation(
+    witness.legacyAttestation,
+    attestation.bootstrapFrom,
+    'Exported bootstrap introduction',
+  );
   if (witness.baselineProtectedBaseSha !== attestation.bootstrapFrom) {
     throw new Error('Exported bootstrap introduction does not preserve the source protected base');
   }
@@ -247,6 +264,29 @@ function validateBaselinePresence(context: BootstrapValidationContext): void {
   }
 }
 
+function validateCandidateUpgrade(
+  attestation: McpSurfaceBootstrapAttestation,
+  context: BootstrapValidationContext,
+  proof: Extract<BootstrapTargetProof, { kind: 'exported-candidate-upgrade' }>,
+): void {
+  if (
+    !context.resolvedCandidateSha ||
+    !/^[a-f0-9]{40}$/.test(context.resolvedCandidateSha) ||
+    proof.protectedTargetSha !== context.resolvedTargetSha ||
+    proof.candidateSha !== context.resolvedCandidateSha
+  ) {
+    throw new Error('Exported candidate upgrade must bind the exact protected target and candidate');
+  }
+  if (!proof.protectedTargetIsCandidateAncestor || !proof.projectionIsCandidateAncestor) {
+    throw new Error('Exported candidate upgrade must contain both protected target and attested projection');
+  }
+  validateLegacyBootstrapAttestation(
+    proof.protectedTargetAttestation,
+    attestation.bootstrapFrom,
+    'Protected legacy fork',
+  );
+}
+
 function validateEstablishedTarget(
   attestation: McpSurfaceBootstrapAttestation,
   context: BootstrapValidationContext,
@@ -259,25 +299,28 @@ function validateEstablishedTarget(
   if (!proof.bootstrapIsTargetAncestor) {
     throw new Error('Attested bootstrap is not an ancestor of the protected target');
   }
+  if (context.targetBaselineProtectedBaseSha !== attestation.bootstrapFrom) {
+    throw new Error('Protected target baseline does not preserve the attested bootstrapFrom');
+  }
   if (proof.kind === 'source') {
     if (!proof.exportedSourceSnapshotsAreTargetAncestors) {
       throw new Error('Exported bootstrap source snapshot is not in the protected source history');
     }
-  } else {
-    if (!proof.projectionIsTargetAncestor) {
-      throw new Error('Attested exported baseline projection is not an ancestor of the protected target');
-    }
-    const expectedTarget = attestation.exportedTargets.find(
-      (target) => target.bootstrapCommit === proof.target.bootstrapCommit,
-    );
-    if (!expectedTarget || JSON.stringify(stable(expectedTarget)) !== JSON.stringify(stable(proof.target))) {
-      throw new Error('Exported bootstrap target is not covered by the source attestation');
-    }
-    validateExportedBootstrapWitness(attestation, expectedTarget, proof.witness);
+    return;
   }
-  if (context.targetBaselineProtectedBaseSha !== attestation.bootstrapFrom) {
-    throw new Error('Protected target baseline does not preserve the attested bootstrapFrom');
+  if (proof.kind === 'exported' && !proof.projectionIsTargetAncestor) {
+    throw new Error('Attested exported baseline projection is not an ancestor of the protected target');
   }
+  if (proof.kind === 'exported-candidate-upgrade') {
+    validateCandidateUpgrade(attestation, context, proof);
+  }
+  const expectedTarget = attestation.exportedTargets.find(
+    (target) => target.bootstrapCommit === proof.target.bootstrapCommit,
+  );
+  if (!expectedTarget || JSON.stringify(stable(expectedTarget)) !== JSON.stringify(stable(proof.target))) {
+    throw new Error('Exported bootstrap target is not covered by the source attestation');
+  }
+  validateExportedBootstrapWitness(attestation, expectedTarget, proof.witness);
 }
 
 export function validateBootstrapAttestation(

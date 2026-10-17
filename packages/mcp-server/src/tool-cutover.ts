@@ -1,3 +1,4 @@
+import { resolveCutoverCompositions } from './tool-cutover-composition.js';
 import { type CutoverConsumerScan, classifyCutoverReferences } from './tool-cutover-negative-references.js';
 import type { EvidenceRef, McpRuntimeProfile } from './tool-governance-types.js';
 
@@ -56,6 +57,10 @@ export type AtomicCutoverManifest = {
   canonicalNames: readonly string[];
   expectedProfiles: Readonly<Record<string, readonly McpRuntimeProfile[]>>;
   rollbackRevision: string;
+  composition?: {
+    protectedTargetSha: string;
+    historicalManifestDigests: readonly string[];
+  };
   layers: Partial<Record<CutoverLayer, CutoverLayerDisposition>>;
 };
 
@@ -70,7 +75,8 @@ export type CutoverFinding = {
     | 'cross-family-cutover'
     | 'invalid-rollback-revision'
     | 'dual-surface-exposure'
-    | 'profile-expectation-mismatch';
+    | 'profile-expectation-mismatch'
+    | 'invalid-cutover-composition';
   manifestIndex?: number;
   name?: string;
   message: string;
@@ -81,6 +87,7 @@ type ValidationInput = {
   after: readonly CutoverSurfaceEntry[];
   manifests: readonly AtomicCutoverManifest[];
   scans: readonly CutoverConsumerScan[];
+  protectedTargetSha?: string;
 };
 
 function sorted(values: Iterable<string>): string[] {
@@ -111,6 +118,7 @@ function manifestSetFindings(
   index: number,
   beforeByName: ReadonlyMap<string, CutoverSurfaceEntry>,
   afterByName: ReadonlyMap<string, CutoverSurfaceEntry>,
+  historicalCompositionMember = false,
 ): CutoverFinding[] {
   const findings: CutoverFinding[] = [];
   const families = familiesForManifest(manifest);
@@ -136,6 +144,7 @@ function manifestSetFindings(
   const hasCurrentDelta = expectedRetired.length > 0 || expectedCanonical.length > 0 || expectedProfileNames.length > 0;
   if (
     hasCurrentDelta &&
+    !historicalCompositionMember &&
     (!equalSet(manifest.retiredNames, expectedRetired) ||
       !equalSet(manifest.canonicalNames, expectedCanonical) ||
       !equalSet(Object.keys(manifest.expectedProfiles), expectedProfileNames))
@@ -310,6 +319,8 @@ export function validateAtomicCutovers(input: ValidationInput): { ok: boolean; f
   const afterByName = new Map(input.after.map((entry) => [entry.name, entry]));
   const scansByName = new Map(input.scans.map((scan) => [scan.retiredName, scan]));
   const findings: CutoverFinding[] = [];
+  const composition = resolveCutoverCompositions(input);
+  findings.push(...composition.findings);
   const manifestedRetirements = new Set(input.manifests.flatMap((manifest) => manifest.retiredNames));
   const manifestedProfileChanges = new Set(
     input.manifests.flatMap((manifest) => Object.keys(manifest.expectedProfiles)),
@@ -333,7 +344,15 @@ export function validateAtomicCutovers(input: ValidationInput): { ok: boolean; f
     }
   }
   input.manifests.forEach((manifest, index) => {
-    findings.push(...manifestSetFindings(manifest, index, beforeByName, afterByName));
+    findings.push(
+      ...manifestSetFindings(
+        manifest,
+        index,
+        beforeByName,
+        afterByName,
+        composition.historicalManifestIndexes.has(index),
+      ),
+    );
     findings.push(...manifestIntegrityFindings(manifest, index));
     findings.push(...scanFindings(manifest, index, scansByName));
     findings.push(...profileFindings(manifest, index, afterByName));

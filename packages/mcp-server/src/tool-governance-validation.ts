@@ -163,23 +163,40 @@ function operationFindings(definition: McpToolDefinition, options: ValidationOpt
   return findings;
 }
 
+function hasAcceptedAdmission(definition: McpToolDefinition, options: ValidationOptions): boolean {
+  const reason = definition.policy.standaloneReason;
+  if (reason.disposition !== 'accepted-boundary' || !options.evidenceCatalog.existingRefs.has(reason.admissionRef)) {
+    return false;
+  }
+  return (options.evidenceCatalog.admissionClaims.get(reason.admissionRef) ?? []).some(
+    (claim) =>
+      claim.ref === reason.admissionRef &&
+      claim.decision === 'accepted' &&
+      claim.subject.toolName === definition.name &&
+      claim.subject.resourceFamily === definition.policy.resourceFamily &&
+      claim.subject.boundaryKind === reason.kind,
+  );
+}
+
 function admissionFindings(
   definition: McpToolDefinition,
   options: ValidationOptions,
   baseFamilies: ReadonlySet<string>,
+  admittedNewFamilies: ReadonlySet<string>,
 ): GovernanceFinding[] {
   const findings: GovernanceFinding[] = [];
   const reason = definition.policy.standaloneReason;
   const isAdded = !options.protectedBase.has(definition.name);
   const familyExisted = baseFamilies.has(definition.policy.resourceFamily);
-  if (isAdded && familyExisted && reason.disposition !== 'accepted-boundary') {
+  const familyAdmitted = familyExisted || admittedNewFamilies.has(definition.policy.resourceFamily);
+  if (isAdded && familyAdmitted && reason.disposition !== 'accepted-boundary') {
     findings.push({
       code: 'unjustified-family-growth',
       toolName: definition.name,
       message: 'A new top-level name in an existing family requires an accepted independent boundary',
     });
   }
-  if (isAdded && !familyExisted && (reason.disposition !== 'accepted-boundary' || reason.kind !== 'resource-entry')) {
+  if (isAdded && !familyAdmitted) {
     findings.push({
       code: 'new-family-requires-resource-entry',
       toolName: definition.name,
@@ -187,14 +204,7 @@ function admissionFindings(
     });
   }
   if (reason.disposition !== 'accepted-boundary') return findings;
-  const claims = options.evidenceCatalog.admissionClaims.get(reason.admissionRef) ?? [];
-  const exact = claims.some(
-    (claim) =>
-      claim.subject.toolName === definition.name &&
-      claim.subject.resourceFamily === definition.policy.resourceFamily &&
-      claim.subject.boundaryKind === reason.kind,
-  );
-  if (!exact) {
+  if (!hasAcceptedAdmission(definition, options)) {
     findings.push({
       code: 'admission-subject-mismatch',
       toolName: definition.name,
@@ -211,6 +221,17 @@ export function validateToolGovernance(
   const findings: GovernanceFinding[] = [];
   const seenNames = new Set<string>();
   const baseFamilies = new Set([...options.protectedBase.values()].map((snapshot) => snapshot.resourceFamily));
+  const admittedNewFamilies = new Set(
+    definitions
+      .filter(
+        (definition) =>
+          !options.protectedBase.has(definition.name) &&
+          definition.policy.standaloneReason.disposition === 'accepted-boundary' &&
+          definition.policy.standaloneReason.kind === 'resource-entry' &&
+          hasAcceptedAdmission(definition, options),
+      )
+      .map((definition) => definition.policy.resourceFamily),
+  );
   for (const definition of definitions) {
     if (seenNames.has(definition.name)) {
       findings.push({
@@ -222,7 +243,7 @@ export function validateToolGovernance(
     seenNames.add(definition.name);
     findings.push(...baseFindings(definition, options));
     findings.push(...operationFindings(definition, options));
-    findings.push(...admissionFindings(definition, options, baseFamilies));
+    findings.push(...admissionFindings(definition, options, baseFamilies, admittedNewFamilies));
   }
   findings.sort((left, right) =>
     `${left.toolName ?? ''}:${left.code}`.localeCompare(`${right.toolName ?? ''}:${right.code}`),

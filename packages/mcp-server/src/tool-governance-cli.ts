@@ -172,6 +172,7 @@ async function validateCutovers(
   before: McpSurfaceSnapshot,
   after: McpSurfaceSnapshot,
   repoRoot: string,
+  protectedTargetSha: string,
 ): Promise<void> {
   const manifests = await readManifests(repoRoot);
   const scans = await scanRetiredNames(
@@ -184,7 +185,13 @@ async function validateCutovers(
       resourceFamily: tool.resourceFamily,
       runtimeProfiles: tool.runtimeProfiles,
     }));
-  const result = validateAtomicCutovers({ before: surface(before), after: surface(after), manifests, scans });
+  const result = validateAtomicCutovers({
+    before: surface(before),
+    after: surface(after),
+    manifests,
+    scans,
+    protectedTargetSha,
+  });
   if (!result.ok) throw new Error(`MCP cutover validation failed:\n${JSON.stringify(result.findings, null, 2)}`);
 }
 
@@ -233,6 +240,7 @@ async function main(): Promise<void> {
   }
   const attestation = await readJson<unknown>(attestationPath);
   const parsedAttestation = parseBootstrapAttestation(attestation);
+  const resolvedCandidateSha = (await git(repoRoot, ['rev-parse', 'HEAD'])) as string;
   const previous = await targetBaseline(repoRoot, resolvedTargetSha);
   const currentBaselineExists = await exists(baselinePath);
   const currentBaseline = currentBaselineExists ? await readJson<McpSurfaceSnapshot>(baselinePath) : undefined;
@@ -240,12 +248,14 @@ async function main(): Promise<void> {
     ? await resolveBootstrapTargetProof({
         readGit: (args, allowFailure) => git(repoRoot, args, allowFailure),
         resolvedTargetSha,
+        resolvedCandidateSha,
         attestation: parsedAttestation,
       })
     : undefined;
   const parsed = validateBootstrapAttestation(parsedAttestation, {
     mode: command,
     resolvedTargetSha,
+    resolvedCandidateSha,
     targetHasBaseline: hasTargetBaseline,
     currentHasBaseline: !hasTargetBaseline && command === 'write' ? true : currentBaselineExists,
     targetBaselineProtectedBaseSha: previous?.protectedBaseSha,
@@ -253,6 +263,8 @@ async function main(): Promise<void> {
   });
   const current = await currentSnapshot(repoRoot, parsed.bootstrapFrom);
   const projectionCandidate = command === 'write' ? current.snapshot : currentBaseline;
+  // A legacy fork upgrade keeps its actual protected target snapshot. Only the
+  // original exact-digest export transition may substitute the public projection.
   const useProjectedBaseline =
     previous !== undefined &&
     projectionCandidate !== undefined &&
@@ -275,7 +287,7 @@ async function main(): Promise<void> {
     if (parity.length > 0) throw new Error(`Protected-base protocol drift:\n${JSON.stringify(parity, null, 2)}`);
   }
   await validateDefinitions(repoRoot, protectedSnapshot, current.implementations);
-  await validateCutovers(protectedSnapshot, current.snapshot, repoRoot);
+  await validateCutovers(protectedSnapshot, current.snapshot, repoRoot, resolvedTargetSha);
   const serialized = serializeMcpSurfaceSnapshot(current.snapshot);
   if (command === 'write') {
     await mkdir(dirname(baselinePath), { recursive: true });

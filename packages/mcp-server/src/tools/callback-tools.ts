@@ -576,10 +576,7 @@ export const listThreadsInputSchema = {
     .min(1)
     .max(200)
     .optional()
-    .describe(
-      'Optional: filter threads whose title or threadId contains this keyword (case-insensitive). ' +
-        'Lookup aid only: locating a subject-owner thread by feature id is fine; using cat-name/activity matches as the delivery destination for a handoff or review is not.',
-    ),
+    .describe('Optional: filter threads whose title or threadId contains this keyword (case-insensitive).'),
   agentKeyCatId: agentKeyCatIdSchema,
 };
 
@@ -4019,7 +4016,8 @@ export const callbackTools = [
     description:
       'List thread summaries for discovery. Use when you need to find a thread by keyword or see recent activity. ' +
       'Returns thread IDs, titles, and activity timestamps. ' +
-      'Use activeSince (Unix ms) to filter to recently active threads. Use keyword to search by title.',
+      'Use activeSince (Unix ms) to filter to recently active threads. Use keyword to search by title. ' +
+      'Lookup aid only: locating a subject-owner thread by feature id is fine; using cat-name/activity matches as the delivery destination for a handoff or review is not.',
     inputSchema: listThreadsInputSchema,
     handler: handleListThreads,
     governance: {

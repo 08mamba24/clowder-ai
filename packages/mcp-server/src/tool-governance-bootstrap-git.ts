@@ -37,9 +37,10 @@ function revisionWitness(line: string | null, subject: string): { commit: string
 export async function resolveBootstrapTargetProof(input: {
   readGit: GovernanceGitRead;
   resolvedTargetSha: string;
+  resolvedCandidateSha?: string;
   attestation: McpSurfaceBootstrapAttestation;
 }): Promise<BootstrapTargetProof> {
-  const { readGit, resolvedTargetSha, attestation } = input;
+  const { readGit, resolvedTargetSha, resolvedCandidateSha, attestation } = input;
   if (await isAncestor(readGit, attestation.bootstrapFrom, resolvedTargetSha)) {
     const exportedSourceSnapshotsAreTargetAncestors = (
       await Promise.all(
@@ -68,20 +69,35 @@ export async function resolveBootstrapTargetProof(input: {
   const legacyAttestation = await jsonAtCommit(readGit, target.bootstrapCommit, MCP_SURFACE_ATTESTATION_PATH);
   const baseline = await jsonAtCommit(readGit, target.bootstrapCommit, MCP_SURFACE_BASELINE_PATH);
   const projectionProvenance = await jsonAtCommit(readGit, target.projectionCommit, '.sync-provenance.json');
+  const witness = {
+    bootstrapCommit: bootstrapRevision.commit,
+    parentShas: bootstrapRevision.parentShas,
+    provenance,
+    legacyAttestation,
+    baselineProtectedBaseSha: stringField(baseline, 'protectedBaseSha'),
+    projectionCommit: projectionRevision.commit,
+    projectionParentShas: projectionRevision.parentShas,
+    projectionProvenance,
+  };
+  const projectionIsTargetAncestor = await isAncestor(readGit, target.projectionCommit, resolvedTargetSha);
+  if (!projectionIsTargetAncestor && resolvedCandidateSha && /^[a-f0-9]{40}$/.test(resolvedCandidateSha)) {
+    return {
+      kind: 'exported-candidate-upgrade',
+      target,
+      protectedTargetSha: resolvedTargetSha,
+      candidateSha: resolvedCandidateSha,
+      bootstrapIsTargetAncestor: true,
+      protectedTargetIsCandidateAncestor: await isAncestor(readGit, resolvedTargetSha, resolvedCandidateSha),
+      projectionIsCandidateAncestor: await isAncestor(readGit, target.projectionCommit, resolvedCandidateSha),
+      protectedTargetAttestation: await jsonAtCommit(readGit, resolvedTargetSha, MCP_SURFACE_ATTESTATION_PATH),
+      witness,
+    };
+  }
   return {
     kind: 'exported',
     target,
     bootstrapIsTargetAncestor: true,
-    projectionIsTargetAncestor: await isAncestor(readGit, target.projectionCommit, resolvedTargetSha),
-    witness: {
-      bootstrapCommit: bootstrapRevision.commit,
-      parentShas: bootstrapRevision.parentShas,
-      provenance,
-      legacyAttestation,
-      baselineProtectedBaseSha: stringField(baseline, 'protectedBaseSha'),
-      projectionCommit: projectionRevision.commit,
-      projectionParentShas: projectionRevision.parentShas,
-      projectionProvenance,
-    },
+    projectionIsTargetAncestor,
+    witness,
   };
 }
