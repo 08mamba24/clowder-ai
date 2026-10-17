@@ -135,8 +135,11 @@ async function resolvePollResult(opts: CiCdCheckTaskSpecOptions, item: CiCdCheck
   return result;
 }
 
-function isStaleCiRoute(result: CiRouteResult): boolean {
-  return result.kind === 'deduped' && result.reason === 'stale_source_observation';
+function isUnrecordedCiRoute(result: CiRouteResult): result is Extract<CiRouteResult, { kind: 'deduped' }> {
+  return (
+    result.kind === 'deduped' &&
+    (result.reason === 'stale_source_observation' || result.reason === 'generation_changed_concurrently')
+  );
 }
 
 /** Number of circular windows before their starting position repeats. */
@@ -225,8 +228,13 @@ export function createCiCdCheckTaskSpec(opts: CiCdCheckTaskSpecOptions): TaskSpe
         const pollResult = await resolvePollResult(opts, signal, ctx.signal);
 
         const routeResult = await opts.cicdRouter.route(pollResult);
-        if (isStaleCiRoute(routeResult))
-          throw new Error(`Stale CI snapshot for ${signal.repoFullName}#${signal.prNumber}; retry current HEAD`);
+        if (isUnrecordedCiRoute(routeResult)) {
+          const failure =
+            routeResult.reason === 'stale_source_observation' ? 'Stale CI snapshot' : 'Unrecorded CI observation';
+          throw new Error(
+            `${failure} for ${signal.repoFullName}#${signal.prNumber}: ${routeResult.reason}; retry next poll`,
+          );
+        }
 
         if (routeResult.kind === 'lifecycle') {
           // Skip wake when the merge was performed by our own GitHub identity —

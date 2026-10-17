@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "while true; do NODE_OPTIONS=\"--import $PWD/scripts/sigusr1-guard.mjs${NODE_OPTIONS:+ $NODE_OPTIONS}\" tsx watch --exclude \"dist/**\" --exclude \"../shared/dist/**\" src/index.ts; ec=$?; if [ $ec -eq 0 ] || [ $ec -eq 130 ]; then break; fi; echo \"[api] dev exited ($ec) — auto-restarting in 1s\"; sleep 1; done",
     "verify:sigusr1": "node scripts/verify-sigusr1-guard.mjs",
-    "build": "pnpm --dir ../shared build && pnpm --dir ../collective-connector build && pnpm --dir ../collective-service build && pnpm run build:f247-extension && tsc && node ./scripts/copy-marketplace-catalog-data.mjs && node ../../scripts/check-provider-request-recorder.mjs",
+    "build": "pnpm --dir ../shared build && pnpm --dir ../collective-connector build && pnpm --dir ../collective-service build && pnpm run build:f247-extension && tsc && node ./scripts/copy-marketplace-catalog-data.mjs && node ./scripts/copy-bundled-plugin-packages.mjs && node ../../scripts/check-provider-request-recorder.mjs",
     "build:f247-extension": "node scripts/build-f247-personal-chrome-extension.mjs",
     "build:f247-extension:write": "node scripts/build-f247-personal-chrome-extension.mjs --write",
     "audit:codex-protocol": "node ./scripts/audit-codex-app-server-protocol.mjs",
@@ -52,7 +52,7 @@
     "persist-dormant-cursors": "pnpm run build && node scripts/persist-dormant-cursors.mjs",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "test:artifact-review": "CAT_CAFE_DISABLE_SHARED_STATE_PREFLIGHT=1 bash ./scripts/with-test-home.sh node --import tsx --test --test-concurrency=1 --test-timeout=60000 test/artifact-review-*.test.ts test/content-owner-media-history.test.ts test/published-media-*.test.ts test/persisted-queue-delivery.test.ts",
+    "test:artifact-review": "CAT_CAFE_DISABLE_SHARED_STATE_PREFLIGHT=1 bash ./scripts/with-test-home.sh node --import tsx --test --test-concurrency=1 --test-timeout=60000 test/artifact-review-*.test.ts test/content-owner-media-history.test.ts test/content-modification-chat-*.test.ts test/published-media-*.test.ts test/persisted-queue-delivery.test.ts",
     "test:companion": "CAT_CAFE_DISABLE_SHARED_STATE_PREFLIGHT=1 bash ./scripts/with-test-home.sh node --import tsx --import ./test/helpers/setup-cat-registry.js --test --test-concurrency=2 --test-timeout=60000 test/f317-*.test.ts test/f317-*.test.mjs",
     "test:page-action": "pnpm --dir ../shared build && pnpm --dir ../mcp-server build && pnpm run build && pnpm run test:page-action:prepared",
     "test:page-action:prepared": "CAT_CAFE_DISABLE_SHARED_STATE_PREFLIGHT=1 bash ./scripts/with-test-home.sh node ./scripts/run-page-action-tests.mjs",
@@ -76,6 +76,7 @@
     "@clowder-ai/plugin-contract-beta24": "npm:@clowder-ai/plugin-contract@0.1.0-beta.24",
     "@clowder-ai/plugin-contract-beta25": "npm:@clowder-ai/plugin-contract@0.1.0-beta.25",
     "@clowder-ai/plugin-contract-beta27": "npm:@clowder-ai/plugin-contract@0.1.0-beta.27",
+    "@clowder-ai/plugin-contract-beta28": "npm:@clowder-ai/plugin-contract@0.1.0-beta.28",
     "@clowder-ai/plugin-sdk": "0.1.0-beta.17",
     "@fastify/cookie": "9",
     "@fastify/cors": "^9.0.0",
@@ -128,6 +129,7 @@
   "devDependencies": {
     "@clowder-ai/plugin-contract-beta20": "npm:@clowder-ai/plugin-contract@0.1.0-beta.20",
     "@clowder-ai/plugin-sdk-beta23": "npm:@clowder-ai/plugin-sdk@0.1.0-beta.23",
+    "@clowder-ai/plugin-sdk-beta24": "npm:@clowder-ai/plugin-sdk@0.1.0-beta.24",
     "@types/better-sqlite3": "^7.6.13",
     "@types/http-proxy": "^1.17.17",
     "@types/node": "^20.11.0",

@@ -197,6 +197,7 @@ export {
   graphTools,
   handleGraphResolve,
 } from './graph-tools.js';
+export { handleGetHarnessHistory, handlePublishHarnessHistory, harnessHistoryTools } from './harness-history-tools.js';
 export {
   capabilitiesSnapshotInputSchema,
   handleCapabilitiesSnapshot,

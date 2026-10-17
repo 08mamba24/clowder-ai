@@ -100,6 +100,8 @@ import {
   type DotAskAdmission,
   hasCompleteDotAskFanout,
 } from '../domains/cats/services/cloud-bridge/dot/DotAskService.js';
+import { resolveDotCallbackReplySource } from '../domains/cats/services/cloud-bridge/dot/dot-callback-reply-source.js';
+import { DOT_CAT_ID } from '../domains/cats/services/cloud-bridge/dot/dot-connection-state.js';
 import type { DotReplyCandidate } from '../domains/cats/services/cloud-bridge/dot/dot-reply-authority.js';
 import { getMessageSpeakerName, getSenderName } from '../domains/cats/services/context/ContextAssembler.js';
 import { FreshnessAttentionEventLog } from '../domains/cats/services/freshness/FreshnessAttentionEventLog.js';
@@ -952,6 +954,8 @@ export interface CallbackRoutesOptions {
   guideSessionStore?: import('../domains/guides/GuideSessionRepository.js').IGuideSessionStore;
   /** AgentRegistry for thread-cats MCP callback */
   agentRegistry?: { getAllEntries(): Map<string, unknown> };
+  /** Read-only F293 annotation; Queue preserves all accepted target rows. */
+  routingDispatchPreflight?: import('../domains/routing-context/RoutingDispatchPreflightPort.js').RoutingDispatchPreflightPort;
   /** For post_message @mention → invocation triggering */
   router?: AgentRouter;
   invocationRecordStore?: IInvocationRecordStore;
@@ -2032,6 +2036,7 @@ export const callbacksRoutes: FastifyPluginAsync<CallbackRoutesOptions> = async 
           enqueueA2A: () =>
             enqueueA2ATargets(
               {
+                ...(opts.routingDispatchPreflight ? { routingDispatchPreflight: opts.routingDispatchPreflight } : {}),
                 socketManager,
                 messageStore,
                 ...(invocationTracker ? { invocationTracker } : {}),
@@ -2215,6 +2220,7 @@ export const callbacksRoutes: FastifyPluginAsync<CallbackRoutesOptions> = async 
         enqueueA2A: () =>
           enqueueA2ATargets(
             {
+              ...(opts.routingDispatchPreflight ? { routingDispatchPreflight: opts.routingDispatchPreflight } : {}),
               socketManager,
               messageStore,
               ...(invocationTracker ? { invocationTracker } : {}),
@@ -2340,6 +2346,7 @@ export const callbacksRoutes: FastifyPluginAsync<CallbackRoutesOptions> = async 
         threadId: effectiveThreadId,
         messageId: storedMsg.id,
         routed: routingOutcome.routed,
+        ...(deliveryDecision.routingPreflight ? { routing_preflight: deliveryDecision.routingPreflight } : {}),
         ...(validatedReplyTo ? { replyTo: validatedReplyTo } : {}),
         ...(clientMessageId ? { clientMessageId } : {}),
         ...(routing_warnings.length > 0 ? { routing_warnings } : {}),
@@ -3319,7 +3326,7 @@ export const callbacksRoutes: FastifyPluginAsync<CallbackRoutesOptions> = async 
         );
       }
     }
-    const dotReplyTriggerId = record.a2aTriggerMessageId ?? turnExecution?.causal?.triggerMessageId;
+    const originalDotReplyTriggerId = record.a2aTriggerMessageId ?? turnExecution?.causal?.triggerMessageId;
     // Callback posts are independent speech, not the execution's terminal answer.
     // Explicit @dot remains supported; automatic consultation return is attached
     // to the canonical completed response in routeSerial.
@@ -3474,6 +3481,21 @@ export const callbacksRoutes: FastifyPluginAsync<CallbackRoutesOptions> = async 
       }
     }
 
+    const dotReplyTriggerId =
+      mentions.some((catId) => catId === DOT_CAT_ID) &&
+      !isCrossThread &&
+      !action &&
+      !localReviewVerdict &&
+      !coordinationResult.suppressRouting &&
+      opts.dotReplyTarget
+        ? await resolveDotCallbackReplySource({
+            triggerMessageId: originalDotReplyTriggerId,
+            replyTo: validatedReplyTo,
+            execution: turnExecution,
+            messages: messageStore,
+          })
+        : originalDotReplyTriggerId;
+
     // Store the message (scoped to the effective thread)
     // AC-B6-P1: When A2A mentions will be enqueued (invocationQueue available),
     // store with deliveryStatus:'queued' so ContextAssembler excludes this message
@@ -3586,6 +3608,7 @@ export const callbacksRoutes: FastifyPluginAsync<CallbackRoutesOptions> = async 
           enqueueA2A: () =>
             enqueueA2ATargets(
               {
+                ...(opts.routingDispatchPreflight ? { routingDispatchPreflight: opts.routingDispatchPreflight } : {}),
                 socketManager,
                 messageStore,
                 ...(invocationTracker ? { invocationTracker } : {}),
@@ -3808,6 +3831,7 @@ export const callbacksRoutes: FastifyPluginAsync<CallbackRoutesOptions> = async 
       enqueueA2A: () =>
         enqueueA2ATargets(
           {
+            ...(opts.routingDispatchPreflight ? { routingDispatchPreflight: opts.routingDispatchPreflight } : {}),
             socketManager,
             messageStore,
             ...(invocationTracker ? { invocationTracker } : {}),
@@ -3977,6 +4001,7 @@ export const callbacksRoutes: FastifyPluginAsync<CallbackRoutesOptions> = async 
       threadId: effectiveThreadId,
       messageId: storedMsg.id,
       routed: routingOutcome.routed,
+      ...(deliveryDecision.routingPreflight ? { routing_preflight: deliveryDecision.routingPreflight } : {}),
       ...(validatedReplyTo ? { replyTo: validatedReplyTo } : {}),
       ...(clientMessageId ? { clientMessageId } : {}),
       ...(routing_warnings.length > 0 ? { routing_warnings } : {}),
@@ -6604,6 +6629,7 @@ export const callbacksRoutes: FastifyPluginAsync<CallbackRoutesOptions> = async 
     // Dispatch voter cats through the canonical A2A Queue so they receive the notification and can vote.
     if (notificationMsg && router && invocationRecordStore) {
       const a2aDeps = {
+        ...(opts.routingDispatchPreflight ? { routingDispatchPreflight: opts.routingDispatchPreflight } : {}),
         router,
         invocationRecordStore,
         socketManager,
@@ -6830,6 +6856,7 @@ export const callbacksRoutes: FastifyPluginAsync<CallbackRoutesOptions> = async 
   // F086: Multi-mention orchestration routes
   if (router && invocationRecordStore) {
     registerMultiMentionRoutes(app, {
+      ...(opts.routingDispatchPreflight ? { routingDispatchPreflight: opts.routingDispatchPreflight } : {}),
       messageStore,
       socketManager,
       router,

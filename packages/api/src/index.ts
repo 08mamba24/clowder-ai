@@ -300,6 +300,7 @@ import { createVignetteWriter } from './domains/taste/services/writeVignette.js'
 import { createTasteProposalStore } from './domains/taste/stores/factories/TasteProposalStoreFactory.js';
 import { AgentPaneRegistry } from './domains/terminal/agent-pane-registry.js';
 import { TmuxGateway } from './domains/terminal/tmux-gateway.js';
+import { createDuckCapabilityPublicAdapter } from './infrastructure/capability-evolution/adapters/microduck-exploration/duck-capability-public-adapter.js';
 import {
   createMicroduckApprovalResolver,
   createMicroduckProposalResolver,
@@ -307,6 +308,10 @@ import {
 import { registerMicroduckLocalOwnerRuntime } from './infrastructure/capability-evolution/adapters/microduck-local-owner.js';
 import { createMicroduckRuntimeAdapter } from './infrastructure/capability-evolution/adapters/microduck-owner-runtime.js';
 import { ProgramAdapterRegistry } from './infrastructure/capability-evolution/adapters/program-adapter-registry.js';
+import { createHarnessHistoryGitSource } from './infrastructure/capability-evolution/adapters/request-review/harness-history-git-source.js';
+import { HarnessHistoryPublicationOwner } from './infrastructure/capability-evolution/adapters/request-review/harness-history-publication-owner.js';
+import { RedisHarnessHistoryPublicationStore } from './infrastructure/capability-evolution/adapters/request-review/harness-history-publication-redis.js';
+import { HarnessHistoryPublicationService } from './infrastructure/capability-evolution/adapters/request-review/harness-history-publication-service.js';
 import { createRequestReviewOwnerAdapter } from './infrastructure/capability-evolution/adapters/request-review/request-review-owner-adapter.js';
 import { RedisRequestReviewOwnerLedger } from './infrastructure/capability-evolution/adapters/request-review/request-review-owner-ledger.js';
 import {
@@ -440,6 +445,7 @@ import { evalRepairOutcomeRoutes } from './routes/eval-repair-outcome-routes.js'
 import { registerEventMemoryCorrectionDecisionRoutes } from './routes/event-memory-correction-decision-routes.js';
 import { readEventMemorySource } from './routes/event-memory-source.js';
 import { gameRoutes } from './routes/games.js';
+import { harnessHistoryRoutes } from './routes/harness-history-routes.js';
 import { registerHumanDispositionFeedbackRoutes } from './routes/human-disposition-feedback-routes.js';
 import {
   accountsRoutes,
@@ -581,7 +587,7 @@ import { emitQueueUpdated } from './utils/queue-enrichment.js';
 import { resolveUserId } from './utils/request-identity.js';
 import { buildSkillMountTargets } from './utils/skill-mount.js';
 import { resolveCatCafeSkillsSource } from './utils/skill-source.js';
-import { getDefaultUploadDir } from './utils/upload-paths.js';
+import { getDefaultConnectorMediaDir, getDefaultUploadDir } from './utils/upload-paths.js';
 
 const PORT = parseInt(process.env.API_SERVER_PORT ?? '3004', 10);
 const HOST = process.env.API_SERVER_HOST ?? '127.0.0.1';
@@ -1020,26 +1026,22 @@ async function main(): Promise<void> {
   }
   await app.register(runtimeInteractionRoutes, { service: runtimeInteractionRuntime.service });
 
-  const invocationQueue = new InvocationQueue(
-    redis ? new RedisQueueLedgerStore(redis) : new InMemoryQueueLedgerStore(),
-    {
-      projectRoot: resolveActiveProjectRoot(),
-      invocationTracker,
-      resolveCarrierCapability: (catId) => router?.freshnessCarrierCapability(catId),
-      resolveTargets: (requested, threadId, content, exact) =>
-        router.resolveSendTargets(requested, threadId, content, exact),
-      onAdmitted: ({ threadId, message, entries }) => {
-        if (message && entries.some((entry) => entry.sourceCategory !== 'a2a_failure'))
-          queueProcessor.registerCallerDispatchInitialTargets(
-            message,
-            entries.flatMap((entry) => entry.targets),
-          );
-        void queueProcessor
-          .requestDrain(threadId)
-          .catch((err) => app.log.error({ err, threadId }, 'send drain failed'));
-      },
+  const queueLedgerStore = redis ? new RedisQueueLedgerStore(redis) : new InMemoryQueueLedgerStore();
+  const invocationQueue = new InvocationQueue(queueLedgerStore, {
+    projectRoot: resolveActiveProjectRoot(),
+    invocationTracker,
+    resolveCarrierCapability: (catId) => router?.freshnessCarrierCapability(catId),
+    resolveTargets: (requested, threadId, content, exact) =>
+      router.resolveSendTargets(requested, threadId, content, exact),
+    onAdmitted: ({ threadId, message, entries }) => {
+      if (message && entries.some((entry) => entry.sourceCategory !== 'a2a_failure'))
+        queueProcessor.registerCallerDispatchInitialTargets(
+          message,
+          entries.flatMap((entry) => entry.targets),
+        );
+      void queueProcessor.requestDrain(threadId).catch((err) => app.log.error({ err, threadId }, 'send drain failed'));
     },
-  );
+  });
   await invocationQueue.hydrateFromLedger(messageStore);
   const invocationRecordStore = createInvocationRecordStore(redis);
   const sessionStore = redis ? new SessionStore(redis) : undefined;
@@ -3683,7 +3685,7 @@ async function main(): Promise<void> {
     './infrastructure/harness-eval/publish-verdict/git-worktree-publisher.js'
   );
   const verdictRepoFullName =
-    process.env.CAT_CAFE_VERDICT_REPO_FULL_NAME ?? process.env.CAT_CAFE_REPO_FULL_NAME ?? 'zts212653/cat-cafe';
+    process.env.CAT_CAFE_VERDICT_REPO_FULL_NAME ?? process.env.CAT_CAFE_REPO_FULL_NAME ?? 'zts212653/clowder-ai';
   const harnessGitPublisher = createGitWorktreePublisher({
     repoRoot,
     expectedRepoFullName: verdictRepoFullName,
@@ -3981,8 +3983,17 @@ async function main(): Promise<void> {
     approvalResolver: createMicroduckApprovalResolver(reevalClosureEventLog),
   });
   evolutionProgramAdapterRegistry.register(microduckRuntimeAdapter);
+  evolutionProgramAdapterRegistry.register(
+    createDuckCapabilityPublicAdapter({ repoRoot: findMonorepoRoot(process.cwd()) }),
+  );
   const requestReviewRepoRoot = findMonorepoRoot(process.cwd());
   const requestReviewOwnerPort = createRequestReviewOwnerPort({ repoRoot: requestReviewRepoRoot });
+  const harnessHistoryOwner = redis
+    ? new HarnessHistoryPublicationOwner({
+        store: new RedisHarnessHistoryPublicationStore(redis),
+        source: createHarnessHistoryGitSource({ repoRoot: requestReviewRepoRoot }),
+      })
+    : undefined;
   const catCafeSkillsSource = await resolveCatCafeSkillsSource();
   const requestReviewOwnerLedger = redis ? new RedisRequestReviewOwnerLedger(redis) : undefined;
   const requestReviewVersionReader = createRequestReviewCurrentVersionReader(requestReviewOwnerPort);
@@ -4047,6 +4058,7 @@ async function main(): Promise<void> {
   let requestReviewOwnerActions: ReturnType<typeof createRequestReviewOwnerActions> | undefined;
   const requestReviewOwnerAdapter = createRequestReviewOwnerAdapter({
     port: requestReviewOwnerPort,
+    ...(harnessHistoryOwner ? { historyReader: harnessHistoryOwner.read.bind(harnessHistoryOwner) } : {}),
     ...(requestReviewOwnerLedger ? { ledger: requestReviewOwnerLedger } : {}),
     resolveActions: () => requestReviewOwnerActions,
   });
@@ -4207,6 +4219,19 @@ async function main(): Promise<void> {
           },
         })
       : undefined;
+  await app.register(harnessHistoryRoutes, {
+    service:
+      harnessHistoryOwner && evolutionProgramService
+        ? new HarnessHistoryPublicationService({
+            owner: harnessHistoryOwner,
+            service: evolutionProgramService,
+            adapterRegistry: evolutionProgramAdapterRegistry,
+            dependencies: { threadStore, invocationReader: registry },
+          })
+        : undefined,
+    callbackRegistry: registry,
+    agentKeyRegistry,
+  });
   await app.register(capabilityEvolutionProgramRoutes, {
     service: evolutionProgramService,
     preparationService: evolutionProgramPreparationService,
@@ -5381,7 +5406,9 @@ async function main(): Promise<void> {
     },
   });
 
+  const { createPrTitleReader } = await import('./infrastructure/github/pr-title-reader.js');
   await app.register(threadsRoutes, {
+    prTitleReader: createPrTitleReader({ getGitHubToken }),
     threadStore,
     presenceSource: sidebarPresenceSource,
     messageStore,
@@ -5672,25 +5699,24 @@ async function main(): Promise<void> {
         },
       };
       let workLifetime = new AbortController();
-      const overview =
-        companionContract === '0.1.0-beta.25'
-          ? new CompanionWorkOverview({
-              ...workOptions,
-              open: async (destination) => {
-                if (destination.messageId)
-                  return (
-                    homeHub?.openWork(
-                      privateUserId,
-                      () => resolveCompanionWorkPublication(workOptions, destination),
-                      assertWorkCurrent,
-                      workLifetime.signal,
-                    ) ?? 'unconfirmed'
-                  );
-                await openConversation(destination.threadId);
-                return 'unconfirmed';
-              },
-            })
-          : undefined;
+      const overview = ['0.1.0-beta.25', '0.1.0-beta.28'].includes(companionContract ?? '')
+        ? new CompanionWorkOverview({
+            ...workOptions,
+            open: async (destination) => {
+              if (destination.messageId)
+                return (
+                  homeHub?.openWork(
+                    privateUserId,
+                    () => resolveCompanionWorkPublication(workOptions, destination),
+                    assertWorkCurrent,
+                    workLifetime.signal,
+                  ) ?? 'unconfirmed'
+                );
+              await openConversation(destination.threadId);
+              return 'unconfirmed';
+            },
+          })
+        : undefined;
       const work = overview
         ? {
             read: () => overview.read(),
@@ -5703,6 +5729,8 @@ async function main(): Promise<void> {
           }
         : undefined;
       return new CompanionHostBridge({
+        messages: messageStore,
+        verifyConversationThread: (threadId) => conciergeThreadServiceShared.isCurrent(privateUserId, threadId),
         observeVoice: (observation) => liveCompanionSessions.observeVoice(privateUserId, observation),
         observeTextSubmission: (observation) => liveCompanionSessions.observeTextSubmission(privateUserId, observation),
         observePresentation: (observation, verifyHost) =>
@@ -5806,36 +5834,21 @@ async function main(): Promise<void> {
     await officialPluginAuth.shutdown();
     await pluginRuntime.shutdown('api_shutdown');
   });
-  const { OFFICIAL_PLUGIN_POLICIES, OFFICIAL_PLUGIN_CATALOG, OFFICIAL_BUNDLED_MANIFESTS } = await import(
-    './domains/plugin/official-catalog.js'
-  );
-  const { RefreshingOfficialPluginCatalog } = await import('./domains/plugin/official-catalog-provider.js');
+  const { OFFICIAL_PLUGIN_POLICIES, OFFICIAL_BUNDLED_MANIFESTS } = await import('./domains/plugin/official-catalog.js');
+  const { RefreshingOfficialPluginCatalog } = await import('./domains/plugin/manager/official-catalog-provider.js');
   const { OfficialPluginHistoryImportService } = await import('./domains/plugin/official-plugin-history-import.js');
   const { OfficialPluginMeetingIntakeService } = await import('./domains/plugin/official-plugin-meeting-intake.js');
   const { createLarkCliFeishuArtifactInspector, normalizeGeneratedArtifact, parseFeishuMinutesReference } =
     await import('@clowder-ai/feishu-meeting-intake');
   const { registerOfficialPluginRoutes } = await import('./routes/plugin-official-routes.js');
   const officialPluginCatalog = new RefreshingOfficialPluginCatalog({ policies: OFFICIAL_PLUGIN_POLICIES });
-  const { validatePluginCatalog } = await import('@clowder-ai/plugin-contract');
-  const {
-    MachineOfficialPluginCatalog,
-    OFFICIAL_PLUGIN_CATALOG_URL,
-    loadMachinePluginCatalog,
-    resolveRepositoryReplacementPluginIds,
-  } = await import('./domains/plugin/manager/machine-catalog-provider.js');
-  const pluginManagerHostPolicies = [
-    {
-      pluginId: 'dev.clowder.video-analysis',
-      replacesRepositoryPluginId: 'video-analysis',
-      effectiveGrants: ['plugin.config.read', 'secret.read'] as const,
-    },
-  ];
-  const pluginManagerCatalog = new MachineOfficialPluginCatalog({
-    loadCatalog: () => loadMachinePluginCatalog(OFFICIAL_PLUGIN_CATALOG_URL),
-    validateCatalog: validatePluginCatalog,
-    hostPolicies: pluginManagerHostPolicies,
-    bundledEntries: OFFICIAL_PLUGIN_CATALOG.filter((entry) => entry.pluginId === 'official.chatgpt-dot'),
-  });
+  const { resolveRepositoryReplacementPluginIds } = await import(
+    './domains/plugin/manager/machine-catalog-provider.js'
+  );
+  const { createHostOfficialPluginCatalog, PLUGIN_MANAGER_HOST_POLICIES: pluginManagerHostPolicies } = await import(
+    './domains/plugin/manager/host-official-catalog.js'
+  );
+  const pluginManagerCatalog = createHostOfficialPluginCatalog();
   const { FilesystemBuiltinPluginPackageMaterializer } = await import(
     './domains/plugin/manager/builtin-package-materializer.js'
   );
@@ -7423,6 +7436,14 @@ async function main(): Promise<void> {
     const catConfig = catRegistry.tryGet(catId)?.config;
     if (!catConfig?.cli || catId === 'gpt-pro' || catConfig.provider === 'openai-chatgpt-pro')
       throw new Error('This member does not use a local command-line tool');
+    if (catConfig.clientId === 'opencode') {
+      const { readOpenCodeImport } = await import(
+        './domains/cats/services/session/import/OpenCodeLocalSessionReader.js'
+      );
+      const metadata = (await readOpenCodeImport({ sessionId })).sessions[0];
+      const { realpath } = await import('node:fs/promises');
+      return { ...metadata, projectPath: await realpath(metadata.projectPath) };
+    }
     if (catConfig?.clientId === 'anthropic') {
       const { inspectClaudeLocalSession } = await import(
         './domains/cats/services/session/import/LocalSessionInspection.js'
@@ -7445,6 +7466,12 @@ async function main(): Promise<void> {
 
   const listLocalSessions = async (catId: string, limit: number) => {
     const catConfig = catRegistry.tryGet(catId)?.config;
+    if (catConfig?.cli && catConfig.clientId === 'opencode') {
+      const { readOpenCodeImport } = await import(
+        './domains/cats/services/session/import/OpenCodeLocalSessionReader.js'
+      );
+      return readOpenCodeImport({ limit });
+    }
     if (catConfig?.cli && catConfig.clientId === 'anthropic') {
       const { readClaudeRecentSessionIndex } = await import(
         './domains/cats/services/session/import/ClaudeRecentSessionIndex.js'
@@ -7837,7 +7864,7 @@ async function main(): Promise<void> {
   await app.register(refAudioUploadRoutes);
 
   // F088: Serve downloaded connector media files
-  const connectorMediaDir = process.env.CONNECTOR_MEDIA_DIR ?? './data/connector-media';
+  const connectorMediaDir = getDefaultConnectorMediaDir(process.env.CONNECTOR_MEDIA_DIR);
   await app.register(connectorMediaRoutes, { mediaDir: connectorMediaDir });
 
   // F34: TTS Provider (mlx-audio → Python TTS server)

@@ -32,6 +32,7 @@ import {
   type RequestGenerationPresentationV1,
   type RequestGenerationRetryReason,
   type RequestGenerationSourceRef,
+  type RoutingPreflightDecisionV1,
   resolveCodexSpeed,
   type SealReason,
   type SessionPolicySnapshot,
@@ -109,6 +110,10 @@ import {
   type AsrPersonMemoryPresentationEnvelope,
   type AsrPersonMemoryPresentationReceipt,
 } from '../../../../memory/people/AsrPersonMemoryOpportunityPromptService.js';
+import {
+  classifyRoutingDispatchFailure,
+  type RoutingDispatchFailureClass,
+} from '../../../../routing-context/RoutingDispatchSignalContract.js';
 import type { AgentPaneRegistry } from '../../../../terminal/agent-pane-registry.js';
 import type { TmuxGateway } from '../../../../terminal/tmux-gateway.js';
 import { resolveBootcampWorkspaceRoot } from '../../bootcamp/workspace-root.js';
@@ -262,6 +267,7 @@ export function requestGenerationMessageSourceRefs(input: {
   readonly injectSystemPrompt: boolean;
   readonly hasContextHint: boolean;
   readonly hasStagingPrepend: boolean;
+  readonly hasRoutingContextProjection?: boolean;
   readonly hasMissionPrefix: boolean;
 }): RequestGenerationSourceRef[] {
   const refs: RequestGenerationSourceRef[] = [
@@ -277,6 +283,9 @@ export function requestGenerationMessageSourceRefs(input: {
       ? [{ owner: 'runtime_context' as const, ref: `context-management-hint:${input.invocationId}` }]
       : []),
     ...(input.hasStagingPrepend ? [{ owner: 'system_prompt' as const, ref: 'staging:adr-038' }] : []),
+    ...(input.hasRoutingContextProjection
+      ? [{ owner: 'runtime_context' as const, ref: `routing-context:${input.invocationId}` }]
+      : []),
     ...(input.hasMissionPrefix ? [{ owner: 'home_state' as const, ref: `thread-mission:${input.threadId}` }] : []),
     { owner: 'runtime_context', ref: `transcript-path-hints:${input.threadId}` },
   ];
@@ -1113,6 +1122,10 @@ export interface InvocationDeps {
   readonly collectiveContext?: () =>
     | import('../../../../plugin/builtin-runtime/collective-current-context.js').CollectiveCurrentContext
     | undefined;
+  /** F293: fresh owner-scoped sparse routing projection resolved for every provider generation. */
+  readonly routingContextPromptProjection?: import('../../../../routing-context/RoutingContextPromptProjector.js').RoutingContextPromptProjectionPort;
+  /** F293: observes routing evidence only after the canonical child terminal is durable. */
+  readonly routingDispatchSignalObserver?: import('../../../../routing-context/RoutingDispatchSignalContract.js').RoutingDispatchTerminalObserver;
   /** F296 B3b-1: single owner of context epoch and cold/hot mode for provider-bound invocations. */
   readonly contextEpochOwner?: Pick<ContextEpochOwner, 'resolve' | 'observeCompaction' | 'confirmColdConsumed'>;
   /** Live project-hook auth readiness required before Claude can own a compaction sequence. */
@@ -1229,6 +1242,9 @@ export interface InvocationParams {
   /** Route-owned intent projected to provider behavior only when its provenance permits it. */
   readonly routeIntent?: AgentRouteIntent;
   /** F293: deterministic message scope, independent from provider prompt inference. */
+  readonly routingContextIntent?: 'review' | 'architecture';
+  /** F293: exact actual-send decision retained until the durable terminal transition. */
+  readonly routingDispatchPreflightDecision?: RoutingPreflightDecisionV1;
   readonly catId: CatId;
   readonly service: AgentService;
   /** #1208: one pre-provider capacity owner shared by all invocation consumers. */
@@ -1595,7 +1611,8 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
   let turnExecutionFailureReason: string | undefined;
   let turnExecutionInterruptionReason: string | undefined;
   let turnExecutionCompletedSuccessfully = false;
-
+  let routingDispatchFailureClass: RoutingDispatchFailureClass | undefined;
+  let routingFailureObservedAt: number | undefined;
   // F153: Record cat invocation count with trigger type
   const triggerType = params.a2aTriggerMessageId ? 'mention' : params.parentInvocationId ? 'routing' : 'default';
   catInvocationCount.add(1, { [AGENT_ID]: catId, [TRIGGER]: triggerType });
@@ -2835,6 +2852,11 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
       const currentWorkspaceFingerprint = buildSessionWorkspaceFingerprint(workingDirectory);
       if (!storedWorkspaceFingerprint || !pathsEqual(storedWorkspaceFingerprint, currentWorkspaceFingerprint)) {
         const reason = storedWorkspaceFingerprint ? 'workspace_mismatch' : 'workspace_unknown';
+        if (activeSessionRecordForResume?.externalImport?.cliSessionId === requestedSessionId) {
+          throw new Error(
+            'Cannot resume the imported OpenCode session in a different or unknown workspace. Restore its original project and binding before retrying; no replacement session was created.',
+          );
+        }
         log.warn(
           {
             catId,
@@ -3506,8 +3528,41 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
       await exposeCurrentPromptMessages();
       return true;
     };
+    let routingContextPrepend = '';
+    let routingContextProjectionFailureAudited = false;
+    const resolveRoutingContextProjection = async (): Promise<void> => {
+      routingContextPrepend = '';
+      if (!deps.routingContextPromptProjection) return;
+      try {
+        routingContextPrepend = await deps.routingContextPromptProjection.resolve({
+          ownerId: userId,
+          ...(params.routingContextIntent ? { intent: params.routingContextIntent } : {}),
+        });
+      } catch (err) {
+        log.warn(
+          { threadId, invocationId, catId, errorName: err instanceof Error ? err.name : 'unknown' },
+          'Routing context prompt projection failed; continuing without dynamic routing context',
+        );
+        if (routingContextProjectionFailureAudited) return;
+        routingContextProjectionFailureAudited = true;
+        try {
+          await auditLog.append({
+            type: AuditEventTypes.ROUTING_CONTEXT_PROJECTION_FAILED,
+            threadId,
+            data: {
+              catId,
+              invocationId,
+              errorName: err instanceof Error ? err.name : 'unknown',
+            },
+          });
+        } catch (auditErr) {
+          log.warn({ threadId, invocationId, auditErr }, 'Routing context projection failure audit write failed');
+        }
+      }
+    };
     const applyEpochScopedPrompt = async (): Promise<void> => {
       const promptBuiltForEpoch = await applyContextPromptFactory();
+      await resolveRoutingContextProjection();
       if (
         !promptBuiltForEpoch &&
         hasTargetContinuityHandshake &&
@@ -3607,6 +3662,9 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
           : `${promptWithMission}`;
       if (contextHintPrefix) composedEffectivePrompt = `${contextHintPrefix}\n\n---\n\n${composedEffectivePrompt}`;
       if (stagingPrepend) composedEffectivePrompt = `${stagingPrepend}\n\n---\n\n${composedEffectivePrompt}`;
+      if (routingContextPrepend) {
+        composedEffectivePrompt = `${routingContextPrepend}\n\n---\n\n${composedEffectivePrompt}`;
+      }
       /* @segment M2 — Transcript Path Hints */
       composedEffectivePrompt = appendTranscriptPathHints(composedEffectivePrompt, TRANSCRIPT_DIR, threadId);
       return { promptWithInvocationAdditions: composedPrompt, effectivePrompt: composedEffectivePrompt };
@@ -3768,6 +3826,7 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
                 injectSystemPrompt,
                 hasContextHint: Boolean(contextHintPrefix),
                 hasStagingPrepend: Boolean(stagingPrepend),
+                hasRoutingContextProjection: Boolean(routingContextPrepend),
                 hasMissionPrefix: Boolean(missionPrefix),
               });
               return {
@@ -4197,6 +4256,35 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
           );
           geminiContextFallback.add(1, { [AGENT_ID]: catId, [TRIGGER]: 'no_per_turn_signal' });
         }
+        // Usage is independently observed even when the carrier has not proved
+        // a window. Keep missing capacity/binding visible without also claiming
+        // the current turn's authoritative usage is absent.
+        if (authoritativeUsage) {
+          const previousPolicyExecution = invocationPolicySnapshot.execution;
+          invocationHasAuthoritativeUsage = true;
+          try {
+            await refreshInvocationPolicyExecution();
+          } catch {
+            /* current invocation still owns the refined in-memory snapshot */
+          }
+          if (
+            previousPolicyExecution.status !== invocationPolicySnapshot.execution.status ||
+            previousPolicyExecution.missingCapabilities.join('\0') !==
+              invocationPolicySnapshot.execution.missingCapabilities.join('\0')
+          ) {
+            outputs.push({
+              type: 'system_info' as const,
+              catId,
+              content: JSON.stringify({
+                type: 'session_policy_execution',
+                invocationId,
+                previousExecution: previousPolicyExecution,
+                effectiveStrategy: invocationPolicySnapshot,
+              }),
+              timestamp: Date.now(),
+            });
+          }
+        }
         if (capacity && windowSize && authoritativeUsage) {
           const { usedTokens, usedFrom } = authoritativeUsage;
           const source: ContextHealth['source'] = capacity.actionable ? 'exact' : 'approx';
@@ -4250,31 +4338,6 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
             content: JSON.stringify({ type: 'context_health', catId, health }),
             timestamp: Date.now(),
           });
-
-          const previousPolicyExecution = invocationPolicySnapshot.execution;
-          invocationHasAuthoritativeUsage = true;
-          try {
-            await refreshInvocationPolicyExecution();
-          } catch {
-            /* current invocation still owns the refined in-memory snapshot */
-          }
-          if (
-            previousPolicyExecution.status !== invocationPolicySnapshot.execution.status ||
-            previousPolicyExecution.missingCapabilities.join('\0') !==
-              invocationPolicySnapshot.execution.missingCapabilities.join('\0')
-          ) {
-            outputs.push({
-              type: 'system_info' as const,
-              catId,
-              content: JSON.stringify({
-                type: 'session_policy_execution',
-                invocationId,
-                previousExecution: previousPolicyExecution,
-                effectiveStrategy: invocationPolicySnapshot,
-              }),
-              timestamp: Date.now(),
-            });
-          }
 
           // F33: Strategy-driven seal decision (replaces F24 Phase B shouldSeal)
           // #1208: lifecycle actions require actionable capacity and an actual
@@ -5287,7 +5350,15 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
 
     const streamProcessedOutputs = async function* (sourceMsg: AgentMessage | undefined): AsyncIterable<AgentMessage> {
       if (!sourceMsg) return;
+      const messageObservedAt = Date.now();
       for (const out of await processMessage(sourceMsg)) {
+        routingDispatchFailureClass ??= classifyRoutingDispatchFailure({
+          ...(out.metadata?.cliDiagnostics?.reasonCode
+            ? { cliReasonCode: out.metadata.cliDiagnostics.reasonCode }
+            : {}),
+          ...(out.errorCode ? { providerErrorCode: out.errorCode } : {}),
+        });
+        if (routingDispatchFailureClass !== undefined) routingFailureObservedAt ??= messageObservedAt;
         if (out.type === 'error') {
           hadError = true;
           const cancelled = out.errorCode === 'INVOCATION_CANCELLED';
@@ -6018,8 +6089,9 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
         if (nativeBindingChanged) {
           // The Native adapter refuses this binding before spawning. Commit the
           // history boundary before rebuilding or submitting any replacement.
-          const prior = await deps.sessionChainStore?.getActive(catId, threadId, userId);
-          if (!prior || prior.cliSessionId !== sessionId || !deps.sessionSealer) {
+          const store = deps.sessionChainStore;
+          const prior = await store?.getActive(catId, threadId, userId);
+          if (!store || !prior || prior.cliSessionId !== sessionId || !deps.sessionSealer) {
             throw new Error('native_resume_boundary_source_unavailable');
           }
           const seal = await deps.sessionSealer.requestSeal({ sessionId: prior.id, reason: retryReason });
@@ -6040,7 +6112,25 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
           };
           for await (const out of streamProcessedOutputs(notice)) yield out;
           delete baseOptions.nativeSessionBinding;
-          activeSessionRecordForResume = null;
+          // Native records the prepared request before yielding session_init.
+          // Establish its replacement logical owner under the existing policy
+          // custody before the next attempt can submit any user input.
+          const replacement = await preflightRace(
+            Promise.resolve(
+              getOrCreateManagedSessionRecord(store, {
+                threadId,
+                catId,
+                userId,
+                compressionCount: invocationCapacitySnapshot?.capability.observesCompression === true ? 0 : null,
+              }),
+            ),
+            'getOrCreateActiveAfterNativeBindingChange',
+            signal,
+          );
+          activeSessionRecordForResume = replacement;
+          invocationPolicyRecordId = replacement.id;
+          invocationHasAuthoritativeUsage = false;
+          await refreshInvocationPolicyExecution();
         }
         try {
           await sessionManager.delete(userId, catId, threadId);
@@ -6362,6 +6452,34 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
         const result = await deps.turnExecutionStore.transitionTerminal(invocationId, terminal);
         if (result.outcome === 'not_found' || result.record === null) {
           log.error({ invocationId, terminal }, 'Turn execution disappeared before terminal transition');
+        } else if (
+          deps.routingDispatchSignalObserver &&
+          params.routingDispatchPreflightDecision &&
+          result.record.status !== 'running' &&
+          result.record.endedAt !== undefined
+        ) {
+          const failureClass =
+            routingDispatchFailureClass ??
+            classifyRoutingDispatchFailure({ terminalReason: result.record.terminalReason });
+          try {
+            await deps.routingDispatchSignalObserver.observeTerminal({
+              ownerId: userId,
+              observationId: invocationId,
+              observedAt: result.record.endedAt,
+              evidenceRef: `turn-execution:${invocationId}`,
+              catId,
+              status: result.record.status,
+              ...(result.record.status === 'failed' && failureClass ? { failureClass } : {}),
+              ...(result.record.status === 'failed' && routingFailureObservedAt !== undefined
+                ? { failureObservedAt: routingFailureObservedAt }
+                : {}),
+              preflightDecision: params.routingDispatchPreflightDecision,
+            });
+          } catch (err) {
+            // Durable lifecycle truth and delivery already committed. Routing observation
+            // is advisory and must never rewrite or suppress that canonical terminal.
+            log.warn({ invocationId, err }, 'F293 durable dispatch signal observation failed');
+          }
         }
       } catch (err) {
         // A running record is deliberately left for startup reconciliation;
