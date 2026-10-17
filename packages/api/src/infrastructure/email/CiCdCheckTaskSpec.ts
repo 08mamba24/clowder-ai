@@ -175,8 +175,8 @@ export function createCiCdCheckTaskSpec(opts: CiCdCheckTaskSpecOptions): TaskSpe
           return { run: false, reason: 'no parseable PR tasks' };
         }
 
-        // At most three 20-PR requests, each with a five-second queue+I/O
-        // deadline, fit inside admission's 30 seconds. Rotate window membership
+        // At most three 20-PR requests share admission's whole-gate deadline;
+        // each reader also bounds its queue+I/O wait. Rotate window membership
         // and batch position separately: a repeated cohort must not keep the
         // same subjects in the failed first batch. Advance both before I/O.
         const start =

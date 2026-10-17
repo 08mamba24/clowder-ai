@@ -14,7 +14,7 @@ import type {
   ConnectorDeliveryInput,
   ConnectorDeliveryResult,
 } from '../../email/deliver-connector-message.js';
-import { gitHubAdmissionCanContinue } from '../../github/admission-budget.js';
+import { gitHubAdmissionCanContinue, gitHubObjectSignal } from '../../github/admission-budget.js';
 import { GitHubRateLimitError } from '../../github/request-budget.js';
 import type { ExecuteContext, GateCtx, TaskSpec_P1, WorkItem } from '../../scheduler/types.js';
 import type { IConnectorThreadBindingStore } from '../ConnectorThreadBindingStore.js';
@@ -121,8 +121,8 @@ export function createRepoScanTaskSpec(opts: RepoScanTaskSpecOptions): TaskSpec_
     trigger: { type: 'interval', ms: opts.pollIntervalMs ?? 300_000 },
     admission: {
       async gate(ctx: GateCtx) {
-        const signal = ctx?.signal;
-        signal?.throwIfAborted();
+        const gateSignal = ctx?.signal;
+        gateSignal?.throwIfAborted();
         if (opts.repoAllowlist.length === 0) {
           return { run: false, reason: 'no repos in allowlist' };
         }
@@ -133,8 +133,9 @@ export function createRepoScanTaskSpec(opts: RepoScanTaskSpecOptions): TaskSpec_
 
         const startIndex = nextRepoIndex % opts.repoAllowlist.length;
         for (let step = 0; step < opts.repoAllowlist.length; step++) {
-          signal?.throwIfAborted();
+          gateSignal?.throwIfAborted();
           if (step > 0 && !gitHubAdmissionCanContinue(ctx)) break;
+          const signal = gitHubObjectSignal(ctx);
           const index = (startIndex + step) % opts.repoAllowlist.length;
           const repo = opts.repoAllowlist[index]!;
           nextRepoIndex = (index + 1) % opts.repoAllowlist.length;
@@ -241,13 +242,13 @@ export function createRepoScanTaskSpec(opts: RepoScanTaskSpecOptions): TaskSpec_
 
             workItems.push(...repoWorkItems);
           } catch (error) {
-            signal?.throwIfAborted();
+            gateSignal?.throwIfAborted();
             if (error instanceof GitHubRateLimitError) continue;
             opts.log.warn(`[repo-scan] Failed to scan ${repo}, skipping`);
           }
         }
 
-        signal?.throwIfAborted();
+        gateSignal?.throwIfAborted();
         if (workItems.length === 0) {
           if (baselinedRepoCount > 0) {
             return {
