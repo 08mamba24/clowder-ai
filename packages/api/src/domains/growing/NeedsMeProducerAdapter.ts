@@ -3,7 +3,7 @@ import type {
   ApprovalProducerId,
   EntrustedWorkTaskRefV1,
   MeetingIntake,
-  PhaseBNeedsMeProducerId,
+  NeedsMeProducerId,
   ProducerAttentionReceiptV1,
   RuntimeInteractionRecord,
   SettledApprovalItem,
@@ -15,6 +15,7 @@ import {
   producerAttentionReceiptV1Schema,
 } from '@cat-cafe/shared';
 import type { ApprovalProducerRegistry } from '../approval-hub/ApprovalProducerRegistry.js';
+import { canonicalMeetings } from '../approval-hub/adapters/F292CanonicalMeetings.js';
 import type { RuntimeInteractionStore } from '../runtime-interaction/ports/RuntimeInteractionStore.js';
 import type { MeetingIntakeStore } from '../signal-intake/MeetingIntakeStore.js';
 
@@ -36,7 +37,7 @@ export type NeedsMeProducerReevaluationResult =
 
 /** Read-only producer boundary. Eligibility and salience arrive from the producer adapter, never owner-read. */
 export interface NeedsMeProducerAdapter {
-  readonly producerId: PhaseBNeedsMeProducerId;
+  readonly producerId: NeedsMeProducerId;
   listCurrentReceipts(ownerUserId: string): Promise<ProducerAttentionReceiptV1[]>;
   readCurrentReceipt(input: NeedsMeProducerReadInput): Promise<ProducerAttentionReceiptV1 | null>;
   /** Canonical producer action. Implementations may mutate only their own record and must CAS their revision. */
@@ -62,7 +63,7 @@ async function reEvaluateCurrentReceipt(
 }
 
 function producerCoordinate(
-  producerId: PhaseBNeedsMeProducerId,
+  producerId: NeedsMeProducerId,
   subjectRef: string,
   revision: number,
 ): ProducerAttentionReceiptV1['producer'] {
@@ -201,8 +202,8 @@ export class F292NeedsMeProducerAdapter implements NeedsMeProducerAdapter {
   constructor(private readonly store: Pick<MeetingIntakeStore, 'get' | 'list'>) {}
 
   async listCurrentReceipts(ownerUserId: string): Promise<ProducerAttentionReceiptV1[]> {
-    const intakes = await this.store.list();
-    return intakes.flatMap((intake) => {
+    const intakes = canonicalMeetings((await this.store.list()).filter((intake) => intake.ownerId === ownerUserId));
+    return intakes.flatMap(({ intake }) => {
       if (intake.ownerId !== ownerUserId || !intake.entrustedWorkTaskRef || !meetingIntakeNeedsAttention(intake)) {
         return [];
       }

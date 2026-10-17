@@ -1,39 +1,23 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import typographyTokens from '@/styles/typography-tokens.json';
-import { apiFetch } from '@/utils/api-client';
+import { AgentPaneListV2 } from './AgentPaneListV2';
+import { type AgentPane, useAgentPanes } from './useAgentPanes';
 
-interface AgentPane {
+export interface AgentPaneSelectionMeta {
   invocationId: string;
-  paneId: string;
-  status: 'running' | 'done' | 'crashed';
-  startedAt: number;
+  catId: string | null;
 }
 
 interface AgentPaneListProps {
   worktreeId: string;
-  onSelectPane: (paneId: string) => void;
+  onSelectPane: (paneId: string, meta?: AgentPaneSelectionMeta) => void;
   selectedPaneId?: string;
 }
 
-export function AgentPaneList({ worktreeId, onSelectPane, selectedPaneId }: AgentPaneListProps) {
-  const [panes, setPanes] = useState<AgentPane[]>([]);
-
-  const refresh = useCallback(async () => {
-    try {
-      const res = await apiFetch(`/api/terminal/agent-panes?worktreeId=${encodeURIComponent(worktreeId)}`);
-      if (res.ok) setPanes((await res.json()) as AgentPane[]);
-    } catch {
-      /* ignore fetch errors */
-    }
-  }, [worktreeId]);
-
-  useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 5000);
-    return () => clearInterval(interval);
-  }, [refresh]);
+function AgentPaneListClassic({ worktreeId, onSelectPane, selectedPaneId }: AgentPaneListProps) {
+  const panes = useAgentPanes(worktreeId);
 
   if (panes.length === 0) return null;
 
@@ -102,4 +86,9 @@ export function AgentPaneList({ worktreeId, onSelectPane, selectedPaneId }: Agen
       ))}
     </div>
   );
+}
+
+export function AgentPaneList(props: AgentPaneListProps) {
+  const presentation = useShellPresentation();
+  return presentation === 'v2' ? <AgentPaneListV2 {...props} /> : <AgentPaneListClassic {...props} />;
 }

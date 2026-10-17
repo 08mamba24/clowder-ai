@@ -1,10 +1,29 @@
 import { createHash } from 'node:crypto';
 import { isCrossThreadProvenance, type PawFeelSignalId } from '@cat-cafe/shared';
-import type { IMessageStore, StoredMessage } from '../../../domains/cats/services/stores/ports/MessageStore.js';
+import type {
+  IMessageStore,
+  PawFeelSourceMessageProjection,
+  StoredMessage,
+} from '../../../domains/cats/services/stores/ports/MessageStore.js';
 import { getTimelineOrderTime } from '../../../domains/cats/services/stores/visibility.js';
 import { extractPawFeelMarkers, isStandalonePawFeelMarker, type PawFeelMarker } from './paw-feel-marker.js';
 
 const DEFAULT_PAGE_SIZE = 200;
+
+function getProjectedTimelineOrderTime(message: PawFeelSourceMessageProjection): number {
+  if (message.timelineOrderAt !== undefined) return message.timelineOrderAt;
+  const queuedAgentSpeech =
+    message.deliveryStatus === 'queued' &&
+    message.catId !== null &&
+    message.source === undefined &&
+    message.sourceParseFailure !== true &&
+    !(
+      (message.userId === 'system' || message.userId === 'scheduler') &&
+      (message.catId === 'system' || message.catId === null)
+    ) &&
+    message.origin !== 'briefing';
+  return queuedAgentSpeech ? message.timestamp : (message.deliveredAt ?? message.timestamp);
+}
 
 export interface PawFeelSourceOptions {
   pageSize?: number;
@@ -46,16 +65,16 @@ export function buildPawFeelSignalId(
   return `${sourceMessageId}:${markerDigest}:${sameDigestOrdinal}`;
 }
 
-export function inspectPawFeelMessage(message: StoredMessage): PawFeelMessageInspection {
+export function inspectPawFeelMessage(message: PawFeelSourceMessageProjection): PawFeelMessageInspection {
   return inspectPawFeelMessageWithMode(message, 'legacy');
 }
 
-export function inspectDeclaredPawFeelMessage(message: StoredMessage): PawFeelMessageInspection {
+export function inspectDeclaredPawFeelMessage(message: PawFeelSourceMessageProjection): PawFeelMessageInspection {
   return inspectPawFeelMessageWithMode(message, 'typed_intent');
 }
 
 function inspectPawFeelMessageWithMode(
-  message: StoredMessage,
+  message: PawFeelSourceMessageProjection,
   mode: 'legacy' | 'typed_intent',
 ): PawFeelMessageInspection {
   const sourceCatId = message.catId;
@@ -79,7 +98,7 @@ function inspectPawFeelMessageWithMode(
       markerDigest,
       sameDigestOrdinal,
       markerIndex,
-      occurredAt: new Date(getTimelineOrderTime(message)).toISOString(),
+      occurredAt: new Date(getProjectedTimelineOrderTime(message)).toISOString(),
       captureAssessment: 'ambiguous' as const,
       marker,
     };

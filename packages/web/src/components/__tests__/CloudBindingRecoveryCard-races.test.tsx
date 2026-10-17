@@ -104,18 +104,13 @@ describe('CloudBindingRecoveryCard lifecycle fences', () => {
     let pluginReads = 0;
     const responses = new Map<string, Promise<Response>>([
       ['GET /api/threads/thread-one/cloud-bindings', Promise.resolve(jsonResponse({ bindings: {} }))],
-      [
-        'GET /api/messages/source-one/queue-targets/gpt-pro/retry-authority',
-        Promise.resolve(jsonResponse({ attemptId: 'attempt-old' })),
-      ],
       ['GET /api/threads/thread-two/cloud-bindings', pendingRead],
-      ['GET /api/messages/source-two/queue-targets/gpt-pro/retry-authority', pendingRead],
       [
         'PATCH /api/threads/thread-two/cloud-bindings',
         Promise.resolve(jsonResponse({ bindings: { 'gpt-pro': 'https://chatgpt.com/c/conversation-old' } })),
       ],
       [
-        'POST /api/messages/source-two/queue-targets/gpt-pro/retry',
+        'POST /api/messages/source-two/delivery-targets/gpt-pro/retry',
         Promise.resolve(jsonResponse({ status: 'retry_queued' }, 202)),
       ],
     ]);
@@ -160,7 +155,7 @@ describe('CloudBindingRecoveryCard lifecycle fences', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('正在查找已授权的 ChatGPT 会话');
+    expect(container.textContent).toContain('正在读取会话与发送状态');
     expect(container.querySelector('button[data-recovery-primary]')).toBeNull();
     expect(
       mockApiFetch.mock.calls.filter(
@@ -169,7 +164,7 @@ describe('CloudBindingRecoveryCard lifecycle fences', () => {
     ).toHaveLength(0);
     expect(
       mockApiFetch.mock.calls.filter(
-        ([path, init]) => path === '/api/messages/source-two/queue-targets/gpt-pro/retry' && init?.method === 'POST',
+        ([path, init]) => path === '/api/messages/source-two/delivery-targets/gpt-pro/retry' && init?.method === 'POST',
       ),
     ).toHaveLength(0);
   });
@@ -220,27 +215,32 @@ describe('CloudBindingRecoveryCard lifecycle fences', () => {
     );
 
     expect(container.querySelector('code[title="conversation-new"]')).not.toBeNull();
-    expect(container.textContent).not.toContain('已绑定，正在发送');
+    expect(container.textContent).not.toContain('消息已进入发送流程');
     expect(
-      mockApiFetch.mock.calls.some(([path]) => path === '/api/messages/source-one/queue-targets/gpt-pro/retry'),
+      mockApiFetch.mock.calls.some(([path]) => path === '/api/messages/source-one/delivery-targets/gpt-pro/retry'),
     ).toBe(false);
   });
 
-  it('reports a stale retry fence without creating a replacement message', async () => {
+  it('surfaces a stale immutable retry fence without duplicating the message', async () => {
     mockApiFetch.mockImplementation(async (path) => {
       if (path === '/api/plugins/personal-chrome') return jsonResponse(pluginState('conversation-bound'));
-      if (path === '/api/threads/thread-one/cloud-bindings') {
+      if (path === '/api/threads/thread-one/cloud-bindings')
         return jsonResponse({ bindings: { 'gpt-pro': 'https://chatgpt.com/c/conversation-bound' } });
-      }
-      return jsonResponse({ code: 'QUEUE_RETRY_AUTHORITY_STALE' }, 409);
+      if (path.endsWith('/retry')) return jsonResponse({ code: 'QUEUE_RETRY_AUTHORITY_STALE' }, 409);
+      throw new Error(`unexpected ${String(path)}`);
     });
 
     await renderCard();
     await act(async () => {
       container.querySelector<HTMLButtonElement>('button[data-recovery-primary]')?.click();
-      await Promise.resolve();
     });
-    expect(container.textContent).toContain('发送状态已经变化');
+    await vi.waitFor(() => expect(container.textContent).toContain('发送状态已变化'));
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      '/api/messages/source-one/delivery-targets/gpt-pro/retry',
+      expect.objectContaining({ body: JSON.stringify({ attemptId: 'attempt-source-one' }) }),
+    );
+    expect(mockApiFetch.mock.calls.filter(([path]) => path.endsWith('/retry'))).toHaveLength(1);
     expect(mockApiFetch.mock.calls.some(([path]) => path === '/api/messages')).toBe(false);
+    expect(container.querySelector<HTMLButtonElement>('button[data-recovery-primary]')?.disabled).toBe(false);
   });
 });

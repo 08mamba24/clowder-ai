@@ -1,6 +1,7 @@
 /** Shared pure format boundary for read-only account snapshots and explicit legacy migration. */
 import type { AccountConfig, CredentialEntry } from '@cat-cafe/shared';
 import { z } from 'zod';
+import { codexManagedAccountSchema } from './codex-account-schema.js';
 import { refStore } from './ref-store.js';
 
 export class AccountStoreVerdictError extends Error {}
@@ -19,6 +20,32 @@ const accountSchema = z
     baseUrl: z.string().optional(),
     displayName: z.string().optional(),
     models: z.array(z.string()).optional(),
+    codex: codexManagedAccountSchema.optional(),
+    claude: z
+      .object({ kind: z.literal('long_lived_token') })
+      .strict()
+      .optional(),
+    quota: z
+      .object({
+        owner: z.object({ accountRef: z.string(), userId: z.string(), workspaceId: z.string() }).optional(),
+        observedAt: z.number(),
+        status: z.enum(['ok', 'unavailable', 'unsupported']),
+        source: z.literal('codex_official_readonly'),
+        items: z.array(
+          z
+            .object({
+              label: z.string(),
+              usedPercent: z.number().min(0).max(100),
+              percentKind: z.enum(['used', 'remaining']).optional(),
+              poolId: z.string().optional(),
+              resetsAt: z.string().optional(),
+              resetsText: z.string().optional(),
+            })
+            .passthrough(),
+        ),
+        error: z.string().optional(),
+      })
+      .optional(),
   })
   .passthrough();
 const credentialSchema = z
@@ -71,6 +98,15 @@ export function parseStoredAccount(value: unknown, source: string): AccountConfi
   const envVars = parseStringRecord(raw.envVars, source);
   const parsed = accountSchema.safeParse({ ...raw, authType: normalizeLegacyAuthType(raw.authType) });
   if (!parsed.success) malformedAccountStore(source);
+  if (
+    parsed.data.claude &&
+    (parsed.data.authType !== 'oauth' ||
+      parsed.data.clientId !== 'anthropic' ||
+      parsed.data.codex ||
+      parsed.data.baseUrl ||
+      parsed.data.envVars)
+  )
+    malformedAccountStore(source);
   // Drop any Zod-produced record fields and reattach the prototype-safe maps.
   const {
     modelAliases: _droppedAliases,
@@ -132,6 +168,9 @@ export function canonicalizeAccount(account: AccountConfig) {
     ...(models.length ? { models } : {}),
     ...(Object.keys(aliases).length ? { modelAliases: aliases } : {}),
     ...(Object.keys(envVars).length ? { envVars } : {}),
+    ...(account.codex ? { codex: account.codex } : {}),
+    ...(account.claude ? { claude: account.claude } : {}),
+    ...(account.quota ? { quota: account.quota } : {}),
   };
 }
 

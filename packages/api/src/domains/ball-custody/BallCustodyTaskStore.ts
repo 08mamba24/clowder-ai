@@ -1,11 +1,16 @@
 import type {
   AutomationState,
   CreateTaskInput,
+  DevelopmentScopeV1,
   ManagedWorkBinding,
   TaskItem,
   TaskKind,
   UpdateTaskInput,
 } from '@cat-cafe/shared';
+import type {
+  DevelopmentSourceQuery,
+  DevelopmentWorkTransition,
+} from '../cats/services/stores/ports/DevelopmentWorkTransition.js';
 import type { ITaskStore } from '../cats/services/stores/ports/TaskStore.js';
 import type {
   AdmitEntrustedWorkStoreInput,
@@ -13,6 +18,7 @@ import type {
   CloseEntrustedWorkStoreInput,
   CloseEntrustedWorkStoreResult,
   ReplaceAutomationStateIfGenerationInput,
+  ReplaceDeploymentWaitIfGenerationInput,
   UpdateEntrustedWorkStoreInput,
   UpdateEntrustedWorkStoreResult,
 } from '../cats/services/stores/ports/TaskStoreContract.js';
@@ -37,6 +43,15 @@ export function withBallCustodyTaskEvents(
 }
 
 class BallCustodyTaskStore implements ITaskStore {
+  findDevelopmentWork(userId: string, scope: DevelopmentScopeV1) {
+    return this.inner.findDevelopmentWork(userId, scope);
+  }
+  transitionDevelopmentWork(input: DevelopmentWorkTransition) {
+    return this.inner.transitionDevelopmentWork(input);
+  }
+  hasDevelopmentSource(query: DevelopmentSourceQuery) {
+    return this.inner.hasDevelopmentSource(query);
+  }
   constructor(
     private readonly inner: ITaskStore,
     private readonly ballCustody: IBallCustodyIngest,
@@ -50,6 +65,10 @@ class BallCustodyTaskStore implements ITaskStore {
 
   get(taskId: string): MaybePromise<TaskItem | null> {
     return this.inner.get(taskId);
+  }
+
+  getWaitRegistration(taskId: string): ReturnType<ITaskStore['getWaitRegistration']> {
+    return this.inner.getWaitRegistration(taskId);
   }
 
   update(taskId: string, input: UpdateTaskInput): MaybePromise<TaskItem | null> {
@@ -126,6 +145,10 @@ class BallCustodyTaskStore implements ITaskStore {
     return this.inner.upsertBySubjectWithManagedWorkBinding(input, binding);
   }
 
+  listDeploymentWaitProjectionCandidates(): MaybePromise<TaskItem[]> {
+    return this.inner.listDeploymentWaitProjectionCandidates?.() ?? this.inner.listByKind('work');
+  }
+
   listByKind(kind: TaskKind): MaybePromise<TaskItem[]> {
     return this.inner.listByKind(kind);
   }
@@ -165,7 +188,16 @@ class BallCustodyTaskStore implements ITaskStore {
     taskId: string,
     input: UpdateEntrustedWorkStoreInput,
   ): MaybePromise<UpdateEntrustedWorkStoreResult> {
-    return this.inner.updateEntrustedWork(taskId, input);
+    const beforeResult = this.inner.get(taskId);
+    const updateAfterBefore = (before: TaskItem | null): MaybePromise<UpdateEntrustedWorkStoreResult> => {
+      const updatedResult = this.inner.updateEntrustedWork(taskId, input);
+      const finish = (result: UpdateEntrustedWorkStoreResult): UpdateEntrustedWorkStoreResult => {
+        if (before && result.kind === 'updated') this.recordStatusTransition(before, result.task);
+        return result;
+      };
+      return isPromiseLike(updatedResult) ? updatedResult.then(finish) : finish(updatedResult);
+    };
+    return isPromiseLike(beforeResult) ? beforeResult.then(updateAfterBefore) : updateAfterBefore(beforeResult);
   }
 
   replaceAutomationStateIfGeneration(
@@ -173,6 +205,22 @@ class BallCustodyTaskStore implements ITaskStore {
     input: ReplaceAutomationStateIfGenerationInput,
   ): MaybePromise<TaskItem | null> {
     return this.inner.replaceAutomationStateIfGeneration(taskId, input);
+  }
+
+  replaceDeploymentWaitIfGeneration(
+    taskId: string,
+    input: ReplaceDeploymentWaitIfGenerationInput,
+  ): MaybePromise<TaskItem | null> {
+    const beforeResult = this.inner.get(taskId);
+    const replaceAfterBefore = (before: TaskItem | null): MaybePromise<TaskItem | null> => {
+      const replaced = this.inner.replaceDeploymentWaitIfGeneration(taskId, input);
+      const finish = (updated: TaskItem | null): TaskItem | null => {
+        if (before && updated) this.recordStatusTransition(before, updated);
+        return updated;
+      };
+      return isPromiseLike(replaced) ? replaced.then(finish) : finish(replaced);
+    };
+    return isPromiseLike(beforeResult) ? beforeResult.then(replaceAfterBefore) : replaceAfterBefore(beforeResult);
   }
 
   private recordStatusTransition(before: TaskItem, updated: TaskItem): void {
@@ -185,12 +233,17 @@ class BallCustodyTaskStore implements ITaskStore {
             threadId: updated.threadId,
             ownerCatId: updated.ownerCatId,
             blockedSinceAt: updated.updatedAt,
+            entrustedWorkRevision: updated.entrustedWork?.revision,
             resolveMode: updated.resolveMode,
           })
         : updated.status === 'done'
           ? buildTaskDoneEvent({ taskId: updated.id, at: updated.updatedAt })
           : before.status === 'blocked'
-            ? buildTaskUnblockedEvent({ taskId: updated.id, at: updated.updatedAt })
+            ? buildTaskUnblockedEvent({
+                taskId: updated.id,
+                at: updated.updatedAt,
+                entrustedWorkRevision: updated.entrustedWork?.revision,
+              })
             : null;
 
     if (!event) return;

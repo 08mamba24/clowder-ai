@@ -34,7 +34,7 @@ function requests(): RuntimeInteractionRequest[] {
       version: 1,
       interactionId: 'question-1',
       kind: 'question',
-      owner,
+      owner: { ...owner, invocationId: 'inv-question' },
       provider: { ...provider, method: 'item/tool/requestUserInput', requestId: 'rpc-2' },
       createdAt: 2000,
       title: 'Which environment?',
@@ -45,7 +45,7 @@ function requests(): RuntimeInteractionRequest[] {
       interactionId: 'elicitation-1',
       kind: 'elicitation',
       mode: 'url',
-      owner,
+      owner: { ...owner, invocationId: 'inv-elicitation' },
       provider: { ...provider, method: 'mcpServer/elicitation/request', requestId: 'rpc-3' },
       createdAt: 1000,
       title: 'Authorize MCP server',
@@ -87,6 +87,9 @@ describe('F306ApprovalAdapter', () => {
       originRef: { kind: 'message', threadId: 'thread-1', messageId: 'message-approval-1' },
       approvalCardRef: { threadId: 'thread-1', messageId: 'message-approval-1' },
     });
+    assert.deepEqual(items[0].needsMeDecisionRefs, [
+      { producerId: 'f306.runtime_interaction', subjectRef: 'approval-1', revision: 3001 },
+    ]);
     assert.equal(items[0].detail.providerRequestId, 'rpc-1');
     assert.equal(items[0].detail.providerTurnId, 'provider-turn');
     assert.equal(items[0].detail.providerItemId, 'provider-item');

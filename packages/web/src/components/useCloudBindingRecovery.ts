@@ -31,12 +31,36 @@ function loadingState(readKey: string): IdentityScopedRecoveryState {
   };
 }
 
+function selectRecoveryConversation(
+  nextState: RecoveryLoadState,
+  identityKey: string,
+  selection: { identityKey: string; conversationId: string | null },
+): string | null {
+  if (nextState.kind !== 'ready') return null;
+  if (nextState.boundConversationId) return nextState.boundConversationId;
+  if (
+    selection.identityKey === identityKey &&
+    nextState.candidates.some((candidate) => candidate.conversationId === selection.conversationId)
+  ) {
+    return selection.conversationId;
+  }
+  return nextState.candidates.length === 1 ? (nextState.candidates[0]?.conversationId ?? null) : null;
+}
+
 export function useCloudBindingRecovery(identity: RecoveryIdentity) {
   const { threadId, sourceMessageId, targetCatId, attemptId } = identity;
-  const identityKey = `${identity.threadId}\u0000${identity.sourceMessageId}\u0000${identity.targetCatId}\u0000${identity.attemptId ?? ''}`;
+  const identityKey = `${identity.threadId}\u0000${identity.sourceMessageId}\u0000${identity.targetCatId}\u0000${identity.attemptId ?? ''}\u0000${identity.deliveryStatus ?? ''}`;
+  const terminalDelivery = identity.deliveryStatus === 'sent' || identity.deliveryStatus === 'failed';
   const currentIdentityRef = useRef(identityKey);
   const operationGenerationRef = useRef(0);
   const busyRef = useRef(false);
+  const selectionRef = useRef<{ identityKey: string; conversationId: string | null }>({
+    identityKey,
+    conversationId: null,
+  });
+  const pollStartedAt = useRef(0);
+  const pollIdentityKeyRef = useRef(identityKey);
+  const titleSyncRequestedRef = useRef<string | null>(null);
   const [refreshGeneration, setRefreshGeneration] = useState(0);
   const recoveryReadKey = `${identityKey}\u0000${refreshGeneration}`;
   const currentReadKeyRef = useRef(recoveryReadKey);
@@ -46,6 +70,12 @@ export function useCloudBindingRecovery(identity: RecoveryIdentity) {
 
   currentIdentityRef.current = identityKey;
   currentReadKeyRef.current = recoveryReadKey;
+  if (pollIdentityKeyRef.current !== identityKey) {
+    pollIdentityKeyRef.current = identityKey;
+    pollStartedAt.current = 0;
+  }
+  if (stateIsCurrent && state.loadState.kind === 'ready')
+    selectionRef.current = { identityKey, conversationId: state.selectedConversationId };
 
   useEffect(() => {
     const controller = new AbortController();
@@ -54,7 +84,11 @@ export function useCloudBindingRecovery(identity: RecoveryIdentity) {
     busyRef.current = false;
     setState(loadingState(recoveryReadKey));
 
-    void readRecoveryState({ threadId, sourceMessageId, targetCatId, attemptId }, controller.signal)
+    if (terminalDelivery) return () => controller.abort();
+
+    const syncTitles = titleSyncRequestedRef.current === identityKey;
+    titleSyncRequestedRef.current = null;
+    void readRecoveryState({ threadId, sourceMessageId, targetCatId, attemptId }, controller.signal, syncTitles)
       .then((nextState) => {
         if (
           !nextState ||
@@ -64,12 +98,7 @@ export function useCloudBindingRecovery(identity: RecoveryIdentity) {
         ) {
           return;
         }
-        const selected =
-          nextState.kind === 'ready'
-            ? (nextState.boundConversationId ??
-              (nextState.candidates.length === 1 ? nextState.candidates[0]?.conversationId : null) ??
-              null)
-            : null;
+        const selected = selectRecoveryConversation(nextState, identityKey, selectionRef.current);
         setState({
           readKey: recoveryReadKey,
           loadState: nextState,
@@ -97,9 +126,25 @@ export function useCloudBindingRecovery(identity: RecoveryIdentity) {
       operationGenerationRef.current += 1;
       busyRef.current = false;
     };
-  }, [threadId, sourceMessageId, targetCatId, attemptId, recoveryReadKey]);
+  }, [threadId, sourceMessageId, targetCatId, attemptId, recoveryReadKey, identityKey, terminalDelivery]);
 
   const refresh = useCallback(() => setRefreshGeneration((current) => current + 1), []);
+  const refreshTitles = useCallback(() => {
+    if (busyRef.current || projectedState.loadState.kind === 'loading') return;
+    busyRef.current = true;
+    titleSyncRequestedRef.current = identityKey;
+    refresh();
+  }, [identityKey, projectedState.loadState.kind, refresh]);
+  const pendingDelivery =
+    projectedState.phase === 'queued' ||
+    (projectedState.loadState.kind === 'ready' && projectedState.loadState.retryState === 'pending');
+  useEffect(() => {
+    if (!pendingDelivery || terminalDelivery) return;
+    if (!pollStartedAt.current) pollStartedAt.current = Date.now();
+    if (Date.now() - pollStartedAt.current >= 30_000) return;
+    const timer = setTimeout(refresh, 1500);
+    return () => clearTimeout(timer);
+  }, [pendingDelivery, terminalDelivery, refresh, refreshGeneration]);
   const selectConversation = useCallback(
     (conversationId: string) => {
       setState((current) =>
@@ -112,9 +157,8 @@ export function useCloudBindingRecovery(identity: RecoveryIdentity) {
   );
 
   const bindAndRetry = useCallback(async () => {
-    if (state.readKey !== recoveryReadKey) return;
-    const attemptId =
-      identity.attemptId ?? (state.loadState.kind === 'ready' ? state.loadState.hydratedAttemptId : undefined);
+    if (terminalDelivery || currentIdentityRef.current !== identityKey || state.readKey !== recoveryReadKey) return;
+    const attemptId = state.loadState.kind === 'ready' ? state.loadState.hydratedAttemptId : undefined;
     const prepared = prepareRecoveryOperation({
       loadState: state.loadState,
       selectedConversationId: state.selectedConversationId,
@@ -127,6 +171,7 @@ export function useCloudBindingRecovery(identity: RecoveryIdentity) {
     operationGenerationRef.current = generation;
     const isCurrent = () => operationGenerationRef.current === generation && currentIdentityRef.current === identityKey;
     busyRef.current = true;
+    pollStartedAt.current = Date.now();
     setState((current) => (current.readKey === recoveryReadKey ? { ...current, operationError: null } : current));
     const outcome = await executeRecoveryOperation({
       identity,
@@ -146,15 +191,26 @@ export function useCloudBindingRecovery(identity: RecoveryIdentity) {
     });
     if (!isCurrent()) return;
     busyRef.current = false;
-    if (outcome.kind === 'queued') {
-      setState((current) => (current.readKey === recoveryReadKey ? { ...current, phase: 'queued' } : current));
+    if (outcome.kind === 'queued' || outcome.kind === 'connected') {
+      setState((current) => (current.readKey === recoveryReadKey ? { ...current, phase: outcome.kind } : current));
+    }
+    if (outcome.kind === 'reconcile') {
+      setState((current) =>
+        current.readKey === recoveryReadKey
+          ? {
+              ...current,
+              phase: 'idle',
+              operationError: '发送状态已变化，请查看这条消息的最新状态。',
+            }
+          : current,
+      );
     }
     if (outcome.kind === 'error') {
       setState((current) =>
         current.readKey === recoveryReadKey ? { ...current, phase: 'idle', operationError: outcome.message } : current,
       );
     }
-  }, [identity, identityKey, recoveryReadKey, state]);
+  }, [identity, identityKey, recoveryReadKey, state, terminalDelivery]);
 
   return {
     loadState: projectedState.loadState,
@@ -163,10 +219,12 @@ export function useCloudBindingRecovery(identity: RecoveryIdentity) {
     phase: projectedState.phase,
     operationError: projectedState.operationError,
     attemptId: stateIsCurrent
-      ? (identity.attemptId ??
-        (projectedState.loadState.kind === 'ready' ? projectedState.loadState.hydratedAttemptId : undefined))
+      ? projectedState.loadState.kind === 'ready'
+        ? projectedState.loadState.hydratedAttemptId
+        : undefined
       : undefined,
     refresh,
+    refreshTitles,
     selectConversation,
     toggleChoices: () =>
       setState((current) =>

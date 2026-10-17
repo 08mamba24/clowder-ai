@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { checkCapabilityTipsForRepo } from './check-capability-tips.mjs';
+import { checkCapabilityTipsForRepo, isContributionRelevantFile } from './check-capability-tips.mjs';
 import {
   candidateReferenceStatus,
   isCoveredByPublicExport,
@@ -94,6 +94,82 @@ export function checkPublicPackageScriptClosure(repoRoot = defaultRepoRoot) {
   }
   errors.sort();
   return { ok: errors.length === 0, errors };
+}
+
+function workflowScriptPaths(workflowText) {
+  // This pre-install audit must run with only Node built-ins. Conservatively
+  // check literal companion paths; workflow syntax validation belongs to CI.
+  const activeText = workflowText
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
+  return [...activeText.matchAll(/\.github\/scripts\/[A-Za-z0-9_./@+-]+/g)].map(([path]) => path);
+}
+
+function publicWorkflowScriptErrors(repoRoot) {
+  const workflowRoot = resolve(repoRoot, '.github/workflows');
+  if (!existsSync(workflowRoot)) return [];
+  const errors = [];
+  const workflows = readdirSync(workflowRoot, { withFileTypes: true }).filter(
+    (entry) => entry.isFile() && /\.ya?ml$/.test(entry.name),
+  );
+  for (const entry of workflows) {
+    const workflowPath = `.github/workflows/${entry.name}`;
+    try {
+      const workflowText = readFileSync(resolve(workflowRoot, entry.name), 'utf8');
+      for (const scriptPath of workflowScriptPaths(workflowText)) {
+        const absolutePath = resolve(repoRoot, scriptPath);
+        const relativePath = relative(repoRoot, absolutePath);
+        if (relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+          errors.push(`${workflowPath} -> outside export root ${scriptPath}`);
+        } else if (!existsSync(absolutePath)) {
+          errors.push(`${workflowPath} -> missing ${scriptPath}`);
+        }
+      }
+    } catch (error) {
+      errors.push(`${workflowPath}: cannot inspect workflow (${error.message})`);
+    }
+  }
+  return [...new Set(errors)].sort();
+}
+
+function hookScriptPaths(activeText) {
+  const paths = new Set(extractRootScriptPathRefs(activeText));
+  const outside = [];
+  for (const match of activeText.matchAll(/((?:\.\.\/)+|\$REPO_ROOT\/)(scripts\/[A-Za-z0-9_./@+-]+)/g)) {
+    if (match[1].startsWith('../../')) outside.push(`${match[1]}${match[2]}`);
+    else paths.add(match[2]);
+  }
+  return { paths, outside };
+}
+
+function publicHookScriptErrors(repoRoot) {
+  const hookRoot = resolve(repoRoot, '.githooks');
+  if (!existsSync(hookRoot)) return [];
+  const errors = [];
+  for (const entry of readdirSync(hookRoot, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const hookPath = `.githooks/${entry.name}`;
+    const activeText = readFileSync(resolve(hookRoot, entry.name), 'utf8')
+      .split(/\r?\n/)
+      .filter((line) => !/^\s*#/.test(line))
+      .join('\n');
+    // These literal root companions include the staged Biome invocation
+    // "$(dirname "${BASH_SOURCE[0]}")/../scripts/...". This is a bounded
+    // pre-install path audit, not a shell interpreter or dynamic closure proof.
+    const { paths, outside } = hookScriptPaths(activeText);
+    errors.push(...outside.map((path) => `${hookPath} -> outside export root ${path}`));
+    for (const scriptPath of paths) {
+      const absolutePath = resolve(repoRoot, scriptPath);
+      const fromRoot = relative(repoRoot, absolutePath);
+      if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+        errors.push(`${hookPath} -> outside export root ${scriptPath}`);
+      } else if (!existsSync(absolutePath)) {
+        errors.push(`${hookPath} -> missing ${scriptPath}`);
+      }
+    }
+  }
+  return [...new Set(errors)].sort();
 }
 
 function loadCapabilityTipInventories(repoRoot, baseRef) {
@@ -186,22 +262,46 @@ export function checkCapabilityTipExportCoverage(repoRoot = defaultRepoRoot, opt
   return { ok: errors.length === 0, errors };
 }
 
+function isCanonicalProvenanceOnlyChange(repoRoot, baseRef, filePath) {
+  // Only prose paths already governed by contribution coverage qualify.
+  // Guide YAML and runtime identities do not share this export transform.
+  if (!filePath.endsWith('.md') || !isContributionRelevantFile(filePath)) return false;
+  const baseline = readGitFile(repoRoot, baseRef, filePath);
+  const candidatePath = resolve(repoRoot, filePath);
+  if (baseline === null || !existsSync(candidatePath)) return false;
+  // Match the approved outbound provenance transform, never general whitespace
+  // or wording normalization. Any extra authored byte keeps coverage mandatory.
+  const projected = baseline
+    .replace(/\b[0-9]{16,}-[0-9]{6,}-[a-f0-9]{8}\b/g, 'private-source-id')
+    .replace(/\bthread_(?=[a-z0-9_]*[0-9])[a-z0-9_]{8,}\b/g, '[thread-id]');
+  return projected !== baseline && projected === readFileSync(candidatePath, 'utf8');
+}
+
 export function checkSyncPublicPreflight(repoRoot = defaultRepoRoot, options = {}) {
   const packageClosure = checkPublicPackageScriptClosure(repoRoot);
   const tipReferenceRegressions = checkCapabilityTipReferenceRegressions(repoRoot, options);
   const tipExportCoverage = checkCapabilityTipExportCoverage(repoRoot, options);
+  const baseRef = options.baseRef ?? 'HEAD';
+  const provenanceOnlyChanges = [];
+  const changedFiles = (options.changedFiles ?? []).filter((filePath) => {
+    if (!isCanonicalProvenanceOnlyChange(repoRoot, baseRef, filePath)) return true;
+    provenanceOnlyChanges.push(filePath);
+    return false;
+  });
   const capabilityTips = checkCapabilityTipsForRepo(repoRoot, {
-    changedFiles: options.changedFiles ?? [],
+    changedFiles,
     baseRef: options.baseRef ?? 'HEAD',
   });
   const errors = [
     ...packageClosure.errors,
+    ...publicWorkflowScriptErrors(repoRoot),
+    ...publicHookScriptErrors(repoRoot),
     ...tipReferenceRegressions.errors,
     ...tipExportCoverage.errors,
     ...capabilityTips.errors,
   ];
   const warnings = capabilityTips.warnings ?? [];
-  return { ok: errors.length === 0, errors, warnings };
+  return { ok: errors.length === 0, errors, warnings, provenanceOnlyChanges };
 }
 
 function parseArgs(argv) {

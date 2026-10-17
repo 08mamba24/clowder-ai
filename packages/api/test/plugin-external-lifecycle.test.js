@@ -11,9 +11,9 @@ import {
 
 const DIGEST = `sha512-${createHash('sha512').update('official-lifecycle').digest('base64')}`;
 
-function manifest() {
+function manifest(pluginId = 'official.feishu-meeting-intake') {
   return {
-    pluginId: 'official.feishu-meeting-intake',
+    pluginId,
     version: '0.1.0-alpha.1',
     contractVersion: '0.1.0',
     name: 'Feishu Meeting Intake',
@@ -36,16 +36,17 @@ function deferred() {
 
 async function harness(overrides = {}) {
   let now = 1_000;
+  const pluginId = overrides.pluginId ?? 'official.feishu-meeting-intake';
   const store = new MemoryPluginInventoryStore();
   const inventory = new HostInventoryControlPlane(store, {
     createInstanceId: () => 'pi_official',
     now: () => now++,
   });
   await inventory.installPackage({
-    manifest: manifest(),
+    manifest: manifest(pluginId),
     computedPackageDigest: DIGEST,
     expectedPackageDigest: DIGEST,
-    packagePluginId: 'official.feishu-meeting-intake',
+    packagePluginId: pluginId,
     effectiveGrants: ['events.publish'],
   });
   const calls = [];
@@ -154,7 +155,12 @@ test('a new activation attempt clears a stale runtime diagnostic before startup 
   const failed = (await store.snapshot()).instances[0];
   assert.equal(failed.activationState, 'error');
   assert.equal(failed.runtimeState, 'stopped');
-  assert.equal(failed.lastRuntimeError, undefined);
+  assert.deepEqual(failed.lastRuntimeError, {
+    code: 'UNEXPECTED_RUNTIME_FAILURE',
+    exitCode: null,
+    signal: null,
+    occurredAt: failed.updatedAt,
+  });
 });
 
 test('disable and uninstall stop process authority before their durable terminal state', async () => {
@@ -210,6 +216,59 @@ test('repair restores the enabled owner intent after restart recovery projects a
   assert.deepEqual(calls, ['stop:pi_official:error', 'start:pi_official']);
 });
 
+test('explicit repair accepts a stopped enabled desktop with a persisted first cause', async () => {
+  const { store, lifecycle, calls } = await harness({ pluginId: 'official.companion' });
+  await lifecycle.prepare('pi_official', 1);
+  const enabled = await lifecycle.enable('pi_official', 2);
+  await store.transaction((transaction) => {
+    const current = transaction.instances.get('pi_official');
+    transaction.instances.put({
+      ...current,
+      runtimeState: 'stopped',
+      lastRuntimeError: {
+        code: 'UNEXPECTED_RUNTIME_FAILURE',
+        desktopReason: 'renderer-gone',
+        exitCode: 17,
+        signal: null,
+        occurredAt: 1_500,
+      },
+    });
+  });
+  await assert.rejects(
+    lifecycle.enable('pi_official', enabled.lifecycleRevision),
+    lifecycleError('INVALID_TRANSITION'),
+  );
+  const repaired = await lifecycle.repair('pi_official', enabled.lifecycleRevision);
+  assert.equal(repaired.activationState, 'enabled');
+  assert.equal(repaired.lastRuntimeError, undefined);
+  assert.deepEqual(calls, ['start:pi_official', 'stop:pi_official:enabled', 'start:pi_official']);
+});
+
+test('desktop repair transition does not expand to an unrelated stopped plugin', async () => {
+  const { store, lifecycle, calls } = await harness();
+  await lifecycle.prepare('pi_official', 1);
+  const enabled = await lifecycle.enable('pi_official', 2);
+  await store.transaction((transaction) => {
+    const current = transaction.instances.get('pi_official');
+    transaction.instances.put({
+      ...current,
+      runtimeState: 'stopped',
+      lastRuntimeError: {
+        code: 'UNEXPECTED_RUNTIME_FAILURE',
+        desktopReason: 'renderer-gone',
+        exitCode: null,
+        signal: null,
+        occurredAt: 1_500,
+      },
+    });
+  });
+  await assert.rejects(
+    lifecycle.repair('pi_official', enabled.lifecycleRevision),
+    lifecycleError('INVALID_TRANSITION'),
+  );
+  assert.deepEqual(calls, ['start:pi_official']);
+});
+
 test('restart recovery preserves enabled owner intent and resumes a fresh runtime', async () => {
   const { store, lifecycle, calls } = await harness();
   await lifecycle.prepare('pi_official', 1);
@@ -226,6 +285,95 @@ test('restart recovery preserves enabled owner intent and resumes a fresh runtim
   assert.equal(recovered.runtimeState, 'stopped');
   assert.equal(recovered.lifecycleRevision, 4);
   assert.deepEqual(calls, ['start:pi_official', 'start:pi_official']);
+});
+
+async function enabledBeforeRestart() {
+  const fixture = await harness();
+  await fixture.lifecycle.prepare('pi_official', 1);
+  await fixture.lifecycle.enable('pi_official', 2);
+  await fixture.store.transaction((transaction) => {
+    const current = transaction.instances.get('pi_official');
+    transaction.instances.put({ ...current, runtimeState: 'healthy' });
+  });
+  fixture.calls.length = 0;
+  return fixture;
+}
+
+test('restart recovery holds a gated instance before any runtime start until its gate opens', async () => {
+  const { store, lifecycle, calls } = await enabledBeforeRestart();
+  const hostListening = deferred();
+  const gated = [];
+
+  const recovery = await lifecycle.recoverAfterRestart({
+    resumeGate: (instance) => {
+      gated.push(instance.pluginInstanceId);
+      return hostListening.promise;
+    },
+  });
+  assert.deepEqual(recovery, { recoveredInstances: 1, resumeRequested: 1 });
+  assert.deepEqual(gated, ['pi_official']);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, [], 'a held instance must not start (or take any lease) before its gate opens');
+  assert.equal((await store.snapshot()).instances[0].runtimeState, 'stopped');
+
+  hostListening.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ['start:pi_official']);
+});
+
+test('restart recovery resumes an instance immediately when its gate is undefined', async () => {
+  const { lifecycle, calls } = await enabledBeforeRestart();
+
+  await lifecycle.recoverAfterRestart({ resumeGate: () => undefined });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ['start:pi_official']);
+});
+
+test('a gate that fails never starts the runtime and keeps enabled intent for the next boot', async () => {
+  const { store, lifecycle, calls } = await enabledBeforeRestart();
+  let failListening;
+  const hostListening = new Promise((_, reject) => {
+    failListening = reject;
+  });
+
+  await lifecycle.recoverAfterRestart({ resumeGate: () => hostListening });
+  failListening(new Error('listen failed'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, []);
+  const instance = (await store.snapshot()).instances[0];
+  assert.equal(instance.activationState, 'enabled');
+  assert.equal(instance.runtimeState, 'stopped');
+  assert.equal(instance.lastRuntimeError, undefined);
+});
+
+test('restart recovery records a bounded diagnostic when runtime resume fails', async () => {
+  const { store, lifecycle } = await harness({
+    start: async () => {
+      throw new Error('secret-bearing resume failure');
+    },
+  });
+  await lifecycle.prepare('pi_official', 1);
+  await store.transaction((transaction) => {
+    const current = transaction.instances.get('pi_official');
+    transaction.instances.put({
+      ...current,
+      activationState: 'enabled',
+      runtimeState: 'healthy',
+      lifecycleRevision: 4,
+    });
+  });
+
+  assert.deepEqual(await lifecycle.recoverAfterRestart(), { recoveredInstances: 1, resumeRequested: 1 });
+  await new Promise((resolve) => setImmediate(resolve));
+  const failed = (await store.snapshot()).instances[0];
+  assert.equal(failed.activationState, 'error');
+  assert.equal(failed.runtimeState, 'stopped');
+  assert.deepEqual(failed.lastRuntimeError, {
+    code: 'UNEXPECTED_RUNTIME_FAILURE',
+    exitCode: null,
+    signal: null,
+    occurredAt: failed.updatedAt,
+  });
 });
 
 test('restart recovery does not create activation intent for a dormant configured instance', async () => {

@@ -1,0 +1,92 @@
+{
+  "resource": {
+    "kind": "family",
+    "resourceFamily": "task-workflow"
+  },
+  "retiredNames": ["cat_cafe_complete_a2a_dispatch", "cat_cafe_complete_managed_hold"],
+  "canonicalNames": [
+    "cat_cafe_development_return",
+    "cat_cafe_development_work",
+    "cat_cafe_get_custody_events",
+    "cat_cafe_get_hold_status",
+    "cat_cafe_read_development_return",
+    "cat_cafe_resolve_development_work"
+  ],
+  "expectedProfiles": {
+    "cat_cafe_development_return": ["full"],
+    "cat_cafe_development_work": ["full"],
+    "cat_cafe_get_custody_events": ["full"],
+    "cat_cafe_get_hold_status": ["full"],
+    "cat_cafe_read_development_return": ["full"],
+    "cat_cafe_resolve_development_work": ["full"]
+  },
+  "rollbackRevision": "c76ad11552fffe59f7fe7493639f84920d505c8a",
+  "composition": {
+    "protectedTargetSha": "c76ad11552fffe59f7fe7493639f84920d505c8a",
+    "historicalManifestDigests": ["sha256:0075a206faa262079009baae96ad0601a8877d92fe86ea973ecb8a46296258a1"]
+  },
+  "layers": {
+    "mcp-definition": {
+      "status": "covered",
+      "consumers": [
+        "packages/mcp-server/src/tools/callback-tools.ts",
+        "packages/mcp-server/src/tools/index.ts",
+        "packages/mcp-server/src/tools/development-work-tools.ts",
+        "packages/mcp-server/src/tools/development-return-tools.ts"
+      ]
+    },
+    "runtime-catalog-profile": {
+      "status": "covered",
+      "consumers": [
+        "packages/mcp-server/src/canonical-server-tools.ts",
+        "packages/mcp-server/governance/mcp-surface-baseline.json"
+      ]
+    },
+    "prompt-l0": {
+      "status": "not-applicable",
+      "rationale": "Ordinary A2A and managed-hold completion now follow the persisted Message/Queue lifecycle; no completion instruction is injected into a model prompt.",
+      "absenceEvidence": [
+        "cat_cafe_complete_a2a_dispatch",
+        "cat_cafe_complete_managed_hold",
+        "cat_cafe_complete_event_wait"
+      ]
+    },
+    "skill-convention": {
+      "status": "covered",
+      "consumers": ["cat-cafe-skills/custody-recognition/SKILL.md", "cat-cafe-skills/feat-lifecycle/SKILL.md"]
+    },
+    "fixture-test": {
+      "status": "covered",
+      "consumers": [
+        "packages/mcp-server/test/tool-registration.test.js",
+        "packages/api/test/turn-custody-projection.test.js",
+        "packages/api/test/managed-command-wake-recovery-sweep.test.js",
+        "packages/api/test/turn-custody-event-wait-remedial-prompt.test.js",
+        "packages/mcp-server/test/a2a-1577-terminal-retirement.test.mjs",
+        "packages/api/test/a2a-1577-thread-context-seam.test.mjs",
+        "packages/api/test/f317-live-dispatch-adoption.test.mjs",
+        "packages/mcp-server/test/tool-cutover-consumer-scan.test.ts",
+        "packages/mcp-server/test/f310-development-work-tools.test.ts",
+        "packages/mcp-server/test/callback-tools.test.js",
+        "packages/mcp-server/test/hold-ball-execution-budget.test.js"
+      ]
+    },
+    "eval": {
+      "status": "not-applicable",
+      "rationale": "The cutover removes a duplicate manual terminal declaration; the canonical Message/Queue lifecycle tests are the behavioral proof.",
+      "absenceEvidence": [
+        "cat_cafe_complete_a2a_dispatch",
+        "cat_cafe_complete_managed_hold",
+        "cat_cafe_complete_event_wait"
+      ]
+    },
+    "observability": {
+      "status": "covered",
+      "consumers": [
+        "packages/api/src/domains/cats/services/stores/visibility.ts",
+        "packages/api/src/domains/cats/services/context/ContextAssembler.ts",
+        "packages/api/src/domains/ball-custody/managed-command-wake-task-projection.ts"
+      ]
+    }
+  }
+}

@@ -1,7 +1,7 @@
 ---
 name: eval-design
-tips_exempt: "v0.3 adds internal eval role separation plus longitudinal trigger, maturity, and actionability governance; it changes no user-invocable capability or product surface."
-description: "E0资格门+指标出生证+纵向运行拓扑+七公理+五病体检。Use when: 设计、修改或审计eval。Not for: 单次交付(quality-gate)、外部claim(source-audit)、摩擦诊断(code-as-harness)。Output: 指标出生证（纵向eval含触发契约）或病名+处置。"
+tips_exempt: "2026-10-01 adds pre-comparison detectability, stochastic-generation rebuild variance, selection-exposed sets and a monotonicity probe to existing eval design; no new product action or surface."
+description: "Use when: 要判断 Agent 是否专业、省心或真正改善，需设计判断依据、指标、校准，或修改/审计 eval。Not for: 单次交付(quality-gate)、外部claim(source-audit)、摩擦诊断(code-as-harness)。Output: 测量与校准草案或指标出生证（纵向eval含触发契约），或病名+处置。"
 ---
 
 # Eval Design — E0 资格门 · 出生证契约 · 运行拓扑 · 设计自检 · 五病体检 · 干预证
@@ -21,6 +21,17 @@ Eval 宪法（七公理 E0–E6）+ Alden 三日思辨的操作化——未来�
 来源：docs/architecture/eval-philosophy.md（宪法 v2.2，七公理）+
 feature-discussions/2026-07-17-eval-charter-draft.md（v1 历史草案，已演进归档）+
 2026-07-16-alden-dialogue-distillation.md（思辨蒸馏）。
+
+## 与能力进化项目的往返
+
+[capability-evolution](../capability-evolution/SKILL.md) 负责一句话入口、对象/owner 绑定与已有 Program 的持续推进；本 skill 负责测量、校准、归因诊断与干预设计。需要跨对象承接时用它的[方法导航](../capability-evolution/refs/evolution-method.md)，不复制旧案例的目标、阈值或授权。
+
+- **从项目进入**：带上当前 Program/对象/claim、已有版本与来源、权限和真实缺口，按问题选择本 skill 的相关部分；不强制每个项目从头填写全部表格。
+- **设计完成后返回**：交付本次相关的测量/角色/校准/触发或干预约定，明确哪些仍是草稿、哪些已由 owner 发布，以及证据仍允许或不允许什么结论。回到原 Program 的当前阶段，不重复 start。
+- **正式写入分界**：F311 只持 owner refs。出生证、proof、角色与 outcome 不能从本 skill 的回答中直接合成；Approval 和采用仍走原 owner/正式动作。证据不足不阻塞既有授权内的公开准备。
+- **没有 Program 上下文**：沿原指标设计/体检流程继续；使用 `eval-design` 本身不要求创建 Evolution Program。
+
+业务方只说“专业、省心、效果更好”也可能需要本 skill；先判断当前是否在设计可靠量尺，别把普通用法问答或单次交付都升级成 eval。信息很少时，仍交付本次能确定的 claim/观察单位/判断与取证草案，逐项说明 GT 域、来源与采集方式、裁判及付薪方，并把校准者、阈值、成本或数据缺口保持为未知。下方 E0 与出生证约束正式资格；草案不能自称已过 E0，也不能拿几条业务形容词代替实际应用方法。
 
 ## 核心定义：一个 eval 指标到底是什么
 
@@ -66,6 +77,12 @@ metric_birth_certificate:
   repeatability_contract:  # （v0.1 增，Sol 刀③）本指标属发现/归因/验收哪一环节；
                            # episode/环境/judge/版本如何冻结；跑几次；均值与 CI 波动
                            # 容差；哪些随机源允许变化。校准管"测得准"，本件管"重测稳"。
+                           # 要据此做优化比较时，针对本轮目标按比较设计估计噪声（可
+                           # 配对时用差值 CI 半宽），与该目标的剩余空间、consumer
+                           # 最小可行动改进对照；噪声不小于任一项，先提高测量分辨率
+                           # 或调整目标，不开优化比较轮。被打分物经随机生成步骤得到
+                           # （记忆库、合成语料等）时，固定被调对象重复重建，区分生成
+                           # 与打分波动；次数按测量需要与预算定（2–3 次可作初探）。
   # 以下两项仅对使用 judge / 其他有额度裁判的环适用；纯 verifier 环不填。
   calibration_runway:      # （v0.2 增，宪法 E0）适用时必填：额度不可读成单一电量，
                            # 按向量三账估——校准账（人-judge 决策级分歧率，晋升/回滚
@@ -104,7 +121,7 @@ metric_birth_certificate:
 | E3 对抗 | observer/domain owner/consumer/calibrator 分权了吗？有外生锚吗？观测面体检过了吗？ | 机制作者兼 observer 后又独自校准开放价值 claim；带毒管线上装仪表 |
 | E4 代谢 | 有孵化-退役机制吗？纵向 Eval 的进入/唤醒/成熟/可行动分开了吗？多久不能不醒？ | 把 maturity 当 scheduler trigger；只有事件触发、沉默时永久不复评 |
 | E5 回灌 | 未验证自评会以事实身份进被测者上下文吗？叙事反馈的案例抽样冻结了吗？ | 把 expected outcome 写成 outcome 回灌；报告人自选案例 |
-| E6 环节 | 发现/归因/验收/改进的性质分开了吗？ | 同批 fixture 既挑改动又验收；归因直接当梯度 |
+| E6 环节 | 发现/归因/验收/改进的性质分开了吗？ | 同批 fixture 既挑改动又验收；仅以聚合分参与选版/回退的模拟考（宪法 E6 三阀门之二）充当独立 holdout；归因直接当梯度 |
 
 E5 禁止的是**事实化回灌**：明确保留为 `hypothesis/expectation`，且下游始终按
 待验证命题读取的字段可以保留；一旦改名、渲染或汇总成既成事实，仍触发否决。
@@ -118,7 +135,7 @@ E5 禁止的是**事实化回灌**：明确保留为 `hypothesis/expectation`，
 | 病名 | 类型 / 链位 | 判据 | 检法 | 处置 |
 |---|---|---|---|---|
 | **划水** | 资产病 / 规约 | 无 validity：与病灶正交（含代谢死亡导致的滞后正交——考卷停更，病灶已迁移） | 全绿期间同域生产翻车照发？最近一次抓到真问题是何时？零代谢？ | 换题对准病灶；重启孵化-退役 |
-| **污染** | 资产病 / 测量 | 输出错误且自信：观测面带毒/judge 共振/被磨熟 | 抽样人工复核；proxy 与人工裁决相关性；判"分数涨效用不涨"散度 | **先修观测面再谈其他**（E3） |
+| **污染** | 资产病 / 测量 | 输出错误且自信：观测面带毒/judge 共振/被磨熟 | 抽样人工复核；proxy 与人工裁决相关性；判"分数涨效用不涨"散度；更强模型/更高 effort 反而不升分→先查题目歧义与判分（只作排查信号，单调不证明量尺正确） | **先修观测面再谈其他**（E3） |
 | **归因停滞** | 流程病 / 归因 | 竞争解释未被区分，下一轮没有新增证据 | 当轮审。"≥3 轮同型 finding"只是报警器——须先排除干预未落地 / 环境重复触发 / 风险已显式接受三种替代解释，方可确诊 | 停点修，回归因补关键区分实验 |
 | **干预失证** | 流程病 / 干预 | 无因果理由 / 预期 Δ / 证伪条件 / 独立验收 | 当轮拦：干预证牌照检查，一轮即拒 | 补齐干预证再动手 |
 | **摸鱼** | 资产病 / 外推 | 无 consumer：输出不驱动任何决策 | 查最近 N 期输出 → 驱动过什么改动？零 = 摸鱼 | sunset（走 F192 verdict） |
@@ -136,7 +153,7 @@ verdict` 是四级台阶，utility_claim + estimator 只走到 metric（候选�
 
 ```text
 可重放评估 → 可信 loss → 失败归因 → 关键科学问题定义 → 预注册干预假设
-→ 定向改动 → 同批复测 + 独立 holdout → verdict
+→ 定向改动 → 同批复测（待测机制为选材时按下文适用对照）+ 独立 holdout → verdict
 ```
 
 归因只产出**候选原因**（且归因自身要审：置信度凭什么、竞争解释排除了吗——狗粮
@@ -148,20 +165,30 @@ intervention_card:
   observed_loss:            # 观测到的 loss（带不确定性）
   competing_attributions:   # 竞争解释清单（不止一个才叫归因过）
   key_scientific_question:  # 哪个实验能区分竞争解释
-  intervention_lever:       # 改哪个变量
+  intervention_lever:       # 改哪个可控面/成套候选；贡献归因需要时再拆分
   causal_rationale:         # 为什么认为它是因
   expected_delta:           # 预期变化多少
   intervention_falsifier:   # 什么结果证明干预假设错了
   rubric_reopen_trigger:    # 什么结果证明尺子本身错了——外推三岔的第三岔，触发
                             # 即回规约改评分标准（宪法 E6：链是环）。诊断指纹：
                             # 系统故障带噪声，量具故障带着几何学的整洁
-  replay_cohort:            # 在哪批冻结数据上重放
-  holdout:                  # 独立验收集
+  replay_cohort:            # 在哪批冻结数据上重放（待测机制为选材时，冻结的是起点/来源可达范围/预算，见下文）
+  holdout:                  # 独立验收集（未参与挑候选、挑版本或回退判断）
   cost_and_rollback:        # 成本与回滚路径
 ```
 
 > 我们认可的不是自动反向传播，而是：**稳定测量产生 loss 向量；归因提出方向；
 > 关键科学问题选择实验；配对干预产生局部因果梯度；裁决层决定是否应用。**
+
+整套候选是否值得与各项变化贡献多少是不同 claim。保持 owner、版本、权限与比较
+条件清楚，按当前问题选比较设计；不把“一个干预”误解为“只能改一个文件”。
+在干预说明中标清贡献已解、部分或未解；整套通过不自动证明某一项起效。
+若待测机制是自适应选材，固定双方拿到的材料会消掉待测变化；保持起点、数据源/
+环境可达范围与独立验收条件可比，计入生成、判定和学习成本，允许实际选材不同。
+比较方法版本时也计入开发与评估方法本身的成本。这不取消固定候选的同批重放，
+也不改写已有项目冻结的试验；适用对照与原文入口见选材与方法研究索引。
+F311 项目选好试验后回到[实际学习循环](../capability-evolution/refs/learning-loop.md)
+执行与接回结果，不停在干预证草稿。
 
 ## 五、选中机制后的落地约束（ADR-031 v3.4 执行细则）
 
@@ -201,9 +228,11 @@ intervention_card:
 | `code-as-harness` | 摩擦→修 harness；本 skill 是它 eval 机制的设计手册 |
 | `source-audit` | 审外部 claim；本 skill 审**自家指标**（对内的 source-audit） |
 | `self-evolution` | 知识沉淀通道；本 skill 产出的教训经它归档 |
+| `capability-evolution` | 进化项目的入口与续办；需要本 skill 设计量尺/归因/干预时进入，带着设计结果及真实 owner refs 返回原 Program |
 
 ## 下一步
 
+- 当前工作属于 F311 Program → 返回 [capability-evolution](../capability-evolution/SKILL.md) 的当前阶段，兑现设计对应的 owner 产物与下一动作；设计完成不等于评估或采用完成
 - 新指标设计完成 → 出生证入 feature doc / spec；纵向 Eval 另把触发契约与四角色写进 AC
 - 存量体检完成 → 体检报告（病名+处置）走 F192 verdict 管线（fix/keep_observe/sunset）
 - 摸出宪法级问题 → 回 docs/architecture/eval-philosophy.md 提修正案（v1 草案

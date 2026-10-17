@@ -18,7 +18,7 @@ L0 §8 trigger 写了 ≠ 猫真用。判断"为什么 miss + 怎么修"必须�
 
 **筛子 0 — Reachability（这能力当前 context 调得到吗？怎么调？）**
 - ❌ 调不到 / trigger 没写"怎么调" → 猫误判"这是别人的工具"，100% miss。**修法 = 补"怎么调"一行，不是 hook**。
-- 教训（2026-05-27）：opus-47 断言"terminal 调不了 workspace-navigator"——纯脑补没 verify（「我能猜出来」病）。当时底层 API 可由 Bash 直调；F223 Phase B 后主路径升级为 `cat_cafe_workspace_navigate` typed MCP。**一个你以为够不着的能力，miss 不是因为懒，是从没进考虑**——独立于"偷懒"的失败域，药方相反（补可达性 ≠ 上 forcing function）。
+- 教训（2026-05-27）：opus-47 断言"terminal 调不了 workspace-navigator"——纯脑补没 verify（未核验工具可达性）。当时底层 API 可由 Bash 直调；F223 Phase B 后主路径升级为 `cat_cafe_workspace_navigate` typed MCP。**一个你以为够不着的能力，miss 不是因为懒，是从没进考虑**——独立于"偷懒"的失败域，药方相反（补可达性 ≠ 上 forcing function）。
 
 **筛子 1 — Enforcement Tier（过了筛子 0 才分）**
 - **Tier A · episodic**：需要时自然想起，无零摩擦偷懒竞品。L0 advisory 够。例：`start_vote` / `expert-panel` / `deep-research`
@@ -246,7 +246,7 @@ opus-47 原把 `workspace-navigator` / `rich-messaging` / `browser-preview` 一�
 
 **坏直觉**：阶段成果只发一堆 commits / markdown
 **场景 trigger**：
-- Showcase 视频 / 教程录屏
+- 一句话要一支视频 / Showcase / 教程录屏（Remotion 搭，先出样张自审）
 - HTML PPT slide / 海报
 - 对外技术博客 / 公众号
 
@@ -295,18 +295,19 @@ opus-47 原把 `workspace-navigator` / `rich-messaging` / `browser-preview` 一�
 
 ### 24. `capability-evolution` — F311 能力进化入口
 
-**坏直觉**：听到“你们能进化什么”只加载通用 `self-evolution` 讲理念；听到“我们来进化 X”只给建议，不启动已经上线的 Program
+**坏直觉**：听到“你们能进化什么”只加载通用 `self-evolution` 讲理念；听到“我们来进化 X”或直接的 Agent / 业务结果，只给建议，不启动已经上线的 Program
 
 **场景 trigger**：
 
 - 信息型：“能进化什么 / 能力进化是什么” → 解释范围与边界，零写入
 - 动作型：“我们来进化 X”且 X 是具体目标 → 解析 canonical targetRef
+- 动作型：“让 / 请让 Agent 或业务能力达到 Y”且不是问句、显式延后或只讨论 → 使用 F311 admission identity 解析 canonical targetRef；不要追问具体实现
 
-**用法**：加载 `capability-evolution`；只有动作型才调用 `cat_cafe_start_evolution_program`，并用触发消息的 exact `sourceMessageId` 作为 `clientMessageId`
+**用法**：加载 `capability-evolution`；只有动作型才调用 `cat_cafe_start_evolution_program`，并用触发消息的 exact `sourceMessageId` 作为 `clientMessageId`；问句、显式延后或只讨论保持零写入。启动后在同一 invocation 继续 get / begin / submit / get，交出首轮正式准备
 
 **边界**：重复错误/SOP/知识沉淀走 `self-evolution`；确定性 bug 走 test/guard；运行健康走 F153 logs/metrics/traces；未知 owner 不猜投，用 F311 admission identity + typed blocker 保持诚实
 
-**Eval**：`eval:capability-wakeup` 规则 `capability-evolution-concrete-target` 统计具体目标出现后 canonical start tool 的成功调用；连续 miss 再决定是否晋升 Tier 1
+**Eval**：`eval:capability-wakeup` 的机械规则只统计它能确定判别的显式具体目标；语义型直接目标留给 rubric judge，不能靠扩写 regex 偷渡进机械分母。连续 miss 再决定是否晋升 Tier 1
 
 ---
 
@@ -321,7 +322,7 @@ opus-47 原把 `workspace-navigator` / `rich-messaging` / `browser-preview` 一�
 | expert-panel / review 报告只发聊天 | `cat_cafe_generate_document` | 生成正式 DOCX/PDF 文档（凭证不过期、可存档、可对外） |
 | 想重开一条已知调查路线 | `cat_cafe_run_perspective` | git-backed Perspective live query 计划重放（advanced/niche，返回 route hints + anchors，仍需 typed reader 取证据） |
 | review 后 lesson 散在脑子里 | `cat_cafe_review_distillation` | 蒸馏 review 结论沉淀（配合 mark_generalizable） |
-| 想记住operator本人、个人近况、称谓或这只 persona 与operator之间特有的沟通边界 | `cat_cafe_propose_profile_update` | 提议更新 relationship primer（F231）；回答“operator是谁 / 咱们怎样相处”，不是通用质量判断；工具在 deferred list 需先 `tool_search` |
+| 想记住operator本人、个人近况、称谓或这只 persona 与operator之间特有的沟通边界 | `cat_cafe_propose_profile_update` | 提议更新 relationship primer（F231）；回答”operator是谁 / 咱们怎样相处”，不是通用质量判断；owner-wide 共享事实加 `targetLayer:'corpus'`；工具在 deferred list 需先 `tool_search` |
 | operator表达可复用的审美/品味/质量/设计或工程判断（正向“这就对了”或负向“太客服了”） | `cat_cafe_propose_taste` | 提议 taste vignette（F221）；回答“什么样的输出/系统才算好”，不是个人事实或重复流程规则；误投 profile 时有 `routing_advisory` |
 | 当轮确认了稳定人名↔workspace handle/别名，或人物私域事实/关系/互动，却当成一次性上下文放过 | `cat_cafe_propose_entity` / `cat_cafe_propose_person_memory` | 已查证、带 provenance 的 workspace 定位别名走 entity；owner-private 人物事实/关系/互动走 person-memory；两类同时成立则分别提案、分别审批。禁止裸名字猜身份或静默写入；工具在 deferred list 需先 `tool_search` |
 | 一看到纠正、表扬或 Magic Word 就默认改关系档案 | 按语义选择 Profile / Taste / `code-as-harness` | 事件形式不决定存储：关于人/关系 → Profile；关于好坏标准 → Taste；重复工具/流程规则 → Harness |

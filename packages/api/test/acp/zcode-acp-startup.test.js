@@ -8,9 +8,11 @@ import { describe, it } from 'node:test';
 import { startAdapter } from './helpers/zcode-acp-test-harness.mjs';
 
 const { resolveZcodeBin } = await import(
-  '../../dist/domains/cats/services/agents/providers/acp/zcode-acp-bootstrap.js'
+  '../../dist/domains/cats/services/agents/providers/acp/zcode/zcode-acp-bootstrap.js'
 );
-const { NativeAppServer } = await import('../../dist/domains/cats/services/agents/providers/acp/zcode-acp-native.js');
+const { NativeAppServer } = await import(
+  '../../dist/domains/cats/services/agents/providers/acp/zcode/zcode-acp-native.js'
+);
 
 /** A real stdio child checks the environment before accepting any native RPC. */
 function fixture(layout = 'bundle', behavior = 'ready') {

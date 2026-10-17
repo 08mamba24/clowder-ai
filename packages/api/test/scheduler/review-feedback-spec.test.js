@@ -52,7 +52,7 @@ function options(taskStore, router, overrides = {}) {
 }
 
 describe('review scheduler F280 adapter', () => {
-  test('finishes routing after a persisted cursor even when cancellation arrives at the commit boundary', async () => {
+  test('commits the cursor once routing recorded the observation, even when cancellation arrives while routing', async () => {
     const taskStore = new TaskStore();
     const task = await createTracked(taskStore);
     const controller = new AbortController();
@@ -61,6 +61,7 @@ describe('review scheduler F280 adapter', () => {
       options(taskStore, {
         route: async () => {
           events.push('routed');
+          controller.abort(new Error('scheduler timeout'));
           return { kind: 'skipped', reason: 'test' };
         },
       }),
@@ -80,7 +81,6 @@ describe('review scheduler F280 adapter', () => {
           decisionCursor: 31,
           commitCursor: async () => {
             events.push('cursor-persisted');
-            controller.abort(new Error('scheduler timeout'));
           },
         },
         task.subjectKey,
@@ -88,7 +88,7 @@ describe('review scheduler F280 adapter', () => {
       )
       .catch(() => {});
 
-    assert.deepEqual(events, ['cursor-persisted', 'routed']);
+    assert.deepEqual(events, ['routed', 'cursor-persisted']);
   });
 
   test('current facts are evaluated even when no raw source body is deliverable', async () => {
@@ -102,7 +102,7 @@ describe('review scheduler F280 adapter', () => {
     assert.equal(gate.workItems.length, 1);
   });
 
-  test('only router-confirmed typed outcome invokes with the unified reason', async () => {
+  test('only a router-confirmed typed outcome admits the wake', async () => {
     const taskStore = new TaskStore();
     await createTracked(taskStore);
     const calls = [];
@@ -110,13 +110,16 @@ describe('review scheduler F280 adapter', () => {
       options(
         taskStore,
         {
-          route: async () => ({
-            kind: 'notified',
-            threadId: 'thread_1',
-            catId: 'codex-sol',
-            messageId: 'msg_1',
-            content: 'compact wait',
-          }),
+          route: async (...args) => {
+            calls.push(args);
+            return {
+              kind: 'notified',
+              threadId: 'thread_1',
+              catId: 'codex-sol',
+              messageId: 'msg_1',
+              content: 'compact wait',
+            };
+          },
         },
         {
           fetchReviews: async () => [
@@ -129,16 +132,16 @@ describe('review scheduler F280 adapter', () => {
               commitId: 'aaa',
             },
           ],
-          invokeTrigger: { trigger: async (...args) => calls.push(args) },
         },
       ),
     );
     const gate = await spec.admission.gate();
     assert.equal(gate.run, true);
     await spec.run.execute(gate.workItems[0].signal, gate.workItems[0].subjectKey, {});
+    // One route == one admission == one wake. The old trigger `reason`/`suggestedSkill` policy was
+    // never read by production; the observable fact is the confirmed typed outcome itself.
     assert.equal(calls.length, 1);
-    assert.equal(calls[0][6].reason, 'github_wait_satisfied');
-    assert.equal(calls[0][6].suggestedSkill, undefined);
+    assert.equal(calls[0][0].headSha, 'aaa');
   });
 
   test('plain @codex review advances the source frontier without forcing invocation', async () => {
@@ -191,7 +194,6 @@ describe('review scheduler F280 adapter', () => {
         },
         {
           fetchPrMetadata: async () => ({ headSha: 'aaa', prState: 'merged' }),
-          invokeTrigger: { trigger: async (...args) => triggerCalls.push(args) },
         },
       ),
     );
@@ -201,9 +203,42 @@ describe('review scheduler F280 adapter', () => {
     assert.equal(gate.workItems.length, 1);
     assert.equal(gate.workItems[0].signal.subjectState, 'merged');
     await spec.run.execute(gate.workItems[0].signal, gate.workItems[0].subjectKey, {});
+    // The route IS the admission, so one confirmed terminal observation is one owner wake.
     assert.equal(routerCalls.length, 1);
-    assert.equal(triggerCalls.length, 1);
-    assert.equal(triggerCalls[0][6].reason, 'github_pr_merged');
+    assert.equal(routerCalls[0].subjectState, 'merged');
+  });
+
+  test('a comment posted in the poll where the PR merges is collected with the terminal truth', async () => {
+    const taskStore = new TaskStore();
+    await createTracked(taskStore);
+    const spec = createReviewFeedbackTaskSpec(
+      options(
+        taskStore,
+        { route: async () => ({ kind: 'skipped', reason: 'test' }) },
+        {
+          fetchPrMetadata: async () => ({ headSha: 'aaa', prState: 'merged' }),
+          fetchComments: async () => [
+            {
+              id: 21,
+              author: 'maintainer',
+              body: 'thanks, merging',
+              createdAt: '2026-09-15T00:00:00Z',
+              commentType: 'conversation',
+            },
+          ],
+        },
+      ),
+    );
+
+    const gate = await spec.admission.gate();
+    assert.equal(gate.workItems.length, 1);
+    const { signal } = gate.workItems[0];
+    assert.equal(signal.subjectState, 'merged');
+    assert.deepEqual(
+      signal.newComments.map((comment) => comment.id),
+      [21],
+      'a terminal PR is the last poll — skipping its comments loses them for good',
+    );
   });
 
   test('the fourth formal changes-requested review pauses one automatic owner wake, while the fifth continues', async () => {
@@ -264,21 +299,29 @@ describe('review scheduler F280 adapter', () => {
       options(
         taskStore,
         {
-          route: async () => ({
-            kind: 'notified',
-            threadId: 'thread_1',
-            catId: 'codex-sol',
-            messageId: 'msg_1',
-            content: 'warn-open',
-          }),
+          route: async (...args) => {
+            calls.push(args);
+            return {
+              kind: 'notified',
+              threadId: 'thread_1',
+              catId: 'codex-sol',
+              messageId: 'msg_1',
+              content: 'warn-open',
+            };
+          },
         },
         {
           fetchPrMetadata: async () => ({ headSha: 'aaa', prState: 'open', authorLogin: 'pr-author' }),
-          fetchReviews: async (_repo, _pr, sinceId) => {
-            if (sinceId === undefined) throw new Error('history unavailable');
-            return [fresh];
-          },
-          invokeTrigger: { trigger: async (...args) => calls.push(args) },
+          // The poll's own review read succeeds; the brake's separate history read fails. Both read
+          // every review now (#1392: dismissals change old ids), so they differ only in order.
+          fetchReviews: (() => {
+            let reads = 0;
+            return async () => {
+              reads += 1;
+              if (reads > 1) throw new Error('history unavailable');
+              return [fresh];
+            };
+          })(),
         },
       ),
     );

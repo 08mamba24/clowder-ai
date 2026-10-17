@@ -1,6 +1,6 @@
 import { extractUserEnvTemplates, hasSupportedEnvTemplate, resolveEnvMap } from '../env-map.js';
 import { isDshHarnessCommand } from './dsh-acp-bootstrap.js';
-import { isZcodeHarnessCommand } from './zcode-acp-bootstrap.js';
+import { isZcodeHarnessCommand } from './zcode/zcode-acp-bootstrap.js';
 
 export interface AcpProcessEnvAccount {
   id: string;

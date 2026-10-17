@@ -15,24 +15,6 @@ export interface FreshnessReplaySelector {
   threadIds?: string[];
 }
 
-export interface FreshnessReplayAggregateSnapshot {
-  window: { fromInclusive: number; toExclusive: number };
-  closureCount: number;
-  committedCount: number;
-  blockedCount: number;
-  disposedCount: number;
-  unresolvedCount: number;
-  supersededAttemptCount: number;
-  redundantCommittedAttemptCount: number;
-  attemptBudgetExhaustedCount: number;
-  commitRecheckExhaustedCount: number;
-  startupRecoveryBlockedCount: number;
-  preflightIncompleteCount: number;
-  lineageIdentityGapCount: number;
-  custodyGapCount: number;
-  verdict: 'no_data' | 'healthy' | 'needs_attention';
-}
-
 export interface FreshnessReplayFacts {
   responsibilityCount: number;
   custodyCount: number;
@@ -54,7 +36,7 @@ export type FreshnessReplayAttentionReason = 'blocked_responsibility' | 'unresol
 export interface FreshnessReplaySample {
   id: string;
   scenario: FreshnessReplayScenario;
-  source: 'fixture' | 'live_closure';
+  source: 'fixture' | 'live_window';
   occurredAt: number;
   threadId: string;
   catIds: string[];
@@ -99,10 +81,75 @@ export interface FreshnessReplayReport {
   noDataReason?: string;
 }
 
+export type FreshnessReplaySourceStatus =
+  | { status: 'complete' }
+  | {
+      status: 'incomplete';
+      reason: string;
+      completeFromMs?: number;
+      observedThroughMs?: number;
+    }
+  | { status: 'unavailable'; reason: string; observedThroughMs?: number };
+
+export interface FreshnessQueueLifecycle {
+  entryId: string;
+  targetCatId: string;
+  threadIds: string[];
+  messageIds: string[];
+  createdAt: number;
+  lastUpdatedAt: number;
+  firstSeenAt?: number;
+  handledAt?: number;
+  withdrawnAt?: number;
+  failedAt?: number;
+  terminalState: boolean;
+  legacyUntimed: boolean;
+}
+
+export interface FreshnessQueueLifecycleReport {
+  entryTargetCount: number;
+  admittedCount: number;
+  seenCount: number;
+  handledCount: number;
+  withdrawnCount: number;
+  failedCount: number;
+  seenUnhandledAtWindowEndCount: number;
+  pendingAtWindowEndCount: number;
+  legacyUntimedCount: number;
+  lifecycles: FreshnessQueueLifecycle[];
+}
+
+export interface FreshnessAttentionSignalReport {
+  eventCount: number;
+  counts: Partial<
+    Record<
+      import('../../../domains/cats/services/freshness/FreshnessAttentionEventLog.js').FreshnessAttentionEvent['kind'],
+      number
+    >
+  >;
+}
+
+export interface FreshnessWindowedSignals {
+  window: { startMs: number; endMs: number };
+  queue: FreshnessQueueLifecycleReport;
+  attention: FreshnessAttentionSignalReport;
+  observedActivityCount: number;
+}
+
+export interface FreshnessReplayMeasurementMaturity {
+  status: 'ready' | 'blocked';
+  sources: {
+    queue_custody: FreshnessReplaySourceStatus;
+    attention_events: FreshnessReplaySourceStatus;
+  };
+  reasons: string[];
+}
+
 export interface FreshnessReplayBundle {
   selector: FreshnessReplaySelector;
   samples: FreshnessReplaySample[];
-  aggregateSnapshot: FreshnessReplayAggregateSnapshot;
   report: FreshnessReplayReport;
   providerNativeCoverage: import('./provider-native-freshness-coverage.js').ProviderNativeFreshnessCoverageReport;
+  windowedSignals: FreshnessWindowedSignals;
+  measurementMaturity: FreshnessReplayMeasurementMaturity;
 }

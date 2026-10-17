@@ -1,4 +1,22 @@
-import type { CollectiveEventEnvelope, CollectivePairingIntent, CollectiveTarget } from '@cat-cafe/shared';
+import type {
+  CollectiveAttentionRequest,
+  CollectiveBindingVoteChoice,
+  CollectiveBindingVoteProjection,
+  CollectiveCollaborationProjection,
+  CollectiveDecisionRecord,
+  CollectiveEventEnvelope,
+  CollectiveLocation,
+  CollectiveMemberDirectory,
+  CollectivePairingIntent,
+  CollectiveParticipant,
+  CollectiveReactionEmoji,
+  CollectiveReactionSummary,
+  CollectiveRecipient,
+  CollectiveRoadmapRecord,
+  CollectiveTarget,
+  CollectiveVoteProjection,
+  CollectiveWorkProjection,
+} from '@cat-cafe/shared';
 
 export type { GitHubAppManifestBeginResult } from './github-app-manifest.js';
 
@@ -47,7 +65,11 @@ export interface HumanAuthBeginResult {
 }
 
 export interface ClientTarget {
-  readonly target: CollectiveTarget;
+  readonly target?: CollectiveTarget;
+  readonly location?: CollectiveLocation;
+  readonly recipient?: CollectiveRecipient;
+  readonly attentionRequest?: CollectiveAttentionRequest;
+  readonly workRequest?: 'entrust';
   readonly replyToEventId?: string;
 }
 
@@ -81,10 +103,30 @@ export interface ClientSnapshot {
   readonly collective?: CollectiveMembership;
   readonly providers: readonly HumanAuthProviderStatus[];
   readonly events: readonly CollectiveEventEnvelope[];
+  readonly collaboration?: CollectiveCollaborationProjection;
+  readonly participants?: readonly CollectiveParticipant[];
+  readonly members?: CollectiveMemberDirectory;
   readonly connection: 'online' | 'offline';
   readonly delivery: DeliveryState;
   readonly notice?: string;
   readonly error?: string;
 }
 
-export type { CollectiveEventEnvelope, CollectiveTarget };
+export type {
+  CollectiveAttentionRequest,
+  CollectiveBindingVoteChoice,
+  CollectiveBindingVoteProjection,
+  CollectiveCollaborationProjection,
+  CollectiveDecisionRecord,
+  CollectiveEventEnvelope,
+  CollectiveTarget,
+  CollectiveLocation,
+  CollectiveRecipient,
+  CollectiveReactionEmoji,
+  CollectiveReactionSummary,
+  CollectiveParticipant,
+  CollectiveMemberDirectory,
+  CollectiveRoadmapRecord,
+  CollectiveVoteProjection,
+  CollectiveWorkProjection,
+};

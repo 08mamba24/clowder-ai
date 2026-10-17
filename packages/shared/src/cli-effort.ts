@@ -25,11 +25,10 @@ const CLI_EFFORT_OPTIONS_BY_PROVIDER: Record<CliEffortProvider, readonly CliEffo
   kimi: ['low', 'high', 'max'],
 };
 
-const GPT_5_6_OPENAI_EFFORT_OPTIONS: readonly CliEffortPreset[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-
-// codex-cli 0.156.1 model/list (2026-09-23): gpt-6-sol reports the same six
-// efforts; gpt-6-luna stops at max, so it stays on the provider base until onboarded.
-const GPT_6_SOL_OPENAI_EFFORT_OPTIONS = GPT_5_6_OPENAI_EFFORT_OPTIONS;
+const OPENAI_MAX_EFFORT_OPTIONS: readonly CliEffortPreset[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+const OPENAI_MAX_ULTRA_EFFORT_OPTIONS: readonly CliEffortPreset[] = [...OPENAI_MAX_EFFORT_OPTIONS, 'ultra'];
+const OPENAI_MAX_MODELS = new Set(['gpt-5.6-luna', 'gpt-6-luna']);
+const OPENAI_MAX_ULTRA_MODELS = new Set(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra', 'gpt-6-sol']);
 
 const CLI_EFFORT_DEFAULT_BY_PROVIDER: Record<CliEffortProvider, CliEffortPreset> = {
   anthropic: 'max',
@@ -45,14 +44,11 @@ export function normalizeModelSlug(model: string | null | undefined): string | n
   return model?.trim().toLowerCase().split('/').filter(Boolean).at(-1) ?? null;
 }
 
-function isGpt56Model(model: string | null | undefined): boolean {
+function getOpenAiEffortOptions(model: string | null | undefined): readonly CliEffortPreset[] {
   const modelId = normalizeModelSlug(model);
-  return modelId ? /^gpt-5\.6(?:-|$)/.test(modelId) : false;
-}
-
-function isGpt6SolModel(model: string | null | undefined): boolean {
-  const modelId = normalizeModelSlug(model);
-  return modelId ? /^gpt-6-sol(?:-|$)/.test(modelId) : false;
+  if (modelId && OPENAI_MAX_ULTRA_MODELS.has(modelId)) return OPENAI_MAX_ULTRA_EFFORT_OPTIONS;
+  if (modelId && OPENAI_MAX_MODELS.has(modelId)) return OPENAI_MAX_EFFORT_OPTIONS;
+  return CLI_EFFORT_OPTIONS_BY_PROVIDER.openai;
 }
 
 /**
@@ -70,8 +66,7 @@ export function getCliEffortOptionsForProvider(
   model?: string | null,
 ): readonly CliEffortPreset[] | null {
   if (!isCliEffortProvider(provider)) return null;
-  if (provider === 'openai' && isGpt56Model(model)) return GPT_5_6_OPENAI_EFFORT_OPTIONS;
-  if (provider === 'openai' && isGpt6SolModel(model)) return GPT_6_SOL_OPENAI_EFFORT_OPTIONS;
+  if (provider === 'openai') return getOpenAiEffortOptions(model);
   if (provider === 'kimi') return isKimiEffortCapableModel(model) ? CLI_EFFORT_OPTIONS_BY_PROVIDER.kimi : null;
   return CLI_EFFORT_OPTIONS_BY_PROVIDER[provider];
 }

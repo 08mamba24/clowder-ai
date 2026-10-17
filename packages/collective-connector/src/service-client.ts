@@ -1,10 +1,18 @@
 import {
   type CollectiveAgentMessageRequest,
+  type CollectiveAgentWorkProposalRequest,
   type CollectiveEventEnvelope,
   type CollectivePairingIntent,
+  type CollectiveParticipationDeclaration,
+  type CollectiveSourceIdentity,
   collectiveEventEnvelopeSchema,
+  collectiveEventIdSchema,
+  collectiveParticipationDeclarationSchema,
+  collectiveWorkIdSchema,
+  collectiveWorkProjectionSchema,
 } from '@cat-cafe/shared';
 import { z } from 'zod';
+import { CollectiveWorkAuthorityClient } from './work-authority-client.js';
 
 const connectionResponseSchema = z
   .object({
@@ -38,6 +46,14 @@ export type ServiceConnectionResponse = z.infer<typeof connectionResponseSchema>
 export type ServicePollResponse = z.infer<typeof pollResponseSchema>;
 
 export class ConnectorTransportError extends Error {
+  get retryable(): boolean {
+    return (
+      this.statusCode === undefined || this.statusCode === 408 || this.statusCode === 429 || this.statusCode >= 500
+    );
+  }
+  get code(): string {
+    return this.causeCode ?? 'COLLECTIVE_SERVICE_UNAVAILABLE';
+  }
   constructor(
     message: string,
     readonly statusCode?: number,
@@ -49,6 +65,7 @@ export class ConnectorTransportError extends Error {
 }
 
 export class CollectiveServiceClient {
+  readonly workAuthority = new CollectiveWorkAuthorityClient((url, path, options) => this.request(url, path, options));
   constructor(
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly timeoutMs = 10_000,
@@ -96,6 +113,57 @@ export class CollectiveServiceClient {
     return collectiveEventEnvelopeSchema.parse(payload);
   }
 
+  async proposeWork(serviceUrl: string, endpointCredential: string, input: CollectiveAgentWorkProposalRequest) {
+    const payload = await this.request(serviceUrl, '/api/collaboration/work/propose-agent', {
+      method: 'POST',
+      credential: endpointCredential,
+      body: input,
+    });
+    return collectiveWorkProjectionSchema.parse(payload);
+  }
+
+  async readAssignedWork(
+    serviceUrl: string,
+    endpointCredential: string,
+    input: {
+      serviceInstanceId: string;
+      collectiveId: string;
+      connectionId: string;
+      workId: string;
+    },
+  ) {
+    const query = new URLSearchParams(input);
+    const payload = await this.request(serviceUrl, `/api/collaboration/work/assigned?${query}`, {
+      credential: endpointCredential,
+    });
+    const work = collectiveWorkProjectionSchema.parse(payload);
+    if (work.workId !== collectiveWorkIdSchema.parse(input.workId)) {
+      throw new ConnectorTransportError('Assigned Work response does not match the requested Work');
+    }
+    return work;
+  }
+
+  async readAssignedWorkByAssignment(
+    serviceUrl: string,
+    endpointCredential: string,
+    input: {
+      serviceInstanceId: string;
+      collectiveId: string;
+      connectionId: string;
+      assignmentEventId: string;
+    },
+  ) {
+    const query = new URLSearchParams(input);
+    const payload = await this.request(serviceUrl, `/api/collaboration/work/assigned-by-assignment?${query}`, {
+      credential: endpointCredential,
+    });
+    const work = collectiveWorkProjectionSchema.parse(payload);
+    if (work.assignmentEventId !== collectiveEventIdSchema.parse(input.assignmentEventId)) {
+      throw new ConnectorTransportError('Assigned Work response does not match the requested assignment');
+    }
+    return work;
+  }
+
   async poll(
     serviceUrl: string,
     endpointCredential: string,
@@ -135,6 +203,64 @@ export class CollectiveServiceClient {
       credential: endpointCredential,
       body: input,
     });
+  }
+
+  async publishParticipation(serviceUrl: string, credential: string, declaration: CollectiveParticipationDeclaration) {
+    const payload = await this.request(serviceUrl, '/api/participation', {
+      method: 'POST',
+      credential,
+      body: declaration,
+    });
+    // The receipt also carries publishedAt. Do not trust an acknowledgement for another revision.
+    const parsed = collectiveParticipationDeclarationSchema.safeParse(
+      Object.fromEntries(Object.entries(payload).filter(([key]) => key !== 'publishedAt')),
+    );
+    if (!parsed.success || JSON.stringify(parsed.data) !== JSON.stringify(declaration))
+      throw new ConnectorTransportError('Participation receipt does not match');
+    return parsed.data;
+  }
+
+  async readParticipationDeclaration(
+    serviceUrl: string,
+    credential: string,
+    coordinates: Pick<CollectiveParticipationDeclaration, 'serviceInstanceId' | 'collectiveId' | 'connectionId'>,
+  ) {
+    const payload = await this.request(serviceUrl, `/api/participation?${new URLSearchParams(coordinates)}`, {
+      credential,
+    });
+    return z.object({ declaration: collectiveParticipationDeclarationSchema.nullable() }).strict().parse(payload)
+      .declaration;
+  }
+
+  async readParticipationContext(
+    serviceUrl: string,
+    credential: string,
+    source: CollectiveSourceIdentity,
+    afterSequence = 0,
+    limit = 30,
+  ) {
+    const payload = await this.request(serviceUrl, '/api/participation/context', {
+      method: 'POST',
+      credential,
+      body: {
+        serviceInstanceId: source.serviceInstanceId,
+        collectiveId: source.collectiveId,
+        connectionId: source.connectionId,
+        catId: source.catId,
+        participationRevision: source.participationRevision,
+        eventId: source.eventId,
+        afterSequence,
+        limit,
+      },
+    });
+    return z
+      .object({
+        source: collectiveEventEnvelopeSchema,
+        events: z.array(collectiveEventEnvelopeSchema).max(100),
+        nextCursor: z.number().int().positive().optional(),
+      })
+      .strict()
+      .parse(payload);
   }
 
   async revoke(
@@ -182,7 +308,17 @@ export class CollectiveServiceClient {
     const payload = (await response.json().catch(() => ({}))) as unknown;
     if (!response.ok) {
       const message = errorMessage(payload) ?? `Collective Service returned HTTP ${response.status}`;
-      throw new ConnectorTransportError(message, response.status);
+      const code =
+        payload &&
+        typeof payload === 'object' &&
+        'error' in payload &&
+        payload.error &&
+        typeof payload.error === 'object' &&
+        'code' in payload.error &&
+        typeof payload.error.code === 'string'
+          ? payload.error.code
+          : undefined;
+      throw new ConnectorTransportError(message, response.status, code);
     }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       throw new ConnectorTransportError('Collective Service returned an invalid response');

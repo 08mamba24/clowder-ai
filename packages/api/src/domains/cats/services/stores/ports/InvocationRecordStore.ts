@@ -9,12 +9,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import {
-  type CatId,
-  type FreshnessClosureStatus,
-  parseWaitContinuationCarrier,
-  type WaitContinuationCarrierV1,
-} from '@cat-cafe/shared';
+import { type CatId, parseWaitContinuationCarrier, type WaitContinuationCarrierV1 } from '@cat-cafe/shared';
 import { isValidTransition } from './invocation-state-machine.js';
 
 /** InvocationRecord lifecycle statuses */
@@ -82,7 +77,7 @@ export interface InvocationRecord {
   intent: 'execute' | 'ideate';
   status: InvocationStatus;
   /** F254: cats with an exact successful terminal event for this invocation.
-   *  Persisted atomically with the running -> succeeded transition so restart
+   *  Persisted atomically with the terminal transition, including partial failure, so restart
    *  recovery never infers per-target success from the aggregate parent status. */
   successfulCatIds?: readonly CatId[];
   /** Idempotency key (client-provided or server-generated, always present) */
@@ -102,10 +97,6 @@ export interface InvocationRecord {
   /** F128: Epoch ms when usageByCat was first recorded. Stable for daily bucketing
    *  (unlike updatedAt which any subsequent update can shift). */
   usageRecordedAt?: number;
-  /** F254 Phase E: typed custody proof for a catch-closure successor. */
-  freshnessClosureId?: string;
-  freshnessInputFrontierMessageId?: string;
-  freshnessClosureStatus?: FreshnessClosureStatus;
   /** F167 S.1-b: server-written carrier classification recovered by holder callbacks. */
   actionLeaseCarrier: InvocationActionLeaseCarrier;
   /** #1291 Gate 4: exact wait generation/outcome that authorized this continuation. */
@@ -136,7 +127,7 @@ export interface CreateResult {
 /** Fields that can be updated on an InvocationRecord */
 export interface UpdateInvocationInput {
   status?: InvocationStatus;
-  /** Exact successful targets. Valid only on the transition to `succeeded`. */
+  /** Exact successful targets on a succeeded or partially failed terminal. Retries skip these targets. */
   successfulCatIds?: readonly CatId[];
   userMessageId?: string | null;
   error?: string;
@@ -155,9 +146,6 @@ export interface UpdateInvocationInput {
    *  updatedAt fallback. Never `invocation.createdAt` (would mis-bucket
    *  cross-midnight runs onto the start day instead of the finish day). */
   usageRecordedAt?: number;
-  freshnessClosureId?: string;
-  freshnessInputFrontierMessageId?: string;
-  freshnessClosureStatus?: FreshnessClosureStatus;
 }
 
 /**
@@ -327,11 +315,6 @@ export class InvocationRecordStore implements IInvocationRecordStore {
     } else if (input.executionStartedAt !== undefined) {
       record.executionStartedAt = input.executionStartedAt;
     }
-    if (input.freshnessClosureId !== undefined) record.freshnessClosureId = input.freshnessClosureId;
-    if (input.freshnessInputFrontierMessageId !== undefined) {
-      record.freshnessInputFrontierMessageId = input.freshnessInputFrontierMessageId;
-    }
-    if (input.freshnessClosureStatus !== undefined) record.freshnessClosureStatus = input.freshnessClosureStatus;
     if (input.usageByCat !== undefined) {
       record.usageByCat = input.usageByCat;
       // F128: stamp usageRecordedAt only on first write (stable for daily bucketing).
@@ -407,8 +390,10 @@ export function normalizeSuccessfulCatIds(
   input: UpdateInvocationInput,
 ): CatId[] | undefined {
   if (input.successfulCatIds === undefined) return undefined;
-  if (input.status !== 'succeeded') {
-    throw new InvalidInvocationSuccessWitnessError('successfulCatIds may only be supplied with status succeeded');
+  if (input.status !== 'succeeded' && input.status !== 'failed') {
+    throw new InvalidInvocationSuccessWitnessError(
+      'successfulCatIds may only be supplied with status succeeded or failed',
+    );
   }
   if (targetCats.length > 0 && input.successfulCatIds.length === 0) {
     throw new InvalidInvocationSuccessWitnessError('successfulCatIds must be non-empty for a targeted invocation');

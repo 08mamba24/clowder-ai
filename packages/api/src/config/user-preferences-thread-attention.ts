@@ -1,10 +1,15 @@
-import type { ThreadAttentionPreferences } from '@cat-cafe/shared';
+import type { ThreadAttentionMemberSort, ThreadAttentionPreferences } from '@cat-cafe/shared';
 import { readUserPreferences, updateUserPreferences } from './user-preferences-store.js';
 
 const GROUP_ID_RE = /^attention_[A-Za-z0-9_-]+$/;
 const THREAD_ID_RE = /^thread_[A-Za-z0-9_-]+$/;
 
-function sanitizePreferences(value: unknown): Required<ThreadAttentionPreferences> {
+type ResolvedPreferences = ThreadAttentionPreferences & {
+  aliases: Record<string, string>;
+  open: Record<string, boolean>;
+};
+
+function sanitizePreferences(value: unknown): ResolvedPreferences {
   if (typeof value !== 'object' || value === null) return { aliases: {}, open: {} };
   const candidate = value as ThreadAttentionPreferences;
   const aliases = Object.fromEntries(
@@ -18,7 +23,23 @@ function sanitizePreferences(value: unknown): Required<ThreadAttentionPreference
       (entry): entry is [string, boolean] => isStableThreadAttentionAnchor(entry[0]) && typeof entry[1] === 'boolean',
     ),
   );
-  return { aliases, open };
+  const memberSort = Object.fromEntries(
+    Object.entries(candidate.memberSort ?? {}).filter(
+      (entry): entry is [string, ThreadAttentionMemberSort] =>
+        isStableThreadAttentionAnchor(entry[0]) && (entry[1] === 'manual' || entry[1] === 'running-first'),
+    ),
+  );
+  const collapsedPeek = Object.fromEntries(
+    Object.entries(candidate.collapsedPeek ?? {}).filter(
+      (entry): entry is [string, boolean] => isStableThreadAttentionAnchor(entry[0]) && typeof entry[1] === 'boolean',
+    ),
+  );
+  return {
+    aliases,
+    open,
+    ...(Object.keys(memberSort).length ? { memberSort } : {}),
+    ...(Object.keys(collapsedPeek).length ? { collapsedPeek } : {}),
+  };
 }
 
 export function isStableThreadAttentionAnchor(anchor: string): boolean {
@@ -33,18 +54,26 @@ export function isStableThreadAttentionThreadId(threadId: string): boolean {
   return THREAD_ID_RE.test(threadId);
 }
 
-export function resolveThreadAttentionPreferences(projectRoot: string): Required<ThreadAttentionPreferences> {
+export function resolveThreadAttentionPreferences(projectRoot: string): ResolvedPreferences {
   return sanitizePreferences(readUserPreferences(projectRoot).threadAttention);
 }
 
 export function saveThreadAttentionPreference(
   projectRoot: string,
-  input: { anchor: string; alias?: string | null; open?: boolean | null },
-): Required<ThreadAttentionPreferences> {
+  input: {
+    anchor: string;
+    alias?: string | null;
+    open?: boolean | null;
+    collapsedPeek?: boolean | null;
+    memberSort?: ThreadAttentionMemberSort | null;
+  },
+): ResolvedPreferences {
   updateUserPreferences(projectRoot, (current) => {
     const existing = sanitizePreferences(current.threadAttention);
     const aliases = { ...existing.aliases };
     const open = { ...existing.open };
+    const memberSort = { ...existing.memberSort };
+    const collapsedPeek = { ...existing.collapsedPeek };
     if (input.alias !== undefined) {
       if (input.alias === null) delete aliases[input.anchor];
       else aliases[input.anchor] = input.alias.trim();
@@ -53,7 +82,23 @@ export function saveThreadAttentionPreference(
       if (input.open === null) delete open[input.anchor];
       else open[input.anchor] = input.open;
     }
-    return { ...current, threadAttention: { aliases, open } };
+    if (input.memberSort !== undefined) {
+      if (input.memberSort === null) delete memberSort[input.anchor];
+      else memberSort[input.anchor] = input.memberSort;
+    }
+    if (input.collapsedPeek !== undefined) {
+      if (input.collapsedPeek === null) delete collapsedPeek[input.anchor];
+      else collapsedPeek[input.anchor] = input.collapsedPeek;
+    }
+    return {
+      ...current,
+      threadAttention: {
+        aliases,
+        open,
+        ...(Object.keys(memberSort).length ? { memberSort } : {}),
+        ...(Object.keys(collapsedPeek).length ? { collapsedPeek } : {}),
+      },
+    };
   });
   return resolveThreadAttentionPreferences(projectRoot);
 }

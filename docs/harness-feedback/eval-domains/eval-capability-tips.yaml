@@ -20,7 +20,7 @@
 #   - Different handoff target: tips → F244, wakeup → F203
 #
 # Phase C ownership:
-#   - operator message 0001785105866266-000010-8f3261db assigns the active run to
+#   - operator message private-source-id assigns the active run to
 #     Sol with Terra as the independent calibrator while the Ragdoll seats are
 #     unavailable.
 #   - Terra is a review role, not a second runtime evalCat field; final Phase C
@@ -55,4 +55,9 @@ sla:
   acknowledgeHours: 72
   reevalWithinHours: 336
 fixtures: []
+# 2026-10-01 dormant: see feature-discussions/2026-10-01-eval-into-f311/README.md
+dormancy:
+  reason: "Never enabled and has no opportunity denominator, certificate or action surface; this retires the eval registration, not F244 tips."
+  revivalPath: "Bind or create a qualified measure when a specific Program has a consumer and a valid opportunity denominator."
+  decisionRef: "private-thread-id#private-source-id"
 enabled: false

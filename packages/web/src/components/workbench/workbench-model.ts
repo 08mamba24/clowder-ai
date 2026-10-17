@@ -1,3 +1,7 @@
+import { resolveArtifactReviewTarget } from './artifact-review-surface';
+import { createEntrustedReturnFromRef, resolveFileTarget } from './real-surface-adapters';
+import { resolveContentSurfaceIdentity } from './resolve-content-surface';
+import { detachUnpinnedSurfaces } from './workbench-bulk-detach';
 import type {
   FocusEntitlement,
   WorkbenchAction,
@@ -5,6 +9,8 @@ import type {
   WorkbenchProjection,
   WorkspaceSurfaceDescriptor,
 } from './workbench-contract';
+import { openPreviewSurface, retainPreviewSlot } from './workbench-preview';
+import { retainRecentVisits } from './workbench-recent-visits';
 
 export type {
   FocusEntitlement,
@@ -18,6 +24,20 @@ export { migrateF284WorkspaceState, restoreWorkbenchState } from './workbench-re
 
 function isUserEntitled(entitlement: FocusEntitlement): boolean {
   return entitlement.kind === 'user';
+}
+
+function isTaskArtifactSurface(surface: WorkspaceSurfaceDescriptor): boolean {
+  return (
+    (surface.type === 'artifact' && surface.renderer === 'artifact-view') ||
+    resolveArtifactReviewTarget(surface) !== null
+  );
+}
+
+function hasArtifactReturn(surface: WorkspaceSurfaceDescriptor): boolean {
+  return (
+    isTaskArtifactSurface(surface) ||
+    (resolveFileTarget(surface) !== null && createEntrustedReturnFromRef(surface.returnTargetRef) !== null)
+  );
 }
 
 function sameObject(left: WorkspaceSurfaceDescriptor, right: WorkspaceSurfaceDescriptor): boolean {
@@ -119,6 +139,7 @@ function pinSurface(
   return {
     ...state,
     pinnedSurfaceIds: action.pinned ? [...without, action.surfaceId] : without,
+    previewSurfaceId: action.pinned && state.previewSurfaceId === action.surfaceId ? null : state.previewSurfaceId,
   };
 }
 
@@ -157,15 +178,17 @@ function openArtifactWithReturn(
 ): WorkbenchLayoutState {
   if (
     !isUserEntitled(action.entitlement) ||
-    action.artifact.type !== 'artifact' ||
-    action.artifact.renderer !== 'artifact-view' ||
+    !isTaskArtifactSurface(action.artifact) ||
     !isEntrustedWorkReturnSurface(action.returnSurface)
   ) {
     return state;
   }
-  const hasReturnSurface = state.surfaces.some(
-    (surface) => surface.id === action.returnSurface.id || sameObject(surface, action.returnSurface),
-  );
+  const isReturnSurface = (surface: WorkspaceSurfaceDescriptor) =>
+    surface.id === action.returnSurface.id || sameObject(surface, action.returnSurface);
+  // After the first desktop open the source (Needs Me / Schedule) lives in the sidecar, not the tabs;
+  // opening another item from there must still work.
+  const hasReturnSurface =
+    state.surfaces.some(isReturnSurface) || (state.sidecar !== null && isReturnSurface(state.sidecar));
   if (!hasReturnSurface) return state;
   const refreshed = state.surfaces.map((surface) =>
     surface.id === action.returnSurface.id || sameObject(surface, action.returnSurface)
@@ -173,10 +196,11 @@ function openArtifactWithReturn(
       : surface,
   );
   const withoutArtifact = withoutObject(refreshed, action.artifact);
+  const artifact = { ...action.artifact, returnTargetRef: action.returnSurface.resultTargetRef };
   if (action.presentation === 'desktop') {
     return {
       ...state,
-      surfaces: [...withoutObject(withoutArtifact, action.returnSurface), action.artifact],
+      surfaces: [...withoutObject(withoutArtifact, action.returnSurface), artifact],
       activeSurfaceId: action.artifact.id,
       split: null,
       sidecar: action.returnSurface,
@@ -186,7 +210,7 @@ function openArtifactWithReturn(
   }
   return {
     ...state,
-    surfaces: [...withoutObject(withoutArtifact, action.returnSurface), action.returnSurface, action.artifact],
+    surfaces: [...withoutObject(withoutArtifact, action.returnSurface), action.returnSurface, artifact],
     activeSurfaceId: action.artifact.id,
     split: null,
     sidecar: null,
@@ -200,12 +224,20 @@ function closeArtifactToReturn(
 ): WorkbenchLayoutState {
   if (!isUserEntitled(action.entitlement)) return state;
   const artifact = state.surfaces.find(
-    (surface) => surface.id === action.artifactSurfaceId && surface.type === 'artifact',
+    (surface) => surface.id === action.artifactSurfaceId && hasArtifactReturn(surface),
   );
   if (!artifact) return state;
-  const openReturn = [...state.surfaces].reverse().find(isEntrustedWorkReturnSurface);
-  const sidecarReturn = state.sidecar && isEntrustedWorkReturnSurface(state.sidecar) ? state.sidecar : null;
-  const returnSurface = sidecarReturn ?? openReturn;
+  if (artifact.id !== state.activeSurfaceId)
+    return closeSurface(state, { ...action, type: 'close-surface', surfaceId: artifact.id });
+  const boundReturn = createEntrustedReturnFromRef(artifact.returnTargetRef);
+  const exactReturn = [state.sidecar, ...state.surfaces].find(
+    (surface) =>
+      surface &&
+      boundReturn &&
+      surface.resultTargetRef?.owner === boundReturn.resultTargetRef?.owner &&
+      surface.resultTargetRef?.key === boundReturn.resultTargetRef?.key,
+  );
+  const returnSurface = exactReturn ?? boundReturn;
   if (!returnSurface) return closeSurface(state, { ...action, type: 'close-surface', surfaceId: artifact.id });
   const surfaces = [...withoutObject(withoutSurface(state.surfaces, artifact.id), returnSurface), returnSurface];
   return {
@@ -213,7 +245,7 @@ function closeArtifactToReturn(
     surfaces,
     activeSurfaceId: returnSurface.id,
     split: null,
-    sidecar: sidecarReturn ? null : state.sidecar,
+    sidecar: state.sidecar && sameObject(state.sidecar, returnSurface) ? null : state.sidecar,
     recentlyClosed: [
       artifact,
       ...withoutObject(withoutSurface(state.recentlyClosed, returnSurface.id), artifact),
@@ -274,34 +306,6 @@ function closeSurface(
   };
 }
 
-function closeOtherSurfaces(
-  state: WorkbenchLayoutState,
-  action: Extract<WorkbenchAction, { type: 'close-other-surfaces' }>,
-): WorkbenchLayoutState {
-  if (!state.surfaces.some((surface) => surface.id === action.preserveSurfaceId)) return state;
-  const retained = state.surfaces.filter(
-    (surface) => surface.id === action.preserveSurfaceId || state.pinnedSurfaceIds.includes(surface.id),
-  );
-  if (retained.length === state.surfaces.length) return state;
-  const retainedIds = new Set(retained.map((surface) => surface.id));
-  const detached = state.surfaces.filter((surface) => !retainedIds.has(surface.id));
-  const recentWithoutDetached = detached.reduce(
-    (recent, surface) => withoutObject(recent, surface),
-    state.recentlyClosed,
-  );
-  const splitRemainsValid =
-    state.split !== null &&
-    retainedIds.has(state.split.primarySurfaceId) &&
-    retainedIds.has(state.split.secondarySurfaceId);
-  return {
-    ...state,
-    surfaces: retained,
-    activeSurfaceId: action.preserveSurfaceId,
-    split: splitRemainsValid ? state.split : null,
-    recentlyClosed: [...detached, ...recentWithoutDetached].slice(0, 5),
-  };
-}
-
 function restoreSurface(
   state: WorkbenchLayoutState,
   action: Extract<WorkbenchAction, { type: 'restore-surface' }>,
@@ -357,23 +361,49 @@ function reduceUserAction(state: WorkbenchLayoutState, action: WorkbenchAction):
       recentlyClosed: [state.sidecar, ...withoutSurface(state.recentlyClosed, state.sidecar.id)].slice(0, 5),
     };
   }
-  if (action.type === 'close-surface') return closeSurface(state, action);
-  if (action.type === 'close-other-surfaces') return closeOtherSurfaces(state, action);
+  if (action.type === 'close-surface') {
+    const closing = state.surfaces.find((surface) => surface.id === action.surfaceId);
+    return closing && hasArtifactReturn(closing)
+      ? closeArtifactToReturn(state, {
+          type: 'close-artifact-to-return',
+          artifactSurfaceId: closing.id,
+          entitlement: action.entitlement,
+        })
+      : closeSurface(state, action);
+  }
+  if (action.type === 'close-other-surfaces') return detachUnpinnedSurfaces(state, action.preserveSurfaceId);
+  if (action.type === 'close-all-unpinned') return detachUnpinnedSurfaces(state);
   if (action.type === 'collapse-split') return { ...state, split: null };
   if (action.type === 'restore-surface') return restoreSurface(state, action);
   return state;
 }
 
-export function reduceWorkbench(state: WorkbenchLayoutState, action: WorkbenchAction): WorkbenchLayoutState {
+function reduceWorkbenchAction(state: WorkbenchLayoutState, action: WorkbenchAction): WorkbenchLayoutState {
   if (action.type === 'dismiss-activity') {
     return { ...state, activity: state.activity.filter((item) => item.id !== action.activityId) };
   }
+  if (action.type === 'open-preview-surface') {
+    return isUserEntitled(action.entitlement)
+      ? openPreviewSurface(retainPreviewSlot(state), action.surface, focusSurfaceInSplit)
+      : recordBackgroundActivity(state, action.surface);
+  }
+  if (action.type === 'promote-preview-surface') {
+    return isUserEntitled(action.entitlement) && state.previewSurfaceId === action.surfaceId
+      ? { ...state, previewSurfaceId: null }
+      : state;
+  }
   if (action.type === 'open-surface') return openSurface(state, action);
   if (action.type === 'refresh-surface') return refreshSurface(state, action.surface);
+  if (action.type === 'resolve-content-surface')
+    return resolveContentSurfaceIdentity(state, action.sourceSurfaceId, action.surface);
   if (action.type === 'open-artifact-with-return') return openArtifactWithReturn(state, action);
   if (action.type === 'close-artifact-to-return') return closeArtifactToReturn(state, action);
   if (!isUserEntitled(action.entitlement)) return state;
   return reduceUserAction(state, action);
+}
+
+export function reduceWorkbench(state: WorkbenchLayoutState, action: WorkbenchAction): WorkbenchLayoutState {
+  return retainRecentVisits(state, retainPreviewSlot(reduceWorkbenchAction(state, action)), action);
 }
 
 export function projectWorkbench(state: WorkbenchLayoutState, width: number): WorkbenchProjection {

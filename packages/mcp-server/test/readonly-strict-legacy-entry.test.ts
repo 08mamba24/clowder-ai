@@ -10,14 +10,15 @@ import {
 } from '../src/server-toolsets.js';
 
 /**
- * F317 P1 regression: the legacy all-in-one entry (dist/index.js →
+ * Strict-readonly regression: the legacy all-in-one entry (dist/index.js →
  * registerFullToolset) must keep CAT_CAFE_READONLY=true strict even when
  * CAT_CAFE_AGENT_KEY_* vars leak in from the parent environment.
  *
- * Evidence: the L1 gate probe observed exactly READONLY ∪ AGENT_KEY (66 tools)
- * under CAT_CAFE_READONLY=true because the probe env carried agent-key vars —
- * the union is by design, but only for explicit opt-in (antigravity), never
- * for incidental env inheritance (third-party MCP mounts like qodercn).
+ * Evidence: the L1 gate probe observed the canonical READONLY ∪ AGENT_KEY
+ * projection under CAT_CAFE_READONLY=true because the probe env carried
+ * agent-key vars. The exact set is derived from the home registry below; the
+ * union is allowed only for explicit opt-in (antigravity), never for incidental
+ * env inheritance (third-party MCP mounts).
  */
 function registeredNames(env?: ToolsetEnv): Set<string> {
   const server = new McpServer({ name: 'readonly-legacy-entry-test', version: '0.0.1' });
@@ -32,7 +33,7 @@ function limbNames(env?: ToolsetEnv): string[] {
   return buildLimbTools(env).map((tool) => tool.name);
 }
 
-describe('registerFullToolset — F317 P1 strict readonly (legacy dist/index.js entry)', () => {
+describe('registerFullToolset — strict readonly (legacy dist/index.js entry)', () => {
   it('default env: full surface registered', () => {
     const names = registeredNames({});
     assert.ok(names.size > 100, `expected full registry, got ${names.size}`);

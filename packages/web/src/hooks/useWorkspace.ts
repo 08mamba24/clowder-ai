@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
-import { API_URL, apiFetch } from '@/utils/api-client';
+import { apiFetch } from '@/utils/api-client';
+import { hasPendingWorkspaceFileLink } from '@/utils/pending-workspace-file-link';
 import { buildWorktreeAliasMap, resolveListedWorktreeId, type WorktreeAliasMap } from '@/utils/worktree-id-alias';
+import { useWorkspaceFileChange } from './useWorkspaceFileChange';
 import { useWorkspaceSearch } from './useWorkspaceSearch';
 
 export type { SearchResult } from './useWorkspaceSearch';
@@ -11,9 +13,15 @@ export type { SearchResult } from './useWorkspaceSearch';
 export interface WorktreeEntry {
   id: string;
   canonicalId?: string | null;
+  rootIdentity?: string;
   root: string;
   branch: string;
   head: string;
+  resolvedRoot?: string;
+  rootEpoch?: number;
+  removable?: boolean;
+  connectionEpoch?: number;
+  legacyAliases?: readonly string[];
 }
 
 export interface TreeNode {
@@ -66,7 +74,10 @@ function reconcileDiscoveredWorktree(
   const aliases = buildWorktreeAliasMap(entries);
   setAliases(aliases, projectPath);
 
-  const currentId = useChatStore.getState().workspaceWorktreeId;
+  const state = useChatStore.getState();
+  const currentId = state.workspaceWorktreeId;
+  // Keep the content owner's namespace on every read, including after a remount or inventory change.
+  if (currentId?.startsWith('f063_root_v1_')) return;
   const listedId = resolveListedWorktreeId(entries, currentId, aliases);
   if (listedId) {
     if (listedId !== currentId) normalizeWorktreeId(listedId);
@@ -76,16 +87,30 @@ function reconcileDiscoveredWorktree(
   const normalizedProjectPath = projectPath.replace(/[\\/]+$/, '');
   const projectWorktree = entries.find((entry) => entry.root.replace(/[\\/]+$/, '') === normalizedProjectPath);
   const discoveredId = projectWorktree?.id ?? entries[0]?.id ?? null;
-  if (discoveredId !== currentId) setWorktreeId(discoveredId);
+  if (discoveredId !== currentId) {
+    // Initial discovery supplies the root for a just-clicked link; it is not a user root switch.
+    if (currentId === null && hasPendingWorkspaceFileLink(state)) normalizeWorktreeId(discoveredId);
+    else setWorktreeId(discoveredId);
+  }
 }
 
-export function useWorkspace() {
+export function useWorkspace({
+  loadContent = true,
+  projectPath: threadProjectPath,
+}: {
+  loadContent?: boolean;
+  /** Null waits for the route thread's project; undefined keeps the classic store projection. */
+  projectPath?: string | null;
+} = {}) {
   const worktreeId = useChatStore((s) => s.workspaceWorktreeId);
   const openFilePath = useChatStore((s) => s.workspaceOpenFilePath);
   const setWorktreeId = useChatStore((s) => s.setWorkspaceWorktreeId);
   const normalizeWorktreeId = useChatStore((s) => s.normalizeWorkspaceWorktreeId);
   const setWorktreeAliases = useChatStore((s) => s.setWorkspaceWorktreeAliases);
-  const projectPath = useChatStore((s) => s.currentProjectPath);
+  const storedProjectPath = useChatStore((s) => s.currentProjectPath);
+  const projectPath = threadProjectPath === undefined ? storedProjectPath : threadProjectPath;
+  const projectPathRef = useRef(projectPath);
+  projectPathRef.current = projectPath;
 
   const [worktrees, setWorktrees] = useState<WorktreeEntry[]>([]);
   const [worktreesProjectPath, setWorktreesProjectPath] = useState<string | null>(null);
@@ -103,31 +128,33 @@ export function useWorkspace() {
     search,
     reset: resetSearch,
   } = useWorkspaceSearch(worktreeId);
-  const projectKey = projectPath || 'default';
-  const worktreesReadyForProject = worktreesProjectPath === projectKey;
+  const projectKey = projectPath === null ? null : projectPath || 'default';
+  const worktreesReadyForProject = projectKey !== null && worktreesProjectPath === projectKey;
   const currentWorktrees = worktreesReadyForProject ? worktrees : [];
 
   // Fetch worktrees — re-fetches when project changes
   const fetchWorktrees = useCallback(async () => {
     const requestSeq = ++worktreeRequestSeq.current;
+    const isCurrentRequest = () => requestSeq === worktreeRequestSeq.current && projectPathRef.current === projectPath;
     setWorktreesLoading(true);
     setWorktreesError(null);
+    if (projectPath === null) return;
     try {
       const newList = await discoverWorktrees(projectPath);
-      if (requestSeq !== worktreeRequestSeq.current) return;
+      if (!isCurrentRequest()) return;
 
       setWorktrees(newList);
       setWorktreesProjectPath(projectKey);
       // The ordinary flow is discovery + choice, never filesystem-path entry.
       reconcileDiscoveredWorktree(newList, projectPath, setWorktreeAliases, normalizeWorktreeId, setWorktreeId);
     } catch {
-      if (requestSeq === worktreeRequestSeq.current) {
+      if (isCurrentRequest()) {
         setWorktrees([]);
         setWorktreesProjectPath(projectKey);
         setWorktreesError('暂时没能读取工作区');
       }
     } finally {
-      if (requestSeq === worktreeRequestSeq.current) {
+      if (isCurrentRequest()) {
         setWorktreesLoading(false);
       }
     }
@@ -163,8 +190,8 @@ export function useWorkspace() {
   );
 
   useEffect(() => {
-    if (worktreeId) fetchTree();
-  }, [worktreeId, fetchTree]);
+    if (loadContent && worktreeId) fetchTree();
+  }, [loadContent, worktreeId, fetchTree]);
 
   // Lazy-load subtree for a directory at max depth (children === undefined)
   const fetchSubtree = useCallback(
@@ -212,86 +239,23 @@ export function useWorkspace() {
 
   // Load file when openFilePath changes
   useEffect(() => {
-    if (openFilePath) fetchFile(openFilePath);
+    if (!loadContent) return;
+    if (openFilePath) void fetchFile(openFilePath);
     else setFile(null);
-  }, [openFilePath, fetchFile]);
+  }, [loadContent, openFilePath, fetchFile]);
 
-  // File-change watcher: auto-reload when file is modified externally
-  const [pendingExternalSha, setPendingExternalSha] = useState<string | null>(null);
-  const editDirtyRef = useRef(false);
-  const fileShaRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    fileShaRef.current = file?.sha256 ?? null;
-  }, [file?.sha256]);
-
-  const setEditDirty = useCallback(
-    (dirty: boolean) => {
-      editDirtyRef.current = dirty;
-      if (!dirty && pendingExternalSha) {
-        setPendingExternalSha(null);
-        if (openFilePath) fetchFile(openFilePath);
-      }
-    },
-    [pendingExternalSha, openFilePath, fetchFile],
-  );
-
-  const applyExternalChange = useCallback(() => {
-    setPendingExternalSha(null);
-    if (openFilePath) fetchFile(openFilePath);
-  }, [openFilePath, fetchFile]);
-
-  const dismissExternalChange = useCallback(() => {
-    setPendingExternalSha(null);
-  }, []);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional reset on file switch
-  useEffect(() => {
-    setPendingExternalSha(null);
-  }, [openFilePath]);
-
-  useEffect(() => {
-    if (!worktreeId || !openFilePath) return;
-    let cancelled = false;
-    let cleanup: (() => void) | null = null;
-
-    import('socket.io-client').then(({ io }) => {
-      if (cancelled) return;
-      const apiUrl = new URL(API_URL);
-      const socket = io(`${apiUrl.protocol}//${apiUrl.host}`, {
-        transports: ['websocket'],
-        forceNew: true,
-      });
-
-      socket.on('connect', () => {
-        socket.emit('workspace:watch-file', {
-          worktreeId,
-          path: openFilePath,
-          sha256: fileShaRef.current,
-        });
-      });
-
-      socket.on('workspace:file-changed', (data: { worktreeId: string; path: string; sha256: string }) => {
-        if (data.path !== openFilePath || data.worktreeId !== worktreeId) return;
-        if (data.sha256 === fileShaRef.current) return;
-        if (editDirtyRef.current) {
-          setPendingExternalSha(data.sha256);
-        } else {
-          fetchFile(openFilePath);
-        }
-      });
-
-      cleanup = () => {
-        socket.emit('workspace:unwatch-file');
-        socket.disconnect();
-      };
-    });
-
-    return () => {
-      cancelled = true;
-      cleanup?.();
-    };
-  }, [worktreeId, openFilePath, fetchFile]);
+  const {
+    pendingExternalSha,
+    onDirtyChange: setEditDirty,
+    applyExternalChange,
+    dismissExternalChange,
+  } = useWorkspaceFileChange({
+    enabled: loadContent,
+    worktreeId,
+    path: openFilePath,
+    currentSha: file?.sha256 ?? null,
+    onReload: fetchFile,
+  });
 
   // Reveal file in system file manager (Finder/Explorer)
   const revealInFinder = useCallback(

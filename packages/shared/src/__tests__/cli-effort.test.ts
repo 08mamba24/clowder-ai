@@ -9,7 +9,7 @@ import {
 } from '../cli-effort.js';
 
 describe('CLI effort capabilities', () => {
-  it('exposes max and ultra for GPT-5.6 and GPT-6 Sol OpenAI models only', () => {
+  it('exposes the effort tiers supported by each OpenAI model', () => {
     expect(getCliEffortOptionsForProvider('openai', 'gpt-5.6-sol')).toEqual([
       'low',
       'medium',
@@ -34,9 +34,8 @@ describe('CLI effort capabilities', () => {
       'max',
       'ultra',
     ]);
-    // codex-cli 0.156.1 model/list (2026-09-23): gpt-6-sol reports all six
-    // efforts; luna stops at max, so it stays on the provider base until onboarded.
-    expect(getCliEffortOptionsForProvider('openai', 'gpt-6-sol')).toEqual([
+    expect(getCliEffortOptionsForProvider('openai', 'gpt-5.6-luna')).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(getCliEffortOptionsForProvider('openai', 'gpt-6-astra')).toEqual([
       'low',
       'medium',
       'high',
@@ -52,27 +51,23 @@ describe('CLI effort capabilities', () => {
       'max',
       'ultra',
     ]);
-    expect(getCliEffortOptionsForProvider('openai', 'gpt-6-sol-long')).toEqual([
-      'low',
-      'medium',
-      'high',
-      'xhigh',
-      'max',
-      'ultra',
-    ]);
-    expect(getCliEffortOptionsForProvider('openai', 'gpt-6-luna')).toEqual(['low', 'medium', 'high', 'xhigh']);
-    expect(getCliEffortOptionsForProvider('openai', 'gpt-6-pro')).toEqual(['low', 'medium', 'high', 'xhigh']);
+    expect(getCliEffortOptionsForProvider('openai', 'gpt-6-luna')).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
     expect(getCliEffortOptionsForProvider('openai', 'gpt-5.5')).toEqual(['low', 'medium', 'high', 'xhigh']);
+    expect(getCliEffortOptionsForProvider('openai', 'gpt-5.6-unknown')).toEqual(['low', 'medium', 'high', 'xhigh']);
+    expect(getCliEffortOptionsForProvider('openai', 'gpt-6-unknown')).toEqual(['low', 'medium', 'high', 'xhigh']);
     expect(getCliEffortOptionsForProvider('openai')).toEqual(['low', 'medium', 'high', 'xhigh']);
   });
 
   it('keeps maintained preset validation model-aware while preserving native member values', () => {
     expect(isValidCliEffortForProvider('openai', 'ultra', 'gpt-5.6-sol')).toBe(true);
     expect(isValidCliEffortForProvider('openai', 'max', 'gpt-5.6-sol')).toBe(true);
-    expect(isValidCliEffortForProvider('openai', 'ultra', 'gpt-5.5')).toBe(false);
+    expect(isValidCliEffortForProvider('openai', 'max', 'gpt-5.6-luna')).toBe(true);
+    expect(isValidCliEffortForProvider('openai', 'ultra', 'gpt-5.6-luna')).toBe(false);
+    expect(isValidCliEffortForProvider('openai', 'max', 'gpt-6-astra')).toBe(true);
     expect(isValidCliEffortForProvider('openai', 'ultra', 'gpt-6-sol')).toBe(true);
-    expect(isValidCliEffortForProvider('openai', 'max', 'gpt-6-sol')).toBe(true);
+    expect(isValidCliEffortForProvider('openai', 'max', 'gpt-6-luna')).toBe(true);
     expect(isValidCliEffortForProvider('openai', 'ultra', 'gpt-6-luna')).toBe(false);
+    expect(isValidCliEffortForProvider('openai', 'ultra', 'gpt-5.5')).toBe(false);
     expect(isValidCliEffortForProvider('openai', 'turbo-native', 'gpt-5.6-sol')).toBe(false);
     expect(normalizeCliEffortForProvider('openai', ' turbo-native ', 'gpt-5.5')).toBe('turbo-native');
     expect(normalizeCliEffortForProvider('google', 'turbo-native', 'gemini-3.1-pro')).toBeNull();
@@ -122,16 +117,6 @@ describe('CLI effort capabilities', () => {
       effective: 'max',
       source: 'thread_override',
       compatibility: 'compatible',
-    });
-    expect(resolveCliEffortOverride('openai', 'gpt-6-sol', 'xhigh', 'ultra')).toEqual({
-      effective: 'ultra',
-      source: 'thread_override',
-      compatibility: 'compatible',
-    });
-    expect(resolveCliEffortOverride('openai', 'gpt-6-luna', 'xhigh', 'ultra')).toEqual({
-      effective: 'xhigh',
-      source: 'inherited',
-      compatibility: 'incompatible',
     });
   });
 

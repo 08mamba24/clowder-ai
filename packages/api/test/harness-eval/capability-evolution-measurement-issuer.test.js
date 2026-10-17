@@ -11,6 +11,10 @@ import { parse, stringify } from 'yaml';
 import {
   bindManifestToSourceArtifact,
   fileSourceStore,
+  keepProofInsufficient,
+  MICRODUCK_OWNER_FEATURE_ID,
+  MICRODUCK_OWNER_STATE_REF,
+  MICRODUCK_PROGRAM_ID,
   PROGRAM_ID,
   program,
   SOURCE_REF,
@@ -25,7 +29,7 @@ async function git(repoRoot, ...args) {
   return (await exec('git', ['-C', repoRoot, ...args], { maxBuffer: 16 * 1024 * 1024 })).stdout.trim();
 }
 
-async function commitGitBackedSource(repoRoot, manifest, remoteRoot) {
+async function commitGitBackedSource(repoRoot, manifest, remoteRoot, manifestRef = SOURCE_REF) {
   if (remoteRoot) await exec('git', ['init', '--bare', remoteRoot]);
   await exec('git', ['init', '-b', 'main', repoRoot]);
   await git(repoRoot, 'config', 'user.name', 'F267 Test');
@@ -39,8 +43,8 @@ async function commitGitBackedSource(repoRoot, manifest, remoteRoot) {
   await git(repoRoot, 'commit', '-m', 'test: commit source-owner input');
   const sourceRevision = await git(repoRoot, 'rev-parse', 'HEAD');
   bindManifestToSourceArtifact(manifest, { sourceRevision, ref: sourceRef, bytes: sourceBytes });
-  await writeYaml(repoRoot, SOURCE_REF, manifest);
-  await git(repoRoot, 'add', '--', SOURCE_REF);
+  await writeYaml(repoRoot, manifestRef, manifest);
+  await git(repoRoot, 'add', '--', manifestRef);
   await git(repoRoot, 'commit', '-m', 'test: commit source-owner manifest');
   if (remoteRoot) await git(repoRoot, 'push', '-u', 'origin', 'main');
   return git(repoRoot, 'rev-parse', 'HEAD');
@@ -126,6 +130,44 @@ describe('F267 capability-evolution measurement issuer', () => {
         'independent_promotion_holdout_missing',
       ],
     });
+    assert.equal(publications, 0);
+  });
+
+  it('fails closed before publication when an active Program omits its explicit value owner', async () => {
+    const { createCapabilityEvolutionMeasurementIssuer } = await loadIssuer();
+    const manifest = await validSourceManifest();
+    const projection = program();
+    delete projection.program.valueOwnerRef;
+    let publications = 0;
+    const issuer = createCapabilityEvolutionMeasurementIssuer({
+      repoRoot: '/definitely/not/a/repository',
+      sourceStore: {
+        readOnMain: async () => ({
+          status: 'ok',
+          bytes: Buffer.from(stringify(manifest)),
+          manifestRevision: 'f'.repeat(40),
+        }),
+        verifySourceRevision: async () => ({ status: 'verified' }),
+      },
+      programReader: { get: async () => projection },
+      gitPublisher: {
+        publishOnIsolatedWorktree: async () => {
+          publications += 1;
+          throw new Error('must not publish');
+        },
+      },
+    });
+
+    const result = await issuer.issue({
+      programId: PROGRAM_ID,
+      ownerUserId: 'operator',
+      catId: 'codex-sol',
+      clientMessageId: 'issue-without-value-owner',
+    });
+
+    assert.equal(result.status, 'insufficient');
+    assert.equal(result.reason, 'source_owner_manifest_invalid');
+    assert.match(result.detail, /value owner missing/);
     assert.equal(publications, 0);
   });
 
@@ -233,6 +275,172 @@ describe('F267 capability-evolution measurement issuer', () => {
           evidenceProofRef: result.evidenceProofRef,
         }),
         { status: 'insufficient', reason: 'proof_source_mismatch' },
+      );
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      await rm(remoteRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes and reopens a proof chain for the exact external microduck owner', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'f267-capability-issuer-microduck-'));
+    const remoteRoot = await mkdtemp(join(tmpdir(), 'f267-capability-issuer-microduck-remote-'));
+    try {
+      const sourceOptions = {
+        programId: MICRODUCK_PROGRAM_ID,
+        ownerFeatureId: MICRODUCK_OWNER_FEATURE_ID,
+        ownerStateRef: MICRODUCK_OWNER_STATE_REF,
+        domainOwnerStateRef: MICRODUCK_OWNER_STATE_REF,
+        sequence: 2,
+      };
+      const manifest = await validSourceManifest(sourceOptions);
+      const sourceArtifactRef = `docs/harness-feedback/measurement-sources/capability-evolution/${manifest.sourceId}.yaml`;
+      const manifestRevision = await commitGitBackedSource(repoRoot, manifest, remoteRoot, sourceArtifactRef);
+      const { createCapabilityEvolutionMeasurementIssuer } = await loadIssuer();
+      const issuer = createCapabilityEvolutionMeasurementIssuer({
+        repoRoot,
+        sourceStore: fileSourceStore(repoRoot, { status: 'verified' }, manifestRevision),
+        programReader: { get: async () => program(sourceOptions) },
+        gitPublisher: {
+          publishOnIsolatedWorktree: async (options) => {
+            assert.equal(options.sourceBase, manifestRevision);
+            await options.stage(repoRoot);
+            return { commitSha: '2'.repeat(40), prUrl: 'https://github.test/cat-cafe/pull/microduck' };
+          },
+        },
+      });
+
+      const issued = await issuer.issue({
+        programId: MICRODUCK_PROGRAM_ID,
+        ownerUserId: 'operator',
+        catId: 'codex-sol',
+        clientMessageId: 'microduck-owner-measurement-source',
+      });
+
+      assert.equal(issued.status, 'published', JSON.stringify(issued));
+      assert.deepEqual(issued.sourceRef, {
+        ownerFeatureId: MICRODUCK_OWNER_FEATURE_ID,
+        ownerStateRef: 'capability-evolution-measurement-source:evolution-program-5073988075254b6eac9a0de0e3a27125',
+      });
+      assert.equal(issued.proofStatus, 'verified');
+      const record = parse(
+        await readFile(
+          join(repoRoot, `docs/harness-feedback/decision-proofs/records/${manifest.decisionProof.proofId}.yaml`),
+          'utf8',
+        ),
+      );
+      assert.equal(record.sourceAttestations[0].ownerFeatureId, MICRODUCK_OWNER_FEATURE_ID);
+      assert.equal(record.sourceAttestations[0].artifactRef, sourceArtifactRef);
+      assert.equal(record.candidate.evidenceRole.proof.ownerFeatureId, MICRODUCK_OWNER_FEATURE_ID);
+      assert.equal(record.candidate.consumerConsumption.receipt.ownerFeatureId, 'F311');
+      assert.equal(record.candidate.promotionHoldout.proof.ownerFeatureId, MICRODUCK_OWNER_FEATURE_ID);
+      const domainOwnerRole = parse(
+        await readFile(
+          join(repoRoot, `docs/harness-feedback/measurement-roles/${manifest.decisionProof.proofId}/domain_owner.yaml`),
+          'utf8',
+        ),
+      );
+      assert.deepEqual(domainOwnerRole.occupantRef, {
+        ownerFeatureId: MICRODUCK_OWNER_FEATURE_ID,
+        ownerStateRef: MICRODUCK_OWNER_STATE_REF,
+      });
+      assert.equal(domainOwnerRole.source.ownerFeatureId, MICRODUCK_OWNER_FEATURE_ID);
+      const consumerRole = parse(
+        await readFile(
+          join(repoRoot, `docs/harness-feedback/measurement-roles/${manifest.decisionProof.proofId}/consumer.yaml`),
+          'utf8',
+        ),
+      );
+      assert.deepEqual(consumerRole.occupantRef, { ownerFeatureId: 'F311', ownerStateRef: 'user:operator' });
+      const { createFileMeasurementDecisionProofResolver } = await import(
+        '../../dist/infrastructure/harness-eval/measurement/measurement-decision-proof-resolver.js'
+      );
+      const reopened = await createFileMeasurementDecisionProofResolver({ repoRoot }).resolve({
+        ownerUserId: 'operator',
+        evidenceProofRef: issued.evidenceProofRef,
+      });
+      assert.equal(reopened.status, 'resolved', JSON.stringify(reopened));
+      assert.equal(reopened.proof.status, 'verified');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      await rm(remoteRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves an atomic Program constitution binding from trusted-main publication artifacts', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'f267-capability-binding-'));
+    const remoteRoot = await mkdtemp(join(tmpdir(), 'f267-capability-binding-remote-'));
+    try {
+      const manifest = await validSourceManifest();
+      keepProofInsufficient(manifest);
+      const manifestRevision = await commitGitBackedSource(repoRoot, manifest, remoteRoot);
+      const { createCapabilityEvolutionMeasurementIssuer } = await loadIssuer();
+      const issued = await createCapabilityEvolutionMeasurementIssuer({
+        repoRoot,
+        sourceStore: fileSourceStore(repoRoot, { status: 'verified' }, manifestRevision),
+        programReader: { get: async () => program() },
+        gitPublisher: {
+          publishOnIsolatedWorktree: async (options) => {
+            const stage = await options.stage(repoRoot);
+            await git(repoRoot, 'add', '--', 'docs/harness-feedback');
+            await git(repoRoot, 'commit', '-m', stage.commitMessage);
+            await git(repoRoot, 'push', 'origin', 'main');
+            return { commitSha: await git(repoRoot, 'rev-parse', 'HEAD'), prUrl: 'https://github.test/pull/binding' };
+          },
+        },
+      }).issue({
+        programId: PROGRAM_ID,
+        ownerUserId: 'operator',
+        catId: 'codex-sol',
+        clientMessageId: 'owner-source-message-binding',
+      });
+      assert.equal(issued.status, 'published', JSON.stringify(issued));
+      assert.equal(issued.proofStatus, 'insufficient');
+      const committedManifest = parse(await git(repoRoot, 'show', `${manifestRevision}:${SOURCE_REF}`));
+      assert.equal(
+        committedManifest.decisionProof.subject.certificateSha256,
+        sha256(Buffer.from(stringify(committedManifest.certificate))),
+      );
+      assert.equal(
+        committedManifest.decisionProof.subject.resultSha256,
+        sha256(Buffer.from(stringify(committedManifest.result))),
+      );
+
+      const { createGitCapabilityEvolutionMeasurementBindingResolver } = await import(
+        '../../dist/infrastructure/harness-eval/measurement/capability-evolution/capability-evolution-measurement-binding-resolver.js'
+      );
+      const resolver = createGitCapabilityEvolutionMeasurementBindingResolver({ repoRoot });
+      const resolution = await resolver.resolveMeasurementConstitution({
+        ownerUserId: 'operator',
+        program: program(),
+        evidenceProofRef: issued.evidenceProofRef,
+      });
+      assert.deepEqual(resolution, {
+        status: 'ready',
+        binding: {
+          sourceRef: issued.sourceRef,
+          measurementCertificateRef: issued.certificateRef,
+          measurementRoleRefs: issued.measurementRoleRefs,
+        },
+      });
+
+      const consumerPath = join(
+        repoRoot,
+        `docs/harness-feedback/measurement-roles/${manifest.decisionProof.proofId}/consumer.yaml`,
+      );
+      const consumer = parse(await readFile(consumerPath, 'utf8'));
+      consumer.occupantRef = { ownerFeatureId: 'F311', ownerStateRef: 'user:someone-else' };
+      await writeFile(consumerPath, stringify(consumer));
+      await git(repoRoot, 'add', '--', consumerPath);
+      await git(repoRoot, 'commit', '-m', 'test: drift published consumer role');
+      await git(repoRoot, 'push', 'origin', 'main');
+      assert.deepEqual(
+        await resolver.resolveMeasurementConstitution({
+          ownerUserId: 'operator',
+          program: program(),
+          evidenceProofRef: issued.evidenceProofRef,
+        }),
+        { status: 'unavailable', reason: 'published role artifact mismatch: consumer' },
       );
     } finally {
       await rm(repoRoot, { recursive: true, force: true });

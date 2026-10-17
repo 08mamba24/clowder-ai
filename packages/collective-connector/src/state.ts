@@ -1,10 +1,30 @@
 import {
   type CollectiveEventEnvelope,
+  type CollectiveLocation,
+  type CollectiveSourceIdentity,
   type CollectiveTarget,
   collectiveEventEnvelopeSchema,
+  collectiveLocationSchema,
+  collectiveSourceIdentitySchema,
   collectiveTargetSchema,
 } from '@cat-cafe/shared';
 import { z } from 'zod';
+import { type HostRouteConfig, hostRouteConfigSchema } from './host-route-state.js';
+import { type ConnectorRouteReceipt, routeReceiptSchema } from './route-receipt.js';
+import { type ConnectorWorkCustody, workCustodySchema } from './work-custody-state.js';
+import { workResultTextPublicationSchema } from './work-result-publication.js';
+
+export {
+  type AgentHostRoute,
+  type ChannelHostRoute,
+  type DesiredParticipation,
+  type HostRouteConfig,
+  type ObservedCatEligibility,
+  type SetHostRouteInput,
+  type StandingInterest,
+  setHostRouteInputSchema,
+} from './host-route-state.js';
+export type { ConnectorRouteReceipt } from './route-receipt.js';
 
 export const verifiedAgentSchema = z
   .object({
@@ -15,32 +35,52 @@ export const verifiedAgentSchema = z
   })
   .strict();
 
+const boundedOwnerRef = z.string().trim().min(1).max(1_000);
+
+export const workResultArtifactSnapshotSchema = z
+  .object({
+    taskRef: boundedOwnerRef.regex(/^task:work:.+/),
+    taskRevision: z.number().int().positive(),
+    artifactRef: boundedOwnerRef,
+    artifactRevision: boundedOwnerRef,
+    completenessRef: boundedOwnerRef,
+    previewRef: boundedOwnerRef,
+    openInWorkspaceRef: boundedOwnerRef,
+    textPublication: workResultTextPublicationSchema.optional(),
+  })
+  .strict();
+
 const outboxItemSchema = z
   .object({
     outboxId: z.string(),
     clientEventId: z.string(),
-    agent: verifiedAgentSchema,
+    agent: verifiedAgentSchema.optional(),
     target: collectiveTargetSchema,
+    location: collectiveLocationSchema.optional(),
+    replySource: collectiveSourceIdentitySchema.optional(),
+    operationKey: z.string().max(1000).optional(),
+    sourceRef: z.string().max(300).optional(),
+    workPurpose: z
+      .object({
+        taskRef: z.string().startsWith('task:work:'),
+        admittedRevision: z.number().int().positive(),
+        resultRevision: z.number().int().positive(),
+        workId: z.string().startsWith('work_').optional(),
+        executionRevision: z.number().int().positive().optional(),
+        assignmentEventId: z.string().startsWith('evt_').optional(),
+        progressKey: z.string().length(64).optional(),
+        artifactSnapshot: workResultArtifactSnapshotSchema.optional(),
+      })
+      .strict()
+      .optional(),
     replyToEventId: z.string().optional(),
     body: z.string(),
-    status: z.enum(['queued', 'sending', 'accepted']),
+    status: z.enum(['prepared', 'queued', 'sending', 'accepted', 'blocked']),
+    failureCode: z.string().optional(),
     acceptedEventId: z.string().optional(),
     createdAt: z.string().datetime(),
   })
   .strict();
-
-const routeReceiptSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('local_echo') }).strict(),
-  z.object({ kind: z.literal('not_local') }).strict(),
-  z
-    .object({
-      kind: z.literal('thread_message'),
-      threadId: z.string(),
-      messageId: z.string(),
-      catId: z.string().optional(),
-    })
-    .strict(),
-]);
 
 const routeFailureSchema = z
   .object({
@@ -78,31 +118,6 @@ const inboxItemSchema = z
     }
   });
 
-const agentHostRouteSchema = z
-  .object({
-    catId: z.string().trim().min(1).max(120),
-    threadId: z.string().trim().min(1).max(240),
-  })
-  .strict();
-
-export const hostRouteConfigSchema = z
-  .object({
-    connectionId: z.string(),
-    localOwnerUserId: z.string().trim().min(1).max(240),
-    defaultIngressThreadId: z.string().trim().min(1).max(240),
-    humanNotificationThreadId: z.string().trim().min(1).max(240),
-    agentRoutes: z.record(z.string(), agentHostRouteSchema),
-    revision: z.number().int().positive(),
-    updatedAt: z.string().datetime(),
-  })
-  .strict();
-
-export const setHostRouteInputSchema = hostRouteConfigSchema.omit({
-  connectionId: true,
-  revision: true,
-  updatedAt: true,
-});
-
 const connectionSchema = z
   .object({
     serviceUrl: z.string().url(),
@@ -114,12 +129,14 @@ const connectionSchema = z
     authorizedHumanId: z.string().optional(),
     endpointLabel: z.string(),
     endpointCredential: z.string().optional(),
+    initialExcludedCatIds: z.array(z.string().trim().min(1).max(120)).max(100).optional(),
     authorityStatus: z.enum(['connected', 'revoking', 'revoked']),
-    revocationReason: z.enum(['owner_revoked', 'identity_rebind_required']).optional(),
+    revocationReason: z.enum(['owner_revoked', 'identity_rebind_required', 'service_revoked']).optional(),
     liveStatus: z.enum(['online', 'offline']),
     lastAckedSequence: z.number().int().nonnegative(),
     pendingAckSequence: z.number().int().positive().optional(),
     outbox: z.array(outboxItemSchema),
+    workCustody: workCustodySchema.optional(),
     inbox: z.array(inboxItemSchema),
     createdAt: z.string().datetime(),
     lastError: z.string().optional(),
@@ -188,15 +205,31 @@ const connectorStateV1Schema = z
   .strict();
 
 export type VerifiedAgent = z.infer<typeof verifiedAgentSchema>;
+export type WorkResultArtifactSnapshot = z.infer<typeof workResultArtifactSnapshotSchema>;
 
 export interface ConnectorOutboxItem {
   readonly outboxId: string;
   readonly clientEventId: string;
-  readonly agent: VerifiedAgent;
+  readonly agent?: VerifiedAgent;
   readonly target: CollectiveTarget;
+  readonly location?: CollectiveLocation;
+  readonly replySource?: CollectiveSourceIdentity;
+  readonly operationKey?: string;
+  readonly sourceRef?: string;
+  readonly workPurpose?: {
+    readonly taskRef: string;
+    readonly admittedRevision: number;
+    readonly resultRevision: number;
+    readonly workId?: string;
+    readonly executionRevision?: number;
+    readonly assignmentEventId?: string;
+    readonly progressKey?: string;
+    readonly artifactSnapshot?: WorkResultArtifactSnapshot;
+  };
   readonly replyToEventId?: string;
   readonly body: string;
-  readonly status: 'queued' | 'sending' | 'accepted';
+  readonly status: 'prepared' | 'queued' | 'sending' | 'accepted' | 'blocked';
+  readonly failureCode?: string;
   readonly acceptedEventId?: string;
   readonly createdAt: string;
 }
@@ -212,37 +245,10 @@ export interface ConnectorInboxItem {
   readonly routeFailure?: ConnectorRouteFailure;
 }
 
-export type ConnectorRouteReceipt =
-  | { readonly kind: 'local_echo' }
-  | { readonly kind: 'not_local' }
-  | {
-      readonly kind: 'thread_message';
-      readonly threadId: string;
-      readonly messageId: string;
-      readonly catId?: string;
-    };
-
 export interface ConnectorRouteFailure {
   readonly code: string;
   readonly message: string;
 }
-
-export interface AgentHostRoute {
-  readonly catId: string;
-  readonly threadId: string;
-}
-
-export interface HostRouteConfig {
-  readonly connectionId: string;
-  readonly localOwnerUserId: string;
-  readonly defaultIngressThreadId: string;
-  readonly humanNotificationThreadId: string;
-  readonly agentRoutes: Readonly<Record<string, AgentHostRoute>>;
-  readonly revision: number;
-  readonly updatedAt: string;
-}
-
-export type SetHostRouteInput = Omit<HostRouteConfig, 'connectionId' | 'revision' | 'updatedAt'>;
 
 export interface ConnectorConnectionState {
   readonly serviceUrl: string;
@@ -254,12 +260,14 @@ export interface ConnectorConnectionState {
   readonly authorizedHumanId?: string;
   readonly endpointLabel: string;
   readonly endpointCredential?: string;
+  readonly initialExcludedCatIds?: string[];
   readonly authorityStatus: 'connected' | 'revoking' | 'revoked';
-  readonly revocationReason?: 'owner_revoked' | 'identity_rebind_required';
+  readonly revocationReason?: 'owner_revoked' | 'identity_rebind_required' | 'service_revoked';
   readonly liveStatus: 'online' | 'offline';
   readonly lastAckedSequence: number;
   readonly pendingAckSequence?: number;
   readonly outbox: ConnectorOutboxItem[];
+  readonly workCustody?: ConnectorWorkCustody;
   readonly inbox: ConnectorInboxItem[];
   readonly createdAt: string;
   readonly lastError?: string;

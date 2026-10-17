@@ -32,7 +32,7 @@ export const MCP_SCHEMA_DELIVERY_FALLBACK_REASONS = [
 
 export const requestGenerationSchemaDeliverySchema = z
   .object({
-    profileClass: z.enum(['full', 'readonly', 'agent-key', 'desktop']),
+    profileClass: z.enum(['full', 'readonly', 'agent-key', 'desktop', 'collective-participation']),
     profileId: nonEmpty.max(80),
     requestedMode: z.enum(MCP_SCHEMA_DELIVERY_REQUESTED_MODES),
     hostVersion: nonEmpty.max(160).optional(),
@@ -73,10 +73,12 @@ export const REQUEST_GENERATION_RETRY_REASONS = [
   'cli_timeout',
   'malformed_toolcall',
   'missing_session',
+  'native_binding_changed',
   'transient_cli_exit',
   'provider_continuation',
   'provider_busy',
   'provider_fallback',
+  'provider_capacity_recovery',
 ] as const;
 
 export const requestGenerationSourceRefSchema = z
@@ -143,7 +145,7 @@ export const sanitizedRequestedRuntimeConfigSchema = z
     reasoningEffort: nonEmpty.optional(),
     serviceTier: nonEmpty.optional(),
     contextWindowTokens: z.number().int().positive().optional(),
-    toolExecutionPolicy: z.enum(['read_only', 'workspace_write']).optional(),
+    toolExecutionPolicy: z.enum(['read_only', 'workspace_write', 'collective_participation']).optional(),
   })
   .strict();
 

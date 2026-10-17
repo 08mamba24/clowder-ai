@@ -20,6 +20,7 @@ describe('schedule mutation principal routing', () => {
   let proposalStore;
   let runner;
   let published;
+  let invokeCalls;
   let previousOwnerUserId;
 
   beforeEach(async () => {
@@ -29,10 +30,16 @@ describe('schedule mutation principal routing', () => {
     applyMigrations(db);
     dynamicStore = new DynamicTaskStore(db);
     proposalStore = new ScheduleMutationProposalStore(db);
+    invokeCalls = [];
     runner = new TaskRunnerV2({
       logger: { info() {}, error() {} },
       ledger: new RunLedger(db),
       dynamicTaskStore: dynamicStore,
+      // Admission is the wake, so the envelope the deliver seam receives IS the observable fact.
+      deliver: async (input) => {
+        invokeCalls.push(input);
+        return 'message-owner-timer';
+      },
     });
     published = [];
     const approvalIngress = {
@@ -231,6 +238,42 @@ describe('schedule mutation principal routing', () => {
       proposalStore.listAudit(OWNER).map((entry) => entry.action),
       ['create', 'pause', 'resume'],
     );
+  });
+
+  it('restores private hold owner authentication provenance when a paused timer is resumed', async () => {
+    const fireAt = Date.now() + 60_000;
+    dynamicStore.insert(
+      {
+        id: 'hold-ball-resume-owner',
+        templateId: 'reminder',
+        trigger: { type: 'once', fireAt },
+        params: {
+          message: 'resume owner work',
+          targetCatId: 'codex-sol',
+          triggerUserId: OWNER,
+          holdLifecycle: { mode: 'timer', status: 'active' },
+        },
+        display: { label: 'Owner timer', category: 'system' },
+        deliveryThreadId: 'thread-owner',
+        enabled: false,
+        createdBy: 'hold-ball:codex-sol',
+        createdAt: new Date(fireAt - 10_000).toISOString(),
+      },
+      'strict',
+    );
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/schedule/tasks/hold-ball-resume-owner',
+      headers: { 'x-test-principal': 'cat' },
+      payload: { enabled: true },
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+    await runner.triggerNow('hold-ball-resume-owner', { manual: true });
+    assert.equal(invokeCalls[0].sourceCategory, 'scheduled');
+    assert.equal(invokeCalls[0].ownerAuthProvenance, 'strict', 'a resumed hold keeps its private owner proof');
+    assert.equal(invokeCalls[0].priority, 'urgent');
   });
 
   function createReminder(principal, trigger = { type: 'once', fireAt: Date.now() + 60_000 }) {

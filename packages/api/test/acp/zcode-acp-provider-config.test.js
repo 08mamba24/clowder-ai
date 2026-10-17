@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { it } from 'node:test';
 
-const providers = await import('../../dist/domains/cats/services/agents/providers/acp/zcode-acp-provider-paths.js');
+const providers = await import(
+  '../../dist/domains/cats/services/agents/providers/acp/zcode/zcode-acp-provider-paths.js'
+);
 
 it('gives concurrent native processes private provider configs without changing session storage', () => {
   const home = mkdtempSync(join(tmpdir(), 'zcode-provider-'));
@@ -47,7 +49,7 @@ it('reclaims a dead process input while preserving a live process input and hist
   writeFileSync(state, 'persistent history');
   const live = providers.createZcodeProviderConfig(home, { ZCODE_MODEL: 'GLM-5.3' });
   const moduleUrl = new URL(
-    '../../dist/domains/cats/services/agents/providers/acp/zcode-acp-provider-paths.js',
+    '../../dist/domains/cats/services/agents/providers/acp/zcode/zcode-acp-provider-paths.js',
     import.meta.url,
   ).href;
   const orphan = spawnSync(

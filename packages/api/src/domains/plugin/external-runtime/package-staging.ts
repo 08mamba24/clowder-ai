@@ -4,13 +4,17 @@ import { constants, createReadStream, type Stats } from 'node:fs';
 import { copyFile, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { isAbsolute, posix, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { validateManifest } from '@clowder-ai/plugin-contract';
+import { type PluginManifest } from '@clowder-ai/plugin-contract';
+import { parse as parseYaml } from 'yaml';
+import { validateHostPluginManifest as validateManifest } from '../desktop-window-runtime/presentation-manifest.js';
+import { recordPackageStagingPhase } from './package-staging-diagnostics.js';
+import { sealStaticPackage } from './static-package-seal.js';
 import type { VerifiedPluginPackage } from './types.js';
 import { ExternalPluginRuntimeError } from './types.js';
 
 const execFileAsync = promisify(execFile);
 const PACKAGE_ARCHIVE_FILENAME = 'package.tgz';
-const PACKAGE_MANIFEST_FILENAME = 'manifest.json';
+const PACKAGE_MANIFEST_FILENAMES = ['plugin.yaml', 'manifest.json'] as const;
 const NPM_ARCHIVE_ROOT = 'package';
 
 interface FileFingerprint {
@@ -24,11 +28,18 @@ interface PackageTreeSnapshot {
   readonly files: readonly FileFingerprint[];
 }
 
+export type PluginManifestValidationResult =
+  | { readonly valid: true; readonly manifest: PluginManifest }
+  | { readonly valid: false; readonly errors: readonly unknown[] };
+
+export type PluginManifestValidator = (value: unknown) => PluginManifestValidationResult;
+
 interface StageVerifiedPackageArchiveInput {
   readonly artifactRoot: string;
   readonly packagesRoot: string;
   readonly packageDigest: string;
   readonly tarBin: string;
+  readonly validateManifest?: PluginManifestValidator;
 }
 
 function runtimeError(message: string, cause?: unknown): ExternalPluginRuntimeError {
@@ -53,7 +64,7 @@ async function verifyArchiveDigest(archivePath: string, packageDigest: string): 
   }
 }
 
-function validateArchiveMembers(output: string): void {
+function archiveMembers(output: string): string[] {
   const members = output.split('\n').filter(Boolean);
   if (members.length === 0) throw runtimeError('staged package archive is empty');
   for (const member of members) {
@@ -69,6 +80,20 @@ function validateArchiveMembers(output: string): void {
     ) {
       throw runtimeError('staged package archive must contain only the canonical package/ tree');
     }
+  }
+  return members;
+}
+
+function validateArchiveMemberTypes(output: string, expectedMembers: number): void {
+  const types = output
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => line.trimStart().charAt(0));
+  if (types.length !== expectedMembers) {
+    throw runtimeError('staged package archive metadata is ambiguous');
+  }
+  if (types.some((type) => type !== '-' && type !== 'd')) {
+    throw runtimeError('staged package archive contains a link or special entry');
   }
 }
 
@@ -121,6 +146,29 @@ function sameSnapshot(left: PackageTreeSnapshot, right: PackageTreeSnapshot): bo
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+async function readPackageManifest(rootDir: string): Promise<unknown> {
+  for (const filename of PACKAGE_MANIFEST_FILENAMES) {
+    const manifestPath = resolve(rootDir, filename);
+    let manifestStat: Stats;
+    try {
+      manifestStat = await lstat(manifestPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
+      throw runtimeError('installed package manifest must be a regular file');
+    }
+    const text = await readFile(manifestPath, 'utf8');
+    try {
+      return filename.endsWith('.json') ? JSON.parse(text) : parseYaml(text);
+    } catch (error) {
+      throw runtimeError('installed package manifest is not valid YAML/JSON', error);
+    }
+  }
+  throw runtimeError('installed package has no canonical plugin.yaml or legacy manifest.json');
+}
+
 export async function stageVerifiedPackageArchive(
   input: StageVerifiedPackageArchiveInput,
 ): Promise<VerifiedPluginPackage> {
@@ -145,47 +193,66 @@ export async function stageVerifiedPackageArchive(
     released = true;
     await rm(stageParent, { recursive: true, force: true });
   };
+  let phase = 'copy';
   try {
     await copyFile(archivePath, sealedArchivePath, constants.COPYFILE_EXCL);
+    phase = 'digest';
     await verifyArchiveDigest(sealedArchivePath, input.packageDigest);
-    const list = await execFileAsync(input.tarBin, ['-tzf', sealedArchivePath], {
-      env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    validateArchiveMembers(list.stdout);
+    phase = 'list';
+    const archiveEnvironment = { PATH: process.env.PATH ?? '/usr/bin:/bin', LC_ALL: 'C' };
+    const [list, verboseList] = await Promise.all([
+      // GNU tar interprets the colon in Windows drive paths as host:file.
+      // Resolve the sealed archive within this Host-owned staging directory.
+      execFileAsync(input.tarBin, ['-tzf', PACKAGE_ARCHIVE_FILENAME], {
+        cwd: stageParent,
+        env: archiveEnvironment,
+        maxBuffer: 8 * 1024 * 1024,
+      }),
+      execFileAsync(input.tarBin, ['-tvzf', PACKAGE_ARCHIVE_FILENAME], {
+        cwd: stageParent,
+        env: archiveEnvironment,
+        maxBuffer: 8 * 1024 * 1024,
+      }),
+    ]);
+    const members = archiveMembers(list.stdout);
+    validateArchiveMemberTypes(verboseList.stdout, members.length);
+    phase = 'extract';
     await mkdir(partialRoot);
-    await execFileAsync(input.tarBin, ['-xzf', sealedArchivePath, '-C', partialRoot, '--strip-components=1'], {
+    await execFileAsync(input.tarBin, ['-xzf', PACKAGE_ARCHIVE_FILENAME, '-C', 'partial', '--strip-components=1'], {
+      cwd: stageParent,
       env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
       maxBuffer: 8 * 1024 * 1024,
     });
+    phase = 'tree';
     const admittedSnapshot = await snapshotPackageTree(partialRoot);
     await rename(partialRoot, readyRoot);
 
-    const manifestPath = resolve(readyRoot, PACKAGE_MANIFEST_FILENAME);
-    const manifestStat = await lstat(manifestPath);
-    if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
-      throw runtimeError('installed package manifest must be a regular file');
-    }
-    let value: unknown;
-    try {
-      value = JSON.parse(await readFile(manifestPath, 'utf8'));
-    } catch (error) {
-      throw runtimeError('installed package manifest is not JSON', error);
-    }
-    const validation = validateManifest(value);
+    phase = 'manifest';
+    const value = await readPackageManifest(readyRoot);
+    const validation = (input.validateManifest ?? validateManifest)(value);
     if (!validation.valid) throw runtimeError('installed package manifest fails the published contract');
 
     const verifyIntegrity = async () => {
+      if (released) throw runtimeError('staged package was released');
       const current = await snapshotPackageTree(readyRoot);
-      if (!sameSnapshot(admittedSnapshot, current)) {
+      if (released || !sameSnapshot(admittedSnapshot, current)) {
         throw runtimeError('launchable package bytes changed after verified staging');
       }
     };
-    await verifyIntegrity();
-    return { rootDir: readyRoot, manifest: validation.manifest, verifyIntegrity, release };
+    phase = 'seal';
+    const verifySeal = await sealStaticPackage(readyRoot, verifyIntegrity);
+    const verifyStaticIntegrity = async () => {
+      if (released) throw runtimeError('staged package was released');
+      await verifySeal();
+      if (released) throw runtimeError('staged package was released');
+    };
+    return { rootDir: readyRoot, manifest: validation.manifest, verifyIntegrity, verifyStaticIntegrity, release };
   } catch (error) {
     await release().catch(() => undefined);
-    if (error instanceof ExternalPluginRuntimeError) throw error;
-    throw runtimeError(`installed package ${input.packageDigest} could not be verified and staged`, error);
+    const failure =
+      error instanceof ExternalPluginRuntimeError
+        ? error
+        : runtimeError(`installed package ${input.packageDigest} could not be verified and staged`, error);
+    throw recordPackageStagingPhase(failure, phase);
   }
 }

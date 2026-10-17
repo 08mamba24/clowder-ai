@@ -320,6 +320,17 @@ describe('RedisThreadStore', { skip: redisIsolationSkipReason(REDIS_URL) }, () =
     assert.ok(ids.indexOf(t2.id) < ids.indexOf(t1.id));
   });
 
+  it('list() rejects a wrong-type participants key paired with a missing thread detail', async () => {
+    await store.get('default');
+    await store.create('alice', 'Visible thread');
+    const orphanId = 'thread_batch_orphan';
+    await redis.zadd(userListKey('alice'), '1', orphanId);
+    await redis.set(threadParticipantsKey(orphanId), 'not a set');
+
+    await assert.rejects(store.list('alice'), /WRONGTYPE/);
+    assert.deepEqual(await redis.hgetall(threadDetailKey(orphanId)), {});
+  });
+
   it('list() self-heals when the user thread index zset is fully lost', async () => {
     const userId = 'self-heal-full';
     const first = await store.create(userId, 'Thread A');
@@ -415,6 +426,14 @@ describe('RedisThreadStore', { skip: redisIsolationSkipReason(REDIS_URL) }, () =
 
     const updated = await store.get(thread.id);
     assert.equal(updated?.backlogItemId, 'blg_123');
+  });
+
+  it('updateBacklogItem() can replace and clear the persisted reverse backlog reference', async () => {
+    const thread = await store.create('user1', 'Post-create feature');
+    await store.updateBacklogItem(thread.id, 'blg_123');
+    assert.equal((await store.get(thread.id))?.backlogItemId, 'blg_123');
+    await store.updateBacklogItem(thread.id, null);
+    assert.equal((await store.get(thread.id))?.backlogItemId, undefined);
   });
 
   it('set/consumeMentionRoutingFeedback() returns one-shot payload', async () => {

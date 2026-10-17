@@ -1,24 +1,20 @@
-import { execFile } from 'node:child_process';
 import { createReadStream, createWriteStream, type ReadStream, type WriteStream } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { withCatCliProcessContext } from '../../utils/cli-process-environment.js';
 import { isParseError, parseNDJSON } from '../../utils/ndjson-parser.js';
+import { excerptSanitizedStderr } from '../../utils/sanitize-cli-stderr.js';
 import type {
   AgentCarrierSession,
   AgentCarrierSessionFactory,
   AgentCarrierSessionOptions,
 } from '../cats/services/types.js';
 import type { AgentPaneRegistry } from './agent-pane-registry.js';
+import { execTmuxClientCommand as execAsync } from './tmux-client-command.js';
+import { paneUtility, shellEscape, writeAgentCommandFile } from './tmux-command-file.js';
 import type { TmuxGateway } from './tmux-gateway.js';
-
-const execAsync = promisify(execFile);
-
-function shellEscape(value: string): string {
-  return `'${value.replace(/'/g, "'\"'\"'")}'`;
-}
+import type { PaneLease } from './tmux-pane-lease.js';
 
 export function buildTmuxAgentCarrierPaneCommand(
   options: AgentCarrierSessionOptions,
@@ -30,14 +26,8 @@ export function buildTmuxAgentCarrierPaneCommand(
   const command = [shellEscape(options.command), ...options.args.map(shellEscape)].join(' ');
   return (
     `set -o pipefail; ${command} < ${shellEscape(inputPath)} 2> ${shellEscape(stderrPath)} ` +
-    `| tee ${shellEscape(outputPath)}; echo "EXIT:$?" > ${shellEscape(exitPath)}`
+    `| ${shellEscape(paneUtility('tee'))} ${shellEscape(outputPath)}; echo "EXIT:$?" > ${shellEscape(exitPath)}`
   );
-}
-
-function assertSafeEnvKey(key: string): void {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-    throw new Error(`Invalid tmux carrier environment key: ${JSON.stringify(key)}`);
-  }
 }
 
 async function readExitCode(path: string): Promise<number | null> {
@@ -53,6 +43,11 @@ async function readExitCode(path: string): Promise<number | null> {
   return null;
 }
 
+export function buildTmuxAgentCarrierExitError(exitCode: number, stderr: string): Error {
+  const excerpt = excerptSanitizedStderr(stderr, { edge: 'tail', maxLength: 1_000 });
+  return new Error(`Codex app-server exited with code ${exitCode}${excerpt ? `: ${excerpt}` : ''}`);
+}
+
 class TmuxAgentCarrierSession implements AgentCarrierSession {
   private input: WriteStream | null = null;
   private output: ReadStream | null = null;
@@ -65,7 +60,7 @@ class TmuxAgentCarrierSession implements AgentCarrierSession {
     private readonly context: {
       worktreeId: string;
       userId: string;
-      paneId: string;
+      lease: PaneLease;
       inputPath: string;
       outputPath: string;
       stderrPath: string;
@@ -76,7 +71,7 @@ class TmuxAgentCarrierSession implements AgentCarrierSession {
     },
   ) {
     this.abortHandler = () => {
-      void this.context.tmuxGateway.killPane(this.context.worktreeId, this.context.paneId);
+      this.context.tmuxGateway.killAgentPane(this.context.lease);
       this.input?.destroy();
       this.output?.destroy();
     };
@@ -102,7 +97,7 @@ class TmuxAgentCarrierSession implements AgentCarrierSession {
       this.context.agentPaneRegistry?.markDone(this.options.invocationId, exitCode);
       if (exitCode !== null && exitCode !== 0 && !this.options.signal?.aborted) {
         const stderr = await readFile(this.context.stderrPath, 'utf8').catch(() => '');
-        throw new Error(`Codex app-server exited with code ${exitCode}${stderr ? `: ${stderr.slice(-1000)}` : ''}`);
+        throw buildTmuxAgentCarrierExitError(exitCode, stderr);
       }
     } catch (error) {
       this.context.agentPaneRegistry?.markCrashed(
@@ -137,7 +132,7 @@ class TmuxAgentCarrierSession implements AgentCarrierSession {
   }
 
   async terminate(): Promise<void> {
-    await this.context.tmuxGateway.killPane(this.context.worktreeId, this.context.paneId).catch(() => {});
+    this.context.tmuxGateway.killAgentPane(this.context.lease);
     this.input?.destroy();
     this.output?.destroy();
   }
@@ -162,36 +157,42 @@ export function createTmuxAgentCarrierSessionFactory(input: {
   userId: string;
   tmuxGateway: TmuxGateway;
   agentPaneRegistry?: AgentPaneRegistry;
+  /** F322: owning cat, recorded into the pane registry so done/crashed panes keep identity. */
+  catId?: string;
 }): AgentCarrierSessionFactory {
   return async (options) => {
+    options.signal?.throwIfAborted();
     const tmpDir = await mkdtemp(join(tmpdir(), `catcafe-agent-duplex-${options.invocationId}-`));
     const inputPath = join(tmpDir, 'input.fifo');
     const outputPath = join(tmpDir, 'output.fifo');
     const stderrPath = join(tmpDir, 'stderr.log');
     const exitPath = join(tmpDir, 'exit-code');
+    let lease: PaneLease | undefined;
     try {
-      await Promise.all([execAsync('mkfifo', [inputPath]), execAsync('mkfifo', [outputPath])]);
-      await input.tmuxGateway.ensureServer(input.worktreeId);
-      const paneId = await input.tmuxGateway.createAgentPane(input.worktreeId, {
-        ...(options.cwd ? { cwd: options.cwd } : {}),
-      });
-      for (const [key, value] of Object.entries(withCatCliProcessContext(options.env ?? {}))) {
-        if (value !== null) {
-          assertSafeEnvKey(key);
-          await input.tmuxGateway.execInPane(input.worktreeId, paneId, `export ${key}=${shellEscape(value)}`);
-        }
-      }
-      await input.tmuxGateway.execInPane(
-        input.worktreeId,
-        paneId,
+      await execAsync('mkfifo', [inputPath, outputPath], { signal: options.signal });
+      const command = await writeAgentCommandFile(
+        tmpDir,
+        { cwd: options.cwd, env: withCatCliProcessContext(options.env ?? {}) },
         buildTmuxAgentCarrierPaneCommand(options, inputPath, outputPath, stderrPath, exitPath),
       );
-      await input.tmuxGateway.setPaneReadOnly(input.worktreeId, paneId, true);
-      input.agentPaneRegistry?.register(options.invocationId, input.worktreeId, paneId, input.userId);
+      lease = await input.tmuxGateway.createAgentPaneLease(input.worktreeId, {
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+        signal: options.signal,
+        command,
+      });
+      options.signal?.throwIfAborted();
+      if (!input.tmuxGateway.setAgentPaneReadOnly(lease)) throw new Error('Agent pane was replaced during setup');
+      input.agentPaneRegistry?.register(
+        options.invocationId,
+        input.worktreeId,
+        lease.paneId,
+        input.userId,
+        input.catId,
+      );
       const session = new TmuxAgentCarrierSession(options, {
         worktreeId: input.worktreeId,
         userId: input.userId,
-        paneId,
+        lease,
         inputPath,
         outputPath,
         stderrPath,
@@ -203,6 +204,7 @@ export function createTmuxAgentCarrierSessionFactory(input: {
       session.start();
       return session;
     } catch (error) {
+      if (lease) input.tmuxGateway.killAgentPane(lease);
       await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       throw error;
     }

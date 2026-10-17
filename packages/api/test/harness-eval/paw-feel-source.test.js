@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
 import { MessageStore } from '../../dist/domains/cats/services/stores/ports/MessageStore.js';
+import { getTimelineOrderTime } from '../../dist/domains/cats/services/stores/visibility.js';
 import {
   collectPawFeelMessages,
   inspectDeclaredPawFeelMessage,
   inspectPawFeelMessage,
 } from '../../dist/infrastructure/harness-eval/friction/paw-feel-source.js';
+import { canonicalTestMessageInput } from '../helpers/message-from-fixtures.js';
 
 const T0 = 1_700_000_000_000;
 
@@ -129,17 +131,36 @@ describe('F278 canonical paw-feel source', () => {
     assert.equal(declared.candidates[0].signalId, legacy.candidates[1].signalId);
   });
 
+  it('preserves every legacy timeline fallback when inspecting a narrow source projection', () => {
+    const cases = [
+      message({ deliveryStatus: 'delivered', deliveredAt: T0 + 100 }),
+      message({ deliveryStatus: 'queued', deliveredAt: T0 + 100 }),
+      message({ catId: 'system', deliveryStatus: 'queued', deliveredAt: T0 + 100 }),
+      message({ userId: 'system', deliveryStatus: 'queued', deliveredAt: T0 + 100 }),
+      message({ origin: 'briefing', deliveryStatus: 'queued', deliveredAt: T0 + 100 }),
+      message({ deliveryStatus: 'delivered', deliveredAt: T0 + 100, timelineOrderAt: T0 + 200 }),
+    ];
+
+    for (const source of cases) {
+      const inspected = inspectPawFeelMessage(source);
+      assert.equal(inspected.kind, 'canonical');
+      assert.equal(inspected.candidates[0].occurredAt, new Date(getTimelineOrderTime(source)).toISOString());
+    }
+  });
+
   it('paginates the complete timeline window without duplicate messages', async () => {
     const store = new MessageStore();
     for (let index = 0; index < 5; index += 1) {
-      store.append({
-        userId: 'u1',
-        catId: 'codex-sol',
-        content: `[爪感差: tool${index}+现象${index}]`,
-        mentions: [],
-        timestamp: T0 + index,
-        threadId: 'thread-source',
-      });
+      store.append(
+        canonicalTestMessageInput({
+          userId: 'u1',
+          catId: 'codex-sol',
+          content: `[爪感差: tool${index}+现象${index}]`,
+          mentions: [],
+          timestamp: T0 + index,
+          threadId: 'thread-source',
+        }),
+      );
     }
 
     const messages = await collectPawFeelMessages(store, T0, T0 + 100, { pageSize: 2 });

@@ -6,6 +6,8 @@ export interface RoutingDispatchPreflightInput {
   ownerId: string;
   targetCatIds: readonly string[];
   intent?: 'review' | 'architecture';
+  /** Set only by trusted dispatch ingress, never by agent/user payload. */
+  ownerRequestedAttempt?: boolean;
 }
 
 export interface RoutingDispatchPreflightPort {
@@ -88,6 +90,7 @@ export class RuntimeRoutingDispatchPreflight implements RoutingDispatchPreflight
         catalogRevision: catalog.catalogRevision,
         candidates: catalog.candidates,
         targetCatIds: input.targetCatIds,
+        ...(input.ownerRequestedAttempt ? { ownerRequestedAttempt: true } : {}),
         ...(input.intent ? { intent: input.intent } : {}),
       });
     } catch {
@@ -119,4 +122,11 @@ export function routingDispatchPreflightReceipt(decision: RoutingPreflightDecisi
     ...(decision.snapshotRef ? { snapshotRef: decision.snapshotRef } : {}),
     target,
   };
+}
+
+/** Only a rejection changes the requested delivery and belongs in chat. */
+export function isUserVisibleRoutingPreflightReceipt(
+  receipt: ReturnType<typeof routingDispatchPreflightReceipt>,
+): boolean {
+  return receipt.target.disposition === 'rejected';
 }

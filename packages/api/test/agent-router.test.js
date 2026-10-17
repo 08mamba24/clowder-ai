@@ -13,6 +13,9 @@ import { resolve } from 'node:path';
 import { after, describe, mock, test } from 'node:test';
 import { migrateRouterOpts } from './helpers/agent-registry-helpers.js';
 
+const previousDefaultCatId = process.env.DEFAULT_CAT_ID;
+process.env.DEFAULT_CAT_ID = 'opus';
+
 // Create mock dependencies for AgentRouter
 function createMockRegistry() {
   let counter = 0;
@@ -236,6 +239,81 @@ function createMockAgentService(catId, responseText = 'Hello from mock') {
 
 const tempProjectRoots = [];
 
+describe('F322 J3 retired chat-content issue detection', () => {
+  for (const entry of ['route', 'routeExecution']) {
+    for (const sample of [
+      { name: 'keyword', messages: ['@opus 不对，请检查', '@opus 还是不行，请继续检查'] },
+      { name: 'retry', messages: Array(3).fill('@opus 请把原消息定位功能接完') },
+    ]) {
+      test(`${entry} routes ${sample.name} messages without creating a problem card`, async () => {
+        const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+        const { InMemoryFrustrationIssueStore } = await import(
+          '../dist/domains/cats/services/stores/memory/InMemoryFrustrationIssueStore.js'
+        );
+        const { resetDedup } = await import('../dist/domains/cats/services/frustration/FrustrationDetector.js');
+        resetDedup();
+        const threadId = `j3-${entry}-${sample.name}`;
+        const messageStore = createMockMessageStore();
+        const issueStore = new InMemoryFrustrationIssueStore();
+        const create = mock.method(issueStore, 'create');
+        const service = createMockAgentService('opus');
+        const broadcastToRoom = mock.fn();
+        const router = new AgentRouter(
+          await migrateRouterOpts({
+            claudeService: service,
+            registry: createMockRegistry(),
+            messageStore,
+            threadStore: createMockThreadStore(),
+            frustrationIssueStore: issueStore,
+            socketManager: { broadcastToRoom },
+          }),
+        );
+        const inputs = entry === 'route' ? sample.messages.slice(0, -1) : sample.messages;
+        let source;
+        for (const [index, content] of inputs.entries())
+          source = messageStore.append({
+            userId: 'owner',
+            catId: null,
+            content,
+            mentions: ['opus'],
+            threadId,
+            timestamp: Date.now() + index,
+          });
+        const message = sample.messages.at(-1);
+        const { targetCats, intent } = await router.resolveTargetsAndIntent(message, threadId);
+        const stream =
+          entry === 'route'
+            ? router.route('owner', message, threadId)
+            : router.routeExecution('owner', message, threadId, source.id, targetCats, intent, {
+                ownerAuthProvenance: 'unknown',
+                humanDispositionInvocationOrigin: 'unknown',
+                onPromptMessagesExposed: async () => undefined,
+                frustrationAutoIssueEligible: true,
+              });
+        const output = [];
+        for await (const event of stream) output.push(event);
+        assert.equal(service.invoke.mock.callCount(), 1);
+        assert.ok(output.some((event) => event.type === 'text'));
+        assert.ok(output.some((event) => event.type === 'done'));
+        assert.equal(create.mock.callCount(), 0);
+        assert.deepEqual(await issueStore.listByThread(threadId), []);
+        assert.equal(
+          messageStore._rows.some((row) => row.source?.connector === 'frustration-auto-issue'),
+          false,
+        );
+        assert.equal(
+          broadcastToRoom.mock.calls.some(
+            (call) =>
+              call.arguments[1] === 'connector_message' &&
+              call.arguments[2]?.source?.connector === 'frustration-auto-issue',
+          ),
+          false,
+        );
+      });
+    }
+  }
+});
+
 function createAvailabilityConfigProject(availabilityOverrides = {}) {
   const projectRoot = mkdtempSync(resolve(tmpdir(), 'agent-router-availability-'));
   tempProjectRoots.push(projectRoot);
@@ -331,12 +409,108 @@ async function withAvailabilityConfig(availabilityOverrides, fn) {
 }
 
 after(() => {
+  if (previousDefaultCatId === undefined) delete process.env.DEFAULT_CAT_ID;
+  else process.env.DEFAULT_CAT_ID = previousDefaultCatId;
   for (const projectRoot of tempProjectRoots) {
     rmSync(projectRoot, { recursive: true, force: true });
   }
 });
 
 describe('AgentRouter', () => {
+  test('routeExecution preserves lifecycle and active-run callbacks through the strategy boundary', async () => {
+    const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+    const { MessageStore } = await import('../dist/domains/cats/services/stores/ports/MessageStore.js');
+    const lifecycleMessageStore = new MessageStore();
+    const lifecycleStarted = mock.fn(async (input) => {
+      const response = await lifecycleMessageStore.append({
+        from: { kind: 'agent', catId: input.catId },
+        userId: input.userId,
+        content: '',
+        mentions: [],
+        origin: 'stream',
+        timestamp: input.startedAt,
+        threadId: input.threadId,
+        lifecycle: {
+          kind: 'response',
+          orderKey: `${input.startedAt}:${input.invocationId}`,
+          invocationId: input.invocationId,
+          targetId: input.catId,
+          inputEntryIds: ['entry-1'],
+          inputMessageIds: ['source-1'],
+          status: 'processing',
+          startedAt: input.startedAt,
+        },
+      });
+      return {
+        responseMessageId: response.id,
+        priorFrontierMessageId: null,
+        activeRun: {
+          threadId: input.threadId,
+          targetId: input.catId,
+          invocationId: input.invocationId,
+          responseMessageId: response.id,
+          inputEntryIds: ['entry-1'],
+          inputMessageIds: ['source-1'],
+          privateInputEntryIds: [],
+          startedAt: input.startedAt,
+        },
+      };
+    });
+    const activeRunReady = mock.fn();
+    const opusService = {
+      invoke: mock.fn(async function* (_prompt, options) {
+        options.activeRunDispatch?.register({
+          invocationId: options.invocationId,
+          capabilities: { append: true, steer: true },
+          handle: { threadId: 'callback-thread', turnId: 'provider-turn-1' },
+          dispatch: async () => ({
+            accepted: true,
+            handle: { threadId: 'callback-thread', turnId: 'provider-turn-1' },
+          }),
+        });
+        yield { type: 'done', catId: 'opus', invocationId: options.invocationId, timestamp: Date.now() };
+      }),
+    };
+    const router = new AgentRouter(
+      await migrateRouterOpts({
+        claudeService: opusService,
+        codexService: createMockAgentService('codex'),
+        geminiService: createMockAgentService('gemini'),
+        registry: createMockRegistry(),
+        messageStore: lifecycleMessageStore,
+        threadStore: createMockThreadStore({ 'callback-thread': ['opus'] }),
+      }),
+    );
+
+    const output = [];
+    for await (const message of router.routeExecution(
+      'user-1',
+      'source body',
+      'callback-thread',
+      'source-1',
+      ['opus'],
+      { intent: 'execute', promptTags: [] },
+      {
+        ownerAuthProvenance: 'strict',
+        humanDispositionInvocationOrigin: 'direct_owner',
+        parentInvocationId: 'parent-1',
+        onPromptMessagesExposed: async () => [],
+        onLifecycleInvocationStarted: lifecycleStarted,
+        onAgentClientActiveRunReady: activeRunReady,
+      },
+    )) {
+      output.push(message);
+    }
+
+    assert.equal(lifecycleStarted.mock.calls.length, 1);
+    assert.equal(activeRunReady.mock.calls.length, 1);
+    assert.equal(activeRunReady.mock.calls[0].arguments[0].catId, 'opus');
+    assert.equal(
+      output.some((message) => message.lifecycleResponseMessageId),
+      true,
+    );
+  });
+
   test('routingPolicy(review) avoids opus when default routing would pick opus', async () => {
     const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
 
@@ -1983,7 +2157,9 @@ describe('AgentRouter', () => {
 
     // User message + 2 cat responses = 3 appends
     assert.equal(appendedMessages.length, 3);
-    const appendedCatIds = appendedMessages.map((m) => m.catId).filter(Boolean);
+    const appendedCatIds = appendedMessages
+      .filter((message) => message.from?.kind === 'agent')
+      .map((message) => message.from.catId);
     assert.ok(appendedCatIds.includes('opus'), 'Opus response should be stored');
     assert.ok(appendedCatIds.includes('codex'), 'Codex response should be stored');
   });
@@ -2224,6 +2400,56 @@ describe('AgentRouter', () => {
 // ── F078: Smart Routing & Group Mentions ─────────────────────────────
 
 describe('F078: Default to last replier', () => {
+  test('canonical no-mention fallback binds the latest completed lifecycle responder before Queue admission', async () => {
+    const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+
+    const messageStore = createMockMessageStore();
+    messageStore.append({
+      from: { kind: 'cat', catId: 'codex' },
+      userId: 'user-1',
+      content: 'completed reply',
+      mentions: [],
+      timestamp: 1,
+      threadId: 't1',
+      lifecycle: {
+        kind: 'response',
+        status: 'completed',
+        sourceMessageId: 'source-1',
+        targetId: 'codex',
+        invocationId: 'invocation-1',
+      },
+    });
+    messageStore.append({
+      from: { kind: 'cat', catId: 'gemini' },
+      userId: 'user-1',
+      content: 'newer but still processing',
+      mentions: [],
+      timestamp: 2,
+      threadId: 't1',
+      lifecycle: {
+        kind: 'response',
+        status: 'processing',
+        sourceMessageId: 'source-2',
+        targetId: 'gemini',
+        invocationId: 'invocation-2',
+      },
+    });
+    const router = new AgentRouter(
+      await migrateRouterOpts({
+        claudeService: createMockAgentService('opus'),
+        codexService: createMockAgentService('codex'),
+        geminiService: createMockAgentService('gemini'),
+        registry: createMockRegistry(),
+        messageStore,
+      }),
+    );
+
+    assert.deepStrictEqual(await router.resolveConversationTargetsAtAdmission([], 't1'), ['codex']);
+    assert.deepStrictEqual(await router.resolveConversationTargetsAtAdmission([], 'thread-without-completed-replies'), [
+      'opus',
+    ]);
+  });
+
   test('no @mention routes to most recent replier only (not all participants)', async () => {
     const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
 
@@ -2628,6 +2854,24 @@ describe('F078: Group mentions', () => {
     assert.ok(!targetCats.includes('gemini'), '@allison should not broadcast to all cats');
   });
 
+  test('does not turn ordinary Chinese prose after a stray inline @ into one giant missing handle', async () => {
+    const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+    const router = new AgentRouter(
+      await migrateRouterOpts({
+        claudeService: createMockAgentService('opus'),
+        codexService: createMockAgentService('codex'),
+        geminiService: createMockAgentService('gemini'),
+        registry: createMockRegistry(),
+        messageStore: createMockMessageStore(),
+      }),
+    );
+
+    const result = await router.resolveTargetsAndIntent('你@一下缅因猫和狸花猫打个招呼我看看');
+
+    assert.deepEqual(result.routing_warnings, []);
+    assert.deepEqual(result.targetCats, ['opus'], 'ordinary prose keeps normal fallback routing');
+  });
+
   test('@threadsafe does NOT trigger @thread (token boundary)', async () => {
     const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
 
@@ -3007,6 +3251,157 @@ describe('#58: preferredCats candidate scope (not dispatch list)', () => {
     const { targetCats } = await router.resolveTargetsAndIntent('just a normal message', 't1');
     assert.equal(targetCats.length, 1, 'without #ideate, should still route to single cat');
   });
+
+  for (const strategy of ['serial', 'parallel']) {
+    test(`${strategy} reports a known unavailable member's cause and clears it after registry recovery`, async () => {
+      const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+      const { AgentRegistry } = await import('../dist/domains/cats/services/agents/registry/AgentRegistry.js');
+      const registry = new AgentRegistry();
+      const healthyService = createMockAgentService('codex');
+      registry.register('codex', healthyService);
+      registry.markUnavailable('opus', {
+        code: 'rejected-account-binding',
+        message: 'account "fixture" has a torn credential without account metadata; reconcile before use',
+      });
+      const messageStore = createMockMessageStore();
+      const router = new AgentRouter({
+        agentRegistry: registry,
+        registry: createMockRegistry(),
+        messageStore,
+        threadStore: createMockThreadStore(),
+      });
+      const message = `${strategy === 'parallel' ? '#ideate' : '#execute'} @opus @codex hello`;
+      const failures = [];
+      const done = [];
+      for await (const event of router.route('user-1', message, 'unavailable-test')) {
+        if (event.type === 'error') {
+          assert.equal(event.catId, 'opus');
+          failures.push(event.error ?? event.content);
+        }
+        if (event.type === 'done') done.push(event);
+      }
+      assert.match(failures.join('\n'), /opus.*rejected-account-binding.*torn credential without account metadata/);
+      assert.doesNotMatch(failures.join('\n'), /Unknown cat ID/);
+      assert.equal(registry.has('opus'), false, 'a diagnostic must not make a member routable');
+      assert.equal(healthyService.invoke.mock.callCount(), 1, 'unavailable members must not block healthy siblings');
+      assert.ok(
+        done.some((event) => event.catId === 'opus'),
+        'unavailable member must settle its stream',
+      );
+      assert.ok(
+        done.some((event) => event.isFinal),
+        'the batch must settle',
+      );
+      assert.ok(
+        messageStore
+          .getByThread('unavailable-test')
+          .some((row) => row.userId === 'system' && /rejected-account-binding.*torn credential/.test(row.content)),
+        'the cause must survive a page reload',
+      );
+
+      const fenceCalls = [];
+      const persistenceContext = { errors: [] };
+      const source = messageStore.append({
+        userId: 'user-1',
+        catId: null,
+        threadId: 'unavailable-fenced',
+        content: message,
+        mentions: ['opus', 'codex'],
+        timestamp: Date.now(),
+      });
+      const { targetCats, intent } = await router.resolveTargetsAndIntent(message, 'unavailable-fenced');
+      for await (const _event of router.routeExecution(
+        'user-1',
+        message,
+        'unavailable-fenced',
+        source.id,
+        targetCats,
+        intent,
+        {
+          ownerAuthProvenance: 'unknown',
+          humanDispositionInvocationOrigin: 'unknown',
+          onPromptMessagesExposed: async () => undefined,
+          persistenceContext,
+          beforeOutputCommit: async (catId) => {
+            fenceCalls.push(catId);
+            return catId !== 'opus';
+          },
+        },
+      )) {
+      }
+      assert.equal(fenceCalls.filter((catId) => catId === 'opus').length, 1);
+      assert.equal(persistenceContext.actionOutputCommitRejected, true);
+      assert.equal(healthyService.invoke.mock.callCount(), 2, 'rejected output fence must not block a healthy sibling');
+      assert.equal(
+        messageStore
+          .getByThread('unavailable-fenced')
+          .some((row) => row.userId === 'system' && /rejected-account-binding/.test(row.content)),
+        false,
+        'a retired generation must not persist its diagnostic',
+      );
+
+      registry.reset();
+      const recovered = createMockAgentService('opus');
+      registry.register('opus', recovered);
+      registry.register('codex', healthyService);
+      router.refreshFromRegistry(registry);
+      for await (const event of router.route('user-1', '@opus hello', 'unavailable-recovered')) {
+        assert.notEqual(event.type, 'error', 'recovery must clear the old registration diagnosis');
+      }
+      assert.equal(recovered.invoke.mock.callCount(), 1);
+    });
+
+    test(`${strategy} preserves ordinary provider errors when the output fence rejects`, async () => {
+      const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+      const { AgentRegistry } = await import('../dist/domains/cats/services/agents/registry/AgentRegistry.js');
+      const registry = new AgentRegistry();
+      const healthyService = createMockAgentService('codex');
+      registry.register('codex', healthyService);
+      registry.register('opus', {
+        invoke: mock.fn(async function* () {
+          yield { type: 'error', catId: 'opus', error: 'fixture provider failure', timestamp: Date.now() };
+          yield { type: 'done', catId: 'opus', timestamp: Date.now() };
+        }),
+      });
+      const messageStore = createMockMessageStore();
+      const router = new AgentRouter({
+        agentRegistry: registry,
+        registry: createMockRegistry(),
+        messageStore,
+        threadStore: createMockThreadStore(),
+      });
+      const threadId = 'provider-error-fenced';
+      const message = `${strategy === 'parallel' ? '#ideate' : '#execute'} @opus @codex hello`;
+      const source = messageStore.append({
+        userId: 'user-1',
+        catId: null,
+        threadId,
+        content: message,
+        mentions: ['opus', 'codex'],
+        timestamp: Date.now(),
+      });
+      const { targetCats, intent } = await router.resolveTargetsAndIntent(message, threadId);
+      const fenceCalls = [];
+      for await (const _event of router.routeExecution('user-1', message, threadId, source.id, targetCats, intent, {
+        ownerAuthProvenance: 'unknown',
+        humanDispositionInvocationOrigin: 'unknown',
+        onPromptMessagesExposed: async () => undefined,
+        beforeOutputCommit: async (catId) => {
+          fenceCalls.push(catId);
+          return catId !== 'opus';
+        },
+      })) {
+      }
+      assert.equal(fenceCalls.filter((catId) => catId === 'opus').length, 1);
+      assert.equal(healthyService.invoke.mock.callCount(), 1);
+      assert.ok(
+        messageStore
+          .getByThread(threadId)
+          .some((row) => row.userId === 'system' && row.content === 'Error: fixture provider failure'),
+        'registration diagnostics must not change ordinary provider error persistence',
+      );
+    });
+  }
 
   test('refreshFromRegistry updates routable service set after runtime catalog changes', async () => {
     const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
@@ -3868,3 +4263,46 @@ describe('F229: Concierge thread routing (duty-cat always takes priority)', () =
     assert.deepEqual(result.targetCats, ['opus'], 'concierge duty cat wins over prior user @mention fallback');
   });
 });
+
+for (const [mode, text, targets] of [
+  ['serial', '@opus ordinary message', ['opus']],
+  ['parallel', '@opus @codex ordinary message', ['opus', 'codex']],
+]) {
+  test(`${mode}: ordinary delivery does not query the signal library`, async () => {
+    const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+    const services = {
+      opus: createMockAgentService('opus', 'Opus response'),
+      codex: createMockAgentService('codex', 'Codex response'),
+      gemini: createMockAgentService('gemini', 'Gemini response'),
+    };
+    // Model a legacy injected dependency: normal delivery must not consult it,
+    // even if the library lookup would return content linked to this thread.
+    const lookup = mock.fn(async () => [
+      {
+        id: 'unrequested-article',
+        title: 'Unrequested article',
+        source: 'synthetic',
+        tier: 1,
+        contentSnippet: 'unrequested-library-content',
+      },
+    ]);
+    const router = new AgentRouter(
+      await migrateRouterOpts({
+        claudeService: services.opus,
+        codexService: services.codex,
+        geminiService: services.gemini,
+        registry: createMockRegistry(),
+        messageStore: createMockMessageStore(),
+        signalArticleLookup: lookup,
+      }),
+    );
+    const output = [];
+    for await (const message of router.route('user-1', text)) output.push(message);
+    for (const target of targets) {
+      assert.equal(services[target].invoke.mock.callCount(), 1);
+      assert.ok(output.some((message) => message.catId === target && message.type === 'done'));
+      assert.ok(!services[target].invoke.mock.calls[0].arguments[0].includes('unrequested-library-content'));
+    }
+    assert.equal(lookup.mock.callCount(), 0, 'normal delivery must perform no article lookup');
+  });
+}

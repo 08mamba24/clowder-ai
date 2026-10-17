@@ -2,36 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '@/stores/chat-types';
 import { isLinkedCloudBindingRecoveryNotice, projectCloudBindingRecovery } from '../cloud-binding-recovery';
 
-function source(state: 'failed' | 'queued' = 'failed'): ChatMessage {
+function source(): ChatMessage {
   return {
     id: 'source-1',
     type: 'user',
     content: '@gpt-pro hello',
     timestamp: 1,
-    extra: {
-      queueReceipt: {
-        version: 1,
-        entryId: 'entry-1',
-        targets: [
-          {
-            catId: 'gpt-pro',
-            state,
-            retryable: state === 'failed',
-            attempts: [
-              {
-                id: state === 'failed' ? 'attempt-failed' : 'attempt-retried',
-                targetCatId: 'gpt-pro',
-                sequence: 1,
-                state,
-                createdAt: 1,
-                updatedAt: 2,
-              },
-            ],
-          },
-        ],
-        reminderAttempts: [],
-      },
-    },
   };
 }
 
@@ -67,14 +43,70 @@ describe('cloud binding recovery projection', () => {
     const warning = notice();
     expect(projectCloudBindingRecovery(authored, [authored, warning])).toEqual({
       targetCatId: 'gpt-pro',
-      attemptId: 'attempt-failed',
+      attemptId: 'dispatch-1',
     });
     expect(isLinkedCloudBindingRecoveryNotice(warning, [authored, warning])).toBe(true);
   });
 
-  it('hides a stale recovery after the exact target advances beyond failed', () => {
-    const authored = source('queued');
-    expect(projectCloudBindingRecovery(authored, [authored, notice()])).toBeUndefined();
+  it('hides recovery after a fresh source exists for the exact failed dispatch', () => {
+    const authored = source();
+    const retried: ChatMessage = {
+      id: 'retry-source-1',
+      type: 'user',
+      content: authored.content,
+      timestamp: 3,
+      extra: {
+        cloudBridgeRetry: {
+          v: 1,
+          sourceMessageId: authored.id,
+          targetCatId: 'gpt-pro',
+          priorDispatchInvocationId: 'dispatch-1',
+        },
+      },
+    };
+    expect(projectCloudBindingRecovery(authored, [authored, notice(), retried])).toBeUndefined();
+  });
+
+  it.each([
+    'sent',
+    'unknown',
+    'failed',
+  ] as const)('projects a %s receipt only when it matches the failed dispatch', (receiptStatus) => {
+    const authored = source();
+    const outboundReceipt = {
+      v: 1 as const,
+      sourceMessageId: authored.id,
+      sourceSender: { kind: 'user' as const, id: 'owner' },
+      targetCatId: 'gpt-pro',
+      dispatchInvocationId: 'dispatch-old',
+      status: receiptStatus,
+      transport: 'host' as const,
+      hostMessageId: 'real-host-id',
+      idempotency: { keyKind: 'source_message_id' as const, disposition: 'fresh' as const },
+    };
+    const receiptNotice = notice({
+      id: 'receipt-2',
+      timestamp: 5,
+      source: {
+        connector: 'cloud-bridge-status',
+        label: '云端猫投递',
+        icon: '☁️',
+        meta: {
+          cloudBridgeOutboundReceipt: outboundReceipt,
+        },
+      },
+    });
+    const pendingProjection = { targetCatId: 'gpt-pro', attemptId: 'dispatch-1' };
+    expect(projectCloudBindingRecovery(authored, [authored, notice(), receiptNotice])).toEqual(pendingProjection);
+    outboundReceipt.dispatchInvocationId = 'dispatch-1';
+    expect(projectCloudBindingRecovery(authored, [authored, notice(), receiptNotice])?.deliveryStatus).toBe(
+      receiptStatus,
+    );
+    if (receiptStatus === 'failed') {
+      expect(projectCloudBindingRecovery(authored, [authored, notice(), receiptNotice])?.attemptId).toBeUndefined();
+      (receiptNotice.source!.meta!.cloudBridgeOutboundReceipt as { transport: string }).transport = 'none';
+      expect(projectCloudBindingRecovery(authored, [authored, notice(), receiptNotice])).toEqual(pendingProjection);
+    }
   });
 
   it('rejects forged or cross-source recovery metadata', () => {

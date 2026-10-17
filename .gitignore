@@ -21,6 +21,9 @@ docs/markers/
 docs/features/index.json
 build/
 .next/
+# Isolated browser outputs are rebuildable; worktree:finish preserves them in quarantine.
+/packages/web/.next-test-*/
+/packages/web/tsconfig.next-test-*.json
 
 # PWA generated service worker files
 packages/web/public/sw.js
@@ -233,3 +236,6 @@ packages/api/test/__b1_parent_a__/
 .claude/skills/thread-orchestration
 .codex-tmp-*
 .tmp/
+
+# Isolated artwork preview sessions; user-entered drafts and SQLite stay local.
+var/f309-artwork-preview/

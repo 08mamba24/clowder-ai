@@ -1,6 +1,6 @@
 ---
 name: tdd
-tips_exempt: internal shared-reference coordinate repair; no user-visible capability change
+tips_exempt: "Internal test-authoring correction: use the existing testing standard to select meaningful RED evidence; no new user-facing action."
 description: >
   Red-Green-Refactor for changes with behavior or regression risk.
   Use when: adding observable behavior, fixing a bug, or changing logic not already covered by a precise executable check.
@@ -16,6 +16,11 @@ triggers:
 # TDD（测试驱动开发）
 
 行为变化先看到一个可信的失败信号，再写最少实现把它变绿。**RED 是证据状态，不是必须新建测试文件。**
+
+先按测试规范判断这条测试是否值得存在：保护的真实失败、最低足够层级、
+已有覆盖缺口与新增成本。生产实现的本地副本、行数或任意 class 拼写也能红绿，却不能据此证明产品正确。
+静态政策交现有 lint；真实行为调用生产入口。删除恒真/装饰断言或机械清理不强造新 RED，
+替代有价值的保护则用代表性真实故障确认检测力；不为每条退役测试再加永久测试。
 
 ## 风险入口
 
@@ -55,7 +60,7 @@ REFACTOR 消除重复、改善命名，不新增行为；复跑同一保护集
 
 ## Bug Fix 模式
 
-未知根因、跨层或非确定性 bug 先加载 `debugging`，用[诊断胶囊](../.cat-cafe-shared-refs/bug-diagnosis-capsule.md)定位；确定根因后再选择 RED：
+未知根因、跨层或非确定性 bug 先加载 `debugging` 定位；[诊断胶囊](../.cat-cafe-shared-refs/bug-diagnosis-capsule.md)是可选的整理参考，可用更合适的方法替换。确定根因后再选择 RED：
 
 - 没有现成复现 → 新增失败回归测试；
 - 已有精确失败检查 → 直接把它当 RED；

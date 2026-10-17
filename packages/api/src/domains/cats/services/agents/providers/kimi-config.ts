@@ -18,9 +18,20 @@ import {
   summarizeMcpInjection,
 } from '../../../../../config/capabilities/capability-orchestrator.js';
 import {
+  assertMappedCapabilitySource,
+  isSameCapabilityRoot,
+  resolveInvokeCapabilityRoot,
+} from '../../../../../config/capabilities/invoke-capability-root.js';
+import { isManagedCatCafeSplit } from '../../../../../config/capabilities/mcp-constants.js';
+import {
   MissingMcpEnvironmentVariableError,
   resolveMcpServerEnvReferences,
 } from '../../../../../config/capabilities/mcp-env-reference.js';
+import {
+  resolveMcpArgs,
+  resolveMcpCommand,
+  resolveMcpWorkingDir,
+} from '../../../../../config/capabilities/mcp-launch-paths.js';
 import { isRetiredGithubMcpConfigEntry } from '../../../../../config/capabilities/retired-github-mcp.js';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 
@@ -277,7 +288,7 @@ export async function writeMcpConfigFile(
   }
   const distDir = dirname(mcpServerPath);
   const binaryProjectRoot = resolve(distDir, '../../..');
-  const capabilitiesProjectRoot = binaryProjectRoot;
+  const capabilitiesProjectRoot = await resolveInvokeCapabilityRoot(binaryProjectRoot);
   const catId = callbackEnv.CAT_CAFE_CAT_ID;
 
   let resolved = false;
@@ -286,13 +297,15 @@ export async function writeMcpConfigFile(
     // F249: Project config is the single truth source for MCP resolution.
     // Try project first; fall back to global for uninitialized projects.
     let capConfig = null;
+    let configSourceRoot = capabilitiesProjectRoot;
     let accessScope: 'global' | 'project' = 'global';
-    if (workingDirectory && workingDirectory !== capabilitiesProjectRoot) {
+    if (workingDirectory && !isSameCapabilityRoot(workingDirectory, capabilitiesProjectRoot)) {
       try {
         const projectRaw = readFileSync(join(workingDirectory, '.cat-cafe', 'capabilities.json'), 'utf-8');
         const parsed = JSON.parse(projectRaw);
         if (parsed?.version === 1 || parsed?.version === 2) {
           capConfig = parsed;
+          configSourceRoot = workingDirectory;
           accessScope = 'project';
         }
       } catch {
@@ -321,7 +334,7 @@ export async function writeMcpConfigFile(
         managedMcpServerNames.add(unresolvedServer.name);
         if (!unresolvedServer.enabled) continue;
         const s = resolveMcpServerEnvReferences(unresolvedServer, process.env);
-        if (s.source === 'cat-cafe' && CAT_CAFE_SPLIT_ENTRYPOINTS.has(s.name)) {
+        if (isManagedCatCafeSplit(s)) {
           const ep = CAT_CAFE_SPLIT_ENTRYPOINTS.get(s.name)!;
           const epPath = join(distDir, ep);
           if (existsSync(epPath)) {
@@ -332,16 +345,20 @@ export async function writeMcpConfigFile(
             };
           }
         } else if (s.resolver === 'pencil') {
-          const pencil = await resolvePencilCommand({ projectRoot: capabilitiesProjectRoot });
+          const pencil = await resolvePencilCommand({ projectRoot: configSourceRoot });
           if (pencil) mcpServers[s.name] = { command: pencil.command, args: pencil.args };
         } else if (s.transport === 'streamableHttp' && s.url) {
           const entry: Record<string, unknown> = { type: 'http', url: s.url };
           if (s.headers && Object.keys(s.headers).length > 0) entry.headers = s.headers;
           mcpServers[s.name] = entry;
         } else if (s.command) {
-          const entry: Record<string, unknown> = { command: s.command, args: s.args };
+          const workingDir = resolveMcpWorkingDir(s.workingDir, configSourceRoot);
+          const entry: Record<string, unknown> = {
+            command: resolveMcpCommand(s.command, workingDir, configSourceRoot),
+            args: resolveMcpArgs(s.args, workingDir, configSourceRoot),
+          };
           if (s.env && Object.keys(s.env).length > 0) entry.env = s.env;
-          if (s.workingDir) entry.cwd = s.workingDir;
+          if (workingDir) entry.cwd = workingDir;
           mcpServers[s.name] = entry;
         }
       }
@@ -352,6 +369,7 @@ export async function writeMcpConfigFile(
     // best-effort fallback below
   }
 
+  assertMappedCapabilitySource(resolved, binaryProjectRoot, capabilitiesProjectRoot);
   if (!resolved) {
     for (const [name, entrypoint] of CAT_CAFE_SPLIT_ENTRYPOINTS) {
       const entrypointPath = join(distDir, entrypoint);

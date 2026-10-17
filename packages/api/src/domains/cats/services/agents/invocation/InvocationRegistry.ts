@@ -12,7 +12,14 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { CatId, ManagedWorkBinding } from '@cat-cafe/shared';
+import {
+  type CatId,
+  type CollectiveExecutionGrant,
+  type CollectiveWorkBinding,
+  collectiveExecutionGrantSchema,
+  collectiveWorkBindingSchema,
+  type ManagedWorkBinding,
+} from '@cat-cafe/shared';
 import type { CallerTraceContext } from '../../../../../infrastructure/telemetry/genai-semconv.js';
 import type { ITurnExecutionStore } from '../../stores/ports/TurnExecutionStore.js';
 import type { ToolExecutionPolicy } from '../../types.js';
@@ -45,8 +52,18 @@ export interface InvocationRecord {
   traceContext?: CallerTraceContext;
   /** ADR-042 callback authorization boundary, persisted across API restarts. */
   toolExecutionPolicy?: ToolExecutionPolicy;
+  /** F290: non-owner authority, bound to this authenticated invocation and its durable source. */
+  executionGrant?: CollectiveExecutionGrant;
+  collectiveWorkBinding?: CollectiveWorkBinding;
   /** In-invocation idempotency keys for callback post-message de-duplication. */
   clientMessageIds: Set<string>;
+  /**
+   * #1542 guard 4: the compaction carrier identity this invocation's launch plan
+   * handed to its Claude spawn. Durable with the callback principal so
+   * /api/sessions/seal can fence legacy-shell callbacks after restart or
+   * capacity pressure — never process-local authority.
+   */
+  expectedCompactionCarrier?: string;
   createdAt: number;
   /** Active principals have no deadline; terminal tombstones expose their GC deadline. */
   expiresAt: number | null;
@@ -151,6 +168,11 @@ export class InvocationRegistry {
   private readonly turnExecutionStore?: Pick<ITurnExecutionStore, 'get'>;
   private readonly onLifecycleSignal?: (signal: CallbackAuthLifecycleSignal) => void;
   private startupRecoveryComplete: boolean;
+  private collectiveWorkAuthorityValidator?: (record: InvocationRecord) => Promise<void>;
+
+  setCollectiveWorkAuthorityValidator(validator: (record: InvocationRecord) => Promise<void>): void {
+    this.collectiveWorkAuthorityValidator = validator;
+  }
 
   constructor(options?: {
     ttlMs?: number;
@@ -194,7 +216,31 @@ export class InvocationRegistry {
     originTriggerMessageId?: string,
     ownerAuthProvenance: OwnerAuthProvenance = 'unknown',
     managedWorkBinding?: ManagedWorkBinding,
+    executionGrant?: CollectiveExecutionGrant,
+    collectiveWorkBinding?: CollectiveWorkBinding,
   ): Promise<{ invocationId: string; callbackToken: string }> {
+    const grant = executionGrant ? collectiveExecutionGrantSchema.parse(executionGrant) : undefined;
+    const workBinding = collectiveWorkBinding ? collectiveWorkBindingSchema.parse(collectiveWorkBinding) : undefined;
+    if (
+      toolExecutionPolicy?.mode === 'collective_work' &&
+      (!workBinding ||
+        toolExecutionPolicy.taskId !== workBinding.taskId ||
+        toolExecutionPolicy.threadId !== threadId ||
+        toolExecutionPolicy.executionRevision !== (workBinding.executionRevision ?? 1) ||
+        toolExecutionPolicy.executionRef !== (workBinding.executionRef ?? workBinding.authorityRef))
+    )
+      throw new Error('Scoped private Work policy requires exact Task and Thread binding');
+    if (workBinding && (ownerAuthProvenance !== 'unknown' || grant || managedWorkBinding || !originTriggerMessageId))
+      throw new Error('Collective Work requires independent owner admission');
+    if (grant) {
+      if (ownerAuthProvenance !== 'unknown' || managedWorkBinding)
+        throw new Error('Public participation cannot acquire owner authority');
+      if (grant.source.catId !== catId || grant.originTriggerMessageId !== originTriggerMessageId)
+        throw new Error('Participation grant source identity mismatch');
+      if (toolExecutionPolicy?.mode !== 'collective_participation')
+        throw new Error('Participation grant requires scoped tool policy');
+    } else if (toolExecutionPolicy?.mode === 'collective_participation')
+      throw new Error('Participation tool policy requires a source grant');
     if (managedWorkBinding) {
       if (ownerAuthProvenance !== 'strict') {
         throw new Error('Managed-work invocation binding requires strict owner authentication');
@@ -212,6 +258,8 @@ export class InvocationRegistry {
       callbackToken,
       userId,
       ownerAuthProvenance,
+      ...(grant ? { executionGrant: grant } : {}),
+      ...(workBinding ? { collectiveWorkBinding: workBinding } : {}),
       ...(managedWorkBinding ? { managedWorkBinding: Object.freeze({ ...managedWorkBinding }) } : {}),
       catId,
       threadId,
@@ -233,7 +281,9 @@ export class InvocationRegistry {
    * instead of regex-matching error strings. (F174 Phase A — KD-4)
    */
   async verify(invocationId: string, callbackToken: string): Promise<VerifyResult> {
-    return this.repairFromCanonical(await this.backend.verify(invocationId, callbackToken));
+    return this.validateCollectiveWork(
+      await this.repairFromCanonical(await this.backend.verify(invocationId, callbackToken)),
+    );
   }
 
   /**
@@ -271,6 +321,11 @@ export class InvocationRegistry {
     return this.backend.setTraceContext(invocationId, ctx);
   }
 
+  /** #1542 guard 4: persist the launch plan's carrier identity on the durable callback principal. */
+  async setExpectedCompactionCarrier(invocationId: string, identity: string): Promise<void> {
+    return this.backend.setExpectedCompactionCarrier(invocationId, identity);
+  }
+
   /**
    * Read-only fetch. Returns null only when unknown or after terminal GC.
    */
@@ -295,7 +350,21 @@ export class InvocationRegistry {
   }
 
   async verifyLatest(invocationId: string, callbackToken: string): Promise<VerifyResult> {
-    return this.repairFromCanonical(await this.backend.verifyLatest(invocationId, callbackToken));
+    return this.validateCollectiveWork(
+      await this.repairFromCanonical(await this.backend.verifyLatest(invocationId, callbackToken)),
+    );
+  }
+
+  private async validateCollectiveWork(result: VerifyResult): Promise<VerifyResult> {
+    if (!result.ok || !result.record.collectiveWorkBinding) return result;
+    if (!this.collectiveWorkAuthorityValidator)
+      return result.record.toolExecutionPolicy?.mode === 'collective_work' ? { ok: false, reason: 'revoked' } : result;
+    try {
+      await this.collectiveWorkAuthorityValidator(result.record);
+      return result;
+    } catch {
+      return { ok: false, reason: 'revoked' };
+    }
   }
 
   async commitTerminal(input: AuthTerminalCommitInput): Promise<AuthTerminalCommitResult> {

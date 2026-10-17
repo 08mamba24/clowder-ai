@@ -235,6 +235,7 @@ test('production composition constructs and recovers K-2D but exposes no startup
 
   const routeBootstrapIndex = source.indexOf('await ensureOfficialPluginSignalRoutes({');
   const runtimeCompositionIndex = source.indexOf('createDormantPluginRuntimeComposition({');
+  const managerCompositionIndex = source.indexOf('createPluginManagerRuntimeComposition({');
 
   assert.match(source, /createDormantPluginRuntimeComposition/);
   assert.match(source, /messageStore,\s*\.\.\.\(redis \? \{ redis \} : \{\}\)/);
@@ -247,11 +248,60 @@ test('production composition constructs and recovers K-2D but exposes no startup
   const runtimeBinding = source.match(/const\s+([A-Za-z_$][\w$]*)\s*=\s*createDormantPluginRuntimeComposition\(\{/);
   assert.ok(runtimeBinding, 'production must bind the dormant plugin runtime composition');
   const runtimeName = runtimeBinding[1];
-  assert.match(source, new RegExp(`await ${runtimeName}\\.recoverAfterRestart\\(\\)`));
+  const recoveryCall = source.match(
+    new RegExp(
+      `await ${runtimeName}\\.recoverAfterRestart\\(\\{\\s*desktopWindowsAfter:\\s*([A-Za-z_$][\\w$]*)\\s*\\}\\)`,
+    ),
+  );
+  assert.ok(recoveryCall, 'restart recovery must hold desktop windows behind the Host listening gate');
+  const recoveryIndex = recoveryCall.index;
+  const gate = source.match(
+    new RegExp(
+      `const\\s+${recoveryCall[1]}\\s*=\\s*new Promise<void>\\(\\(resolve\\)\\s*=>\\s*\\{\\s*([A-Za-z_$][\\w$]*)\\s*=\\s*resolve;?\\s*\\}\\)`,
+    ),
+  );
+  assert.ok(gate, 'the desktop resume gate must be a Host-owned deferred promise');
+  assert.match(
+    source,
+    new RegExp(
+      `listen:\\s*async\\s*\\(\\)\\s*=>\\s*\\{\\s*const\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*await app\\.listen\\(\\{ port: PORT, host: HOST \\}\\);\\s*${gate[1]}\\(\\);\\s*return\\s+\\1;\\s*\\}`,
+    ),
+    'desktop windows may app.inject; the gate opens only once app.listen has booted Fastify',
+  );
+  assert.equal(source.split(`${gate[1]}()`).length - 1, 1, 'the gate has a single release point');
+  assert.match(source, /new FilesystemBuiltinPluginPackageMaterializer\(\{/);
+  assert.match(source, /builtinContributions:\s*\{/);
+  assert.ok(
+    managerCompositionIndex >= 0 && managerCompositionIndex < recoveryIndex,
+    'builtin contribution routing must be registered before durable instances resume',
+  );
   assert.match(source, new RegExp(`await ${runtimeName}\\.shutdown\\('api_shutdown'\\)`));
   assert.match(source, /OfficialPluginHistoryImportService/);
   assert.match(source, /createLarkCliFeishuArtifactInspector/);
   assert.match(source, /historyImport:/);
+  assert.match(source, /createPluginManagerRuntimeComposition\(\{/);
+  assert.match(source, /new MachineOfficialPluginCatalog\(\{/);
+  assert.match(source, /validateCatalog: validatePluginCatalog/);
+  assert.match(source, /loadMachinePluginCatalog\(OFFICIAL_PLUGIN_CATALOG_URL\)/);
+  assert.match(source, /replacesRepositoryPluginId:\s*'video-analysis'/);
+  const managerCompatibilityIndex = source.indexOf('const repositoryPluginManagerCompatibility =');
+  const managerComposition = source.slice(managerCompatibilityIndex, recoveryIndex);
+  assert.ok(managerCompatibilityIndex >= 0, 'repository compatibility must be composed after catalog policy exists');
+  assert.match(
+    managerComposition,
+    /compatibility:\s*repositoryPluginManagerCompatibility/,
+    'Train B Manager must project real repository plugins through its read-only compatibility boundary',
+  );
+  assert.match(managerComposition, /loadSuppressedPluginIds:/);
+  assert.match(managerComposition, /resolveRepositoryReplacementPluginIds\(/);
+  assert.match(managerComposition, /pluginRuntime\.inventoryStore\.snapshot\(\)/);
+  assert.match(managerComposition, /instance\.lifecycleState === 'installed'/);
+  assert.match(source, /registerPluginManagerRoutes\(managerApp/);
+  assert.match(source, /contributions: pluginManagerRuntime\.builtinSupervisor/);
+  assert.match(source, /register\(pluginManagerUploadRoutes/);
+  assert.match(source, /officialRouteCatalogProvider:\s*officialPluginCatalog/);
+  assert.match(source, /installer: pluginManagerRuntime\.officialRouteInstaller/);
+  assert.doesNotMatch(source, /new OfficialPluginPackageInstaller\(/);
   assert.match(source, /registerOfficialPluginRoutes\(app/);
   assert.doesNotMatch(source, new RegExp(`${runtimeName}\\.supervisor\\.start\\(`));
 });

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import Fastify from 'fastify';
+import { canonicalTestMessageInput } from './helpers/message-from-fixtures.js';
 
 // F231 Phase C Task3: cat-side propose-profile-update callback route.
 // Pins the current primer as beforeContent + baseContentHash (P1-2 optimistic-lock base),
@@ -29,14 +30,16 @@ describe('callback propose-profile-update route', () => {
     const key = body.clientRequestId ? `${userId}:${catId}:${threadId}:${body.clientRequestId}` : undefined;
     let origin = key ? originByRequest.get(key) : undefined;
     if (!origin) {
-      origin = messageStore.append({
-        userId,
-        catId: null,
-        content: 'Please update the profile',
-        mentions: [],
-        timestamp: Date.now(),
-        threadId,
-      });
+      origin = messageStore.append(
+        canonicalTestMessageInput({
+          userId,
+          catId: null,
+          content: 'Please update the profile',
+          mentions: [],
+          timestamp: Date.now(),
+          threadId,
+        }),
+      );
       if (key) originByRequest.set(key, origin);
     }
     const { invocationId, callbackToken } = await registry.create(userId, catId, threadId, undefined, origin.id);
@@ -139,6 +142,8 @@ describe('callback propose-profile-update route', () => {
       body: { afterContent: 'X', rationale: 'r', signalKind: 'cat-declared', targetLayer: 'capsule' },
     });
     assert.equal(res.statusCode, 400);
+    const body = JSON.parse(res.body);
+    assert.equal(body.error, 'invalid_target_layer', 'typed error for rejected layer');
   });
 
   it('replaced invocation → typed auth failure (no proposal created)', async () => {
@@ -222,29 +227,33 @@ describe('callback propose-profile-update route', () => {
       signalProvenance: { kind: 'cat-declared', sourceThreadId: 'thread_1' },
       createdBy: 'alice',
     });
-    const cardMessage = await messageStore.append({
-      userId: 'alice',
-      catId: 'opus',
-      content: 'visible profile update card',
-      mentions: [],
-      timestamp: Date.now(),
-      threadId: 'thread_1',
-      extra: {
-        rich: {
-          v: 1,
-          blocks: [{ id: `profile-update-${existingProposalId}`, kind: 'card', v: 1, title: 'Profile update' }],
-        },
-      },
-    });
-    for (let i = 0; i < 600; i += 1) {
-      await messageStore.append({
+    const cardMessage = await messageStore.append(
+      canonicalTestMessageInput({
         userId: 'alice',
-        catId: null,
-        content: `newer ${i}`,
+        catId: 'opus',
+        content: 'visible profile update card',
         mentions: [],
-        timestamp: Date.now() + i + 1,
+        timestamp: Date.now(),
         threadId: 'thread_1',
-      });
+        extra: {
+          rich: {
+            v: 1,
+            blocks: [{ id: `profile-update-${existingProposalId}`, kind: 'card', v: 1, title: 'Profile update' }],
+          },
+        },
+      }),
+    );
+    for (let i = 0; i < 600; i += 1) {
+      await messageStore.append(
+        canonicalTestMessageInput({
+          userId: 'alice',
+          catId: null,
+          content: `newer ${i}`,
+          mentions: [],
+          timestamp: Date.now() + i + 1,
+          threadId: 'thread_1',
+        }),
+      );
     }
 
     const res = await propose({
@@ -256,5 +265,118 @@ describe('callback propose-profile-update route', () => {
     assert.equal(body.proposalId, existingProposalId);
     assert.equal(body.deduped, true);
     assert.equal(store.get(existingProposalId).cardMessageId, cardMessage.id);
+  });
+
+  // --- T5: Phase E corpus propose ---
+
+  it('targetLayer corpus: derives targetPath from PROFILE_CORPUS_RELATIVE_PATH, reads corpus beforeContent', async () => {
+    // Seed a corpus file
+    mkdirSync(join(profileDir, 'corpus'), { recursive: true });
+    writeFileSync(join(profileDir, 'corpus', 'shared-facts.md'), 'old fact', 'utf8');
+
+    const res = await propose({
+      body: {
+        afterContent: 'new fact',
+        rationale: 'operator told us',
+        signalKind: 'cvo-instructed',
+        targetLayer: 'corpus',
+      },
+    });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.status, 'pending');
+    const proposal = store.get(body.proposalId);
+    assert.equal(proposal.targetLayer, 'corpus');
+    assert.equal(proposal.targetPath, 'corpus/shared-facts.md');
+    assert.equal(proposal.beforeContent, 'old fact');
+    assert.equal(proposal.baseContentHash, writeMod.hashContent('old fact'));
+  });
+
+  it('targetLayer corpus: absent corpus → beforeContent empty', async () => {
+    const res = await propose({
+      body: {
+        afterContent: 'first fact',
+        rationale: 'init',
+        signalKind: 'cat-declared',
+        targetLayer: 'corpus',
+      },
+    });
+    assert.equal(res.statusCode, 200);
+    const proposal = store.get(JSON.parse(res.body).proposalId);
+    assert.equal(proposal.beforeContent, '');
+    assert.equal(proposal.baseContentHash, writeMod.hashContent(''));
+  });
+
+  it('targetLayer capsule → 400 (Phase E: still rejected, A4)', async () => {
+    const res = await propose({
+      body: { afterContent: 'X', rationale: 'r', signalKind: 'cat-declared', targetLayer: 'capsule' },
+    });
+    assert.equal(res.statusCode, 400);
+    const body = JSON.parse(res.body);
+    assert.equal(body.error, 'invalid_target_layer', 'typed error for capsule');
+  });
+
+  it('unknown targetLayer → 400 with typed error', async () => {
+    const res = await propose({
+      body: { afterContent: 'X', rationale: 'r', signalKind: 'cat-declared', targetLayer: 'wormhole' },
+    });
+    assert.equal(res.statusCode, 400);
+    const body = JSON.parse(res.body);
+    assert.equal(body.error, 'invalid_target_layer', 'typed error for unknown layer');
+    assert.ok(body.detail, 'detail present');
+  });
+
+  it('dedup retry bypasses target read failure (P1 idempotency guard)', async () => {
+    // A successful first proposal with clientRequestId should be retrievable even
+    // when the corpus repository becomes temporarily unavailable on retry.
+    mkdirSync(join(profileDir, 'corpus'), { recursive: true });
+    writeFileSync(join(profileDir, 'corpus', 'shared-facts.md'), 'stable fact', 'utf8');
+
+    const body = {
+      afterContent: 'updated fact',
+      rationale: 'idempotency test',
+      signalKind: 'cat-declared',
+      targetLayer: 'corpus',
+      clientRequestId: 'req-durable',
+    };
+
+    const r1 = await propose({ body });
+    assert.equal(r1.statusCode, 200, 'first call succeeds');
+    const firstProposalId = JSON.parse(r1.body).proposalId;
+
+    // Break the corpus repository — simulates transient disk/storage failure
+    const origReadCorpus = repository.readCorpus;
+    repository.readCorpus = () => {
+      throw new Error('disk gone');
+    };
+    try {
+      // Retry with same clientRequestId — dedup should short-circuit before target read
+      const r2 = await propose({ body });
+      assert.equal(r2.statusCode, 200, 'retry succeeds via dedup despite broken repository');
+      const retryBody = JSON.parse(r2.body);
+      assert.equal(retryBody.proposalId, firstProposalId, 'returns same proposal');
+      assert.equal(retryBody.deduped, true, 'marked as deduped');
+    } finally {
+      repository.readCorpus = origReadCorpus;
+    }
+  });
+
+  it('corpus repository error returns 503 corpus_target_unavailable', async () => {
+    // Monkeypatch readCorpus to throw (simulating disk I/O or missing repo)
+    const origReadCorpus = repository.readCorpus;
+    repository.readCorpus = () => {
+      throw new Error('disk I/O');
+    };
+    try {
+      const res = await propose({
+        body: { afterContent: 'new fact', rationale: 'r', signalKind: 'cat-declared', targetLayer: 'corpus' },
+      });
+      assert.equal(res.statusCode, 503, 'returns 503 on corpus repository error');
+      const body = JSON.parse(res.body);
+      assert.equal(body.error, 'corpus_target_unavailable', 'typed error for unavailable corpus');
+      assert.ok(body.detail, 'detail message present');
+    } finally {
+      repository.readCorpus = origReadCorpus;
+    }
   });
 });
