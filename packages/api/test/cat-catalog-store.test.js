@@ -600,9 +600,11 @@ describe('cat-catalog-store', () => {
 
     // Hand-built member occupying the qoder identity under a DIFFERENT breed id,
     // so the breed-id early-exit cannot mask the occupancy check under test.
+    // `createRuntimeCat` only nests into an existing breed (the editor's contract),
+    // so this uses a template breed id instead of inventing a runtime breed id.
     createRuntimeCat(projectRoot, {
       catId: 'qoder',
-      breedId: 'custom-qoder',
+      breedId: 'ragdoll',
       name: '银线（手建）',
       displayName: '银线（手建）',
       nickname: '银线',
@@ -631,11 +633,13 @@ describe('cat-catalog-store', () => {
       false,
       'template qoder breed must not backfill over the occupied qoder identity',
     );
-    const custom = hydrated.breeds.find((breed) => breed.id === 'custom-qoder');
-    assert.ok(custom, 'hand-built custom-qoder breed must survive the upgrade bootstrap');
-    assert.equal(custom.displayName, '银线（手建）', 'runtime displayName must be preserved');
-    assert.equal(custom.variants[0]?.personality, '本人自述', 'runtime personality must be preserved');
-    assert.equal(custom.variants[0]?.accountRef, 'qoder-main', 'runtime accountRef must be preserved');
+    const custom = hydrated.breeds.find((breed) => breed.id === 'ragdoll');
+    assert.ok(custom, 'hand-built member breed must survive the upgrade bootstrap');
+    const customVariant = (custom.variants ?? []).find((variant) => variant.id === 'qoder-default');
+    assert.ok(customVariant, 'hand-built qoder member must survive the upgrade bootstrap');
+    assert.equal(customVariant.displayName, '银线（手建）', 'runtime displayName must be preserved');
+    assert.equal(customVariant.personality, '本人自述', 'runtime personality must be preserved');
+    assert.equal(customVariant.accountRef, 'qoder-main', 'runtime accountRef must be preserved');
     assert.deepEqual(
       hydrated.roster?.qoder,
       customRoster,
@@ -686,7 +690,7 @@ describe('cat-catalog-store', () => {
       false,
       'template qoder breed must stay blocked by the occupying hand-built member',
     );
-    const customBreed = hydrated.breeds.find((breed) => breed.id === 'ragdoll' && breed.catId === 'qoder');
+    const customBreed = hydrated.breeds.find((breed) => breed.id === 'ragdoll');
     assert.ok(customBreed, 'hand-built qoder member breed must survive the upgrade');
     const customVariant = (customBreed.variants ?? []).find((v) => v.id === 'qoder-default');
     assert.ok(customVariant, 'hand-built qoder variant under the template breed id must survive');
