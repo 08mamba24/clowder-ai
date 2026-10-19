@@ -200,7 +200,8 @@ export function repoCommentPollTaskSpec(opts: RepoCommentPollTaskSpecOptions): T
           const repo = opts.repoAllowlist[index]!;
           nextRepoIndex = (index + 1) % opts.repoAllowlist.length;
           try {
-            await pollSingleRepo(opts, repo, gitHubObjectSignal(ctx));
+            // Complete all pages for this repository before committing its cursor.
+            await pollSingleRepo(opts, repo, gitHubObjectSignal(ctx, 30_000));
           } catch (e) {
             gateSignal?.throwIfAborted();
             if (e instanceof GitHubRateLimitError) continue;

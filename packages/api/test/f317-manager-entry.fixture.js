@@ -29,7 +29,7 @@ const sri = (bytes) => `sha512-${createHash('sha512').update(bytes).digest('base
 export const publishedLetterContract = (version) =>
   version === '0.1.0-alpha.24'
     ? '0.1.0-beta.27'
-    : ['0.1.0-alpha.30', '0.1.0-alpha.31'].includes(version)
+    : ['0.1.0-alpha.30', '0.1.0-alpha.31', '0.1.0-alpha.32'].includes(version)
       ? '0.1.0-beta.29'
       : '0.1.0-beta.28';
 
@@ -56,6 +56,7 @@ export async function managerEntryFixture(
     '0.1.0-alpha.29': process.env.F317_VERIFIED_ALPHA29_ARCHIVE,
     '0.1.0-alpha.30': process.env.F317_VERIFIED_ALPHA30_ARCHIVE,
     '0.1.0-alpha.31': process.env.F317_VERIFIED_ALPHA31_ARCHIVE,
+    '0.1.0-alpha.32': process.env.F317_VERIFIED_ALPHA32_ARCHIVE,
   };
   const actual = plugin.versions.every((release) => Boolean(archivePaths[release.version]));
   for (const release of plugin.versions) {

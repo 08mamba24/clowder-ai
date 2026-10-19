@@ -6,7 +6,7 @@ import { resolveCompanionArchiveContract } from '../dist/domains/plugin/desktop-
 import { managerEntryFixture, publishedLetterContract } from './f317-manager-entry.fixture.js';
 import { desktopWindowManifest } from './f317-window-manifest.fixture.js';
 
-// Exact public 978cf092118823d821e34a8725b1e950adeaf84c release rows; no mutable next tag.
+// Exact public 7c1d369c9082fd5319f45884ee95cda5ef803e91 release rows; no mutable next tag.
 const catalogData = JSON.parse(
   await readFile(new URL('./fixtures/f317-published-letter-catalog.json', import.meta.url), 'utf8'),
 );
