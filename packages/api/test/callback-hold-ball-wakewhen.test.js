@@ -227,6 +227,35 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
     assert.fail('command did not reach its durable terminal');
   }
 
+  // The hold route persists the wait and then blocks inside messageStore.append.
+  // If admission fails before that append, the visibility trigger never settles;
+  // node --test runs this suite with --test-timeout=0, so waiting on it alone
+  // hangs forever instead of reporting the failed request. Race it against the
+  // actual HTTP outcome so an early rejection fails fast with status/body.
+  async function awaitVisibilityAppend(visibilityAppendStarted, heldPromise) {
+    let timer;
+    const outcome = await Promise.race([
+      visibilityAppendStarted.then(() => ({ kind: 'append' })),
+      heldPromise.then(
+        (response) => ({ kind: 'response', response }),
+        (error) => ({ kind: 'error', error }),
+      ),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ kind: 'timeout' }), 10_000);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (outcome.kind !== 'append') {
+      const detail =
+        outcome.kind === 'response'
+          ? `early HTTP ${outcome.response.statusCode}: ${outcome.response.body}`
+          : outcome.kind === 'error'
+            ? `request failed: ${outcome.error?.message}`
+            : 'no visibility append within 10s';
+      assert.fail(`pre-launch visibility window never opened (${detail})`);
+    }
+  }
+
   for (const actorUserId of ['scheduler', 'system']) {
     test(`F261 ${actorUserId} command and wake share the server-owned thread principal`, async () => {
       const deliveries = [];
@@ -1492,7 +1521,7 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
         wakeWhen: { command: 'echo done' },
       },
     });
-    await visibilityAppendStarted;
+    await awaitVisibilityAppend(visibilityAppendStarted, heldPromise);
     const waitId = deps._insertedTasks[0]?.id;
     assert.ok(waitId, 'hold route must persist the wait before visibility append');
 
@@ -2048,7 +2077,7 @@ describe('F167 Phase P: wakeWhen cancel/replace/delivery tests', () => {
         wakeWhen: { command: 'echo done' },
       },
     });
-    await visibilityAppendStarted;
+    await awaitVisibilityAppend(visibilityAppendStarted, heldPromise);
     const waitId = deps._insertedTasks[0]?.id;
     assert.ok(waitId);
 
