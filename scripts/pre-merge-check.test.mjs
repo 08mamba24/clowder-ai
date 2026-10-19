@@ -51,6 +51,8 @@ const rebaseStatePath = ${JSON.stringify(`${logPath}.rebase-state`)};
 const rebaseCount = () => (existsSync(rebaseStatePath) ? Number(readFileSync(rebaseStatePath, 'utf8')) : 0);
 const mergeStatePath = ${JSON.stringify(`${logPath}.merge-state`)};
 const mergeCount = () => (existsSync(mergeStatePath) ? Number(readFileSync(mergeStatePath, 'utf8')) : 0);
+const headDriftPath = ${JSON.stringify(`${logPath}.head-drift`)};
+const trackedDriftPath = ${JSON.stringify(`${logPath}.tracked-drift`)};
 appendFileSync(${JSON.stringify(logPath)}, \`git \${args.join(' ')}\\n\`);
 
 if (args[0] === 'branch' && args[1] === '--show-current') {
@@ -61,6 +63,9 @@ if (args[0] === 'branch' && args[1] === '--show-current') {
 if (args[0] === 'status' && args[1] === '--porcelain') {
   if (process.env.STUB_GIT_DIRTY) {
     process.stdout.write(process.env.STUB_GIT_DIRTY + '\\n');
+  }
+  if (existsSync(trackedDriftPath)) {
+    process.stdout.write(' M scripts/pre-merge-check.sh\\n');
   }
   process.exit(0);
 }
@@ -119,12 +124,14 @@ if (args[0] === 'rev-parse' && args[1] === '--short' && args[2] === 'HEAD') {
 }
 
 if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
-  process.stdout.write(String.fromCharCode(97 + Math.min(rebaseCount() + mergeCount(), 5)).repeat(40) + '\\n');
+  process.stdout.write(
+    (existsSync(headDriftPath) ? 'f'.repeat(40) : String.fromCharCode(97 + Math.min(rebaseCount() + mergeCount(), 5)).repeat(40)) + '\\n',
+  );
   process.exit(0);
 }
 
 if (args[0] === 'rev-parse' && args[1] === 'HEAD^{tree}') {
-  process.stdout.write('2'.repeat(40) + '\\n');
+  process.stdout.write((existsSync(headDriftPath) ? '9'.repeat(40) : '2'.repeat(40)) + '\\n');
   process.exit(0);
 }
 
@@ -157,8 +164,18 @@ process.exit(1);
 
 function createPnpmStub(logPath) {
   return `#!${process.execPath}
-const { appendFileSync } = require('node:fs');
+const { appendFileSync, writeFileSync } = require('node:fs');
 const args = process.argv.slice(2);
+// A stage may commit a new HEAD or dirty tracked inputs while the gate runs.
+// The marker is written when the named command executes, so the drift happens
+// after earlier stages completed, exactly like the 8950dae production run.
+const commandLine = args.join(' ');
+if (process.env.STUB_STAGE_HEAD_DRIFT && commandLine.includes(process.env.STUB_STAGE_HEAD_DRIFT)) {
+  writeFileSync(${JSON.stringify(`${logPath}.head-drift`)}, '1');
+}
+if (process.env.STUB_STAGE_TRACKED_DRIFT && commandLine.includes(process.env.STUB_STAGE_TRACKED_DRIFT)) {
+  writeFileSync(${JSON.stringify(`${logPath}.tracked-drift`)}, '1');
+}
 appendFileSync(${JSON.stringify(logPath)}, \`pnpm \${args.join(' ')}\\n\`);
 appendFileSync(
   ${JSON.stringify(logPath)},
@@ -1440,6 +1457,52 @@ describe('pre-merge-check dependency refresh order', () => {
     const source = readFileSync(scriptPath, 'utf8');
 
     assert.doesNotMatch(source, /git worktree list --porcelain\s*\|\s*head\b/);
+  });
+
+  // 8950dae production counter-example: the run started at 3676245, HEAD advanced
+  // mid-run, and the terminal banner/sentinel still certified 8950dae. The public
+  // export path has no source-only terminal receipt to catch this, so the shell
+  // itself must revalidate the frozen HEAD/tree before publishing green.
+  it('refuses green and the sentinel when HEAD advances during the final stage (public export)', (t) => {
+    const result = runGate(
+      requireBash(t),
+      [],
+      { STUB_STAGE_HEAD_DRIFT: 'check:artifacts' },
+      { publicSyncFixture: true },
+    );
+
+    assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stderr, /Gate input changed during terminal report/);
+    assert.match(result.stderr, /Frozen HEAD\/tree: a{8} 2{8}/);
+    assert.match(result.stderr, /Actual HEAD\/tree: f{8} 9{8}/);
+    assert.doesNotMatch(result.stdout, /GATE PASSED/);
+    assert.equal(result.sentinelWritten, false);
+  });
+
+  it('refuses later stages after HEAD advances mid-run (public export)', (t) => {
+    const result = runGate(requireBash(t), [], { STUB_STAGE_HEAD_DRIFT: 'test:public' }, { publicSyncFixture: true });
+
+    assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stderr, /Gate input changed during stage lint-web/);
+    assert.ok(result.logLines.includes('pnpm --filter @cat-cafe/api run test:public'));
+    assert.ok(!result.logLines.includes('pnpm --filter @cat-cafe/web lint'));
+    assert.doesNotMatch(result.stdout, /GATE PASSED/);
+    assert.equal(result.sentinelWritten, false);
+  });
+
+  it('refuses green and the sentinel when tracked inputs change during the run (public export)', (t) => {
+    const result = runGate(
+      requireBash(t),
+      [],
+      { STUB_STAGE_TRACKED_DRIFT: 'check:artifacts' },
+      { publicSyncFixture: true },
+    );
+
+    assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stderr, /Tracked worktree inputs changed during terminal report/);
+    assert.match(result.stderr, /M scripts\/pre-merge-check\.sh/);
+    assert.doesNotMatch(result.stdout, /GATE PASSED/);
+    assert.equal(result.sentinelWritten, false);
   });
 
   it('uses public API tests when source-only Claude settings are absent', (t) => {

@@ -506,6 +506,11 @@ if [ "$PUBLIC_EXPORT" = "true" ]; then
   # phases directly; the public gate still retains its exported singleflight and
   # pressure guard below.
   run_gate_resource_stage() {
+    local stage="$2"
+    if ! assert_gate_frozen_inputs "stage $stage"; then
+      GATE_FAILED_STAGE="$stage"
+      return 1
+    fi
     shift 2
     "$@"
   }
@@ -518,6 +523,10 @@ else
     local mode="$1"
     local stage="$2"
     local heartbeat_status=0
+    if ! assert_gate_frozen_inputs "stage $stage"; then
+      GATE_FAILED_STAGE="$stage"
+      return 1
+    fi
     shift 2
     heartbeat_gate_receipt || heartbeat_status=$?
     if [ "$heartbeat_status" -ne 0 ]; then
@@ -624,6 +633,10 @@ run_resumable_gate_stage() {
   local receipt_status=0
   shift 2
   disable_test_file_timing
+  if ! assert_gate_frozen_inputs "stage $stage"; then
+    GATE_FAILED_STAGE="$stage"
+    return 1
+  fi
   gate_stage_is_green "$stage" || receipt_status=$?
   case "$receipt_status" in
     0)
@@ -949,6 +962,38 @@ else
   fi
 fi
 
+# The exact revision and tree this invocation verifies. The integration cut was
+# frozen above; nothing later may silently certify a different checkout. Every
+# stage and the terminal report compare against this pair instead of re-reading
+# HEAD and trusting whatever happens to be committed when the banner prints.
+GATE_FROZEN_REVISION="$(git rev-parse HEAD)"
+GATE_FROZEN_TREE="$(git rev-parse 'HEAD^{tree}')"
+# Local --no-rebase probes may start from a dirty tree by contract. Compare
+# against this baseline so only drift introduced *during* the run fails closed.
+GATE_FROZEN_TRACKED_STATUS="$(git status --porcelain --untracked-files=no)"
+
+assert_gate_frozen_inputs() {
+  local where="$1"
+  local observed_revision observed_tree tracked_drift
+  observed_revision="$(git rev-parse HEAD 2>/dev/null || true)"
+  observed_tree="$(git rev-parse 'HEAD^{tree}' 2>/dev/null || true)"
+  if [ "$observed_revision" != "$GATE_FROZEN_REVISION" ] || [ "$observed_tree" != "$GATE_FROZEN_TREE" ]; then
+    echo -e "${RED}❌ Gate input changed during ${where}; refusing to certify ${GATE_FROZEN_REVISION:0:8}${NC}" >&2
+    echo "   Frozen HEAD/tree: ${GATE_FROZEN_REVISION:0:8} ${GATE_FROZEN_TREE:0:8}" >&2
+    echo "   Actual HEAD/tree: ${observed_revision:0:8} ${observed_tree:0:8}" >&2
+    echo "   A commit or checkout during the run cannot inherit the stages already executed; rerun the gate on the new exact HEAD." >&2
+    return 1
+  fi
+  tracked_drift="$(git status --porcelain --untracked-files=no 2>/dev/null || true)"
+  if [ "$tracked_drift" != "$GATE_FROZEN_TRACKED_STATUS" ]; then
+    echo -e "${RED}❌ Tracked worktree inputs changed during ${where}; refusing to certify this run${NC}" >&2
+    echo "$tracked_drift" | head -10 >&2
+    echo "   Restore the frozen tree and rerun the gate; completed stage evidence no longer covers these bytes." >&2
+    return 1
+  fi
+  return 0
+}
+
 export CAT_CAFE_GATE_BASE_SHA="$GATE_BASE_SHA"
 echo -e "${GREEN}✓ Gate baseline frozen: ${GATE_BASE_SHA:0:8}${NC}"
 echo ""
@@ -957,7 +1002,7 @@ echo ""
 # Local --no-rebase probes use the same classifier, but cannot publish merge
 # evidence. Public exports retain their historical full contract.
 if [ "$PUBLIC_EXPORT" = "false" ] && [ "$TEST_MODE" = "full" ]; then
-  GATE_CONTROL_REVISION="$(git rev-parse HEAD)"
+  GATE_CONTROL_REVISION="$GATE_FROZEN_REVISION"
   GATE_CONTROL_PLANE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cat-cafe-gate-control.XXXXXX")"
   node "$REPO_ROOT/scripts/snapshot-gate-control-plane.mjs" \
     --repo-root "$REPO_ROOT" \
@@ -1032,6 +1077,7 @@ if [ "$PUBLIC_EXPORT" = "false" ] && [ "$TEST_MODE" = "full" ]; then
     reuse)
       echo -e "${GREEN}✓ Reused canonical exact-tree terminal-green evidence${NC}"
       if [ "$NO_REBASE" = "false" ] && [ "$GATE_VERIFICATION_SCOPE" = "merge" ]; then
+        assert_gate_frozen_inputs "reused terminal evidence" || exit 1
         bash "$(dirname "$0")/write-gate-last-run.sh" "$REPO_ROOT"
       fi
       exit 0
@@ -1104,12 +1150,12 @@ if [ "$NO_REBASE" = "false" ] && [ "$PUBLIC_EXPORT" = "false" ] && [ "$TEST_MODE
   if [ "$GATE_IDENTITY_ARG_COUNT" -eq 0 ]; then
     GATE_CLAIM_JSON="$(node "$GATE_TERMINAL_RECEIPT_SCRIPT" begin \
       --owner-pid "$$" --expected-fingerprint "$GATE_ROUTE_FINGERPRINT" \
-      --head-sha "$GATE_CONTROL_REVISION" --tree-sha "$(git rev-parse 'HEAD^{tree}')" \
+      --head-sha "$GATE_CONTROL_REVISION" --tree-sha "$GATE_FROZEN_TREE" \
       --base-sha "$GATE_BASE_SHA" --route "$GATE_ROUTE" --risk "${RISK_AXIS:-none}" --mode "$TEST_MODE" --)"
   else
     GATE_CLAIM_JSON="$(node "$GATE_TERMINAL_RECEIPT_SCRIPT" begin \
       --owner-pid "$$" --expected-fingerprint "$GATE_ROUTE_FINGERPRINT" \
-      --head-sha "$GATE_CONTROL_REVISION" --tree-sha "$(git rev-parse 'HEAD^{tree}')" \
+      --head-sha "$GATE_CONTROL_REVISION" --tree-sha "$GATE_FROZEN_TREE" \
       --base-sha "$GATE_BASE_SHA" --route "$GATE_ROUTE" --risk "${RISK_AXIS:-none}" --mode "$TEST_MODE" \
       -- "${GATE_IDENTITY_ARGS[@]}")"
   fi
@@ -1129,6 +1175,7 @@ if [ "$NO_REBASE" = "false" ] && [ "$PUBLIC_EXPORT" = "false" ] && [ "$TEST_MODE
       if [ "$GATE_CLAIM_STATUS" = "green" ]; then
         echo -e "${GREEN}✓ Reused canonical exact-tree terminal-green receipt: ${GATE_RUN_ID}${NC}"
         if [ "$GATE_VERIFICATION_SCOPE" = "merge" ]; then
+          assert_gate_frozen_inputs "reused terminal receipt" || exit 1
           bash "$(dirname "$0")/write-gate-last-run.sh" "$REPO_ROOT"
         fi
         exit 0
@@ -1347,7 +1394,16 @@ if [ -n "$GATE_NATIVE_REQUIREMENTS" ]; then
 fi
 
 GATE_TOTAL=$((SECONDS - GATE_START))
-FINAL_SHA="$(git rev-parse HEAD)"
+
+# The banner, receipt and sentinel certify the run that actually executed, never
+# the checkout that happens to be present now. A commit during the run (the
+# 8950dae incident: the run started at 3676245, HEAD advanced to 8950dae, and
+# the banner still said GATE PASSED for 8950dae) must fail closed here.
+if ! assert_gate_frozen_inputs "terminal report"; then
+  GATE_TERMINAL_STATUS=failed
+  exit 1
+fi
+FINAL_SHA="$GATE_FROZEN_REVISION"
 SHORT_SHA="${FINAL_SHA:0:8}"
 
 echo "╔══════════════════════════════════════════════════════╗"
