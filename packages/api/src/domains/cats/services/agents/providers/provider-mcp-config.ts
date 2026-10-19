@@ -16,6 +16,10 @@ import {
 } from '../../../../../config/capabilities/invoke-capability-root.js';
 import { isManagedCatCafeSplit } from '../../../../../config/capabilities/mcp-constants.js';
 import {
+  assertMcpServerEnvReferencesAvailable,
+  MissingMcpEnvironmentVariableError,
+} from '../../../../../config/capabilities/mcp-env-reference.js';
+import {
   resolveMcpArgs,
   resolveMcpCommand,
   resolveMcpWorkingDir,
@@ -56,6 +60,13 @@ export async function resolveProviderMcpConfigResolution(input: {
   }
 
   if (input.credentialFile) catCafeEnvEntries.CAT_CAFE_CREDENTIAL_FILE = input.credentialFile;
+
+  // Claude Code interpolates ${VAR} references itself, so a reference that cannot
+  // be resolved is not an error the CLI would report as such — it would silently
+  // persist a placeholder into the invocation config (or fail only after spawn).
+  // Verify availability over the same environment the CLI will inherit, and refuse
+  // before spawn.
+  const interpolationEnv: Record<string, string | undefined> = { ...process.env, ...input.callbackEnv };
 
   const mcpServers: Record<string, Record<string, unknown>> = {};
   const managedMcpServerNames = new Set<string>();
@@ -102,10 +113,12 @@ export async function resolveProviderMcpConfigResolution(input: {
           const pencil = await resolvePencilCommand({ projectRoot: configSourceRoot });
           if (pencil) mcpServers[s.name] = { command: pencil.command, args: pencil.args };
         } else if (s.transport === 'streamableHttp' && s.url) {
+          assertMcpServerEnvReferencesAvailable({ name: s.name, headers: s.headers }, interpolationEnv);
           const entry: Record<string, unknown> = { type: 'http', url: s.url };
           if (s.headers && Object.keys(s.headers).length > 0) entry.headers = s.headers;
           mcpServers[s.name] = entry;
         } else if (s.command) {
+          assertMcpServerEnvReferencesAvailable({ name: s.name, env: s.env }, interpolationEnv);
           const workingDir = resolveMcpWorkingDir(s.workingDir, configSourceRoot);
           const entry: Record<string, unknown> = {
             command: resolveMcpCommand(s.command, workingDir, configSourceRoot),
@@ -118,7 +131,11 @@ export async function resolveProviderMcpConfigResolution(input: {
       }
       resolved = true;
     }
-  } catch {
+  } catch (error) {
+    // A missing env reference is a fail-closed contract, not a capability-resolution
+    // miss: falling back to the built-in servers would start the CLI with a config
+    // that still contains an unresolved placeholder.
+    if (error instanceof MissingMcpEnvironmentVariableError) throw error;
     // best-effort fallback below
   }
   assertMappedCapabilitySource(resolved, binaryProjectRoot, capabilitiesProjectRoot);
