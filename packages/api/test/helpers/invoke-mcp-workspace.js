@@ -179,14 +179,19 @@ async function codexConfig(_f, workingDirectory) {
 
 export const providers = {
   codex: codexConfig,
-  claude: async (f, workingDirectory) =>
-    (
+  claude: async (f, workingDirectory) => {
+    const callbackEnv = { ...callbackFixture, CAT_CAFE_CAT_ID: 'opus' };
+    return (
       await resolveClaudeMcpConfig({
         workingDirectory,
         mcpServerPath: f.mcpServerPath,
-        callbackEnv: { ...callbackFixture, CAT_CAFE_CAT_ID: 'opus' },
+        callbackEnv,
+        // This fixture compares the config surface, not spawn-env promotion:
+        // model the plain inherited env (no accountEnv / deny-list applied).
+        childEnv: { ...process.env, ...callbackEnv },
       })
-    ).servers,
+    ).servers;
+  },
   kimi: async (f, workingDirectory) => {
     const path = await writeMcpConfigFile(workingDirectory ?? '', f.mcpServerPath, {
       ...callbackFixture,

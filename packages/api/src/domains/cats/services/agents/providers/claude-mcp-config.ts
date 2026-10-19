@@ -11,6 +11,8 @@ export async function resolveClaudeMcpConfig(input: {
   readonly callbackEnv?: Record<string, string>;
   readonly workingDirectory?: string;
   readonly mcpServerPath?: string;
+  /** Environment the `claude` child will inherit — the ground truth for `${VAR}` checks. */
+  readonly childEnv: Readonly<Record<string, string | undefined>>;
 }): Promise<ClaudeMcpConfigResolution | undefined> {
   if (!input.callbackEnv || !input.mcpServerPath) return undefined;
   return resolveProviderMcpConfigResolution({

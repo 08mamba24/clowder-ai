@@ -44,6 +44,14 @@ export async function resolveProviderMcpConfigResolution(input: {
   mcpServerPath: string;
   credentialFile?: string;
   provider?: string;
+  /**
+   * The environment the provider CLI will actually inherit (process env plus the
+   * provider's own overrides/deny-list already applied). `${VAR}` references are
+   * validated against this map — never against the API process env, because a
+   * value may exist in one but not in the child (e.g. account-scoped env vars or
+   * subscription-mode strips).
+   */
+  childEnv: Readonly<Record<string, string | undefined>>;
 }): Promise<{ servers: Record<string, Record<string, unknown>>; source: 'capabilities.json' | 'fallback' }> {
   const distDir = dirname(input.mcpServerPath);
   const binaryProjectRoot = resolve(distDir, '../../..');
@@ -64,9 +72,9 @@ export async function resolveProviderMcpConfigResolution(input: {
   // Claude Code interpolates ${VAR} references itself, so a reference that cannot
   // be resolved is not an error the CLI would report as such — it would silently
   // persist a placeholder into the invocation config (or fail only after spawn).
-  // Verify availability over the same environment the CLI will inherit, and refuse
-  // before spawn.
-  const interpolationEnv: Record<string, string | undefined> = { ...process.env, ...input.callbackEnv };
+  // Verify availability over the exact environment the caller will pass to spawn,
+  // and refuse before spawn.
+  const interpolationEnv = input.childEnv;
 
   const mcpServers: Record<string, Record<string, unknown>> = {};
   const managedMcpServerNames = new Set<string>();

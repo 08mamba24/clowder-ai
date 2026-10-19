@@ -32,7 +32,13 @@ import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 import { buildCliDiagnostics, buildSilentCompletionDiagnostic } from '../../../../../utils/cli-diagnostics.js';
 import { formatCliExitError } from '../../../../../utils/cli-format.js';
 import { formatCliNotFoundError, resolveCliCommand } from '../../../../../utils/cli-resolve.js';
-import { isCliError, isCliTimeout, isLivenessWarning, spawnCli } from '../../../../../utils/cli-spawn.js';
+import {
+  buildChildEnv,
+  isCliError,
+  isCliTimeout,
+  isLivenessWarning,
+  spawnCli,
+} from '../../../../../utils/cli-spawn.js';
 import type { SpawnFn } from '../../../../../utils/cli-types.js';
 import { findMonorepoRoot } from '../../../../../utils/monorepo-root.js';
 import { CliRawArchive } from '../../session/CliRawArchive.js';
@@ -467,6 +473,30 @@ export class ClaudeAgentService implements AgentService {
       args.push('--add-dir', dir);
     }
 
+    // F171/#883/F320: build the CLI env override set exactly once. The same object
+    // is both the MCP environment-reference precondition and the env handed to
+    // spawnCli, so a variable that exists only in the API process (or one added by
+    // accountEnv, or removed by the subscription deny-list / selected-token filter)
+    // is judged by what the child will actually inherit.
+    const envOverrides = buildClaudeEnvOverrides(options?.callbackEnv);
+    // Account env vars applied LAST — user overrides provider-injected values
+    if (options?.accountEnv) {
+      for (const [k, v] of Object.entries(options.accountEnv)) envOverrides[k] = v;
+    }
+    // #883: Subscription mode deny-list must survive accountEnv merge.
+    // Account-level env (e.g. ANTHROPIC_AUTH_TOKEN from a proxy profile)
+    // could re-introduce the proxy token that buildClaudeEnvOverrides cleared.
+    if (options?.callbackEnv?.[ANTHROPIC_PROFILE_MODE_KEY] === 'subscription') {
+      for (const key of SUBSCRIPTION_MODE_DENY_KEYS) envOverrides[key] = null;
+    }
+    if (readOnly) envOverrides.CAT_CAFE_READONLY = 'true';
+    applyClaudeTokenAccountEnv(envOverrides, options?.claudeTokenAccount);
+    // buildChildEnv applies the same inherit/strip/delete rules spawnCli uses, so
+    // `${VAR}` validation below sees the real child environment.
+    const claudeChildEnv = buildChildEnv(envOverrides, {
+      workingDirectory: options?.workingDirectory,
+    });
+
     // #712: Inject ALL enabled MCP servers from capabilities.json at invoke time.
     // Built-in cat-cafe servers resolve paths from distDir; externals use descriptor values.
     // On Windows, Claude CLI treats inline JSON as a file path — write to temp file.
@@ -475,6 +505,7 @@ export class ClaudeAgentService implements AgentService {
         callbackEnv: options?.callbackEnv,
         workingDirectory: options?.workingDirectory,
         mcpServerPath: this.mcpServerPath,
+        childEnv: claudeChildEnv,
       });
       if (mcpResolution) {
         const mcpServers = mcpResolution.servers;
@@ -617,18 +648,8 @@ export class ClaudeAgentService implements AgentService {
       }
 
       let sawResultError = false;
-      const envOverrides = buildClaudeEnvOverrides(options?.callbackEnv);
-      // F171: Account env vars applied LAST — user overrides provider-injected values
-      if (options?.accountEnv) {
-        for (const [k, v] of Object.entries(options.accountEnv)) envOverrides[k] = v;
-      }
-      // #883: Subscription mode deny-list must survive accountEnv merge.
-      // Account-level env (e.g. ANTHROPIC_AUTH_TOKEN from a proxy profile)
-      // could re-introduce the proxy token that buildClaudeEnvOverrides cleared.
-      if (options?.callbackEnv?.[ANTHROPIC_PROFILE_MODE_KEY] === 'subscription') {
-        for (const key of SUBSCRIPTION_MODE_DENY_KEYS) envOverrides[key] = null;
-      }
-      if (readOnly) envOverrides.CAT_CAFE_READONLY = 'true';
+      // envOverrides was assembled before MCP resolution so the `${VAR}`
+      // precheck and the spawn see one environment (see comment above).
 
       // Debug: log full invocation details (env values redacted by pino redact paths)
       const safeEnvSummary: Record<string, string> = {};
@@ -738,7 +759,6 @@ export class ClaudeAgentService implements AgentService {
           ? { rawArchivePath: this.rawArchive.getPath(options.invocationId) }
           : {}),
       };
-      applyClaudeTokenAccountEnv(envOverrides, options?.claudeTokenAccount);
       const events = options?.spawnCliOverride
         ? options.spawnCliOverride(cliOpts)
         : spawnCli(cliOpts, this.spawnFn ? { spawnFn: this.spawnFn } : undefined);

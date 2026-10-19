@@ -1442,6 +1442,192 @@ test('Claude fails closed before spawn when an MCP environment reference is miss
   }
 });
 
+test('Claude resolves MCP env references from the final child env (accountEnv)', async () => {
+  const runtimeRoot = mkdtempSync(join(tmpdir(), 'cat-cafe-claude-account-env-'));
+  const mcpDistDir = join(runtimeRoot, 'packages', 'mcp-server', 'dist');
+  const projectDir = mkdtempSync(join(tmpdir(), 'cat-cafe-claude-account-env-project-'));
+  const envKey = 'TEST_CLAUDE_ACCOUNT_MCP_TOKEN';
+  const previousToken = process.env[envKey];
+  delete process.env[envKey];
+  mkdirSync(mcpDistDir, { recursive: true });
+  writeFileSync(join(mcpDistDir, 'index.js'), '// stub', 'utf8');
+  writeCapabilitiesConfig(runtimeRoot, [
+    {
+      id: 'env-backed-remote',
+      type: 'mcp',
+      globalEnabled: true,
+      source: 'external',
+      mcpServer: {
+        transport: 'streamableHttp',
+        url: 'https://mcp.example.test',
+        headers: { Authorization: `Bearer \${${envKey}}` },
+      },
+    },
+  ]);
+
+  const proc = createMockProcess();
+  const spawnFn = createMockSpawnFn(proc);
+  const service = createClaudeAgentService({
+    spawnFn,
+    model: 'claude-test-model',
+    mcpServerPath: join(mcpDistDir, 'index.js'),
+  });
+
+  try {
+    const promise = collect(
+      service.invoke('hello', {
+        workingDirectory: projectDir,
+        callbackEnv: { CAT_CAFE_CAT_ID: 'opus' },
+        accountEnv: { [envKey]: 'account-scoped-secret' },
+      }),
+    );
+    // Fail fast if the invocation rejects before the mock CLI starts, instead of
+    // waiting for events that a never-spawned process will not emit.
+    promise.catch(() => {});
+    await Promise.race([
+      emitClaudeEvents(proc, [{ type: 'result', subtype: 'success' }]),
+      promise.then(() => {
+        throw new Error('invocation completed before the mock CLI lifecycle started');
+      }),
+    ]);
+    await promise;
+
+    assert.equal(spawnFn.mock.calls.length, 1);
+    const spawnOptions = spawnFn.mock.calls[0].arguments[2];
+    assert.equal(spawnOptions.env[envKey], 'account-scoped-secret');
+    const args = spawnFn.mock.calls[0].arguments[1];
+    const parsed = JSON.parse(args[args.indexOf('--mcp-config') + 1]);
+    // Persistent config keeps the placeholder; the secret never enters argv.
+    assert.equal(parsed.mcpServers['env-backed-remote'].headers.Authorization, `Bearer \${${envKey}}`);
+    assert.doesNotMatch(args.join('\n'), /account-scoped-secret/);
+  } finally {
+    if (previousToken === undefined) delete process.env[envKey];
+    else process.env[envKey] = previousToken;
+    rmSync(runtimeRoot, { recursive: true, force: true });
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test('Claude fails closed when accountEnv blanks a referenced MCP variable', async () => {
+  const runtimeRoot = mkdtempSync(join(tmpdir(), 'cat-cafe-claude-env-blanked-'));
+  const mcpDistDir = join(runtimeRoot, 'packages', 'mcp-server', 'dist');
+  const projectDir = mkdtempSync(join(tmpdir(), 'cat-cafe-claude-env-blanked-project-'));
+  const envKey = 'TEST_CLAUDE_BLANKED_MCP_TOKEN';
+  const previousToken = process.env[envKey];
+  process.env[envKey] = 'live-process-value';
+  mkdirSync(mcpDistDir, { recursive: true });
+  writeFileSync(join(mcpDistDir, 'index.js'), '// stub', 'utf8');
+  writeCapabilitiesConfig(runtimeRoot, [
+    {
+      id: 'env-backed-remote',
+      type: 'mcp',
+      globalEnabled: true,
+      source: 'external',
+      mcpServer: {
+        transport: 'streamableHttp',
+        url: 'https://mcp.example.test',
+        headers: { Authorization: `Bearer \${${envKey}}` },
+      },
+    },
+  ]);
+
+  const proc = createMockProcess();
+  const spawnFn = createMockSpawnFn(proc);
+  const service = createClaudeAgentService({
+    spawnFn,
+    model: 'claude-test-model',
+    mcpServerPath: join(mcpDistDir, 'index.js'),
+  });
+
+  const controller = new AbortController();
+  try {
+    const invocation = collect(
+      service.invoke('hello', {
+        workingDirectory: projectDir,
+        callbackEnv: { CAT_CAFE_CAT_ID: 'opus' },
+        // Account env is applied after the process env — the child receives ''.
+        accountEnv: { [envKey]: '' },
+        signal: controller.signal,
+      }),
+    );
+    invocation.catch(() => {});
+    // If this regresses, the invocation spawns and waits for events forever;
+    // fail fast rather than hanging on a mock CLI that will never emit.
+    const deadline = new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('invocation did not fail before spawn')), 5_000);
+      timer.unref?.();
+    });
+    await assert.rejects(() => Promise.race([invocation, deadline]), new RegExp(`env-backed-remote.*${envKey}`));
+
+    assert.equal(spawnFn.mock.calls.length, 0);
+  } finally {
+    controller.abort();
+    if (previousToken === undefined) delete process.env[envKey];
+    else process.env[envKey] = previousToken;
+    rmSync(runtimeRoot, { recursive: true, force: true });
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test('Claude fails closed when subscription mode strips a referenced MCP variable', async () => {
+  const runtimeRoot = mkdtempSync(join(tmpdir(), 'cat-cafe-claude-env-stripped-'));
+  const mcpDistDir = join(runtimeRoot, 'packages', 'mcp-server', 'dist');
+  const projectDir = mkdtempSync(join(tmpdir(), 'cat-cafe-claude-env-stripped-project-'));
+  const envKey = 'ANTHROPIC_AUTH_TOKEN';
+  const previousToken = process.env[envKey];
+  process.env[envKey] = 'shell-proxy-token';
+  mkdirSync(mcpDistDir, { recursive: true });
+  writeFileSync(join(mcpDistDir, 'index.js'), '// stub', 'utf8');
+  writeCapabilitiesConfig(runtimeRoot, [
+    {
+      id: 'env-backed-remote',
+      type: 'mcp',
+      globalEnabled: true,
+      source: 'external',
+      mcpServer: {
+        transport: 'streamableHttp',
+        url: 'https://mcp.example.test',
+        headers: { Authorization: `Bearer \${${envKey}}` },
+      },
+    },
+  ]);
+
+  const proc = createMockProcess();
+  const spawnFn = createMockSpawnFn(proc);
+  const service = createClaudeAgentService({
+    spawnFn,
+    model: 'claude-test-model',
+    mcpServerPath: join(mcpDistDir, 'index.js'),
+  });
+
+  const controller = new AbortController();
+  try {
+    const invocation = collect(
+      service.invoke('hello', {
+        workingDirectory: projectDir,
+        callbackEnv: { CAT_CAFE_CAT_ID: 'opus', CAT_CAFE_ANTHROPIC_PROFILE_MODE: 'subscription' },
+        signal: controller.signal,
+      }),
+    );
+    invocation.catch(() => {});
+    // If this regresses, the invocation spawns and waits for events forever;
+    // fail fast rather than hanging on a mock CLI that will never emit.
+    const deadline = new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('invocation did not fail before spawn')), 5_000);
+      timer.unref?.();
+    });
+    await assert.rejects(() => Promise.race([invocation, deadline]), new RegExp(`env-backed-remote.*${envKey}`));
+
+    assert.equal(spawnFn.mock.calls.length, 0);
+  } finally {
+    controller.abort();
+    if (previousToken === undefined) delete process.env[envKey];
+    else process.env[envKey] = previousToken;
+    rmSync(runtimeRoot, { recursive: true, force: true });
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
 test('#712: Claude merge excludes disabled capability-managed user entries', async () => {
   const runtimeRoot = mkdtempSync(join(tmpdir(), 'cat-cafe-claude-disabled-merge-runtime-'));
   const mcpDistDir = join(runtimeRoot, 'packages', 'mcp-server', 'dist');
