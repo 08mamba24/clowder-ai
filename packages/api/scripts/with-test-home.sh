@@ -13,6 +13,18 @@ cleanup() {
 
 trap cleanup EXIT
 
+# A gate launched from a dev-server shell inherits the launcher's exported
+# shell functions (BASH_FUNC_compile_packages%%, ...). Bash re-exports every
+# imported function to its children, and the tmux pane environment contract
+# rejects those keys outright, so pane-spawning suites fail only when the gate
+# was launched from the launcher's own environment. Shell functions are
+# launcher implementation detail, never fixture state: drop every inherited
+# one and keep only this wrapper's own cleanup. This is the same class of
+# isolation as the CAT_CAFE_* execution coordinates below.
+while IFS= read -r fn; do
+  [ "$fn" = cleanup ] || unset -f "$fn" 2>/dev/null || true
+done < <(declare -F | awk '{print $NF}')
+
 export HOME="$test_home"
 # P1-13: os.homedir() resolves from USERPROFILE on Windows and from HOME
 # elsewhere, so isolating one coordinate and inheriting the other leaves the
