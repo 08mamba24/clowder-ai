@@ -118,6 +118,21 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
     source: 'https://developers.openai.com/api/docs/pricing',
     verifiedAt: '2026-09-23',
   },
+  // OpenAI GPT-6.1 Sol — standard; >272K input tokens: 2× input/cache and 1.5× output.
+  'gpt-6.1-sol': {
+    inputPerMillion: 2.0,
+    cachedInputPerMillion: 0.1,
+    outputPerMillion: 10.0,
+    source: 'https://developers.openai.com/api/docs/models/gpt-6.1-sol',
+    verifiedAt: '2026-10-19',
+  },
+  'gpt-6.1-sol-long': {
+    inputPerMillion: 4.0,
+    cachedInputPerMillion: 0.2,
+    outputPerMillion: 15.0,
+    source: 'https://developers.openai.com/api/docs/models/gpt-6.1-sol',
+    verifiedAt: '2026-10-19',
+  },
 
   // ── DeepSeek ───────────────────────────────────────────────────────
   // Official peak rates (USD / 1M). Off-peak is half. Peak hours UTC Mon–Fri
