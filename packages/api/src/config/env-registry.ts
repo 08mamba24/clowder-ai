@@ -427,6 +427,16 @@ export const ENV_VARS: EnvDefinition[] = [
     runtimeEditable: false,
   },
   {
+    name: 'CAT_CAFE_MCP_CALLBACK_CREDENTIALS',
+    defaultValue: '(空)',
+    description:
+      'MCP 挂载能力声明，非凭据：启动方显式置 "false" 表示该挂载没有 invocation/agent-key callback 凭据（如 Qoder 只读记忆 shim 只收身份变量），' +
+      'canonical 投影将不广告只能走 callback 的工具；未设置时保持历史工具面不变。启动时不做凭据探测。',
+    category: 'server',
+    sensitive: false,
+    runtimeEditable: false,
+  },
+  {
     name: 'CAT_CAFE_AGENT_KEY_BOUND_CAT_ID',
     defaultValue: '(空)',
     description:

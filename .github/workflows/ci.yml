@@ -21,6 +21,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  fork-compat:
+    name: Fork compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.20.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Fork-only provider/composition contracts. The same selection source and
+      # runner are used by the local pre-merge gate (`test:fork-compat:prepared`).
+      - name: Run fork compatibility suites
+        run: pnpm --filter @cat-cafe/api run test:fork-compat
+        env:
+          GIT_AUTHOR_NAME: CI Runner
+          GIT_AUTHOR_EMAIL: ci@clowder-ai.dev
+          GIT_COMMITTER_NAME: CI Runner
+          GIT_COMMITTER_EMAIL: ci@clowder-ai.dev
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

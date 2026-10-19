@@ -162,12 +162,14 @@ export const externalRuntimeSessionReadTools = [
     description:
       'List orphan, dispatched, or IDE-direct external runtime sessions by runtime, cat, and recent activity. ' +
       'Use when an external runtime session looks lost, detached from the current thread, or needs cross-runtime drilldown. ' +
-      'Use before reading digest/events when there is no normal Clowder AI thread yet.',
+      'Use before reading digest/events when there is no normal Clowder AI thread yet. ' +
+      'BOUNDARY: local-process read (GET /api/external-runtime-sessions) with CAT_CAFE_USER_ID / optional CAT_CAFE_CAT_ID attribution; the API enforces user/thread/cat ownership. No elevation, default-identity change, or caller-supplied ownership.',
     inputSchema: listExternalRuntimeSessionsInputSchema,
     handler: handleListExternalRuntimeSessions,
     governance: {
       implementationExport: 'handleListExternalRuntimeSessions',
       action: 'read',
+      authority: 'local-runtime',
       risk: { level: 'read', openWorld: false },
       runtimeProfiles: ['full', 'readonly', 'desktop:live-companion'],
       targetExposure: 'lazy-discoverable',
@@ -178,12 +180,14 @@ export const externalRuntimeSessionReadTools = [
     description:
       'Read one external runtime session metadata record and drilldown pointers. ' +
       'Use after list when you need the sessionId, runtime binding, digest pointer, or handoff event path for an external runtime session. ' +
-      'After this, use cat_cafe_read_session_digest or cat_cafe_read_session_events with the returned sessionId.',
+      'After this, use cat_cafe_read_session_digest or cat_cafe_read_session_events with the returned sessionId. ' +
+      'BOUNDARY: local-process read (GET /api/external-runtime-sessions/:sessionId) with CAT_CAFE_USER_ID / optional CAT_CAFE_CAT_ID attribution; the API enforces user/thread/cat ownership. No elevation, default-identity change, or caller-supplied ownership.',
     inputSchema: readExternalRuntimeSessionInputSchema,
     handler: handleReadExternalRuntimeSession,
     governance: {
       implementationExport: 'handleReadExternalRuntimeSession',
       action: 'read',
+      authority: 'local-runtime',
       risk: { level: 'read', openWorld: false },
       runtimeProfiles: ['full', 'readonly', 'desktop:live-companion'],
       targetExposure: 'lazy-discoverable',

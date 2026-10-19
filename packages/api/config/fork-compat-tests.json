@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "description": "Fork-only compatibility suites that must run on every upstream merge, even when the provider files themselves did not change. One selection source for CI and the local pre-merge gate; tests are grouped by the fork contract they protect, not by production tool ownership.",
+  "groups": {
+    "qoder-memory-surface": [
+      "test/qoder-l2-tool-surface.test.js",
+      "test/qoder-agent-service.test.js",
+      "test/qoder-memory-policy-sandbox.test.js"
+    ],
+    "zcode-acp-contract": ["test/acp/zcode-acp-startup.test.js", "test/acp/zcode-acp-adapter.contract.test.js"],
+    "dsh-acp-contract": ["test/acp/dsh-acp-bootstrap.test.js", "test/acp/dsh-family-mcp-callback.test.js"],
+    "origin-upstream-composition": ["test/origin-upstream-boot-smoke.test.js"]
+  }
+}

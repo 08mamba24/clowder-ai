@@ -489,8 +489,13 @@ fi
 # terminal green can be settled without it ever passing. The cheap check tiers
 # run in both modes. scripts/gate-required-stages.test.mjs pins this.
 if [ "$TEST_MODE" = "public" ]; then
-  GATE_REQUIRED_STAGES="check-sources,check-installed,tsc,test-public,lint-web,check"
+  # fork-compat is an explicit named stage in public mode: the public resolver
+  # covers the same files, but the fork gate must prove its own selection source
+  # ran rather than infer coverage from a broader suite.
+  GATE_REQUIRED_STAGES="check-sources,check-installed,tsc,fork-compat,test-public,lint-web,check"
 else
+  # Full mode runs every workspace test (including the fork-compat files) via
+  # test-non-browser; no separate stage is added.
   GATE_REQUIRED_STAGES="check-sources,check-installed,tsc,test-non-browser,test-web-unit,test-web-browser,test-web-guards,lint-web,check"
 fi
 
@@ -1268,6 +1273,16 @@ STEP_START=$SECONDS
 # resource claim; a timed-out test may have spawned a detached child.
 if [ "$TEST_MODE" = "public" ]; then
   echo "── Step 5/6: Public repo test suite ──"
+  # Fork-only provider/composition contracts. Same resolver + runner as the CI
+  # `Fork compatibility` job; dist is already built by Step 3, so the prepared
+  # entrypoint avoids a second build.
+  if ! run_resumable_gate_stage shared fork-compat env -u REDIS_URL pnpm --filter @cat-cafe/api run test:fork-compat:prepared; then
+    echo ""
+    echo -e "${RED}❌ Fork 兼容性测试未通过${NC}"
+    echo "   这些用例保护 Qoder/ZCode/DSH 分支能力与 origin↔upstream 组合缝；上游合并不触及 provider 文件时也必须通过。"
+    exit 1
+  fi
+  echo -e "${GREEN}✓ Fork 兼容性测试通过${NC}"
   if ! run_resumable_gate_stage shared test-public env -u REDIS_URL pnpm --filter @cat-cafe/api run test:public; then
     echo ""
     echo -e "${RED}❌ Public 测试未通过${NC}"
