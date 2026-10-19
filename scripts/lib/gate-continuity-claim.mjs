@@ -10,11 +10,12 @@ import {
 import { gateRunHasScope } from './gate-verification-scope.mjs';
 import { stablePatchId } from './git-patch-id.mjs';
 
-export const CONTINUITY_POLICY = 'gate-owner-c2-v3';
+export const CONTINUITY_POLICY = 'gate-owner-c2-v4';
 export const CONTINUITY_CHECKS = Object.freeze([
   'risk-matched-targeted-evidence',
   'cross-package-typecheck',
   'docs-validation',
+  'fork-compatibility',
 ]);
 const OID = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
 const CLAIM_ID = /^[a-f0-9]{64}$/u;

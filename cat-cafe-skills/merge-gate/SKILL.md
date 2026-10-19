@@ -232,6 +232,8 @@ pnpm gate
 
 已完成的只有 base 冻结、route 分类、`assuranceLevel` 判定；**没有跑任何测试、类型检查或 lint**。作者随后必须自己实跑 `Still owed` 列出的受影响检查（触及跨包类型时补对应 typecheck），把命令逐条写进 evidence manifest 的 `gate_commands`；`gate_passed` 只能由这些命令的真实退出码决定，classifier 的 3 不是它的输入。
 
+**Fork 合入的固定欠项**：分类器的 `requiredChecks` 总会包含 `fork-compatibility`（除非同一 HEAD 的 full-green 复用已经执行过同一选择）。在 exact HEAD 实跑 `pnpm --filter @cat-cafe/api run test:fork-compat`（或在 evidence manifest 出示覆盖该选择的同 HEAD full-green），把命令写进 `gate_commands`。只跑作者自选的受影响检查、或引用别处的绿，都不构成 fork 合入验收。该 suite 的唯一选择源是 `packages/api/config/fork-compat-tests.json`，同时覆盖 API provider/composition 契约与 mcp-server 的 mount 能力投影；CI 的 `Fork compatibility` 结果由必过 aggregate `Test (Public)` 消费。
+
 **runtime 未激活时的读法**：渲染器代码已在 main，但 `live=dormant`——runtime 经 ADR-039 `pnpm runtime:restart` 激活前（在线时 `pnpm start` 是 no-op，不激活），managed 唤醒仍按旧逻辑把它显示成「❌ 退出码 3」。看到「退出码 3」一律按 3 的语义读（已分类、未验证）：不要去 debug 一个没坏的东西，也不要为它重跑 full。
 
 历史事故：S1 之前这条路径 exit 0 + 一行黄字，2026-09-20 opus5 六次 gate 实录第 3 次差点看绿开 PR（`[thread-id]#private-source-id`）；退出码 3 与末行声明就是为此改的。

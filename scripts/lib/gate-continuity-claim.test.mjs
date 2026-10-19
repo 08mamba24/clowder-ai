@@ -60,6 +60,7 @@ test('producer and consumer bind an explicit C2 assertion without rewriting the 
     'risk-matched-targeted-evidence',
     'cross-package-typecheck',
     'docs-validation',
+    'fork-compatibility',
   ]);
   assert.deepEqual(readGateRun(f.databasePath, f.run.runId), before);
   assert.equal(listGateRuns(f.databasePath).length, 1);

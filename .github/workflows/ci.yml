@@ -302,7 +302,10 @@ jobs:
 
   test:
     name: Test (Public)
-    needs: [public-test-prepare, public-test-shards, public-test-summary, public-test-serial, public-test-contract]
+    # The aggregate is the required check. Consume the fork-compat job here as
+    # well, otherwise a separate job can fail while an older required aggregate
+    # still reports green.
+    needs: [public-test-prepare, public-test-shards, public-test-summary, public-test-serial, public-test-contract, fork-compat]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -314,21 +317,33 @@ jobs:
           SHARDED_RESULT: ${{ needs.public-test-shards.result }}
           SUMMARY_RESULT: ${{ needs.public-test-summary.result }}
           SERIAL_RESULT: ${{ needs.public-test-serial.result }}
+          FORK_COMPAT_RESULT: ${{ needs.fork-compat.result }}
           TEST_MODE: ${{ needs.public-test-prepare.outputs.mode }}
         run: |
           set -euo pipefail
-          [[ "$PREPARE_RESULT" == 'success' ]]
-          [[ "$CONTRACT_RESULT" == 'success' ]]
+          # Explicit guards rather than bare `[[ ]]` under errexit: this
+          # aggregate is the required merge outlet and must fail closed on
+          # every bash version, including macOS bash 3.2 where a failing
+          # `[[ ]]` does not abort the script.
+          require_result() {
+            if [[ "$1" != "$2" ]]; then
+              echo "$3 result is $1, expected $2" >&2
+              exit 1
+            fi
+          }
+          require_result "$PREPARE_RESULT" success 'public-test-prepare'
+          require_result "$CONTRACT_RESULT" success 'public-test-contract'
+          require_result "$FORK_COMPAT_RESULT" success 'fork-compat'
           case "$TEST_MODE" in
             sharded)
-              [[ "$SHARDED_RESULT" == 'success' ]]
-              [[ "$SUMMARY_RESULT" == 'success' ]]
-              [[ "$SERIAL_RESULT" == 'skipped' ]]
+              require_result "$SHARDED_RESULT" success 'public-test-shards'
+              require_result "$SUMMARY_RESULT" success 'public-test-summary'
+              require_result "$SERIAL_RESULT" skipped 'public-test-serial'
               ;;
             serial)
-              [[ "$SERIAL_RESULT" == 'success' ]]
-              [[ "$SHARDED_RESULT" == 'skipped' ]]
-              [[ "$SUMMARY_RESULT" == 'skipped' ]]
+              require_result "$SERIAL_RESULT" success 'public-test-serial'
+              require_result "$SHARDED_RESULT" skipped 'public-test-shards'
+              require_result "$SUMMARY_RESULT" skipped 'public-test-summary'
               ;;
             *)
               echo "unknown public-test mode: $TEST_MODE" >&2

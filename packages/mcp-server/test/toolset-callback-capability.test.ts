@@ -75,4 +75,65 @@ describe('callback capability projection', () => {
     assert.ok(filtered.includes('cat_cafe_search_evidence'));
     assert.deepEqual(filtered, names(buildMemoryTools(READONLY_WITHOUT_CALLBACK)));
   });
+
+  it('does not widen a no-callback mount through incidental agent-key or union flags', () => {
+    const tools = [{ name: 'cat_cafe_cross_post_message' }, { name: 'cat_cafe_search_evidence' }];
+    // With the union enabled, an agent-key-only tool would normally be added.
+    assert.deepEqual(names(applyReadonlyFilter(tools, { readonly: true, hasAgentKey: true, agentKeyUnion: true })), [
+      'cat_cafe_cross_post_message',
+      'cat_cafe_search_evidence',
+    ]);
+    // The explicit capability false wins: incidental identity vars cannot make
+    // a callback-only tool callable, so it must not be advertised.
+    assert.deepEqual(
+      names(
+        applyReadonlyFilter(tools, {
+          readonly: true,
+          hasAgentKey: true,
+          agentKeyUnion: true,
+          callbackCredentials: false,
+        }),
+      ),
+      ['cat_cafe_search_evidence'],
+    );
+    const env = parseToolsetEnv({
+      CAT_CAFE_READONLY: 'true',
+      CAT_CAFE_READONLY_AGENT_KEY_UNION: 'true',
+      CAT_CAFE_AGENT_KEY_SECRET: 'incidental-agent-key',
+      CAT_CAFE_MCP_CALLBACK_CREDENTIALS: 'false',
+    } as NodeJS.ProcessEnv);
+    assert.equal(env.hasAgentKey, true);
+    assert.equal(env.agentKeyUnion, true);
+    assert.equal(env.callbackCredentials, false);
+    const surface = names(buildMemoryTools(env));
+    assert.ok(surface.includes('cat_cafe_search_evidence'), 'local document search stays available');
+    assert.ok(!surface.includes('cat_cafe_get_recall_metrics'), 'callback-only metrics stay withheld');
+    assert.ok(!surface.includes('cat_cafe_read_meeting_artifact'), 'callback-only meeting reads stay withheld');
+  });
+
+  it('reports the message-mode limitation without issuing a callback request', async () => {
+    const previousEnv = { ...process.env };
+    const previousFetch = globalThis.fetch;
+    let requests = 0;
+    process.env.CAT_CAFE_MCP_CALLBACK_CREDENTIALS = 'false';
+    // Credentials may be inherited incidentally; the declaration still wins.
+    process.env.CAT_CAFE_INVOCATION_ID = 'capability-test-invocation';
+    process.env.CAT_CAFE_CALLBACK_TOKEN = 'capability-test-token';
+    globalThis.fetch = async () => {
+      requests += 1;
+      throw new Error('message mode must not reach the callback transport');
+    };
+    try {
+      const { handleSearchEvidence } = await import('../src/tools/evidence-tools.js');
+      const result = await handleSearchEvidence({ query: 'piano', resultUnit: 'message' });
+      assert.equal(requests, 0, 'a no-callback mount must not attempt a callback request');
+      assert.equal(result.isError, true);
+      assert.match(result.content[0].text, /resultUnit=message requires invocation or agent-key credentials/);
+      assert.match(result.content[0].text, /Retry with resultUnit="document"/);
+    } finally {
+      globalThis.fetch = previousFetch;
+      for (const key of Object.keys(process.env)) if (!(key in previousEnv)) delete process.env[key];
+      Object.assign(process.env, previousEnv);
+    }
+  });
 });
