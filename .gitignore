@@ -76,6 +76,9 @@ cat-config.json
 # Claude Code skills — cat-cafe symlinks are tracked; plugin-generated ones are not
 .claude/skills/pencil-renderer
 .claude/skills/pencil-to-code
+# The cat runtime mounts the shared skill tree here per machine (symlinks, not
+# sources). It is runtime state, so a merge gate must not see it as dirty work.
+.claude/skills/
 
 # Claude local project memory / backup files
 .claude/projects/
