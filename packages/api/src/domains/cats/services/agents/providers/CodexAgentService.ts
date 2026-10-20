@@ -1743,7 +1743,9 @@ export class CodexAgentService implements AgentService {
               ),
             }
           : await buildCatCafeMcpArgs(mcpCallbackEnv, options?.workingDirectory);
-    const gitRepoArgs = readOnly || live || native ? [] : buildGitRepoArgs(options?.workingDirectory);
+    // Non-Git projects also need this startup flag for read-only turns.
+    // The sandbox, approval policy, and capability restrictions remain separate.
+    const gitRepoArgs = live || native ? [] : buildGitRepoArgs(options?.workingDirectory);
     // User-defined CLI args from the member editor (#567) — passed as-is, no implicit wrapping.
     // Each entry is split by whitespace (e.g. "--config model_reasoning_effort=\"low\"").
     // F203 Phase C / 砚砚 P1: strip reserved system config keys (developer_instructions,
