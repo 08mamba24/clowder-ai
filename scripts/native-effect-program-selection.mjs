@@ -5,7 +5,10 @@ import { commandName } from './native-effect-shell-tokenizer.mjs';
 import { classifyNativeTarget } from './native-effect-target-classifier.mjs';
 
 // Exact reviewed repository wrapper, not a name-based exemption for runtime code.
-const GH_WRAPPER_SHA256 = '90a1f78629e42dede68328a37585aef60b35e7beb2e00637f62dde2a6ffc921c';
+// The pin follows the wrapper merged by e61291c03 (qoder repository reads); the
+// merge that brought it in kept the older pin, so every verified gh read was
+// denied with protected_target_unparsed. Keep the two in lockstep.
+const GH_WRAPPER_SHA256 = '5ec246d687ffc330d274f356b40ab6738d7e02e073e645b2c364c2f1b7ad6bb8';
 const ordinary = (path) => classifyNativeTarget(path, undefined, 'unknown').kind === 'ordinary';
 const literal = (value) => typeof value === 'string' && !/[$`*?[\]{}\n\r]/.test(value);
 

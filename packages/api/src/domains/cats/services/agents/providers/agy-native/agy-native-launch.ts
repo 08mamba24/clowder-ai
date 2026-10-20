@@ -2,6 +2,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import type { AgyProfileConfig, CatId, NativeSessionBinding } from '@cat-cafe/shared';
 import { resolveCliCommand } from '../../../../../../utils/cli-resolve.js';
+import { buildChildEnv } from '../../../../../../utils/cli-spawn.js';
 import type { CliSpawnOptions } from '../../../../../../utils/cli-types.js';
 import { findMonorepoRoot } from '../../../../../../utils/monorepo-root.js';
 import type { AgentServiceOptions, PreparedProviderRequestV1 } from '../../../types.js';
@@ -124,6 +125,13 @@ async function materializeTaskMcp(
   const credential = ordinary && callbackEnv ? prepareAgyNativeCredentialFile(home, callbackEnv ?? {}) : undefined;
   try {
     const runtimeRoot = findMonorepoRoot(process.cwd());
+    // AGY spawns with inheritParentEnv:false, so `${VAR}` availability must be
+    // judged against the same isolated env the CLI receives (see cliOptions below),
+    // not the API process env.
+    const childEnv = buildChildEnv(
+      { ...isolatedOAuthEnv(home), ...executionOwnerEnv(input.options) },
+      { inheritParentEnv: false, workingDirectory: input.workspace },
+    );
     const resolvedServers =
       ordinary && credential
         ? await resolveProviderMcpConfig({
@@ -132,6 +140,7 @@ async function materializeTaskMcp(
             mcpServerPath: join(runtimeRoot, 'packages/mcp-server/dist/index.js'),
             credentialFile: credential.path,
             provider: 'google',
+            childEnv,
           })
         : undefined;
     materializeAgyNativeMcpConfig({

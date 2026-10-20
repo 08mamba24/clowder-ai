@@ -1523,9 +1523,15 @@ build_packages() {
     BUILD_IDENTITY_PENDING=true
     # Preserve the public launcher and alpha coordinates; export only its
     # compiler/log functions into the awaited, independently owned POSIX group.
-    export -f compile_packages run_logged_step run_in_dir
-    if PROJECT_DIR="$PROJECT_DIR" PROD_WEB="$PROD_WEB" RED="$RED" GREEN="$GREEN" CYAN="$CYAN" NC="$NC" \
-        node "$SCRIPT_DIR/lib/build-identity.cjs" run "$PROJECT_DIR" "$selected_packages" bash -c compile_packages; then
+    # The export must die with that child. A launcher-wide `export -f` leaves
+    # BASH_FUNC_* keys in the environment of the long-running server this script
+    # starts afterwards, and the tmux pane environment contract rejects them, so
+    # every agent pane spawned from a dev-started server would fail to launch.
+    if (
+        export -f compile_packages run_logged_step run_in_dir
+        PROJECT_DIR="$PROJECT_DIR" PROD_WEB="$PROD_WEB" RED="$RED" GREEN="$GREEN" CYAN="$CYAN" NC="$NC" \
+            node "$SCRIPT_DIR/lib/build-identity.cjs" run "$PROJECT_DIR" "$selected_packages" bash -c compile_packages
+    ); then
         rc=0
     else
         rc=$?

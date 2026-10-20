@@ -21,6 +21,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  fork-compat:
+    name: Fork compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.20.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Fork-only provider/composition contracts. The same selection source and
+      # runner are used by the local pre-merge gate (`test:fork-compat:prepared`).
+      - name: Run fork compatibility suites
+        run: pnpm --filter @cat-cafe/api run test:fork-compat
+        env:
+          GIT_AUTHOR_NAME: CI Runner
+          GIT_AUTHOR_EMAIL: ci@clowder-ai.dev
+          GIT_COMMITTER_NAME: CI Runner
+          GIT_COMMITTER_EMAIL: ci@clowder-ai.dev
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -280,7 +302,10 @@ jobs:
 
   test:
     name: Test (Public)
-    needs: [public-test-prepare, public-test-shards, public-test-summary, public-test-serial, public-test-contract]
+    # The aggregate is the required check. Consume the fork-compat job here as
+    # well, otherwise a separate job can fail while an older required aggregate
+    # still reports green.
+    needs: [public-test-prepare, public-test-shards, public-test-summary, public-test-serial, public-test-contract, fork-compat]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -292,21 +317,33 @@ jobs:
           SHARDED_RESULT: ${{ needs.public-test-shards.result }}
           SUMMARY_RESULT: ${{ needs.public-test-summary.result }}
           SERIAL_RESULT: ${{ needs.public-test-serial.result }}
+          FORK_COMPAT_RESULT: ${{ needs.fork-compat.result }}
           TEST_MODE: ${{ needs.public-test-prepare.outputs.mode }}
         run: |
           set -euo pipefail
-          [[ "$PREPARE_RESULT" == 'success' ]]
-          [[ "$CONTRACT_RESULT" == 'success' ]]
+          # Explicit guards rather than bare `[[ ]]` under errexit: this
+          # aggregate is the required merge outlet and must fail closed on
+          # every bash version, including macOS bash 3.2 where a failing
+          # `[[ ]]` does not abort the script.
+          require_result() {
+            if [[ "$1" != "$2" ]]; then
+              echo "$3 result is $1, expected $2" >&2
+              exit 1
+            fi
+          }
+          require_result "$PREPARE_RESULT" success 'public-test-prepare'
+          require_result "$CONTRACT_RESULT" success 'public-test-contract'
+          require_result "$FORK_COMPAT_RESULT" success 'fork-compat'
           case "$TEST_MODE" in
             sharded)
-              [[ "$SHARDED_RESULT" == 'success' ]]
-              [[ "$SUMMARY_RESULT" == 'success' ]]
-              [[ "$SERIAL_RESULT" == 'skipped' ]]
+              require_result "$SHARDED_RESULT" success 'public-test-shards'
+              require_result "$SUMMARY_RESULT" success 'public-test-summary'
+              require_result "$SERIAL_RESULT" skipped 'public-test-serial'
               ;;
             serial)
-              [[ "$SERIAL_RESULT" == 'success' ]]
-              [[ "$SHARDED_RESULT" == 'skipped' ]]
-              [[ "$SUMMARY_RESULT" == 'skipped' ]]
+              require_result "$SERIAL_RESULT" success 'public-test-serial'
+              require_result "$SHARDED_RESULT" skipped 'public-test-shards'
+              require_result "$SUMMARY_RESULT" skipped 'public-test-summary'
               ;;
             *)
               echo "unknown public-test mode: $TEST_MODE" >&2

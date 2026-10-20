@@ -42,6 +42,7 @@ import {
 
 const here = import.meta.dirname;
 const repoRoot = resolveRepoRoot();
+const mcp = await import(join(repoRoot, 'packages', 'mcp-server', 'dist', 'server-toolsets.js'));
 
 function resolveRepoRoot() {
   // packages/api/test -> repo root (three levels up).
@@ -147,6 +148,10 @@ function runMemoryShimUnderPolicy({ policyText, dir }) {
       capabilities: {},
       clientInfo: { name: 'seatbelt-regression', version: '0.0.0' },
     },
+  })}\n${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n${JSON.stringify({
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/list',
   })}\n`;
 
   const wrapper = join(repoRoot, 'scripts', 'qoder-shell-sandbox.mjs');
@@ -159,6 +164,9 @@ function runMemoryShimUnderPolicy({ policyText, dir }) {
       CAT_CAFE_DATA_DIR: mcpDataDir,
       CAT_CAFE_READONLY: 'true',
       CAT_CAFE_READONLY_AGENT_KEY_UNION: 'false',
+      // The Qoder mount receives identity vars only; this explicit capability
+      // declaration is what the production mcp-config writes.
+      CAT_CAFE_MCP_CALLBACK_CREDENTIALS: 'false',
       CAT_CAFE_QODER_SANDBOX_BIN: '/usr/bin/sandbox-exec',
       CAT_CAFE_QODER_WORKSPACE_POLICY: policyPath,
       CAT_CAFE_QODER_MEMORY_POLICY: policyPath,
@@ -168,6 +176,43 @@ function runMemoryShimUnderPolicy({ policyText, dir }) {
     encoding: 'utf8',
     timeout: 30_000,
   });
+}
+
+function jsonRpcResults(stdout) {
+  const results = new Map();
+  for (const line of String(stdout ?? '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) continue;
+    try {
+      const message = JSON.parse(trimmed);
+      if (message && typeof message === 'object' && 'id' in message && 'result' in message) {
+        results.set(message.id, message.result);
+      }
+    } catch {
+      // Diagnostics on stdout are not protocol evidence; ignore.
+    }
+  }
+  return results;
+}
+
+function assertAdvertisedSurface(result) {
+  const results = jsonRpcResults(result.stdout);
+  assert.ok(results.has(1), `memory MCP must answer initialize; stdout=${JSON.stringify(result.stdout)}`);
+  const list = results.get(2);
+  assert.ok(
+    list && Array.isArray(list.tools),
+    `memory MCP must answer tools/list; stdout=${JSON.stringify(result.stdout)}`,
+  );
+  const advertised = list.tools.map((tool) => tool.name).sort();
+  const expected = mcp
+    .buildMemoryTools({ readonly: true, callbackCredentials: false, hasAgentKey: false, agentKeyUnion: false })
+    .map((tool) => tool.name)
+    .sort();
+  assert.deepEqual(
+    advertised,
+    expected,
+    'the mounted tools/list surface must equal the same-capability canonical projection',
+  );
 }
 
 describe('memory MCP under the real Seatbelt memory policy (darwin)', () => {
@@ -188,6 +233,7 @@ describe('memory MCP under the real Seatbelt memory policy (darwin)', () => {
         result.stdout.includes('"result"') && result.stdout.includes('"serverInfo"'),
         `memory MCP must answer initialize under the closure policy; stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`,
       );
+      assertAdvertisedSurface(result);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

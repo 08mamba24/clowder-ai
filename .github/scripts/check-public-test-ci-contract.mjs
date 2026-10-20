@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 
@@ -121,6 +122,50 @@ assert.match(
   /--max-critical-path-ms 600000(?:\s|$)/,
   'public-test evidence must fail when the measured critical path exceeds 10 minutes',
 );
+
+const aggregateStep = workflow.jobs.test.steps.find((step) => step.name === 'Require complete public-test evidence');
+assert.ok(aggregateStep, 'the public-test aggregate step must exist');
+assert.ok(
+  Array.isArray(workflow.jobs.test.needs) && workflow.jobs.test.needs.includes('fork-compat'),
+  'the required Test (Public) aggregate must depend on the fork-compat job',
+);
+assert.equal(
+  aggregateStep.env?.FORK_COMPAT_RESULT,
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
+  '${{ needs.fork-compat.result }}',
+  'the aggregate must consume the fork-compat job result',
+);
+
+// Behavior, not a text search: execute the exact aggregate bash with simulated
+// dependency results. An older branch protection rule that still requires only
+// this aggregate must turn red when fork compatibility fails or never runs.
+function runAggregate(overrides = {}) {
+  return spawnSync('bash', ['-c', aggregateStep.run], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PREPARE_RESULT: 'success',
+      CONTRACT_RESULT: 'success',
+      SHARDED_RESULT: 'success',
+      SUMMARY_RESULT: 'success',
+      SERIAL_RESULT: 'skipped',
+      FORK_COMPAT_RESULT: 'success',
+      TEST_MODE: 'sharded',
+      ...overrides,
+    },
+  });
+}
+
+const allGreen = runAggregate();
+assert.equal(allGreen.status, 0, allGreen.stderr);
+for (const [story, overrides] of [
+  ['the fork-compat job fails', { FORK_COMPAT_RESULT: 'failure' }],
+  ['the fork-compat job is skipped', { FORK_COMPAT_RESULT: 'skipped' }],
+  ['the fork-compat job never reported', { FORK_COMPAT_RESULT: '' }],
+]) {
+  const result = runAggregate(overrides);
+  assert.notEqual(result.status, 0, `Test (Public) must not be green when ${story}`);
+}
 
 process.stdout.write(
   `public-test CI contract OK (Node ${versions[0]}, owner ${distributableShardStep.env.DEFAULT_OWNER_USER_ID})\n`,

@@ -187,7 +187,20 @@ describe('Personal Chrome Native Messaging full seam', () => {
         async sendMessage(tabId, request) {
           assert.equal(tabId, 73);
           contentRequests.push(request);
-          if (contentRequests.length === 1) return undefined;
+          if (request.kind === 'adapter_health') {
+            // The pre-reload listener ignores the first health probe; the host then
+            // injects the current content adapter and retries the same request.
+            const probes = contentRequests.filter((entry) => entry.kind === 'adapter_health');
+            if (probes.length === 1) return undefined;
+            return {
+              v: 2,
+              kind: 'adapter_health_result',
+              requestId: request.requestId,
+              status: 'ready',
+              observedRevisions: request.expectedRevisions,
+            };
+          }
+          assert.equal(request.kind, 'append_message_v2');
           return {
             v: 2,
             kind: 'append_result',
@@ -216,13 +229,13 @@ describe('Personal Chrome Native Messaging full seam', () => {
       text: 'TEXT_IS_ONLY_PRESENT_IN_THE_PROTOCOL_REQUEST',
       expectedRevisions: {
         helper: helperArtifactRevision,
-        extension: '0.2.12',
-        pageAdapter: '2026-09-19.1',
+        extension: '0.2.13',
+        pageAdapter: '2026-09-24.1',
       },
     });
     await terminal;
 
-    assert.equal(contentRequests.length, 2);
+    assert.equal(contentRequests.length, 3);
     assert.equal(injected.length, 1);
     assert.equal(injected[0].target.tabId, 73);
     assert.equal(injected[0].files.join(','), 'content-script.js');
@@ -392,14 +405,14 @@ describe('Personal Chrome Native Messaging full seam', () => {
         conversationId: 'conversation-7',
         expectedRevisions: {
           helper: helperArtifactRevision,
-          extension: '0.2.12',
+          extension: '0.2.13',
           pageAdapter: '2026-09-19.1',
         },
       });
       assert.equal(revisionHealth.status, 'ready');
       assert.deepEqual(revisionHealth.observedRevisions, {
         helper: helperArtifactRevision,
-        extension: '0.2.12',
+        extension: '0.2.13',
         pageAdapter: '2026-09-19.1',
       });
 

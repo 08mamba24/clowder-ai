@@ -166,6 +166,15 @@ export async function handleSearchEvidence(
   extra?: EvidenceToolCallExtra,
 ): Promise<ToolResult> {
   if (input.resultUnit === 'message') {
+    if (process.env['CAT_CAFE_MCP_CALLBACK_CREDENTIALS'] === 'false') {
+      // Honest limitation instead of a credential error from callbackGet: this
+      // mount (e.g. the Qoder readonly memory shim) has no invocation/agent-key
+      // credentials, so only the local document mode is callable.
+      return errorResult(
+        'resultUnit=message requires invocation or agent-key credentials; this mount exposes document mode only. ' +
+          'Retry with resultUnit="document" (local process reads project knowledge without callback auth).',
+      );
+    }
     const params: Record<string, string> = {
       q: input.query,
       resultUnit: 'message',
@@ -765,6 +774,7 @@ export const evidenceTools = [
       'NOT for: resolving a known exact anchor (use cat_cafe_graph_resolve), scanning recent items without a query (use cat_cafe_list_recent), or reading raw messages from a known thread (use get_thread_context). ' +
       'Output: document-mode evidence summaries, or message-mode canonical source snippets, thread/message coordinates and honest scope/degradation metadata; this is read-only and does not navigate. ' +
       'MESSAGE CONTRACT: resultUnit=message supports messageSort=time (default) or relevance and mode=hybrid (default); scope is threads, optional threadId means current conversation, omission means all readable project conversations. Authenticated invocation binds the exact question exclusion; caller-supplied user/source IDs are ignored. Limited results and unknown freshness do not prove the first occurrence or complete history. ' +
+      'AUTHENTICATION BOUNDARY: document mode is a local-process read. Message mode requires invocation or agent-key credentials; a mount without those credentials reports that limitation explicitly and offers document mode instead of silently degrading. ' +
       'GOTCHA: matchRank is rank position, not trust; authority is document reliability, and broad coverage requires separate docs + threads searches instead of treating one all-scope query as exhaustive. ' +
       'Semantic/fuzzy find entry point for memory recall. For precise anchors (F186, ADR-019), prefer cat_cafe_graph_resolve; for zero-prior scanning, prefer cat_cafe_list_recent; when unsure, start here with mode=hybrid. ' +
       'Supports scope (docs/threads/all), mode (lexical/semantic/hybrid), and depth (summary/raw). ' +

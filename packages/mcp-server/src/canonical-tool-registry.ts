@@ -11,7 +11,43 @@ export type CanonicalToolsetEnv = {
   desktopMode?: string;
   /** Explicit opt-in for the readonly+agent-key union. */
   agentKeyUnion?: boolean;
+  /**
+   * Explicit launcher capability bit for invocation/agent-key callback
+   * credentials. `false` means this mount cannot authenticate callback calls
+   * (for example the Qoder readonly memory shim, which only receives identity
+   * vars). `undefined` preserves the historical surface for every other mount.
+   *
+   * This is a declaration, never a runtime probe: the projection must not call
+   * getCallbackConfig() or guess from incidental environment variables.
+   */
+  callbackCredentials?: boolean;
 };
+
+/**
+ * A tool is callback-only when none of its declared authorization paths can be
+ * satisfied by the local process. Such tools are advertised only on mounts that
+ * explicitly declare callback credentials.
+ */
+function hasLocalProcessAuthorization(definition: FamilyToolDefinition): boolean {
+  const operation = definition.operation;
+  const paths =
+    operation.kind === 'single'
+      ? operation.boundary.authorizationPaths
+      : operation.variants.flatMap((variant) => variant.boundary.authorizationPaths);
+  return paths.some((path) => path.credentialSource === 'local-process');
+}
+
+export function callbackOnlyToolNames(registry: readonly FamilyToolDefinition[]): ReadonlySet<string> {
+  return new Set(registry.filter((definition) => !hasLocalProcessAuthorization(definition)).map((d) => d.name));
+}
+
+function applyCallbackCapability(
+  tools: readonly FamilyToolDefinition[],
+  env: CanonicalToolsetEnv,
+): readonly FamilyToolDefinition[] {
+  if (env.callbackCredentials !== false) return tools;
+  return tools.filter(hasLocalProcessAuthorization);
+}
 
 const DESKTOP_PROFILES = {
   'fable-phase0': 'desktop:fable-phase0',
@@ -66,12 +102,15 @@ export function projectCanonicalToolRegistry(
   registry: readonly FamilyToolDefinition[],
   env: CanonicalToolsetEnv,
 ): readonly FamilyToolDefinition[] {
+  const project = (selected: readonly FamilyToolDefinition[]) => applyCallbackCapability(selected, env);
   if (env.collectiveWork) {
     if (env.participation) throw new Error('Conflicting Collective MCP profiles');
-    return registry.filter((definition) => definition.policy.runtimeProfiles.includes('collective-work'));
+    return project(registry.filter((definition) => definition.policy.runtimeProfiles.includes('collective-work')));
   }
   if (env.participation)
-    return registry.filter((definition) => definition.policy.runtimeProfiles.includes('collective-participation'));
+    return project(
+      registry.filter((definition) => definition.policy.runtimeProfiles.includes('collective-participation')),
+    );
   if (env.desktopMode) {
     const profile = DESKTOP_PROFILES[env.desktopMode as keyof typeof DESKTOP_PROFILES];
     if (!profile) {
@@ -79,19 +118,21 @@ export function projectCanonicalToolRegistry(
         `Unknown CAT_CAFE_DESKTOP_MODE: "${env.desktopMode}". Valid modes: ${Object.keys(DESKTOP_PROFILES).join(', ')}`,
       );
     }
-    return registry.filter((definition) => definition.policy.runtimeProfiles.includes(profile));
+    return project(registry.filter((definition) => definition.policy.runtimeProfiles.includes(profile)));
   }
   if (!env.readonly) {
-    return registry.filter((definition) => definition.policy.runtimeProfiles.includes('full'));
+    return project(registry.filter((definition) => definition.policy.runtimeProfiles.includes('full')));
   }
   // readonly is strict unless the launcher explicitly opted into the
   // agent-key union (agentKeyUnion) AND agent-key credentials are present.
   // Incidental CAT_CAFE_AGENT_KEY_* vars inherited from a parent environment
   // no longer widen a read-only mount.
-  return registry.filter(
-    (definition) =>
-      definition.policy.runtimeProfiles.includes('readonly') ||
-      (!!env.agentKeyUnion && !!env.hasAgentKey && definition.policy.runtimeProfiles.includes('agent-key')),
+  return project(
+    registry.filter(
+      (definition) =>
+        definition.policy.runtimeProfiles.includes('readonly') ||
+        (!!env.agentKeyUnion && !!env.hasAgentKey && definition.policy.runtimeProfiles.includes('agent-key')),
+    ),
   );
 }
 

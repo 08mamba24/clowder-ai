@@ -99,12 +99,20 @@ export async function prepareClaudeSdkLaunch(input: {
     { body: l0, injectionDecision: 'native_l0_compiled' },
     ...(options?.systemPrompt ? [{ body: options.systemPrompt, injectionDecision: 'route_append_system_prompt' }] : []),
   ];
+  const overrides = { ...buildClaudeEnvOverrides(options?.callbackEnv), ...options?.accountEnv };
+  if (options?.callbackEnv?.[ANTHROPIC_PROFILE_MODE_KEY] === 'subscription')
+    for (const key of SUBSCRIPTION_MODE_DENY_KEYS) overrides[key] = null;
+  applyClaudeTokenAccountEnv(overrides, options?.claudeTokenAccount);
+  const env = buildChildEnv(overrides, { workingDirectory: options?.workingDirectory });
+  if (readOnly) env.CAT_CAFE_READONLY = 'true';
+  // Validate MCP `${VAR}` references against the same env this SDK child receives.
   const mcpResolution =
     !readOnly && options?.callbackEnv && input.mcpServerPath
       ? await resolveClaudeMcpConfig({
           callbackEnv: options.callbackEnv,
           workingDirectory: options.workingDirectory,
           mcpServerPath: input.mcpServerPath,
+          childEnv: env,
         })
       : undefined;
   const mcpServers = mcpResolution?.servers ?? {};
@@ -124,12 +132,6 @@ export async function prepareClaudeSdkLaunch(input: {
   const settings = plan?.ready
     ? composeManagedSettingsDocument(plan, accountSettings, options?.workingDirectory)
     : accountSettings;
-  const overrides = { ...buildClaudeEnvOverrides(options?.callbackEnv), ...options?.accountEnv };
-  if (options?.callbackEnv?.[ANTHROPIC_PROFILE_MODE_KEY] === 'subscription')
-    for (const key of SUBSCRIPTION_MODE_DENY_KEYS) overrides[key] = null;
-  applyClaudeTokenAccountEnv(overrides, options?.claudeTokenAccount);
-  const env = buildChildEnv(overrides, { workingDirectory: options?.workingDirectory });
-  if (readOnly) env.CAT_CAFE_READONLY = 'true';
   const request: PreparedProviderRequestV1 = Object.freeze({
     v: 1,
     message: Object.freeze({ body: prompt }),

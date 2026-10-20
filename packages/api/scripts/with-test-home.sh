@@ -13,6 +13,18 @@ cleanup() {
 
 trap cleanup EXIT
 
+# A gate launched from a dev-server shell inherits the launcher's exported
+# shell functions (BASH_FUNC_compile_packages%%, ...). Bash re-exports every
+# imported function to its children, and the tmux pane environment contract
+# rejects those keys outright, so pane-spawning suites fail only when the gate
+# was launched from the launcher's own environment. Shell functions are
+# launcher implementation detail, never fixture state: drop every inherited
+# one and keep only this wrapper's own cleanup. This is the same class of
+# isolation as the CAT_CAFE_* execution coordinates below.
+while IFS= read -r fn; do
+  [ "$fn" = cleanup ] || unset -f "$fn" 2>/dev/null || true
+done < <(declare -F | awk '{print $NF}')
+
 export HOME="$test_home"
 # P1-13: os.homedir() resolves from USERPROFILE on Windows and from HOME
 # elsewhere, so isolating one coordinate and inheriting the other leaves the
@@ -45,6 +57,20 @@ unset LISTEN_MODE_DB
 unset CAT_CAFE_RUNTIME_ROOT
 unset CAT_CAFE_MCP_SERVER_PATH
 unset CAT_CAFE_WORKSPACE_ROOT
+
+# A pre-merge gate launched through hold_ball runs inside a managed job. That
+# execution identity must not leak into the sandbox: ManagedJobService.submit()
+# treats an inherited CAT_CAFE_MANAGED_JOB_ID as proof of a nested job and
+# refuses every managed command a test tries to exercise (400
+# nested_managed_job_denied), so the same suites pass from a clean shell and
+# fail from the gate. Tests that need a job identity give ManagedRunner an
+# explicit `managedJob`; inheriting the gate's is never what they meant.
+unset CAT_CAFE_MANAGED_JOB_ID
+unset CAT_CAFE_MANAGED_JOB_LOG_PATH
+unset CAT_CAFE_MANAGED_JOB_DESCRIPTOR
+unset CAT_CAFE_MANAGED_RUNNER_COMMAND
+unset CAT_CAFE_MANAGED_RUNNER_CWD
+unset CAT_CAFE_GATE_ORIGIN_TASK_ID
 
 # CAT_CAFE_GLOBAL_CONFIG_ROOT is the same kind of persistence coordinate as the
 # two roots above (P2-9). Leaving it inherited made a suite READ the operator's

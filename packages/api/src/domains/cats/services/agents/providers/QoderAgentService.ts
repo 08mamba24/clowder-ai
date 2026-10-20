@@ -43,6 +43,7 @@ import {
 import { tmpdir, userInfo } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { CatId } from '@cat-cafe/shared';
+import { QODER_READONLY_MEMORY_TOOLS } from '../../../../../generated/fork-memory-tools.js';
 import type { GhReadLease } from '../../../../../infrastructure/github/agent-github-read-types.js';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 import { formatCliNotFoundError, resolveCliCommand } from '../../../../../utils/cli-resolve.js';
@@ -103,24 +104,9 @@ export const QODER_BASIC_TOOLS = Object.freeze(['Bash', 'Edit', 'Glob', 'Grep', 
 export const QODER_MEMORY_MCP_SERVER = 'cat-cafe-memory';
 
 /**
- * Exact readonly surface of the split `packages/mcp-server/dist/memory.js`
- * entrypoint. A cross-package test pins this duplicate projection to
- * buildMemoryTools({ readonly: true }) so registry drift fails CI.
+ * Exact readonly surface ... (see generated artifact) — generated, never hand-edited.
  */
-export const QODER_READONLY_MEMORY_TOOLS = Object.freeze([
-  'cat_cafe_graph_resolve',
-  'cat_cafe_list_external_runtime_sessions',
-  'cat_cafe_list_recent',
-  'cat_cafe_list_session_chain',
-  'cat_cafe_read_external_runtime_session',
-  'cat_cafe_read_file_slice',
-  'cat_cafe_read_invocation_detail',
-  'cat_cafe_read_meeting_artifact',
-  'cat_cafe_read_session_digest',
-  'cat_cafe_read_session_events',
-  'cat_cafe_run_perspective',
-  'cat_cafe_search_evidence',
-] as const);
+export { QODER_READONLY_MEMORY_TOOLS };
 
 export type QoderToolAccess = 'controlled' | 'disabled';
 
@@ -756,6 +742,13 @@ function createQoderInvocationLease(input: {
       CAT_CAFE_READONLY: 'true',
       // Incidental agent-key vars inherited by qodercn must never widen this mount.
       CAT_CAFE_READONLY_AGENT_KEY_UNION: 'false',
+      // Explicit capability declaration, not a credential: this mount only
+      // receives identity vars (READONLY_MEMORY_IDENTITY_ENV_KEYS). The memory
+      // server must not advertise tools whose only authorization path is a
+      // callback (recall metrics, meeting artifacts), because they can never be
+      // called here. No invocation/agent-key secret is passed to Qoder/Bash/
+      // mcp-config by this declaration.
+      CAT_CAFE_MCP_CALLBACK_CREDENTIALS: 'false',
       HOME: homeDir,
       TMPDIR: scratchDir,
     };

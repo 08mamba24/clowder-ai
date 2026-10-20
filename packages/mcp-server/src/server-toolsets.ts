@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { projectAgentKeyCollaborationContract } from './agent-key-collaboration-contract.js';
 import { CANONICAL_TOOL_REGISTRY } from './canonical-server-tools.js';
-import { derivedProfileSet, projectServerFamily } from './canonical-tool-registry.js';
+import { callbackOnlyToolNames, derivedProfileSet, projectServerFamily } from './canonical-tool-registry.js';
 import { jsonSchemaToZod } from './json-schema-to-zod.js';
 import { runWithNativeTurnAuth } from './native-turn-auth.js';
 import type { FamilyToolDefinition, McpServerFamily } from './tool-governance-snapshot.js';
@@ -49,6 +49,14 @@ export interface ToolsetEnv {
    * widen the surface on their own.
    */
   agentKeyUnion?: boolean;
+  /**
+   * Explicit launcher capability for invocation/agent-key callback
+   * credentials. `false` means this mount has no callback credentials (for
+   * example the Qoder readonly memory shim, which only receives identity
+   * vars), so callback-only tools must not be advertised. `undefined` keeps
+   * the historical surface for every other mount.
+   */
+  callbackCredentials?: boolean;
 }
 
 /**
@@ -75,6 +83,9 @@ export function parseToolsetEnv(env: NodeJS.ProcessEnv = process.env): ToolsetEn
     hasAgentKey: hasUsableAgentKeyCredentials(env),
     desktopMode: desktopMode || undefined,
     agentKeyUnion: env.CAT_CAFE_READONLY_AGENT_KEY_UNION === 'true',
+    // Declaration, not a probe: only an explicit `false` narrows the surface.
+    // Every other value (including absence) preserves the historical one.
+    callbackCredentials: env.CAT_CAFE_MCP_CALLBACK_CREDENTIALS === 'false' ? false : undefined,
   };
 }
 
@@ -90,19 +101,27 @@ export function parseToolsetEnv(env: NodeJS.ProcessEnv = process.env): ToolsetEn
  *      launcher explicitly opted in (agentKeyUnion) AND agent-key credentials
  *      are present (hasAgentKey). Incidental CAT_CAFE_AGENT_KEY_* vars no
  *      longer widen a read-only mount.
+ *   4. A launcher that explicitly declares no callback credentials
+ *      (callbackCredentials=false, e.g. the Qoder memory shim) never sees
+ *      callback-only tools, whatever profile selected them.
  */
 export function applyReadonlyFilter<T extends { name: string }>(
   tools: readonly T[],
   env: ToolsetEnv = parseToolsetEnv(),
 ): readonly T[] {
+  const capability = (selected: readonly T[]): readonly T[] => {
+    if (env.callbackCredentials !== false) return selected;
+    const callbackOnly = callbackOnlyToolNames(CANONICAL_TOOL_REGISTRY);
+    return selected.filter((tool) => !callbackOnly.has(tool.name));
+  };
   if (env.collectiveWork) {
     if (env.participation) throw new Error('Conflicting Collective MCP profiles');
     const allowed = derivedProfileSet(CANONICAL_TOOL_REGISTRY, 'collective-work');
-    return tools.filter((tool) => allowed.has(tool.name));
+    return capability(tools.filter((tool) => allowed.has(tool.name)));
   }
   if (env.participation) {
     const allowed = derivedProfileSet(CANONICAL_TOOL_REGISTRY, 'collective-participation');
-    return tools.filter((tool) => allowed.has(tool.name));
+    return capability(tools.filter((tool) => allowed.has(tool.name)));
   }
   if (env.desktopMode) {
     if (!KNOWN_DESKTOP_MODES.has(env.desktopMode)) {
@@ -111,21 +130,23 @@ export function applyReadonlyFilter<T extends { name: string }>(
       );
     }
     if (env.desktopMode === 'fable-phase0') {
-      return tools.filter((t) => DESKTOP_FABLE_PHASE0_ALLOWED_TOOLS.has(t.name));
+      return capability(tools.filter((t) => DESKTOP_FABLE_PHASE0_ALLOWED_TOOLS.has(t.name)));
     }
     if (env.desktopMode === 'live-companion') {
       const allowed = derivedProfileSet(CANONICAL_TOOL_REGISTRY, 'desktop:live-companion');
-      return tools.filter((tool) => allowed.has(tool.name));
+      return capability(tools.filter((tool) => allowed.has(tool.name)));
     }
     if (env.desktopMode === 'cloud-pro-phase0') {
       // Cloud profile derives its own bounded read/message surface from the registry.
-      return tools.filter((t) => DESKTOP_CLOUD_PRO_PHASE0_ALLOWED_TOOLS.has(t.name));
+      return capability(tools.filter((t) => DESKTOP_CLOUD_PRO_PHASE0_ALLOWED_TOOLS.has(t.name)));
     }
   }
-  if (!env.readonly) return tools;
-  return tools.filter(
-    (t) =>
-      READONLY_ALLOWED_TOOLS.has(t.name) || (!!env.agentKeyUnion && !!env.hasAgentKey && AGENT_KEY_TOOLS.has(t.name)),
+  if (!env.readonly) return capability(tools);
+  return capability(
+    tools.filter(
+      (t) =>
+        READONLY_ALLOWED_TOOLS.has(t.name) || (!!env.agentKeyUnion && !!env.hasAgentKey && AGENT_KEY_TOOLS.has(t.name)),
+    ),
   );
 }
 

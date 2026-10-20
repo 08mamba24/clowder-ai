@@ -1,11 +1,15 @@
 /**
- * F167 PR-A — the hold route's `503 HOLD_OWNER_FENCE_UNAVAILABLE` says which of its five causes it fell on.
+ * F167 PR-A — the hold route's `503 HOLD_OWNER_FENCE_UNAVAILABLE` says which of its four causes it fell on.
  *
  * `resolveHoldWaitOwnerFence` reads the calling invocation's PARENT record and refuses (fails closed) unless it
- * exists in the same thread and tenant and lists the calling cat. Five different causes used to collapse into one
+ * exists in the same thread and tenant. Four different causes used to collapse into one
  * opaque 503, so a cat that hit it could not tell a missing parent from a thread mismatch from a failed read.
  * The response now carries one reason code, and only the code: no thread, tenant or record data. The route still
  * refuses, releases the quota reservation it took, and creates no task.
+ *
+ * There is deliberately no targetCats cause: a cross-cat @ handoff makes the child the RECEIVER while the parent
+ * round names the passing cat, so requiring inclusion would reject every handoff (see the 2026-09-18 F280 incident
+ * note on resolveHoldWaitOwnerFence). The positive case below pins that admission.
  */
 import assert from 'node:assert/strict';
 import { beforeEach, describe, test } from 'node:test';
@@ -126,7 +130,6 @@ describe('F167 hold owner fence 503 carries a reason code', () => {
     parent_missing: () => async () => null,
     thread_mismatch: (thread) => async () => record(thread, { threadId: 'thread-elsewhere' }),
     user_mismatch: (thread) => async () => record(thread, { userId: 'user-2' }),
-    target_cat_missing: (thread) => async () => record(thread, { targetCats: ['opus'] }),
     store_read_failed: () => async () => {
       throw new Error('record store unavailable');
     },
@@ -158,5 +161,17 @@ describe('F167 hold owner fence 503 carries a reason code', () => {
     const response = await holdFrom(deps, thread.id);
 
     assert.equal(response.statusCode, 200, response.body);
+  });
+
+  test('cross-cat @ handoff: a parent whose targetCats names another cat is admitted', async () => {
+    const thread = await threadStore.create('user-1', 'fence');
+    // The parent round belongs to the passing cat; the child invocation is the receiver.
+    const deps = stubDeps(async () => record(thread, { targetCats: ['opus'] }));
+
+    const response = await holdFrom(deps, thread.id);
+
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(JSON.parse(response.body).held, true);
+    assert.equal(deps._released.length, 0, 'an admitted hold keeps its quota reservation');
   });
 });

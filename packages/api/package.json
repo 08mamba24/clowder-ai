@@ -20,6 +20,8 @@
     "test:public:plan": "node ./scripts/plan-public-test-shards.mjs",
     "test:public:shard": "CAT_CAFE_DISABLE_SHARED_STATE_PREFLIGHT=1 bash ./scripts/with-test-home.sh node ./scripts/run-public-test-shard.mjs",
     "test:public:summary": "node ./scripts/summarize-public-test-shards.mjs",
+    "test:fork-compat": "pnpm --dir ../shared build && pnpm --dir ../mcp-server build && pnpm run build && CAT_CAFE_DISABLE_SHARED_STATE_PREFLIGHT=1 bash ./scripts/with-test-home.sh bash ./scripts/run-fork-compat-tests.sh",
+    "test:fork-compat:prepared": "CAT_CAFE_DISABLE_SHARED_STATE_PREFLIGHT=1 bash ./scripts/with-test-home.sh bash ./scripts/run-fork-compat-tests.sh",
     "test:prompt-budget": "CAT_CAFE_DISABLE_SHARED_STATE_PREFLIGHT=1 bash ./scripts/with-test-home.sh node --import $(pwd)/test/helpers/setup-cat-registry.js --test --test-concurrency=1 test/system-prompt-builder.test.js",
     "smoke:f254-codex-freshness": "pnpm run build && node dist/scripts/f254-codex-native-freshness-live-fixture.js",
     "smoke:f306-native-effect-guard": "pnpm run build && node dist/scripts/f306-native-effect-guard/live-fixture.js",

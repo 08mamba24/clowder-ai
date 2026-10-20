@@ -34,6 +34,10 @@ const PREVIOUS_STATUSES = new Set(['none', 'green', 'failed', 'cancelled', 'time
 const FAILURE_RELATIONS = new Set(['none', 'unrelated', 'related', 'unknown']);
 const PATCH_RELATIONS = new Set(['equivalent', 'changed', 'unknown']);
 const CHECK_STATUSES = new Set(['green', 'failed', 'not_run']);
+// Fork-owned provider/composition contracts are not covered by an upstream path
+// filter, so a fork candidate is only accepted with exact-candidate evidence
+// (or same-HEAD full-green coverage that already executed the same suites).
+const FORK_COMPATIBILITY_CHECK = 'fork-compatibility';
 const SHARED_ROOT_CONTRACTS = new Set([
   'package.json',
   'pnpm-lock.yaml',
@@ -323,20 +327,28 @@ function collectFullReasons(input, baseRelation, browserPolicyRegistration) {
 }
 
 function targetedChecks(input) {
-  if (input.riskLane === undefined) return ['risk-matched-targeted-evidence'];
-  return [
-    input.typecheckStatus === 'green' ? null : 'cross-package-typecheck',
-    input.targetedStatus === 'green' ? null : 'targeted-checks',
-  ].filter(Boolean);
+  const checks =
+    input.riskLane === undefined
+      ? ['risk-matched-targeted-evidence']
+      : [
+          input.typecheckStatus === 'green' ? null : 'cross-package-typecheck',
+          input.targetedStatus === 'green' ? null : 'targeted-checks',
+        ].filter(Boolean);
+  // No targeted acceptance path may infer fork coverage from a broader suite:
+  // the caller must declare exact-candidate fork evidence, otherwise it is owed.
+  if (input.forkCompatibilityStatus !== 'green') checks.push(FORK_COMPATIBILITY_CHECK);
+  return checks;
 }
 
 function targetedReason(input) {
-  if (!['none', 'green'].includes(input.previousStatus)) {
-    return 'an incomplete unrelated full-gate receipt invalidates reuse but does not upgrade the risk route';
-  }
-  return input.previousStatus === 'green'
-    ? 'full-green continuity is incomplete, so targeted evidence must be refreshed'
-    : 'no reusable full-green receipt exists';
+  const reason = !['none', 'green'].includes(input.previousStatus)
+    ? 'an incomplete unrelated full-gate receipt invalidates reuse but does not upgrade the risk route'
+    : input.previousStatus === 'green'
+      ? 'full-green continuity is incomplete, so targeted evidence must be refreshed'
+      : 'no reusable full-green receipt exists';
+  return input.forkCompatibilityStatus === 'green'
+    ? reason
+    : `${reason}; exact-candidate fork compatibility evidence (or same-HEAD full-green coverage) is still owed`;
 }
 
 function classifyCoverageRoute(input, browserPolicyRegistration) {
@@ -347,6 +359,7 @@ function classifyCoverageRoute(input, browserPolicyRegistration) {
     invalidValue('previousStatus', input.previousStatus, PREVIOUS_STATUSES),
     invalidValue('previousFailureRelevance', input.previousFailureRelevance, FAILURE_RELATIONS),
     invalidValue('authoredPatch', input.authoredPatch, PATCH_RELATIONS),
+    invalidValue('forkCompatibilityStatus', input.forkCompatibilityStatus, CHECK_STATUSES, true),
   ].filter(Boolean);
   if (invalid.length > 0) return fullResult(baseRelation, invalid);
 

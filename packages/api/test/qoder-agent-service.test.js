@@ -97,7 +97,11 @@ test('argv carries explicit -m model (round-2 P1-1: model is a typed input, actu
 test('L2: controlled argv exposes the complete basic set and preauthorizes bounded write/shell + memory', () => {
   assert.deepEqual(QODER_BASIC_TOOLS, ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write']);
   assert.equal(QODER_MEMORY_MCP_SERVER, 'cat-cafe-memory');
-  assert.equal(QODER_READONLY_MEMORY_TOOLS.length, 12, 'split memory.js readonly surface is pinned exactly');
+  assert.ok(QODER_READONLY_MEMORY_TOOLS.length > 0, 'split memory.js readonly surface must be non-empty');
+  assert.ok(
+    QODER_READONLY_MEMORY_TOOLS.includes('cat_cafe_search_evidence'),
+    'the local document search path must remain on the Qoder mount',
+  );
 
   const args = buildQoderArgs({
     profileDir: '/p',
@@ -856,7 +860,7 @@ test('GitHub read MCP: private HTTP header survives native config, never prompt/
   }
 });
 
-test('GitHub read MCP: denied grants preserve 18 tools and readonly policy never opens a lease', async () => {
+test('GitHub read MCP: denied grants preserve the controlled surface and readonly policy never opens a lease', async () => {
   for (const readOnly of [false, true]) {
     const root = mkdtempSync(join(tmpdir(), 'qoder-gh-no-grant-'));
     const workspace = join(root, 'workspace');
@@ -1212,6 +1216,11 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
   assert.deepEqual(memory.args, []);
   assert.equal(memory.env.CAT_CAFE_READONLY, 'true');
   assert.equal(memory.env.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'false');
+  assert.equal(
+    memory.env.CAT_CAFE_MCP_CALLBACK_CREDENTIALS,
+    'false',
+    'the mount declares its real capability (no callback credentials) without passing any credential',
+  );
   assert.equal(memory.env.ALLOWED_WORKSPACE_DIRS, canonicalWorkspace);
   assert.equal(memory.env.CAT_CAFE_API_URL, 'http://127.0.0.1:3004');
   assert.equal(memory.env.CAT_CAFE_CALLBACK_TOKEN, undefined, 'readonly memory does not receive write credentials');

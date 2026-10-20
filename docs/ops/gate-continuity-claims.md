@@ -48,7 +48,7 @@ pnpm gate --risk contract --continuity-claim CLAIM_HASH
 
 保留原 invocation 的所有非控制参数；不要为加入 locator 凭空增加一个 pnpm `--` 分隔符。若旧调用原本带该字面分隔符，生成和消费时也必须保留。Locator 自身不进入旧 gate fingerprint。
 
-消费不会 fetch/rebase 或修改旧 run。有效声明仅返回 **targeted / unverified，exit 3**，且 `mergeReady=false`、`reusesFullGreen=false`；仍欠风险匹配定向检查、跨包类型检查和 docs validation。完成 C3、独立 review 与现有合入授权后才能合入。过期或无效声明返回拒绝，不悄悄启动一轮 full；先查清拒绝原因，再选择新的合法验证路径。
+消费不会 fetch/rebase 或修改旧 run。有效声明仅返回 **targeted / unverified，exit 3**，且 `mergeReady=false`、`reusesFullGreen=false`；仍欠风险匹配定向检查、跨包类型检查、docs validation 和 exact-candidate fork 兼容证据。完成 C3、独立 review 与现有合入授权后才能合入。过期或无效声明返回拒绝，不悄悄启动一轮 full；先查清拒绝原因，再选择新的合法验证路径。策略标识为 `gate-owner-c2-v4`；旧 `v3` 声明会因策略不匹配被拒绝，必须按当前策略重新声明。
 
 ## 证明边界
 
