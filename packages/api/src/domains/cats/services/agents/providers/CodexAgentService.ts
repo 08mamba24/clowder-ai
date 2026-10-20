@@ -1,6 +1,7 @@
 import type { RuntimeProviderProfile } from '../../../../../config/account-resolver.js';
 import { finalizeCodexAccountEnvironment } from '../../../../../config/codex-account-environment.js';
 import { resolveCodexAccountLaunch, resolveCodexApiExecutionHome } from '../../../../../config/codex-account-launch.js';
+import { codexCliConfig } from '../../../../../config/codex-launch-config.js';
 import { codexManagedLaunchArgs } from '../../../../../config/codex-managed-launch.js';
 import { assertCodexManagedPlatformSupport } from '../../../../../config/codex-managed-support.js';
 import { assertCodexSharedStateRoots } from '../../../../../config/codex-shared-state.js';
@@ -16,6 +17,7 @@ import { CODEX_DESKTOP_ISOLATION_ARGS, CODEX_RESTRICTED_APPS_ARGS } from './code
 
 export { codexConfigObjectFromArgs } from './codex-config-overrides.js';
 
+import { buildCodexModelCatalogArgs, isCodexCustomCatalogModel } from './codex-model-catalog.js';
 import { extractUserEnvTemplates, hasSupportedEnvTemplate, resolveEnvMap } from './env-map.js';
 /**
  * Codex Agent Service
@@ -605,14 +607,16 @@ export function resolveCodexSchemaModelFamily(model: string | null | undefined):
 /**
  * `--config` keys whose values are part of a system-owned runtime contract.
  * Free-form cliConfigArgs may override ordinary Codex preferences, but they
- * cannot replace identity/speed controls or the model/window that an
- * invocation_config binding certifies as applied before launch.
+ * cannot replace identity/speed controls, the model/window an
+ * invocation_config binding certifies as applied before launch, or the
+ * custom-model metadata catalog injected for routed models.
  */
 const RESERVED_SYSTEM_CONFIG_KEYS: ReadonlySet<string> = new Set([
   'developer_instructions',
   'service_tier',
   'model',
   'model_context_window',
+  'model_catalog_json',
   'model_auto_compact_token_limit',
 ]);
 
@@ -657,6 +661,27 @@ function parseCodexConfigArg(
 function configKey(expression: string): string {
   const equalsIndex = expression.indexOf('=');
   return (equalsIndex === -1 ? expression : expression.slice(0, equalsIndex)).trim();
+}
+
+/**
+ * Mirrors Codex's final `tools.update_plan.enabled` resolution for this
+ * invocation. The CLI applies every accepted `-c/--config` assignment in
+ * order, so a later duplicate leaf wins and a later parent-table assignment
+ * replaces the whole subtree (including dropping `update_plan`). Reuse the
+ * same dotted-path/TOML parser as the launch-config projection instead of
+ * scanning for the first matching leaf.
+ */
+function isCodexUpdatePlanEnabled(args: readonly string[]): boolean {
+  try {
+    const config = codexCliConfig(args);
+    const tools = config.tools;
+    if (!isCodexConfigObject(tools)) return false;
+    const updatePlan = tools.update_plan;
+    if (!isCodexConfigObject(updatePlan)) return false;
+    return updatePlan.enabled === true;
+  } catch {
+    return false;
+  }
 }
 
 /** Parse every documented/accepted spelling of Codex's model value flag. */
@@ -1777,6 +1802,21 @@ export class CodexAgentService implements AgentService {
         userFlagSet.add(userConfigArgs[i]);
       }
     }
+    // Custom-model metadata: a model without a built-in Codex catalog entry
+    // (e.g. deepseek-flash) gets our catalog file so the CLI stops falling
+    // back to generic metadata. Gated per-model because the flag replaces
+    // the entire built-in catalog. The window is bound to THIS invocation's
+    // resolved native window (#1381) rather than a module-wide constant, and
+    // the instructions template is adapted to the tools this invocation
+    // actually exposes because Codex skips its own filter once a catalog is
+    // present.
+    const modelCatalogArgs = buildCodexModelCatalogArgs(effectiveModel, {
+      carrier: carrierMode,
+      nativeContextWindowTokens: nativeWindowTokens,
+      updatePlanEnabled: isCodexUpdatePlanEnabled(userConfigArgs),
+    });
+    const catalogRequested = carrierMode === 'exec_json' && isCodexCustomCatalogModel(effectiveModel);
+    const catalogApplied = modelCatalogArgs.length > 0;
     const authMode =
       options?.codexAccountLaunch?.authMode ??
       (nativeTool && !options?.callbackEnv?.CODEX_AUTH_MODE ? 'auto' : getCodexAuthMode(options?.callbackEnv));
@@ -1986,6 +2026,7 @@ export class CodexAgentService implements AgentService {
           ...dedup(modelArgs),
           ...dedup(reasoningArgs),
           ...dedup(contextWindowArgs),
+          ...dedup(modelCatalogArgs),
           ...dedup(sandboxConfigArgs),
           ...dedup(approvalArgs),
           ...dedup(appsWriteApprovalArgs),
@@ -2008,6 +2049,7 @@ export class CodexAgentService implements AgentService {
           ...dedup(modelArgs),
           ...dedup(reasoningArgs),
           ...dedup(contextWindowArgs),
+          ...dedup(modelCatalogArgs),
           ...['--sandbox', sandboxMode],
           ...(readOnly || native ? [] : ['--add-dir', '.git']),
           ...dedup(approvalArgs),
@@ -2032,6 +2074,7 @@ export class CodexAgentService implements AgentService {
             ...dedup(modelArgs),
             ...dedup(reasoningArgs),
             ...dedup(contextWindowArgs),
+            ...dedup(modelCatalogArgs),
             ...dedup(appsWriteApprovalArgs),
             ...dedup(providerArgs),
             ...userConfigArgs,
@@ -2218,6 +2261,11 @@ export class CodexAgentService implements AgentService {
           cwd: options?.workingDirectory ?? null,
           authMode,
           argCount: args.length,
+          // Distinguish "builtin model / app_server (not applicable)" from
+          // "custom model requested the catalog but materialization fell back".
+          modelCatalog: catalogApplied ? 'applied' : catalogRequested ? 'fallback' : 'not_applicable',
+          requestedContextWindow: contextWindow ?? null,
+          catalogContextWindow: catalogApplied && nativeWindowTokens != null ? nativeWindowTokens : null,
           // Log flag names + --config keys (no values) for debugging
           cliFlags: args.filter((a) => a.startsWith('-')),
           cliConfigKeys: args.map((a, i) => (args[i - 1] === '--config' ? a.split('=')[0] : null)).filter(Boolean),
