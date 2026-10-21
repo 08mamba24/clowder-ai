@@ -362,6 +362,59 @@ test('L2: init gate accepts only the exact basic + readonly-memory surface and a
   );
 });
 
+test('qoderInitGate diagnostics identify extra and missing tools without changing the reported surface', () => {
+  const tools = ['Read', 'Agent'];
+  const expected = { tools: ['Read', 'Write'], mcpServerNames: [] };
+  const result = qoderInitGate(
+    { protocol_version: '1.4.0', permissionMode: 'default', model: 'Auto', tools, mcp_servers: [] },
+    'Auto',
+    expected,
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /^tools mismatch:/);
+  assert.match(result.reason, /expected=\["Read","Write"\]/);
+  assert.match(result.reason, /reported=\["Read","Agent"\]/);
+  assert.match(result.reason, /extra=\["Agent"\]/);
+  assert.match(result.reason, /missing=\["Write"\]/);
+  assert.deepEqual(tools, ['Read', 'Agent']);
+  assert.deepEqual(expected.tools, ['Read', 'Write']);
+});
+
+test('qoderInitGate diagnostics keep duplicate and non-string tool advertisements fail-closed', () => {
+  const good = { protocol_version: '1.4.0', permissionMode: 'default', model: 'Auto', mcp_servers: [] };
+  const expected = { tools: ['Read'], mcpServerNames: [] };
+  const duplicate = qoderInitGate({ ...good, tools: ['Read', 'Read'] }, 'Auto', expected);
+  assert.equal(duplicate.ok, false);
+  assert.match(duplicate.reason, /extra=\[\]/);
+  assert.match(duplicate.reason, /missing=\[\]/);
+  assert.match(duplicate.reason, /duplicates=\["Read"\]/);
+  const malformed = qoderInitGate({ ...good, tools: ['Read', 7] }, 'Auto', expected);
+  assert.equal(malformed.ok, false);
+  assert.match(malformed.reason, /extra=\[7\]/);
+});
+
+test('qoderInitGate diagnostics identify extra and missing MCP server names', () => {
+  const result = qoderInitGate(
+    {
+      protocol_version: '1.4.0',
+      permissionMode: 'default',
+      model: 'Auto',
+      tools: [],
+      mcp_servers: [
+        { name: 'cat-cafe-memory', status: 'connected' },
+        { name: 'unexpected', status: 'connected' },
+      ],
+    },
+    'Auto',
+    { tools: [], mcpServerNames: ['cat-cafe-memory', 'history'] },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /^mcp server set mismatch:/);
+  assert.match(result.reason, /expected=\["cat-cafe-memory","history"\]/);
+  assert.match(result.reason, /extra=\["unexpected"\]/);
+  assert.match(result.reason, /missing=\["history"\]/);
+});
+
 // round-3 P1④：精确匹配——大小写漂移不再放行（auth-error 夹具实测：未认证 CLI 回报
 // 小写 auto；大小写宽容会把这类漂移静默吞掉）
 test('round3 P1-4a: init gate model match is exact — case drift is fail-closed', () => {

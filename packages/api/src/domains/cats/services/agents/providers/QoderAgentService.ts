@@ -367,6 +367,18 @@ function exactStringSet(actual: unknown[], expected: readonly string[]): boolean
   return sortedActual.every((value, index) => value === sortedExpected[index]);
 }
 
+function describeSetMismatch(label: string, actual: readonly unknown[], expected: readonly string[]): string {
+  const expectedNames = new Set<unknown>(expected);
+  const reportedNames = new Set(actual);
+  const extra = [...reportedNames].filter((name) => !expectedNames.has(name));
+  const missing = expected.filter((name) => !reportedNames.has(name));
+  const duplicates = [...new Set(actual.filter((name, index) => actual.indexOf(name) !== index))];
+  return (
+    `${label} mismatch: expected=${JSON.stringify(expected)}, reported=${JSON.stringify(actual)}, ` +
+    `extra=${JSON.stringify(extra)}, missing=${JSON.stringify(missing)}, duplicates=${JSON.stringify(duplicates)}`
+  );
+}
+
 /** init 门（任何 assistant 事件之前，fail closed）。tools/mcp 必须与本次请求精确全等。 */
 export function qoderInitGate(
   initEvent: unknown,
@@ -382,7 +394,7 @@ export function qoderInitGate(
   }
   if (!Array.isArray(e.tools)) return { ok: false, reason: 'init.tools missing (not an array)' };
   if (!exactStringSet(e.tools, expected.tools)) {
-    return { ok: false, reason: `tools mismatch: ${JSON.stringify(e.tools)}` };
+    return { ok: false, reason: describeSetMismatch('tools', e.tools, expected.tools) };
   }
   if (!Array.isArray(e.mcp_servers)) return { ok: false, reason: 'init.mcp_servers missing (not an array)' };
   const mcpNames: string[] = [];
@@ -398,7 +410,7 @@ export function qoderInitGate(
     mcpNames.push(server.name);
   }
   if (!exactStringSet(mcpNames, expected.mcpServerNames)) {
-    return { ok: false, reason: `mcp server set mismatch: ${JSON.stringify(mcpNames)}` };
+    return { ok: false, reason: describeSetMismatch('mcp server set', mcpNames, expected.mcpServerNames) };
   }
   // P1④ 精确匹配（大小写敏感）。L1 夹具实测：未认证 CLI 回报小写 auto（auth-error），
   // 静默回落回报 Auto（silent-model-fallback）——任何与请求值不同的字符串（含大小写
