@@ -104,7 +104,7 @@
 
 - [x] 3 新猫入 roster：谱谱(橘猫/glm)、渊渊(玄猫/deepseek)、灵灵(三花猫/san-hua)，走 opencode 后端，已注册+可@+可路由
 - [ ] GLM 5.2 benchmark 回填（独立榜出 或 F200 轨迹攒够后，替换 5.1 代理数）
-- [ ] 3 新猫 avatar PNG (/avatars/glm|deepseek|minimax.png) — 缺则 UI 占位，不影响路由（2026-10-20 复核：minimax.png 仍缺，灵灵走占位图）
+- [ ] 3 新猫 avatar PNG (/avatars/glm|deepseek|minimax.png) — 缺则 UI 占位，不影响路由（2026-10-21 复核：三花猫的 minimax.png 已随 PR #56 补入仓库；在线头像走 /uploads/ 上传路径，现行成员多走这条。glm.png 实为 glm52.png（已存在）；deepseek 在现行 roster 无对应静态文件、其成员走上传路径——此两项另核）
 - [ ] 猫名最终可让猫自己确认(项目惯例 cats name themselves)（灵灵自己的花名册页已建：`docs/stories/cat-names/灵灵.md`，性格/角色/特长三空位待共创）
 - [ ] lead variants 模型升级(fable / gpt-5.5 / glm-5.1 / deepseek-v4-pro / minimax-m3)——需确认 carrier 接受新 model id
 - [ ] L0 指针进 root md / session hook (F208 AC-A3)
