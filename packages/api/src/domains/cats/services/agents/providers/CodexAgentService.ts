@@ -608,9 +608,8 @@ export function resolveCodexSchemaModelFamily(model: string | null | undefined):
 /**
  * `--config` keys whose values are part of a system-owned runtime contract.
  * Free-form cliConfigArgs may override ordinary Codex preferences, but they
- * cannot replace identity/speed controls, the model/window an
- * invocation_config binding certifies as applied before launch, or the
- * custom-model metadata catalog injected for routed models.
+ * cannot replace identity/speed controls or the model/window that an
+ * invocation_config binding certifies as applied before launch.
  */
 const RESERVED_SYSTEM_CONFIG_KEYS: ReadonlySet<string> = new Set([
   'developer_instructions',
@@ -664,14 +663,7 @@ function configKey(expression: string): string {
   return (equalsIndex === -1 ? expression : expression.slice(0, equalsIndex)).trim();
 }
 
-/**
- * Mirrors Codex's final `tools.update_plan.enabled` resolution for this
- * invocation. The CLI applies every accepted `-c/--config` assignment in
- * order, so a later duplicate leaf wins and a later parent-table assignment
- * replaces the whole subtree (including dropping `update_plan`). Reuse the
- * same dotted-path/TOML parser as the launch-config projection instead of
- * scanning for the first matching leaf.
- */
+/** Resolve tool availability from the final CLI config, including parent-table replacement. */
 function isCodexUpdatePlanEnabled(args: readonly string[]): boolean {
   try {
     const config = codexCliConfig(args);
@@ -1810,14 +1802,8 @@ export class CodexAgentService implements AgentService {
         userFlagSet.add(userConfigArgs[i]);
       }
     }
-    // Custom-model metadata: a model without a built-in Codex catalog entry
-    // (e.g. deepseek-flash) gets our catalog file so the CLI stops falling
-    // back to generic metadata. Gated per-model because the flag replaces
-    // the entire built-in catalog. The window is bound to THIS invocation's
-    // resolved native window (#1381) rather than a module-wide constant, and
-    // the instructions template is adapted to the tools this invocation
-    // actually exposes because Codex skips its own filter once a catalog is
-    // present.
+    // The catalog replaces CLI metadata wholesale: gate custom models and bind
+    // its window and tool instructions to this invocation's resolved values.
     const modelCatalogArgs = buildCodexModelCatalogArgs(effectiveModel, {
       carrier: carrierMode,
       nativeContextWindowTokens: nativeWindowTokens,
@@ -2268,8 +2254,7 @@ export class CodexAgentService implements AgentService {
           cwd: options?.workingDirectory ?? null,
           authMode,
           argCount: args.length,
-          // Distinguish "builtin model / app_server (not applicable)" from
-          // "custom model requested the catalog but materialization fell back".
+          // Applied records argv selection; native usage remains the readback evidence.
           modelCatalog: catalogApplied ? 'applied' : catalogRequested ? 'fallback' : 'not_applicable',
           requestedContextWindow: contextWindow ?? null,
           catalogContextWindow: catalogApplied && nativeWindowTokens != null ? nativeWindowTokens : null,

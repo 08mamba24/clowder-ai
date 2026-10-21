@@ -44,8 +44,6 @@ const rows: AttentionListRow[] = threads.map((thread) => ({
   thread,
 }));
 
-const MOCK_GROUP_DECISIONS = { status: 'ready' as const, threadIds: new Set<string>() };
-
 function Harness({
   handleRef,
   getRowHeight,
@@ -63,7 +61,6 @@ function Harness({
         getRowHeight={getRowHeight}
         scrollContainerRef={scrollContainerRef}
         renderItem={(row) => <div data-row-key={row.key}>{row.key}</div>}
-        groupDecisions={MOCK_GROUP_DECISIONS}
       />
     </div>
   );
@@ -151,6 +148,20 @@ describe('VirtualAttentionList nearest visibility', () => {
     expect(scroller.scrollTop).toBe(288);
     vi.unstubAllGlobals();
   });
+  it('releases the measured virtual slot when the same row leaves its reading-height hold', () => {
+    let contentHeight = 120;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      return rect(0, this.dataset.rowKey === 'thread:thread-0' ? contentHeight : 0);
+    });
+    const handleRef = createRef<VirtualThreadListHandle>();
+    act(() => root.render(<Harness handleRef={handleRef} getRowHeight={(row) => (row === rows[0] ? 120 : 72)} />));
+    const next = () => host.querySelector('[data-row-key="thread:thread-1"]')?.parentElement?.style.top;
+    expect(next()).toBe('120px');
+    contentHeight = 40;
+    act(() => root.render(<Harness handleRef={handleRef} getRowHeight={(row) => (row === rows[0] ? 40 : 72)} />));
+    expect(next()).toBe('40px');
+    expect(host.querySelector<HTMLElement>('[data-testid="virtual-attention-list"]')?.style.height).toBe('7168px');
+  });
   it('positions and locates compact rows with mixed one-line and two-line heights', () => {
     const handleRef = createRef<VirtualThreadListHandle>();
     const getRowHeight = (row: AttentionListRow) => (row.key === 'thread:thread-0' ? 32 : 52);
@@ -167,14 +178,9 @@ describe('VirtualAttentionList nearest visibility', () => {
     expect(scroller.scrollTop).toBe(2486);
     expect(host.querySelector('[data-row-key="thread:thread-50"]')).not.toBeNull();
   });
-
   it('invalidates offscreen measurement cache when pending decisions change', () => {
     const handleRef = createRef<VirtualThreadListHandle>();
     let decisions = new Set<string>();
-    const getRowHeight = (row: AttentionListRow) => {
-      const threadId = row.kind === 'thread' ? row.thread.id : '';
-      return decisions.has(threadId) ? 76 : 52;
-    };
 
     // Mock getBoundingClientRect to return real heights matching getRowHeight
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
@@ -194,6 +200,15 @@ describe('VirtualAttentionList nearest visibility', () => {
         status: 'ready',
         threadIds: decisions,
       });
+      // Home ties measured cache entries to the canonical height estimate. Keep that
+      // estimate reactive to decision changes, as ThreadSidebar's callback does.
+      const getRowHeight = React.useCallback(
+        (row: AttentionListRow) => {
+          const threadId = row.kind === 'thread' ? row.thread.id : '';
+          return groupDecisions.threadIds.has(threadId) ? 76 : 52;
+        },
+        [groupDecisions],
+      );
       // Expose setter for test control via typed ref
       updateDecisionsRef.current = (newDecisions: Set<string>) => {
         decisions = newDecisions;
@@ -208,7 +223,6 @@ describe('VirtualAttentionList nearest visibility', () => {
             getRowHeight={getRowHeight}
             scrollContainerRef={scrollContainerRef}
             renderItem={(row) => <div data-row-key={row.key}>{row.key}</div>}
-            groupDecisions={groupDecisions}
           />
         </div>
       );

@@ -1,10 +1,14 @@
 import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { AttentionListRow } from './attention-clusters';
-import type { GroupDecisionRead } from './use-group-decisions';
 
 interface MeasuredRow {
   row: AttentionListRow;
   height: number;
+  estimate: number;
+}
+
+function sameMeasurement(previous: MeasuredRow | undefined, next: MeasuredRow): boolean {
+  return previous?.row === next.row && previous.height === next.height && previous.estimate === next.estimate;
 }
 
 /** Optional words never decide the line count. Only the unshrunk presence symbols and badges do. */
@@ -66,23 +70,17 @@ export function useMeasuredSidebarRows(
   rows: AttentionListRow[],
   listRef: RefObject<HTMLDivElement>,
   containerRef: RefObject<HTMLDivElement>,
-  enabled: boolean,
+  getRowHeight: ((row: AttentionListRow) => number) | undefined,
   range: { start: number; end: number },
-  groupDecisions: GroupDecisionRead,
 ) {
   const [measured, setMeasured] = useState<ReadonlyMap<string, MeasuredRow>>(new Map());
   const measuredWidth = useRef<number | null>(null);
   const rowByKey = useMemo(() => new Map(rows.map((row) => [row.key, row])), [rows]);
-
-  // Invalidate cache when decisions change
-  useEffect(() => {
-    setMeasured(new Map());
-  }, [groupDecisions]);
-
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A new virtual range mounts different DOM nodes to measure and observe.
   useEffect(() => {
     const list = listRef.current,
       container = containerRef.current;
-    if (!enabled || !list || !container) return;
+    if (!getRowHeight || !list || !container) return;
     const measure = () => {
       const resized = measuredWidth.current !== container.clientWidth;
       measuredWidth.current = container.clientWidth;
@@ -90,18 +88,13 @@ export function useMeasuredSidebarRows(
         const key = slot.dataset.virtualRowKey;
         const row = key ? rowByKey.get(key) : undefined;
         const height = slot.firstElementChild?.getBoundingClientRect().height ?? 0;
-        return key && row && height > 0 ? [{ key, row, height: Math.ceil(height) }] : [];
+        return key && row && height > 0 ? [{ key, row, height: Math.ceil(height), estimate: getRowHeight(row) }] : [];
       });
       setMeasured((current) => {
-        if (
-          !resized &&
-          values.every(
-            (value) => current.get(value.key)?.row === value.row && current.get(value.key)?.height === value.height,
-          )
-        )
-          return current;
+        if (!resized && values.every((value) => sameMeasurement(current.get(value.key), value))) return current;
         const next = resized ? new Map<string, MeasuredRow>() : new Map(current);
-        for (const value of values) next.set(value.key, { row: value.row, height: value.height });
+        for (const value of values)
+          next.set(value.key, { row: value.row, height: value.height, estimate: value.estimate });
         for (const key of next.keys()) if (!rowByKey.has(key)) next.delete(key);
         return next;
       });
@@ -112,6 +105,6 @@ export function useMeasuredSidebarRows(
     for (const slot of list.querySelectorAll('[data-virtual-row-key]'))
       if (slot.firstElementChild) observer?.observe(slot.firstElementChild);
     return () => observer?.disconnect();
-  }, [rowByKey, listRef, containerRef, enabled, range]);
+  }, [rowByKey, listRef, containerRef, getRowHeight, range.start, range.end]);
   return measured;
 }
