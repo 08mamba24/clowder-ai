@@ -44,6 +44,8 @@ const rows: AttentionListRow[] = threads.map((thread) => ({
   thread,
 }));
 
+const MOCK_GROUP_DECISIONS = { status: 'ready' as const, threadIds: new Set<string>() };
+
 function Harness({
   handleRef,
   getRowHeight,
@@ -61,6 +63,7 @@ function Harness({
         getRowHeight={getRowHeight}
         scrollContainerRef={scrollContainerRef}
         renderItem={(row) => <div data-row-key={row.key}>{row.key}</div>}
+        groupDecisions={MOCK_GROUP_DECISIONS}
       />
     </div>
   );
@@ -163,5 +166,95 @@ describe('VirtualAttentionList nearest visibility', () => {
     act(() => handleRef.current?.scrollToIndex(50));
     expect(scroller.scrollTop).toBe(2486);
     expect(host.querySelector('[data-row-key="thread:thread-50"]')).not.toBeNull();
+  });
+
+  it('invalidates offscreen measurement cache when pending decisions change', () => {
+    const handleRef = createRef<VirtualThreadListHandle>();
+    let decisions = new Set<string>();
+    const getRowHeight = (row: AttentionListRow) => {
+      const threadId = row.kind === 'thread' ? row.thread.id : '';
+      return decisions.has(threadId) ? 76 : 52;
+    };
+
+    // Mock getBoundingClientRect to return real heights matching getRowHeight
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const key = this.dataset.rowKey;
+      if (!key) return rect(0, 0);
+      const threadId = key.split(':')[1];
+      const height = decisions.has(threadId) ? 76 : 52;
+      return rect(0, height);
+    });
+
+    // Test control ref with explicit type
+    const updateDecisionsRef = { current: null as ((newDecisions: Set<string>) => void) | null };
+
+    function DynamicHarness() {
+      const scrollContainerRef = useRef<HTMLDivElement>(null);
+      const [groupDecisions, setGroupDecisions] = React.useState<{ status: 'ready'; threadIds: Set<string> }>({
+        status: 'ready',
+        threadIds: decisions,
+      });
+      // Expose setter for test control via typed ref
+      updateDecisionsRef.current = (newDecisions: Set<string>) => {
+        decisions = newDecisions;
+        setGroupDecisions({ status: 'ready', threadIds: newDecisions });
+      };
+      return (
+        <div ref={scrollContainerRef} data-testid="scroller">
+          <div data-scroll-occluder="true">Tabs</div>
+          <VirtualAttentionList
+            ref={handleRef}
+            rows={rows}
+            getRowHeight={getRowHeight}
+            scrollContainerRef={scrollContainerRef}
+            renderItem={(row) => <div data-row-key={row.key}>{row.key}</div>}
+            groupDecisions={groupDecisions}
+          />
+        </div>
+      );
+    }
+
+    act(() => root.render(<DynamicHarness />));
+    const scroller = host.querySelector('[data-testid="scroller"]') as HTMLDivElement;
+    const list = host.querySelector('[data-testid="virtual-attention-list"]') as HTMLDivElement;
+    Object.defineProperty(scroller, 'clientHeight', { value: 640, configurable: true });
+
+    // Initial: all 52px, total = 52 * 100 = 5200px
+    expect(list.style.height).toBe('5200px');
+
+    // Scroll to make row 50 visible and measure it (enters cache with 52px)
+    act(() => handleRef.current?.scrollToIndex(50));
+    expect(host.querySelector('[data-row-key="thread:thread-50"]')).not.toBeNull();
+
+    // Scroll row 50 offscreen (back to top)
+    act(() => {
+      scroller.scrollTop = 0;
+      scroller.dispatchEvent(new Event('scroll'));
+    });
+    expect(host.querySelector('[data-row-key="thread:thread-50"]')).toBeNull();
+
+    // Add decision for thread-50 (should invalidate cache)
+    act(() => {
+      updateDecisionsRef.current?.(new Set(['thread-50']));
+    });
+
+    // Total should update immediately: 52*99 + 76 = 5224px
+    // Cache invalidation ensures offscreen row uses new height, not stale 52px
+    expect(list.style.height).toBe('5224px');
+
+    // Scroll thread-50 offscreen again before removing decision
+    act(() => {
+      scroller.scrollTop = 0;
+      scroller.dispatchEvent(new Event('scroll'));
+    });
+    expect(host.querySelector('[data-row-key="thread:thread-50"]')).toBeNull();
+
+    // Remove decision (thread-50 still offscreen)
+    act(() => {
+      updateDecisionsRef.current?.(new Set());
+    });
+
+    // Total should return to 5200px immediately (cache invalidated again)
+    expect(list.style.height).toBe('5200px');
   });
 });

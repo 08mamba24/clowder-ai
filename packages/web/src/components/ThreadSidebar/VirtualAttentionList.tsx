@@ -10,6 +10,7 @@ import {
   useState,
 } from 'react';
 import type { AttentionListRow } from './attention-clusters';
+import type { GroupDecisionRead } from './use-group-decisions';
 import { useMeasuredSidebarRows } from './use-measured-sidebar-rows';
 import type { VirtualThreadListHandle } from './VirtualThreadList';
 
@@ -22,6 +23,7 @@ interface VirtualAttentionListProps {
   scrollContainerRef: RefObject<HTMLDivElement>;
   renderItem: (row: AttentionListRow) => ReactNode;
   getRowHeight?: (row: AttentionListRow) => number;
+  groupDecisions: GroupDecisionRead;
 }
 
 function offsetTopWithin(element: HTMLElement, container: HTMLElement): number {
@@ -47,13 +49,13 @@ function viewportHeight(container: HTMLElement): number {
 }
 
 export const VirtualAttentionList = forwardRef<VirtualThreadListHandle, VirtualAttentionListProps>(
-  function VirtualAttentionList({ rows, scrollContainerRef, renderItem, getRowHeight }, ref) {
+  function VirtualAttentionList({ rows, scrollContainerRef, renderItem, getRowHeight, groupDecisions }, ref) {
     const listRef = useRef<HTMLDivElement>(null);
     const [range, setRange] = useState(() => ({
       start: 0,
       end: Math.min(rows.length, Math.ceil(FALLBACK_VIEWPORT_HEIGHT_PX / ROW_HEIGHT_PX) + OVERSCAN_ROWS),
     }));
-    const measured = useMeasuredSidebarRows(rows, listRef, scrollContainerRef, !!getRowHeight, range);
+    const measured = useMeasuredSidebarRows(rows, listRef, scrollContainerRef, !!getRowHeight, range, groupDecisions);
     const offsets = useMemo(() => {
       const result = [0];
       for (const row of rows) {

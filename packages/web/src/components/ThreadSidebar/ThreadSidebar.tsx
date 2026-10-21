@@ -607,7 +607,7 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
     collapsedPeek: attentionCollapsedPeek,
     toggleCollapsedPeek: toggleAttentionCollapsedPeek,
   } = useAttentionClusters(liveThreads, currentThreadId, normalizedQuery);
-  const groupDecisions = useGroupDecisions(isV2 && attentionClusters.length > 0);
+  const groupDecisions = useGroupDecisions(isV2);
   const [attentionArrangeMode, setAttentionArrangeMode] = useState(false);
   const [searchGroupRequest, setSearchGroupRequest] = useState<SearchGroupRequest | null>(null);
   const searchGroupOperation = useRef(0);
@@ -1098,7 +1098,7 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
       })),
     [activeTabContent.threads],
   );
-  const threadRowHeight = useSidebarRowHeight(liveThreads, currentConversationId, isV2);
+  const threadRowHeight = useSidebarRowHeight(liveThreads, currentConversationId, isV2, groupDecisions);
   const attentionRowHeight = useCallback(
     (row: AttentionListRow) => {
       if (!isV2) return 80;
@@ -1464,6 +1464,7 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
             presence={thread.presence}
             unreadCount={thread.unreadCount}
             hasUserMention={thread.hasUserMention}
+            hasPendingDecision={groupDecisions.status === 'ready' && groupDecisions.threadIds.has(thread.id)}
             projectPath={thread.projectPath}
             indented={indented}
             preferredCats={thread.preferredCats}
@@ -1481,6 +1482,7 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
       commitAttentionThreadDrop,
       currentConversationId,
       draggedAttentionThreadId,
+      groupDecisions,
       handleDeleteRequest,
       handleRename,
       handleReplay,
@@ -2010,6 +2012,7 @@ export function ThreadSidebar({ onClose, className, routeThreadId, activeDestina
                           getRowHeight={isV2 ? attentionRowHeight : undefined}
                           scrollContainerRef={scrollContainerRef}
                           renderItem={renderAttentionRow}
+                          groupDecisions={groupDecisions}
                         />
                       ) : (
                         <VirtualThreadList
