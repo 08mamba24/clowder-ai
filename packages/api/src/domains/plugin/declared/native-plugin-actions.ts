@@ -74,7 +74,8 @@ export class NativePluginActions {
     this.#bindings.set(instanceId, binding);
     for (const [contributionId, connection] of connections) {
       this.#tokens.set(connection.token, { binding, contributionId, methods: connection.methods });
-      process.env[this.environmentKey(instanceId, contributionId)] = connection.token;
+      process.env[this.environmentKey(instanceId, contributionId, 'TOKEN')] = connection.token;
+      process.env[this.environmentKey(instanceId, contributionId, 'PATH')] = '/api/plugin-runtime/action';
     }
   }
 
@@ -103,17 +104,17 @@ export class NativePluginActions {
   environmentReferences(instanceId: string, contributionId: string): Readonly<Record<string, string>> {
     if (!this.#bindings.get(instanceId)?.connections.has(contributionId)) return {};
     return {
-      CLOWDER_PLUGIN_ACTION_TOKEN: `\${${this.environmentKey(instanceId, contributionId)}}`,
-      CLOWDER_PLUGIN_ACTION_PATH: '/api/plugin-runtime/action',
+      CLOWDER_PLUGIN_ACTION_TOKEN: `\${${this.environmentKey(instanceId, contributionId, 'TOKEN')}}`,
+      CLOWDER_PLUGIN_ACTION_PATH: `\${${this.environmentKey(instanceId, contributionId, 'PATH')}}`,
     };
   }
 
-  private environmentKey(instanceId: string, contributionId: string): string {
+  private environmentKey(instanceId: string, contributionId: string, field: 'TOKEN' | 'PATH'): string {
     const id = createHash('sha256')
       .update(JSON.stringify([instanceId, contributionId]))
       .digest('hex')
       .toUpperCase();
-    return `CLOWDER_PLUGIN_${id}_ACTION_TOKEN`;
+    return `CLOWDER_PLUGIN_${id}_ACTION_${field}`;
   }
 
   deactivate(instanceId: string): void {

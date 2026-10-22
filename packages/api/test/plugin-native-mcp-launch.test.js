@@ -135,7 +135,11 @@ test('native launch resolves a frozen exact activation descriptor without trusti
     f.config().capabilities[0].mcpServer.env?.CLOWDER_PLUGIN_ACTION_TOKEN,
     f.router.nativeActions.environmentReferences('instance-a', 'native').CLOWDER_PLUGIN_ACTION_TOKEN,
   );
-  assert.equal(f.config().capabilities[0].mcpServer.env?.CLOWDER_PLUGIN_ACTION_PATH, '/api/plugin-runtime/action');
+  assert.equal(
+    f.config().capabilities[0].mcpServer.env?.CLOWDER_PLUGIN_ACTION_PATH,
+    f.router.nativeActions.environmentReferences('instance-a', 'native').CLOWDER_PLUGIN_ACTION_PATH,
+  );
+  assert.equal(first.env.CLOWDER_PLUGIN_ACTION_PATH, '/api/plugin-runtime/action');
   const ambient = f.config().capabilities[0];
   ambient.mcpServer.command = '/ambient-command';
   ambient.mcpServer.env.CLOWDER_PLUGIN_ACTION_TOKEN = 'ambient-token';

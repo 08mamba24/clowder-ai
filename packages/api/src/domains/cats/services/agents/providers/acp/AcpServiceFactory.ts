@@ -33,6 +33,12 @@ import {
   type VerifiedAcpBootstrapContext,
   verifyAcpBootstrap,
 } from './bootstrap/acp-bootstrap-context.js';
+import {
+  type AcpServicePoolLease,
+  bindAcpServicePoolLease,
+  retainAcpServicePool,
+  retireAcpServicePool,
+} from './pool/acp-service-pool-lease.js';
 
 export type AcpPoolRegistry = Map<string, AcpProcessPool>;
 
@@ -207,7 +213,7 @@ async function ensureAcpPool(
   input: CreateAcpServiceForConfigInput,
   bootstrap: VerifiedAcpBootstrapContext,
   spawn: AcpSpawnContext,
-): Promise<AcpProcessPool> {
+): Promise<{ pool: AcpProcessPool; lease: AcpServicePoolLease }> {
   const { profileId, acpConfig, poolRegistry } = input;
   const spawnSignature = createAcpPoolSpawnSignature({
     command: bootstrap.command,
@@ -226,12 +232,12 @@ async function ensureAcpPool(
 
   const existingPool = poolRegistry.get(profileId);
   if (existingPool && existingPool.spawnSignature !== spawnSignature) {
-    existingPool.retireWhenIdle();
+    await retireAcpServicePool(existingPool, () => existingPool.retireWhenIdle());
     poolRegistry.delete(profileId);
   }
 
   const activePool = poolRegistry.get(profileId);
-  if (activePool) return activePool;
+  if (activePool) return { pool: activePool, lease: retainAcpServicePool(poolRegistry, profileId, activePool, false) };
 
   const pool = new AcpProcessPool(
     {
@@ -258,12 +264,12 @@ async function ensureAcpPool(
     spawnSignature,
   );
   poolRegistry.set(profileId, pool);
-  return pool;
+  return { pool, lease: retainAcpServicePool(poolRegistry, profileId, pool, true) };
 }
 
 export async function createAcpServiceForConfig(
   input: CreateAcpServiceForConfigInput,
-): Promise<AcpAgentService | null> {
+): Promise<(AcpAgentService & { disposeHostService(): Promise<void> }) | null> {
   const { projectRoot, profileId, config, acpConfig } = input;
   const catId = config.id;
   const effectiveModel =
@@ -318,30 +324,33 @@ export async function createAcpServiceForConfig(
   if (!spawn) return null;
   const root = input.bootstrapRoot ?? acpConfig.bootstrapRoot;
   const verified = verifyAcpBootstrap(bootstrap, profileId, root, spawn.env, acpConfig.bootstrapRoot !== undefined);
-  const pool = await saveSpan('acp.pool', () => ensureAcpPool(effectiveInput, verified, spawn));
+  const { pool, lease } = await saveSpan('acp.pool', () => ensureAcpPool(effectiveInput, verified, spawn));
 
   // #712 P1-1: pass whitelist — MCP resolution happens at invoke time in
   // AcpAgentService so capability toggles take effect without registry rebuild.
-  return new AcpAgentService({
-    ...(spawn.antigravity ? { antigravity: spawn.antigravity, agentBusyRetryDelaysMs: [] } : {}),
-    catId,
-    pool,
-    poolKey: bootstrap.poolKey,
-    projectRoot: bootstrap.projectRoot,
-    mcpWhitelist: acpConfig.mcpWhitelist ?? [],
-    providerName: config.clientId === 'acp' ? 'acp' : config.clientId,
-    modelName: spawn.sessionModel ?? config.defaultModel ?? 'acp',
-    sessionModel: spawn.sessionModel,
-    contextBinding: {
-      model: effectiveModel,
-      ...((config.clientId === 'opencode' || config.clientId === 'kimi') && spawn.contextPolicy?.windowTokens
-        ? { windowTokens: spawn.contextPolicy.windowTokens }
-        : {}),
-      source: 'service_spawn',
-    },
-    mcpSupport: config.mcpSupport,
-    // #1186: Thread the member's configured idle TTL to AcpAgentService so
-    // promptStream uses it as the authoritative no-event termination threshold.
-    idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,
-  });
+  return bindAcpServicePoolLease(
+    new AcpAgentService({
+      ...(spawn.antigravity ? { antigravity: spawn.antigravity, agentBusyRetryDelaysMs: [] } : {}),
+      catId,
+      pool,
+      poolKey: bootstrap.poolKey,
+      projectRoot: bootstrap.projectRoot,
+      mcpWhitelist: acpConfig.mcpWhitelist ?? [],
+      providerName: config.clientId === 'acp' ? 'acp' : config.clientId,
+      modelName: spawn.sessionModel ?? config.defaultModel ?? 'acp',
+      sessionModel: spawn.sessionModel,
+      contextBinding: {
+        model: effectiveModel,
+        ...((config.clientId === 'opencode' || config.clientId === 'kimi') && spawn.contextPolicy?.windowTokens
+          ? { windowTokens: spawn.contextPolicy.windowTokens }
+          : {}),
+        source: 'service_spawn',
+      },
+      mcpSupport: config.mcpSupport,
+      // #1186: Thread the member's configured idle TTL to AcpAgentService so
+      // promptStream uses it as the authoritative no-event termination threshold.
+      idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,
+    }),
+    lease,
+  );
 }

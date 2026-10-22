@@ -194,6 +194,13 @@ export function MemberRuntimeFields({
           {libraryError}
         </p>
       )}
+      {clientLibraries
+        .filter((library) => library.error)
+        .map((library) => (
+          <p key={library.pluginId} role="alert" className="text-sm text-cafe-secondary">
+            {library.pluginId}: {library.error}
+          </p>
+        ))}
       {needsLogin && (
         <div role="status" className="rounded-xl bg-conn-amber-bg p-4 text-sm text-conn-amber-text">
           <p className="font-semibold">{t(`${tool} 尚未登录`, `${tool} is not signed in`)}</p>

@@ -3,31 +3,6 @@ import type { EnvDefinition } from '../env-registry.js';
 
 export const ENV_DEFINITIONS_5: readonly EnvDefinition[] = [
   {
-    name: 'CAT_CAFE_TMUX_PATH',
-    defaultValue: '(未设置)',
-    description: 'Tmux 可执行文件路径',
-    category: 'cli',
-    sensitive: false,
-  },
-  {
-    name: 'CAT_CAFE_DATA_DIR',
-    defaultValue: '~/.cat-cafe',
-    description: '猫猫数据的默认根目录。会话记录和上传目录可通过各自设置单独指定',
-    category: 'cli',
-    sensitive: false,
-    runtimeEditable: false,
-    label: '数据根目录',
-    settingsGroup: 'storage',
-    restartRequired: true,
-  },
-  {
-    name: 'CAT_CAFE_CALLBACK_TOKEN',
-    defaultValue: '(未设置)',
-    description: 'Callback 鉴权 token',
-    category: 'cli',
-    sensitive: true,
-  },
-  {
     name: 'CAT_CAFE_CALLBACK_OUTBOX_ENABLED',
     defaultValue: 'true',
     description: 'Callback outbox 是否启用',
@@ -173,7 +148,6 @@ export const ENV_DEFINITIONS_5: readonly EnvDefinition[] = [
     sensitive: false,
     hubVisible: false,
   },
-  // --- proxy ---
   {
     name: 'ANTHROPIC_PROXY_ENABLED',
     defaultValue: '1',
@@ -226,7 +200,6 @@ export const ENV_DEFINITIONS_5: readonly EnvDefinition[] = [
     sensitive: false,
     hubVisible: false,
   },
-  // --- codex ---
   {
     name: 'CAT_CODEX_SANDBOX_MODE',
     defaultValue: 'danger-full-access',
@@ -248,22 +221,5 @@ export const ENV_DEFINITIONS_5: readonly EnvDefinition[] = [
     category: 'cli',
     sensitive: true,
     runtimeEditable: false,
-  },
-  {
-    name: 'CLAUDE_CONFIG_DIR',
-    defaultValue: '',
-    description: 'Claude Code 本机会话与进程索引目录；未设置时使用用户目录下的 .claude',
-    category: 'cli',
-    sensitive: false,
-    runtimeEditable: false,
-  },
-  {
-    name: 'CAT_CAFE_CLAUDE_CARRIER',
-    defaultValue: 'print_sdk',
-    description: 'F318 Claude carrier；agent_sdk 仅显式 canary，默认不变。SDK 已接受执行后故障不会自动降级重放',
-    category: 'cli',
-    sensitive: false,
-    runtimeEditable: false,
-    allowedValues: ['print_sdk', 'agent_sdk', 'interactive_pty', 'bg_daemon', 'api_key'],
   },
 ];

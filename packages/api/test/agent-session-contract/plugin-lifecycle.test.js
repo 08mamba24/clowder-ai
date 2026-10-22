@@ -88,7 +88,7 @@ test('missing implementation releases cached bridge before emitting failure', as
   failure(await collect(service.invoke('x', options({ hostSessionId: 'host' }))), 'session_implementation_unavailable');
   assert.deepEqual(provider.calls.release, [{ id: 'host', reason: 'implementation_unavailable' }]);
 });
-async function lifecycle(t, raw = declaration, mode) {
+async function lifecycle(t, raw = declaration, mode, createProvider) {
   const root = await mkdtemp(join(tmpdir(), 'plugin-session-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const packageRoot = join(root, 'source');
@@ -127,11 +127,13 @@ async function lifecycle(t, raw = declaration, mode) {
       CAT_CAFE_AGENT_SESSION_CONTRACT: mode,
       CAT_CAFE_AGENT_SESSION_BINDINGS: JSON.stringify({ codex: 'plugin:local.agent-session-reference/agent' }),
     }),
-    createProvider: () => {
-      const provider = new FakeSessionProvider();
-      created.push(provider);
-      return provider;
-    },
+    createProvider:
+      createProvider ??
+      (() => {
+        const provider = new FakeSessionProvider();
+        created.push(provider);
+        return provider;
+      }),
   });
   const runtime = new DeclaredRuntimeContributions({ packages, configuration: {}, agentSessionProviders: host });
   const admission = { instance, packageRecord: pkg, effectiveGrants: [] };
@@ -315,4 +317,64 @@ test('bridge marker uses Pino structured fields and does not log Host credential
   );
   assert.equal(JSON.stringify(lines).includes('not-for-logs'), false);
   await service.releaseAll('test');
+});
+
+test('activation waits for the bound concrete Host service; disable revokes its capability surface', async (t) => {
+  const { createRefreshingAcpSessionProvider } = await import(
+    '../../dist/domains/cats/services/agents/session-contract/acp-session-provider.js'
+  );
+  const { deferred } = await import('./fake-session-provider.js');
+  const entered = deferred();
+  const gate = deferred();
+  const actual = {
+    injectsL0Natively: () => true,
+    async *invoke() {
+      yield { type: 'done' };
+    },
+  };
+  const h = await lifecycle(t, declaration, undefined, () =>
+    createRefreshingAcpSessionProvider({
+      catId: 'codex',
+      scope: {},
+      revision: () => 1,
+      createService: async () => {
+        entered.resolve();
+        await gate.promise;
+        return actual;
+      },
+    }),
+  );
+  let activated = false;
+  const activation = h.runtime
+    .activate(h.admission, () => assert.fail('plugin code invoked'))
+    .then(() => {
+      activated = true;
+    });
+  await entered.promise;
+  assert.equal(activated, false);
+  assert.equal(h.service.injectsL0Natively?.(), undefined);
+  gate.resolve();
+  await activation;
+  assert.equal(h.service.injectsL0Natively?.(), true);
+  await h.runtime.deactivateAll();
+  assert.equal(h.service.injectsL0Natively?.(), undefined);
+});
+
+test('failed concrete Host preparation rejects activation and unregisters the declaration', async (t) => {
+  const { createRefreshingAcpSessionProvider } = await import(
+    '../../dist/domains/cats/services/agents/session-contract/acp-session-provider.js'
+  );
+  const h = await lifecycle(t, declaration, undefined, () =>
+    createRefreshingAcpSessionProvider({
+      catId: 'codex',
+      scope: {},
+      revision: () => 1,
+      createService: async () => {
+        throw new Error('actual ACP bootstrap unavailable');
+      },
+    }),
+  );
+  await assert.rejects(() => h.runtime.activate(h.admission, () => {}), /actual ACP bootstrap unavailable/);
+  assert.equal(h.registry.has(ref), false);
+  assert.equal(h.service.contextCapability?.(), undefined);
 });

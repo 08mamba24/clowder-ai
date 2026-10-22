@@ -1018,3 +1018,87 @@ test('git install passes the closed source through one Manager route without aud
     await app.close();
   }
 });
+
+test('home local read routes retain authentication, query validation and private namespace', async () => {
+  const { app, calls } = await harness({
+    overrides: {
+      searchLocal: async (query) => {
+        calls.push(['search-local', query]);
+        return { ...listed, catalog: { status: 'loading', refreshedAt: null } };
+      },
+    },
+  });
+  try {
+    for (const url of [
+      '/api/plugin-manager/plugins/_local',
+      '/api/plugin-manager/plugins/_local/search?q=video',
+      '/api/plugin-manager/plugins/_local/official.video',
+    ]) {
+      assert.equal((await app.inject({ method: 'GET', url })).statusCode, 401);
+    }
+    assert.deepEqual(calls, []);
+    const search = await app.inject({
+      method: 'GET',
+      url: '/api/plugin-manager/plugins/_local/search?q=video',
+      headers: readHeaders,
+    });
+    assert.equal(search.statusCode, 200, search.payload);
+    assert.equal(search.json().catalog.status, 'loading');
+    assert.deepEqual(calls, [['search-local', 'video']]);
+    for (const url of [
+      '/api/plugin-manager/plugins/_local/search?q=video&extra=true',
+      '/api/plugin-manager/plugins/_local/-invalid',
+    ]) {
+      assert.equal((await app.inject({ method: 'GET', url, headers: readHeaders })).statusCode, 400);
+    }
+    assert.deepEqual(calls, [['search-local', 'video']]);
+  } finally {
+    await app.close();
+  }
+});
+
+test('home local detail scopes bindings to the verified session or callback user', async () => {
+  const owners = [];
+  const { app } = await harness({
+    callbackRegistry: verifiedCallbackRegistry(),
+    overrides: {
+      getLocal: async () => ({
+        plugin: { ...listed.plugins[0], artifact: 'installed' },
+        catalog: listed.catalog,
+      }),
+    },
+    bindings: {
+      list: async (id, owner) => {
+        owners.push([id, owner]);
+        return [];
+      },
+    },
+  });
+  const url = '/api/plugin-manager/plugins/_local/official.video';
+  const callbackHeaders = {
+    host: 'localhost:3004',
+    origin: 'http://localhost:3004',
+    'x-invocation-id': 'inv-plugin',
+    'x-callback-token': 'callback-secret',
+  };
+  try {
+    const session = await app.inject({ method: 'GET', url, headers: { 'x-test-session-user': 'reader-user' } });
+    assert.equal(session.statusCode, 200, session.payload);
+    const callback = await app.inject({ method: 'GET', url, headers: callbackHeaders, remoteAddress: '127.0.0.1' });
+    assert.equal(callback.statusCode, 200, callback.payload);
+    assert.deepEqual(owners, [
+      ['official.video', 'reader-user'],
+      ['official.video', ownerUserId],
+    ]);
+    const rejected = await app.inject({
+      method: 'GET',
+      url,
+      remoteAddress: '127.0.0.1',
+      headers: { ...callbackHeaders, 'x-callback-token': 'wrong-secret' },
+    });
+    assert.equal(rejected.statusCode, 401);
+    assert.equal(owners.length, 2);
+  } finally {
+    await app.close();
+  }
+});

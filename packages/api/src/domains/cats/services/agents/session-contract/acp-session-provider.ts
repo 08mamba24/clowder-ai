@@ -4,14 +4,40 @@ import type { AgentMessage, AgentService, AgentServiceOptions, MessageMetadata }
 import type * as Contract from './types.js';
 
 type ActiveTurn = { controller: AbortController; ref: Contract.TurnRef; done: boolean };
-type AcpService = Pick<AgentService, 'invoke'> & { releaseSession?(nativeSessionId: string): Promise<void> };
+export type AcpService = AgentService & {
+  releaseSession?(nativeSessionId: string): Promise<void>;
+  disposeHostService?(): Promise<void>;
+};
 interface Session {
   nativeId?: string;
   active?: ActiveTurn;
 }
 export class AcpSessionProvider implements Contract.AgentSessionProvider {
   private readonly sessions = new Map<string, Session>();
-  constructor(private readonly deps: { catId: CatId; service: AcpService }) {}
+  constructor(
+    private readonly deps: {
+      catId: CatId;
+      service: AcpService;
+      prepareHostService?(): Promise<AgentService>;
+      hostService?(): AgentService | undefined;
+      bindHostService?(service: AgentService): Contract.AgentSessionProvider | undefined;
+      disposeHostService?(): Promise<void>;
+    },
+  ) {}
+  prepareHostService(): Promise<AgentService> {
+    return this.deps.prepareHostService?.() ?? Promise.resolve(this.deps.service);
+  }
+  hostService(): AgentService | undefined {
+    return this.deps.hostService ? this.deps.hostService() : this.deps.service;
+  }
+  bindHostService(service: AgentService): Contract.AgentSessionProvider | undefined {
+    if (service !== this.hostService()) return;
+    return this.deps.bindHostService ? this.deps.bindHostService(service) : this;
+  }
+  async disposeHostService(): Promise<void> {
+    if (this.deps.disposeHostService) await this.deps.disposeHostService();
+    else await this.deps.service.disposeHostService?.();
+  }
   capabilities(): Contract.AgentSessionCapabilities {
     return {
       input: 'unsupported',
@@ -229,57 +255,4 @@ export class AcpSessionProvider implements Contract.AgentSessionProvider {
   }
 }
 
-const constructions = new WeakMap<object, Map<CatId, Promise<AcpService | null>>>();
-
-/** Host-only asynchronous service construction, refreshed with the member/account configuration revision. */
-export function createRefreshingAcpSessionProvider(input: {
-  catId: CatId;
-  scope: object;
-  revision(): number;
-  createService(): Promise<AcpService | null>;
-}): AcpSessionProvider {
-  let generation = -1;
-  let pending: Promise<AcpService | null> | undefined;
-  const get = () => {
-    const revision = input.revision();
-    if (!pending || generation !== revision) {
-      const queue = constructions.get(input.scope) ?? new Map<CatId, Promise<AcpService | null>>();
-      constructions.set(input.scope, queue);
-      const building = (queue.get(input.catId) ?? Promise.resolve(null)).catch(() => null).then(input.createService);
-      queue.set(input.catId, building);
-      const clear = () => {
-        if (queue.get(input.catId) === building) queue.delete(input.catId);
-      };
-      const failed = () => {
-        // An older rejection must not evict a newer configuration's construction.
-        if (pending === building) pending = undefined;
-      };
-      void building.then(
-        (service) => {
-          clear();
-          if (!service) failed();
-        },
-        () => {
-          clear();
-          failed();
-        },
-      );
-      pending = building;
-      generation = revision;
-    }
-    return pending;
-  };
-  return new AcpSessionProvider({
-    catId: input.catId,
-    service: {
-      async *invoke(prompt, options) {
-        const service = await get();
-        if (!service) throw new Error('Plugin ACP service unavailable');
-        yield* service.invoke(prompt, options);
-      },
-      async releaseSession(id) {
-        await (await pending)?.releaseSession?.(id);
-      },
-    },
-  });
-}
+export { createRefreshingAcpSessionProvider } from './refreshing-acp-session-provider.js';

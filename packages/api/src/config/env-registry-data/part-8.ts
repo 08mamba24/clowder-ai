@@ -1,7 +1,70 @@
 import type { EnvDefinition } from '../env-registry.js';
 
 export const ENV_DEFINITIONS_8: readonly EnvDefinition[] = [
-  // --- quota ---
+  {
+    name: 'EMBED_URL',
+    defaultValue: 'http://127.0.0.1:9880',
+    description: 'Embedding 服务地址（独立 Python GPU 进程 scripts/embed-api.py）',
+    category: 'evidence',
+    sensitive: false,
+  },
+  {
+    name: 'EVIDENCE_DB',
+    defaultValue: '{repoRoot}/evidence.sqlite',
+    description: 'F102 SQLite 数据库路径',
+    category: 'evidence',
+    sensitive: false,
+  },
+  {
+    name: 'GLOBAL_KNOWLEDGE_DB',
+    defaultValue: `\${CAT_CAFE_DATA_DIR:-~/.cat-cafe}/global_knowledge.sqlite`,
+    description: 'F-4: 全局知识 SQLite 路径；设置后覆盖 CAT_CAFE_DATA_DIR 下的默认位置',
+    category: 'evidence',
+    sensitive: false,
+  },
+  {
+    name: 'WORLD_DB',
+    defaultValue: '{repoRoot}/world.sqlite',
+    description: 'F093 World Engine SQLite 数据库路径',
+    category: 'evidence',
+    sensitive: false,
+  },
+  {
+    name: 'TASK_OUTCOME_DB',
+    defaultValue: '{repoRoot}/task-outcome-episodes.sqlite',
+    description: 'F192 Phase G Task Outcome Episode SQLite 数据库路径',
+    category: 'evidence',
+    sensitive: false,
+  },
+  {
+    name: 'EVENT_MEMORY_DB',
+    defaultValue: '{repoRoot}/event-memory.sqlite',
+    description: 'F227 Event Memory typed event index SQLite 数据库路径',
+    category: 'evidence',
+    sensitive: false,
+  },
+  {
+    name: 'F102_API_BASE',
+    defaultValue: '(未设置 → 摘要调度器不启用)',
+    description: 'Phase G 摘要调度用的反代 API 地址（不是猫猫自己的 provider profile）',
+    category: 'evidence',
+    sensitive: false,
+  },
+  {
+    name: 'F102_API_KEY',
+    defaultValue: '(未设置)',
+    description: 'Phase G 摘要调度用的反代 API Key',
+    category: 'evidence',
+    sensitive: true,
+    runtimeEditable: true,
+  },
+  {
+    name: 'EMBED_PORT',
+    defaultValue: '9880',
+    description: 'Embedding 服务端口（仅在 EMBED_URL 未设置时使用）',
+    category: 'evidence',
+    sensitive: false,
+  },
   {
     name: 'QUOTA_OFFICIAL_REFRESH_ENABLED',
     defaultValue: '0（默认关闭）',
@@ -25,7 +88,6 @@ export const ENV_DEFINITIONS_8: readonly EnvDefinition[] = [
     sensitive: false,
     runtimeEditable: false,
   },
-  // --- telemetry (F153) ---
   {
     name: 'TELEMETRY_DEBUG',
     defaultValue: '(未设置 → 关闭)',
@@ -141,7 +203,6 @@ export const ENV_DEFINITIONS_8: readonly EnvDefinition[] = [
     sensitive: false,
     runtimeEditable: false,
   },
-  // --- audio (F195 会中实时智囊) ---
   {
     name: 'AUDIO_SERVICE_URL',
     defaultValue: 'http://127.0.0.1:9881',

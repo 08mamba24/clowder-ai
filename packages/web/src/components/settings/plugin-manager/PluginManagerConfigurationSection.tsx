@@ -245,6 +245,11 @@ export function PluginManagerConfigurationSection({
         <SettingsText as="h4" variant="xs" tone="muted" className="font-semibold">
           {presentation === 'v2' ? '配置' : '插件配置'}
         </SettingsText>
+        {clientLibrary?.error && (
+          <p role="alert" className="text-sm text-cafe-secondary">
+            {clientLibrary.error}
+          </p>
+        )}
         {installed ? (
           <>
             {steps.map((step, index) => (

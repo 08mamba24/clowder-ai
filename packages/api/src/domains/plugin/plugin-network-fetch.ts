@@ -1,12 +1,9 @@
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
 import http from 'node:http';
 
-const BRIDGE_URL_ENV = 'CAT_CAFE_PLUGIN_NETWORK_BRIDGE_URL';
-const BRIDGE_TOKEN_ENV = 'CAT_CAFE_PLUGIN_NETWORK_BRIDGE_TOKEN';
-
 function bridgeConfig(): { endpoint: URL; token: string } | undefined {
-  const value = process.env[BRIDGE_URL_ENV];
-  const token = process.env[BRIDGE_TOKEN_ENV];
+  const value = process.env.CAT_CAFE_PLUGIN_NETWORK_BRIDGE_URL;
+  const token = process.env.CAT_CAFE_PLUGIN_NETWORK_BRIDGE_TOKEN;
   if (!value && !token) return undefined;
   if (!value || !token) throw new TypeError('Desktop plugin network bridge configuration is incomplete');
   const endpoint = new URL(value);

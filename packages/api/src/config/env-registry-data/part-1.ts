@@ -3,24 +3,6 @@ import type { EnvDefinition } from '../env-registry.js';
 
 export const ENV_DEFINITIONS_1: readonly EnvDefinition[] = [
   {
-    name: 'CAT_CAFE_AGENT_SESSION_CONTRACT',
-    runtimeEditable: false,
-    restartRequired: true,
-    category: 'cli',
-    sensitive: false,
-    description: '会话契约插件接入：plugin（默认，未绑定成员沿用原服务）或 off',
-    defaultValue: 'plugin',
-  },
-  {
-    name: 'CAT_CAFE_AGENT_SESSION_BINDINGS',
-    runtimeEditable: false,
-    restartRequired: true,
-    category: 'cli',
-    sensitive: false,
-    description: '猫成员到插件会话实现的 JSON 绑定',
-    defaultValue: '{}',
-  },
-  {
     name: 'PLUGIN_GIT_MARKETPLACE',
     defaultValue: '(未设置)',
     description:
@@ -29,7 +11,6 @@ export const ENV_DEFINITIONS_1: readonly EnvDefinition[] = [
     sensitive: false,
     runtimeEditable: false,
   },
-  // --- server ---
   {
     name: 'CAT_CAFE_DOT_WEBHOOK_PROXY_URL',
     defaultValue: '(未配置；使用系统 DNS)',
@@ -265,6 +246,65 @@ export const ENV_DEFINITIONS_1: readonly EnvDefinition[] = [
       'F298 callback auth 后端：redis 为 durable 默认；memory 仅限显式 degraded 本地/测试模式，并在容量满时拒绝新 admission',
     category: 'server',
     sensitive: false,
+    runtimeEditable: false,
+  },
+  {
+    name: 'CAT_CAFE_AUTH_TOMBSTONE_GC_TTL_MS',
+    defaultValue: '2592000000',
+    description: 'F298 callback auth 终态 tombstone GC 保留期（毫秒，默认 30 天；active principal 永不使用 TTL）',
+    category: 'server',
+    sensitive: false,
+    runtimeEditable: false,
+  },
+  {
+    name: 'F233_BALL_CUSTODY_PROBE_INTERVAL_MS',
+    defaultValue: '60000',
+    description: 'F233 ball-custody ProbeScheduler 轮询间隔（毫秒，启动时读取）',
+    category: 'server',
+    sensitive: false,
+    runtimeEditable: false,
+  },
+  {
+    name: 'CAT_CAFE_REPO_ROOT',
+    defaultValue: '(进程 CWD)',
+    description: 'F233 Phase C feat trajectory collector 所读 cat-cafe 仓根目录（含 .git）。未设置时用 process.cwd()',
+    category: 'server',
+    sensitive: false,
+    runtimeEditable: false,
+  },
+  {
+    name: 'CAT_CAFE_REPO_FULL_NAME',
+    defaultValue: deploymentDefaults.repositoryFullName,
+    description: 'F233 Phase C feat trajectory collector 调 gh CLI 用的 owner/repo（GitHub PR 元数据查询）',
+    category: 'server',
+    sensitive: false,
+    runtimeEditable: false,
+  },
+  {
+    name: 'CAT_CAFE_VERDICT_REPO_FULL_NAME',
+    defaultValue: `CAT_CAFE_REPO_FULL_NAME or ${deploymentDefaults.repositoryFullName}`,
+    description:
+      'F248 verdict publisher canonical owner/repo; automatic, pre-push, and managed agent-shell publication fail closed on target mismatch',
+    category: 'server',
+    sensitive: false,
+    runtimeEditable: false,
+  },
+  {
+    name: 'CAT_CAFE_PLUGIN_NETWORK_BRIDGE_URL',
+    defaultValue: '(仅桌面启动入口设置)',
+    description: 'Electron 向自有 API 子进程传递的内部回环插件下载桥地址，随桌面服务生命周期创建和回收',
+    category: 'server',
+    sensitive: false,
+    hubVisible: false,
+    runtimeEditable: false,
+  },
+  {
+    name: 'CAT_CAFE_PLUGIN_NETWORK_BRIDGE_TOKEN',
+    defaultValue: '(仅桌面启动入口设置)',
+    description: 'Electron 向自有 API 子进程传递的随机插件下载桥 bearer，随桥实例创建和回收',
+    category: 'server',
+    sensitive: true,
+    hubVisible: false,
     runtimeEditable: false,
   },
 ];

@@ -175,5 +175,7 @@ test('owner catalog stays available while disabled and never starts a client; an
     enabled.json().libraries[0].clients.map((client) => client.available),
     [true, true],
   );
-  assert.equal(h.created.length, 0);
+  assert.equal(h.created.length, 1, 'activation prepares the persisted member for Host capability admission');
+  assert.equal(h.created[0].provider.calls.open.length, 0, 'preparation does not open an agent session');
+  assert.equal(h.created[0].provider.calls.start.length, 0, 'reading the catalog never starts a client turn');
 });

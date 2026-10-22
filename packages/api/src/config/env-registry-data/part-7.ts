@@ -3,6 +3,42 @@ import type { EnvDefinition } from '../env-registry.js';
 
 export const ENV_DEFINITIONS_7: readonly EnvDefinition[] = [
   {
+    name: 'GENSHIN_VOICE_DIR',
+    defaultValue: '~/projects/.../genshin',
+    description: 'GPT-SoVITS 角色模型目录',
+    category: 'tts',
+    sensitive: false,
+  },
+  {
+    name: 'CHARACTER_VOICE_DIR',
+    defaultValue: '(未设置 → dirname(GENSHIN_VOICE_DIR))',
+    description: '角色语音模型根目录（优先级高于 GENSHIN_VOICE_DIR）',
+    category: 'tts',
+    sensitive: false,
+  },
+  {
+    name: 'WHISPER_URL',
+    defaultValue: 'http://localhost:9876',
+    description: 'Whisper STT 服务地址（服务端）',
+    category: 'stt',
+    sensitive: false,
+  },
+  {
+    name: 'CONNECTOR_MEDIA_DIR',
+    defaultValue: './data/connector-media',
+    description: '连接器媒体下载目录',
+    category: 'connector',
+    sensitive: false,
+  },
+  {
+    name: 'NEXT_PUBLIC_API_URL',
+    defaultValue: deploymentDefaults.apiBaseUrl,
+    description: '前端连接的 API 地址',
+    category: 'frontend',
+    sensitive: false,
+    runtimeEditable: false,
+  },
+  {
     name: 'NEXT_PUBLIC_COLLECTIVE_SERVICE_URL',
     defaultValue: 'http://localhost:5201',
     description: `${deploymentDefaults.brand.name}「进入 Collective」默认打开的独立 Service 地址`,
@@ -51,7 +87,6 @@ export const ENV_DEFINITIONS_7: readonly EnvDefinition[] = [
     sensitive: false,
     runtimeEditable: true,
   },
-  // --- push ---
   {
     name: 'VAPID_PUBLIC_KEY',
     defaultValue: '(未设置 → 推送不可用)',
@@ -73,7 +108,6 @@ export const ENV_DEFINITIONS_7: readonly EnvDefinition[] = [
     category: 'push',
     sensitive: false,
   },
-  // --- signal ---
   {
     name: 'SIGNALS_ROOT_DIR',
     defaultValue: '(未设置)',
@@ -88,7 +122,6 @@ export const ENV_DEFINITIONS_7: readonly EnvDefinition[] = [
     category: 'signal',
     sensitive: false,
   },
-  // --- evidence (F102 记忆系统) ---
   {
     name: 'EMBED_MODE',
     defaultValue: 'off',
@@ -127,7 +160,6 @@ export const ENV_DEFINITIONS_7: readonly EnvDefinition[] = [
     category: 'evidence',
     sensitive: false,
   },
-  // --- F200 Recall Telemetry ---
   {
     name: 'F200_CONSUMPTION_RERANK',
     defaultValue: 'off',
@@ -137,7 +169,6 @@ export const ENV_DEFINITIONS_7: readonly EnvDefinition[] = [
     runtimeEditable: true,
     allowedValues: ['off', 'shadow', 'on'],
   },
-  // --- F163 记忆熵减实验框架 ---
   {
     name: 'F163_AUTHORITY_BOOST',
     defaultValue: 'off',
@@ -200,69 +231,5 @@ export const ENV_DEFINITIONS_7: readonly EnvDefinition[] = [
     sensitive: false,
     runtimeEditable: true,
     allowedValues: ['off', 'suggest', 'apply'],
-  },
-  {
-    name: 'EMBED_URL',
-    defaultValue: 'http://127.0.0.1:9880',
-    description: 'Embedding 服务地址（独立 Python GPU 进程 scripts/embed-api.py）',
-    category: 'evidence',
-    sensitive: false,
-  },
-  {
-    name: 'EVIDENCE_DB',
-    defaultValue: '{repoRoot}/evidence.sqlite',
-    description: 'F102 SQLite 数据库路径',
-    category: 'evidence',
-    sensitive: false,
-  },
-  {
-    name: 'GLOBAL_KNOWLEDGE_DB',
-    defaultValue: `\${CAT_CAFE_DATA_DIR:-~/.cat-cafe}/global_knowledge.sqlite`,
-    description: 'F-4: 全局知识 SQLite 路径；设置后覆盖 CAT_CAFE_DATA_DIR 下的默认位置',
-    category: 'evidence',
-    sensitive: false,
-  },
-  {
-    name: 'WORLD_DB',
-    defaultValue: '{repoRoot}/world.sqlite',
-    description: 'F093 World Engine SQLite 数据库路径',
-    category: 'evidence',
-    sensitive: false,
-  },
-  {
-    name: 'TASK_OUTCOME_DB',
-    defaultValue: '{repoRoot}/task-outcome-episodes.sqlite',
-    description: 'F192 Phase G Task Outcome Episode SQLite 数据库路径',
-    category: 'evidence',
-    sensitive: false,
-  },
-  {
-    name: 'EVENT_MEMORY_DB',
-    defaultValue: '{repoRoot}/event-memory.sqlite',
-    description: 'F227 Event Memory typed event index SQLite 数据库路径',
-    category: 'evidence',
-    sensitive: false,
-  },
-  {
-    name: 'F102_API_BASE',
-    defaultValue: '(未设置 → 摘要调度器不启用)',
-    description: 'Phase G 摘要调度用的反代 API 地址（不是猫猫自己的 provider profile）',
-    category: 'evidence',
-    sensitive: false,
-  },
-  {
-    name: 'F102_API_KEY',
-    defaultValue: '(未设置)',
-    description: 'Phase G 摘要调度用的反代 API Key',
-    category: 'evidence',
-    sensitive: true,
-    runtimeEditable: true,
-  },
-  {
-    name: 'EMBED_PORT',
-    defaultValue: '9880',
-    description: 'Embedding 服务端口（仅在 EMBED_URL 未设置时使用）',
-    category: 'evidence',
-    sensitive: false,
   },
 ];

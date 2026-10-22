@@ -129,6 +129,24 @@ export const ENV_VARS: EnvDefinition[] = [
   ...ENV_DEFINITIONS_7,
   ...ENV_DEFINITIONS_8,
   {
+    name: 'CAT_CAFE_AGENT_SESSION_CONTRACT',
+    runtimeEditable: false,
+    restartRequired: true,
+    category: 'cli',
+    sensitive: false,
+    defaultValue: 'plugin',
+    description: '会话契约插件接入：plugin（默认，未绑定成员沿用原服务）或 off',
+  },
+  {
+    name: 'CAT_CAFE_AGENT_SESSION_BINDINGS',
+    runtimeEditable: false,
+    restartRequired: true,
+    category: 'cli',
+    sensitive: false,
+    defaultValue: '{}',
+    description: '猫成员到插件会话实现的 JSON 绑定',
+  },
+  {
     name: 'CAT_CAFE_TRUSTED_HOST_COMPATIBILITY',
     defaultValue: '0',
     description:

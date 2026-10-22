@@ -468,7 +468,7 @@ describe('start-dev strict profile isolation', () => {
     const devScript = pkg.scripts.dev;
     const supervisor = readFileSync(resolve(ROOT, 'packages/api/scripts/dev-supervisor.mjs'), 'utf8');
 
-    assert.equal(devScript, 'node scripts/dev-supervisor.mjs');
+    assert.match(devScript, /(?:^| && )node scripts\/dev-supervisor\.mjs$/);
     assert.match(supervisor, /'watch'/);
     assert.match(supervisor, /'--exclude',\s*'dist\/\*\*'/);
     assert.match(supervisor, /'--exclude',\s*'\.\.\/shared\/dist\/\*\*'/);

@@ -1,48 +1,6 @@
-import { deploymentDefaults } from '@cat-cafe/shared';
 import type { EnvDefinition } from '../env-registry.js';
 
 export const ENV_DEFINITIONS_2: readonly EnvDefinition[] = [
-  {
-    name: 'CAT_CAFE_AUTH_TOMBSTONE_GC_TTL_MS',
-    defaultValue: '2592000000',
-    description: 'F298 callback auth 终态 tombstone GC 保留期（毫秒，默认 30 天；active principal 永不使用 TTL）',
-    category: 'server',
-    sensitive: false,
-    runtimeEditable: false,
-  },
-  {
-    name: 'F233_BALL_CUSTODY_PROBE_INTERVAL_MS',
-    defaultValue: '60000',
-    description: 'F233 ball-custody ProbeScheduler 轮询间隔（毫秒，启动时读取）',
-    category: 'server',
-    sensitive: false,
-    runtimeEditable: false,
-  },
-  {
-    name: 'CAT_CAFE_REPO_ROOT',
-    defaultValue: '(进程 CWD)',
-    description: 'F233 Phase C feat trajectory collector 所读 cat-cafe 仓根目录（含 .git）。未设置时用 process.cwd()',
-    category: 'server',
-    sensitive: false,
-    runtimeEditable: false,
-  },
-  {
-    name: 'CAT_CAFE_REPO_FULL_NAME',
-    defaultValue: deploymentDefaults.repositoryFullName,
-    description: 'F233 Phase C feat trajectory collector 调 gh CLI 用的 owner/repo（GitHub PR 元数据查询）',
-    category: 'server',
-    sensitive: false,
-    runtimeEditable: false,
-  },
-  {
-    name: 'CAT_CAFE_VERDICT_REPO_FULL_NAME',
-    defaultValue: `CAT_CAFE_REPO_FULL_NAME or ${deploymentDefaults.repositoryFullName}`,
-    description:
-      'F248 verdict publisher canonical owner/repo; automatic, pre-push, and managed agent-shell publication fail closed on target mismatch',
-    category: 'server',
-    sensitive: false,
-    runtimeEditable: false,
-  },
   {
     name: 'CAT_CAFE_AGENT_KEY_SECRET',
     defaultValue: '(空)',
@@ -266,5 +224,40 @@ export const ENV_DEFINITIONS_2: readonly EnvDefinition[] = [
     description: '工作区关联的项目根（冒号分隔）',
     category: 'server',
     sensitive: false,
+  },
+  {
+    name: 'HYPERFOCUS_THRESHOLD_MS',
+    defaultValue: '5400000 (90分钟)',
+    description: 'Hyperfocus 健康提醒阈值',
+    category: 'server',
+    sensitive: false,
+  },
+  {
+    name: 'ANTHROPIC_API_KEY',
+    defaultValue: '(未设置 → 由 accounts/credentials 系统注入)',
+    description: 'Anthropic API Key（#340 P6: 由统一账户系统管理，不再从 .env 读取）',
+    category: 'server',
+    sensitive: true,
+    hubVisible: false,
+  },
+  {
+    name: 'LOG_LEVEL',
+    defaultValue: 'info',
+    description: '日志级别（debug / info / warn / error）',
+    category: 'server',
+    sensitive: false,
+    runtimeEditable: false,
+    exampleRecommended: true,
+    label: '日志级别',
+    settingsGroup: 'runtime',
+    restartRequired: true,
+  },
+  {
+    name: 'LOG_DIR',
+    defaultValue: './data/logs/api',
+    description: 'API 日志目录（Pino 滚动日志写入路径）',
+    category: 'server',
+    sensitive: false,
+    exampleRecommended: true,
   },
 ];

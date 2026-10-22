@@ -3,6 +3,23 @@ import type { EnvDefinition } from '../env-registry.js';
 
 export const ENV_DEFINITIONS_6: readonly EnvDefinition[] = [
   {
+    name: 'CLAUDE_CONFIG_DIR',
+    defaultValue: '',
+    description: 'Claude Code 本机会话与进程索引目录；未设置时使用用户目录下的 .claude',
+    category: 'cli',
+    sensitive: false,
+    runtimeEditable: false,
+  },
+  {
+    name: 'CAT_CAFE_CLAUDE_CARRIER',
+    defaultValue: 'print_sdk',
+    description: 'F318 Claude carrier；agent_sdk 仅显式 canary，默认不变。SDK 已接受执行后故障不会自动降级重放',
+    category: 'cli',
+    sensitive: false,
+    runtimeEditable: false,
+    allowedValues: ['print_sdk', 'agent_sdk', 'interactive_pty', 'bg_daemon', 'api_key'],
+  },
+  {
     name: 'CAT_CAFE_CODEX_CARRIER',
     defaultValue: 'cli',
     description:
@@ -142,7 +159,6 @@ export const ENV_DEFINITIONS_6: readonly EnvDefinition[] = [
     hubVisible: false,
     runtimeEditable: false,
   },
-  // --- gemini ---
   {
     name: 'GOOGLE_API_KEY',
     defaultValue: '(未设置 → 由 accounts/credentials 系统注入)',
@@ -168,7 +184,6 @@ export const ENV_DEFINITIONS_6: readonly EnvDefinition[] = [
     sensitive: false,
     runtimeEditable: false,
   },
-  // --- kimi ---
   {
     name: 'MOONSHOT_API_KEY',
     defaultValue: '(未设置)',
@@ -203,7 +218,6 @@ export const ENV_DEFINITIONS_6: readonly EnvDefinition[] = [
     hubVisible: false,
     runtimeEditable: false,
   },
-  // --- tts ---
   {
     name: 'TTS_URL',
     defaultValue: 'http://localhost:9879',
@@ -224,44 +238,5 @@ export const ENV_DEFINITIONS_6: readonly EnvDefinition[] = [
     description: '听读模式持久状态数据库；设置后覆盖 CAT_CAFE_DATA_DIR 下的默认位置',
     category: 'tts',
     sensitive: false,
-  },
-  {
-    name: 'GENSHIN_VOICE_DIR',
-    defaultValue: '~/projects/.../genshin',
-    description: 'GPT-SoVITS 角色模型目录',
-    category: 'tts',
-    sensitive: false,
-  },
-  {
-    name: 'CHARACTER_VOICE_DIR',
-    defaultValue: '(未设置 → dirname(GENSHIN_VOICE_DIR))',
-    description: '角色语音模型根目录（优先级高于 GENSHIN_VOICE_DIR）',
-    category: 'tts',
-    sensitive: false,
-  },
-  // --- stt ---
-  {
-    name: 'WHISPER_URL',
-    defaultValue: 'http://localhost:9876',
-    description: 'Whisper STT 服务地址（服务端）',
-    category: 'stt',
-    sensitive: false,
-  },
-  // --- connector media ---
-  {
-    name: 'CONNECTOR_MEDIA_DIR',
-    defaultValue: './data/connector-media',
-    description: '连接器媒体下载目录',
-    category: 'connector',
-    sensitive: false,
-  },
-  // --- frontend ---
-  {
-    name: 'NEXT_PUBLIC_API_URL',
-    defaultValue: deploymentDefaults.apiBaseUrl,
-    description: '前端连接的 API 地址',
-    category: 'frontend',
-    sensitive: false,
-    runtimeEditable: false,
   },
 ];

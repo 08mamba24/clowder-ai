@@ -15,8 +15,10 @@ import { afterEach, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { catRegistry } from '@cat-cafe/shared';
 import { validateEffectiveGrants, validateManifest } from '@clowder-ai/plugin-contract';
+import { createModuleActionClient } from '@clowder-ai/plugin-sdk';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import Fastify from 'fastify';
 
 import { fileBasedMcpIO } from '../dist/config/capabilities/capability-mcp-service.js';
 import {
@@ -31,6 +33,7 @@ import {
   createDormantPluginRuntimeComposition,
   createPluginManagerRuntimeComposition,
 } from '../dist/domains/plugin/index.js';
+import { pluginNativeActionRoutes } from '../dist/routes/plugin-native-action-routes.js';
 
 const roots = [];
 afterEach(async () => {
@@ -154,14 +157,22 @@ async function writeFixturePackage(nativeAction = false, mcpTools = false) {
     join(packageRoot, 'dist/mcp.js'),
     mcpTools
       ? `import { createInterface } from 'node:readline';
+import { createModuleActionClient } from ${JSON.stringify(import.meta.resolve('@clowder-ai/plugin-sdk'))};
 if (!process.env.CLOWDER_PLUGIN_ACTION_TOKEN) process.exit(2);
-createInterface({ input: process.stdin }).on('line', line => {
+const actions = createModuleActionClient();
+createInterface({ input: process.stdin }).on('line', async line => {
   const request = JSON.parse(line);
   if (request.id === undefined) return;
+  try {
   const result = request.method === 'initialize'
     ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'runtime-root-fixture', version: '1' } }
+    : request.method === 'tools/call'
+    ? { content: [{ type: 'text', text: JSON.stringify(await actions.invoke('native.run', request.params.arguments)) }] }
     : { tools: [{ name: 'fixture_native_action', inputSchema: { type: 'object' } }] };
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');
+  } catch (error) {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32603, message: error.message } }) + '\\n');
+  }
 });
 `
       : 'process.exit(0);\n',
@@ -505,6 +516,7 @@ for (const legacy of ['missing-env-mapping', 'persisted-old-token']) {
     const projectBytes = await readFile(projectFile, 'utf8');
     const { runtime: restarted } = createRuntime(host);
     let client;
+    const app = Fastify();
     try {
       const recovery = await restarted.recoverAfterRestart();
       await restarted.lifecycle.drainRestartRecovery();
@@ -519,10 +531,35 @@ for (const legacy of ['missing-env-mapping', 'persisted-old-token']) {
       assert.equal(after.instances[0].pluginInstanceId, before.instances[0].pluginInstanceId);
       assert.equal(after.instances[0].packageDigest, before.instances[0].packageDigest);
       assert.equal(after.instances[0].activationState, 'enabled');
+      const invocation = {
+        userId: 'owner',
+        catId: catRegistry.getAllIds()[0],
+        threadId: 'fixture-thread',
+        invocationId: 'fixture-invocation',
+        callbackToken: 'fixture-callback',
+      };
+      const verify = async (id, credential) =>
+        id === invocation.invocationId && credential === invocation.callbackToken
+          ? { ok: true, record: invocation }
+          : { ok: false, reason: 'invalid_token' };
+      await app.register(pluginNativeActionRoutes, {
+        actions: restarted.supervisor.nativeActions,
+        registry: { verify, verifyLatest: verify, isStartupRecoveryComplete: () => true },
+        sources: {
+          invocationTracker: { getActiveSlots: () => [] },
+          messageStore: { getById: async () => null },
+        },
+      });
+      const apiUrl = await app.listen({ host: '127.0.0.1', port: 0 });
       const servers = await resolveProviderMcpConfig({
         workingDirectory: consumer,
         mcpServerPath: join(host, 'packages/mcp-server/dist/index.js'),
-        callbackEnv: { CAT_CAFE_CAT_ID: catRegistry.getAllIds()[0] },
+        callbackEnv: {
+          CAT_CAFE_API_URL: apiUrl,
+          CAT_CAFE_CAT_ID: invocation.catId,
+          CAT_CAFE_INVOCATION_ID: invocation.invocationId,
+          CAT_CAFE_CALLBACK_TOKEN: invocation.callbackToken,
+        },
       });
       const server = servers[existing.id.replaceAll(':', '__')];
       assert.ok(server);
@@ -535,22 +572,20 @@ for (const legacy of ['missing-env-mapping', 'persisted-old-token']) {
         (await client.listTools()).tools.map((t) => t.name),
         ['fixture_native_action'],
       );
-      const caller = {
-        userId: 'owner',
-        catId: 'codex',
-        threadId: 'fixture',
-        invocationId: 'fixture',
-        assertCurrent: async () => {},
-      };
       assert.deepEqual(
-        await restarted.supervisor.nativeActions.call(token, 'native.run', { value: 'recovered' }, caller),
+        JSON.parse(
+          (await client.callTool({ name: 'fixture_native_action', arguments: { value: 'recovered' } })).content[0].text,
+        ),
         { value: 'recovered' },
       );
-      await assert.rejects(restarted.supervisor.nativeActions.call(previousToken, 'native.run', {}, caller), {
-        statusCode: 401,
+      const staleClient = createModuleActionClient({
+        env: { ...server.env, CLOWDER_PLUGIN_ACTION_TOKEN: previousToken },
       });
+      await assert.rejects(staleClient.invoke('native.run', {}), /HTTP 401/);
+      assert.equal(await readFile(projectFile, 'utf8'), projectBytes, 'SDK action must not rewrite the project');
     } finally {
       await client?.close();
+      await app.close();
       await restarted.shutdown();
     }
   });

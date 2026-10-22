@@ -19,6 +19,26 @@ import { resolvePackageFile } from './declared-resource-paths.js';
 export interface AgentSessionProviderLifecycle {
   activate(admission: PluginRuntimeAdmission): Promise<(() => Promise<void>) | undefined>;
 }
+async function completeServiceCalls(
+  services: readonly RegisteredSessionAgentService[],
+  operation: (service: RegisteredSessionAgentService) => Promise<void>,
+): Promise<void> {
+  const results = await Promise.allSettled(services.map(async (service) => operation(service)));
+  const errors = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, 'Agent service lifecycle operations failed');
+}
+async function retireRegistrations(
+  registrations: ReturnType<typeof registerPluginAgentProvider>[],
+  services: readonly RegisteredSessionAgentService[],
+  reason: string,
+): Promise<void> {
+  // Stop invocation bridges first; resource disposal must also run if that fails.
+  const results = await Promise.allSettled([completeServiceCalls(services, (service) => service.releaseAll(reason))]);
+  results.push(...(await Promise.allSettled(registrations.map((registration) => registration.disposeHostServices()))));
+  const errors = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+  if (errors.length) throw new AggregateError(errors, 'Agent registration disposal failed');
+}
 export function declaredAgentSessionProviders(input: {
   settings: SessionContractSettings;
   packages: VerifiedPluginPackageLocator;
@@ -69,6 +89,11 @@ export function declaredAgentSessionProviders(input: {
               })
             : [result.declaration];
         const registrations: ReturnType<typeof registerPluginAgentProvider>[] = [];
+        const boundServices = () =>
+          [...input.services.values()].filter((service) =>
+            registrations.some((registration) => service.implementationKey === registration.key),
+          );
+        let preparingServices: RegisteredSessionAgentService[] = [];
         try {
           for (const declaration of declarations)
             registrations.push(
@@ -78,19 +103,24 @@ export function declaredAgentSessionProviders(input: {
                 createProvider: input.createProvider,
               }),
             );
+          preparingServices = boundServices();
+          await completeServiceCalls(preparingServices, (service) => service.prepare());
         } catch (error) {
           for (const registration of registrations) registration.unregister();
+          // Keep the started instances even if the member map changed while preparing.
+          const retiringServices = [...new Set([...preparingServices, ...boundServices()])];
+          try {
+            await retireRegistrations(registrations, retiringServices, 'implementation_unavailable');
+          } catch (cleanupError) {
+            throw new AggregateError([error, cleanupError], `Agent preparation rollback failed: ${String(error)}`);
+          }
           throw error;
         }
         log('registered');
         return async () => {
           for (const registration of registrations) registration.unregister();
           log('unregistered');
-          await Promise.all(
-            [...input.services.values()]
-              .filter((service) => registrations.some((registration) => service.implementationKey === registration.key))
-              .map((service) => service.releaseAll('implementation_unregistered')),
-          );
+          await retireRegistrations(registrations, boundServices(), 'implementation_unregistered');
         };
       } catch (error) {
         log('rejected', String(error));

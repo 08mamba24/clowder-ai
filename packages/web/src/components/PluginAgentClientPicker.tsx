@@ -48,7 +48,14 @@ export function PluginAgentClientPicker({
           {error}
         </p>
       )}
-      {!loading && !clients.length && (
+      {libraries
+        .filter((library) => library.error)
+        .map((library) => (
+          <p key={library.pluginId} role="alert" className="text-xs text-cafe-secondary">
+            {library.pluginId}: {library.error}
+          </p>
+        ))}
+      {!loading && !clients.length && !error && !libraries.some((library) => library.error) && (
         <p className="text-xs text-cafe-secondary">在设置 → 插件中安装并配置 ACP 客户端目录，启用后即可选择。</p>
       )}
       {form.acpAgentProvider && (

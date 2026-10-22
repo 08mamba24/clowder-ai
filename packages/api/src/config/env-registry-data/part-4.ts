@@ -3,52 +3,6 @@ import type { EnvDefinition } from '../env-registry.js';
 
 export const ENV_DEFINITIONS_4: readonly EnvDefinition[] = [
   {
-    name: 'BACKLOG_TTL_SECONDS',
-    defaultValue: '(无过期)',
-    description: 'Backlog 过期时间',
-    category: 'storage',
-    sensitive: false,
-    runtimeEditable: false,
-    label: '待办保留',
-    settingsGroup: 'lifecycle',
-    restartRequired: true,
-  },
-  {
-    name: 'TRANSCRIPT_DATA_DIR',
-    defaultValue: '<项目根>/data/transcripts',
-    description: '猫猫的对话录制文件存放位置',
-    category: 'storage',
-    sensitive: false,
-    runtimeEditable: false,
-    label: '会话记录目录',
-    settingsGroup: 'storage',
-    restartRequired: true,
-  },
-  {
-    name: 'ANNOTATION_DATA_DIR',
-    defaultValue: '{repoRoot}/data/stories',
-    description: 'Story annotation + export 存储目录（F252 Phase D）',
-    category: 'storage',
-    sensitive: false,
-  },
-  {
-    name: 'DOCS_ROOT',
-    defaultValue: '{repoRoot}/docs',
-    description: 'Docs 根目录路径（F102 记忆系统用）',
-    category: 'storage',
-    sensitive: false,
-  },
-  {
-    name: 'VISIBILITY_CURSOR_V2',
-    defaultValue: '(未设置 → off)',
-    description:
-      '#1269: Activation gate for v2 cursor durable-slot initiation. Set to "on" to enable v2 encoding in previously untouched durable slots (delivery/read/seen positions). Canonical comparison always uses v2 regardless of this flag. Deployment-scoped: OFF by default, rollback-safe (existing v2 slots remain advanceable).',
-    category: 'storage',
-    sensitive: false,
-    runtimeEditable: false,
-  },
-  // --- budget ---
-  {
     name: 'MAX_A2A_DEPTH',
     defaultValue: '15',
     description: 'A2A 猫猫互调最大深度',
@@ -62,7 +16,6 @@ export const ENV_DEFINITIONS_4: readonly EnvDefinition[] = [
     category: 'budget',
     sensitive: false,
   },
-  // --- cli ---
   {
     name: 'CLI_TIMEOUT_MS',
     defaultValue: DEFAULT_CLI_TIMEOUT_LABEL,
@@ -265,5 +218,30 @@ export const ENV_DEFINITIONS_4: readonly EnvDefinition[] = [
     description: '设为 1 启用 tmux agent 模式',
     category: 'cli',
     sensitive: false,
+  },
+  {
+    name: 'CAT_CAFE_TMUX_PATH',
+    defaultValue: '(未设置)',
+    description: 'Tmux 可执行文件路径',
+    category: 'cli',
+    sensitive: false,
+  },
+  {
+    name: 'CAT_CAFE_DATA_DIR',
+    defaultValue: '~/.cat-cafe',
+    description: '猫猫数据的默认根目录。会话记录和上传目录可通过各自设置单独指定',
+    category: 'cli',
+    sensitive: false,
+    runtimeEditable: false,
+    label: '数据根目录',
+    settingsGroup: 'storage',
+    restartRequired: true,
+  },
+  {
+    name: 'CAT_CAFE_CALLBACK_TOKEN',
+    defaultValue: '(未设置)',
+    description: 'Callback 鉴权 token',
+    category: 'cli',
+    sensitive: true,
   },
 ];

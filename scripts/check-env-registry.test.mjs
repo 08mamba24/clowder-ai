@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, win32 } from 'node:path';
 import { describe, it } from 'node:test';
 import { parseVars } from './lib/env-registry-parser.mjs';
 import { loadEnvRegistrySource } from './lib/env-registry-source.mjs';
@@ -149,6 +149,7 @@ describe('env-registry completeness', () => {
     'WEIXIN_ENABLE_UNSAFE_VOICE_MODES',
     'WEIXIN_CAPTURE_INBOUND_VOICE_MEDIA',
   ];
+  const isPluginNetworkConsumer = (location) => /(?:^|[/\\])plugin-network-fetch\.ts:\d+$/.test(location);
 
   it('every allowlist entry has a non-empty reason', () => {
     for (const [name, reason] of ALLOWLIST) {
@@ -189,6 +190,21 @@ describe('env-registry completeness', () => {
           'or add to ALLOWLIST in this script with a reason.',
       );
     }
+  });
+
+  it('checks both desktop plugin bridge handoff variables without an allowlist bypass', () => {
+    for (const name of ['CAT_CAFE_PLUGIN_NETWORK_BRIDGE_URL', 'CAT_CAFE_PLUGIN_NETWORK_BRIDGE_TOKEN']) {
+      assert.ok(envRefs.get(name)?.some(isPluginNetworkConsumer), `${name} must be discovered at its API consumer`);
+      assert.ok(registeredNames.has(name), `${name} must be registered`);
+      assert.equal(ALLOWLIST.has(name), false, `${name} must not bypass registration`);
+    }
+  });
+
+  it('recognizes the bridge consumer with Windows and POSIX diagnostic separators', () => {
+    assert.ok(isPluginNetworkConsumer(`${win32.join('packages', 'api', 'plugin-network-fetch.ts')}:5`));
+    assert.ok(isPluginNetworkConsumer('packages/api/plugin-network-fetch.ts:5'));
+    assert.equal(isPluginNetworkConsumer('packages/api/other-plugin-network-fetch.ts:5'), false);
+    assert.equal(isPluginNetworkConsumer('packages/api/plugin-network-fetch.ts:5/other.ts:2'), false);
   });
 
   it('no allowlist entry that is actually registered (redundant)', () => {
