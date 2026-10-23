@@ -171,7 +171,7 @@ it(
     const start = async () => {
       const native = new NativeAppServer(bin, env);
       clients.push(native);
-      assert.equal((await native.request('session/list', { includeArchived: false }, 10000)).error, undefined);
+      assert.equal((await native.request('session/list', {}, 10000)).error, undefined);
       return native;
     };
     const config = (token) => [

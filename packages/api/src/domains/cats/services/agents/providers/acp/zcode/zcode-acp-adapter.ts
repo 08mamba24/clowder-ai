@@ -111,7 +111,7 @@ async function handleAcp(
     case undefined:
       return;
     case 'initialize': {
-      const ready = await native.request('session/list', { includeArchived: false }, Math.min(timeoutMs, 10_000));
+      const ready = await native.request('session/list', {}, Math.min(timeoutMs, 10_000));
       if (ready.error) {
         acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(ready.error)));
         native.close();
