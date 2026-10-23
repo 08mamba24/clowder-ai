@@ -17,7 +17,7 @@ import { startAdapter } from './helpers/zcode-acp-test-harness.mjs';
 
 const MAC_APP_ZCODE = '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs';
 const LINUX_APP_ZCODE = '/opt/ZCode/app/resources/glm/zcode.cjs';
-const COVERED_ZCODE_VERSIONS = ['0.16.5'];
+const COVERED_ZCODE_VERSIONS = ['0.16.5', '0.17.0'];
 
 /** @param {NodeJS.ProcessEnv | Record<string, string | undefined>} [env] */
 function isZcodeLiveCreateOptIn(env = process.env) {
@@ -72,6 +72,7 @@ describe('ZCode ACP live-create gate', () => {
   it('requires an exact, explicitly covered --version line', () => {
     assert.equal(parseZcodeCliVersion('0.16.3\n'), '0.16.3');
     assert.equal(parseZcodeCliVersion('0.16.5\n'), '0.16.5');
+    assert.equal(COVERED_ZCODE_VERSIONS.includes(parseZcodeCliVersion('0.17.0\n')), true);
     assert.equal(parseZcodeCliVersion('0.16.2\n'), '0.16.2');
     assert.equal(COVERED_ZCODE_VERSIONS.includes(parseZcodeCliVersion('0.16.2\n')), false);
     assert.equal(parseZcodeCliVersion('1.0.0\n'), '1.0.0');
