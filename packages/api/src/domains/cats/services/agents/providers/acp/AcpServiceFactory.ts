@@ -34,6 +34,7 @@ import {
   type VerifiedAcpBootstrapContext,
   verifyAcpBootstrap,
 } from './bootstrap/acp-bootstrap-context.js';
+import { pendingAcpPoolRetirement, trackAcpPoolRetirement } from './pool/acp-pool-retirement-registry.js';
 import {
   type AcpServicePoolLease,
   bindAcpServicePoolLease,
@@ -234,7 +235,8 @@ async function ensureAcpPool(
 
   const existingPool = poolRegistry.get(profileId);
   if (existingPool && existingPool.spawnSignature !== spawnSignature) {
-    await retireAcpServicePool(existingPool, () => existingPool.retireWhenIdle());
+    const retirement = retireAcpServicePool(existingPool, () => existingPool.retireWhenIdle());
+    trackAcpPoolRetirement(poolRegistry, profileId, retirement.completion);
     poolRegistry.delete(profileId);
   }
 
@@ -267,6 +269,7 @@ async function ensureAcpPool(
       return acpConfig.transport === 'httpstream' ? new AcpHttpStreamClient(clientCfg) : new AcpClient(clientCfg);
     },
     spawnSignature,
+    pendingAcpPoolRetirement(poolRegistry, profileId),
   );
   poolRegistry.set(profileId, pool);
   return { pool, lease: retainAcpServicePool(poolRegistry, profileId, pool, true) };

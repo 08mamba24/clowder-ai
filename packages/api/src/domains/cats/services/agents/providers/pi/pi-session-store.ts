@@ -150,4 +150,6 @@ export function assertPiNativeIdentity(slot: PiSessionSlot, state: Record<string
     state.isCompacting === true
   )
     throw new Error('Pi did not open the exact native session; this bridge requires Pi 1.3-compatible persistent RPC');
+  // Pi creates JSONL lazily. Anchor its first validated path before any prompt can write history.
+  slot.file ??= resolve(state.sessionFile);
 }

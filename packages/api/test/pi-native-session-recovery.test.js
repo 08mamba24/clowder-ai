@@ -61,6 +61,28 @@ test('Pi checks native identity before sending a new prompt', () =>
     assert.equal(existsSync(join(root, 'seen-history.json')), false);
   }));
 
+test('Pi anchors the first native file before its lazy creation and rejects a same-ID file switch', () =>
+  fixture(async ({ root, make }) => {
+    const client = make();
+    const created = await client.request('session/new', { cwd: root, mcpServers: [] });
+    const id = created.result.sessionId;
+    const directory = join(root, 'native-sessions/pi/v1', scope, id);
+    assert.equal(
+      readdirSync(directory).some((name) => name.endsWith('.jsonl')),
+      false,
+      'Pi has not written yet',
+    );
+    writeFileSync(join(root, 'changed-native-file'), 'same ID, another file in the owned directory');
+    const reply = await prompt(client, id, 'must not reach native prompt');
+    assert.match(reply.error?.message ?? '', /exact native session/);
+    assert.equal(existsSync(join(root, 'seen-history.json')), false, 'rejected before native prompt admission');
+    assert.equal(
+      readdirSync(directory).some((name) => name.endsWith('.jsonl')),
+      false,
+      'no new history was written',
+    );
+  }));
+
 test('Pi cold load restores the exact native ID/history and keeps files across close', () =>
   fixture(async ({ root, make }) => {
     const first = make();

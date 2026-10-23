@@ -47,6 +47,14 @@ export function hasInvocationCredentialScope(): boolean {
   return requestCredentials.getStore() !== undefined;
 }
 
+/** A bound invocation must supply its own user; only launcher calls may use the legacy principal. */
+export function resolveInvocationUserId(legacyUserId: string): string {
+  const scoped = requestCredentials.getStore();
+  if (!scoped) return legacyUserId;
+  if (!scoped.userId?.trim()) throw new Error('Verified invocation userId is required');
+  return scoped.userId;
+}
+
 /**
  * Resolve the current invocation credential pair. Long-lived MCP subprocesses
  * prefer the owner-only refresh file; legacy one-shot subprocesses fall back

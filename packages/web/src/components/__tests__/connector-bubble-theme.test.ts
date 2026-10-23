@@ -4,6 +4,7 @@
  * from the unified ConnectorDefinition metadata.
  */
 
+import { type ConnectorDefinition, registerConnectorDefinition, unregisterConnectorDefinition } from '@cat-cafe/shared';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +12,25 @@ import type { ChatMessage } from '@/stores/chat-types';
 import { apiFetch } from '@/utils/api-client';
 import { ConnectorBubble } from '../ConnectorBubble';
 import { ShellPresentationContext } from '../shell/shell-presentation';
+
+// Plugin identities are registered at runtime rather than compiled into the Host.
+// These cases exercise registered presentation, so supply that prerequisite here.
+const pluginPresentations: readonly ConnectorDefinition[] = [
+  ...['github-review', 'github-wait', 'github-issue-comment'].map((id) => ({
+    id,
+    displayName: id,
+    icon: { type: 'svg' as const, iconId: 'github' },
+    themeColor: '#778899',
+    description: 'Registered GitHub presentation fixture',
+  })),
+  {
+    id: 'feishu',
+    displayName: 'Feishu',
+    icon: { type: 'png', src: '/images/connectors/feishu.png' },
+    themeColor: '#3370FF',
+    description: 'Registered external platform fixture',
+  },
+];
 
 vi.mock('@/utils/api-client', () => ({
   API_URL: 'http://api.test',
@@ -23,11 +43,13 @@ describe('ConnectorBubble theme', () => {
   const mockApiFetch = vi.mocked(apiFetch);
 
   beforeAll(() => {
+    for (const presentation of pluginPresentations) registerConnectorDefinition(presentation);
     (globalThis as { React?: typeof React }).React = React;
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   });
 
   afterAll(() => {
+    for (const presentation of pluginPresentations) unregisterConnectorDefinition(presentation.id);
     delete (globalThis as { React?: typeof React }).React;
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   });
@@ -437,7 +459,7 @@ describe('ConnectorBubble theme', () => {
     { connector: 'github-wait', label: 'GitHub Wait', icon: 'github', themeToken: 'github-wait' },
     { connector: 'frustration-auto-issue', label: '问题检测', icon: '🔍', themeToken: 'frustration-auto-issue' },
     { connector: 'physical-limb.stackchan', label: 'StackChan', icon: 'robot', themeToken: 'physical-limb-stackchan' },
-  ] as const)('renders built-in $connector with its registered SVG and CSS-safe theme token instead of the fallback icon', ({
+  ] as const)('renders registered $connector with its SVG and CSS-safe theme token instead of the fallback icon', ({
     connector,
     label,
     icon,

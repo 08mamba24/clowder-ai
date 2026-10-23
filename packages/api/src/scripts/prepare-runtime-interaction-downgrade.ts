@@ -21,7 +21,6 @@ import { fileURLToPath } from 'node:url';
 import { Redis } from 'ioredis';
 import { legacyRuntimeQuestionRequestSchema } from './runtime-interaction-downgrade/legacy-question-schema.js';
 
-const DEFAULT_REDIS_URL = 'redis://127.0.0.1:6399';
 const DEFAULT_KEY_PREFIX = 'cat-cafe:';
 const SCAN_COUNT = 200;
 
@@ -40,6 +39,7 @@ export interface DowngradeCliArgs {
   redisUrl: string;
   keyPrefix: string;
   apply: boolean;
+  runtimeRedisAcknowledged: boolean;
   confirm?: string;
   now: number;
 }
@@ -183,9 +183,10 @@ function assignArgValue(
 
 export function parseCliArgs(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): DowngradeCliArgs {
   const args: DowngradeCliArgs = {
-    redisUrl: env.REDIS_URL ?? DEFAULT_REDIS_URL,
+    redisUrl: '',
     keyPrefix: env.REDIS_KEY_PREFIX ?? DEFAULT_KEY_PREFIX,
     apply: false,
+    runtimeRedisAcknowledged: false,
     now: Date.now(),
   };
   const valueFields = new Map<string, 'redisUrl' | 'keyPrefix' | 'confirm' | 'now'>([
@@ -194,11 +195,16 @@ export function parseCliArgs(argv: readonly string[], env: NodeJS.ProcessEnv = p
     ['--confirm', 'confirm'],
     ['--now', 'now'],
   ]);
+  const booleanFields = new Map<string, 'apply' | 'runtimeRedisAcknowledged'>([
+    ['--apply', 'apply'],
+    ['--i-understand-runtime-redis', 'runtimeRedisAcknowledged'],
+  ]);
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--' || arg === '--dry-run') continue;
-    if (arg === '--apply') {
-      args.apply = true;
+    const booleanField = booleanFields.get(arg);
+    if (booleanField) {
+      args[booleanField] = true;
       continue;
     }
     const field = valueFields.get(arg);
@@ -208,11 +214,24 @@ export function parseCliArgs(argv: readonly string[], env: NodeJS.ProcessEnv = p
     assignArgValue(args, field, arg, value);
     index += 1;
   }
+  if (!args.redisUrl.trim()) throw new Error('Explicit --redis-url <url> is required; REDIS_URL is not used');
   args.keyPrefix = args.keyPrefix === '' || args.keyPrefix.endsWith(':') ? args.keyPrefix : `${args.keyPrefix}:`;
   return args;
 }
 
+/** Pure target guard: no client may be created before this check, including dry-run. */
+export function assertRedisTarget(args: Pick<DowngradeCliArgs, 'redisUrl' | 'runtimeRedisAcknowledged'>): void {
+  const target = new URL(args.redisUrl);
+  if (!['redis:', 'rediss:', 'unix:'].includes(target.protocol)) {
+    throw new Error('--redis-url must use redis://, rediss:// or unix://');
+  }
+  if (Number(target.port) === 6399 && !args.runtimeRedisAcknowledged) {
+    throw new Error('Redis 6399 requires prior owner authorization and --i-understand-runtime-redis');
+  }
+}
+
 export function assertApplyConfirmation(args: DowngradeCliArgs): void {
+  assertRedisTarget(args);
   if (args.apply && args.confirm !== APPLY_CONFIRMATION) {
     throw new Error(`--apply requires --confirm "${APPLY_CONFIRMATION}"`);
   }
@@ -489,7 +508,8 @@ const CLI_USAGE = `Usage:
 Default mode is a zero-write dry-run. Stop the API host before --apply.
 
 Options:
-  --redis-url <url>      Redis target (default: REDIS_URL or redis://127.0.0.1:6399)
+  --redis-url <url>      Required explicit Redis target; no default or REDIS_URL fallback
+  --i-understand-runtime-redis  Required for port 6399, after prior owner authorization
   --key-prefix <prefix>  Redis key prefix (default: REDIS_KEY_PREFIX or cat-cafe:)
   --now <ms>             Settlement timestamp for deterministic runs (default: now)
   --apply                Rewrite records and invalidate pending cards

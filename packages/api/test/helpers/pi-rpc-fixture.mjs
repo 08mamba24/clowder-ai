@@ -43,7 +43,10 @@ process.stdin.on('data', (chunk) => {
           model,
           thinkingLevel,
           sessionId: existsSync(path.join(root, 'changed-native-id')) ? 'unexpected-session' : sessionId,
-          sessionFile,
+          sessionFile:
+            sessionFile && existsSync(path.join(root, 'changed-native-file'))
+              ? path.join(path.dirname(sessionFile), 'replacement.jsonl')
+              : sessionFile,
           isStreaming: false,
         });
         break;

@@ -1,14 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { resolveInvokeCapabilityRoot } from '../config/capabilities/invoke-capability-root.js';
 import { AcpClient } from '../domains/cats/services/agents/providers/acp/AcpClient.js';
 import { buildDshPatch, canonicalDshConfig, composeDshProviderSource, inspectDshConfig } from './dsh-setup-config.js';
 import { type DshSetupLaunch, dshSetupBootstrap, dumpDshConfig } from './dsh-setup-launch.js';
+import { resolveDshHome } from './native-dsh-home.js';
 
-export function dshSourceProfiles(home = process.env.DSH_HOME ?? join(homedir(), '.dsh')): string[] {
+export function dshSourceProfiles(configuredHome?: string): string[] {
   try {
+    const home = resolveDshHome(configuredHome);
     return readdirSync(join(home, 'profiles'), { withFileTypes: true })
       .flatMap((entry) => {
         if (!entry.isDirectory() || !/^[\w-]+$/.test(entry.name)) return [];
@@ -51,7 +52,7 @@ export async function readDshSetup(launch: DshSetupLaunch, sourceProfile: string
   if (!profiles.includes(sourceProfile) || !profiles.includes(launch.args[launch.profileIndex] ?? ''))
     throw Error('dsh_setup_profile_required');
   const active = await dumpDshConfig(launch);
-  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh');
+  const home = resolveDshHome();
   const source =
     sourceProfile === launch.args[launch.profileIndex]
       ? active
@@ -67,9 +68,7 @@ export async function readDshSetup(launch: DshSetupLaunch, sourceProfile: string
       sourceProfile,
       active: inspectDshConfig(active),
       source: inspectDshConfig(source),
-      revision: digest(
-        JSON.stringify([launch, process.env.DSH_HOME, canonicalDshConfig(active), canonicalDshConfig(source)]),
-      ),
+      revision: digest(JSON.stringify([launch, home, canonicalDshConfig(active), canonicalDshConfig(source)])),
     },
   };
 }

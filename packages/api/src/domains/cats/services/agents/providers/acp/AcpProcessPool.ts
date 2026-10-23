@@ -130,6 +130,9 @@ export class AcpProcessPool {
   private healthTimer: ReturnType<typeof setInterval> | null = null;
   private retiring = false;
   private closed = false;
+  private closing?: Promise<void>;
+  private retirementCompletion?: Promise<void>;
+  private resolveRetirement?: () => void;
 
   private readonly _metrics: AcpPoolMetrics = {
     liveProcessCount: 0,
@@ -146,7 +149,10 @@ export class AcpProcessPool {
     variantConfig: unknown,
     clientFactory: AcpClientFactory,
     spawnSignature?: string,
+    private readonly previousGeneration?: Promise<void>,
   ) {
+    // Retain a failed predecessor as an admission failure even before the first acquire.
+    void previousGeneration?.catch(() => {});
     this.spawnSignature = spawnSignature;
     this.config = {
       maxLiveProcesses: config.maxLiveProcesses,
@@ -267,7 +273,10 @@ export class AcpProcessPool {
 
     const spawnPromise = this.doSpawn(poolKey, key, this.supportsMultiplexing ? key : undefined, retirement);
     this.inFlightSpawns.add(spawnPromise);
-    const completed = () => this.inFlightSpawns.delete(spawnPromise);
+    const completed = () => {
+      this.inFlightSpawns.delete(spawnPromise);
+      this.checkRetirementDrained();
+    };
     void spawnPromise.then(completed, completed);
     if (this.supportsMultiplexing) this.pendingSpawns.set(key, spawnPromise);
 
@@ -276,6 +285,7 @@ export class AcpProcessPool {
   }
 
   private async waitForRetirement(key: string): Promise<void> {
+    await this.previousGeneration;
     await this.retirements.wait(key);
     if (this.closed) throw new Error('Pool is closed');
     if (this.retiring) throw new Error('Pool is retired');
@@ -364,26 +374,35 @@ export class AcpProcessPool {
     return pids;
   }
 
-  async closeAll(): Promise<void> {
+  closeAll(): Promise<void> {
+    this.closing ??= this.closeOwnedEntries();
+    return this.closing;
+  }
+
+  private async closeOwnedEntries(): Promise<void> {
     this.closed = true;
     this.stopHealthCheck();
+    const failures: unknown[] = [];
 
     for (const [key, entries] of this.entries) {
       for (const entry of entries) {
         this.clearIdleTimer(entry);
         entry.state = 'closing';
-        await entry.client.close().catch(() => {});
+        await entry.client.close().catch((error: unknown) => failures.push(error));
       }
       entries.length = 0;
     }
     this.entries.clear();
-    await this.retirements.drain().catch(() => {});
+    await this.retirements.drain().catch((error: unknown) => failures.push(error));
     await Promise.allSettled(this.inFlightSpawns);
     this.sessionOwners.clear();
     this.sealedSessions.clear();
     this._metrics.liveProcessCount = 0;
     this._metrics.activeLeaseCount = 0;
     this._metrics.idleProcessCount = 0;
+    this.checkRetirementDrained();
+    await this.previousGeneration?.catch((error: unknown) => failures.push(error));
+    if (failures.length) throw failures[0];
   }
 
   /**
@@ -391,8 +410,14 @@ export class AcpProcessPool {
    * Idle processes close immediately; leased processes close when their final
    * invocation releases them.
    */
-  retireWhenIdle(): void {
-    if (this.closed || this.retiring) return;
+  retireWhenIdle(): Promise<void> {
+    if (this.retirementCompletion) return this.retirementCompletion;
+    const drained = new Promise<void>((resolve) => {
+      this.resolveRetirement = resolve;
+    });
+    // Even an unused intermediate generation must carry its predecessor's exit fence forward.
+    this.retirementCompletion = Promise.all([this.previousGeneration, drained]).then(() => this.retirements.drain());
+    void this.retirementCompletion.catch(() => {});
     this.retiring = true;
     this.stopHealthCheck();
 
@@ -402,6 +427,13 @@ export class AcpProcessPool {
         this.closeRetiredEntry(entry, entry.poolKey, true);
       }
     }
+    this.checkRetirementDrained();
+    return this.retirementCompletion;
+  }
+
+  private checkRetirementDrained(): void {
+    if (this.retiring && this._metrics.liveProcessCount === 0 && this.inFlightSpawns.size === 0)
+      this.resolveRetirement?.();
   }
 
   // ── Internal ────────────────────────────────────────────────
@@ -474,6 +506,7 @@ export class AcpProcessPool {
     this._metrics.liveProcessCount--;
     if (idleWasCounted) this._metrics.idleProcessCount--;
     this.retirements.track(key, () => entry.client.close());
+    this.checkRetirementDrained();
   }
 
   private retireEntry(entry: PoolEntry, poolKey: PoolKey, reason: string): void {
@@ -501,6 +534,7 @@ export class AcpProcessPool {
     this._metrics.liveProcessCount--;
     this._metrics.evictionCount++;
     this.retirements.track(key, () => entry.client.close());
+    this.checkRetirementDrained();
     log.warn({ poolKey, reason }, 'Retired unsafe ACP process');
   }
 

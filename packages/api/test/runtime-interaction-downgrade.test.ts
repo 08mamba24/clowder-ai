@@ -253,18 +253,46 @@ function seededRedis() {
 }
 
 describe('runtime interaction downgrade recovery', () => {
-  it('defaults to a zero-write dry-run and requires an explicit apply confirmation', () => {
-    const defaults = parseCliArgs([], {});
+  it('requires an explicit target even when the host environment points at production', () => {
+    assert.throws(() => parseCliArgs([], {}), /--redis-url/);
+    assert.throws(() => parseCliArgs([], { REDIS_URL: 'redis://127.0.0.1:6399' }), /--redis-url/);
+  });
+
+  it('defaults to a zero-write dry-run after explicit target selection and requires apply confirmation', () => {
+    const target = ['--redis-url', 'redis://127.0.0.1:6398'];
+    const defaults = parseCliArgs(target, {});
     assert.equal(defaults.apply, false);
     assert.equal(defaults.keyPrefix, KEY_PREFIX);
-    assert.equal(defaults.redisUrl, 'redis://127.0.0.1:6399');
-    assert.equal(parseCliArgs(['--', '--dry-run'], {}).apply, false);
-    assert.equal(parseCliArgs(['--key-prefix', 'test'], {}).keyPrefix, 'test:');
-    assert.equal(parseCliArgs(['--now', '1234'], {}).now, 1234);
+    assert.equal(defaults.redisUrl, 'redis://127.0.0.1:6398');
+    assert.equal(parseCliArgs([...target, '--', '--dry-run'], {}).apply, false);
+    assert.equal(parseCliArgs([...target, '--key-prefix', 'test'], {}).keyPrefix, 'test:');
+    assert.equal(parseCliArgs([...target, '--now', '1234'], {}).now, 1234);
     assert.throws(() => parseCliArgs(['--now', '-1'], {}), /non-negative integer/);
     assert.throws(() => parseCliArgs(['--unknown'], {}), /Unknown argument/);
     assert.throws(() => assertApplyConfirmation({ ...defaults, apply: true }), /requires --confirm/);
     assert.doesNotThrow(() => assertApplyConfirmation({ ...defaults, apply: true, confirm: APPLY_CONFIRMATION }));
+  });
+
+  it('refuses any 6399 target before I/O, including dry-run and generic apply confirmation', () => {
+    for (const redisUrl of ['redis://127.0.0.1:6399', 'rediss://runtime.example:6399', 'redis://[::1]:06399']) {
+      const args = parseCliArgs(['--redis-url', redisUrl], {});
+      assert.throws(() => assertApplyConfirmation(args), /6399.*--i-understand-runtime-redis/);
+      assert.throws(
+        () => assertApplyConfirmation({ ...args, apply: true, confirm: APPLY_CONFIRMATION }),
+        /6399.*--i-understand-runtime-redis/,
+      );
+    }
+  });
+
+  it('requires independent runtime acknowledgement and apply confirmation for an explicit 6399 target', () => {
+    const args = parseCliArgs(['--redis-url', 'redis://127.0.0.1:6399', '--i-understand-runtime-redis'], {});
+    assert.doesNotThrow(() => assertApplyConfirmation(args));
+    assert.throws(() => assertApplyConfirmation({ ...args, apply: true }), /requires --confirm/);
+    assert.doesNotThrow(() => assertApplyConfirmation({ ...args, apply: true, confirm: APPLY_CONFIRMATION }));
+    assert.throws(
+      () => assertApplyConfirmation(parseCliArgs(['--redis-url', 'https://example.invalid'], {})),
+      /redis:\/\//,
+    );
   });
 
   it('dry-run reports the plan without writing or settling anything', async () => {

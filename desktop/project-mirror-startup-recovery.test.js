@@ -43,11 +43,12 @@ test('one startup recovers unreadable docs mirrors when the actual Node consumer
   fs.mkdirSync(path.join(installRoot, 'packages/api/node_modules'), { recursive: true });
   const node = path.join(installRoot, process.platform === 'win32' ? 'node/node.exe' : 'node/bin/node');
   fs.mkdirSync(path.dirname(node), { recursive: true });
-  try {
-    fs.linkSync(process.execPath, node);
-  } catch {
-    fs.copyFileSync(process.execPath, node);
-  }
+  // A Homebrew Node binary resolves libnode relative to its executable. A
+  // hard link gives dyld a second path for the same inode and can poison
+  // concurrent probes. POSIX symlinks retain the real installed loader root;
+  // Windows Node is a standalone executable and can be copied safely.
+  if (process.platform === 'win32') fs.copyFileSync(process.execPath, node);
+  else fs.symlinkSync(process.execPath, node);
   const manager = new ServiceManager(installRoot, { frontendPort: 5200, apiPort: 3200, redisPort: 6300 });
   manager._getUserDataDir = () => userRoot;
   manager._isPortOpen = async () => false;

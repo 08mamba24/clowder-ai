@@ -11,6 +11,7 @@ import { resolveCliCommandOrBare } from '../utils/cli-resolve.js';
 import { buildChildEnv } from '../utils/cli-spawn.js';
 import { resolveWindowsSpawnPlan } from '../utils/cli-spawn-win.js';
 import { createDshDumpSnapshot } from './dsh-setup-snapshot.js';
+import { resolveDshHome } from './native-dsh-home.js';
 import { dshProfileState } from './native-dsh-profile.js';
 import { closeCatalogProcess } from './runtime-catalog-process.js';
 
@@ -23,7 +24,7 @@ export interface DshSetupLaunch {
 
 /** Unknown wrappers can change HOME or run arbitrary commands: keep them manual. */
 export function resolveDshSetupLaunch(command: string, args: string[], cwd: string): DshSetupLaunch {
-  if (process.env.DSH_HOME && !isAbsolute(process.env.DSH_HOME)) throw Error('dsh_setup_custom_startup');
+  resolveDshHome();
   const plan = process.platform === 'win32' ? resolveWindowsSpawnPlan(command, args) : { command, args };
   if ('shell' in plan && plan.shell) throw Error('dsh_setup_custom_startup');
   let offset = 0;

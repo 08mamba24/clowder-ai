@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
+import { resolveDshHome } from './native-dsh-home.js';
 
 function read(path: string): Buffer | undefined {
   try {
@@ -16,7 +16,7 @@ function read(path: string): Buffer | undefined {
  * disposable HOME; never copy credential files, .env, sessions or databases. */
 export function createDshDumpSnapshot(parent: string, profile: string) {
   if (!/^[\w-]+$/.test(profile)) throw Error('dsh_setup_custom_startup');
-  const nativeHome = process.env.DSH_HOME ?? join(homedir(), '.dsh');
+  const nativeHome = resolveDshHome();
   const directory = mkdtempSync(join(parent, 'dsh-dump-'));
   const files = new Map<string, Buffer | undefined>();
   function dispose() {

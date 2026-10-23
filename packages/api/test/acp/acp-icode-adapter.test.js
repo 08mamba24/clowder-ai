@@ -8,9 +8,9 @@
  *  - Model selection uses the standard `session/set_model` (modelId = iCode
  *    model profile id), never `session/set_config_option`, and failures are
  *    surfaced as errors instead of silently continuing on the default model.
- *  - Resume (`session/load`) never re-injects the MCP overlay: iCode rejects
- *    overlay changes on persisted sessions, so servers are only injected via
- *    `session/new`.
+ *  - Resume (`session/load`) re-injects the current invocation's MCP overlay
+ *    after the previous live instance is closed, so persisted sessions load
+ *    with fresh per-turn credentials, just like `session/new`.
  *  - The live session instance is closed per turn (`session/close`) so the
  *    next turn can load the persisted session with fresh credentials.
  *  - The factory threads `defaultPermissionDecision: 'reject'` (fail-closed)

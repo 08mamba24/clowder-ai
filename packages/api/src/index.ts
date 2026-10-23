@@ -1,5 +1,6 @@
 import { reportAcpHostPolicy, resolveAcpHostPolicy } from './config/acp-host-policy.js';
 import { AgentServiceUnavailableError } from './domains/cats/services/agents/registry/AgentServiceUnavailableError.js';
+import { hasRecentWorkPublication } from './domains/cats/services/agents/routing/recent-global-work-reader.js';
 import { createRefreshingAcpSessionProvider } from './domains/cats/services/agents/session-contract/acp-session-provider.js';
 import {
   SessionImplementationRegistry,
@@ -11,6 +12,7 @@ import {
   selectSessionAgentService,
 } from './domains/cats/services/agents/session-contract/registered-session-agent-service.js';
 import { readSessionContractSettings } from './domains/cats/services/agents/session-contract/session-contract-settings.js';
+import { ContextSourceOpportunityStore } from './domains/memory/cue/ContextSourceOpportunityStore.js';
 import {
   createHostMediaPathResolver,
   hostMediaPathRootsFromEnv,
@@ -396,6 +398,10 @@ import {
   PawFeelCaptureIntentSidecar,
   PawFeelCaptureService,
 } from './infrastructure/harness-eval/paw-feel-disposition/hot-intake.js';
+import {
+  loadOrCreatePawFeelInboxAuditCursorSigner,
+  PawFeelInboxAuditScanService,
+} from './infrastructure/harness-eval/paw-feel-disposition/inbox-audit-scan.js';
 import { createMemoryCuePawFeelGitTruth } from './infrastructure/harness-eval/paw-feel-disposition/providers/memory-cue-git-truth.js';
 import {
   MEMORY_CUE_PAW_FEEL_PROVIDER_ROUTE,
@@ -499,6 +505,7 @@ import {
   mkdirRoute,
   packsRoutes,
   pawFeelDispositionRoutes,
+  pawFeelInboxAuditScanRoutes,
   pawFeelLegacyCensusRoutes,
   perspectiveRoutes,
   projectSetupRoute,
@@ -637,6 +644,7 @@ async function main(): Promise<void> {
   startupMilestone('telemetry-ready');
 
   const { registerMemberSaveDiagnostics } = await import('./routes/member-save-diagnostics.js');
+  const { registerConnectionDiagnostics } = await import('./routes/connection-diagnostics.js');
   const { saveSpan } = await import('./utils/member-save-diagnostics.js');
 
   const app = Fastify({ logger: customLogger as unknown as import('fastify').FastifyBaseLogger });
@@ -667,6 +675,8 @@ async function main(): Promise<void> {
     origin: resolveFrontendCorsOrigins(process.env, app.log),
     credentials: true,
     exposedHeaders: ['x-clowder-save-id'],
+    // Diagnostic correlation adds a fixed header to GETs; reuse their preflight during polling.
+    maxAge: 600,
   });
 
   // F156 D-2: Anti-clickjacking headers (X-Frame-Options + CSP frame-ancestors)
@@ -677,6 +687,7 @@ async function main(): Promise<void> {
   await app.register(sessionAuthPlugin);
   await app.register(sessionRoute, { ownerUserId: privateUserId });
   registerMemberSaveDiagnostics(app, runtimeDeploymentRevision ?? undefined);
+  registerConnectionDiagnostics(app);
 
   // WebSocket support (F089 terminal)
   await app.register(fastifyWebsocket);
@@ -1014,7 +1025,7 @@ async function main(): Promise<void> {
     readDiagnostics: messageReadDiagnostics,
     onAppend: (msg) => {
       appendListener?.(msg);
-      if (userMentionEvent(msg))
+      if (userMentionEvent(msg) || hasRecentWorkPublication(msg))
         socketManager?.emitToUser(msg.userId, 'entrusted_work_projection_invalidated', { ownerUserId: msg.userId });
       custodyOpportunityObservation?.notifySourceChanged(msg);
     },
@@ -1700,7 +1711,7 @@ async function main(): Promise<void> {
   const priorTimelineListener = messageStore.onTimelineChanged;
   messageStore.onTimelineChanged = (message) => {
     priorTimelineListener?.(message);
-    if (userMentionEvent(message) || message.mentionsUser)
+    if (userMentionEvent(message) || message.mentionsUser || hasRecentWorkPublication(message))
       socketManager?.emitToUser(message.userId, 'entrusted_work_projection_invalidated', {
         ownerUserId: message.userId,
       });
@@ -2587,6 +2598,27 @@ async function main(): Promise<void> {
     logger: app.log,
   });
   const memoryCueRuntime = createMemoryCueRuntime({
+    ...(memoryServices.catalog && memoryServices.collectionStores && memoryServices.knowledgeResolver
+      ? {
+          contextProjectDiscovery: {
+            threads: threadStore,
+            catalog: memoryServices.catalog,
+            stores: memoryServices.collectionStores,
+            resolver: memoryServices.knowledgeResolver,
+            homeProjectPath: resolveActiveProjectRoot(),
+            homeDocsRoot: docsRoot,
+          },
+        }
+      : {}),
+    contextSourceOpportunityStore: new ContextSourceOpportunityStore(memoryServices.store.getDb()),
+    contextSourceAuthorization: {
+      threads: threadStore,
+      tasks: taskStore,
+      onOmission: (sourceMessageId, reason) =>
+        app.log.info({ sourceMessageId, reason }, '[F321] context source admission omitted'),
+      ...(actionSuccessorLeaseStore ? { leases: actionSuccessorLeaseStore } : {}),
+      ...(taskApprovedDelegateProvider ? { delegates: taskApprovedDelegateProvider } : {}),
+    },
     threadOverviewSource,
     episodeStore: memoryCueEpisodeStore,
     handles: memoryCueHandles,
@@ -2690,6 +2722,7 @@ async function main(): Promise<void> {
       personMemoryStore,
       messageStore,
     ),
+    contextSourceAdmission: memoryCueRuntime.contextSourceAdmission,
     memoryCuePromptService: memoryCueRuntime.promptService,
     profileCueOpportunitySource: memoryCueRuntime.profileOpportunitySource,
     eventCueOpportunitySource: memoryCueRuntime.eventOpportunitySource,
@@ -3313,7 +3346,14 @@ async function main(): Promise<void> {
   {
     const { UnavailableTipEventSink, RedisTipEventSink } = await import('./routes/tip-telemetry.js');
     const tipSink = redis ? new RedisTipEventSink(redis) : new UnavailableTipEventSink();
-    await app.register(tipTelemetryRoutes, { sink: tipSink });
+    const { CapabilityTipsUsageAdapter } = await import(
+      './infrastructure/harness-eval/capability-tips/capability-tips-usage-adapter.js'
+    );
+    const tipUsage = redis ? new CapabilityTipsUsageAdapter(redis) : undefined;
+    await app.register(tipTelemetryRoutes, {
+      sink: tipSink,
+      ...(tipUsage ? { readUsage: (selector) => tipUsage.resolve(selector) } : {}),
+    });
   }
   // F200 Phase B: Recall metrics API
   await app.register(recallMetricsRoutes, {
@@ -3431,6 +3471,7 @@ async function main(): Promise<void> {
   const pawFeelLegacyCensusCursorSigner = redis
     ? await loadOrCreateLegacyPawFeelBlockerCensusCursorSigner(redis)
     : undefined;
+  const pawFeelInboxAuditCursorSigner = redis ? await loadOrCreatePawFeelInboxAuditCursorSigner(redis) : undefined;
   const pawFeelFixResolver = actionSuccessorLeaseStore
     ? new PawFeelFixEvidenceResolver({ leaseStore: actionSuccessorLeaseStore, taskStore })
     : undefined;
@@ -3529,6 +3570,14 @@ async function main(): Promise<void> {
         ...(pawFeelDispositionReadModel ? { bundleMembershipResolver: pawFeelDispositionReadModel } : {}),
       })
     : undefined;
+  const pawFeelInboxAuditScanService =
+    pawFeelDispositionEventLog && pawFeelDispositionReadModel && pawFeelInboxAuditCursorSigner
+      ? new PawFeelInboxAuditScanService({
+          eventLog: pawFeelDispositionEventLog,
+          readModel: pawFeelDispositionReadModel,
+          signer: pawFeelInboxAuditCursorSigner,
+        })
+      : undefined;
   const pawFeelBlockerReconciler = pawFeelDispositionService
     ? new PawFeelBlockerReconciler({ service: pawFeelDispositionService })
     : undefined;
@@ -4164,6 +4213,11 @@ async function main(): Promise<void> {
     ...(pawFeelCaptureIntentSidecar ? { captureIntentSidecar: pawFeelCaptureIntentSidecar } : {}),
     ...(pawFeelDutyConfigStore ? { dutyConfigStore: pawFeelDutyConfigStore } : {}),
     ...(pawFeelDutyReceiptService ? { dutyReceiptService: pawFeelDutyReceiptService } : {}),
+    callbackRegistry: registry,
+    agentKeyRegistry,
+  });
+  await app.register(pawFeelInboxAuditScanRoutes, {
+    ...(pawFeelInboxAuditScanService ? { auditScanService: pawFeelInboxAuditScanService } : {}),
     callbackRegistry: registry,
     agentKeyRegistry,
   });
@@ -4973,6 +5027,9 @@ async function main(): Promise<void> {
     capabilityProjectRoot: pluginCapabilityRoot,
     editorParentOrigin: new URL(resolveFrontendBaseUrl(process.env, app.log)).origin,
     desktopExecutor: {
+      prepare: async () => {
+        await companionDesktopComponent.prepare();
+      },
       open: async (launch) =>
         new ElectronDesktopWindowExecutor({
           executable: await companionDesktopComponent.executable(),
@@ -5763,6 +5820,8 @@ async function main(): Promise<void> {
     }),
   );
   const livingWorks = new LivingWorkService({
+    changed: (ownerUserId) =>
+      socketManager?.emitToUser(ownerUserId, 'entrusted_work_projection_invalidated', { ownerUserId }),
     responses: workResponses,
     owner: collaborativeContent.owner,
     versions: artifactReview.store.works,
