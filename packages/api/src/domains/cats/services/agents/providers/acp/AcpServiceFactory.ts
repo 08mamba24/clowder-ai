@@ -228,6 +228,7 @@ async function ensureAcpPool(
     idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,
     transport: acpConfig.transport ?? 'stdio',
     supportsMultiplexing: acpConfig.supportsMultiplexing,
+    protocolAdapter: acpConfig.protocolAdapter,
     ...(spawn.antigravity ? { sessionPolicy: { provider: 'antigravity', profile: spawn.antigravity.profile } } : {}),
   });
 
@@ -256,6 +257,9 @@ async function ensureAcpPool(
         cwd: bootstrap.verifyCwd(),
         ...(process.platform === 'win32' ? { verifyBootstrapCwd: bootstrap.verifyCwd } : {}),
         ...(spawn.env ? { env: spawn.env } : {}),
+        // iCode fail-closed policy: flagged native effects must never be
+        // auto-approved by the generic default (allow) path.
+        ...(acpConfig.protocolAdapter === 'icode' ? { defaultPermissionDecision: 'reject' as const } : {}),
         ...(spawn.antigravity
           ? { inheritParentEnv: false, permissionHandler: denyAgyAcpPermission, antigravityDiagnostics: true }
           : {}),
@@ -285,6 +289,28 @@ export async function createAcpServiceForConfig(
       'httpstream-missing-experimental-opt-in',
       { catId, profileId },
       'ACP registry sync skipped member because httpstream transport requires experimental opt-in',
+    );
+  }
+
+  if (acpConfig.protocolAdapter === 'icode' && acpConfig.transport === 'httpstream') {
+    return skipAcpProfile(
+      input,
+      'icode-requires-stdio',
+      { catId, profileId, transport: acpConfig.transport },
+      'ACP registry sync skipped iCode member because the icode adapter requires stdio transport',
+    );
+  }
+
+  const icodeModelProfileId = acpConfig.protocolAdapter === 'icode' ? acpConfig.modelProfileId?.trim() : undefined;
+  if (acpConfig.protocolAdapter === 'icode' && !icodeModelProfileId) {
+    // Display model (defaultModel/effectiveModel) is not an iCode model profile
+    // id. Falling back to it would either fail on session/set_model or leave the
+    // provider on its own default while the thread shows a different model.
+    return skipAcpProfile(
+      input,
+      'icode-missing-model-profile',
+      { catId, profileId },
+      'ACP registry sync skipped iCode member because modelProfileId is required',
     );
   }
 
@@ -345,7 +371,11 @@ export async function createAcpServiceForConfig(
       mcpWhitelist: acpConfig.mcpWhitelist ?? [],
       providerName: config.clientId === 'acp' ? 'acp' : config.clientId,
       modelName: spawn.sessionModel ?? config.defaultModel ?? 'acp',
-      sessionModel: spawn.sessionModel,
+      // iCode: modelProfileId is the session/set_model target (iCode model
+      // configuration id), distinct from defaultModel (display/audit model name).
+      // The factory rejects iCode members without it, so this is always defined.
+      sessionModel: acpConfig.protocolAdapter === 'icode' ? icodeModelProfileId : spawn.sessionModel,
+      protocolAdapter: acpConfig.protocolAdapter,
       contextBinding: {
         model: effectiveModel,
         ...((config.clientId === 'opencode' || config.clientId === 'kimi') && spawn.contextPolicy?.windowTokens

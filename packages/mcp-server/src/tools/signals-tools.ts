@@ -4,13 +4,17 @@ import { defineMcpMigrationFactory } from '../tool-governance-migration.js';
 
 import type { ToolResult } from './file-tools.js';
 import { errorResult, successResult } from './file-tools.js';
+import { resolveInvocationEnv } from './invocation-auth.js';
 
 const defineTool = defineMcpMigrationFactory('signals-tools.ts', undefined, {
   resourceFamily: 'signal-article',
   authority: 'local-runtime',
 });
 
-const API_URL = process.env['CAT_CAFE_API_URL'] ?? deploymentDefaults.apiBaseUrl;
+function resolveApiUrl(): string {
+  return resolveInvocationEnv('CAT_CAFE_API_URL') ?? deploymentDefaults.apiBaseUrl;
+}
+
 const SIGNAL_USER = process.env['CAT_CAFE_SIGNAL_USER']?.trim() || 'codex';
 
 interface SignalArticleLike {
@@ -36,7 +40,7 @@ async function apiJson(
       headers.set('Content-Type', 'application/json');
     }
 
-    const response = await fetch(`${API_URL}${path}`, {
+    const response = await fetch(`${resolveApiUrl()}${path}`, {
       ...init,
       headers,
     });
