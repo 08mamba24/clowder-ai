@@ -79,7 +79,7 @@ END`,
 
 // Versions 53-57 were deployed by reverted F323 migrations and remain in live
 // schema_version ledgers. They must never be reused even though main returned to V52.
-export const CURRENT_SCHEMA_VERSION = 69;
+export const CURRENT_SCHEMA_VERSION = 70;
 
 function memoryCueLedgerHasConsumerBinding(db: Database.Database): boolean {
   return (db.prepare('PRAGMA table_info(memory_cue_events)').all() as Array<{ name: string }>).some(
@@ -1782,6 +1782,16 @@ export function applyMigrations(db: Database.Database): void {
         ON entity_revision_events(entity_id, actor_id, proposal_id, revision_id)
         WHERE source = 'proposal-approval'`);
       db.prepare('INSERT INTO schema_version(version,applied_at) VALUES (?,?)').run(69, new Date().toISOString());
+    })();
+  }
+  // V70: hold continuations retain their authenticated caller's tool restrictions.
+  // Existing rows stay NULL (unknown restrictions); no historical authority is upgraded.
+  if (currentVersion < 70) {
+    db.transaction(() => {
+      const columns = db.prepare('PRAGMA table_info(dynamic_task_defs)').all() as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === 'tool_execution_policy_json'))
+        db.exec('ALTER TABLE dynamic_task_defs ADD COLUMN tool_execution_policy_json TEXT');
+      db.prepare('INSERT INTO schema_version(version,applied_at) VALUES (?,?)').run(70, new Date().toISOString());
     })();
   }
 }
