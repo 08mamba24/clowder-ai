@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { secretMcpContract } from './helpers/secret-mcp-contract.js';
 
 const { AgyNativeAgentService } = await import(
   '../dist/domains/cats/services/agents/providers/agy-native/AgyNativeAgentService.js'
@@ -107,6 +109,7 @@ describe('F325 one-turn native AGY carrier', () => {
     );
     let servers;
     let credential;
+    let currentAuth;
     try {
       const events = await collect(
         f.service.invoke('Use the tools enabled for this project.', {
@@ -122,6 +125,8 @@ describe('F325 one-turn native AGY carrier', () => {
           spawnCliOverride: async function* (launch) {
             servers = JSON.parse(readFileSync(join(geminiDir(launch), 'config/mcp_config.json'), 'utf8')).mcpServers;
             credential = servers['cat-cafe-memory']?.env.CAT_CAFE_CREDENTIAL_FILE;
+            const stored = JSON.parse(readFileSync(credential, 'utf8'));
+            currentAuth = stored.invocationId === 'discovery-inv' && stored.callbackToken === 'fixture-token';
             yield* fakeEvents(
               launch.args[launch.args.indexOf('--agent') + 1],
               launch.cwd,
@@ -133,18 +138,36 @@ describe('F325 one-turn native AGY carrier', () => {
       );
       assert.equal(events.at(-1).errorCode, undefined, JSON.stringify(events));
       assert.deepEqual(Object.keys(servers).sort(), ['cat-cafe-limb', 'cat-cafe-memory', 'project-fixture']);
-      const env = servers['cat-cafe-memory'].env;
-      assert.equal(env.CAT_CAFE_CAT_ID, 'gemini38');
-      assert.equal(env.CAT_CAFE_THREAD_ID, 'discovery-thread');
-      assert.equal(env.CAT_CAFE_USER_ID, 'owner');
-      assert.equal(env.ALLOWED_WORKSPACE_DIRS, process.env.ALLOWED_WORKSPACE_DIRS?.trim() || f.workspace);
-      assert.equal(env.CAT_CAFE_CALLBACK_TOKEN, undefined);
-      assert.equal(env.CAT_CAFE_INVOCATION_ID, undefined);
-      assert.equal(
-        servers['project-fixture'].env,
-        undefined,
-        'external tools must not inherit host callback authority',
-      );
+      assert.equal(currentAuth, true, 'the per-turn file must hold the current invocation credentials before spawn');
+      for (const entry of ['memory', 'limb']) {
+        const { proxyEnv, upstream } = secretMcpContract(servers[`cat-cafe-${entry}`]);
+        assert.equal(upstream.command, process.execPath);
+        assert.deepEqual(upstream.args, [fileURLToPath(new URL(`../../mcp-server/dist/${entry}.js`, import.meta.url))]);
+        assert.equal(upstream.source, `cat-cafe-${entry}`);
+        assert.equal(upstream.env.ALLOWED_WORKSPACE_DIRS, process.env.ALLOWED_WORKSPACE_DIRS?.trim() || f.workspace);
+        assert.equal(
+          proxyEnv.ALLOWED_WORKSPACE_DIRS,
+          undefined,
+          'only the upstream reader owns the workspace boundary',
+        );
+        for (const env of [proxyEnv, upstream.env]) {
+          assert.equal(env.CAT_CAFE_API_URL, 'http://127.0.0.1:3012');
+          assert.equal(env.CAT_CAFE_CAT_ID, 'gemini38');
+          assert.equal(env.CAT_CAFE_THREAD_ID, 'discovery-thread');
+          assert.equal(env.CAT_CAFE_USER_ID, 'owner');
+          assert.equal(env.CAT_CAFE_CREDENTIAL_FILE, credential);
+          assert.equal(env.CAT_CAFE_CALLBACK_TOKEN, undefined);
+          assert.equal(env.CAT_CAFE_INVOCATION_ID, undefined);
+        }
+      }
+      const { proxyEnv, upstream } = secretMcpContract(servers['project-fixture']);
+      assert.equal(upstream.command, '/usr/bin/true');
+      assert.deepEqual(upstream.args, ['--fixture']);
+      assert.equal(upstream.source, 'project-fixture');
+      assert.deepEqual(upstream.env, {}, 'external tools must not inherit host callback authority');
+      assert.equal(proxyEnv.CAT_CAFE_CREDENTIAL_FILE, credential);
+      assert.equal(proxyEnv.CAT_CAFE_CALLBACK_TOKEN, undefined);
+      assert.equal(proxyEnv.CAT_CAFE_INVOCATION_ID, undefined);
       assert.ok(credential && !existsSync(credential), 'terminal cleanup retires the exact credential');
     } finally {
       f.cleanup();
@@ -365,7 +388,8 @@ describe('F325 one-turn native AGY carrier', () => {
       assert.equal(settings.allowNonWorkspaceAccess, false);
       assert.deepEqual(mcp.mcpServers, {});
       assert.doesNotMatch(body, / {2}- (?:run_command|write_to_file|call_mcp_tool)\n/);
-      assert.match(hooks['cat-cafe-native-effect'].PreToolUse[0].hooks[0].command, /'read-only'$/);
+      const guardCommand = hooks['cat-cafe-native-effect'].PreToolUse[0].hooks[0].command;
+      assert.ok(guardCommand.endsWith(`'read-only' '${launch.env.HOME}'`), guardCommand);
     } finally {
       f.cleanup();
     }

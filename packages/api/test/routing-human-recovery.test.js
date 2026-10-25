@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { routingSignalClosures } from '@cat-cafe/shared';
 import { routeSerial } from '../dist/domains/cats/services/agents/routing/route-serial.js';
 import { AutomaticRoutingSignalService } from '../dist/domains/routing-context/AutomaticRoutingSignalService.js';
+import { buildRoutingSignalDecisionProjection } from '../dist/domains/routing-context/preflight/RoutingSignalDecisionProjection.js';
 import { RoutingContextResolver } from '../dist/domains/routing-context/RoutingContextResolver.js';
 import { RuntimeRoutingDispatchPreflight } from '../dist/domains/routing-context/RoutingDispatchPreflightPort.js';
 import { RoutingDispatchSignalAdapter } from '../dist/domains/routing-context/RoutingDispatchSignalAdapter.js';
@@ -25,6 +26,10 @@ function harness(catIds = ['sol', 'terra']) {
     },
     async getOwnerRevision() {
       return events.length;
+    },
+    async readDecisionProjection(ownerId) {
+      const owned = events.filter((event) => event.ownerId === ownerId);
+      return buildRoutingSignalDecisionProjection({ ownerId, revision: owned.length, events: owned });
     },
     async listByOwner(ownerId) {
       return events.filter((event) => event.ownerId === ownerId);
