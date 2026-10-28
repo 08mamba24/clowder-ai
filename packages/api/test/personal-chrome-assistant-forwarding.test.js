@@ -43,7 +43,7 @@ it('forwards a validated source-bound assistant final from the content script to
     observedRevisions: {
       helper: helperArtifactRevision,
       extension: '0.2.13',
-      pageAdapter: '2026-09-24.1',
+      pageAdapter: '2026-10-28.1',
     },
   };
 
@@ -107,6 +107,7 @@ it('forwards a privacy-safe assistant observation failure and waits for durable 
       anchorTurnFound: true,
       followingTurnCount: 1,
       assistantCandidateCount: 1,
+      rolelessAssistantUnitCount: 0,
       laterUserTurnPresent: false,
       assistantHostIdStatus: 'missing_or_ambiguous',
       assistantContentStatus: 'present',
@@ -118,7 +119,7 @@ it('forwards a privacy-safe assistant observation failure and waits for durable 
     observedRevisions: {
       helper: helperArtifactRevision,
       extension: '0.2.13',
-      pageAdapter: '2026-09-24.1',
+      pageAdapter: '2026-10-28.1',
     },
   };
 

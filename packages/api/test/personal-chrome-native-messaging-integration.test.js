@@ -230,7 +230,7 @@ describe('Personal Chrome Native Messaging full seam', () => {
       expectedRevisions: {
         helper: helperArtifactRevision,
         extension: '0.2.13',
-        pageAdapter: '2026-09-24.1',
+        pageAdapter: '2026-10-28.1',
       },
     });
     await terminal;

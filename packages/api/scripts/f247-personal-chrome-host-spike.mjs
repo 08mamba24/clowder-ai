@@ -61,7 +61,7 @@ function appendRequest(requestId) {
     expectedRevisions: {
       helper: 'isolated-spike-helper',
       extension: '0.2.13',
-      pageAdapter: '2026-09-24.1',
+      pageAdapter: '2026-10-28.1',
     },
   };
 }

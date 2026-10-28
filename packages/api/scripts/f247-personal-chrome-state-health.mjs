@@ -24,7 +24,7 @@ export async function projectPersonalChromeLiveState({
   const expectedRevisions = {
     helper: installation.expectedArtifactDigest ?? installation.artifactDigest,
     extension: '0.2.13',
-    pageAdapter: '2026-09-24.1',
+    pageAdapter: '2026-10-28.1',
   };
   try {
     const record =
