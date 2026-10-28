@@ -36,6 +36,81 @@ const RENDERED_MESSAGE_CONTENT_SELECTOR = '.whitespace-pre-wrap';
 const SAFE_TURN_ID = /^conversation-turn-[A-Za-z0-9._:-]+$/;
 const MAX_ASSISTANT_CONTENT_BYTES = 128 * 1024;
 
+// Roleless DOM (observed on ChatGPT Pro 2026-10-28): user messages render as
+// [data-user-message-bubble="true"] inside [data-content-search-unit-key]
+// units, assistant replies as units whose key ends in ":assistant". These
+// markers carry no Host-provided message identity; unit keys such as
+// fallback-turn-N:M:role are page-local and never qualify as hostMessageId.
+const ROLELESS_USER_BUBBLE_SELECTOR = '[data-user-message-bubble="true"]';
+const ROLELESS_ASSISTANT_UNIT_SELECTOR = '[data-content-search-unit-key$=":assistant"]';
+const ROLELESS_TEXT_EXCLUSION_SELECTOR = 'button, a, svg, script, style, noscript';
+// DOM spec constants (the adapter never assumes a global Node/NodeFilter).
+const TREE_WALKER_SHOW_TEXT = 0x4;
+const TREE_WALKER_ACCEPT = 1;
+const TREE_WALKER_REJECT = 2;
+const DOCUMENT_POSITION_FOLLOWING = 0x4;
+
+function outermostMatches(document, selector) {
+  return [...document.querySelectorAll(selector)].filter((element) => element.parentElement?.closest(selector) == null);
+}
+
+function visibleUserBubbleTextNodes(bubble) {
+  const document = bubble.ownerDocument;
+  const walker = document.createTreeWalker(bubble, TREE_WALKER_SHOW_TEXT, {
+    acceptNode(node) {
+      return node.parentElement?.closest(ROLELESS_TEXT_EXCLUSION_SELECTOR) == null
+        ? TREE_WALKER_ACCEPT
+        : TREE_WALKER_REJECT;
+    },
+  });
+  const nodes = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node);
+  return nodes;
+}
+
+// The dispatched body renders as one whole text node inside the bubble, so an
+// exact projection is a per-node equality check; concatenated textContent
+// would also pick up affordance labels rendered inside the bubble.
+function rolelessBubbleHasExactText(bubble, expectedText) {
+  return visibleUserBubbleTextNodes(bubble).some((node) => node.data === expectedText);
+}
+
+function rolelessUserBubbles(document) {
+  return [...document.querySelectorAll(ROLELESS_USER_BUBBLE_SELECTOR)];
+}
+
+function rolelessAssistantUnits(document) {
+  return outermostMatches(document, ROLELESS_ASSISTANT_UNIT_SELECTOR);
+}
+
+function messageSequence(document) {
+  const items = [];
+  for (const element of document.querySelectorAll(USER_MESSAGE_SELECTOR)) {
+    items.push({ role: 'user', lineage: 'legacy', element });
+  }
+  for (const element of rolelessUserBubbles(document)) {
+    items.push({ role: 'user', lineage: 'roleless', element });
+  }
+  for (const element of document.querySelectorAll(ASSISTANT_MESSAGE_SELECTOR)) {
+    items.push({ role: 'assistant', lineage: 'legacy', element });
+  }
+  for (const element of rolelessAssistantUnits(document)) {
+    items.push({ role: 'assistant', lineage: 'roleless', element });
+  }
+  items.sort((a, b) => {
+    if (a.element === b.element) return 0;
+    return a.element.compareDocumentPosition(b.element) & DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+  });
+  return items;
+}
+
+function anchorElementFor(item) {
+  if (item.lineage === 'roleless') {
+    return item.element.closest('[data-content-search-unit-key]') ?? item.element;
+  }
+  return enclosingTurn(item.element);
+}
+
 function enclosingTurn(message) {
   return message.closest(MESSAGE_TURN_SELECTOR);
 }
@@ -75,9 +150,50 @@ function renderedMessageHasExactText(message, expectedText) {
 
 export { ChatGptPageAdapterError };
 
+function rolelessHostMessageDiagnostic(document, rolelessScan) {
+  return {
+    v: 1,
+    legacyUserMessageCount: Math.min(document.querySelectorAll(USER_MESSAGE_SELECTOR).length, 1_000),
+    rolelessUserBubbleCount: Math.min(rolelessScan.bubbles.length, 1_000),
+    userBubbleTextExactMatchCount: Math.min(rolelessScan.matching.length, 1_000),
+    ambiguousMatch: rolelessScan.matching.length > 1,
+    hostIdExposed: rolelessScan.matching.some((bubble) => hostMessageIdFor(bubble) != null),
+    nextAction: 'inspect_bound_tab',
+  };
+}
+
+function legacyReceiptCandidate(document, existingIds, text) {
+  for (const message of document.querySelectorAll(USER_MESSAGE_SELECTOR)) {
+    const messageId = hostMessageIdFor(message);
+    if (!messageId || existingIds.has(messageId)) continue;
+    if (!renderedMessageHasExactText(message, text)) continue;
+    return { hostMessageId: messageId, turn: enclosingTurn(message) };
+  }
+  return null;
+}
+
+function rolelessReceiptScan(document, existingIds, text) {
+  const bubbles = rolelessUserBubbles(document);
+  const matching = bubbles.filter((bubble) => rolelessBubbleHasExactText(bubble, text));
+  const confirmed = matching
+    .map((bubble) => ({ bubble, hostMessageId: hostMessageIdFor(bubble) }))
+    .find((candidate) => candidate.hostMessageId && !existingIds.has(candidate.hostMessageId));
+  return {
+    bubbles,
+    matching,
+    receipt: confirmed
+      ? {
+          hostMessageId: confirmed.hostMessageId,
+          turn: anchorElementFor({ role: 'user', lineage: 'roleless', element: confirmed.bubble }),
+        }
+      : null,
+  };
+}
+
 function observeHostMessage({ document, MutationObserver, existingIds, text, timeoutMs }) {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let lastRolelessScan = { bubbles: [], matching: [], receipt: null };
     const finish = (callback) => {
       if (settled) return;
       settled = true;
@@ -86,25 +202,38 @@ function observeHostMessage({ document, MutationObserver, existingIds, text, tim
       callback();
     };
     const scan = () => {
-      for (const message of document.querySelectorAll(USER_MESSAGE_SELECTOR)) {
-        const messageId = hostMessageIdFor(message);
-        if (!messageId || existingIds.has(messageId)) continue;
-        if (!renderedMessageHasExactText(message, text)) continue;
-        finish(() => resolve({ hostMessageId: messageId, turn: enclosingTurn(message) }));
+      const legacy = legacyReceiptCandidate(document, existingIds, text);
+      if (legacy) {
+        finish(() => resolve(legacy));
         return;
+      }
+      lastRolelessScan = rolelessReceiptScan(document, existingIds, text);
+      if (lastRolelessScan.receipt) {
+        finish(() => resolve(lastRolelessScan.receipt));
       }
     };
     const observer = new MutationObserver(scan);
     observer.observe(document.body, { childList: true, subtree: true, attributes: true });
     const timer = setTimeout(() => {
-      finish(() =>
-        reject(
-          new ChatGptPageAdapterError(
-            'HOST_MESSAGE_NOT_OBSERVED',
-            'ChatGPT did not expose a new user message with one unique Host-provided turn identifier',
-          ),
-        ),
-      );
+      finish(() => {
+        const diagnostic = rolelessHostMessageDiagnostic(document, lastRolelessScan);
+        if (lastRolelessScan.matching.length > 0) {
+          reject(
+            new ChatGptPageAdapterError(
+              'HOST_MESSAGE_ID_UNAVAILABLE',
+              'ChatGPT exposed the dispatched user bubble without any Host-provided message identifier',
+              diagnostic,
+            ),
+          );
+          return;
+        }
+        const error = new ChatGptPageAdapterError(
+          'HOST_MESSAGE_NOT_OBSERVED',
+          'ChatGPT did not expose a new user message with one unique Host-provided turn identifier',
+        );
+        error.diagnostic = diagnostic;
+        reject(error);
+      });
     }, timeoutMs);
     scan();
   });
@@ -154,61 +283,76 @@ function causalAssistantCandidate(turn) {
   return { message: assistants[0] };
 }
 
-function sourceTurnForHostMessage(document, hostMessageId) {
-  const matchingTurns = [
-    ...new Set(
-      [...document.querySelectorAll(USER_MESSAGE_SELECTOR)]
-        .filter((message) => hostMessageIdFor(message) === hostMessageId)
-        .map(enclosingTurn)
-        .filter(Boolean),
-    ),
-  ];
-  return matchingTurns.length === 1 ? matchingTurns[0] : null;
+function uniqueAnchorItem(sequence, hostMessageId) {
+  const matches = sequence.filter((item) => item.role === 'user' && hostMessageIdFor(item.element) === hostMessageId);
+  const anchors = [...new Set(matches.map(anchorElementFor).filter((anchor) => anchor != null))];
+  if (anchors.length !== 1) return null;
+  return matches.find((item) => anchorElementFor(item) != null) ?? null;
 }
 
 function findCausalAssistantCandidate(document, hostMessageId) {
-  const userTurn = sourceTurnForHostMessage(document, hostMessageId);
-  if (!userTurn) return null;
-  const turns = [...document.querySelectorAll(MESSAGE_TURN_SELECTOR)];
-  const anchorIndex = turns.indexOf(userTurn);
+  const sequence = messageSequence(document);
+  const anchorItem = uniqueAnchorItem(sequence, hostMessageId);
+  if (!anchorItem) return null;
+  const anchorIndex = sequence.indexOf(anchorItem);
   if (anchorIndex === -1) return null;
-  for (const turn of turns.slice(anchorIndex + 1)) {
-    const candidate = causalAssistantCandidate(turn);
-    if (candidate) return { turn, ...candidate };
+  for (let index = anchorIndex + 1; index < sequence.length; index += 1) {
+    const item = sequence[index];
+    if (item.role === 'user') {
+      return {
+        error: new ChatGptPageAdapterError(
+          'ASSISTANT_TURN_SUPERSEDED',
+          'a later user turn appeared before the source-bound assistant final',
+        ),
+      };
+    }
+    if (item.lineage === 'legacy') {
+      const turn = anchorElementFor(item);
+      const turnCandidate = causalAssistantCandidate(turn);
+      if (turnCandidate?.error) return turnCandidate;
+      if (!turnCandidate) continue;
+      return { turn, message: turnCandidate.message };
+    }
+    return { turn: anchorElementFor(item), message: item.element };
   }
   return null;
 }
 
+function assistantHostIdStatusFor(assistantCandidates) {
+  if (assistantCandidates.length === 0) return 'not_observed';
+  return assistantCandidates.length === 1 && hostMessageIdFor(assistantCandidates[0])
+    ? 'unique'
+    : 'missing_or_ambiguous';
+}
+
+function assistantContentStatusFor(contentStatuses) {
+  if (contentStatuses.includes('oversized')) return 'oversized';
+  if (contentStatuses.includes('present')) return 'present';
+  if (contentStatuses.includes('missing')) return 'missing';
+  return 'not_observed';
+}
+
 function assistantObservationDiagnostic(document, userTurn, hostMessageId) {
-  const turns = [...document.querySelectorAll(MESSAGE_TURN_SELECTOR)];
-  const currentUserTurn = sourceTurnForHostMessage(document, hostMessageId);
-  const anchorIndex = turns.indexOf(currentUserTurn);
-  const followingTurns = anchorIndex === -1 ? [] : turns.slice(anchorIndex + 1);
-  const followingRoles = followingTurns.flatMap(messageRoleElements);
-  const assistantCandidates = followingRoles.filter((candidate) => candidate.matches(ASSISTANT_MESSAGE_SELECTOR));
+  const sequence = messageSequence(document);
+  const anchorItem = uniqueAnchorItem(sequence, hostMessageId);
+  const anchorIndex = anchorItem ? sequence.indexOf(anchorItem) : -1;
+  const followingItems = anchorIndex === -1 ? [] : sequence.slice(anchorIndex + 1);
+  const assistantCandidates = followingItems.filter((item) => item.role === 'assistant').map((item) => item.element);
   const contentStatuses = assistantCandidates.map(assistantContentStatus);
-  const assistantHostIdStatus =
-    assistantCandidates.length === 0
-      ? 'not_observed'
-      : assistantCandidates.length === 1 && hostMessageIdFor(assistantCandidates[0])
-        ? 'unique'
-        : 'missing_or_ambiguous';
-  const assistantContentStatusValue = contentStatuses.includes('oversized')
-    ? 'oversized'
-    : contentStatuses.includes('present')
-      ? 'present'
-      : contentStatuses.includes('missing')
-        ? 'missing'
-        : 'not_observed';
+  const anchorTurn = anchorItem?.lineage === 'legacy' ? anchorElementFor(anchorItem) : null;
+  const turns = [...document.querySelectorAll(MESSAGE_TURN_SELECTOR)];
+  const legacyAnchorIndex = anchorTurn ? turns.indexOf(anchorTurn) : -1;
+  const followingTurns = legacyAnchorIndex === -1 ? [] : turns.slice(legacyAnchorIndex + 1);
   return {
     v: 1,
-    userTurnConnected: userTurn?.isConnected === true,
+    userTurnConnected: (anchorItem?.element ?? userTurn)?.isConnected === true,
     anchorTurnFound: anchorIndex !== -1,
     followingTurnCount: Math.min(followingTurns.length, 1_000),
     assistantCandidateCount: Math.min(assistantCandidates.length, 1_000),
-    laterUserTurnPresent: followingRoles.some((candidate) => candidate.matches(USER_MESSAGE_SELECTOR)),
-    assistantHostIdStatus,
-    assistantContentStatus: assistantContentStatusValue,
+    rolelessAssistantUnitCount: Math.min(rolelessAssistantUnits(document).length, 1_000),
+    laterUserTurnPresent: followingItems.some((item) => item.role === 'user'),
+    assistantHostIdStatus: assistantHostIdStatusFor(assistantCandidates),
+    assistantContentStatus: assistantContentStatusFor(contentStatuses),
     streamingControlPresent: assistantIsStreaming(document),
     turnMatchCount: Math.min(turns.length, 1_000),
     userMessageCount: Math.min(document.querySelectorAll(USER_MESSAGE_SELECTOR).length, 1_000),
@@ -579,4 +723,6 @@ export const CHATGPT_PAGE_ADAPTER_SELECTORS = Object.freeze({
   sendButton: [...SEND_BUTTON_SELECTORS],
   userMessage: USER_MESSAGE_SELECTOR,
   assistantMessage: ASSISTANT_MESSAGE_SELECTOR,
+  rolelessUserBubble: ROLELESS_USER_BUBBLE_SELECTOR,
+  rolelessAssistantUnit: ROLELESS_ASSISTANT_UNIT_SELECTOR,
 });

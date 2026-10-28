@@ -87,7 +87,7 @@ describe('Personal Chrome append replay safety', () => {
       expectedRevisions: {
         helper: helperArtifactRevision,
         extension: '0.2.13',
-        pageAdapter: '2026-09-24.1',
+        pageAdapter: '2026-10-28.1',
       },
     });
     await terminal;
@@ -177,7 +177,7 @@ describe('Personal Chrome append replay safety', () => {
       expectedRevisions: {
         helper: helperArtifactRevision,
         extension: '0.2.13',
-        pageAdapter: '2026-09-24.1',
+        pageAdapter: '2026-10-28.1',
       },
     });
     await terminal;
