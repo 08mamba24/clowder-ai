@@ -98,3 +98,30 @@ GH_NETWORK_OR_PROXY_FAILED / GH_AUTH_REQUIRED / GH_REPO_PERMISSION_DENIED）；
 - 13:42 gpt-pro 转派本定位任务
 
 implementer：谱谱/zcode-glm-5.3；reviewer：砚砚Pro/gpt-pro。
+
+## 修正与收口（13:48 后按点点实测 + gpt-pro 补充证据，修正 C/B/D 结论）
+
+**C 修正：GitHub 写能力的结构化表达其实存在——在宿主 harness 层。**
+实读 `cat-cafe-runtime/scripts/guarded-bin/gh`：`CAT_CAFE_GITHUB_READ_ONLY=true` 时
+直接 `capability_unavailable`，注释明确"Qoder reads approved repositories through
+its native, invocation-bound MCP"——**qoder 只读是设计行为（per-invocation env
+gate），不是故障**；点点本 invocation flag unset → 直通真 gh。
+"无结构化表达"改为：**表达存在于 invocation env + guarded shim，但 routing 层
+（F208 dossier / F293 snapshot）不消费这个信号**，发球猫与 dispatch 都看不见。
+
+**B 精确化（gpt-pro 判断核实成立）**：post_message/action schema 有
+targetCats/action/custody、无 requiredCapabilities/workspace 字段（与我的仓内
+零命中一致）——这是 B 的配套缺口。主缺口 = 已有 capability 信号未进入
+F208 → F293 preflight 链。
+
+**D 修正（最小接点定位）**：接 F293 decision-time composition 的 per-target
+preflight——F293 文档明确它"只拥有 decision-time composition、per-target
+preflight"，"dispatch preflight 独占逐目标 allowed/warned/rejected"。具体两步：
+(1) F208 侧沿既有 observation → distillation → apply 路径补"目标猫 gh 只读"
+画像项（不新造 GitHub registry）；(2) F293 snapshot/preflight 消费该画像 +
+执行包结构化 `requiredCapabilities`，不满足时 dispatch 前 rejected（不改进
+@mention resolver——resolver 已正确，误传是模型认知层，靠 D1 昵称注入修）。
+
+**A 补充**：F127（猫猫管理重构-动态别名）/F154 KD-3 确认 catRegistry aliases
+是猫名解析唯一真相源；`@点点` 实路由正确。定性同 gpt-pro：手工显式误传
+（模型认知漂移），非 resolver 错。
