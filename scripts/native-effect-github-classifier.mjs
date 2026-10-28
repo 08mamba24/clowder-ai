@@ -290,19 +290,33 @@ function normalizeGhFlag(flag) {
 }
 
 /**
- * `gh pr create --body-file <path>` reads one local file into the PR body — a
- * remote publication fed by a single local read, proven by what actually
- * exists on disk: the literal path and its resolved realpath must both
- * classify as ordinary in the guard's own target model (any cat-cafe-runtime
- * component, runtime branch, or Redis 6399 coordinate refuses), the file must
- * resolve (a dangling symlink proves nothing — no speculative fallback for
- * not-yet-created inputs), and the resolved node must be a regular file, so
- * devices, descriptors, and streams (/dev/stdin, /dev/null) are excluded by
- * type rather than by name. Relative paths and gh's `-` stdin form stay
- * unrecognized, keeping the conservative path.
+ * The OS descriptor namespace — /dev/fd/N, /dev/stdin and friends,
+ * /proc/self/fd/N — names THIS process's open file descriptors by construction:
+ * the same path is a different file depending on which process resolves it.
+ * That is an input ORIGIN, not a named on-disk file, so it never earns the
+ * named-file proof — even when the descriptor happens to be backed by a
+ * regular file.
+ */
+const DESCRIPTOR_NAMESPACE_PATH = /^(?:\/dev\/(?:fd\/\d+|stdin|stdout|stderr)|\/proc\/(?:self\/fd|\d+\/fd)\/\d+)$/;
+
+/**
+ * Contract for `gh pr create --body-file <path>` — one local read feeding a
+ * remote publication, proven as:
+ * 1. an ordinary NAMED file that exists on disk — the literal path and its
+ *    resolved realpath both classify as ordinary in the guard's target model
+ *    (any cat-cafe-runtime component, runtime branch, or Redis 6399 refuses);
+ * 2. never a process stdin/handle/descriptor origin — descriptor-namespace
+ *    paths are refused as both the literal value and a symlink destination,
+ *    because isFile() describes the backing object, not the input's origin;
+ * 3. unresolvable when resolution fails (missing file, dangling symlink) —
+ *    no speculative fallback for not-yet-created inputs.
+ * The resolved node must additionally be a regular file, so devices and other
+ * node types are excluded by type rather than by name. Relative paths and
+ * gh's `-` stdin form stay unrecognized, keeping the conservative path.
  */
 function isReadableOrdinaryBodyFile(value) {
   if (!isAbsolute(value) || value === '-') return false;
+  if (DESCRIPTOR_NAMESPACE_PATH.test(value)) return false;
   const kind = (path) => classifyNativeTarget(path, undefined, 'read').kind;
   if (kind(value) !== 'ordinary') return false;
   let real;
@@ -311,6 +325,7 @@ function isReadableOrdinaryBodyFile(value) {
   } catch {
     return false;
   }
+  if (DESCRIPTOR_NAMESPACE_PATH.test(real)) return false;
   if (kind(real) !== 'ordinary') return false;
   try {
     return statSync(real).isFile();

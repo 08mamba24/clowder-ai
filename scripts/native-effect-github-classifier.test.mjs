@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import {
   constrainedGhApiOperation,
@@ -271,6 +273,40 @@ test('decision level: the pinned wrapper refuses aliased, dangling, and stream b
     );
     assert.equal(refused.decision, 'deny', file);
     assert.notEqual(refused.target?.kind, 'remote_repository', file);
+  }
+});
+
+test('descriptor-namespace body inputs never earn the named-file proof', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-r6-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  // Literal descriptor paths are refused regardless of this process's own fds.
+  for (const descriptor of ['/dev/stdin', '/dev/stdout', '/dev/stderr', '/dev/fd/0', '/proc/self/fd/0']) {
+    assert.equal(constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t --body-file ${descriptor}`), null, descriptor);
+  }
+  const viaStdin = join(cwd, 'via-stdin.md');
+  symlinkSync('/dev/stdin', viaStdin);
+  assert.equal(constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t --body-file ${viaStdin}`), null);
+  // The reviewer's mechanism: a child whose fd 0 IS an ordinary regular file —
+  // realpath('/dev/stdin') = /dev/fd/0 and stat().isFile() is true there — must
+  // still not turn the process stdin into a named body file.
+  const stdinSource = join(cwd, 'stdin-source.md');
+  writeFileSync(stdinSource, '# stdin-backed\n');
+  const probe = join(cwd, 'probe.mjs');
+  const classifierUrl = pathToFileURL(join(import.meta.dirname, 'native-effect-github-classifier.mjs')).href;
+  writeFileSync(
+    probe,
+    `import { constrainedGhPullRequestOperation } from '${classifierUrl}';\n` +
+      `import { realpathSync, statSync } from 'node:fs';\n` +
+      `const real = realpathSync('/dev/stdin');\n` +
+      `console.log(JSON.stringify({ real, isFile: statSync(real).isFile() }));\n` +
+      `if (constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file /dev/stdin') !== null) process.exit(3);\n`,
+  );
+  const fd = openSync(stdinSource, 'r');
+  try {
+    const run = spawnSync(process.execPath, [probe], { stdio: [fd, 'pipe', 'pipe'], encoding: 'utf8' });
+    assert.equal(run.status, 0, `${run.stderr}\n${run.stdout}`);
+  } finally {
+    closeSync(fd);
   }
 });
 
