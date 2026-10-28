@@ -75,3 +75,39 @@ HOST_MESSAGE_ID_UNAVAILABLE + 观察器不启动 = 诚实失败，**不得记为
 2. [operator] 分发通道决策（A/B 上述）
 3. [operator] 通道就绪后触发一次新 dispatch 做 Browser 路径真实验收
 4. [谱谱] 验收记录补齐 + 上游移植（独立分支、收窄范围、回交 gpt-pro review）
+
+## 修正（14:4x，operator 定"沿用 A"后按 gpt-pro 约束重核）
+
+上一节"Browser 路径三层阻塞"**结论错误，予以推翻**——重核证据（绝对路径，真实宿主）：
+
+1. **Native 通道健康活跃**（此前 `~/` 又落沙盒 HOME，重查修正）：
+   - `/Users/yuhan/Library/Application Support/Google/Chrome/NativeMessagingHosts/ai.catcafe.personal_cloud_cat_host.json`
+     存在（19:11 更新），指向 runtime plugin-host 的 native-host-launcher.mjs，
+     allowed_origins = 扩展 `mjpbglbfkbjhnamnafkodgdpgfhjoife`。
+   - launcher / pairing / delivery-ledger 全在；**ledger 22:36 仍在写**。
+   - 决定性证据：ledger 最新 4 条的 idempotencyKey 精确对应 operator
+     14:31-14:36 的四条消息（0001793197886431 / 0001793198009023 /
+     0001793198160301 / 0001793198181023）——dispatch→Native→扩展→页面
+     全链路活着。前三条 `HOST_MESSAGE_NOT_OBSERVED`（旧 bundle 的
+     roleless 盲，正是 PR #59 修的），第 4 条 `CHATGPT_GENERATING`
+     （上一条回答生成中，单次发送保护诚实拒绝——#50 语义正常）。
+2. **install 的 chrome_web_store 硬门不构成阻塞**：现有安装健康，
+   本轮无需 install；更新走 A 路径刷新扩展产物即可。
+3. **inspect 报 `helper: invalid` 的真实机制（finding，非故障）**：
+   pairing.json 的 artifactDigest=`sha512:d1a4e1ae…` 落后于 artifacts
+   已部署的新一代（`7ed2cebe…`，19:11 升级未同步 re-pair）。Chrome 实际
+   通道不校验该账目，ledger 照常工作。后续应修 re-pair 同步，不阻塞本轮。
+
+**Browser 路径剩余唯一断点 = 扩展 bundle 旧版（0.2.13 / pageAdapter
+2026-09-24.1）对 roleless DOM 盲。** 修复已在 PR #59（170a1b689）。
+
+### 终验时序（按 gpt-pro 约束：只部署复审过的固定产物）
+
+1. PR #59 复审 merge（点点 push → 金哥复审，进行中）
+2. live runtime 升级到 merge commit（常规 runtime 部署链）
+3. Chrome 扩展 reload（A 路径，同 ID `mjpbglbfkbjhnamnafkodgdpgfhjoife`
+   不变，unpacked 目录重读）
+4. operator 下一条 @gpt-pro 自然成为验收 dispatch；读 ledger 新条目：
+   预期 `HOST_MESSAGE_NOT_OBSERVED` → `HOST_MESSAGE_ID_UNAVAILABLE`
+   （页面无真 ID 时，诚实失败）；若 ChatGPT 恢复暴露 data-message-id 则
+   正常回执 + assistant 观察启动。MCP 路径同轮对照（gpt-pro 回帖可见）。
