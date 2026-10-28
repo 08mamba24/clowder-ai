@@ -366,4 +366,71 @@ describe('ChatGPT page adapter roleless DOM', () => {
     assert.ok(failures[0].diagnostic.assistantCandidateCount >= 1);
     assert.equal(failures[0].diagnostic.assistantHostIdStatus, 'missing_or_ambiguous');
   });
+
+  it('binds the receipt to the new dispatch when an older roleless bubble repeats the text with a real Host ID', async () => {
+    const fixture = createRolelessFixture();
+    const repeatedText = 'the operator once sent this exact text and the page kept the older bubble';
+    appendRolelessUserMessage({
+      document: fixture.document,
+      unitKey: 'fallback-turn-0:0:user',
+      sentText: repeatedText,
+      hostMessageId: 'old-message-id',
+    });
+    fixture.onSendHandlers.push(({ sendCount, sentText }) => {
+      appendRolelessUserMessage({
+        document: fixture.document,
+        unitKey: `fallback-turn-${sendCount}:0:user`,
+        sentText,
+        hostMessageId: 'new-message-id',
+      });
+    });
+    const adapter = adapterFor(fixture);
+
+    const result = await adapter.appendMessage({
+      requestId: 'request-roleless-preexisting-with-id',
+      conversationId: 'conversation-7',
+      text: repeatedText,
+      idempotencyKey: 'source-message-roleless-preexisting-with-id',
+    });
+
+    assert.equal(result.hostMessageId, 'new-message-id');
+    assert.equal(fixture.getSendCount(), 1);
+  });
+
+  it('matches a multi-block roleless bubble whose paragraphs render as separate text blocks', async () => {
+    const fixture = createRolelessFixture();
+    const firstLine = 'first dispatched paragraph';
+    const secondLine = 'second dispatched paragraph';
+    fixture.onSendHandlers.push(({ sendCount }) => {
+      const unit = fixture.document.createElement('div');
+      unit.setAttribute('data-content-search-unit-key', `fallback-turn-${sendCount}:0:user`);
+      const bubble = fixture.document.createElement('div');
+      bubble.setAttribute('data-user-message-bubble', 'true');
+      const wrapper = fixture.document.createElement('div');
+      for (const line of [firstLine, secondLine]) {
+        const block = fixture.document.createElement('div');
+        const paragraph = fixture.document.createElement('p');
+        paragraph.textContent = line;
+        block.append(paragraph);
+        wrapper.append(block);
+      }
+      bubble.append(wrapper);
+      unit.append(bubble);
+      fixture.document.querySelector('#messages').append(unit);
+    });
+    const adapter = adapterFor(fixture);
+
+    const error = await rejectionOf(
+      adapter.appendMessage({
+        requestId: 'request-roleless-multiblock',
+        conversationId: 'conversation-7',
+        text: `${firstLine}\n${secondLine}`,
+        idempotencyKey: 'source-message-roleless-multiblock',
+      }),
+    );
+
+    assert.equal(error.code, 'HOST_MESSAGE_ID_UNAVAILABLE');
+    assert.equal(error.diagnostic?.userBubbleTextExactMatchCount, 1);
+    assert.equal(fixture.getSendCount(), 1);
+  });
 });

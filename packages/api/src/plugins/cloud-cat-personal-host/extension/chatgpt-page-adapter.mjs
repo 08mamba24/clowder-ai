@@ -68,11 +68,54 @@ function visibleUserBubbleTextNodes(bubble) {
   return nodes;
 }
 
+const ROLELESS_BLOCK_TAGS = new Set([
+  'ADDRESS',
+  'BLOCKQUOTE',
+  'DIV',
+  'DD',
+  'DL',
+  'DT',
+  'FIELDSET',
+  'FIGURE',
+  'H1',
+  'H2',
+  'H3',
+  'H4',
+  'H5',
+  'H6',
+  'LI',
+  'OL',
+  'P',
+  'PRE',
+  'UL',
+]);
+
 // The dispatched body renders as one whole text node inside the bubble, so an
 // exact projection is a per-node equality check; concatenated textContent
 // would also pick up affordance labels rendered inside the bubble.
+// Multi-paragraph bodies render as one text run per block element, so a
+// second projection compares the per-block lines against the dispatched
+// newline-separated lines without collapsing any whitespace.
+function rolelessBubbleBlockLines(bubble) {
+  const lines = new Map();
+  for (const node of visibleUserBubbleTextNodes(bubble)) {
+    let block = node.parentElement;
+    while (block && block !== bubble && !ROLELESS_BLOCK_TAGS.has(block.tagName)) {
+      block = block.parentElement;
+    }
+    const key = block ?? bubble;
+    lines.set(key, (lines.get(key) ?? '') + node.data);
+  }
+  return [...lines.values()];
+}
+
 function rolelessBubbleHasExactText(bubble, expectedText) {
-  return visibleUserBubbleTextNodes(bubble).some((node) => node.data === expectedText);
+  if (visibleUserBubbleTextNodes(bubble).some((node) => node.data === expectedText)) return true;
+  const expectedLines = expectedText.split('\n');
+  const blockLines = rolelessBubbleBlockLines(bubble);
+  return (
+    blockLines.length === expectedLines.length && blockLines.every((line, index) => line === expectedLines[index])
+  );
 }
 
 function rolelessUserBubbles(document) {
@@ -493,7 +536,9 @@ function requireEmptyComposer(document, revisions) {
 }
 
 function existingUserMessageIds(document) {
-  return new Set([...document.querySelectorAll(USER_MESSAGE_SELECTOR)].map(hostMessageIdFor).filter(Boolean));
+  const legacyIds = [...document.querySelectorAll(USER_MESSAGE_SELECTOR)].map(hostMessageIdFor);
+  const rolelessIds = rolelessUserBubbles(document).map(hostMessageIdFor);
+  return new Set([...legacyIds, ...rolelessIds].filter(Boolean));
 }
 
 function requireSafeSubmissionState({
