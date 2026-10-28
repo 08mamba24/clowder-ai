@@ -228,6 +228,52 @@ test('decision level: the pinned wrapper publishes via an ordinary body file and
   assert.equal(refused.reasonCode, 'protected_target_unparsed');
 });
 
+test('body-file alias, dangling symlink, and stream inputs share the file-input proof boundary', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-r5-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const ordinary = join(cwd, 'PR_BODY.md');
+  writeFileSync(ordinary, '# body\n');
+  const protectedText = join(cwd, 'cat-cafe-runtime', 'private-fixture.md');
+  const dangling = join(cwd, 'dangling.md');
+  symlinkSync(join(cwd, 'cat-cafe-runtime', 'not-created.md'), dangling);
+
+  // One semantic role: -F and --body-file normalize together, so aliasing can
+  // neither bypass the file validation nor dodge the duplicate detection.
+  assert.equal(constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t -F ${protectedText}`), null);
+  assert.equal(constrainedGhPullRequestOperation('gh pr create --repo a/b --title t -F -'), null);
+  assert.equal(
+    constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t --body-file ${ordinary} -F ${protectedText}`),
+    null,
+  );
+  assert.equal(
+    constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t -F ${ordinary}`)?.effect,
+    'remote_mutation',
+  );
+  // An unresolvable input (dangling symlink) proves nothing.
+  assert.equal(constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t --body-file ${dangling}`), null);
+  // Devices, descriptors, and streams are not ordinary body files — by file
+  // type, not by name.
+  assert.equal(constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file /dev/stdin'), null);
+  assert.equal(constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file /dev/null'), null);
+});
+
+test('decision level: the pinned wrapper refuses aliased, dangling, and stream body inputs', { skip: !pinnedWrapperPresent() }, (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-r5-decision-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const protectedText = join(cwd, 'cat-cafe-runtime', 'private-fixture.md');
+  const dangling = join(cwd, 'dangling.md');
+  symlinkSync(join(cwd, 'cat-cafe-runtime', 'not-created.md'), dangling);
+  for (const file of [protectedText, dangling, '/dev/stdin']) {
+    const refused = decideShellHookPayload(
+      { judged: `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair --body-file '${file}'` },
+      cwd,
+      source,
+    );
+    assert.equal(refused.decision, 'deny', file);
+    assert.notEqual(refused.target?.kind, 'remote_repository', file);
+  }
+});
+
 test('recognized REST and PR shapes keep their classification', () => {
   assert.deepEqual(constrainedGhApiOperation('gh api user --jq .login'), {
     effect: 'read',

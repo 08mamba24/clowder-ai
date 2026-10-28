@@ -1,5 +1,5 @@
-import { realpathSync } from 'node:fs';
-import { dirname, isAbsolute } from 'node:path';
+import { realpathSync, statSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { classifyNativeTarget } from './native-effect-target-classifier.mjs';
 import { shellInvocation } from './native-effect-shell-tokenizer.mjs';
 
@@ -268,40 +268,54 @@ function parseConstrainedGhFlags(tokens, contract) {
 }
 
 function normalizeGhFlag(flag) {
-  if (flag === '-R') return '--repo';
-  if (flag === '-d') return '--delete-branch';
-  if (flag === '-s') return '--squash';
-  return flag;
+  // Aliases normalize to one semantic role BEFORE duplicate detection and
+  // value validation run, so `-F x` can neither dodge `--body-file`'s file
+  // proof nor slip past a repeated-option check as a different key.
+  const ALIASES = {
+    '-R': '--repo',
+    '-d': '--delete-branch',
+    '-s': '--squash',
+    '-F': '--body-file',
+    '-t': '--title',
+    '-b': '--body',
+    '-B': '--base',
+    '-H': '--head',
+    '-a': '--assignee',
+    '-r': '--reviewer',
+    '-l': '--label',
+    '-p': '--project',
+    '-m': '--milestone',
+  };
+  return ALIASES[flag] ?? flag;
 }
 
 /**
  * `gh pr create --body-file <path>` reads one local file into the PR body — a
- * remote publication fed by a single local read. The guard's own target model,
- * not a name list, decides which files are ordinary: the literal path and the
- * realpath of its nearest existing ancestor must both classify as ordinary.
- * Protected coordinates (any cat-cafe-runtime component, runtime branches,
- * Redis 6399), a symlink that reaches one — even dangling — a relative path
- * this classifier cannot resolve, and gh's `-` stdin form all stay
- * unrecognized and keep the conservative path.
+ * remote publication fed by a single local read, proven by what actually
+ * exists on disk: the literal path and its resolved realpath must both
+ * classify as ordinary in the guard's own target model (any cat-cafe-runtime
+ * component, runtime branch, or Redis 6399 coordinate refuses), the file must
+ * resolve (a dangling symlink proves nothing — no speculative fallback for
+ * not-yet-created inputs), and the resolved node must be a regular file, so
+ * devices, descriptors, and streams (/dev/stdin, /dev/null) are excluded by
+ * type rather than by name. Relative paths and gh's `-` stdin form stay
+ * unrecognized, keeping the conservative path.
  */
 function isReadableOrdinaryBodyFile(value) {
   if (!isAbsolute(value) || value === '-') return false;
   const kind = (path) => classifyNativeTarget(path, undefined, 'read').kind;
   if (kind(value) !== 'ordinary') return false;
-  // The nearest existing ancestor pins the real coordinates even when the file
-  // does not exist yet; a future file created through a protected symlink is a
-  // protected file, not an unborn ordinary one.
-  let current = value;
-  for (;;) {
-    try {
-      const real = realpathSync(current);
-      return real === current ? true : kind(real) === 'ordinary';
-    } catch (error) {
-      if (error.code !== 'ENOENT') return false;
-      const parent = dirname(current);
-      if (parent === current) return false;
-      current = parent;
-    }
+  let real;
+  try {
+    real = realpathSync(value);
+  } catch {
+    return false;
+  }
+  if (kind(real) !== 'ordinary') return false;
+  try {
+    return statSync(real).isFile();
+  } catch {
+    return false;
   }
 }
 
