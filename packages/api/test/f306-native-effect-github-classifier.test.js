@@ -10,8 +10,8 @@ import {
   constrainedGhApiOperation,
   constrainedGhHelpOperation,
   constrainedGhPullRequestOperation,
-} from './native-effect-github-classifier.mjs';
-import { decideShellHookPayload } from './native-effect-shell-decision.mjs';
+} from '../../../scripts/native-effect-github-classifier.mjs';
+import { decideShellHookPayload } from '../../../scripts/native-effect-shell-decision.mjs';
 
 const GH_WRAPPER = '/Users/yuhan/cat-cafe/cat-cafe-runtime/scripts/guarded-bin/gh';
 const GH_WRAPPER_SHA256 = '5ec246d687ffc330d274f356b40ab6738d7e02e073e645b2c364c2f1b7ad6bb8';
@@ -292,18 +292,23 @@ test('descriptor-namespace body inputs never earn the named-file proof', (t) => 
   const stdinSource = join(cwd, 'stdin-source.md');
   writeFileSync(stdinSource, '# stdin-backed\n');
   const probe = join(cwd, 'probe.mjs');
-  const classifierUrl = pathToFileURL(join(import.meta.dirname, 'native-effect-github-classifier.mjs')).href;
+  const classifierUrl = pathToFileURL(join(import.meta.dirname, '..', '..', '..', 'scripts', 'native-effect-github-classifier.mjs')).href;
   writeFileSync(
     probe,
     `import { constrainedGhPullRequestOperation } from '${classifierUrl}';\n` +
-      `import { realpathSync, statSync } from 'node:fs';\n` +
+      `import { realpathSync, statSync, symlinkSync } from 'node:fs';\n` +
+      `import { join } from 'node:path';\n` +
       `const real = realpathSync('/dev/stdin');\n` +
       `console.log(JSON.stringify({ real, isFile: statSync(real).isFile() }));\n` +
-      `if (constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file /dev/stdin') !== null) process.exit(3);\n`,
+      `const link = join(process.env.PROBE_DIR, 'link-to-fd.md');\n` +
+      `symlinkSync('/proc/self/fd/0', link);\n` +
+      `if (constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file /dev/stdin') !== null) process.exit(3);\n` +
+      `if (constrainedGhPullRequestOperation(\`gh pr create --repo a/b --title t --body-file \${link}\`) !== null) process.exit(5);\n` +
+      `if (constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file /proc/self/./fd/0') !== null) process.exit(6);\n`,
   );
   const fd = openSync(stdinSource, 'r');
   try {
-    const run = spawnSync(process.execPath, [probe], { stdio: [fd, 'pipe', 'pipe'], encoding: 'utf8' });
+    const run = spawnSync(process.execPath, [probe], { stdio: [fd, 'pipe', 'pipe'], encoding: 'utf8', env: { ...process.env, PROBE_DIR: cwd } });
     assert.equal(run.status, 0, `${run.stderr}\n${run.stdout}`);
   } finally {
     closeSync(fd);
@@ -349,7 +354,7 @@ test('real Linux descriptor traversal with a regular-file stdin child', { skip: 
   const stdinSource = join(cwd, 'stdin-source.md');
   writeFileSync(stdinSource, '# stdin-backed\n');
   const probe = join(cwd, 'probe.mjs');
-  const classifierUrl = pathToFileURL(join(import.meta.dirname, 'native-effect-github-classifier.mjs')).href;
+  const classifierUrl = pathToFileURL(join(import.meta.dirname, '..', '..', '..', 'scripts', 'native-effect-github-classifier.mjs')).href;
   writeFileSync(
     probe,
     `import { constrainedGhPullRequestOperation } from '${classifierUrl}';\n` +
@@ -358,11 +363,32 @@ test('real Linux descriptor traversal with a regular-file stdin child', { skip: 
   );
   const fd = openSync(stdinSource, 'r');
   try {
-    const run = spawnSync(process.execPath, [probe], { stdio: [fd, 'pipe', 'pipe'], encoding: 'utf8' });
+    const run = spawnSync(process.execPath, [probe], { stdio: [fd, 'pipe', 'pipe'], encoding: 'utf8', env: { ...process.env, PROBE_DIR: cwd } });
     assert.equal(run.status, 0, `${run.stderr}\n${run.stdout}`);
   } finally {
     closeSync(fd);
   }
+});
+
+test('relative symlink targets keep unresolved dot segments until each hop is physically proved', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'gh-r8-kernel-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ordinary = join(root, 'ordinary');
+  const runtime = join(root, 'cat-cafe-runtime');
+  mkdirSync(ordinary);
+  mkdirSync(join(runtime, 'nested'), { recursive: true });
+  writeFileSync(join(ordinary, 'body.md'), 'PUBLIC-SYNTHETIC');
+  writeFileSync(join(runtime, 'body.md'), 'PRIVATE-SYNTHETIC');
+  symlinkSync('../cat-cafe-runtime/nested', join(ordinary, 'middle'));
+  symlinkSync('middle/../body.md', join(ordinary, 'via.md'));
+  const input = join(ordinary, 'via.md');
+  // The kernel resolves `middle` (a symlink) BEFORE the `..` applies: the real
+  // read is the PRIVATE runtime file, not the ordinary-looking PUBLIC one.
+  assert.equal(readFileSync(input, 'utf8'), 'PRIVATE-SYNTHETIC');
+  assert.equal(
+    constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t --body-file ${input}`),
+    null,
+  );
 });
 
 test('recognized REST and PR shapes keep their classification', () => {

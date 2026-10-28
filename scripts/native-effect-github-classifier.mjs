@@ -1,5 +1,5 @@
 import { readlinkSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
+import { isAbsolute } from 'node:path';
 import { classifyNativeTarget } from './native-effect-target-classifier.mjs';
 import { shellInvocation } from './native-effect-shell-tokenizer.mjs';
 
@@ -300,47 +300,50 @@ function normalizeGhFlag(flag) {
 const DESCRIPTOR_NAMESPACE_PATH = /^(?:\/dev\/(?:fd\/\d+|stdin|stdout|stderr)|\/proc\/(?:self\/fd|\d+\/fd)\/\d+)$/;
 
 /**
- * Resolve <value> hop by hop — readlink never follows — checking the
- * descriptor namespace at EVERY accumulated component, so a descriptor hidden
- * mid-chain can never surface on the far side as an ordinary-looking pathname:
- * on Linux /proc/<pid>/fd/N is itself a symlink to the open file (a realpath
- * would follow it to the backing name), and dot segments such as
- * /proc/self/./fd/0 defeat anchored literal checks. Lexical '..' popping is
- * physical here: every component beneath it was resolved, not assumed.
- * Returns the proven final path, or null whenever the topology cannot be
- * proven (missing component, unreadable link, hop limit) — conservative
- * unknown, never a speculative fallback.
+ * Resolve <value> with kernel-equivalent sequencing: raw segments (including
+ * '.' and '..') are processed one at a time against a stack of PHYSICALLY
+ * resolved components, and a symlink expansion happens BEFORE any later '..'
+ * applies — a relative target's dot segments are never folded lexically, so
+ * `middle/../body.md` through a symlinked `middle` cannot swap a protected
+ * physical source for an ordinary-looking path. The descriptor namespace is
+ * checked at EVERY accumulated component (Linux /proc/<pid>/fd/N is itself a
+ * symlink to the open file; dot segments like /proc/self/./fd/0 defeat
+ * anchored literal checks). Unprovable topology — missing component, unreadable
+ * link, hop or segment limits, '..' above the root — returns null:
+ * conservative unknown, never a speculative fallback.
  */
 function resolvePathWithoutDescriptorTraversal(value) {
-  let pending = value;
-  for (let hops = 0; hops <= 24; hops += 1) {
-    const parts = pending.split('/').filter((part) => part !== '' && part !== '.');
-    let resolved = '';
-    let restarted = false;
-    for (let index = 0; index < parts.length; index += 1) {
-      const part = parts[index];
-      if (part === '..') {
-        resolved = resolved.slice(0, resolved.lastIndexOf('/'));
+  let queue = value.split('/');
+  let stack = [];
+  let hops = 0;
+  let processed = 0;
+  while (queue.length > 0) {
+    processed += 1;
+    if (hops > 40 || processed > 512) return null;
+    const part = queue.shift();
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (stack.length === 0) return null;
+      stack.pop();
+      continue;
+    }
+    const current = `/${[...stack, part].join('/')}`;
+    if (DESCRIPTOR_NAMESPACE_PATH.test(current)) return null;
+    let link;
+    try {
+      link = readlinkSync(current);
+    } catch (error) {
+      if (error.code === 'EINVAL') {
+        stack.push(part);
         continue;
       }
-      resolved = `${resolved}/${part}`;
-      if (DESCRIPTOR_NAMESPACE_PATH.test(resolved)) return null;
-      let link;
-      try {
-        link = readlinkSync(resolved);
-      } catch (error) {
-        if (error.code === 'EINVAL') continue;
-        return null;
-      }
-      const remaining = parts.slice(index + 1);
-      const target = isAbsolute(link) ? link : join(dirname(resolved), link);
-      pending = [target, ...remaining].join('/');
-      restarted = true;
-      break;
+      return null;
     }
-    if (!restarted) return resolved;
+    hops += 1;
+    queue = isAbsolute(link) ? link.split('/') : [...link.split('/'), ...queue];
+    if (isAbsolute(link)) stack = [];
   }
-  return null;
+  return stack.length === 0 ? '/' : `/${stack.join('/')}`;
 }
 
 /**
