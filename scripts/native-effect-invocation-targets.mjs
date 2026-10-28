@@ -1,5 +1,9 @@
 import { executedInvocations } from './lib/shell-invocation.mjs';
-import { constrainedGhApiOperation, constrainedGhPullRequestOperation } from './native-effect-github-classifier.mjs';
+import {
+  constrainedGhApiOperation,
+  constrainedGhHelpOperation,
+  constrainedGhPullRequestOperation,
+} from './native-effect-github-classifier.mjs';
 import { withoutInterpreterSource } from './native-effect-interpreter-source.mjs';
 import { proveProgramSelection } from './native-effect-program-selection.mjs';
 
@@ -38,7 +42,10 @@ export function observedReadProgram(command, cwd, namespaceStable) {
   }
   if (call.redirections?.length || selection?.kind !== 'repository_gh_wrapper') return { unproved: true };
   const named = ['gh', ...call.programOperands].map(quote).join(' ');
-  const operation = constrainedGhApiOperation(named) ?? constrainedGhPullRequestOperation(named);
+  const operation =
+    constrainedGhApiOperation(named) ??
+    constrainedGhPullRequestOperation(named) ??
+    constrainedGhHelpOperation(named);
   return operation?.effect === 'read' ? { command: named, unproved: false } : {};
 }
 

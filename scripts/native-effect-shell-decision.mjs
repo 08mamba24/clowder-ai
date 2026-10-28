@@ -3,7 +3,7 @@ import { scanShellText, shellSubstitutions } from './lib/shell-lexical.mjs';
 import { SUBSTITUTION } from './lib/shell-text.mjs';
 import { copyNamespaceStability, shellTextPreservesCopyNamespace } from './native-effect-copy-namespace.mjs';
 import { contextualGitMutationCandidates } from './native-effect-git-context.mjs';
-import { constrainedGhApiOperation } from './native-effect-github-classifier.mjs';
+import { constrainedGhApiOperation, constrainedGhHelpOperation } from './native-effect-github-classifier.mjs';
 import { hereDocumentView } from './native-effect-heredoc.mjs';
 import { withoutInterpreterSource } from './native-effect-interpreter-source.mjs';
 import {
@@ -226,7 +226,9 @@ function segmentCandidate(
   const remoteOperation =
     argvPreserved &&
     !unprovedReadProgram &&
-    (constrainedGhApiOperation(command) ?? constrainedGhPullRequestOperation(command));
+    (constrainedGhApiOperation(command) ??
+      constrainedGhPullRequestOperation(command) ??
+      constrainedGhHelpOperation(command));
   const copy = argvPreserved ? explicitCopyRoles(command) : null;
   const explicitTarget = argvPreserved ? (explicitTemporaryWorktreeTarget(command) ?? copy?.destination) : undefined;
   const locatedSource = location ? { ...source, cwd: location } : source;

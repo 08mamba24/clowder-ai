@@ -19,11 +19,68 @@ const API_VALUES = new Map([
 ]);
 const API_FLAGS = new Set(['--include', '-i', '--paginate', '--silent', '--slurp', '--verbose']);
 
+const GRAPHQL_VALUES = new Map([
+  ['--field', 'field'],
+  ['-f', 'field'],
+  ['--jq', 'format'],
+  ['-q', 'format'],
+  ['--template', 'format'],
+  ['-t', 'format'],
+  ['--hostname', 'hostname'],
+  ['--preview', 'preview'],
+  ['-p', 'preview'],
+]);
+
+/** Inline literal only: no shell substitution residues, no gh `@file` read channel. */
+const literalInlineValue = (value) => typeof value === 'string' && !/[$`]/.test(value) && !value.startsWith('@');
+
+/**
+ * GraphQL documents carry their own semantics, so the HTTP verb says nothing.
+ * Provable pure queries (only `query { ... }` selections) read; any mutation or
+ * subscription mention, or anything not provable as a query, is a remote
+ * mutation — conservative on side effects, never on local protection.
+ */
+function graphqlDocumentEffect(document) {
+  const withoutComments = document.replace(/#[^\r\n]*/g, ' ');
+  if (/\b(?:mutation|subscription)\b/.test(withoutComments)) return 'remote_mutation';
+  const prologue = withoutComments.trimStart();
+  return prologue.startsWith('query') || prologue.startsWith('{') ? 'read' : 'remote_mutation';
+}
+
+function constrainedGhGraphqlOperation(tokens) {
+  let query;
+  for (let index = 3; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === '--help' || token === '-h') return { effect: 'read', target: 'github://api/help' };
+    if (API_FLAGS.has(token)) continue;
+    const equals = token.indexOf('=');
+    const attached = !token.startsWith('--') && token.length > 2;
+    const flag = attached ? token.slice(0, 2) : equals < 0 ? token : token.slice(0, equals);
+    const role = GRAPHQL_VALUES.get(flag);
+    if (!role) return null;
+    const value = attached ? token.slice(2) : equals < 0 ? tokens[++index] : token.slice(equals + 1);
+    if (value === undefined || !literalInlineValue(value)) return null;
+    if (role !== 'field') continue;
+    const separator = value.indexOf('=');
+    if (separator <= 0) return null;
+    const name = value.slice(0, separator);
+    const body = value.slice(separator + 1);
+    if (body.startsWith('@')) return null;
+    if (name === 'query') {
+      if (query !== undefined) return null;
+      query = body;
+    }
+  }
+  if (query === undefined) return null;
+  return { effect: graphqlDocumentEffect(query), target: 'github://api/graphql' };
+}
+
 export function constrainedGhApiOperation(raw) {
   const parsed = shellInvocation(raw);
   if (!parsed.complete || parsed.redirections.length) return null;
   const tokens = parsed.words.map(({ value }) => value);
   if (tokens[0] !== 'gh' || tokens[1] !== 'api') return null;
+  if (tokens[2] === 'graphql') return constrainedGhGraphqlOperation(tokens);
   let method,
     fields = false,
     endpoint;
@@ -34,6 +91,7 @@ export function constrainedGhApiOperation(raw) {
       endpoint = token;
       continue;
     }
+    if (token === '--help' || token === '-h') return endpoint ? null : { effect: 'read', target: 'github://api/help' };
     if (API_FLAGS.has(token)) continue;
     const equals = token.indexOf('=');
     const attached = !token.startsWith('--') && token.length > 2;
@@ -45,9 +103,19 @@ export function constrainedGhApiOperation(raw) {
     if (role === 'method') method = value.toUpperCase();
     if (role === 'field') fields = true;
   }
-  if (!endpoint || endpoint === 'graphql' || !['GET', 'HEAD'].includes(method ?? (fields ? 'POST' : 'GET')))
+  if (!endpoint || !['GET', 'HEAD'].includes(method ?? (fields ? 'POST' : 'GET')))
     return null;
   return { effect: 'read', target: `github://api/${endpoint}` };
+}
+
+/** `gh help [topics]` prints CLI documentation offline; flags and paths stay unrecognized. */
+export function constrainedGhHelpOperation(raw) {
+  const parsed = shellInvocation(raw);
+  if (!parsed.complete || parsed.redirections.length) return null;
+  const tokens = parsed.words.map(({ value }) => value);
+  if (tokens[0] !== 'gh' || tokens[1] !== 'help') return null;
+  if (tokens.slice(2).some((topic) => !/^[a-z][a-z0-9-]*$/.test(topic))) return null;
+  return { effect: 'read', target: 'github://cli/help' };
 }
 
 export function isConstrainedGhPullRequestRead(raw) {
@@ -73,16 +141,18 @@ export function constrainedGhPullRequestOperation(raw) {
 
   const repo = flags.get('--repo');
   const repository = typeof repo === 'string' ? repo : 'current';
+  const mutating = ['merge', 'close', 'create'].includes(invocation.subcommand);
   return {
-    effect: ['merge', 'close'].includes(invocation.subcommand) ? 'remote_mutation' : 'read',
+    effect: mutating ? 'remote_mutation' : 'read',
     target: `github://${repository}/${invocation.pullNumber ? `pull/${invocation.pullNumber}` : 'pulls'}`,
   };
 }
 
 function parseGhPullRequestInvocation(tokens) {
-  const subcommand = tokens[2];
-  if (!['view', 'checks', 'list', 'merge', 'close'].includes(subcommand)) return null;
+  const subcommand = tokens[2] === 'new' ? 'create' : tokens[2];
+  if (!['view', 'checks', 'list', 'merge', 'close', 'create'].includes(subcommand)) return null;
   if (subcommand === 'list') return { subcommand, flagIndex: 3 };
+  if (subcommand === 'create') return { subcommand, flagIndex: 3 };
   const pullNumber = tokens[3];
   const hasValidPullNumber =
     subcommand === 'close' ? /^[1-9]\d*$/.test(pullNumber ?? '') : /^\d+$/.test(pullNumber ?? '');
@@ -116,6 +186,33 @@ function ghPullRequestFlagContract(subcommand) {
         '--search',
         '--state',
         '--template',
+      ]),
+    };
+  }
+  if (subcommand === 'create') {
+    return {
+      booleans: new Set(['--draft', '--fill', '--fill-first', '--no-maintainer-edit', '--verbose']),
+      values: new Set([
+        '--repo',
+        '-R',
+        '--title',
+        '-t',
+        '--body',
+        '-b',
+        '--base',
+        '-B',
+        '--head',
+        '-H',
+        '--assignee',
+        '-a',
+        '--reviewer',
+        '-r',
+        '--label',
+        '-l',
+        '--project',
+        '-p',
+        '--milestone',
+        '-m',
       ]),
     };
   }
@@ -165,5 +262,9 @@ function isValidGhFlagValue(flag, value) {
   if (flag === '--limit') return /^[1-9]\d*$/.test(value);
   if (flag === '--state') return ['open', 'closed', 'merged', 'all'].includes(value);
   if (flag === '--match-head-commit') return /^[0-9a-f]{40,64}$/i.test(value);
+  // PR text values are inline literals: no gh `@file` channel, no substitution residue.
+  if (['--title', '-t', '--body', '-b', '--base', '-B', '--head', '-H'].includes(flag)) {
+    return literalInlineValue(value);
+  }
   return true;
 }
