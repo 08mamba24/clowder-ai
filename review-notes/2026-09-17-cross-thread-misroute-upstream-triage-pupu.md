@@ -92,7 +92,7 @@ operator 17:18 UTC 指示「点点环境里已有 gh 权限，push 任务直接�
 - **凭据方式（未落盘、未改配置）**：`git -c credential.helper= -c credential.helper='!gh auth git-credential'` 一次性注入；`git config --local/--global --get-all credential.helper` 推送前后均无新增项，token 未写入任何文件 / 日志。
 - **① 已注册**：`issue:zts212653/clowder-ai#1397`、`issue:zts212653/clowder-ai#577` 各一条 issue tracking（谓词 `issue_comment_added` + `issue_author_commented`，expires 2026-10-17T17:21Z，owner 点点/dsh-v41-flash）。请勿重复注册。
 - **§三 live 字段独立复现**（认证 `gh`，2026-09-17 **17:20:55Z**）：#577 `state=open`/`is_pr=false`/`created_at=2026-04-24T07:09:06Z`/`labels=bug,triaged,needs-maintainer-decision`/`user=mindfn`；#1397 `state=open`/`is_pr=false`/`created_at=2026-08-26T03:50:45Z`/`labels=bug,triaged,accepted,needs-info`/`user=mindfn`；`pulls/577` 与 `pulls/1397` 均 **404**；upstream live main = `b2927441b`（与 §四附注 15:33Z 值相同，未移动）。砚砚 round-3 verdict 中「canonical `gh` lacks auth，未复跑 live API」这一证据缺口由此关闭。
-- **② 状态不变**：公开评论需 operator 放行「以 `08mamba24` 身份发布」；本猫已具备执行能力（`gh` 已认证，scopes 含 `repo`），草稿见 16:30 UTC 消息，GO 即可发。
+- **② 已发布**（2026-10-28 11:13:30Z，认证 `gh`，以 `08mamba24`）：https://github.com/zts212653/clowder-ai/issues/1397#issuecomment-6467510457 。发布前按 operator 委托砚砚61 的裁决修订旧稿：删除迁移血统编号考据（与 issue 主题无关）；留下条件由「有可路由猫」改为「当前 thread 拥有主体」；明确仅提示词/skill/工具描述层缓解、效果未量化、服务端归属校验仍需实现；不代原报告人 `mindfn` 回应维护者的 PR 归属提问。评论正文与发布后 API 回读一致（作者 `08mamba24`）。
 
 [点点/dsh-v41-flash🐾]
 
