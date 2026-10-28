@@ -12,8 +12,34 @@
  */
 
 import assert from 'node:assert/strict';
-import { afterEach, beforeEach, describe, it } from 'node:test';
+import { cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { after, afterEach, beforeEach, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
+
+// The global-scope sync persists <repo-root>/.cat-cafe state (STARTUP_REPO_ROOT
+// fallback). That file is the lane-wide capability source for every LATER test
+// file in the same shard job — with-test-home unsets the redirect envs, so the
+// binary root IS the checkout — and a leftover without the built-in split
+// servers silently changes their MCP resolution (PR #60 CI: wiring's Gemini
+// callbackEnv lost cat-cafe-collab). Snapshot whatever was there and restore it.
+const globalStateRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../.cat-cafe');
+const snapshot = existsSync(globalStateRoot) ? mkdtempSync(join(tmpdir(), 'drift-global-state-')) : null;
+if (snapshot) cpSync(globalStateRoot, join(snapshot, 'state'), { recursive: true });
+after(() => {
+  if (existsSync(globalStateRoot)) rmSync(globalStateRoot, { recursive: true, force: true });
+  if (snapshot) {
+    cpSync(join(snapshot, 'state'), globalStateRoot, { recursive: true });
+    rmSync(snapshot, { recursive: true, force: true });
+  }
+  assert.equal(
+    existsSync(globalStateRoot),
+    snapshot !== null,
+    'drift resolve leaked a repo-root .cat-cafe state into later test files',
+  );
+});
 
 const { unifiedDriftRoutes } = await import('../dist/routes/drift.js');
 
