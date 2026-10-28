@@ -5,8 +5,8 @@ import { copyNamespaceStability, shellTextPreservesCopyNamespace } from './nativ
 import { contextualGitMutationCandidates } from './native-effect-git-context.mjs';
 import { constrainedGhApiOperation, constrainedGhHelpOperation } from './native-effect-github-classifier.mjs';
 import { hereDocumentView } from './native-effect-heredoc.mjs';
-import { observedGhOperation } from './native-effect-invocation-targets.mjs';
 import { withoutInterpreterSource } from './native-effect-interpreter-source.mjs';
+import { observedGhOperation } from './native-effect-invocation-targets.mjs';
 import {
   explicitCopyRoles,
   isConstrainedLocalMediaObservation,

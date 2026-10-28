@@ -1,7 +1,7 @@
 import { readlinkSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { classifyNativeTarget } from './native-effect-target-classifier.mjs';
 import { shellInvocation } from './native-effect-shell-tokenizer.mjs';
+import { classifyNativeTarget } from './native-effect-target-classifier.mjs';
 
 const API_VALUES = new Map([
   ['--method', 'method'],
@@ -113,8 +113,7 @@ export function constrainedGhApiOperation(raw) {
     if (role === 'method') method = value.toUpperCase();
     if (role === 'field') fields = true;
   }
-  if (!endpoint || !['GET', 'HEAD'].includes(method ?? (fields ? 'POST' : 'GET')))
-    return null;
+  if (!endpoint || !['GET', 'HEAD'].includes(method ?? (fields ? 'POST' : 'GET'))) return null;
   return { effect: 'read', target: `github://api/${endpoint}` };
 }
 
@@ -340,7 +339,9 @@ function resolvePathWithoutDescriptorTraversal(value) {
       return null;
     }
     hops += 1;
-    queue = isAbsolute(link) ? link.split('/') : [...link.split('/'), ...queue];
+    // Both branches keep the unconsumed suffix: an absolute directory alias
+    // (alias -> /abs/named) still owns the rest of the input path after it.
+    queue = [...link.split('/'), ...queue];
     if (isAbsolute(link)) stack = [];
   }
   return stack.length === 0 ? '/' : `/${stack.join('/')}`;

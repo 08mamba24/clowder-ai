@@ -43,7 +43,8 @@ export function segmentView(segment, location, roleSource = segment, namespaceSt
     roles,
     unprovedReadProgram:
       readProgram.unproved ??
-      ((commandName(program?.value) === 'diff' || (commandName(program?.value) === 'gh' && program.value.includes('/'))) &&
+      ((commandName(program?.value) === 'diff' ||
+        (commandName(program?.value) === 'gh' && program.value.includes('/'))) &&
         // A pinned-wrapper invocation that classifies by its delegated argv is a
         // proved program; only an unclassified absolute-path gh stays unproved.
         !observedGhOperation(roleSource, location)),

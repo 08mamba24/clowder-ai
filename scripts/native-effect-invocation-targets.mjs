@@ -43,9 +43,7 @@ export function observedReadProgram(command, cwd, namespaceStable) {
   if (call.redirections?.length || selection?.kind !== 'repository_gh_wrapper') return { unproved: true };
   const named = ['gh', ...call.programOperands].map(quote).join(' ');
   const operation =
-    constrainedGhApiOperation(named) ??
-    constrainedGhPullRequestOperation(named) ??
-    constrainedGhHelpOperation(named);
+    constrainedGhApiOperation(named) ?? constrainedGhPullRequestOperation(named) ?? constrainedGhHelpOperation(named);
   return operation?.effect === 'read' ? { command: named, unproved: false } : {};
 }
 
@@ -67,9 +65,7 @@ export function observedGhOperation(command, cwd) {
   if (selection?.kind !== 'repository_gh_wrapper') return null;
   const named = ['gh', ...call.programOperands].map(quote).join(' ');
   return (
-    constrainedGhApiOperation(named) ??
-    constrainedGhPullRequestOperation(named) ??
-    constrainedGhHelpOperation(named)
+    constrainedGhApiOperation(named) ?? constrainedGhPullRequestOperation(named) ?? constrainedGhHelpOperation(named)
   );
 }
 
