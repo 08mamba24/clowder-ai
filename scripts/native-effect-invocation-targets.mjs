@@ -49,6 +49,30 @@ export function observedReadProgram(command, cwd, namespaceStable) {
   return operation?.effect === 'read' ? { command: named, unproved: false } : {};
 }
 
+/**
+ * The pinned-wrapper publication entry: an absolute-path invocation of the
+ * content-verified guarded gh (program selection proves wrapper, interpreter,
+ * delegate, and git before any text is trusted) normalizes to its delegated
+ * gh argv and classifies with an honest effect — read or remote mutation.
+ * Executing the verified wrapper is never a write of its own file; an
+ * unproved executable under the runtime tree still proves nothing.
+ */
+export function observedGhOperation(command, cwd) {
+  const call = completeDirectInvocation(executedInvocations(command, { cwd }));
+  if (!call || call.name !== 'gh' || !call.program.includes('/')) return null;
+  if (LOAD_ENV.some((name) => process.env[name])) return null;
+  if (call.environment.some((word) => !/^(?:PATH|CAT_CAFE_REAL_GH_PATH)=/.test(word))) return null;
+  if (call.redirections?.length) return null;
+  const selection = proveProgramSelection(call);
+  if (selection?.kind !== 'repository_gh_wrapper') return null;
+  const named = ['gh', ...call.programOperands].map(quote).join(' ');
+  return (
+    constrainedGhApiOperation(named) ??
+    constrainedGhPullRequestOperation(named) ??
+    constrainedGhHelpOperation(named)
+  );
+}
+
 /** Project targets from the original shared reader; retain its code/argv evidence.
  * PATH chooses an executable; observation must prove its selection before it can
  * leave target text. The same observed program may establish a bounded inline

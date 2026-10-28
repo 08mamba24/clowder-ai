@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -9,6 +10,19 @@ import {
   constrainedGhPullRequestOperation,
 } from './native-effect-github-classifier.mjs';
 import { decideShellHookPayload } from './native-effect-shell-decision.mjs';
+
+const GH_WRAPPER = '/Users/yuhan/cat-cafe/cat-cafe-runtime/scripts/guarded-bin/gh';
+const GH_WRAPPER_SHA256 = '5ec246d687ffc330d274f356b40ab6738d7e02e073e645b2c364c2f1b7ad6bb8';
+const pinnedWrapperPresent = () => {
+  try {
+    return (
+      existsSync(GH_WRAPPER) &&
+      createHash('sha256').update(readFileSync(GH_WRAPPER)).digest('hex') === GH_WRAPPER_SHA256
+    );
+  } catch {
+    return false;
+  }
+};
 
 // Provenance: F306 AC-C7 -- canonical gh remote operations must classify with an
 // honest effect and a remote coordinate. Unrecognized shapes keep today's
@@ -49,10 +63,8 @@ test('graphql documents that cannot be proven read-only stay mutations, never re
   }
 });
 
-test('graphql shape contract: file channels, methods, and missing queries stay unrecognized', () => {
+test('graphql shape contract: typed file channels, methods, and missing queries stay unrecognized', () => {
   const shapes = [
-    "gh api graphql -f query=@prepared-query.graphql",
-    "gh api graphql -f query='{ x }' -f body=@discussion-body.md",
     "gh api graphql -f query='{ x }' --method DELETE",
     'gh api graphql',
     "gh api graphql -H 'X: y' -f query='{ x }'",
@@ -60,16 +72,14 @@ test('graphql shape contract: file channels, methods, and missing queries stay u
   for (const shape of shapes) {
     assert.equal(constrainedGhApiOperation(shape), null, shape);
   }
+  // gh's -f/--raw-field has no @file magic: a leading @ stays literal data and
+  // classifies by its (unprovable, therefore mutation) document.
+  assert.equal(constrainedGhApiOperation('gh api graphql -f query=@prepared-query.graphql')?.effect, 'remote_mutation');
 });
 
-test('generated graphql text never classifies', () => {
-  const shapes = [
-    'gh api graphql -f query="$(cat /etc/hosts)"',
-    'gh api graphql -f query=\'{ id } $(echo x)\'',
-  ];
-  for (const shape of shapes) {
-    assert.equal(constrainedGhApiOperation(shape), null, shape);
-  }
+test('real substitution never classifies; quoted $() is literal data', () => {
+  assert.equal(constrainedGhApiOperation('gh api graphql -f query="$(cat /etc/hosts)"'), null);
+  assert.equal(constrainedGhApiOperation("gh api graphql -f query='{ id } $(echo x)'")?.effect, 'read');
 });
 
 test('canonical pr create classifies as a remote mutation on the repository', () => {
@@ -89,7 +99,6 @@ test('pr create shape contract: file channels, browser handoff, and unknown flag
     'gh pr create --repo a/b --web',
     'gh pr create --repo a/b --title t --unknown-flag x',
     'gh pr create --repo a/b --title "$(cat /etc/passwd)"',
-    'gh pr create --repo a/b --title @title.txt',
   ];
   for (const shape of shapes) {
     assert.equal(constrainedGhPullRequestOperation(shape), null, shape);
@@ -101,6 +110,56 @@ test('gh help classifies as a local read of the CLI surface', () => {
   assert.deepEqual(constrainedGhHelpOperation('gh help api'), { effect: 'read', target: 'github://cli/help' });
   assert.equal(constrainedGhHelpOperation('gh help api --flag'), null);
   assert.equal(constrainedGhHelpOperation('gh help ../../etc'), null);
+});
+
+test('a # inside a GraphQL string never hides a mutation (no regex comment deletion)', () => {
+  const multiOperation =
+    "gh api graphql -f operationName=Publish -f query='query Unused { repository(owner:\"#\",name:\"unused\") { id } } mutation Publish { createDiscussion(input:{repositoryId:\"R_1\"}) { discussion { id } } }'";
+  assert.equal(constrainedGhApiOperation(multiOperation)?.effect, 'remote_mutation');
+  const mutationInBody =
+    "gh api graphql -f query='query { search(query:\"mutation tips\",type:DISCUSSION) { nodes { __typename } } }'";
+  assert.equal(constrainedGhApiOperation(mutationInBody)?.effect, 'remote_mutation');
+});
+
+test('static GraphQL variables and Markdown backticks in quoted literals classify', () => {
+  const withVariables =
+    "gh api graphql -f query='query($owner:String!) { repository(owner:$owner) { id } }' -f owner=deepseek-ai";
+  assert.deepEqual(constrainedGhApiOperation(withVariables), { effect: 'read', target: 'github://api/graphql' });
+  const publishShape =
+    "gh api graphql -f query='mutation Publish($repository: ID!, $category: ID!) { createDiscussion(input:{repositoryId:$repository,categoryId:$category}) { discussion { id } } }' -f repository=R_1 -f category=DIC_1 -f body='see `ctx.subagents.runMaintenance` in the docs'";
+  assert.deepEqual(constrainedGhApiOperation(publishShape), {
+    effect: 'remote_mutation',
+    target: 'github://api/graphql',
+  });
+  const rawFieldLongForm = "gh api graphql --raw-field query='{ viewer { login } }'";
+  assert.deepEqual(constrainedGhApiOperation(rawFieldLongForm), { effect: 'read', target: 'github://api/graphql' });
+});
+
+test('typed -F/--field keeps its @file channel closed; raw -f does not gain one', () => {
+  assert.equal(constrainedGhApiOperation('gh api graphql -F query=@prepared.graphql'), null);
+  assert.equal(constrainedGhApiOperation("gh api graphql --field body=@discussion.md -f query='{ x }'"), null);
+});
+
+test('pr create accepts literal $ and Markdown inside quoted titles and bodies', () => {
+  assert.equal(
+    constrainedGhPullRequestOperation("gh pr create --repo a/b --title 'costs $5' --body 'see `ctx` docs'")?.effect,
+    'remote_mutation',
+  );
+});
+
+test('the pinned wrapper entry: verified absolute-path query and mutation both classify', { skip: !pinnedWrapperPresent() }, (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-wrapper-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const query = `${GH_WRAPPER} api graphql -f query='{ viewer { login } }'`;
+  const mutation = `${GH_WRAPPER} api graphql -f query='mutation { createDiscussion(input:{repositoryId:"R_1"}) { discussion { id } } }'`;
+  const readDecision = decideShellHookPayload({ judged: query }, cwd, source);
+  assert.equal(readDecision.decision, 'allow');
+  assert.equal(readDecision.effect, 'read');
+  assert.deepEqual(readDecision.target, { kind: 'remote_repository', value: 'github://api/graphql' });
+  const mutationDecision = decideShellHookPayload({ judged: mutation }, cwd, source);
+  assert.equal(mutationDecision.decision, 'allow');
+  assert.equal(mutationDecision.effect, 'remote_mutation');
+  assert.deepEqual(mutationDecision.target, { kind: 'remote_repository', value: 'github://api/graphql' });
 });
 
 test('recognized REST and PR shapes keep their classification', () => {
@@ -140,7 +199,6 @@ test('decision level: canonical gh remote operations get remote coordinates', (t
 test('decision level: protections survive the new recognition', (t) => {
   const cwd = mkdtempSync(join(tmpdir(), 'gh-classifier-'));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
-  const runtime = '/Users/yuhan/cat-cafe/cat-cafe-runtime/scripts/guarded-bin/gh api graphql -f query=q';
 
   const sanctuaryDelete = decision('rm -rf /Users/yuhan/cat-cafe/cat-cafe-runtime/scripts/x', cwd);
   assert.equal(sanctuaryDelete.decision, 'deny');
@@ -150,11 +208,12 @@ test('decision level: protections survive the new recognition', (t) => {
   assert.equal(sanctuaryWrite.decision, 'deny');
   assert.equal(sanctuaryWrite.reasonCode, 'runtime_sanctuary_mutation');
 
-  // The wrapper's absolute path is a runtime coordinate: plain `gh` (PATH-selected
-  // pinned wrapper) is the canonical entry this classifier recognizes.
-  const wrapperPath = decision(runtime, cwd);
-  assert.equal(wrapperPath.decision, 'deny');
-  assert.equal(wrapperPath.reasonCode, 'protected_target_unparsed');
+  // An absolute path that is NOT the pinned wrapper stays a runtime coordinate:
+  // executing the verified wrapper (proven by content) differs from running an
+  // unproved executable that happens to live under the runtime tree.
+  const unprovedPath = decision('/Users/yuhan/cat-cafe/cat-cafe-runtime/scripts/gh-unverified api graphql -f query=q', cwd);
+  assert.equal(unprovedPath.decision, 'deny');
+  assert.equal(unprovedPath.reasonCode, 'protected_target_unparsed');
 
   // Substitution-generated graphql text never earns a remote read/mutation proof.
   const substituted = decision('gh api graphql -f query="$(cat /etc/hosts)"', cwd);

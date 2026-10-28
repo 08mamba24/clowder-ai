@@ -20,8 +20,10 @@ const API_VALUES = new Map([
 const API_FLAGS = new Set(['--include', '-i', '--paginate', '--silent', '--slurp', '--verbose']);
 
 const GRAPHQL_VALUES = new Map([
-  ['--field', 'field'],
-  ['-f', 'field'],
+  ['-f', 'raw'],
+  ['--raw-field', 'raw'],
+  ['--field', 'typed'],
+  ['-F', 'typed'],
   ['--jq', 'format'],
   ['-q', 'format'],
   ['--template', 'format'],
@@ -31,22 +33,27 @@ const GRAPHQL_VALUES = new Map([
   ['-p', 'preview'],
 ]);
 
-/** Inline literal only: no shell substitution residues, no gh `@file` read channel. */
-const literalInlineValue = (value) => typeof value === 'string' && !/[$`]/.test(value) && !value.startsWith('@');
-
 /**
  * GraphQL documents carry their own semantics, so the HTTP verb says nothing.
- * Provable pure queries (only `query { ... }` selections) read; any mutation or
- * subscription mention, or anything not provable as a query, is a remote
- * mutation — conservative on side effects, never on local protection.
+ * A word-boundary scan over the RAW document is the only mutation detector:
+ * regex comment deletion cannot tell a `#` inside a GraphQL string from a real
+ * comment, and deleting text is exactly how a selected mutation once vanished.
+ * Consequence: `mutation`/`subscription` mentioned anywhere — including string
+ * data or comments — conservatively yields a remote mutation; a document is a
+ * read only when it mentions neither and opens with `query`/`{` verbatim.
  */
 function graphqlDocumentEffect(document) {
-  const withoutComments = document.replace(/#[^\r\n]*/g, ' ');
-  if (/\b(?:mutation|subscription)\b/.test(withoutComments)) return 'remote_mutation';
-  const prologue = withoutComments.trimStart();
+  if (/\b(?:mutation|subscription)\b/.test(document)) return 'remote_mutation';
+  const prologue = document.trimStart();
   return prologue.startsWith('query') || prologue.startsWith('{') ? 'read' : 'remote_mutation';
 }
 
+/**
+ * Completeness of the shell parse already proves every word is literal data:
+ * unquoted `$`, backticks, and `$(...)` make the parse incomplete. Within that
+ * proof only gh's own typed `-F/--field` channel stays closed — its `@file`
+ * prefix would attach local file contents to the request.
+ */
 function constrainedGhGraphqlOperation(tokens) {
   let query;
   for (let index = 3; index < tokens.length; index += 1) {
@@ -59,13 +66,13 @@ function constrainedGhGraphqlOperation(tokens) {
     const role = GRAPHQL_VALUES.get(flag);
     if (!role) return null;
     const value = attached ? token.slice(2) : equals < 0 ? tokens[++index] : token.slice(equals + 1);
-    if (value === undefined || !literalInlineValue(value)) return null;
-    if (role !== 'field') continue;
+    if (value === undefined) return null;
+    if (role !== 'raw' && role !== 'typed') continue;
     const separator = value.indexOf('=');
     if (separator <= 0) return null;
     const name = value.slice(0, separator);
     const body = value.slice(separator + 1);
-    if (body.startsWith('@')) return null;
+    if (role === 'typed' && body.startsWith('@')) return null;
     if (name === 'query') {
       if (query !== undefined) return null;
       query = body;
@@ -262,9 +269,7 @@ function isValidGhFlagValue(flag, value) {
   if (flag === '--limit') return /^[1-9]\d*$/.test(value);
   if (flag === '--state') return ['open', 'closed', 'merged', 'all'].includes(value);
   if (flag === '--match-head-commit') return /^[0-9a-f]{40,64}$/i.test(value);
-  // PR text values are inline literals: no gh `@file` channel, no substitution residue.
-  if (['--title', '-t', '--body', '-b', '--base', '-B', '--head', '-H'].includes(flag)) {
-    return literalInlineValue(value);
-  }
+  // PR text values are literal argv words (the tokenizer already rejected real
+  // substitutions); --body-file stays outside the contract entirely.
   return true;
 }
