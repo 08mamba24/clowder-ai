@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -300,6 +300,61 @@ test('descriptor-namespace body inputs never earn the named-file proof', (t) => 
       `const real = realpathSync('/dev/stdin');\n` +
       `console.log(JSON.stringify({ real, isFile: statSync(real).isFile() }));\n` +
       `if (constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file /dev/stdin') !== null) process.exit(3);\n`,
+  );
+  const fd = openSync(stdinSource, 'r');
+  try {
+    const run = spawnSync(process.execPath, [probe], { stdio: [fd, 'pipe', 'pipe'], encoding: 'utf8' });
+    assert.equal(run.status, 0, `${run.stderr}\n${run.stdout}`);
+  } finally {
+    closeSync(fd);
+  }
+});
+
+test('path resolution keeps intermediate evidence: descriptor traversal never gains the named-file proof', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-r7-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const backing = join(cwd, 'backing.md');
+  writeFileSync(backing, 'synthetic ordinary backing file\n');
+  // Linux models: a symlink whose target IS a descriptor path, and a literal
+  // dot-segment form that defeats anchored regex checks.
+  const link = join(cwd, 'body-link.md');
+  symlinkSync('/proc/self/fd/0', link);
+  for (const input of [link, '/proc/self/./fd/0', '/proc/1234/fd/9']) {
+    assert.equal(
+      constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t --body-file ${input}`),
+      null,
+      input,
+    );
+  }
+  // Ordinary symlink topologies keep proving: absolute chain and a `..` target.
+  const nested = join(cwd, 'nested');
+  mkdirSync(nested);
+  const shared = join(cwd, 'shared-body.md');
+  writeFileSync(shared, 'shared body\n');
+  symlinkSync(shared, join(nested, 'direct.md'));
+  symlinkSync('../shared-body.md', join(nested, 'via-parent.md'));
+  symlinkSync(join(nested, 'direct.md'), join(cwd, 'chain.md'));
+  for (const good of [join(nested, 'direct.md'), join(nested, 'via-parent.md'), join(cwd, 'chain.md')]) {
+    assert.equal(
+      constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t --body-file ${good}`)?.effect,
+      'remote_mutation',
+      good,
+    );
+  }
+});
+
+test('real Linux descriptor traversal with a regular-file stdin child', { skip: process.platform !== 'linux' }, (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-r7-linux-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const stdinSource = join(cwd, 'stdin-source.md');
+  writeFileSync(stdinSource, '# stdin-backed\n');
+  const probe = join(cwd, 'probe.mjs');
+  const classifierUrl = pathToFileURL(join(import.meta.dirname, 'native-effect-github-classifier.mjs')).href;
+  writeFileSync(
+    probe,
+    `import { constrainedGhPullRequestOperation } from '${classifierUrl}';\n` +
+      `if (constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file /proc/self/fd/0') !== null) process.exit(3);\n` +
+      `if (constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file /dev/stdin') !== null) process.exit(4);\n`,
   );
   const fd = openSync(stdinSource, 'r');
   try {

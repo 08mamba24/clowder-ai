@@ -1,5 +1,5 @@
-import { realpathSync, statSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { readlinkSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join } from 'node:path';
 import { classifyNativeTarget } from './native-effect-target-classifier.mjs';
 import { shellInvocation } from './native-effect-shell-tokenizer.mjs';
 
@@ -300,17 +300,62 @@ function normalizeGhFlag(flag) {
 const DESCRIPTOR_NAMESPACE_PATH = /^(?:\/dev\/(?:fd\/\d+|stdin|stdout|stderr)|\/proc\/(?:self\/fd|\d+\/fd)\/\d+)$/;
 
 /**
+ * Resolve <value> hop by hop — readlink never follows — checking the
+ * descriptor namespace at EVERY accumulated component, so a descriptor hidden
+ * mid-chain can never surface on the far side as an ordinary-looking pathname:
+ * on Linux /proc/<pid>/fd/N is itself a symlink to the open file (a realpath
+ * would follow it to the backing name), and dot segments such as
+ * /proc/self/./fd/0 defeat anchored literal checks. Lexical '..' popping is
+ * physical here: every component beneath it was resolved, not assumed.
+ * Returns the proven final path, or null whenever the topology cannot be
+ * proven (missing component, unreadable link, hop limit) — conservative
+ * unknown, never a speculative fallback.
+ */
+function resolvePathWithoutDescriptorTraversal(value) {
+  let pending = value;
+  for (let hops = 0; hops <= 24; hops += 1) {
+    const parts = pending.split('/').filter((part) => part !== '' && part !== '.');
+    let resolved = '';
+    let restarted = false;
+    for (let index = 0; index < parts.length; index += 1) {
+      const part = parts[index];
+      if (part === '..') {
+        resolved = resolved.slice(0, resolved.lastIndexOf('/'));
+        continue;
+      }
+      resolved = `${resolved}/${part}`;
+      if (DESCRIPTOR_NAMESPACE_PATH.test(resolved)) return null;
+      let link;
+      try {
+        link = readlinkSync(resolved);
+      } catch (error) {
+        if (error.code === 'EINVAL') continue;
+        return null;
+      }
+      const remaining = parts.slice(index + 1);
+      const target = isAbsolute(link) ? link : join(dirname(resolved), link);
+      pending = [target, ...remaining].join('/');
+      restarted = true;
+      break;
+    }
+    if (!restarted) return resolved;
+  }
+  return null;
+}
+
+/**
  * Contract for `gh pr create --body-file <path>` — one local read feeding a
  * remote publication, proven as:
- * 1. an ordinary NAMED file that exists on disk — the literal path and its
- *    resolved realpath both classify as ordinary in the guard's target model
+ * 1. an ordinary NAMED file that exists on disk — the literal path and the
+ *    fully traversed resolution both classify as ordinary in the target model
  *    (any cat-cafe-runtime component, runtime branch, or Redis 6399 refuses);
  * 2. never a process stdin/handle/descriptor origin — descriptor-namespace
- *    paths are refused as both the literal value and a symlink destination,
- *    because isFile() describes the backing object, not the input's origin;
- * 3. unresolvable when resolution fails (missing file, dangling symlink) —
- *    no speculative fallback for not-yet-created inputs.
- * The resolved node must additionally be a regular file, so devices and other
+ *    paths are refused as the literal value AND at every intermediate hop of
+ *    the resolution, because they name this process's descriptors by
+ *    construction; a symlink chain through one is refused with it;
+ * 3. unresolvable when resolution fails (missing component, dangling symlink,
+ *    hop limit) — no speculative fallback for not-yet-created inputs.
+ * The proven node must additionally be a regular file, so devices and other
  * node types are excluded by type rather than by name. Relative paths and
  * gh's `-` stdin form stay unrecognized, keeping the conservative path.
  */
@@ -319,14 +364,8 @@ function isReadableOrdinaryBodyFile(value) {
   if (DESCRIPTOR_NAMESPACE_PATH.test(value)) return false;
   const kind = (path) => classifyNativeTarget(path, undefined, 'read').kind;
   if (kind(value) !== 'ordinary') return false;
-  let real;
-  try {
-    real = realpathSync(value);
-  } catch {
-    return false;
-  }
-  if (DESCRIPTOR_NAMESPACE_PATH.test(real)) return false;
-  if (kind(real) !== 'ordinary') return false;
+  const real = resolvePathWithoutDescriptorTraversal(value);
+  if (real === null || kind(real) !== 'ordinary') return false;
   try {
     return statSync(real).isFile();
   } catch {
