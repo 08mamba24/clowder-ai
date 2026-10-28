@@ -1,3 +1,6 @@
+import { realpathSync } from 'node:fs';
+import { dirname, isAbsolute } from 'node:path';
+import { classifyNativeTarget } from './native-effect-target-classifier.mjs';
 import { shellInvocation } from './native-effect-shell-tokenizer.mjs';
 
 const API_VALUES = new Map([
@@ -212,6 +215,8 @@ function ghPullRequestFlagContract(subcommand) {
         '-t',
         '--body',
         '-b',
+        '--body-file',
+        '-F',
         '--base',
         '-B',
         '--head',
@@ -269,13 +274,45 @@ function normalizeGhFlag(flag) {
   return flag;
 }
 
+/**
+ * `gh pr create --body-file <path>` reads one local file into the PR body — a
+ * remote publication fed by a single local read. The guard's own target model,
+ * not a name list, decides which files are ordinary: the literal path and the
+ * realpath of its nearest existing ancestor must both classify as ordinary.
+ * Protected coordinates (any cat-cafe-runtime component, runtime branches,
+ * Redis 6399), a symlink that reaches one — even dangling — a relative path
+ * this classifier cannot resolve, and gh's `-` stdin form all stay
+ * unrecognized and keep the conservative path.
+ */
+function isReadableOrdinaryBodyFile(value) {
+  if (!isAbsolute(value) || value === '-') return false;
+  const kind = (path) => classifyNativeTarget(path, undefined, 'read').kind;
+  if (kind(value) !== 'ordinary') return false;
+  // The nearest existing ancestor pins the real coordinates even when the file
+  // does not exist yet; a future file created through a protected symlink is a
+  // protected file, not an unborn ordinary one.
+  let current = value;
+  for (;;) {
+    try {
+      const real = realpathSync(current);
+      return real === current ? true : kind(real) === 'ordinary';
+    } catch (error) {
+      if (error.code !== 'ENOENT') return false;
+      const parent = dirname(current);
+      if (parent === current) return false;
+      current = parent;
+    }
+  }
+}
+
 function isValidGhFlagValue(flag, value) {
   if (flag === '--repo') return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value);
   if (flag === '--interval') return /^\d+$/.test(value);
   if (flag === '--limit') return /^[1-9]\d*$/.test(value);
   if (flag === '--state') return ['open', 'closed', 'merged', 'all'].includes(value);
   if (flag === '--match-head-commit') return /^[0-9a-f]{40,64}$/i.test(value);
+  if (flag === '--body-file') return isReadableOrdinaryBodyFile(value);
   // PR text values are literal argv words (the tokenizer already rejected real
-  // substitutions); --body-file stays outside the contract entirely.
+  // substitutions); the file-backed body is governed by isReadableOrdinaryBodyFile.
   return true;
 }

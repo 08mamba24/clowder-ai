@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -172,6 +172,60 @@ test('unquoted brace and glob expansion never rewrites the classified PR argv', 
     constrainedGhPullRequestOperation("gh pr create --repo a/b --body '{safe,not-a-flag}' --title 'v1.*'")?.effect,
     'remote_mutation',
   );
+});
+
+test('pr create --body-file: the standard file-backed body path classifies by the target model', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const ordinary = join(cwd, 'PR_BODY.md');
+  writeFileSync(ordinary, '# change\n\nmulti-line body\n');
+  const protectedText = join(cwd, 'cat-cafe-runtime', 'private.md');
+  const ordinarySymlink = join(cwd, 'link.md');
+  symlinkSync(ordinary, ordinarySymlink);
+  const runtimeSymlink = join(cwd, 'runtime-link.md');
+  symlinkSync('/Users/yuhan/cat-cafe/cat-cafe-runtime/scripts', runtimeSymlink);
+
+  assert.deepEqual(
+    constrainedGhPullRequestOperation(
+      `gh pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair --body-file ${ordinary}`,
+    ),
+    { effect: 'remote_mutation', target: 'github://08mamba24/clowder-ai/pulls' },
+  );
+  assert.equal(
+    constrainedGhPullRequestOperation(
+      `gh pr create --repo a/b --title t --body-file /Users/yuhan/cat-cafe/cat-cafe-runtime/x.md`,
+    ),
+    null,
+  );
+  assert.equal(constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t --body-file ${protectedText}`), null);
+  assert.equal(constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t --body-file ${runtimeSymlink}/gh`), null);
+  assert.equal(
+    constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t --body-file ${runtimeSymlink}/guarded-bin/gh`),
+    null,
+  );
+  assert.equal(constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file -'), null);
+  assert.equal(constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file PR_BODY.md'), null);
+  assert.equal(
+    constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t --body-file ${ordinarySymlink}`)?.effect,
+    'remote_mutation',
+  );
+});
+
+test('decision level: the pinned wrapper publishes via an ordinary body file and still refuses protected inputs', { skip: !pinnedWrapperPresent() }, (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-decision-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const ordinary = join(cwd, 'PR_BODY.md');
+  writeFileSync(ordinary, '# change\n');
+  const protectedFile = join(cwd, 'cat-cafe-runtime', 'private.md');
+  const shape = (file) =>
+    `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair --body-file '${file}'`;
+  const allowed = decideShellHookPayload({ judged: shape(ordinary) }, cwd, source);
+  assert.equal(allowed.decision, 'allow');
+  assert.equal(allowed.effect, 'remote_mutation');
+  assert.deepEqual(allowed.target, { kind: 'remote_repository', value: 'github://08mamba24/clowder-ai/pulls' });
+  const refused = decideShellHookPayload({ judged: shape(protectedFile) }, cwd, source);
+  assert.equal(refused.decision, 'deny');
+  assert.equal(refused.reasonCode, 'protected_target_unparsed');
 });
 
 test('recognized REST and PR shapes keep their classification', () => {
