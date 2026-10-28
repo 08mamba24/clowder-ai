@@ -162,6 +162,18 @@ test('the pinned wrapper entry: verified absolute-path query and mutation both c
   assert.deepEqual(mutationDecision.target, { kind: 'remote_repository', value: 'github://api/graphql' });
 });
 
+test('unquoted brace and glob expansion never rewrites the classified PR argv', () => {
+  const runtime = '/Users/yuhan/cat-cafe/cat-cafe-runtime';
+  assert.equal(constrainedGhPullRequestOperation(`gh pr create --body {safe,--body-file=${runtime}/body.md}`), null);
+  assert.equal(constrainedGhPullRequestOperation(`gh pr create --template ${runtime}/*`), null);
+  assert.equal(constrainedGhPullRequestOperation(`gh pr create --body ${runtime}/*`), null);
+  // Quoted braces/globs are literal data and stay legal.
+  assert.equal(
+    constrainedGhPullRequestOperation("gh pr create --repo a/b --body '{safe,not-a-flag}' --title 'v1.*'")?.effect,
+    'remote_mutation',
+  );
+});
+
 test('recognized REST and PR shapes keep their classification', () => {
   assert.deepEqual(constrainedGhApiOperation('gh api user --jq .login'), {
     effect: 'read',

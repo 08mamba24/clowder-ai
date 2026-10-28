@@ -1,4 +1,4 @@
-import { shellInvocation, tokenizeSimpleShellCommand } from './native-effect-shell-tokenizer.mjs';
+import { shellInvocation } from './native-effect-shell-tokenizer.mjs';
 
 const API_VALUES = new Map([
   ['--method', 'method'],
@@ -136,8 +136,14 @@ export function isConstrainedGhPullRequestRead(raw) {
  * task custody, review, merge-gate, and operator boundaries remain authoritative.
  */
 export function constrainedGhPullRequestOperation(raw) {
-  const tokens = tokenizeSimpleShellCommand(raw);
-  if (!tokens || tokens[0] !== 'gh' || tokens[1] !== 'pr') return null;
+  // The PR entry shares the graphql/api/help proof standard: shellInvocation
+  // completeness means every argv word is literal. A brace or glob word is not
+  // literal (the shell rewrites the argv it came from), so the classified shape
+  // can never diverge from the executed one; quoted braces/globs stay data.
+  const parsed = shellInvocation(raw);
+  if (!parsed.complete || parsed.redirections.length) return null;
+  const tokens = parsed.words.map(({ value }) => value);
+  if (tokens[0] !== 'gh' || tokens[1] !== 'pr') return null;
   const invocation = parseGhPullRequestInvocation(tokens);
   if (!invocation) return null;
   const flags = parseConstrainedGhFlags(
