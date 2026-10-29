@@ -20,6 +20,7 @@ import {
   constrainedGhApiOperation,
   constrainedGhHelpOperation,
   constrainedGhPullRequestOperation,
+  isDescriptorNamespacePath,
 } from '../../../scripts/native-effect-github-classifier.mjs';
 import { decideShellHookPayload } from '../../../scripts/native-effect-shell-decision.mjs';
 
@@ -409,7 +410,11 @@ test('real Linux descriptor traversal with a regular-file stdin child', { skip: 
       `const link = join(process.env.PROBE_DIR, 'link-to-fd.md');\n` +
       `symlinkSync('/proc/self/fd/0', link);\n` +
       `if (constrainedGhPullRequestOperation(\`gh pr create --repo a/b --title t --body-file \${link}\`) !== null) process.exit(5);\n` +
-      `if (constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file /proc/self/./fd/0') !== null) process.exit(6);\n`,
+      `if (constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file /proc/self/./fd/0') !== null) process.exit(6);\n` +
+      `if (constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file /proc/thread-self/fd/0') !== null) process.exit(7);\n` +
+      `import { readdirSync } from 'node:fs';\n` +
+      `const tid = readdirSync('/proc/self/task')[0];\n` +
+      `if (constrainedGhPullRequestOperation(\`gh pr create --repo a/b --title t --body-file /proc/self/task/\${tid}/fd/0\`) !== null) process.exit(8);\n`,
   );
   const fd = openSync(stdinSource, 'r');
   try {
@@ -457,6 +462,56 @@ test('absolute directory-alias symlinks keep the unconsumed path suffix', (t) =>
       'remote_mutation',
       input,
     );
+  }
+});
+
+test('REST typed fields carrying local file or stdin inputs never earn the remote-read fast path', () => {
+  const refusals = [
+    'gh api repos/example/fixture/issues --method GET -F marker=@/etc/hosts',
+    'gh api repos/example/fixture/issues --method GET --field marker=@-',
+    'gh api repos/example/fixture/issues --method GET --field=name=@/etc/hosts',
+    'gh api repos/example/fixture/issues --method GET -F @/etc/hosts',
+    'gh api repos/example/fixture/issues --method GET -Fmarker=@/etc/hosts',
+  ];
+  for (const shape of refusals) {
+    assert.equal(constrainedGhApiOperation(shape), null, shape);
+  }
+  // Positives stay: raw fields are literal strings; typed values without @ are data.
+  assert.equal(
+    constrainedGhApiOperation('gh api repos/example/fixture/issues --method GET -f raw=@/etc/hosts')?.effect,
+    'read',
+  );
+  assert.equal(constrainedGhApiOperation('gh api repos/example/fixture/issues --method GET -F num=3')?.effect, 'read');
+  assert.equal(constrainedGhApiOperation('gh api repos/example/fixture/issues')?.effect, 'read');
+});
+
+test('decision level: REST typed @ inputs are not allowed as pure remote reads', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-rest-typed-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const decision = decideShellHookPayload(
+    { judged: 'gh api repos/example/fixture/issues --method GET -F marker=@/etc/hosts' },
+    cwd,
+    source,
+  );
+  assert.ok(
+    !(decision.decision === 'allow' && decision.effect === 'read' && decision.target.kind === 'remote_repository'),
+  );
+});
+
+test('descriptor namespace predicate covers Linux thread and task fd paths', () => {
+  for (const path of [
+    '/proc/thread-self/fd/0',
+    '/proc/self/task/1234/fd/0',
+    '/proc/1234/task/5678/fd/9',
+    '/proc/self/fd/0',
+    '/proc/1234/fd/3',
+    '/dev/fd/3',
+    '/dev/stdin',
+  ]) {
+    assert.ok(isDescriptorNamespacePath(path), path);
+  }
+  for (const ordinary of ['/tmp/thread-self/fd/0', '/proc/self/status', '/etc/hosts']) {
+    assert.ok(!isDescriptorNamespacePath(ordinary), ordinary);
   }
 });
 

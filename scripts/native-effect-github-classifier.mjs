@@ -111,7 +111,17 @@ export function constrainedGhApiOperation(raw) {
     const value = attached ? token.slice(2) : equals < 0 ? tokens[++index] : token.slice(equals + 1);
     if (value === undefined) return null;
     if (role === 'method') method = value.toUpperCase();
-    if (role === 'field') fields = true;
+    if (role === 'field') {
+      // gh's typed -F/--field channel reads local files (@path) and stdin (@-)
+      // into the request; the REST read fast path must not certify a command
+      // with unproved local inputs. Raw -f/--raw-field values stay literal.
+      if (flag === '--field' || flag === '-F') {
+        const separator = value.indexOf('=');
+        const body = separator < 0 ? value : value.slice(separator + 1);
+        if (body.startsWith('@')) return null;
+      }
+      fields = true;
+    }
   }
   if (!endpoint || !['GET', 'HEAD'].includes(method ?? (fields ? 'POST' : 'GET'))) return null;
   return { effect: 'read', target: `github://api/${endpoint}` };
@@ -296,7 +306,13 @@ function normalizeGhFlag(flag) {
  * named-file proof — even when the descriptor happens to be backed by a
  * regular file.
  */
-const DESCRIPTOR_NAMESPACE_PATH = /^(?:\/dev\/(?:fd\/\d+|stdin|stdout|stderr)|\/proc\/(?:self\/fd|\d+\/fd)\/\d+)$/;
+const DESCRIPTOR_NAMESPACE_PATH =
+  /^(?:\/dev\/(?:fd\/\d+|stdin|stdout|stderr)|\/proc\/(?:self|thread-self|\d+)(?:\/task\/\d+)?\/fd\/\d+)$/;
+
+/** The descriptor-namespace membership test, exported for cross-platform regression:
+ * Linux thread/task forms (/proc/thread-self, /proc/PID/task/TID) cannot be
+ * exercised from a darwin host, so the boundary itself is unit-tested. */
+export const isDescriptorNamespacePath = (value) => DESCRIPTOR_NAMESPACE_PATH.test(value);
 
 /**
  * Resolve <value> with kernel-equivalent sequencing: raw segments (including
