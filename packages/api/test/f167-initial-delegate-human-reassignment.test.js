@@ -34,7 +34,9 @@ const { canonicalizeActionTerminalPredicate } = await import(
 const { claimActionSuccessor, recordActionSuccessorOutcome, replaceActionSuccessor } = await import(
   '../dist/domains/ball-custody/action-successor-state-machine.js'
 );
-const { resolveTaskExecutionBinding } = await import('../dist/domains/growing/EntrustedWorkTaskExecutionBinding.js');
+const { resolveTaskExecutionBinding } = await import(
+  '../dist/domains/growing/execution/EntrustedWorkTaskExecutionBinding.js'
+);
 
 function initialLease({ terminal = true } = {}) {
   const terminalPredicate = canonicalizeActionTerminalPredicate({

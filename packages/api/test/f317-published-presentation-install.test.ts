@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { createCatId } from '@cat-cafe/shared';
 import { validateCompanionReply } from '@clowder-ai/plugin-contract-beta27';
 import { createCompanionClient } from '@clowder-ai/plugin-sdk-beta23/companion';
-import { LivePresentationObservations } from '../src/domains/concierge/live/live-presentation-observations.js';
+import { LivePresentationObservations } from '../src/domains/concierge/live/observations/live-presentation-observations.js';
 import { PUBLISHED_COMPANION_PRESENTATION } from '../src/domains/plugin/desktop-window-runtime/published-companion-v2.js';
 import { FilePluginInventoryStore } from '../src/domains/plugin/host-inventory/stores.js';
 import { modernCompanionInstallFixture } from './helpers/f317-companion-install-fixture.js';

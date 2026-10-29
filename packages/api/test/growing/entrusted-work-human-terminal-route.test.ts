@@ -4,8 +4,8 @@ import type { EntrustedWorkTaskExecutionV1, TaskItem } from '@cat-cafe/shared';
 import Fastify from 'fastify';
 import { MessageStore } from '../../src/domains/cats/services/stores/ports/MessageStore.js';
 import { TaskStore } from '../../src/domains/cats/services/stores/ports/TaskStore.js';
-import { EntrustedWorkHumanTerminalService } from '../../src/domains/growing/EntrustedWorkHumanTerminalService.js';
 import { EntrustedWorkLifecycleService } from '../../src/domains/growing/EntrustedWorkLifecycleService.js';
+import { EntrustedWorkHumanTerminalService } from '../../src/domains/growing/human-terminal/EntrustedWorkHumanTerminalService.js';
 import type { SocketManager } from '../../src/infrastructure/websocket/index.js';
 import { tasksRoutes } from '../../src/routes/tasks.js';
 

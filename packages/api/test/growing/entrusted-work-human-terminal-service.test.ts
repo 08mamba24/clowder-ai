@@ -3,12 +3,12 @@ import { describe, test } from 'node:test';
 import type { EntrustedWorkTaskExecutionStopV1, EntrustedWorkTaskExecutionV1, TaskItem } from '@cat-cafe/shared';
 import { type IMessageStore, MessageStore } from '../../src/domains/cats/services/stores/ports/MessageStore.js';
 import { TaskStore } from '../../src/domains/cats/services/stores/ports/TaskStore.js';
+import { EntrustedWorkLifecycleService } from '../../src/domains/growing/EntrustedWorkLifecycleService.js';
+import type { EntrustedWorkTaskExecutionInspection } from '../../src/domains/growing/execution/EntrustedWorkTaskExecutionService.js';
 import {
   EntrustedWorkHumanTerminalError,
   EntrustedWorkHumanTerminalService,
-} from '../../src/domains/growing/EntrustedWorkHumanTerminalService.js';
-import { EntrustedWorkLifecycleService } from '../../src/domains/growing/EntrustedWorkLifecycleService.js';
-import type { EntrustedWorkTaskExecutionInspection } from '../../src/domains/growing/EntrustedWorkTaskExecutionService.js';
+} from '../../src/domains/growing/human-terminal/EntrustedWorkHumanTerminalService.js';
 
 const decisionId = 'b5e80c62-2a8c-4554-8e72-9cf22ac0214a';
 

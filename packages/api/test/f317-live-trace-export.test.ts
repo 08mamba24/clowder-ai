@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { NodeTracerProvider, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-node';
-import { LiveResponseTrace } from '../src/domains/concierge/live/live-response-trace.js';
+import { LiveResponseTrace } from '../src/domains/concierge/live/observations/live-response-trace.js';
 import { LocalTraceExporter } from '../src/infrastructure/telemetry/local-trace-exporter.js';
 import { LocalTraceStore } from '../src/infrastructure/telemetry/local-trace-store.js';
 import { RedactingSpanProcessor } from '../src/infrastructure/telemetry/redactor.js';

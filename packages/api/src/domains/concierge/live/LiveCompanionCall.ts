@@ -31,14 +31,14 @@ import { buildLiveMcpConfig } from './live-mcp-config.js';
 import { LiveNativeActivity, liveNativeToolsReady } from './live-native-activity.js';
 import { LiveNativeCredentials } from './live-native-credentials.js';
 import { LiveNativeWork } from './live-native-work.js';
+import { LiveSharedScreen } from './live-shared-screen.js';
 import {
   type LivePresentationObservation,
   LivePresentationObservations,
   type LivePresentationReply,
-} from './live-presentation-observations.js';
-import { LiveResponseTrace } from './live-response-trace.js';
-import { LiveSharedScreen } from './live-shared-screen.js';
-import { LiveSubexecutionLog } from './live-subexecution-log.js';
+} from './observations/live-presentation-observations.js';
+import { LiveResponseTrace } from './observations/live-response-trace.js';
+import { LiveSubexecutionLog } from './observations/live-subexecution-log.js';
 
 export type { LiveCompanionCallOptions } from './live-call-options.js';
 export class LiveCompanionCall implements CodexLiveRunPort {

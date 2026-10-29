@@ -11,7 +11,7 @@ import {
   entrustedWorkTaskExecutionStopV1Schema,
   entrustedWorkTaskExecutionV1Schema,
 } from '@cat-cafe/shared';
-import type { AppendMessageInput, StoredMessage } from '../cats/services/stores/ports/MessageStore.js';
+import type { AppendMessageInput, StoredMessage } from '../../cats/services/stores/ports/MessageStore.js';
 
 export interface HumanDecisionCoordinates {
   readonly actorRef: string;

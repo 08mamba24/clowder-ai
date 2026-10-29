@@ -1,6 +1,6 @@
 import type { TaskItem } from '@cat-cafe/shared';
-import type { ActionSuccessorLease } from '../ball-custody/action-successor-state-machine.js';
-import type { InvocationRecord } from '../cats/services/stores/ports/InvocationRecordStore.js';
+import type { ActionSuccessorLease } from '../../ball-custody/action-successor-state-machine.js';
+import type { InvocationRecord } from '../../cats/services/stores/ports/InvocationRecordStore.js';
 
 export interface ExactTaskExecutionControl {
   readonly parentInvocationId: string;

@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { createCatId } from '@cat-cafe/shared';
-import type { CodexLiveNativeClient } from '../../../cats/services/agents/providers/CodexLiveRunPort.js';
-import type { IMessageStore } from '../../../cats/services/stores/ports/MessageStore.js';
-import type { ConciergeThreadService } from '../../ConciergeThreadService.js';
-import type { LiveCompanionCall } from '../LiveCompanionCall.js';
-import type { LiveCompanionSessions } from '../LiveCompanionSessions.js';
+import type { CodexLiveNativeClient } from '../../../../cats/services/agents/providers/CodexLiveRunPort.js';
+import type { IMessageStore } from '../../../../cats/services/stores/ports/MessageStore.js';
+import type { ConciergeThreadService } from '../../../ConciergeThreadService.js';
+import type { LiveCompanionCall } from '../../LiveCompanionCall.js';
+import type { LiveCompanionSessions } from '../../LiveCompanionSessions.js';
+import type { OwnerPageActionService } from '../owner-page-action-service.js';
 import { assertOwnerLocalNoteLabIsolation, type OwnerLocalNoteLabOptions } from './owner-local-note-lab.js';
-import type { OwnerPageActionService } from './owner-page-action-service.js';
 
 const NATIVE_THREAD_ID = 'f317_local_note_simulation';
 const SIMULATION_MS = 15 * 60_000;

@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import './helpers/setup-cat-registry.js';
 import Fastify from 'fastify';
-import { resolveTaskExecutionBinding } from '../dist/domains/growing/EntrustedWorkTaskExecutionBinding.js';
-import { EntrustedWorkTaskExecutionService } from '../dist/domains/growing/EntrustedWorkTaskExecutionService.js';
+import { resolveTaskExecutionBinding } from '../dist/domains/growing/execution/EntrustedWorkTaskExecutionBinding.js';
+import { EntrustedWorkTaskExecutionService } from '../dist/domains/growing/execution/EntrustedWorkTaskExecutionService.js';
 import {
   CHILD_CAT,
   DEV_SCOPE,

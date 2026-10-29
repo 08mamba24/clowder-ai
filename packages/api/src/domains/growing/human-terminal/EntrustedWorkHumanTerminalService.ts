@@ -13,8 +13,13 @@ import type {
   IdempotentAppendResult,
   IMessageStore,
   StoredMessage,
-} from '../cats/services/stores/ports/MessageStore.js';
-import type { ITaskStore } from '../cats/services/stores/ports/TaskStore.js';
+} from '../../cats/services/stores/ports/MessageStore.js';
+import type { ITaskStore } from '../../cats/services/stores/ports/TaskStore.js';
+import { EntrustedWorkLifecycleError, type EntrustedWorkLifecycleService } from '../EntrustedWorkLifecycleService.js';
+import type {
+  EntrustedWorkTaskExecutionInspection,
+  EntrustedWorkTaskExecutionService,
+} from '../execution/EntrustedWorkTaskExecutionService.js';
 import { EntrustedWorkHumanTerminalError } from './EntrustedWorkHumanTerminalError.js';
 import {
   buildHumanTerminalClosure,
@@ -27,11 +32,6 @@ import {
   parseMatchingHumanTerminalReceipt,
   satisfiedDecisionStop,
 } from './EntrustedWorkHumanTerminalReceipt.js';
-import { EntrustedWorkLifecycleError, type EntrustedWorkLifecycleService } from './EntrustedWorkLifecycleService.js';
-import type {
-  EntrustedWorkTaskExecutionInspection,
-  EntrustedWorkTaskExecutionService,
-} from './EntrustedWorkTaskExecutionService.js';
 
 export type { EntrustedWorkHumanTerminalErrorCode } from './EntrustedWorkHumanTerminalError.js';
 export { EntrustedWorkHumanTerminalError } from './EntrustedWorkHumanTerminalError.js';

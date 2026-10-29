@@ -6,7 +6,7 @@ import { ThreadChatHistoryAdmissionProvider } from '@/components/thread-chat/Thr
 import { useChatStore } from '@/stores/chatStore';
 import { apiFetch } from '@/utils/api-client';
 import { MessageStore } from '../../../../api/src/domains/cats/services/stores/ports/MessageStore.js';
-import { LiveSubexecutionLog } from '../../../../api/src/domains/concierge/live/live-subexecution-log.js';
+import { LiveSubexecutionLog } from '../../../../api/src/domains/concierge/live/observations/live-subexecution-log.js';
 import { useChatHistory } from '../useChatHistory';
 
 vi.mock('@/utils/api-client', () => ({ apiFetch: vi.fn() }));

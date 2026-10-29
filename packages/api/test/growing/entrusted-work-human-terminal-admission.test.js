@@ -11,9 +11,9 @@ import { QueueProcessor } from '../../dist/domains/cats/services/agents/invocati
 import { InvocationRecordStore } from '../../dist/domains/cats/services/stores/ports/InvocationRecordStore.js';
 import { MessageStore } from '../../dist/domains/cats/services/stores/ports/MessageStore.js';
 import { TaskStore } from '../../dist/domains/cats/services/stores/ports/TaskStore.js';
-import { EntrustedWorkHumanTerminalService } from '../../dist/domains/growing/EntrustedWorkHumanTerminalService.js';
 import { EntrustedWorkLifecycleService } from '../../dist/domains/growing/EntrustedWorkLifecycleService.js';
-import { EntrustedWorkTaskExecutionService } from '../../dist/domains/growing/EntrustedWorkTaskExecutionService.js';
+import { EntrustedWorkTaskExecutionService } from '../../dist/domains/growing/execution/EntrustedWorkTaskExecutionService.js';
+import { EntrustedWorkHumanTerminalService } from '../../dist/domains/growing/human-terminal/EntrustedWorkHumanTerminalService.js';
 
 function deferred() {
   let resolve;

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { createCdpPageActionPort } from '../src/domains/concierge/action/CdpPageActionPort.ts';
-import { maybeStartOwnerLocalNoteLab } from '../src/domains/concierge/live/host/owner-local-note-lab.ts';
+import { maybeStartOwnerLocalNoteLab } from '../src/domains/concierge/live/host/local-note/owner-local-note-lab.ts';
 
 const projectRoot = resolve('../..');
 const isolated = {
@@ -57,7 +57,9 @@ test('an isolated Host starts one exact fixture and supplies its own browser con
 });
 
 test('resource cleanup starts both closes, bounds a hang, and remains single-flight', async () => {
-  const { createOwnerLocalNoteCleanup } = await import('../src/domains/concierge/live/host/owner-local-note-lab.ts');
+  const { createOwnerLocalNoteCleanup } = await import(
+    '../src/domains/concierge/live/host/local-note/owner-local-note-lab.ts'
+  );
   assert.equal(typeof createOwnerLocalNoteCleanup, 'function');
   let browserCloses = 0;
   let serverCloses = 0;

@@ -2,12 +2,12 @@ import type { EntrustedWorkTaskExecutionV1, TaskItem } from '@cat-cafe/shared';
 import type {
   ApprovedDelegate,
   TaskApprovedDelegateProvider,
-} from '../ball-custody/action-subject-delegate-contract.js';
+} from '../../ball-custody/action-subject-delegate-contract.js';
 import {
   currentDelegateLineageGenerationHasExactEntry,
   delegateLineageHasProposalAnchor,
-} from '../ball-custody/action-successor-delegate-lineage.js';
-import type { ActionSuccessorLease } from '../ball-custody/action-successor-state-machine.js';
+} from '../../ball-custody/action-successor-delegate-lineage.js';
+import type { ActionSuccessorLease } from '../../ball-custody/action-successor-state-machine.js';
 
 export type TaskExecutionBinding = NonNullable<Extract<EntrustedWorkTaskExecutionV1, { state: 'running' }>['binding']>;
 export type TaskExecutionBindingResolution =

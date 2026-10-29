@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { TaskItem } from '@cat-cafe/shared';
-import { resolveEntrustedWorkTaskRefFromSource } from '../../src/domains/growing/EntrustedWorkRuntimeInteractionBinding.js';
+import { resolveEntrustedWorkTaskRefFromSource } from '../../src/domains/growing/execution/EntrustedWorkRuntimeInteractionBinding.js';
 
 const now = 1_777_000_000_000;
 

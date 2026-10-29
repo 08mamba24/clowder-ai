@@ -1,10 +1,13 @@
 import type { EntrustedWorkTaskExecutionStopV1, EntrustedWorkTaskExecutionV1, TaskItem } from '@cat-cafe/shared';
 import { entrustedWorkTaskExecutionStopV1Schema, entrustedWorkTaskExecutionV1Schema } from '@cat-cafe/shared';
-import type { ActionSuccessorLeaseStore } from '../ball-custody/ActionSuccessorLeaseStore.js';
-import type { TaskApprovedDelegateProvider } from '../ball-custody/action-subject-delegate-contract.js';
-import type { ActionSuccessorLease } from '../ball-custody/action-successor-state-machine.js';
-import type { IInvocationRecordStore, InvocationRecord } from '../cats/services/stores/ports/InvocationRecordStore.js';
-import type { ITurnExecutionStore } from '../cats/services/stores/ports/TurnExecutionStore.js';
+import type { ActionSuccessorLeaseStore } from '../../ball-custody/ActionSuccessorLeaseStore.js';
+import type { TaskApprovedDelegateProvider } from '../../ball-custody/action-subject-delegate-contract.js';
+import type { ActionSuccessorLease } from '../../ball-custody/action-successor-state-machine.js';
+import type {
+  IInvocationRecordStore,
+  InvocationRecord,
+} from '../../cats/services/stores/ports/InvocationRecordStore.js';
+import type { ITurnExecutionStore } from '../../cats/services/stores/ports/TurnExecutionStore.js';
 import { resolveTaskExecutionBinding, type TaskExecutionBinding } from './EntrustedWorkTaskExecutionBinding.js';
 import { collectTaskExecutionCandidates, type TaskExecutionCandidate } from './EntrustedWorkTaskExecutionCandidates.js';
 import {

@@ -7,9 +7,9 @@ import Fastify from 'fastify';
 import { InvocationTracker } from '../../dist/domains/cats/services/agents/invocation/InvocationTracker.js';
 import { MessageStore } from '../../dist/domains/cats/services/stores/ports/MessageStore.js';
 import { TaskStore } from '../../dist/domains/cats/services/stores/ports/TaskStore.js';
-import { EntrustedWorkHumanTerminalService } from '../../dist/domains/growing/EntrustedWorkHumanTerminalService.js';
 import { EntrustedWorkLifecycleService } from '../../dist/domains/growing/EntrustedWorkLifecycleService.js';
-import { EntrustedWorkTaskExecutionService } from '../../dist/domains/growing/EntrustedWorkTaskExecutionService.js';
+import { EntrustedWorkTaskExecutionService } from '../../dist/domains/growing/execution/EntrustedWorkTaskExecutionService.js';
+import { EntrustedWorkHumanTerminalService } from '../../dist/domains/growing/human-terminal/EntrustedWorkHumanTerminalService.js';
 import { sessionAuthPlugin, sessionRoute } from '../../dist/infrastructure/session-auth.js';
 import { tasksRoutes } from '../../dist/routes/tasks.js';
 

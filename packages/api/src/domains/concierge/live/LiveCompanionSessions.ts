@@ -7,7 +7,10 @@ import type { F317LiveCallObservation, F317MeetingGrant } from '../meeting/f317-
 import type { LiveMeetingDependencies } from './host/live-meeting-host.js';
 import { type LiveCarrierOperationLease, LiveCarrierUnavailableError } from './LiveCarrierOperationGate.js';
 import type { LiveCompanionCall, LiveCompanionCallOptions } from './LiveCompanionCall.js';
-import type { LivePresentationObservation, LivePresentationReply } from './live-presentation-observations.js';
+import type {
+  LivePresentationObservation,
+  LivePresentationReply,
+} from './observations/live-presentation-observations.js';
 
 export class LiveCallAlreadyActiveError extends Error {
   constructor() {

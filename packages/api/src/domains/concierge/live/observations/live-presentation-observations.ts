@@ -1,6 +1,6 @@
-import type { IMessageStore, StoredMessage } from '../../cats/services/stores/ports/MessageStore.js';
-import { canViewMessage } from '../../cats/services/stores/visibility.js';
-import type { HostVoiceObservation } from '../../plugin/desktop-window-runtime/companion-private-wire.js';
+import type { IMessageStore, StoredMessage } from '../../../cats/services/stores/ports/MessageStore.js';
+import { canViewMessage } from '../../../cats/services/stores/visibility.js';
+import type { HostVoiceObservation } from '../../../plugin/desktop-window-runtime/companion-private-wire.js';
 
 /** B's published reference-only receipt; archive admission remains Host-owned. */
 export interface LivePresentationObservation {
