@@ -6,7 +6,7 @@ import { createAssistantReturnInbox } from '../src/plugins/cloud-cat-personal-ho
 const revisions = {
   helper: `sha512:${'0'.repeat(128)}`,
   extension: '0.2.13',
-  pageAdapter: '2026-09-24.1',
+  pageAdapter: '2026-10-28.1',
 };
 
 function observed() {
@@ -38,6 +38,7 @@ function observationFailure(overrides = {}) {
       anchorTurnFound: true,
       followingTurnCount: 1,
       assistantCandidateCount: 1,
+      rolelessAssistantUnitCount: 0,
       laterUserTurnPresent: false,
       assistantHostIdStatus: 'missing_or_ambiguous',
       assistantContentStatus: 'present',

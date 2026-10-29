@@ -126,7 +126,7 @@ describe('PersonalChromeHostAdapter', () => {
       assert.deepEqual((server.calls[0].request as Record<string, unknown>).expectedRevisions, {
         helper: `sha512:${'a'.repeat(128)}`,
         extension: '0.2.13',
-        pageAdapter: '2026-09-24.1',
+        pageAdapter: '2026-10-28.1',
       });
     } finally {
       await server.close();
@@ -292,7 +292,7 @@ describe('PersonalChromeHostAdapter', () => {
             expectedRevisions: {
               helper: helperArtifactRevision,
               extension: '0.2.13',
-              pageAdapter: '2026-09-24.1',
+              pageAdapter: '2026-10-28.1',
             },
           },
         },

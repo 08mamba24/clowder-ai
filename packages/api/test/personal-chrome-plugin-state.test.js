@@ -116,7 +116,7 @@ test('a connected socket with a stale page adapter is never projected as ready',
   const expected = {
     helper: `sha512:${'a'.repeat(128)}`,
     extension: '0.2.13',
-    pageAdapter: '2026-09-24.1',
+    pageAdapter: '2026-10-28.1',
   };
   const state = await inspectPersonalChromePluginState({
     platform: 'darwin',
@@ -165,7 +165,7 @@ test('an active legacy Helper projects one final extension reload action, not ge
     expectedRevisions: {
       helper: expectedHelper,
       extension: '0.2.13',
-      pageAdapter: '2026-09-24.1',
+      pageAdapter: '2026-10-28.1',
     },
     errorCode: 'STALE_HELPER_PROTOCOL',
   });

@@ -13,6 +13,7 @@ const ASSISTANT_OBSERVATION_DIAGNOSTIC_FIELDS = [
   'anchorTurnFound',
   'followingTurnCount',
   'assistantCandidateCount',
+  'rolelessAssistantUnitCount',
   'laterUserTurnPresent',
   'assistantHostIdStatus',
   'assistantContentStatus',
@@ -100,6 +101,7 @@ function validAssistantObservationDiagnostic(value) {
     [
       'followingTurnCount',
       'assistantCandidateCount',
+      'rolelessAssistantUnitCount',
       'turnMatchCount',
       'userMessageCount',
       'assistantMessageCount',

@@ -127,7 +127,7 @@ describe('personal Chrome extension contract', () => {
       assert.match(source, /0\.2\.13/);
     }
     for (const source of [contentScriptEntry, contentScript, protocol, stateHealth]) {
-      assert.match(source, /2026-09-24\.1/);
+      assert.match(source, /2026-10-28\.1/);
     }
   });
 
