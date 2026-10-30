@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TaskItem } from '@cat-cafe/shared';
 import type { ActionSuccessorLease } from '../../src/domains/ball-custody/action-successor-state-machine.js';
-import { EntrustedWorkTaskExecutionService } from '../../src/domains/growing/EntrustedWorkTaskExecutionService.js';
+import { EntrustedWorkTaskExecutionService } from '../../src/domains/growing/execution/EntrustedWorkTaskExecutionService.js';
 
 const taskId = 'task-parent-bound';
 const ownerThread = 'thread-root';

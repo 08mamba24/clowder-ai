@@ -12,10 +12,43 @@
  */
 
 import assert from 'node:assert/strict';
-import { afterEach, beforeEach, describe, it } from 'node:test';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { after, afterEach, beforeEach, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 
+// The global-scope sync persists `.cat-cafe` state at STARTUP_REPO_ROOT. Run the
+// whole file against an OWNED workspace from the start via the existing
+// persistent-path redirect: the runtime/workspace coordinates are read per
+// request, so pointing them at a temp workspace before the routes module loads
+// keeps the real fallback behavior while the write lands in
+// `<temp>/.cat-cafe` — never in the checkout, which every later test file in
+// the same shard lane reads as its capability source (PR #60 CI: a leaked
+// collab-less config broke wiring's Gemini callbackEnv). Cleanup owns only the
+// temp workspace; the checkout's pre-existing state stays untouched.
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+const ownedWorkspace = mkdtempSync(join(tmpdir(), 'drift-global-workspace-'));
+const originalRuntimeRoot = process.env.CAT_CAFE_RUNTIME_ROOT;
+const originalWorkspaceRoot = process.env.CAT_CAFE_WORKSPACE_ROOT;
+const checkoutStateExisted = existsSync(join(repoRoot, '.cat-cafe'));
+process.env.CAT_CAFE_RUNTIME_ROOT = repoRoot;
+process.env.CAT_CAFE_WORKSPACE_ROOT = ownedWorkspace;
 const { unifiedDriftRoutes } = await import('../dist/routes/drift.js');
+
+after(() => {
+  if (originalRuntimeRoot === undefined) delete process.env.CAT_CAFE_RUNTIME_ROOT;
+  else process.env.CAT_CAFE_RUNTIME_ROOT = originalRuntimeRoot;
+  if (originalWorkspaceRoot === undefined) delete process.env.CAT_CAFE_WORKSPACE_ROOT;
+  else process.env.CAT_CAFE_WORKSPACE_ROOT = originalWorkspaceRoot;
+  rmSync(ownedWorkspace, { recursive: true, force: true });
+  assert.equal(
+    existsSync(join(repoRoot, '.cat-cafe')),
+    checkoutStateExisted,
+    'drift resolve leaked a repo-root .cat-cafe state into later test files',
+  );
+});
 
 /** Auth headers that pass requireDriftWriteAccess. */
 const AUTH_HEADERS = {
@@ -59,6 +92,8 @@ describe('#1050 — MCP drift resolve without projectPath', () => {
     // After fix: should NOT return that error — it may fail deeper (e.g. no drift),
     // but not at the projectPath-required gate.
     assert.notEqual(res.json().error, 'Required: projectPath for MCP resolve');
+    // The global fallback resolved to the OWNED workspace for the whole file.
+    assert.equal(existsSync(join(repoRoot, '.cat-cafe')), checkoutStateExisted);
   });
 
   it('does not reject MCP resolve when projectPath is explicitly undefined', async () => {
@@ -151,6 +186,13 @@ describe('#1049 Phase D — conflictPolicy parameter validation', () => {
     });
     // conflictPolicy is unified across MCP and skill — should not fail at validation
     assert.notEqual(res.json().error?.includes?.('conflictPolicy'), true);
+    // The skill sync is what persists global capability state: it must land in
+    // this file's OWNED workspace, never in the shared checkout.
+    assert.ok(
+      existsSync(join(ownedWorkspace, '.cat-cafe', 'capabilities.json')),
+      'global-scope skill sync must persist into the redirected owned workspace',
+    );
+    assert.equal(existsSync(join(repoRoot, '.cat-cafe')), checkoutStateExisted);
   });
 
   it('rejects invalid conflictPolicy for skill resolve too', async () => {

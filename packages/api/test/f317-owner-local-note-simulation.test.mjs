@@ -7,7 +7,7 @@ import Fastify from 'fastify';
 import { MessageStore } from '../src/domains/cats/services/stores/ports/MessageStore.ts';
 import { ThreadStore } from '../src/domains/cats/services/stores/ports/ThreadStore.ts';
 import { ConciergeThreadService } from '../src/domains/concierge/ConciergeThreadService.ts';
-import { maybeStartOwnerLocalNoteLab } from '../src/domains/concierge/live/host/owner-local-note-lab.ts';
+import { maybeStartOwnerLocalNoteLab } from '../src/domains/concierge/live/host/local-note/owner-local-note-lab.ts';
 import { OwnerPageActionService } from '../src/domains/concierge/live/host/owner-page-action-service.ts';
 import { LiveCompanionSessions } from '../src/domains/concierge/live/LiveCompanionSessions.ts';
 import { sessionAuthPlugin, sessionRoute } from '../src/infrastructure/session-auth.ts';
@@ -25,7 +25,7 @@ const isolated = {
 
 test('isolated owner HTTP can inspect, cancel and restore the labeled simulation without media', async (t) => {
   const { startOwnerLocalNoteSimulation } = await import(
-    '../src/domains/concierge/live/host/owner-local-note-simulation.ts'
+    '../src/domains/concierge/live/host/local-note/owner-local-note-simulation.ts'
   );
   const previousOwnerId = process.env.DEFAULT_OWNER_USER_ID;
   process.env.DEFAULT_OWNER_USER_ID = 'owner';

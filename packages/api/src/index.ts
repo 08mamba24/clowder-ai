@@ -230,15 +230,15 @@ import { TtsRegistry } from './domains/cats/services/tts/TtsRegistry.js';
 import { startTtsCacheCleaner } from './domains/cats/services/tts/tts-cache-cleaner.js';
 import { initVoiceBlockSynthesizer } from './domains/cats/services/tts/VoiceBlockSynthesizer.js';
 import type { AgentService, ClaudeCompactionHooksFactory } from './domains/cats/services/types.js';
-import { EntrustedWorkHumanTerminalService } from './domains/growing/EntrustedWorkHumanTerminalService.js';
 import { EntrustedWorkLifecycleService } from './domains/growing/EntrustedWorkLifecycleService.js';
 import {
   EntrustedWorkOwnerReadService,
   type PreparedArtifactReader,
 } from './domains/growing/EntrustedWorkOwnerReadService.js';
-import { EntrustedWorkTaskExecutionService } from './domains/growing/EntrustedWorkTaskExecutionService.js';
+import { EntrustedWorkTaskExecutionService } from './domains/growing/execution/EntrustedWorkTaskExecutionService.js';
 import { F232PreparedArtifactReader } from './domains/growing/F232PreparedArtifactReader.js';
 import { F290CollectiveWorkResultProducerAdapter } from './domains/growing/F290CollectiveWorkResultProducerAdapter.js';
+import { EntrustedWorkHumanTerminalService } from './domains/growing/human-terminal/EntrustedWorkHumanTerminalService.js';
 import {
   F246NeedsMeProducerAdapter,
   F292NeedsMeProducerAdapter,
@@ -4408,7 +4408,9 @@ async function main(): Promise<void> {
       }),
     });
     homeHub = homeActions.hub;
-    const { maybeStartOwnerLocalNoteLab } = await import('./domains/concierge/live/host/owner-local-note-lab.js');
+    const { maybeStartOwnerLocalNoteLab } = await import(
+      './domains/concierge/live/host/local-note/owner-local-note-lab.js'
+    );
     const localNoteIsolation = {
       enabled: process.env.CAT_CAFE_F317_LOCAL_NOTE_LAB === '1',
       projectRoot: findMonorepoRoot(),
@@ -4513,7 +4515,7 @@ async function main(): Promise<void> {
     if (localNoteLab) {
       try {
         const { startOwnerLocalNoteSimulation } = await import(
-          './domains/concierge/live/host/owner-local-note-simulation.js'
+          './domains/concierge/live/host/local-note/owner-local-note-simulation.js'
         );
         localNoteSimulation = await startOwnerLocalNoteSimulation({
           isolation: localNoteIsolation,

@@ -5,8 +5,8 @@ import {
   prepareLocalNoteRollback,
   prepareLocalNoteTrial,
   selectLocalNoteAction,
-} from '../../action/LocalNoteTrialProfile.js';
-import type { OwnerPageActionProfile } from './owner-page-action-contract.js';
+} from '../../../action/LocalNoteTrialProfile.js';
+import type { OwnerPageActionProfile } from '../owner-page-action-contract.js';
 
 /** Adapt F's reviewed named page policy to A's owner consent lifecycle. */
 export function createOwnerLocalNoteProfile(trustedFixtureUrl: string): OwnerPageActionProfile {

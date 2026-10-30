@@ -1,11 +1,11 @@
 import type { ProviderSubexecutionSemanticEvent } from '@cat-cafe/shared';
 import { type Attributes, type Span, trace } from '@opentelemetry/api';
-import type { CodexAppServerJsonObject } from '../../cats/services/agents/providers/CodexAppServerEventMapper.js';
+import type { CodexAppServerJsonObject } from '../../../cats/services/agents/providers/CodexAppServerEventMapper.js';
 import type {
   HostTextSubmission,
   HostVoiceObservation,
-} from '../../plugin/desktop-window-runtime/companion-private-wire.js';
-import { record } from './live-call-async.js';
+} from '../../../plugin/desktop-window-runtime/companion-private-wire.js';
+import { record } from '../live-call-async.js';
 
 export type LiveResponseStage =
   | 'client_text_sent'

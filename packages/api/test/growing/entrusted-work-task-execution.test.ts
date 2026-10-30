@@ -4,7 +4,7 @@ import type { TaskItem } from '@cat-cafe/shared';
 import type { ActionSuccessorLease } from '../../src/domains/ball-custody/action-successor-state-machine.js';
 import type { InvocationRecord } from '../../src/domains/cats/services/stores/ports/InvocationRecordStore.js';
 import type { TurnExecutionRecord } from '../../src/domains/cats/services/stores/ports/TurnExecutionStore.js';
-import { EntrustedWorkTaskExecutionService } from '../../src/domains/growing/EntrustedWorkTaskExecutionService.js';
+import { EntrustedWorkTaskExecutionService } from '../../src/domains/growing/execution/EntrustedWorkTaskExecutionService.js';
 
 const now = 1_791_772_100_000;
 

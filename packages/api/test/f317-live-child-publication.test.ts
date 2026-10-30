@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { createCatId } from '@cat-cafe/shared';
 import { CodexAppServerClient } from '../src/domains/cats/services/agents/providers/CodexAppServerClient.js';
 import { MessageStore } from '../src/domains/cats/services/stores/ports/MessageStore.js';
-import { LiveSubexecutionLog } from '../src/domains/concierge/live/live-subexecution-log.js';
+import { LiveSubexecutionLog } from '../src/domains/concierge/live/observations/live-subexecution-log.js';
 
 for (const { childCompletes, recordFailure } of [
   { childCompletes: true, recordFailure: false },

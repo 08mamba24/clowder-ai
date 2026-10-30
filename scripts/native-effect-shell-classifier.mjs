@@ -2,7 +2,7 @@ import { executedInvocations } from './lib/shell-invocation.mjs';
 import { shellSegments } from './lib/shell-lexical.mjs';
 import { SUBSTITUTION } from './lib/shell-text.mjs';
 import { DELETE_PROGRAMS, findArgvDeletes, findExecutedCommands } from './native-effect-find-classifier.mjs';
-import { constrainedGhApiOperation } from './native-effect-github-classifier.mjs';
+import { constrainedGhApiOperation, constrainedGhHelpOperation } from './native-effect-github-classifier.mjs';
 import { classifyHttpOperation } from './native-effect-http-classifier.mjs';
 import { FOREIGN_INTERPRETERS } from './native-effect-interpreter-source.mjs';
 import { isConstrainedLocalMediaObservation } from './native-effect-media-classifier.mjs';
@@ -245,6 +245,7 @@ function isReadOperation(raw) {
     isGitRepositoryObservation(raw) ||
     isConstrainedGhPullRequestRead(raw) ||
     constrainedGhApiOperation(raw)?.effect === 'read' ||
+    constrainedGhHelpOperation(raw)?.effect === 'read' ||
     isConstrainedSqliteRead(raw) ||
     isLocalObservation(raw) ||
     /^\s*cd\b[^;&|]*$/i.test(raw) ||

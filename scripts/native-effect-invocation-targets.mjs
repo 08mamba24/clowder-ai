@@ -1,5 +1,9 @@
 import { executedInvocations } from './lib/shell-invocation.mjs';
-import { constrainedGhApiOperation, constrainedGhPullRequestOperation } from './native-effect-github-classifier.mjs';
+import {
+  constrainedGhApiOperation,
+  constrainedGhHelpOperation,
+  constrainedGhPullRequestOperation,
+} from './native-effect-github-classifier.mjs';
 import { withoutInterpreterSource } from './native-effect-interpreter-source.mjs';
 import { proveProgramSelection } from './native-effect-program-selection.mjs';
 
@@ -38,8 +42,31 @@ export function observedReadProgram(command, cwd, namespaceStable) {
   }
   if (call.redirections?.length || selection?.kind !== 'repository_gh_wrapper') return { unproved: true };
   const named = ['gh', ...call.programOperands].map(quote).join(' ');
-  const operation = constrainedGhApiOperation(named) ?? constrainedGhPullRequestOperation(named);
+  const operation =
+    constrainedGhApiOperation(named) ?? constrainedGhPullRequestOperation(named) ?? constrainedGhHelpOperation(named);
   return operation?.effect === 'read' ? { command: named, unproved: false } : {};
+}
+
+/**
+ * The pinned-wrapper publication entry: an absolute-path invocation of the
+ * content-verified guarded gh (program selection proves wrapper, interpreter,
+ * delegate, and git before any text is trusted) normalizes to its delegated
+ * gh argv and classifies with an honest effect — read or remote mutation.
+ * Executing the verified wrapper is never a write of its own file; an
+ * unproved executable under the runtime tree still proves nothing.
+ */
+export function observedGhOperation(command, cwd) {
+  const call = completeDirectInvocation(executedInvocations(command, { cwd }));
+  if (!call || call.name !== 'gh' || !call.program.includes('/')) return null;
+  if (LOAD_ENV.some((name) => process.env[name])) return null;
+  if (call.environment.some((word) => !/^(?:PATH|CAT_CAFE_REAL_GH_PATH)=/.test(word))) return null;
+  if (call.redirections?.length) return null;
+  const selection = proveProgramSelection(call);
+  if (selection?.kind !== 'repository_gh_wrapper') return null;
+  const named = ['gh', ...call.programOperands].map(quote).join(' ');
+  return (
+    constrainedGhApiOperation(named) ?? constrainedGhPullRequestOperation(named) ?? constrainedGhHelpOperation(named)
+  );
 }
 
 /** Project targets from the original shared reader; retain its code/argv evidence.

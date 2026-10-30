@@ -10,7 +10,7 @@ import { CompanionHostBridge } from '../../src/domains/concierge/live/CompanionH
 import type {
   LivePresentationObservation,
   LivePresentationReply,
-} from '../../src/domains/concierge/live/live-presentation-observations.js';
+} from '../../src/domains/concierge/live/observations/live-presentation-observations.js';
 import { companionCommandValidator } from '../../src/domains/plugin/desktop-window-runtime/admission.js';
 import type { DesktopWindowLaunch } from '../../src/domains/plugin/desktop-window-runtime/types.js';
 import { OFFICIAL_PLUGIN_CATALOG } from '../../src/domains/plugin/official-catalog.js';

@@ -3,9 +3,10 @@ import { scanShellText, shellSubstitutions } from './lib/shell-lexical.mjs';
 import { SUBSTITUTION } from './lib/shell-text.mjs';
 import { copyNamespaceStability, shellTextPreservesCopyNamespace } from './native-effect-copy-namespace.mjs';
 import { contextualGitMutationCandidates } from './native-effect-git-context.mjs';
-import { constrainedGhApiOperation } from './native-effect-github-classifier.mjs';
+import { constrainedGhApiOperation, constrainedGhHelpOperation } from './native-effect-github-classifier.mjs';
 import { hereDocumentView } from './native-effect-heredoc.mjs';
 import { withoutInterpreterSource } from './native-effect-interpreter-source.mjs';
+import { observedGhOperation } from './native-effect-invocation-targets.mjs';
 import {
   explicitCopyRoles,
   isConstrainedLocalMediaObservation,
@@ -226,7 +227,10 @@ function segmentCandidate(
   const remoteOperation =
     argvPreserved &&
     !unprovedReadProgram &&
-    (constrainedGhApiOperation(command) ?? constrainedGhPullRequestOperation(command));
+    (constrainedGhApiOperation(command) ??
+      constrainedGhPullRequestOperation(command) ??
+      constrainedGhHelpOperation(command) ??
+      observedGhOperation(command, cwd));
   const copy = argvPreserved ? explicitCopyRoles(command) : null;
   const explicitTarget = argvPreserved ? (explicitTemporaryWorktreeTarget(command) ?? copy?.destination) : undefined;
   const locatedSource = location ? { ...source, cwd: location } : source;
@@ -239,7 +243,14 @@ function segmentCandidate(
   if (managedPreview)
     return { effect, target: { kind: 'ordinary', value: managedPreview.target }, source: locatedSource };
   if (remoteOperation)
-    return { effect, target: { kind: 'remote_repository', value: remoteOperation.target }, source: locatedSource };
+    // The classified operation owns the effect: text-level matches agree with the
+    // segment classifier by construction, and a pinned-wrapper invocation (whose
+    // segment text alone stays unknown) normalizes to its delegated argv here.
+    return {
+      effect: remoteOperation.effect,
+      target: { kind: 'remote_repository', value: remoteOperation.target },
+      source: locatedSource,
+    };
   const target = classifyTarget(
     copy?.targetText ??
       explicitTarget ??

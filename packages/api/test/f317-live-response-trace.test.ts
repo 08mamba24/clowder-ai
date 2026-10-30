@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { LiveResponseTrace } from '../src/domains/concierge/live/live-response-trace.js';
+import { LiveResponseTrace } from '../src/domains/concierge/live/observations/live-response-trace.js';
 
 test('reasoning, tools and draft deltas never become outward, visible or audible observations', () => {
   const events: string[] = [];

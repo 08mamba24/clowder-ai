@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { startFixtureServer } from '../../../scripts/f317-page-action/serve.mjs';
-import { createOwnerLocalNoteProfile } from '../src/domains/concierge/live/host/owner-local-note-profile.ts';
+import { createOwnerLocalNoteProfile } from '../src/domains/concierge/live/host/local-note/owner-local-note-profile.ts';
 
 const { createHostLaunchedLocalNoteConnector } = await import(
   process.env.F317_TEST_COMPILED_ACTOR === '1'

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createCatId } from '@cat-cafe/shared';
 import { MessageStore } from '../src/domains/cats/services/stores/ports/MessageStore.js';
-import { LivePresentationObservations } from '../src/domains/concierge/live/live-presentation-observations.js';
+import { LivePresentationObservations } from '../src/domains/concierge/live/observations/live-presentation-observations.js';
 
 test('only a trusted current-call assistant item can be visible; native/message aliases report once', async () => {
   const store = new MessageStore();

@@ -1,7 +1,7 @@
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { kernelPath, unfoldedJoin } from './lib/shell-directory.mjs';
 import { withoutInterpreterSource } from './native-effect-interpreter-source.mjs';
-import { invocationTargetView, observedReadProgram } from './native-effect-invocation-targets.mjs';
+import { invocationTargetView, observedGhOperation, observedReadProgram } from './native-effect-invocation-targets.mjs';
 import { commandName, shellInvocation, shellWords } from './native-effect-shell-tokenizer.mjs';
 import { fileProgramAnalysis } from './native-effect-write-effects.mjs';
 
@@ -43,7 +43,11 @@ export function segmentView(segment, location, roleSource = segment, namespaceSt
     roles,
     unprovedReadProgram:
       readProgram.unproved ??
-      (commandName(program?.value) === 'diff' || (commandName(program?.value) === 'gh' && program.value.includes('/'))),
+      ((commandName(program?.value) === 'diff' ||
+        (commandName(program?.value) === 'gh' && program.value.includes('/'))) &&
+        // A pinned-wrapper invocation that classifies by its delegated argv is a
+        // proved program; only an unclassified absolute-path gh stays unproved.
+        !observedGhOperation(roleSource, location)),
     targetText: withObservedWriteAliases(roles?.text ?? command, roles?.call.cwd ?? context.location),
   };
 }

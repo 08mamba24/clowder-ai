@@ -113,9 +113,7 @@ function rolelessBubbleHasExactText(bubble, expectedText) {
   if (visibleUserBubbleTextNodes(bubble).some((node) => node.data === expectedText)) return true;
   const expectedLines = expectedText.split('\n');
   const blockLines = rolelessBubbleBlockLines(bubble);
-  return (
-    blockLines.length === expectedLines.length && blockLines.every((line, index) => line === expectedLines[index])
-  );
+  return blockLines.length === expectedLines.length && blockLines.every((line, index) => line === expectedLines[index]);
 }
 
 function rolelessUserBubbles(document) {

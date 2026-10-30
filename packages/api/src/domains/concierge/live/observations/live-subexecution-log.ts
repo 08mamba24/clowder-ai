@@ -1,11 +1,11 @@
 import type { CatId, ProviderSubexecutionSemanticEvent } from '@cat-cafe/shared';
-import type { CodexSubexecutionEvent } from '../../cats/services/agents/providers/CodexSubexecutionIdentity.js';
-import { transformCodexEvent } from '../../cats/services/agents/providers/codex-event-transform.js';
+import type { CodexSubexecutionEvent } from '../../../cats/services/agents/providers/CodexSubexecutionIdentity.js';
+import { transformCodexEvent } from '../../../cats/services/agents/providers/codex-event-transform.js';
 import type {
   AppendMessageInput,
   IMessageStore,
   StoredMessage,
-} from '../../cats/services/stores/ports/MessageStore.js';
+} from '../../../cats/services/stores/ports/MessageStore.js';
 
 interface Child {
   identity: ProviderSubexecutionSemanticEvent;

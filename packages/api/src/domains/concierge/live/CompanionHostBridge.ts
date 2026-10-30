@@ -32,7 +32,10 @@ import {
   CompanionUnifiedDecisions,
 } from './host/unified/companion-unified-decisions.js';
 import { LiveCompanionSelectionError, resolveLiveCompanionSelection } from './live-companion-selection.js';
-import type { LivePresentationObservation, LivePresentationReply } from './live-presentation-observations.js';
+import type {
+  LivePresentationObservation,
+  LivePresentationReply,
+} from './observations/live-presentation-observations.js';
 
 type Options = ConstructorParameters<typeof CompanionOwnerClient>[0] & {
   /** Exact published archive admission from the installed package digest. */

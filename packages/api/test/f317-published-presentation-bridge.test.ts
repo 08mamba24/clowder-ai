@@ -8,7 +8,7 @@ import cookie from '@fastify/cookie';
 import Fastify from 'fastify';
 import { MessageStore } from '../src/domains/cats/services/stores/ports/MessageStore.js';
 import { CompanionHostBridge } from '../src/domains/concierge/live/CompanionHostBridge.js';
-import { LivePresentationObservations } from '../src/domains/concierge/live/live-presentation-observations.js';
+import { LivePresentationObservations } from '../src/domains/concierge/live/observations/live-presentation-observations.js';
 import { sessionAuthPlugin, sessionRoute } from '../src/infrastructure/session-auth.js';
 
 async function fixture(t: TestContext) {

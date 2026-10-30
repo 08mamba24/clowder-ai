@@ -20,7 +20,7 @@ import {
   EntrustedWorkHumanTerminalError,
   type EntrustedWorkHumanTerminalResult,
   type EntrustedWorkHumanTerminalService,
-} from '../domains/growing/EntrustedWorkHumanTerminalService.js';
+} from '../domains/growing/human-terminal/EntrustedWorkHumanTerminalService.js';
 import type { DeploymentWaitLifecycleService } from '../domains/runtime-deployment/DeploymentWaitLifecycleService.js';
 import { validateUrl } from '../infrastructure/scheduler/content-fetcher.js';
 import type { SocketManager } from '../infrastructure/websocket/index.js';

@@ -3,7 +3,7 @@ import type { Server } from 'node:http';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import puppeteer, { type Browser } from 'puppeteer-core';
-import { createHostLaunchedLocalNoteConnector } from '../../action/LocalNoteTrialConnector.js';
+import { createHostLaunchedLocalNoteConnector } from '../../../action/LocalNoteTrialConnector.js';
 import { createOwnerLocalNoteProfile } from './owner-local-note-profile.js';
 
 export interface OwnerLocalNoteLabOptions {

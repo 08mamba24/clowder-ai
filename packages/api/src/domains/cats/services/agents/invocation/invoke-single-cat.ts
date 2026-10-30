@@ -91,7 +91,7 @@ import { readProcessActivity } from '../../../../../utils/process-activity-regis
 import { pathsEqual } from '../../../../../utils/project-path.js';
 import { tcpProbe } from '../../../../../utils/tcp-probe.js';
 import { estimateTokens } from '../../../../../utils/token-counter.js';
-import { resolveEntrustedWorkTaskRefFromSource } from '../../../../growing/EntrustedWorkRuntimeInteractionBinding.js';
+import { resolveEntrustedWorkTaskRefFromSource } from '../../../../growing/execution/EntrustedWorkRuntimeInteractionBinding.js';
 import {
   type MemoryCueInvocationPromptResolver,
   type MemoryCueOpportunitySeed,
