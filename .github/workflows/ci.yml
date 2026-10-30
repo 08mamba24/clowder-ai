@@ -48,6 +48,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # check:mcp-surface-governance proves the exported bootstrap lineage
+          # (merge-base --is-ancestor) against origin/main. A depth-1 checkout
+          # cannot reach the bootstrap commit and the validator correctly fails
+          # closed (main-push run 41023809527 / job 123957074197). Fetch full
+          # history so the lineage proof has real commits to walk.
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
