@@ -85,7 +85,12 @@ test('dispatch uses the native program, native configuration and native identity
   assert.ok(launch.args.includes('-p'));
   assert.ok(!launch.args.includes('--print'));
   assert.ok(!launch.args.includes('--prompt'));
-  assert.equal(launch.env.KIMI_CODE_HOME, undefined, 'the existing parent binding is inherited unchanged');
+  assert.equal(
+    launch.env.KIMI_CODE_HOME,
+    join(root, 'modern'),
+    'the frozen child snapshot preserves the existing native binding',
+  );
+  assert.equal(launch.inheritParentEnv, false, 'launch must use the same snapshot that was validated');
   assert.ok(messages.some((m) => m.type === 'text' && m.content === '42'));
   assert.equal(
     nativeOpeningCapsuleRevision(prepared, { mode: 'cold' }, 'owner', {

@@ -4,12 +4,13 @@ import { existsSync } from 'node:fs';
 import fs, { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { mock, type TestContext, test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { KimiAgentService } from '../src/domains/cats/services/agents/providers/KimiAgentService.js';
 import { prepareKimiMcpConfig } from '../src/domains/cats/services/agents/providers/kimi-mcp-config.js';
+import { invalidateCliCommand } from '../src/utils/cli-resolve.js';
 import { buildChildEnv } from '../src/utils/cli-spawn.js';
 import { directMcpContract } from './helpers/direct-mcp-contract.js';
 
@@ -21,7 +22,15 @@ async function fixture(t: TestContext) {
   for (const path of [join(config, '.cat-cafe'), join(workspace, '.kimi-code'), dist]) {
     await mkdir(path, { recursive: true });
   }
-  const env = { CAT_CAFE_CONFIG_ROOT: config, CAT_CAFE_RUNTIME_ROOT: join(root, 'binary') };
+  const bin = join(root, 'bin');
+  await mkdir(bin);
+  await writeFile(join(bin, 'kimi'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const env = {
+    CAT_CAFE_CONFIG_ROOT: config,
+    CAT_CAFE_RUNTIME_ROOT: join(root, 'binary'),
+    PATH: `${bin}${delimiter}${process.env.PATH}`,
+  };
+  invalidateCliCommand('kimi');
   const before = { ...process.env };
   Object.assign(process.env, env);
   t.after(async () => {
@@ -29,6 +38,7 @@ async function fixture(t: TestContext) {
       if (before[key] === undefined) delete process.env[key];
       else process.env[key] = before[key];
     }
+    invalidateCliCommand('kimi');
     await rm(root, { recursive: true, force: true });
   });
   await writeFile(join(dist, 'collab.js'), '// never executed');

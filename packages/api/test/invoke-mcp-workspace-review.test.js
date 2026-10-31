@@ -39,7 +39,12 @@ for (const [provider, invoke] of Object.entries(providers)) {
     assert.equal(env.ALLOWED_WORKSPACE_DIRS, transport(provider, mcp['cat-cafe-collab']).env.ALLOWED_WORKSPACE_DIRS);
     // OpenCode inherits callback credentials through its CLI process environment;
     // the runtime config carries only its existing managed workspace environment.
-    if (provider !== 'opencode') {
+    if (provider === 'kimi') {
+      assert.ok(env.CAT_CAFE_CREDENTIAL_FILE, 'the helper verifies current credentials before disposing the lease');
+      assert.equal(env.CAT_CAFE_INVOCATION_ID, undefined);
+      assert.equal(env.CAT_CAFE_CALLBACK_TOKEN, undefined);
+      assert.equal(env.CAT_CAFE_API_URL, callbackFixture.CAT_CAFE_API_URL);
+    } else if (provider !== 'opencode') {
       for (const [key, value] of Object.entries(callbackFixture)) assert.equal(env[key], value);
     }
     assert.deepEqual(

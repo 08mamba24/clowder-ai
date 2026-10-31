@@ -71,6 +71,37 @@ after(() => {
   else process.env.CAT_CAFE_REAL_GH_PATH = AMBIENT_GH_DELEGATE;
 });
 
+// Loader variables are explicit inputs to this synchronous classifier fixture,
+// independent of the CI launcher. The public resource guard stays installed;
+// child processes run only after these inputs have been restored.
+const FIXTURE_LOADER_KEYS = [
+  'NODE_OPTIONS',
+  'NODE_PATH',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'DYLD_INSERT_LIBRARIES',
+  'DYLD_LIBRARY_PATH',
+  'DYLD_FRAMEWORK_PATH',
+  'BASH_ENV',
+  'ENV',
+];
+const loaderEnvironment = () => Object.fromEntries(FIXTURE_LOADER_KEYS.map((key) => [key, process.env[key]]));
+function applyLoaderEnvironment(environment) {
+  for (const key of FIXTURE_LOADER_KEYS) {
+    if (environment[key] === undefined) delete process.env[key];
+    else process.env[key] = environment[key];
+  }
+}
+function classifyWrapperFixture(view, cwd, source, loaderInputs = {}) {
+  const inherited = loaderEnvironment();
+  try {
+    applyLoaderEnvironment(loaderInputs);
+    return decideShellHookPayload(view, cwd, source);
+  } finally {
+    applyLoaderEnvironment(inherited);
+  }
+}
+
 function wrapperProofDiagnostic(result, cwd) {
   const call = { program: GH_WRAPPER, cwd, wrappers: [] };
   return JSON.stringify({
@@ -91,7 +122,7 @@ function wrapperProofDiagnostic(result, cwd) {
 // graphql/pr-create/help recognition added here.
 
 const source = { provider: 'github-classifier-test', tool: 'shell' };
-const decision = (command, cwd) => decideShellHookPayload({ judged: command }, cwd, source);
+const decision = (command, cwd) => classifyWrapperFixture({ judged: command }, cwd, source);
 
 const GRAPHQL_QUERY =
   'gh api graphql -f query=\'query { repository(owner:"deepseek-ai",name:"deepseek-harness") { id discussionCategories(first:20) { nodes { id name slug } } } }\'';
@@ -217,14 +248,56 @@ test('the pinned wrapper entry: verified absolute-path query and mutation both c
   );
   const query = `${GH_WRAPPER} api graphql -f query='{ viewer { login } }'`;
   const mutation = `${GH_WRAPPER} api graphql -f query='mutation { createDiscussion(input:{repositoryId:"R_1"}) { discussion { id } } }'`;
-  const readDecision = decideShellHookPayload({ judged: query }, cwd, source);
+  const readDecision = classifyWrapperFixture({ judged: query }, cwd, source);
   assert.equal(readDecision.decision, 'allow');
   assert.equal(readDecision.effect, 'read', wrapperProofDiagnostic(readDecision, cwd));
   assert.deepEqual(readDecision.target, { kind: 'remote_repository', value: 'github://api/graphql' });
-  const mutationDecision = decideShellHookPayload({ judged: mutation }, cwd, source);
+  const mutationDecision = classifyWrapperFixture({ judged: mutation }, cwd, source);
   assert.equal(mutationDecision.decision, 'allow');
   assert.equal(mutationDecision.effect, 'remote_mutation', wrapperProofDiagnostic(mutationDecision, cwd));
   assert.deepEqual(mutationDecision.target, { kind: 'remote_repository', value: 'github://api/graphql' });
+});
+
+test('a pinned wrapper retains inherited-loader refusal with an otherwise valid program chain', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-wrapper-loader-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const inherited = loaderEnvironment();
+  const commands = [
+    `${GH_WRAPPER} api graphql -f query='{ viewer { login } }'`,
+    `${GH_WRAPPER} api graphql -f query='mutation { createDiscussion(input:{repositoryId:"R_1"}) { discussion { id } } }'`,
+  ];
+  for (const key of FIXTURE_LOADER_KEYS) {
+    for (const command of commands) {
+      const result = classifyWrapperFixture({ judged: command }, cwd, source, {
+        [key]: key === 'NODE_OPTIONS' ? '--require /fixture/unproved-loader.cjs' : '/fixture/unproved-loader',
+      });
+      assert.equal(result.effect, 'unknown', key);
+      assert.notEqual(result.target?.kind, 'remote_repository', key);
+      assert.deepEqual(loaderEnvironment(), inherited, `${key}: restore the launcher before another call`);
+    }
+  }
+});
+
+test('a throwing classifier fixture restores the launcher environment and keeps the public guard installed', () => {
+  const inherited = loaderEnvironment();
+  const inheritedFetch = globalThis.fetch;
+  const failure = new Error('classifier fixture failed');
+  assert.throws(
+    () =>
+      classifyWrapperFixture(
+        {
+          get judged() {
+            assert.ok(FIXTURE_LOADER_KEYS.every((key) => process.env[key] === undefined));
+            throw failure;
+          },
+        },
+        WRAPPER_FIXTURE_ROOT,
+        source,
+      ),
+    failure,
+  );
+  assert.deepEqual(loaderEnvironment(), inherited);
+  assert.equal(globalThis.fetch, inheritedFetch);
 });
 
 test('a pinned wrapper does not prove a missing or protected interpreter chain', (t) => {
@@ -238,7 +311,7 @@ test('a pinned wrapper does not prove a missing or protected interpreter chain',
   for (const path of [missing, `${protectedBin}:${FIXTURE_BIN}`]) {
     process.env.PATH = path;
     try {
-      const result = decideShellHookPayload(
+      const result = classifyWrapperFixture(
         { judged: `${GH_WRAPPER} api graphql -f query='{ viewer { login } }'` },
         cwd,
         source,
@@ -312,17 +385,16 @@ test('decision level: the pinned wrapper publishes via an ordinary body file and
   const protectedFile = join(cwd, 'cat-cafe-runtime', 'private.md');
   const shape = (file) =>
     `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair --body-file '${file}'`;
-  const allowed = decideShellHookPayload({ judged: shape(ordinary) }, cwd, source);
+  const allowed = classifyWrapperFixture({ judged: shape(ordinary) }, cwd, source);
   assert.equal(allowed.decision, 'allow');
   assert.equal(allowed.effect, 'remote_mutation', wrapperProofDiagnostic(allowed, cwd));
   assert.deepEqual(allowed.target, { kind: 'remote_repository', value: 'github://08mamba24/clowder-ai/pulls' });
-  // Contract reconciliation (R8): the merged tree resolves the effect policy toward
-  // "an unrecognised effect is deferred, not a mutation" (native-effect-policy.mjs,
-  // upstream 51838b4b), so a protected body file is no longer denied at this layer.
-  // What must stay true is that it is never certified: unknown effect, sanctuary
-  // coordinate, and no remote coordinate.
-  const refused = decideShellHookPayload({ judged: shape(protectedFile) }, cwd, source);
+  // #4807 keeps an unproved protected input closed: it remains unknown at its
+  // sanctuary coordinate, is denied, and never gains a certified remote coordinate.
+  const refused = classifyWrapperFixture({ judged: shape(protectedFile) }, cwd, source);
+  assert.equal(refused.decision, 'deny');
   assert.equal(refused.effect, 'unknown');
+  assert.equal(refused.reasonCode, 'protected_target_unparsed');
   assert.equal(refused.target.kind, 'runtime_sanctuary');
   assert.notEqual(refused.target?.kind, 'remote_repository');
 });
@@ -387,7 +459,7 @@ test('decision level: the pinned wrapper refuses a protected body-file input (PR
     ['-F', 'alias-to-runtime.md'],
     ['--body-file', `${RUNTIME_ROOT}/x.md`],
   ]) {
-    const deferred = decideShellHookPayload(
+    const deferred = classifyWrapperFixture(
       {
         judged: `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair ${flag} '${file}'`,
       },
@@ -429,7 +501,7 @@ test('decision level: dot-dot through a directory alias is judged on the kernel 
     ['--body-file', rawAbsolute],
     ['-F', rawAbsolute],
   ]) {
-    const deferred = decideShellHookPayload(
+    const deferred = classifyWrapperFixture(
       {
         judged: `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair ${flag} '${file}'`,
       },
@@ -456,7 +528,7 @@ test('decision level: dangling and stream body inputs never earn a remote coordi
   const dangling = join(cwd, 'dangling.md');
   symlinkSync(join(cwd, 'cat-cafe-runtime', 'not-created.md'), dangling);
   for (const file of [dangling, '/dev/stdin', '-']) {
-    const deferred = decideShellHookPayload(
+    const deferred = classifyWrapperFixture(
       {
         judged: `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair --body-file '${file}'`,
       },
@@ -650,7 +722,7 @@ test('REST typed fields carrying local file or stdin inputs never earn the remot
 test('decision level: REST typed @ inputs are not allowed as pure remote reads', (t) => {
   const cwd = mkdtempSync(join(tmpdir(), 'gh-rest-typed-'));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
-  const decision = decideShellHookPayload(
+  const decision = classifyWrapperFixture(
     { judged: 'gh api repos/example/fixture/issues --method GET -F marker=@/etc/hosts' },
     cwd,
     source,

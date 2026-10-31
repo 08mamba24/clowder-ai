@@ -15,7 +15,13 @@ import { estimateCostFromTokens } from '../../../../../config/model-pricing.js';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 import { formatCliExitError } from '../../../../../utils/cli-format.js';
 import { formatCliNotFoundError } from '../../../../../utils/cli-resolve.js';
-import { isCliError, isCliTimeout, isLivenessWarning, spawnCli } from '../../../../../utils/cli-spawn.js';
+import {
+  buildChildEnv,
+  isCliError,
+  isCliTimeout,
+  isLivenessWarning,
+  spawnCli,
+} from '../../../../../utils/cli-spawn.js';
 import type { SpawnFn } from '../../../../../utils/cli-types.js';
 import { resolveKimiCliRuntime, resolveKimiRuntimePaths } from '../../../../../utils/kimi-cli-runtime.js';
 import { CliRawArchive } from '../../session/CliRawArchive.js';
@@ -329,10 +335,25 @@ export class KimiAgentService implements AgentService {
     let mcpLease: KimiMcpLease | undefined;
     try {
       await ensureKimiSecretHooks({ ...(options?.callbackEnv ?? {}), ...(options?.accountEnv ?? {}) });
+      const childEnv = Object.fromEntries(
+        Object.entries(
+          buildChildEnv(
+            {
+              ...(options?.callbackEnv ?? {}),
+              ...(apiKeyEnv ?? {}),
+              ...(options?.accountEnv ?? {}),
+              KIMI_MODEL_THINKING_EFFORT: effortLevel,
+              [KIMI_V2_ENGINE_ENV_KEY]: '1',
+            },
+            { bindExecutionOwner: true, workingDirectory },
+          ),
+        ).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+      );
       mcpLease = await prepareKimiMcpConfig({
         callbackEnv: { ...(options?.callbackEnv ?? {}), ...(options?.accountEnv ?? {}) },
         workingDirectory: options?.workingDirectory,
         mcpServerPath: this.mcpServerPath,
+        childEnv,
       });
       let emittedSessionInit = Boolean(effectiveResumeSessionId);
       let sawModelOutput = false;
@@ -381,22 +402,10 @@ export class KimiAgentService implements AgentService {
         args,
         ...(managedArgvFlags.length > 0 ? { managedArgvFlags } : {}),
         ...(options?.workingDirectory ? { cwd: options.workingDirectory } : {}),
-        // env is always present: KIMI_MODEL_THINKING_EFFORT carries the resolved
-        // member/thread effort for tier-capable models. For boolean-thinking
-        // models (effortLevel === null) the explicit null is a deletion marker:
-        // buildChildEnv removes any parent/callback/account value so the CLI
-        // keeps its own thinking config (the var is a force-on-wire channel
-        // that bypasses support_efforts, not a harmless leftover).
-        // Configured effort wins over account/callback env.
-        env: {
-          ...(options?.callbackEnv ?? {}),
-          ...(apiKeyEnv ?? {}),
-          ...(options?.accountEnv ?? {}),
-          ...mcpLease.env,
-          KIMI_MODEL_THINKING_EFFORT: effortLevel,
-          // Native mode requires the kimi-code v2 engine for --agent-file.
-          [KIMI_V2_ENGINE_ENV_KEY]: '1',
-        },
+        // Spawn the same filtered snapshot that proved the MCP references;
+        // parent changes after preparation cannot reintroduce removed values.
+        env: mcpLease.childEnv ?? childEnv,
+        inheritParentEnv: false,
         ...(options?.signal ? { signal: options.signal } : {}),
         ...(options?.invocationId ? { invocationId: options.invocationId } : {}),
         ...(options?.cliSessionId ? { cliSessionId: options.cliSessionId } : {}),

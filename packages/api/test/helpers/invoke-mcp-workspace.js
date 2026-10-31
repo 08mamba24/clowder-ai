@@ -7,6 +7,7 @@ import { PassThrough } from 'node:stream';
 import { namedAlphaEnvironment } from '../../../../scripts/lib/alpha-coordinates.mjs';
 import { CodexAgentService } from '../../dist/domains/cats/services/agents/providers/CodexAgentService.js';
 import { resolveClaudeMcpConfig } from '../../dist/domains/cats/services/agents/providers/claude-mcp-config.js';
+import { prepareKimiMcpConfig } from '../../dist/domains/cats/services/agents/providers/kimi-mcp-config.js';
 import { writeOpenCodeRuntimeConfig } from '../../dist/domains/cats/services/agents/providers/opencode-config-writer.js';
 import { upstreamMcpServersFromArgs } from './direct-mcp-contract.js';
 import { fakeL0Compiler } from './fake-l0-compiler.js';
@@ -178,13 +179,29 @@ export const providers = {
     ).servers;
   },
   kimi: async (f, workingDirectory) => {
-    const path = await writeMcpConfigFile(workingDirectory ?? '', f.mcpServerPath, {
-      ...callbackFixture,
-      CAT_CAFE_CAT_ID: 'kimi',
+    const directory = workingDirectory ?? f.main;
+    const lease = await prepareKimiMcpConfig({
+      workingDirectory: directory,
+      mcpServerPath: f.mcpServerPath,
+      callbackEnv: { ...callbackFixture, CAT_CAFE_CAT_ID: 'kimi', CAT_CAFE_THREAD_ID: 'thread-mcp-workspace' },
     });
-    const config = JSON.parse(readFileSync(path, 'utf8')).mcpServers;
-    rmSync(join(path, '..'), { recursive: true, force: true });
-    return config;
+    try {
+      const config = JSON.parse(readFileSync(join(directory, '.kimi-code/mcp.json'), 'utf8')).mcpServers;
+      // Verify current authorization while the owned credential lease exists;
+      // the returned config is only an inspection snapshot, never a runnable lease.
+      for (const server of Object.values(config)) {
+        const path = server.env?.CAT_CAFE_CREDENTIAL_FILE;
+        if (!path) continue;
+        const credentials = JSON.parse(readFileSync(path, 'utf8'));
+        assert.equal(credentials.invocationId, callbackFixture.CAT_CAFE_INVOCATION_ID);
+        assert.equal(credentials.callbackToken, callbackFixture.CAT_CAFE_CALLBACK_TOKEN);
+        assert.equal(server.env.CAT_CAFE_INVOCATION_ID, undefined);
+        assert.equal(server.env.CAT_CAFE_CALLBACK_TOKEN, undefined);
+      }
+      return config;
+    } finally {
+      await lease.dispose();
+    }
   },
   opencode: async (f, workingDirectory) => {
     const path = await writeOpenCodeRuntimeConfig(

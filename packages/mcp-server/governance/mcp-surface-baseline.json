@@ -2177,7 +2177,7 @@
                   "ownerStateRef": {
                     "maxLength": 500,
                     "minLength": 1,
-                    "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$",
+                    "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#%-]+$",
                     "type": "string"
                   },
                   "version": {
@@ -2242,7 +2242,7 @@
         ],
         "type": "object"
       },
-      "inputSchemaDigest": "sha256:d7e418dc21498dbeaa8eccb3efc4a4cd45a3d3d564eca58cc807c293294767b2",
+      "inputSchemaDigest": "sha256:e4069935ed495f60251d92428747fa3d8d723d76b5518edaffcaca7a362a184e",
       "annotations": {
         "destructiveHint": false,
         "openWorldHint": false,
@@ -7253,7 +7253,7 @@
               "ownerStateRef": {
                 "maxLength": 500,
                 "minLength": 1,
-                "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$",
+                "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#%-]+$",
                 "type": "string"
               },
               "version": {
@@ -7313,7 +7313,7 @@
         ],
         "type": "object"
       },
-      "inputSchemaDigest": "sha256:30f23b2622a3d50b7261bcea89e8a2e42d5564f4e64e2e350a38d0d3bb55eaad",
+      "inputSchemaDigest": "sha256:81900860706833e172ab6407de93dae59c8621615d29db14bdcab02c15a2e317",
       "annotations": {
         "destructiveHint": false,
         "openWorldHint": false,
@@ -9954,7 +9954,7 @@
                                     "ownerStateRef": {
                                       "maxLength": 500,
                                       "minLength": 1,
-                                      "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$",
+                                      "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#%-]+$",
                                       "type": "string"
                                     },
                                     "version": {
@@ -10556,7 +10556,7 @@
         ],
         "type": "object"
       },
-      "inputSchemaDigest": "sha256:b357288b9e299eae301830b3fd95dc69730be6e9b1ca9089d8fcc93c54055801",
+      "inputSchemaDigest": "sha256:2a20b860029461ca0f8f9250b85a10711247a27c143ad0a30fbdcbad440b33af",
       "annotations": {
         "destructiveHint": false,
         "openWorldHint": false,
@@ -10813,7 +10813,7 @@
               "ownerStateRef": {
                 "maxLength": 500,
                 "minLength": 1,
-                "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$",
+                "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#%-]+$",
                 "type": "string"
               },
               "version": {
@@ -10858,7 +10858,7 @@
         ],
         "type": "object"
       },
-      "inputSchemaDigest": "sha256:275ff2b717246b7877a0a8a04ad24545cc7cc8d92df4f770086bdac269d1051e",
+      "inputSchemaDigest": "sha256:ab3c5011e56980f823015139cfac7a0b8e7f9ba89dc285375f596659df096c1a",
       "annotations": {
         "destructiveHint": false,
         "openWorldHint": false,
@@ -15762,7 +15762,7 @@
                       "ownerStateRef": {
                         "maxLength": 500,
                         "minLength": 1,
-                        "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$",
+                        "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#%-]+$",
                         "type": "string"
                       },
                       "version": {
@@ -16037,7 +16037,7 @@
         ],
         "type": "object"
       },
-      "inputSchemaDigest": "sha256:4b261db7eb9eb12f2eaae88d4393102520eab27836e3ebfa45392929b9cbf900",
+      "inputSchemaDigest": "sha256:d5909985c4ccf8b728e0b149cb92272ef38678aa2f81d4c8c4a47073683da727",
       "annotations": {
         "destructiveHint": false,
         "openWorldHint": false,
@@ -19774,7 +19774,7 @@
                   "ownerStateRef": {
                     "maxLength": 500,
                     "minLength": 1,
-                    "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$",
+                    "pattern": "^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#%-]+$",
                     "type": "string"
                   },
                   "version": {
@@ -19834,7 +19834,7 @@
         ],
         "type": "object"
       },
-      "inputSchemaDigest": "sha256:3717520d820c28eeccb834e864c0a226daa2ee04321994125d9be516c1e83aa3",
+      "inputSchemaDigest": "sha256:7f30313866c41f3f5f21dec51995b393cf66cf7ebebc668f1f29a128dfe1fed7",
       "annotations": {
         "destructiveHint": false,
         "openWorldHint": false,

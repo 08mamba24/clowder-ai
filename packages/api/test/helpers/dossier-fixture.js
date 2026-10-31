@@ -26,4 +26,6 @@ l0SelfDescription: "fixture-self-canary"
   assert.equal(snapshot.state, 'loaded');
   assert.deepEqual(snapshot.diagnostics, []);
   assert.equal(snapshot.profiles.get('fable-5')?.l0RoutingNote, 'fixture-route-canary');
+  assert.equal(snapshot.profiles.get('fable-5')?.l0RosterSummary, 'fixture-roster-canary');
+  assert.equal(snapshot.profiles.get('fable-5')?.identity?.pronouns, '戊/fixture-pronoun');
 }

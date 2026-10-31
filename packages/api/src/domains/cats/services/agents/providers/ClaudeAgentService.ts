@@ -514,7 +514,9 @@ export class ClaudeAgentService implements AgentService {
     // spawnCli, so a variable that exists only in the API process (or one added by
     // accountEnv, or removed by the subscription deny-list / selected-token filter)
     // is judged by what the child will actually inherit.
-    const envOverrides = buildClaudeEnvOverrides(options?.callbackEnv);
+    const envOverrides = buildClaudeEnvOverrides(options?.callbackEnv, {
+      contextNativeWindowTokens: options?.contextNativeWindowTokens,
+    });
     // Account env vars applied LAST — user overrides provider-injected values
     if (options?.accountEnv) {
       for (const [k, v] of Object.entries(options.accountEnv)) envOverrides[k] = v;
