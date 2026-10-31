@@ -44,6 +44,15 @@ export const TRUSTED_CHROME_SETUP_DELIVERIES = Object.freeze([
     version: '0.1.0-fork.1',
     digest: 'sha512-/4CkF+XQcop8sBQrqJfG1j10EjOpOQd7ZUBbd7vZpxaDSOlo4Dyw/93+rvjkW8v9WKKTnyBmWwxrWltkOqbtbQ==',
   }),
+  // Additional exact fork candidate after the reviewed 71749a292 roleless UUID
+  // receipt/return repair. Packed after a TypeScript build under Node 24;
+  // SHA256 495acd2ba58b9a90920e6187d3239ba0b3e38da9163f3a7d124737d1d145b5fa,
+  // 160152 bytes. Runtime payload matches the real-Chrome accepted package.
+  // Retain the preceding exact delivery for already-installed consumers.
+  Object.freeze({
+    version: '0.1.0-fork.1',
+    digest: 'sha512-FoMApxf+2YGGrOtLHv7XHKZv194vVW17M1Z9GgYRCYMCGmhdo4dTpwkqF3pVrYQI7Mjx2itbyt5jHdlzl4JpiA==',
+  }),
 ]);
 
 /** Routing is not authorization: both projection and execution resolve the policy below. */
