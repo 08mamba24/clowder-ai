@@ -172,6 +172,7 @@ function runAggregate(overrides = {}) {
       SUMMARY_RESULT: 'success',
       SERIAL_RESULT: 'skipped',
       FORK_COMPAT_RESULT: 'success',
+      WEB_FIRST_RUN_ONBOARDING_RESULT: 'success',
       TEST_MODE: 'sharded',
       ...overrides,
     },
@@ -184,6 +185,8 @@ for (const [story, overrides] of [
   ['the fork-compat job fails', { FORK_COMPAT_RESULT: 'failure' }],
   ['the fork-compat job is skipped', { FORK_COMPAT_RESULT: 'skipped' }],
   ['the fork-compat job never reported', { FORK_COMPAT_RESULT: '' }],
+  ['the web-first-run-onboarding job fails', { WEB_FIRST_RUN_ONBOARDING_RESULT: 'failure' }],
+  ['the web-first-run-onboarding job never reported', { WEB_FIRST_RUN_ONBOARDING_RESULT: '' }],
 ]) {
   const result = runAggregate(overrides);
   assert.notEqual(result.status, 0, `Test (Public) must not be green when ${story}`);
