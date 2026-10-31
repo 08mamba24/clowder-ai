@@ -30,18 +30,14 @@ import {
 } from './native-effect-shell-classifier.mjs';
 import { hasConcurrentShellExecution, pipelineChainStart } from './native-effect-shell-concurrency.mjs';
 import { expandSegmentBindings, isShellBinding } from './native-effect-shell-expansion.mjs';
-import { realpathSync } from 'node:fs';
+import { kernelPath } from './lib/shell-directory.mjs';
 import { classifyNativeTarget as classifyTarget, insideMainCheckout } from './native-effect-target-classifier.mjs';
 
 // #4807 conservative line: resolve symlink aliases on the real decision path so a
-// link pointing into a sanctuary cannot project as an ordinary target.
-const resolveSymlinkSafe = (path) => {
-  try {
-    return realpathSync(path);
-  } catch {
-    return undefined;
-  }
-};
+// link pointing into a sanctuary cannot project as an ordinary target. The kernel
+// (realpathSync.native) applies `..` after each symlink hop; the JS realpathSync
+// folds dot segments first and would answer for a different physical file.
+const resolveSymlinkSafe = (path) => kernelPath(path) ?? undefined;
 import { worktreeRemovalDecision } from './native-effect-worktree-removal.mjs';
 
 // Provenance: F306 AC-C7 -- how a shell command becomes candidates (per segment, per

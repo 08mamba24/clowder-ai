@@ -352,6 +352,44 @@ test('decision level: the pinned wrapper refuses a protected body-file input (PR
   }
 });
 
+test('decision level: dot-dot through a directory alias is judged on the kernel path (R8 regression)', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-kernelpath-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const protectedText = join(cwd, 'cat-cafe-runtime', 'private-fixture.md');
+  const nested = join(cwd, 'cat-cafe-runtime', 'nested');
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(protectedText, 'runtime secret\n');
+  // Ordinary same-name decoy: a lexical fold of `directory-alias/../private-fixture.md`
+  // lands here and would wrongly certify an ordinary target.
+  writeFileSync(join(cwd, 'private-fixture.md'), 'ordinary body\n');
+  // The kernel resolves `directory-alias` (a symlink) BEFORE the `..` applies, so
+  // every spelling below physically reads cat-cafe-runtime/private-fixture.md.
+  symlinkSync(nested, join(cwd, 'directory-alias'));
+  // Raw absolute spelling built by string concatenation so the test itself never
+  // normalizes the dot segments away.
+  const rawAbsolute = `${cwd}/directory-alias/../private-fixture.md`;
+  for (const [flag, file] of [
+    ['--body-file', 'directory-alias/../private-fixture.md'],
+    ['-F', 'directory-alias/../private-fixture.md'],
+    ['--body-file', './directory-alias/../private-fixture.md'],
+    ['-F', './directory-alias/../private-fixture.md'],
+    ['--body-file', rawAbsolute],
+    ['-F', rawAbsolute],
+  ]) {
+    const deferred = decideShellHookPayload(
+      {
+        judged: `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair ${flag} '${file}'`,
+      },
+      cwd,
+      source,
+    );
+    assert.equal(deferred.decision, 'deny', `${flag} ${file}`);
+    assert.equal(deferred.effect, 'unknown', `${flag} ${file}`);
+    assert.equal(deferred.target.kind, 'runtime_sanctuary', `${flag} ${file}`);
+    assert.equal(deferred.reasonCode, 'protected_target_unparsed', `${flag} ${file}`);
+  }
+});
+
 test('decision level: dangling and stream body inputs never earn a remote coordinate', (t) => {
   // Contract reconciliation (R8): under the merged target model the working
   // directory — not the program path — is the fallback target, so a dangling
