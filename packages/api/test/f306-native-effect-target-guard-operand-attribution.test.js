@@ -141,6 +141,8 @@ describe('F306 final attribution: metadata is data; known writes have a positive
       const result = decideBoth(`redis-cli -p 6399 ${command}`, mainRoot);
       assert.equal(result.decision, 'deny', command);
       assert.equal(result.effect, 'unknown', command);
+      assert.equal(result.target.kind, 'redis_sanctuary', command);
+      assert.equal(result.reasonCode, 'protected_target_unparsed', command);
     }
   });
 
@@ -197,6 +199,7 @@ describe('F306 final attribution: metadata is data; known writes have a positive
     const unknown = decideBoth('redis-cli -p 6399 UNKNOWN_COMMAND x', mainRoot);
     assert.equal(unknown.decision, 'deny');
     assert.equal(unknown.effect, 'unknown');
+    assert.equal(unknown.target.kind, 'redis_sanctuary');
     assert.equal(unknown.reasonCode, 'protected_target_unparsed');
   });
 

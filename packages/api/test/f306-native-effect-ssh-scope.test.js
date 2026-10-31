@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
+import { remoteSshExecution } from '../../../scripts/native-effect-ssh-scope.mjs';
 import { decideNativeHookPayload } from '../../../scripts/native-effect-target-guard.mjs';
 import { nativeHookPrograms, nativeHookTestEnv } from './helpers/native-hook-programs.js';
 import { reportSystemSshRunnerInputs } from './helpers/system-ssh-runner-inputs.js';
@@ -39,6 +40,12 @@ const decide = (command, cwd = main, extra = {}) =>
   decideNativeHookPayload(payload(command, 'Bash', cwd), { ...options, ...extra });
 
 test('source546: a literal remote SSH service has a remote coordinate in both provider payloads', () => {
+  // The recognizer attributes the same remote coordinate under both cwds; only
+  // the full-guard decision diverges once the cwd is the runtime sanctuary.
+  for (const cwd of [main, runtime]) {
+    const recognised = remoteSshExecution(script(), cwd, options.sshScope);
+    assert.equal(recognised.target, 'ssh://root@203.0.113.8:22', cwd);
+  }
   for (const provider of ['Bash', 'exec_command']) {
     const result = decideNativeHookPayload(payload(script(), provider, main), options);
     assert.equal(result.decision, 'allow', JSON.stringify(result));
@@ -59,39 +66,41 @@ test('source546: a literal remote SSH service has a remote coordinate in both pr
 });
 
 test('the final native shell execution payload uses its actual local cwd and the same SSH scope', () => {
-  // Both commands deny, but for distinguishable reasons — and the opaque script
-  // denies ONLY because the actual cwd (native_execution.cwd_uri = runtime) is
-  // used instead of the declared input cwd (main), which would allow it under
-  // the remote coordinate. That contrast is the cwd proof (#4807 conservative
-  // line: unknown effect on the runtime sanctuary denies).
-  for (const [command, reasonCode] of [
-    [script(), 'protected_target_unparsed'],
-    [`${prefix} true > '${runtime}/.env'`, undefined],
-  ]) {
-    const input = {
-      cwd: main,
+  // Decisions must follow the actual cwd (native_execution.cwd_uri), not the
+  // declared input.cwd — proved in both directions: the opaque script declared
+  // under the runtime but actually executed in main earns the remote coordinate
+  // (allow), while the same script declared in main and actually executed in the
+  // runtime sanctuary denies (#4807 conservative line: unknown effect on the
+  // sanctuary denies). The runtime .env redirect denies under either reading.
+  const finalPayload = (declaredCwd, actualCwd, command) => ({
+    cwd: declaredCwd,
+    turn_id: 'ssh-scope-turn',
+    tool_use_id: 'ssh-scope-call',
+    tool_name: 'Bash',
+    hook_event_name: 'NativeShellSafetyCheck',
+    session_id: 'ssh-session',
+    native_execution: {
+      plan_id: 'ssh-plan',
+      call_id: 'ssh-scope-call',
       turn_id: 'ssh-scope-turn',
-      tool_use_id: 'ssh-scope-call',
-      tool_name: 'Bash',
-      hook_event_name: 'NativeShellSafetyCheck',
-      session_id: 'ssh-session',
-      native_execution: {
-        plan_id: 'ssh-plan',
-        call_id: 'ssh-scope-call',
-        turn_id: 'ssh-scope-turn',
-        environment_id: 'local',
-        cwd_uri: pathToFileURL(runtime).href,
-        argv: ['/bin/bash', '-c', command],
-        command,
-        phase: 'before_first_effect',
-        constraints: {},
-        fingerprint: 'a'.repeat(40),
-      },
-    };
-    const result = decideNativeHookPayload(input, options);
-    assert.equal(result.decision, 'deny', JSON.stringify(result));
+      environment_id: 'local',
+      cwd_uri: pathToFileURL(actualCwd).href,
+      argv: ['/bin/bash', '-c', command],
+      command,
+      phase: 'before_first_effect',
+      constraints: {},
+      fingerprint: 'a'.repeat(40),
+    },
+  });
+  for (const [declaredCwd, actualCwd, command, decision, reasonCode] of [
+    [main, runtime, script(), 'deny', 'protected_target_unparsed'],
+    [main, runtime, `${prefix} true > '${runtime}/.env'`, 'deny', undefined],
+    [runtime, main, script(), 'allow', 'remote_ssh_policy_deferred'],
+  ]) {
+    const result = decideNativeHookPayload(finalPayload(declaredCwd, actualCwd, command), options);
+    assert.equal(result.decision, decision, JSON.stringify(result));
     if (reasonCode) assert.equal(result.reasonCode, reasonCode, JSON.stringify(result));
-    assert.equal(result.source.cwd, runtime);
+    assert.equal(result.source.cwd, actualCwd);
   }
 });
 
