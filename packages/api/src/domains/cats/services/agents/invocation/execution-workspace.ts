@@ -26,7 +26,7 @@ export async function freezeExecutionWorkspace(input: {
   const required =
     providerRequiresThreadWorkspace(input.provider as Parameters<typeof providerRequiresThreadWorkspace>[0]) ||
     input.requiresAgyWorkspace;
-  const requiredBy = input.requiresAgyWorkspace ? 'AGY' : 'OpenCode';
+  const requiredBy = input.requiresAgyWorkspace ? 'AGY' : input.provider === 'qoder' ? 'Qoder' : 'OpenCode';
   let thread: Thread | null | undefined;
   let failure: string | undefined;
   try {

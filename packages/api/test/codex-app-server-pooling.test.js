@@ -1247,10 +1247,15 @@ test('plugin MCP wrapper follows the replacement host credential file instead of
   config.capabilities.at(-1).mcpServer.env.CLOWDER_PLUGIN_ACTION_TOKEN = '${MCP_WRAPPER_FIXTURE_TOKEN}';
   writeFileSync(configPath, JSON.stringify(config));
   const previousRoots = Object.fromEntries(
-    ['CAT_CAFE_RUNTIME_ROOT', 'CAT_CAFE_WORKSPACE_ROOT'].map((key) => [key, process.env[key]]),
+    ['CAT_CAFE_RUNTIME_ROOT', 'CAT_CAFE_WORKSPACE_ROOT', 'CAT_CAFE_GLOBAL_CONFIG_ROOT'].map((key) => [
+      key,
+      process.env[key],
+    ]),
   );
   process.env.CAT_CAFE_RUNTIME_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
   process.env.CAT_CAFE_WORKSPACE_ROOT = credsDir;
+  // The runtime root locates the wrapper; account reads must remain inside this fixture.
+  process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = credsDir;
   try {
     const pool = new FakeHostPool();
     const service = new CodexAgentService({
@@ -1260,23 +1265,31 @@ test('plugin MCP wrapper follows the replacement host credential file instead of
       l0CompilerFn: fakeL0Compiler,
       model: 'gpt-5.3-codex',
     });
-    await drain(
+    const seedEvents = await drain(
       service.invoke('seed plugin transport', {
         workingDirectory: credsDir,
         invocationId: 'plugin-seed',
         callbackEnv: callbackEnv('plugin-seed', 'seed-token'),
       }),
     );
+    assert.deepEqual(
+      seedEvents.filter((event) => event.type === 'error'),
+      [],
+    );
     const seedStart = pool.wires[0].writes.find((m) => m.method === 'thread/start');
     const oldPath = managedCredentialPath(seedStart);
     pool.replacementSessionIds.add('codex-thread-1');
-    await drain(
+    const replacementEvents = await drain(
       service.invoke('replacement plugin transport', {
         workingDirectory: credsDir,
         invocationId: 'plugin-current',
         sessionId: 'codex-thread-1',
         callbackEnv: callbackEnv('plugin-current', 'current-token'),
       }),
+    );
+    assert.deepEqual(
+      replacementEvents.filter((event) => event.type === 'error'),
+      [],
     );
     const resume = pool.wires.at(-1).writes.find((m) => m.method === 'thread/resume');
     const server = Object.entries(resume.params.config.mcp_servers).find(([id]) => id.includes('github-tracking'))?.[1];

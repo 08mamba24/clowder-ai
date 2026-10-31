@@ -145,7 +145,9 @@ test('client config adapters share generic env expansion, including ACP session 
   save(project, { ...entry, mcpServer: { ...entry.mcpServer, env: { CUSTOM: 'obsolete' } } });
   const mcpServerPath = join(host, 'packages/mcp-server/dist/index.js');
   const callbackEnv = { CAT_CAFE_CAT_ID: 'codex' };
-  const shared = await resolveProviderMcpConfig({ workingDirectory: project, mcpServerPath, callbackEnv });
+  // Native providers validate references against the environment actually passed to spawn.
+  const childEnv = { ...callbackEnv, MCP_FIXTURE_TOKEN: 'current-value' };
+  const shared = await resolveProviderMcpConfig({ workingDirectory: project, mcpServerPath, callbackEnv, childEnv });
   const sharedContract = directMcpContract(shared.fixture);
   assert.equal(sharedContract.upstream.env.CUSTOM, 'prefix:current-value');
   assert.equal(sharedContract.launchEnv.CUSTOM, 'prefix:current-value');
@@ -155,6 +157,7 @@ test('client config adapters share generic env expansion, including ACP session 
     workingDirectory: project,
     mcpServerPath,
     callbackEnv,
+    childEnv,
     nativeDirectory: root(t),
   });
   const kimiContract = directMcpContract(kimi.fixture);
@@ -163,8 +166,9 @@ test('client config adapters share generic env expansion, including ACP session 
   assert.equal(kimiContract.upstream.command, entry.mcpServer.command);
   assert.deepEqual(kimiContract.upstream.args, entry.mcpServer.args);
   const openCode = buildOpenCodeMcpSync(mcpServerPath, 'codex', host, project);
-  // This builder returns the upstream descriptor; the runtime config writer decorates it later.
-  assert.equal(openCode.fixture.environment.CUSTOM, 'prefix:current-value');
+  // OpenCode interpolates native references at launch; its config must not persist the resolved value.
+  assert.equal(openCode.fixture.environment.CUSTOM, 'prefix:{env:MCP_FIXTURE_TOKEN}');
+  assert.doesNotMatch(JSON.stringify(openCode), /current-value/);
   assert.deepEqual(openCode.fixture.command, [entry.mcpServer.command, ...entry.mcpServer.args]);
   const config = readInvocationMcpConfig(host, project).config;
   const acp = await resolveAcpMcpServers(host, ['fixture'], undefined, {
