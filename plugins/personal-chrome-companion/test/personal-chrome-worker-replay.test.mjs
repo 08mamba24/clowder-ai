@@ -6,7 +6,7 @@ import { runInNewContext } from 'node:vm';
 const serviceWorkerPath = new URL('../extension/service-worker.js', import.meta.url);
 const helperArtifactRevision = `sha512:${'0'.repeat(128)}`;
 const EXTENSION_REVISION = '0.2.13';
-const PAGE_ADAPTER_REVISION = '2026-10-30-fork.1';
+const PAGE_ADAPTER_REVISION = '2026-10-31-fork.1';
 const passiveAlarms = () => ({ create: async () => undefined, onAlarm: { addListener() {} } });
 
 // #50 replay safety, ported 1:1 from fork

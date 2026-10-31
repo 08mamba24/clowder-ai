@@ -22,7 +22,7 @@ const helperArtifactRevision = `sha512:${'0'.repeat(128)}`;
 const REVISIONS = {
   helper: helperArtifactRevision,
   extension: '0.2.13',
-  pageAdapter: '2026-10-30-fork.1',
+  pageAdapter: '2026-10-31-fork.1',
 };
 const CONVERSATION_ID = 'conversation-7';
 const SOURCE_MESSAGE_ID = 'source-message-9';

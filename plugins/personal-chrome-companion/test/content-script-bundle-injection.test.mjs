@@ -13,7 +13,7 @@ const extensionRoot = () => new URL('../extension/', import.meta.url);
 // direct-import module tests stay green.
 
 const EXTENSION_REVISION = '0.2.13';
-const PAGE_ADAPTER_REVISION = '2026-10-30-fork.1';
+const PAGE_ADAPTER_REVISION = '2026-10-31-fork.1';
 const HELPER_REVISION = `sha512:${'0'.repeat(128)}`;
 
 function createInjectionFixture() {

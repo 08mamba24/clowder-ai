@@ -6,7 +6,7 @@ import { createAssistantReturnInbox } from '../native-host/assistant-return-inbo
 const revisions = {
   helper: `sha512:${'0'.repeat(128)}`,
   extension: '0.2.13',
-  pageAdapter: '2026-10-30-fork.1',
+  pageAdapter: '2026-10-31-fork.1',
 };
 
 function observed() {
