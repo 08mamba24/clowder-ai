@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -23,6 +24,7 @@ import {
   constrainedGhPullRequestOperation,
   isDescriptorNamespacePath,
 } from '../../../scripts/native-effect-github-classifier.mjs';
+import { proveProgramSelection } from '../../../scripts/native-effect-program-selection.mjs';
 import { decideShellHookPayload } from '../../../scripts/native-effect-shell-decision.mjs';
 
 // The pinned wrapper entry is proved by content, so this test owns its own copy of
@@ -53,7 +55,34 @@ const GH_DELEGATE = join(WRAPPER_FIXTURE_ROOT, 'delegate', 'gh');
 mkdirSync(dirname(GH_DELEGATE), { recursive: true });
 writeFileSync(GH_DELEGATE, '#!/bin/sh\nexit 0\n');
 chmodSync(GH_DELEGATE, 0o755);
+const AMBIENT_PATH = process.env.PATH;
+const AMBIENT_GH_DELEGATE = process.env.CAT_CAFE_REAL_GH_PATH;
 process.env.CAT_CAFE_REAL_GH_PATH = GH_DELEGATE;
+const FIXTURE_BIN = dirname(GH_DELEGATE);
+symlinkSync(process.execPath, join(FIXTURE_BIN, 'node'));
+writeFileSync(join(FIXTURE_BIN, 'git'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+// Program selection proves the complete node/delegate/git chain, not just the
+// pinned wrapper. Keep that chain independent of a CI runner's ambient PATH.
+process.env.PATH = FIXTURE_BIN;
+after(() => {
+  if (AMBIENT_PATH === undefined) delete process.env.PATH;
+  else process.env.PATH = AMBIENT_PATH;
+  if (AMBIENT_GH_DELEGATE === undefined) delete process.env.CAT_CAFE_REAL_GH_PATH;
+  else process.env.CAT_CAFE_REAL_GH_PATH = AMBIENT_GH_DELEGATE;
+});
+
+function wrapperProofDiagnostic(result, cwd) {
+  const call = { program: GH_WRAPPER, cwd, wrappers: [] };
+  return JSON.stringify({
+    decision: result,
+    fixtureSelection: proveProgramSelection({ ...call, environment: [`PATH=${FIXTURE_BIN}`] }),
+    ambientSelection: proveProgramSelection({ ...call, environment: [`PATH=${AMBIENT_PATH ?? ''}`] }),
+    ambientPath: AMBIENT_PATH,
+    node: realpathSync(join(FIXTURE_BIN, 'node')),
+    delegate: GH_DELEGATE,
+    git: join(FIXTURE_BIN, 'git'),
+  });
+}
 
 // Provenance: F306 AC-C7 -- canonical gh remote operations must classify with an
 // honest effect and a remote coordinate. Unrecognized shapes keep today's
@@ -190,12 +219,36 @@ test('the pinned wrapper entry: verified absolute-path query and mutation both c
   const mutation = `${GH_WRAPPER} api graphql -f query='mutation { createDiscussion(input:{repositoryId:"R_1"}) { discussion { id } } }'`;
   const readDecision = decideShellHookPayload({ judged: query }, cwd, source);
   assert.equal(readDecision.decision, 'allow');
-  assert.equal(readDecision.effect, 'read');
+  assert.equal(readDecision.effect, 'read', wrapperProofDiagnostic(readDecision, cwd));
   assert.deepEqual(readDecision.target, { kind: 'remote_repository', value: 'github://api/graphql' });
   const mutationDecision = decideShellHookPayload({ judged: mutation }, cwd, source);
   assert.equal(mutationDecision.decision, 'allow');
-  assert.equal(mutationDecision.effect, 'remote_mutation');
+  assert.equal(mutationDecision.effect, 'remote_mutation', wrapperProofDiagnostic(mutationDecision, cwd));
   assert.deepEqual(mutationDecision.target, { kind: 'remote_repository', value: 'github://api/graphql' });
+});
+
+test('a pinned wrapper does not prove a missing or protected interpreter chain', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-wrapper-unproved-chain-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const missing = join(cwd, 'empty-bin');
+  const protectedBin = join(cwd, 'cat-cafe-runtime', 'bin');
+  mkdirSync(missing);
+  mkdirSync(protectedBin, { recursive: true });
+  writeFileSync(join(protectedBin, 'node'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  for (const path of [missing, `${protectedBin}:${FIXTURE_BIN}`]) {
+    process.env.PATH = path;
+    try {
+      const result = decideShellHookPayload(
+        { judged: `${GH_WRAPPER} api graphql -f query='{ viewer { login } }'` },
+        cwd,
+        source,
+      );
+      assert.equal(result.effect, 'unknown', path);
+      assert.notEqual(result.target?.kind, 'remote_repository', path);
+    } finally {
+      process.env.PATH = FIXTURE_BIN;
+    }
+  }
 });
 
 test('unquoted brace and glob expansion never rewrites the classified PR argv', () => {
@@ -261,7 +314,7 @@ test('decision level: the pinned wrapper publishes via an ordinary body file and
     `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair --body-file '${file}'`;
   const allowed = decideShellHookPayload({ judged: shape(ordinary) }, cwd, source);
   assert.equal(allowed.decision, 'allow');
-  assert.equal(allowed.effect, 'remote_mutation');
+  assert.equal(allowed.effect, 'remote_mutation', wrapperProofDiagnostic(allowed, cwd));
   assert.deepEqual(allowed.target, { kind: 'remote_repository', value: 'github://08mamba24/clowder-ai/pulls' });
   // Contract reconciliation (R8): the merged tree resolves the effect policy toward
   // "an unrecognised effect is deferred, not a mutation" (native-effect-policy.mjs,

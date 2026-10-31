@@ -12,10 +12,12 @@
  */
 
 import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, beforeEach, describe, it } from 'node:test';
+import { dirname, join } from 'node:path';
+import { after, afterEach, beforeEach, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 
 // The global-scope sync persists `.cat-cafe` state at STARTUP_REPO_ROOT. Run the

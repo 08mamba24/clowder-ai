@@ -387,6 +387,7 @@ describe('cat-catalog-store', () => {
     const runtimeCatalog = JSON.parse(readFileSync(catalogPath, 'utf-8'));
 
     assert.equal(runtimeCatalog.breeds.length, 0, 'members require explicit owner confirmation');
+    assert.equal(runtimeCatalog.memberInitialization, 'user_selected_v1');
     assert.deepEqual(runtimeCatalog.roster?.owner, {
       family: 'owner',
       roles: ['owner'],
@@ -402,6 +403,12 @@ describe('cat-catalog-store', () => {
     // Non-breed config (reviewPolicy, coCreator) is preserved from template.
     assert.deepEqual(runtimeCatalog.reviewPolicy, template.reviewPolicy);
     assert.deepEqual(runtimeCatalog.coCreator, template.coCreator);
+    bootstrapCatCatalog(projectRoot, templatePath);
+    assert.deepEqual(
+      JSON.parse(readFileSync(catalogPath, 'utf-8')),
+      runtimeCatalog,
+      'a second bootstrap must not enroll unconfirmed template members',
+    );
   });
 
   it('preserves allowlisted glm52 dragon-li upgrades for a legacy runtime catalog', () => {
@@ -450,7 +457,7 @@ describe('cat-catalog-store', () => {
     assert.equal(runtimeCatalog.roster?.glm52?.family, 'dragon-li', 'glm52 roster entry should be persisted');
   });
 
-  it('backfills allowlisted grok-build, dsh, zcode, and qoder breeds into a fresh runtime catalog', () => {
+  it('backfills allowlisted grok-build, dsh, zcode, and qoder breeds into a legacy runtime catalog', () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-harness-'));
     const templatePath = join(projectRoot, 'cat-template.json');
     const template = makeF127BootstrapTemplate();
@@ -570,6 +577,7 @@ describe('cat-catalog-store', () => {
       evaluation: 'Qoder CN L2',
     };
     writeFileSync(templatePath, JSON.stringify(template, null, 2));
+    writeCatCatalog(projectRoot, makeF127BootstrapTemplate());
 
     const catalogPath = bootstrapCatCatalog(projectRoot, templatePath);
     const runtimeCatalog = JSON.parse(readFileSync(catalogPath, 'utf-8'));
@@ -593,6 +601,7 @@ describe('cat-catalog-store', () => {
     legacyTemplate.breeds = legacyTemplate.breeds.filter((breed) => breed.id !== 'qoder');
     delete legacyTemplate.roster.qoder;
     writeFileSync(templatePath, JSON.stringify(legacyTemplate, null, 2));
+    writeCatCatalog(projectRoot, legacyTemplate);
     bootstrapCatCatalog(projectRoot, templatePath);
 
     // Hand-built member occupying the qoder identity under a DIFFERENT breed id,
@@ -655,6 +664,7 @@ describe('cat-catalog-store', () => {
     legacyTemplate.breeds = legacyTemplate.breeds.filter((breed) => breed.id !== 'qoder');
     delete legacyTemplate.roster.qoder;
     writeFileSync(templatePath, JSON.stringify(legacyTemplate, null, 2));
+    writeCatCatalog(projectRoot, legacyTemplate);
     bootstrapCatCatalog(projectRoot, templatePath);
 
     createRuntimeCat(projectRoot, {
@@ -702,6 +712,7 @@ describe('cat-catalog-store', () => {
     const template = JSON.parse(readFileSync(REPO_TEMPLATE_PATH, 'utf-8'));
     writeFileSync(templatePath, JSON.stringify(template, null, 2));
 
+    writeCatCatalog(projectRoot, template);
     bootstrapCatCatalog(projectRoot, templatePath);
     await deleteRuntimeCat(projectRoot, 'qoder');
     bootstrapCatCatalog(projectRoot, templatePath);

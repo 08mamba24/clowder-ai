@@ -3,10 +3,7 @@
     "kind": "family",
     "resourceFamily": "task-workflow"
   },
-  "retiredNames": [
-    "cat_cafe_complete_a2a_dispatch",
-    "cat_cafe_complete_managed_hold"
-  ],
+  "retiredNames": ["cat_cafe_complete_a2a_dispatch", "cat_cafe_complete_managed_hold"],
   "canonicalNames": [
     "cat_cafe_development_return",
     "cat_cafe_development_work",
@@ -16,24 +13,12 @@
     "cat_cafe_resolve_development_work"
   ],
   "expectedProfiles": {
-    "cat_cafe_development_return": [
-      "full"
-    ],
-    "cat_cafe_development_work": [
-      "full"
-    ],
-    "cat_cafe_get_custody_events": [
-      "full"
-    ],
-    "cat_cafe_get_hold_status": [
-      "full"
-    ],
-    "cat_cafe_read_development_return": [
-      "full"
-    ],
-    "cat_cafe_resolve_development_work": [
-      "full"
-    ]
+    "cat_cafe_development_return": ["full"],
+    "cat_cafe_development_work": ["full"],
+    "cat_cafe_get_custody_events": ["full"],
+    "cat_cafe_get_hold_status": ["full"],
+    "cat_cafe_read_development_return": ["full"],
+    "cat_cafe_resolve_development_work": ["full"]
   },
   "rollbackRevision": "c76ad11552fffe59f7fe7493639f84920d505c8a",
   "layers": {
@@ -64,10 +49,7 @@
     },
     "skill-convention": {
       "status": "covered",
-      "consumers": [
-        "cat-cafe-skills/custody-recognition/SKILL.md",
-        "cat-cafe-skills/feat-lifecycle/SKILL.md"
-      ]
+      "consumers": ["cat-cafe-skills/custody-recognition/SKILL.md", "cat-cafe-skills/feat-lifecycle/SKILL.md"]
     },
     "fixture-test": {
       "status": "covered",

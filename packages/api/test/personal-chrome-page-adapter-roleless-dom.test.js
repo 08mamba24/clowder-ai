@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { JSDOM } from 'jsdom';
 
-import { createChatGptPageAdapter } from '../src/plugins/cloud-cat-personal-host/extension/chatgpt-page-adapter.mjs';
+import { createChatGptPageAdapter } from '../../../plugins/personal-chrome-companion/extension/chatgpt-page-adapter.mjs';
 
 // Generalized fixtures for the roleless ChatGPT DOM (observed 2026-10-28):
 // user bubbles use [data-user-message-bubble="true"] inside

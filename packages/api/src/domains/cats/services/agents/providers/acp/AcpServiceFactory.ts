@@ -22,23 +22,12 @@ import { AcpAgentService } from './AcpAgentService.js';
 import { AcpClient } from './AcpClient.js';
 import { AcpHttpStreamClient } from './AcpHttpStreamClient.js';
 import { AcpProcessPool, DEFAULT_ACP_IDLE_TTL_MS } from './AcpProcessPool.js';
+import { resolveAcpBootstrapCwd } from './acp-bootstrap-cwd.js';
 // resolveAcpMcpServers + resolveDisabledServerIds moved to AcpAgentService.invoke()
 // for invoke-time resolution (#712 P1-1).
 import { createAcpPoolSpawnSignature } from './acp-pool-signature.js';
 import { skipAcpProfile } from './acp-registration-failure.js';
 import { tryPrepareAcpProcessEnv } from './acp-spawn-env.js';
-import {
-  dshOmitsAcpSessionMcp,
-  isDshHarnessCommand,
-  mintDshCredentialFile,
-  prepareDshAcpSpawnForProject,
-} from './dsh-acp-bootstrap.js';
-import {
-  applyZcodeHarnessSpawn,
-  isZcodeHarnessCommand,
-  zcodeOmitsAcpSessionMcp,
-  zcodeUnreadyMessage,
-} from './zcode/zcode-acp-bootstrap.js';
 import { denyAgyAcpPermission } from './agy/agy-acp-permission.js';
 import { prepareAgyAcpProfile } from './agy/agy-acp-profile.js';
 import type { AgyAcpConfig } from './agy/agy-acp-session.js';
@@ -48,7 +37,12 @@ import {
   type VerifiedAcpBootstrapContext,
   verifyAcpBootstrap,
 } from './bootstrap/acp-bootstrap-context.js';
-import { resolveAcpBootstrapCwd } from './acp-bootstrap-cwd.js';
+import {
+  dshOmitsAcpSessionMcp,
+  isDshHarnessCommand,
+  mintDshCredentialFile,
+  prepareDshAcpSpawnForProject,
+} from './dsh-acp-bootstrap.js';
 import { pendingAcpPoolRetirement, trackAcpPoolRetirement } from './pool/acp-pool-retirement-registry.js';
 import {
   type AcpServicePoolLease,
@@ -56,6 +50,12 @@ import {
   retainAcpServicePool,
   retireAcpServicePool,
 } from './pool/acp-service-pool-lease.js';
+import {
+  applyZcodeHarnessSpawn,
+  isZcodeHarnessCommand,
+  zcodeOmitsAcpSessionMcp,
+  zcodeUnreadyMessage,
+} from './zcode/zcode-acp-bootstrap.js';
 
 export type AcpPoolRegistry = Map<string, AcpProcessPool>;
 

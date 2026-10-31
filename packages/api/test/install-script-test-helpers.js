@@ -35,30 +35,39 @@ export {
   writeFileSync,
 };
 
-/**
- * Snippets may call install.sh's `run_install_auth_config`, which spawns the
- * standalone installer. That child inherits NODE_TEST_CONTEXT and so is subject
- * to the installer's fail-closed boundary (P1-6), which needs a declared
- * sandbox root. Every fixture in these suites lives under mkdtemp(tmpdir()),
- * and install.sh deliberately writes to two roots per call (project + runtime
- * worktree), so tmpdir() is the smallest root that covers a snippet without
- * enumerating both. Callers with a tighter fixture may pass sandboxRoot.
- */
-export function runSourceOnlySnippet(snippet, { sandboxRoot = tmpdir() } = {}) {
-  const result = spawnSync(
-    'bash',
-    // Source-only skips the installer's project discovery; helpers still need its real source root.
-    ['-lc', `set -e\nsource "${installScript}" --source-only >/dev/null 2>&1\nPROJECT_DIR="${repoRoot}"\n${snippet}`],
-    { encoding: 'utf8' },
-  );
+/** Installer snippets name their owned write targets; an omitted declaration grants no writes. */
+export function runSourceOnlySnippet(snippet, { sandboxRoot } = {}) {
+  const snippetHome = realpathSync(mkdtempSync(join(tmpdir(), 'install-snippet-home-')));
+  const env = { ...process.env, HOME: snippetHome, USERPROFILE: snippetHome, CAT_CAFE_TEST_SANDBOX: '1' };
+  for (const name of [
+    'CAT_CAFE_TEST_SANDBOX_ROOT',
+    'CAT_CAFE_TEST_SANDBOX_ALLOW_UNSAFE_ROOT',
+    'CAT_CAFE_GLOBAL_CONFIG_ROOT',
+    'CAT_CAFE_CONFIG_ROOT',
+    'CAT_CAFE_RUNTIME_ROOT',
+    'CAT_CAFE_WORKSPACE_ROOT',
+  ])
+    delete env[name];
+  if (sandboxRoot) env.CAT_CAFE_TEST_SANDBOX_ROOT = sandboxRoot;
 
-  assert.equal(
-    result.status,
-    0,
-    [`exit=${result.status}`, `stdout:\n${result.stdout}`, `stderr:\n${result.stderr}`].join('\n'),
-  );
+  try {
+    const result = spawnSync(
+      'bash',
+      // Source-only skips project discovery; helpers still need the real installer source root.
+      ['-c', `set -e\nsource "${installScript}" --source-only >/dev/null 2>&1\nPROJECT_DIR="${repoRoot}"\n${snippet}`],
+      { cwd: repoRoot, encoding: 'utf8', env },
+    );
 
-  return result.stdout.trim();
+    assert.equal(
+      result.status,
+      0,
+      [`exit=${result.status}`, `stdout:\n${result.stdout}`, `stderr:\n${result.stderr}`].join('\n'),
+    );
+
+    return result.stdout.trim();
+  } finally {
+    rmSync(snippetHome, { recursive: true, force: true });
+  }
 }
 
 export function runGit(args, cwd) {

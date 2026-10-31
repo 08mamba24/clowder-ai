@@ -200,33 +200,33 @@ jobs:
           REQUIRE_OPENCODE_MODEL_ID_TEST: '1'
       - name: Windows ACP bootstrap private directories and test isolation
         run: >-
-          node --import tsx --import ./packages/api/test/helpers/setup-cat-registry.js --test
+          node packages/api/scripts/with-test-home.mjs
+          node --import tsx --import ./test/helpers/setup-cat-registry.js --test
           --test-concurrency=2 --test-timeout=60000
-          packages/api/test/acp/acp-bootstrap-cwd.test.js
-          packages/api/test/acp/acp-bootstrap-platform.test.js
-          packages/api/test/acp/acp-bootstrap-windows.test.js
-          packages/api/test/acp/acp-service-factory.test.js
-          packages/api/test/acp/acp-registration-availability.test.js
-          packages/api/test/acp/acp-bootstrap-ancestor-security.test.js
-          packages/api/test/acp/acp-bootstrap-relocation.test.js
-          packages/api/test/acp/acp-bootstrap-spawn-recheck.test.js
-          packages/api/test/acp/acp-bootstrap-startup-policy.test.js
-          packages/api/test/acp/acp-bootstrap-generic-selection.test.ts
-          packages/api/test/acp/acp-bootstrap-explicit-root.test.ts
-          packages/api/test/acp/acp-bootstrap-strict-native.test.ts
-          packages/api/test/acp/acp-bootstrap-posix-preservation.test.ts
-          packages/api/test/acp/acp-bootstrap-check-route.test.ts
-          packages/api/test/acp/acp-host-policy-matrix.test.ts
-          packages/api/test/acp/acp-directory-identity.test.ts
-          packages/api/test/acp-bootstrap-config-recovery.test.js
-          packages/api/test/plugin-inventory-writer-lease.test.js
-          packages/api/test/audit-log-retry.test.js
-          packages/api/test/agent-session-contract/acp-factory-recovery.test.ts
-          packages/api/test/account-credential-identity.test.js
-          packages/api/test/account-store-adjudication.test.js
+          test/acp/acp-bootstrap-cwd.test.js
+          test/acp/acp-bootstrap-platform.test.js
+          test/acp/acp-bootstrap-windows.test.js
+          test/acp/acp-service-factory.test.js
+          test/acp/acp-registration-availability.test.js
+          test/acp/acp-bootstrap-ancestor-security.test.js
+          test/acp/acp-bootstrap-relocation.test.js
+          test/acp/acp-bootstrap-spawn-recheck.test.js
+          test/acp/acp-bootstrap-startup-policy.test.js
+          test/acp/acp-bootstrap-generic-selection.test.ts
+          test/acp/acp-bootstrap-explicit-root.test.ts
+          test/acp/acp-bootstrap-strict-native.test.ts
+          test/acp/acp-bootstrap-posix-preservation.test.ts
+          test/acp/acp-bootstrap-check-route.test.ts
+          test/acp/acp-host-policy-matrix.test.ts
+          test/acp/acp-directory-identity.test.ts
+          test/acp-bootstrap-config-recovery.test.js
+          test/plugin-inventory-writer-lease.test.js
+          test/audit-log-retry.test.js
+          test/agent-session-contract/acp-factory-recovery.test.ts
+          test/account-credential-identity.test.js
+          test/account-store-adjudication.test.js
         env:
           NODE_ENV: test
-          CAT_CAFE_GLOBAL_CONFIG_ROOT: ${{ runner.temp }}/acp-bootstrap-config
           REDIS_URL: redis://127.0.0.1:0
         # volume-root and audited-runtime tests require explicitly selected native fixtures:
         # ACP_BOOTSTRAP_TEST_VOLUME and ACP_DSH_AUDITED_ENTRY (see issue1653 verification report).

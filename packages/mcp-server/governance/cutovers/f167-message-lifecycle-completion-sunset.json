@@ -3,39 +3,19 @@
     "kind": "family",
     "resourceFamily": "task-workflow"
   },
-  "retiredNames": [
-    "cat_cafe_complete_a2a_dispatch",
-    "cat_cafe_complete_managed_hold",
-    "cat_cafe_complete_event_wait"
-  ],
+  "retiredNames": ["cat_cafe_complete_a2a_dispatch", "cat_cafe_complete_managed_hold", "cat_cafe_complete_event_wait"],
   "canonicalNames": [],
   "expectedProfiles": {
-    "cat_cafe_list_tasks": [
-      "full",
-      "desktop:live-companion"
-    ],
-    "cat_cafe_read_entrusted_work": [
-      "full",
-      "readonly",
-      "agent-key",
-      "desktop:live-companion"
-    ],
-    "cat_cafe_update_entrusted_work": [
-      "full",
-      "desktop:live-companion"
-    ],
-    "cat_cafe_update_task": [
-      "full",
-      "desktop:live-companion"
-    ]
+    "cat_cafe_list_tasks": ["full", "desktop:live-companion"],
+    "cat_cafe_read_entrusted_work": ["full", "readonly", "agent-key", "desktop:live-companion"],
+    "cat_cafe_update_entrusted_work": ["full", "desktop:live-companion"],
+    "cat_cafe_update_task": ["full", "desktop:live-companion"]
   },
   "rollbackRevision": "ef93d7401d0c41b6cf3ff52396f91b299d706e40",
   "layers": {
     "mcp-definition": {
       "status": "covered",
-      "consumers": [
-        "packages/mcp-server/src/canonical-server-tools.ts"
-      ]
+      "consumers": ["packages/mcp-server/src/canonical-server-tools.ts"]
     },
     "runtime-catalog-profile": {
       "status": "covered",
@@ -46,16 +26,11 @@
     },
     "prompt-l0": {
       "status": "covered",
-      "consumers": [
-        "assets/prompt-templates/l5-mcp-tools-index.md"
-      ]
+      "consumers": ["assets/prompt-templates/l5-mcp-tools-index.md"]
     },
     "skill-convention": {
       "status": "covered",
-      "consumers": [
-        "cat-cafe-skills/refs/mcp-callbacks.md",
-        "docs/features/F202-plugin-framework.md"
-      ]
+      "consumers": ["cat-cafe-skills/refs/mcp-callbacks.md", "docs/features/F202-plugin-framework.md"]
     },
     "fixture-test": {
       "status": "covered",
@@ -77,9 +52,7 @@
     },
     "observability": {
       "status": "covered",
-      "consumers": [
-        "packages/api/src/domains/plugin/runtime-composition.ts"
-      ]
+      "consumers": ["packages/api/src/domains/plugin/runtime-composition.ts"]
     }
   },
   "fixtureTestConsumers": [

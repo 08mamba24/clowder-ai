@@ -94,7 +94,10 @@ describe('factory-created client wiring (R2 review regression)', () => {
     mkdirSync(project);
     const dshRoot = join(root, 'dsh');
     mkdirSync(join(dshRoot, 'packages/examples/acp-demo/lib'), { recursive: true });
-    writeFileSync(join(dshRoot, 'packages/examples/acp-demo/lib/bin.js'), '#!/usr/bin/env node\nthrow new Error("MUST NEVER SPAWN");\n');
+    writeFileSync(
+      join(dshRoot, 'packages/examples/acp-demo/lib/bin.js'),
+      '#!/usr/bin/env node\nthrow new Error("MUST NEVER SPAWN");\n',
+    );
     mkdirSync(join(dshRoot, 'packages/mcp/mcp-client/lib'), { recursive: true });
     writeFileSync(
       join(dshRoot, 'packages/mcp/mcp-client/package.json'),

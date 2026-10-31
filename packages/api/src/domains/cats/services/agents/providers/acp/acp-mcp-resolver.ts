@@ -22,10 +22,6 @@ import {
   SENSITIVE_KEY_PATTERNS,
 } from '../../../../../../config/capabilities/capability-orchestrator.js';
 import {
-  renderMcpServerEnvReferenceValues,
-  resolveMcpServerEnvReferences,
-} from '../../../../../../config/capabilities/mcp-env-reference.js';
-import {
   invocationPluginMcpConfig,
   projectInvocationPluginMcp,
 } from '../../../../../../config/capabilities/invocation-plugin-mcp-view.js';
@@ -33,6 +29,10 @@ import {
   assertMappedCapabilitySource,
   resolveDeclaredCapabilityRoot,
 } from '../../../../../../config/capabilities/invoke-capability-root.js';
+import {
+  renderMcpServerEnvReferenceValues,
+  resolveMcpServerEnvReferences,
+} from '../../../../../../config/capabilities/mcp-env-reference.js';
 import {
   isRetiredGithubMcpCapability,
   isRetiredGithubMcpConfigEntry,
