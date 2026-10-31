@@ -3,9 +3,6 @@
 import { spawnSync } from 'node:child_process';
 import { dirname, delimiter, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { prepareSecretSafeSend } from '../lib/secret-outbound-args.mjs';
-import { assertSecretFree } from '../lib/secret-payload-files.mjs';
-import { executeSecretSafeCommand } from '../lib/secret-command-execution.mjs';
 
 const args = process.argv.slice(2);
 const ownDir = dirname(fileURLToPath(import.meta.url));
@@ -22,6 +19,15 @@ if (process.env.CAT_CAFE_GITHUB_READ_ONLY === 'true') {
   process.stderr.write('capability_unavailable: use mcp__clowder-repository-read__github_read\n');
   process.exit(1);
 }
+
+// The controlled Qoder sandbox mounts this wrapper but not scripts/lib, and the
+// `gh --version` canary is classified under the workspace policy. Resolve the
+// secret helpers only after the read-only carrier has answered or refused, so a
+// read-only runtime without the lib mount can still start. Every non-read-only
+// invocation loads the same helpers before it inspects or forwards any content.
+const { prepareSecretSafeSend } = await import('../lib/secret-outbound-args.mjs');
+const { assertSecretFree } = await import('../lib/secret-payload-files.mjs');
+const { executeSecretSafeCommand } = await import('../lib/secret-command-execution.mjs');
 
 let prepared;
 try {
