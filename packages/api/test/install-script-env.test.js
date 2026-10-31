@@ -195,18 +195,53 @@ test('runtime-aware auth wrapper also updates project-local state for direct sta
     initGitRepo(projectRoot);
     addWorktree(projectRoot, runtimeRoot, 'runtime/main-sync');
 
-    runSourceOnlySnippet(`
+    runSourceOnlySnippet(
+      `
 cd "${repoRoot}"
 PROJECT_DIR="${projectRoot}"
 CAT_CAFE_RUNTIME_DIR="${runtimeRoot}"
 run_install_auth_config client-auth set --project-dir "${projectRoot}" --client codex --mode oauth
-`);
+`,
+      { sandboxRoot: parentRoot },
+    );
 
     const runtimeAccounts = JSON.parse(readFileSync(join(runtimeRoot, '.cat-cafe', 'accounts.json'), 'utf8'));
     const projectAccounts = JSON.parse(readFileSync(join(projectRoot, '.cat-cafe', 'accounts.json'), 'utf8'));
 
     assert.equal(runtimeAccounts.codex?.authType, 'oauth');
     assert.equal(projectAccounts.codex?.authType, 'oauth');
+  } finally {
+    rmSync(parentRoot, { recursive: true, force: true });
+  }
+});
+
+test('installer snippets cannot write outside their exact declared fixture root', () => {
+  const parentRoot = mkdtempSync(join(tmpdir(), 'install-snippet-boundary-'));
+  const ownedRoot = join(parentRoot, 'owned');
+  const neighboringRoot = join(parentRoot, 'neighbor');
+  mkdirSync(ownedRoot);
+  mkdirSync(neighboringRoot);
+  try {
+    const output = runSourceOnlySnippet(
+      `
+node scripts/install-auth-config.mjs test-guard-probe --root "${ownedRoot}"
+if node scripts/install-auth-config.mjs test-guard-probe --root "${neighboringRoot}" 2>/dev/null; then
+  printf 'escaped'
+else
+  printf 'refused'
+fi
+`,
+      { sandboxRoot: ownedRoot },
+    );
+    assert.equal(output, 'refused');
+    const undeclared = runSourceOnlySnippet(`
+if node scripts/install-auth-config.mjs test-guard-probe --root "${ownedRoot}" 2>/dev/null; then
+  printf 'escaped'
+else
+  printf 'refused'
+fi
+`);
+    assert.equal(undeclared, 'refused', 'an omitted declaration must not grant the entire temp parent');
   } finally {
     rmSync(parentRoot, { recursive: true, force: true });
   }
@@ -238,14 +273,18 @@ test('Claude empty API key removes stale installer-managed profile', () => {
       }),
     );
 
-    runSourceOnlySnippet(`
+    runSourceOnlySnippet(
+      `
 PROJECT_DIR="${envRoot}"
 export CAT_CAFE_GLOBAL_CONFIG_ROOT="${envRoot}"
-node scripts/install-auth-config.mjs claude-profile remove --project-dir "${envRoot}" --force true 2>/dev/null || true
-`);
+node scripts/install-auth-config.mjs claude-profile remove --project-dir "${envRoot}" --force true
+`,
+      { sandboxRoot: envRoot },
+    );
 
     // After migration + remove, accounts.json should not contain installer-managed
     const accountsPath = join(catCafeDir, 'accounts.json');
+    assert.equal(existsSync(accountsPath), true, 'the installer must actually migrate the fixture');
     const accounts = existsSync(accountsPath) ? JSON.parse(readFileSync(accountsPath, 'utf8')) : {};
     assert.equal(accounts['installer-managed'], undefined, 'installer-managed account must be removed');
     const credPath = join(catCafeDir, 'credentials.json');

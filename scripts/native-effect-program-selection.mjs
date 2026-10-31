@@ -5,10 +5,17 @@ import { commandName } from './native-effect-shell-tokenizer.mjs';
 import { classifyNativeTarget } from './native-effect-target-classifier.mjs';
 
 // Exact reviewed repository wrapper, not a name-based exemption for runtime code.
-// The pin follows the wrapper merged by e61291c03 (qoder repository reads); the
-// merge that brought it in kept the older pin, so every verified gh read was
-// denied with protected_target_unparsed. Keep the two in lockstep.
-const GH_WRAPPER_SHA256 = '5ec246d687ffc330d274f356b40ab6738d7e02e073e645b2c364c2f1b7ad6bb8';
+// The pin must stay in lockstep with the content of scripts/guarded-bin/gh.
+// History: e61291c03 taught that a stale pin denies every verified gh read
+// with protected_target_unparsed. The upstream merge then evolved the wrapper
+// (secret-safe send execution) while the fork added the READ_ONLY carrier
+// gate and the cat-cafe verdict repo fallback, so the automerged wrapper
+// matched neither side's pin. This value is the sha256 of the semantically
+// merged wrapper; update it together with any wrapper change.
+// The secret helpers are dynamic imports after the READ_ONLY gate so the
+// controlled Qoder sandbox can start without scripts/lib mounted; the pin now
+// covers that byte change (P1 gh canary, 2026-10-31).
+const GH_WRAPPER_SHA256 = 'e44e9b5b7d3d1b92a74768adc9d98172d0caae06fd532dfafe2aa3345644522e';
 const ordinary = (path) => classifyNativeTarget(path, undefined, 'unknown').kind === 'ordinary';
 const literal = (value) => typeof value === 'string' && !/[$`*?[\]{}\n\r]/.test(value);
 

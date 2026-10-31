@@ -104,7 +104,12 @@ function readExistingConfig(path: string, runtimeRoot: string, home: string, cre
   return content;
 }
 
-/** Only launch built-in Clowder AI servers from the trusted runtime root; no callback token is stored. */
+/** Preserve account admission checks even though a turn never inherits this shared config. */
+export function validateAgyNativeAccountMcp(profileHome: string, runtimeRoot: string): void {
+  readExistingConfig(join(profileHome, '.gemini/config/mcp_config.json'), runtimeRoot, profileHome);
+}
+
+/** Trusted built-ins only. HTTP headers live in the owner-only per-turn profile and are reclaimed with it. */
 export function materializeAgyNativeMcpConfig(input: AgyNativeMcpConfigInput): string {
   const suppliedHome = resolve(input.profileHome);
   requireDirectory(suppliedHome);

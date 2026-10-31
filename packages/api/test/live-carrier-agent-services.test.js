@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { ClaudeSdkAgentService } from '../dist/domains/cats/services/agents/providers/ClaudeSdkAgentService.js';
+import {
+  assertInheritedHostAuthorityCleared,
+  directMcpContract,
+  readNativeMcpConfig,
+} from './helpers/direct-mcp-contract.js';
 
 class AsyncInbox {
   #values = [];
@@ -128,6 +133,7 @@ describe('live member carriers', () => {
       session_id: 'sdk-session-1',
       user_message_uuids: [initialInput.value.uuid, appendedInput.uuid, steeredInput.uuid],
     });
+    events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
     events.close();
     assert.equal((await output.next()).value.type, 'done');
     assert.equal(registration.released, true);
@@ -179,7 +185,7 @@ describe('live member carriers', () => {
     assert.match(failure.error, /REDACTED/);
   });
 
-  it('Claude SDK closes a streaming-input query when the provider emits its result terminal', async () => {
+  it('Claude SDK closes a streaming-input query only after the native idle receipt', async () => {
     const events = new AsyncInbox();
     const registration = activeRunRegistration();
     let sdkInput;
@@ -216,9 +222,12 @@ describe('live member carriers', () => {
       session_id: 'sdk-result-terminal',
       usage: { input_tokens: 10, output_tokens: 2 },
     });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(registration.released, false, 'a result alone is not the native drain receipt');
+    events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
     const settled = await Promise.race([
       terminal,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('SDK result did not close the invocation')), 500)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('SDK idle did not close the invocation')), 500)),
     ]);
 
     assert.equal(settled.value.type, 'done');
@@ -276,6 +285,7 @@ describe('live member carriers', () => {
       session_id: 'sdk-task-notification',
       usage: { input_tokens: 0, output_tokens: 0 },
     });
+    events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
     events.push({
       type: 'assistant',
       session_id: 'sdk-task-notification',
@@ -292,6 +302,7 @@ describe('live member carriers', () => {
       num_turns: 1,
       usage: { input_tokens: 10, output_tokens: 2 },
     });
+    events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
 
     const rest = [];
     for (;;) {
@@ -321,6 +332,7 @@ describe('live member carriers', () => {
         sdkOptions.push(options);
         const events = new AsyncInbox();
         events.push({ type: 'result', subtype: 'success', session_id: 'sdk-hooks', usage: {} });
+        events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
         events.close();
         return { interrupt: async () => {}, [Symbol.asyncIterator]: () => events[Symbol.asyncIterator]() };
       },
@@ -442,6 +454,7 @@ describe('live member carriers', () => {
       user_message_uuid: initialInput.uuid,
       usage: { input_tokens: 10, output_tokens: 2 },
     });
+    events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
     events.push({
       type: 'assistant',
       session_id: 'sdk-append-result-race',
@@ -459,6 +472,7 @@ describe('live member carriers', () => {
       user_message_uuid: appendedInput.uuid,
       usage: { input_tokens: 12, output_tokens: 3 },
     });
+    events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
     assert.equal((await terminal).value.type, 'done');
     assert.equal(registration.released, true);
   });
@@ -503,6 +517,7 @@ describe('live member carriers', () => {
       user_message_uuids: [initialInput.uuid],
       queued_turn_count: 0,
     });
+    events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
     assert.equal(
       (
         await registration.dispatcher.dispatch(
@@ -524,6 +539,7 @@ describe('live member carriers', () => {
       user_message_uuid: appendedInput.value.uuid,
       queued_turn_count: 0,
     });
+    events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
     assert.equal((await pendingOutput).value.type, 'done');
     assert.equal(registration.released, true);
   });
@@ -565,6 +581,7 @@ describe('live member carriers', () => {
       user_message_uuid: initialInput.uuid,
       queued_turn_count: 0,
     });
+    events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
     assert.equal(
       (
         await registration.dispatcher.dispatch(
@@ -590,6 +607,7 @@ describe('live member carriers', () => {
       user_message_uuid: appendedInput.uuid,
       queued_turn_count: 0,
     });
+    events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
     assert.equal((await pendingOutput).value.type, 'done');
     assert.equal(registration.released, true);
   });
@@ -654,6 +672,7 @@ describe('live member carriers', () => {
       user_message_uuids: [initialInput.uuid, firstAppend.uuid, secondAppend.uuid],
       usage: { input_tokens: 14, output_tokens: 3 },
     });
+    events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
     assert.equal((await terminal).value.type, 'done');
     assert.equal(registration.released, true);
   });
@@ -740,6 +759,7 @@ describe('live member carriers', () => {
       user_message_uuid: steeredInput.uuid,
       usage: { input_tokens: 12, output_tokens: 3 },
     });
+    events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
     assert.equal((await terminal).value.type, 'done');
     assert.equal(registration.released, true);
   });
@@ -794,12 +814,14 @@ describe('live member carriers', () => {
       queued_turn_count: 0,
       usage: { input_tokens: 12, output_tokens: 3 },
     });
+    events.push({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
     assert.equal((await terminal).value.type, 'done');
     assert.equal(registration.released, true);
   });
 
-  it('Claude SDK injects the invocation MCP map through the native SDK option', async () => {
+  it('Claude SDK injects the guarded invocation MCP map through the native SDK option', async (t) => {
     const root = mkdtempSync(join(tmpdir(), 'cat-cafe-claude-sdk-mcp-'));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
     mkdirSync(join(root, '.cat-cafe'));
     writeFileSync(
       join(root, '.mcp.json'),
@@ -824,13 +846,24 @@ describe('live member carriers', () => {
 
     for await (const _message of service.invoke('initial body', {
       workingDirectory: root,
-      callbackEnv: { CAT_CAFE_CAT_ID: 'opus', CAT_CAFE_INVOCATION_ID: 'inv-sdk-mcp' },
+      callbackEnv: {
+        CAT_CAFE_CAT_ID: 'opus',
+        CAT_CAFE_API_URL: 'http://127.0.0.1:1',
+        CAT_CAFE_INVOCATION_ID: 'inv-sdk-mcp',
+        CAT_CAFE_CALLBACK_TOKEN: 'fixture-sdk-callback',
+      },
     })) {
       // Drain the injected query.
     }
 
     assert.equal(sdkOptions.strictMcpConfig, true);
-    assert.deepEqual(sdkOptions.mcpServers['user-tool'], { command: 'user-tool', args: ['serve'] });
+    const { upstream } = directMcpContract(
+      readNativeMcpConfig(sdkOptions.extraArgs['mcp-config']).mcpServers['user-tool'],
+    );
+
+    assert.equal(upstream.command, 'user-tool');
+    assert.deepEqual(upstream.args, ['serve']);
+    assertInheritedHostAuthorityCleared(upstream.env);
   });
 
   it('Claude SDK rejects a steer whose provider interrupt never acknowledges', async () => {
@@ -862,7 +895,7 @@ describe('live member carriers', () => {
       { text: 'must not be appended after an unacknowledged interrupt' },
       { expectedInvocationId: registration.invocationId, force: true },
     );
-    assert.deepEqual(rejected, { accepted: false, reason: 'provider_rejected' });
+    assert.deepEqual(rejected, { accepted: false, reason: 'exception', acceptance: 'not_accepted' });
 
     events.close();
     const failure = await output.next();

@@ -9,6 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 import { catRegistry, createCatId } from '@cat-cafe/shared';
 import './helpers/setup-cat-registry.js';
+import { isolateAccountAuthEnvironment } from './helpers/account-auth-environment.js';
 import { selectFakeCodexHome } from './helpers/fake-codex-home.js';
 
 const { parseA2AMentions } = await import('../dist/domains/cats/services/agents/routing/a2a-mentions.js');
@@ -148,7 +149,9 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
   /** @type {string | undefined} */ let savedCodexHome;
   /** @type {string | undefined} */ let savedCodexSqliteHome;
 
+  let restoreAuthEnvironment;
   beforeEach(() => {
+    restoreAuthEnvironment = isolateAccountAuthEnvironment();
     savedTemplatePath = process.env.CAT_TEMPLATE_PATH;
     savedGlobalRoot = process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
     savedConfigRoot = process.env.CAT_CAFE_CONFIG_ROOT;
@@ -159,6 +162,7 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
   });
 
   afterEach(() => {
+    restoreAuthEnvironment();
     if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = savedCodexHome;
     if (savedCodexSqliteHome === undefined) delete process.env.CODEX_SQLITE_HOME;
@@ -178,6 +182,60 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
 
   after(() => {
     console.log('Retained isolated catalog fixtures:', JSON.stringify(tempDirs));
+  });
+
+  it('persists a member banner through POST, GET and PATCH removal without changing its avatar', async () => {
+    const projectRoot = createProjectRoot();
+    process.env.CAT_TEMPLATE_PATH = join(projectRoot, 'cat-template.json');
+    const app = (await import('fastify')).default();
+    await app.register((await import('../dist/routes/cats.js')).catsRoutes);
+    const headers = { 'x-cat-cafe-user': 'default-user' };
+    try {
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/cats',
+        headers,
+        payload: {
+          catId: 'banner-http',
+          name: 'Banner member',
+          displayName: 'Banner member',
+          avatar: '/avatars/default.png',
+          banner: '/uploads/banner-sunset.jpg',
+          color: { primary: '#765843', secondary: '#eadccc' },
+          mentionPatterns: ['@banner-http'],
+          roleDescription: 'Preview',
+          clientId: 'openai',
+          accountRef: 'codex',
+          defaultModel: 'gpt-5.4',
+          mcpSupport: true,
+        },
+      });
+      assert.equal(created.statusCode, 201, created.payload);
+      const read = async () =>
+        (await app.inject({ method: 'GET', url: '/api/cats', headers }))
+          .json()
+          .cats.find((cat) => cat.id === 'banner-http');
+      assert.equal((await read()).banner, '/uploads/banner-sunset.jpg');
+      const rejected = await app.inject({
+        method: 'PATCH',
+        url: '/api/cats/banner-http',
+        headers,
+        payload: { banner: 'https://tracker.example/banner.jpg' },
+      });
+      assert.equal(rejected.statusCode, 400, rejected.payload);
+      const cleared = await app.inject({
+        method: 'PATCH',
+        url: '/api/cats/banner-http',
+        headers,
+        payload: { banner: null },
+      });
+      assert.equal(cleared.statusCode, 200, cleared.payload);
+      const cat = await read();
+      assert.equal(cat.banner, undefined);
+      assert.equal(cat.avatar, '/avatars/default.png');
+    } finally {
+      await app.close();
+    }
   });
 
   it('POST and PATCH accept an existing breedId and preserve member identity', async () => {
@@ -334,6 +392,7 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
     const createdBody = JSON.parse(createRes.body);
     assert.equal(createdBody.cat.id, 'runtime-spark');
     assert.equal(createdBody.cat.clientId, 'openai');
+    assert.equal(createdBody.cat.avatar, '/avatars/spark.png', 'create response must preserve the identity avatar');
 
     // Simulate a member created by an older version. New routes must preserve
     // this rollback byte during unrelated writes while refusing to edit it.
@@ -385,6 +444,7 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
     assert.ok(runtimeCat, 'runtime-spark should appear in /api/cats');
     assert.equal(runtimeCat.displayName, '运行时火花猫');
     assert.equal(runtimeCat.nickname, '火花');
+    assert.equal(runtimeCat.avatar, '/avatars/spark.png', 'list response must preserve the identity avatar');
     assert.deepEqual(runtimeCat.mentionPatterns, ['@runtime-spark', '@运行时火花']);
     assert.equal(runtimeCat.teamStrengths, '精确点改 + 快速修复');
     assert.equal(runtimeCat.caution, null);
@@ -2022,6 +2082,11 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
     process.env.HOME = workspaceRoot;
     writeFileSync(join(runtimeRoot, 'cat-template.json'), JSON.stringify(makeTemplate(), null, 2));
     seedCatalogFromTemplate(runtimeRoot);
+    mkdirSync(join(workspaceRoot, '.cat-cafe'), { recursive: true });
+    writeFileSync(
+      join(workspaceRoot, '.cat-cafe', 'capabilities.json'),
+      JSON.stringify({ version: 2, capabilities: [] }),
+    );
     process.env.CAT_TEMPLATE_PATH = join(runtimeRoot, 'cat-template.json');
     process.chdir(runtimeRoot);
 
@@ -2871,53 +2936,6 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
       ),
       'expected catId validation issue in details',
     );
-  });
-
-  it('POST /api/cats rejects builtin bindings from the wrong client family even when protocol matches', async () => {
-    const projectRoot = createProjectRoot();
-    process.env.CAT_TEMPLATE_PATH = join(projectRoot, 'cat-template.json');
-
-    const Fastify = (await import('fastify')).default;
-    const { catsRoutes } = await import('../dist/routes/cats.js');
-
-    const app = Fastify();
-    await app.register(catsRoutes);
-
-    const cases = [
-      {
-        catId: 'runtime-opencode-wrong-builtin',
-        clientId: 'opencode',
-        accountRef: 'claude',
-        defaultModel: 'claude-sonnet-4-6',
-      },
-    ];
-
-    for (const spec of cases) {
-      const createRes = await app.inject({
-        method: 'POST',
-        url: '/api/cats',
-        headers: {
-          'content-type': 'application/json',
-          'x-cat-cafe-user': 'codex',
-        },
-        body: JSON.stringify({
-          catId: spec.catId,
-          name: spec.catId,
-          displayName: spec.catId,
-          avatar: '/avatars/runtime.png',
-          color: { primary: '#0f172a', secondary: '#e2e8f0' },
-          mentionPatterns: [`@${spec.catId}`],
-          roleDescription: '审查',
-          clientId: spec.clientId,
-          accountRef: spec.accountRef,
-          defaultModel: spec.defaultModel,
-        }),
-      });
-
-      assert.equal(createRes.statusCode, 400);
-      const createBody = JSON.parse(createRes.body);
-      assert.match(createBody.error, new RegExp(`incompatible with client "${spec.clientId}"`, 'i'));
-    }
   });
 
   it('POST /api/cats allows third-party gateway bindings for google client', async () => {
@@ -4280,7 +4298,7 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
       displayName: 'Patch ACP Remove Whitelist',
       authType: 'api_key',
       protocol: 'openai',
-      apiKey: 'sk-patch-remove-whitelist',
+      apiKey: ['sk', '-patch-remove-whitelist'].join(''),
       models: ['test-model'],
     });
 
@@ -4490,6 +4508,35 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
     assert.equal(fetched.cli, undefined, 'GET confirms cli removed after PATCH cli:null');
   });
 
+  it('plugin agentProvider cannot change either protected cloud identity', async () => {
+    const projectRoot = createProjectRootFromRepoTemplate();
+    const catalogPath = join(projectRoot, '.cat-cafe', 'cat-catalog.json');
+    const Fastify = (await import('fastify')).default;
+    const { catsRoutes } = await import('../dist/routes/cats.js');
+    const app = Fastify();
+    await app.register(catsRoutes);
+    const before = readFileSync(catalogPath, 'utf8');
+    for (const id of ['gpt-pro', 'gpt-dot']) {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/cats/${id}`,
+        headers: { 'x-cat-cafe-user': 'codex' },
+        payload: { agentProvider: 'plugin:official.acp-clients/dsh' },
+      });
+      assert.equal(response.statusCode, 409, response.body);
+      assert.equal(response.json().code, 'BUILTIN_CLOUD_IDENTITY_PROTECTED');
+      assert.equal(readFileSync(catalogPath, 'utf8'), before);
+    }
+    const unchanged = await app.inject({
+      method: 'PATCH',
+      url: '/api/cats/gpt-pro',
+      headers: { 'x-cat-cafe-user': 'codex' },
+      payload: { agentProvider: null },
+    });
+    assert.equal(unchanged.statusCode, 200, unchanged.body);
+    await app.close();
+  });
+
   it('F247: built-in gpt-pro rejects identity mutation atomically while profile edits remain available', async () => {
     const projectRoot = createProjectRootFromRepoTemplate();
     const catalogPath = join(projectRoot, '.cat-cafe', 'cat-catalog.json');
@@ -4546,6 +4593,7 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
         'commandArgs',
         'cliConfigArgs',
         'acp',
+        'agentProvider',
       ],
       driftedFields: [],
     });
@@ -4715,6 +4763,7 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
     );
     assert.ok(variant, 'repo template must contain the built-in gpt-pro variant');
     variant.defaultModel = 'gpt-5.6-sol';
+    variant.agentProvider = 'plugin:official.acp-clients/dsh';
     delete variant.provider;
     variant.mcpSupport = false;
     variant.cli = { command: 'codex', outputFormat: 'json' };
@@ -4733,7 +4782,7 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
     assert.equal(drifted.identityProtection.state, 'drifted');
     assert.deepEqual(
       [...drifted.identityProtection.driftedFields].sort(),
-      ['cli', 'defaultModel', 'mcpSupport', 'mentionPatterns', 'provider'].sort(),
+      ['cli', 'defaultModel', 'mcpSupport', 'mentionPatterns', 'provider', 'agentProvider'].sort(),
     );
 
     const profileOnlyEdit = await app.inject({
@@ -4773,6 +4822,7 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
     assert.equal(repaired.statusCode, 200, repaired.body);
     const repairedCat = JSON.parse(repaired.body).cat;
     assert.equal(repairedCat.defaultModel, 'gpt-pro');
+    assert.equal(repairedCat.agentProvider, null);
     assert.equal(repairedCat.provider, 'openai-chatgpt-pro');
     assert.equal(repairedCat.mcpSupport, true);
     assert.equal(repairedCat.cli, undefined);

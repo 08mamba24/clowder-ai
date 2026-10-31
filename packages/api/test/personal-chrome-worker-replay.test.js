@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 
 const apiRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const serviceWorkerPath = join(apiRoot, 'src/plugins/cloud-cat-personal-host/extension/service-worker.js');
+const serviceWorkerPath = join(apiRoot, '../../plugins/personal-chrome-companion/extension/service-worker.js');
 const helperArtifactRevision = `sha512:${'0'.repeat(128)}`;
 const passiveAlarms = () => ({ create: async () => undefined, onAlarm: { addListener() {} } });
 

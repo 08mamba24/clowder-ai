@@ -25,6 +25,16 @@ const TARGETS = new Set([
 /** Pure provider-neutral policy. Filesystem capability remains outside this guard. */
 export function decideNativeEffect(candidate) {
   if (!isCandidate(candidate)) return deny(candidate, 'invalid_candidate');
+  // #4807 conservative line first: the two literal sanctuaries deny even an
+  // unrecognised effect — an unparseable command touching runtime/Redis must
+  // never be deferred into the wild. Other targets defer unknown effects.
+  if (candidate.effect === 'unknown' && PROTECTED_SANCTUARY_KINDS.has(candidate.target.kind))
+    return PROTECTED_POLICIES[candidate.target.kind](candidate);
+  if (candidate.effect === 'unknown')
+    return allow(
+      candidate,
+      candidate.target.kind === 'ordinary' ? 'ordinary_policy_deferred' : 'unrecognised_effect_deferred',
+    );
   if (candidate.effect === 'read') return allow(candidate, 'read_only');
   if (candidate.effect === 'repository_refresh') return allow(candidate, 'remote_tracking_refresh');
   if (candidate.effect === 'remote_mutation') {
@@ -40,7 +50,9 @@ export function decideNativeEffect(candidate) {
 
 // Deny = recognised dangerous effect on a protected target (operator: fail closed on the physical target,
 // ordinary targets go to sandbox/permission/custody). `unknown` still denies on the two literal
-// sanctuaries, runtime and Redis 6399 -- #4807's conservative line, named in argv, cwd or redirection.
+// sanctuaries, runtime and Redis 6399 -- #4807's conservative line, named in argv, cwd or redirection:
+// an unparseable command touching a sanctuary must never be deferred into the wild.
+const PROTECTED_SANCTUARY_KINDS = new Set(['runtime_sanctuary', 'redis_sanctuary']);
 const PROTECTED_POLICIES = {
   runtime_sanctuary: (candidate) =>
     deny(candidate, candidate.effect === 'unknown' ? 'protected_target_unparsed' : 'runtime_sanctuary_mutation'),

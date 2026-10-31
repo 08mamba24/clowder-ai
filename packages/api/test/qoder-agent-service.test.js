@@ -2108,24 +2108,63 @@ test('round3 P1-3a: EPIPE on stdin write is contained (shared spawnCli EPIPE gua
   );
 });
 
-// P1③：init 门红了之后走共享有界终止——invoke 立即返回，不再有 5s 非 unref 计时器
-// + 250×20ms exit 轮询阻塞
-test('round3 P1-3b: init-gate red aborts via shared bounded termination (prompt return, no 5s block)', async () => {
+// P1③（P2 rewrite per combination review）：init 门红后，共享 spawnCli 的消费者早退路径
+// 必须等真实 OS exit（cli-spawn finally：killChild + await processExit），调用方才能
+// 收凭据/租约。旧夹具从不 emit exit 且断言 <3000ms——与默认 KILL_GRACE_MS=3000 的
+// 共享等待互相矛盾。现在经 spawnCliOverride 委托真·共享 spawnCli，只注入文档化的
+// 短 terminationGraces（CliSpawnerDeps 测试注入口，生产常量不变）：fake child 忽略
+// SIGTERM，SIGKILL 后异步 emit exit（绝不 close），记录 signal/exit/return 顺序。
+test('round3 P1-3b: init-gate red aborts via shared bounded termination and waits for real OS exit', async () => {
+  const { spawnCli } = await import('../dist/utils/cli-spawn.js');
+  const order = [];
+  let closeCount = 0;
+  let invokeDone = false;
+  let invokeDoneAtExit;
   const child = new EventEmitter();
   child.stdout = Readable.from(fixtureLines('tool-use').map((l) => l + '\n'));
   child.stderr = Readable.from([]);
   child.stdin = fakeStdin();
   child.pid = 4194304 + Math.floor(Math.random() * 1000);
-  child.kill = () => {
+  child.on('close', () => closeCount++);
+  child.kill = (signal) => {
     child.killed = true;
-    // 忽略 SIGTERM：绝不 close —— 考验有界终止与调用方返回解耦
+    order.push(`kill:${signal}`);
+    // 忽略 SIGTERM：只有 SIGKILL 才放倒进程——且只 emit exit（绝不 close），
+    // 证明共享等待骑在 OS exit 上，而不是继承的 stdio close。
+    if (signal === 'SIGKILL') {
+      setTimeout(() => {
+        invokeDoneAtExit = invokeDone;
+        order.push('exit');
+        child.emit('exit', null, 'SIGKILL');
+      }, 5);
+    }
   };
-  const svc = makeSvc({ spawnFn: () => child });
+  const svc = makeSvc();
   const t0 = Date.now();
-  const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp' });
+  const out = await runInvoke(svc, 'hi', {
+    workingDirectory: '/tmp',
+    spawnCliOverride: (cliOpts) =>
+      spawnCli(cliOpts, {
+        spawnFn: () => child,
+        terminationGraces: { interruptMs: 25, terminateMs: 50 },
+        exitDrainGraceMs: 20,
+      }),
+  }).then((msgs) => {
+    invokeDone = true;
+    order.push('invoke-returned');
+    return msgs;
+  });
   const elapsed = Date.now() - t0;
+  // init-gate red 仍是中止原因；prompt-error 是终态消息，且只在共享等待观察到
+  // 真实 exit 之后才发出（消费侧顺序由 consumeStream 的 break→finally→yield 决定）。
   assert.ok(out.some((m) => m.type === 'error' && m.error.includes('init gate')));
-  assert.ok(elapsed < 3000, `invoke must return promptly on gate red (took ${elapsed}ms)`);
+  assert.equal(out.at(-1).type, 'error');
+  assert.ok(out.at(-1).error.includes('init gate'));
+  assert.ok(!out.some((m) => m.type === 'done'));
+  assert.equal(invokeDoneAtExit, false, 'invoke must still be incomplete when the child exits');
+  assert.deepEqual(order, ['kill:SIGTERM', 'kill:SIGKILL', 'exit', 'invoke-returned']);
+  assert.equal(closeCount, 0, 'the shared wait must not inherit stdio close');
+  assert.ok(elapsed < 1000, `injected short graces keep the gate-red abort bounded (took ${elapsed}ms)`);
 });
 
 // P1③：raw NDJSON 事件经共享 sink 落档（#780 先例），payload 过 sanitizeRawEvent

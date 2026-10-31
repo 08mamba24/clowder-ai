@@ -17,6 +17,7 @@ import { activeExecutionKey, useActiveExecutionStore } from '@/stores/activeExec
 import { useToastStore } from '@/stores/toastStore';
 import { isStreamingTipSuppressed } from '../capability-tip-placement';
 import { useShellCopy } from '../shell/shell-copy';
+import { useMessageNavigation } from '../thread-chat/MessageNavigationContext';
 import { useQueueActionConvergence } from '../useQueueActionConvergence';
 import { locateExecution } from './execution-location';
 import { executionRowCopy } from './execution-row.shell-copy';
@@ -37,6 +38,7 @@ function useNow(active: boolean): number {
 }
 
 export function useExecutionRow(threadId: string) {
+  const navigateToMessage = useMessageNavigation();
   const words = useShellCopy(executionRowCopy);
   const { getCatById } = useCatData({ fetch: false });
   const resolveCatName = useCallback((catId: string) => resolveCatNameplateName(catId, getCatById), [getCatById]);
@@ -46,7 +48,15 @@ export function useExecutionRow(threadId: string) {
   // The ONE shared answer to "is what this thread shows still verified?": the project-wide snapshot covers this thread
   // when it is anchored here OR belongs to the same project, so a failed re-read is stale for a same-project thread
   // that is not the anchor too. (An anchor-only test here missed that case; the classic composer already gets it right.)
-  const { canonicalProjectionStale, hasUnverifiedLegacyExecution } = useExecutionRecoveryVerification(threadId);
+  const { canonicalProjectionStale, canonicalProjectionLoading, hasUnverifiedLegacyExecution } =
+    useExecutionRecoveryVerification(threadId);
+  const [confirmationExpired, setConfirmationExpired] = useState(false);
+  useEffect(() => {
+    setConfirmationExpired(false);
+    if (!canonicalProjectionLoading || !hasUnverifiedLegacyExecution) return;
+    const timer = setTimeout(() => setConfirmationExpired(true), 10_000);
+    return () => clearTimeout(timer);
+  }, [threadId, canonicalProjectionLoading, hasUnverifiedLegacyExecution]);
 
   const view = useQueueView(threadId);
   // The new shell's row reports a reset that went through as done even when the re-read after it fails.
@@ -81,6 +91,7 @@ export function useExecutionRow(threadId: string) {
         cancelPendingKeys,
         silent,
         hydrationStale: canonicalProjectionStale,
+        hydrationLoading: canonicalProjectionLoading && !confirmationExpired,
         hasUnverifiedLegacyExecution,
         queue: {
           entries: view.visibleEntries,
@@ -88,12 +99,22 @@ export function useExecutionRow(threadId: string) {
           waitInfo: view.waitInfo,
         },
       }),
-    [canonicalProjectionStale, cancelPendingKeys, executions, hasUnverifiedLegacyExecution, now, silent, view],
+    [
+      canonicalProjectionStale,
+      canonicalProjectionLoading,
+      confirmationExpired,
+      cancelPendingKeys,
+      executions,
+      hasUnverifiedLegacyExecution,
+      now,
+      silent,
+      view,
+    ],
   );
 
   const forceReset = useRowForceReset({ threadId, convergence });
   const locate = (execution: (typeof executions)[number]) => {
-    if (locateExecution(execution) === 'unavailable')
+    if (locateExecution(execution, navigateToMessage) === 'unavailable')
       useToastStore
         .getState()
         .addToast({ type: 'info', title: words.actions.locate, message: words.actions.unavailable, duration: 5000 });

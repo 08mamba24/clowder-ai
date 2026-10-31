@@ -10,6 +10,19 @@ export function malformedAccountStore(source: string): never {
   throw new AccountStoreVerdictError(`Invalid/malformed account store (${source}); repair it before use`);
 }
 
+const stringRecord = z.record(z.string());
+const quotaItems = z.array(
+  z
+    .object({
+      label: z.string(),
+      usedPercent: z.number().min(0).max(100),
+      percentKind: z.enum(['used', 'remaining']).optional(),
+      poolId: z.string().optional(),
+      resetsAt: z.string().optional(),
+      resetsText: z.string().optional(),
+    })
+    .passthrough(),
+);
 // modelAliases / envVars are NOT z.record: Zod's record parser silently drops the
 // own-key "__proto__" (R19), which made dual-root equality treat a populated
 // alias map as empty and accept both-equal. Parse those maps with refStore.
@@ -31,19 +44,16 @@ const accountSchema = z
         observedAt: z.number(),
         status: z.enum(['ok', 'unavailable', 'unsupported']),
         source: z.literal('codex_official_readonly'),
-        items: z.array(
-          z
-            .object({
-              label: z.string(),
-              usedPercent: z.number().min(0).max(100),
-              percentKind: z.enum(['used', 'remaining']).optional(),
-              poolId: z.string().optional(),
-              resetsAt: z.string().optional(),
-              resetsText: z.string().optional(),
-            })
-            .passthrough(),
-        ),
+        items: quotaItems,
         error: z.string().optional(),
+        credentialVersion: z.string().optional(),
+        failure: z
+          .object({
+            kind: z.enum(['renewal_required', 'signin_required', 'service_unreachable']),
+            officialDetail: z.string().max(500).optional(),
+          })
+          .optional(),
+        lastSuccess: z.object({ observedAt: z.number(), items: quotaItems }).optional(),
       })
       .optional(),
   })

@@ -12,8 +12,9 @@ import {
 import { SETTINGS_SECTIONS } from '../settings-nav-config';
 
 describe('F322 设置与管理 information architecture', () => {
-  it('has exactly the 11 decided first-level items, in the decided order and groups', () => {
+  it('places your profile above the decided settings destinations and groups', () => {
     expect(SETTINGS_IA.map((entry) => entry.label)).toEqual([
+      '你',
       '猫猫团队',
       '调度',
       '能力进化',
@@ -26,7 +27,7 @@ describe('F322 设置与管理 information architecture', () => {
       '功能看板',
       '信号',
     ]);
-    expect(SETTINGS_IA.map((entry) => entry.group)).toEqual([1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3]);
+    expect(SETTINGS_IA.map((entry) => entry.group)).toEqual([1, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3]);
     expect(new Set(SETTINGS_IA.map((entry) => entry.id)).size).toBe(SETTINGS_IA.length);
   });
 
@@ -38,7 +39,7 @@ describe('F322 设置与管理 information architecture', () => {
     expect(team.destination.items[0]).toEqual({ kind: 'section', sectionId: 'members' });
   });
 
-  it('keeps every one of the 14 old sections, each under exactly one first-level item', () => {
+  it('keeps every current section under exactly one owner with no retired entries', () => {
     for (const section of SETTINGS_SECTIONS) {
       const owners = SETTINGS_IA.filter(
         (entry) =>
@@ -48,7 +49,14 @@ describe('F322 设置与管理 information architecture', () => {
       expect(owners, `section ${section.id} must have exactly one owner`).toHaveLength(1);
       expect(entryForSection(section.id)).toBe(owners[0]);
     }
-    expect(SETTINGS_SECTIONS).toHaveLength(14);
+    expect(SETTINGS_SECTIONS).toHaveLength(13);
+    const declared = SETTINGS_IA.flatMap((entry) =>
+      entry.destination.kind === 'sections'
+        ? entry.destination.items.flatMap((item) => (item.kind === 'section' ? [item.sectionId] : []))
+        : [],
+    );
+    expect(declared.sort()).toEqual(SETTINGS_SECTIONS.map((section) => section.id).sort());
+    expect(declared).not.toContain('im');
   });
 
   it('places account login immediately after members under 猫猫团队', () => {
@@ -77,6 +85,11 @@ describe('F322 pins above the mailbox', () => {
     expect(pin).toMatchObject({ kind: 'section', id: 'notify', label: '通知' });
   });
 
+  it('resolves a retired im pin to the current plugin destination', () => {
+    expect(resolvePin('im')).toEqual(resolvePin('plugins'));
+    expect(resolvePin('im')).toMatchObject({ kind: 'section', id: 'plugins' });
+  });
+
   it('new pins are namespaced so a first-level "系统" can never collide with the old "系统配置" section id', () => {
     expect(destPinId('system')).toBe('dest:system');
     expect(resolvePin('system')).toMatchObject({ kind: 'section', label: '系统配置' });
@@ -86,8 +99,13 @@ describe('F322 pins above the mailbox', () => {
 
   it('the Workspace team panel has its own pin identity and never resolves to the settings members section', () => {
     expect(TEAM_WORKSPACE_PIN_ID).not.toBe(destPinId('team'));
-    expect(resolvePin(TEAM_WORKSPACE_PIN_ID)).toMatchObject({ kind: 'workspace-team', label: '成员能力与路由状态' });
-    expect(resolvePin('dest:team')).toMatchObject({ kind: 'entry', label: '猫猫团队' });
+    expect(resolvePin(TEAM_WORKSPACE_PIN_ID)).toMatchObject({
+      kind: 'workspace-team',
+      label: '成员能力与路由状态',
+      icon: 'paw',
+    });
+    expect(resolvePin('dest:team')).toMatchObject({ kind: 'entry', label: '猫猫团队', icon: 'paw' });
+    expect(resolvePin('members')).toMatchObject({ kind: 'section', label: '成员与运行时', icon: 'paw' });
   });
 
   it('an unknown or retired pin id resolves to nothing instead of crashing the rail', () => {

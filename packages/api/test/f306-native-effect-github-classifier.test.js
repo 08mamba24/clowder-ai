@@ -2,40 +2,118 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   closeSync,
-  existsSync,
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import test from 'node:test';
-import { pathToFileURL } from 'node:url';
+import { dirname, join } from 'node:path';
+import test, { after } from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   constrainedGhApiOperation,
   constrainedGhHelpOperation,
   constrainedGhPullRequestOperation,
   isDescriptorNamespacePath,
 } from '../../../scripts/native-effect-github-classifier.mjs';
+import { proveProgramSelection } from '../../../scripts/native-effect-program-selection.mjs';
 import { decideShellHookPayload } from '../../../scripts/native-effect-shell-decision.mjs';
 
-const GH_WRAPPER = '/Users/yuhan/cat-cafe/cat-cafe-runtime/scripts/guarded-bin/gh';
-const GH_WRAPPER_SHA256 = '5ec246d687ffc330d274f356b40ab6738d7e02e073e645b2c364c2f1b7ad6bb8';
-const pinnedWrapperPresent = () => {
-  try {
-    return (
-      existsSync(GH_WRAPPER) &&
-      createHash('sha256').update(readFileSync(GH_WRAPPER)).digest('hex') === GH_WRAPPER_SHA256
-    );
-  } catch {
-    return false;
+// The pinned wrapper entry is proved by content, so this test owns its own copy of
+// the merged guarded wrapper instead of binding to whatever install happens to sit
+// in the developer's runtime tree (R8): a live-install pin silently skipped once the
+// runtime was upgraded, and failed against the old install before that.
+//
+// The copy is placed under a `cat-cafe-runtime` component because that path shape is
+// what runtime-sanctuary target classification keys on; the fixture root itself is a
+// temp directory, so `runtime_sanctuary` evidence below is produced by the path
+// component rather than by this machine's real install.
+const WRAPPER_SOURCE = fileURLToPath(new URL('../../../scripts/guarded-bin/gh', import.meta.url));
+const WRAPPER_FIXTURE_ROOT = mkdtempSync(join(tmpdir(), 'f306-gh-wrapper-'));
+after(() => rmSync(WRAPPER_FIXTURE_ROOT, { recursive: true, force: true }));
+const RUNTIME_ROOT = join(WRAPPER_FIXTURE_ROOT, 'cat-cafe-runtime');
+const GH_WRAPPER = join(RUNTIME_ROOT, 'scripts', 'guarded-bin', 'gh');
+mkdirSync(dirname(GH_WRAPPER), { recursive: true });
+copyFileSync(WRAPPER_SOURCE, GH_WRAPPER);
+chmodSync(GH_WRAPPER, 0o755);
+// Same bytes as the repository wrapper the program-selection pin covers, so the
+// fixture copies the merged artifact rather than an install that may drift.
+const GH_WRAPPER_SHA256 = createHash('sha256').update(readFileSync(WRAPPER_SOURCE)).digest('hex');
+
+// The delegate proof needs an ordinary executable named gh. A plain `#!/bin/sh`
+// stub keeps the chain hermetic: selection proves wrapper → node → delegate → git,
+// and nothing here ever executes the delegate.
+const GH_DELEGATE = join(WRAPPER_FIXTURE_ROOT, 'delegate', 'gh');
+mkdirSync(dirname(GH_DELEGATE), { recursive: true });
+writeFileSync(GH_DELEGATE, '#!/bin/sh\nexit 0\n');
+chmodSync(GH_DELEGATE, 0o755);
+const AMBIENT_PATH = process.env.PATH;
+const AMBIENT_GH_DELEGATE = process.env.CAT_CAFE_REAL_GH_PATH;
+process.env.CAT_CAFE_REAL_GH_PATH = GH_DELEGATE;
+const FIXTURE_BIN = dirname(GH_DELEGATE);
+symlinkSync(process.execPath, join(FIXTURE_BIN, 'node'));
+writeFileSync(join(FIXTURE_BIN, 'git'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+// Program selection proves the complete node/delegate/git chain, not just the
+// pinned wrapper. Keep that chain independent of a CI runner's ambient PATH.
+process.env.PATH = FIXTURE_BIN;
+after(() => {
+  if (AMBIENT_PATH === undefined) delete process.env.PATH;
+  else process.env.PATH = AMBIENT_PATH;
+  if (AMBIENT_GH_DELEGATE === undefined) delete process.env.CAT_CAFE_REAL_GH_PATH;
+  else process.env.CAT_CAFE_REAL_GH_PATH = AMBIENT_GH_DELEGATE;
+});
+
+// Loader variables are explicit inputs to this synchronous classifier fixture,
+// independent of the CI launcher. The public resource guard stays installed;
+// child processes run only after these inputs have been restored.
+const FIXTURE_LOADER_KEYS = [
+  'NODE_OPTIONS',
+  'NODE_PATH',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'DYLD_INSERT_LIBRARIES',
+  'DYLD_LIBRARY_PATH',
+  'DYLD_FRAMEWORK_PATH',
+  'BASH_ENV',
+  'ENV',
+];
+const loaderEnvironment = () => Object.fromEntries(FIXTURE_LOADER_KEYS.map((key) => [key, process.env[key]]));
+function applyLoaderEnvironment(environment) {
+  for (const key of FIXTURE_LOADER_KEYS) {
+    if (environment[key] === undefined) delete process.env[key];
+    else process.env[key] = environment[key];
   }
-};
+}
+function classifyWrapperFixture(view, cwd, source, loaderInputs = {}) {
+  const inherited = loaderEnvironment();
+  try {
+    applyLoaderEnvironment(loaderInputs);
+    return decideShellHookPayload(view, cwd, source);
+  } finally {
+    applyLoaderEnvironment(inherited);
+  }
+}
+
+function wrapperProofDiagnostic(result, cwd) {
+  const call = { program: GH_WRAPPER, cwd, wrappers: [] };
+  return JSON.stringify({
+    decision: result,
+    fixtureSelection: proveProgramSelection({ ...call, environment: [`PATH=${FIXTURE_BIN}`] }),
+    ambientSelection: proveProgramSelection({ ...call, environment: [`PATH=${AMBIENT_PATH ?? ''}`] }),
+    ambientPath: AMBIENT_PATH,
+    node: realpathSync(join(FIXTURE_BIN, 'node')),
+    delegate: GH_DELEGATE,
+    git: join(FIXTURE_BIN, 'git'),
+  });
+}
 
 // Provenance: F306 AC-C7 -- canonical gh remote operations must classify with an
 // honest effect and a remote coordinate. Unrecognized shapes keep today's
@@ -44,7 +122,7 @@ const pinnedWrapperPresent = () => {
 // graphql/pr-create/help recognition added here.
 
 const source = { provider: 'github-classifier-test', tool: 'shell' };
-const decision = (command, cwd) => decideShellHookPayload({ judged: command }, cwd, source);
+const decision = (command, cwd) => classifyWrapperFixture({ judged: command }, cwd, source);
 
 const GRAPHQL_QUERY =
   'gh api graphql -f query=\'query { repository(owner:"deepseek-ai",name:"deepseek-harness") { id discussionCategories(first:20) { nodes { id name slug } } } }\'';
@@ -160,27 +238,94 @@ test('pr create accepts literal $ and Markdown inside quoted titles and bodies',
   );
 });
 
-test(
-  'the pinned wrapper entry: verified absolute-path query and mutation both classify',
-  { skip: !pinnedWrapperPresent() },
-  (t) => {
-    const cwd = mkdtempSync(join(tmpdir(), 'gh-wrapper-'));
-    t.after(() => rmSync(cwd, { recursive: true, force: true }));
-    const query = `${GH_WRAPPER} api graphql -f query='{ viewer { login } }'`;
-    const mutation = `${GH_WRAPPER} api graphql -f query='mutation { createDiscussion(input:{repositoryId:"R_1"}) { discussion { id } } }'`;
-    const readDecision = decideShellHookPayload({ judged: query }, cwd, source);
-    assert.equal(readDecision.decision, 'allow');
-    assert.equal(readDecision.effect, 'read');
-    assert.deepEqual(readDecision.target, { kind: 'remote_repository', value: 'github://api/graphql' });
-    const mutationDecision = decideShellHookPayload({ judged: mutation }, cwd, source);
-    assert.equal(mutationDecision.decision, 'allow');
-    assert.equal(mutationDecision.effect, 'remote_mutation');
-    assert.deepEqual(mutationDecision.target, { kind: 'remote_repository', value: 'github://api/graphql' });
-  },
-);
+test('the pinned wrapper entry: verified absolute-path query and mutation both classify', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-wrapper-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  assert.equal(
+    createHash('sha256').update(readFileSync(GH_WRAPPER)).digest('hex'),
+    GH_WRAPPER_SHA256,
+    'the fixture wrapper must be the merged repository wrapper',
+  );
+  const query = `${GH_WRAPPER} api graphql -f query='{ viewer { login } }'`;
+  const mutation = `${GH_WRAPPER} api graphql -f query='mutation { createDiscussion(input:{repositoryId:"R_1"}) { discussion { id } } }'`;
+  const readDecision = classifyWrapperFixture({ judged: query }, cwd, source);
+  assert.equal(readDecision.decision, 'allow');
+  assert.equal(readDecision.effect, 'read', wrapperProofDiagnostic(readDecision, cwd));
+  assert.deepEqual(readDecision.target, { kind: 'remote_repository', value: 'github://api/graphql' });
+  const mutationDecision = classifyWrapperFixture({ judged: mutation }, cwd, source);
+  assert.equal(mutationDecision.decision, 'allow');
+  assert.equal(mutationDecision.effect, 'remote_mutation', wrapperProofDiagnostic(mutationDecision, cwd));
+  assert.deepEqual(mutationDecision.target, { kind: 'remote_repository', value: 'github://api/graphql' });
+});
+
+test('a pinned wrapper retains inherited-loader refusal with an otherwise valid program chain', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-wrapper-loader-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const inherited = loaderEnvironment();
+  const commands = [
+    `${GH_WRAPPER} api graphql -f query='{ viewer { login } }'`,
+    `${GH_WRAPPER} api graphql -f query='mutation { createDiscussion(input:{repositoryId:"R_1"}) { discussion { id } } }'`,
+  ];
+  for (const key of FIXTURE_LOADER_KEYS) {
+    for (const command of commands) {
+      const result = classifyWrapperFixture({ judged: command }, cwd, source, {
+        [key]: key === 'NODE_OPTIONS' ? '--require /fixture/unproved-loader.cjs' : '/fixture/unproved-loader',
+      });
+      assert.equal(result.effect, 'unknown', key);
+      assert.notEqual(result.target?.kind, 'remote_repository', key);
+      assert.deepEqual(loaderEnvironment(), inherited, `${key}: restore the launcher before another call`);
+    }
+  }
+});
+
+test('a throwing classifier fixture restores the launcher environment and keeps the public guard installed', () => {
+  const inherited = loaderEnvironment();
+  const inheritedFetch = globalThis.fetch;
+  const failure = new Error('classifier fixture failed');
+  assert.throws(
+    () =>
+      classifyWrapperFixture(
+        {
+          get judged() {
+            assert.ok(FIXTURE_LOADER_KEYS.every((key) => process.env[key] === undefined));
+            throw failure;
+          },
+        },
+        WRAPPER_FIXTURE_ROOT,
+        source,
+      ),
+    failure,
+  );
+  assert.deepEqual(loaderEnvironment(), inherited);
+  assert.equal(globalThis.fetch, inheritedFetch);
+});
+
+test('a pinned wrapper does not prove a missing or protected interpreter chain', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-wrapper-unproved-chain-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const missing = join(cwd, 'empty-bin');
+  const protectedBin = join(cwd, 'cat-cafe-runtime', 'bin');
+  mkdirSync(missing);
+  mkdirSync(protectedBin, { recursive: true });
+  writeFileSync(join(protectedBin, 'node'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  for (const path of [missing, `${protectedBin}:${FIXTURE_BIN}`]) {
+    process.env.PATH = path;
+    try {
+      const result = classifyWrapperFixture(
+        { judged: `${GH_WRAPPER} api graphql -f query='{ viewer { login } }'` },
+        cwd,
+        source,
+      );
+      assert.equal(result.effect, 'unknown', path);
+      assert.notEqual(result.target?.kind, 'remote_repository', path);
+    } finally {
+      process.env.PATH = FIXTURE_BIN;
+    }
+  }
+});
 
 test('unquoted brace and glob expansion never rewrites the classified PR argv', () => {
-  const runtime = '/Users/yuhan/cat-cafe/cat-cafe-runtime';
+  const runtime = RUNTIME_ROOT;
   assert.equal(constrainedGhPullRequestOperation(`gh pr create --body {safe,--body-file=${runtime}/body.md}`), null);
   assert.equal(constrainedGhPullRequestOperation(`gh pr create --template ${runtime}/*`), null);
   assert.equal(constrainedGhPullRequestOperation(`gh pr create --body ${runtime}/*`), null);
@@ -200,7 +345,7 @@ test('pr create --body-file: the standard file-backed body path classifies by th
   const ordinarySymlink = join(cwd, 'link.md');
   symlinkSync(ordinary, ordinarySymlink);
   const runtimeSymlink = join(cwd, 'runtime-link.md');
-  symlinkSync('/Users/yuhan/cat-cafe/cat-cafe-runtime/scripts', runtimeSymlink);
+  symlinkSync(join(RUNTIME_ROOT, 'scripts'), runtimeSymlink);
 
   assert.deepEqual(
     constrainedGhPullRequestOperation(
@@ -209,9 +354,7 @@ test('pr create --body-file: the standard file-backed body path classifies by th
     { effect: 'remote_mutation', target: 'github://08mamba24/clowder-ai/pulls' },
   );
   assert.equal(
-    constrainedGhPullRequestOperation(
-      `gh pr create --repo a/b --title t --body-file /Users/yuhan/cat-cafe/cat-cafe-runtime/x.md`,
-    ),
+    constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t --body-file ${RUNTIME_ROOT}/x.md`),
     null,
   );
   assert.equal(
@@ -234,26 +377,27 @@ test('pr create --body-file: the standard file-backed body path classifies by th
   );
 });
 
-test(
-  'decision level: the pinned wrapper publishes via an ordinary body file and still refuses protected inputs',
-  { skip: !pinnedWrapperPresent() },
-  (t) => {
-    const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-decision-'));
-    t.after(() => rmSync(cwd, { recursive: true, force: true }));
-    const ordinary = join(cwd, 'PR_BODY.md');
-    writeFileSync(ordinary, '# change\n');
-    const protectedFile = join(cwd, 'cat-cafe-runtime', 'private.md');
-    const shape = (file) =>
-      `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair --body-file '${file}'`;
-    const allowed = decideShellHookPayload({ judged: shape(ordinary) }, cwd, source);
-    assert.equal(allowed.decision, 'allow');
-    assert.equal(allowed.effect, 'remote_mutation');
-    assert.deepEqual(allowed.target, { kind: 'remote_repository', value: 'github://08mamba24/clowder-ai/pulls' });
-    const refused = decideShellHookPayload({ judged: shape(protectedFile) }, cwd, source);
-    assert.equal(refused.decision, 'deny');
-    assert.equal(refused.reasonCode, 'protected_target_unparsed');
-  },
-);
+test('decision level: the pinned wrapper publishes via an ordinary body file and still refuses protected inputs', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-decision-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const ordinary = join(cwd, 'PR_BODY.md');
+  writeFileSync(ordinary, '# change\n');
+  const protectedFile = join(cwd, 'cat-cafe-runtime', 'private.md');
+  const shape = (file) =>
+    `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair --body-file '${file}'`;
+  const allowed = classifyWrapperFixture({ judged: shape(ordinary) }, cwd, source);
+  assert.equal(allowed.decision, 'allow');
+  assert.equal(allowed.effect, 'remote_mutation', wrapperProofDiagnostic(allowed, cwd));
+  assert.deepEqual(allowed.target, { kind: 'remote_repository', value: 'github://08mamba24/clowder-ai/pulls' });
+  // #4807 keeps an unproved protected input closed: it remains unknown at its
+  // sanctuary coordinate, is denied, and never gains a certified remote coordinate.
+  const refused = classifyWrapperFixture({ judged: shape(protectedFile) }, cwd, source);
+  assert.equal(refused.decision, 'deny');
+  assert.equal(refused.effect, 'unknown');
+  assert.equal(refused.reasonCode, 'protected_target_unparsed');
+  assert.equal(refused.target.kind, 'runtime_sanctuary');
+  assert.notEqual(refused.target?.kind, 'remote_repository');
+});
 
 test('body-file alias, dangling symlink, and stream inputs share the file-input proof boundary', (t) => {
   const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-r5-'));
@@ -284,28 +428,118 @@ test('body-file alias, dangling symlink, and stream inputs share the file-input 
   assert.equal(constrainedGhPullRequestOperation('gh pr create --repo a/b --title t --body-file /dev/null'), null);
 });
 
-test(
-  'decision level: the pinned wrapper refuses aliased, dangling, and stream body inputs',
-  { skip: !pinnedWrapperPresent() },
-  (t) => {
-    const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-r5-decision-'));
-    t.after(() => rmSync(cwd, { recursive: true, force: true }));
-    const protectedText = join(cwd, 'cat-cafe-runtime', 'private-fixture.md');
-    const dangling = join(cwd, 'dangling.md');
-    symlinkSync(join(cwd, 'cat-cafe-runtime', 'not-created.md'), dangling);
-    for (const file of [protectedText, dangling, '/dev/stdin']) {
-      const refused = decideShellHookPayload(
-        {
-          judged: `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair --body-file '${file}'`,
-        },
-        cwd,
-        source,
-      );
-      assert.equal(refused.decision, 'deny', file);
-      assert.notEqual(refused.target?.kind, 'remote_repository', file);
-    }
-  },
-);
+test('decision level: the pinned wrapper refuses a protected body-file input (PR60 contract)', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-r5-protected-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const protectedText = join(cwd, 'cat-cafe-runtime', 'private-fixture.md');
+  mkdirSync(dirname(protectedText), { recursive: true });
+  writeFileSync(protectedText, 'runtime secret\n');
+  const protectedAlias = join(cwd, 'alias-to-runtime.md');
+  symlinkSync(protectedText, protectedAlias);
+  // The classifier must refuse the alias too: a symlink whose resolved target sits
+  // inside the runtime tree is the same protected input under another name.
+  assert.equal(
+    constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t --body-file ${protectedAlias}`),
+    null,
+  );
+  assert.equal(constrainedGhPullRequestOperation(`gh pr create --repo a/b --title t -F ${protectedAlias}`), null);
+  // -F and --body-file are one file channel: the classifier refuses a protected
+  // target through either flag (asserted above). The decision layer defers the
+  // unrecognised effect (see the reconciliation note in the "publishes via an
+  // ordinary body file" test); what it must never do is certify that channel as a
+  // remote mutation carrying a remote coordinate.
+  for (const [flag, file] of [
+    ['--body-file', protectedText],
+    ['-F', protectedText],
+    ['--body-file', protectedAlias],
+    ['-F', protectedAlias],
+    ['--body-file', './alias-to-runtime.md'],
+    ['-F', './alias-to-runtime.md'],
+    ['--body-file', 'alias-to-runtime.md'],
+    ['-F', 'alias-to-runtime.md'],
+    ['--body-file', `${RUNTIME_ROOT}/x.md`],
+  ]) {
+    const deferred = classifyWrapperFixture(
+      {
+        judged: `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair ${flag} '${file}'`,
+      },
+      cwd,
+      source,
+    );
+    assert.equal(deferred.decision, 'deny', `${flag} ${file}`);
+    assert.equal(deferred.effect, 'unknown', `${flag} ${file}`);
+    assert.equal(deferred.target.kind, 'runtime_sanctuary', `${flag} ${file}`);
+    assert.notEqual(deferred.target?.kind, 'remote_repository', `${flag} ${file}`);
+    // #4807 restored: an unrecognised effect on the runtime sanctuary denies
+    // (protected_target_unparsed) instead of deferring — the conservative line
+    // the fork shipped and the reviewer required preserved.
+    assert.equal(deferred.reasonCode, 'protected_target_unparsed', `${flag} ${file}`);
+  }
+});
+
+test('decision level: dot-dot through a directory alias is judged on the kernel path (R8 regression)', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-kernelpath-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const protectedText = join(cwd, 'cat-cafe-runtime', 'private-fixture.md');
+  const nested = join(cwd, 'cat-cafe-runtime', 'nested');
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(protectedText, 'runtime secret\n');
+  // Ordinary same-name decoy: a lexical fold of `directory-alias/../private-fixture.md`
+  // lands here and would wrongly certify an ordinary target.
+  writeFileSync(join(cwd, 'private-fixture.md'), 'ordinary body\n');
+  // The kernel resolves `directory-alias` (a symlink) BEFORE the `..` applies, so
+  // every spelling below physically reads cat-cafe-runtime/private-fixture.md.
+  symlinkSync(nested, join(cwd, 'directory-alias'));
+  // Raw absolute spelling built by string concatenation so the test itself never
+  // normalizes the dot segments away.
+  const rawAbsolute = `${cwd}/directory-alias/../private-fixture.md`;
+  for (const [flag, file] of [
+    ['--body-file', 'directory-alias/../private-fixture.md'],
+    ['-F', 'directory-alias/../private-fixture.md'],
+    ['--body-file', './directory-alias/../private-fixture.md'],
+    ['-F', './directory-alias/../private-fixture.md'],
+    ['--body-file', rawAbsolute],
+    ['-F', rawAbsolute],
+  ]) {
+    const deferred = classifyWrapperFixture(
+      {
+        judged: `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair ${flag} '${file}'`,
+      },
+      cwd,
+      source,
+    );
+    assert.equal(deferred.decision, 'deny', `${flag} ${file}`);
+    assert.equal(deferred.effect, 'unknown', `${flag} ${file}`);
+    assert.equal(deferred.target.kind, 'runtime_sanctuary', `${flag} ${file}`);
+    assert.equal(deferred.reasonCode, 'protected_target_unparsed', `${flag} ${file}`);
+  }
+});
+
+test('decision level: dangling and stream body inputs never earn a remote coordinate', (t) => {
+  // Contract reconciliation (R8): under the merged target model the working
+  // directory — not the program path — is the fallback target, so a dangling
+  // symlink or a stream descriptor stays an *ordinary* target instead of
+  // inheriting the wrapper's runtime path. The classifier still refuses to read
+  // them (asserted above), so the honest decision is an unrecognised effect
+  // deferred to the sandbox/permission layer, never a certified read or a remote
+  // coordinate. The runtime sanctuary itself stays closed in every case.
+  const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-r5-decision-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const dangling = join(cwd, 'dangling.md');
+  symlinkSync(join(cwd, 'cat-cafe-runtime', 'not-created.md'), dangling);
+  for (const file of [dangling, '/dev/stdin', '-']) {
+    const deferred = classifyWrapperFixture(
+      {
+        judged: `${GH_WRAPPER} pr create --repo 08mamba24/clowder-ai --base main --head fix/x --title repair --body-file '${file}'`,
+      },
+      cwd,
+      source,
+    );
+    assert.equal(deferred.effect, 'unknown', file);
+    assert.notEqual(deferred.target?.kind, 'remote_repository', file);
+    assert.match(deferred.reasonCode, /_deferred$/, file);
+  }
+});
 
 test('descriptor-namespace body inputs never earn the named-file proof', (t) => {
   const cwd = mkdtempSync(join(tmpdir(), 'gh-bodyfile-r6-'));
@@ -488,7 +722,7 @@ test('REST typed fields carrying local file or stdin inputs never earn the remot
 test('decision level: REST typed @ inputs are not allowed as pure remote reads', (t) => {
   const cwd = mkdtempSync(join(tmpdir(), 'gh-rest-typed-'));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
-  const decision = decideShellHookPayload(
+  const decision = classifyWrapperFixture(
     { judged: 'gh api repos/example/fixture/issues --method GET -F marker=@/etc/hosts' },
     cwd,
     source,
@@ -569,23 +803,24 @@ test('decision level: protections survive the new recognition', (t) => {
   const cwd = mkdtempSync(join(tmpdir(), 'gh-classifier-'));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
 
-  const sanctuaryDelete = decision('rm -rf /Users/yuhan/cat-cafe/cat-cafe-runtime/scripts/x', cwd);
+  const sanctuaryDelete = decision(`rm -rf ${RUNTIME_ROOT}/scripts/x`, cwd);
   assert.equal(sanctuaryDelete.decision, 'deny');
   assert.equal(sanctuaryDelete.reasonCode, 'runtime_sanctuary_mutation');
 
-  const sanctuaryWrite = decision('echo hi > /Users/yuhan/cat-cafe/cat-cafe-runtime/x', cwd);
+  const sanctuaryWrite = decision(`echo hi > ${RUNTIME_ROOT}/x`, cwd);
   assert.equal(sanctuaryWrite.decision, 'deny');
   assert.equal(sanctuaryWrite.reasonCode, 'runtime_sanctuary_mutation');
 
-  // An absolute path that is NOT the pinned wrapper stays a runtime coordinate:
-  // executing the verified wrapper (proven by content) differs from running an
-  // unproved executable that happens to live under the runtime tree.
-  const unprovedPath = decision(
-    '/Users/yuhan/cat-cafe/cat-cafe-runtime/scripts/gh-unverified api graphql -f query=q',
-    cwd,
-  );
-  assert.equal(unprovedPath.decision, 'deny');
-  assert.equal(unprovedPath.reasonCode, 'protected_target_unparsed');
+  // Contract reconciliation (R8): the merged target model treats the program's own
+  // location as program selection, not a mutation operand ("PATH and the program's own
+  // location select code; neither is a file mutation operand"), so an unproved
+  // executable under the runtime tree is deferred rather than denied — while it still
+  // never earns a read or a remote coordinate, and the sanctuary stays closed when it
+  // is actually the operand (asserted above).
+  const unprovedPath = decision(`${RUNTIME_ROOT}/scripts/gh-unverified api graphql -f query=q`, cwd);
+  assert.equal(unprovedPath.decision, 'allow');
+  assert.equal(unprovedPath.effect, 'unknown');
+  assert.notEqual(unprovedPath.target?.kind, 'remote_repository');
 
   // Substitution-generated graphql text never earns a remote read/mutation proof.
   const substituted = decision('gh api graphql -f query="$(cat /etc/hosts)"', cwd);

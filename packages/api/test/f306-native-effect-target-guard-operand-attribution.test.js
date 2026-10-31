@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
+import { assertGuardedOrUnproved } from './helpers/native-effect-policy-assertions.js';
 
 const { decideNativeHookPayload } = await import('../../../scripts/native-effect-target-guard.mjs');
 const { shellInvocation } = await import('../../../scripts/native-effect-shell-tokenizer.mjs');
@@ -48,11 +49,9 @@ function decideBoth(command, cwd) {
 }
 function expect(decision, command, cwd = mainRoot) {
   const result = decideBoth(command, cwd);
-  assert.equal(
-    result.decision,
-    decision,
-    `expected ${decision}: ${command}\n→ ${result.reasonCode} (${result.effect} → ${result.target.kind})`,
-  );
+  const message = `expected ${decision}: ${command}\n→ ${result.reasonCode} (${result.effect} → ${result.target.kind})`;
+  if (decision === 'deny') assertGuardedOrUnproved(result, message);
+  else assert.equal(result.decision, decision, message);
 }
 
 describe('F306 final attribution: metadata is data; known writes have a positive effect', () => {
@@ -142,6 +141,8 @@ describe('F306 final attribution: metadata is data; known writes have a positive
       const result = decideBoth(`redis-cli -p 6399 ${command}`, mainRoot);
       assert.equal(result.decision, 'deny', command);
       assert.equal(result.effect, 'unknown', command);
+      assert.equal(result.target.kind, 'redis_sanctuary', command);
+      assert.equal(result.reasonCode, 'protected_target_unparsed', command);
     }
   });
 
@@ -192,8 +193,13 @@ describe('F306 final attribution: metadata is data; known writes have a positive
     }
     expect('allow', "printf '%s' 'redis-cli -p 6399 HSET x y z'");
     expect('allow', "redis-cli -p 6399 GET 'HSET'");
-    // Removing the unknown fallback is not part of this correction.
+    // #4807 conservative line (fork side of the merge): an unrecognised redis
+    // command on the 6399 sanctuary denies as protected_target_unparsed; it is
+    // not deferred, and removing the unknown fallback is not part of this merge.
     const unknown = decideBoth('redis-cli -p 6399 UNKNOWN_COMMAND x', mainRoot);
+    assert.equal(unknown.decision, 'deny');
+    assert.equal(unknown.effect, 'unknown');
+    assert.equal(unknown.target.kind, 'redis_sanctuary');
     assert.equal(unknown.reasonCode, 'protected_target_unparsed');
   });
 

@@ -9,6 +9,8 @@ const ownDir = dirname(fileURLToPath(import.meta.url));
 
 // Nested shell commands have no authority to call the host read carrier.
 // Qoder reads approved repositories through its native, invocation-bound MCP.
+// (fork capability, kept from e61291c03; must stay ahead of any content
+// processing so read-only mode never inspects or forwards payload data)
 if (process.env.CAT_CAFE_GITHUB_READ_ONLY === 'true') {
   if (args.length === 1 && args[0] === '--version') {
     process.stdout.write('gh (Clowder readonly carrier)\n');
@@ -17,6 +19,24 @@ if (process.env.CAT_CAFE_GITHUB_READ_ONLY === 'true') {
   process.stderr.write('capability_unavailable: use mcp__clowder-repository-read__github_read\n');
   process.exit(1);
 }
+
+// The controlled Qoder sandbox mounts this wrapper but not scripts/lib, and the
+// `gh --version` canary is classified under the workspace policy. Resolve the
+// secret helpers only after the read-only carrier has answered or refused, so a
+// read-only runtime without the lib mount can still start. Every non-read-only
+// invocation loads the same helpers before it inspects or forwards any content.
+const { prepareSecretSafeSend } = await import('../lib/secret-outbound-args.mjs');
+const { assertSecretFree } = await import('../lib/secret-payload-files.mjs');
+const { executeSecretSafeCommand } = await import('../lib/secret-command-execution.mjs');
+
+let prepared;
+try {
+  assertSecretFree(args.join('\n'));
+} catch {
+  process.stderr.write('secret_send_blocked: content was unsafe or could not be inspected; use explicit body/file input.\n');
+  process.exit(1);
+}
+process.on('exit', () => prepared?.dispose());
 
 const VALUE_OPTION_ALIASES = Object.freeze({
   repository: Object.freeze(['--repo', '-R']),
@@ -125,6 +145,10 @@ function fail(code, detail) {
 }
 
 if (isVerdictPrCreate()) {
+  // Fork verdict publishing targets the cat-cafe evaluation repository.
+  // deploymentDefaults in this checkout resolves to zts212653/clowder-ai
+  // (opensource profile), which would silently retarget fork verdict PRs;
+  // keep the fork fallback until the fork explicitly decides to migrate.
   const expectedRepo =
     process.env.CAT_CAFE_VERDICT_REPO_FULL_NAME ??
     process.env.CAT_CAFE_REPO_FULL_NAME ??
@@ -176,10 +200,9 @@ const delegatePath = (process.env.PATH ?? '')
   .filter((entry) => entry && resolve(entry) !== resolve(ownDir))
   .join(delimiter);
 const delegate = process.env.CAT_CAFE_REAL_GH_PATH ?? 'gh';
-const result = spawnSync(delegate, args, {
-  env: { ...process.env, PATH: delegatePath },
-  stdio: 'inherit',
-});
-if (result.error) fail('gh_delegate_failed', result.error.message);
-if (result.signal) process.kill(process.pid, result.signal);
-process.exit(result.status ?? 1);
+try {
+  prepared = await prepareSecretSafeSend('gh', args);
+} catch {
+  fail('secret_send_blocked', 'content was unsafe or could not be inspected; use explicit body/file input.');
+}
+process.exit(await executeSecretSafeCommand(delegate, prepared.args, { ...process.env, PATH: delegatePath }));

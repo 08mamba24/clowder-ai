@@ -68,7 +68,9 @@ function normalizedDescriptor(adapter: ProgramAdapter): ProgramAdapterDescriptor
     descriptor.schemaVersion !== 1 ||
     descriptor.adapterId.trim().length === 0 ||
     descriptor.targetOwnerFeatureId.trim().length === 0 ||
-    !/^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]*$/.test(descriptor.targetStateRefPrefix)
+    // Same portable allowlist as OWNER_STATE_REF_PATTERN, but `*` because an adapter may
+    // register a bare kind namespace (`simulator:`). `%` keeps percent-encoded owner refs valid.
+    !/^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#%-]*$/.test(descriptor.targetStateRefPrefix)
   ) {
     throw new Error('program adapter requires a complete v1 descriptor');
   }
