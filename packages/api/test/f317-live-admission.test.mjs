@@ -8,7 +8,7 @@ import { MessageStore } from '../dist/domains/cats/services/stores/ports/Message
 import { ThreadStore } from '../dist/domains/cats/services/stores/ports/ThreadStore.js';
 import { MemoryConciergeConfigStore } from '../dist/domains/concierge/ConciergeConfigStore.js';
 import { ConciergeThreadService } from '../dist/domains/concierge/ConciergeThreadService.js';
-import { createOwnerLocalNoteProfile } from '../dist/domains/concierge/live/host/owner-local-note-profile.js';
+import { createOwnerLocalNoteProfile } from '../dist/domains/concierge/live/host/local-note/owner-local-note-profile.js';
 import { OwnerPageActionService } from '../dist/domains/concierge/live/host/owner-page-action-service.js';
 import { LiveCompanionSessions } from '../dist/domains/concierge/live/LiveCompanionSessions.js';
 import { sessionAuthPlugin, sessionRoute } from '../dist/infrastructure/session-auth.js';
