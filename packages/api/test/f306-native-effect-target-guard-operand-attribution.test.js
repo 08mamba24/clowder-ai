@@ -139,6 +139,7 @@ describe('F306 final attribution: metadata is data; known writes have a positive
     expect('allow', 'redis-cli < /tmp/in -p 6399 GET HSET');
     for (const command of ['UNKNOWN GET', '--unknown GET', 'UNKNOWN "$(printf GET)"']) {
       const result = decideBoth(`redis-cli -p 6399 ${command}`, mainRoot);
+      assert.equal(result.decision, 'deny', command);
       assert.equal(result.effect, 'unknown', command);
     }
   });
@@ -190,10 +191,13 @@ describe('F306 final attribution: metadata is data; known writes have a positive
     }
     expect('allow', "printf '%s' 'redis-cli -p 6399 HSET x y z'");
     expect('allow', "redis-cli -p 6399 GET 'HSET'");
-    // A defers parser uncertainty; the command was not certified as a read.
+    // #4807 conservative line (fork side of the merge): an unrecognised redis
+    // command on the 6399 sanctuary denies as protected_target_unparsed; it is
+    // not deferred, and removing the unknown fallback is not part of this merge.
     const unknown = decideBoth('redis-cli -p 6399 UNKNOWN_COMMAND x', mainRoot);
+    assert.equal(unknown.decision, 'deny');
     assert.equal(unknown.effect, 'unknown');
-    assert.equal(unknown.reasonCode, 'unrecognised_effect_deferred');
+    assert.equal(unknown.reasonCode, 'protected_target_unparsed');
   });
 
   test('in-place editors, output options and read-write redirection identify writes', () => {

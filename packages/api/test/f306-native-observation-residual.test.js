@@ -303,7 +303,11 @@ test('real shared hook keeps inherited loader selection unproved under public is
       encoding: 'utf8',
     });
     assert.equal(result.status, 0, result.stderr);
-    if (command.includes(' > ')) assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, 'deny');
-    else assert.equal(result.stdout.trim(), '');
+    // #4807 conservative line (origin side of the merge): under a runtime cwd an
+    // unproved inherited-loader selection denies for BOTH the plain comparison
+    // (unknown effect on the sanctuary, protected_target_unparsed) and the
+    // explicit runtime output target. Ordinary-target and proved-read positives
+    // stay covered by the gh-proof cases above.
+    assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, 'deny');
   }
 });

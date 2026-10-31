@@ -39,22 +39,34 @@ const decide = (command, cwd = main, extra = {}) =>
   decideNativeHookPayload(payload(command, 'Bash', cwd), { ...options, ...extra });
 
 test('source546: a literal remote SSH service has a remote coordinate in both provider payloads', () => {
-  for (const cwd of [main, runtime])
-    for (const provider of ['Bash', 'exec_command']) {
-      const result = decideNativeHookPayload(payload(script(), provider, cwd), options);
-      assert.equal(result.decision, 'allow', JSON.stringify(result));
-      assert.equal(result.reasonCode, 'remote_ssh_policy_deferred');
-      assert.equal(result.effect, 'unknown', 'an opaque remote script is not certified read-only');
-      assert.equal(result.source.provider, provider === 'Bash' ? 'claude' : 'codex');
-      assert.equal(result.target.value, 'ssh://root@203.0.113.8:22');
-      assert.ok(!result.target.value.includes('identity'), '-i is a local input, not the service target');
-    }
+  for (const provider of ['Bash', 'exec_command']) {
+    const result = decideNativeHookPayload(payload(script(), provider, main), options);
+    assert.equal(result.decision, 'allow', JSON.stringify(result));
+    assert.equal(result.reasonCode, 'remote_ssh_policy_deferred');
+    assert.equal(result.effect, 'unknown', 'an opaque remote script is not certified read-only');
+    assert.equal(result.source.provider, provider === 'Bash' ? 'claude' : 'codex');
+    assert.equal(result.target.value, 'ssh://root@203.0.113.8:22');
+    assert.ok(!result.target.value.includes('identity'), '-i is a local input, not the service target');
+    // #4807 conservative line (fork side of the merge): the same opaque remote
+    // script under a runtime cwd is an unrecognised effect on the sanctuary —
+    // deny, never a deferred remote certificate.
+    const inRuntime = decideNativeHookPayload(payload(script(), provider, runtime), options);
+    assert.equal(inRuntime.decision, 'deny', JSON.stringify(inRuntime));
+    assert.equal(inRuntime.effect, 'unknown');
+    assert.equal(inRuntime.target.kind, 'runtime_sanctuary');
+    assert.equal(inRuntime.reasonCode, 'protected_target_unparsed');
+  }
 });
 
 test('the final native shell execution payload uses its actual local cwd and the same SSH scope', () => {
-  for (const [command, decision] of [
-    [script(), 'allow'],
-    [`${prefix} true > '${runtime}/.env'`, 'deny'],
+  // Both commands deny, but for distinguishable reasons — and the opaque script
+  // denies ONLY because the actual cwd (native_execution.cwd_uri = runtime) is
+  // used instead of the declared input cwd (main), which would allow it under
+  // the remote coordinate. That contrast is the cwd proof (#4807 conservative
+  // line: unknown effect on the runtime sanctuary denies).
+  for (const [command, reasonCode] of [
+    [script(), 'protected_target_unparsed'],
+    [`${prefix} true > '${runtime}/.env'`, undefined],
   ]) {
     const input = {
       cwd: main,
@@ -77,7 +89,8 @@ test('the final native shell execution payload uses its actual local cwd and the
       },
     };
     const result = decideNativeHookPayload(input, options);
-    assert.equal(result.decision, decision, JSON.stringify(result));
+    assert.equal(result.decision, 'deny', JSON.stringify(result));
+    if (reasonCode) assert.equal(result.reasonCode, reasonCode, JSON.stringify(result));
     assert.equal(result.source.cwd, runtime);
   }
 });
@@ -162,14 +175,18 @@ test('both real hook CLIs use remote attribution and keep denial audit in a priv
   reportSystemSshRunnerInputs(t);
   for (const [program, hook, provider] of nativeHookPrograms()) {
     const env = nativeHookTestEnv({ ...process.env, CAT_CAFE_DEPLOYMENT_ID: 'runtime' });
-    for (const [command, denied] of [
-      [script(), false],
-      [`${prefix} true > '${runtime}/.env'`, true],
-      ["ssh root@203.0.113.8 -o 'ProxyCommand=kill -TERM 4242' true", true],
+    // The ordinary-cwd positive keeps proving remote attribution end-to-end;
+    // the same opaque script under the runtime cwd denies on the #4807
+    // conservative line, so both readings stay covered through the real hooks.
+    for (const [command, cwd, denied] of [
+      [script(), main, false],
+      [script(), runtime, true],
+      [`${prefix} true > '${runtime}/.env'`, runtime, true],
+      ["ssh root@203.0.113.8 -o 'ProxyCommand=kill -TERM 4242' true", runtime, true],
     ]) {
       const result = spawnSync(program, [hook], {
         env,
-        input: JSON.stringify(payload(command, provider, runtime)),
+        input: JSON.stringify(payload(command, provider, cwd)),
         encoding: 'utf8',
         timeout: 10000,
       });
