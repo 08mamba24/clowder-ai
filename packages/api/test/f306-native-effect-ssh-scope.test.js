@@ -92,14 +92,20 @@ test('the final native shell execution payload uses its actual local cwd and the
       fingerprint: 'a'.repeat(40),
     },
   });
-  for (const [declaredCwd, actualCwd, command, decision, reasonCode] of [
-    [main, runtime, script(), 'deny', 'protected_target_unparsed'],
-    [main, runtime, `${prefix} true > '${runtime}/.env'`, 'deny', undefined],
-    [runtime, main, script(), 'allow', 'remote_ssh_policy_deferred'],
+  for (const [declaredCwd, actualCwd, command, decision, reasonCode, effect] of [
+    [main, runtime, script(), 'deny', 'protected_target_unparsed', 'unknown'],
+    [main, runtime, `${prefix} true > '${runtime}/.env'`, 'deny', undefined, undefined],
+    // Reverse control (P2-1): the SAME opaque script declared under the runtime
+    // but actually executed in main earns the deferred remote coordinate —
+    // allow / unknown / remote_ssh_policy_deferred with source.cwd === main —
+    // proving the actual cwd overrides the declared one instead of the guard
+    // blanket-denying every NativeShellSafetyCheck payload.
+    [runtime, main, script(), 'allow', 'remote_ssh_policy_deferred', 'unknown'],
   ]) {
     const result = decideNativeHookPayload(finalPayload(declaredCwd, actualCwd, command), options);
     assert.equal(result.decision, decision, JSON.stringify(result));
     if (reasonCode) assert.equal(result.reasonCode, reasonCode, JSON.stringify(result));
+    if (effect) assert.equal(result.effect, effect, JSON.stringify(result));
     assert.equal(result.source.cwd, actualCwd);
   }
 });
