@@ -26,6 +26,7 @@ import {
   type OpenCodeRuntimeConfigOptions,
 } from './opencode-config-template.js';
 import { resolveCapabilityMcpNamesSync } from './opencode-mcp-injection.js';
+import { withOpenCodeSecretGuard } from './opencode-secret-config.js';
 
 // ─── Config file writers ──────────────────────────────────────────
 
@@ -37,8 +38,8 @@ function sanitizePathSegment(value: string): string {
  * F203 Phase I: Write an instructions-only opencode config (no provider block).
  *
  * Used for OpenCode fallback paths (subscription/unresolved/known-model) where
- * a full runtime config is not generated. The config ONLY contains `instructions`
- * so OpenCode reads L0 + OPENCODE.md into system role. No provider/apiKey fields
+ * a full runtime config is not generated. Instructions plus the managed security
+ * plugin let OpenCode read L0 + OPENCODE.md without replacing auth. No provider/apiKey fields
  * → `buildEnv` must NOT clear native auth when this config is set.
  *
  * Callers must also set `CAT_CAFE_OC_INSTRUCTIONS_ONLY=1` in callbackEnv so
@@ -61,6 +62,7 @@ export function writeOpenCodeInstructionsOnlyConfig(
   const config: {
     $schema: string;
     instructions: string[];
+    plugin?: string[];
     permission?: { external_directory: Record<string, string> };
   } = {
     $schema: 'https://opencode.ai/config.json',
@@ -70,7 +72,11 @@ export function writeOpenCodeInstructionsOnlyConfig(
   if (externalDirectoryPermissions) {
     config.permission = { external_directory: externalDirectoryPermissions };
   }
-  writeFileSync(tempPath, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  writeFileSync(tempPath, JSON.stringify(withOpenCodeSecretGuard(config), null, 2), {
+    encoding: 'utf8',
+    mode: 0o600,
+    flag: 'wx',
+  });
   renameSync(tempPath, configPath);
   chmodSync(configPath, 0o600);
   return configPath;
@@ -184,7 +190,11 @@ export async function writeOpenCodeRuntimeConfig(
 
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
   chmodSync(configDir, 0o700);
-  writeFileSync(tempPath, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  writeFileSync(tempPath, JSON.stringify(withOpenCodeSecretGuard(config), null, 2), {
+    encoding: 'utf8',
+    mode: 0o600,
+    flag: 'wx',
+  });
   renameSync(tempPath, configPath);
   chmodSync(configPath, 0o600);
   return configPath;

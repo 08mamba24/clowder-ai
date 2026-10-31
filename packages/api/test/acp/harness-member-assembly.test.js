@@ -188,11 +188,11 @@ describe('Grok Build and DeepSeek Harness member assembly', () => {
         assert.notEqual(dshSpawn.cmd, 'dsh', 'must not speak ACP to the headless dsh CLI');
         assert.equal(dshSpawn.cmd, process.execPath);
         assert.equal(dshSpawn.args[0], fixture.bin);
-        assert.equal(
-          dshSpawn.cwd,
-          join(fixture.root, 'examples', 'acp-agent'),
-          'DSH ACP must spawn from the harness composition dir',
-        );
+        // Cwd contract (upstream verified-bootstrap model): the spawn runs from
+        // the pool-verified ACP bootstrap cwd, not the dsh composition dir. The
+        // overlay --config path below is absolute, so harness config and plugin
+        // resolution do not depend on the spawn cwd.
+        assert.match(dshSpawn.cwd, /cat-cafe-acp-bootstrap/, 'DSH ACP spawns from the verified bootstrap cwd');
         const configIdx = dshSpawn.args.indexOf('--config');
         assert.ok(configIdx >= 0, `DSH spawn must pass --config, got ${JSON.stringify(dshSpawn.args)}`);
         const overlayPath = dshSpawn.args[configIdx + 1];

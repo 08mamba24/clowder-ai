@@ -1,8 +1,6 @@
 import { resolve } from 'node:path';
 import type { AgyProfileConfig, CatId } from '@cat-cafe/shared';
-import { createModuleLogger } from '../../../../../../infrastructure/logger.js';
 import { spawnCli } from '../../../../../../utils/cli-spawn.js';
-import type { PreparedIdleFreshnessNotice } from '../../../freshness/FreshnessNoticeBroker.js';
 import { CliRawArchive } from '../../../session/CliRawArchive.js';
 import type {
   AgentFreshnessCarrierCapability,
@@ -14,15 +12,14 @@ import type {
   ProviderContinuityPreflight,
   ToolExecutionPolicy,
 } from '../../../types.js';
-import { type RawArchiveSink, sanitizeRawEvent } from '../codex-audit-hooks.js';
+import type { RawArchiveSink } from '../codex-audit-hooks.js';
 import { compileL0ViaSubprocess } from '../l0-compiler.js';
 import { createAgyNativeContinuityInput } from './agy-native-continuity.js';
-import { AgyNativeResumeMismatchError } from './agy-native-errors.js';
+import { AgyNativeResumeMismatchError, AgyNativeStartupError } from './agy-native-errors.js';
 import { prepareAgyNativeLaunch } from './agy-native-launch.js';
 import { preflightAgyNativeWorkspace } from './agy-native-policy.js';
 import { AgyNativeProfileBusyError } from './agy-native-profile-turn.js';
-import { AgyNativeProgress } from './agy-native-progress.js';
-import { type AgyNativeObservedTurn, observeAgyNativeTurn, projectAgyNativeTurn } from './agy-native-turn.js';
+import { runAgyNativeInvocation } from './run/agy-native-invocation.js';
 
 export interface AgyNativeAgentServiceConfig {
   readonly catId: CatId;
@@ -31,27 +28,6 @@ export interface AgyNativeAgentServiceConfig {
   readonly l0CompilerFn?: typeof compileL0ViaSubprocess;
   readonly rawArchive?: RawArchiveSink;
   readonly spawnCliFn?: typeof spawnCli;
-}
-
-const log = createModuleLogger('agy-native');
-
-async function* archiveNativeStream(
-  stream: AsyncIterable<unknown>,
-  invocationId: string | undefined,
-  archive: RawArchiveSink,
-  closeInput: () => void,
-) {
-  for await (const event of stream) {
-    if (invocationId) {
-      try {
-        await archive.append(invocationId, sanitizeRawEvent(event));
-      } catch (error) {
-        log.warn({ invocationId, error }, 'Native raw archive write failed');
-      }
-    }
-    if (event && typeof event === 'object' && 'event' in event && event.event === 'result') closeInput();
-    yield event;
-  }
 }
 
 function hasUnsupportedNativeOverrides(
@@ -68,7 +44,7 @@ function hasUnsupportedNativeOverrides(
   );
 }
 
-/** One CLI process per turn; operator-approved native execution and separately scoped host MCP. */
+/** One CLI process per invocation; operator-approved native execution and separately scoped host MCP. */
 export class AgyNativeAgentService implements AgentService {
   readonly catId: CatId;
   private readonly model: string;
@@ -101,7 +77,7 @@ export class AgyNativeAgentService implements AgentService {
       provider: 'google',
       carrier: 'agy_stream_json',
       deliverySemantics: 'queued_internal_turn',
-      activeInvocationGuidance: 'unsupported',
+      activeInvocationGuidance: 'supported',
     };
   }
 
@@ -200,9 +176,7 @@ export class AgyNativeAgentService implements AgentService {
       { type: 'error', catId: this.catId, errorCode: code, error: message, metadata, timestamp: Date.now() },
       { type: 'done', catId: this.catId, errorCode: code, metadata, timestamp: Date.now() },
     ];
-    let disposeCredentials: (() => void) | undefined;
-    const idleFreshness = options?.activeInvocationFreshness?.idle;
-    let preparedNotice: PreparedIdleFreshnessNotice | null = null;
+    let disposeCredentials: (() => void | Promise<void>) | undefined;
     try {
       if (hasUnsupportedNativeOverrides(this.model, this.profile, options)) {
         throw new Error('AGY native requires an explicit profile/model and refuses CLI or account env overrides');
@@ -220,18 +194,14 @@ export class AgyNativeAgentService implements AgentService {
       const body = await this.l0CompilerFn({
         catId: this.catId as string,
         userId: compactionControl?.userId ?? options?.callbackEnv?.CAT_CAFE_USER_ID,
-        projection: options?.toolExecutionPolicy?.mode === 'collective_participation' ? 'public' : 'owner',
+        projection: 'owner',
       });
-      if (options?.toolExecutionPolicy?.mode !== 'read_only') {
-        preparedNotice = (await idleFreshness?.prepare()) ?? null;
-      }
-      const turnPrompt = preparedNotice ? `${prompt}\n\n${preparedNotice.text}` : prompt;
       const launch = await prepareAgyNativeLaunch({
         catId: this.catId,
         model: this.model,
         profileConfig: this.profile,
         workspace,
-        prompt: turnPrompt,
+        prompt,
         body,
         ...(compactionControl ? { controlOperation: 'compact' as const } : {}),
         ...(this.command ? { command: this.command } : {}),
@@ -240,69 +210,26 @@ export class AgyNativeAgentService implements AgentService {
       disposeCredentials = launch.disposeCredentials;
       const rawArchivePath = options?.invocationId ? this.rawArchive.getPath?.(options.invocationId) : undefined;
       if (rawArchivePath) metadata.diagnostics = { agyNative: { rawArchivePath } };
-      const continuityInput = preflight
-        ? createAgyNativeContinuityInput(launch, preflight, options, preparedNotice?.text)
-        : undefined;
+      const continuityInput = preflight ? createAgyNativeContinuityInput(launch, preflight, options) : undefined;
       if (!continuityInput) await options?.beforeProviderLaunch?.(launch.preparedRequest);
-      const inputLifetime = new AbortController();
-      const { stdinInput, ...deferredLaunchOptions } = launch.cliOptions;
-      const cliOptions = {
-        ...deferredLaunchOptions,
-        ...(continuityInput ? { onStdinReady: continuityInput.onStdinReady } : { stdinInput }),
-        stdinCloseSignal: inputLifetime.signal,
-        rawArchivePath,
-      };
-      const stream = options?.spawnCliOverride ? options.spawnCliOverride(cliOptions) : this.spawnCliFn(cliOptions);
-      const progress = new AgyNativeProgress(this.catId, metadata);
-      let observed: AgyNativeObservedTurn | undefined;
-      for await (const observation of observeAgyNativeTurn(
-        archiveNativeStream(stream, options?.invocationId, this.rawArchive, () => inputLifetime.abort()),
-        {
-          agentName: launch.agentName,
-          spawnCwd: launch.cliOptions.cwd,
-          model: this.model,
-          permissionMode: launch.permissionMode,
-          ...(launch.resumeSessionId ? { sessionId: launch.resumeSessionId } : {}),
-        },
-        options?.signal,
-      )) {
-        if (observation.kind === 'init') {
-          await continuityInput?.acceptVerifiedInit(observation.sessionId);
-          metadata.sessionId = observation.sessionId;
-          yield {
-            type: 'session_init',
-            catId: this.catId,
-            sessionId: observation.sessionId,
-            nativeSessionBinding: { ...launch.binding, cliSessionId: observation.sessionId },
-            metadata,
-            timestamp: Date.now(),
-          };
-        } else if (observation.kind === 'step') {
-          yield* progress.step(observation.event);
-        } else observed = observation.observed;
-      }
-      if (!observed) throw new Error('AGY native stream ended without a terminal observation');
-      const messages = projectAgyNativeTurn(
-        this.catId,
+      yield* runAgyNativeInvocation({
+        catId: this.catId,
+        model: this.model,
+        prompt,
+        launch,
         metadata,
-        observed,
-        observed.cancelledBeforeTerminal === true,
-        launch.agentTools,
-        compactionControl !== undefined,
-      );
-      if (preparedNotice) {
-        const terminal = messages.at(-1);
-        if (terminal?.type === 'done' && !terminal.errorCode) {
-          await idleFreshness?.commitDelivered(preparedNotice, { acceptedTurnId: observed.sessionId });
-        } else {
-          idleFreshness?.defer(preparedNotice);
-        }
-        preparedNotice = null;
-      }
-      yield* progress.final(messages);
+        rawArchive: this.rawArchive,
+        spawnCliFn: this.spawnCliFn,
+        options,
+        continuityInput,
+        rawArchivePath,
+        compactionRequested: compactionControl !== undefined,
+      });
     } catch (error) {
-      if (preparedNotice) idleFreshness?.defer(preparedNotice);
       const cancelled = options?.signal?.aborted === true;
+      if (!cancelled && error instanceof AgyNativeStartupError && error.cliDiagnostics) {
+        metadata.cliDiagnostics = error.cliDiagnostics;
+      }
       yield* failure(
         cancelled
           ? 'AGY_CANCELLED'
@@ -314,7 +241,7 @@ export class AgyNativeAgentService implements AgentService {
         cancelled ? 'AGY native turn was cancelled' : error instanceof Error ? error.message : String(error),
       );
     } finally {
-      disposeCredentials?.();
+      await disposeCredentials?.();
     }
   }
 }

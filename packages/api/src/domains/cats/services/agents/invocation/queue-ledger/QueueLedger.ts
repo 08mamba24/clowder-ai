@@ -1,6 +1,13 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import type { CatRoutingError, MessageFrom, QueueAuthorIntent, WaitContinuationCarrierV1 } from '@cat-cafe/shared';
+import type {
+  CatRoutingError,
+  LifecycleAppendFailure,
+  MessageFrom,
+  QueueAuthorIntent,
+  RoutingAdmissionProvenanceV1,
+  WaitContinuationCarrierV1,
+} from '@cat-cafe/shared';
 import type { CallerTraceContext } from '../../../../../../infrastructure/telemetry/genai-semconv.js';
 import type { ActionSuccessorFence } from '../../../../../ball-custody/ActionSuccessorAdmissionContract.js';
 import type { CloudDispatchProvenance } from '../../../cloud-bridge/types.js';
@@ -50,6 +57,21 @@ export interface QueueLedgerExecution {
 }
 
 export interface QueueLedgerDelivery {
+  /** Optional B observation, never execution/recovery authority. No quota/account payload is retained. */
+  routingAdmission?: RoutingAdmissionProvenanceV1;
+  /** Original Queue owns each Append until provider acceptance or durable recovery. */
+  appendPendingByTarget?: Record<
+    string,
+    Pick<LifecycleAppendFailure, 'targetId' | 'invocationId' | 'responseMessageId' | 'at'> & {
+      dispatchStarted: boolean;
+      /** Keep this target after read/transport acceptance until its own successful internal turn. */
+      requiresCompletion?: boolean;
+    }
+  >;
+  /** Definite refusals await a new run; uncertain inputs remain held while their original handoff is checked. */
+  appendRecoveryByTarget?: Record<string, LifecycleAppendFailure>;
+  /** F293 policy refusals wait for an explicit owner attempt, including after restart. */
+  routingHeldTargetIds?: string[];
   authorIntentByTarget?: Record<string, QueueAuthorIntent>;
   steerRequestedAt?: number;
 }
@@ -117,7 +139,7 @@ export type QueueLedgerTransitionResult =
   | { outcome: 'updated'; entry: QueueLedgerEntry }
   | { outcome: 'not_found' | 'state_changed' };
 
-export type QueueLedgerCommitMode = 'queued' | 'processing' | 'withdrawn';
+export type QueueLedgerCommitMode = 'claimed' | 'queued' | 'processing' | 'withdrawn';
 
 export interface QueueLedgerStore {
   enqueue(entries: readonly QueueLedgerEntry[], maxQueuedUserEntries?: number): Promise<QueueLedgerEnqueueResult>;

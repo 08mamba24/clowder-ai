@@ -140,6 +140,14 @@ async function flushEffects() {
   });
 }
 
+// Shared member forms read the household account selection, including from the Chat host.
+function accountSelectionRead(path: string, init?: RequestInit): Promise<Response> {
+  if (path === '/api/accounts/codex/members' && !init?.method) {
+    return Promise.resolve(jsonResponse({ selection: { state: 'empty', members: [] } }));
+  }
+  throw new Error(`Unexpected apiFetch path: ${path}`);
+}
+
 async function changeField(
   element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
   value: string,
@@ -1285,9 +1293,9 @@ describe('HubCatEditor', () => {
     expect(carrierOptionsForClient('acp').map((option) => option.value)).toEqual(['acp']);
   });
 
-  it('seeds a create draft with the first carrier supported by its client', () => {
+  it('seeds a create draft with the supported default carrier for its client', () => {
     expect(initialState(null, { clientId: 'acp', defaultModel: '' }).carrier).toBe('acp');
-    expect(initialState(null, { clientId: 'openai', defaultModel: '' }).carrier).toBe('cli');
+    expect(initialState(null, { clientId: 'openai', defaultModel: '' }).carrier).toBe('app_server');
   });
 
   it('getAcpWarning returns kimi login warning when kimi + ACP', () => {
@@ -1646,7 +1654,7 @@ describe('HubCatEditor', () => {
 
   it('renders normal member provider/model fields and saves to /api/cats', async () => {
     const onSaved = vi.fn(() => Promise.resolve());
-    mockApiFetch.mockImplementation((path: string) => {
+    mockApiFetch.mockImplementation((path: string, init?: RequestInit) => {
       if (path === '/api/accounts') {
         return Promise.resolve(
           jsonResponse({
@@ -1689,12 +1697,18 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
       root.render(React.createElement(HubCatEditor, { open: true, onClose: vi.fn(), onSaved }));
     });
+    await flushEffects();
+    await changeField(
+      queryField<HTMLSelectElement>(container, 'select[aria-label="配置方式"]'),
+      'managed_account',
+      'change',
+    );
     await flushEffects();
 
     expect(document.body.textContent).toContain('用哪个号');
@@ -1730,7 +1744,7 @@ describe('HubCatEditor', () => {
 
   it('AC-C2: defaults API-key member aliases to the selected model name', async () => {
     const onSaved = vi.fn(() => Promise.resolve());
-    mockApiFetch.mockImplementation((path: string) => {
+    mockApiFetch.mockImplementation((path: string, init?: RequestInit) => {
       if (path === '/api/accounts') {
         return Promise.resolve(
           jsonResponse({
@@ -1760,7 +1774,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -1832,7 +1846,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -2065,7 +2079,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -2133,7 +2147,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -2223,7 +2237,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -2238,9 +2252,9 @@ describe('HubCatEditor', () => {
     });
     await flushEffects();
 
-    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="接入方式"]').value).toBe('acp');
+    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="Transport"]').value).toBe('acp');
     await changeField(queryField<HTMLSelectElement>(container, 'select[aria-label="Client"]'), 'anthropic', 'change');
-    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="接入方式"]').value).toBe('cli');
+    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="Transport"]').value).toBe('cli');
 
     const saveButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent === '保存',
@@ -2325,7 +2339,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -2340,24 +2354,24 @@ describe('HubCatEditor', () => {
     });
     await flushEffects();
 
-    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="接入方式"]').value).toBe('acp');
+    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="Transport"]').value).toBe('acp');
     await changeField(queryField<HTMLSelectElement>(container, 'select[aria-label="Client"]'), 'google', 'change');
     await flushEffects();
-    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="接入方式"]').value).toBe('agy-native');
+    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="Transport"]').value).toBe('agy-native');
     expect(
-      Array.from(queryField<HTMLSelectElement>(container, 'select[aria-label="接入方式"]').options).map(
+      Array.from(queryField<HTMLSelectElement>(container, 'select[aria-label="Transport"]').options).map(
         (option) => option.value,
       ),
     ).not.toContain('acp');
     await changeField(
-      queryField<HTMLSelectElement>(container, 'select[aria-label="用哪个号"]'),
+      queryField<HTMLSelectElement>(container, 'select[aria-label="Account"]'),
       'gemini-oauth',
       'change',
     );
     await changeField(queryField<HTMLInputElement>(container, 'input[aria-label="Model"]'), 'gemini-3.8-flash-high');
 
     expect(document.body.querySelector('input[aria-label="ACP Command"]')).toBeNull();
-    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="接入方式"]').value).toBe('agy-native');
+    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="Transport"]').value).toBe('agy-native');
     await changeField(
       queryField<HTMLTextAreaElement>(container, 'textarea[aria-label="批准工作区"]'),
       '/approved/workspace',
@@ -2378,7 +2392,7 @@ describe('HubCatEditor', () => {
     const payload = JSON.parse(String(patchCall?.[1]?.body));
     expect(payload.clientId).toBe('google');
     expect(payload.carrier).toBe('cli'); // Native CLI is selected by the explicit agyProfile below.
-    expect(payload.acp).toBeUndefined(); // Inactive config cannot override the canonical carrier.
+    expect(payload.acp).toBeNull(); // Switching to Native explicitly clears the previous ACP configuration.
     expect(payload.agyProfile).toMatchObject({
       carrier: 'native',
       model: 'gemini-3.8-flash-high',
@@ -2452,7 +2466,7 @@ describe('HubCatEditor', () => {
     expect(modelInput.value).toBe('claude-opus-4-6');
 
     // Switch Provider to codex-sponsor (API Key)
-    await changeField(queryField(container, 'select[aria-label="用哪个号"]'), 'codex-sponsor', 'change');
+    await changeField(queryField(container, 'select[aria-label="Account"]'), 'codex-sponsor', 'change');
     await flushEffects();
 
     // defaultModel should have been reset (not still 'claude-opus-4-6')
@@ -2525,7 +2539,7 @@ describe('HubCatEditor', () => {
     expect(providerInput.value).toBe('maas');
 
     // Switch account to deepseek-key
-    await changeField(queryField(container, 'select[aria-label="用哪个号"]'), 'deepseek-key', 'change');
+    await changeField(queryField(container, 'select[aria-label="Account"]'), 'deepseek-key', 'change');
     await flushEffects();
 
     // provider should have been cleared (not still 'maas')
@@ -2546,6 +2560,12 @@ describe('HubCatEditor', () => {
       root.render(React.createElement(HubCatEditor, { open: true, onClose: vi.fn(), onSaved: vi.fn() }));
     });
     await flushEffects();
+    await changeField(
+      queryField<HTMLSelectElement>(container, 'select[aria-label="配置方式"]'),
+      'managed_account',
+      'change',
+    );
+    await flushEffects();
 
     expect(
       Array.from(queryField<HTMLSelectElement>(container, 'select[aria-label="Client"]').options).map(
@@ -2556,7 +2576,7 @@ describe('HubCatEditor', () => {
   });
 
   it('shows the selected client builtin account together with all API key accounts', async () => {
-    mockApiFetch.mockImplementation((path: string) => {
+    mockApiFetch.mockImplementation((path: string, init?: RequestInit) => {
       if (path === '/api/accounts') {
         return Promise.resolve(
           jsonResponse({
@@ -2596,12 +2616,18 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
       root.render(React.createElement(HubCatEditor, { open: true, onClose: vi.fn(), onSaved: vi.fn() }));
     });
+    await flushEffects();
+    await changeField(
+      queryField<HTMLSelectElement>(container, 'select[aria-label="配置方式"]'),
+      'managed_account',
+      'change',
+    );
     await flushEffects();
 
     await changeField(queryField(container, 'select[aria-label="Client"]'), 'openai', 'change');
@@ -2786,7 +2812,7 @@ describe('HubCatEditor', () => {
   });
 
   it('shows google api_key accounts with baseUrl, hides those without (#470)', async () => {
-    mockApiFetch.mockImplementation((path: string) => {
+    mockApiFetch.mockImplementation((path: string, init?: RequestInit) => {
       if (path === '/api/accounts') {
         return Promise.resolve(
           jsonResponse({
@@ -2850,7 +2876,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -2924,7 +2950,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -2939,7 +2965,9 @@ describe('HubCatEditor', () => {
     const modelList = document.getElementById(modelInput.getAttribute('list') ?? '');
     const modelSuggestions = Array.from(modelList?.querySelectorAll('option') ?? []).map((option) => option.value);
     expect(modelSuggestions).toEqual(['gpt-5.3-codex-spark', 'gpt-5.4']);
-    expect(document.body.textContent).toContain('当前模型不在此认证信息的模型列表中');
+    expect(document.body.textContent).toContain('模型未列在这个账号中。保存时会保留你填写的模型。');
+
+    await changeField(queryField(container, 'input[aria-label="Nickname"]'), 'Save baseline regression');
 
     const saveButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent === '保存',
@@ -3009,7 +3037,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -3021,7 +3049,7 @@ describe('HubCatEditor', () => {
 
     await changeField(queryField(container, 'input[aria-label="Model"]'), 'gpt-5.4-custom');
 
-    expect(document.body.textContent).toContain('修改后会保存你输入的自定义值');
+    expect(document.body.textContent).toContain('保存时会保留你填写的模型。');
 
     const saveButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent === '保存',
@@ -3087,7 +3115,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -3180,7 +3208,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -3190,7 +3218,9 @@ describe('HubCatEditor', () => {
     });
     await flushEffects();
 
-    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="用哪个号"]').value).toBe('');
+    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="Account"]').value).toBe('');
+
+    await changeField(queryField(container, 'input[aria-label="Nickname"]'), 'Save baseline regression');
 
     const saveButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent === '保存',
@@ -3267,7 +3297,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -3277,7 +3307,9 @@ describe('HubCatEditor', () => {
     });
     await flushEffects();
 
-    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="用哪个号"]').value).toBe('');
+    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="Account"]').value).toBe('');
+
+    await changeField(queryField(container, 'input[aria-label="Nickname"]'), 'Save baseline regression');
 
     const saveButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent === '保存',
@@ -3326,7 +3358,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -3335,6 +3367,8 @@ describe('HubCatEditor', () => {
       );
     });
     await flushEffects();
+
+    await changeField(queryField(container, 'input[aria-label="Nickname"]'), 'Save baseline regression');
 
     const saveButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent === '保存',
@@ -3387,7 +3421,7 @@ describe('HubCatEditor', () => {
     await flushEffects();
     await flushEffects();
 
-    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="用哪个号"]').value).toBe('');
+    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="Account"]').value).toBe('');
     expect((saveButton as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -3441,7 +3475,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -3451,7 +3485,7 @@ describe('HubCatEditor', () => {
     });
     await flushEffects();
 
-    await changeField(queryField(container, 'select[aria-label="用哪个号"]'), '', 'change');
+    await changeField(queryField(container, 'select[aria-label="Account"]'), '', 'change');
 
     const saveButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent === '保存',
@@ -3520,7 +3554,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -3549,7 +3583,7 @@ describe('HubCatEditor', () => {
   });
 
   it('rejects non-positive contextWindow and allows empty', async () => {
-    mockApiFetch.mockImplementation((path: string) => {
+    mockApiFetch.mockImplementation((path: string, init?: RequestInit) => {
       if (path === '/api/accounts') {
         return Promise.resolve(
           jsonResponse({
@@ -3579,12 +3613,18 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
       root.render(React.createElement(HubCatEditor, { open: true, onClose: vi.fn(), onSaved: vi.fn() }));
     });
+    await flushEffects();
+    await changeField(
+      queryField<HTMLSelectElement>(container, 'select[aria-label="配置方式"]'),
+      'managed_account',
+      'change',
+    );
     await flushEffects();
 
     await changeField(queryField(container, 'input[aria-label="Name"]'), '火花猫');
@@ -3623,7 +3663,7 @@ describe('HubCatEditor', () => {
       roleDescription: '桥接通道',
       personality: '稳定',
     };
-    mockApiFetch.mockImplementation((path: string) => {
+    mockApiFetch.mockImplementation((path: string, init?: RequestInit) => {
       if (path === '/api/accounts') {
         return Promise.resolve(jsonResponse({ projectPath: '/tmp/project', activeProfileId: null, providers: [] }));
       }
@@ -3633,7 +3673,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -3712,7 +3752,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -3851,7 +3891,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -3863,25 +3903,22 @@ describe('HubCatEditor', () => {
     expect(document.body.textContent).toContain('显示后缀');
     expect(document.body.textContent).toContain('擅长领域');
     expect(document.body.textContent).toContain('注意事项');
-    expect(document.body.textContent).toContain('Strengths');
-    expect(document.body.textContent).toContain('▸ Voice Config');
-    expect(document.body.textContent).toContain('展开后可配置 TTS clone 参考音频和文本。');
-    expect(document.body.textContent).toContain('别名与 @ 路由');
-    expect(document.body.textContent).toContain('认证与模型');
-    expect(
-      Array.from(document.body.querySelectorAll('h5')).some(
-        (heading) => heading.textContent === 'Session State / Chain',
-      ),
-    ).toBe(true);
-    expect(document.body.textContent).toContain('── Codex 专属 (仅 Client=Codex 时显示) ──');
-    expect(document.body.textContent).toContain('Codex Sandbox (Codex)');
-    expect(document.body.textContent).toContain('Codex Approval (Codex)');
-    expect(document.body.textContent).toContain('Codex Auth Mode (Codex)');
+    expect(document.body.textContent).toContain('擅长标签');
+    expect(document.body.textContent).toContain('语音设置');
+    expect(document.body.textContent).toContain('@ 名字');
+    expect(document.body.textContent).toContain('模型与接入');
+    expect(Array.from(document.body.querySelectorAll('h4')).some((heading) => heading.textContent === '上下文')).toBe(
+      true,
+    );
+    expect(document.body.textContent).not.toContain('── Codex 专属 (仅 Client=Codex 时显示) ──');
+    expect(document.body.textContent).toContain('沙箱');
+    expect(document.body.textContent).toContain('审批方式');
+    expect(document.body.textContent).toContain('凭据类型');
     expect(document.body.textContent).not.toContain('这 3 项是全局运行参数（非成员级）');
     expect(queryField<HTMLSelectElement>(container, 'select[aria-label^="Codex Sandbox"]').disabled).toBe(false);
     expect(queryField<HTMLSelectElement>(container, 'select[aria-label^="Codex Approval"]').disabled).toBe(false);
     expect(queryField<HTMLSelectElement>(container, 'select[aria-label^="Codex Auth Mode"]').disabled).toBe(false);
-    expect(document.body.textContent).toContain('运行时持久化');
+    expect(document.body.textContent).toContain('没有改动');
     expect(document.body.textContent).toContain('保存');
     expect(document.body.textContent).not.toContain('删除成员');
     expect(document.body.textContent).not.toContain('账号与运行方式');
@@ -3894,10 +3931,10 @@ describe('HubCatEditor', () => {
     await changeField(queryField(container, 'input[aria-label="Nickname"]'), '砚砚升级版');
     await changeField(queryField(container, 'input[aria-label="Team Strengths"]'), '代码审查、找 bug、深度思考');
     await changeField(queryField(container, 'input[aria-label="Strengths"]'), 'security, testing, debugging');
-    await changeField(queryField(container, 'select[aria-label="Session Strategy"]'), 'handoff', 'change');
+    await changeField(queryField(container, 'select[aria-label="上下文满了以后"]'), 'handoff', 'change');
     expect(document.body.textContent).not.toContain('能力预检');
     expect(document.body.textContent).not.toContain('保存后会重新预检 handoff');
-    await changeField(queryField(container, 'input[aria-label="Session Warn Threshold"]'), '0.55', 'change');
+    await changeField(queryField(container, 'input[aria-label="提醒线"]'), '0.55', 'change');
     await changeField(queryField(container, 'select[aria-label^="Codex Sandbox"]'), 'danger-full-access', 'change');
     await changeField(queryField(container, 'select[aria-label^="Codex Approval"]'), 'never', 'change');
     await changeField(queryField(container, 'select[aria-label^="Codex Auth Mode"]'), 'api_key', 'change');
@@ -4030,7 +4067,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -4114,7 +4151,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cats/opencode' && init?.method === 'PATCH') {
         return Promise.resolve(jsonResponse({ cat: { id: 'opencode' } }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -4122,15 +4159,15 @@ describe('HubCatEditor', () => {
     });
     await flushEffects();
 
-    expect(
-      Array.from(document.body.querySelectorAll('h5')).some(
-        (heading) => heading.textContent === 'Session State / Chain',
-      ),
-    ).toBe(true);
+    expect(Array.from(document.body.querySelectorAll('h4')).some((heading) => heading.textContent === '上下文')).toBe(
+      true,
+    );
     expect(document.body.textContent).not.toContain('Session Chain 未开启');
-    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="Session Strategy"]').value).toBe('compress');
-    expect(document.body.querySelector('input[aria-label="Session Observe Threshold"]')).toBeTruthy();
-    expect(document.body.querySelector('input[aria-label="Session Observe Threshold (upper)"]')).toBeTruthy();
+    expect(queryField<HTMLSelectElement>(container, 'select[aria-label="上下文满了以后"]').value).toBe('compress');
+    expect(document.body.querySelector('input[aria-label="提醒线"]')).toBeTruthy();
+    expect(document.body.querySelector('input[aria-label="记录线"]')).toBeTruthy();
+
+    await changeField(queryField(container, 'input[aria-label="Nickname"]'), 'Changed legacy member');
 
     const saveButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent === '保存',
@@ -4202,12 +4239,18 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
       root.render(React.createElement(HubCatEditor, { open: true, onClose: vi.fn(), onSaved }));
     });
+    await flushEffects();
+    await changeField(
+      queryField<HTMLSelectElement>(container, 'select[aria-label="配置方式"]'),
+      'managed_account',
+      'change',
+    );
     await flushEffects();
 
     await changeField(queryField(container, 'input[aria-label="Name"]'), '运行时审查猫');
@@ -4325,7 +4368,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -4402,7 +4445,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -4411,7 +4454,7 @@ describe('HubCatEditor', () => {
     await flushEffects();
 
     expect(document.body.textContent).toContain('Codex 运行参数加载失败 (503)');
-    expect(document.body.textContent).toContain('Codex 配置基线未加载成功');
+    expect(document.body.textContent).toContain('全局设置读取失败，以下选项暂不能修改。请重开本页重试。');
     expect(queryField<HTMLSelectElement>(container, 'select[aria-label^="Codex Sandbox"]').disabled).toBe(true);
     expect(queryField<HTMLSelectElement>(container, 'select[aria-label^="Codex Approval"]').disabled).toBe(true);
     expect(queryField<HTMLSelectElement>(container, 'select[aria-label^="Codex Auth Mode"]').disabled).toBe(true);
@@ -4505,7 +4548,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -4514,6 +4557,7 @@ describe('HubCatEditor', () => {
     await flushEffects();
 
     await changeField(queryField(container, 'input[aria-label="Nickname"]'), '新昵称');
+    await changeField(queryField(container, 'input[aria-label="Model"]'), 'another-model');
     await changeField(queryField(container, 'select[aria-label^="Codex Sandbox"]'), 'danger-full-access', 'change');
 
     const saveButton = Array.from(document.body.querySelectorAll('button')).find(
@@ -4535,13 +4579,15 @@ describe('HubCatEditor', () => {
     const rollbackPayload = JSON.parse(String(catPatches[1]?.[1]?.body));
     expect(rollbackPayload.nickname).toBe('旧昵称');
     expect(rollbackPayload.defaultModel).toBe('gpt-5.4');
-    expect(rollbackPayload.accountRef).toBe('codex-sponsor');
+    expect(rollbackPayload).not.toHaveProperty('accountRef');
     expect(document.body.textContent).toContain('Codex PATCH failed');
     expect(onSaved).not.toHaveBeenCalled();
   });
 
-  it('rolls back prior strategy and config mutations when a later Codex config PATCH fails', async () => {
-    const onSaved = vi.fn(() => Promise.resolve());
+  it.each(['patch', 'readback'] as const)('rolls back all member/config changes after %s failure', async (failure) => {
+    const onSaved = vi.fn(() =>
+      failure === 'readback' ? Promise.reject(new Error('Readback failed')) : Promise.resolve(),
+    );
     const existingCat = {
       id: 'codex',
       name: 'codex',
@@ -4634,7 +4680,7 @@ describe('HubCatEditor', () => {
       }
       if (path === '/api/config' && init?.method === 'PATCH') {
         configPatchCount += 1;
-        if (configPatchCount === 2) {
+        if (failure === 'patch' && configPatchCount === 2) {
           return Promise.resolve(jsonResponse({ error: 'Second Codex PATCH failed' }, 500));
         }
         return Promise.resolve(jsonResponse({ config: {} }));
@@ -4642,7 +4688,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -4651,8 +4697,8 @@ describe('HubCatEditor', () => {
     await flushEffects();
 
     await changeField(queryField(container, 'input[aria-label="Nickname"]'), '新昵称');
-    await changeField(queryField(container, 'select[aria-label="Session Strategy"]'), 'handoff', 'change');
-    await changeField(queryField(container, 'input[aria-label="Session Warn Threshold"]'), '0.55');
+    await changeField(queryField(container, 'select[aria-label="上下文满了以后"]'), 'handoff', 'change');
+    await changeField(queryField(container, 'input[aria-label="提醒线"]'), '0.55');
     await changeField(queryField(container, 'select[aria-label^="Codex Sandbox"]'), 'danger-full-access', 'change');
     await changeField(queryField(container, 'select[aria-label^="Codex Approval"]'), 'never', 'change');
 
@@ -4690,8 +4736,17 @@ describe('HubCatEditor', () => {
     expect(catPatches).toHaveLength(2);
     const rollbackPayload = JSON.parse(String(catPatches[1]?.[1]?.body));
     expect(rollbackPayload.nickname).toBe('旧昵称');
-    expect(document.body.textContent).toContain('Second Codex PATCH failed');
-    expect(onSaved).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(failure === 'patch' ? 'Second Codex PATCH failed' : 'Readback failed');
+    expect(onSaved).toHaveBeenCalledTimes(failure === 'readback' ? 1 : 0);
+    if (failure === 'readback') {
+      expect(configPatches).toHaveLength(4);
+      expect(configPatches.map(([, init]) => JSON.parse(String(init?.body)).value)).toEqual([
+        'danger-full-access',
+        'never',
+        'on-request',
+        'workspace-write',
+      ]);
+    }
   });
 
   it('rolls back already-applied strategy mutations when later save requests throw', async () => {
@@ -4788,7 +4843,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -4796,8 +4851,8 @@ describe('HubCatEditor', () => {
     });
     await flushEffects();
 
-    await changeField(queryField(container, 'select[aria-label="Session Strategy"]'), 'handoff', 'change');
-    await changeField(queryField(container, 'input[aria-label="Session Warn Threshold"]'), '0.55');
+    await changeField(queryField(container, 'select[aria-label="上下文满了以后"]'), 'handoff', 'change');
+    await changeField(queryField(container, 'input[aria-label="提醒线"]'), '0.55');
 
     const saveButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent === '保存',
@@ -4832,7 +4887,7 @@ describe('HubCatEditor', () => {
       roleDescription: '主架构师',
       personality: '温柔但有主见',
     };
-    mockApiFetch.mockImplementation((path: string) => {
+    mockApiFetch.mockImplementation((path: string, init?: RequestInit) => {
       if (path === '/api/accounts') {
         return Promise.resolve(jsonResponse({ projectPath: '/tmp/project', activeProfileId: null, providers: [] }));
       }
@@ -4842,7 +4897,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cat-templates') {
         return Promise.resolve(jsonResponse({ templates: [] }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     // Render WITH hasDossier=true — badge should appear
@@ -4939,7 +4994,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cats/gpt-pro' && init?.method === 'PATCH') {
         return Promise.resolve(jsonResponse({ cat: protectedCat }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -4954,10 +5009,10 @@ describe('HubCatEditor', () => {
     });
     await flushEffects();
 
-    expect(document.body.textContent).toContain('云端身份已保护');
-    expect(document.body.textContent).toContain('固定云端入口');
-    expect(document.body.textContent).toContain('需要本地 Codex，请新建另一位成员');
-    expect(document.body.textContent).toContain('主句柄 @gpt-pro 固定');
+    expect(document.body.textContent).toContain('云端身份配置已锁定');
+    expect(document.body.textContent).toContain('通过 Remote MCP 与猫咖通信');
+    expect(document.body.textContent).toContain('需要本地 Codex，请添加另一位成员');
+    expect(document.body.textContent).toContain('主 @ 名字 @gpt-pro 固定');
     expect(document.body.querySelector('button[aria-label="移除 @gpt-pro"]')).toBeNull();
     expect(document.body.querySelector('button[aria-label="移除 @yanyan-pro"]')).not.toBeNull();
     expect(document.body.querySelector('select[aria-label="Client"]')).toBeNull();
@@ -5031,7 +5086,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cats/gpt-pro' && init?.method === 'PATCH') {
         return Promise.resolve(jsonResponse({ cat: protectedCat }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -5112,7 +5167,7 @@ describe('HubCatEditor', () => {
       if (path === '/api/cats/gpt-pro' && init?.method === 'PATCH') {
         return Promise.resolve(jsonResponse({ cat: driftedCat }));
       }
-      throw new Error(`Unexpected apiFetch path: ${path}`);
+      return accountSelectionRead(path, init);
     });
 
     await act(async () => {
@@ -5129,7 +5184,7 @@ describe('HubCatEditor', () => {
 
     expect(document.body.textContent).toContain('检测到云端身份配置异常');
     const restoreButton = Array.from(document.body.querySelectorAll('button')).find(
-      (button) => button.textContent === '恢复云端身份',
+      (button) => button.textContent === '恢复云端身份配置',
     );
     expect(restoreButton).toBeDefined();
     await act(async () => {

@@ -12,13 +12,16 @@ import { resolveBoundAccountRefForCat } from '../../../../../../config/cat-accou
 import type { AcpVariantConfig } from '../../../../../../config/cat-config-loader.js';
 import { resolveContextCapacity } from '../../../../../../config/context-capacity.js';
 import { resolveEffectiveOpenCodeModel } from '../../../../../../config/opencode-model.js';
+import { saveSpan } from '../../../../../../utils/member-save-diagnostics.js';
 import type { AgentRegistrationFailure } from '../../registry/AgentServiceUnavailableError.js';
+import { prepareDshSecretPatch, verifyDshSecretPatch } from '../dsh-secret-patch.js';
+import { ensureKimiSecretHooks } from '../kimi-secret-hooks.js';
 import { prepareOpenCodeAcpSpawnConfig } from '../opencode-acp-spawn-config.js';
+import { piBridgeStorageArgs } from '../pi/pi-bridge-launch.js';
 import { AcpAgentService } from './AcpAgentService.js';
 import { AcpClient } from './AcpClient.js';
 import { AcpHttpStreamClient } from './AcpHttpStreamClient.js';
-import { AcpProcessPool, DEFAULT_ACP_IDLE_TTL_MS, type PoolKey } from './AcpProcessPool.js';
-import { resolveAcpBootstrapArgs, resolveAcpBootstrapCommand, resolveAcpBootstrapCwd } from './acp-bootstrap-cwd.js';
+import { AcpProcessPool, DEFAULT_ACP_IDLE_TTL_MS } from './AcpProcessPool.js';
 // resolveAcpMcpServers + resolveDisabledServerIds moved to AcpAgentService.invoke()
 // for invoke-time resolution (#712 P1-1).
 import { createAcpPoolSpawnSignature } from './acp-pool-signature.js';
@@ -36,6 +39,23 @@ import {
   zcodeOmitsAcpSessionMcp,
   zcodeUnreadyMessage,
 } from './zcode/zcode-acp-bootstrap.js';
+import { denyAgyAcpPermission } from './agy/agy-acp-permission.js';
+import { prepareAgyAcpProfile } from './agy/agy-acp-profile.js';
+import type { AgyAcpConfig } from './agy/agy-acp-session.js';
+import {
+  type AcpBootstrapContext,
+  resolveAcpBootstrap,
+  type VerifiedAcpBootstrapContext,
+  verifyAcpBootstrap,
+} from './bootstrap/acp-bootstrap-context.js';
+import { resolveAcpBootstrapCwd } from './acp-bootstrap-cwd.js';
+import { pendingAcpPoolRetirement, trackAcpPoolRetirement } from './pool/acp-pool-retirement-registry.js';
+import {
+  type AcpServicePoolLease,
+  bindAcpServicePoolLease,
+  retainAcpServicePool,
+  retireAcpServicePool,
+} from './pool/acp-service-pool-lease.js';
 
 export type AcpPoolRegistry = Map<string, AcpProcessPool>;
 
@@ -60,18 +80,10 @@ export interface CreateAcpServiceForConfigInput {
   acpConfig: AcpVariantConfig;
   poolRegistry: AcpPoolRegistry;
   log: Pick<FastifyBaseLogger, 'info' | 'warn'>;
+  /** Tests supply an owned throwaway root; production uses the platform default. */
+  bootstrapRoot?: string;
   /** Carry a safe registration failure to the router while leaving this service absent. */
   onUnavailable?: (reason: AgentRegistrationFailure) => void;
-}
-
-interface AcpBootstrapContext {
-  projectRoot: string;
-  command: string;
-  args: string[];
-  cwd: string;
-  model?: string;
-  poolKey: PoolKey;
-  extraEnv?: Record<string, string>;
 }
 
 interface AcpAccountContext {
@@ -80,6 +92,7 @@ interface AcpAccountContext {
 }
 
 interface AcpSpawnContext {
+  antigravity?: AgyAcpConfig;
   env?: Record<string, string>;
   sessionModel?: string;
   openCodeRuntimeConfig: unknown;
@@ -110,28 +123,8 @@ function resolveAcpContextPolicy(config: CatConfig, effectiveModel: string): Acp
   };
 }
 
-function resolveAcpBootstrap(
-  projectRoot: string,
-  profileId: string,
-  acpConfig: AcpVariantConfig,
-  effectiveModel: string,
-): AcpBootstrapContext {
-  const model = effectiveModel.trim() || undefined;
-  const args = resolveAcpBootstrapArgs(projectRoot, acpConfig.startupArgs, {
-    base_model: model,
-    model,
-  });
-  return {
-    projectRoot,
-    command: resolveAcpBootstrapCommand(projectRoot, acpConfig.command),
-    args,
-    cwd: resolveAcpBootstrapCwd(projectRoot, profileId),
-    model,
-    poolKey: { projectPath: projectRoot, providerProfile: profileId },
-  };
-}
-
 function resolveAcpAccount(projectRoot: string, config: CatConfig): AcpAccountContext {
+  if (config.configurationSource === 'native_tool' && !config.accountRef) return { account: null };
   const catId = config.id;
   const accountRef = resolveBoundAccountRefForCat(projectRoot, catId, config);
   const builtinClient = resolveBuiltinClientForProvider(config.clientId);
@@ -147,9 +140,36 @@ async function prepareAcpSpawnContext(
   input: CreateAcpServiceForConfigInput,
   bootstrap: AcpBootstrapContext,
   accountContext: AcpAccountContext,
+  extraEnv?: Record<string, string>,
 ): Promise<AcpSpawnContext | null> {
   const { config, profileId } = input;
   const catId = config.id;
+  if (config.agyProfile?.carrier === 'acp') {
+    try {
+      if (
+        config.clientId !== 'google' ||
+        input.acpConfig.transport === 'httpstream' ||
+        (accountContext.account &&
+          (accountContext.account.authType !== 'oauth' || Object.keys(accountContext.account.envVars ?? {}).length))
+      ) {
+        throw new Error('AGY official ACP requires Google personal OAuth over stdio without account overrides');
+      }
+      const prepared = await prepareAgyAcpProfile({
+        catId,
+        model: input.effectiveModel,
+        projectRoot: bootstrap.projectRoot,
+        profile: config.agyProfile,
+      });
+      return { ...prepared, sessionModel: input.effectiveModel, openCodeRuntimeConfig: null, contextPolicy: null };
+    } catch (err) {
+      return skipAcpProfile(
+        input,
+        'invalid-spawn-env',
+        { err, catId, profileId, accountRef: accountContext.accountRef },
+        'ACP registry sync skipped member due to invalid AGY profile',
+      );
+    }
+  }
   const acpEnvResult = tryPrepareAcpProcessEnv({
     clientId: config.clientId,
     provider: config.provider,
@@ -165,11 +185,9 @@ async function prepareAcpSpawnContext(
       'ACP registry sync skipped member due to invalid spawn env',
     );
   }
-  let acpSpawnEnv: Record<string, string> | undefined = {
-    ...(bootstrap.extraEnv ?? {}),
-    ...(acpEnvResult.env ?? {}),
-  };
-  if (Object.keys(acpSpawnEnv).length === 0) acpSpawnEnv = undefined;
+  let acpSpawnEnv: Record<string, string> | undefined = acpEnvResult.env;
+  if (extraEnv) acpSpawnEnv = { ...(acpSpawnEnv ?? {}), ...extraEnv };
+  if (config.clientId === 'kimi') await ensureKimiSecretHooks(acpSpawnEnv ?? {});
 
   let openCodeAcpSpawnConfig: Awaited<ReturnType<typeof prepareOpenCodeAcpSpawnConfig>>;
   const contextPolicy = resolveAcpContextPolicy(config, input.effectiveModel);
@@ -177,7 +195,7 @@ async function prepareAcpSpawnContext(
     // kimi-code's ACP server creates sessions through the same KimiCLI.create()
     // path as the CLI. KIMI_MODEL_MAX_CONTEXT_SIZE is its supported model-window
     // override, so keep the member policy process-scoped instead of mutating the
-    // user's shared ~/.kimi/config.toml.
+    // user's shared ~/.kimi-code/config.toml.
     acpSpawnEnv = {
       ...(acpSpawnEnv ?? {}),
       KIMI_MODEL_MAX_CONTEXT_SIZE: String(contextPolicy.windowTokens),
@@ -226,32 +244,36 @@ async function prepareAcpSpawnContext(
 
 async function ensureAcpPool(
   input: CreateAcpServiceForConfigInput,
-  bootstrap: AcpBootstrapContext,
+  bootstrap: VerifiedAcpBootstrapContext,
   spawn: AcpSpawnContext,
-): Promise<AcpProcessPool> {
+): Promise<{ pool: AcpProcessPool; lease: AcpServicePoolLease }> {
   const { profileId, acpConfig, poolRegistry } = input;
   const supportsMultiplexing = resolveEffectiveAcpSupportsMultiplexing(acpConfig);
   const spawnSignature = createAcpPoolSpawnSignature({
     command: bootstrap.command,
     args: bootstrap.args,
     cwd: bootstrap.cwd,
+    bootstrapIsolation: bootstrap.isolation,
     env: spawn.env ?? null,
     openCodeRuntimeConfig: spawn.openCodeRuntimeConfig,
     contextPolicy: spawn.contextPolicy,
     maxLiveProcesses: acpConfig.pool?.maxLiveProcesses ?? 3,
     idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,
     transport: acpConfig.transport ?? 'stdio',
-    supportsMultiplexing,
+    supportsMultiplexing: resolveEffectiveAcpSupportsMultiplexing(acpConfig),
+    protocolAdapter: acpConfig.protocolAdapter,
+    ...(spawn.antigravity ? { sessionPolicy: { provider: 'antigravity', profile: spawn.antigravity.profile } } : {}),
   });
 
   const existingPool = poolRegistry.get(profileId);
   if (existingPool && existingPool.spawnSignature !== spawnSignature) {
-    existingPool.retireWhenIdle();
+    const retirement = retireAcpServicePool(existingPool, () => existingPool.retireWhenIdle());
+    trackAcpPoolRetirement(poolRegistry, profileId, retirement.completion);
     poolRegistry.delete(profileId);
   }
 
   const activePool = poolRegistry.get(profileId);
-  if (activePool) return activePool;
+  if (activePool) return { pool: activePool, lease: retainAcpServicePool(poolRegistry, profileId, activePool, false) };
 
   const pool = new AcpProcessPool(
     {
@@ -259,7 +281,18 @@ async function ensureAcpPool(
       idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,
       healthCheckIntervalMs: 30_000,
     },
-    { ...acpConfig, supportsMultiplexing },
+    spawn.antigravity
+      ? {
+          ...acpConfig,
+          supportsMultiplexing: false,
+          rejectActiveSessionLease: true,
+        }
+      : {
+          ...acpConfig,
+          // DSH background turns and ZCode native warm sessions outlive a Hub
+          // lease; catalog config cannot opt them back into multiplexing.
+          supportsMultiplexing: resolveEffectiveAcpSupportsMultiplexing(acpConfig),
+        },
     () => {
       const dsh = isDshHarnessCommand(acpConfig.command);
       const retireAfterLease = dsh || isZcodeHarnessCommand(acpConfig.command);
@@ -270,21 +303,32 @@ async function ensureAcpPool(
       const clientCfg = {
         command: bootstrap.command,
         args: bootstrap.args,
-        cwd: bootstrap.cwd,
+        // Cold starts must recreate a lost cwd and revalidate its permissions.
+        // Existing live processes keep their cwd and drain under pool policy.
+        cwd: bootstrap.verifyCwd(),
+        ...(process.platform === 'win32' ? { verifyBootstrapCwd: bootstrap.verifyCwd } : {}),
         ...(Object.keys(env).length > 0 ? { env } : {}),
-        retireAfterLease,
+        // DSH/ZCode attempts must never be warm-reused after a lease release.
+        ...(retireAfterLease ? { retireAfterLease: true } : {}),
+        // iCode fail-closed policy: flagged native effects must never be
+        // auto-approved by the generic default (allow) path.
+        ...(acpConfig.protocolAdapter === 'icode' ? { defaultPermissionDecision: 'reject' as const } : {}),
+        ...(spawn.antigravity
+          ? { inheritParentEnv: false, permissionHandler: denyAgyAcpPermission, antigravityDiagnostics: true }
+          : {}),
       };
       return acpConfig.transport === 'httpstream' ? new AcpHttpStreamClient(clientCfg) : new AcpClient(clientCfg);
     },
     spawnSignature,
+    pendingAcpPoolRetirement(poolRegistry, profileId),
   );
   poolRegistry.set(profileId, pool);
-  return pool;
+  return { pool, lease: retainAcpServicePool(poolRegistry, profileId, pool, true) };
 }
 
 export async function createAcpServiceForConfig(
   input: CreateAcpServiceForConfigInput,
-): Promise<AcpAgentService | null> {
+): Promise<(AcpAgentService & { disposeHostService(): Promise<void> }) | null> {
   const { projectRoot, profileId, config, acpConfig } = input;
   const catId = config.id;
   const effectiveModel =
@@ -302,6 +346,29 @@ export async function createAcpServiceForConfig(
     );
   }
 
+  if (acpConfig.protocolAdapter === 'icode' && acpConfig.transport === 'httpstream') {
+    return skipAcpProfile(
+      input,
+      'icode-requires-stdio',
+      { catId, profileId, transport: acpConfig.transport },
+      'ACP registry sync skipped iCode member because the icode adapter requires stdio transport',
+    );
+  }
+
+  const icodeModelProfileId = acpConfig.protocolAdapter === 'icode' ? acpConfig.modelProfileId?.trim() : undefined;
+  if (acpConfig.protocolAdapter === 'icode' && !icodeModelProfileId) {
+    // Display model (defaultModel/effectiveModel) is not an iCode model profile
+    // id. Falling back to it would either fail on session/set_model or leave the
+    // provider on its own default while the thread shows a different model.
+    return skipAcpProfile(
+      input,
+      'icode-missing-model-profile',
+      { catId, profileId },
+      'ACP registry sync skipped iCode member because modelProfileId is required',
+    );
+  }
+
+  let dshExtraEnv: Record<string, string> | undefined;
   let bootstrap = resolveAcpBootstrap(projectRoot, profileId, acpConfig, effectiveModel);
   if (isDshHarnessCommand(acpConfig.command)) {
     const dshPrepared = await prepareDshAcpSpawnForProject({
@@ -309,7 +376,7 @@ export async function createAcpServiceForConfig(
       args: acpConfig.startupArgs,
       model: effectiveModel,
       projectRoot: bootstrap.projectRoot,
-      bootstrapCwd: bootstrap.cwd,
+      bootstrapCwd: resolveAcpBootstrapCwd(bootstrap.projectRoot, profileId),
       mcpWhitelist: acpConfig.mcpWhitelist ?? [],
       mcpSupport: config.mcpSupport !== false,
       catId,
@@ -322,13 +389,14 @@ export async function createAcpServiceForConfig(
         dshPrepared.error.message,
       );
     }
+    // DSH env additions ride the spawn env via prepareAcpSpawnContext; the
+    // spawn cwd stays owned by the upstream verified-bootstrap model (the dsh
+    // composition dir is already absolute inside its command/args).
+    dshExtraEnv = dshPrepared.env;
     bootstrap = {
       ...bootstrap,
       command: dshPrepared.command,
       args: dshPrepared.args,
-      extraEnv: dshPrepared.env,
-      // Overlay + official plugins resolve from the composition dir, not ACP tmp cwd.
-      cwd: dshPrepared.cwd,
     };
   }
   const zcodePrepared = applyZcodeHarnessSpawn(bootstrap, acpConfig.command);
@@ -341,6 +409,13 @@ export async function createAcpServiceForConfig(
     );
   }
   bootstrap = zcodePrepared.bootstrap;
+  // Harness-prepared env (dsh spawn env + zcode ZCODE_MODEL) must reach both the
+  // unready probe and the final spawn env, or a prepared member reports
+  // zcode-provider-unready with the model it already resolved.
+  const bootstrapExtraEnv: Record<string, string> = {
+    ...dshExtraEnv,
+    ...(bootstrap as { extraEnv?: Record<string, string> }).extraEnv,
+  };
   let accountContext: AcpAccountContext;
   try {
     accountContext = resolveAcpAccount(bootstrap.projectRoot, config);
@@ -373,9 +448,15 @@ export async function createAcpServiceForConfig(
       );
     }
   }
-  const spawn = await prepareAcpSpawnContext(effectiveInput, bootstrap, accountContext);
+  const spawn = await saveSpan('acp.prepare', () =>
+    prepareAcpSpawnContext(effectiveInput, bootstrap, accountContext, bootstrapExtraEnv),
+  );
   if (!spawn) return null;
-  const zcodeUnready = zcodeUnreadyMessage(acpConfig.command, { ...process.env, ...spawn.env });
+  const zcodeUnready = zcodeUnreadyMessage(acpConfig.command, {
+    ...process.env,
+    ...bootstrapExtraEnv,
+    ...spawn.env,
+  });
   if (zcodeUnready) {
     return skipAcpProfile(
       input,
@@ -384,31 +465,58 @@ export async function createAcpServiceForConfig(
       zcodeUnready,
     );
   }
-  const pool = await ensureAcpPool(effectiveInput, bootstrap, spawn);
+  bootstrap.args = piBridgeStorageArgs(
+    bootstrap.command,
+    bootstrap.args,
+    [bootstrap.projectRoot, catId, profileId, accountContext.accountRef ?? 'native-profile'],
+    { ...process.env, ...spawn.env },
+  );
+  const originalArgs = bootstrap.args;
+  bootstrap.args = await prepareDshSecretPatch(bootstrap.command, originalArgs, bootstrap.projectRoot);
+  const root = input.bootstrapRoot ?? acpConfig.bootstrapRoot;
+  const verified = verifyAcpBootstrap(bootstrap, profileId, root, spawn.env, acpConfig.bootstrapRoot !== undefined);
+  if (bootstrap.args !== originalArgs) {
+    const patch = bootstrap.args.at(-1);
+    if (!patch) throw new Error('secret_dsh_patch_unavailable');
+    const verifyCwd = verified.verifyCwd;
+    verified.verifyCwd = (...args) => {
+      if (!verifyDshSecretPatch(patch)) throw new Error('secret_dsh_patch_changed');
+      return verifyCwd(...args);
+    };
+  }
+  const { pool, lease } = await saveSpan('acp.pool', () => ensureAcpPool(effectiveInput, verified, spawn));
 
   // #712 P1-1: pass whitelist — MCP resolution happens at invoke time in
   // AcpAgentService so capability toggles take effect without registry rebuild.
-  return new AcpAgentService({
-    catId,
-    pool,
-    poolKey: bootstrap.poolKey,
-    projectRoot: bootstrap.projectRoot,
-    mcpWhitelist: acpConfig.mcpWhitelist ?? [],
-    providerName: config.clientId === 'acp' ? 'acp' : config.clientId,
-    modelName: spawn.sessionModel ?? config.defaultModel ?? 'acp',
-    sessionModel: spawn.sessionModel,
-    contextBinding: {
-      model: effectiveModel,
-      ...((config.clientId === 'opencode' || config.clientId === 'kimi') && spawn.contextPolicy?.windowTokens
-        ? { windowTokens: spawn.contextPolicy.windowTokens }
-        : {}),
-      source: 'service_spawn',
-    },
-    mcpSupport: config.mcpSupport,
-    omitSessionMcpServers: dshOmitsAcpSessionMcp(acpConfig.command) || zcodeOmitsAcpSessionMcp(acpConfig.command),
-    isolatedGitHubRead: isZcodeHarnessCommand(acpConfig.command),
-    // #1186: Thread the member's configured idle TTL to AcpAgentService so
-    // promptStream uses it as the authoritative no-event termination threshold.
-    idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,
-  });
+  return bindAcpServicePoolLease(
+    new AcpAgentService({
+      ...(spawn.antigravity ? { antigravity: spawn.antigravity, agentBusyRetryDelaysMs: [] } : {}),
+      catId,
+      pool,
+      poolKey: bootstrap.poolKey,
+      projectRoot: bootstrap.projectRoot,
+      mcpWhitelist: acpConfig.mcpWhitelist ?? [],
+      providerName: config.clientId === 'acp' ? 'acp' : config.clientId,
+      modelName: spawn.sessionModel ?? config.defaultModel ?? 'acp',
+      // iCode: modelProfileId is the session/set_model target (iCode model
+      // configuration id), distinct from defaultModel (display/audit model name).
+      // The factory rejects iCode members without it, so this is always defined.
+      sessionModel: acpConfig.protocolAdapter === 'icode' ? icodeModelProfileId : spawn.sessionModel,
+      protocolAdapter: acpConfig.protocolAdapter,
+      contextBinding: {
+        model: effectiveModel,
+        ...((config.clientId === 'opencode' || config.clientId === 'kimi') && spawn.contextPolicy?.windowTokens
+          ? { windowTokens: spawn.contextPolicy.windowTokens }
+          : {}),
+        source: 'service_spawn',
+      },
+      mcpSupport: config.mcpSupport,
+      omitSessionMcpServers: dshOmitsAcpSessionMcp(acpConfig.command) || zcodeOmitsAcpSessionMcp(acpConfig.command),
+      isolatedGitHubRead: isZcodeHarnessCommand(acpConfig.command),
+      // #1186: Thread the member's configured idle TTL to AcpAgentService so
+      // promptStream uses it as the authoritative no-event termination threshold.
+      idleTtlMs: acpConfig.pool?.idleTtlMs ?? DEFAULT_ACP_IDLE_TTL_MS,
+    }),
+    lease,
+  );
 }

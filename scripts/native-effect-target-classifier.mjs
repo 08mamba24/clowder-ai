@@ -9,15 +9,38 @@ const RUNTIME_BRANCH = /(^|[\s'"=:/])runtime\/main-sync(?:[\s'";&|()<>{}]|$)/i;
 const REDIS_6399 =
   /(?:\b(?:redis-cli|redis-server|lsof|localhost|127\.0\.0\.1)\b[^\n;&|]*\b6399\b|\b6399\b[^\n;&|]*\b(?:redis|lsof|kill)\b)/i;
 
-export function classifyNativeTarget(raw, cwd, effect, ordinaryValueFallback) {
+export function classifyNativeTarget(raw, cwd, effect, ordinaryValueFallback, resolveSymlink) {
   const fetchTargets = fetchTargetText(raw);
   raw = fetchTargets ?? raw;
   const combined = `${cwd ?? ''}\n${raw}`;
   if (isBroadRootTarget(raw, cwd, effect)) return { kind: 'broad_root', value: broadRootValue(raw, cwd) };
+  // A filesystem-resolved symlink alias must not hide a sanctuary target: when
+  // the caller supplies a resolver, an ordinary-looking absolute operand that
+  // resolves into a runtime component projects as the sanctuary it points at.
+  if (typeof resolveSymlink === 'function') {
+    for (const token of shellTargetTokens(raw)) {
+      if (token.includes('*')) continue;
+      // Absolute operands resolve directly; relative operands resolve against
+      // the command's cwd so an alias in a known directory cannot hide a
+      // sanctuary target behind a shorter spelling.
+      const operand = token.startsWith('/') ? token : cwd ? resolve(cwd, token) : undefined;
+      if (!operand) continue;
+      let resolved;
+      try {
+        resolved = resolveSymlink(operand);
+      } catch {
+        continue;
+      }
+      if (resolved && resolved !== operand && RUNTIME_COMPONENT.test(resolved)) {
+        return { kind: 'runtime_sanctuary', value: token };
+      }
+    }
+  }
   // A wildcard can select the runtime only for an effect we recognised. For a command we
   // could not read, `**/test/**` is a pathspec, not evidence of a runtime target.
-  if (RUNTIME_COMPONENT.test(combined) || (effect !== 'unknown' && containsRuntimeComponentGlob(raw, cwd))) {
-    return { kind: 'runtime_sanctuary', value: firstProtectedValue(raw, cwd) };
+  const runtimeGlob = effect !== 'unknown' ? runtimeComponentGlobTarget(raw, cwd) : undefined;
+  if (RUNTIME_COMPONENT.test(combined) || runtimeGlob) {
+    return { kind: 'runtime_sanctuary', value: runtimeGlob ?? firstProtectedValue(raw, cwd) };
   }
   if (REDIS_6399.test(combined)) return { kind: 'redis_sanctuary', value: 'redis://127.0.0.1:6399' };
   if (namesRuntimeBranch(combined) || isProtectedBranchRewrite(raw, fetchTargets === null)) {
@@ -76,8 +99,10 @@ function isBroadRootSelector(rawToken) {
   return /\/projects\/relay-station(?:\/cat-cafe)?[./*]*$/i.test(token);
 }
 
-function containsRuntimeComponentGlob(raw, cwd) {
-  const tokens = shellTargetTokens(raw);
+function runtimeComponentGlobTarget(raw, cwd) {
+  const tokens = shellTargetTokens(raw).map((token) =>
+    token.startsWith('~/') ? `${homedir()}${token.slice(1)}` : token,
+  );
   // Locate the installation independently of the wildcard. Its parent cwd is
   // already a coordinate, even with no checkout component. Conversely, an
   // operand /tmp/cat-cafe-* does not invent a second protected installation.
@@ -90,22 +115,24 @@ function containsRuntimeComponentGlob(raw, cwd) {
     const joined = unfoldedJoin(cwd ?? '/', `${parent}/cat-cafe-runtime`);
     return [kernelPath(joined) ?? resolve(joined)];
   });
-  return tokens.some((token) => {
-    const wildcard = token.search(/[*?[{]/);
-    if (wildcard < 0 || /[$`]/.test(token)) return false;
-    const slash = token.lastIndexOf('/', wildcard);
-    const parent = slash < 0 ? '.' : token.slice(0, slash + 1);
-    if (!isAbsolute(parent) && !cwd) return false;
-    const joined = unfoldedJoin(cwd ?? '/', parent);
-    const physicalParent = kernelPath(joined) ?? resolve(joined);
-    const pattern = `${physicalParent}/${token.slice(slash + 1)}`;
-    return roots.some((root) => {
-      for (let candidate = root; candidate !== '/'; candidate = dirname(candidate)) {
-        if (matchesGlob(candidate, pattern)) return true;
-      }
-      return false;
-    });
-  });
+  return tokens
+    .map((token) => {
+      const wildcard = token.search(/[*?[{]/);
+      if (wildcard < 0 || /[$`]/.test(token)) return false;
+      const slash = token.lastIndexOf('/', wildcard);
+      const parent = slash < 0 ? '.' : token.slice(0, slash + 1);
+      if (!isAbsolute(parent) && !cwd) return false;
+      const joined = unfoldedJoin(cwd ?? '/', parent);
+      const physicalParent = kernelPath(joined) ?? resolve(joined);
+      const pattern = `${physicalParent}/${token.slice(slash + 1)}`;
+      return roots.find((root) => {
+        for (let candidate = root; candidate !== '/'; candidate = dirname(candidate)) {
+          if (matchesGlob(candidate, pattern)) return true;
+        }
+        return false;
+      });
+    })
+    .find(Boolean);
 }
 
 function containsRuntimeBranchGlob(raw) {

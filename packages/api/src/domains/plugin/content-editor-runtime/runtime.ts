@@ -1,6 +1,6 @@
 import type { ContentEditorProviderContribution } from '@clowder-ai/plugin-contract';
 import { WIRE_VERSION } from '@clowder-ai/plugin-contract';
-import type { BuiltinPluginRuntime } from '../builtin-runtime/hybrid-supervisor.js';
+import type { BundledPluginRuntime } from '../builtin-runtime/carriers/bundled-runtime-carrier.js';
 import { type StaticSurfaceServer, startStaticSurfaceServer } from '../external-runtime/static-surface-server.js';
 import type { VerifiedPluginPackage, VerifiedPluginPackageLocator } from '../external-runtime/types.js';
 import type { BuiltinBrokerConnection } from '../host-broker/builtin-loopback.js';
@@ -8,6 +8,7 @@ import type { HostBrokerControlPlane } from '../host-broker/control-plane.js';
 import type { HostBrokerStore } from '../host-broker/ports.js';
 import { StaticFeatureAuthority } from '../host-broker/static-feature-authority.js';
 import type { PluginInventoryStore } from '../host-inventory/ports.js';
+import type { ExecutablePluginPackageRecord } from '../host-inventory/types.js';
 import { staticEditorContributions } from './admission.js';
 
 interface Options {
@@ -25,7 +26,6 @@ export interface PluginContentEditorHandle {
   readonly installationInstanceId: string;
   readonly packageDigest: string;
   readonly providerVersion: string;
-  readonly grantRevision: number;
   readonly lifecycleRevision: number;
   readonly executionLease: string;
   readonly featureId: string;
@@ -50,7 +50,7 @@ interface ActivePackage {
 /** Trusted Host adapter for the admitted static transport class. It imports no
  * package code and exposes no plugin-side bootstrap or effect APIs.
  */
-export class ContentEditorPluginRuntime implements BuiltinPluginRuntime {
+export class ContentEditorPluginRuntime implements BundledPluginRuntime {
   readonly features: StaticFeatureAuthority;
   private readonly active = new Map<string, ActivePackage>();
   private readonly starting = new Map<string, { controller: AbortController; promise: Promise<void> }>();
@@ -67,6 +67,12 @@ export class ContentEditorPluginRuntime implements BuiltinPluginRuntime {
         await run.package.verifyIntegrity();
       },
     });
+  }
+
+  /** This runtime implements any package whose manifest is the narrow static-editor
+   * shape — a manifest-derived claim, so no pluginId reaches carrier selection. */
+  claims(packageRecord: Pick<ExecutablePluginPackageRecord, 'manifest'>): boolean {
+    return staticEditorContributions(packageRecord.manifest).length > 0;
   }
 
   start(id: string): Promise<void> {
@@ -98,7 +104,6 @@ export class ContentEditorPluginRuntime implements BuiltinPluginRuntime {
       installationInstanceId: id,
       packageDigest: lease.packageRevision,
       providerVersion: run.package.manifest.version,
-      grantRevision: lease.grantRevision,
       lifecycleRevision: lease.lifecycleRevision,
       executionLease: lease.executionLease,
       featureId: lease.featureId,
@@ -117,7 +122,7 @@ export class ContentEditorPluginRuntime implements BuiltinPluginRuntime {
       const inventory = await this.options.inventory.snapshot();
       const instance = inventory.instances.find((r) => r.pluginInstanceId === id && r.lifecycleState === 'installed');
       const installed = instance && inventory.packages.find((r) => r.packageDigest === instance.packageDigest);
-      if (!instance || !installed || staticEditorContributions(installed.manifest).length === 0)
+      if (!instance || !installed?.manifest || staticEditorContributions(installed.manifest).length === 0)
         throw new Error('unsupported static editor');
       pkg = await this.options.packages.resolveInstalledPackage(instance.packageDigest);
       if (JSON.stringify(pkg.manifest) !== JSON.stringify(installed.manifest))

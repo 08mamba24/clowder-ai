@@ -1,0 +1,90 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import test from 'node:test';
+
+// Vendored copy (fork integration branch): this test drives the
+// clowder-ai-plugins repository-root publish scripts (../../../scripts/*).
+// When those scripts are not present — i.e. inside the vendored in-tree copy —
+// skip it explicitly instead of deleting it. The equivalent packed-artifact
+// guarantee (member listing, install-host CLI presence, digest identity) is
+// produced by the integration evidence pipeline (npm pack + tar listing +
+// sha512 digest; see PROVENANCE.md and the integration evidence directory).
+const repoRootScriptPath = (name) => new URL(`../../../scripts/${name}`, import.meta.url);
+const hasRepoRootScripts = existsSync(repoRootScriptPath('materialize-locked-dependencies.mjs'));
+const { materializeLockedDependencies } = hasRepoRootScripts
+  ? await import(repoRootScriptPath('materialize-locked-dependencies.mjs'))
+  : { materializeLockedDependencies: undefined };
+const { ownPublishMembers } = hasRepoRootScripts
+  ? await import(repoRootScriptPath('own-publish-members.mjs'))
+  : { ownPublishMembers: undefined };
+
+const packageDirectory = new URL('../', import.meta.url);
+
+async function copyProductionPackage(source, destination) {
+  for (const member of await ownPublishMembers(source, {
+    runNpm: (args, cwd) => process.env.CLOWDER_ARTIFACT_NPM_CLI === undefined
+      ? run('npm', args, cwd)
+      : run(process.execPath, [process.env.CLOWDER_ARTIFACT_NPM_CLI, ...args], cwd),
+  })) {
+    const target = join(destination, member);
+    await mkdir(dirname(target), { recursive: true });
+    await copyFile(join(source, member), target);
+  }
+}
+
+function run(command, args, cwd) {
+  const result = spawnSync(command, args, { cwd, encoding: 'utf8' });
+  assert.equal(result.status, 0, [command, ...args, result.stdout, result.stderr].filter(Boolean).join('\n'));
+  return result.stdout;
+}
+
+test(
+  'packs only the public companion closure and ships the install-host CLI in the artifact',
+  { skip: !hasRepoRootScripts && 'vendored copy: clowder-ai-plugins repo-root publish scripts not present (equivalent guarantee via integration pack+digest evidence)' },
+  async () => {
+  const temporary = await mkdtemp(join(tmpdir(), 'f247-companion-pack-'));
+  try {
+    const output = run(
+      'node',
+      ['scripts/pack-publish-artifact.mjs', 'packages/personal-chrome-companion', temporary],
+      new URL('../../', packageDirectory),
+    );
+    const [artifact] = JSON.parse(output);
+    const archive = join(temporary, artifact.filename);
+    const listing = run('tar', ['-tzf', archive], temporary).split('\n');
+    for (const member of [
+      'package/dist/index.js',
+      'package/extension/manifest.json',
+      'package/native-host/native-host-cli.mjs',
+      'package/README.md',
+    ]) {
+      assert.ok(listing.includes(member), `${member} is missing from packed artifact`);
+    }
+    assert.ok(listing.includes('package/native-host/install-host.mjs'));
+    assert.ok(listing.includes('package/native-host/setup-host.mjs'));
+    assert.ok(listing.includes('package/native-host/setup-protocol.md'));
+    const packageJson = JSON.parse(await readFile(new URL('package.json', packageDirectory), 'utf8'));
+    assert.equal(packageJson.private, undefined);
+    assert.equal(packageJson.bin['clowder-personal-chrome-host'], 'native-host/native-host-cli.mjs');
+    // Relocate the current locked production closure without retained archives or checkout symlinks.
+    const consumer = join(temporary, 'isolated-import'); await mkdir(consumer);
+    run('tar', ['-xzf', archive, '-C', consumer], temporary);
+    const installed = join(consumer, 'package');
+    await materializeLockedDependencies({
+      repoRoot: new URL('../../', packageDirectory).pathname,
+      packageRoot: packageDirectory.pathname,
+      destination: installed,
+      copyPublishPackage: copyProductionPackage,
+    });
+    run(process.execPath, ['--input-type=module', '--eval',
+      "const module = await import('./dist/index.js'); if (typeof module.default?.create !== 'function') throw new Error('Packed module entrypoint unavailable'); console.log('PACKED_MODULE_IMPORTED');"], installed);
+    const cliResult = spawnSync('node', [new URL('native-host/native-host-cli.mjs', packageDirectory).pathname], { cwd: new URL('.', packageDirectory).pathname, encoding: 'utf8' });
+    assert.equal(cliResult.stderr.includes('required personal Chrome host configuration is missing'), true);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});

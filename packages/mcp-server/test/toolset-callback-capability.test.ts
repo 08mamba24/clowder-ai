@@ -29,7 +29,6 @@ describe('callback capability projection', () => {
     assert.equal(env.callbackCredentials, undefined);
     const surface = names(buildMemoryTools(env));
     assert.ok(surface.includes('cat_cafe_get_recall_metrics'), 'default readonly mount still advertises metrics');
-    assert.ok(surface.includes('cat_cafe_read_meeting_artifact'), 'default readonly mount still advertises meeting');
   });
 
   it('only an explicit false narrows; truthy-looking values keep the default', () => {
@@ -51,7 +50,11 @@ describe('callback capability projection', () => {
 
   it('withholds callback-only tools from a mount without callback credentials', () => {
     const surface = names(buildMemoryTools(READONLY_WITHOUT_CALLBACK));
-    for (const withheld of ['cat_cafe_get_recall_metrics', 'cat_cafe_read_meeting_artifact']) {
+    const withheldTools = [
+      'cat_cafe_get_recall_metrics',
+      'cat_cafe_read_meeting_artifact', // mcp-cutover-negative-reference: absence
+    ];
+    for (const withheld of withheldTools) {
       assert.ok(!surface.includes(withheld), `${withheld} must not be advertised without callback credentials`);
     }
     for (const kept of [
@@ -71,7 +74,7 @@ describe('callback capability projection', () => {
     }));
     const filtered = applyReadonlyFilter(tools, READONLY_WITHOUT_CALLBACK).map((tool) => tool.name);
     assert.ok(!filtered.includes('cat_cafe_get_recall_metrics'));
-    assert.ok(!filtered.includes('cat_cafe_read_meeting_artifact'));
+    assert.ok(!filtered.includes('cat_cafe_read_meeting_artifact')); // mcp-cutover-negative-reference: absence
     assert.ok(filtered.includes('cat_cafe_search_evidence'));
     assert.deepEqual(filtered, names(buildMemoryTools(READONLY_WITHOUT_CALLBACK)));
   });
@@ -108,7 +111,7 @@ describe('callback capability projection', () => {
     const surface = names(buildMemoryTools(env));
     assert.ok(surface.includes('cat_cafe_search_evidence'), 'local document search stays available');
     assert.ok(!surface.includes('cat_cafe_get_recall_metrics'), 'callback-only metrics stay withheld');
-    assert.ok(!surface.includes('cat_cafe_read_meeting_artifact'), 'callback-only meeting reads stay withheld');
+    assert.ok(!surface.includes('cat_cafe_read_meeting_artifact'), 'callback-only meeting reads stay withheld'); // mcp-cutover-negative-reference: absence
   });
 
   it('reports the message-mode limitation without issuing a callback request', async () => {
