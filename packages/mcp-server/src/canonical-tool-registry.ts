@@ -4,8 +4,6 @@ import type { McpToolDefinition } from './tool-governance-types.js';
 export type CanonicalToolSources = Readonly<Record<McpServerFamily, readonly McpToolDefinition[]>>;
 
 export type CanonicalToolsetEnv = {
-  collectiveWork?: boolean;
-  participation?: boolean;
   readonly?: boolean;
   hasAgentKey?: boolean;
   desktopMode?: string;
@@ -103,14 +101,6 @@ export function projectCanonicalToolRegistry(
   env: CanonicalToolsetEnv,
 ): readonly FamilyToolDefinition[] {
   const project = (selected: readonly FamilyToolDefinition[]) => applyCallbackCapability(selected, env);
-  if (env.collectiveWork) {
-    if (env.participation) throw new Error('Conflicting Collective MCP profiles');
-    return project(registry.filter((definition) => definition.policy.runtimeProfiles.includes('collective-work')));
-  }
-  if (env.participation)
-    return project(
-      registry.filter((definition) => definition.policy.runtimeProfiles.includes('collective-participation')),
-    );
   if (env.desktopMode) {
     const profile = DESKTOP_PROFILES[env.desktopMode as keyof typeof DESKTOP_PROFILES];
     if (!profile) {

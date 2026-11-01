@@ -25,11 +25,10 @@
  *   3. JobEventConsumer parses jsonl per-line with try/catch (delegated)
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { type CatId, createCatId } from '@cat-cafe/shared';
-import { resolveCatCafeNodeCommand } from '../../../../../config/capabilities/mcp-constants.js';
 import { getCatModel } from '../../../../../config/cat-models.js';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 import {
@@ -66,8 +65,10 @@ import {
   resolveDefaultClaudeMcpServerPath,
   SUBSCRIPTION_MODE_DENY_KEYS,
 } from './ClaudeAgentService.js';
+import { resolveClaudeMcpConfig } from './claude-mcp-config.js';
 import { JobEventConsumer, type JobState } from './JobEventConsumer.js';
 import { compileL0ViaSubprocess } from './l0-compiler.js';
+import { writeInvocationMcpConfigFile } from './session-credential-file.js';
 import { TranscriptTailer } from './TranscriptTailer.js';
 
 const SHORT_ID_PATTERN = /backgrounded\s*·\s*([a-f0-9]{8})/;
@@ -169,7 +170,6 @@ export class ClaudeBgCarrierService implements AgentService {
   private readonly jobOwnershipEnabled: boolean;
   /** Windows: cached MCP config file path (created once per instance,
    *  reused across invocations to avoid temp file spam). */
-  private mcpConfigFilePath: string | undefined;
   /** F203 Phase C: compiles per-cat L0 → file for --system-prompt-file. */
   private readonly l0CompilerFn: typeof compileL0ViaSubprocess;
 
@@ -313,44 +313,63 @@ export class ClaudeBgCarrierService implements AgentService {
     if (options?.claudeTokenAccount) throw new Error('claude_token_carrier_unsupported');
     const readOnly = options?.toolExecutionPolicy?.mode === 'read_only';
     const l0Path = await this.compileL0ToTempFile(options?.callbackEnv?.CAT_CAFE_USER_ID);
-    return new Promise<StartJobResult>((resolve, reject) => {
-      // Critical: even with --bg, the child inherits parent env unless we
-      // explicitly strip CLAUDE_CODE_ENTRYPOINT. Otherwise transcript entrypoint
-      // becomes sdk-cli regardless of flag. See F198 spike commit 8c5da78c7.
-      //
-      // F198 refactor (operator directive 2026-05-14): delegate env construction
-      // to the shared `buildClaudeEnvOverrides` helper (exported from
-      // ClaudeAgentService) instead of re-implementing 80% of subscription/
-      // ENTRYPOINT/Anthropic-clearing rules. Coordinate-system fix for the
-      // round-6 补锅 pattern — single source of truth for Claude carrier env.
-      //
-      // Default to subscription mode unless caller explicitly sets mode in
-      // callbackEnv. accountEnv applied LAST (F171). Entrypoint guard FINAL
-      // (AC-B6 invariant — never accept ENTRYPOINT poisoning via either env).
-      const callbackEnvWithMode: Record<string, string> = {
-        [ANTHROPIC_PROFILE_MODE_KEY]: 'subscription',
-        ...(options?.callbackEnv ?? {}),
-      };
-      const envOverrides = buildClaudeEnvOverrides(callbackEnvWithMode);
-      if (options?.accountEnv) {
-        for (const [k, v] of Object.entries(options.accountEnv)) {
-          envOverrides[k] = v;
-        }
+    // Critical: even with --bg, the child inherits parent env unless we
+    // explicitly strip CLAUDE_CODE_ENTRYPOINT. Otherwise transcript entrypoint
+    // becomes sdk-cli regardless of flag. See F198 spike commit 8c5da78c7.
+    //
+    // F198 refactor (operator directive 2026-05-14): delegate env construction
+    // to the shared `buildClaudeEnvOverrides` helper (exported from
+    // ClaudeAgentService) instead of re-implementing 80% of subscription/
+    // ENTRYPOINT/Anthropic-clearing rules. Coordinate-system fix for the
+    // round-6 补锅 pattern — single source of truth for Claude carrier env.
+    //
+    // Default to subscription mode unless caller explicitly sets mode in
+    // callbackEnv. accountEnv applied LAST (F171). Entrypoint guard FINAL
+    // (AC-B6 invariant — never accept ENTRYPOINT poisoning via either env).
+    const callbackEnvWithMode: Record<string, string> = {
+      [ANTHROPIC_PROFILE_MODE_KEY]: 'subscription',
+      ...(options?.callbackEnv ?? {}),
+    };
+    const envOverrides = buildClaudeEnvOverrides(callbackEnvWithMode, {
+      contextNativeWindowTokens: options?.contextNativeWindowTokens,
+    });
+    if (options?.accountEnv) {
+      for (const [k, v] of Object.entries(options.accountEnv)) {
+        envOverrides[k] = v;
       }
-      // #883: Subscription deny-list must survive accountEnv merge.
-      // bg carrier is ALWAYS subscription (api_key fallback routes to
-      // ClaudeAgentService per KD-3). Use the effective mode from
-      // callbackEnvWithMode — which defaults to 'subscription' — so the
-      // deny-list fires even when the caller doesn't explicitly pass mode.
-      // Only an explicit api_key callbackEnv (which overrides the default
-      // at line 233) bypasses the deny-list.
-      if (callbackEnvWithMode[ANTHROPIC_PROFILE_MODE_KEY] === 'subscription') {
-        for (const key of SUBSCRIPTION_MODE_DENY_KEYS) envOverrides[key] = null;
-      }
-      envOverrides.CLAUDE_CODE_ENTRYPOINT = null;
-      envOverrides.CLAUDECODE = null;
-      if (readOnly) envOverrides.CAT_CAFE_READONLY = 'true';
+    }
+    // #883: Subscription deny-list must survive accountEnv merge.
+    // bg carrier is ALWAYS subscription (api_key fallback routes to
+    // ClaudeAgentService per KD-3). Use the effective mode from
+    // callbackEnvWithMode — which defaults to 'subscription' — so the
+    // deny-list fires even when the caller doesn't explicitly pass mode.
+    // Only an explicit api_key callbackEnv (which overrides the default
+    // at line 233) bypasses the deny-list.
+    if (callbackEnvWithMode[ANTHROPIC_PROFILE_MODE_KEY] === 'subscription') {
+      for (const key of SUBSCRIPTION_MODE_DENY_KEYS) envOverrides[key] = null;
+    }
+    envOverrides.CLAUDE_CODE_ENTRYPOINT = null;
+    envOverrides.CLAUDECODE = null;
+    if (readOnly) envOverrides.CAT_CAFE_READONLY = 'true';
 
+    // Claude Agent View persists jobs behind a shared daemon and strips
+    // arbitrary dispatcher env. Never project a process token onto that
+    // daemon; persist only the provider-native stop namespace instead.
+    envOverrides[CLI_PROCESS_OWNER_ENV] = null;
+    envOverrides[CLI_PROCESS_CONTEXT_ENV] = CAT_CLI_PROCESS_CONTEXT;
+    const childCwd = options?.workingDirectory ?? process.cwd();
+    const env = buildChildEnv(envOverrides, { workingDirectory: childCwd });
+
+    const mcpResolution =
+      !readOnly && options?.callbackEnv && this.mcpServerPath
+        ? await resolveClaudeMcpConfig({
+            callbackEnv: options.callbackEnv,
+            workingDirectory: options.workingDirectory,
+            mcpServerPath: this.mcpServerPath,
+            childEnv: env,
+          })
+        : undefined;
+    return new Promise<StartJobResult>((resolve, reject) => {
       // F198 codex round-7 B-prime refactor: model selection delegates to
       // ClaudeAgentService.resolveClaudeModelSelection so we don't drift
       // from production --model handling. Resolves:
@@ -368,7 +387,7 @@ export class ClaudeBgCarrierService implements AgentService {
       // before detaching worker daemon). Remove prompt positional from argv;
       // stream content via stdin (set up below).
       const args = useEnvModelOverride ? ['--bg'] : ['--bg', '--model', effectiveModel];
-      args.push('--effort', effortLevel);
+      if (effortLevel) args.push('--effort', effortLevel);
       // F203 Phase C: native system role from compiled L0 file (above).
       args.push('--system-prompt-file', l0Path);
 
@@ -415,28 +434,10 @@ export class ClaudeBgCarrierService implements AgentService {
       // Windows: claude CLI treats inline JSON as a file path → write JSON
       // to a temp file. POSIX: pass JSON inline (matches ClaudeAgentService).
       if (!readOnly && options?.callbackEnv && this.mcpServerPath) {
-        const IS_WINDOWS = process.platform === 'win32';
-        if (IS_WINDOWS) {
-          if (!this.mcpConfigFilePath || !existsSync(this.mcpConfigFilePath)) {
-            const dir = mkdtempSync(join(tmpdir(), 'cat-cafe-bg-mcp-'));
-            this.mcpConfigFilePath = join(dir, 'mcp-config.json');
-            writeFileSync(
-              this.mcpConfigFilePath,
-              JSON.stringify({
-                mcpServers: { 'cat-cafe': { command: resolveCatCafeNodeCommand(), args: [this.mcpServerPath] } },
-              }),
-              'utf-8',
-            );
-          }
-          args.push('--mcp-config', this.mcpConfigFilePath);
-        } else {
-          args.push(
-            '--mcp-config',
-            JSON.stringify({
-              mcpServers: { 'cat-cafe': { command: resolveCatCafeNodeCommand(), args: [this.mcpServerPath] } },
-            }),
-          );
-        }
+        args.push(
+          '--mcp-config',
+          writeInvocationMcpConfigFile({ mcpServers: mcpResolution?.servers ?? {} }, options.callbackEnv),
+        );
         // F198 Step-4 (2026-05-14, alpha-evidence): daemon `--bg` discovers
         // cwd `.mcp.json` walking up the tree. WITHOUT this flag, claude
         // would LOAD discovered servers ALONGSIDE our injected cat-cafe MCP
@@ -456,13 +457,6 @@ export class ClaudeBgCarrierService implements AgentService {
       // with claude installed-but-not-on-PATH (production runtime envs
       // launched via systemd/pm2/launchd) don't fail with ENOENT. Matches
       // existing ClaudeAgentService pattern (utils/cli-resolve.ts).
-      // Claude Agent View persists jobs behind a shared daemon and strips
-      // arbitrary dispatcher env. Never project a process token onto that
-      // daemon; persist only the provider-native stop namespace instead.
-      envOverrides[CLI_PROCESS_OWNER_ENV] = null;
-      envOverrides[CLI_PROCESS_CONTEXT_ENV] = CAT_CLI_PROCESS_CONTEXT;
-      const childCwd = options?.workingDirectory ?? process.cwd();
-      const env = buildChildEnv(envOverrides, { workingDirectory: childCwd });
       let owner: ClaudeBgJobOwnerHandle | undefined;
       try {
         if (this.jobOwnershipEnabled) {
@@ -498,7 +492,7 @@ export class ClaudeBgCarrierService implements AgentService {
             carrier: 'bg_daemon',
             ...(effectiveModel ? { model: effectiveModel } : {}),
             protocol: 'job_jsonl',
-            reasoningEffort: effortLevel,
+            ...(effortLevel ? { reasoningEffort: effortLevel } : {}),
             ...(readOnly ? { toolExecutionPolicy: 'read_only' as const } : {}),
           }),
           tools: Object.freeze({

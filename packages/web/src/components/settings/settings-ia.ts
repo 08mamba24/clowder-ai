@@ -1,10 +1,11 @@
+import { canonicalSettingsSectionId } from '@/lib/settings-section-id';
 import type { WorkspaceMode } from '@/lib/workspace-modes';
 import { SETTINGS_SECTIONS } from './settings-nav-config';
 
 /**
- * F322 设置与管理 — the 11 first-level destinations (home-northstar README 1.6 §3, 旧入口 → 新位置).
+ * F322 设置与管理 — You plus the existing 11 first-level destinations (home-northstar README 1.6 §3).
  *
- * This is a MAP over what already exists, not new pages: every one of the 14 old settings sections keeps its id,
+ * This is a MAP over what already exists, not new pages: each current settings section keeps its id,
  * renderer, `/settings?s=` deep link and extra positioning params; the other entries open the object that already owns
  * them (a full route, or the conversation's Workspace panel). Nothing here stores data.
  *
@@ -21,6 +22,7 @@ export type SecondLevelItem =
 export type SettingsDestination =
   | { kind: 'sections'; items: readonly SecondLevelItem[] }
   | { kind: 'theme' }
+  | { kind: 'you' }
   | { kind: 'route'; path: string }
   | { kind: 'workspace-mode'; mode: Exclude<WorkspaceMode, 'dev' | 'team'> }
   | { kind: 'evolution-home' };
@@ -41,10 +43,11 @@ const sections = (...ids: string[]): SettingsDestination => ({
 });
 
 export const SETTINGS_IA: readonly SettingsEntry[] = [
+  { id: 'you', label: '你', icon: 'user', group: 1, destination: { kind: 'you' } },
   {
     id: 'team',
     label: '猫猫团队',
-    icon: 'users',
+    icon: 'paw',
     group: 1,
     destination: {
       kind: 'sections',
@@ -65,7 +68,7 @@ export const SETTINGS_IA: readonly SettingsEntry[] = [
     label: '连接与扩展',
     icon: 'plug',
     group: 2,
-    destination: sections('im', 'marketplace', 'skills', 'mcp', 'plugins'),
+    destination: sections('marketplace', 'skills', 'mcp', 'plugins'),
   },
   {
     id: 'system',
@@ -100,7 +103,7 @@ export function findEntry(entryId: string): SettingsEntry | undefined {
   return SETTINGS_IA.find((entry) => entry.id === entryId);
 }
 
-/** Which first-level entry owns an old settings section (every one of the 14 has exactly one). */
+/** Which first-level entry owns a current settings section (each has exactly one). */
 export function entryForSection(sectionId: string): SettingsEntry | undefined {
   return SETTINGS_IA.find(
     (entry) =>
@@ -115,6 +118,7 @@ export function sectionLabel(sectionId: string): string {
 
 /** `?s=` value → the entry it lives under; `theme` is the one new value, everything else is an old section id. */
 export function entryForSelection(selection: string): SettingsEntry | undefined {
+  if (selection === 'you') return findEntry('you');
   return selection === 'theme' ? findEntry('theme') : entryForSection(selection);
 }
 
@@ -131,12 +135,12 @@ export type ResolvedPin =
 /** Old pins are bare section ids and stay valid; new pins are `dest:<entry id>`. Unknown ids resolve to null (hidden, never crash). */
 export function resolvePin(pinId: string): ResolvedPin | null {
   if (pinId === TEAM_WORKSPACE_PIN_ID) {
-    return { kind: 'workspace-team', id: pinId, label: TEAM_WORKSPACE_LABEL, icon: 'users' };
+    return { kind: 'workspace-team', id: pinId, label: TEAM_WORKSPACE_LABEL, icon: 'paw' };
   }
   if (pinId.startsWith(DEST_PREFIX)) {
     const entry = findEntry(pinId.slice(DEST_PREFIX.length));
     return entry ? { kind: 'entry', id: pinId, label: entry.label, icon: entry.icon, entry } : null;
   }
-  const section = SETTINGS_SECTIONS.find((candidate) => candidate.id === pinId);
-  return section ? { kind: 'section', id: pinId, label: section.label, icon: section.icon } : null;
+  const section = SETTINGS_SECTIONS.find((candidate) => candidate.id === canonicalSettingsSectionId(pinId));
+  return section ? { kind: 'section', id: section.id, label: section.label, icon: section.icon } : null;
 }

@@ -21,10 +21,6 @@
     "cat_cafe_resolve_development_work": ["full"]
   },
   "rollbackRevision": "c76ad11552fffe59f7fe7493639f84920d505c8a",
-  "composition": {
-    "protectedTargetSha": "c76ad11552fffe59f7fe7493639f84920d505c8a",
-    "historicalManifestDigests": ["sha256:0075a206faa262079009baae96ad0601a8877d92fe86ea973ecb8a46296258a1"]
-  },
   "layers": {
     "mcp-definition": {
       "status": "covered",

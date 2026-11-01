@@ -45,7 +45,7 @@ test('F317 L2: qoder readonly-memory allowlist equals the canonical projection f
     'callbackCredentials=false must withhold at least one callback-only tool from the Qoder mount',
   );
   assert.deepEqual(
-    withheld.filter((name) => name !== 'cat_cafe_get_recall_metrics' && name !== 'cat_cafe_read_meeting_artifact'),
+    withheld.filter((name) => name !== 'cat_cafe_get_recall_metrics'),
     [],
     `only callback-only tools may be withheld; unexpected withheld set: ${JSON.stringify(withheld)}`,
   );

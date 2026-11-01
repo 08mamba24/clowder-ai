@@ -39,7 +39,7 @@ const modelAliasesSchema = z
 const authTypeEnum = z.enum(['oauth', 'api_key']);
 const modeEnum = z.enum(['subscription', 'api_key']);
 /** F171: restrict clientId to known clients — prevents silent data rot when frontend truststhis as enum. */
-const accountClientEnum = z.enum(['anthropic', 'openai', 'google', 'kimi', 'opencode', 'acp', 'qoder']);
+const accountClientEnum = z.enum(['anthropic', 'openai', 'google', 'kimi', 'pi', 'opencode', 'acp', 'qoder']);
 
 export const projectQuerySchema = z.object({
   projectPath: z.string().optional(),

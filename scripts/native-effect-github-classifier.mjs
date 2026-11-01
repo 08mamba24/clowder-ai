@@ -85,11 +85,14 @@ function constrainedGhGraphqlOperation(tokens) {
   return { effect: graphqlDocumentEffect(query), target: 'github://api/graphql' };
 }
 
-export function constrainedGhApiOperation(raw) {
+export function constrainedGhApiOperation(raw, { payloadFree = false } = {}) {
   const parsed = shellInvocation(raw);
   if (!parsed.complete || parsed.redirections.length) return null;
   const tokens = parsed.words.map(({ value }) => value);
   if (tokens[0] !== 'gh' || tokens[1] !== 'api') return null;
+  // GraphQL documents carry their own semantics in the document body; a
+  // payload-free certification can never vouch for inline GraphQL inputs.
+  if (payloadFree && tokens[2] === 'graphql') return null;
   if (tokens[2] === 'graphql') return constrainedGhGraphqlOperation(tokens);
   let method,
     fields = false,
@@ -108,6 +111,9 @@ export function constrainedGhApiOperation(raw) {
     const flag = attached ? token.slice(0, 2) : equals < 0 ? token : token.slice(0, equals);
     const role = API_VALUES.get(flag);
     if (!role) return null;
+    // Payload-free reads (secret-safety consumers) must not carry any field or
+    // header inputs at all; both channels can attach local content to a request.
+    if (payloadFree && ['field', 'header'].includes(role)) return null;
     const value = attached ? token.slice(2) : equals < 0 ? tokens[++index] : token.slice(equals + 1);
     if (value === undefined) return null;
     if (role === 'method') method = value.toUpperCase();

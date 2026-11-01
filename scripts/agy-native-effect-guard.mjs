@@ -6,7 +6,9 @@ import { pathToFileURL } from 'node:url';
 import { commandTouchesAgyControl } from './agy-native-control-commands.mjs';
 import { readSelfHostFacet } from './lib/self-host-facet.mjs';
 import { kernelPath } from './lib/shell-directory.mjs';
+import { appendNativeDenial, guardReason } from './native-effect-audit.mjs';
 import { decideNativeHookPayload } from './native-effect-target-guard.mjs';
+import { nativeSecretDenial } from './native-secret-policy.mjs';
 
 const vocabulary = JSON.parse(
   readFileSync(new URL('../assets/agy-native-tool-vocabulary.json', import.meta.url), 'utf8'),
@@ -22,16 +24,33 @@ function profileControlPath(path, profileHome) {
   const roots = [resolve(profileHome), kernelPath(profileHome)].filter(Boolean).map((root) => root.toLowerCase());
   if (roots.includes(path)) return true;
   const root = roots.find((root) => path.startsWith(`${root}/`));
-  const suffix = root ? path.slice(root.length + 1) : '';
+  // The run's data alias is the account's native storage. Keep ordinary brain
+  // artifacts writable there; configuration and the alias directory itself stay protected.
+  const suffix = (root ? path.slice(root.length + 1) : '').replace(
+    /^\.cat-cafe-native-runs\/run-[a-z0-9]+\/(?=\.gemini\/antigravity-cli\/)/,
+    '',
+  );
   return (
+    suffix === 'library' ||
+    suffix === 'library/keychains' ||
+    suffix.startsWith('library/keychains/') ||
+    suffix === 'library/preferences' ||
+    suffix === 'library/preferences/com.apple.security.plist' ||
+    suffix === '.gemini/antigravity-cli/antigravity-oauth-token' ||
     suffix === '.gemini' ||
     suffix === '.gemini/antigravity-cli' ||
+    suffix === '.gemini/antigravity-acp' ||
+    /^\.gemini\/antigravity-acp\/(?:settings\.json|acp_token\.json|acp_business_token\.json|trusted_workspaces\.json)$/.test(
+      suffix,
+    ) ||
     suffix === '.gemini/config' ||
     suffix.startsWith('.gemini/config/') ||
     /^\.gemini\/antigravity-cli\/(?:settings\.json|skills(?:\/|$)|plugins(?:\/|$)|\.cat-cafe-skills[-.])/.test(
       suffix,
     ) ||
-    suffix.startsWith('.cat-cafe-native-turn.sqlite')
+    suffix.startsWith('.cat-cafe-native-turn.sqlite') ||
+    suffix === '.cat-cafe-native-runs' ||
+    suffix.startsWith('.cat-cafe-native-runs/')
   );
 }
 
@@ -66,14 +85,22 @@ export function decideAgyNativeHookPayload(payload, options = {}) {
     return deny('invalid AGY tool arguments');
   const cwd = typeof args.Cwd === 'string' ? args.Cwd : payload.workspacePaths?.[0];
   if (typeof cwd !== 'string' || !isAbsolute(cwd)) return deny('missing tool workspace');
+  // Preserve raw content and delegated arguments before effect/target projection.
+  const secretTool =
+    name === 'call_mcp_tool' && args.ServerName === 'browser' ? `mcp__browser__${args.ToolName}` : name;
+  const secretInput = secretTool === name ? args : args.Arguments;
+  const secretDenial = nativeSecretDenial({ tool_name: secretTool, tool_input: secretInput, cwd });
+  if (secretDenial) return deny(secretDenial);
   if (options.readOnly && !READERS.has(name)) return deny('read-only invocation');
+  const isControl = (path, directory, profileHome) =>
+    controlPath(path, directory, profileHome) || (options.toolHome && controlPath(path, directory, options.toolHome));
 
   let toolName;
   let toolInput;
   if (FILE_WRITERS.has(name)) {
     const target = args.TargetFile ?? args.NotebookPath;
     if (typeof target !== 'string' || !target) return deny('missing file target');
-    if (controlPath(target, cwd, options.profileHome)) return deny('AGY executable control-plane write');
+    if (isControl(target, cwd, options.profileHome)) return deny('AGY executable control-plane write');
     toolName = name === 'write_to_file' ? 'Write' : 'Edit';
     toolInput = { file_path: target };
   } else if (COMMANDS.has(name)) {
@@ -89,7 +116,9 @@ export function decideAgyNativeHookPayload(payload, options = {}) {
     if (typeof command !== 'string' || !command) return deny('missing command');
     // The CLI hot-loads these programs outside its terminal sandbox. Their
     // protection is carrier integrity, not another list of protected project files.
-    if (commandTouchesAgyControl(command, cwd, options.profileHome, controlPath)) {
+    if (
+      commandTouchesAgyControl(command, cwd, options.profileHome, isControl, 0, options.toolHome ?? options.profileHome)
+    ) {
       return deny('AGY executable control-plane command');
     }
     toolName = 'Bash';
@@ -99,8 +128,10 @@ export function decideAgyNativeHookPayload(payload, options = {}) {
     // provider/callback authority. They do not become shell or file commands.
     return DELEGATED_TOOLS.has(name) ? { decision: 'allow' } : deny(`unknown or unqualified native operation: ${name}`);
   }
-  const verdict = decideNativeHookPayload({ tool_name: toolName, tool_input: toolInput, cwd }, options);
-  return verdict.decision === 'allow' ? { decision: 'allow' } : deny(verdict.reasonCode);
+  const projected = { tool_name: toolName, tool_input: toolInput, cwd };
+  const verdict = decideNativeHookPayload(projected, options);
+  options.onTargetDecision?.(projected, verdict);
+  return verdict.decision === 'allow' ? { decision: 'allow' } : { decision: 'deny', reason: guardReason(verdict) };
 }
 
 async function main() {
@@ -111,10 +142,22 @@ async function main() {
       if (raw.length > 2 * 1024 * 1024) throw new Error('oversized hook input');
     }
     const hostHome = process.argv[2];
+    // The carrier account is frozen in the host-generated command. A command
+    // shell may restore HOME for tools without changing this protection root.
+    const profileHome = process.argv[4] || process.env.HOME;
+    const toolHome = process.env.CAT_CAFE_NATIVE_TOOL_HOME || process.env.HOME;
+    if (toolHome) process.env.HOME = toolHome;
     const decision = decideAgyNativeHookPayload(JSON.parse(raw), {
-      profileHome: process.env.HOME,
+      profileHome,
+      toolHome,
       readOnly: process.argv[3] === 'read-only',
       selfHost: () => readSelfHostFacet({ ...(hostHome ? { homeDir: hostHome } : {}) }),
+      onTargetDecision: (payload, verdict) =>
+        appendNativeDenial(
+          payload,
+          { ...verdict, source: { ...verdict.source, provider: 'agy' } },
+          hostHome ? { homeDir: hostHome } : {},
+        ),
     });
     process.stdout.write(`${JSON.stringify(decision)}\n`);
   } catch {

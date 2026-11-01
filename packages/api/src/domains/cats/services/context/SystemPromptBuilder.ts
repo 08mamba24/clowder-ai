@@ -13,8 +13,13 @@ import type {
   CrossThreadCoordination,
   WorldContextEnvelope,
 } from '@cat-cafe/shared';
-import { catRegistry } from '@cat-cafe/shared';
-import { getDossierL0Pronouns, getDossierL0RoutingNote } from '@cat-cafe/shared/dossier';
+import { catRegistry, collectRosterFamilyLabels, formatRosterLabel } from '@cat-cafe/shared';
+import {
+  getDossierL0Pronouns,
+  getDossierL0RoutingNote,
+  getDossierRosterSummary,
+  hasDossierEntry,
+} from '@cat-cafe/shared/dossier';
 import { isCatAvailable } from '../../../../config/cat-config-loader.js';
 import { getCatModel } from '../../../../config/cat-models.js';
 import { findMonorepoRoot } from '../../../../utils/monorepo-root.js';
@@ -361,19 +366,15 @@ function ensureMergeGateSourceProvenanceTrigger(content: string): string {
  * Excludes the current cat. Returns null if no teammates.
  */
 /** @internal F237 — exported for ContextAssembler bridge */
-export function buildTeammateRoster(currentCatId: CatId): string | null {
+export function buildTeammateRoster(currentCatId: CatId, projectRoot = findMonorepoRoot()): string | null {
   const allConfigs = getAllConfigs();
   const entries = Object.entries(allConfigs).filter(([id]) => id !== currentCatId && isCatAvailable(id));
   if (entries.length === 0) return null;
 
   const rows: string[] = [];
+  const familyLabels = collectRosterFamilyLabels(entries.map(([, config]) => config));
   for (const [id, config] of entries) {
-    const label = config.variantLabel
-      ? `${config.displayName} ${config.variantLabel}`
-      : config.nickname
-        ? `${config.displayName}/${config.nickname}`
-        : config.displayName;
-    const projectRoot = findMonorepoRoot();
+    const label = formatRosterLabel(config, familyLabels);
     const pronouns = getDossierL0Pronouns(id, projectRoot)?.split('/')[0]?.trim();
     const rosterLabel = pronouns ? `${config.nickname ?? label}（${pronouns}）` : label;
     const mention = pickVariantMention(id, config);

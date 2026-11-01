@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import type { Capability } from '@clowder-ai/plugin-contract';
+import { isHostReservedDataDirectoryName, requestedDataDirectoryName } from './data-directory-name.js';
 import {
   type PackageAdmissionContractRuntime,
   type VerifiedPackageAdmission,
@@ -11,10 +11,8 @@ import { normalizePluginInstanceAfterRestart } from './restart-recovery.js';
 import type {
   InventoryMutationResult,
   PackageAdmissionCandidate,
-  PluginGrantRecord,
   PluginInstanceRecord,
   ReinstallPackageInput,
-  RevokeGrantInput,
   UpgradePackageInput,
 } from './types.js';
 import { PluginInventoryError } from './types.js';
@@ -38,15 +36,6 @@ function assertCurrentInstance(
   return instance;
 }
 
-function assertGrantRevision(grants: PluginGrantRecord, expectedGrantRevision: number): void {
-  if (grants.grantRevision !== expectedGrantRevision) {
-    throw new PluginInventoryError(
-      'STALE_GRANT_REVISION',
-      `expected grant revision ${expectedGrantRevision}, current ${grants.grantRevision}`,
-    );
-  }
-}
-
 function assertLifecycleRevision(instance: PluginInstanceRecord, expectedLifecycleRevision: number): void {
   if (instance.lifecycleRevision !== expectedLifecycleRevision) {
     throw new PluginInventoryError(
@@ -56,7 +45,34 @@ function assertLifecycleRevision(instance: PluginInstanceRecord, expectedLifecyc
   }
 }
 
+/**
+ * F202 W2-3 h2: two installed plugins never share one data directory. Every admission (install,
+ * upgrade, reinstall) writes its package through putVerifiedPackage, so the check sits there.
+ */
+function assertDataDirectoryFree(transaction: PluginInventoryTransaction, verified: VerifiedPackageAdmission): void {
+  const name = requestedDataDirectoryName(verified.package.manifest);
+  if (name === undefined) return;
+  if (isHostReservedDataDirectoryName(name)) {
+    throw new PluginInventoryError(
+      'DATA_DIRECTORY_IN_USE',
+      `data directory ${name} is reserved for the Host's own files`,
+    );
+  }
+  for (const instance of transaction.instances.list()) {
+    if (instance.lifecycleState !== 'installed' || instance.pluginId === verified.package.pluginId) continue;
+    const holderPackage = transaction.packages.get(instance.packageDigest);
+    const holder = holderPackage?.manifest ?? holderPackage?.incompatibleManifest;
+    if (holder !== undefined && requestedDataDirectoryName(holder) === name) {
+      throw new PluginInventoryError(
+        'DATA_DIRECTORY_IN_USE',
+        `data directory ${name} is already used by the installed plugin ${instance.pluginId}`,
+      );
+    }
+  }
+}
+
 function putVerifiedPackage(transaction: PluginInventoryTransaction, verified: VerifiedPackageAdmission): void {
+  assertDataDirectoryFree(transaction, verified);
   const existing = transaction.packages.get(verified.package.packageDigest);
   if (!existing) {
     transaction.packages.put(verified.package);
@@ -95,16 +111,6 @@ function createInstance(
   };
 }
 
-function createGrant(pluginInstanceId: string, verified: VerifiedPackageAdmission, now: number): PluginGrantRecord {
-  return {
-    pluginInstanceId,
-    requestedCapabilities: verified.requestedCapabilities,
-    effectiveGrants: verified.effectiveGrants,
-    grantRevision: 1,
-    updatedAt: now,
-  };
-}
-
 export class HostInventoryControlPlane {
   constructor(
     readonly store: PluginInventoryStore,
@@ -132,8 +138,7 @@ export class HostInventoryControlPlane {
       transaction.instances.put(
         createInstance(pluginInstanceId, verified.package.pluginId, input.computedPackageDigest, now),
       );
-      transaction.grants.put(createGrant(pluginInstanceId, verified, now));
-      return { pluginInstanceId, packageDigest: input.computedPackageDigest, grantRevision: 1 };
+      return { pluginInstanceId, packageDigest: input.computedPackageDigest };
     });
   }
 
@@ -149,9 +154,6 @@ export class HostInventoryControlPlane {
           'upgrade package does not belong to the current instance',
         );
       }
-      const grants = transaction.grants.get(current.pluginInstanceId);
-      if (!grants) throw new PluginInventoryError('INVENTORY_INVARIANT', 'current instance has no grant record');
-      assertGrantRevision(grants, input.expectedGrantRevision);
       if (
         !['stopped', 'crashed'].includes(current.runtimeState) ||
         current.activationState === 'enabling' ||
@@ -159,27 +161,19 @@ export class HostInventoryControlPlane {
       ) {
         throw new PluginInventoryError('RUNTIME_NOT_STOPPED', 'package mutation requires a stable stopped runtime');
       }
+      const incompatible = transaction.packages.get(current.packageDigest)?.manifest === null;
       putVerifiedPackage(transaction, verified);
       transaction.instances.put({
         ...current,
         packageDigest: input.computedPackageDigest,
         runtimeState: 'stopped',
+        ...(incompatible ? { activationState: 'disabled' as const } : {}),
         lifecycleRevision: current.lifecycleRevision + 1,
-        updatedAt: now,
-      });
-      // The package manifest is the authority basis, so every upgrade advances the grant fence.
-      const grantRevision = grants.grantRevision + 1;
-      transaction.grants.put({
-        ...grants,
-        requestedCapabilities: verified.requestedCapabilities,
-        effectiveGrants: verified.effectiveGrants,
-        grantRevision,
         updatedAt: now,
       });
       return {
         pluginInstanceId: current.pluginInstanceId,
         packageDigest: input.computedPackageDigest,
-        grantRevision,
       };
     });
   }
@@ -210,26 +204,7 @@ export class HostInventoryControlPlane {
         updatedAt: now,
       });
       transaction.instances.put(createInstance(nextInstanceId, current.pluginId, input.computedPackageDigest, now));
-      transaction.grants.put(createGrant(nextInstanceId, verified, now));
-      return { pluginInstanceId: nextInstanceId, packageDigest: input.computedPackageDigest, grantRevision: 1 };
-    });
-  }
-
-  async revokeGrant(input: RevokeGrantInput): Promise<number> {
-    return this.store.transaction((transaction) => {
-      assertCurrentInstance(transaction, input.pluginInstanceId);
-      const grants = transaction.grants.get(input.pluginInstanceId);
-      if (!grants) throw new PluginInventoryError('INVENTORY_INVARIANT', 'current instance has no grant record');
-      assertGrantRevision(grants, input.expectedGrantRevision);
-      if (!grants.requestedCapabilities.includes(input.capability as Capability)) {
-        throw new PluginInventoryError('INVALID_GRANT', `${input.capability} is not requested by this plugin`);
-      }
-      if (!grants.effectiveGrants.includes(input.capability as Capability)) return grants.grantRevision;
-      const now = this.now();
-      const effectiveGrants = grants.effectiveGrants.filter((capability) => capability !== input.capability);
-      const grantRevision = grants.grantRevision + 1;
-      transaction.grants.put({ ...grants, effectiveGrants, grantRevision, updatedAt: now });
-      return grantRevision;
+      return { pluginInstanceId: nextInstanceId, packageDigest: input.computedPackageDigest };
     });
   }
 

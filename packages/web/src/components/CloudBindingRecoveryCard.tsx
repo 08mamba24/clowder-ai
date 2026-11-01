@@ -1,5 +1,8 @@
 'use client';
 
+import { isCloudBridgeOutboundReceiptV1 } from '@cat-cafe/shared';
+import { useId } from 'react';
+import type { ChatMessage } from '@/stores/chat-types';
 import { personalChromeSettingsHref } from '@/utils/personal-chrome-settings';
 import {
   CloudConversationChoices,
@@ -7,10 +10,15 @@ import {
   ConversationSummary,
   OpenConversation,
 } from './CloudConversationChoices';
+import { CloudReplyStatus } from './CloudReplyStatus';
 import type { RecoveryDeliveryStatus, RecoveryLoadState, RecoveryPhase } from './cloud-binding-recovery-operations';
+import { cloudDispatchReceipt } from './cloud-dispatch-receipt';
+import { useShellPresentation } from './shell/shell-presentation';
 import { useCloudBindingRecovery } from './useCloudBindingRecovery';
+import { useCloudReply } from './useCloudReply';
 
 export interface CloudBindingRecoveryCardProps {
+  timelineMessages?: readonly ChatMessage[];
   threadId: string;
   sourceMessageId: string;
   targetCatId: string;
@@ -86,24 +94,39 @@ function ReadyRecovery(
   props: CloudBindingRecoveryCardViewProps & { loadState: Extract<RecoveryLoadState, { kind: 'ready' }> },
 ) {
   const { loadState, selectedConversationId, showChoices, phase, onRefresh } = props;
+  // Its own radio group: other recovery cards, and the thread panel, can show choices at the same time.
+  const radioName = `cloud-recovery-conversation-${useId()}`;
   if (loadState.candidates.length === 0)
     return (
       <div className="mt-3 text-sm text-cafe-secondary">
-        <p>还没有已授权会话。打开目标 ChatGPT 对话后，点击扩展里的「授权此会话」。</p>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <a
-            data-recovery-open-chatgpt
-            href="https://chatgpt.com/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className={primaryClass}
-          >
-            打开 ChatGPT 授权会话
-          </a>
-          <button type="button" onClick={onRefresh} className={secondaryClass}>
-            我已授权，重新检查
-          </button>
-        </div>
+        {loadState.connectionIssue ? (
+          <div className="flex flex-wrap gap-2">
+            <a href={personalChromeSettingsHref()} className={primaryClass}>
+              {loadState.connectionActionLabel ?? '检查 Chrome 连接'}
+            </a>
+            <button type="button" onClick={onRefresh} className={secondaryClass}>
+              我已处理，重新检查
+            </button>
+          </div>
+        ) : (
+          <>
+            <p>还没有已授权会话。打开目标 ChatGPT 对话后，点击扩展里的「授权此会话」。</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <a
+                data-recovery-open-chatgpt
+                href="https://chatgpt.com/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className={primaryClass}
+              >
+                打开 ChatGPT 授权会话
+              </a>
+              <button type="button" onClick={onRefresh} className={secondaryClass}>
+                我已授权，重新检查
+              </button>
+            </div>
+          </>
+        )}
       </div>
     );
   const selected = loadState.candidates.find((candidate) => candidate.conversationId === selectedConversationId);
@@ -126,10 +149,10 @@ function ReadyRecovery(
     <div>
       {loadState.connectionIssue ? (
         <a
-          href={personalChromeSettingsHref(props.threadId)}
+          href={personalChromeSettingsHref()}
           className="mt-2 inline-block text-xs font-semibold text-cafe-interactive hover:underline"
         >
-          检查连接组件
+          {loadState.connectionActionLabel ?? '检查 Chrome 连接'}
         </a>
       ) : null}
       {showChoices ? (
@@ -139,6 +162,7 @@ function ReadyRecovery(
           boundConversationId={loadState.boundConversationId}
           busy={busy}
           onSelect={props.onSelect}
+          name={radioName}
         />
       ) : selected ? (
         <div className="mt-3 rounded-lg border border-[var(--console-border-soft)] bg-[var(--console-card-bg)] px-3 py-2">
@@ -231,6 +255,9 @@ export function CloudBindingRecoveryCardView(props: CloudBindingRecoveryCardView
               <p role="alert" className="text-xs text-conn-red-text">
                 {props.loadState.message}
               </p>
+              <a href={personalChromeSettingsHref()} className={`${secondaryClass} mt-2 inline-block`}>
+                {props.loadState.actionLabel ?? '检查 Personal Chrome'}
+              </a>
               <button type="button" onClick={props.onRefresh} className={`${secondaryClass} mt-2`}>
                 重新检查
               </button>
@@ -243,6 +270,52 @@ export function CloudBindingRecoveryCardView(props: CloudBindingRecoveryCardView
 }
 
 export function CloudBindingRecoveryCard(props: CloudBindingRecoveryCardProps) {
+  const shell = useShellPresentation();
+  const receipt = props.timelineMessages
+    ?.flatMap((m) => {
+      const value = m.source?.meta?.cloudBridgeOutboundReceipt;
+      return m.source?.connector === 'cloud-bridge-status' &&
+        m.replyTo === props.sourceMessageId &&
+        isCloudBridgeOutboundReceiptV1(value) &&
+        value.sourceMessageId === props.sourceMessageId &&
+        value.targetCatId === props.targetCatId &&
+        (!props.attemptId || value.dispatchInvocationId === props.attemptId)
+        ? [value]
+        : [];
+    })
+    .at(-1);
+  const identity =
+    receipt ??
+    (props.attemptId
+      ? {
+          sourceMessageId: props.sourceMessageId,
+          targetCatId: props.targetCatId,
+          dispatchInvocationId: props.attemptId,
+        }
+      : undefined);
+  const logical = useCloudReply(identity, props.threadId, props.timelineMessages);
+  const source = props.timelineMessages?.find((m) => m.id === props.sourceMessageId);
+  const native = source ? cloudDispatchReceipt(source, props.targetCatId, props.timelineMessages ?? []) : undefined;
+  if (
+    shell === 'v2' &&
+    native?.identity.dispatchInvocationId === identity?.dispatchInvocationId &&
+    logical.state !== 'unverified'
+  )
+    return null;
+  if (logical.state !== 'unverified')
+    return (
+      <section data-testid="cloud-binding-recovery-card" className="mt-3 rounded-xl border border-default p-4">
+        <CloudReplyStatus
+          result={logical}
+          targetCatId={props.targetCatId}
+          hostUnconfirmed={receipt?.status === 'unknown' && receipt.transport === 'host'}
+        />
+      </section>
+    );
+  return <ActiveRecoveryCard {...props} />;
+}
+
+function ActiveRecoveryCard(props: CloudBindingRecoveryCardProps) {
   const controller = useCloudBindingRecovery(props);
   return (
     <CloudBindingRecoveryCardView

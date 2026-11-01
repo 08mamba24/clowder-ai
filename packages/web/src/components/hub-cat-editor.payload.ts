@@ -1,11 +1,12 @@
 import type { CatData } from '@/hooks/useCatData';
-import { buildAgyProfilePatch } from './hub-cat-editor.agy';
+import { buildAgyProfilePatch, usesAgyAcp } from './hub-cat-editor.agy';
 import {
   type ClientId,
   DEFAULT_ANTIGRAVITY_COMMAND_ARGS,
   defaultAcpCommandForClient,
   defaultAcpStartupArgsForClient,
   type HubCatEditorFormState,
+  initialState,
   normalizeMentionPattern,
   splitCommandArgs,
   splitMentionPatterns,
@@ -80,7 +81,7 @@ function optionalPositiveInteger(raw: string, fieldName: string): number | undef
   return parsed;
 }
 
-const ACP_FORM_OWNED_KEYS = new Set(['command', 'startupArgs', 'transport', 'pool']);
+const ACP_FORM_OWNED_KEYS = new Set(['agentProvider', 'command', 'startupArgs', 'transport', 'pool']);
 
 function preserveHiddenAcpFields(cat?: CatData | null): Record<string, unknown> {
   if (!cat?.acp) return {};
@@ -88,21 +89,35 @@ function preserveHiddenAcpFields(cat?: CatData | null): Record<string, unknown> 
 }
 
 function buildAcpTransportConfig(form: HubCatEditorFormState, cat?: CatData | null) {
+  if (form.acpAgentProvider) return { command: 'plugin-agent', startupArgs: [] };
   const transport = form.acpTransport ?? 'stdio';
-  const command = trimText(form.acpCommand) || defaultAcpCommandForClient(form.clientId);
+  const officialAgy = usesAgyAcp(form);
+  const command =
+    trimText(form.acpCommand) || (officialAgy ? 'agy_acp_server.par' : defaultAcpCommandForClient(form.clientId));
   if (!command) throw new Error('ACP Command 不能为空');
   // Empty is valid: API schema allows [], and command-only ACP (DSH/ZCode) uses it.
   // Client defaults still apply when the field is blank (OpenCode/Gemini/Kimi).
   const startupArgs = splitCommandArgs(
-    trimText(form.acpStartupArgs) || defaultAcpStartupArgsForClient(form.clientId, transport),
+    trimText(form.acpStartupArgs) || (officialAgy ? '' : defaultAcpStartupArgsForClient(form.clientId, transport)),
   );
   const maxLiveProcesses = optionalPositiveInteger(form.acpMaxLiveProcesses, 'ACP Max Processes');
   const idleTtlMinutes = optionalPositiveInteger(form.acpIdleTtlMinutes, 'ACP Idle TTL');
+  const savedTtl = cat?.acp?.pool?.idleTtlMs;
+  const untouchedTtl =
+    cat?.acp && form.acpIdleTtlMinutes === (savedTtl === undefined ? '' : String(Math.round(savedTtl / 60_000)));
+  const idleTtlMs = untouchedTtl
+    ? cat.acp?.pool?.idleTtlMs
+    : idleTtlMinutes === undefined
+      ? undefined
+      : idleTtlMinutes * 60_000;
   const pool =
-    maxLiveProcesses !== undefined || idleTtlMinutes !== undefined
+    maxLiveProcesses !== undefined || idleTtlMs !== undefined
       ? {
+          ...Object.fromEntries(
+            Object.entries(cat?.acp?.pool ?? {}).filter(([key]) => key !== 'maxLiveProcesses' && key !== 'idleTtlMs'),
+          ),
           ...(maxLiveProcesses !== undefined ? { maxLiveProcesses } : {}),
-          ...(idleTtlMinutes !== undefined ? { idleTtlMs: idleTtlMinutes * 60_000 } : {}),
+          ...(idleTtlMs !== undefined ? { idleTtlMs } : {}),
         }
       : undefined;
   return {
@@ -117,6 +132,7 @@ function buildAcpTransportConfig(form: HubCatEditorFormState, cat?: CatData | nu
 
 function buildAcpPatch(form: HubCatEditorFormState, cat?: CatData | null): Record<string, unknown> {
   if (form.carrier === 'acp') return { acp: buildAcpTransportConfig(form, cat) };
+  if (form.clientId === 'google' && form.agyNativeEnabled && cat?.acp) return { acp: null };
   return {};
 }
 
@@ -155,6 +171,17 @@ export function buildCatPayload(form: HubCatEditorFormState, cat?: CatData | nul
   const displayName = trimText(form.displayName) || name;
   const createName = name || displayName;
   const updateName = name || displayName || cat?.name || cat?.displayName || '';
+  const nativeTool = form.configurationSource === 'native_tool';
+  const changedRuntime =
+    cat &&
+    (form.clientId !== cat.clientId ||
+      (cat.carrier !== undefined && form.carrier !== cat.carrier) ||
+      (form.carrier === 'acp' &&
+        cat.acp &&
+        (form.acpCommand.trim() !== cat.acp.command ||
+          JSON.stringify(splitCommandArgs(form.acpStartupArgs)) !== JSON.stringify(cat.acp.startupArgs) ||
+          form.acpTransport !== (cat.acp.transport ?? 'stdio'))));
+  const agentProvider = form.acpAgentProvider !== undefined ? form.acpAgentProvider : changedRuntime ? null : undefined;
   const trimmedAccountRef = resolveFormAccountRef(form);
   const accountRefPatch =
     trimmedAccountRef.length > 0
@@ -167,7 +194,7 @@ export function buildCatPayload(form: HubCatEditorFormState, cat?: CatData | nul
   const cliCarrier = usesCliCarrier(form);
   const trimmedCliEffort = trimText(form.cliEffort);
   const cliFields: Record<string, unknown> = {};
-  if (cliCarrier && trimmedCliEffort.length > 0) {
+  if ((cliCarrier || nativeTool) && trimmedCliEffort.length > 0) {
     cliFields.effort = trimmedCliEffort;
   } else if (cat?.cli?.effort) {
     cliFields.effort = null as null;
@@ -189,10 +216,13 @@ export function buildCatPayload(form: HubCatEditorFormState, cat?: CatData | nul
   const voiceConfigPatch: Record<string, unknown> =
     voiceConfig !== undefined ? { voiceConfig } : cat?.voiceConfig ? { voiceConfig: null } : {};
   const common = {
+    ...(agentProvider !== undefined ? { agentProvider: form.carrier === 'acp' ? agentProvider || null : null } : {}),
+    ...(form.configurationSource && !cat?.identityProtection ? { configurationSource: form.configurationSource } : {}),
     displayName,
     variantLabel: trimText(form.variantLabel),
     nickname: trimText(form.nickname),
     avatar: trimText(form.avatar),
+    ...(form.banner?.trim() ? { banner: form.banner.trim() } : cat?.banner ? { banner: null } : {}),
     color: {
       primary: trimText(form.colorPrimary),
       secondary: trimText(form.colorSecondary),
@@ -255,6 +285,8 @@ export function buildCatPatchPayload(form: HubCatEditorFormState, cat: CatData, 
     delete payload.defaultModel;
   }
 
+  if ((form.configurationSource ?? 'managed_account') === (cat.configurationSource ?? 'managed_account'))
+    delete payload.configurationSource;
   const nextAccountRef = normalizeOptionalText(form.accountRef);
   const currentAccountRef = normalizeOptionalText(cat.accountRef);
   if (nextAccountRef === currentAccountRef) {
@@ -277,6 +309,7 @@ export function buildCatPatchPayload(form: HubCatEditorFormState, cat: CatData, 
   // transport identity is a product invariant. Do not let generic form defaults
   // turn an innocent nickname/avatar save into a provider or CLI mutation.
   if (cat.identityProtection?.kind === 'builtin-cloud') {
+    delete payload.configurationSource;
     for (const field of cat.identityProtection.lockedFields) {
       delete payload[field];
     }
@@ -287,5 +320,27 @@ export function buildCatPatchPayload(form: HubCatEditorFormState, cat: CatData, 
     }
   }
 
+  return payload;
+}
+
+export function buildMemberPatchPayload(form: HubCatEditorFormState, cat: CatData, context: CatPayloadContext = {}) {
+  const payload = buildCatPatchPayload(form, cat, context);
+  if (cat.visualAssets && cat.visualAssets.state !== 'unlinked') delete payload.avatar;
+  // Compare form projections, not normalized persisted objects: a name-only save
+  // must not round ACP TTLs, rewrite voice extensions or persist inferred defaults.
+  const baseline = buildCatPayload(initialState(cat), cat, context) as Record<string, unknown>;
+  for (const key of Object.keys(payload)) {
+    if (key === 'cli' && payload.cli && baseline.cli) {
+      const cli = payload.cli as Record<string, unknown>;
+      const original = baseline.cli as Record<string, unknown>;
+      for (const field of Object.keys(cli)) {
+        if (field === 'serviceTier' && context.forceServiceTier) continue;
+        if (JSON.stringify(cli[field]) === JSON.stringify(original[field])) delete cli[field];
+      }
+      if (Object.keys(cli).length === 0) delete payload.cli;
+    } else if (JSON.stringify(payload[key]) === JSON.stringify(baseline[key])) {
+      delete payload[key];
+    }
+  }
   return payload;
 }

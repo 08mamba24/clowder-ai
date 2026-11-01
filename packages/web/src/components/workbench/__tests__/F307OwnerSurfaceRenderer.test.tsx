@@ -120,7 +120,8 @@ vi.mock('@/utils/api-client', async (importOriginal) => {
                     catId: 'codex-sol',
                     createdAt: artifactFixture.revision,
                     sourceMessageId: 'published',
-                    url: 'artifact:ppt:tomorrows-ppt',
+                    ref: 'artifact:ppt:tomorrows-ppt',
+                    url: '/uploads/tomorrows-ppt.pptx',
                   },
                 ],
               }),
@@ -488,7 +489,7 @@ describe('F307 owner surface renderer', () => {
     Object.assign(artifactFixture, { revision: 7, threadId: 'thread-f310' });
   });
 
-  it('opens inline approval and meeting repair refs in the existing Approval owner surface', () => {
+  it('opens current approval refs and does not route retired meeting repairs to Approval', () => {
     const surface = createWorkspaceDestinationSurface({
       kind: 'mode',
       id: 'needs-me',
@@ -531,16 +532,8 @@ describe('F307 owner surface renderer', () => {
         .querySelector('[data-testid="needs-me-open-meeting-repair"]')
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    expect(onOpenSurface).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        objectRef: { kind: 'workspace-destination', id: 'mode:approval' },
-        resultTargetRef: {
-          owner: 'f246-approval-navigation',
-          key: encodeURIComponent(JSON.stringify(['global', 'intake/one'])),
-        },
-      }),
-    );
-    expect(onRefreshSurface).toHaveBeenCalledTimes(2);
+    expect(onOpenSurface).toHaveBeenCalledTimes(1);
+    expect(onRefreshSurface).toHaveBeenCalledTimes(1);
   });
 
   it('opens v2 Needs Me approval actions directly in the mailbox and preserves the return item', () => {

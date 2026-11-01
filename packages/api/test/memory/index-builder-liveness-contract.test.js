@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as pause } from 'node:timers/promises';
+import Database from 'better-sqlite3';
 import { IndexBuilder } from '../../dist/domains/memory/IndexBuilder.js';
+import { ProjectionCheckpointBackpressureError } from '../../dist/domains/memory/projection-checkpoints.js';
 import { SqliteEvidenceStore } from '../../dist/domains/memory/SqliteEvidenceStore.js';
 import { RunLedger } from '../../dist/infrastructure/scheduler/RunLedger.js';
 
@@ -59,7 +61,7 @@ test(
   'online history indexing yields between message batches while same-DB ledger writes proceed',
   { timeout: 30_000 },
   async (t) => {
-    const { docs, store } = await fixture(t);
+    const { root, docs, store } = await fixture(t);
     const messages = Array.from({ length: 2000 }, (_, i) => ({
       id: `m-${i}`,
       threadId: 'fixture',
@@ -96,26 +98,60 @@ test(
     };
     const timer = setInterval(() => {
       gaps.push(recordGap(performance.now()));
-      const count = countPassages.get().n;
-      if (count > 0 && count < messages.length) passageCounts.add(count);
-      const started = performance.now();
-      ledger.record({
-        task_id: 'index-fixture',
-        subject_key: 'live',
-        outcome: 'delivered',
-        signal_summary: null,
-        duration_ms: 0,
-        started_at: Date.now(),
-        assigned_cat_id: null,
-      });
-      writes.push(performance.now() - started);
     }, 5);
+    // Write at real batch boundaries: a timer writing during PASSIVE checkpoint
+    // can keep adding WAL frames and make a healthy drain retry indefinitely.
+    // Keep the independent timer above to detect event-loop stalls.
+    const runBatch = store.runCheckpointedBatch.bind(store);
+    t.mock.method(store, 'runCheckpointedBatch', async (fn) => {
+      const result = await runBatch(fn);
+      const count = countPassages.get().n;
+      if (count > 0 && count < messages.length) {
+        const started = performance.now();
+        ledger.record({
+          task_id: 'index-fixture',
+          subject_key: 'live',
+          outcome: 'delivered',
+          signal_summary: null,
+          duration_ms: 0,
+          started_at: Date.now(),
+          assigned_cat_id: null,
+        });
+        writes.push(performance.now() - started);
+        passageCounts.add(count);
+      }
+      return result;
+    });
+    const reader = new Database(join(root, 'evidence.sqlite'), { readonly: true });
+    let pinNextBatch = true;
+    let checkpointRetries = 0;
     try {
-      await builder.rebuild({
-        force: true,
-        onProgress: (phase) => phases.push({ phase, atMs: performance.now() - startedAt }),
-      });
+      // Like runtime catch-up, retry transient maintenance backpressure.
+      // Pin one real snapshot so recovery is exercised on every run,
+      // independent of worker and event-loop timing.
+      for (;;) {
+        try {
+          await builder.rebuild({
+            force: true,
+            onProgress: (phase) => {
+              phases.push({ phase, atMs: performance.now() - startedAt });
+              if (phase === 'thread-passages' && pinNextBatch) {
+                pinNextBatch = false;
+                reader.exec('BEGIN');
+                reader.prepare('SELECT count(*) FROM evidence_passages').get();
+              }
+            },
+          });
+          break;
+        } catch (error) {
+          if (!(error instanceof ProjectionCheckpointBackpressureError) || checkpointRetries >= 3) throw error;
+          checkpointRetries++;
+          if (reader.inTransaction) reader.exec('ROLLBACK');
+          await pause(5);
+        }
+      }
     } finally {
+      reader.close();
       // A final synchronous stretch can finish before the next timer fires.
       recordGap(performance.now());
       clearInterval(timer);
@@ -125,16 +161,19 @@ test(
           messages: 2000,
           turns: gaps.length,
           passageCheckpoints: passageCounts.size,
+          checkpointRetries,
           slowestGap,
           maxWriterMs: Math.max(...writes),
           phases,
         }),
       );
     }
+    assert.ok(checkpointRetries > 0, 'recover after the temporary reader releases its snapshot');
     assert.equal(countPassages.get().n, 2000);
     const summary = (await store.getByAnchor('thread-fixture')).summary;
     assert.ok(summary.startsWith('[user] message 1900 '), 'summary uses the latest 100 messages');
     assert.ok(passageCounts.size > 1, 'ledger writes observe progress between incomplete passage batches');
+    assert.ok(writes.length > 10, 'real ledger writes complete while message indexing remains incomplete');
     assert.ok(gaps.length > 10);
     assert.ok(slowestGap.durationMs < 250, `max event loop gap ${slowestGap.durationMs}ms`);
     assert.ok(Math.max(...writes) < 100, `writer wait ${Math.max(...writes)}ms`);
