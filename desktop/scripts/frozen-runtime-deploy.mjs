@@ -31,7 +31,7 @@ const tracked = fs.existsSync(inventoryFile)
 // linked non-test input still fails loudly.
 const linkedFixtureRoot = 'packages/api/test/fixtures/';
 for (const relative of tracked) {
-  if (!/^(packages|scripts)\//.test(relative)) continue;
+  if (!/^(packages|scripts|patches)\//.test(relative)) continue;
   const from = path.resolve(source, relative),
     target = path.resolve(workspace, relative);
   if (!from.startsWith(source + path.sep) || !target.startsWith(workspace + path.sep))
