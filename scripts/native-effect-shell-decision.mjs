@@ -1,3 +1,4 @@
+import { kernelPath } from './lib/shell-directory.mjs';
 import { executedInvocations, executionChainInvocations } from './lib/shell-invocation.mjs';
 import { scanShellText, shellSubstitutions } from './lib/shell-lexical.mjs';
 import { SUBSTITUTION } from './lib/shell-text.mjs';
@@ -30,18 +31,14 @@ import {
 } from './native-effect-shell-classifier.mjs';
 import { hasConcurrentShellExecution, pipelineChainStart } from './native-effect-shell-concurrency.mjs';
 import { expandSegmentBindings, isShellBinding } from './native-effect-shell-expansion.mjs';
-import { realpathSync } from 'node:fs';
 import { classifyNativeTarget as classifyTarget, insideMainCheckout } from './native-effect-target-classifier.mjs';
 
 // #4807 conservative line: resolve symlink aliases on the real decision path so a
-// link pointing into a sanctuary cannot project as an ordinary target.
-const resolveSymlinkSafe = (path) => {
-  try {
-    return realpathSync(path);
-  } catch {
-    return undefined;
-  }
-};
+// link pointing into a sanctuary cannot project as an ordinary target. The kernel
+// (realpathSync.native) applies `..` after each symlink hop; the JS realpathSync
+// folds dot segments first and would answer for a different physical file.
+const resolveSymlinkSafe = (path) => kernelPath(path) ?? undefined;
+
 import { worktreeRemovalDecision } from './native-effect-worktree-removal.mjs';
 
 // Provenance: F306 AC-C7 -- how a shell command becomes candidates (per segment, per
@@ -50,7 +47,12 @@ import { worktreeRemovalDecision } from './native-effect-worktree-removal.mjs';
 export function decideShellHookPayload(view, cwd, source, depth = 0, initialCopyNamespaceStable = true) {
   const lexical = scanShellText(view.judged);
   const raw = lexical.text;
-  if (depth > 8) return decideNativeEffect({ effect: 'unknown', target: classifyTarget(raw, cwd, 'unknown', undefined, resolveSymlinkSafe), source });
+  if (depth > 8)
+    return decideNativeEffect({
+      effect: 'unknown',
+      target: classifyTarget(raw, cwd, 'unknown', undefined, resolveSymlinkSafe),
+      source,
+    });
   const pipelineBoundary = dataDrivenPipelineDecision(raw, cwd, source);
   if (pipelineBoundary?.decision === 'deny') return pipelineBoundary;
   const parts = splitShellExecutionSegmentsWithSeparators(raw);
@@ -58,7 +60,11 @@ export function decideShellHookPayload(view, cwd, source, depth = 0, initialCopy
   const mediaObservation = segments.find(isLocalMediaObservationCommand);
   let mediaUncertainty;
   if (mediaObservation && (segments.length !== 1 || !isConstrainedLocalMediaObservation(mediaObservation))) {
-    const candidate = { effect: 'unknown', target: classifyTarget(raw, cwd, 'unknown', undefined, resolveSymlinkSafe), source };
+    const candidate = {
+      effect: 'unknown',
+      target: classifyTarget(raw, cwd, 'unknown', undefined, resolveSymlinkSafe),
+      source,
+    };
     mediaUncertainty = candidate;
     if (decideNativeEffect(candidate).decision === 'deny') {
       return deny(candidate, 'unbounded_local_media_observation');
@@ -143,7 +149,11 @@ export function decideShellHookPayload(view, cwd, source, depth = 0, initialCopy
   const denials = decisions.filter((decision) => decision.decision === 'deny');
   if (denials.length) return denials.reduce((best, candidate) => (rank(candidate) > rank(best) ? candidate : best));
   if (!lexical.complete) {
-    const candidate = { effect: 'unknown', target: classifyTarget(raw, cwd, 'unknown', undefined, resolveSymlinkSafe), source };
+    const candidate = {
+      effect: 'unknown',
+      target: classifyTarget(raw, cwd, 'unknown', undefined, resolveSymlinkSafe),
+      source,
+    };
     return candidate.target.kind === 'protected_branch'
       ? deny(candidate, 'protected_target_unparsed')
       : decideNativeEffect(candidate);
@@ -154,7 +164,11 @@ function dataDrivenPipelineDecision(raw, cwd, source) {
   const consumer = splitPipelineSegments(raw).slice(1).find(isDataDrivenPipelineConsumer);
   if (!consumer) return null;
   const effect = classifyShellSegment(consumer);
-  return decideNativeEffect({ effect, target: classifyTarget(raw, cwd, effect, undefined, resolveSymlinkSafe), source });
+  return decideNativeEffect({
+    effect,
+    target: classifyTarget(raw, cwd, effect, undefined, resolveSymlinkSafe),
+    source,
+  });
 }
 
 function nestedSubstitutionDecisions(innerCommands, directory, source, depth, initialCopyNamespaceStable) {

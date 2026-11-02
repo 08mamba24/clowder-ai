@@ -19,7 +19,7 @@ import {
 const REVISIONS = {
   helper: `sha512:${'a'.repeat(128)}`,
   extension: '0.2.13',
-  pageAdapter: '2026-10-30-fork.1',
+  pageAdapter: '2026-10-31-fork.1',
 } as const;
 
 const appendRequest = {

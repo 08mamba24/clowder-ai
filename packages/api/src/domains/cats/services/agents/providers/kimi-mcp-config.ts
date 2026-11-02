@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { catRegistry } from '@cat-cafe/shared';
 import { resolveBinaryRoot } from '../../../../../config/capabilities/capability-orchestrator.js';
 import { isSameCapabilityRoot } from '../../../../../config/capabilities/invoke-capability-root.js';
+import { buildChildEnv } from '../../../../../utils/cli-spawn.js';
 import { resolveKimiRuntimePaths } from '../../../../../utils/kimi-cli-runtime.js';
 import { pathsEqual } from '../../../../../utils/project-path.js';
 import { prepareKimiMcpCredentialLease } from './kimi-mcp-credential-lease.js';
@@ -12,6 +13,7 @@ import { resolveKimiMcpSurface } from './kimi-mcp-surface.js';
 
 export interface KimiMcpLease {
   env: Record<string, string>;
+  childEnv?: Record<string, string>;
   dispose(): Promise<void>;
 }
 
@@ -37,6 +39,7 @@ export async function prepareKimiMcpConfig(input: {
   callbackEnv?: Record<string, string>;
   workingDirectory?: string;
   mcpServerPath?: string;
+  childEnv?: Readonly<Record<string, string>>;
 }): Promise<KimiMcpLease> {
   const noop: KimiMcpLease = { env: {}, dispose: async () => {} };
   if (!input.callbackEnv?.CAT_CAFE_CAT_ID) return noop;
@@ -47,7 +50,7 @@ export async function prepareKimiMcpConfig(input: {
   const binaryRoot = resolveBinaryRoot(resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../../../..'));
   // Project entries shadow native HOME entries. Explicitly block native-only
   // servers so the managed invocation cannot bypass the capability registry.
-  const nativeDirectory = resolveKimiRuntimePaths(input.callbackEnv).shareDir;
+  const nativeDirectory = resolveKimiRuntimePaths(input.childEnv ?? input.callbackEnv).shareDir;
   const directory = join(input.workingDirectory, '.kimi-code');
   // Compare existing parents too: first use may not have created either leaf yet.
   if (isNativeHomeDirectory(directory, nativeDirectory)) {
@@ -55,6 +58,14 @@ export async function prepareKimiMcpConfig(input: {
   }
   const credentials = await prepareKimiMcpCredentialLease(input.callbackEnv);
   try {
+    const childEnv = Object.fromEntries(
+      Object.entries(
+        buildChildEnv(
+          { ...(input.childEnv ?? input.callbackEnv), ...credentials.env, KIMI_CODE_TRUST_WORKSPACE: '1' },
+          { bindExecutionOwner: true, workingDirectory: input.workingDirectory, inheritParentEnv: false },
+        ),
+      ).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+    );
     const servers = await resolveKimiMcpSurface({
       workingDirectory: input.workingDirectory,
       callbackEnv: { ...input.callbackEnv, ...credentials.env },
@@ -62,6 +73,7 @@ export async function prepareKimiMcpConfig(input: {
       nativeDirectory,
       mcpSupport,
       credentialFile: credentials.path,
+      childEnv,
     });
     await mkdir(directory, { recursive: true });
     if ((await lstat(directory)).isSymbolicLink()) throw new Error('Refusing a linked Kimi MCP directory');
@@ -105,6 +117,7 @@ export async function prepareKimiMcpConfig(input: {
       // Only the capability set resolved by Clowder is written to this project file.
       // This trust applies to the managed child process, never to the user's native HOME.
       env: { KIMI_CODE_TRUST_WORKSPACE: '1', ...credentials.env },
+      childEnv,
       async dispose() {
         try {
           if (disposed) return;

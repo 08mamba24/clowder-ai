@@ -20,10 +20,12 @@ export function classifyNativeTarget(raw, cwd, effect, ordinaryValueFallback, re
   if (typeof resolveSymlink === 'function') {
     for (const token of shellTargetTokens(raw)) {
       if (token.includes('*')) continue;
-      // Absolute operands resolve directly; relative operands resolve against
-      // the command's cwd so an alias in a known directory cannot hide a
-      // sanctuary target behind a shorter spelling.
-      const operand = token.startsWith('/') ? token : cwd ? resolve(cwd, token) : undefined;
+      // Absolute operands resolve directly; relative operands join against the
+      // command's cwd WITHOUT lexical folding, so an alias in a known directory
+      // cannot hide a sanctuary target behind a shorter spelling — and `..`
+      // after a symlink hop still means the kernel's parent-of-target, not the
+      // spelling's previous component.
+      const operand = token.startsWith('/') ? token : cwd ? unfoldedJoin(cwd, token) : undefined;
       if (!operand) continue;
       let resolved;
       try {

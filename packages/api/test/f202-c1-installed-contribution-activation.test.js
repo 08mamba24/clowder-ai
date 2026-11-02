@@ -28,6 +28,7 @@ import {
   createPluginManagerRuntimeComposition,
 } from '../dist/domains/plugin/index.js';
 import { registerPluginManagerRoutes } from '../dist/routes/plugin-manager-routes.js';
+import { buildChildEnv } from '../dist/utils/cli-spawn.js';
 import { directMcpContract } from './helpers/direct-mcp-contract.js';
 
 const roots = [];
@@ -382,6 +383,7 @@ for (const phase of ['package replacement', 'restart recovery']) {
         workingDirectory: consumer,
         mcpServerPath: join(projectRoot, 'packages/mcp-server/dist/index.js'),
         callbackEnv: { CAT_CAFE_CAT_ID: 'codex' },
+        childEnv: buildChildEnv({ CAT_CAFE_CAT_ID: 'codex' }, { workingDirectory: consumer, bindExecutionOwner: true }),
       });
       try {
         const rendered = JSON.parse(await readFile(join(consumer, '.kimi-code/mcp.json'), 'utf8'));

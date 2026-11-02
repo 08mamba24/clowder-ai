@@ -25,10 +25,18 @@ const CLEARED_ENV_KEYS = [
   'CAT_CAFE_RUNTIME_ROOT',
   'CAT_CAFE_MCP_SERVER_PATH',
   'CAT_CAFE_WORKSPACE_ROOT',
+  'CAT_CAFE_MANAGED_JOB_ID',
+  'CAT_CAFE_MANAGED_JOB_LOG_PATH',
+  'CAT_CAFE_MANAGED_JOB_DESCRIPTOR',
+  'CAT_CAFE_MANAGED_RUNNER_COMMAND',
+  'CAT_CAFE_MANAGED_RUNNER_CWD',
+  'CAT_CAFE_GATE_ORIGIN_TASK_ID',
   'CODEX_HOME',
   'CODEX_SQLITE_HOME',
   'CAT_CAFE_CODEX_CARRIER',
   'CAT_CAFE_CLAUDE_CARRIER',
+  'CAT_CAFE_DSH_ROOT',
+  'CAT_CAFE_DSH_ACP_CONFIG',
   'API_SERVER_HOST',
   'DEFAULT_CAT_ID',
   'REDIS_PORT',
@@ -74,12 +82,15 @@ function configureSandbox(env) {
   const testHome = realpathSync(mkdtempSync(join(tmpdir(), 'cat-cafe-test-home-')));
 
   env.HOME = testHome;
-  if (isWindows) env.USERPROFILE = testHome;
+  env.USERPROFILE = testHome;
   env.CAT_CAFE_TEST_SANDBOX = '1';
   env.CAT_CAFE_TEST_REAL_HOME = realHome;
   env.NODE_ENV = 'test';
 
   for (const key of CLEARED_ENV_KEYS) delete env[key];
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('BASH_FUNC_')) delete env[key];
+  }
 
   try {
     if (env.CAT_CAFE_REDIS_TEST_ISOLATED === '1') {

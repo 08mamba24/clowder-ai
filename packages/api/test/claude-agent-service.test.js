@@ -1342,7 +1342,7 @@ test('Claude keeps MCP environment references native instead of placing secrets 
 
     const args = spawnFn.mock.calls[0].arguments[1];
     const serializedConfig = args[args.indexOf('--mcp-config') + 1];
-    const parsed = JSON.parse(serializedConfig);
+    const parsed = readNativeMcpConfig(serializedConfig);
     assert.equal(parsed.mcpServers['env-backed-remote'].headers.Authorization, `Bearer \${${envKey}}`);
     assert.doesNotMatch(args.join('\n'), /claude-secret-must-not-enter-argv/);
   } finally {
@@ -1529,7 +1529,7 @@ test('Claude resolves MCP env references from the final child env (accountEnv)',
     const spawnOptions = spawnFn.mock.calls[0].arguments[2];
     assert.equal(spawnOptions.env[envKey], 'account-scoped-secret');
     const args = spawnFn.mock.calls[0].arguments[1];
-    const parsed = JSON.parse(args[args.indexOf('--mcp-config') + 1]);
+    const parsed = readNativeMcpConfig(args[args.indexOf('--mcp-config') + 1]);
     // Persistent config keeps the placeholder; the secret never enters argv.
     assert.equal(parsed.mcpServers['env-backed-remote'].headers.Authorization, `Bearer \${${envKey}}`);
     assert.doesNotMatch(args.join('\n'), /account-scoped-secret/);

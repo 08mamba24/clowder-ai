@@ -37,13 +37,15 @@ const STOP_BUTTON_SELECTORS = [
   'button[aria-label="停止生成"]',
 ];
 const SAFE_TURN_ID = /^conversation-turn-[A-Za-z0-9._:-]+$/;
+const HOST_MESSAGE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_ASSISTANT_CONTENT_BYTES = 128 * 1024;
 
 // Roleless DOM (observed on ChatGPT Pro 2026-10-28): user messages render as
 // [data-user-message-bubble="true"] inside [data-content-search-unit-key]
-// units, assistant replies as units whose key ends in ":assistant". These
-// markers carry no Host-provided message identity; unit keys such as
-// fallback-turn-N:M:role are page-local and never qualify as hostMessageId.
+// units, assistant replies as units whose key ends in ":assistant".
+// Unit keys such as fallback-turn-N:M:role are page-local and never qualify
+// as hostMessageId. The 2026-10-31 DOM exposes real UUIDs separately on the
+// search owner whose key matches this exact content unit.
 const ROLELESS_USER_BUBBLE_SELECTOR = '[data-user-message-bubble="true"]';
 const ROLELESS_ASSISTANT_UNIT_SELECTOR = '[data-content-search-unit-key$=":assistant"]';
 const ROLELESS_TEXT_EXCLUSION_SELECTOR = 'button, a, svg, script, style, noscript';
@@ -161,9 +163,27 @@ function enclosingTurn(message) {
   return message.closest(MESSAGE_TURN_SELECTOR);
 }
 
+function searchOwnerMessageIdFor(message, searchOwner) {
+  const unit = message.closest('[data-content-search-unit-key]');
+  const units = [...searchOwner.querySelectorAll('[data-content-search-unit-key]')];
+  if (searchOwner.matches('[data-content-search-unit-key]')) units.unshift(searchOwner);
+  if (
+    !unit || units.length !== 1 || units[0] !== unit ||
+    searchOwner.getAttribute('data-chatgpt-search-unit-key') !== unit.getAttribute('data-content-search-unit-key')
+  ) return null;
+  const ids = [...new Set(searchOwner.getAttribute('data-chatgpt-search-message-ids').trim().split(/\s+/))];
+  if (ids.length !== 1 || !HOST_MESSAGE_UUID.test(ids[0])) return null;
+  return ids[0];
+}
+
 function hostMessageIdFor(message) {
   const owner = message.closest('[data-message-id]');
   const ownerId = owner?.getAttribute('data-message-id')?.trim();
+  const searchOwner = message.closest('[data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]');
+  if (searchOwner) {
+    const searchId = searchOwnerMessageIdFor(message, searchOwner);
+    return ownerId && ownerId !== searchId ? null : searchId;
+  }
   if (ownerId) return ownerId;
 
   const turn = enclosingTurn(message);
@@ -292,15 +312,23 @@ function messageRoleElements(turn) {
   return elements;
 }
 
+function assistantText(message) {
+  if (!message) return '';
+  const bodies = [...message.querySelectorAll('[data-markdown-text-style="assistant-message"]')];
+  if (bodies.length > 1) return '';
+  const body = bodies[0] ?? message;
+  return typeof body.innerText === 'string' ? body.innerText : body.textContent;
+}
+
 function boundedAssistantText(message) {
-  const raw = typeof message.innerText === 'string' ? message.innerText : message.textContent;
+  const raw = assistantText(message);
   const content = typeof raw === 'string' ? raw.trim() : '';
   if (!content || new TextEncoder().encode(content).byteLength > MAX_ASSISTANT_CONTENT_BYTES) return null;
   return content;
 }
 
 function assistantContentStatus(message) {
-  const raw = typeof message?.innerText === 'string' ? message.innerText : message?.textContent;
+  const raw = assistantText(message);
   const content = typeof raw === 'string' ? raw.trim() : '';
   if (!content) return 'missing';
   return new TextEncoder().encode(content).byteLength > MAX_ASSISTANT_CONTENT_BYTES ? 'oversized' : 'present';

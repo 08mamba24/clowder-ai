@@ -131,7 +131,89 @@ async function rejectionOf(promise) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// The 2026-10-31 page exposes real UUIDs on a search owner outside the user
+// content unit; assistant owners expose the same UUID twice. Unit keys remain
+// fallback-turn markers and are only used to bound the identity projection.
+function exposeSearchMessageIds(unit, messageIds) {
+  const document = unit.ownerDocument;
+  const key = unit.getAttribute('data-content-search-unit-key');
+  const owner = key.endsWith(':user') ? document.createElement('div') : unit;
+  if (owner !== unit) {
+    unit.replaceWith(owner);
+    owner.append(unit);
+  }
+  owner.setAttribute('data-chatgpt-search-unit-key', key);
+  owner.setAttribute('data-chatgpt-search-message-ids', messageIds);
+  return owner;
+}
+
 describe('ChatGPT page adapter roleless DOM', () => {
+  it('captures the real search UUIDs and assistant body from the current roleless page', async () => {
+    const fixture = createRolelessFixture();
+    const userId = '11111111-1111-4111-8111-111111111111';
+    const assistantId = '22222222-2222-4222-8222-222222222222';
+    const finals = [];
+    fixture.onSendHandlers.push(({ sentText }) => {
+      exposeSearchMessageIds(appendRolelessUserMessage({
+        document: fixture.document, unitKey: 'fallback-turn-6:0:user', sentText,
+      }), userId);
+      const assistant = appendRolelessAssistantMessage({
+        document: fixture.document, unitKey: 'fallback-turn-6:2:assistant', content: 'L3_OK',
+      });
+      exposeSearchMessageIds(assistant, `${assistantId} ${assistantId}`);
+      assistant.firstElementChild.setAttribute('data-markdown-text-style', 'assistant-message');
+      const label = fixture.document.createElement('h4');
+      label.textContent = 'ChatGPT says:';
+      assistant.prepend(label);
+      const control = fixture.document.createElement('button');
+      control.textContent = 'Copy';
+      assistant.append(control);
+    });
+    const adapter = adapterFor(fixture, { onAssistantFinal: (final) => finals.push(final) });
+    const result = await adapter.appendMessage({
+      requestId: 'request-search-uuid', conversationId: 'conversation-7',
+      text: 'current roleless receipt and return', idempotencyKey: 'source-search-uuid',
+    });
+    await sleep(40);
+    assert.equal(result.hostMessageId, userId);
+    assert.equal(fixture.getSendCount(), 1);
+    assert.equal(finals.length, 1);
+    assert.equal(finals[0].assistantMessageId, assistantId);
+    assert.equal(finals[0].content, 'L3_OK');
+  });
+
+  const invalidSearchIdentities = {
+    multiple_ids: (_unit, owner) => owner.setAttribute('data-chatgpt-search-message-ids',
+      '11111111-1111-4111-8111-111111111111 22222222-2222-4222-8222-222222222222'),
+    fallback_key: (_unit, owner) => owner.setAttribute('data-chatgpt-search-message-ids', 'fallback-turn-6:0:user'),
+    wrong_unit: (_unit, owner) => owner.setAttribute('data-chatgpt-search-unit-key', 'fallback-turn-5:0:user'),
+    sibling_unit: (unit, owner) => {
+      const sibling = unit.ownerDocument.createElement('div');
+      sibling.setAttribute('data-content-search-unit-key', 'fallback-turn-5:0:user');
+      owner.append(sibling);
+    },
+    conflicting_legacy_id: (unit) => unit.setAttribute('data-message-id', 'different-host-id'),
+  };
+  for (const [scenario, invalidate] of Object.entries(invalidSearchIdentities)) {
+    it(`does not confirm a search identity with ${scenario}`, async () => {
+      const fixture = createRolelessFixture();
+      const userId = '11111111-1111-4111-8111-111111111111';
+      fixture.onSendHandlers.push(({ sentText }) => {
+        const unit = appendRolelessUserMessage({
+          document: fixture.document, unitKey: 'fallback-turn-6:0:user', sentText,
+        });
+        const owner = exposeSearchMessageIds(unit, userId);
+        invalidate(unit, owner);
+      });
+      const error = await rejectionOf(adapterFor(fixture).appendMessage({
+        requestId: `request-search-${scenario}`, conversationId: 'conversation-7',
+        text: 'identity must be unique and local', idempotencyKey: `source-search-${scenario}`,
+      }));
+      assert.equal(error.code, 'HOST_MESSAGE_ID_UNAVAILABLE');
+      assert.equal(fixture.getSendCount(), 1);
+    });
+  }
+
   it('reports HOST_MESSAGE_ID_UNAVAILABLE when the roleless bubble carries the exact text but no real Host ID', async () => {
     const fixture = createRolelessFixture();
     const progress = [];

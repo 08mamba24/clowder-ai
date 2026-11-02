@@ -10,6 +10,7 @@ import { terminateChild } from '../scripts/with-test-home.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const withTestHome = resolve(__dirname, '../scripts/with-test-home.mjs');
+const REDIS_URL_PROBE = 'process.env.REDIS_URL';
 
 function run(args) {
   return spawnSync(process.execPath, [withTestHome, ...args], {
@@ -211,14 +212,18 @@ test('with-test-home strips runtime default cat override from outer shell', () =
  * it cannot stop a test from reading the operator's real config.
  */
 test('with-test-home strips the inherited global config root from outer shell', () => {
-  const result = spawnSync('bash', [withTestHome, 'node', '-p', 'process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT ?? ""'], {
-    cwd: resolve(__dirname, '..'),
-    env: {
-      ...process.env,
-      CAT_CAFE_GLOBAL_CONFIG_ROOT: '/some/inherited/store/root',
+  const result = spawnSync(
+    process.execPath,
+    [withTestHome, 'node', '-p', 'process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT ?? ""'],
+    {
+      cwd: resolve(__dirname, '..'),
+      env: {
+        ...process.env,
+        CAT_CAFE_GLOBAL_CONFIG_ROOT: '/some/inherited/store/root',
+      },
+      encoding: 'utf8',
     },
-    encoding: 'utf8',
-  });
+  );
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), '');
@@ -272,7 +277,7 @@ test('with-test-home strips the runtime Claude carrier from outer shell', () => 
 
 test('with-test-home does not pass the live DSH installation or composition into API children', () => {
   const result = spawnSync(
-    'bash',
+    process.execPath,
     [
       withTestHome,
       'node',
@@ -307,9 +312,54 @@ test('with-test-home does not pass the live DSH installation or composition into
  * guarantees it — one owned directory, both names — is platform-independent and
  * asserted directly (R13 ruling 2).
  */
+test('with-test-home removes the launching managed-job identity before fixture commands run', () => {
+  const keys = [
+    'CAT_CAFE_MANAGED_JOB_ID',
+    'CAT_CAFE_MANAGED_JOB_LOG_PATH',
+    'CAT_CAFE_MANAGED_JOB_DESCRIPTOR',
+    'CAT_CAFE_MANAGED_RUNNER_COMMAND',
+    'CAT_CAFE_MANAGED_RUNNER_CWD',
+    'CAT_CAFE_GATE_ORIGIN_TASK_ID',
+  ];
+  const result = spawnSync(
+    process.execPath,
+    [
+      withTestHome,
+      process.execPath,
+      '-p',
+      `JSON.stringify(${JSON.stringify(keys)}.map(key => process.env[key] ?? null))`,
+    ],
+    {
+      cwd: resolve(__dirname, '..'),
+      env: { ...process.env, ...Object.fromEntries(keys.map((key) => [key, 'launcher-owned'])) },
+      encoding: 'utf8',
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(
+    JSON.parse(result.stdout),
+    keys.map(() => null),
+  );
+});
+
+test('with-test-home removes exported shell functions from the launching shell', () => {
+  const key = 'BASH_FUNC_compile_packages%%';
+  const result = spawnSync(
+    process.execPath,
+    [withTestHome, process.execPath, '-p', `process.env[${JSON.stringify(key)}] ?? ''`],
+    {
+      cwd: resolve(__dirname, '..'),
+      env: { ...process.env, [key]: '() { :; }' },
+      encoding: 'utf8',
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), '');
+});
+
 test('with-test-home points both home coordinates at the same wrapper-owned temp home', () => {
   const result = spawnSync(
-    'bash',
+    process.execPath,
     [withTestHome, 'node', '-p', 'JSON.stringify([process.env.HOME, process.env.USERPROFILE])'],
     {
       cwd: resolve(__dirname, '..'),

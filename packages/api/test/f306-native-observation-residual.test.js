@@ -292,18 +292,44 @@ test('gh read proof distinguishes inherited lookup from inline selection in all 
 
 test('real shared hook keeps inherited loader selection unproved under public isolation', () => {
   const guard = fileURLToPath(new URL('../../../scripts/native-effect-target-guard.mjs', import.meta.url));
-  for (const command of [`diff -qr ${runtime} ${ordinary}`, `diff -qr ${runtime} ${ordinary} > ${runtime}/output`]) {
-    const result = spawnSync(process.execPath, [guard], {
+  const isolated = (command, cwd) =>
+    spawnSync(process.execPath, [guard], {
       env: nativeHookTestEnv({
         ...process.env,
         NODE_OPTIONS: `--import=${publicGuard}`,
         CAT_CAFE_PUBLIC_TEST_RESOURCE_SCOPE: 'distributable',
       }),
-      input: JSON.stringify({ tool_name: 'Bash', cwd: runtime, tool_input: { command } }),
+      input: JSON.stringify({ tool_name: 'Bash', cwd, tool_input: { command } }),
       encoding: 'utf8',
     });
+  // #4807 conservative line (origin side of the merge): under a runtime cwd an
+  // unproved inherited-loader selection denies, but the TWO negatives deny for
+  // distinguishable reasons and each keeps its original attribution value:
+  //   - plain comparison: the read is never certified, so the effect stays
+  //     unknown on the sanctuary → protected_target_unparsed;
+  //   - explicit runtime output redirect: the write effect IS recognised, so it
+  //     denies as a sanctuary mutation → runtime_sanctuary_mutation (write).
+  for (const [command, reason] of [
+    [`diff -qr ${runtime} ${ordinary}`, /protected_target_unparsed \(unknown → runtime_sanctuary/],
+    [`diff -qr ${runtime} ${ordinary} > ${runtime}/output`, /runtime_sanctuary_mutation \(write → runtime_sanctuary/],
+  ]) {
+    const result = isolated(command, runtime);
     assert.equal(result.status, 0, result.stderr);
-    if (command.includes(' > ')) assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, 'deny');
-    else assert.equal(result.stdout.trim(), '');
+    const refusal = JSON.parse(result.stdout).hookSpecificOutput;
+    assert.equal(refusal.permissionDecision, 'deny', command);
+    assert.match(refusal.permissionDecisionReason, reason, command);
   }
+  // Main-cwd control: the SAME ordinary comparison allows under main, while its
+  // runtime-cwd twin denies with the effect still unknown — the deny comes from
+  // the sanctuary attribution, not from the isolation itself, and the isolated
+  // read is never certified (effect stays unknown, not read).
+  const control = isolated(`diff -qr ${main} ${ordinary}`, main);
+  assert.equal(control.status, 0, control.stderr);
+  assert.equal(control.stdout.trim(), '');
+  const contrast = isolated(`diff -qr ${main} ${ordinary}`, runtime);
+  assert.equal(contrast.status, 0, contrast.stderr);
+  assert.match(
+    JSON.parse(contrast.stdout).hookSpecificOutput.permissionDecisionReason,
+    /protected_target_unparsed \(unknown → runtime_sanctuary/,
+  );
 });

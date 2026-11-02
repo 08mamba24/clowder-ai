@@ -6,24 +6,10 @@
   "canonicalNames": [],
   "retiredNames": [],
   "expectedProfiles": {
-    "cat_cafe_list_tasks": [
-      "desktop:live-companion",
-      "full"
-    ],
-    "cat_cafe_read_entrusted_work": [
-      "agent-key",
-      "desktop:live-companion",
-      "full",
-      "readonly"
-    ],
-    "cat_cafe_update_entrusted_work": [
-      "desktop:live-companion",
-      "full"
-    ],
-    "cat_cafe_update_task": [
-      "desktop:live-companion",
-      "full"
-    ]
+    "cat_cafe_list_tasks": ["desktop:live-companion", "full"],
+    "cat_cafe_read_entrusted_work": ["agent-key", "desktop:live-companion", "full", "readonly"],
+    "cat_cafe_update_entrusted_work": ["desktop:live-companion", "full"],
+    "cat_cafe_update_task": ["desktop:live-companion", "full"]
   },
   "composition": {
     "protectedTargetSha": "ef93d7401d0c41b6cf3ff52396f91b299d706e40",
@@ -35,9 +21,7 @@
   "layers": {
     "mcp-definition": {
       "status": "covered",
-      "consumers": [
-        "packages/mcp-server/src/canonical-server-tools.ts"
-      ]
+      "consumers": ["packages/mcp-server/src/canonical-server-tools.ts"]
     },
     "runtime-catalog-profile": {
       "status": "covered",
@@ -48,16 +32,11 @@
     },
     "prompt-l0": {
       "status": "covered",
-      "consumers": [
-        "assets/prompt-templates/l5-mcp-tools-index.md"
-      ]
+      "consumers": ["assets/prompt-templates/l5-mcp-tools-index.md"]
     },
     "skill-convention": {
       "status": "covered",
-      "consumers": [
-        "cat-cafe-skills/refs/mcp-callbacks.md",
-        "docs/features/F202-plugin-framework.md"
-      ]
+      "consumers": ["cat-cafe-skills/refs/mcp-callbacks.md", "docs/features/F202-plugin-framework.md"]
     },
     "fixture-test": {
       "status": "covered",
@@ -74,9 +53,7 @@
     },
     "observability": {
       "status": "covered",
-      "consumers": [
-        "packages/api/src/domains/plugin/runtime-composition.ts"
-      ]
+      "consumers": ["packages/api/src/domains/plugin/runtime-composition.ts"]
     }
   },
   "rollbackRevision": "ef93d7401d0c41b6cf3ff52396f91b299d706e40"

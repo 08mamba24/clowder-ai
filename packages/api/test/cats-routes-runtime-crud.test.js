@@ -2082,6 +2082,11 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
     process.env.HOME = workspaceRoot;
     writeFileSync(join(runtimeRoot, 'cat-template.json'), JSON.stringify(makeTemplate(), null, 2));
     seedCatalogFromTemplate(runtimeRoot);
+    mkdirSync(join(workspaceRoot, '.cat-cafe'), { recursive: true });
+    writeFileSync(
+      join(workspaceRoot, '.cat-cafe', 'capabilities.json'),
+      JSON.stringify({ version: 2, capabilities: [] }),
+    );
     process.env.CAT_TEMPLATE_PATH = join(runtimeRoot, 'cat-template.json');
     process.chdir(runtimeRoot);
 

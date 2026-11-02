@@ -43,7 +43,7 @@ it('forwards a validated source-bound assistant final from the content script to
     observedRevisions: {
       helper: helperArtifactRevision,
       extension: '0.2.13',
-      pageAdapter: '2026-10-30-fork.1',
+      pageAdapter: '2026-10-31-fork.1',
     },
   };
 
@@ -119,7 +119,7 @@ it('forwards a privacy-safe assistant observation failure and waits for durable 
     observedRevisions: {
       helper: helperArtifactRevision,
       extension: '0.2.13',
-      pageAdapter: '2026-10-30-fork.1',
+      pageAdapter: '2026-10-31-fork.1',
     },
   };
 

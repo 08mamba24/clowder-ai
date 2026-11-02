@@ -30,6 +30,13 @@
 
 ## Canonical pack toolchain (digest chain)
 
+- Host repository formatting does not rewrite this independently owned vendored
+  package: `biome.json` disables only its formatter and import sorting for this
+  exact package path. All lint rules remain enabled. Native-host files and
+  extension source are published payloads; changing their bytes only to match
+  the host's style would change the reviewed archive identity. The package-owned
+  bundle freshness check, build, tests, and exact delivery digest still apply.
+
 - npm pack output bytes depend on the Node runtime's zlib: the canonical
   delivery digest below is defined for Node >= 24 only (repo guard requires
   Node >= 24). Never re-pack with an older Node and compare against the pin.

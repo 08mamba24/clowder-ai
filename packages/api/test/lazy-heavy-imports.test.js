@@ -13,7 +13,7 @@ const entries = {
   ImageExportBrowserSession: 'services/image-export-browser-session.ts',
   openCurrentBrowserPage: 'domains/concierge/action/jev/OwnerCurrentPageBrowser.ts',
   createOwnerCdpConnector: 'domains/concierge/action/jev/OwnerCdpConnector.ts',
-  maybeStartOwnerLocalNoteLab: 'domains/concierge/live/host/owner-local-note-lab.ts',
+  maybeStartOwnerLocalNoteLab: 'domains/concierge/live/host/local-note/owner-local-note-lab.ts',
   SignalEmailService: 'domains/signals/services/email-service.ts',
   createRetryableLoader: 'utils/retryable-loader.ts',
 };

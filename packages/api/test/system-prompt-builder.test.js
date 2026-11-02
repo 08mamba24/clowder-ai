@@ -157,9 +157,18 @@ describe('SystemPromptBuilder', () => {
       teammates: [],
       mcpAvailable: true,
     });
+    const { loadL5McpToolsIndex } = await import('../dist/domains/cats/services/context/prompt-template-loader.js');
+    assert.ok(prompt.includes(loadL5McpToolsIndex()), 'S13 must deliver the same canonical index as native L0');
     assert.ok(prompt.includes('cat_cafe_post_message'));
     assert.ok(prompt.includes('已安装的 GitHub 插件'));
-    assert.equal(prompt.includes('cat_cafe_register_pr_tracking'), false); // mcp-cutover-negative-reference: absence
+    assert.ok(prompt.includes('tool_search'), 'plugin-provided tracking must retain its discovery route');
+    for (const retired of [
+      'cat_cafe_register_pr_tracking', // mcp-cutover-negative-reference: absence
+      'cat_cafe_register_issue_tracking', // mcp-cutover-negative-reference: absence
+      'cat_cafe_unregister_tracking', // mcp-cutover-negative-reference: absence
+    ]) {
+      assert.equal(prompt.includes(retired), false, retired);
+    }
     assert.ok(prompt.includes('cat_cafe_get_pending_mentions'));
     assert.ok(prompt.includes('cat_cafe_get_thread_context'));
   });
@@ -735,7 +744,7 @@ describe('SystemPromptBuilder', () => {
     assert.ok(!rosterSection.includes('| 布偶猫/宪宪'), 'Opus default should not list itself');
   });
 
-  test('roster hydrates an explicit dossier fixture and falls back without that installation', async (t) => {
+  test('roster hydrates explicit dossier routing without capability summary and falls back without that installation', async (t) => {
     await withFreshRuntimeRegistry(async () => {
       const { buildTeammateRoster } = await import('../dist/domains/cats/services/context/SystemPromptBuilder.js');
       const { writeDossierFixture } = await import('./helpers/dossier-fixture.js');
@@ -744,8 +753,12 @@ describe('SystemPromptBuilder', () => {
       writeDossierFixture(root);
       const roster = buildTeammateRoster('codex', root);
       assert.match(roster, /（戊）/);
-      assert.match(roster, /fixture-roster-canary/);
-      assert.doesNotMatch(buildTeammateRoster('codex', join(root, 'absent')), /（戊）|fixture-roster-canary/);
+      assert.match(roster, /fixture-route-canary/);
+      assert.doesNotMatch(roster, /fixture-roster-canary/);
+      assert.doesNotMatch(
+        buildTeammateRoster('codex', join(root, 'absent')),
+        /（戊）|fixture-route-canary|fixture-roster-canary/,
+      );
     });
   });
 
@@ -1097,12 +1110,23 @@ describe('SystemPromptBuilder', () => {
       }
       const prompt = buildStaticIdentity('opus');
       const rosterLines = prompt.split('\n').filter((l) => l.trim().startsWith('|'));
-      const glmLine = rosterLines.find((l) => l.includes('@glm52'));
-      assert.match(glmLine ?? '', /^\| 狸花猫 GLM-5\.2\/小狸花 \|/, `got: ${glmLine}`);
-      const sonnetLine = rosterLines.find((l) => l.includes('@sonnet'));
-      assert.match(sonnetLine ?? '', /^\| 布偶猫 Sonnet\/宪宪 \|/, `family row is self here; got: ${sonnetLine}`);
-      const geminiVariantLine = rosterLines.find((l) => l.includes('@gemini38'));
-      assert.match(geminiVariantLine ?? '', /^\| 暹罗猫 Gemini 3\.8 Flash \|/, `got: ${geminiVariantLine}`);
+      const { getCatModel } = await import('../dist/config/cat-models.js');
+      for (const [id, label] of [
+        ['glm52', '狸花猫 GLM-5.2/小狸花'],
+        ['sonnet', '布偶猫 Sonnet/宪宪'],
+        ['gemini38', '暹罗猫 Gemini 3.8 Flash'],
+      ]) {
+        const line = rosterLines.find((row) => row.split('|')[2]?.trim().startsWith(`@${id} · `));
+        assert.ok(line, `missing variant row: ${id}`);
+        const cells = line
+          .split('|')
+          .slice(1, -1)
+          .map((cell) => cell.trim());
+        assert.equal(cells.length, 3, 'the routing-only roster has three semantic columns');
+        assert.equal(cells[0], label);
+        assert.equal(cells[1], `@${id} · ${getCatModel(id)}`);
+        assert.ok(cells[2].length > 0, 'routing boundary or explicit empty marker must remain');
+      }
     } finally {
       catRegistry.reset();
       for (const [id, config] of Object.entries(originalConfigs)) {

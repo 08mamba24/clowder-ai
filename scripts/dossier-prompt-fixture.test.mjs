@@ -18,12 +18,16 @@ function fixture(t) {
   return { root, profileDir };
 }
 
-test('API roster consumes pronoun and summary from the explicit dossier root', (t) => {
+test('API roster consumes pronoun and routing note while excluding capability summary from the explicit dossier root', (t) => {
   const { root } = fixture(t);
   const roster = buildTeammateRoster('codex', root);
   assert.match(roster, /（戊）/);
-  assert.match(roster, /fixture-roster-canary/);
-  assert.doesNotMatch(buildTeammateRoster('codex', join(root, 'absent')), /fixture-roster-canary|（戊）/);
+  assert.match(roster, /fixture-route-canary/);
+  assert.doesNotMatch(roster, /fixture-roster-canary/);
+  assert.doesNotMatch(
+    buildTeammateRoster('codex', join(root, 'absent')),
+    /fixture-route-canary|fixture-roster-canary|（戊）/,
+  );
 });
 
 test('compiled roster consumes the explicit pronoun and routing note, excluding the capability summary', async (t) => {

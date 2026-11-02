@@ -93,10 +93,9 @@ export async function resolveKimiMcpSurface(input: {
   credentialFile?: string;
   /**
    * Env the Kimi CLI interpolates `${VAR}` references against at launch.
-   * Defaults to the env known at surface time (callback + account + credential
-   * lease, all carried in callbackEnv) — a strict subset of the final spawn env,
-   * which the carrier extends with apiKey/model vars after the lease is
-   * prepared. Validation therefore fails closed, never lax.
+   * The service and lease provide the same filtered snapshot passed to spawn,
+   * including credential-file promotion and callback-token removal. Direct
+   * callers without a snapshot retain their explicit callback-only authority.
    */
   childEnv?: Readonly<Record<string, string | undefined>>;
 }): Promise<Record<string, Server>> {

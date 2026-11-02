@@ -12,7 +12,10 @@ import { classifyNativeTarget } from './native-effect-target-classifier.mjs';
 // gate and the cat-cafe verdict repo fallback, so the automerged wrapper
 // matched neither side's pin. This value is the sha256 of the semantically
 // merged wrapper; update it together with any wrapper change.
-const GH_WRAPPER_SHA256 = '90654a2676cfead339356df6487f7f30e761413223d38cafb5710b4cf2444c3e';
+// The secret helpers are dynamic imports after the READ_ONLY gate so the
+// controlled Qoder sandbox can start without scripts/lib mounted; the pin now
+// covers that byte change (P1 gh canary, 2026-10-31).
+const GH_WRAPPER_SHA256 = 'e44e9b5b7d3d1b92a74768adc9d98172d0caae06fd532dfafe2aa3345644522e';
 const ordinary = (path) => classifyNativeTarget(path, undefined, 'unknown').kind === 'ordinary';
 const literal = (value) => typeof value === 'string' && !/[$`*?[\]{}\n\r]/.test(value);
 

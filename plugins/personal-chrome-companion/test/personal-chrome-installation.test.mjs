@@ -351,7 +351,7 @@ describe('Personal Chrome Host installation state', () => {
         expectedRevisions: {
           helper: record.artifactDigest,
           extension: '0.2.13',
-          pageAdapter: '2026-10-30-fork.1',
+          pageAdapter: '2026-10-31-fork.1',
         },
       });
       assert.equal(result.status, 'host_observed');
