@@ -36,7 +36,8 @@ function buildEffortRow(
   participants: ReadonlySet<string>,
 ): ThreadMemberEffortRow | null {
   const config = catRegistry.tryGet(catId)?.config;
-  if (!config || !isCatAvailable(catId)) return null;
+  // Thread effort overrides control CLI invocations, not cloud sessions.
+  if (!config?.cli || !isCatAvailable(catId)) return null;
 
   const effectiveModel = getCatModel(catId);
   const options = getCliEffortOptionsForProvider(config.clientId, effectiveModel);
@@ -118,7 +119,7 @@ export const threadMemberEffortRoutes: FastifyPluginAsync<ThreadMemberEffortRout
       const catId = createCatId(String(catResult.data));
       const config = catRegistry.tryGet(catId)?.config;
       const effectiveModel = config ? getCatModel(catId) : null;
-      const options = config ? getCliEffortOptionsForProvider(config.clientId, effectiveModel) : null;
+      const options = config?.cli ? getCliEffortOptionsForProvider(config.clientId, effectiveModel) : null;
       if (!config || !isCatAvailable(catId) || !options) {
         reply.status(400);
         return { error: 'Cat does not support effort overrides' };
