@@ -33,6 +33,13 @@ describe('F291 Codex speed contract', () => {
     ['gpt-6-astra-long', true],
     ['openai/gpt-6-astra', true],
     ['gpt-6-luna', true],
+    ['gpt-6.1-sol', true],
+    ['gpt-6.1-terra', true],
+    [' OpenAI/GPT-6.1-SOL ', true],
+    ['gpt-6.1', false],
+    ['gpt-6.1-pro', false],
+    ['gpt-6.1-luna', false],
+    ['gpt-6.1-sol-unknown', false],
     ['', false],
   ])('classifies the v1 Fast model family %s', (model, expected) => {
     expect(supportsCodexFastModel(model)).toBe(expected);
@@ -53,6 +60,23 @@ describe('F291 Codex speed contract', () => {
       override: 'standard',
       inherited: 'fast',
       requested: 'standard',
+      source: 'thread_override',
+      compatibility: 'compatible',
+    });
+  });
+
+  it('allows a GPT-6.1 thread Fast request over an inherited Standard default', () => {
+    expect(
+      resolveCodexSpeed({
+        clientId: 'openai',
+        authType: 'oauth',
+        model: 'gpt-6.1-sol',
+        memberDefault: 'standard',
+        threadOverride: 'fast',
+      }),
+    ).toMatchObject({
+      options: ['standard', 'fast'],
+      requested: 'fast',
       source: 'thread_override',
       compatibility: 'compatible',
     });

@@ -37,6 +37,9 @@ export function isCodexSpeedValue(value: unknown): value is CodexSpeedValue {
  */
 export function supportsCodexFastModel(model: string | null | undefined): boolean {
   const slug = model?.trim().toLowerCase().split('/').at(-1) ?? '';
+  // Codex 0.163.0 model metadata (2026-11-03): both exact 6.1 slugs list fast.
+  // Do not infer support for other 6.1 variants or future model families.
+  if (slug === 'gpt-6.1-sol' || slug === 'gpt-6.1-terra') return true;
   // codex-cli 0.156.1 model/list (2026-09-23): gpt-6-sol, gpt-6-astra and
   // gpt-6-luna all report additionalSpeedTiers=[fast]. gpt-6-pro and bare
   // gpt-6 report none and stay out until the native metadata lists them.
