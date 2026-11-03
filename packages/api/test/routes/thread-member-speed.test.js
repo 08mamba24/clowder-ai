@@ -25,6 +25,7 @@ function registerCodexSpeedCat(id, model, serviceTier) {
 
 registerCodexSpeedCat('codex-speed-test', 'gpt-5.6-sol', 'standard');
 registerCodexSpeedCat('codex-speed-old', 'gpt-4.1');
+registerCodexSpeedCat('codex-speed-sol61', 'gpt-6.1-sol', 'standard');
 
 function createMockThreadStore() {
   const threads = new Map();
@@ -135,6 +136,31 @@ describe('F291 thread member speed routes', () => {
     assert.equal(cleared.override, null);
     assert.equal(cleared.requested, 'standard');
     assert.equal(cleared.source, 'member_default');
+  });
+
+  it('offers, persists and clears GPT-6.1 Fast over an inherited Standard default', async () => {
+    const catId = 'codex-speed-sol61';
+    const list = await app.inject({ method: 'GET', url: `/api/threads/${THREAD_ID}/members/speed`, headers: HEADERS });
+    assert.deepEqual(list.json().members.find((row) => row.catId === catId).options, ['standard', 'fast']);
+    const set = await app.inject({
+      method: 'PATCH',
+      url: `/api/threads/${THREAD_ID}/members/${catId}/speed`,
+      headers: HEADERS,
+      payload: { speed: 'fast' },
+    });
+    assert.equal(set.statusCode, 200);
+    assert.equal(set.json().requested, 'fast');
+    assert.equal(threadStore.getMemberSpeeds(THREAD_ID)[catId], 'fast');
+    const clear = await app.inject({
+      method: 'PATCH',
+      url: `/api/threads/${THREAD_ID}/members/${catId}/speed`,
+      headers: HEADERS,
+      payload: { speed: null },
+    });
+    assert.equal(clear.statusCode, 200);
+    assert.equal(clear.json().requested, 'standard');
+    assert.equal(clear.json().source, 'member_default');
+    assert.equal(threadStore.getMemberSpeeds(THREAD_ID)[catId], undefined);
   });
 
   it('rejects invalid, unsupported, shared-default, missing, foreign, and unauthenticated requests', async () => {

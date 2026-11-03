@@ -175,6 +175,45 @@ describe('F262 thread member effort routes', () => {
     }
   });
 
+  it('offers, persists and clears GPT-6.1 ultra through the thread API', async () => {
+    const previousModel = process.env.CAT_CODEX_SOL_MODEL;
+    try {
+      process.env.CAT_CODEX_SOL_MODEL = 'gpt-6.1-sol';
+      const list = await app.inject({
+        method: 'GET',
+        url: `/api/threads/${THREAD_ID}/members/effort`,
+        headers: HEADERS,
+      });
+      assert.ok(
+        list
+          .json()
+          .members.find((row) => row.catId === 'codex-sol')
+          .options.includes('ultra'),
+      );
+      const set = await app.inject({
+        method: 'PATCH',
+        url: `/api/threads/${THREAD_ID}/members/codex-sol/effort`,
+        headers: HEADERS,
+        payload: { effort: 'ultra' },
+      });
+      assert.equal(set.statusCode, 200);
+      assert.equal(set.json().effective, 'ultra');
+      assert.equal(threadStore.getMemberEffort(THREAD_ID, 'codex-sol'), 'ultra');
+      const clear = await app.inject({
+        method: 'PATCH',
+        url: `/api/threads/${THREAD_ID}/members/codex-sol/effort`,
+        headers: HEADERS,
+        payload: { effort: null },
+      });
+      assert.equal(clear.statusCode, 200);
+      assert.equal(clear.json().source, 'inherited');
+      assert.equal(threadStore.getMemberEffort(THREAD_ID, 'codex-sol'), undefined);
+    } finally {
+      if (previousModel === undefined) delete process.env.CAT_CODEX_SOL_MODEL;
+      else process.env.CAT_CODEX_SOL_MODEL = previousModel;
+    }
+  });
+
   it('projects options and validates overrides against the runtime-effective model', async () => {
     const previousCodexModel = process.env.CAT_CODEX_MODEL;
     const previousSolModel = process.env.CAT_CODEX_SOL_MODEL;
