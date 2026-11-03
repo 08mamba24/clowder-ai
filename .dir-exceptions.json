@@ -50,13 +50,6 @@
       "ticket": "F290 W4 / cat-cafe#5670 / clowder-ai#1614"
     },
     {
-      "path": "packages/api/src/domains/plugin/builtin-runtime",
-      "owner": "codex61-sol",
-      "reason": "2026-10-18 W4 source fix-forward: #5670 grew this directory from 24 to 25 files with collective-artifact-command.ts. Keep the existing Host verifier and invocation composition imports stable while the parallel F290 UI integration proceeds; reassess the artifact command versus participation/runtime adapter boundary before expiry.",
-      "expiresAt": "2026-10-31",
-      "ticket": "F290 W4 / cat-cafe#5670 / clowder-ai#1614"
-    },
-    {
       "path": "packages/api/src/domains/video-studio/content-owner",
       "owner": "codex61-sol",
       "reason": "2026-10-18 W4 source fix-forward: #5670 grew this directory from 20 to 25 files with collective scope, snapshot, custody fence, validation and errors. Keep owner effect/receipt and private/public isolation imports stable; #5712 concurrently changes this owner. Reassess collective custody and publication subgroups with the content owner before expiry.",
@@ -87,7 +80,7 @@
     {
       "path": "packages/api/src/domains/cats/services/agents/routing",
       "owner": "opus-48",
-      "reason": "2026-08-31 renewal (F23 gate option b \u2014 freshness/ real split in same PR). 33 files. Agent routing + artifact tracking remain one unsplit agents subdomain.",
+      "reason": "2026-08-31 renewal (F23 gate option b — freshness/ real split in same PR). 33 files. Agent routing + artifact tracking remain one unsplit agents subdomain.",
       "expiresAt": "2026-10-31",
       "ticket": "F23-followup"
     },
@@ -160,13 +153,6 @@
       "reason": "2026-08-31 renewal (F23 gate option b). 50 files. Redis implementations should split with their proposal/community/session domains.",
       "expiresAt": "2026-10-31",
       "ticket": "F23-followup"
-    },
-    {
-      "path": "packages/api/src/domains/auto-dream",
-      "owner": "codex-sol",
-      "reason": "2026-08-31 renewal. 35 files. Auto Dream mixes cat-life settings, seed/store, run lifecycle, proactive relationship; F255/F272 own split.",
-      "expiresAt": "2026-10-31",
-      "ticket": "F255/F272"
     },
     {
       "path": "packages/api/src/domains/ball-custody",
