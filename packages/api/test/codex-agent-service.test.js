@@ -2100,6 +2100,28 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     assert.ok(!args.includes('model_reasoning_effort="ultra"'));
   });
 
+  test('GPT-6.1 sends ultra reasoning and Fast speed together to Codex', async () => {
+    const proc = createMockProcess();
+    const spawnFn = createMockSpawnFn(proc);
+    const service = new CodexAgentService({
+      l0CompilerFn: fakeL0Compiler,
+      spawnFn,
+      catId: 'runtime-sol61',
+      model: 'gpt-6.1-sol',
+    });
+    const promise = collect(
+      service.invoke('hello', {
+        reasoningEffortOverride: 'ultra',
+        requestedServiceTier: 'fast',
+      }),
+    );
+    emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-sol61-ultra-fast' }]);
+    await promise;
+    const args = spawnFn.mock.calls[0].arguments[1];
+    assert.ok(args.includes('model_reasoning_effort="ultra"'), JSON.stringify(args));
+    assert.ok(args.includes('service_tier="fast"'), JSON.stringify(args));
+  });
+
   test('F291 maps requested Standard/Fast speed to reserved Codex exec config', async () => {
     for (const { requestedServiceTier, expected } of [
       { requestedServiceTier: 'standard', expected: 'service_tier="default"' },

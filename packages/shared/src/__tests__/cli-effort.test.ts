@@ -9,6 +9,27 @@ import {
 } from '../cli-effort.js';
 
 describe('CLI effort capabilities', () => {
+  it.each([
+    'gpt-6.1-sol',
+    'gpt-6.1-terra',
+    ' OpenAI/GPT-6.1-SOL ',
+  ])('offers and applies ultra for the catalogued model %s', (model) => {
+    expect(getCliEffortOptionsForProvider('openai', model)).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+    expect(resolveCliEffortOverride('openai', model, 'xhigh', 'ultra')).toEqual({
+      effective: 'ultra',
+      source: 'thread_override',
+      compatibility: 'compatible',
+    });
+  });
+
+  it.each([
+    'gpt-6.1',
+    'gpt-6.1-pro',
+    'gpt-6.1-luna',
+    'gpt-6.1-sol-unknown',
+  ])('does not infer ultra support for uncatalogued model %s', (model) =>
+    expect(isValidCliEffortForProvider('openai', 'ultra', model)).toBe(false));
+
   it('exposes the effort tiers supported by each OpenAI model', () => {
     expect(getCliEffortOptionsForProvider('openai', 'gpt-5.6-sol')).toEqual([
       'low',
