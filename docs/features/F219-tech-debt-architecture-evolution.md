@@ -4,7 +4,7 @@ related_features: [F215, F216, F023]
 topics: [tech-debt, architecture, refactor, routing, dispatch, vision]
 doc_kind: spec
 created: 2026-06-02
-tips_exempt: status-only correction (spec to in-progress for lint dogfood); F219 core work not yet implemented, no user-facing capability
+tips_exempt: renewed 2026-11-04 for this upstream-sync PR — the only doc change adds user_journey_exempt metadata (checker-scope widening from upstream branch roles); still no user-facing capability, F219 core work not yet implemented
 user_journey_exempt: internal tech-debt inventory and architecture evolution; refactor planning has no user-perceivable surface (directory splits and engine decoupling preserve behavior)
 ---
 
