@@ -22,6 +22,15 @@ export interface ContextAssemblerOptions {
   maxTotalTokens?: number;
 }
 
+/**
+ * Bounded replay budget for ACP session rebuilds: when a provider declares no
+ * session resume capability, the carrier rebuilds a fresh replacement session
+ * and injects one controlled history prefix of at most this size. Matches the
+ * session-bootstrap ceiling so rebuild replay stays a summary, never a full
+ * transcript dump.
+ */
+export const REBUILD_CONTEXT_MAX_TOTAL_TOKENS = 2000;
+
 export interface AssembledContext {
   /** Formatted context string to prepend to prompt */
   contextText: string;

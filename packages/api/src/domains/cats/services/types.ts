@@ -132,6 +132,12 @@ export interface MessageMetadata {
    * next round's `--resume` target. bg-only; absent for other providers.
    */
   resumeSessionId?: string;
+  /**
+   * ACP rebuild audit: set when a resume-requested turn had to replace the
+   * session because the provider declares no session resume capability. Marks
+   * the replacement as an explicit migration, never a silent amnesiac restart.
+   */
+  sessionRebuild?: { fromSessionId: string; reason: 'provider_without_resume_capability' };
   usage?: TokenUsage;
   /** F306: bounded provider-neutral child lifecycle for live/F5 Agent Run parity. */
   subexecutionEvents?: readonly ProviderSubexecutionSemanticEvent[];
@@ -1135,6 +1141,13 @@ export interface AgentServiceOptions {
   systemPrompt?: string;
   /** Static identity prompt used only if a resumed carrier creates a fresh fallback session. */
   resumeFallbackSystemPrompt?: string;
+  /**
+   * Controlled context-replay prefix for providers that cannot resume sessions
+   * (no loadSession and no sessionCapabilities.resume). The ACP carrier injects
+   * it once when it must rebuild a fresh replacement session, so the rebuilt
+   * session is explicitly migrated, never a silent amnesiac restart.
+   */
+  rebuildContextPrompt?: string;
   /** F089: Override spawnCli with tmux-based spawner (set per-invocation) */
   spawnCliOverride?: SpawnCliOverride;
   /** F254 D2: optional tmux/direct duplex carrier factory for app-server mode. */

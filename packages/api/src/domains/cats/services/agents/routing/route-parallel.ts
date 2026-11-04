@@ -51,7 +51,7 @@ import {
   preflightRoutingDispatch,
   routingDispatchPreflightReceipt,
 } from '../../../../routing-context/RoutingDispatchPreflightPort.js';
-import { assembleContext } from '../../context/ContextAssembler.js';
+import { assembleContext, REBUILD_CONTEXT_MAX_TOTAL_TOKENS } from '../../context/ContextAssembler.js';
 import {
   buildInvocationContext,
   buildStaticIdentity,
@@ -1076,6 +1076,16 @@ async function* routeParallelPrepared(
             }
           : undefined;
 
+      // ACP carriers whose provider declares no session resume capability
+      // rebuild a fresh replacement session each turn (per-turn process
+      // retirement). Hand the carrier a bounded, controlled replay of the
+      // assembled history; it is injected exactly once on that rebuild, so the
+      // replacement is an explicit migration, never a silent amnesiac restart.
+      const rebuildContextPrompt =
+        catConfig?.clientId === 'acp' && history && history.length > 0
+          ? assembleContext(history, { maxTotalTokens: REBUILD_CONTEXT_MAX_TOTAL_TOKENS }).contextText || undefined
+          : undefined;
+
       if (!incrementalMode) {
         exactPromptMessageIds = collectExactPromptMessageIds(options.persistedPromptMessageIds ?? [], [
           currentUserMessageId,
@@ -1111,6 +1121,7 @@ async function* routeParallelPrepared(
         prompt,
         ...(contextPromptFactory ? { contextPromptFactory } : {}),
         ...(rebuildPromptAfterSessionSeal ? { rebuildPromptAfterSessionSeal } : {}),
+        ...(rebuildContextPrompt ? { rebuildContextPrompt } : {}),
         userId,
         ownerAuthProvenance,
         threadId,
