@@ -24,14 +24,17 @@ for (const name of ['package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml', '.n
 const inventoryFile = path.join(source, '.build-input-files.json');
 const tracked = fs.existsSync(inventoryFile)
   ? JSON.parse(fs.readFileSync(inventoryFile, 'utf8'))
-  : execFileSync('git', ['ls-files', '-z'], { cwd: source }).toString('utf8').split('\0').filter(Boolean);
+  : execFileSync('git', ['ls-files', '-z'], { cwd: source, maxBuffer: 64 * 1024 * 1024 })
+      .toString('utf8')
+      .split('\0')
+      .filter(Boolean);
 // A reviewed fixture alias is a test input, not a runtime input: packages/api/test/fixtures/qoder/current
 // links to its own tracked generation (.gen-<hash>/), and the generation is copied from those tracked files
 // below. Skipping just the alias keeps the artifact link-free without dropping the fixture data, and any
 // linked non-test input still fails loudly.
 const linkedFixtureRoot = 'packages/api/test/fixtures/';
 for (const relative of tracked) {
-  if (!/^(packages|scripts)\//.test(relative)) continue;
+  if (!/^(packages|scripts|patches)\//.test(relative)) continue;
   const from = path.resolve(source, relative),
     target = path.resolve(workspace, relative);
   if (!from.startsWith(source + path.sep) || !target.startsWith(workspace + path.sep))

@@ -3,8 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createMicroduckControlOwnerPort } from '../../dist/infrastructure/capability-evolution/adapters/microduck-control-owner-port.js';
-import { createMicroduckControlSlotOwner } from '../../dist/infrastructure/capability-evolution/adapters/microduck-control-slot-owner.js';
+import { createMicroduckControlOwnerPort } from '../../dist/infrastructure/capability-evolution/adapters/microduck-control/microduck-control-owner-port.js';
+import { createMicroduckControlSlotOwner } from '../../dist/infrastructure/capability-evolution/adapters/microduck-control/microduck-control-slot-owner.js';
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 

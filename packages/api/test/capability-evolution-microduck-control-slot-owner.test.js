@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { createMicroduckControlSlotOwner } from '../dist/infrastructure/capability-evolution/adapters/microduck-control-slot-owner.js';
+import { createMicroduckControlSlotOwner } from '../dist/infrastructure/capability-evolution/adapters/microduck-control/microduck-control-slot-owner.js';
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
-import { readMicroduckControlCandidateContract } from '../dist/infrastructure/capability-evolution/adapters/microduck-control-owner-contract.js';
+import { readMicroduckControlCandidateContract } from '../dist/infrastructure/capability-evolution/adapters/microduck-control/microduck-control-owner-contract.js';
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
