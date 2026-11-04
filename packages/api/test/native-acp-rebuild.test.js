@@ -18,12 +18,18 @@ const effortOptions = [
   { id: 'effort', category: 'thought_level', currentValue: 'high', options: [{ value: 'low' }, { value: 'high' }] },
 ];
 
-const REBUILD_PREFIX = '[受控历史重放]\nuser: 之前的问题\nassistant: 之前的回答';
+const REBUILD_PREFIX =
+  '/rebuild-replay v1 messages=2 tokens=48 truncated=false\nuser: 之前的问题\nassistant: 之前的回答';
+const REBUILD_PREFIX_TRUNCATED =
+  '/rebuild-replay v1 messages=1 tokens=2000 truncated=true\nassistant: 只有最后一轮';
+const MALFORMED_PREFIX = '[受控历史重放]\nuser: 之前的问题（没有自描述头，属于接线损伤）';
 
-function fixture({ resumeSupport, loadSessionError } = {}) {
+function fixture({ resumeSupport, loadSessionError, sealLeaseAfterFirstAcquire = false } = {}) {
   const calls = [];
   const sealed = [];
   const prompted = [];
+  let acquireCount = 0;
+  let failNextNewSession = false;
   const client = {
     recentCapacitySignal: null,
     onCapacity() {},
@@ -38,6 +44,10 @@ function fixture({ resumeSupport, loadSessionError } = {}) {
     },
     async newSession() {
       calls.push('new');
+      if (failNextNewSession) {
+        failNextNewSession = false;
+        throw new Error('spawn failed');
+      }
       return { sessionId: 'fresh', configOptions: effortOptions };
     },
     async setSessionConfigOption() {
@@ -52,7 +62,11 @@ function fixture({ resumeSupport, loadSessionError } = {}) {
   };
   const pool = {
     async acquire(poolKey) {
-      return { client, poolKey, release() {} };
+      acquireCount += 1;
+      // After the first acquire, model the pool handing out a sealed lease for
+      // the retired session id (canResumeRequestedSession=false).
+      const sealedLease = sealLeaseAfterFirstAcquire && acquireCount > 1;
+      return { client, poolKey, release() {}, ...(sealedLease ? { canResumeRequestedSession: false } : {}) };
     },
     sealSession(poolKey, sessionId) {
       sealed.push(sessionId);
@@ -66,7 +80,15 @@ function fixture({ resumeSupport, loadSessionError } = {}) {
     providerName: 'dsh',
     modelName: '',
   });
-  return { calls, sealed, prompted, service };
+  return {
+    calls,
+    sealed,
+    prompted,
+    service,
+    failNextNewSession() {
+      failNextNewSession = true;
+    },
+  };
 }
 
 test('provider without resume capability rebuilds an explicit replacement instead of fail-closing', async () => {
@@ -92,12 +114,36 @@ test('provider without resume capability rebuilds an explicit replacement instea
     messages.some((message) => message.type === 'error'),
     false,
   );
-  // Audit metadata marks the rebuild on the persisted message metadata path.
+  // Audit metadata marks the rebuild on the persisted message metadata path,
+  // including the parsed replay self-description.
   const doneOrChunk = messages.find((message) => message.metadata?.sessionRebuild);
   assert.ok(doneOrChunk, 'expected sessionRebuild audit metadata on an emitted message');
   assert.deepEqual(doneOrChunk.metadata.sessionRebuild, {
     fromSessionId: 'prior-turn-session',
     reason: 'provider_without_resume_capability',
+    replay: { messageCount: 2, estimatedTokens: 48, truncated: false },
+  });
+});
+
+test('truncated replay is audited as partial migration, not a full resume', async () => {
+  const { sealed, prompted, service } = fixture({ resumeSupport: 'none' });
+  const messages = [];
+  for await (const message of service.invoke('continue', {
+    sessionId: 'prior-turn-session',
+    rebuildContextPrompt: REBUILD_PREFIX_TRUNCATED,
+  }))
+    messages.push(message);
+  assert.deepEqual(sealed, ['prior-turn-session']);
+  assert.ok(prompted[0].includes('只有最后一轮'));
+  assert.equal(
+    messages.some((message) => message.type === 'error'),
+    false,
+  );
+  const audited = messages.find((message) => message.metadata?.sessionRebuild);
+  assert.deepEqual(audited.metadata.sessionRebuild.replay, {
+    messageCount: 1,
+    estimatedTokens: 2000,
+    truncated: true,
   });
 });
 
@@ -114,6 +160,57 @@ test('rebuilt turn without a replay prefix fails closed instead of running an am
   const error = messages.find((message) => message.type === 'error');
   assert.ok(error, 'expected a fail-closed error when the replay prefix is missing');
   assert.equal(error.error.includes('受控历史重放缺失'), true);
+});
+
+test('malformed replay without the self-describing header fails closed the same way', async () => {
+  const { calls, sealed, prompted, service } = fixture({ resumeSupport: 'none' });
+  const messages = [];
+  for await (const message of service.invoke('continue', {
+    sessionId: 'prior-turn-session',
+    rebuildContextPrompt: MALFORMED_PREFIX,
+  }))
+    messages.push(message);
+  // Non-empty but not a contract-shaped replay: still wiring damage, still closed.
+  assert.ok(!calls.includes('prompt'));
+  assert.deepEqual(sealed, []);
+  assert.equal(prompted.length, 0);
+  const error = messages.find((message) => message.type === 'error');
+  assert.ok(error);
+  assert.equal(error.error.includes('不合规'), true);
+});
+
+test('sealed session id retries as an explicit fresh turn instead of wedging after a rebuild', async () => {
+  const { calls, sealed, prompted, service } = fixture({ resumeSupport: 'none', sealLeaseAfterFirstAcquire: true });
+  // Turn A: rebuild happens, the old id gets sealed.
+  for await (const message of service.invoke('first', {
+    sessionId: 'wedged-session',
+    rebuildContextPrompt: REBUILD_PREFIX,
+  }));
+  assert.deepEqual(sealed, ['wedged-session']);
+  // Turn B: the pool now hands out canResumeRequestedSession=false for that id
+  // (sealed) — the carrier must take the sealed_fresh path, create a session,
+  // and never wedge on the sealed binding or hit the fail-closed error.
+  const messages = [];
+  for await (const message of service.invoke('second', { sessionId: 'wedged-session' })) messages.push(message);
+  assert.ok(calls.includes('prompt'), 'the follow-up turn must still reach the model');
+  const error = messages.find((message) => message.type === 'error');
+  assert.ok(!error, `sealed retry must not fail: ${error?.error ?? ''}`);
+  assert.ok(prompted.at(-1).includes('second'));
+});
+
+test('newSession failure during a rebuild surfaces as an error, never a silent success', async () => {
+  const failing = fixture({ resumeSupport: 'none' });
+  failing.failNextNewSession();
+  const messages = [];
+  for await (const message of failing.service.invoke('continue', {
+    sessionId: 'prior-turn-session',
+    rebuildContextPrompt: REBUILD_PREFIX,
+  }))
+    messages.push(message);
+  const error = messages.find((message) => message.type === 'error');
+  assert.ok(error, 'newSession failure must surface as an error message');
+  const doneAfterFailure = messages.find((message) => message.type === 'done' && !message.error);
+  assert.ok(!doneAfterFailure || messages.indexOf(error) < messages.indexOf(doneAfterFailure), 'failure precedes done');
 });
 
 test('two consecutive turns keep continuity across a cold-started replacement process', async () => {
@@ -135,7 +232,7 @@ test('two consecutive turns keep continuity across a cold-started replacement pr
   const second = [];
   for await (const message of service.invoke('第二轮的问题', {
     sessionId: 'fresh',
-    rebuildContextPrompt: '[受控历史重放]\nuser: 第一轮的问题\nassistant: 第一轮的回答',
+    rebuildContextPrompt: '/rebuild-replay v1 messages=2 tokens=40 truncated=false\nuser: 第一轮的问题\nassistant: 第一轮的回答',
   }))
     second.push(message);
   assert.ok(!calls.includes('load'), 'must not attempt loadSession on a resume-incapable provider');

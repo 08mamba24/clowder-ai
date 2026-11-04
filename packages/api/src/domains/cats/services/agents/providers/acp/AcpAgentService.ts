@@ -30,6 +30,7 @@ import { getCatEffort } from '../../../../../../config/cat-config-loader.js';
 import { getCatModel } from '../../../../../../config/cat-models.js';
 import { createModuleLogger } from '../../../../../../infrastructure/logger.js';
 import { createPromptDigest } from '../../../context/prompt-digest.js';
+import { REBUILD_REPLAY_HEADER } from '../../../context/ContextAssembler.js';
 import type {
   AgentMessage,
   AgentService,
@@ -726,8 +727,10 @@ export class AcpAgentService implements AgentService {
       // pick the explicit, audited rebuild path instead: seal the unrecoverable
       // id, create a fresh replacement, and restore identity/context once. The
       // rebuild is only allowed to reach the model when the controlled history
-      // replay is actually available — a missing prefix means the route wiring
-      // is broken, and an amnesiac replacement turn must fail closed, not run.
+      // replay carries a parseable self-description (message count, token
+      // estimate, truncation flag): a missing or malformed replay header means
+      // the route wiring is broken, and an amnesiac replacement turn must fail
+      // closed, not run.
       if (
         resumeSessionId &&
         !agy &&
@@ -735,14 +738,23 @@ export class AcpAgentService implements AgentService {
         typeof client.sessionResumeSupport === 'function' &&
         client.sessionResumeSupport() === 'none'
       ) {
-        if (!options?.rebuildContextPrompt) {
+        const replayHeader = options?.rebuildContextPrompt?.match(REBUILD_REPLAY_HEADER);
+        if (!replayHeader) {
           throw new AcpSessionBindingError(
-            'ACP 工具无会话恢复能力且受控历史重放缺失；已保留原历史并阻断新建会话。',
+            'ACP 工具无会话恢复能力且受控历史重放缺失或不合规；已保留原历史并阻断新建会话。',
           );
         }
         this.pool.sealSession?.(this.poolKey, resumeSessionId);
         resumeDisposition = 'rebuilt_fresh';
-        metadata.sessionRebuild = { fromSessionId: resumeSessionId, reason: 'provider_without_resume_capability' };
+        metadata.sessionRebuild = {
+          fromSessionId: resumeSessionId,
+          reason: 'provider_without_resume_capability',
+          replay: {
+            messageCount: Number(replayHeader[1]),
+            estimatedTokens: Number(replayHeader[2]),
+            truncated: replayHeader[3] === 'true',
+          },
+        };
         log.warn(
           { ...ctx, sessionId: resumeSessionId, cwd },
           'ACP provider declares no session resume capability; rebuilding an explicit replacement session',

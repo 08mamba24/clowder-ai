@@ -136,8 +136,13 @@ export interface MessageMetadata {
    * ACP rebuild audit: set when a resume-requested turn had to replace the
    * session because the provider declares no session resume capability. Marks
    * the replacement as an explicit migration, never a silent amnesiac restart.
+   * `replay` records what the injected controlled history actually carried.
    */
-  sessionRebuild?: { fromSessionId: string; reason: 'provider_without_resume_capability' };
+  sessionRebuild?: {
+    fromSessionId: string;
+    reason: 'provider_without_resume_capability';
+    replay?: { messageCount: number; estimatedTokens: number; truncated: boolean };
+  };
   usage?: TokenUsage;
   /** F306: bounded provider-neutral child lifecycle for live/F5 Agent Run parity. */
   subexecutionEvents?: readonly ProviderSubexecutionSemanticEvent[];

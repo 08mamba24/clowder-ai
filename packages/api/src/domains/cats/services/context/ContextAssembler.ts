@@ -31,6 +31,42 @@ export interface ContextAssemblerOptions {
  */
 export const REBUILD_CONTEXT_MAX_TOTAL_TOKENS = 2000;
 
+/**
+ * Shared eligibility filter for prompt context (F117/#699/PR#992 defenses):
+ * delivered only, no display-only system noise, no briefings, no [错误]
+ * agent messages. Exported so the rebuild replay below reports truncation
+ * against the same eligibility the assembler itself uses.
+ */
+function deliveredContextMessages(messages: StoredMessage[]): StoredMessage[] {
+  return messages.filter((m) => {
+    const from = messageFrom(m);
+    return (
+      isDelivered(m) &&
+      (from.kind !== 'system' || !isDisplayOnlySystemMessage(m) || isAgentReadableManagedHoldMessage(m)) &&
+      m.origin !== 'briefing' &&
+      !(from.kind === 'agent' && m.content?.startsWith('[错误]'))
+    );
+  });
+}
+
+/**
+ * Header prepended to every ACP session-rebuild replay. The carrier parses it
+ * back and refuses to run the model when it is missing or malformed: a replay
+ * without a parseable self-description is wiring damage, not a usable
+ * controlled context. Format: message count, estimated tokens, truncated flag.
+ */
+export const REBUILD_REPLAY_HEADER = /^\/rebuild-replay v1 messages=(\d+) tokens=(\d+) truncated=(true|false)\n/;
+
+/** Assemble the controlled replay block the ACP carrier may inject on a rebuild. */
+export function buildRebuildContextReplay(messages: StoredMessage[]): string | undefined {
+  const { contextText, messageCount, estimatedTokens } = assembleContext(messages, {
+    maxTotalTokens: REBUILD_CONTEXT_MAX_TOTAL_TOKENS,
+  });
+  if (!contextText) return undefined;
+  const truncated = messageCount < deliveredContextMessages(messages).length;
+  return `/rebuild-replay v1 messages=${messageCount} tokens=${estimatedTokens} truncated=${truncated}\n${contextText}`;
+}
+
 export interface AssembledContext {
   /** Formatted context string to prepend to prompt */
   contextText: string;
@@ -227,15 +263,7 @@ export function assembleContext(messages: StoredMessage[], options?: ContextAsse
   // Only filter agent messages starting with [错误] — user messages are legit.
   // All 6 known contaminated records start with [错误] (no partial-text-before-error exists
   // in practice, since stream_idle_stall means zero text was produced before the error).
-  const deliveredMessages = messages.filter((m) => {
-    const from = messageFrom(m);
-    return (
-      isDelivered(m) &&
-      (from.kind !== 'system' || !isDisplayOnlySystemMessage(m) || isAgentReadableManagedHoldMessage(m)) &&
-      m.origin !== 'briefing' &&
-      !(from.kind === 'agent' && m.content?.startsWith('[错误]'))
-    );
-  });
+  const deliveredMessages = deliveredContextMessages(messages);
 
   if (deliveredMessages.length === 0) {
     return { contextText: '', messageCount: 0, estimatedTokens: 0 };
