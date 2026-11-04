@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { stat } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 
-import { createMicroduckControlOwnerPort } from '../dist/infrastructure/capability-evolution/adapters/microduck-control-owner-port.js';
-import { createMicroduckControlSlotOwner } from '../dist/infrastructure/capability-evolution/adapters/microduck-control-slot-owner.js';
+import { createMicroduckControlOwnerPort } from '../dist/infrastructure/capability-evolution/adapters/microduck-control/microduck-control-owner-port.js';
+import { createMicroduckControlSlotOwner } from '../dist/infrastructure/capability-evolution/adapters/microduck-control/microduck-control-slot-owner.js';
 import { createMicroduckOwnerAdapter } from '../dist/infrastructure/capability-evolution/adapters/microduck-owner-adapter.js';
 import {
   cycleRef,

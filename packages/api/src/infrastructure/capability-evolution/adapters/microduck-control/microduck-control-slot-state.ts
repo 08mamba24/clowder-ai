@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto';
 import { type ExactAssetVersionRefV1, type OwnerTruthRefV1, refIdentity } from '@cat-cafe/shared';
 import { MICRODUCK_CONTROL_SUBJECT_ORDER } from './microduck-control-evaluation-schemas.js';
-import type { MicroduckRollbackReceipt, MicroduckWritebackReceipt } from './microduck-owner-contract.js';
-import { microduckRollbackSchema, microduckWritebackSchema } from './microduck-owner-schemas.js';
+import type { MicroduckRollbackReceipt, MicroduckWritebackReceipt } from '../microduck-owner-contract.js';
+import { microduckRollbackSchema, microduckWritebackSchema } from '../microduck-owner-schemas.js';
 import {
   exactRef,
   isMicroduckControlPackageRef,
   isMicroduckPolicyRef,
   ownerRef,
-} from './microduck-owner-validation.js';
+} from '../microduck-owner-validation.js';
 
 const OWNER_FEATURE_ID = 'microduck-owner';
 

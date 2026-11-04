@@ -1,5 +1,5 @@
-export * from './adapters/microduck-control-owner-port.js';
-export * from './adapters/microduck-control-slot-owner.js';
+export * from './adapters/microduck-control/microduck-control-owner-port.js';
+export * from './adapters/microduck-control/microduck-control-slot-owner.js';
 export * from './adapters/microduck-governance-resolvers.js';
 export * from './adapters/microduck-local-owner.js';
 export * from './adapters/microduck-owner-adapter.js';

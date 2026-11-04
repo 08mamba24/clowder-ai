@@ -19,7 +19,7 @@ import type {
   MicroduckBlocked,
   MicroduckRollbackReceipt,
   MicroduckWritebackReceipt,
-} from './microduck-owner-contract.js';
+} from '../microduck-owner-contract.js';
 
 export type { MicroduckControlSlotVersionV1 } from './microduck-control-slot-state.js';
 

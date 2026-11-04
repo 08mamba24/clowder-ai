@@ -20,7 +20,7 @@ import {
   MICRODUCK_OWNER_FEATURE_ID,
   type MicroduckBlocked,
   type MicroduckVerification,
-} from './microduck-owner-contract.js';
+} from '../microduck-owner-contract.js';
 
 const EXPECTED_ROLES = ['deployed_reference', 'matched_control', 'candidate', 'candidate', 'candidate'] as const;
 const EXPECTED_SCALES = [1, 1, 0.9, 1.05, 1.1] as const;

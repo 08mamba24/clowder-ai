@@ -12,8 +12,8 @@ import type {
   MicroduckOwnerPort,
   MicroduckProgramScope,
   MicroduckVerification,
-} from './microduck-owner-contract.js';
-import { microduckFreshOutcomeSchema, microduckRestoreOutcomeSchema } from './microduck-owner-schemas.js';
+} from '../microduck-owner-contract.js';
+import { microduckFreshOutcomeSchema, microduckRestoreOutcomeSchema } from '../microduck-owner-schemas.js';
 import {
   blocked,
   exactRef,
@@ -26,7 +26,7 @@ import {
   parsedOwnerResponse,
   sameRef,
   verificationGate,
-} from './microduck-owner-validation.js';
+} from '../microduck-owner-validation.js';
 
 type VerificationInput = Parameters<MicroduckOwnerPort['resolveVerification']>[0];
 

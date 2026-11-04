@@ -5,8 +5,8 @@ import type {
   MicroduckFreshOutcome,
   MicroduckRestoreOutcome,
   MicroduckRollbackReceipt,
-} from './microduck-owner-contract.js';
-import { blocked, isMicroduckHashRef, ownerRef } from './microduck-owner-validation.js';
+} from '../microduck-owner-contract.js';
+import { blocked, isMicroduckHashRef, ownerRef } from '../microduck-owner-validation.js';
 
 export type MicroduckRestoreAttemptDiagnosis =
   | {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 
-import { diagnoseMicroduckRestoreAttempt } from '../dist/infrastructure/capability-evolution/adapters/microduck-control-owner-port.js';
+import { diagnoseMicroduckRestoreAttempt } from '../dist/infrastructure/capability-evolution/adapters/microduck-control/microduck-control-owner-port.js';
 import {
   controlOwnerFixture,
   controlWritebackInput,

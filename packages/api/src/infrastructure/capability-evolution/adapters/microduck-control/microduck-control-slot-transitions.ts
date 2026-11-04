@@ -15,8 +15,8 @@ import type {
   MicroduckBlocked,
   MicroduckRollbackReceipt,
   MicroduckWritebackReceipt,
-} from './microduck-owner-contract.js';
-import { exactRef } from './microduck-owner-validation.js';
+} from '../microduck-owner-contract.js';
+import { exactRef } from '../microduck-owner-validation.js';
 
 type TransitionResult<T> =
   | { readonly status: 'committed'; readonly snapshot: ControlSlotSnapshotV1; readonly receipt: T }
