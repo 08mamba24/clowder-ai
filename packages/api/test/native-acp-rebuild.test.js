@@ -101,19 +101,56 @@ test('provider without resume capability rebuilds an explicit replacement instea
   });
 });
 
-test('rebuilt turn without a replay prefix still migrates explicitly and keeps the turn prompt intact', async () => {
+test('rebuilt turn without a replay prefix fails closed instead of running an amnesiac model call', async () => {
   const { calls, sealed, prompted, service } = fixture({ resumeSupport: 'none' });
   const messages = [];
   for await (const message of service.invoke('continue', { sessionId: 'prior-turn-session' })) messages.push(message);
+  // No load, no fresh session, no prompt: a missing replay prefix means broken
+  // route wiring — the model must never run on a silently amnesiac session.
   assert.ok(!calls.includes('load'));
-  assert.deepEqual(sealed, ['prior-turn-session']);
-  assert.equal(prompted.length, 1);
-  assert.equal(prompted[0].includes('受控历史重放'), false);
-  assert.ok(prompted[0].includes('continue'));
+  assert.ok(!calls.includes('prompt'));
+  assert.deepEqual(sealed, []);
+  assert.equal(prompted.length, 0);
+  const error = messages.find((message) => message.type === 'error');
+  assert.ok(error, 'expected a fail-closed error when the replay prefix is missing');
+  assert.equal(error.error.includes('受控历史重放缺失'), true);
+});
+
+test('two consecutive turns keep continuity across a cold-started replacement process', async () => {
+  const { calls, sealed, prompted, service } = fixture({ resumeSupport: 'none' });
+  // Turn 1: fresh start, no prior session — produces session 'fresh'.
+  const first = [];
+  for await (const message of service.invoke('第一轮的问题', {})) first.push(message);
+  assert.ok(calls.includes('new'));
+  assert.ok(calls.includes('prompt'));
+  assert.ok(prompted[0].includes('第一轮的问题'));
   assert.equal(
-    messages.some((message) => message.type === 'error'),
+    first.some((message) => message.type === 'error'),
     false,
   );
+
+  // Turn 2: same logical session requested, but a brand-new process (liveSessions
+  // miss is modeled by the resumeSupport='none' client) must rebuild with the
+  // first turn's Q/A replayed from the route-assembled prefix.
+  const second = [];
+  for await (const message of service.invoke('第二轮的问题', {
+    sessionId: 'fresh',
+    rebuildContextPrompt: '[受控历史重放]\nuser: 第一轮的问题\nassistant: 第一轮的回答',
+  }))
+    second.push(message);
+  assert.ok(!calls.includes('load'), 'must not attempt loadSession on a resume-incapable provider');
+  assert.deepEqual(sealed, ['fresh'], 'the unrecoverable session id is sealed exactly once');
+  const secondPrompt = prompted.at(-1);
+  assert.ok(secondPrompt.includes('第一轮的问题'), 'second turn sees the first turn question');
+  assert.ok(secondPrompt.includes('第一轮的回答'), 'second turn sees the first turn answer');
+  assert.ok(secondPrompt.includes('第二轮的问题'), 'second turn keeps its own input');
+  assert.equal(
+    second.some((message) => message.type === 'error'),
+    false,
+  );
+  const audited = second.find((message) => message.metadata?.sessionRebuild);
+  assert.ok(audited, 'rebuild audit metadata present on the second turn');
+  assert.equal(audited.metadata.sessionRebuild.fromSessionId, 'fresh');
 });
 
 test('provider with loadSession capability keeps the resume path untouched', async () => {

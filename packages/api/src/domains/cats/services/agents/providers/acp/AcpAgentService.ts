@@ -724,7 +724,10 @@ export class AcpAgentService implements AgentService {
       // new turn cold-starts a process whose liveSessions cache cannot hold the
       // previous turn. loadSession would fail-closed before the model call, so
       // pick the explicit, audited rebuild path instead: seal the unrecoverable
-      // id, create a fresh replacement, and restore identity/context once.
+      // id, create a fresh replacement, and restore identity/context once. The
+      // rebuild is only allowed to reach the model when the controlled history
+      // replay is actually available — a missing prefix means the route wiring
+      // is broken, and an amnesiac replacement turn must fail closed, not run.
       if (
         resumeSessionId &&
         !agy &&
@@ -732,6 +735,11 @@ export class AcpAgentService implements AgentService {
         typeof client.sessionResumeSupport === 'function' &&
         client.sessionResumeSupport() === 'none'
       ) {
+        if (!options?.rebuildContextPrompt) {
+          throw new AcpSessionBindingError(
+            'ACP 工具无会话恢复能力且受控历史重放缺失；已保留原历史并阻断新建会话。',
+          );
+        }
         this.pool.sealSession?.(this.poolKey, resumeSessionId);
         resumeDisposition = 'rebuilt_fresh';
         metadata.sessionRebuild = { fromSessionId: resumeSessionId, reason: 'provider_without_resume_capability' };
