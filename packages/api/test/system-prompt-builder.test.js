@@ -15,7 +15,10 @@ import { catRegistry } from '@cat-cafe/shared';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPO_ROOT_TEMPLATE = resolve(REPO_ROOT, 'cat-template.json');
 const CAT_TEMPLATE_PATH = REPO_ROOT_TEMPLATE;
-const FULL_RUNTIME_PROMPT_CHAR_BUDGET = 7300; // 6500→6700→7050→7200→7300: gemini35 + gpt-pro + zcode/dsh + qoder roster growth
+// Upstream #1754 adds 135 chars to the compiled Meta Method (2367 → 2502).
+// Carry that reviewed content delta into the fixed budget without adding headroom:
+// the full SOP fixture grows from 7249 to 7384 chars; the voice fixture from 7246 to 7381.
+const FULL_RUNTIME_PROMPT_CHAR_BUDGET = 7435;
 
 function assertWithinFullRuntimePromptBudget(prompt) {
   assert.ok(
@@ -840,7 +843,7 @@ describe('SystemPromptBuilder', () => {
     }
   });
 
-  test('buildStaticIdentity roster size with full runtime config stays under 4700 chars after Magic Words growth', async () => {
+  test('buildSystemPrompt with full runtime config stays within the full runtime prompt budget', async () => {
     await withFreshRuntimeRegistry(async () => {
       const { buildSystemPrompt } = await import('../dist/domains/cats/services/context/SystemPromptBuilder.js');
       const prompt = buildSystemPrompt({
@@ -1909,7 +1912,7 @@ describe('SystemPromptBuilder', () => {
     assert.ok(ctx.includes('F080'), 'Should contain feature ID');
   });
 
-  test('buildSystemPrompt size stays under 3900 chars with SOP hint after Magic Words + runtime prompt growth', async () => {
+  test('buildSystemPrompt with SOP hint stays within the full runtime prompt budget', async () => {
     const build = await getBuilder();
     const prompt = build({
       catId: 'opus',
@@ -1926,11 +1929,7 @@ describe('SystemPromptBuilder', () => {
         featureId: 'F073',
       },
     });
-    // 6200→6500→6700→6800→7050→7200: decision funnel §17 + roster growth + F208 dossier l0RosterSummary
-    assert.ok(
-      prompt.length < FULL_RUNTIME_PROMPT_CHAR_BUDGET,
-      `Prompt with SOP hint is ${prompt.length} chars, expected < ${FULL_RUNTIME_PROMPT_CHAR_BUDGET}`,
-    );
+    assertWithinFullRuntimePromptBudget(prompt);
   });
 
   // --- F092: Voice Mode prompt injection ---
@@ -1959,7 +1958,7 @@ describe('SystemPromptBuilder', () => {
     assert.ok(!ctx.includes('Voice Mode ON'), 'Should not include voice mode header');
   });
 
-  test('buildSystemPrompt size stays under 5200 chars with voice mode + SOP hint after Magic Words growth', async () => {
+  test('buildSystemPrompt with voice mode and SOP hint stays within the full runtime prompt budget', async () => {
     const build = await getBuilder();
     const prompt = build({
       catId: 'opus',
@@ -1977,11 +1976,7 @@ describe('SystemPromptBuilder', () => {
       },
       voiceMode: true,
     });
-    // 6200→6500→6700→6800→7050→7200: decision funnel §17 + roster growth + F208 dossier l0RosterSummary
-    assert.ok(
-      prompt.length < FULL_RUNTIME_PROMPT_CHAR_BUDGET,
-      `Prompt with voice mode + SOP hint is ${prompt.length} chars, expected < ${FULL_RUNTIME_PROMPT_CHAR_BUDGET}`,
-    );
+    assertWithinFullRuntimePromptBudget(prompt);
   });
 
   test('buildInvocationContext injects bootcamp mode when bootcampState provided', async () => {
