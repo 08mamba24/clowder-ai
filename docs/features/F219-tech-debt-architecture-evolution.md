@@ -5,6 +5,7 @@ topics: [tech-debt, architecture, refactor, routing, dispatch, vision]
 doc_kind: spec
 created: 2026-06-02
 tips_exempt: status-only correction (spec to in-progress for lint dogfood); F219 core work not yet implemented, no user-facing capability
+user_journey_exempt: internal tech-debt inventory and architecture evolution; refactor planning has no user-perceivable surface (directory splits and engine decoupling preserve behavior)
 ---
 
 # F219: 核心引擎技术债盘点 + 架构演进

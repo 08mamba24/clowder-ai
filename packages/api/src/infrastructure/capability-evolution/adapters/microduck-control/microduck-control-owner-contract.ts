@@ -3,6 +3,11 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import type { ExactAssetVersionRefV1, OwnerTruthRefV1 } from '@cat-cafe/shared';
 import {
+  MICRODUCK_OWNER_FEATURE_ID,
+  type MicroduckBlocked,
+  type MicroduckVerification,
+} from '../microduck-owner-contract.js';
+import {
   isMeasuredControlEvaluation,
   selectedControlSubjectPassesHoldout,
   selectedPublicControlSubject,
@@ -16,11 +21,6 @@ import {
   microduckControlExperimentSchema,
 } from './microduck-control-evaluation-schemas.js';
 import type { MicroduckControlSlotVersionV1 } from './microduck-control-slot-state.js';
-import {
-  MICRODUCK_OWNER_FEATURE_ID,
-  type MicroduckBlocked,
-  type MicroduckVerification,
-} from '../microduck-owner-contract.js';
 
 const EXPECTED_ROLES = ['deployed_reference', 'matched_control', 'candidate', 'candidate', 'candidate'] as const;
 const EXPECTED_SCALES = [1, 1, 0.9, 1.05, 1.1] as const;

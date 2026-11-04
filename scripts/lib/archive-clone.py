@@ -43,7 +43,9 @@ def checked(result):
 
 
 def metadata(path):
-    st = path.stat(follow_symlinks=False)
+    # os.lstat == Path.stat(follow_symlinks=False) and works on Python 3.9
+    # hosts where Path.stat has no follow_symlinks parameter yet.
+    st = os.lstat(path)
     encoded = os.fsencode(path)
     size = checked(LIBC.listxattr(encoded, None, 0, 0))
     names = ctypes.create_string_buffer(size)

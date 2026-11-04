@@ -1,5 +1,4 @@
 import type { ExactAssetVersionRefV1, OwnerTruthRefV1 } from '@cat-cafe/shared';
-import type { MicroduckControlSlotVersionV1 } from './microduck-control-slot-owner.js';
 import type {
   MicroduckBlocked,
   MicroduckFreshOutcome,
@@ -7,6 +6,7 @@ import type {
   MicroduckRollbackReceipt,
 } from '../microduck-owner-contract.js';
 import { blocked, isMicroduckHashRef, ownerRef } from '../microduck-owner-validation.js';
+import type { MicroduckControlSlotVersionV1 } from './microduck-control-slot-owner.js';
 
 export type MicroduckRestoreAttemptDiagnosis =
   | {

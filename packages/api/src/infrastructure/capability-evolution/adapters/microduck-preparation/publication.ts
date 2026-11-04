@@ -10,7 +10,10 @@ import {
 } from '@cat-cafe/shared';
 import { getCoCreatorDisplay } from '../../../../config/co-creator-display.js';
 import { ARCHIVE_SOURCE_REPOSITORY_URL } from '../archive-source-repository.js';
-import { isMeasuredControlEvaluation, selectedPublicControlSubject } from '../microduck-control/microduck-control-candidate-selection.js';
+import {
+  isMeasuredControlEvaluation,
+  selectedPublicControlSubject,
+} from '../microduck-control/microduck-control-candidate-selection.js';
 import {
   MICRODUCK_CONTROL_CANDIDATE_ORDER,
   type MicroduckControlEvaluationReceipt,

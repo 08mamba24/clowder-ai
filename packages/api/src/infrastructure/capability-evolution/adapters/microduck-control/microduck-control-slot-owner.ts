@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { type ExactAssetVersionRefV1, type OwnerTruthRefV1, refIdentity } from '@cat-cafe/shared';
+import type {
+  MicroduckBlocked,
+  MicroduckRollbackReceipt,
+  MicroduckWritebackReceipt,
+} from '../microduck-owner-contract.js';
 import {
   type ControlSlotSnapshotV1,
   exactSame,
@@ -15,11 +20,6 @@ import {
   validClientMessageId,
 } from './microduck-control-slot-state.js';
 import { transitionControlSlotRollback, transitionControlSlotWriteback } from './microduck-control-slot-transitions.js';
-import type {
-  MicroduckBlocked,
-  MicroduckRollbackReceipt,
-  MicroduckWritebackReceipt,
-} from '../microduck-owner-contract.js';
 
 export type { MicroduckControlSlotVersionV1 } from './microduck-control-slot-state.js';
 

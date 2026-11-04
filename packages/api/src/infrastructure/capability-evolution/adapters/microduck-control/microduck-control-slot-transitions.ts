@@ -1,4 +1,10 @@
 import { type ExactAssetVersionRefV1, type OwnerTruthRefV1, refIdentity } from '@cat-cafe/shared';
+import type {
+  MicroduckBlocked,
+  MicroduckRollbackReceipt,
+  MicroduckWritebackReceipt,
+} from '../microduck-owner-contract.js';
+import { exactRef } from '../microduck-owner-validation.js';
 import {
   type ControlSlotSnapshotV1,
   canonicalJson,
@@ -11,12 +17,6 @@ import {
   storeVersion,
   targetRef,
 } from './microduck-control-slot-state.js';
-import type {
-  MicroduckBlocked,
-  MicroduckRollbackReceipt,
-  MicroduckWritebackReceipt,
-} from '../microduck-owner-contract.js';
-import { exactRef } from '../microduck-owner-validation.js';
 
 type TransitionResult<T> =
   | { readonly status: 'committed'; readonly snapshot: ControlSlotSnapshotV1; readonly receipt: T }

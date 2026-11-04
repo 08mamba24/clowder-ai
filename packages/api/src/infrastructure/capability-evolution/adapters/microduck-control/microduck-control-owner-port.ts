@@ -1,12 +1,4 @@
 import type { ExactAssetVersionRefV1, OwnerTruthRefV1 } from '@cat-cafe/shared';
-import {
-  collectMicroduckLoadedOutcome,
-  type MicroduckControlLoadedOutcomeRunner,
-  microduckRestoreBlocked,
-} from './microduck-control-loaded-outcome.js';
-import type { ResolvedMicroduckControlCandidateContract } from './microduck-control-owner-contract.js';
-import type { MicroduckControlSlotOwner, MicroduckControlSlotVersionV1 } from './microduck-control-slot-owner.js';
-import { exactSame, normalizeVersion } from './microduck-control-slot-state.js';
 import type {
   MicroduckBlocked,
   MicroduckOwnerPort,
@@ -27,6 +19,14 @@ import {
   sameRef,
   verificationGate,
 } from '../microduck-owner-validation.js';
+import {
+  collectMicroduckLoadedOutcome,
+  type MicroduckControlLoadedOutcomeRunner,
+  microduckRestoreBlocked,
+} from './microduck-control-loaded-outcome.js';
+import type { ResolvedMicroduckControlCandidateContract } from './microduck-control-owner-contract.js';
+import type { MicroduckControlSlotOwner, MicroduckControlSlotVersionV1 } from './microduck-control-slot-owner.js';
+import { exactSame, normalizeVersion } from './microduck-control-slot-state.js';
 
 type VerificationInput = Parameters<MicroduckOwnerPort['resolveVerification']>[0];
 
