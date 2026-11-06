@@ -199,7 +199,11 @@ test('verified composer rejections remain unsent through the owner-facing receip
   const { dispatch } = bridgeFor(h);
   const cases = [
     { errorCode: 'COMPOSER_NOT_EMPTY', expectedMessage: /草稿/ },
-    { errorCode: 'COMPOSER_NOT_FOUND', expectedMessage: /输入框/ },
+    {
+      errorCode: 'COMPOSER_NOT_FOUND',
+      expectedMessage:
+        '未发送给 @gpt-pro：未找到绑定会话的 ChatGPT 输入框，尚未点击发送。请检查原会话页面与扩展状态后，重新 @gpt-pro 发一条新消息。',
+    },
     { errorCode: 'COMPOSER_DOM_UNSUPPORTED', phase: 'empty_check', expectedMessage: /输入框/ },
     { errorCode: 'COMPOSER_DOM_UNSUPPORTED', phase: 'before_submit', expectedMessage: /输入框/ },
   ];
@@ -228,7 +232,8 @@ test('verified composer rejections remain unsent through the owner-facing receip
     assert.equal(status.outboundReceipt.status, 'failed', errorCode);
     assert.equal(outcome.errorCode, errorCode);
     assert.match(status.message, /^未发送给 @gpt-pro/);
-    assert.match(status.message, expectedMessage);
+    if (typeof expectedMessage === 'string') assert.equal(status.message, expectedMessage);
+    else assert.match(status.message, expectedMessage);
     assert.equal(status.outboundReceipt.idempotency.disposition, 'fresh');
     assert.equal(h.calls(METHODS.append).length, index + 1, 'reporting a rejection must not retry the message');
   }
@@ -274,6 +279,37 @@ test('post-submit observation failures and unproven effects stay unknown', async
     assert.match(status.message, /结果未知/);
     assert.equal(h.calls(METHODS.append).length, index + 1, 'an unknown effect must not trigger another append');
   }
+});
+
+test('a mismatched diagnostic code cannot prove a pre-submit composer rejection', async () => {
+  const h = await enabledHost();
+  const { dispatch } = bridgeFor(h);
+  h.script[METHODS.append] = {
+    status: 'failed',
+    errorCode: 'COMPOSER_DOM_UNSUPPORTED',
+    diagnostic: {
+      ...validDiagnostic,
+      errorCode: 'COMPOSER_NOT_FOUND',
+      fingerprint: { ...validDiagnostic.fingerprint, phase: 'empty_check' },
+    },
+  };
+  const sourceMessageId = 'source-mismatched-diagnostic';
+  const outcome = await dispatch(sourceMessageId);
+  assert.equal(outcome.errorCode, 'COMPOSER_DOM_UNSUPPORTED');
+  assert.equal(outcome.failureDiagnostic.errorCode, 'COMPOSER_NOT_FOUND');
+  const status = JSON.parse(
+    buildCloudBridgeStatusContent({
+      catId: 'gpt-pro',
+      outcome,
+      audit: {
+        sourceMessageId,
+        sourceSender: { kind: 'user', id: 'user-1' },
+        dispatchInvocationId: 'inv-mismatched-diagnostic',
+      },
+    }),
+  );
+  assert.equal(status.outboundReceipt.status, 'unknown');
+  assert.match(status.message, /结果未知/);
 });
 
 test('an untyped adapter error cannot prove a composer rejection', async () => {
