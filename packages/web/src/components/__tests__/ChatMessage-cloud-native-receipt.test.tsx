@@ -1,3 +1,4 @@
+import { isCloudBridgeOutboundReceiptV1 } from '@cat-cafe/shared';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -150,6 +151,33 @@ describe('V2 cloud replies use the existing native receipt', () => {
     expect(container.textContent).toContain('已完成，没有返回可显示内容');
     expect(container.textContent).toContain('云端猫投递');
     expect(container.textContent).toContain('已收到 Pro 回复');
+  });
+
+  it.each([
+    'classic',
+    'v2',
+  ] as const)('shows a verified Host rejection as unsent with no reply link in %s', async (shell) => {
+    const messages = cloudReceiptTurn().filter((message) => message.id !== 'reply81');
+    const notice = '未发送给 @gpt-pro：绑定的 ChatGPT 会话输入框里有草稿，已保留原文。';
+    for (const message of messages) {
+      const payload = message.extra?.systemInfo?.payload;
+      const receipt =
+        message.source?.meta?.cloudBridgeOutboundReceipt ??
+        (payload?.type === 'cloud_bridge_status' ? payload.outboundReceipt : undefined);
+      if (!isCloudBridgeOutboundReceiptV1(receipt)) continue;
+      Object.assign(receipt, { status: 'failed' });
+      message.content = notice;
+      if (payload?.type === 'cloud_bridge_status') payload.message = notice;
+    }
+    const before = JSON.stringify(messages);
+    await render(messages, shell);
+    const native = container.querySelector('[data-dispatch-target="gpt-pro"]');
+    expect(native?.textContent).toContain('尚未发送');
+    expect(native?.textContent).not.toContain('收到');
+    expect(native?.querySelector('button')).toBeNull();
+    expect(container.textContent).toContain(notice);
+    expect(JSON.stringify(messages)).toBe(before);
+    expect(vi.mocked(apiFetch).mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
   });
 
   it('uses the same native receipt for dot after its existing event reader confirms the exact reply', async () => {

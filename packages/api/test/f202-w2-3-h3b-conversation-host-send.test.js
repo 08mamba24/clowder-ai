@@ -10,7 +10,9 @@
  */
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
+import { buildCloudBridgeStatusContent } from '../dist/domains/cats/services/cloud-bridge/cloud-bridge-fallback.js';
 import { CloudInvokeBridge } from '../dist/domains/cats/services/cloud-bridge/cloud-invoke-bridge.js';
+import { dispatchBoundConversationThroughHost } from '../dist/domains/cats/services/cloud-bridge/conversation-host-dispatch.js';
 import { PluginConversationHostAdapter } from '../dist/domains/cats/services/cloud-bridge/plugin-conversation-host/plugin-conversation-host-adapter.js';
 import { ExternalPluginRuntimeError } from '../dist/domains/plugin/external-runtime/types.js';
 import { cleanup, conversationHostHarness, METHODS, validDiagnostic } from './f202-w2-3-h3b.fixture.js';
@@ -190,4 +192,149 @@ test('through the bridge the frozen mapping (d) holds', async () => {
   const before = h.calls(METHODS.append).length;
   assert.equal((await outcomeFor({ status: 'appended', providerMessageId: 'never' })).reason, 'no-adapter');
   assert.equal(h.calls(METHODS.append).length, before, 'a disabled package is never called');
+});
+
+test('verified composer rejections remain unsent through the owner-facing receipt', async () => {
+  const h = await enabledHost();
+  const { dispatch } = bridgeFor(h);
+  const cases = [
+    { errorCode: 'COMPOSER_NOT_EMPTY', expectedMessage: /草稿/ },
+    {
+      errorCode: 'COMPOSER_NOT_FOUND',
+      expectedMessage:
+        '未发送给 @gpt-pro：未找到绑定会话的 ChatGPT 输入框，尚未点击发送。请检查原会话页面与扩展状态后，重新 @gpt-pro 发一条新消息。',
+    },
+    { errorCode: 'COMPOSER_DOM_UNSUPPORTED', phase: 'empty_check', expectedMessage: /输入框/ },
+    { errorCode: 'COMPOSER_DOM_UNSUPPORTED', phase: 'before_submit', expectedMessage: /输入框/ },
+  ];
+  for (const [index, { errorCode, phase, expectedMessage }] of cases.entries()) {
+    const sourceMessageId = `source-composer-${index}`;
+    h.script[METHODS.append] = {
+      status: 'failed',
+      errorCode,
+      idempotentReplay: false,
+      ...(phase
+        ? { diagnostic: { ...validDiagnostic, errorCode, fingerprint: { ...validDiagnostic.fingerprint, phase } } }
+        : {}),
+    };
+    const outcome = await dispatch(sourceMessageId);
+    const status = JSON.parse(
+      buildCloudBridgeStatusContent({
+        catId: 'gpt-pro',
+        outcome,
+        audit: {
+          sourceMessageId,
+          sourceSender: { kind: 'user', id: 'user-1' },
+          dispatchInvocationId: `inv-composer-${index}`,
+        },
+      }),
+    );
+    assert.equal(status.outboundReceipt.status, 'failed', errorCode);
+    assert.equal(outcome.errorCode, errorCode);
+    assert.match(status.message, /^未发送给 @gpt-pro/);
+    if (typeof expectedMessage === 'string') assert.equal(status.message, expectedMessage);
+    else assert.match(status.message, expectedMessage);
+    assert.equal(status.outboundReceipt.idempotency.disposition, 'fresh');
+    assert.equal(h.calls(METHODS.append).length, index + 1, 'reporting a rejection must not retry the message');
+  }
+});
+
+test('post-submit observation failures and unproven effects stay unknown', async () => {
+  const h = await enabledHost();
+  const { dispatch } = bridgeFor(h);
+  const cases = [
+    { status: 'failed', errorCode: 'HOST_MESSAGE_NOT_OBSERVED' },
+    { status: 'failed', errorCode: 'HOST_MESSAGE_ID_UNAVAILABLE' },
+    { status: 'failed', errorCode: 'AMBIGUOUS_EFFECT' },
+    { status: 'failed', errorCode: 'COMPOSER_DOM_UNSUPPORTED' },
+    {
+      status: 'failed',
+      errorCode: 'COMPOSER_DOM_UNSUPPORTED',
+      diagnostic: {
+        ...validDiagnostic,
+        errorCode: 'COMPOSER_DOM_UNSUPPORTED',
+        fingerprint: { ...validDiagnostic.fingerprint, phase: 'inserted' },
+      },
+    },
+    () => {
+      throw Object.assign(new Error('unverified rejection'), { code: 'COMPOSER_NOT_EMPTY' });
+    },
+  ];
+  for (const [index, answer] of cases.entries()) {
+    const sourceMessageId = `source-unknown-${index}`;
+    h.script[METHODS.append] = answer;
+    const outcome = await dispatch(sourceMessageId);
+    const status = JSON.parse(
+      buildCloudBridgeStatusContent({
+        catId: 'gpt-pro',
+        outcome,
+        audit: {
+          sourceMessageId,
+          sourceSender: { kind: 'user', id: 'user-1' },
+          dispatchInvocationId: `inv-unknown-${index}`,
+        },
+      }),
+    );
+    assert.equal(status.outboundReceipt.status, 'unknown');
+    assert.match(status.message, /结果未知/);
+    assert.equal(h.calls(METHODS.append).length, index + 1, 'an unknown effect must not trigger another append');
+  }
+});
+
+test('a mismatched diagnostic code cannot prove a pre-submit composer rejection', async () => {
+  const h = await enabledHost();
+  const { dispatch } = bridgeFor(h);
+  h.script[METHODS.append] = {
+    status: 'failed',
+    errorCode: 'COMPOSER_DOM_UNSUPPORTED',
+    diagnostic: {
+      ...validDiagnostic,
+      errorCode: 'COMPOSER_NOT_FOUND',
+      fingerprint: { ...validDiagnostic.fingerprint, phase: 'empty_check' },
+    },
+  };
+  const sourceMessageId = 'source-mismatched-diagnostic';
+  const outcome = await dispatch(sourceMessageId);
+  assert.equal(outcome.errorCode, 'COMPOSER_DOM_UNSUPPORTED');
+  assert.equal(outcome.failureDiagnostic.errorCode, 'COMPOSER_NOT_FOUND');
+  const status = JSON.parse(
+    buildCloudBridgeStatusContent({
+      catId: 'gpt-pro',
+      outcome,
+      audit: {
+        sourceMessageId,
+        sourceSender: { kind: 'user', id: 'user-1' },
+        dispatchInvocationId: 'inv-mismatched-diagnostic',
+      },
+    }),
+  );
+  assert.equal(status.outboundReceipt.status, 'unknown');
+  assert.match(status.message, /结果未知/);
+});
+
+test('an untyped adapter error cannot prove a composer rejection', async () => {
+  const { outcome } = await dispatchBoundConversationThroughHost({
+    adapter: {
+      async append_message() {
+        throw Object.assign(new Error('unverified rejection'), { code: 'COMPOSER_NOT_EMPTY' });
+      },
+    },
+    boundUrl: 'https://chatgpt.com/c/conversation-1',
+    renderedPrompt: 'hello',
+    params: { sourceMessageId: 'source-untyped' },
+  });
+  const status = JSON.parse(
+    buildCloudBridgeStatusContent({
+      catId: 'gpt-pro',
+      outcome,
+      audit: {
+        sourceMessageId: 'source-untyped',
+        sourceSender: { kind: 'user', id: 'user-1' },
+        dispatchInvocationId: 'inv-untyped',
+      },
+    }),
+  );
+  assert.equal(outcome.errorCode, undefined);
+  assert.equal(status.outboundReceipt.status, 'unknown');
+  assert.match(status.message, /结果未知/);
 });

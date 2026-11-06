@@ -53,7 +53,8 @@ export function MessageDispatchRecipient({
 }: RecipientProps) {
   const navigateToMessage = useMessageNavigation();
   const shell = useShellPresentation();
-  const cloud = shell === 'v2' ? cloudDispatchReceipt(message, projection.targetId, timelineMessages) : undefined;
+  const attempt = cloudDispatchReceipt(message, projection.targetId, timelineMessages);
+  const cloud = shell === 'v2' ? attempt : undefined;
   const logical = useCloudReply(cloud?.identity, threadId, timelineMessages, { readDotEvent: shell === 'v2' });
   const label = getCatLabel(projection.targetId);
   const ref = message.lifecycle?.dispatchRefs?.find((candidate) => candidate.targetId === projection.targetId);
@@ -86,17 +87,14 @@ export function MessageDispatchRecipient({
   const title = [dispatchReceiptLabel(receipt, label, 'recipient'), audit].filter(Boolean).join('\n');
   const awaitingCloudReply =
     cloud && linkedMessage && !hasAssistantBody(linkedMessage) && response?.status === 'completed';
+  const notSent = attempt?.receipt?.status === 'failed';
   const replyMessageId =
     logical.state !== 'unverified'
       ? logical.replyMessageId
-      : awaitingCloudReply
+      : awaitingCloudReply || notSent
         ? undefined
         : projection.statusMessageId;
   const failedDelivery = linked?.kind === 'delivery_failure';
-  const notSent =
-    cloud?.receipt?.status === 'failed' &&
-    cloud.receipt.transport === 'none' &&
-    cloud.receipt.idempotency.disposition === 'not_attempted';
   const outcome = response && response.status !== 'processing' ? responseOutcome[response.status] : undefined;
   const progress =
     logical.state === 'replied'
