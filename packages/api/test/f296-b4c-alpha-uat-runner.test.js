@@ -164,6 +164,7 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
     const sessionCookie = `cat_cafe_session=${'1'.repeat(64)}`;
     const traceReads = new Map();
     let invocationNumber = 0;
+    const deliveredMessages = [];
     let metricsValue = 0;
     let dynamicCanaryRequests = 0;
     t.after(() => {
@@ -191,7 +192,7 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
         ]),
       ].join('\n');
     };
-    globalThis.fetch = async (input) => {
+    globalThis.fetch = async (input, init) => {
       const url = new URL(input);
       if (url.pathname === '/api/session') {
         return Response.json(
@@ -218,8 +219,24 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
         });
       }
       if (url.pathname === '/api/messages') {
+        // Unified delivery lifecycle (#1398): POST answers 202 queued with the
+        // stored user message id; the invocation id is recovered by polling the
+        // thread's response-message lifecycle keyed on inputMessageIds.
+        if ((init?.method ?? 'GET').toUpperCase() === 'GET') {
+          return Response.json({
+            messages: deliveredMessages.map(({ userMessageId, invocationId }) => ({
+              id: `response-${invocationId}`,
+              lifecycle: { kind: 'response', invocationId, inputMessageIds: [userMessageId], status: 'completed' },
+            })),
+          });
+        }
         invocationNumber += 1;
-        return Response.json({ status: 'processing', invocationId: `parent-${invocationNumber}` });
+        const userMessageId = `user-${invocationNumber}`;
+        deliveredMessages.push({ userMessageId, invocationId: `parent-${invocationNumber}` });
+        return Response.json(
+          { status: 'queued', merged: false, userMessageId },
+          { status: 202 },
+        );
       }
       if (url.pathname.endsWith('/executions')) {
         const parentNumber = url.pathname.split('/').at(-2).split('-').at(-1);
