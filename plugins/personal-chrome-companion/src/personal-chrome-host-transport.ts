@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
+import { appendRevisionError } from '../native-host/append-result.mjs';
 import { projectHealthResult } from '../native-host/health-result.mjs';
 import { parseTitleRefreshResult, type PersonalChromeTitleRefreshRequest, type PersonalChromeTitleSync } from './title-refresh-protocol.js';
 
@@ -10,7 +11,6 @@ import {
   PERSONAL_CHROME_PAGE_ADAPTER_REVISION,
   PERSONAL_CHROME_PROTOCOL_VERSION,
   type PersonalChromeAppendRequest,
-  type PersonalChromeAppendResult,
   type PersonalChromeAssistantReturn,
   type PersonalChromeAssistantReturnRequest,
   type PersonalChromeAssistantReturnResult,
@@ -109,18 +109,6 @@ function validateOptions(options: PersonalChromeHostAdapterOptions): void {
   if (options.timeoutMs !== undefined && (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 10)) {
     throw new PersonalChromeHostError('INVALID_CONFIGURATION', 'timeoutMs must be an integer of at least 10');
   }
-}
-
-function revisionsMatch(
-  expected: PersonalChromeAppendRequest['expectedRevisions'],
-  observed: PersonalChromeAppendResult['observedRevisions'],
-): boolean {
-  return (
-    observed !== undefined &&
-    observed.helper === expected.helper &&
-    observed.extension === expected.extension &&
-    observed.pageAdapter === expected.pageAdapter
-  );
 }
 
 function exchangeLocalFrame<
@@ -305,23 +293,20 @@ export class PersonalChromeHostAdapter implements IPersonalChromeAssistantReturn
       // is unknown (ledger h3 (e)).
       throw new PersonalChromeHostError('AMBIGUOUS_EFFECT', 'host receipt does not match the append request');
     }
+    const revisionError = appendRevisionError(request.expectedRevisions, result);
     if (result.status === 'failed') {
-      const staleRevision =
-        result.errorCode.startsWith('STALE_') ||
-        (result.observedRevisions !== undefined &&
-          !revisionsMatch(request.expectedRevisions, result.observedRevisions));
       await this.options.onRevisionContact?.(result.observedRevisions,
-        staleRevision && !result.errorCode.startsWith('STALE_') ? 'STALE_ADAPTER' : result.errorCode, conversationId);
+        revisionError ?? result.errorCode, conversationId);
       throw new PersonalChromeHostError(
-        staleRevision ? 'STALE_ADAPTER' : result.errorCode,
-        staleRevision
+        revisionError ?? result.errorCode,
+        revisionError
           ? 'personal Chrome adapter revision does not match runtime'
           : `personal Chrome host failed: ${result.errorCode}`,
         result.idempotentReplay,
         result.diagnostic,
       );
     }
-    if (!revisionsMatch(request.expectedRevisions, result.observedRevisions)) {
+    if (revisionError) {
       await this.options.onRevisionContact?.(result.observedRevisions, 'STALE_ADAPTER', conversationId);
       throw new PersonalChromeHostError('STALE_ADAPTER', 'personal Chrome adapter revision does not match runtime');
     }

@@ -5,6 +5,7 @@ import { chmod, mkdir } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { appendRevisionError } from './append-result.mjs';
 import { createAssistantReturnInbox } from './assistant-return-inbox.mjs';
 import {
   authorizePersonalChromeConversation,
@@ -105,15 +106,6 @@ function secretsMatch(expected, received) {
   const expectedBuffer = Buffer.from(expected, 'utf8');
   const receivedBuffer = Buffer.from(received, 'utf8');
   return expectedBuffer.length === receivedBuffer.length && timingSafeEqual(expectedBuffer, receivedBuffer);
-}
-
-function revisionsMatch(expected, observed) {
-  return (
-    observed &&
-    observed.helper === expected.helper &&
-    observed.extension === expected.extension &&
-    observed.pageAdapter === expected.pageAdapter
-  );
 }
 
 function parsePairedAppendEnvelope(expectedPairingSecret, rawEnvelope) {
@@ -532,16 +524,19 @@ export async function createNativeHostBridge(options) {
       return;
     }
     const observedRevisions = safeRevisions(message.observedRevisions);
-    if (!revisionsMatch(pending.expectedRevisions, observedRevisions)) {
+    const revisionContact = observedRevisions ?? {
+      helper: options.helperArtifactRevision, extension: '0.0.0', pageAdapter: 'unobserved',
+    };
+    const revisionError = appendRevisionError(pending.expectedRevisions, {
+      status: message.status,
+      errorCode: safeErrorCode(message.errorCode) ? message.errorCode : undefined,
+      observedRevisions: revisionContact,
+    });
+    if (revisionError) {
       await settle(
         key,
-        failureFor(message, message.status === 'failed' && safeErrorCode(message.errorCode) &&
-          message.errorCode.startsWith('STALE_') ? message.errorCode : 'STALE_ADAPTER', {
-          observedRevisions: observedRevisions ?? {
-            helper: options.helperArtifactRevision,
-            extension: '0.0.0',
-            pageAdapter: 'unobserved',
-          },
+        failureFor(message, revisionError, {
+          observedRevisions: revisionContact,
         }),
       );
       return;

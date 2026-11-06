@@ -233,7 +233,7 @@ test('only correlated matching revision contact clears reload; stale append/prob
   assert.equal((await operations.probe()).ok, true);
   assert.equal(delivery.status().reloadRequired, false);
   const append = await operations.appendMessage({ conversationId: 'conversation-1', text: 'test', idempotencyKey: 'delivery-1' });
-  assert.equal(append.errorCode, 'STALE_ADAPTER');
+  assert.equal(append.errorCode, 'STALE_EXTENSION');
   assert.equal(delivery.status().reloadRequired, true);
   await operations.probe();
   assert.equal(delivery.status().reloadRequired, false);
