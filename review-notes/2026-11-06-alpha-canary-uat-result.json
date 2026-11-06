@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 2,
+  "revision": "ad0c52d2009b71c6bb5b8ce46c1fe28794315888",
+  "dynamicPresentation": {
+    "outcome": "failed",
+    "reason": "invocation_rejected",
+    "observation": null
+  },
+  "journeys": [
+    {
+      "journey": "cold",
+      "outcome": "failed",
+      "reason": "invocation_rejected",
+      "observation": null
+    },
+    {
+      "journey": "resumed-small",
+      "outcome": "unsupported",
+      "reason": "prerequisite_not_observed",
+      "observation": null
+    },
+    {
+      "journey": "resumed-large",
+      "outcome": "unsupported",
+      "reason": "prerequisite_not_observed",
+      "observation": null
+    },
+    {
+      "journey": "replacement",
+      "outcome": "unsupported",
+      "reason": "provider_replacement_trigger_unavailable",
+      "observation": null
+    },
+    {
+      "journey": "authoritative-compaction",
+      "outcome": "unsupported",
+      "reason": "provider_compaction_trigger_unavailable",
+      "observation": null
+    }
+  ]
+}
