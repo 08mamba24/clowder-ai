@@ -18,6 +18,9 @@ vi.mock('@/utils/api-client', () => ({
 vi.mock('../BindNewSessionSection', () => ({
   BindNewSessionSection: () => null,
 }));
+vi.mock('../CloudConversationLink', () => ({
+  CloudConversationLink: () => null,
+}));
 vi.mock('../ContextHealthBar', () => ({
   ContextHealthBar: () => null,
 }));
@@ -103,6 +106,38 @@ describe('SessionChainPanel onViewSession', () => {
       sealedBtn?.click();
     });
   }
+
+  it('keeps scoped transcript viewing available without offering home resume', async () => {
+    mocks.apiFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        sessions: [
+          {
+            ...sealedSession,
+            scopedInvocation: {
+              invocationId: 'actual-child',
+              executionScope: 'collective-participation',
+              originMessageId: 'source',
+            },
+          },
+        ],
+      }),
+    });
+    const { SessionChainPanel } = await import('../SessionChainPanel');
+    await act(async () =>
+      root.render(
+        React.createElement(SessionChainPanel, {
+          threadId: 'scoped-thread',
+          catInvocations: {},
+          onViewSession: vi.fn(),
+        }),
+      ),
+    );
+    await expandSealedSection();
+    expect(container.textContent).toContain('独立执行');
+    expect(container.querySelector('[data-testid="restore-session-sess-abc"]')).toBeNull();
+    expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent === '查看')).toBe(true);
+  });
 
   it('renders a "查看" button on sealed sessions when onViewSession is provided', async () => {
     await renderPanel();

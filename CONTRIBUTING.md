@@ -8,9 +8,20 @@
 
 > **Maintainers / Triagers**: See [MAINTAINERS.md](MAINTAINERS.md) for triage, labels, assignment, and review guidelines.
 
+## Branches and releases
+
+Open normal feature, fix, and documentation PRs against **`next`**, our integration branch.
+Start your branch from the latest upstream `next` and check the PR's base before submitting.
+Both `next` and `main` run Linux and Windows CI.
+
+**`main` remains the default, stable branch.** Maintainers promote a fixed, tested candidate from
+`next` to `main` before publishing a release. A successful `next` CI run does not itself publish a version.
+Stable users should install a published release. Urgent stable fixes may target `main` when explicitly
+designated by a maintainer; the fix must also return to `next` and survive the next integration update.
+
 ## For Beta Testers (Internal Preview)
 
-You have **Write** access to this repo, but `main` is protected — all changes go through **Pull Requests**.
+You have **Write** access to this repo, but `next` and `main` are protected — all changes go through **Pull Requests**.
 
 ### Quick Start: Submit a PR
 
@@ -19,8 +30,9 @@ You have **Write** access to this repo, but `main` is protected — all changes 
 gh repo fork zts212653/clowder-ai --clone
 cd clowder-ai
 
-# 2. Create a feature branch
-git checkout -b feat/your-feature-name
+# 2. Create a feature branch from the upstream integration branch
+git fetch https://github.com/zts212653/clowder-ai.git next
+git checkout -b feat/your-feature-name FETCH_HEAD
 
 # 3. Install, build, and verify
 pnpm install
@@ -54,8 +66,8 @@ git add -A
 git commit -m "feat(scope): description of your change"
 git push origin feat/your-feature-name
 
-# 6. Open a PR from your fork → zts212653/clowder-ai main
-gh pr create --repo zts212653/clowder-ai
+# 6. Open a PR from your fork → zts212653/clowder-ai next
+gh pr create --repo zts212653/clowder-ai --base next
 ```
 
 ### Report bugs or suggest features
@@ -231,15 +243,30 @@ Every contribution should respect these:
 - **TypeScript** with strict mode
 - **Biome** for formatting and linting (`pnpm check` / `pnpm check:fix`)
 - **pnpm** for package management
-- Files under 350 lines (warning at 200)
+- Review responsibilities and coupling at 200 lines; split at 350 by default or explain the structural reason to keep the unit together. Do not add per-file line-count unit tests.
 - No `any` types
 - Run `pnpm lint` before submitting
+
+For test changes, explain the real failure, the lowest sufficient layer, the gap in existing coverage, and added cost.
+Reuse precise existing checks; do not copy production logic into a test or treat decorative source strings as product behavior.
+Collect cleanup candidates and edit a batch before running affected checks. A full gate needs a concrete uncovered risk,
+not another small deletion; record failed attempts as well as the final successful run.
 
 ---
 
 <a id="中文"></a>
 
 > **Maintainer / Triager**：分类、标签、认领、审查指南请看 [MAINTAINERS.md](MAINTAINERS.md)。
+
+## 分支与发布
+
+普通功能、修复和文档 PR 都以 **`next`** 为目标。请从上游最新 `next` 创建工作分支，
+提交 PR 前核对 base；`next` 和 `main` 都运行 Linux、Windows CI。
+
+**`main` 继续作为默认的稳定分支。** 维护者验收一个固定候选后，将它从 `next` 晋升到 `main`，
+再发布版本；`next` 的 CI 通过本身不会发版。稳定使用请安装已发布版本。
+紧急稳定版修复经维护者明确指定可以直接面向 `main`，修复随后必须回到 `next`，
+并验证下一轮集成更新仍然保留它。
 
 ## 如何为 Clowder 贡献
 
@@ -393,6 +420,10 @@ Review PR 时的优先级：
 - **TypeScript** 严格模式
 - **Biome** 格式化和 lint（`pnpm check` / `pnpm check:fix`）
 - **pnpm** 包管理
-- 文件不超过 350 行（200 行开始警告）
+- 200 行审查职责与耦合，350 行默认拆分，保留须说明结构理由；不为单个文件另写数行 UT。
 - 禁止 `any` 类型
 - 提交前跑 `pnpm lint`
+
+测试增量说明真实失败、最低足够层级、已有覆盖缺口与新增成本。已有精准检查足够就复用，
+不复制生产逻辑来测自己，也不把装饰源码字串当产品行为。清理先收齐候选、成批修改，再集中跑受影响检查；
+全量门禁须有具体未覆盖风险，不因又删几条测试而重跑。失败尝试与最后一次成功都计入总账。

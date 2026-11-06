@@ -1,3 +1,9 @@
+import type { MemberCanonService } from '../domains/collaborative-content/asset-canon/member-service.js';
+import { registerDshSetupRoutes } from './dsh-setup-route.js';
+import { registerMemberCanonResponse } from './member-canon-response.js';
+import { dshLauncherProfileState, InvalidDshProfile } from './native-dsh-profile.js';
+import { discoverNativeRuntimesWithReadiness } from './native-runtimes.js';
+import { registerRuntimeCatalogRoute } from './runtime-catalog-route.js';
 /**
  * Cats API Routes
  * GET /api/cats - 获取所有猫猫信息
@@ -6,16 +12,31 @@
 
 import { resolve } from 'node:path';
 import {
+  BUILTIN_CLOUD_IDENTITY_LOCKED_FIELDS,
+  BUILTIN_GPT_PRO_CANONICAL_MENTION,
+  BUILTIN_GPT_PRO_IDENTITY,
+  type BuiltinCloudIdentityLockedField,
+  type BuiltinCloudIdentityProtectedField,
+  backgroundImageUrlSchema,
+  CAT_CARRIERS,
+  type CatCarrier,
   type CatConfig,
   type CatId,
   type CliConfig,
   type ClientId,
+  catClientSupportsCarrier,
+  catClientSupportsNativeTool,
   catRegistry,
+  type FreshnessCarrierCapability,
   getCliEffortOptionsForProvider,
   getDefaultCliEffortForProvider,
+  hasBuiltinGptProCanonicalMention,
+  isBuiltinGptProIdentity,
   normalizeCliEffortForProvider,
+  projectBuiltinCloudIdentityProtection,
   type RosterEntry,
   resolveCodexSpeed,
+  supportsActiveInvocationGuidance,
 } from '@cat-cafe/shared';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
@@ -27,6 +48,11 @@ import {
   validateRuntimeProviderBinding,
 } from '../config/account-resolver.js';
 import {
+  agyNativeMemberSettingsSchema,
+  publicAgyProfile,
+  resolveAgyNativeMemberPatch,
+} from '../config/agy-native-member-settings.js';
+import {
   inheritFullyBlockedMcpCapabilitiesForNewCat,
   removeDeletedCatFromBlockedMcps,
 } from '../config/capabilities/capability-orchestrator.js';
@@ -34,22 +60,39 @@ import { resolveBoundAccountRefForCat } from '../config/cat-account-binding.js';
 import { bootstrapCatCatalog } from '../config/cat-catalog-store.js';
 import {
   getAcpConfig,
+  getDefaultCatId,
   getRoster,
   loadCatConfig,
   loadResolvedCatConfig,
+  readResolvedTemplateSource,
+  resolveCatCarrier,
   toAllCatConfigs,
 } from '../config/cat-config-loader.js';
 import { getCatModel } from '../config/cat-models.js';
-import { resolveCodexCarrierTruth } from '../config/codex-cli.js';
+import { reconcileCatRegistry } from '../config/cat-registry-reconciliation.js';
 import { configEventBus, createChangeSetId } from '../config/config-event-bus.js';
 import { getConfiguredMemberWindowSetting, resolveContextCapacity } from '../config/context-capacity.js';
+import { readLocalAccountSelection } from '../config/local-account-selection.js';
+import {
+  MemberConfigurationConflict,
+  memberConfigurationRevision,
+  updateMemberWithRevision,
+} from '../config/member-config-revision.js';
+import { createOwnedRuntimeCat, MemberCreateConflict, memberCreationReceipt } from '../config/member-create-receipt.js';
 import { inferOpenCodeProviderFromModelName } from '../config/opencode-model.js';
 import { resolveProjectTemplatePath } from '../config/project-template-path.js';
 import { getResolvedCats } from '../config/resolved-cats.js';
-import { createRuntimeCat, deleteRuntimeCat, updateRuntimeCat } from '../config/runtime-cat-catalog.js';
+import {
+  createRuntimeCat,
+  deleteRuntimeCat,
+  readRuntimeAccountMembers,
+  readRuntimeCatCatalog,
+  withRuntimeCatMutationLock,
+} from '../config/runtime-cat-catalog.js';
 import { deleteRuntimeOverride, getRuntimeOverride, setRuntimeOverride } from '../config/session-strategy-overrides.js';
 import type { InvocationCapacitySnapshot } from '../domains/cats/services/agents/invocation/invocation-capacity-snapshot.js';
 import { resolveActiveProjectRoot } from '../utils/active-project-root.js';
+import { saveSpan } from '../utils/member-save-diagnostics.js';
 import { resolveHeaderUserId } from '../utils/request-identity.js';
 
 const colorSchema = z.object({
@@ -65,9 +108,10 @@ const cliSchema = z.object({
   effort: cliEffortSchema.nullable().optional(),
   /** F291: null clears the member default and restores Codex user-config inheritance. */
   serviceTier: z.enum(['standard', 'fast']).nullable().optional(),
-  /** F254 D2: Codex carrier override (openai only). null clears the per-cat override. */
+  /** Read-only input for pre-canonical onboarding request replay; never written into cli. */
   carrier: z.enum(['exec_json', 'app_server']).nullable().optional(),
 });
+const catCarrierSchema = z.enum(CAT_CARRIERS);
 
 const clientSchema = z.enum([
   'anthropic',
@@ -84,6 +128,10 @@ const clientSchema = z.enum([
 /** F161: ACP transport config schema — matches AcpVariantConfig from cat-config-loader. */
 const acpConfigSchema = z
   .object({
+    agentProvider: z
+      .string()
+      .regex(/^plugin:[a-z0-9][a-z0-9._-]{0,127}\/[a-z0-9][a-z0-9._-]{0,63}$/)
+      .optional(),
     command: z.string().min(1),
     startupArgs: z.array(z.string()),
     /** F161 Phase C: wire transport. 'stdio' (default, omitted) or 'httpstream'. */
@@ -92,6 +140,10 @@ const acpConfigSchema = z
     experimental: z.literal(true).optional(),
     mcpWhitelist: z.array(z.string().min(1)).optional(),
     supportsMultiplexing: z.boolean().optional(),
+    /** iCode protocol adapter: session/set_model model binding, per-turn session/close, fail-closed permissions. */
+    protocolAdapter: z.enum(['icode']).optional(),
+    /** iCode: model configuration id sent to session/set_model (distinct from defaultModel). */
+    modelProfileId: z.string().min(1).optional(),
     pool: z
       .object({
         maxLiveProcesses: z.number().int().positive().optional(),
@@ -132,6 +184,14 @@ function resolveGenericAcpMcpSupportForPatch(
   return isClientSwitchToGenericAcp ? true : undefined;
 }
 
+function resolveRequestedCarrier(clientId: ClientId, requested?: CatCarrier): CatCarrier {
+  const carrier = clientId === 'acp' ? 'acp' : (requested ?? 'cli');
+  if (!catClientSupportsCarrier(clientId, carrier)) {
+    throw new Error(`carrier "${carrier}" is not supported by clientId "${clientId}"`);
+  }
+  return carrier;
+}
+
 const catIdSchema = z
   .string()
   .min(1)
@@ -150,16 +210,24 @@ const voiceConfigSchema = z.object({
 
 const baseCatSchema = z.object({
   catId: catIdSchema,
+  breedId: z.string().trim().min(1).max(64).optional(),
   name: z.string().min(1),
   displayName: z.string().min(1),
   variantLabel: z.string().optional(),
   nickname: z.string().optional(),
+  banner: backgroundImageUrlSchema.optional(),
   avatar: z.preprocess(
     (val) => (typeof val === 'string' && val.trim() === '' ? undefined : val),
     z.string().min(1).optional(),
   ),
   color: colorSchema,
   mentionPatterns: z.array(z.string().min(1)).min(1),
+  configurationSource: z.enum(['native_tool', 'managed_account']).optional(),
+  agentProvider: z
+    .string()
+    .regex(/^plugin:[a-z0-9][a-z0-9._-]{0,127}\/[a-z0-9][a-z0-9._-]{0,63}$/)
+    .nullable()
+    .optional(),
   accountRef: z.string().min(1).optional(),
   /** clowder-ai#1208: explicit context window cap. undefined=Auto, positive int=Manual.
    *  Old contextBudget (4-field) is no longer accepted — parse tolerance in catalog only. */
@@ -170,6 +238,7 @@ const baseCatSchema = z.object({
   caution: z.string().nullable().optional(),
   strengths: z.array(z.string().min(1)).optional(),
   sessionChain: z.boolean().optional(),
+  carrier: catCarrierSchema.optional(),
   voiceConfig: voiceConfigSchema.optional(),
 });
 
@@ -187,9 +256,11 @@ const createNormalCatSchema = baseCatSchema.extend({
   cliConfigArgs: z.array(z.string().min(1)).optional(),
   provider: z.string().min(1).optional(),
   acp: acpConfigSchema.optional(), // F161: optional ACP transport for any client
+  agyProfile: agyNativeMemberSettingsSchema.optional(),
 });
 
 const createAntigravityCatSchema = baseCatSchema.extend({
+  agyProfile: z.never().optional(),
   clientId: z.literal('antigravity'),
   defaultModel: modelSchema,
   mcpSupport: z.boolean().optional(),
@@ -198,7 +269,9 @@ const createAntigravityCatSchema = baseCatSchema.extend({
 
 /** F161: Generic ACP client — acp section required (it's the only transport). */
 const createAcpCatSchema = baseCatSchema.extend({
+  agyProfile: z.never().optional(),
   clientId: z.literal('acp'),
+  cli: cliSchema.optional(),
   defaultModel: modelSchema,
   mcpSupport: z.boolean().optional(),
   // F161 AC-A5 / KD-1: generic ACP is a transport, not a provider identity — no provider field.
@@ -214,14 +287,27 @@ const createCatSchema = z.discriminatedUnion('clientId', [
 ]);
 
 const updateCatSchema = z.object({
+  breedId: z.string().trim().min(1).max(64).optional(),
   name: z.string().min(1).optional(),
   displayName: z.string().min(1).optional(),
   variantLabel: z.string().nullable().optional(),
   nickname: z.string().optional(),
   avatar: z.string().min(1).optional(),
+  banner: backgroundImageUrlSchema.nullable().optional(),
   color: colorSchema.optional(),
   mentionPatterns: z.array(z.string().min(1)).min(1).optional(),
+  configurationSource: z.enum(['native_tool', 'managed_account']).nullable().optional(),
+  agentProvider: z
+    .string()
+    .regex(/^plugin:[a-z0-9][a-z0-9._-]{0,127}\/[a-z0-9][a-z0-9._-]{0,63}$/)
+    .nullable()
+    .optional(),
+  expectedRevision: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   accountRef: z.string().min(1).nullable().optional(),
+  accountBindingMode: z.enum(['follow', 'override']).optional(),
   contextWindow: z.number().int().positive().nullable().optional(),
   roleDescription: z.string().min(1).optional(),
   personality: z.string().optional(),
@@ -231,6 +317,7 @@ const updateCatSchema = z.object({
   sessionChain: z.boolean().optional(),
   available: z.boolean().optional(),
   clientId: clientSchema.optional(),
+  carrier: catCarrierSchema.optional(),
   defaultModel: modelSchema.optional(),
   mcpSupport: z.boolean().optional(),
   // F247 KD-17: nullable to allow removing cli (cloud-only Remote MCP cats skip local dispatch).
@@ -238,11 +325,159 @@ const updateCatSchema = z.object({
   commandArgs: z.array(z.string().min(1)).optional(),
   cliConfigArgs: z.array(z.string().min(1)).optional(),
   provider: z.string().min(1).nullable().optional(),
+  /** Explicit recovery for a historically drifted built-in cloud identity. */
+  restoreBuiltinCloudIdentity: z.literal(true).optional(),
   voiceConfig: voiceConfigSchema.nullable().optional(),
   acp: acpConfigSchema.nullable().optional(), // F161: nullable to allow removing ACP transport
+  agyProfile: agyNativeMemberSettingsSchema.nullable().optional(),
 });
 
 type UpdateCatRequestBody = z.infer<typeof updateCatSchema>;
+type CreateCatRequestBody = z.infer<typeof createCatSchema>;
+
+function resolveNativeAvatar(
+  clientId: ClientId,
+  avatar: string | undefined | null,
+  acp?: { command: string; startupArgs: string[] } | null,
+): string {
+  const value = avatar?.trim();
+  if (value) return value;
+  if (clientId === 'kimi') return '/avatars/family/kimi.png';
+  const acpText = acp ? [acp.command, ...acp.startupArgs].join(' ') : '';
+  const isPiAcp = clientId === 'acp' && /(?:^|[\\/])pi(?:[-_.]|$)/i.test(acpText);
+  if (isPiAcp) {
+    return '/avatars/family/opencode.png';
+  }
+  return '/avatars/default.png';
+}
+
+const BUILTIN_CLOUD_IDENTITY_PROTECTED_ERROR =
+  '内置云端成员 @gpt-pro 的身份受保护，不能改所属家族、Client、模型或传输方式。主句柄 @gpt-pro 固定；可以修改名称、头像、昵称和角色资料，并增加其他别名。需要本地 Codex，请新建另一位成员。';
+
+const BUILTIN_CLOUD_HANDLE_RESERVED_ERROR =
+  '主句柄 @gpt-pro 专属于内置云端成员，不能分配给其他成员。需要本地 Codex，请使用不同的 Cat ID 和别名。';
+
+const BUILTIN_CLOUD_IDENTITY_REPAIR_ERROR =
+  '检测到云端成员 @gpt-pro 的接入身份已经偏离内置定义。请在成员设置中使用“恢复云端身份”；普通编辑不会静默覆盖现有配置。';
+
+function builtinCloudIdentityCandidate(input: { cat: CatConfig; accountRef?: string | null; acp?: unknown }) {
+  return {
+    id: input.cat.id as string,
+    breedId: input.cat.breedId,
+    clientId: input.cat.clientId,
+    defaultModel: input.cat.defaultModel,
+    provider: input.cat.provider,
+    mcpSupport: input.cat.mcpSupport,
+    accountRef: input.accountRef === undefined ? input.cat.accountRef : input.accountRef,
+    cli: input.cat.cli,
+    commandArgs: input.cat.commandArgs,
+    cliConfigArgs: input.cat.cliConfigArgs,
+    acp: input.acp,
+    agentProvider: input.cat.agentProvider,
+    mentionPatterns: input.cat.mentionPatterns,
+  };
+}
+
+function builtinCloudIdentityPatchFields(body: UpdateCatRequestBody): BuiltinCloudIdentityProtectedField[] {
+  const fields: BuiltinCloudIdentityProtectedField[] = BUILTIN_CLOUD_IDENTITY_LOCKED_FIELDS.filter((field) =>
+    Object.hasOwn(body, field),
+  );
+  if (Object.hasOwn(body, 'mentionPatterns')) fields.push('mentionPatterns');
+  return fields;
+}
+
+const BUILTIN_CLOUD_IDENTITY_ACCOUNT_REFS = new Set<unknown>([null, BUILTIN_GPT_PRO_IDENTITY.builtinAccountRef]);
+
+const BUILTIN_CLOUD_IDENTITY_PATCH_VALIDATORS = {
+  breedId: (value: unknown) => value === BUILTIN_GPT_PRO_IDENTITY.breedId,
+  clientId: (value: unknown) => value === BUILTIN_GPT_PRO_IDENTITY.clientId,
+  defaultModel: (value: unknown) => value === BUILTIN_GPT_PRO_IDENTITY.defaultModel,
+  provider: (value: unknown) => value === BUILTIN_GPT_PRO_IDENTITY.provider,
+  mcpSupport: (value: unknown) => value === BUILTIN_GPT_PRO_IDENTITY.mcpSupport,
+  accountRef: (value: unknown) => BUILTIN_CLOUD_IDENTITY_ACCOUNT_REFS.has(value),
+  cli: (value: unknown) => value === null,
+  commandArgs: (value: unknown) => Array.isArray(value) && value.length === 0,
+  cliConfigArgs: (value: unknown) => Array.isArray(value) && value.length === 0,
+  acp: (value: unknown) => value === null,
+  agentProvider: (value: unknown) => value === null,
+} satisfies Record<BuiltinCloudIdentityLockedField, (value: unknown) => boolean>;
+
+function builtinCloudIdentityPatchViolationFields(body: UpdateCatRequestBody): BuiltinCloudIdentityProtectedField[] {
+  const fields: BuiltinCloudIdentityProtectedField[] = BUILTIN_CLOUD_IDENTITY_LOCKED_FIELDS.filter(
+    (field) => Object.hasOwn(body, field) && !BUILTIN_CLOUD_IDENTITY_PATCH_VALIDATORS[field](body[field]),
+  );
+  if (body.mentionPatterns !== undefined && !hasBuiltinGptProCanonicalMention(body.mentionPatterns)) {
+    fields.push('mentionPatterns');
+  }
+  return fields;
+}
+
+function builtinCloudIdentityCreateViolationFields(body: CreateCatRequestBody): BuiltinCloudIdentityProtectedField[] {
+  if (!isBuiltinGptProIdentity(body.catId)) {
+    return hasBuiltinGptProCanonicalMention(body.mentionPatterns) ? ['mentionPatterns'] : [];
+  }
+
+  const fields: BuiltinCloudIdentityProtectedField[] = [];
+  if (body.breedId !== undefined && body.breedId !== BUILTIN_GPT_PRO_IDENTITY.breedId) fields.push('breedId');
+  if (body.clientId !== BUILTIN_GPT_PRO_IDENTITY.clientId) fields.push('clientId');
+  if (body.defaultModel !== BUILTIN_GPT_PRO_IDENTITY.defaultModel) fields.push('defaultModel');
+  if (!('provider' in body) || body.provider !== BUILTIN_GPT_PRO_IDENTITY.provider) fields.push('provider');
+  if (body.mcpSupport !== undefined && body.mcpSupport !== BUILTIN_GPT_PRO_IDENTITY.mcpSupport) {
+    fields.push('mcpSupport');
+  }
+  if (body.accountRef !== undefined && body.accountRef !== BUILTIN_GPT_PRO_IDENTITY.builtinAccountRef) {
+    fields.push('accountRef');
+  }
+  if ('cli' in body && body.cli != null) fields.push('cli');
+  if ('commandArgs' in body && body.commandArgs?.length) fields.push('commandArgs');
+  if ('cliConfigArgs' in body && body.cliConfigArgs?.length) fields.push('cliConfigArgs');
+  if ('acp' in body && body.acp != null) fields.push('acp');
+  if (body.agentProvider != null) fields.push('agentProvider');
+  if (!hasBuiltinGptProCanonicalMention(body.mentionPatterns)) fields.push('mentionPatterns');
+  return fields;
+}
+
+function persistedBuiltinCloudIdentityCat(projectRoot: string, fallback: CatConfig): CatConfig {
+  if (!isBuiltinGptProIdentity(fallback.id as string)) return fallback;
+  const persisted = toAllCatConfigs(readRuntimeCatCatalog(projectRoot))[fallback.id as string];
+  // Some tests and integrations register gpt-pro directly in CatRegistry
+  // without owning this project's runtime catalog. In that valid source mode,
+  // the resolved registry entry is the only identity truth available.
+  return persisted === undefined ? fallback : persisted;
+}
+
+function patchOrCurrent<T>(patch: T | undefined, current: T): T {
+  return patch === undefined ? current : patch;
+}
+
+function projectedBuiltinCloudIdentityAfterPatch(input: {
+  current: CatConfig;
+  currentAccountRef?: string | null;
+  currentAcp?: unknown;
+  body: UpdateCatRequestBody;
+}) {
+  const { current, currentAccountRef, currentAcp, body } = input;
+  return projectBuiltinCloudIdentityProtection({
+    id: current.id as string,
+    breedId: patchOrCurrent(body.breedId, current.breedId),
+    clientId: patchOrCurrent(body.clientId, current.clientId),
+    defaultModel: patchOrCurrent(body.defaultModel, current.defaultModel),
+    provider: body.provider !== undefined ? body.provider : current.provider,
+    mcpSupport: patchOrCurrent(body.mcpSupport, current.mcpSupport),
+    accountRef:
+      body.accountRef !== undefined
+        ? body.accountRef
+        : currentAccountRef === undefined
+          ? current.accountRef
+          : currentAccountRef,
+    cli: body.cli !== undefined ? body.cli : current.cli,
+    commandArgs: body.commandArgs !== undefined ? body.commandArgs : current.commandArgs,
+    cliConfigArgs: body.cliConfigArgs !== undefined ? body.cliConfigArgs : current.cliConfigArgs,
+    acp: body.acp !== undefined ? body.acp : currentAcp,
+    agentProvider: body.agentProvider !== undefined ? body.agentProvider : current.agentProvider,
+    mentionPatterns: patchOrCurrent(body.mentionPatterns, current.mentionPatterns),
+  });
+}
 
 function resolveProjectRoot(): string {
   return resolveActiveProjectRoot();
@@ -315,6 +550,7 @@ function buildResolvedCliConfig(
   defaultModel: string,
   baseCli: CliConfig,
   patch?: CliPatch,
+  nativeTool = false,
 ): CliConfig {
   const defaultArgs =
     patch?.defaultArgs !== undefined
@@ -327,14 +563,13 @@ function buildResolvedCliConfig(
 
   const effortTouched = patch ? Object.hasOwn(patch, 'effort') : false;
   const nextEffort = effortTouched ? patch?.effort : baseCli.effort;
-  if (nextEffort !== undefined && nextEffort !== null && !getCliEffortOptionsForProvider(client, defaultModel)) {
+  if (
+    nextEffort !== undefined &&
+    nextEffort !== null &&
+    !nativeTool &&
+    !getCliEffortOptionsForProvider(client, defaultModel)
+  ) {
     throw new Error(`client "${client}" does not support cli.effort`);
-  }
-
-  const carrierTouched = patch ? Object.hasOwn(patch, 'carrier') : false;
-  const nextCarrier = carrierTouched ? patch?.carrier : baseCli.carrier;
-  if (nextCarrier !== undefined && nextCarrier !== null && client !== 'openai') {
-    throw new Error(`client "${client}" does not support cli.carrier (codex-only)`);
   }
 
   const serviceTierTouched = patch ? Object.hasOwn(patch, 'serviceTier') : false;
@@ -347,7 +582,6 @@ function buildResolvedCliConfig(
     outputFormat: patch?.outputFormat ?? baseCli.outputFormat,
     ...(defaultArgs ? { defaultArgs } : {}),
     ...(nextEffort !== undefined && nextEffort !== null ? { effort: nextEffort } : {}),
-    ...(nextCarrier !== undefined && nextCarrier !== null ? { carrier: nextCarrier } : {}),
     ...(nextServiceTier !== undefined && nextServiceTier !== null ? { serviceTier: nextServiceTier } : {}),
   };
 }
@@ -373,8 +607,6 @@ function buildCliForModelSwitch(client: ClientId, defaultModel: string, currentC
     outputFormat: currentCli.outputFormat,
     ...(currentCli.defaultArgs?.length ? { defaultArgs: [...currentCli.defaultArgs] } : {}),
     ...(normalizedEffort ? { effort: normalizedEffort } : {}),
-    // Carrier is model-independent — preserve the per-cat override across model switches.
-    ...(currentCli.carrier ? { carrier: currentCli.carrier } : {}),
     // Requested service tier is also model-independent intent. Runtime compatibility
     // decides whether it is active for the selected model/account.
     ...(currentCli.serviceTier ? { serviceTier: currentCli.serviceTier } : {}),
@@ -406,7 +638,10 @@ function resolveNextCli(params: {
   const isClientSwitch = body.clientId !== undefined && body.clientId !== currentCat.clientId;
   const isModelSwitch = body.defaultModel !== undefined && body.defaultModel !== currentCat.defaultModel;
   const defaultCli = defaultCliForClient(effectiveClient);
-  const defaultEffort = getDefaultCliEffortForProvider(effectiveClient);
+  const nativeTool =
+    (body.configurationSource === undefined ? currentCat.configurationSource : body.configurationSource) ===
+    'native_tool';
+  const defaultEffort = nativeTool ? undefined : getDefaultCliEffortForProvider(effectiveClient);
 
   if (body.cli !== undefined) {
     // F247 KD-17: explicit null means remove cli (cloud-only mode, Remote MCP cat).
@@ -419,10 +654,11 @@ function resolveNextCli(params: {
           ...(defaultEffort ? { effort: defaultEffort } : {}),
         };
       }
-      if (isModelSwitch) return buildCliForModelSwitch(effectiveClient, effectiveDefaultModel, currentCat.cli);
+      if (isModelSwitch && !nativeTool)
+        return buildCliForModelSwitch(effectiveClient, effectiveDefaultModel, currentCat.cli);
       return currentCat.cli;
     })();
-    return buildResolvedCliConfig(effectiveClient, effectiveDefaultModel, baseCli, body.cli);
+    return buildResolvedCliConfig(effectiveClient, effectiveDefaultModel, baseCli, body.cli, nativeTool);
   }
 
   if (isClientSwitch) {
@@ -442,7 +678,7 @@ function resolveNextCli(params: {
     };
   }
 
-  if (isModelSwitch && currentCat.cli) {
+  if (isModelSwitch && currentCat.cli && !nativeTool) {
     return buildCliForModelSwitch(effectiveClient, effectiveDefaultModel, currentCat.cli);
   }
 
@@ -459,8 +695,14 @@ async function validateAccountBindingOrThrow(
   accountRef?: string | null,
   defaultModel?: string | null,
   providerName?: string | null,
-  options?: { legacyCompat?: boolean },
+  options?: { legacyCompat?: boolean; nativeTool?: boolean },
 ): Promise<void> {
+  if (options?.nativeTool) {
+    if (!catClientSupportsNativeTool(client))
+      throw new Error('此客户端暂不支持本机工具模式，请使用指定服务账号或受支持的 ACP 适配器');
+    if (providerName === 'openai-chatgpt-pro') throw new Error('云端成员不能使用本机工具模式');
+    if (!accountRef?.trim()) return;
+  }
   const trimmedAccountRef = accountRef?.trim();
   if (client === 'antigravity' && trimmedAccountRef) {
     throw new Error('antigravity client does not support accountRef');
@@ -474,8 +716,20 @@ async function validateAccountBindingOrThrow(
     // INV-11: unresolved account bindings name the account, not the provider.
     throw new Error(`account "${trimmedAccountRef}" not found`);
   }
+  if (
+    options?.nativeTool &&
+    runtimeProfile.authType === 'oauth' &&
+    trimmedAccountRef !== builtinAccountIdForClient(client)
+  ) {
+    throw new Error('独立订阅身份需要账号隔离接口；请选择工具当前身份，或保留已有账号配置。');
+  }
   // api_key accounts require an explicit model; OAuth/subscription CLIs have defaults
-  if (runtimeProfile.authType === 'api_key' && !defaultModel?.trim()) {
+  if (
+    runtimeProfile.authType === 'api_key' &&
+    !defaultModel?.trim() &&
+    !runtimeProfile.syntheticNative &&
+    !options?.nativeTool
+  ) {
     throw new Error('API Key 认证类型需要指定 Model');
   }
   const compatibilityError = validateRuntimeProviderBinding(client, runtimeProfile, defaultModel);
@@ -522,101 +776,107 @@ async function toCatResponse(
   metadata: CatResponseMetadata,
   resolveEffectiveAccountRef: (cat: CatConfig) => Promise<string | undefined>,
   resolveContextCapacitySnapshot?: (catId: CatId) => InvocationCapacitySnapshot | undefined,
+  resolveCarrierCapability?: (catId: CatId) => FreshnessCarrierCapability | undefined,
 ) {
-  const acpConfig = getAcpConfig(cat.id as string, projectRoot);
-  const contextSnapshot = resolveContextCapacitySnapshot?.(cat.id);
-  const contextCapability = contextSnapshot?.capability;
-  const effectiveAccountRef = await resolveEffectiveAccountRef(cat);
-  return {
-    id: cat.id,
-    name: cat.name,
-    displayName: cat.displayName,
-    nickname: cat.nickname,
-    color: cat.color,
-    mentionPatterns: cat.mentionPatterns,
-    breedId: cat.breedId,
-    accountRef: effectiveAccountRef,
-    clientId: cat.clientId,
-    defaultModel: cat.defaultModel,
-    cli: cat.cli,
-    // F254 D2: effective carrier truth — only for cats that actually dispatch
-    // through the local Codex CLI. Generic ACP (getAcpConfig wins in the
-    // assembly) and cloud-only cats (cli removed, F247 KD-17) never reach the
-    // Codex carrier, so exposing one would be a lie.
-    ...(cat.clientId === 'openai' && !acpConfig && cat.cli != null
-      ? { codexCarrier: resolveCodexCarrierTruth(cat.cli.carrier) }
-      : {}),
-    contextWindow: getConfiguredMemberWindowSetting(cat),
-    // #1208 Items 4+6: resolved context window info + client capability for Hub display.
-    resolvedContext: (() => {
-      const capacity =
-        contextSnapshot?.capacity ??
-        resolveContextCapacity({
-          catId: cat.id as string,
-          memberWindowTokens: getConfiguredMemberWindowSetting(cat),
-          model: getCatModel(cat.id as string, cat.defaultModel),
-        });
-      const capabilityInfo = {
-        capabilityReason: contextCapability?.reason ?? 'Concrete carrier capability unavailable',
-        reportsRuntimeWindow: contextCapability?.reportsRuntimeWindow ?? false,
-        authoritativeUsage: contextCapability?.authoritativeUsage ?? false,
-        usageTelemetry: contextCapability?.usageTelemetry ?? 'unavailable',
-        nativeWindowControl: contextCapability?.nativeWindowControl ?? false,
-        nativeCompressionControl: contextCapability?.nativeCompressionControl ?? false,
-        observesCompression: contextCapability?.observesCompression ?? false,
+  return saveSpan(
+    'response.member',
+    async () => {
+      const acpConfig = getAcpConfig(cat.id as string, projectRoot);
+      const contextSnapshot = resolveContextCapacitySnapshot?.(cat.id);
+      const contextCapability = contextSnapshot?.capability;
+      const effectiveAccountRef = await resolveEffectiveAccountRef(cat);
+      const carrierCapability = resolveCarrierCapability?.(cat.id);
+      const persistedIdentityCat = persistedBuiltinCloudIdentityCat(projectRoot, cat);
+      const identityProtection = projectBuiltinCloudIdentityProtection(
+        builtinCloudIdentityCandidate({ cat: persistedIdentityCat, accountRef: effectiveAccountRef, acp: acpConfig }),
+      );
+      return {
+        id: cat.id,
+        name: cat.name,
+        displayName: cat.displayName,
+        nickname: cat.nickname,
+        // Preserve the identity asset selected by onboarding/manual editing.
+        // Omitting this field makes every refreshed native member fall back to
+        // the gray default avatar even though the catalog contains the asset.
+        avatar: resolveNativeAvatar(cat.clientId, cat.avatar, acpConfig),
+        ...(cat.banner ? { banner: cat.banner } : {}),
+        color: cat.color,
+        mentionPatterns: cat.mentionPatterns,
+        breedId: cat.breedId,
+        relationshipKey: cat.relationshipKey,
+        accountRef: effectiveAccountRef,
+        accountBindingMode: cat.accountBindingMode,
+        configurationSource: cat.configurationSource,
+        agentProvider: cat.agentProvider,
+        configurationRevision: memberConfigurationRevision(projectRoot, cat.id),
+        clientId: cat.clientId,
+        defaultModel: cat.defaultModel,
+        isDefaultResponder: cat.id === getDefaultCatId(),
+        messageDeliveryCapabilities: {
+          guideReply: supportsActiveInvocationGuidance(carrierCapability),
+        },
+        carrier: cat.carrier,
+        cli: cat.cli,
+        contextWindow: getConfiguredMemberWindowSetting(cat),
+        // #1208 Items 4+6: resolved context window info + client capability for Hub display.
+        resolvedContext: (() => {
+          const capacity =
+            contextSnapshot?.capacity ??
+            resolveContextCapacity({
+              catId: cat.id as string,
+              memberWindowTokens: getConfiguredMemberWindowSetting(cat),
+              model: getCatModel(cat.id as string, cat.defaultModel),
+            });
+          const capabilityInfo = {
+            capabilityReason: contextCapability?.reason ?? 'Concrete carrier capability unavailable',
+            reportsRuntimeWindow: contextCapability?.reportsRuntimeWindow ?? false,
+            authoritativeUsage: contextCapability?.authoritativeUsage ?? false,
+            usageTelemetry: contextCapability?.usageTelemetry ?? 'unavailable',
+            nativeWindowControl: contextCapability?.nativeWindowControl ?? false,
+            nativeCompressionControl: contextCapability?.nativeCompressionControl ?? false,
+            observesCompression: contextCapability?.observesCompression ?? false,
+          };
+          return capacity.source !== 'unresolved'
+            ? {
+                windowTokens: capacity.windowTokens,
+                inputCeilingTokens: capacity.inputCeilingTokens,
+                source: capacity.source,
+                provenance: capacity.provenance,
+                actionable: capacity.actionable,
+                ...capabilityInfo,
+              }
+            : capabilityInfo;
+        })(),
+        roleDescription: cat.roleDescription,
+        personality: cat.personality,
+        teamStrengths: cat.teamStrengths,
+        caution: cat.caution,
+        strengths: cat.strengths,
+        sessionChain: cat.sessionChain,
+        voiceConfig: cat.voiceConfig,
+        commandArgs: cat.commandArgs,
+        cliConfigArgs: cat.cliConfigArgs,
+        provider: cat.provider,
+        variantLabel: cat.variantLabel ?? undefined,
+        isDefaultVariant: cat.isDefaultVariant ?? undefined,
+        breedDisplayName: cat.breedDisplayName ?? undefined,
+        mcpSupport: cat.mcpSupport,
+        ...(acpConfig ? { acp: acpConfig } : {}),
+        ...(cat.agyProfile ? { agyProfile: publicAgyProfile(cat.agyProfile) } : {}),
+        ...(identityProtection ? { identityProtection } : {}),
+        roster: metadata.roster
+          ? {
+              family: metadata.roster.family,
+              roles: [...metadata.roster.roles],
+              lead: metadata.roster.lead,
+              available: metadata.roster.available,
+              evaluation: metadata.roster.evaluation,
+            }
+          : null,
       };
-      return capacity.source !== 'unresolved'
-        ? {
-            windowTokens: capacity.windowTokens,
-            inputCeilingTokens: capacity.inputCeilingTokens,
-            source: capacity.source,
-            provenance: capacity.provenance,
-            actionable: capacity.actionable,
-            ...capabilityInfo,
-          }
-        : capabilityInfo;
-    })(),
-    avatar: cat.avatar,
-    roleDescription: cat.roleDescription,
-    personality: cat.personality,
-    teamStrengths: cat.teamStrengths,
-    caution: cat.caution,
-    strengths: cat.strengths,
-    sessionChain: cat.sessionChain,
-    voiceConfig: cat.voiceConfig,
-    commandArgs: cat.commandArgs,
-    cliConfigArgs: cat.cliConfigArgs,
-    provider: cat.provider,
-    variantLabel: cat.variantLabel ?? undefined,
-    isDefaultVariant: cat.isDefaultVariant ?? undefined,
-    breedDisplayName: cat.breedDisplayName ?? undefined,
-    mcpSupport: cat.mcpSupport,
-    ...(acpConfig ? { acp: acpConfig } : {}),
-    roster: metadata.roster
-      ? {
-          family: metadata.roster.family,
-          roles: [...metadata.roster.roles],
-          lead: metadata.roster.lead,
-          available: metadata.roster.available,
-          evaluation: metadata.roster.evaluation,
-        }
-      : null,
-    // F161: adapterMode is now provider-agnostic — any clientId can have ACP config
-    adapterMode: acpConfig ? 'acp' : 'cli',
-  };
-}
-
-async function reconcileCatRegistry(projectRoot: string, managedIdsBefore: ReadonlySet<string>) {
-  const runtimeCats = toAllCatConfigs(loadResolvedCatConfig(resolveProjectTemplatePath(projectRoot)));
-  const extraCats = catRegistry.getAllConfigs();
-  catRegistry.reset();
-  for (const [id, config] of Object.entries(runtimeCats)) {
-    catRegistry.register(id, config);
-  }
-  for (const [id, config] of Object.entries(extraCats)) {
-    if (!runtimeCats[id] && !managedIdsBefore.has(id)) catRegistry.register(id, config);
-  }
-  return catRegistry.getAllConfigs();
+    },
+    { catId: cat.id },
+  );
 }
 
 function getManagedCatalogIds(projectRoot: string): Set<string> {
@@ -684,17 +944,30 @@ async function cleanupBlockedMcpForAllProjects(projectRoot: string, deletedCatId
 }
 
 interface CatsRoutesOptions {
+  memberAssets?: () => MemberCanonService | undefined;
   onCatalogChanged?: (cats: Record<string, CatConfig>) => Promise<void> | void;
   resolveContextCapacitySnapshot?: (catId: CatId) => InvocationCapacitySnapshot | undefined;
+  nativeRuntimeDiscovery?: typeof discoverNativeRuntimesWithReadiness;
+  resolveCarrierCapability?: (catId: CatId) => FreshnessCarrierCapability | undefined;
 }
 
 export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opts) => {
+  if (opts.memberAssets) registerMemberCanonResponse(app, opts.memberAssets);
+  registerRuntimeCatalogRoute(app);
+  registerDshSetupRoutes(app);
+  app.get('/api/cats/native-runtimes', async (request, reply) => {
+    if (!resolveHeaderUserId(request)) return reply.code(401).send({ error: '需要登录后检查本机工具' });
+    return (opts.nativeRuntimeDiscovery ?? discoverNativeRuntimesWithReadiness)(
+      resolveProjectRoot(),
+      (request.query as { refresh?: string }).refresh === '1',
+    );
+  });
   // GET /api/cat-templates - 获取角色模板（纯灵魂层，不含 client/model 绑定）
   app.get('/api/cat-templates', async () => {
     try {
       const projectRoot = resolveProjectRoot();
       const templatePath = resolveProjectTemplatePath(projectRoot);
-      const raw = JSON.parse(await import('node:fs').then((fs) => fs.promises.readFile(templatePath, 'utf-8'))) as {
+      const raw = JSON.parse(readResolvedTemplateSource(templatePath)) as {
         roleTemplates?: {
           id: string;
           name: string;
@@ -747,6 +1020,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
             resolveMetadata(cat.id),
             resolveEffectiveAccountRef,
             opts.resolveContextCapacitySnapshot,
+            opts.resolveCarrierCapability,
           ),
         ),
       ),
@@ -770,12 +1044,78 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
       return { error: 'Invalid request', details: parsed.error.issues };
     }
 
-    const projectRoot = resolveProjectRoot();
-    const managedIdsBefore = getManagedCatalogIds(projectRoot);
     const body = parsed.data;
 
+    const createViolationFields = builtinCloudIdentityCreateViolationFields(body);
+    if (
+      body.catId === 'gpt-dot' ||
+      body.mentionPatterns?.some((pattern) => pattern.trim().toLowerCase().replace(/^@/, '') === 'dot')
+    ) {
+      return reply
+        .code(409)
+        .send({ code: 'BUILTIN_CLOUD_HANDLE_RESERVED', error: '请在 ChatGPT 云端插件中接入这只独立云端成员。' });
+    }
+    if (createViolationFields.length > 0) {
+      reply.status(409);
+      return {
+        code: isBuiltinGptProIdentity(body.catId)
+          ? 'BUILTIN_CLOUD_IDENTITY_PROTECTED'
+          : 'BUILTIN_CLOUD_HANDLE_RESERVED',
+        error: isBuiltinGptProIdentity(body.catId)
+          ? BUILTIN_CLOUD_IDENTITY_PROTECTED_ERROR
+          : BUILTIN_CLOUD_HANDLE_RESERVED_ERROR,
+        protectedFields: createViolationFields,
+      };
+    }
+
+    const projectRoot = resolveProjectRoot();
+    const managedIdsBefore = getManagedCatalogIds(projectRoot);
+    let requestedCarrier: CatCarrier;
+    try {
+      requestedCarrier = resolveRequestedCarrier(
+        body.clientId,
+        resolveCatCarrier(
+          {
+            clientId: body.clientId,
+            carrier: body.carrier,
+            configurationSource: body.configurationSource,
+            acp: 'acp' in body ? body.acp : undefined,
+            cli: 'cli' in body ? { carrier: body.cli?.carrier ?? undefined } : undefined,
+          },
+          '',
+        ),
+      );
+      if (requestedCarrier === 'acp' && !('acp' in body && body.acp)) {
+        throw new Error('carrier "acp" requires an acp config (command + startupArgs)');
+      }
+    } catch (err) {
+      reply.status(400);
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+
+    let receipt: ReturnType<typeof memberCreationReceipt>;
+    try {
+      receipt = memberCreationReceipt(
+        operator,
+        request.headers['x-cat-cafe-onboarding-journey'],
+        request.headers['idempotency-key'],
+        body,
+      );
+    } catch (error) {
+      return reply.code(409).send({
+        code: 'member_creation_conflict',
+        error: error instanceof Error ? error.message : 'Creation conflict',
+      });
+    }
+    let replayed = false;
+    if (!receipt && (managedIdsBefore.has(body.catId) || catRegistry.tryGet(body.catId)))
+      return reply.code(409).send({
+        code: 'member_creation_conflict',
+        error: `Member ID "${body.catId}" is occupied; choose another ID or explicitly edit that member`,
+      });
+
     // Validate alias uniqueness across all existing members
-    if (body.mentionPatterns?.length) {
+    if (!receipt && body.mentionPatterns?.length) {
       const allConfigs = catRegistry.getAllConfigs();
       for (const pattern of body.mentionPatterns) {
         const normalized = pattern.toLowerCase();
@@ -790,6 +1130,22 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
 
     const accountRef = resolveAccountRef(body);
     try {
+      const createRuntimeCatSerialized = async (input: Parameters<typeof createRuntimeCat>[1]) => {
+        const result = await withRuntimeCatMutationLock(projectRoot, () =>
+          createOwnedRuntimeCat(projectRoot, { ...input, agentProvider: body.agentProvider }, receipt, () => {
+            if (
+              body.configurationSource === 'native_tool' &&
+              'acp' in body &&
+              body.acp &&
+              dshLauncherProfileState(body.acp.command, body.acp.startupArgs, projectRoot) === 'acp_profile_invalid'
+            )
+              throw new InvalidDshProfile('DSH 的现有 ACP profile 无效，请先在客户端修复配置。');
+          }),
+        );
+        body.catId = result.id;
+        replayed = result.replayed;
+        managedIdsBefore.delete(result.id);
+      };
       /* Infer provider for opencode API-key accounts from the model name when no
          explicit provider is given. This avoids hard-coding 'openai' for all bare
          models — Anthropic/Google accounts get the correct adapter.
@@ -806,6 +1162,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         accountRef,
         body.defaultModel,
         providerNameForValidation,
+        { nativeTool: body.configurationSource === 'native_tool' },
       );
       validateServiceTierMutationOrThrow(
         projectRoot,
@@ -815,15 +1172,18 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         'cli' in body ? body.cli?.serviceTier : undefined,
         'cli' in body && body.cli !== undefined && Object.hasOwn(body.cli, 'serviceTier'),
       );
-      const resolvedAvatar = body.avatar ?? '/avatars/default.png';
+      const resolvedAvatar = resolveNativeAvatar(body.clientId, body.avatar, 'acp' in body ? body.acp : undefined);
       if (body.clientId === 'antigravity') {
-        createRuntimeCat(projectRoot, {
+        await createRuntimeCatSerialized({
           catId: body.catId,
+          configurationSource: body.configurationSource,
+          breedId: body.breedId,
           name: body.name,
           displayName: body.displayName,
           variantLabel: body.variantLabel,
           nickname: body.nickname,
           avatar: resolvedAvatar,
+          ...(body.banner ? { banner: body.banner } : {}),
           color: body.color,
           mentionPatterns: body.mentionPatterns,
           ...(accountRef !== undefined ? { accountRef: accountRef ?? undefined } : {}),
@@ -834,6 +1194,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
           caution: body.caution,
           strengths: body.strengths,
           clientId: 'antigravity',
+          carrier: requestedCarrier,
           defaultModel: body.defaultModel,
           mcpSupport: body.mcpSupport ?? true,
           cli: {
@@ -845,13 +1206,16 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         });
       } else if (body.clientId === 'acp') {
         // F161: Generic ACP client — no CLI config, ACP section is the transport.
-        createRuntimeCat(projectRoot, {
+        await createRuntimeCatSerialized({
           catId: body.catId,
+          configurationSource: body.configurationSource,
+          breedId: body.breedId,
           name: body.name,
           displayName: body.displayName,
           variantLabel: body.variantLabel,
           nickname: body.nickname,
           avatar: resolvedAvatar,
+          ...(body.banner ? { banner: body.banner } : {}),
           color: body.color,
           mentionPatterns: body.mentionPatterns,
           ...(accountRef !== undefined ? { accountRef: accountRef ?? undefined } : {}),
@@ -862,19 +1226,33 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
           caution: body.caution,
           strengths: body.strengths,
           clientId: 'acp',
+          carrier: 'acp',
           defaultModel: body.defaultModel,
           mcpSupport: resolveGenericAcpMcpSupport(body.mcpSupport, body.acp) ?? false,
-          cli: defaultCliForClient('acp'),
+          cli:
+            body.configurationSource === 'native_tool'
+              ? buildResolvedCliConfig('acp', body.defaultModel, defaultCliForClient('acp'), body.cli, true)
+              : defaultCliForClient('acp'),
           // F161 AC-A5 / KD-1: generic ACP never carries provider (already stripped by schema).
           ...(body.voiceConfig ? { voiceConfig: body.voiceConfig } : {}),
           acp: body.acp,
         });
       } else {
         // F247 KD-17: cloud-only providers (Remote MCP) skip local CLI dispatch.
+        const agyProfile = resolveAgyNativeMemberPatch({
+          projectRoot,
+          requested: body.agyProfile,
+          clientId: body.clientId,
+          carrier: requestedCarrier,
+          acp: body.acp,
+          model: body.defaultModel,
+          accountRef: accountRef ?? undefined,
+          cliConfigArgs: body.cliConfigArgs,
+        });
         // Caller signals cloud-only via provider="openai-chatgpt-pro" (future: more cloud markers).
         const explicitProviderForCloud = 'provider' in body ? body.provider : undefined;
         const isCloudOnlyProvider = explicitProviderForCloud === 'openai-chatgpt-pro';
-        const usesAcpTransport = body.acp != null;
+        const usesAcpTransport = requestedCarrier === 'acp';
         const resolvedCli = isCloudOnlyProvider
           ? undefined
           : (() => {
@@ -883,16 +1261,22 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
                 body.defaultModel,
                 defaultCliForClient(body.clientId),
                 body.cli,
+                body.configurationSource === 'native_tool',
               );
-              return usesAcpTransport ? stripCliTransportExtensions(cli) : cli;
+              return usesAcpTransport && body.configurationSource !== 'native_tool'
+                ? stripCliTransportExtensions(cli)
+                : cli;
             })();
-        createRuntimeCat(projectRoot, {
+        await createRuntimeCatSerialized({
           catId: body.catId,
+          configurationSource: body.configurationSource,
+          breedId: body.breedId,
           name: body.name,
           displayName: body.displayName,
           variantLabel: body.variantLabel,
           nickname: body.nickname,
           avatar: resolvedAvatar,
+          ...(body.banner ? { banner: body.banner } : {}),
           color: body.color,
           mentionPatterns: body.mentionPatterns,
           ...(accountRef !== undefined ? { accountRef: accountRef ?? undefined } : {}),
@@ -903,6 +1287,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
           caution: body.caution,
           strengths: body.strengths,
           clientId: body.clientId,
+          carrier: requestedCarrier,
           defaultModel: body.defaultModel,
           mcpSupport:
             body.mcpSupport ??
@@ -919,10 +1304,15 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
             : {}),
           ...(body.voiceConfig ? { voiceConfig: body.voiceConfig } : {}),
           ...(body.acp ? { acp: body.acp } : {}),
+          ...(agyProfile ? { agyProfile } : {}),
         });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (err instanceof MemberCreateConflict)
+        return reply.code(409).send({ code: 'member_creation_conflict', error: message });
+      if (err instanceof InvalidDshProfile)
+        return reply.code(400).send({ code: 'acp_profile_invalid', error: message });
       reply.status(400);
       return { error: message };
     }
@@ -944,7 +1334,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
     const cat = resolved[body.catId];
     const metadata = buildCatResponseMetadataResolver(projectRoot);
     const resolveEffectiveAccountRef = buildEffectiveAccountRefResolver();
-    reply.status(201);
+    reply.status(replayed ? 200 : 201);
     return {
       cat: await toCatResponse(
         cat,
@@ -954,6 +1344,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         opts.resolveContextCapacitySnapshot,
       ),
       updatedBy: operator,
+      ...(replayed ? { idempotent: true } : {}),
     };
   });
 
@@ -975,6 +1366,49 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
     }
 
     const body = parsed.data;
+    if (body.avatar !== undefined && opts.memberAssets?.()?.binding(request.params.id)) {
+      const mixed = Object.keys(body).some((key) => key !== 'avatar' && key !== 'expectedRevision');
+      return reply.code(409).send({
+        error: mixed ? 'canon_avatar_mixed_patch' : 'canon_avatar_selection_required',
+        message: '头像已关联正典，请在外观里单独选择并保存头像。',
+      });
+    }
+    const restoringBuiltinCloudIdentity = body.restoreBuiltinCloudIdentity === true;
+    if (request.params.id === 'gpt-dot') {
+      const fields = [...BUILTIN_CLOUD_IDENTITY_LOCKED_FIELDS, 'mentionPatterns', 'restoreBuiltinCloudIdentity'];
+      if (fields.some((field) => Object.hasOwn(body, field)))
+        return reply.code(409).send({
+          code: 'BUILTIN_CLOUD_IDENTITY_PROTECTED',
+          error: 'dot 的身份与连接在插件集成中管理。',
+        });
+    }
+    const patchViolationFields = isBuiltinGptProIdentity(request.params.id)
+      ? builtinCloudIdentityPatchViolationFields(body)
+      : [];
+
+    // Reject an explicitly unsafe built-in identity mutation before resolving or
+    // bootstrapping the runtime catalog. A rejected write must be side-effect free.
+    if (!restoringBuiltinCloudIdentity && patchViolationFields.length > 0) {
+      reply.status(409);
+      return {
+        code: 'BUILTIN_CLOUD_IDENTITY_PROTECTED',
+        error: BUILTIN_CLOUD_IDENTITY_PROTECTED_ERROR,
+        protectedFields: patchViolationFields,
+      };
+    }
+    if (
+      !isBuiltinGptProIdentity(request.params.id) &&
+      body.mentionPatterns !== undefined &&
+      hasBuiltinGptProCanonicalMention(body.mentionPatterns)
+    ) {
+      reply.status(409);
+      return {
+        code: 'BUILTIN_CLOUD_HANDLE_RESERVED',
+        error: BUILTIN_CLOUD_HANDLE_RESERVED_ERROR,
+        protectedFields: ['mentionPatterns'],
+      };
+    }
+
     const projectRoot = resolveProjectRoot();
 
     // Validate alias uniqueness when mentionPatterns are being updated
@@ -998,18 +1432,108 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
       reply.status(404);
       return { error: `Cat "${request.params.id}" not found` };
     }
-    const effectiveClient = body.clientId ?? currentCat.clientId;
-    const currentEffectiveAccountRef = await resolveEffectiveAccountRef(currentCat);
-    let targetAccountRef = resolveAccountRef(body);
-    let effectiveAccountRef =
-      targetAccountRef !== undefined ? (targetAccountRef ?? undefined) : currentEffectiveAccountRef;
-    const effectiveDefaultModel = body.defaultModel !== undefined ? body.defaultModel : currentCat.defaultModel;
+    const currentEffectiveAccountRef = await saveSpan('member.account', () => resolveEffectiveAccountRef(currentCat));
+    const currentAcpConfig = getAcpConfig(request.params.id as string, projectRoot);
+    const persistedIdentityCat = persistedBuiltinCloudIdentityCat(projectRoot, currentCat);
+    const currentIdentityProtection = projectBuiltinCloudIdentityProtection(
+      builtinCloudIdentityCandidate({
+        cat: persistedIdentityCat,
+        accountRef: currentEffectiveAccountRef,
+        acp: currentAcpConfig,
+      }),
+    );
+    const protectedIdentityFields = builtinCloudIdentityPatchFields(body);
+
+    if (restoringBuiltinCloudIdentity && !isBuiltinGptProIdentity(request.params.id)) {
+      reply.status(400);
+      return {
+        code: 'BUILTIN_CLOUD_IDENTITY_RESTORE_UNAVAILABLE',
+        error: '这个成员不是内置云端身份，不能使用“恢复云端身份”。',
+      };
+    }
+    if (restoringBuiltinCloudIdentity && Object.keys(body).some((field) => field !== 'restoreBuiltinCloudIdentity')) {
+      reply.status(400);
+      return {
+        code: 'BUILTIN_CLOUD_IDENTITY_RESTORE_MIXED_PATCH',
+        error: '“恢复云端身份”必须单独执行，不能同时修改 Client、模型或传输配置。',
+      };
+    }
+    if (currentIdentityProtection && !restoringBuiltinCloudIdentity && protectedIdentityFields.length > 0) {
+      if (currentIdentityProtection.state === 'drifted') {
+        reply.status(409);
+        return {
+          code: 'BUILTIN_CLOUD_IDENTITY_REPAIR_REQUIRED',
+          error: BUILTIN_CLOUD_IDENTITY_REPAIR_ERROR,
+          driftedFields: currentIdentityProtection.driftedFields,
+        };
+      }
+      const projectedIdentity = projectedBuiltinCloudIdentityAfterPatch({
+        current: persistedIdentityCat,
+        currentAccountRef: currentEffectiveAccountRef,
+        currentAcp: currentAcpConfig,
+        body,
+      });
+      if (projectedIdentity?.state === 'drifted') {
+        reply.status(409);
+        return {
+          code: 'BUILTIN_CLOUD_IDENTITY_PROTECTED',
+          error: BUILTIN_CLOUD_IDENTITY_PROTECTED_ERROR,
+          protectedFields: protectedIdentityFields,
+        };
+      }
+    }
+
+    if (currentIdentityProtection && body.configurationSource !== undefined) {
+      reply.status(409);
+      return { code: 'BUILTIN_CLOUD_IDENTITY_PROTECTED', error: BUILTIN_CLOUD_IDENTITY_PROTECTED_ERROR };
+    }
+    const effectiveSource =
+      body.configurationSource === undefined ? currentCat.configurationSource : body.configurationSource;
+    const nativeTool = effectiveSource === 'native_tool';
+    const effectiveClient = restoringBuiltinCloudIdentity
+      ? BUILTIN_GPT_PRO_IDENTITY.clientId
+      : patchOrCurrent(body.clientId, currentCat.clientId);
+    let effectiveCarrier: CatCarrier;
+    try {
+      effectiveCarrier = resolveRequestedCarrier(
+        effectiveClient,
+        restoringBuiltinCloudIdentity
+          ? undefined
+          : (body.carrier ?? (body.clientId !== undefined ? undefined : currentCat.carrier)),
+      );
+    } catch (err) {
+      reply.status(400);
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+    let targetAccountRef = restoringBuiltinCloudIdentity ? null : resolveAccountRef(body);
+    let effectiveAccountRef = restoringBuiltinCloudIdentity
+      ? BUILTIN_GPT_PRO_IDENTITY.builtinAccountRef
+      : targetAccountRef !== undefined
+        ? targetAccountRef === null
+          ? undefined
+          : targetAccountRef
+        : currentEffectiveAccountRef;
+    const effectiveDefaultModel = restoringBuiltinCloudIdentity
+      ? BUILTIN_GPT_PRO_IDENTITY.defaultModel
+      : patchOrCurrent(body.defaultModel, currentCat.defaultModel);
 
     // Auto-rebase builtin binding when switching client families.
     // When the editor sends the old client's builtin accountRef during a provider switch,
     // rebase to the new client's builtin so validation doesn't reject the stale ref.
     const isClientSwitch = body.clientId !== undefined && body.clientId !== currentCat.clientId;
-    const currentAcpConfig = getAcpConfig(request.params.id as string, projectRoot);
+    if (
+      body.available === true &&
+      body.accountRef === undefined &&
+      body.accountBindingMode === undefined &&
+      currentCat.accountBindingMode === 'follow' &&
+      effectiveClient === 'openai'
+    ) {
+      const selected = readLocalAccountSelection(readRuntimeAccountMembers(projectRoot), 'openai').accountRef;
+      if (selected) {
+        effectiveAccountRef = selected;
+        targetAccountRef = selected;
+      }
+    }
     if (isClientSwitch && effectiveAccountRef) {
       const oldBuiltin = resolveBuiltinClientForProvider(currentCat.clientId);
       if (oldBuiltin && builtinAccountIdForClient(oldBuiltin) === effectiveAccountRef) {
@@ -1021,12 +1545,15 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
       }
     }
     const providerConfigTouched =
+      body.agentProvider !== undefined ||
+      body.configurationSource !== undefined ||
       body.clientId !== undefined ||
       body.defaultModel !== undefined ||
       targetAccountRef !== undefined ||
+      body.accountBindingMode !== undefined ||
       body.provider !== undefined;
 
-    if (providerConfigTouched) {
+    if (providerConfigTouched && !restoringBuiltinCloudIdentity) {
       try {
         // F161 AC-A5 / KD-1: generic ACP carries no provider — exclude it from binding validation.
         const effectiveProviderName =
@@ -1038,7 +1565,6 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         // Compare against current binding — editor always sends accountRef even when unchanged.
         const isBindingChange =
           targetAccountRef !== undefined && (targetAccountRef ?? undefined) !== currentEffectiveAccountRef;
-        const isClientSwitch = body.clientId !== undefined && body.clientId !== currentCat.clientId;
         const isExistingOpencode = currentCat.clientId === 'opencode';
         const legacyCompat =
           body.provider === undefined &&
@@ -1052,7 +1578,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
           effectiveAccountRef,
           effectiveDefaultModel,
           effectiveProviderName,
-          { legacyCompat },
+          { legacyCompat, nativeTool },
         );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1087,13 +1613,35 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
     }
 
     const shouldClearAcpOnClientSwitch =
-      isClientSwitch && effectiveClient !== 'acp' && body.acp === undefined && currentAcpConfig !== undefined;
-    const effectiveAcpConfig =
-      body.acp !== undefined ? body.acp : shouldClearAcpOnClientSwitch ? null : currentAcpConfig;
-    const usesAcpTransport = effectiveClient === 'acp' || effectiveAcpConfig != null;
+      restoringBuiltinCloudIdentity ||
+      (isClientSwitch && effectiveClient !== 'acp' && body.acp === undefined && currentAcpConfig !== undefined);
+    const effectiveAcpConfig = restoringBuiltinCloudIdentity
+      ? null
+      : body.acp !== undefined
+        ? body.acp
+        : shouldClearAcpOnClientSwitch
+          ? null
+          : currentAcpConfig;
+    const usesAcpTransport = effectiveCarrier === 'acp';
+    if (usesAcpTransport && !effectiveAcpConfig) {
+      reply.status(400);
+      return { error: 'carrier "acp" requires an acp config (command + startupArgs)' };
+    }
 
     const managedIdsBefore = getManagedCatalogIds(projectRoot);
     try {
+      const agyProfilePatch = resolveAgyNativeMemberPatch({
+        projectRoot,
+        requested: body.agyProfile,
+        current: currentCat.agyProfile,
+        clientId: effectiveClient,
+        carrier: effectiveCarrier,
+        acp: effectiveAcpConfig,
+        model: effectiveDefaultModel,
+        accountRef: effectiveAccountRef,
+        previousAccountRef: currentEffectiveAccountRef,
+        cliConfigArgs: body.cliConfigArgs ?? currentCat.cliConfigArgs,
+      });
       const hasCommandArgsPatch = body.commandArgs !== undefined;
       const nextCommandArgs = body.commandArgs ?? [];
       const nextCli = resolveNextCli({
@@ -1110,6 +1658,8 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
           : body.mcpSupport;
       // #1208 P2: canonicalize legacy cli.contextWindow to top-level on every save.
       const canonicalContextWindow = canonicalizeContextWindow(currentCat, body.contextWindow);
+      const leavesGenericAcpClient =
+        body.acp === undefined && currentCat.clientId === 'acp' && effectiveClient !== 'acp';
 
       // #1208 Item 5 fix: force-strip legacy cli.contextWindow / cli.autoCompactTokenLimit
       // on every save. When nextCli is undefined (no cli patch), the old cli object persists
@@ -1125,20 +1675,26 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         if (nextCli === undefined && !hasLegacyWindowFields && !hasCliOnlyFields) {
           return undefined; // nothing to strip
         }
-        if (usesAcpTransport) return stripCliTransportExtensions(cli);
+        if (usesAcpTransport && !nativeTool) return stripCliTransportExtensions(cli);
         const { contextWindow: _cw, autoCompactTokenLimit: _acl, ...base } = raw;
         return base as unknown as CliConfig;
       })();
 
-      updateRuntimeCat(projectRoot, request.params.id, {
+      await updateMemberWithRevision(projectRoot, request.params.id, body.expectedRevision, {
+        ...(agyProfilePatch !== undefined ? { agyProfile: agyProfilePatch } : {}),
+        ...(body.breedId !== undefined ? { breedId: body.breedId } : {}),
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),
         ...(body.variantLabel !== undefined ? { variantLabel: body.variantLabel } : {}),
         ...(body.nickname !== undefined ? { nickname: body.nickname } : {}),
         ...(body.avatar !== undefined ? { avatar: body.avatar } : {}),
+        ...(body.banner !== undefined ? { banner: body.banner } : {}),
         ...(body.color !== undefined ? { color: body.color } : {}),
         ...(body.mentionPatterns !== undefined ? { mentionPatterns: body.mentionPatterns } : {}),
+        ...(body.configurationSource !== undefined ? { configurationSource: body.configurationSource } : {}),
+        ...(body.agentProvider !== undefined ? { agentProvider: body.agentProvider } : {}),
         ...(targetAccountRef !== undefined ? { accountRef: targetAccountRef } : {}),
+        ...(body.accountBindingMode !== undefined ? { accountBindingMode: body.accountBindingMode } : {}),
         ...(canonicalContextWindow !== undefined ? { contextWindow: canonicalContextWindow } : {}),
         ...(body.roleDescription !== undefined ? { roleDescription: body.roleDescription } : {}),
         ...(body.personality !== undefined ? { personality: body.personality } : {}),
@@ -1146,6 +1702,9 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         ...(body.caution !== undefined ? { caution: body.caution } : {}),
         ...(body.strengths !== undefined ? { strengths: body.strengths } : {}),
         ...(body.clientId !== undefined ? { clientId: body.clientId } : {}),
+        // Always write the resolved value so any legacy transport/cli.carrier
+        // selection converges to the canonical field on the next edit.
+        carrier: effectiveCarrier,
         ...(body.defaultModel !== undefined ? { defaultModel: body.defaultModel } : {}),
         ...(nextGenericAcpMcpSupport !== undefined ? { mcpSupport: nextGenericAcpMcpSupport } : {}),
         ...(hasCommandArgsPatch
@@ -1178,13 +1737,36 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
             ? { voiceConfig: null }
             : { voiceConfig: body.voiceConfig }
           : {}),
-        ...(body.acp !== undefined
-          ? body.acp === null
-            ? { acp: null }
-            : { acp: body.acp }
-          : shouldClearAcpOnClientSwitch
-            ? { acp: null }
+        ...(leavesGenericAcpClient
+          ? { acp: null }
+          : body.acp !== undefined
+            ? body.acp === null
+              ? { acp: null }
+              : { acp: body.acp }
             : {}),
+        ...(restoringBuiltinCloudIdentity
+          ? {
+              breedId: BUILTIN_GPT_PRO_IDENTITY.breedId,
+              clientId: BUILTIN_GPT_PRO_IDENTITY.clientId,
+              defaultModel: BUILTIN_GPT_PRO_IDENTITY.defaultModel,
+              provider: BUILTIN_GPT_PRO_IDENTITY.provider,
+              mcpSupport: BUILTIN_GPT_PRO_IDENTITY.mcpSupport,
+              accountRef: null,
+              cli: null,
+              commandArgs: [],
+              cliConfigArgs: [],
+              acp: null,
+              agentProvider: null,
+              mentionPatterns: Array.from(
+                new Set([
+                  BUILTIN_GPT_PRO_CANONICAL_MENTION,
+                  ...currentCat.mentionPatterns.filter(
+                    (pattern) => pattern.trim().toLowerCase() !== BUILTIN_GPT_PRO_CANONICAL_MENTION,
+                  ),
+                ]),
+              ),
+            }
+          : {}),
       });
       const resolved = await reconcileCatRegistry(projectRoot, managedIdsBefore);
       await configEventBus.emitChangeAsync({
@@ -1208,7 +1790,9 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (/not found/i.test(message)) {
+      if (err instanceof MemberConfigurationConflict) {
+        reply.status(409);
+      } else if (/not found/i.test(message)) {
         reply.status(404);
       } else {
         reply.status(400);
@@ -1229,6 +1813,14 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
     if (!currentCat) {
       reply.status(404);
       return { error: `Cat "${request.params.id}" not found` };
+    }
+    if (isBuiltinGptProIdentity(request.params.id) || request.params.id === 'gpt-dot') {
+      reply.status(409);
+      return {
+        code: 'BUILTIN_CLOUD_IDENTITY_PROTECTED',
+        error:
+          '内置云端成员 @gpt-pro 是固定云端入口，不能删除。若暂时不使用，可以停用这个成员；需要本地 Codex，请新建另一位成员。',
+      };
     }
     const managedIdsBefore = getManagedCatalogIds(projectRoot);
     const overrideBackup = getRuntimeOverride(request.params.id);
@@ -1277,7 +1869,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
       return { error: 'Cat not found' };
     }
 
-    // Cat status is currently tracked via WebSocket events (ThinkingIndicator/ParallelStatusBar).
+    // Cat status is currently tracked via WebSocket events (message bubbles / status panel).
     // This endpoint returns placeholder data; Redis-backed polling status is a future enhancement.
     // See: InvocationTracker for per-thread tracking, not per-cat.
     return {

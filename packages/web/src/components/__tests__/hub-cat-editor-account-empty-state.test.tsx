@@ -104,9 +104,17 @@ describe('HubCatEditor zero-account onboarding', () => {
       root.render(React.createElement(HubCatEditor, { open: true, onClose: vi.fn(), onSaved: vi.fn() }));
     });
     await flushEffects();
+    if (document.body.querySelector<HTMLSelectElement>('select[aria-label="配置方式"]')?.value === 'native_tool') {
+      await changeField(queryField<HTMLSelectElement>('select[aria-label="配置方式"]'), 'managed_account', 'change');
+      await flushEffects();
+    }
 
     await changeField(queryField<HTMLSelectElement>('select[aria-label="Client"]'), 'catagent', 'change');
     await flushEffects();
+    if (document.body.querySelector<HTMLSelectElement>('select[aria-label="配置方式"]')?.value === 'native_tool') {
+      await changeField(queryField<HTMLSelectElement>('select[aria-label="配置方式"]'), 'managed_account', 'change');
+      await flushEffects();
+    }
 
     expect(document.body.textContent).toContain('当前没有可用的认证账号');
     const createAccountButton = Array.from(document.body.querySelectorAll('button')).find(
@@ -170,10 +178,14 @@ describe('HubCatEditor zero-account onboarding', () => {
       root.render(React.createElement(HubCatEditor, { open: true, onClose: vi.fn(), onSaved }));
     });
     await flushEffects();
+    if (document.body.querySelector<HTMLSelectElement>('select[aria-label="配置方式"]')?.value === 'native_tool') {
+      await changeField(queryField<HTMLSelectElement>('select[aria-label="配置方式"]'), 'managed_account', 'change');
+      await flushEffects();
+    }
 
     expect(document.body.textContent).toContain('当前没有可用的认证账号');
     expect(document.body.textContent).toContain('首次安装默认只启用一个品种');
-    expect(queryField<HTMLSelectElement>('select[aria-label="认证信息"]').disabled).toBe(true);
+    expect(queryField<HTMLSelectElement>('select[aria-label="用哪个号"]').disabled).toBe(true);
 
     const createAccountButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent === '新建 / 登录账号',
@@ -189,11 +201,19 @@ describe('HubCatEditor zero-account onboarding', () => {
       authSaveButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flushEffects();
+    if (document.body.querySelector<HTMLSelectElement>('select[aria-label="配置方式"]')?.value === 'native_tool') {
+      await changeField(queryField<HTMLSelectElement>('select[aria-label="配置方式"]'), 'managed_account', 'change');
+      await flushEffects();
+    }
     await flushEffects();
+    if (document.body.querySelector<HTMLSelectElement>('select[aria-label="配置方式"]')?.value === 'native_tool') {
+      await changeField(queryField<HTMLSelectElement>('select[aria-label="配置方式"]'), 'managed_account', 'change');
+      await flushEffects();
+    }
 
     expect(document.body.textContent).toContain('添加成员');
     expect(document.body.textContent).not.toContain('添加账户认证');
-    const accountSelect = queryField<HTMLSelectElement>('select[aria-label="认证信息"]');
+    const accountSelect = queryField<HTMLSelectElement>('select[aria-label="用哪个号"]');
     expect(accountSelect.value).toBe('claude-oauth');
     expect(queryField<HTMLInputElement>('input[aria-label="Model"]').value).toBe('claude-sonnet-4-6');
 
@@ -208,6 +228,10 @@ describe('HubCatEditor zero-account onboarding', () => {
       memberSaveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flushEffects();
+    if (document.body.querySelector<HTMLSelectElement>('select[aria-label="配置方式"]')?.value === 'native_tool') {
+      await changeField(queryField<HTMLSelectElement>('select[aria-label="配置方式"]'), 'managed_account', 'change');
+      await flushEffects();
+    }
 
     const postCall = mockApiFetch.mock.calls.find(([path]) => path === '/api/cats');
     expect(postCall).toBeTruthy();

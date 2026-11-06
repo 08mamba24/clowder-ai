@@ -1,19 +1,26 @@
 /* eslint-disable @next/next/no-css-tags -- Global CSS that does not need Next processing
  * (xterm vendor + app-level token/control styles) is served as static stylesheets to
  * bypass Next dev's flight CSS loader which chokes on class selectors and non-root CSS. */
+import { deploymentDefaults } from '@cat-cafe/shared';
 import type { Metadata, Viewport } from 'next';
 import { AppShell } from '@/components/AppShell';
 import { BrakeModal } from '@/components/BrakeModal';
 import { CatHueInjector } from '@/components/CatHueInjector';
+import { CoCreatorHueInjector } from '@/components/CoCreatorHueInjector';
 import { GuideOverlay } from '@/components/GuideOverlay';
 import { SessionBootstrap } from '@/components/SessionBootstrap';
 import { ThemeApplier } from '@/components/ThemeApplier';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { ToastContainer } from '@/components/ToastContainer';
 import { ConfirmProvider } from '@/components/useConfirm';
+import vendorStylesheets from '@/generated/vendor-stylesheets.json';
 import { META_THEME_COLOR } from '@/lib/color-defaults';
 import { buildPwaRetirementScript } from '@/lib/pwa-retirement-script';
+import { runtimeApiOriginFromPort } from '@/lib/runtime-api-origin';
 import './globals.css';
+
+// The document must carry this process's API port, never a statically baked build port.
+export const dynamic = 'force-dynamic';
 
 export const viewport: Viewport = {
   width: 'device-width',
@@ -23,8 +30,8 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: 'Clowder AI',
-  description: 'Your AI team collaboration space',
+  title: deploymentDefaults.brand.name,
+  description: deploymentDefaults.brand.tagline,
   manifest: '/manifest.json',
   icons: {
     icon: [
@@ -37,7 +44,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
-    title: 'Clowder AI',
+    title: deploymentDefaults.brand.name,
   },
 };
 
@@ -55,18 +62,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       data-cat-cafe-build-revision={embeddedBrowserBuildRevision}
       data-cat-cafe-pwa-retirement={pwaEnabled ? 'enabled' : 'disabled'}
       data-pwa-cleanup-state={pwaEnabled ? 'enabled' : 'pending'}
+      data-cat-cafe-api-origin={runtimeApiOriginFromPort(process.env.API_SERVER_PORT)}
     >
       <head>
-        <link rel="stylesheet" href="/vendor/app/theme-tokens.css" />
-        <link rel="stylesheet" href="/vendor/app/cat-persona-tokens.css" />
-        <link rel="stylesheet" href="/vendor/app/cat-persona-derived.css" />
-        <link rel="stylesheet" href="/vendor/app/connector-tokens.css" />
-        <link rel="stylesheet" href="/vendor/app/theme-extras.css" />
-        <link rel="stylesheet" href="/vendor/app/console-tokens.css" />
-        <link rel="stylesheet" href="/vendor/app/console-shell.css" />
-        <link rel="stylesheet" href="/vendor/app/console-controls.css" />
-        <link rel="stylesheet" href="/vendor/app/werewolf-theme.css" />
-        <link rel="stylesheet" href="/vendor/xterm/xterm.css" />
+        {vendorStylesheets.map((href) => (
+          <link key={href} rel="stylesheet" href={href} />
+        ))}
       </head>
       <body className="min-h-screen">
         {pwaRetirementScript ? (
@@ -78,6 +79,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         ) : null}
         <SessionBootstrap />
         <CatHueInjector />
+        <CoCreatorHueInjector />
         <ThemeProvider>
           <ThemeApplier />
           <ConfirmProvider>

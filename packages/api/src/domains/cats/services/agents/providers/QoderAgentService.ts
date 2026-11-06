@@ -43,6 +43,7 @@ import {
 import { tmpdir, userInfo } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { CatId } from '@cat-cafe/shared';
+import { QODER_READONLY_MEMORY_TOOLS } from '../../../../../generated/fork-memory-tools.js';
 import type { GhReadLease } from '../../../../../infrastructure/github/agent-github-read-types.js';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 import { formatCliNotFoundError, resolveCliCommand } from '../../../../../utils/cli-resolve.js';
@@ -103,24 +104,9 @@ export const QODER_BASIC_TOOLS = Object.freeze(['Bash', 'Edit', 'Glob', 'Grep', 
 export const QODER_MEMORY_MCP_SERVER = 'cat-cafe-memory';
 
 /**
- * Exact readonly surface of the split `packages/mcp-server/dist/memory.js`
- * entrypoint. A cross-package test pins this duplicate projection to
- * buildMemoryTools({ readonly: true }) so registry drift fails CI.
+ * Exact readonly surface ... (see generated artifact) — generated, never hand-edited.
  */
-export const QODER_READONLY_MEMORY_TOOLS = Object.freeze([
-  'cat_cafe_graph_resolve',
-  'cat_cafe_list_external_runtime_sessions',
-  'cat_cafe_list_recent',
-  'cat_cafe_list_session_chain',
-  'cat_cafe_read_external_runtime_session',
-  'cat_cafe_read_file_slice',
-  'cat_cafe_read_invocation_detail',
-  'cat_cafe_read_meeting_artifact',
-  'cat_cafe_read_session_digest',
-  'cat_cafe_read_session_events',
-  'cat_cafe_run_perspective',
-  'cat_cafe_search_evidence',
-] as const);
+export { QODER_READONLY_MEMORY_TOOLS };
 
 export type QoderToolAccess = 'controlled' | 'disabled';
 
@@ -381,6 +367,18 @@ function exactStringSet(actual: unknown[], expected: readonly string[]): boolean
   return sortedActual.every((value, index) => value === sortedExpected[index]);
 }
 
+function describeSetMismatch(label: string, actual: readonly unknown[], expected: readonly string[]): string {
+  const expectedNames = new Set<unknown>(expected);
+  const reportedNames = new Set(actual);
+  const extra = [...reportedNames].filter((name) => !expectedNames.has(name));
+  const missing = expected.filter((name) => !reportedNames.has(name));
+  const duplicates = [...new Set(actual.filter((name, index) => actual.indexOf(name) !== index))];
+  return (
+    `${label} mismatch: expected=${JSON.stringify(expected)}, reported=${JSON.stringify(actual)}, ` +
+    `extra=${JSON.stringify(extra)}, missing=${JSON.stringify(missing)}, duplicates=${JSON.stringify(duplicates)}`
+  );
+}
+
 /** init 门（任何 assistant 事件之前，fail closed）。tools/mcp 必须与本次请求精确全等。 */
 export function qoderInitGate(
   initEvent: unknown,
@@ -396,7 +394,7 @@ export function qoderInitGate(
   }
   if (!Array.isArray(e.tools)) return { ok: false, reason: 'init.tools missing (not an array)' };
   if (!exactStringSet(e.tools, expected.tools)) {
-    return { ok: false, reason: `tools mismatch: ${JSON.stringify(e.tools)}` };
+    return { ok: false, reason: describeSetMismatch('tools', e.tools, expected.tools) };
   }
   if (!Array.isArray(e.mcp_servers)) return { ok: false, reason: 'init.mcp_servers missing (not an array)' };
   const mcpNames: string[] = [];
@@ -412,7 +410,7 @@ export function qoderInitGate(
     mcpNames.push(server.name);
   }
   if (!exactStringSet(mcpNames, expected.mcpServerNames)) {
-    return { ok: false, reason: `mcp server set mismatch: ${JSON.stringify(mcpNames)}` };
+    return { ok: false, reason: describeSetMismatch('mcp server set', mcpNames, expected.mcpServerNames) };
   }
   // P1④ 精确匹配（大小写敏感）。L1 夹具实测：未认证 CLI 回报小写 auto（auth-error），
   // 静默回落回报 Auto（silent-model-fallback）——任何与请求值不同的字符串（含大小写
@@ -756,6 +754,13 @@ function createQoderInvocationLease(input: {
       CAT_CAFE_READONLY: 'true',
       // Incidental agent-key vars inherited by qodercn must never widen this mount.
       CAT_CAFE_READONLY_AGENT_KEY_UNION: 'false',
+      // Explicit capability declaration, not a credential: this mount only
+      // receives identity vars (READONLY_MEMORY_IDENTITY_ENV_KEYS). The memory
+      // server must not advertise tools whose only authorization path is a
+      // callback (recall metrics, meeting artifacts), because they can never be
+      // called here. No invocation/agent-key secret is passed to Qoder/Bash/
+      // mcp-config by this declaration.
+      CAT_CAFE_MCP_CALLBACK_CREDENTIALS: 'false',
       HOME: homeDir,
       TMPDIR: scratchDir,
     };

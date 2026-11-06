@@ -318,6 +318,8 @@ export interface AssemblerInput {
   pingPongWarning: PingPongInput | null;
   teammates: readonly TeammateSnapshot[];
   mentionRoutingItems: readonly string[];
+  /** A private declaration/action discrepancy, distinct from unrouted mentions. */
+  voidHoldFeedback?: boolean;
   promptTags: readonly string[];
   activeParticipants: readonly ActiveParticipantInput[];
   routingPolicyParts: string | null;
@@ -329,10 +331,9 @@ export interface AssemblerInput {
   guidePromptLines: string | null;
   conciergeLines: readonly string[] | null;
 
-  // --- World / Knowledge / Signals ---
+  // --- World / Knowledge ---
   worldContext: WorldContextInput | null;
   alwaysOnDocsBlock: string | null;
-  activeSignalsBlock: string | null;
 
   // --- Pre-loaded template content (for D8/D21 which use file loading) ---
   a2aBallCheckContent: string | null;

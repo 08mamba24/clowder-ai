@@ -4,12 +4,12 @@ related_features: [F133, F139, F141, F168, F280]
 topics: [github, conflict-detection, review-feedback, pr-signals, automation]
 doc_kind: spec
 created: 2026-03-26
-tips_exempt: "Renewed 2026-09-04 for the current F308 public-link projection only; the agent-facing tracking policy adds no separate user capability."
+tips_exempt: "Renewed 2026-10-15 for the public repository-name projection in an existing dynamic-repository validation example; tracking behavior and user actions are unchanged."
 ---
 
 # F140: GitHub PR Signals — 冲突检测 + Review Feedback 全来源感知
 
-> ## ⛔ 契约冻结（2026-07-29，operator signoff msg `0001785311364054-000054-656d056c`）
+> ## ⛔ 契约冻结（2026-07-29，operator signoff msg `private-source-id`）
 >
 > **本 Feature 的 wake 契约已移交 F280 Unified Wait Contract。**
 > F140 从此不再接受新的 post-completion 补丁——下面那串从 2026-05-07 到 2026-07-20 的
@@ -131,7 +131,7 @@ operator补充：
 
 > **愿景**：PR tracking 是面向开源社区的通用功能——社区小伙伴在自己的项目里也能用。注册接口不能假设仓库是哪个，但也不能接受不存在的仓库名（脏数据会让 F139 轮询器查错 repo）。
 >
-> **守护**：不硬编码 `zts212653/cat-cafe`，用 `gh repo view` 动态校验。合法 repo 全放行，非法 repo 全拦截。
+> **守护**：不硬编码 `zts212653/clowder-ai`，用 `gh repo view` 动态校验。合法 repo 全放行，非法 repo 全拦截。
 >
 > **根因**：2026-03-25 一次 merge-gate 注册了 `anthropic-cat-cafe/cat-cafe#743`（repo 不存在），脏数据驻留导致 CI/CD Check 轮询假仓库。
 

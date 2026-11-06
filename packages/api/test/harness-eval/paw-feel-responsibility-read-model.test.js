@@ -117,6 +117,13 @@ describe('F278 responsibility read model', () => {
       ownerCatId: 'codex-sol',
       taskId: 'task-1',
       leaseId: 'lease-1',
+      repairBinding: {
+        kind: 'action_lease',
+        taskId: 'task-1',
+        leaseId: 'lease-1',
+        generation: 4,
+        holderThreadId: null,
+      },
     });
     assert.deepEqual(derivePawFeelResponsibility(repair), {
       state: 'unreviewed',
@@ -126,6 +133,13 @@ describe('F278 responsibility read model', () => {
       ownerCatId: 'codex-sol',
       taskId: 'task-1',
       leaseId: 'lease-1',
+      repairBinding: {
+        kind: 'action_lease',
+        taskId: 'task-1',
+        leaseId: 'lease-1',
+        generation: 4,
+        holderThreadId: null,
+      },
     });
 
     const proposed = { ...baseProjection('route_pending'), proposalId: 'proposal-1' };
@@ -149,6 +163,11 @@ describe('F278 responsibility read model', () => {
       source: { availability: 'available', preview: 'preview', sourceHref: '/source', digestVerified: true },
       ageMs: 1,
       overdue: false,
+      issue: {
+        resolution: 'open',
+        continuation: { kind: 'review_required', evidenceRefs: [] },
+        ageMs: 1,
+      },
       reviewContext: { sourceMarkerCount: 2 },
     };
     const [mixed] = derivePawFeelBundles([

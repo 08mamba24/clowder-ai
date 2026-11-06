@@ -1,5 +1,6 @@
 import { CONTEXT_ATTACHMENT_COMMENT_MAX_LENGTH } from '@cat-cafe/shared';
 import type { RefObject } from 'react';
+import { useActionSurfaceRef } from './message-v2/message-action-ownership';
 import {
   type TransferCatChoice,
   TransferCatStep,
@@ -19,6 +20,7 @@ interface TransferTargetPickerViewProps {
   error: string | null;
   submitting: boolean;
   itemCount: number;
+  selectionSummary?: string;
   singleItemLabel?: string;
   onClose: () => void;
   onBack: () => void;
@@ -145,8 +147,12 @@ function TransferPickerFooter({
 }
 
 export function TransferTargetPickerView(props: TransferTargetPickerViewProps) {
+  const actionSurfaceRef = useActionSurfaceRef<HTMLDivElement>();
   return (
-    <div className={`fixed inset-0 z-[90] flex ${props.isDesktop ? 'items-center justify-center p-4' : 'items-end'}`}>
+    <div
+      ref={actionSurfaceRef}
+      className={`fixed inset-0 z-[90] flex ${props.isDesktop ? 'items-center justify-center p-4' : 'items-end'}`}
+    >
       <button
         type="button"
         className="absolute inset-0 bg-[var(--console-overlay-backdrop)]"
@@ -164,6 +170,13 @@ export function TransferTargetPickerView(props: TransferTargetPickerViewProps) {
         }`}
       >
         <TransferPickerHeader {...props} />
+        <div
+          className="max-h-32 shrink-0 overflow-y-auto border-b border-cafe px-[14px] py-2.5 text-[13px] text-cafe-primary"
+          data-testid="transfer-selection-summary"
+        >
+          <p>{props.singleItemLabel ? `转发 ${props.singleItemLabel}` : `转发 ${props.itemCount} 条消息`}</p>
+          {props.selectionSummary && <p className="mt-0.5 text-xs text-cafe-muted">{props.selectionSummary}</p>}
+        </div>
         <TransferPickerBody {...props} />
         {props.targetThreadId ? <TransferPickerFooter {...props} /> : null}
       </div>

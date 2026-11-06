@@ -18,7 +18,7 @@ const {
   sanitizeZcodeFailureText,
   zcodeAppServerEnv,
   ZcodeStderrRedactor,
-} = await import('../../dist/domains/cats/services/agents/providers/acp/zcode-acp-protocol.js');
+} = await import('../../dist/domains/cats/services/agents/providers/acp/zcode/zcode-acp-protocol.js');
 
 describe('ZCode ACP adapter contract (fake app-server)', () => {
   it('initialize / session/new / prompt returns PONG with end_turn', async () => {

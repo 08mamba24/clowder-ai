@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { CatId, SessionRecord } from '@cat-cafe/shared';
+import { deploymentDefaults } from '@cat-cafe/shared';
 import type { FastifyInstance, FastifyPluginOptions, FastifyReply, FastifyRequest } from 'fastify';
 import type { AgentRegistry } from '../domains/cats/services/agents/registry/AgentRegistry.js';
+import { isHomeSession } from '../domains/cats/services/session/session-scope.js';
 import type { ISessionChainStore } from '../domains/cats/services/stores/ports/SessionChainStore.js';
 import type { IThreadStore, Thread } from '../domains/cats/services/stores/ports/ThreadStore.js';
 import type { ProviderNativeStatus } from '../domains/cats/services/types.js';
@@ -47,6 +49,7 @@ export async function nativeThreadStatusRoutes(
     const sessions = await options.sessionChainStore.getChainByThread(access.thread.id);
     const candidates = sessions.filter(
       (session) =>
+        isHomeSession(session) &&
         session.status === 'active' &&
         session.userId === access.userId &&
         !!session.cliSessionId &&
@@ -62,7 +65,7 @@ export async function nativeThreadStatusRoutes(
     if (!source) return;
     const targetThreadId = request.body?.targetThreadId?.trim();
     if (!targetThreadId || targetThreadId === source.thread.id) {
-      return reply.status(400).send({ error: 'A distinct Clowder AI target thread is required' });
+      return reply.status(400).send({ error: `A distinct ${deploymentDefaults.brand.name} target thread is required` });
     }
     const targetThread = await options.threadStore.get(targetThreadId);
     if (!targetThread) return reply.status(404).send({ error: 'Target thread not found' });
@@ -97,7 +100,7 @@ export async function nativeThreadStatusRoutes(
       );
       if (!bound) {
         return reply.status(409).send({
-          error: 'Native fork could not bind the Clowder AI target',
+          error: `Native fork could not bind the ${deploymentDefaults.brand.name} target`,
           code: 'NATIVE_FORK_BIND_CONFLICT',
           providerEvidence: { runtimeSessionId: fork.forkedRuntimeSessionId, binding: 'unbound' },
         });

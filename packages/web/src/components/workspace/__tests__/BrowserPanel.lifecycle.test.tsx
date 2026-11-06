@@ -1,15 +1,21 @@
-import React, { act } from 'react';
+import React, { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
+  hmrEnabled: [] as boolean[],
 }));
 
 vi.mock('@/utils/api-client', () => ({
   apiFetch: (...args: unknown[]) => mocks.apiFetch(...args),
 }));
-vi.mock('../useHmrStatus', () => ({ useHmrStatus: () => 'idle' }));
+vi.mock('../useHmrStatus', () => ({
+  useHmrStatus: (_gatewayPort: number, _targetPort: number, enabled = true) => {
+    mocks.hmrEnabled.push(enabled);
+    return 'idle';
+  },
+}));
 vi.mock('../usePreviewBridge', () => ({
   usePreviewBridge: () => ({
     consoleEntries: [],
@@ -25,6 +31,7 @@ vi.mock('../BrowserToolbar', () => ({
   BrowserToolbar: () => React.createElement('div', { 'data-testid': 'browser-toolbar' }),
 }));
 
+import { WorkspaceSurfaceVisibilityProvider } from '@/components/workbench/WorkspaceSurfaceVisibility';
 import { BrowserPanel } from '../BrowserPanel';
 
 describe('F284 BrowserPanel preview lifecycle', () => {
@@ -37,6 +44,7 @@ describe('F284 BrowserPanel preview lifecycle', () => {
   });
 
   beforeEach(() => {
+    mocks.hmrEnabled = [];
     mocks.apiFetch.mockReset();
     mocks.apiFetch.mockImplementation(async (url: string) => {
       if (url === '/api/preview/status') {
@@ -59,6 +67,37 @@ describe('F284 BrowserPanel preview lifecycle', () => {
   afterAll(() => {
     delete (globalThis as { React?: typeof React }).React;
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  });
+
+  it('creates one tab under StrictMode and keeps one tab when the same port re-enters', async () => {
+    await act(async () =>
+      root.render(
+        <StrictMode>
+          <BrowserPanel initialPort={5173} />
+        </StrictMode>,
+      ),
+    );
+    const tabs = () => container.querySelectorAll('[role="button"]');
+    expect(tabs()).toHaveLength(1);
+    await act(async () =>
+      root.render(
+        <StrictMode>
+          <BrowserPanel initialPort={5173} initialPath="/updated" />
+        </StrictMode>,
+      ),
+    );
+    expect(tabs()).toHaveLength(1);
+    expect(container.textContent).toContain('localhost:5173');
+  });
+
+  it('keeps separate tabs for different ports and reuses a previously opened port', async () => {
+    await act(async () => root.render(<BrowserPanel initialPort={5173} />));
+    await act(async () => root.render(<BrowserPanel initialPort={5324} initialPath="/dashboard" />));
+    expect(container.querySelectorAll('[role="button"]')).toHaveLength(2);
+    expect(container.textContent).toContain('localhost:5173');
+    expect(container.textContent).toContain('localhost:5324/dashboard');
+    await act(async () => root.render(<BrowserPanel initialPort={5173} />));
+    expect(container.querySelectorAll('[role="button"]')).toHaveLength(2);
   });
 
   it('does not terminate the backend preview when the shell unmounts', async () => {
@@ -93,5 +132,54 @@ describe('F284 BrowserPanel preview lifecycle', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ port: 5173 }),
     });
+  });
+
+  it('keeps the preview instance while hidden, pauses HMR detail work, and re-probes once on return', async () => {
+    mocks.apiFetch.mockImplementation(async (url: string) => {
+      if (url === '/api/preview/status') {
+        return { json: async () => ({ available: true, gatewayPort: 4111 }) };
+      }
+      if (url.startsWith('/api/preview/target-health')) {
+        return { ok: true, json: async () => ({ reachable: true }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    const render = async (visible: boolean) => {
+      await act(async () => {
+        root.render(
+          <WorkspaceSurfaceVisibilityProvider visible={visible}>
+            <BrowserPanel initialPort={5173} initialPath="/owner-a" />
+          </WorkspaceSurfaceVisibilityProvider>,
+        );
+        await Promise.resolve();
+      });
+    };
+    const requestCount = (prefix: string) =>
+      mocks.apiFetch.mock.calls.filter(([url]) => String(url).startsWith(prefix)).length;
+
+    await render(false);
+    expect(requestCount('/api/preview/status')).toBe(0);
+    expect(requestCount('/api/preview/target-health')).toBe(0);
+    expect(mocks.hmrEnabled.at(-1)).toBe(false);
+
+    await render(true);
+    const iframe = container.querySelector('iframe');
+    expect(iframe).not.toBeNull();
+    expect(requestCount('/api/preview/status')).toBe(1);
+    const healthBeforeHide = requestCount('/api/preview/target-health');
+    expect(healthBeforeHide).toBe(1);
+    expect(mocks.hmrEnabled.at(-1)).toBe(true);
+
+    await render(false);
+    expect(container.querySelector('iframe')).toBe(iframe);
+    expect(requestCount('/api/preview/status')).toBe(1);
+    expect(requestCount('/api/preview/target-health')).toBe(healthBeforeHide);
+    expect(mocks.hmrEnabled.at(-1)).toBe(false);
+
+    await render(true);
+    expect(container.querySelector('iframe')).toBe(iframe);
+    expect(requestCount('/api/preview/status')).toBe(1);
+    expect(requestCount('/api/preview/target-health')).toBe(healthBeforeHide + 1);
+    expect(mocks.hmrEnabled.at(-1)).toBe(true);
   });
 });

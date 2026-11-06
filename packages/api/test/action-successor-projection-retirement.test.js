@@ -18,16 +18,16 @@ const HEAD_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 function completedLease() {
   const terminalPredicate = canonicalizeActionTerminalPredicate({
-    actionFamily: 'review',
-    subjectRef: 'pr:zts212653/clowder-ai#1391',
-    predicate: { kind: 'review_delivered', headSha: HEAD_A },
+    actionFamily: 'implement',
+    subjectRef: 'subject:task:work-1391',
+    predicate: { kind: 'task_done' },
   });
   const claimed = claimActionSuccessor(null, {
     leaseId: '52752674-4234-4f23-97fd-8bcb25c86025',
     tenantScope: 'default-user',
-    subjectRef: 'pr:zts212653/clowder-ai#1391',
-    actionFamily: 'review',
-    successorSlot: 'reviewer',
+    subjectRef: 'subject:task:work-1391',
+    actionFamily: 'implement',
+    successorSlot: 'implementer',
     mode: 'single',
     holderCatIds: ['codex-sol'],
     dispatchId: 'cross-post:f300-pr1391-replace-gen3-v1',
@@ -43,7 +43,7 @@ function completedLease() {
   const candidate = recordActionCompletionCandidate(claimed, {
     generation: 1,
     catId: 'codex-sol',
-    evidenceRefs: ['community:pr:zts212653/clowder-ai#1391:review:approved'],
+    evidenceRefs: ['task:work-1391:done:110'],
     now: 110,
   });
   const snapshot = candidate.completionCandidates['codex-sol'];
@@ -111,20 +111,10 @@ describe('#1371 fenced terminal projection retirement', () => {
     assert.equal(fixture.grounding.trackingTaskPresent, false);
   });
 
-  it('retires the exact Queue fence and matching tracking generation idempotently', async () => {
+  it('retires the exact Queue fence idempotently without mutating migrated tracking data', async () => {
     const lease = completedLease();
     const taskStore = new TaskStore();
     const task = await createTrackingTask(taskStore);
-    const queueCustodyCoordinator = {
-      retireActionSuccessorFence: mock.fn(async () => ({
-        changed: true,
-        messageId: 'message-1391',
-        threadId: 'thread_mp3ab0r9xqxrkrc5',
-        userId: 'default-user',
-        entryIds: ['queue-1391'],
-        targetCatIds: ['codex-sol'],
-      })),
-    };
     const invocationQueue = {
       listActionSuccessorFence: mock.fn(() => [
         {
@@ -134,7 +124,7 @@ describe('#1371 fenced terminal projection retirement', () => {
           messageIds: ['message-1391'],
         },
       ]),
-      retireActionSuccessorFence: mock.fn(() => [
+      retireActionSuccessorFenceDurable: mock.fn(async () => [
         {
           entryId: 'queue-1391',
           threadId: 'thread_mp3ab0r9xqxrkrc5',
@@ -145,7 +135,6 @@ describe('#1371 fenced terminal projection retirement', () => {
     };
     const publishQueue = mock.fn(async () => undefined);
     const service = new ActionSuccessorProjectionRetirementService({
-      queueCustodyCoordinator,
       invocationQueue,
       taskStore,
       publishQueue,
@@ -155,11 +144,9 @@ describe('#1371 fenced terminal projection retirement', () => {
     await service.retire(lease);
 
     const retired = await taskStore.get(task.id);
-    assert.equal(retired.status, 'done');
-    assert.equal(retired.automationState.await, undefined);
+    assert.deepEqual(retired, task, 'tracking lifecycle belongs to the installed provider');
     assert.equal(retired.automationState.ci.headSha, HEAD_A);
-    assert.equal(queueCustodyCoordinator.retireActionSuccessorFence.mock.calls.length, 2);
-    assert.equal(invocationQueue.retireActionSuccessorFence.mock.calls.length, 2);
+    assert.equal(invocationQueue.retireActionSuccessorFenceDurable.mock.calls.length, 2);
     assert.deepEqual(publishQueue.mock.calls[0].arguments[0], {
       threadId: 'thread_mp3ab0r9xqxrkrc5',
       userId: 'default-user',
@@ -175,19 +162,6 @@ describe('#1371 fenced terminal projection retirement', () => {
     } = completedLease();
     const events = [];
     const taskStore = new TaskStore();
-    const queueCustodyCoordinator = {
-      retireActionSuccessorFence: mock.fn(async (messageId) => {
-        events.push(`durable:${messageId}`);
-        return {
-          changed: true,
-          messageId,
-          threadId: 'thread_mp3ab0r9xqxrkrc5',
-          userId: 'default-user',
-          entryIds: ['queue-direct'],
-          targetCatIds: ['codex-sol'],
-        };
-      }),
-    };
     const invocationQueue = {
       listActionSuccessorFence: mock.fn(() => {
         events.push('process:list');
@@ -200,13 +174,19 @@ describe('#1371 fenced terminal projection retirement', () => {
           },
         ];
       }),
-      retireActionSuccessorFence: mock.fn(() => {
-        events.push('process:retire');
-        return [];
+      retireActionSuccessorFenceDurable: mock.fn(async () => {
+        events.push('durable:retire');
+        return [
+          {
+            entryId: 'queue-direct',
+            threadId: 'thread_mp3ab0r9xqxrkrc5',
+            userId: 'default-user',
+            messageIds: ['message-direct'],
+          },
+        ];
       }),
     };
     const service = new ActionSuccessorProjectionRetirementService({
-      queueCustodyCoordinator,
       invocationQueue,
       taskStore,
       publishQueue: async () => events.push('publish'),
@@ -214,21 +194,19 @@ describe('#1371 fenced terminal projection retirement', () => {
 
     await service.retire(lease);
 
-    assert.deepEqual(events, ['process:list', 'durable:message-direct', 'process:retire', 'publish']);
+    assert.deepEqual(events, ['process:list', 'durable:retire', 'publish']);
   });
 
   it('does not retire fresh-HEAD tracking while converging the old fenced projection', async () => {
     const lease = completedLease();
     const taskStore = new TaskStore();
     const task = await createTrackingTask(taskStore, HEAD_B);
-    const queueCustodyCoordinator = { retireActionSuccessorFence: mock.fn(async () => null) };
     const invocationQueue = {
       listActionSuccessorFence: mock.fn(() => []),
-      retireActionSuccessorFence: mock.fn(() => []),
+      retireActionSuccessorFenceDurable: mock.fn(async () => []),
     };
     const publishQueue = mock.fn(async () => undefined);
     const service = new ActionSuccessorProjectionRetirementService({
-      queueCustodyCoordinator,
       invocationQueue,
       taskStore,
       publishQueue,

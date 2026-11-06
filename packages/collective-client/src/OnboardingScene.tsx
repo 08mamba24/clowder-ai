@@ -1,12 +1,14 @@
 import { type FormEvent, useState } from 'react';
 
 import type { ClientPhase, HumanAuthProviderStatus } from './client-types.js';
+import { useCollectiveText } from './collective-copy.js';
 import type { EntryMode } from './human-auth-flow.js';
 
 export function OnboardingScene({
   phase,
   mode,
   providers,
+  hasAuthenticatedHuman = false,
   error,
   onBootstrap,
   onAuthenticate,
@@ -16,12 +18,14 @@ export function OnboardingScene({
   readonly phase: ClientPhase;
   readonly mode: EntryMode;
   readonly providers: readonly HumanAuthProviderStatus[];
+  readonly hasAuthenticatedHuman?: boolean;
   readonly error?: string;
   readonly onBootstrap: (displayName: string) => Promise<void>;
   readonly onAuthenticate: () => Promise<void>;
   readonly onConfigureProvider: () => Promise<void>;
   readonly onCreateCollective: (name: string) => Promise<void>;
 }) {
+  const t = useCollectiveText();
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState<string>();
   const github = providers.find((provider) => provider.id === 'github');
@@ -29,15 +33,15 @@ export function OnboardingScene({
   if (phase === 'loading') {
     return (
       <div className="state-scene" aria-live="polite">
-        <p>正在打开共同家园…</p>
+        <p>{t('正在打开共同体…')}</p>
       </div>
     );
   }
   if (phase === 'unavailable') {
     return (
       <div className="state-scene state-scene-error" role="alert">
-        <h2>现在还进不去</h2>
-        <p>共同现场暂时不可达。数据仍留在原处，恢复连接后可以继续。</p>
+        <h2>{t('现在还进不去')}</h2>
+        <p>{t('暂时连不上这个共同体。恢复后可以接着用。')}</p>
         {error && <small>{error}</small>}
       </div>
     );
@@ -67,12 +71,12 @@ export function OnboardingScene({
     return (
       <div className="entry-wrap">
         <section className="entry-card">
-          <p className="entry-eyebrow">Human 登录</p>
-          <h2>创建 GitHub 登录应用</h2>
-          <p>在 GitHub 确认一次即可为这个 Service 建立登录能力，不需要复制 Client ID 或 secret。</p>
+          <p className="entry-eyebrow">{t('Human 登录')}</p>
+          <h2>{t('创建 GitHub 登录应用')}</h2>
+          <p>{t('在 GitHub 确认一次即可为这个 Service 建立登录能力，不需要复制 Client ID 或 secret。')}</p>
           <div className="entry-action">
             <button type="button" disabled={busy} onClick={() => void run(onConfigureProvider)}>
-              {busy ? '正在打开 GitHub…' : '在 GitHub 中创建'}
+              {t(busy ? '正在打开 GitHub…' : '在 GitHub 中创建')}
             </button>
           </div>
           {localError && <p className="form-error">{localError}</p>}
@@ -84,9 +88,13 @@ export function OnboardingScene({
   if (phase === 'create-collective') {
     return (
       <EntryCard
-        eyebrow="第一次建立 Collective"
-        title="给共同家园起个名字"
-        description="你会成为第一位管理者。首启完成后还需绑定 Human 身份，才能邀请成员、连接 Café 或进入日常协作。"
+        eyebrow={hasAuthenticatedHuman ? '选择下一步' : '第一次建立 Collective'}
+        title={hasAuthenticatedHuman ? '新建共同体' : '给共同体起个名字'}
+        description={
+          hasAuthenticatedHuman
+            ? '你已离开原共同体。可以在这里新建，也可以从新的邀请链接加入；原公开历史与署名仍会保留。'
+            : '你会成为第一位管理者。首启完成后还需绑定 Human 身份，才能邀请成员、连接 Café 或进入日常协作。'
+        }
         label="Collective 名称"
         defaultValue="Clowder AI Collective"
         button="建立 Collective"
@@ -131,7 +139,7 @@ export function OnboardingScene({
     return (
       <AuthCard
         eyebrow="Collective 邀请"
-        title="加入同一个共同现场"
+        title="加入共同体"
         description="先验证你的 Human 身份，再接受这次邀请。Clowder AI endpoint 的连接与撤销仍独立管理。"
         button="使用 GitHub 验证并加入"
         providerReady={github?.ready === true}
@@ -145,7 +153,7 @@ export function OnboardingScene({
   return (
     <AuthCard
       eyebrow="欢迎回来"
-      title="进入你的 Collective"
+      title="登录共同体"
       description="用已经绑定的 Human 身份登录。若你是新成员，请从邀请链接进入。"
       button="使用 GitHub 登录"
       providerReady={github?.ready === true}
@@ -187,18 +195,19 @@ function AuthCard({
   readonly error?: string;
   readonly onAuthenticate: () => Promise<void>;
 }) {
+  const t = useCollectiveText();
   return (
     <div className="entry-wrap">
       <section className="entry-card">
-        <p className="entry-eyebrow">{eyebrow}</p>
-        <h2>{title}</h2>
-        <p>{description}</p>
+        <p className="entry-eyebrow">{t(eyebrow)}</p>
+        <h2>{t(title)}</h2>
+        <p>{t(description)}</p>
         <div className="entry-action">
           <button type="button" disabled={busy || !providerReady} onClick={() => void onAuthenticate()}>
-            {busy ? '正在前往验证…' : button}
+            {t(busy ? '正在前往验证…' : button)}
           </button>
         </div>
-        {!providerReady && <p className="provider-note">Human 登录尚未配置，请联系 Service 管理者。</p>}
+        {!providerReady && <p className="provider-note">{t('Human 登录尚未配置，请联系 Service 管理者。')}</p>}
         {error && <p className="form-error">{error}</p>}
       </section>
     </div>
@@ -226,19 +235,20 @@ function EntryCard({
   readonly error?: string;
   readonly onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
 }) {
+  const t = useCollectiveText();
   return (
     <div className="entry-wrap">
       <section className="entry-card">
-        <p className="entry-eyebrow">{eyebrow}</p>
-        <h2>{title}</h2>
-        <p>{description}</p>
+        <p className="entry-eyebrow">{t(eyebrow)}</p>
+        <h2>{t(title)}</h2>
+        <p>{t(description)}</p>
         <form onSubmit={(event) => void onSubmit(event)}>
           <label>
-            {label}
+            {t(label)}
             <input name="value" defaultValue={defaultValue} autoComplete="name" required />
           </label>
           <button type="submit" disabled={busy}>
-            {busy ? '正在继续…' : button}
+            {t(busy ? '正在继续…' : button)}
           </button>
         </form>
         {error && <p className="form-error">{error}</p>}

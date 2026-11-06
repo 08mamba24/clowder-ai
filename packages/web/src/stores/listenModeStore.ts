@@ -1,14 +1,20 @@
-import type { ListenDocumentIdentity, ListenPlaybackRate, ListenRetention } from '@cat-cafe/shared';
+import type { ListenDocumentIdentity, ListenPlaybackRate, ListenRetention, ThreadArtifactDTO } from '@cat-cafe/shared';
 import { create } from 'zustand';
 import type { ListenSentence } from '@/lib/listen-mode/markdown-sentences';
 
 export type ListenModePhase = 'loading' | 'buffering' | 'playing' | 'paused' | 'idle' | 'error';
+/** Explicit view navigation only; this event never starts playback or changes document authority. */
+export const LISTEN_RETURN_DOCUMENT_EVENT = 'cat-cafe:listen-return-document';
 
 export interface ListenDocumentDescriptor {
   identity: ListenDocumentIdentity;
   title: string;
   worktreeId: string | null;
   sentences: ListenSentence[];
+  /** Navigation points back to an existing owner; an opaque cache identity is never a filesystem locator. */
+  returnTarget?:
+    | { kind: 'workspace'; worktreeId: string; path: string }
+    | { kind: 'artifact'; threadId: string; artifact: ThreadArtifactDTO };
 }
 
 export interface ListenModeSession extends ListenDocumentDescriptor {

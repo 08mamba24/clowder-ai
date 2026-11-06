@@ -52,6 +52,8 @@ export interface ReattachReturnedActionSuccessorInput {
   terminalPredicate: CanonicalActionTerminalPredicate;
   evidenceRef: string;
   freshnessEvidenceRef: string;
+  /** F167 × F322: proposal authority evidence from delegate standing. */
+  delegateEvidenceRef?: string;
   returnedHolderCatId: string;
   returnedHolderThreadId: string;
   returnProof: ReturnedActionSuccessorProof;
@@ -224,19 +226,23 @@ export function reattachReturnedActionSuccessor(
       dispatchId,
       terminalPredicateState: { kind: 'predicate_backed' },
       terminalPredicate: input.terminalPredicate,
+
       generation: current.generation + 1,
       status: 'active',
       holderOutcomes: {},
       completionCandidates: {},
       evidenceRefs: [
-        ...new Set([
-          ...current.evidenceRefs,
-          current.issuerStandingEvidenceRef,
-          transition.groundingEvidenceRef,
-          evidenceRef,
-          freshnessEvidenceRef,
-          ...(returnProofEvidenceRef ? [returnProofEvidenceRef] : []),
-        ]),
+        ...new Set(
+          [
+            ...current.evidenceRefs,
+            current.issuerStandingEvidenceRef,
+            transition.groundingEvidenceRef,
+            evidenceRef,
+            freshnessEvidenceRef,
+            input.delegateEvidenceRef,
+            ...(returnProofEvidenceRef ? [returnProofEvidenceRef] : []),
+          ].filter((r): r is string => !!r),
+        ),
       ],
       returnDeliveryState: undefined,
       returnDeliveryEvidenceRef: undefined,

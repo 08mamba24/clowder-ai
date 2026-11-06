@@ -11,23 +11,36 @@ import {
 } from '../infrastructure/capability-evolution/program-command-contract.js';
 import { EvolutionProgramEvaluationError } from '../infrastructure/capability-evolution/program-evaluation-linker.js';
 import { ProgramJoinInputError } from '../infrastructure/capability-evolution/program-join-validator.js';
+import type { EvolutionProgramPreparationService } from '../infrastructure/capability-evolution/program-preparation-service.js';
 import type { EvolutionProgramService } from '../infrastructure/capability-evolution/program-service.js';
+import type { EvolutionProgramOriginResolver } from '../infrastructure/capability-evolution/read-model/program-origin.js';
 import type { CapabilityEvolutionMeasurementIssuer } from '../infrastructure/harness-eval/measurement/capability-evolution/capability-evolution-measurement-issuer.js';
 import type { AgentKeyAuthRegistry, CallbackAuthRegistry } from './callback-auth-prehandler.js';
 import { registerCallbackAuthHook } from './callback-auth-prehandler.js';
+import { createCapabilityEvolutionAssetReviewHandler } from './capability-evolution-asset-review-route.js';
+import { createCapabilityEvolutionExplorationMediaHandler } from './capability-evolution-exploration-media-route.js';
+import { createCapabilityEvolutionExplorationHandler } from './capability-evolution-exploration-routes.js';
 import { registerCapabilityEvolutionMeasurementIssuanceRoute } from './capability-evolution-measurement-issuance-route.js';
+import {
+  createCapabilityEvolutionPreparationMediaHandler,
+  createCapabilityEvolutionPreparationReviewHandler,
+} from './capability-evolution-preparation-review-route.js';
 import { createCapabilityEvolutionProgramAdapterHandlers } from './capability-evolution-program-adapter-routes.js';
 import { createCapabilityEvolutionChangeHandler } from './capability-evolution-program-change-handler.js';
 import { requireContext } from './capability-evolution-program-context.js';
+import { createPreparationHandlers } from './capability-evolution-program-preparation-routes.js';
+import { createCapabilityEvolutionProgramReadHandlers } from './capability-evolution-program-read-routes.js';
 import {
   commandSchema,
   constitutionSchema,
   createProgramSchema,
   evaluationRoundSchema,
   evaluationSchema,
+  measurementConstitutionRebindSchema,
   observationSchema,
   programIdSchema,
 } from './capability-evolution-program-schemas.js';
+import { surfaceFor } from './capability-evolution-program-surface.js';
 
 export interface CapabilityEvolutionProgramRoutesOptions {
   service?: Pick<
@@ -38,6 +51,7 @@ export interface CapabilityEvolutionProgramRoutesOptions {
     | 'command'
     | 'linkObservation'
     | 'linkCertificates'
+    | 'rebindMeasurementConstitution'
     | 'triggerEvaluation'
     | 'linkMeasurement'
     | 'linkAttribution'
@@ -46,10 +60,12 @@ export interface CapabilityEvolutionProgramRoutesOptions {
     | 'syncChange'
     | 'decideChange'
   >;
+  preparationService?: Pick<EvolutionProgramPreparationService, 'get' | 'beginPreparationWork' | 'submitPreparation'>;
   callbackRegistry?: CallbackAuthRegistry;
   agentKeyRegistry?: AgentKeyAuthRegistry;
   measurementIssuer?: Pick<CapabilityEvolutionMeasurementIssuer, 'issue'>;
   adapterRegistry?: ProgramAdapterRegistry;
+  resolveOrigin?: EvolutionProgramOriginResolver;
 }
 
 const PROGRAM_ERROR_STATUS = {
@@ -59,27 +75,6 @@ const PROGRAM_ERROR_STATUS = {
   idempotency_collision: 409,
 } as const satisfies Record<EvolutionProgramServiceErrorCode, number>;
 
-function surfaceFor(programId: string) {
-  return {
-    id: `evolution-program:${programId}`,
-    type: 'evolution-program',
-    renderer: 'evolution-program',
-    title: 'Evolution Program',
-    context: 'Capability Evolution · canonical lifecycle',
-    objectRef: { kind: 'evolution-program', id: programId },
-    ownerStateRef: { owner: 'f311-capability-evolution-control', key: programId },
-    resultTargetRef: { owner: 'f311-capability-evolution-control', key: programId },
-    capabilities: {
-      split: true,
-      sidecar: true,
-      pin: true,
-      mainAreaAttention: true,
-      closePolicy: 'detach-host',
-      restorePolicy: 'descriptor',
-    },
-  } as const;
-}
-
 function sendResult(
   result: EvolutionProgramServiceResult | EvolutionProgramChangeResult,
   reply: FastifyReply,
@@ -88,7 +83,7 @@ function sendResult(
   if (result.outcome === 'conflict') return reply.status(409).send(result);
   return reply.status(creation && result.outcome === 'appended' ? 201 : 200).send({
     ...result,
-    surface: surfaceFor(result.projection.program.programId),
+    surface: surfaceFor(result.projection.program),
   });
 }
 
@@ -134,17 +129,14 @@ export const capabilityEvolutionProgramRoutes: FastifyPluginAsync<CapabilityEvol
     sendError,
   });
 
-  const list = async (request: FastifyRequest, reply: FastifyReply) => {
-    const context = requireContext(request, reply);
-    if (!context) return;
-    if (!service) return unavailable(reply);
-    try {
-      const programs = await service.list(context.workspaceId);
-      return { programs, surfaces: programs.map((projection) => surfaceFor(projection.program.programId)) };
-    } catch (error) {
-      return sendError(error, reply);
-    }
-  };
+  const { list, get } = createCapabilityEvolutionProgramReadHandlers({
+    service,
+    detailService: opts.preparationService,
+    resolveOrigin: opts.resolveOrigin,
+    unavailable,
+    sendError,
+  });
+  const preparation = createPreparationHandlers({ service: opts.preparationService, unavailable, sendError });
   const create = async (request: FastifyRequest, reply: FastifyReply) => {
     const context = requireContext(request, reply);
     if (!context) return;
@@ -154,6 +146,7 @@ export const capabilityEvolutionProgramRoutes: FastifyPluginAsync<CapabilityEvol
       const result = await service.create({
         workspaceId: context.workspaceId,
         targetRef: body.targetRef,
+        ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),
         clientMessageId: body.clientMessageId,
         actorRef: context.actorRef,
         originRef: context.originFor(body.clientMessageId),
@@ -163,20 +156,6 @@ export const capabilityEvolutionProgramRoutes: FastifyPluginAsync<CapabilityEvol
       return sendError(error, reply);
     }
   };
-  const get = async (request: FastifyRequest, reply: FastifyReply) => {
-    const context = requireContext(request, reply);
-    if (!context) return;
-    if (!service) return unavailable(reply);
-    try {
-      const programId = programIdSchema.parse((request.params as { programId: string }).programId);
-      const projection = await service.get(programId);
-      if (projection.program.workspaceId !== context.workspaceId) return reply.status(404).send({ error: 'not_found' });
-      return projection;
-    } catch (error) {
-      return sendError(error, reply);
-    }
-  };
-
   const command = async (request: FastifyRequest, reply: FastifyReply) => {
     const context = requireContext(request, reply);
     if (!context) return;
@@ -246,6 +225,32 @@ export const capabilityEvolutionProgramRoutes: FastifyPluginAsync<CapabilityEvol
           certificates: body.certificates,
           valueOwnerRef: body.valueOwnerRef,
           measurementRoleRefs: body.measurementRoleRefs,
+        }),
+        reply,
+      );
+    } catch (error) {
+      return sendError(error, reply);
+    }
+  };
+
+  const measurementConstitutionRebind = async (request: FastifyRequest, reply: FastifyReply) => {
+    const context = requireContext(request, reply);
+    if (!context) return;
+    if (!service) return unavailable(reply);
+    try {
+      const programId = programIdSchema.parse((request.params as { programId: string }).programId);
+      const current = await service.get(programId);
+      if (current.program.workspaceId !== context.workspaceId) return reply.status(404).send({ error: 'not_found' });
+      const body = measurementConstitutionRebindSchema.parse(request.body);
+      return sendResult(
+        await service.rebindMeasurementConstitution({
+          programId,
+          expectedSequence: body.expectedSequence,
+          clientMessageId: body.clientMessageId,
+          actorRef: context.actorRef,
+          originRef: context.originFor(body.clientMessageId),
+          ownerUserId: context.ownerUserId,
+          evidenceProofRef: body.evidenceProofRef,
         }),
         reply,
       );
@@ -333,19 +338,33 @@ export const capabilityEvolutionProgramRoutes: FastifyPluginAsync<CapabilityEvol
   };
 
   const change = createCapabilityEvolutionChangeHandler({ service, unavailable, sendResult, sendError });
+  const ownerReadOptions = { service, adapterRegistry: opts.adapterRegistry, unavailable, sendError };
+  const assetReview = createCapabilityEvolutionAssetReviewHandler(ownerReadOptions);
+  const preparationReview = createCapabilityEvolutionPreparationReviewHandler(ownerReadOptions);
+  const preparationMedia = createCapabilityEvolutionPreparationMediaHandler(ownerReadOptions);
+  const exploration = createCapabilityEvolutionExplorationHandler(ownerReadOptions);
+  const explorationMedia = createCapabilityEvolutionExplorationMediaHandler(ownerReadOptions);
 
   for (const prefix of ['/api/capability-evolution/programs', '/api/callbacks/evolution-programs']) {
     app.get(prefix, list);
     app.post(prefix, create);
     app.get(`${prefix}/:programId`, get);
     app.get(`${prefix}/:programId/adapter-manifest`, adapterManifest);
+    app.get(`${prefix}/:programId/asset-review`, assetReview);
+    app.get(`${prefix}/:programId/exploration`, exploration);
+    app.get(`${prefix}/:programId/exploration-media/:sha256`, explorationMedia);
+    app.get(`${prefix}/:programId/preparation-review`, preparationReview);
+    app.get(`${prefix}/:programId/preparation-media/:sha256`, preparationMedia);
     app.get(`${prefix}/:programId/adapter-media/:sceneIndex`, adapterMedia);
     app.post(`${prefix}/:programId/commands`, command);
     app.post(`${prefix}/:programId/constitution`, constitution);
+    app.post(`${prefix}/:programId/measurement-constitution`, measurementConstitutionRebind);
     app.post(`${prefix}/:programId/observations`, observation);
     app.post(`${prefix}/:programId/evaluation-rounds`, evaluationRound);
     app.post(`${prefix}/:programId/evaluations`, evaluation);
     app.post(`${prefix}/:programId/changes`, change);
+    app.post(`${prefix}/:programId/preparation/work`, preparation.begin);
+    app.post(`${prefix}/:programId/preparation/submissions`, preparation.submit);
   }
   registerCapabilityEvolutionMeasurementIssuanceRoute(app, opts.measurementIssuer);
 };

@@ -70,7 +70,7 @@ qodercn（Qoder 中国版 CLI，`@qodercn-ai/qoderclicn@1.1.51`）headless spawn
 - **Slice 1 ✅（PR #24）：非路由的窄 QoderAgentService + 测试**（I-4 边界：typed inputs 经可信 resolver 解析、缺 workingDirectory fail closed、`QODERCN_CONFIG_DIR` 不进 generic accountEnv 的 last-wins 合并、stdin prompt）。**入口条件 I-11（见下）先行**。
 - **Slice 2：注册 + account binding + workspace/session guard 原子 vertical slice**（ClientId/schema/Hub 类型/default CLI/factory/account routing 一次接齐，不留半注册态；`providerRequiresThreadWorkspace` 等 OpenCode 硬编码泛化并覆盖 qoder + e2e resume 测试；account mapping + `QODERCN_CONFIG_DIR` 受控字段校验为安全重点段）。
 - **Slice 3：cat-template 条目**（I-9：Slice 1/2 + 隔离 acceptance 全绿后最后加）——**本 PR**：`breeds` 增 `qoder`（`qoder-default` 变体，clientId=qoder、Qwen3.8-Max、cli=qodercn、mcpSupport=true）；breed-only 入口循 zcode 先例，roleTemplate/personality 留给猫本人。
-- **L2 受控工具 slice（复核中）**：六个基础内置工具一次性可见；只预授权 workspace-scoped Read/Edit、sandboxed Bash 与 12 个 readonly memory tools；init 对 18-tool 全集 + 唯一 connected MCP server fail closed；路由 read-only 请求维持空工具面。
+- **L2 受控工具 slice（复核中）**：六个基础内置工具一次性可见；只预授权 workspace-scoped Read/Edit、sandboxed Bash 与 readonly memory tools；init 对由 canonical 投影派生的完整工具集 + 唯一 connected MCP server fail closed（数量不写死，随 registry 与挂载能力变化）；路由 read-only 请求维持空工具面。
 
 ### I-11 runtime profile ownership / lifecycle（P1，Slice 1 入口条件）
 
@@ -100,6 +100,7 @@ L1 实证：qodercn 把 session 存在 config-dir 的 `projects/<cwd-slug>/`，r
 | 2026-09-17 | runtime 激活（B→A 的 A 步完成）：operator 重启后 live health 自报 `deploymentRevision=5f8897e1a`，受控链四项运行资产就绪。live 首次真实 `@qoder` 调用诊断：init 回报 6 基础工具 + model 匹配 + permissionMode=default（L2 路径生效），但 `apiKeySource=none`（账号未绑定）且 `cat-cafe-memory=disconnected`；memory.js 单测握手 1s 绿，判定主因为无认证连锁。前置动作：operator 完成 qoder 账号 OAuth 绑定。 |
 | 2026-09-17 | operator 拍板「要」：家里正式新增银线（俄罗斯蓝猫，Qwen 家族）。Slice 3 = cat-template breed 条目（`qoder` / `qoder-default`，clientId=qoder、Qwen3.8-Max、mcpSupport=true、cli=qodercn，breed-only 入口循 zcode 先例，性格留白归本人）。E2E 验收（真实 spawn + 工具任务）在账号绑定 + 本 PR 合入后执行。 |
 | 2026-09-17 | Slice 3 merged（PR #37，squash `0c28ae014`）：cat-template 注册 `qoder` breed + roster，并修复被本 rollout 面激活的存量 P1（promotion 清理按父-breed 推断会截肢手建猫，改用显式出身 allowlist `PROMOTED_SUBVARIANT_TAKEOVERS`）。跨族 APPROVE（砚砚，四轮往返挖出该 P1；verdict 经 patch-id 全等从 `f7c4980c2` 桥接至 rebase 后 `e6c4a9efe`）+ CI 14/14。**只记录代码落 main**：`main=landed:0c28ae014`、`live=dormant`（未获 operator 激活授权，ADR-039）；且模板条目对现网**暂不生效**——live 已有 catId=`qoder` 自定义猫，回填 occupancy 保护使其跳过。E2E 验收待 operator 完成 qoder 账号绑定后执行。 |
+| 2026-10-19 | 上游合并后 Qoder 启动 fail closed 的根因修复（分支独有适配未跟随上游新增工具）：Qoder 只读记忆面不再手抄，改由 canonical registry 生成静态投影 `packages/api/src/generated/fork-memory-tools.ts`，新鲜度由跨包测试锁住。投影按挂载真实能力 `buildMemoryTools({readonly:true, callbackCredentials:false})` 计算——Qoder shim 只收身份变量、不收 callback 凭据，因此 `cat_cafe_get_recall_metrics` 与 `cat_cafe_read_meeting_artifact` 不广告；`cat_cafe_search_evidence` 保留本地 document 模式，message 模式在无凭据时明确报告不可用。数量由 registry 派生（当前 11），不写死。新增唯一 fork 兼容入口 `test:fork-compat`，同一选择源接 CI 与本地 gate，覆盖 Qoder/ZCode/DSH 启动契约及 origin↔upstream 组合缝。 |
 
 ## 边界
 

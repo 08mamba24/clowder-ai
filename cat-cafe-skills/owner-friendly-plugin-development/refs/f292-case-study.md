@@ -4,7 +4,7 @@
 
 ## 原始摩擦
 
-线程 `[thread-id]` 的来源消息 `0001786246964071-000653-374c7712` 描述了完整人工链：
+线程 `[thread-id]` 的来源消息 `private-source-id` 描述了完整人工链：
 
 ```text
 打开飞书纪要 → 下载 TXT → 找文件路径 → 找猫 thread → 解释路径与背景 → 请求整理
@@ -62,5 +62,5 @@ Host 安装器只解包 npm tarball，不替插件安装运行依赖。开发仓
 - Feature truth：`docs/features/F292-feishu-meeting-intake-plugin.md`
 - Public contract / official plugin：`zts212653/clowder-ai-plugins#23`
 - Runtime-closure remediation：`zts212653/clowder-ai-plugins#31`
-- In-card owner auth：`zts212653/cat-cafe#3631`
+- In-card owner auth：`zts212653/clowder-ai#3631`
 - Thread：`[thread-id]`

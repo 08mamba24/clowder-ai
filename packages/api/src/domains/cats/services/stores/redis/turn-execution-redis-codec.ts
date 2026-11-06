@@ -3,6 +3,7 @@ import {
   assertCoveredMessageIds,
   assertCreateTurnExecutionInput,
   assertTurnExecutionTerminalInput,
+  isTurnOutputFence,
   serializeTurnExecutionIdentity,
   type TurnExecutionCausalRefs,
   type TurnExecutionKind,
@@ -21,11 +22,17 @@ export interface RedisTurnExecutionHash {
   userId?: string;
   catId?: string;
   executionKind?: string;
+  queueCompletionPolicy?: string;
   startedAt?: string;
   causal?: string;
   status?: string;
   endedAt?: string;
   terminalReason?: string;
+  providerTeardownAt?: string;
+  providerStartedAt?: string;
+  providerLifecycleTracked?: string;
+  /** F117 KD-21: late-bound fence verdict, outside the immutable identity like coverage. */
+  outputFence?: string;
 }
 
 type RedisTurnExecutionIdentityHash = RedisTurnExecutionHash &
@@ -36,7 +43,7 @@ type RedisTurnExecutionIdentityHash = RedisTurnExecutionHash &
     >
   >;
 
-function hasIdentityFields(data: RedisTurnExecutionHash): data is RedisTurnExecutionIdentityHash {
+export function hasTurnExecutionIdentityFields(data: RedisTurnExecutionHash): data is RedisTurnExecutionIdentityHash {
   return Boolean(
     data.invocationId &&
       data.parentInvocationId &&
@@ -72,15 +79,26 @@ function hasValidLifecycle(record: TurnExecutionRecord): boolean {
     status: record.status,
     endedAt: record.endedAt,
     ...(record.terminalReason !== undefined ? { terminalReason: record.terminalReason } : {}),
+    ...(record.providerTeardownAt !== undefined ? { providerTeardownAt: record.providerTeardownAt } : {}),
   });
   return true;
 }
 
+/**
+ * F117 KD-21: a record written before the fence existed hydrates without one, for settlement to
+ * resolve. A fence that cannot be read hides the record rather than letting a reader treat it as open.
+ */
+function withOutputFence(record: TurnExecutionRecord, raw: string | undefined): TurnExecutionRecord | null {
+  if (raw === undefined) return record;
+  return isTurnOutputFence(raw) ? { ...record, outputFence: raw } : null;
+}
+
 export function hydrateTurnExecution(data: RedisTurnExecutionHash): TurnExecutionRecord | null {
-  if (!hasIdentityFields(data)) return null;
+  if (!hasTurnExecutionIdentityFields(data)) return null;
   try {
-    if (!['ordinary', 'routing_guard', 'freshness_supplement'].includes(data.executionKind)) return null;
+    if (!['ordinary', 'routing_guard'].includes(data.executionKind)) return null;
     if (!['running', 'succeeded', 'failed', 'canceled', 'interrupted'].includes(data.status)) return null;
+    if (data.queueCompletionPolicy && data.queueCompletionPolicy !== 'explicit_source') return null;
     const legacyCausal = parseCausal(data.causal);
     const legacyRecord: TurnExecutionRecord = {
       invocationId: data.invocationId,
@@ -89,11 +107,17 @@ export function hydrateTurnExecution(data: RedisTurnExecutionHash): TurnExecutio
       userId: data.userId,
       catId: data.catId as CatId,
       executionKind: data.executionKind as TurnExecutionKind,
+      ...(data.queueCompletionPolicy === 'explicit_source'
+        ? { queueCompletionPolicy: 'explicit_source' as const }
+        : {}),
+      ...(data.providerLifecycleTracked === '1' ? { providerLifecycleTracked: true as const } : {}),
+      ...(data.providerStartedAt ? { providerStartedAt: Number(data.providerStartedAt) } : {}),
       startedAt: Number(data.startedAt),
       ...(legacyCausal ? { causal: legacyCausal } : {}),
       status: data.status as TurnExecutionStatus,
       ...(data.endedAt ? { endedAt: Number(data.endedAt) } : {}),
       ...(data.terminalReason ? { terminalReason: data.terminalReason } : {}),
+      ...(data.providerTeardownAt ? { providerTeardownAt: Number(data.providerTeardownAt) } : {}),
     };
     assertCreateTurnExecutionInput(legacyRecord);
     if (data.immutableIdentity !== serializeTurnExecutionIdentity(legacyRecord)) return null;
@@ -112,7 +136,7 @@ export function hydrateTurnExecution(data: RedisTurnExecutionHash): TurnExecutio
     assertCreateTurnExecutionInput(record);
     if (!hasValidLifecycle(record)) return null;
     if (hasCoverageIdentity && data.coveredMessageIdsIdentity !== serializeTurnExecutionIdentity(record)) return null;
-    return record;
+    return withOutputFence(record, data.outputFence);
   } catch {
     return null;
   }

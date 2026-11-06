@@ -1,30 +1,30 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, relative, resolve, sep } from 'node:path';
 import type { CatCafeConfig, ClientId, RosterEntry } from '@cat-cafe/shared';
+import { type NativeToolIdentity, nativeToolIdentityFor } from '@cat-cafe/shared';
+import { createModuleLogger } from '../infrastructure/logger.js';
 import { resolveBuiltinClientForProvider } from './account-resolver.js';
 import {
   GEMINI35_CAT_ID,
-  GEMINI35_OLD_NAME,
-  GEMINI35_OLD_ROLE_DESCRIPTION,
-  GEMINI35_OLD_VARIANT_LABEL,
+  GEMINI35_LEGACY_NAMES,
+  GEMINI35_LEGACY_ROLE_DESCRIPTIONS,
+  GEMINI35_LEGACY_VARIANT_LABELS,
   LEGACY_GEMINI_CONSUMER_CAT_IDS,
   resolveAgyGeminiDefaultModel,
 } from './agy-gemini-models.js';
 import { inheritFullyBlockedMcpCapabilitiesForNewCatsSync } from './capabilities/capability-orchestrator.js';
-import {
-  pickSeedBreed,
-  pruneRosterToRuntimeBreeds,
-  type RuntimeBreedWithCatIds,
-} from './cat-catalog-bootstrap-roster.js';
+import { isUserSelectedCatalog, USER_SELECTED_INITIALIZATION } from './cat-catalog-initialization.js';
 import {
   isTemplateBreedBackfillAllowed,
   isTemplateVariantBackfillAllowed,
   normalizeMentionAlias,
 } from './template-variant-backfill.js';
 import { isTemplateVariantTombstoned } from './template-variant-tombstones.js';
+import { readRepairedVoiceRefTexts } from './voice-ref-text-repair.js';
 
 const CONFIG_SUBDIR = '.cat-cafe';
 const CAT_CATALOG_FILENAME = 'cat-catalog.json';
+const log = createModuleLogger('cat-catalog');
 
 function safePath(projectRoot: string, ...segments: string[]): string {
   const root = resolve(projectRoot);
@@ -117,6 +117,10 @@ function migrateLegacyGeminiConsumerCarrier(
 ): boolean {
   const clientId = typeof variant.clientId === 'string' ? variant.clientId : variant.provider;
   if (clientId !== 'google') return false;
+  // An explicit Native selection or editor clear tombstone supersedes the one-time legacy migration.
+  // Otherwise every read changes the Native model back to a display label or deletes a selected ACP transport.
+  if (variant.agyProfile === null || (isRecord(variant.agyProfile) && variant.agyProfile.carrier === 'native'))
+    return false;
 
   const resolvedCatId = typeof variant.catId === 'string' ? variant.catId : breedDefaultCatId;
   if (!resolvedCatId) return false;
@@ -386,6 +390,12 @@ const GEMINI35_OLD_MENTION_ALIASES = new Set(
     .filter((alias): alias is string => !!alias),
 );
 
+const GEMINI35_ALIASES_MOVED_TO_GEMINI38 = new Set(
+  ['@gemini38', '@gemini-38', '@gemini3.8', '@flash', '@暹罗flash', '@暹罗gemini38']
+    .map(normalizeMentionAlias)
+    .filter((alias): alias is string => !!alias),
+);
+
 function collectRuntimeIdentityOccupancy(breeds: Record<string, unknown>[]): RuntimeIdentityOccupancy {
   const catIds = new Set<string>();
   const mentionAliases = new Set<string>();
@@ -436,6 +446,7 @@ function persistMissingTemplateBreeds(projectRoot: string, catalogPath: string, 
   }
 
   const catalog = JSON.parse(catalogRaw) as CatCafeConfig;
+  if (isUserSelectedCatalog(catalog)) return false;
   const template = JSON.parse(templateRaw) as CatCafeConfig;
   const next = structuredClone(catalog) as CatCafeConfig;
   const nextBreeds = next.breeds as unknown as Record<string, unknown>[];
@@ -504,6 +515,7 @@ function persistMissingTemplateVariants(projectRoot: string, catalogPath: string
   }
 
   const catalog = JSON.parse(catalogRaw) as CatCafeConfig;
+  if (isUserSelectedCatalog(catalog)) return false;
   const template = JSON.parse(templateRaw) as CatCafeConfig;
   const next = structuredClone(catalog) as CatCafeConfig;
   const templateBreeds = new Map<string, Record<string, unknown>>();
@@ -651,6 +663,7 @@ function syncGemini35TemplateUpgrade(catalogPath: string, templatePath: string):
   }
 
   const catalog = JSON.parse(catalogRaw) as CatCafeConfig;
+  if (isUserSelectedCatalog(catalog)) return false;
   const template = JSON.parse(templateRaw) as CatCafeConfig;
   const templateBreed = (template.breeds as unknown as Record<string, unknown>[]).find(isGemini35Breed);
   if (!templateBreed) return false;
@@ -662,19 +675,45 @@ function syncGemini35TemplateUpgrade(catalogPath: string, templatePath: string):
   const nextBreeds = next.breeds as unknown as Record<string, unknown>[];
   let dirty = false;
 
+  if (next.version === 2 && template.version === 2) {
+    const nextRoster = next.roster as unknown as Record<string, unknown>;
+    const templateRoster = template.roster as unknown as Record<string, unknown>;
+    const currentEntry = isRecord(nextRoster[GEMINI35_CAT_ID]) ? nextRoster[GEMINI35_CAT_ID] : {};
+    const templateEntry = isRecord(templateRoster[GEMINI35_CAT_ID]) ? templateRoster[GEMINI35_CAT_ID] : undefined;
+    if (templateEntry && currentEntry.available !== false) {
+      nextRoster[GEMINI35_CAT_ID] = { ...templateEntry, ...currentEntry, available: false };
+      dirty = true;
+    }
+  }
+
   for (const breed of nextBreeds) {
     if (!isGemini35Breed(breed)) continue;
 
-    if (breed.name === GEMINI35_OLD_NAME && typeof templateBreed.name === 'string') {
+    if (
+      typeof breed.name === 'string' &&
+      GEMINI35_LEGACY_NAMES.has(breed.name) &&
+      typeof templateBreed.name === 'string'
+    ) {
       breed.name = templateBreed.name;
       dirty = true;
     }
-    if (breed.roleDescription === GEMINI35_OLD_ROLE_DESCRIPTION && typeof templateBreed.roleDescription === 'string') {
+    if (
+      typeof breed.roleDescription === 'string' &&
+      GEMINI35_LEGACY_ROLE_DESCRIPTIONS.has(breed.roleDescription) &&
+      typeof templateBreed.roleDescription === 'string'
+    ) {
       breed.roleDescription = templateBreed.roleDescription;
       dirty = true;
     }
 
-    const breedPatterns = readStringArray(breed.mentionPatterns);
+    const currentBreedPatterns = readStringArray(breed.mentionPatterns);
+    const breedPatterns = currentBreedPatterns.filter(
+      (pattern) => !GEMINI35_ALIASES_MOVED_TO_GEMINI38.has(normalizeMentionAlias(pattern)),
+    );
+    if (breedPatterns.length !== currentBreedPatterns.length) {
+      breed.mentionPatterns = breedPatterns;
+      dirty = true;
+    }
     const existingAliases = collectMentionAliasesForBreed(breed);
     const occupiedAliases = collectMentionAliasesExcludingBreed(nextBreeds, breed);
     let patternsDirty = false;
@@ -702,7 +741,8 @@ function syncGemini35TemplateUpgrade(catalogPath: string, templatePath: string):
         templateVariants.find((candidate) => candidate.id === variant.id) ??
         templateVariants.find((candidate) => resolveVariantCatId(templateBreed, candidate) === GEMINI35_CAT_ID);
       if (
-        variant.variantLabel === GEMINI35_OLD_VARIANT_LABEL &&
+        typeof variant.variantLabel === 'string' &&
+        GEMINI35_LEGACY_VARIANT_LABELS.has(variant.variantLabel) &&
         templateVariant &&
         typeof templateVariant.variantLabel === 'string'
       ) {
@@ -807,6 +847,98 @@ function readBootstrapSourceConfig(templatePath: string): { catalog: CatCafeConf
   };
 }
 
+function stringField(record: Record<string, unknown>, field: string): string | undefined {
+  const value = record[field];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function replaceExactLegacyString(
+  target: Record<string, unknown>,
+  field: string,
+  legacy: string,
+  next: string,
+): boolean {
+  if (!next || next === legacy) return false;
+  if (stringField(target, field) !== legacy) return false;
+  target[field] = next;
+  return true;
+}
+
+/** Rename only when both visible-name fields are still the old default. */
+function replaceExactLegacyName(target: Record<string, unknown>, identity: NativeToolIdentity): boolean {
+  const currentName = stringField(target, 'name');
+  const currentDisplayName = stringField(target, 'displayName');
+  const legacy = identity.legacy.name;
+  const nameIsLegacy =
+    currentName === legacy &&
+    (currentDisplayName === legacy || currentDisplayName === undefined || currentDisplayName === '');
+  if (!nameIsLegacy) return false;
+  let changed = false;
+  if (currentName !== identity.name) {
+    target.name = identity.name;
+    changed = true;
+  }
+  if (currentDisplayName !== identity.name) {
+    target.displayName = identity.name;
+    changed = true;
+  }
+  return changed;
+}
+
+function repairLegacyIdentityRecord(record: Record<string, unknown>, identity: NativeToolIdentity): boolean {
+  let changed = replaceExactLegacyName(record, identity);
+  changed = replaceExactLegacyString(record, 'nickname', identity.legacy.nickname, identity.nickname) || changed;
+  changed = replaceExactLegacyString(record, 'avatar', identity.legacy.avatar, identity.avatar) || changed;
+  changed =
+    replaceExactLegacyString(record, 'roleDescription', identity.legacy.roleDescription, identity.roleDescription) ||
+    changed;
+  changed =
+    replaceExactLegacyString(record, 'personality', identity.legacy.personality, identity.personality) || changed;
+  changed =
+    replaceExactLegacyString(record, 'teamStrengths', identity.legacy.teamStrengths, identity.teamStrengths) || changed;
+  return changed;
+}
+
+/**
+ * Repair native-tool members created before their cat identity existed.
+ * Only exact legacy defaults are replaced, so a user's own edits are kept.
+ * Idempotent: after the first successful pass every field no longer matches.
+ */
+export function repairLegacyNativeToolIdentities(catalog: { breeds?: Array<Record<string, unknown>> }): boolean {
+  let changed = false;
+  for (const breed of catalog.breeds ?? []) {
+    const variants = Array.isArray(breed.variants) ? (breed.variants as Array<Record<string, unknown>>) : [];
+    const defaultVariant = variants.find((variant) => variant.id === breed.defaultVariantId) ?? variants[0];
+    const identity = nativeToolIdentityFor({
+      clientId: defaultVariant ? stringField(defaultVariant, 'clientId') : undefined,
+      catId:
+        (defaultVariant ? stringField(defaultVariant, 'catId') : undefined) ??
+        stringField(breed, 'catId') ??
+        stringField(breed, 'id'),
+      acp: defaultVariant?.acp,
+    });
+    if (!identity) continue;
+    changed = repairLegacyIdentityRecord(breed, identity) || changed;
+    for (const variant of variants) {
+      changed = repairLegacyIdentityRecord(variant, identity) || changed;
+    }
+  }
+  return changed;
+}
+
+function repairLegacyNativeIdentityFile(catalogPath: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(catalogPath, 'utf-8'));
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  if (!repairLegacyNativeToolIdentities(parsed as { breeds?: Array<Record<string, unknown>> })) return false;
+  writeFileAtomic(catalogPath, `${JSON.stringify(parsed, null, 2)}\n`);
+  return true;
+}
+
 // NOTE: Repairing existing empty catalogs (e.g. Windows reinstall where user-data
 // dir survives) is intentionally NOT done here — we cannot distinguish "broken
 // install with empty breeds" from "user intentionally deleted all members".
@@ -819,53 +951,39 @@ export function bootstrapCatCatalog(projectRoot: string, templatePath: string): 
     readCatCatalogRaw(projectRoot);
     // Strip legacy source field from variants (obsolete after F171).
     stripLegacySourceField(catalogPath);
+    // Repair reference transcripts seeded wrong for known clips (exact clip + wrong text only).
+    const repairedVoiceRefTexts = readRepairedVoiceRefTexts(catalogPath);
+    if (repairedVoiceRefTexts !== null) writeFileAtomic(catalogPath, repairedVoiceRefTexts);
     // Ensure owner is always present in roster.
     ensureOwnerInRoster(catalogPath);
     // Persist allowlisted template-added breeds so promoted house cats become
     // runtime members without reopening the template-only breed leak fixed by #772.
     persistMissingTemplateBreeds(projectRoot, catalogPath, templatePath);
+    // Restore the disabled Gemini 3.6 identity and release aliases now owned by
+    // the separate Gemini 3.8 cat before variant occupancy is evaluated.
+    syncGemini35TemplateUpgrade(catalogPath, templatePath);
     // Persist template-added variants into already-enabled runtime breeds so
     // read and write paths agree after upgrades.
     persistMissingTemplateVariants(projectRoot, catalogPath, templatePath);
-    // Keep built-in Gemini Flash identity fields aligned for existing catalogs
-    // whose runtime copy would otherwise keep pre-upgrade 3.5 names and aliases.
-    syncGemini35TemplateUpgrade(catalogPath, templatePath);
+    // Replace pre-identity native-tool defaults (Kimi/DSH/Pi) that older
+    // releases persisted. Exact legacy strings only; user edits stay.
+    repairLegacyNativeIdentityFile(catalogPath);
     return catalogPath;
   }
 
   const { catalog: template } = readBootstrapSourceConfig(templatePath);
   const { catalog: migratedCatalog } = migrateCatalogVariants(template);
 
-  // #948: Seed the first breed from the template so the app starts with at least
-  // one usable member. Without this, the registry is empty and the frontend
-  // crashes before the first-run wizard is reachable.
-  // In dev environments (template has no breeds), start empty — developers use
-  // the wizard or manual config to add members.
-  const seedBreed = pickSeedBreed(migratedCatalog);
-
-  let runtimeCatalog: CatCafeConfig;
-  if (seedBreed) {
-    const seedBreeds = [seedBreed as CatCafeConfig['breeds'][number]];
-    runtimeCatalog = {
-      ...migratedCatalog,
-      breeds: seedBreeds,
-    };
-    if ('roster' in runtimeCatalog) {
-      (runtimeCatalog as { roster: Record<string, RosterEntry> }).roster = pruneRosterToRuntimeBreeds(
-        runtimeCatalog.roster as Record<string, RosterEntry>,
-        seedBreeds as RuntimeBreedWithCatIds[],
-        OWNER_ROSTER_KEY,
-        buildOwnerRosterEntry(),
-      );
-    }
-  } else {
-    // Template has no breeds — start empty (first-run wizard guides member addition).
-    runtimeCatalog = createEmptyRuntimeCatalog(migratedCatalog);
-  }
+  // #1651: Templates are an add-member menu. Detection and owner confirmation
+  // create actual members; the empty registry is a supported first-run state.
+  const runtimeCatalog = {
+    ...createEmptyRuntimeCatalog(migratedCatalog),
+    memberInitialization: USER_SELECTED_INITIALIZATION,
+  };
 
   mkdirSync(dirname(catalogPath), { recursive: true });
   writeFileAtomic(catalogPath, `${JSON.stringify(runtimeCatalog, null, 2)}\n`);
-  persistMissingTemplateBreeds(projectRoot, catalogPath, templatePath);
+  log.info('首次启动：已创建空成员目录；项目自带角色模板仅供选择，检测并确认添加后才会创建成员。');
   return catalogPath;
 }
 

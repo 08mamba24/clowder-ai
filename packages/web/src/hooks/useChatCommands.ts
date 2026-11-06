@@ -1,8 +1,10 @@
 'use client';
 
+import { deploymentDefaults } from '@cat-cafe/shared';
 import { useRouter } from 'next/navigation';
 import { useCallback, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import { useSettingsReadingEntry } from '@/components/shell/useSettingsSourceReturn';
 import { useCatData } from '@/hooks/useCatData';
 import { type ChatMessage as ChatMessageData, useChatStore } from '@/stores/chatStore';
 import type { EvidenceSourceType } from '@/types/evidence';
@@ -20,7 +22,7 @@ export function isCommandInvocation(input: string, command: string): boolean {
 
 /** Format ConfigSnapshot into readable multi-line text for /config display */
 function formatConfigForDisplay(config: ConfigSnapshot): string {
-  const lines: string[] = ['[配置] Clowder AI 运行配置', ''];
+  const lines: string[] = [`[配置] ${deploymentDefaults.brand.displayName} 运行配置`, ''];
 
   // Per-cat capacity truth (#1208: no independent prompt-policy knobs)
   if (config.perCatCapacities) {
@@ -116,6 +118,7 @@ function formatConfigForDisplay(config: ConfigSnapshot): string {
  */
 export function useChatCommands() {
   const router = useRouter();
+  const captureSettingsOrigin = useSettingsReadingEntry();
   const { addMessageToThread } = useChatStore(useShallow((s) => ({ addMessageToThread: s.addMessageToThread })));
   const { cats } = useCatData();
 
@@ -183,6 +186,7 @@ export function useChatCommands() {
 
         // /config (no args) — navigate to Settings page
         if (!configArgs) {
+          captureSettingsOrigin();
           router.push('/settings?s=system');
           return true;
         }
@@ -953,7 +957,7 @@ export function useChatCommands() {
 
       return false;
     },
-    [addMessageToThread, router],
+    [addMessageToThread, router, captureSettingsOrigin],
   );
 
   return { processCommand };

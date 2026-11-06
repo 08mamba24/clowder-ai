@@ -232,6 +232,40 @@ describe('POST /api/threads/:threadId/export-image', () => {
     });
   });
 
+  it('passes the resolved partial selection to image rendering and counts the source once', async () => {
+    const block = { id: 'selected-card', kind: 'card', v: 1, title: '审批卡统一结果行' };
+    const app = await buildApp(
+      createMessageStore([
+        makeMessage({
+          content: '两件都弄好了：',
+          extra: {
+            rich: { v: 1, blocks: [block, { id: 'excluded-card', kind: 'card', v: 1, title: '额度表 · 本周' }] },
+          },
+        }),
+      ]),
+    );
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/threads/thread-1/export-selection-image',
+      headers: { 'x-cat-cafe-user': 'user-1' },
+      payload: {
+        items: [
+          { kind: 'quote', messageId: 'message-1', text: '两件都弄好了：', renderedOccurrences: 1 },
+          { kind: 'rich_block', messageId: 'message-1', sourceMessageIds: ['message-1'], blockId: 'selected-card' },
+        ],
+      },
+    });
+    await app.close();
+    assert.equal(res.statusCode, 200, res.body);
+    assert.deepEqual(captures[0].options.selectionMessageIds, ['message-1']);
+    assert.deepEqual(
+      captures[0].options.selectionItems.map((item) => item.kind),
+      ['quote', 'rich_block'],
+    );
+    assert.equal(captures[0].options.selectionItems[0].readableContent, '两件都弄好了：');
+    assert.equal(captures[0].options.selectionItems[1].richBlock.id, 'selected-card');
+  });
+
   it('does not launch capture when selection resolution fails', async () => {
     const app = await buildApp(createMessageStore([makeMessage({ id: 'message-1', _tombstone: true, content: '' })]));
 
@@ -340,6 +374,19 @@ describe('buildImageExportUrl', () => {
     }
   });
 
+  it('waits for asynchronous export content even when no HTML widgets exist', async () => {
+    let snapshots = 0;
+    const page = {
+      async evaluate(_fn, ...args) {
+        if (args[0] === 'catcafe:html-widget-export-proof-request') return;
+        snapshots += 1;
+        return { height: 1748, widgets: [], pendingContentIds: snapshots < 2 ? ['paw-feel:message-1'] : [] };
+      },
+    };
+    await refreshHtmlWidgetExportLayoutProof(page, Date.now() + 1000, 1);
+    assert.equal(snapshots, 2, 'capture proof must not accept the offscreen placeholder as complete content');
+  });
+
   it('commits a screenshot candidate only after fresh proof both before and after capture', async () => {
     const events = [];
     let proofCount = 0;
@@ -393,6 +440,7 @@ describe('buildImageExportUrl', () => {
         if (args[0] === 'data-html-widget-proof-request-id') {
           return {
             height: 100,
+            pendingContentIds: [],
             widgets: [
               {
                 widgetId: 'late-proof-widget',
@@ -465,6 +513,7 @@ describe('buildImageExportUrl', () => {
         if (args[0] === 'data-html-widget-proof-request-id') {
           return {
             height: 100,
+            pendingContentIds: [],
             widgets: [
               {
                 widgetId: 'cumulative-deadline-widget',

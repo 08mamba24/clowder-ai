@@ -1,3 +1,6 @@
+import { type CloudBindingRefusal, catRegistry } from '@cat-cafe/shared';
+import { resolveCloudConversationCat } from '../domains/cats/services/cloud-bridge/cloud-conversation-identity.js';
+import { pluginPrTitleReader } from './plugin/pr-artifact-title-reader.js';
 /**
  * Thread API Routes
  * POST   /api/threads     - 创建对话
@@ -7,23 +10,28 @@
  * DELETE /api/threads/:id  - 删除对话
  */
 
-import type { CatId } from '@cat-cafe/shared';
-import { catIdSchema } from '@cat-cafe/shared';
+import type { CatId, GlobalArtifactDTO, GlobalArtifactsResponse, ThreadArtifactDTO } from '@cat-cafe/shared';
+import { catIdSchema, projectThreadWorks } from '@cat-cafe/shared';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import type { InvocationQueue } from '../domains/cats/services/agents/invocation/InvocationQueue.js';
 import type { InvocationTracker } from '../domains/cats/services/agents/invocation/InvocationTracker.js';
 import type { QueueProcessor } from '../domains/cats/services/agents/invocation/QueueProcessor.js';
 import type { TaskProgressStore } from '../domains/cats/services/agents/invocation/TaskProgressStore.js';
+import { readGlobalWorksPage, WorksPageError } from '../domains/cats/services/agents/routing/global-works-page.js';
 import {
-  aggregateThreadArtifacts,
-  collectAllThreadMessages,
+  type PrTitleReader,
+  readArtifactPrTitles,
+} from '../domains/cats/services/agents/routing/thread-artifact-pr-titles.js';
+import { observeThreadArtifactRead } from '../domains/cats/services/agents/routing/thread-artifact-read-diagnostics.js';
+import {
+  aggregateProjectedThreadArtifacts,
+  collectThreadMessageArtifacts,
 } from '../domains/cats/services/agents/routing/thread-artifacts-aggregator.js';
+import { threadWorksPrs } from '../domains/cats/services/agents/routing/thread-works-prs.js';
 import { resolveBootcampWorkspaceRoot } from '../domains/cats/services/bootcamp/workspace-root.js';
-import { recordFreshnessClosureTransition } from '../domains/cats/services/freshness/closure/freshness-closure-telemetry.js';
-import { projectFreshnessClosure } from '../domains/cats/services/freshness/glass-box/FreshnessOutputCommitCoordinator.js';
-import { projectFreshnessSupplementForHistory } from '../domains/cats/services/freshness/glass-box/freshness-supplement-history-projection.js';
 import { AuditEventTypes, getEventAuditLog } from '../domains/cats/services/orchestration/EventAuditLog.js';
+import { isHomeSession } from '../domains/cats/services/session/session-scope.js';
 import type { TranscriptWriter } from '../domains/cats/services/session/TranscriptWriter.js';
 import { compareCursors, parseCursor } from '../domains/cats/services/stores/cursor.js';
 import { gateForDurableSlot } from '../domains/cats/services/stores/cursor-activation.js';
@@ -48,10 +56,21 @@ import type {
 } from '../domains/cats/services/stores/ports/ThreadStore.js';
 import {
   isDurableOwnerReadEvidence,
+  isThreadMessageVisibleToViewer,
   passesManagedHoldViewerBoundary,
   SYSTEM_USER_IDS,
 } from '../domains/cats/services/stores/visibility.js';
+import {
+  type AcceptedWorkspaceArtifactReaderHolder,
+  type AppliedWorkspaceReceiptMessage,
+  projectAppliedWorkspaceReceipts,
+} from '../domains/collaborative-content/modification/accepted-workspace-artifacts.js';
+import {
+  readIndependentThreadWorks,
+  withIndependentWorksRead,
+} from '../domains/collaborative-content/works/catalogue.js';
 import { projectThreadRelations } from '../domains/thread-navigation/thread-relation-projection.js';
+import type { GlobalArtifactWorkLineageResolverHolder } from '../domains/video-studio/content-owner/global-artifact-work-lineage.js';
 import { createModuleLogger } from '../infrastructure/logger.js';
 import { visibilityCursorUnresolvedRepair } from '../infrastructure/telemetry/instruments.js';
 import type { SocketManager } from '../infrastructure/websocket/index.js';
@@ -59,15 +78,31 @@ import { CHATGPT_CHAT_URL_REGEX } from '../utils/chatgpt-chat-url.js';
 import { migrateStoredProjectPath, resolvePersistentProjectPathDetailed } from '../utils/persistent-project-path.js';
 import { resolveStrictUserId, resolveUserId } from '../utils/request-identity.js';
 import { getMultiMentionOrchestrator } from './callback-multi-mention-routes.js';
+import { readRecentWorksView } from './recent-works-view.js';
 import {
   composeSidebarPresence,
   type SidebarPresence,
   type SidebarPresenceSource,
 } from './sidebar-presence-projection.js';
-import { sendCanonicalSidebarSnapshot } from './sidebar-snapshot-http.js';
+import { createSidebarCompositionTimer, sendCanonicalSidebarSnapshot } from './sidebar-snapshot-http.js';
+import { createThreadProjectPathResolver, mapThreadList } from './thread-list-project-migration.js';
 
 const log = createModuleLogger('routes/threads');
 const WRITE_OPS = new Set(['edit', 'create', 'delete']);
+const recentWorksQuerySchema = z
+  .object({
+    view: z.literal('recent-works'),
+    limit: z.coerce.number().int().min(1).max(12).default(3),
+  })
+  .strict();
+const worksQuerySchema = z.object({ view: z.literal('works') }).strict();
+const pagedWorksQuerySchema = z
+  .object({
+    view: z.literal('works'),
+    read: z.literal('pages'),
+    cursor: z.string().min(1).max(4096).optional(),
+  })
+  .strict();
 
 type StoredReadCoordinateAssessment =
   | { kind: 'valid'; primary: NonNullable<ReturnType<typeof parseCursor>> }
@@ -364,12 +399,89 @@ async function isReadStateCaughtUp(
   }
 }
 
+async function resolveMentionAtReadBoundary(
+  messageStore: IMessageStore,
+  userId: string,
+  threadId: string,
+  targetMessageId: string,
+  caughtUp: boolean,
+): Promise<boolean> {
+  if (!caughtUp) return false;
+  return messageStore.resolveUserMentionRequestFromRead(userId, threadId, targetMessageId, Date.now());
+}
+
+type LatestThreadReadResult =
+  | { kind: 'empty' }
+  | {
+      kind: 'acknowledged';
+      advanced: boolean;
+      caughtUp: boolean;
+      handledMention: boolean;
+      messageId: string;
+      cursor: string;
+    };
+
+async function acknowledgeLatestThreadRead(
+  readStateStore: IThreadReadStateStore,
+  messageStore: IMessageStore,
+  userId: string,
+  threadId: string,
+): Promise<LatestThreadReadResult> {
+  const latest = await messageStore.getLatestVisibleCursor(threadId, {
+    evidence: 'durable_owner_read',
+    viewerUserId: userId,
+  });
+  if (!latest) return { kind: 'empty' };
+  const advanced = await gatedReadStateAck(readStateStore, messageStore, userId, threadId, latest.cursor, {
+    repairUnresolvableLegacy: true,
+  });
+  const caughtUp = advanced
+    ? true
+    : await isReadStateCaughtUp(
+        await readStateStore.get(userId, threadId),
+        latest.cursor,
+        latest.messageId,
+        messageStore,
+        userId,
+        threadId,
+      );
+  const handledMention = await resolveMentionAtReadBoundary(messageStore, userId, threadId, latest.messageId, caughtUp);
+  return {
+    kind: 'acknowledged',
+    advanced,
+    caughtUp,
+    handledMention,
+    messageId: latest.messageId,
+    cursor: latest.cursor,
+  };
+}
+
+async function acknowledgeAllThreadReads(
+  threadStore: IThreadStore,
+  readStateStore: IThreadReadStateStore,
+  messageStore: IMessageStore,
+  userId: string,
+) {
+  const threads = await threadStore.list(userId);
+  let advancedCount = 0;
+  let handledMentionCount = 0;
+  for (const thread of threads) {
+    const result = await acknowledgeLatestThreadRead(readStateStore, messageStore, userId, thread.id);
+    if (result.kind !== 'acknowledged') continue;
+    if (result.advanced) advancedCount++;
+    if (result.handledMention) handledMentionCount++;
+  }
+  return { advancedCount, handledMentionCount, totalThreads: threads.length };
+}
+
 interface ThreadIndexBuilder {
   markThreadDirty(threadId: string): void;
   flushDirtyThreads?(): number | Promise<number>;
 }
 
 export interface ThreadsRoutesOptions {
+  /** Presentation metadata for already owner-scoped, formally attached PR works. */
+  prTitleReader?: PrTitleReader;
   threadStore: IThreadStore;
   /**
    * F297 Phase B: batched active-execution presence for the Sidebar snapshot (C10).
@@ -387,7 +499,6 @@ export interface ThreadsRoutesOptions {
   /** Optional: cascade delete delivery cursors when thread is deleted */
   deliveryCursorStore?: DeliveryCursorStore;
   /** F254 Phase E: cascade persistent catch responsibility with thread deletion. */
-  freshnessClosureStore?: import('../domains/cats/services/freshness/closure/FreshnessClosureStore.js').FreshnessClosureStore;
   /** F254 Phase E: explicit blocked-closure retry uses the unified queue. */
   invocationQueue?: InvocationQueue;
   queueProcessor?: QueueProcessor;
@@ -412,12 +523,80 @@ export interface ThreadsRoutesOptions {
   sessionChainStore?: ISessionChainStore;
   /** F232: in-memory transcript buffer reader for pre-seal file artifact visibility. */
   transcriptWriter?: TranscriptWriter;
+  /** F309: late-bound owner-backed batch projection for global and thread artifact reads. */
+  artifactWorkLineage?: GlobalArtifactWorkLineageResolverHolder;
+  /** F309: pure projection of already-accepted original file results. */
+  acceptedWorkspaceArtifacts?: AcceptedWorkspaceArtifactReaderHolder;
   /**
    * F229: Reserved — no longer used by GET /api/threads.
    * createdBy=userId (P1 fix) means threadStore.list(userId) already returns concierge threads;
-   * threadKind='concierge' filter handles default exclusion / includeConcierge=true inclusion.
+   * threadKind='concierge' filter keeps only the owner's canonical carrier in the default list.
    */
   conciergeThreadService?: import('../domains/concierge/ConciergeThreadService.js').ConciergeThreadService;
+}
+
+async function projectGlobalArtifactWorkLineage(
+  holder: GlobalArtifactWorkLineageResolverHolder | undefined,
+  ownerUserId: string,
+  artifacts: GlobalArtifactDTO[],
+): Promise<{
+  artifacts: GlobalArtifactDTO[];
+  total: number;
+  workLineage: 'resolved' | 'unavailable';
+}> {
+  const resolver = holder?.current;
+  if (!resolver)
+    return { artifacts: withoutWorkLineage(artifacts), total: artifacts.length, workLineage: 'unavailable' };
+  try {
+    const works = await resolver.resolve({ ownerUserId, artifacts });
+    if (works.length !== artifacts.length) throw new Error('Artifact work lineage result length mismatch');
+    const projected = artifacts.map((artifact, index) => {
+      const work = works[index];
+      return work ? { ...artifact, work } : artifact;
+    });
+    return { artifacts: projected, total: projected.length, workLineage: 'resolved' };
+  } catch (error) {
+    log.warn({ err: error }, 'F309 artifact work lineage unavailable');
+    return { artifacts: withoutWorkLineage(artifacts), total: artifacts.length, workLineage: 'unavailable' };
+  }
+}
+
+function withoutWorkLineage(artifacts: readonly GlobalArtifactDTO[]) {
+  return artifacts.map(({ work: _unavailableWork, ...artifact }) => artifact);
+}
+
+// Accepted-file availability is independent of the F138 work-lineage contract.
+async function readAcceptedWorkspaceArtifacts(
+  holder: AcceptedWorkspaceArtifactReaderHolder | undefined,
+  ownerUserId: string,
+  threadId: string,
+  receipts: readonly AppliedWorkspaceReceiptMessage[],
+): Promise<{ artifacts: ThreadArtifactDTO[]; complete: boolean }> {
+  if (receipts.length === 0) return { artifacts: [], complete: true };
+  if (!holder?.current) return { artifacts: [], complete: false };
+  try {
+    return { artifacts: await holder.current.read({ ownerUserId, threadId, receipts }), complete: true };
+  } catch {
+    log.warn({ threadId }, 'Accepted workspace artifact owner unavailable');
+    return { artifacts: [], complete: false };
+  }
+}
+
+function filterGlobalArtifacts(
+  artifacts: readonly GlobalArtifactDTO[],
+  query: { type?: string; cat?: string; q?: string | string[] },
+): GlobalArtifactDTO[] {
+  let filtered = [...artifacts];
+  if (query.type) filtered = filtered.filter((artifact) => artifact.type === query.type);
+  if (query.cat) filtered = filtered.filter((artifact) => (artifact.catId ?? '—') === query.cat);
+  const search = Array.isArray(query.q) ? query.q[0] : query.q;
+  if (typeof search === 'string') {
+    const lower = search.toLowerCase();
+    filtered = filtered.filter(
+      (artifact) => typeof artifact.name === 'string' && artifact.name.toLowerCase().includes(lower),
+    );
+  }
+  return filtered;
 }
 
 async function collectLiveFileLedger(
@@ -430,7 +609,9 @@ async function collectLiveFileLedger(
 
   try {
     const sessions = await Promise.resolve(sessionChainStore.getChainByThread(threadId));
-    const activeSessions = sessions.filter((session) => session.status === 'active' && session.userId === userId);
+    const activeSessions = sessions.filter(
+      (session) => isHomeSession(session) && session.status === 'active' && session.userId === userId,
+    );
     const fileArrays = await Promise.all(
       activeSessions.map(async (session) => {
         const files = await transcriptWriter.getFilesTouched(session.id, {
@@ -482,6 +663,7 @@ const bootcampStateSchema = z
       .optional(),
     advancedFeatures: z.record(z.enum(['available', 'unavailable', 'skipped'])).optional(),
     startedAt: z.number(),
+    journeyId: z.string().min(8).max(200).optional(),
     completedAt: z.number().optional(),
   })
   .strict();
@@ -490,6 +672,9 @@ const createThreadSchema = z
   .object({
     /** Legacy fallback only; preferred identity source is X-Cat-Cafe-User header. */
     userId: z.string().min(1).max(100).optional(),
+    /** Owner-scoped first-send replay key. Same owner + key resolves the same thread. */
+    idempotencyKey: z.string().uuid().optional(),
+    temporaryTitle: z.string().min(1).max(200).optional(),
     title: z.string().min(1).max(200).optional(),
     projectPath: z.string().min(1).max(500).optional(),
     /** F32-b Phase 2: Thread-level cat preference (validated against catRegistry) */
@@ -515,7 +700,7 @@ const listThreadsSchema = z.object({
   /** F095 Phase D: When true, list soft-deleted threads (trash bin) instead of active threads. */
   deleted: z.union([z.boolean(), z.string().trim().min(1).max(8)]).optional(),
   /**
-   * F229: When true, include concierge threads in the list (default: excluded).
+   * F229/F317: When true, include the owner's extra concierge threads; the canonical one is visible by default.
    * Used by the concierge surface to load the per-user concierge thread.
    */
   includeConcierge: z.union([z.boolean(), z.string().trim().min(1).max(8)]).optional(),
@@ -592,12 +777,16 @@ function projectThreadForListView(
   return { ...summary, presence: presence ?? { status: 'idle' } };
 }
 
-async function migrateRuntimeProjectPath(thread: Thread, threadStore: IThreadStore): Promise<Thread> {
+async function migrateRuntimeProjectPath(
+  thread: Thread,
+  threadStore: IThreadStore,
+  resolvePath = migrateStoredProjectPath,
+): Promise<Thread> {
   if (!thread.projectPath || thread.projectPath === 'default' || thread.projectPath.startsWith('games/')) {
     return thread;
   }
   const previousProjectPath = thread.projectPath;
-  const migratedProjectPath = await migrateStoredProjectPath(previousProjectPath);
+  const migratedProjectPath = await resolvePath(previousProjectPath);
   if (migratedProjectPath === previousProjectPath) return thread;
   const projectPath = migratedProjectPath ?? 'default';
 
@@ -649,6 +838,8 @@ const updateThreadSchema = z
     title: z.string().trim().min(1).max(200).optional(),
     pinned: z.boolean().optional(),
     favorited: z.boolean().optional(),
+    /** F322: post-create Feature association. null clears. */
+    backlogItemId: z.string().trim().min(1).max(100).nullable().optional(),
     thinkingMode: z.enum(['debug', 'play']).optional(),
     /** F32-b Phase 2: Update thread-level cat preference. Empty array clears. */
     preferredCats: z.array(catIdSchema()).max(10).optional(),
@@ -687,6 +878,7 @@ const updateThreadSchema = z
       data.title !== undefined ||
       data.pinned !== undefined ||
       data.favorited !== undefined ||
+      data.backlogItemId !== undefined ||
       data.thinkingMode !== undefined ||
       data.preferredCats !== undefined ||
       data.routingPolicy !== undefined ||
@@ -714,6 +906,8 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
 
     const {
       userId: legacyUserId,
+      idempotencyKey,
+      temporaryTitle,
       title,
       projectPath,
       preferredCats,
@@ -727,13 +921,68 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       return { error: 'Identity required (session cookie or X-Cat-Cafe-User header)' };
     }
 
+    const onboardingJourneyId = request.headers['x-cat-cafe-onboarding-journey'];
+    const onboardingIdempotencyKey = request.headers['idempotency-key'];
+    const headerJourneyId = typeof onboardingJourneyId === 'string' ? onboardingJourneyId : undefined;
+    const keyJourneyId =
+      typeof onboardingIdempotencyKey === 'string' && onboardingIdempotencyKey.startsWith('onboarding:')
+        ? onboardingIdempotencyKey.slice('onboarding:'.length)
+        : undefined;
+    const journeyId = headerJourneyId ?? bootcampState?.journeyId ?? keyJourneyId;
+    if (journeyId !== undefined && (journeyId.length < 8 || journeyId.length > 200)) {
+      reply.status(400);
+      return { error: 'Invalid onboarding journey id' };
+    }
+    if (journeyId) {
+      const existing = (await threadStore.list(userId)).find(
+        (candidate) => candidate.bootcampState?.journeyId === journeyId,
+      );
+      if (existing) return sanitizeThreadForResponse(existing, userId);
+    }
+
     const resolvedProjectPath = await resolveCreateThreadProjectPath(projectPath, bootcampState as BootcampStateV1);
     if (!resolvedProjectPath.ok) {
       reply.status(resolvedProjectPath.statusCode);
       return { error: resolvedProjectPath.error };
     }
 
-    let thread: Thread = await threadStore.create(userId, title, resolvedProjectPath.projectPath);
+    let thread: Thread;
+    if (journeyId && threadStore.ensureOnboardingThread) {
+      const ensured = await threadStore.ensureOnboardingThread(
+        userId,
+        journeyId,
+        title ?? '首启协作旅程',
+        resolvedProjectPath.projectPath ?? 'default',
+        bootcampState as BootcampStateV1,
+      );
+      if (ensured.thread.createdBy !== userId) {
+        reply.status(409);
+        return { error: 'Onboarding journey belongs to another user' };
+      }
+      reply.status(ensured.created ? 201 : 200);
+      return sanitizeThreadForResponse(ensured.thread, userId);
+    }
+    if (idempotencyKey) {
+      try {
+        thread = await threadStore.ensureOwnedThread({
+          userId,
+          idempotencyKey,
+          title: title ?? temporaryTitle ?? null,
+          titleSource: title ? 'user' : 'temporary',
+          participants: [],
+          projectPath: resolvedProjectPath.projectPath,
+        });
+      } catch (error) {
+        if ((error as { code?: unknown }).code === 'OWNER_ADMISSION_UNAVAILABLE') {
+          reply.status(409);
+          return { error: 'Conversation replay is unavailable', code: 'THREAD_REPLAY_UNAVAILABLE' };
+        }
+        throw error;
+      }
+    } else {
+      thread = await threadStore.create(userId, title, resolvedProjectPath.projectPath);
+      if (!title && temporaryTitle) await threadStore.setAutomaticTitle(thread.id, temporaryTitle, 'temporary');
+    }
 
     // F32-b Phase 2: Set preferred cats if provided at creation time
     if (preferredCats && preferredCats.length > 0) {
@@ -802,15 +1051,15 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       deletedRaw === undefined &&
       includeConciergeRaw === undefined;
     const sidebarCompositionStartedAt = isCanonicalSidebarSnapshot ? performance.now() : null;
+    const sidebarTiming = isCanonicalSidebarSnapshot ? createSidebarCompositionTimer() : undefined;
     const userId = resolveUserId(request, { defaultUserId: 'default-user' });
     if (!userId) return { threads: [] };
+    const resolveListProjectPath = createThreadProjectPathResolver();
 
     // F095 Phase D: Return soft-deleted threads when deleted=true
     if (showDeleted) {
-      let deletedThreads = await Promise.all(
-        (await threadStore.listDeleted(userId)).map(async (thread) =>
-          sanitizeThreadForResponse(await migrateRuntimeProjectPath(thread, threadStore), userId),
-        ),
+      let deletedThreads = await mapThreadList(await threadStore.listDeleted(userId), async (thread) =>
+        sanitizeThreadForResponse(await migrateRuntimeProjectPath(thread, threadStore, resolveListProjectPath), userId),
       );
       // F229: Apply the same concierge exclusion to the trash view.
       // Without this, a soft-deleted concierge thread appears in the default trash list;
@@ -822,7 +1071,12 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       return { threads: deletedThreads.map((thread) => projectThreadForListView(thread, view)) };
     }
 
-    const migratedProjectPath = projectPath ? await migrateStoredProjectPath(projectPath) : undefined;
+    // Resolve the owner's one canonical concierge carrier before reading the
+    // list. This also repairs a generated blank title without creating a thread.
+    sidebarTiming?.mark('setupMs');
+    const canonicalConciergeId = await opts.conciergeThreadService?.findThreadId(userId);
+    sidebarTiming?.mark('conciergeMs');
+    const migratedProjectPath = projectPath ? await resolveListProjectPath(projectPath) : undefined;
     if (projectPath && migratedProjectPath === null) return { threads: [] };
     const projectPathMatches =
       projectPath && migratedProjectPath
@@ -833,19 +1087,30 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
     let threads = projectPathMatches
       ? [...new Map(projectPathMatches.flat().map((thread) => [thread.id, thread] as const)).values()]
       : await threadStore.list(userId);
-    threads = await Promise.all(
-      threads.map(async (thread) =>
-        sanitizeThreadForResponse(await migrateRuntimeProjectPath(thread, threadStore), userId),
-      ),
-    );
-
-    // F229: Exclude concierge threads from default sidebar listing.
-    // createdBy=userId (P1 fix) means threadStore.list(userId) includes concierge threads;
-    // threadKind='concierge' is the filter signal at this route layer.
-    // includeConcierge=true opt-in exposes them (used by the concierge surface itself).
-    if (!includeConcierge) {
-      threads = threads.filter((t) => !isConciergeThread(t));
+    sidebarTiming?.mark('listMs');
+    if (canonicalConciergeId && !threads.some((thread) => thread.id === canonicalConciergeId)) {
+      const canonical = await threadStore.get(canonicalConciergeId);
+      if (
+        canonical &&
+        !canonical.deletedAt &&
+        (!projectPath || canonical.projectPath === migratedProjectPath || canonical.projectPath === projectPath)
+      )
+        threads.push(canonical);
     }
+    sidebarTiming?.mark('conciergeAttachMs');
+    threads = await mapThreadList(threads, async (thread) =>
+      sanitizeThreadForResponse(await migrateRuntimeProjectPath(thread, threadStore, resolveListProjectPath), userId),
+    );
+    sidebarTiming?.mark('pathMigrationMs');
+
+    // Keep only this owner's canonical concierge carrier discoverable. Stale
+    // same-kind orphans cannot become duplicate history entries.
+    threads = threads.filter(
+      (thread) =>
+        !isConciergeThread(thread) ||
+        thread.id === canonicalConciergeId ||
+        (includeConcierge && thread.createdBy === userId),
+    );
 
     // F058 Phase G: Match threads by feature IDs in titles
     if (featureIds) {
@@ -926,17 +1191,20 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
     }
 
     // F069: Hydrate unread summaries from read state store
+    sidebarTiming?.mark('filterMs');
     if (opts.readStateStore && messageStore && threads.length > 0) {
       const summaries = await opts.readStateStore.getUnreadSummaries(
         userId,
         threads.map((t) => t.id),
         messageStore,
       );
+      sidebarTiming?.mark('unreadReadMs');
       const summaryMap = new Map(summaries.map((s) => [s.threadId, s]));
       threads = threads.map((t) => {
         const s = summaryMap.get(t.id);
         return { ...t, unreadCount: s?.unreadCount ?? 0, hasUserMention: s?.hasUserMention ?? false };
       });
+      sidebarTiming?.mark('unreadProjectMs');
     }
 
     // F297 Phase B (AC-B4): Sidebar snapshot 必须自带 C10 presence，
@@ -945,12 +1213,14 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       view === 'sidebar' && threads.length > 0
         ? await composeSidebarPresence(threads, userId, opts.presenceSource)
         : undefined;
+    sidebarTiming?.mark('presenceMs');
 
     const response = {
       threads: threads.map((thread) => projectThreadForListView(thread, view, presenceByThread?.get(thread.id))),
     };
+    sidebarTiming?.mark('dtoProjectMs');
     if (sidebarCompositionStartedAt !== null) {
-      return sendCanonicalSidebarSnapshot(request, reply, response, sidebarCompositionStartedAt);
+      return sendCanonicalSidebarSnapshot(request, reply, response, sidebarCompositionStartedAt, sidebarTiming?.phases);
     }
     return response;
   });
@@ -976,94 +1246,20 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       return { error: 'Thread not found' };
     }
     const userId = resolveUserId(request, { defaultUserId: 'default-user' }) ?? 'default-user';
-    return sanitizeThreadForResponse(await migrateRuntimeProjectPath(thread, threadStore), userId);
+    if (isConciergeThread(thread)) {
+      const canonicalId = await opts.conciergeThreadService?.findThreadId(userId);
+      if (thread.createdBy !== userId && canonicalId !== id) {
+        reply.status(404);
+        return { error: 'Thread not found' };
+      }
+    }
+    return sanitizeThreadForResponse(
+      await migrateRuntimeProjectPath((await threadStore.get(id)) ?? thread, threadStore),
+      userId,
+    );
   });
 
   // F254 Phase E: rebuildable Hub projection for F5/reconnect recovery.
-  app.get('/api/threads/:id/freshness-closures', async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const thread = await threadStore.get(id);
-    if (!thread || thread.deletedAt) {
-      reply.status(404);
-      return { error: 'Thread not found' };
-    }
-    const userId = resolveUserId(request, { defaultUserId: 'default-user' }) ?? 'default-user';
-    const closures = ((await opts.freshnessClosureStore?.listActiveByThread(id)) ?? []).filter(
-      (closure) => closure.userId === userId,
-    );
-    const supplements = ((await opts.freshnessClosureStore?.listSupplementsByThread(id)) ?? []).filter(
-      (supplement) => supplement.userId === userId,
-    );
-    return {
-      closures: closures.map((closure) => projectFreshnessClosure(closure)),
-      supplements: await Promise.all(
-        supplements.map((supplement) => projectFreshnessSupplementForHistory(supplement, opts.messageStore)),
-      ),
-    };
-  });
-
-  app.post('/api/threads/:id/freshness-closures/:closureId/retry', async (request, reply) => {
-    const { id, closureId } = request.params as { id: string; closureId: string };
-    const userId = resolveStrictUserId(request);
-    if (!userId) {
-      reply.status(401);
-      return { error: 'Authentication required' };
-    }
-    const closure = await opts.freshnessClosureStore?.get(closureId);
-    if (!closure || closure.threadId !== id || closure.userId !== userId) {
-      reply.status(404);
-      return { error: 'Freshness closure not found' };
-    }
-    if (closure.status !== 'blocked') {
-      reply.status(409);
-      return { error: 'Freshness closure is not blocked', status: closure.status };
-    }
-    if (!opts.invocationQueue || !opts.queueProcessor || !opts.freshnessClosureStore) {
-      reply.status(503);
-      return { error: 'Freshness retry unavailable' };
-    }
-    const nextEpoch = closure.retryEpoch + 1;
-    const enqueue = opts.invocationQueue.enqueue({
-      threadId: id,
-      userId,
-      ownerAuthProvenance: 'strict',
-      content: `[Freshness Catch Closure ${closure.id}] 显式重试；正文由执行前 closure truth 注入。`,
-      source: 'agent',
-      sourceCategory: 'freshness',
-      targetCats: [closure.catId],
-      callerCatId: closure.catId,
-      autoExecute: true,
-      priority: 'normal',
-      intent: 'execute',
-      idempotencyKey: `freshness-closure:${closure.id}:retry:${nextEpoch}`,
-      freshnessClosureId: closure.id,
-      freshnessRequiredFrontierMessageId: closure.requiredFrontierMessageId,
-    });
-    if (enqueue.outcome === 'full') {
-      reply.status(409);
-      return { error: 'Invocation queue is full' };
-    }
-    const retried = await opts.freshnessClosureStore.retry(closure.id, {
-      actorId: userId,
-      evidenceRef: `api:retry:${Date.now()}`,
-      now: Date.now(),
-    });
-    recordFreshnessClosureTransition('retried');
-    const projection = projectFreshnessClosure(retried);
-    opts.socketManager?.broadcastAgentMessage(
-      {
-        type: 'system_info',
-        catId: retried.catId as CatId,
-        content: JSON.stringify(projection),
-        timestamp: projection.updatedAt,
-      },
-      id,
-    );
-    void opts.queueProcessor.tryAutoExecute(id);
-    reply.status(202);
-    return { closure: projection };
-  });
-
   // PATCH /api/threads/:id - 更新标题/置顶/收藏
   app.patch('/api/threads/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -1078,11 +1274,20 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       reply.status(404);
       return { error: 'Thread not found' };
     }
+    const patchUserId = resolveUserId(request, { defaultUserId: 'default-user' }) ?? 'default-user';
+    if (isConciergeThread(thread) && thread.createdBy !== patchUserId) {
+      const canonicalId = await opts.conciergeThreadService?.findThreadId(patchUserId);
+      if (canonicalId !== id) {
+        reply.status(404);
+        return { error: 'Thread not found' };
+      }
+    }
 
     const {
       title,
       pinned,
       favorited,
+      backlogItemId,
       thinkingMode,
       preferredCats,
       routingPolicy,
@@ -1093,6 +1298,25 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       preferredWorkspaceMode,
       labels,
     } = parseResult.data;
+    // Feature association is owner-only and validated before ANY mutation so a
+    // combined PATCH cannot partially apply title/pin when the Feature is invalid.
+    if (backlogItemId !== undefined) {
+      if (thread.createdBy !== patchUserId) {
+        reply.status(404);
+        return { error: 'Thread not found' };
+      }
+      if (backlogItemId !== null) {
+        if (!opts.backlogStore) {
+          reply.status(503);
+          return { error: 'Backlog store unavailable' };
+        }
+        const item = await opts.backlogStore.get(backlogItemId, patchUserId);
+        if (!item) {
+          reply.status(400);
+          return { error: 'Invalid backlogItemId: backlog item not found or not owned by user' };
+        }
+      }
+    }
     if (title !== undefined) {
       await threadStore.updateTitle(id, title);
       try {
@@ -1104,6 +1328,15 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
     }
     if (pinned !== undefined) await threadStore.updatePin(id, pinned);
     if (favorited !== undefined) await threadStore.updateFavorite(id, favorited);
+    if (backlogItemId !== undefined) {
+      await threadStore.updateBacklogItem(id, backlogItemId);
+      try {
+        opts.indexBuilder?.markThreadDirty(id);
+        await opts.indexBuilder?.flushDirtyThreads?.();
+      } catch (err) {
+        log.warn({ err, threadId: id }, 'failed to refresh thread evidence index after Feature update');
+      }
+    }
     if (thinkingMode !== undefined) await threadStore.updateThinkingMode(id, thinkingMode);
     if (preferredCats !== undefined) await threadStore.updatePreferredCats(id, preferredCats as CatId[]);
     if (routingPolicy !== undefined) {
@@ -1137,7 +1370,6 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       reply.status(404);
       return { error: 'Thread not found' };
     }
-    const patchUserId = resolveUserId(request, { defaultUserId: 'default-user' }) ?? 'default-user';
     return sanitizeThreadForResponse(updated, patchUserId);
   });
 
@@ -1212,7 +1444,10 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       return { error: 'Only the thread owner can read cloud cat bindings' };
     }
     const bindings = await threadStore.getCloudCatBindings(id);
-    return { bindings };
+    // F202 h3c-2: which cat's binding is the thread's ChatGPT conversation is the Host's answer, not
+    // a fixed id — the panel lists the binding of the configured cloud cat, and none when the
+    // provider has no cat or several.
+    return { bindings, cloudCat: resolveCloudConversationCat(catRegistry, 'chatgpt') };
   });
 
   // PATCH /api/threads/:id/cloud-bindings — STRICT user-owned only.
@@ -1221,34 +1456,51 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
   //
   // Auth model: same 4 layers as GET (strict resolver / reserved-identity reject /
   // system-thread reject / literal owner match). See GET doc above for history.
+  //
+  // F202 h3c-1: every refusal carries a `CloudBindingRefusal` code, and only these checks — all made
+  // before the write — send one. A client reads such a refusal as "nothing was written"; any other
+  // failure leaves the outcome unknown, and the client reads the binding back.
   app.patch<{ Params: { id: string } }>('/api/threads/:id/cloud-bindings', async (request, reply) => {
     const { id } = request.params;
     const userId = resolveStrictUserId(request);
     if (!userId) {
       reply.status(401);
-      return { error: 'Authentication required' };
+      return { error: 'Authentication required', code: 'CLOUD_BINDING_AUTH_REQUIRED' satisfies CloudBindingRefusal };
     }
     if (SYSTEM_USER_IDS.has(userId)) {
       reply.status(401);
-      return { error: 'Reserved internal identity cannot be used' };
+      return {
+        error: 'Reserved internal identity cannot be used',
+        code: 'CLOUD_BINDING_RESERVED_IDENTITY' satisfies CloudBindingRefusal,
+      };
     }
     const parseResult = cloudBindingPatchSchema.safeParse(request.body);
     if (!parseResult.success) {
       reply.status(400);
-      return { error: 'Invalid request body', details: parseResult.error.issues };
+      return {
+        error: 'Invalid request body',
+        code: 'CLOUD_BINDING_INVALID_BODY' satisfies CloudBindingRefusal,
+        details: parseResult.error.issues,
+      };
     }
     const thread = await threadStore.get(id);
     if (!thread || thread.deletedAt) {
       reply.status(404);
-      return { error: 'Thread not found' };
+      return { error: 'Thread not found', code: 'CLOUD_BINDING_THREAD_NOT_FOUND' satisfies CloudBindingRefusal };
     }
     if (SYSTEM_USER_IDS.has(thread.createdBy)) {
       reply.status(403);
-      return { error: 'Cloud cat bindings are not supported on system-owned threads' };
+      return {
+        error: 'Cloud cat bindings are not supported on system-owned threads',
+        code: 'CLOUD_BINDING_SYSTEM_THREAD' satisfies CloudBindingRefusal,
+      };
     }
     if (thread.createdBy !== userId) {
       reply.status(403);
-      return { error: 'Only the thread owner can update cloud cat bindings' };
+      return {
+        error: 'Only the thread owner can update cloud cat bindings',
+        code: 'CLOUD_BINDING_NOT_OWNER' satisfies CloudBindingRefusal,
+      };
     }
     const { catId, chatUrl } = parseResult.data;
     await threadStore.updateCloudCatBinding(id, catId as CatId, chatUrl);
@@ -1303,7 +1555,6 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
 
       // B-4: Cascade delete guide session to prevent stale sessions on deleted threads
       void opts.guideSessionStore?.delete(id).catch(() => {});
-      await opts.freshnessClosureStore?.deleteByThread(id);
 
       // I-2: Audit thread deletion for traceability (best-effort, don't block response)
       const userId = resolveUserId(request, {});
@@ -1388,6 +1639,10 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       reply.status(401);
       return { error: 'Identity required' };
     }
+    const rawQuery = request.query as Record<string, unknown>;
+    const worksView = Object.hasOwn(rawQuery, 'view');
+    if (worksView && !worksQuerySchema.safeParse(rawQuery).success)
+      return reply.code(400).send({ error: 'Invalid works view query' });
 
     const { threadId } = request.params;
     const thread = await threadStore.get(threadId);
@@ -1401,28 +1656,143 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       return { error: 'Access denied' };
     }
 
-    // P1 fix (砚砚 review): 分页扫全量消息，getByThread 默认 limit=50 会吞掉 >50 条 thread 的早期产物
-    const messages = messageStore ? await collectAllThreadMessages(messageStore, threadId, userId) : [];
-    const allTasks = taskStore ? await taskStore.listByThread(threadId) : [];
-    // F232 P1 (cloud review): system thread（createdBy='system'，shared default thread）任何认证用户
-    // 都通过上面的 access guard，但 PR tracking task 带注册者 userId（user-specific）。必须按 userId 过滤，
-    // 否则 shared system thread 上 Alice 会看到 Bob 的 PR titles/refs。messages 已由
-    // collectAllThreadMessages(userId) scoped；ledger 是 thread 级产物记录（updatedBy=cat/'user'，非
-    // user 私有数据），无需过滤。
-    const prTasks = allTasks.filter((t) => t.kind === 'pr_tracking' && t.userId === userId);
-    const mem = await threadStore.getThreadMemory(threadId);
-    // P1 fix (砚砚 review): ledger 含 file/plan/feature-doc 文档产物（F148 类型），不止 file；都映射为面板 file 类，不静默丢
-    const persistedFileLedger = (mem?.recentArtifacts ?? []).filter(
-      (a) => a.type === 'file' || a.type === 'plan' || a.type === 'feature-doc',
-    );
-    const liveFileLedger = await collectLiveFileLedger(opts.sessionChainStore, opts.transcriptWriter, threadId, userId);
-    const fileLedger = [...persistedFileLedger, ...liveFileLedger];
-    const artifacts = aggregateThreadArtifacts({ messages, prTasks, fileLedger });
-    return { threadId, artifacts };
+    return observeThreadArtifactRead(request.log, async (measure, recordWorkRead) => {
+      // Scan complete publication history, retiring raw message pages after both projections.
+      const receipts: AppliedWorkspaceReceiptMessage[] = [];
+      const messageArtifacts = messageStore
+        ? await measure('messages', () =>
+            collectThreadMessageArtifacts(messageStore, threadId, userId, (page) => {
+              receipts.push(...projectAppliedWorkspaceReceipts(page));
+            }),
+          )
+        : [];
+      const allTasks = taskStore ? await measure('tasks', () => taskStore.listByThread(threadId)) : [];
+      // F232 P1 (cloud review): system thread（createdBy='system'，shared default thread）任何认证用户
+      // 都通过上面的 access guard，但 PR tracking task 带注册者 userId（user-specific）。必须按 userId 过滤，
+      // 否则 shared system thread 上 Alice 会看到 Bob 的 PR titles/refs。消息分页已按 userId scoped；ledger 是 thread 级产物记录（updatedBy=cat/'user'，非
+      // user 私有数据），无需过滤。
+      const prTasks = worksView
+        ? threadWorksPrs(allTasks, userId, thread.createdBy)
+        : allTasks.filter((t) => t.kind === 'pr_tracking' && t.userId === userId);
+      const mem = worksView ? null : await measure('memory', () => threadStore.getThreadMemory(threadId));
+      // P1 fix (砚砚 review): ledger 含 file/plan/feature-doc 文档产物（F148 类型），不止 file；都映射为面板 file 类，不静默丢
+      const persistedFileLedger = (mem?.recentArtifacts ?? []).filter(
+        (a) => a.type === 'file' || a.type === 'plan' || a.type === 'feature-doc',
+      );
+      const liveFileLedger = worksView
+        ? []
+        : await measure('liveFiles', () =>
+            collectLiveFileLedger(opts.sessionChainStore, opts.transcriptWriter, threadId, userId),
+          );
+      const fileLedger = [...persistedFileLedger, ...liveFileLedger];
+      const acceptedFiles = await measure('acceptedFiles', () =>
+        readAcceptedWorkspaceArtifacts(opts.acceptedWorkspaceArtifacts, userId, threadId, receipts),
+      );
+      // Keep the owner scope open across both reads: its final manifest and
+      // authorization fence must follow title completion, as in the serial path.
+      const artifacts = await withIndependentWorksRead(
+        worksView ? opts.artifactWorkLineage?.independent : undefined,
+        userId,
+        async (independentWorks) => {
+          const reads = await Promise.allSettled([
+            measure('prTitles', () =>
+              readArtifactPrTitles(
+                aggregateProjectedThreadArtifacts({
+                  messageArtifacts: [...messageArtifacts, ...acceptedFiles.artifacts],
+                  prTasks,
+                  fileLedger: worksView ? [] : fileLedger,
+                }),
+                worksView ? (opts.prTitleReader ?? pluginPrTitleReader(app, request)) : undefined,
+              ),
+            ),
+            worksView
+              ? measure('independentWorks', () => readIndependentThreadWorks(independentWorks, userId, threadId))
+              : Promise.resolve([]),
+          ]);
+          const combined: ThreadArtifactDTO[] = [];
+          for (const read of reads) {
+            if (read.status === 'rejected') throw read.reason;
+            combined.push(...read.value);
+          }
+          return combined;
+        },
+        recordWorkRead,
+      );
+      const projected = await measure('lineage', () =>
+        projectGlobalArtifactWorkLineage(
+          opts.artifactWorkLineage,
+          userId,
+          artifacts.map((artifact) => ({ ...artifact, threadId, threadTitle: thread.title ?? '' })),
+        ),
+      );
+      return {
+        threadId,
+        artifacts: projected.artifacts.map(
+          ({ threadId: _threadId, threadTitle: _threadTitle, ...artifact }) => artifact,
+        ),
+        workLineage: projected.workLineage,
+        ...(worksView
+          ? {
+              view: 'works',
+              total: projectThreadWorks(projected.artifacts, projected.workLineage === 'resolved').length,
+              complete: !!messageStore && !!taskStore && acceptedFiles.complete,
+            }
+          : {}),
+      };
+    });
   });
 
+  // F232 PR-A: GET /api/threads/:threadId/artifacts/:messageId/blocks/:blockId — read one html_widget.
+  // Same identity, thread admission and message visibility as the catalogue route directly above;
+  // a block the catalogue lists must be readable, and a block it cannot list must not be.
+  app.get<{ Params: { threadId: string; messageId: string; blockId: string } }>(
+    '/api/threads/:threadId/artifacts/:messageId/blocks/:blockId',
+    async (request, reply) => {
+      reply.header('Cache-Control', 'private, no-store');
+      const userId = resolveUserId(request, {});
+      if (!userId) {
+        reply.status(401);
+        return { error: 'Identity required' };
+      }
+      const { threadId, messageId, blockId } = request.params;
+      const thread = await threadStore.get(threadId);
+      if (!thread) {
+        reply.status(404);
+        return { error: 'Thread not found' };
+      }
+      if (thread.createdBy !== userId && thread.createdBy !== 'system') {
+        reply.status(403);
+        return { error: 'Access denied' };
+      }
+      const message = messageStore ? await messageStore.getById(messageId) : null;
+      // One response for "not this thread", "not visible to you" and "no such block":
+      // never leak whether the message exists outside the catalogue.
+      if (!message || message.threadId !== threadId || !isThreadMessageVisibleToViewer(message, userId)) {
+        reply.status(404);
+        return { error: 'widget_block_unavailable' };
+      }
+      const block = (message.extra?.rich?.blocks ?? []).find((candidate) => candidate.id === blockId);
+      if (!block || block.kind !== 'html_widget') {
+        reply.status(404);
+        return { error: 'widget_block_unavailable' };
+      }
+      return {
+        threadId,
+        messageId,
+        block: {
+          id: block.id,
+          kind: block.kind,
+          v: block.v,
+          html: block.html,
+          ...(block.title === undefined ? {} : { title: block.title }),
+          ...(block.height === undefined ? {} : { height: block.height }),
+        },
+      };
+    },
+  );
+
   // F232 Phase B: GET /api/artifacts — global artifact aggregation across all user threads (AC-B1, AC-B2).
-  // Iterates all threads calling aggregateThreadArtifacts() per thread (reuses Phase A pipeline).
+  // Projects each historical page, reusing the full Phase A artifact aggregation contract.
   app.get('/api/artifacts', async (request, reply) => {
     const userId = resolveUserId(request, {});
     if (!userId) {
@@ -1430,53 +1800,156 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       return { error: 'Identity required' };
     }
 
-    const userThreads = await threadStore.list(userId);
-
-    // Parallel aggregation across all threads (AC-B2: reuse pipeline)
-    const perThread = await Promise.all(
-      userThreads.map(async (thread) => {
-        const messages = messageStore ? await collectAllThreadMessages(messageStore, thread.id, userId) : [];
-        const allTasks = taskStore ? await taskStore.listByThread(thread.id) : [];
-        const prTasks = allTasks.filter((t) => t.kind === 'pr_tracking' && t.userId === userId);
-        const mem = await threadStore.getThreadMemory(thread.id);
-        const fileLedger = (mem?.recentArtifacts ?? []).filter(
-          (a) => a.type === 'file' || a.type === 'plan' || a.type === 'feature-doc',
-        );
-        const artifacts = aggregateThreadArtifacts({
-          messages,
-          prTasks,
-          fileLedger,
-        });
-        return artifacts.map((a) => ({
-          ...a,
-          threadId: thread.id,
-          threadTitle: thread.title ?? thread.id,
-        }));
-      }),
-    );
-
-    // Flatten + sort descending by createdAt
-    let all = perThread.flat().sort((a, b) => b.createdAt - a.createdAt);
-
-    // F232 Phase B: server-side query param filtering (AC-B1)
-    const { type, cat, q } = request.query as { type?: string; cat?: string; q?: string };
-    if (type) {
-      all = all.filter((a) => a.type === type);
-    }
-    if (cat) {
-      // Normalize null catId → '—' sentinel (same as client-side extractCatChips)
-      all = all.filter((a) => (a.catId ?? '—') === cat);
-    }
-    if (q) {
-      // Normalize: Fastify may expose duplicate ?q= as array; take first element
-      const qStr = Array.isArray(q) ? q[0] : q;
-      if (typeof qStr === 'string') {
-        const lower = qStr.toLowerCase();
-        all = all.filter((a) => a.name && a.name.toLowerCase().includes(lower));
+    const rawQuery = request.query as Record<string, unknown>;
+    if (Object.hasOwn(rawQuery, 'view') && rawQuery.view !== 'works') {
+      const parsed = recentWorksQuerySchema.safeParse(rawQuery);
+      if (!parsed.success) {
+        reply.status(400);
+        return { error: 'Invalid recent works query' };
       }
+      return readRecentWorksView({
+        userId,
+        limit: parsed.data.limit,
+        threadStore,
+        messageStore,
+        independent: opts.artifactWorkLineage?.independent,
+        resolveLineage: (artifacts) => projectGlobalArtifactWorkLineage(opts.artifactWorkLineage, userId, artifacts),
+        readAccepted: (threadId, messages) =>
+          readAcceptedWorkspaceArtifacts(
+            opts.acceptedWorkspaceArtifacts,
+            userId,
+            threadId,
+            projectAppliedWorkspaceReceipts(messages),
+          ),
+      });
     }
 
-    return { artifacts: all, total: all.length };
+    return withIndependentWorksRead(opts.artifactWorkLineage?.independent, userId, async (independentWorks) => {
+      if (rawQuery.view === 'works' && rawQuery.read === 'pages') {
+        const query = pagedWorksQuerySchema.safeParse(rawQuery);
+        if (!query.success) return reply.code(400).send({ error: 'Invalid paged works query' });
+        const started = performance.now();
+        try {
+          const page = await readGlobalWorksPage({
+            userId,
+            cursor: query.data.cursor,
+            threads: await threadStore.list(userId),
+            messages: messageStore,
+            tasks: taskStore,
+            accepted: async (threadId, messages) => {
+              const result = await readAcceptedWorkspaceArtifacts(
+                opts.acceptedWorkspaceArtifacts,
+                userId,
+                threadId,
+                projectAppliedWorkspaceReceipts(messages),
+              );
+              if (!result.complete) throw new WorksPageError('Accepted work source unavailable', 503);
+              return result.artifacts;
+            },
+            ...(independentWorks
+              ? {
+                  ownedWorks: (threadId: string, after?: string, snapshot?: string) =>
+                    independentWorks.readThread({ ownerUserId: userId, threadId, after, snapshot }),
+                }
+              : {}),
+          });
+          const artifacts = await readArtifactPrTitles(page.artifacts, opts.prTitleReader);
+          const projected = await projectGlobalArtifactWorkLineage(opts.artifactWorkLineage, userId, artifacts);
+          request.log.info(
+            { worksPage: { ...page.cost, durationMs: performance.now() - started, complete: page.complete } },
+            'Bounded global works page',
+          );
+          return {
+            artifacts: projected.artifacts,
+            workLineage: projected.workLineage,
+            pageTotal: projected.artifacts.length,
+            view: 'works',
+            complete: page.complete,
+            ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+          };
+        } catch (error) {
+          if (error instanceof WorksPageError) return reply.code(error.statusCode).send({ error: error.message });
+          throw error;
+        }
+      }
+      const worksView = rawQuery.view === 'works';
+      if (worksView && !worksQuerySchema.safeParse(rawQuery).success)
+        return reply.code(400).send({ error: 'Invalid works view query' });
+
+      const userThreads = await threadStore.list(userId);
+
+      // Bound raw-message reads while retaining the original thread order for equal-time ties.
+      const perThread = new Array<GlobalArtifactDTO[]>(userThreads.length);
+      const threadEntries = userThreads.entries();
+      let scanFailed = false;
+      let worksComplete = !!messageStore && !!taskStore;
+      const workers = Array.from({ length: Math.min(4, userThreads.length) }, async () => {
+        for (const [index, thread] of threadEntries) {
+          if (scanFailed) break;
+          try {
+            const receipts: AppliedWorkspaceReceiptMessage[] = [];
+            const messageArtifacts = messageStore
+              ? await collectThreadMessageArtifacts(messageStore, thread.id, userId, (page) => {
+                  receipts.push(...projectAppliedWorkspaceReceipts(page));
+                })
+              : [];
+            const acceptedFiles = await readAcceptedWorkspaceArtifacts(
+              opts.acceptedWorkspaceArtifacts,
+              userId,
+              thread.id,
+              receipts,
+            );
+            if (!acceptedFiles.complete) worksComplete = false;
+            const allTasks = taskStore ? await taskStore.listByThread(thread.id) : [];
+            const prTasks = worksView
+              ? threadWorksPrs(allTasks, userId, thread.createdBy)
+              : allTasks.filter((t) => t.kind === 'pr_tracking' && t.userId === userId);
+            const mem = worksView ? null : await threadStore.getThreadMemory(thread.id);
+            const fileLedger = (mem?.recentArtifacts ?? []).filter(
+              (a) => a.type === 'file' || a.type === 'plan' || a.type === 'feature-doc',
+            );
+            const artifacts = aggregateProjectedThreadArtifacts({
+              messageArtifacts: [...messageArtifacts, ...acceptedFiles.artifacts],
+              prTasks,
+              fileLedger: worksView ? [] : fileLedger,
+            });
+            if (worksView) artifacts.push(...(await readIndependentThreadWorks(independentWorks, userId, thread.id)));
+            perThread[index] = artifacts.map((a) => ({
+              ...a,
+              threadId: thread.id,
+              threadTitle: thread.title ?? thread.id,
+            }));
+          } catch (error) {
+            scanFailed = true;
+            throw error;
+          }
+        }
+      });
+      // A failed request admits no new work; already-started reads settle before returning.
+      const settled = await Promise.allSettled(workers);
+      const failed = settled.find((result) => result.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+
+      // Flatten + sort descending by createdAt
+      const all = filterGlobalArtifacts(
+        perThread.flat().sort((a, b) => b.createdAt - a.createdAt),
+        rawQuery as { type?: string; cat?: string; q?: string | string[] },
+      );
+
+      const titled = await readArtifactPrTitles(
+        all,
+        worksView ? (opts.prTitleReader ?? pluginPrTitleReader(app, request)) : undefined,
+      );
+      const projected = await projectGlobalArtifactWorkLineage(opts.artifactWorkLineage, userId, titled);
+      return worksView
+        ? {
+            ...projected,
+            view: 'works',
+            total: projectThreadWorks(projected.artifacts, projected.workLineage === 'resolved').length,
+            complete: worksComplete,
+          }
+        : projected;
+    });
   });
 
   // F35: PATCH /api/threads/:id/reveal — reveal all whispers in a thread
@@ -1522,25 +1995,7 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       return { error: 'Read state store or message store not available' };
     }
 
-    const threads = await threadStore.list(userId);
-    let advancedCount = 0;
-
-    for (const thread of threads) {
-      // F297 AC-D4: stay in visibility order, but require durable owner-read
-      // evidence so a queued mutable stream cannot be acknowledged mid-flight.
-      const latest = await messageStore.getLatestVisibleCursor(thread.id, {
-        evidence: 'durable_owner_read',
-        viewerUserId: userId,
-      });
-      if (!latest) continue;
-      // #1269: Gated ack — applies durable-slot gate + conditional pre-reconcile
-      const advanced = await gatedReadStateAck(opts.readStateStore!, messageStore, userId, thread.id, latest.cursor, {
-        repairUnresolvableLegacy: true,
-      });
-      if (advanced) advancedCount++;
-    }
-
-    return { advancedCount, totalThreads: threads.length };
+    return acknowledgeAllThreadReads(threadStore, opts.readStateStore, messageStore, userId);
   });
 
   // F069: PATCH /api/threads/:id/read — mark thread as read up to messageId
@@ -1578,6 +2033,7 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
     // Without canonicalization, a raw v1 ID permanently loses to any v2 cursor
     // in SET_IF_GREATER because 'v' (0x76) > any digit — the ack silently no-ops.
     let cursorToken = parseResult.data.upToMessageId;
+    let targetMessageId = parseResult.data.upToMessageId;
     if (messageStore) {
       const msg = await messageStore.getById(parseResult.data.upToMessageId);
       if (!msg || msg.threadId !== id) {
@@ -1588,14 +2044,15 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       // same managed-hold owner/hidden boundary as timeline and latest-cursor
       // reads before canonicalization or legacy cursor repair can advance it.
       if (!passesManagedHoldViewerBoundary(msg, userId)) {
-        return { advanced: false, caughtUp: false };
+        return { advanced: false, caughtUp: false, handledMention: false };
       }
       // F297 AC-D4: direct message-id ACK is still owner-read evidence.
       // Mutable stream speech may paint while queued, but cannot advance the
       // durable cursor until the same message reaches final delivery.
       if (!isDurableOwnerReadEvidence(msg)) {
-        return { advanced: false, caughtUp: false };
+        return { advanced: false, caughtUp: false, handledMention: false };
       }
+      targetMessageId = msg.id;
       if (messageStore.canonicalizeCursor) {
         cursorToken = await messageStore.canonicalizeCursor(parseResult.data.upToMessageId, id);
       }
@@ -1610,9 +2067,11 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
     // Check against both cursor (v2) and raw messageId (v1 fallback when V2 OFF)
     const afterState = await opts.readStateStore.get(userId, id);
     const caughtUp =
-      advanced ||
-      (await isReadStateCaughtUp(afterState, cursorToken, parseResult.data.upToMessageId, messageStore, userId, id));
-    return { advanced, caughtUp };
+      advanced || (await isReadStateCaughtUp(afterState, cursorToken, targetMessageId, messageStore, userId, id));
+    const handledMention = messageStore
+      ? await resolveMentionAtReadBoundary(messageStore, userId, id, targetMessageId, caughtUp)
+      : false;
+    return { advanced, caughtUp, handledMention };
   });
 
   // F069-R5: POST /api/threads/:id/read/latest — ack to latest real message server-side.
@@ -1642,27 +2101,18 @@ export const threadsRoutes: FastifyPluginAsync<ThreadsRoutesOptions> = async (ap
       return { error: 'Thread not found' };
     }
 
-    // F297 AC-D4: stay in visibility order, but require durable owner-read
-    // evidence so a queued mutable stream cannot be acknowledged mid-flight.
-    const latest = await messageStore.getLatestVisibleCursor(id, {
-      evidence: 'durable_owner_read',
-      viewerUserId: userId,
-    });
-    if (!latest) {
-      return { advanced: false, caughtUp: true, reason: 'no messages' };
+    const result = await acknowledgeLatestThreadRead(opts.readStateStore, messageStore, userId, id);
+    if (result.kind === 'empty') {
+      return { advanced: false, caughtUp: true, handledMention: false, reason: 'no messages' };
     }
-
-    // #1269: Gated ack — applies durable-slot gate + conditional pre-reconcile
-    const advanced = await gatedReadStateAck(opts.readStateStore, messageStore, userId, id, latest.cursor, {
-      repairUnresolvableLegacy: true,
-    });
-    // #1304: caughtUp distinguishes "cursor at latest" from "stale/can't compare"
-    // Check against both cursor (v2) and raw messageId (v1 fallback when V2 OFF)
-    const afterState = await opts.readStateStore.get(userId, id);
-    const caughtUp =
-      advanced || (await isReadStateCaughtUp(afterState, latest.cursor, latest.messageId, messageStore, userId, id));
     // #1200 RED #23b: return both raw messageId and canonical v2 cursor
-    return { advanced, caughtUp, messageId: latest.messageId, cursor: latest.cursor };
+    return {
+      advanced: result.advanced,
+      caughtUp: result.caughtUp,
+      handledMention: result.handledMention,
+      messageId: result.messageId,
+      cursor: result.cursor,
+    };
   });
 };
 

@@ -13,44 +13,72 @@
  *   分类直接由数据源类型决定（rich block kind / task kind / ledger entry type）。
  */
 
-import { isSourceCodeExtension, type RichBlock, type ThreadArtifactDTO } from '@cat-cafe/shared';
+import {
+  isSourceCodeExtension,
+  type MessageContent,
+  messageMediaItemKey,
+  projectFileContent,
+  type RichBlock,
+  type ThreadArtifactDTO,
+} from '@cat-cafe/shared';
 import type { IMessageStore, StoredMessage } from '../../stores/ports/MessageStore.js';
 import { getTimelineOrderTime } from '../../stores/visibility.js';
 
 const THREAD_SCAN_PAGE = 200;
 
-/**
- * F232 P1 fix: 分页扫完整 thread 的全部消息。`getByThread` 默认 limit=50 会截断 >50 条
- * 消息的 thread 的早期产物（违反 AC-A1 全量聚合）。用 getByThreadBefore 游标循环扫到底。
- */
-export async function collectAllThreadMessages(
-  store: Pick<IMessageStore, 'getByThread' | 'getByThreadBefore'>,
+type ThreadMessageScanStore = Pick<IMessageStore, 'getByThread' | 'getByThreadBefore'>;
+
+/** Preserve publication-order cursors and owner visibility for every historical page. */
+async function* readThreadMessagePages(
+  store: ThreadMessageScanStore,
   threadId: string,
   userId?: string,
-  // pageSize 暴露仅为可测试性（默认 = THREAD_SCAN_PAGE，生产行为不变）：
-  // 分页 cursor 路径只在「满页」时触发，小页让 Redis-backed 测试无需造 200+ 条消息
-  // 即可覆盖 queued→delivered re-score 跨页场景（对齐 F099 rightPanelToggleTransition 导出思路）。
   pageSize: number = THREAD_SCAN_PAGE,
-): Promise<StoredMessage[]> {
-  const all: StoredMessage[] = [];
+  artifactProjection = false,
+): AsyncGenerator<StoredMessage[]> {
+  const options = { includeQueuedCatMessages: true, ...(artifactProjection ? { artifactProjection: true } : {}) };
   let cursor: { ts: number; id: string } | undefined;
   for (;;) {
     const page = cursor
-      ? await store.getByThreadBefore(threadId, cursor.ts, pageSize, cursor.id, userId, {
-          includeQueuedCatMessages: true,
-        })
-      : await store.getByThread(threadId, pageSize, userId, { includeQueuedCatMessages: true });
+      ? await store.getByThreadBefore(threadId, cursor.ts, pageSize, cursor.id, userId, options)
+      : await store.getByThread(threadId, pageSize, userId, options);
     if (page.length === 0) break;
-    all.push(...page);
+    yield page;
     if (page.length < pageSize) break;
-    // getByThread/getByThreadBefore 返回 oldest→newest（最老在 page[0]）。
-    // cursor 必须取当前页最老的一条，才能继续往「更老」分页；用最新一条会重叠重扫整页。
+    // Pages are oldest→newest; continue from the oldest publication cursor.
     const oldest = page[0];
-    // Cursor must use the same publication-order score as Redis: real-cat
-    // speech keeps authoring time; ordinary queued work uses delivery time.
     cursor = { ts: getTimelineOrderTime(oldest), id: oldest.id };
   }
+}
+
+/** Legacy full-message contract, including complete historical pagination. */
+export async function collectAllThreadMessages(
+  store: ThreadMessageScanStore,
+  threadId: string,
+  userId?: string,
+  pageSize: number = THREAD_SCAN_PAGE,
+): Promise<StoredMessage[]> {
+  const all: StoredMessage[] = [];
+  for await (const page of readThreadMessagePages(store, threadId, userId, pageSize)) {
+    for (const message of page) all.push(message);
+  }
   return all;
+}
+
+/** Retain only artifact DTOs; unrelated raw message payloads can retire after each page. */
+export async function collectThreadMessageArtifacts(
+  store: ThreadMessageScanStore,
+  threadId: string,
+  userId?: string,
+  observePage?: (page: readonly StoredMessage[]) => void,
+): Promise<ThreadArtifactDTO[]> {
+  const artifacts: ThreadArtifactDTO[] = [];
+  for await (const page of readThreadMessagePages(store, threadId, userId, THREAD_SCAN_PAGE, true)) {
+    observePage?.(page);
+    // Preserve traversal order: equal-time ref replacement and no-ref ties depend on it.
+    for (const artifact of projectMessageArtifacts(page)) artifacts.push(artifact);
+  }
+  return artifacts;
 }
 
 export interface AggregatorMessage {
@@ -58,6 +86,7 @@ export interface AggregatorMessage {
   catId: string | null;
   timestamp: number;
   extra?: { rich?: { blocks?: RichBlock[] } };
+  contentBlocks?: readonly MessageContent[];
 }
 
 export interface AggregatorPrTask {
@@ -84,9 +113,6 @@ export interface ThreadArtifactsAggregatorInput {
 
 const AUDIO_NAME_MAX = 24;
 
-/** F232 A.2: video 扩展名集合——mimeType 优先，扩展名 fallback（无 mimeType 的旧 file block）。 */
-const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'avi', 'mkv', 'm4v', 'ogv']);
-
 function extensionOf(name: string): string {
   const dot = name.lastIndexOf('.');
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
@@ -97,47 +123,153 @@ function ledgerArtifactType(f: AggregatorFileLedgerEntry): 'file' | 'code' {
   return isSourceCodeExtension(ext) ? 'code' : 'file';
 }
 
-/** 单个 rich block → 产物（每 kind 一个 flat mapper；不收录的 kind 返回 []）。 */
-function blockToArtifacts(b: RichBlock, msg: AggregatorMessage): ThreadArtifactDTO[] {
+type ArtifactVisitor = (artifact: ThreadArtifactDTO) => void;
+
+/** 单个 rich block → 产物；visitor 让有界 reader 不必先物化整个 gallery。 */
+function visitBlockArtifacts(b: RichBlock, msg: AggregatorMessage, visit: ArtifactVisitor): void {
   const base = { catId: msg.catId, createdAt: msg.timestamp, sourceMessageId: msg.id };
   switch (b.kind) {
-    case 'media_gallery':
-      return b.items.map(
-        (item): ThreadArtifactDTO => ({
+    case 'media_gallery': {
+      for (const [itemIndex, item] of b.items.entries()) {
+        visit({
           ...base,
           type: 'image',
           name: item.caption ?? item.alt ?? 'image',
           url: item.url,
-        }),
-      );
+          publicationItem: { kind: 'media-gallery', blockId: b.id, itemIndex },
+        });
+      }
+      return;
+    }
     case 'file': {
       // AC-A9: video 识别——mimeType 优先，扩展名 fallback
-      const isVideo = b.mimeType ? b.mimeType.startsWith('video/') : VIDEO_EXTENSIONS.has(extensionOf(b.fileName));
-      return [{ ...base, type: isVideo ? 'video' : 'file', name: b.fileName, url: b.url }];
+      const isVideo = projectFileContent({ name: b.fileName, url: b.url, mime: b.mimeType }).kind === 'video';
+      visit({
+        ...base,
+        type: isVideo ? 'video' : 'file',
+        name: b.fileName,
+        ...(b.mimeType ? { mime: b.mimeType } : {}),
+        url: b.url,
+        publicationItem: { kind: 'rich-file', blockId: b.id },
+      });
+      return;
     }
     case 'diff':
-      return [{ ...base, type: 'code', name: b.filePath, ref: b.filePath }];
+      visit({ ...base, type: 'code', name: b.filePath, ref: b.filePath });
+      return;
     case 'audio':
-      return [
-        { ...base, type: 'audio', name: b.title ?? (b.text ? b.text.slice(0, AUDIO_NAME_MAX) : 'voice'), url: b.url },
-      ];
+      visit({
+        ...base,
+        type: 'audio',
+        name: b.title ?? (b.text ? b.text.slice(0, AUDIO_NAME_MAX) : 'voice'),
+        url: b.url,
+      });
+      return;
     case 'html_widget':
-      return [{ ...base, type: 'widget', name: b.title ?? 'Widget' }];
+      // 只带定位，不带 HTML 正文：面板按坐标回原消息读取，并在读取时复核 kind。
+      visit({ ...base, type: 'widget', name: b.title ?? 'Widget', widgetBlockId: b.id });
+      return;
     case 'interactive':
-      return [{ ...base, type: 'widget', name: b.title ?? b.description ?? 'Interactive' }];
+      // interactive 是审批/选择控件，仍回原消息处理；不给块坐标，避免被当成 HTML 预览。
+      visit({ ...base, type: 'widget', name: b.title ?? b.description ?? 'Interactive' });
+      return;
     default:
-      return []; // card / checklist 不收录
+      return; // card / checklist 不收录
   }
 }
 
-function richBlocksToArtifacts(messages: AggregatorMessage[]): ThreadArtifactDTO[] {
-  const out: ThreadArtifactDTO[] = [];
+function visitContentArtifacts(msg: AggregatorMessage, visit: ArtifactVisitor): void {
+  for (const [index, block] of (msg.contentBlocks ?? []).entries()) {
+    if (block.type !== 'image' && block.type !== 'file') continue;
+    visit({
+      catId: msg.catId,
+      createdAt: msg.timestamp,
+      sourceMessageId: msg.id,
+      type:
+        block.type === 'image'
+          ? 'image'
+          : projectFileContent({ name: block.fileName, url: block.url, mime: block.mimeType }).kind === 'video'
+            ? 'video'
+            : 'file',
+      name: block.type === 'image' ? '图片' : block.fileName,
+      url: block.url,
+      ...(block.type === 'file' && block.mimeType ? { mime: block.mimeType } : {}),
+      publicationItem: { kind: 'content-block', index },
+    });
+  }
+}
+
+function visitMessageArtifacts(messages: readonly AggregatorMessage[], visit: ArtifactVisitor): void {
   for (const msg of messages) {
+    visitContentArtifacts(msg, visit);
     for (const b of msg.extra?.rich?.blocks ?? []) {
-      out.push(...blockToArtifacts(b, msg));
+      visitBlockArtifacts(b, msg, visit);
     }
   }
+}
+
+export function projectMessageArtifacts(messages: readonly AggregatorMessage[]): ThreadArtifactDTO[] {
+  const out: ThreadArtifactDTO[] = [];
+  visitMessageArtifacts(messages, (artifact) => out.push(artifact));
   return out;
+}
+
+/** A single gallery cannot make one catalogue response or one F309 lookup unbounded. */
+export function projectMessageArtifactSlice(message: AggregatorMessage, offset: number, limit: number) {
+  const artifacts: ThreadArtifactDTO[] = [];
+  let total = 0;
+  visitMessageArtifacts([message], (artifact) => {
+    if (total >= offset && artifacts.length < limit) artifacts.push(artifact);
+    total += 1;
+  });
+  return { artifacts, total };
+}
+
+const RECENT_MESSAGE_ARTIFACT_TYPES = new Set<ThreadArtifactDTO['type']>(['image', 'video', 'file']);
+
+function compareMessageRecentArtifacts(left: ThreadArtifactDTO, right: ThreadArtifactDTO): number {
+  const leftPublication = left.publicationItem ? messageMediaItemKey(left.publicationItem) : '';
+  const rightPublication = right.publicationItem ? messageMediaItemKey(right.publicationItem) : '';
+  return (
+    right.createdAt - left.createdAt ||
+    (left.sourceMessageId ?? '').localeCompare(right.sourceMessageId ?? '') ||
+    leftPublication.localeCompare(rightPublication) ||
+    left.type.localeCompare(right.type) ||
+    (left.ref ?? '').localeCompare(right.ref ?? '') ||
+    (left.url ?? '').localeCompare(right.url ?? '') ||
+    left.name.localeCompare(right.name) ||
+    (left.catId ?? '').localeCompare(right.catId ?? '')
+  );
+}
+
+function insertBoundedRecentArtifact(sorted: ThreadArtifactDTO[], artifact: ThreadArtifactDTO, limit: number): void {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (compareMessageRecentArtifacts(artifact, sorted[middle]) < 0) high = middle;
+    else low = middle + 1;
+  }
+  if (low >= limit) return;
+  sorted.splice(low, 0, artifact);
+  if (sorted.length > limit) sorted.pop();
+}
+
+export interface RecentMessageArtifactPage {
+  artifacts: ThreadArtifactDTO[];
+  total: number;
+}
+
+/** Count every admitted item while retaining only a bounded canonical prefix. */
+export function projectRecentMessageArtifactPage(message: AggregatorMessage, limit: number): RecentMessageArtifactPage {
+  const out: ThreadArtifactDTO[] = [];
+  let total = 0;
+  visitMessageArtifacts([message], (artifact) => {
+    if (artifact.catId === null || !RECENT_MESSAGE_ARTIFACT_TYPES.has(artifact.type)) return;
+    total += 1;
+    insertBoundedRecentArtifact(out, artifact, limit);
+  });
+  return { artifacts: out, total };
 }
 
 function prTasksToArtifacts(prTasks: AggregatorPrTask[]): ThreadArtifactDTO[] {
@@ -165,6 +297,7 @@ function fileLedgerToArtifacts(fileLedger: AggregatorFileLedgerEntry[]): ThreadA
     createdAt: f.updatedAt,
     sourceMessageId: null,
     ref: f.ref,
+    fileLedgerRef: f.ref,
   }));
 }
 
@@ -183,11 +316,21 @@ function dedupeByRef(artifacts: ThreadArtifactDTO[]): ThreadArtifactDTO[] {
   return [...byRef.values(), ...noRef];
 }
 
-export function aggregateThreadArtifacts(input: ThreadArtifactsAggregatorInput): ThreadArtifactDTO[] {
+export function aggregateProjectedThreadArtifacts(
+  input: Omit<ThreadArtifactsAggregatorInput, 'messages'> & { messageArtifacts: ThreadArtifactDTO[] },
+): ThreadArtifactDTO[] {
   const all = [
-    ...richBlocksToArtifacts(input.messages),
+    ...input.messageArtifacts,
     ...prTasksToArtifacts(input.prTasks),
     ...fileLedgerToArtifacts(input.fileLedger),
   ];
   return dedupeByRef(all).sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export function aggregateThreadArtifacts(input: ThreadArtifactsAggregatorInput): ThreadArtifactDTO[] {
+  return aggregateProjectedThreadArtifacts({
+    messageArtifacts: projectMessageArtifacts(input.messages),
+    prTasks: input.prTasks,
+    fileLedger: input.fileLedger,
+  });
 }

@@ -23,10 +23,13 @@ function isDoneStatus(status) {
   // Strip markdown bold (**) AND leading decorations (emoji / ✅ / symbols / whitespace)
   // before testing — feature docs use **done**, closed, "✅ closed", "done ✅", etc.
   // (F180 used an emoji *prefix* "✅ closed" which broke the bare ^(done|closed) match.)
+  // Terminal statuses: done, closed, and failed-close (a feature closed by operator decision
+  // without reaching its goal, e.g. F233 "failed-close (partial-value-preserved)").
+  // All three leave BACKLOG, which lists active features only.
   const plain = String(status ?? '')
     .replace(/\*+/g, '')
     .replace(/^[^A-Za-z]+/, '');
-  return /^(done|closed)\b/i.test(plain);
+  return /^(done|closed|failed-close)\b/i.test(plain);
 }
 
 function parseBacklogFeatureIds(markdown) {
@@ -178,22 +181,28 @@ function getBranchFeatureDocs(repoRoot) {
 }
 
 // Discover feature docs referenced in commit messages (e.g. "fix(F252): update player").
-// Third discovery layer: catches branches where the name lacks an F-number but commit
-// messages reference one. Together with getChangedFeatureDocs (diff) and getBranchFeatureDocs
-// (branch name), this covers the standard workflow.
+// Explicit conventional scopes identify owned work; incidental body references (e.g.
+// regression fixtures) do not expand that scope. Legacy unscoped messages still supply hints.
 function getCommitFeatureDocs(repoRoot) {
   try {
-    const log = execFileSync('git', ['log', 'origin/main..HEAD', '--format=%s%n%b'], {
+    const log = execFileSync('git', ['log', 'origin/main..HEAD', '--format=%s%x00%b%x00'], {
       cwd: repoRoot,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
     if (!log) return [];
 
-    const fMatches = [...log.matchAll(/F(\d+)/gi)];
-    if (fMatches.length === 0) return [];
-
-    const fNums = new Set(fMatches.map((m) => m[1]));
+    const fields = log.split('\0');
+    const fNums = new Set();
+    for (let index = 0; index + 1 < fields.length; index += 2) {
+      const subject = fields[index].trim();
+      const body = fields[index + 1];
+      const scope = subject.match(/^[\w-]+\(([^)]+)\)!?:\s/)?.[1];
+      const scopedIds = scope ? [...scope.matchAll(/\bF(\d{3,4})\b/gi)] : [];
+      const matches = scopedIds.length > 0 ? scopedIds : [...`${subject}\n${body}`.matchAll(/\bF(\d{3,4})\b/gi)];
+      for (const match of matches) fNums.add(match[1]);
+    }
+    if (fNums.size === 0) return [];
     const featuresDir = join(repoRoot, 'docs', 'features');
 
     try {

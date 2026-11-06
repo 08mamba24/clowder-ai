@@ -77,7 +77,7 @@
 
 建议模型: `deepseek-v4-pro`。**Pro vs Max = 同模型(1.6T/49B, 1M ctx)的推理力度档，非两个模型**：默认 Pro($0.435/$0.87)跑 batch；最硬的算法/验证 gate 切 Max($1.74/$3.48, 4x, SWE-Verified 80.6 开源第一)。
 
-## 灵灵 · MiniMax (三花猫 / san-hua · catId minimax · ✅已入 roster) · 极速产出/批量
+## 灵灵 · MiniMax (三花猫 / san-hua · catId san-hua · ✅已入 roster) · 极速产出/批量
 
 > 一句话：全队最快，1M 上下文 + 多模态，烁烁定调它走量出稿。
 
@@ -88,7 +88,7 @@
 - ⑤ **互补&反模式**: 烁烁定调→它走量出稿；草稿交烁烁/砚砚把关 `[设计]`
 - ⑥ **熔断**: 文档过长降智→切片；要质量别用它换速度
 
-建议模型: `minimax-m3`(M3 系)。
+建议模型: `minimax-m3`(M3 系)。**实际在跑**：`openrouter/minimax/minimax-m3.1-flash:free`（OpenRouter 免费档，2026-10-20 登记，catId `san-hua`，见 `cat-catalog.json` → `breeds[id=san-hua]`）。该变体的 `caution`：仅用免费模型，额度不足时说明情况，不自行切换付费模型。
 
 ---
 
@@ -102,10 +102,10 @@
 
 ## TODO (F208 后续 Phase)
 
-- [x] 3 新猫入 roster：谱谱(橘猫/glm)、渊渊(玄猫/deepseek)、灵灵(三花猫/minimax)，走 opencode 后端，已注册+可@+可路由
+- [x] 3 新猫入 roster：谱谱(橘猫/glm)、渊渊(玄猫/deepseek)、灵灵(三花猫/san-hua)，走 opencode 后端，已注册+可@+可路由
 - [ ] GLM 5.2 benchmark 回填（独立榜出 或 F200 轨迹攒够后，替换 5.1 代理数）
-- [ ] 3 新猫 avatar PNG (/avatars/glm|deepseek|minimax.png) — 缺则 UI 占位，不影响路由
-- [ ] 猫名最终可让猫自己确认(项目惯例 cats name themselves)
+- [ ] 3 新猫 avatar PNG (/avatars/glm|deepseek|minimax.png) — 缺则 UI 占位，不影响路由（2026-10-21 复核：三花猫的 minimax.png 已随 PR #56 补入仓库；在线头像走 /uploads/ 上传路径，现行成员多走这条。glm.png 实为 glm52.png（已存在）；deepseek 在现行 roster 无对应静态文件、其成员走上传路径——此两项另核）
+- [ ] 猫名最终可让猫自己确认(项目惯例 cats name themselves)（灵灵自己的花名册页已建：`docs/stories/cat-names/灵灵.md`，性格/角色/特长三空位待共创）
 - [ ] lead variants 模型升级(fable / gpt-5.5 / glm-5.1 / deepseek-v4-pro / minimax-m3)——需确认 carrier 接受新 model id
 - [ ] L0 指针进 root md / session hook (F208 AC-A3)
 - [ ] 传球按需加载 L1 (F208 Phase B)

@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { after, before, beforeEach, describe, it } from 'node:test';
+import { after, afterEach, before, beforeEach, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { selectFakeCodexHome } from './helpers/fake-codex-home.js';
 
 const { bootstrapCatCatalog, resolveCatCatalogPath, writeCatCatalog } = await import(
   '../dist/config/cat-catalog-store.js'
@@ -11,6 +12,8 @@ const { bootstrapCatCatalog, resolveCatCatalogPath, writeCatCatalog } = await im
 const { createRuntimeCat, deleteRuntimeCat, readRuntimeCatCatalog, updateRuntimeCat } = await import(
   '../dist/config/runtime-cat-catalog.js'
 );
+const { resolveCatGitAuthorName } = await import('../dist/config/cat-git-identity.js');
+const { FileProfileRepository } = await import('../dist/domains/cats/services/profile/ProfileRepository.js');
 const { getAcpConfig, getRoster, loadResolvedCatConfig, toAllCatConfigs, _resetCachedConfig } = await import(
   '../dist/config/cat-config-loader.js'
 );
@@ -351,6 +354,8 @@ function collectCatalogCatIds(catalog) {
 describe('cat-catalog-store', () => {
   // Isolate provider profiles to a clean tmpdir so tests don't read from ~/.cat-cafe/
   let savedGlobalRoot;
+  let savedCodexHome;
+  let savedCodexSqliteHome;
   const isolationRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-isolation-'));
   before(() => {
     savedGlobalRoot = process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
@@ -358,13 +363,21 @@ describe('cat-catalog-store', () => {
   });
   beforeEach(() => {
     process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = isolationRoot;
+    savedCodexHome = process.env.CODEX_HOME;
+    savedCodexSqliteHome = process.env.CODEX_SQLITE_HOME;
+  });
+  afterEach(() => {
+    if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = savedCodexHome;
+    if (savedCodexSqliteHome === undefined) delete process.env.CODEX_SQLITE_HOME;
+    else process.env.CODEX_SQLITE_HOME = savedCodexSqliteHome;
   });
   after(() => {
     if (savedGlobalRoot === undefined) delete process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
     else process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = savedGlobalRoot;
   });
 
-  it('bootstraps with one seed breed from template (#948)', () => {
+  it('bootstraps with an empty member list while preserving non-member template settings (#1651)', () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-f127-default-'));
     const templatePath = join(projectRoot, 'cat-template.json');
     const template = makeF127BootstrapTemplate();
@@ -373,10 +386,8 @@ describe('cat-catalog-store', () => {
     const catalogPath = bootstrapCatCatalog(projectRoot, templatePath);
     const runtimeCatalog = JSON.parse(readFileSync(catalogPath, 'utf-8'));
 
-    // #948: New catalogs seed the first breed from template so the app starts
-    // with at least one usable member (empty registry crashes before wizard).
-    assert.equal(runtimeCatalog.breeds.length, 1, 'should seed exactly one breed');
-    assert.equal(runtimeCatalog.breeds[0].id, 'ragdoll', 'seed breed should be the first template breed');
+    assert.equal(runtimeCatalog.breeds.length, 0, 'members require explicit owner confirmation');
+    assert.equal(runtimeCatalog.memberInitialization, 'user_selected_v1');
     assert.deepEqual(runtimeCatalog.roster?.owner, {
       family: 'owner',
       roles: ['owner'],
@@ -386,15 +397,21 @@ describe('cat-catalog-store', () => {
     });
     assert.deepEqual(
       Object.keys(runtimeCatalog.roster ?? {}).sort(),
-      ['opus', 'owner', 'sonnet'],
-      'seeded catalog roster should only expose registered runtime cats plus owner',
+      ['owner'],
+      'the initial roster should only expose its owner',
     );
     // Non-breed config (reviewPolicy, coCreator) is preserved from template.
     assert.deepEqual(runtimeCatalog.reviewPolicy, template.reviewPolicy);
     assert.deepEqual(runtimeCatalog.coCreator, template.coCreator);
+    bootstrapCatCatalog(projectRoot, templatePath);
+    assert.deepEqual(
+      JSON.parse(readFileSync(catalogPath, 'utf-8')),
+      runtimeCatalog,
+      'a second bootstrap must not enroll unconfirmed template members',
+    );
   });
 
-  it('backfills allowlisted glm52 dragon-li breed into a fresh runtime catalog', () => {
+  it('preserves allowlisted glm52 dragon-li upgrades for a legacy runtime catalog', () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-glm52-'));
     const templatePath = join(projectRoot, 'cat-template.json');
     const template = makeF127BootstrapTemplate();
@@ -428,19 +445,19 @@ describe('cat-catalog-store', () => {
       evaluation: 'GLM-5.2',
     };
     writeFileSync(templatePath, JSON.stringify(template, null, 2));
-
+    writeCatCatalog(projectRoot, { ...template, breeds: [template.breeds[0]] });
     const catalogPath = bootstrapCatCatalog(projectRoot, templatePath);
     const runtimeCatalog = JSON.parse(readFileSync(catalogPath, 'utf-8'));
 
     assert.deepEqual(
       runtimeCatalog.breeds.map((breed) => breed.id),
       ['ragdoll', 'dragon-li'],
-      'fresh runtime catalog should keep the seed breed and the allowlisted glm52 breed',
+      'legacy runtime catalog should keep existing members and its allowlisted upgrade',
     );
     assert.equal(runtimeCatalog.roster?.glm52?.family, 'dragon-li', 'glm52 roster entry should be persisted');
   });
 
-  it('backfills allowlisted grok-build, dsh, zcode, and qoder breeds into a fresh runtime catalog', () => {
+  it('backfills allowlisted grok-build, dsh, zcode, and qoder breeds into a legacy runtime catalog', () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-harness-'));
     const templatePath = join(projectRoot, 'cat-template.json');
     const template = makeF127BootstrapTemplate();
@@ -560,6 +577,7 @@ describe('cat-catalog-store', () => {
       evaluation: 'Qoder CN L2',
     };
     writeFileSync(templatePath, JSON.stringify(template, null, 2));
+    writeCatCatalog(projectRoot, makeF127BootstrapTemplate());
 
     const catalogPath = bootstrapCatCatalog(projectRoot, templatePath);
     const runtimeCatalog = JSON.parse(readFileSync(catalogPath, 'utf-8'));
@@ -583,13 +601,16 @@ describe('cat-catalog-store', () => {
     legacyTemplate.breeds = legacyTemplate.breeds.filter((breed) => breed.id !== 'qoder');
     delete legacyTemplate.roster.qoder;
     writeFileSync(templatePath, JSON.stringify(legacyTemplate, null, 2));
+    writeCatCatalog(projectRoot, legacyTemplate);
     bootstrapCatCatalog(projectRoot, templatePath);
 
     // Hand-built member occupying the qoder identity under a DIFFERENT breed id,
     // so the breed-id early-exit cannot mask the occupancy check under test.
+    // `createRuntimeCat` only nests into an existing breed (the editor's contract),
+    // so this uses a template breed id instead of inventing a runtime breed id.
     createRuntimeCat(projectRoot, {
       catId: 'qoder',
-      breedId: 'custom-qoder',
+      breedId: 'ragdoll',
       name: '银线（手建）',
       displayName: '银线（手建）',
       nickname: '银线',
@@ -618,11 +639,13 @@ describe('cat-catalog-store', () => {
       false,
       'template qoder breed must not backfill over the occupied qoder identity',
     );
-    const custom = hydrated.breeds.find((breed) => breed.id === 'custom-qoder');
-    assert.ok(custom, 'hand-built custom-qoder breed must survive the upgrade bootstrap');
-    assert.equal(custom.displayName, '银线（手建）', 'runtime displayName must be preserved');
-    assert.equal(custom.variants[0]?.personality, '本人自述', 'runtime personality must be preserved');
-    assert.equal(custom.variants[0]?.accountRef, 'qoder-main', 'runtime accountRef must be preserved');
+    const custom = hydrated.breeds.find((breed) => breed.id === 'ragdoll');
+    assert.ok(custom, 'hand-built member breed must survive the upgrade bootstrap');
+    const customVariant = (custom.variants ?? []).find((variant) => variant.id === 'qoder-default');
+    assert.ok(customVariant, 'hand-built qoder member must survive the upgrade bootstrap');
+    assert.equal(customVariant.displayName, '银线（手建）', 'runtime displayName must be preserved');
+    assert.equal(customVariant.personality, '本人自述', 'runtime personality must be preserved');
+    assert.equal(customVariant.accountRef, 'qoder-main', 'runtime accountRef must be preserved');
     assert.deepEqual(
       hydrated.roster?.qoder,
       customRoster,
@@ -641,6 +664,7 @@ describe('cat-catalog-store', () => {
     legacyTemplate.breeds = legacyTemplate.breeds.filter((breed) => breed.id !== 'qoder');
     delete legacyTemplate.roster.qoder;
     writeFileSync(templatePath, JSON.stringify(legacyTemplate, null, 2));
+    writeCatCatalog(projectRoot, legacyTemplate);
     bootstrapCatCatalog(projectRoot, templatePath);
 
     createRuntimeCat(projectRoot, {
@@ -673,7 +697,7 @@ describe('cat-catalog-store', () => {
       false,
       'template qoder breed must stay blocked by the occupying hand-built member',
     );
-    const customBreed = hydrated.breeds.find((breed) => breed.id === 'ragdoll' && breed.catId === 'qoder');
+    const customBreed = hydrated.breeds.find((breed) => breed.id === 'ragdoll');
     assert.ok(customBreed, 'hand-built qoder member breed must survive the upgrade');
     const customVariant = (customBreed.variants ?? []).find((v) => v.id === 'qoder-default');
     assert.ok(customVariant, 'hand-built qoder variant under the template breed id must survive');
@@ -688,6 +712,7 @@ describe('cat-catalog-store', () => {
     const template = JSON.parse(readFileSync(REPO_TEMPLATE_PATH, 'utf-8'));
     writeFileSync(templatePath, JSON.stringify(template, null, 2));
 
+    writeCatCatalog(projectRoot, template);
     bootstrapCatCatalog(projectRoot, templatePath);
     await deleteRuntimeCat(projectRoot, 'qoder');
     bootstrapCatCatalog(projectRoot, templatePath);
@@ -709,7 +734,7 @@ describe('cat-catalog-store', () => {
     const templatePath = join(projectRoot, 'cat-template.json');
     const template = JSON.parse(readFileSync(REPO_TEMPLATE_PATH, 'utf-8'));
     writeFileSync(templatePath, JSON.stringify(template, null, 2));
-
+    writeCatCatalog(projectRoot, template);
     bootstrapCatCatalog(projectRoot, templatePath);
     await deleteRuntimeCat(projectRoot, 'glm52');
     bootstrapCatCatalog(projectRoot, templatePath);
@@ -997,6 +1022,7 @@ describe('cat-catalog-store', () => {
 
   it('creates a new runtime member without corrupting v2 top-level fields', async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-'));
+    selectFakeCodexHome(projectRoot);
     const templatePath = join(projectRoot, 'cat-template.json');
     writeFileSync(templatePath, JSON.stringify(validConfig(), null, 2));
     writeCatCatalog(projectRoot, validConfig());
@@ -1038,6 +1064,7 @@ describe('cat-catalog-store', () => {
 
   it('persists voiceConfig when creating a runtime member', async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-'));
+    selectFakeCodexHome(projectRoot);
     const templatePath = join(projectRoot, 'cat-template.json');
     writeFileSync(templatePath, JSON.stringify(validConfig(), null, 2));
     writeCatCatalog(projectRoot, validConfig());
@@ -1076,6 +1103,123 @@ describe('cat-catalog-store', () => {
       instruct: 'calm',
       speed: 1.1,
     });
+  });
+
+  it('creates a member inside an existing breed without replacing its identity', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-'));
+    const template = validConfig();
+    writeFileSync(join(projectRoot, 'cat-template.json'), JSON.stringify(template));
+    writeCatCatalog(projectRoot, template);
+
+    createRuntimeCat(projectRoot, {
+      catId: 'opus55',
+      breedId: 'ragdoll',
+      name: '布偶猫 Opus 5.5',
+      displayName: '宪宪',
+      nickname: '宪宪',
+      avatar: '/avatars/opus55.png',
+      color: { primary: '#123456', secondary: '#abcdef' },
+      mentionPatterns: ['@opus55'],
+      roleDescription: '独立成员',
+      personality: '直率',
+      clientId: 'anthropic',
+      defaultModel: 'claude-opus-5-5',
+      mcpSupport: true,
+      cli: { command: 'claude', outputFormat: 'stream-json' },
+    });
+
+    const catalog = readRuntimeCatCatalog(projectRoot);
+    assert.equal(catalog.breeds.filter((breed) => breed.id === 'ragdoll').length, 1);
+    assert.equal(catalog.breeds.length, 1);
+    assert.equal(catalog.roster.opus55.family, 'ragdoll');
+    const resolved = toAllCatConfigs(catalog);
+    assert.equal(resolved.opus55.breedId, 'ragdoll');
+    assert.equal(resolved.opus55.relationshipKey, 'opus55', 'new member keeps an independent relationship persona');
+    assert.equal(resolved.opus55.name, '布偶猫 Opus 5.5');
+    assert.equal(resolved.opus55.displayName, '宪宪');
+    assert.equal(resolved.opus55.avatar, '/avatars/opus55.png');
+    assert.deepEqual(resolved.opus55.mentionPatterns, ['@opus55']);
+    assert.equal(resolved.opus.name, '布偶猫');
+  });
+
+  it('moves a standalone member into an existing breed without losing member fields', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-'));
+    const template = validConfig();
+    writeFileSync(join(projectRoot, 'cat-template.json'), JSON.stringify(template));
+    writeCatCatalog(projectRoot, template);
+
+    createRuntimeCat(projectRoot, {
+      catId: 'opus55',
+      name: '布偶猫 Opus 5.5',
+      displayName: '宪宪',
+      nickname: '小宪',
+      avatar: '/avatars/opus55.png',
+      color: { primary: '#123456', secondary: '#abcdef' },
+      mentionPatterns: ['@opus55', '@小宪'],
+      roleDescription: '独立成员',
+      personality: '直率',
+      teamStrengths: '设计',
+      caution: null,
+      sessionChain: false,
+      clientId: 'anthropic',
+      defaultModel: 'claude-opus-5-5',
+      mcpSupport: true,
+      cli: { command: 'claude', outputFormat: 'stream-json' },
+    });
+    const before = toAllCatConfigs(readRuntimeCatCatalog(projectRoot)).opus55;
+    const beforeProfiles = new FileProfileRepository({
+      dataDir: projectRoot,
+      relationshipKeyForCat: () => before.relationshipKey,
+    });
+    const beforePrimer = beforeProfiles.primerPath(beforeProfiles.scope('default-user', 'opus55'));
+
+    updateRuntimeCat(projectRoot, 'opus55', { breedId: 'ragdoll' });
+
+    const catalog = readRuntimeCatCatalog(projectRoot);
+    assert.equal(
+      catalog.breeds.some((breed) => breed.id === 'opus55'),
+      false,
+    );
+    assert.equal(catalog.roster.opus55.family, 'ragdoll');
+    const after = toAllCatConfigs(catalog).opus55;
+    for (const key of [
+      'id',
+      'name',
+      'displayName',
+      'nickname',
+      'avatar',
+      'color',
+      'mentionPatterns',
+      'roleDescription',
+      'personality',
+      'teamStrengths',
+      'caution',
+      'sessionChain',
+      'clientId',
+      'defaultModel',
+      'mcpSupport',
+      'cli',
+    ]) {
+      assert.deepEqual(after[key], before[key], `${key} must survive the move`);
+    }
+    assert.equal(after.breedId, 'ragdoll');
+    assert.equal(
+      after.relationshipKey,
+      before.relationshipKey,
+      'breed migration must not collapse relationship identity',
+    );
+    const afterProfiles = new FileProfileRepository({
+      dataDir: projectRoot,
+      relationshipKeyForCat: () => after.relationshipKey,
+    });
+    assert.equal(afterProfiles.primerPath(afterProfiles.scope('default-user', 'opus55')), beforePrimer);
+    assert.equal(
+      afterProfiles.scopeForPinnedPrimerTarget('default-user', 'opus55', 'relationship/opus55-primer.md')
+        .relationshipKey,
+      'opus55',
+    );
+    assert.equal(resolveCatGitAuthorName('opus55', after.breedId, after.defaultModel), 'Ragdoll-Opus-5.5');
+    assert.equal(toAllCatConfigs(catalog).opus.name, '布偶猫');
   });
 
   it('updates an existing runtime member in place', async () => {
@@ -1365,6 +1509,7 @@ describe('cat-catalog-store', () => {
 
   it('persists acp tombstone when disabling template-inherited ACP transport', async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-'));
+    selectFakeCodexHome(projectRoot);
     const templatePath = join(projectRoot, 'cat-template.json');
     const template = validConfig();
     template.breeds[0].variants[0].clientId = 'google';
@@ -1451,7 +1596,7 @@ describe('cat-catalog-store', () => {
   });
 
   it('migrates existing gemini35 catalogs from Gemini 3.5 identity to Gemini 3.6', () => {
-    const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-gemini36-'));
+    const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-gemini36-from35-'));
     const templatePath = join(projectRoot, 'cat-template.json');
     const template = makeF127BootstrapTemplate();
     const templateBreed = template.breeds.find((breed) => breed.id === 'siamese');
@@ -1464,8 +1609,6 @@ describe('cat-catalog-store', () => {
       '@gemini36',
       '@gemini-36',
       '@gemini3.6',
-      '@flash',
-      '@暹罗flash',
       '@暹罗gemini35',
       '@暹罗gemini36',
     ];
@@ -1536,6 +1679,51 @@ describe('cat-catalog-store', () => {
     const rawCatalog = JSON.parse(readFileSync(resolveCatCatalogPath(projectRoot), 'utf-8'));
     const migrated = rawCatalog.breeds.find((breed) => breed.id === 'siamese').variants[0];
     assert.equal(migrated.defaultModel, 'Gemini 3.6 Flash (High)');
+  });
+
+  it('splits transient in-place 3.8 catalogs into disabled gemini35 plus current gemini38', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-gemini38-split-'));
+    const templatePath = REPO_TEMPLATE_PATH;
+    const catalog = makeF127BootstrapTemplate();
+    const legacyBreed = catalog.breeds.find((breed) => breed.id === 'siamese');
+    legacyBreed.id = 'gemini35';
+    legacyBreed.catId = 'gemini35';
+    legacyBreed.name = '暹罗猫 Gemini 3.8 Flash';
+    legacyBreed.mentionPatterns = ['@gemini35', '@gemini36', '@gemini38', '@gemini-38', '@gemini3.8', '@flash'];
+    legacyBreed.roleDescription = '暹罗猫 Gemini 3.8 Flash，视觉设计和创意顾问';
+    legacyBreed.defaultVariantId = 'gemini35-default';
+    const legacyVariant = legacyBreed.variants[0];
+    legacyVariant.id = 'gemini35-default';
+    legacyVariant.clientId = 'google';
+    legacyVariant.variantLabel = 'Gemini 3.8 Flash';
+    legacyVariant.defaultModel = 'Gemini 3.8 Flash (High)';
+    legacyVariant.cli = { command: 'agy', outputFormat: 'plainText', defaultArgs: [] };
+    delete legacyVariant.provider;
+    catalog.roster.gemini35 = {
+      family: 'siamese',
+      roles: ['designer'],
+      lead: false,
+      available: true,
+      evaluation: 'transient in-place 3.8',
+    };
+    writeCatCatalog(projectRoot, catalog);
+
+    bootstrapCatCatalog(projectRoot, templatePath);
+
+    const rawCatalog = JSON.parse(readFileSync(resolveCatCatalogPath(projectRoot), 'utf-8'));
+    const migratedBreed = rawCatalog.breeds.find((breed) => breed.id === 'gemini35');
+    const gemini35 = migratedBreed.variants.find((variant) => variant.id === 'gemini35-default');
+    const gemini38 = migratedBreed.variants.find((variant) => variant.catId === 'gemini38');
+    assert.equal(migratedBreed.name, '暹罗猫 Gemini 3.6 Flash');
+    assert.equal(gemini35.variantLabel, 'Gemini 3.6 Flash');
+    assert.equal(gemini35.defaultModel, 'Gemini 3.6 Flash (High)');
+    assert.equal(rawCatalog.roster.gemini35.available, false);
+    assert.ok(!migratedBreed.mentionPatterns.some((alias) => alias.includes('3.8')));
+    assert.equal(migratedBreed.mentionPatterns.includes('@flash'), false);
+    assert.ok(gemini38, 'gemini38 variant is backfilled into the existing Siamese breed');
+    assert.equal(gemini38.defaultModel, 'Gemini 3.8 Flash (High)');
+    assert.ok(gemini38.mentionPatterns.includes('@flash'));
+    assert.equal(rawCatalog.roster.gemini38.available, true);
   });
 
   it('migrates persisted Gemini 2.5 ids to AGY selector labels when carrier is already AGY', () => {
@@ -1722,6 +1910,7 @@ describe('cat-catalog-store', () => {
 
   it('rejects runtime members that reuse an alias from another cat', () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-'));
+    selectFakeCodexHome(projectRoot);
     const templatePath = join(projectRoot, 'cat-template.json');
     writeFileSync(templatePath, JSON.stringify(validConfig(), null, 2));
     writeCatCatalog(projectRoot, validConfig());
@@ -1754,6 +1943,7 @@ describe('cat-catalog-store', () => {
 
   it('deletes a runtime-created member without touching the rest of the catalog', async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'cat-catalog-store-'));
+    selectFakeCodexHome(projectRoot);
     const templatePath = join(projectRoot, 'cat-template.json');
     writeFileSync(templatePath, JSON.stringify(validConfig(), null, 2));
     writeCatCatalog(projectRoot, validConfig());
@@ -1809,6 +1999,7 @@ describe('cat-catalog-store', () => {
     const siblingRoot = join(parentRoot, 'clowder-ai-old');
     mkdirSync(projectRoot, { recursive: true });
     mkdirSync(siblingRoot, { recursive: true });
+    selectFakeCodexHome(projectRoot);
 
     const templatePath = join(projectRoot, 'cat-template.json');
     const siblingTemplatePath = join(siblingRoot, 'cat-template.json');
@@ -1858,6 +2049,7 @@ describe('cat-catalog-store', () => {
     const siblingRoot = join(parentRoot, 'clowder-ai-old');
     mkdirSync(projectRoot, { recursive: true });
     mkdirSync(siblingRoot, { recursive: true });
+    selectFakeCodexHome(projectRoot);
 
     const templatePath = join(projectRoot, 'cat-template.json');
     const siblingTemplatePath = join(siblingRoot, 'cat-template.json');

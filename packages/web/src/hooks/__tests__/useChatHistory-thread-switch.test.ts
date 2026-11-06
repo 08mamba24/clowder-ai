@@ -7,6 +7,7 @@ import { useTaskStore } from '@/stores/taskStore';
 import { apiFetch } from '@/utils/api-client';
 import { loadThreadMessages } from '@/utils/offline-store';
 import { __resetTaskCacheForTest, useChatHistory } from '../useChatHistory';
+import { useChatSocketCallbacks } from '../useChatSocketCallbacks';
 
 vi.mock('@/utils/api-client', () => ({
   apiFetch: vi.fn(),
@@ -64,7 +65,6 @@ describe('useChatHistory thread switch ordering', () => {
       targetCats: [],
       catStatuses: {},
       catInvocations: {},
-      currentGame: null,
 
       threadStates: {},
       currentThreadId: 'thread-a',
@@ -74,6 +74,9 @@ describe('useChatHistory thread switch ordering', () => {
       currentProjectPath: 'default',
       threads: [],
       isLoadingThreads: false,
+      streamCatchUpVersionByThread: {},
+      lastConsumedCatchUpVersionByThread: {},
+      pendingCatchUpTargetSeqByThread: {},
     });
     useTaskStore.getState().clearTasks();
     __resetTaskCacheForTest();
@@ -90,6 +93,37 @@ describe('useChatHistory thread switch ordering', () => {
     });
     container.remove();
     apiFetchMock.mockReset();
+  });
+
+  it('task updates do not rerender history and socket owners that only consume task actions', async () => {
+    let renders = 0;
+    function ActionConsumer() {
+      useChatHistory('thread-a');
+      useChatSocketCallbacks({ threadId: 'thread-a', handleAgentMessage: () => true });
+      renders += 1;
+      return null;
+    }
+    await act(async () => {
+      root.render(React.createElement(ThreadChatHistoryAdmissionProvider, null, React.createElement(ActionConsumer)));
+    });
+    const beforeUpdate = renders;
+    await act(async () => {
+      useTaskStore.getState().addTask({
+        id: 'background-task',
+        threadId: 'thread-a',
+        kind: 'work',
+        subjectKey: null,
+        title: 'background progress',
+        ownerCatId: null,
+        status: 'doing',
+        why: '',
+        createdBy: 'user',
+        createdAt: 1,
+        updatedAt: 1,
+      });
+    });
+    expect(useTaskStore.getState().tasks[0]?.id).toBe('background-task');
+    expect(renders).toBe(beforeUpdate);
   });
 
   it('does not clear previous thread messages before setCurrentThread runs', () => {
@@ -290,13 +324,11 @@ describe('useChatHistory thread switch ordering', () => {
           catStatuses: {},
           catStatusDetails: {},
           catInvocations: {},
-          currentGame: null,
 
           unreadCount: 1,
           hasUserMention: false,
           lastActivity: Date.now(),
           queue: [],
-          queuePaused: false,
           queueFull: false,
           workspaceWorktreeId: null,
           workspaceOpenTabs: [],
@@ -341,13 +373,11 @@ describe('useChatHistory thread switch ordering', () => {
           catStatuses: {},
           catStatusDetails: {},
           catInvocations: {},
-          currentGame: null,
 
           unreadCount: 0,
           hasUserMention: false,
           lastActivity: Date.now(),
           queue: [],
-          queuePaused: false,
           queueFull: false,
           workspaceWorktreeId: null,
           workspaceOpenTabs: [],
@@ -366,6 +396,60 @@ describe('useChatHistory thread switch ordering', () => {
     const calls = apiFetchMock.mock.calls;
     const historyCall = calls.find(([url]) => typeof url === 'string' && url.includes('/api/messages'));
     expect(historyCall).toBeUndefined();
+  });
+
+  it('defers a background thread catch-up until that thread history hook is mounted', async () => {
+    vi.useFakeTimers();
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.includes('/api/messages')) {
+        return Promise.resolve(new Response(JSON.stringify({ messages: [], hasMore: false }), { status: 200 }));
+      }
+      if (url.includes('/api/tasks')) {
+        return Promise.resolve(new Response(JSON.stringify({ tasks: [] }), { status: 200 }));
+      }
+      if (url.includes('/task-progress')) {
+        return Promise.resolve(new Response(JSON.stringify({ taskProgress: {} }), { status: 200 }));
+      }
+      if (url.includes('/queue')) {
+        return Promise.resolve(new Response(JSON.stringify({ queue: [], paused: false }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+    });
+
+    await act(async () => {
+      root.render(React.createElement(HookHost, { threadId: 'thread-a' }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    apiFetchMock.mockClear();
+
+    act(() => {
+      useChatStore.getState().requestStreamCatchUp('thread-b');
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(700);
+    });
+
+    const backgroundHistoryCalls = apiFetchMock.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.includes('/api/messages') && url.includes('threadId=thread-b'),
+    );
+    expect(backgroundHistoryCalls).toHaveLength(0);
+    expect(useChatStore.getState().streamCatchUpVersionByThread['thread-b']).toBe(1);
+    expect(useChatStore.getState().lastConsumedCatchUpVersionByThread['thread-b'] ?? 0).toBe(0);
+
+    act(() => {
+      useChatStore.getState().setCurrentThread('thread-b');
+      root.render(React.createElement(HookHost, { threadId: 'thread-b' }));
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(700);
+      await Promise.resolve();
+    });
+
+    expect(useChatStore.getState().lastConsumedCatchUpVersionByThread['thread-b']).toBe(1);
+    vi.useRealTimers();
   });
 
   it('forces replace hydration when cached thread already contains duplicate same-invocation bubbles', () => {
@@ -404,13 +488,11 @@ describe('useChatHistory thread switch ordering', () => {
           catStatuses: {},
           catStatusDetails: {},
           catInvocations: {},
-          currentGame: null,
 
           unreadCount: 0,
           hasUserMention: false,
           lastActivity: now,
           queue: [],
-          queuePaused: false,
           queueFull: false,
           workspaceWorktreeId: null,
           workspaceOpenTabs: [],
@@ -446,13 +528,11 @@ describe('useChatHistory thread switch ordering', () => {
           catStatuses: { opus: 'streaming' },
           catStatusDetails: {},
           catInvocations: {},
-          currentGame: null,
 
           unreadCount: 0,
           hasUserMention: false,
           lastActivity: Date.now(),
           queue: [],
-          queuePaused: false,
           queueFull: false,
           workspaceWorktreeId: null,
           workspaceOpenTabs: [],
@@ -526,12 +606,10 @@ describe('useChatHistory thread switch ordering', () => {
           catStatuses: {},
           catStatusDetails: {},
           catInvocations: {},
-          currentGame: null,
           unreadCount: 0,
           hasUserMention: false,
           lastActivity: now,
           queue: [],
-          queuePaused: false,
           queueFull: false,
           workspaceWorktreeId: null,
           workspaceOpenTabs: [],

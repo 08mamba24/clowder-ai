@@ -6,6 +6,9 @@ import type {
   MessageWorkDisposition,
 } from '@cat-cafe/shared';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { messageDispositionCopy } from '@/components/message-disposition.shell-copy';
+import { useShellCopy } from '@/components/shell/shell-copy';
+import { useShellPresentation } from '@/components/shell/shell-presentation';
 import { apiFetch } from '@/utils/api-client';
 
 const DEFAULT_SNAPSHOT: MessageDispositionPreferenceSnapshot = {
@@ -14,38 +17,27 @@ const DEFAULT_SNAPSHOT: MessageDispositionPreferenceSnapshot = {
   thread: null,
   effective: 'next_work',
   source: 'product',
-  onboardingSeen: false,
 };
 
-export type MessageDispositionSelectionSource = MessageDispositionPreferenceSource | 'once';
-export type MessageDispositionPreferenceScope = 'once' | 'thread' | 'global';
+export type MessageDispositionSelectionSource = MessageDispositionPreferenceSource;
+export type MessageDispositionPreferenceScope = 'thread' | 'global';
 
 export interface MessageDispositionPreferenceController {
   snapshot: MessageDispositionPreferenceSnapshot;
-  oneShot: MessageWorkDisposition | null;
   effective: MessageWorkDisposition;
   source: MessageDispositionSelectionSource;
   loading: boolean;
   error: string | null;
-  setOneShot(disposition: MessageWorkDisposition): void;
-  clearOneShot(): void;
   setPreference(scope: 'thread' | 'global', disposition: MessageWorkDisposition | null): Promise<boolean>;
-  markOnboardingSeen(): Promise<boolean>;
 }
 
 type PreferenceWrite =
   | { scope: 'global'; disposition: MessageWorkDisposition | null }
-  | { scope: 'thread'; threadId: string; disposition: MessageWorkDisposition | null }
-  | { scope: 'onboarding'; seen: true };
+  | { scope: 'thread'; threadId: string; disposition: MessageWorkDisposition | null };
 
 interface ScopedSnapshot {
   threadId: string | undefined;
   value: MessageDispositionPreferenceSnapshot;
-}
-
-interface ScopedOneShot {
-  threadId: string | undefined;
-  value: MessageWorkDisposition | null;
 }
 
 function applyGlobalPreference(
@@ -60,7 +52,6 @@ function applyGlobalPreference(
     global,
     effective,
     source: snapshot.thread ? 'thread' : global ? 'global' : 'product',
-    onboardingSeen: next.onboardingSeen,
   };
 }
 
@@ -72,14 +63,17 @@ function applySavedSnapshot(
 ): ScopedSnapshot {
   if (current.threadId !== threadId) return current;
   if (body.scope === 'global') return { threadId, value: applyGlobalPreference(current.value, next) };
-  if (body.scope === 'onboarding') {
-    return { threadId, value: { ...current.value, onboardingSeen: next.onboardingSeen } };
-  }
   return { threadId, value: next };
 }
 
+class PreferenceHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Send mode preference HTTP ${status}`);
+  }
+}
+
 async function readSnapshot(response: Response): Promise<MessageDispositionPreferenceSnapshot> {
-  if (!response.ok) throw new Error(`偏好保存失败 (${response.status})`);
+  if (!response.ok) throw new PreferenceHttpError(response.status);
   return (await response.json()) as MessageDispositionPreferenceSnapshot;
 }
 
@@ -87,24 +81,27 @@ export function useMessageDispositionPreference(
   threadId: string | undefined,
   enabled: boolean,
 ): MessageDispositionPreferenceController {
+  const localized = useShellCopy(messageDispositionCopy);
+  const t = (useShellPresentation() === 'v2' ? localized : messageDispositionCopy.zh).composer;
   const [snapshotState, setSnapshotState] = useState<ScopedSnapshot>({
     threadId: undefined,
     value: DEFAULT_SNAPSHOT,
   });
-  const [oneShotState, setOneShotState] = useState<ScopedOneShot>({
-    threadId: undefined,
-    value: null,
-  });
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setError] = useState<{ cause: unknown; fallback: 'loadFailed' | 'saveFailed' } | null>(null);
+  const error = failure
+    ? failure.cause instanceof PreferenceHttpError
+      ? t.httpFailed(failure.cause.status)
+      : failure.cause instanceof Error
+        ? failure.cause.message
+        : t[failure.fallback]
+    : null;
   const operationSequence = useRef(0);
   const snapshot = snapshotState.threadId === threadId ? snapshotState.value : DEFAULT_SNAPSHOT;
-  const oneShot = oneShotState.threadId === threadId ? oneShotState.value : null;
 
   useLayoutEffect(() => {
     operationSequence.current += 1;
     setSnapshotState({ threadId, value: DEFAULT_SNAPSHOT });
-    setOneShotState({ threadId, value: null });
     setLoading(false);
     setError(null);
   }, [threadId]);
@@ -120,25 +117,13 @@ export function useMessageDispositionPreference(
       })
       .catch((cause: unknown) => {
         if (operationSequence.current === sequence) {
-          setError(cause instanceof Error ? cause.message : '偏好读取失败');
+          setError({ cause, fallback: 'loadFailed' });
         }
       })
       .finally(() => {
         if (operationSequence.current === sequence) setLoading(false);
       });
   }, [enabled, threadId]);
-
-  const setOneShot = useCallback(
-    (disposition: MessageWorkDisposition) => {
-      setOneShotState({ threadId, value: disposition });
-      setError(null);
-    },
-    [threadId],
-  );
-
-  const clearOneShot = useCallback(() => {
-    setOneShotState((current) => (current.threadId === threadId ? { ...current, value: null } : current));
-  }, [threadId]);
 
   const save = useCallback(
     async (body: PreferenceWrite): Promise<boolean> => {
@@ -158,7 +143,7 @@ export function useMessageDispositionPreference(
         return true;
       } catch (cause) {
         if (operationSequence.current === sequence) {
-          setError(cause instanceof Error ? cause.message : '偏好保存失败');
+          setError({ cause, fallback: 'saveFailed' });
         }
         return false;
       } finally {
@@ -179,24 +164,15 @@ export function useMessageDispositionPreference(
     [save, threadId],
   );
 
-  const markOnboardingSeen = useCallback(() => {
-    if (snapshot.onboardingSeen) return Promise.resolve(true);
-    return save({ scope: 'onboarding', seen: true });
-  }, [save, snapshot.onboardingSeen]);
-
   return useMemo(
     () => ({
       snapshot,
-      oneShot,
-      effective: oneShot ?? snapshot.effective,
-      source: oneShot ? ('once' as const) : snapshot.source,
+      effective: snapshot.effective,
+      source: snapshot.source,
       loading,
       error,
-      setOneShot,
-      clearOneShot,
       setPreference,
-      markOnboardingSeen,
     }),
-    [snapshot, oneShot, loading, error, setOneShot, clearOneShot, setPreference, markOnboardingSeen],
+    [snapshot, loading, error, setPreference],
   );
 }

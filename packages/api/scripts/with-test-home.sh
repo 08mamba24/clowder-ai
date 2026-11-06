@@ -13,14 +13,32 @@ cleanup() {
 
 trap cleanup EXIT
 
+# A gate launched from a dev-server shell inherits the launcher's exported
+# shell functions (BASH_FUNC_compile_packages%%, ...). Bash re-exports every
+# imported function to its children, and the tmux pane environment contract
+# rejects those keys outright, so pane-spawning suites fail only when the gate
+# was launched from the launcher's own environment. Shell functions are
+# launcher implementation detail, never fixture state: drop every inherited
+# one and keep only this wrapper's own cleanup. This is the same class of
+# isolation as the CAT_CAFE_* execution coordinates below.
+while IFS= read -r fn; do
+  [ "$fn" = cleanup ] || unset -f "$fn" 2>/dev/null || true
+done < <(declare -F | awk '{print $NF}')
+
 export HOME="$test_home"
 # P1-13: os.homedir() resolves from USERPROFILE on Windows and from HOME
 # elsewhere, so isolating one coordinate and inheriting the other leaves the
 # operator's real profile reachable on the platform this wrapper does not run
 # on. Two names for "where home is" must point at the same owned directory.
 export USERPROFILE="$test_home"
-export CAT_CAFE_TEST_SANDBOX="${CAT_CAFE_TEST_SANDBOX:-1}"
+export CAT_CAFE_TEST_SANDBOX="1"
 export CAT_CAFE_TEST_REAL_HOME="${CAT_CAFE_TEST_REAL_HOME:-$real_home}"
+# Isolation starts here; a live shell's config root or opt-out must not survive.
+# Tests exercising overrides can set them explicitly inside the sandbox.
+unset CAT_CAFE_GLOBAL_CONFIG_ROOT
+unset CAT_CAFE_CONFIG_ROOT
+unset CAT_TEMPLATE_PATH
+unset CAT_CAFE_TEST_SANDBOX_ALLOW_UNSAFE_ROOT
 # Test entrypoints must not inherit a production NODE_ENV from the outer shell.
 # Telemetry redaction tests rely on test-mode defaults instead of production secrets.
 export NODE_ENV="test"
@@ -40,6 +58,20 @@ unset CAT_CAFE_RUNTIME_ROOT
 unset CAT_CAFE_MCP_SERVER_PATH
 unset CAT_CAFE_WORKSPACE_ROOT
 
+# A pre-merge gate launched through hold_ball runs inside a managed job. That
+# execution identity must not leak into the sandbox: ManagedJobService.submit()
+# treats an inherited CAT_CAFE_MANAGED_JOB_ID as proof of a nested job and
+# refuses every managed command a test tries to exercise (400
+# nested_managed_job_denied), so the same suites pass from a clean shell and
+# fail from the gate. Tests that need a job identity give ManagedRunner an
+# explicit `managedJob`; inheriting the gate's is never what they meant.
+unset CAT_CAFE_MANAGED_JOB_ID
+unset CAT_CAFE_MANAGED_JOB_LOG_PATH
+unset CAT_CAFE_MANAGED_JOB_DESCRIPTOR
+unset CAT_CAFE_MANAGED_RUNNER_COMMAND
+unset CAT_CAFE_MANAGED_RUNNER_CWD
+unset CAT_CAFE_GATE_ORIGIN_TASK_ID
+
 # CAT_CAFE_GLOBAL_CONFIG_ROOT is the same kind of persistence coordinate as the
 # two roots above (P2-9). Leaving it inherited made a suite READ the operator's
 # real accounts/credentials when launched from a cat's shell and the fixture's
@@ -47,6 +79,11 @@ unset CAT_CAFE_WORKSPACE_ROOT
 # cannot make a read reproducible. Tests that need a global root set it
 # themselves; inheriting one is never what they meant.
 unset CAT_CAFE_GLOBAL_CONFIG_ROOT
+
+# A runtime-selected Codex login/state home overrides HOME. Keep native reads
+# inside the sandbox; individual tests may select their own fixture afterward.
+unset CODEX_HOME
+unset CODEX_SQLITE_HOME
 
 # Runtime shells may select persistent transports for live agent invocations.
 # Tests rely on each provider's default carrier so spawn seams remain the only
@@ -68,5 +105,28 @@ unset API_SERVER_HOST
 # DEFAULT_CAT_ID is user/runtime preference, not test fixture state. Leaving it
 # inherited makes routing tests depend on which cat launched the test command.
 unset DEFAULT_CAT_ID
+
+# REDIS_URL is a runtime binding like the variables above, but unsetting it is
+# not enough: an absent URL can select a shared default endpoint. Nor is 6398
+# proof of an owned test store: another checkout may be using it. Non-Redis
+# suites must have a non-connectable binding, and discard inherited data paths.
+#
+# The isolated runner can call pnpm test, which enters this wrapper again.
+# Preserve that runner's endpoint/DB only after checking its existing lease,
+# manifest and live process ownership. A flag alone cannot authorize a URL.
+#
+# Shard children are narrowed further by PUBLIC_TEST_DENY_REDIS_URL in
+# packages/api/scripts/public-test-isolation-preflight.mjs, which rewrites them
+# to a non-connectable endpoint. This pin is the floor, that rewrite is the
+# stricter case; they are not duplicates of each other.
+if [[ "${CAT_CAFE_REDIS_TEST_ISOLATED:-}" == "1" ]]; then
+  test_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  # The validator must run before a test preload can rewrite the candidate DB.
+  REDIS_URL="$(NODE_OPTIONS= NODE_TEST_CONTEXT= node "$test_script_dir/redis-test-entrypoint.mjs")"
+  export REDIS_URL
+else
+  unset REDIS_PORT REDIS_DATA_DIR REDIS_BACKUP_DIR REDIS_KEY_PREFIX
+  export REDIS_URL="redis://127.0.0.1:0"
+fi
 
 exec "$@"

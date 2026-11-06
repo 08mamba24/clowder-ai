@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
+import { isHydratedMessageBundle } from '@cat-cafe/shared';
 import Fastify from 'fastify';
+import { canonicalTestMessageInput } from './helpers/message-from-fixtures.js';
 
 const { messageBundleRoutes } = await import('../dist/routes/message-bundles.js');
 const { digestMessageBundleQuoteProjection } = await import(
@@ -8,7 +10,7 @@ const { digestMessageBundleQuoteProjection } = await import(
 );
 
 function targetMessage(overrides = {}) {
-  return {
+  return canonicalTestMessageInput({
     id: 'bundle-1',
     threadId: 'target-thread',
     userId: 'user-1',
@@ -25,11 +27,11 @@ function targetMessage(overrides = {}) {
       },
     },
     ...overrides,
-  };
+  });
 }
 
 function sourceMessage(overrides = {}) {
-  return {
+  return canonicalTestMessageInput({
     id: 'source-1',
     threadId: 'source-thread',
     userId: 'user-1',
@@ -38,7 +40,7 @@ function sourceMessage(overrides = {}) {
     mentions: [],
     timestamp: 100,
     ...overrides,
-  };
+  });
 }
 
 describe('GET /api/message-bundles/:messageId', () => {
@@ -83,7 +85,7 @@ describe('GET /api/message-bundles/:messageId', () => {
     assert.equal(deps.messageStore.getById.mock.calls.length, 0);
   });
 
-  it('hydrates current source truth with Bundle identity, source, author, and exact message ref', async () => {
+  it('hydrates current source truth with Bundle identity, source, sender, and exact message ref', async () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/message-bundles/bundle-1',
@@ -91,6 +93,7 @@ describe('GET /api/message-bundles/:messageId', () => {
     });
 
     assert.equal(response.statusCode, 200, response.body);
+    assert.ok(isHydratedMessageBundle(response.json()), 'actual route response must satisfy the Web read contract');
     assert.deepEqual(JSON.parse(response.body), {
       messageBundleId: 'bundle-1',
       targetThreadId: 'target-thread',
@@ -104,7 +107,7 @@ describe('GET /api/message-bundles/:messageId', () => {
           kind: 'message',
           messageId: 'source-1',
           sourceThreadId: 'source-thread',
-          author: { kind: 'cat', catId: 'opus' },
+          from: { kind: 'agent', catId: 'opus' },
           timestamp: 100,
           readableContent: 'current source body',
         },
@@ -165,6 +168,7 @@ describe('GET /api/message-bundles/:messageId', () => {
 
     assert.equal(response.statusCode, 200, response.body);
     const body = JSON.parse(response.body);
+    assert.ok(isHydratedMessageBundle(body), 'tombstones remain valid projections without sender or content');
     assert.deepEqual(body.items, [{ status: 'tombstone', messageId: 'source-1', reason: 'source_unavailable' }]);
     assert.equal(response.body.includes('recalled private body'), false);
   });

@@ -1,3 +1,4 @@
+import { deploymentDefaults } from '@cat-cafe/shared';
 export type CodexApprovalSurface = 'interactive' | 'unavailable';
 
 export type CodexAppApprovalFailureCode = 'user_rejected' | 'confirmation_unavailable';
@@ -19,9 +20,21 @@ export const CODEX_APPS_WRITE_APPROVAL_ARGS = [
   'apps._default.default_tools_approval_mode="writes"',
 ] as const;
 
-export const CAT_CAFE_GITHUB_ROUTING_INSTRUCTIONS = `# Clowder AI GitHub routing
+/** Raw member preferences cannot grant Apps write approval, including through inline parent tables. */
+export function isReservedCodexAppApprovalConfigKey(key: string): boolean {
+  const path = key.split('.');
+  if (path[0] !== 'apps') return false;
+  return (
+    path.length <= 2 ||
+    path.at(-1) === 'default_tools_approval_mode' ||
+    path.at(-1) === 'approval_mode' ||
+    ((path[2] === 'tools' || path[2] === 'links') && path.length <= 4)
+  );
+}
 
-- GitHub MCP and GitHub App tools are retired for repository operations in Clowder AI. Do not install or invoke them.
+export const CAT_CAFE_GITHUB_ROUTING_INSTRUCTIONS = `# ${deploymentDefaults.brand.displayName} GitHub routing
+
+- GitHub MCP and GitHub App tools are retired for repository operations in ${deploymentDefaults.brand.displayName}. Do not install or invoke them.
 - Use the repository's canonical \`gh\` CLI path for both reads and writes.
 - This changes transport only; it does not grant authority. Continue to follow merge-gate, review, operator, and irreversible-operation boundaries.`;
 
@@ -62,8 +75,7 @@ export function classifyCodexGithubAppApprovalFailure(input: {
   if (input.approvalSurface === 'unavailable') {
     return {
       reasonCode: 'confirmation_unavailable',
-      message:
-        'GitHub App confirmation is unavailable in this Clowder AI invocation. Use the canonical gh CLI under merge-gate when the write is already authorized; otherwise report the exact missing authority. No permission was expanded.',
+      message: `GitHub App confirmation is unavailable in this ${deploymentDefaults.brand.displayName} invocation. Use the canonical gh CLI under merge-gate when the write is already authorized; otherwise report the exact missing authority. No permission was expanded.`,
     };
   }
 

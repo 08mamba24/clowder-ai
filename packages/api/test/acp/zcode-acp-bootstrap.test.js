@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 const { flattenAcpPrompt, zcodeLaunchPlan } = await import(
-  '../../dist/domains/cats/services/agents/providers/acp/zcode-acp-adapter.js'
+  '../../dist/domains/cats/services/agents/providers/acp/zcode/zcode-acp-adapter.js'
 );
 const {
   isZcodeHarnessCommand,
@@ -16,7 +16,7 @@ const {
   resolveZcodeAcpAdapterPath,
   resolveZcodeBin,
   diagnoseZcodeSpawnReady,
-} = await import('../../dist/domains/cats/services/agents/providers/acp/zcode-acp-bootstrap.js');
+} = await import('../../dist/domains/cats/services/agents/providers/acp/zcode/zcode-acp-bootstrap.js');
 
 describe('ZCode ACP bootstrap', () => {
   it('treats zcode as a harness that omits session MCP', () => {

@@ -12,7 +12,11 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { CatId, ManagedWorkBinding } from '@cat-cafe/shared';
+import {
+  parseSharedInvocationContext,
+  type SharedInvocationContext,
+} from '@cat-cafe/mcp-server/dist/shared-invocation-context.js';
+import { type CatId, type ManagedWorkBinding } from '@cat-cafe/shared';
 import type { CallerTraceContext } from '../../../../../infrastructure/telemetry/genai-semconv.js';
 import type { ITurnExecutionStore } from '../../stores/ports/TurnExecutionStore.js';
 import type { ToolExecutionPolicy } from '../../types.js';
@@ -20,6 +24,7 @@ import { authTerminalFromTurnExecution } from './CallbackAuthTurnExecutionProjec
 import type { AuthInvocationMigrationResult, IAuthInvocationBackend } from './IAuthInvocationBackend.js';
 import { MemoryAuthInvocationBackend } from './MemoryAuthInvocationBackend.js';
 import type { OwnerAuthProvenance } from './owner-auth-provenance.js';
+import type { RetiredAuthorizationSnapshot } from './retired-auth-authorization.js';
 import { normalizeToolExecutionPolicy } from './tool-execution-policy.js';
 
 export interface InvocationRecord {
@@ -30,6 +35,7 @@ export interface InvocationRecord {
   ownerAuthProvenance: OwnerAuthProvenance;
   /** F275: server-resolved identity; never accepted from callback request payloads. */
   readonly managedWorkBinding?: ManagedWorkBinding;
+  /** Durable Host Task coordinates; inert without a Host currentness dependency. */
   catId: CatId;
   /** Thread this invocation belongs to (for WebSocket room scoping) */
   threadId: string;
@@ -45,8 +51,19 @@ export interface InvocationRecord {
   traceContext?: CallerTraceContext;
   /** ADR-042 callback authorization boundary, persisted across API restarts. */
   toolExecutionPolicy?: ToolExecutionPolicy;
+  /** Immutable Host launch roots and capability upper bound for shared MCP requests. */
+  readonly sharedMcpContext?: SharedInvocationContext;
+  /** Read-only history of a retired authority; terminal records only. */
+  readonly retiredAuthorization?: RetiredAuthorizationSnapshot;
   /** In-invocation idempotency keys for callback post-message de-duplication. */
   clientMessageIds: Set<string>;
+  /**
+   * #1542 guard 4: the compaction carrier identity this invocation's launch plan
+   * handed to its Claude spawn. Durable with the callback principal so
+   * /api/sessions/seal can fence legacy-shell callbacks after restart or
+   * capacity pressure — never process-local authority.
+   */
+  expectedCompactionCarrier?: string;
   createdAt: number;
   /** Active principals have no deadline; terminal tombstones expose their GC deadline. */
   expiresAt: number | null;
@@ -158,6 +175,7 @@ export class InvocationRegistry {
     tombstoneGcTtlMs?: number;
     backend?: IAuthInvocationBackend;
     startupRecoveryRequired?: boolean;
+    /** Host-only Task/receipt/source/installation re-read. Missing means deny private principals. */
     turnExecutionStore?: Pick<ITurnExecutionStore, 'get'>;
     onLifecycleSignal?: (signal: CallbackAuthLifecycleSignal) => void;
   }) {
@@ -194,6 +212,7 @@ export class InvocationRegistry {
     originTriggerMessageId?: string,
     ownerAuthProvenance: OwnerAuthProvenance = 'unknown',
     managedWorkBinding?: ManagedWorkBinding,
+    sharedMcpContext?: SharedInvocationContext,
   ): Promise<{ invocationId: string; callbackToken: string }> {
     if (managedWorkBinding) {
       if (ownerAuthProvenance !== 'strict') {
@@ -213,12 +232,17 @@ export class InvocationRegistry {
       userId,
       ownerAuthProvenance,
       ...(managedWorkBinding ? { managedWorkBinding: Object.freeze({ ...managedWorkBinding }) } : {}),
+      ...(sharedMcpContext ? { sharedMcpContext: parseSharedInvocationContext(sharedMcpContext) } : {}),
       catId,
       threadId,
       ...(parentInvocationId ? { parentInvocationId } : {}),
       ...(a2aTriggerMessageId ? { a2aTriggerMessageId } : {}),
       ...(originTriggerMessageId ? { originTriggerMessageId } : {}),
-      ...(toolExecutionPolicy ? { toolExecutionPolicy: normalizeToolExecutionPolicy(toolExecutionPolicy) } : {}),
+      ...(toolExecutionPolicy
+        ? {
+            toolExecutionPolicy: normalizeToolExecutionPolicy(toolExecutionPolicy),
+          }
+        : {}),
       clientMessageIds: new Set<string>(),
       createdAt: now,
     });
@@ -233,7 +257,7 @@ export class InvocationRegistry {
    * instead of regex-matching error strings. (F174 Phase A — KD-4)
    */
   async verify(invocationId: string, callbackToken: string): Promise<VerifyResult> {
-    return this.repairFromCanonical(await this.backend.verify(invocationId, callbackToken));
+    return await this.repairFromCanonical(await this.backend.verify(invocationId, callbackToken));
   }
 
   /**
@@ -271,6 +295,11 @@ export class InvocationRegistry {
     return this.backend.setTraceContext(invocationId, ctx);
   }
 
+  /** #1542 guard 4: persist the launch plan's carrier identity on the durable callback principal. */
+  async setExpectedCompactionCarrier(invocationId: string, identity: string): Promise<void> {
+    return this.backend.setExpectedCompactionCarrier(invocationId, identity);
+  }
+
   /**
    * Read-only fetch. Returns null only when unknown or after terminal GC.
    */
@@ -291,11 +320,11 @@ export class InvocationRegistry {
    * refresh-token onRequest hook so bad-auth requests can't burn cooldown.
    */
   async peek(invocationId: string, callbackToken: string): Promise<VerifyResult> {
-    return this.repairFromCanonical(await this.backend.peek(invocationId, callbackToken));
+    return await this.repairFromCanonical(await this.backend.peek(invocationId, callbackToken));
   }
 
   async verifyLatest(invocationId: string, callbackToken: string): Promise<VerifyResult> {
-    return this.repairFromCanonical(await this.backend.verifyLatest(invocationId, callbackToken));
+    return await this.repairFromCanonical(await this.backend.verifyLatest(invocationId, callbackToken));
   }
 
   async commitTerminal(input: AuthTerminalCommitInput): Promise<AuthTerminalCommitResult> {

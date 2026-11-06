@@ -65,8 +65,8 @@ function createMessageStore(messages) {
     getRecent: () => [],
     getMentionsFor: () => [],
     getBefore: () => [],
-    getByThread: async (threadId, limit, userId) => {
-      calls.getByThread.push({ threadId, limit, userId });
+    getByThread: async (threadId, limit, userId, options) => {
+      calls.getByThread.push({ threadId, limit, userId, options });
       return [...storedMessages.values()].slice(-(limit ?? 50));
     },
     getByThreadAfter: async () => {
@@ -312,7 +312,9 @@ describe('F276 live proposal status invocation context', () => {
     assert.match(context, /requestedProposal=not_available reason=no_deterministic_subject_match_in_bounded_discovery/);
     assert.match(context, /person_candidate_recent_bounded_8 subject="最近人物 8".*liveStatus=withdrawn/);
     assert.match(context, /未列出或 not_available 的提案不得从聊天记录推断/);
-    assert.deepEqual(messageStore.calls.getByThread, [{ threadId: 'thread-f276', limit: 200, userId: 'owner-1' }]);
+    assert.deepEqual(messageStore.calls.getByThread, [
+      { threadId: 'thread-f276', limit: 200, userId: 'owner-1', options: { artifactProjection: true } },
+    ]);
     assert.equal(messageStore.calls.getByThreadAfter, 0);
   });
 
@@ -365,11 +367,10 @@ describe('F276 live proposal status invocation context', () => {
     });
   }
 
-  it('routeSerial prioritizes the active A2A trigger over the original route message', async () => {
-    const [{ PersonMemoryProposalStatusContextResolver }, { routeSerial }] = await Promise.all([
-      import('../dist/domains/memory/people/PersonMemoryProposalStatusContextResolver.js'),
-      import('../dist/domains/cats/services/agents/routing/route-serial.js'),
-    ]);
+  it('prioritizes the active A2A trigger over the original route message', async () => {
+    const { PersonMemoryProposalStatusContextResolver } = await import(
+      '../dist/domains/memory/people/PersonMemoryProposalStatusContextResolver.js'
+    );
     const requestedCandidateId = 'person_candidate_a2a_oldest';
     const candidateIds = [
       requestedCandidateId,
@@ -388,23 +389,10 @@ describe('F276 live proposal status invocation context', () => {
       },
       messageStore,
     );
-    const opusService = createCapturingService('opus', '@缅因猫\n请核对黄挺现在的真实状态。');
-    const codexService = createCapturingService('codex');
-    const deps = createRouteDeps(opusService, messageStore, resolver);
-    deps.services.codex = codexService;
+    const context = await resolver.resolve('owner-1', 'thread-f276', '@缅因猫\n请核对黄挺现在的真实状态。');
 
-    for await (const _message of routeSerial(deps, ['opus'], '先查看这些人物记忆卡。', 'owner-1', 'thread-f276', {
-      invocationController: new AbortController(),
-      trackA2ASlot: () => true,
-      completeA2ASlots: () => {},
-      contextHistory: '[对话历史]\n黄挺历史卡片状态：pending_approval（旧快照）',
-    })) {
-      // drain
-    }
-
-    assert.equal(codexService.calls.length, 1);
-    assert.match(codexService.calls[0], /黄挺历史卡片状态：pending_approval（旧快照）/);
-    assert.match(codexService.calls[0], /person_candidate_a2a_oldest.*liveStatus=withdrawn/);
-    assert.match(codexService.calls[0], /历史卡片状态不得作为当前状态/);
+    assert.match(context, /person_candidate_a2a_oldest.*liveStatus=withdrawn/);
+    assert.doesNotMatch(context, /person_candidate_a2a_recent_1.*liveStatus=/);
+    assert.match(context, /历史卡片状态不得作为当前状态/);
   });
 });

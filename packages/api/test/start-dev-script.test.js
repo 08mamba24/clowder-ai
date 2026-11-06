@@ -36,6 +36,101 @@ function runSourceOnlySnippet(scriptPath, snippet, envOverrides = {}) {
   return result.stdout.trim();
 }
 
+test('runtime artifact proof is consumed before API children and scoped to its checkout', () => {
+  const scriptPath = resolve(process.cwd(), '../../scripts/start-dev.sh');
+  const runtimeRoot = resolve(process.cwd(), '../..');
+  const probe = `PROD_WEB=true\nreuse_verified_runtime_artifacts\nprintf '%s|%s' "$QUICK_MODE" "\${CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED-unset}"`;
+
+  assert.equal(
+    runSourceOnlySnippet(scriptPath, probe, {
+      CAT_CAFE_DEPLOYMENT_ID: 'runtime',
+      CAT_CAFE_RUNTIME_ROOT: runtimeRoot,
+      CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED: '1',
+    }),
+    'true|unset',
+  );
+  assert.equal(
+    runSourceOnlySnippet(scriptPath, probe, {
+      CAT_CAFE_DEPLOYMENT_ID: 'runtime',
+      CAT_CAFE_RUNTIME_ROOT: tmpdir(),
+      CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED: '1',
+    }),
+    'false|unset',
+  );
+  assert.equal(
+    runSourceOnlySnippet(scriptPath, probe, {
+      CAT_CAFE_RUNTIME_ROOT: runtimeRoot,
+      CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED: '1',
+    }),
+    'false|unset',
+  );
+});
+
+test('dotenv cannot grant the launcher artifact proof', () => {
+  const tmp = createTempProject();
+  try {
+    writeFileSync(join(tmp, '.env.local'), 'CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED=1\n');
+    const output = runSourceOnlySnippet(
+      join(tmp, 'scripts', 'start-dev.sh'),
+      `PROD_WEB=true\nreuse_verified_runtime_artifacts\nprintf '%s|%s' "$QUICK_MODE" "\${CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED-unset}"`,
+      { CAT_CAFE_DEPLOYMENT_ID: 'runtime', CAT_CAFE_RUNTIME_ROOT: tmp },
+    );
+    assert.equal(output, 'false|unset');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('daemon re-exec keeps the artifact proof for its own verified checkout only', () => {
+  const tmp = createTempProject();
+  try {
+    const scriptPath = join(tmp, 'scripts', 'start-dev.sh');
+    const probePath = join(tmp, 'daemon-proof-probe.sh');
+    const logPath = join(tmp, 'daemon-proof.log');
+    writeFileSync(
+      probePath,
+      [
+        '#!/usr/bin/env bash',
+        `source "${scriptPath}" --source-only --prod-web >/dev/null 2>&1`,
+        'trap - EXIT INT TERM',
+        'reuse_verified_runtime_artifacts',
+        `printf 'QUICK=%s VERIFIED=%s\\n' "$QUICK_MODE" "\${CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED-unset}"`,
+        'printf "ARG=<%s>\\n" "$@"',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+
+    for (const [runtimeRoot, expectedQuick] of [
+      [tmp, 'true'],
+      [tmpdir(), 'false'],
+    ]) {
+      const result = spawnSync(
+        'bash',
+        [
+          '-lc',
+          `set -e\nsource "${scriptPath}" --source-only --prod-web >/dev/null 2>&1\ntrap - EXIT INT TERM\nDAEMON_LOG_FILE="${logPath}"\nlaunch_daemon_child "${probePath}" proof-token "argument with spaces"\nwait "$DAEMON_PID"`,
+        ],
+        {
+          encoding: 'utf8',
+          env: baseShellEnv({
+            CAT_CAFE_DEPLOYMENT_ID: 'runtime',
+            CAT_CAFE_RUNTIME_ROOT: runtimeRoot,
+            CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED: '1',
+          }),
+        },
+      );
+      assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+      assert.equal(
+        readFileSync(logPath, 'utf8'),
+        `QUICK=${expectedQuick} VERIFIED=unset\nARG=<argument with spaces>\nARG=<--cat-cafe-daemon-token=proof-token>\n`,
+      );
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 function createBashOnlyPath(root) {
   const binDir = join(root, 'bin');
   mkdirSync(binDir, { recursive: true });
@@ -119,7 +214,7 @@ test('start-dev cloud cleanup uses an owner manifest instead of global cloud sto
 test('start-dev cleanup consumes a published owner manifest while helper startup is still in flight', () => {
   const scriptPath = resolve(process.cwd(), '../../scripts/start-dev.sh');
   const scriptText = readFileSync(scriptPath, 'utf8');
-  const cleanupSource = scriptText.match(/cleanup\(\) \{[\s\S]*?\n\}\n\ntrap cleanup EXIT/)?.[0];
+  const cleanupSource = scriptText.match(/^cleanup\(\) \{[\s\S]*?^\}/m)?.[0];
 
   assert.ok(cleanupSource, 'cleanup function must remain discoverable');
   assert.match(cleanupSource, /\[ -n "\$F247_CLOUD_OWNER_FILE" \]/);
@@ -485,6 +580,7 @@ test('start-dev keeps explicit runtime ownership paths over dotenv', () => {
     cpSync(nodeGuardPath, join(tempRoot, 'scripts', 'lib', 'node-runtime-guard.sh'));
     cpSync(redisHelperPath, join(tempRoot, 'scripts', 'lib', 'redis-rdb-first.sh'));
     cpSync(downloadOverridesPath, join(tempRoot, 'scripts', 'download-source-overrides.sh'));
+    copyDeploymentDefaults(tempRoot);
     writeFileSync(
       join(tempRoot, '.env'),
       [
@@ -593,82 +689,21 @@ function createTempProject() {
   cpSync(join(realScriptsDir, 'download-source-overrides.sh'), join(scriptsDir, 'download-source-overrides.sh'));
   cpSync(join(realScriptsDir, 'lib', 'node-runtime-guard.sh'), join(scriptsDir, 'lib', 'node-runtime-guard.sh'));
   cpSync(join(realScriptsDir, 'lib', 'redis-rdb-first.sh'), join(scriptsDir, 'lib', 'redis-rdb-first.sh'));
+  copyDeploymentDefaults(tmp);
   chmodSync(join(scriptsDir, 'start-dev.sh'), 0o755);
   return tmp;
 }
 
-function createManagedRuntimeFixture({
-  launcherHasConnectorInjection = false,
-  runtimeDirName = 'cat-cafe-runtime',
-  runtimeBranch = 'runtime/main-sync',
-} = {}) {
-  const tempRoot = mkdtempSync(join(tmpdir(), 'managed-runtime-'));
-  const workspaceRoot = join(tempRoot, 'launcher');
-  const runtimeRoot = join(tempRoot, runtimeDirName);
-  mkdirSync(join(workspaceRoot, 'scripts'), { recursive: true });
-
-  const git = (...args) => {
-    const result = spawnSync('git', ['-C', workspaceRoot, ...args], {
-      encoding: 'utf8',
-      env: baseShellEnv(),
-    });
-    assert.equal(
-      result.status,
-      0,
-      `git ${args.join(' ')} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-    );
-  };
-
-  git('init', '--initial-branch=main');
-  git('config', 'user.name', 'Clowder AI Test');
-  git('config', 'user.email', 'test@cat-cafe.local');
-  writeFileSync(join(workspaceRoot, 'launcher-version.txt'), 'pre-1282\n');
-  writeFileSync(
-    join(workspaceRoot, 'scripts', 'runtime-worktree.sh'),
-    [
-      '#!/bin/bash',
-      ...(launcherHasConnectorInjection
-        ? ['export CONNECTOR_GATEWAY_AUTOSTART="${CONNECTOR_GATEWAY_AUTOSTART:-1}"']
-        : []),
-      'exec env CAT_CAFE_STRICT_PROFILE_DEFAULTS=1 ./scripts/start-dev.sh --prod-web --profile=opensource "$@"',
-      '',
-    ].join('\n'),
-  );
-  git('add', 'launcher-version.txt', 'scripts/runtime-worktree.sh');
-  git('commit', '-m', 'seed legacy launcher');
-  git('worktree', 'add', '-b', runtimeBranch, runtimeRoot);
-
-  copyStartDevClosure(
-    runtimeRoot,
-    resolve(process.cwd(), '../../scripts/start-dev.sh'),
-    join(runtimeRoot, 'scripts', 'start-dev.sh'),
-    join(runtimeRoot, 'scripts', 'download-source-overrides.sh'),
-  );
-
-  return { tempRoot, workspaceRoot, runtimeRoot };
-}
-
-function readManagedRuntimeConnectorAutostart({ runtimeRoot, workspaceRoot }, envOverrides = {}) {
-  const scriptPath = join(runtimeRoot, 'scripts', 'start-dev.sh');
-  const result = spawnSync(
-    'bash',
-    [
-      '-lc',
-      `set -e\nsource "${scriptPath}" --source-only --prod-web --profile=opensource >/dev/null 2>&1\ntrap - EXIT INT TERM\nprintf '%s' "\${CONNECTOR_GATEWAY_AUTOSTART-unset}"`,
-    ],
-    {
-      cwd: runtimeRoot,
-      encoding: 'utf8',
-      env: baseShellEnv({
-        CAT_CAFE_RUNTIME_ROOT: runtimeRoot,
-        CAT_CAFE_WORKSPACE_ROOT: workspaceRoot,
-        CAT_CAFE_STRICT_PROFILE_DEFAULTS: '1',
-        ...envOverrides,
-      }),
-    },
-  );
-  assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-  return result.stdout.trim();
+/** start-dev.sh reads its default ports through read-deployment-default.mjs. */
+function copyDeploymentDefaults(root) {
+  mkdirSync(join(root, 'packages', 'shared', 'src'), { recursive: true });
+  for (const path of [
+    'scripts/read-deployment-default.mjs',
+    'packages/shared/src/deployment-defaults.ts',
+    'packages/shared/src/deployment-profiles.json',
+  ]) {
+    cpSync(resolve(process.cwd(), '../..', path), join(root, path));
+  }
 }
 
 function copyStartDevClosure(tempRoot, scriptPath, tempScriptPath, tempOverridesPath) {
@@ -683,6 +718,7 @@ function copyStartDevClosure(tempRoot, scriptPath, tempScriptPath, tempOverrides
     resolve(process.cwd(), '../../scripts/lib/redis-rdb-first.sh'),
     join(tempRoot, 'scripts', 'lib', 'redis-rdb-first.sh'),
   );
+  copyDeploymentDefaults(tempRoot);
 }
 
 test('.env.local overrides same-name keys from .env (#603)', () => {
@@ -861,139 +897,6 @@ test('dotenv cannot grant global sidecar ownership without wrapper env', () => {
     assert.equal(result.stdout.trim(), 'unset');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test('non-runtime connector opt-out from wrapper env beats dotenv values', () => {
-  const tmp = createTempProject();
-  try {
-    writeFileSync(join(tmp, '.env.local'), 'CONNECTOR_GATEWAY_AUTOSTART=1\n');
-    const scriptPath = join(tmp, 'scripts', 'start-dev.sh');
-
-    const result = spawnSync(
-      'bash',
-      [
-        '-lc',
-        `set -e\nsource "${scriptPath}" --source-only >/dev/null 2>&1\ntrap - EXIT INT TERM\nprintf '%s' "$CONNECTOR_GATEWAY_AUTOSTART"`,
-      ],
-      {
-        encoding: 'utf8',
-        env: baseShellEnv({ CONNECTOR_GATEWAY_AUTOSTART: '0' }),
-      },
-    );
-
-    assert.equal(result.status, 0, `snippet failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-    assert.equal(result.stdout.trim(), '0');
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test('runtime connector opt-in from wrapper env beats dotenv values', () => {
-  const tmp = createTempProject();
-  try {
-    writeFileSync(join(tmp, '.env.local'), 'CONNECTOR_GATEWAY_AUTOSTART=0\n');
-    const scriptPath = join(tmp, 'scripts', 'start-dev.sh');
-
-    const result = spawnSync(
-      'bash',
-      [
-        '-lc',
-        `set -e\nsource "${scriptPath}" --source-only >/dev/null 2>&1\ntrap - EXIT INT TERM\nprintf '%s' "$CONNECTOR_GATEWAY_AUTOSTART"`,
-      ],
-      {
-        encoding: 'utf8',
-        env: baseShellEnv({ CONNECTOR_GATEWAY_AUTOSTART: '1' }),
-      },
-    );
-
-    assert.equal(result.status, 0, `snippet failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-    assert.equal(result.stdout.trim(), '1');
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test('dotenv cannot grant connector autostart without wrapper env', () => {
-  const tmp = createTempProject();
-  try {
-    writeFileSync(join(tmp, '.env.local'), 'CONNECTOR_GATEWAY_AUTOSTART=1\n');
-    const scriptPath = join(tmp, 'scripts', 'start-dev.sh');
-
-    const result = spawnSync(
-      'bash',
-      [
-        '-lc',
-        `set -e\nsource "${scriptPath}" --source-only >/dev/null 2>&1\ntrap - EXIT INT TERM\nprintf '%s' "\${CONNECTOR_GATEWAY_AUTOSTART-unset}"`,
-      ],
-      {
-        encoding: 'utf8',
-        env: baseShellEnv(),
-      },
-    );
-
-    assert.equal(result.status, 0, `snippet failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-    assert.equal(result.stdout.trim(), 'unset');
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test('new runtime preserves connector autostart when invoked by the pre-1282 managed launcher', () => {
-  const fixture = createManagedRuntimeFixture();
-  try {
-    assert.equal(readManagedRuntimeConnectorAutostart(fixture), '1');
-  } finally {
-    rmSync(fixture.tempRoot, { recursive: true, force: true });
-  }
-});
-
-test('legacy managed launcher honors its explicit runtime path and branch selection', () => {
-  const fixture = createManagedRuntimeFixture({
-    runtimeDirName: 'custom-runtime',
-    runtimeBranch: 'runtime/custom',
-  });
-  try {
-    assert.equal(
-      readManagedRuntimeConnectorAutostart(fixture, {
-        CAT_CAFE_RUNTIME_DIR: fixture.runtimeRoot,
-        CAT_CAFE_RUNTIME_BRANCH: 'runtime/custom',
-      }),
-      '1',
-    );
-  } finally {
-    rmSync(fixture.tempRoot, { recursive: true, force: true });
-  }
-});
-
-test('pre-1282 managed launcher compatibility never overrides an explicit connector opt-out', () => {
-  const fixture = createManagedRuntimeFixture();
-  try {
-    writeFileSync(join(fixture.runtimeRoot, '.env.local'), 'CONNECTOR_GATEWAY_AUTOSTART=1\n');
-    assert.equal(readManagedRuntimeConnectorAutostart(fixture, { CONNECTOR_GATEWAY_AUTOSTART: '0' }), '0');
-  } finally {
-    rmSync(fixture.tempRoot, { recursive: true, force: true });
-  }
-});
-
-test('registered worktree topology alone cannot grant connector autostart', () => {
-  const fixture = createManagedRuntimeFixture({ launcherHasConnectorInjection: true });
-  try {
-    assert.equal(readManagedRuntimeConnectorAutostart(fixture), 'unset');
-  } finally {
-    rmSync(fixture.tempRoot, { recursive: true, force: true });
-  }
-});
-
-test('arbitrary registered feature worktree cannot impersonate the managed runtime', () => {
-  const fixture = createManagedRuntimeFixture({
-    runtimeDirName: 'feature-probe',
-    runtimeBranch: 'feat/probe',
-  });
-  try {
-    assert.equal(readManagedRuntimeConnectorAutostart(fixture), 'unset');
-  } finally {
-    rmSync(fixture.tempRoot, { recursive: true, force: true });
   }
 });
 
@@ -1234,6 +1137,7 @@ test('redis snapshot archive failure warns and does not abort startup flow', () 
     assert.equal(result.status, 0, `snapshot failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
     assert.match(result.stdout, /Redis 快照归档失败/);
     assert.match(result.stdout, /ok$/);
+    assert.equal(result.stderr, '', 'the launcher warning must replace low-level mktemp errors');
   } finally {
     chmodSync(backupDir, 0o700);
     rmSync(tempRoot, { recursive: true, force: true });
@@ -1409,6 +1313,7 @@ test('wait_for_port_or_exit fails fast when background process exits before bind
   const output = runSourceOnlySnippet(
     scriptPath,
     `
+port_is_listening() { return 1; }
 background_eval_with_null_stdin "exit 0"
 pid=$!
 if wait_for_port_or_exit 65534 "test-service" "$pid" 2 >/dev/null; then
@@ -1422,44 +1327,29 @@ fi
   assert.equal(output, 'failed-fast');
 });
 
-test('wait_for_port_or_exit falls back when lsof probe fails but the port is actually listening', () => {
+test('wait_for_port_or_exit falls back when lsof probe fails but the port is actually listening', async () => {
   const scriptPath = resolve(process.cwd(), '../../scripts/start-dev.sh');
-  const output = runSourceOnlySnippet(
-    scriptPath,
-    `
-tmp_dir=$(mktemp -d)
-trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; rm -rf "$tmp_dir"' RETURN
-cat > "$tmp_dir/server.js" <<'EOF'
-const net = require('node:net');
-const server = net.createServer((socket) => {
-  socket.on('error', () => {});
-  socket.end();
-});
-server.on('error', (err) => {
-  console.error(err);
-  process.exit(1);
-});
-server.listen(65531, '127.0.0.1', () => {
-  setInterval(() => {}, 1000);
-});
-EOF
-node "$tmp_dir/server.js" >/dev/null 2>&1 &
-server_pid=$!
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  nc -z 127.0.0.1 65531 >/dev/null 2>&1 && break
-  sleep 0.1
-done
+  const server = await listenOnLoopback();
+
+  try {
+    const port = server.address().port;
+    const output = runSourceOnlySnippet(
+      scriptPath,
+      `
 lsof() { return 1; }
 ss() { return 127; }
-if wait_for_port_or_exit 65531 "test-service" "$server_pid" 2 >/dev/null; then
+if wait_for_port_or_exit ${port} "test-service" "$$" 2 >/dev/null; then
   printf 'fallback-ok'
 else
   printf 'fallback-failed'
 fi
 `,
-  );
+    );
 
-  assert.equal(output, 'fallback-ok');
+    assert.equal(output, 'fallback-ok');
+  } finally {
+    await new Promise((resolvePromise) => server.close(resolvePromise));
+  }
 });
 
 test('terminate_managed_pids kills tracked child process trees', () => {
@@ -1493,6 +1383,129 @@ fi
   );
 
   assert.equal(output, 'child-killed');
+});
+
+test('terminate_managed_pids kills a descendant that outlives its parent exiting on TERM', () => {
+  // 2026-10-30 runtime stop: next start exited on TERM, while its next-server child kept waiting
+  // on open browser connections; reparented to init, it survived and stop reported process_set_survived.
+  const scriptPath = resolve(process.cwd(), '../../scripts/start-dev.sh');
+  const output = runSourceOnlySnippet(
+    scriptPath,
+    `
+if ! command -v pgrep >/dev/null 2>&1; then
+  printf 'skipped'
+  exit 0
+fi
+sh -c 'sh -c "trap \\"\\" TERM; exec sleep 30" & wait' &
+parent_pid=$!
+child_pid=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  child_pid=$(pgrep -P "$parent_pid" | head -n 1 || true)
+  [ -n "$child_pid" ] && break
+  sleep 0.1
+done
+[ -n "$child_pid" ] || { printf 'missing-child'; exit 1; }
+MANAGED_PIDS=("$parent_pid")
+MANAGED_SHUTDOWN_GRACE_SECONDS=0.3
+terminate_managed_pids
+sleep 0.2
+if kill -0 "$parent_pid" 2>/dev/null; then
+  printf 'parent-alive'
+elif kill -0 "$child_pid" 2>/dev/null; then
+  kill -KILL "$child_pid" 2>/dev/null || true
+  printf 'orphan-alive'
+else
+  printf 'orphan-killed'
+fi
+`,
+  );
+
+  assert.equal(output, 'orphan-killed');
+});
+
+test('terminate_managed_pids also KILLs what a surviving descendant spawned after the snapshot', () => {
+  const scriptPath = resolve(process.cwd(), '../../scripts/start-dev.sh');
+  const output = runSourceOnlySnippet(
+    scriptPath,
+    `
+if ! command -v pgrep >/dev/null 2>&1; then
+  printf 'skipped'
+  exit 0
+fi
+work=$(mktemp -d)
+cat > "$work/child.sh" <<'SH'
+trap '' TERM
+sleep 0.2
+sh -c 'echo $$ > "$0"; exec sleep 30' "$1" &
+wait
+SH
+sh -c 'sh "$0" "$1" & wait' "$work/child.sh" "$work/grandchild.pid" &
+parent_pid=$!
+child_pid=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  child_pid=$(pgrep -P "$parent_pid" | head -n 1 || true)
+  [ -n "$child_pid" ] && break
+  sleep 0.05
+done
+[ -n "$child_pid" ] || { printf 'missing-child'; exit 1; }
+MANAGED_PIDS=("$parent_pid")
+MANAGED_SHUTDOWN_GRACE_SECONDS=0.6
+terminate_managed_pids
+sleep 0.2
+grandchild_pid=$(cat "$work/grandchild.pid" 2>/dev/null || true)
+rm -rf "$work"
+[ -n "$grandchild_pid" ] || { printf 'missing-grandchild'; exit 0; }
+if kill -0 "$grandchild_pid" 2>/dev/null; then
+  kill -KILL "$grandchild_pid" 2>/dev/null || true
+  printf 'grandchild-alive'
+else
+  printf 'grandchild-killed'
+fi
+`,
+  );
+
+  assert.equal(output, 'grandchild-killed');
+});
+
+test('terminate_managed_pids never KILLs a recorded descendant pid that now names another process', () => {
+  const scriptPath = resolve(process.cwd(), '../../scripts/start-dev.sh');
+  const output = runSourceOnlySnippet(
+    scriptPath,
+    `
+if ! command -v pgrep >/dev/null 2>&1; then
+  printf 'skipped'
+  exit 0
+fi
+sh -c 'sh -c "trap \\"\\" TERM; exec sleep 30" & wait' &
+parent_pid=$!
+child_pid=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  child_pid=$(pgrep -P "$parent_pid" | head -n 1 || true)
+  [ -n "$child_pid" ] && break
+  sleep 0.1
+done
+[ -n "$child_pid" ] || { printf 'missing-child'; exit 1; }
+# The grace is where a pid can be recycled: after it, the recorded start time no longer matches.
+recycled=false
+sleep() { recycled=true; command sleep "$@"; }
+process_started_at() {
+  if [ "$recycled" = true ]; then printf 'another process'; else command ps -p "$1" -o lstart= 2>/dev/null; fi
+}
+MANAGED_PIDS=("$parent_pid")
+MANAGED_SHUTDOWN_GRACE_SECONDS=0.3
+terminate_managed_pids
+unset -f sleep
+sleep 0.2
+if kill -0 "$child_pid" 2>/dev/null; then
+  kill -KILL "$child_pid" 2>/dev/null || true
+  printf 'spared'
+else
+  printf 'killed'
+fi
+`,
+  );
+
+  assert.equal(output, 'spared');
 });
 
 test('managed shutdown leaves enough time for API audio-finalization hooks', () => {

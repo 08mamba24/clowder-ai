@@ -55,7 +55,7 @@ describe('resolveStartupCliConfigContext', () => {
     }
   });
 
-  it('regenerates workspace CLI configs with runtime MCP binaries and workspace env', async () => {
+  it('reconciles runtime MCP binaries without recreating retired Gemini execution config', async () => {
     const root = join(tmpdir(), `cat-cafe-startup-regenerate-workspace-${Date.now()}`);
     const runtime = join(tmpdir(), `cat-cafe-startup-regenerate-runtime-${Date.now()}`);
     const apiCwd = join(runtime, 'packages', 'api');
@@ -90,7 +90,7 @@ describe('resolveStartupCliConfigContext', () => {
       process.env.CAT_CAFE_WORKSPACE_ROOT = root;
       process.env.CAT_CAFE_RUNTIME_ROOT = runtime;
 
-      const result = await regenerateStartupCliConfigs(apiCwd);
+      const result = await regenerateStartupCliConfigs(apiCwd, { ...process.env, CAT_CAFE_DEPLOYMENT_ID: 'runtime' });
 
       assert.deepEqual(result, { projectRoot: root, generated: true, healed: true });
       const capabilities = JSON.parse(await readFile(join(root, '.cat-cafe', 'capabilities.json'), 'utf-8'));
@@ -99,16 +99,7 @@ describe('resolveStartupCliConfigContext', () => {
         join(runtime, 'packages', 'mcp-server', 'dist', 'memory.js'),
       );
 
-      // Claude and Codex are invoke-time only — no persistent files should be written.
-      // Only Gemini .gemini/settings.json should be generated at startup.
-      const gemini = JSON.parse(await readFile(join(root, '.gemini', 'settings.json'), 'utf-8'));
-      assert.equal(
-        gemini.mcpServers['cat-cafe-memory'].args[0],
-        join(runtime, 'packages', 'mcp-server', 'dist', 'memory.js'),
-      );
-      // Gemini uses callback env placeholders (not ALLOWED_WORKSPACE_DIRS directly)
-      assert.ok(gemini.mcpServers['cat-cafe-memory'].env, 'env should be present');
-      assert.equal(gemini.mcpServers['cat-cafe-memory'].env.CAT_CAFE_API_URL, '${CAT_CAFE_API_URL}');
+      await assert.rejects(readFile(join(root, '.gemini', 'settings.json')), { code: 'ENOENT' });
     } finally {
       if (originalAwd === undefined) delete process.env.ALLOWED_WORKSPACE_DIRS;
       else process.env.ALLOWED_WORKSPACE_DIRS = originalAwd;
@@ -120,6 +111,68 @@ describe('resolveStartupCliConfigContext', () => {
       await rm(runtime, { recursive: true, force: true });
     }
   });
+
+  for (const [deployment, withRuntimeRoot] of [
+    ['alpha', true],
+    [undefined, true],
+    ['runtime', true],
+    ['runtime', false],
+  ]) {
+    const label =
+      deployment === 'runtime'
+        ? `linked worktree with an inherited runtime identity${withRuntimeRoot ? '' : ' and no runtime root'}`
+        : deployment;
+    it(`${label ?? 'unlabelled linked worktree'} startup leaves shared workspace and HOME CLI configuration byte-for-byte unchanged`, async () => {
+      assert.equal(process.env.CAT_CAFE_TEST_SANDBOX, '1', 'run through scripts/with-test-home.sh');
+      const root = join(tmpdir(), `cat-cafe-alpha-startup-workspace-${Date.now()}`);
+      const runtime = join(tmpdir(), `cat-cafe-alpha-startup-runtime-${Date.now()}`);
+      const apiCwd = join(runtime, 'packages', 'api');
+      const workspaceConfig = join(root, '.cat-cafe', 'capabilities.json');
+      const geminiConfig = join(root, '.gemini', 'settings.json');
+      const agyConfig = join(homedir(), '.gemini', 'antigravity', 'mcp_config.json');
+      await mkdir(join(root, '.cat-cafe'), { recursive: true });
+      await mkdir(join(root, '.gemini'), { recursive: true });
+      await mkdir(join(homedir(), '.gemini', 'antigravity'), { recursive: true });
+      await mkdir(apiCwd, { recursive: true });
+      await writeFile(join(root, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
+      await writeFile(join(runtime, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
+      await writeFile(join(runtime, '.git'), 'gitdir: ../workspace/.git/worktrees/preview\n');
+      const originalAgy = await readFile(agyConfig).catch((err) => {
+        if (err.code === 'ENOENT') return null;
+        throw err;
+      });
+      const capability = {
+        id: 'cat-cafe-memory',
+        type: 'mcp',
+        enabled: true,
+        source: 'cat-cafe',
+        mcpServer: { command: 'node', args: ['/existing-owner/memory.js'] },
+      };
+      await writeFile(workspaceConfig, JSON.stringify({ version: 1, capabilities: [capability] }));
+      const sentinel = JSON.stringify({ mcpServers: { 'cat-cafe-memory': capability.mcpServer } });
+      await writeFile(geminiConfig, sentinel);
+      await writeFile(agyConfig, sentinel);
+      const paths = [workspaceConfig, geminiConfig, agyConfig];
+      const before = await Promise.all(paths.map((path) => readFile(path)));
+      try {
+        const result = await regenerateStartupCliConfigs(apiCwd, {
+          ...(deployment ? { CAT_CAFE_DEPLOYMENT_ID: deployment } : {}),
+          CAT_CAFE_WORKSPACE_ROOT: root,
+          ...(withRuntimeRoot ? { CAT_CAFE_RUNTIME_ROOT: deployment === 'runtime' ? root : runtime } : {}),
+        });
+        const after = await Promise.all(paths.map((path) => readFile(path)));
+        for (let index = 0; index < paths.length; index++) {
+          assert.equal(after[index].equals(before[index]), true, `Alpha overwrote config ${index}`);
+        }
+        assert.deepEqual(result, { projectRoot: root, generated: false, healed: false });
+      } finally {
+        if (originalAgy === null) await rm(agyConfig, { force: true });
+        else await writeFile(agyConfig, originalAgy);
+        await rm(root, { recursive: true, force: true });
+        await rm(runtime, { recursive: true, force: true });
+      }
+    });
+  }
 
   it('waits for the capability lock before healing and generating startup configs', async () => {
     const root = join(tmpdir(), `cat-cafe-startup-lock-${Date.now()}`);
@@ -169,7 +222,10 @@ describe('resolveStartupCliConfigContext', () => {
       await enteredPromise;
 
       let settled = false;
-      const startupPromise = regenerateStartupCliConfigs(apiCwd).then((result) => {
+      const startupPromise = regenerateStartupCliConfigs(apiCwd, {
+        ...process.env,
+        CAT_CAFE_DEPLOYMENT_ID: 'runtime',
+      }).then((result) => {
         settled = true;
         return result;
       });

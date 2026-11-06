@@ -1,8 +1,34 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 
 const workflow = parse(readFileSync(new URL('../workflows/ci.yml', import.meta.url), 'utf8'));
+for (const event of ['push', 'pull_request']) {
+  assert.deepEqual(
+    [...workflow.on[event].branches].sort(),
+    ['main', 'next'],
+    `public CI must cover both the stable and integration branches on ${event}`,
+  );
+}
+for (const filename of ['windows-smoke.yml', 'macos-preview-smoke.yml']) {
+  const nativeWorkflow = parse(readFileSync(new URL(`../workflows/${filename}`, import.meta.url), 'utf8'));
+  assert.deepEqual(
+    [...nativeWorkflow.on.pull_request.branches].sort(),
+    ['main', 'next'],
+    `${filename} must validate PRs for both branch roles`,
+  );
+  assert.ok(
+    Object.hasOwn(nativeWorkflow.on, 'workflow_dispatch'),
+    `${filename} must support checking the restored next head before ordinary PRs move there`,
+  );
+}
+const lintCheckout = workflow.jobs.lint.steps.find((step) => step.uses === 'actions/checkout@v4');
+assert.equal(
+  lintCheckout?.with?.['fetch-depth'],
+  0,
+  'the lint job runs MCP lineage checks and must fetch complete Git history',
+);
 const runtimeJobs = ['public-test-prepare', 'public-test-shards', 'public-test-summary'];
 const versions = runtimeJobs.map((jobName) => {
   const setupNode = workflow.jobs[jobName].steps.find((step) => step.uses === 'actions/setup-node@v4');
@@ -15,14 +41,176 @@ for (const [index, version] of versions.entries()) {
 }
 assert.equal(new Set(versions).size, 1, 'plan producers and consumers must use the same Node runtime');
 
-const shardStep = workflow.jobs['public-test-shards'].steps.find((step) => step.name === 'Run public-test lane');
-assert.ok(shardStep, 'the public-test shard runner step must exist');
+const sharedShardStep = workflow.jobs['public-test-shards'].steps.find(
+  (step) => step.name === 'Run shared-resource public-test lane',
+);
+assert.ok(sharedShardStep, 'the shared-resource public-test shard runner step must exist');
+const distributableShardStep = workflow.jobs['public-test-shards'].steps.find(
+  (step) => step.name === 'Run distributable public-test lane without external network',
+);
+assert.ok(distributableShardStep, 'the distributable public-test shard runner step must exist');
+const summaryStep = workflow.jobs['public-test-summary'].steps.find(
+  (step) => step.name === 'Prove complete public-test coverage and summarize timing',
+);
+assert.ok(summaryStep, 'the public-test summary step must exist');
+assert.deepEqual(
+  workflow.jobs['public-test-shards'].strategy.matrix.lane,
+  [
+    'serial-shared',
+    'distributable-1',
+    'distributable-2',
+    'distributable-3',
+    'distributable-4',
+    'distributable-5',
+    'distributable-6',
+  ],
+  'public-test CI must retain one explicit shared-resource lane and six guarded distributable shards',
+);
+assert.deepEqual(
+  workflow.jobs['public-test-shards'].permissions,
+  { contents: 'read' },
+  'public-test shard jobs must not receive repository write permission',
+);
+const checkoutStep = workflow.jobs['public-test-shards'].steps.find((step) => step.uses === 'actions/checkout@v4');
 assert.equal(
-  shardStep.env?.DEFAULT_OWNER_USER_ID,
-  'default-user',
-  'public tests must use a deterministic local owner identity',
+  checkoutStep?.with?.['persist-credentials'],
+  false,
+  'public-test shard jobs must not persist repository credentials',
+);
+for (const shardStep of [sharedShardStep, distributableShardStep]) {
+  assert.equal(
+    shardStep.env?.DEFAULT_OWNER_USER_ID,
+    'default-user',
+    'public tests must use a deterministic local owner identity',
+  );
+  assert.deepEqual(
+    Object.keys(shardStep.env ?? {}).sort(),
+    ['DEFAULT_OWNER_USER_ID', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_NAME'],
+    'public-test shard execution must not receive external service credentials',
+  );
+}
+assert.equal(
+  sharedShardStep.if,
+  "matrix.lane == 'serial-shared'",
+  'the shared-resource lane must retain network access',
+);
+assert.equal(
+  distributableShardStep.if,
+  "matrix.lane != 'serial-shared'",
+  'only distributable lanes may enter the no-egress network namespace',
+);
+assert.match(
+  distributableShardStep.run,
+  /sudo --preserve-env unshare --net/,
+  'distributable public tests must execute in a separate network namespace',
+);
+assert.match(
+  distributableShardStep.run,
+  /\.github\/scripts\/run-public-test-distributable\.sh/,
+  'distributable public tests must enter the checked no-egress launcher',
+);
+assert.match(
+  distributableShardStep.run,
+  /runner_path="\$PATH"/,
+  'the launcher must receive the runner toolchain path rather than sudo secure_path',
+);
+assert.match(
+  distributableShardStep.run,
+  /pnpm_path="\$\(command -v pnpm\)"/,
+  'the shard command must use the resolved pnpm executable across the sudo boundary',
+);
+const distributableLauncher = readFileSync(new URL('./run-public-test-distributable.sh', import.meta.url), 'utf8');
+assert.match(
+  distributableLauncher,
+  /exec \/usr\/bin\/python3 -I .*public-test-namespace-init\.py/,
+  'the private PID domain must have a dedicated orphan reaper, not the shard runtime as PID 1',
+);
+assert.ok(readFileSync(new URL('./public-test-namespace-init.py', import.meta.url), 'utf8'));
+for (const [pattern, message] of [
+  [/ip link set lo up/, 'the distributable network namespace must retain loopback for local test servers'],
+  [/--no-new-privs/, 'the distributable test process must not regain privilege through setuid executables'],
+  [/--bounding-set=-all/, 'the distributable test process must have an empty capability bounding set'],
+  [/--inh-caps=-all/, 'the distributable test process must have an empty inheritable capability set'],
+  [/--ambient-caps=-all/, 'the distributable test process must have an empty ambient capability set'],
+  [/NoNewPrivs/, 'the launcher must verify no-new-privileges after dropping root'],
+  [/CapInh.*CapPrm.*CapEff.*CapBnd.*CapAmb/s, 'the launcher must verify every capability set is empty'],
+  [/command -v sudo[\s\S]*sudo_path.*-n true/, 'the launcher must prove passwordless sudo cannot regain root'],
+  [
+    /command -v nsenter[\s\S]*nsenter_path.*-t 1 -n true/,
+    'the launcher must prove the parent network namespace cannot be entered',
+  ],
+]) {
+  assert.match(distributableLauncher, pattern, message);
+}
+assert.doesNotMatch(
+  summaryStep.run,
+  /--max-critical-path-ms\b/,
+  'public-test coverage must not fail solely because runner-dependent timing exceeds a target',
+);
+assert.match(
+  summaryStep.run,
+  /::warning title=Public test timing::/,
+  'public-test timing above the optimization target must remain visible as a warning',
+);
+assert.match(
+  summaryStep.run,
+  /GITHUB_STEP_SUMMARY/,
+  'public-test timing and runner consumption must remain visible in the job summary',
+);
+for (const job of ['public-test-shards', 'public-test-summary', 'public-test-serial']) {
+  assert.ok(
+    Number.isInteger(workflow.jobs[job]['timeout-minutes']) && workflow.jobs[job]['timeout-minutes'] > 0,
+    `${job} must retain a bounded job timeout for stuck processes`,
+  );
+}
+
+const aggregateStep = workflow.jobs.test.steps.find((step) => step.name === 'Require complete public-test evidence');
+assert.ok(aggregateStep, 'the public-test aggregate step must exist');
+assert.ok(
+  Array.isArray(workflow.jobs.test.needs) && workflow.jobs.test.needs.includes('fork-compat'),
+  'the required Test (Public) aggregate must depend on the fork-compat job',
+);
+assert.equal(
+  aggregateStep.env?.FORK_COMPAT_RESULT,
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
+  '${{ needs.fork-compat.result }}',
+  'the aggregate must consume the fork-compat job result',
 );
 
+// Behavior, not a text search: execute the exact aggregate bash with simulated
+// dependency results. An older branch protection rule that still requires only
+// this aggregate must turn red when fork compatibility fails or never runs.
+function runAggregate(overrides = {}) {
+  return spawnSync('bash', ['-c', aggregateStep.run], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PREPARE_RESULT: 'success',
+      CONTRACT_RESULT: 'success',
+      SHARDED_RESULT: 'success',
+      SUMMARY_RESULT: 'success',
+      SERIAL_RESULT: 'skipped',
+      FORK_COMPAT_RESULT: 'success',
+      WEB_FIRST_RUN_ONBOARDING_RESULT: 'success',
+      TEST_MODE: 'sharded',
+      ...overrides,
+    },
+  });
+}
+
+const allGreen = runAggregate();
+assert.equal(allGreen.status, 0, allGreen.stderr);
+for (const [story, overrides] of [
+  ['the fork-compat job fails', { FORK_COMPAT_RESULT: 'failure' }],
+  ['the fork-compat job is skipped', { FORK_COMPAT_RESULT: 'skipped' }],
+  ['the fork-compat job never reported', { FORK_COMPAT_RESULT: '' }],
+  ['the web-first-run-onboarding job fails', { WEB_FIRST_RUN_ONBOARDING_RESULT: 'failure' }],
+  ['the web-first-run-onboarding job never reported', { WEB_FIRST_RUN_ONBOARDING_RESULT: '' }],
+]) {
+  const result = runAggregate(overrides);
+  assert.notEqual(result.status, 0, `Test (Public) must not be green when ${story}`);
+}
+
 process.stdout.write(
-  `public-test CI contract OK (Node ${versions[0]}, owner ${shardStep.env.DEFAULT_OWNER_USER_ID})\n`,
+  `public-test CI contract OK (Node ${versions[0]}, owner ${distributableShardStep.env.DEFAULT_OWNER_USER_ID})\n`,
 );

@@ -143,6 +143,8 @@ export interface RichInteractiveBlock extends RichBlockBase {
   messageTemplate?: string;
   disabled?: boolean;
   selectedIds?: string[];
+  /** Set false when adjacent blocks belong to separate producer items and must submit independently. */
+  autoGroup?: boolean;
   /** Phase C: blocks sharing the same groupId are submitted together */
   groupId?: string;
 }
@@ -270,7 +272,12 @@ function isValidMediaItem(value: unknown): boolean {
 }
 
 function isValidInteractiveOption(value: unknown): boolean {
-  return isRecord(value) && isNonEmptyString(value.id) && isNonEmptyString(value.label);
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value.id) &&
+    isNonEmptyString(value.label) &&
+    hasOptionalString(value, 'description')
+  );
 }
 
 function isValidCardBlock(obj: Record<string, unknown>): boolean {
@@ -305,6 +312,9 @@ function isValidAudioBlock(obj: Record<string, unknown>): boolean {
   const hasUrlOrText = isTrimmedNonEmptyString(obj.url) || isTrimmedNonEmptyString(obj.text);
   return (
     hasUrlOrText &&
+    hasOptionalString(obj, 'url') &&
+    hasOptionalString(obj, 'text') &&
+    hasOptionalString(obj, 'speaker') &&
     hasOptionalString(obj, 'title') &&
     hasOptionalNumber(obj, 'durationSec') &&
     hasOptionalString(obj, 'mimeType')
@@ -326,6 +336,7 @@ function isValidInteractiveBlock(obj: Record<string, unknown>): boolean {
     hasOptionalBoolean(obj, 'allowRandom') &&
     hasOptionalString(obj, 'messageTemplate') &&
     hasOptionalBoolean(obj, 'disabled') &&
+    hasOptionalBoolean(obj, 'autoGroup') &&
     (!('selectedIds' in obj) || Array.isArray(obj.selectedIds)) &&
     (!('groupId' in obj) || isNonEmptyString(obj.groupId))
   );

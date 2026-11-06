@@ -1,78 +1,102 @@
 'use client';
-
+import { projectFileContent, type ThreadArtifactDTO } from '@cat-cafe/shared';
+import { ChatWorkCard } from '@/components/artifacts/ChatWorkCard';
+import { useNearWorkViewport } from '@/components/artifacts/useNearWorkViewport';
+import { useWorkCardDescription } from '@/components/artifacts/useWorkCardDescription';
+import type { PublishedMessageCoordinate } from '@/components/content-review/usePublishedContent';
 import type { RichFileBlock } from '@/stores/chat-types';
-import { CompactLabel } from '../content-overflow';
-import { HubIcon } from '../hub-icons';
+import { useChatStore } from '@/stores/chatStore';
+import { isSafeFileUrl, useFileCardOpen } from './useFileCardOpen';
+import { useRegisteredFileWork } from './useRegisteredFileWork';
 
-const EXT_ICON_NAMES: Record<string, string> = {
-  pdf: 'file-text',
-  doc: 'file-text',
-  docx: 'file-text',
-  xls: 'bar-chart',
-  xlsx: 'bar-chart',
-  ppt: 'file-text',
-  pptx: 'file-text',
-  md: 'file-text',
-  txt: 'file-text',
+type FileBlockProps = {
+  block: RichFileBlock;
+  publication?: PublishedMessageCoordinate;
+  sourceThreadId?: string;
+  messageId?: string;
+  sourceMessageIds?: readonly string[];
+  catId?: string;
 };
 
-/** Video extensions — mirrors thread-artifacts-aggregator VIDEO_EXTENSIONS. */
-const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'avi', 'mkv', 'm4v', 'ogv']);
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+function fileArtifactType(block: RichFileBlock): ThreadArtifactDTO['type'] {
+  const { kind } = projectFileContent({ name: block.fileName, url: block.url, mime: block.mimeType });
+  return kind === 'image' || kind === 'video' || kind === 'audio' ? kind : 'file';
 }
 
-function isSafeUrl(url: string): boolean {
-  return /^\/uploads\//.test(url) || /^\/api\//.test(url) || /^https:\/\//.test(url);
+export function FileBlock(props: FileBlockProps) {
+  const { block, publication, sourceThreadId, messageId, sourceMessageIds } = props;
+  // All three original-owner hooks discard pending navigation when this source changes.
+  const sourceKey = JSON.stringify([
+    block.url,
+    sourceThreadId,
+    messageId,
+    sourceMessageIds,
+    publication?.threadId,
+    publication?.messageId,
+    publication?.messageRevision,
+    publication?.origins,
+  ]);
+  return <FileCard key={sourceKey} {...props} />;
 }
 
-function isVideoFile(block: RichFileBlock): boolean {
-  if (block.mimeType?.startsWith('video/')) return true;
-  const ext = block.fileName.split('.').pop()?.toLowerCase() ?? '';
-  return VIDEO_EXTENSIONS.has(ext);
-}
-
-export function FileBlock({ block }: { block: RichFileBlock }) {
-  const ext = block.fileName.split('.').pop()?.toLowerCase() ?? '';
-  const iconName = EXT_ICON_NAMES[ext] ?? 'file-text';
-  const safeHref = isSafeUrl(block.url) ? block.url : undefined;
-
-  // Video files: inline player with download fallback
-  if (isVideoFile(block) && safeHref) {
-    return (
-      <div className="overflow-hidden rounded-lg border border-cafe">
-        <video controls preload="metadata" className="max-h-[400px] w-full rounded-t-lg bg-black">
-          <source src={safeHref} type={block.mimeType ?? 'video/mp4'} />
-        </video>
-        <div className="flex items-center gap-3 px-4 py-2">
-          <HubIcon name="play" className="h-4 w-4 flex-shrink-0 text-cafe-muted" />
-          <div className="min-w-0 flex-1">
-            <CompactLabel label="文件名" value={block.fileName} className="text-sm font-medium text-cafe-black" />
-          </div>
-          {block.fileSize != null && <div className="text-xs text-cafe-muted">{formatFileSize(block.fileSize)}</div>}
-          <a href={safeHref} download={block.fileName} className="text-xs text-cafe-link hover:underline">
-            下载
-          </a>
-        </div>
-      </div>
-    );
-  }
-
+function FileCard({ block, publication, sourceThreadId, messageId, sourceMessageIds, catId }: FileBlockProps) {
+  const { ref, near } = useNearWorkViewport<HTMLDivElement>();
+  const host = useChatStore((state) => state.currentThreadId);
+  const originThread = sourceThreadId ?? publication?.threadId ?? host ?? undefined;
+  const registered = useRegisteredFileWork(block.url, originThread, near);
+  const reference = registered.artifact?.work ?? registered.reference ?? undefined;
+  const read = useWorkCardDescription(reference, near);
+  const type = fileArtifactType(block);
+  const video = type === 'video';
+  const opening = useFileCardOpen({
+    block,
+    publication,
+    host,
+    originThread,
+    messageId,
+    sourceMessageIds,
+    registered,
+    video,
+  });
+  const original: ThreadArtifactDTO = registered.artifact ?? {
+    type,
+    name: block.fileName,
+    mime: block.mimeType,
+    catId: catId ?? null,
+    createdAt: Number(publication?.messageRevision) || 0,
+    sourceMessageId: messageId ?? null,
+    ...(isSafeFileUrl(block.url) ? { url: block.url } : {}),
+  };
+  const artifact = reference
+    ? {
+        ...original,
+        work: {
+          ...reference,
+          currentOwnerRevision:
+            read.description?.currentOwnerRevision ?? original.work?.currentOwnerRevision ?? reference.ownerRevision,
+        },
+      }
+    : original;
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-cafe px-4 py-3 transition-colors hover:bg-cafe-surface-elevated">
-      <HubIcon name={iconName} className="h-6 w-6 flex-shrink-0 text-cafe-muted" />
-      <div className="min-w-0 flex-1">
-        <CompactLabel label="文件名" value={block.fileName} className="text-sm font-medium text-cafe-black" />
-        {block.fileSize != null && <div className="text-xs text-cafe-muted">{formatFileSize(block.fileSize)}</div>}
-      </div>
-      {safeHref && (
-        <a href={safeHref} download={block.fileName} className="shrink-0 text-xs text-cafe-link hover:underline">
-          下载
-        </a>
+    <div ref={ref} className="chat-work-card">
+      <ChatWorkCard
+        artifact={artifact}
+        busy={opening.busy}
+        description={read.description}
+        previewPending={registered.loading || read.loading}
+        disabled={!isSafeFileUrl(block.url)}
+        onSelect={() => void opening.open('lightbox')}
+        onOpen={() => void opening.open('work-mode')}
+        onLatest={artifact.work ? () => void opening.open('lightbox', true) : undefined}
+        testId="file-block-cover"
+        copyName={block.fileName}
+      />
+      {opening.error && (
+        <p role="alert" className="mt-2 text-xs text-cafe-error">
+          {opening.error}
+        </p>
       )}
+      {opening.lightbox}
     </div>
   );
 }

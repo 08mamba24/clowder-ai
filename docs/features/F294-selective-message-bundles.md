@@ -1,10 +1,10 @@
 ---
 feature_ids: [F294]
-related_features: [F017, F052, F063, F193, F264, F290]
+related_features: [F017, F052, F063, F193, F264, F290, F322]
 topics: [message-selection, quote-selection, context-attachments, message-bundle, export, rich-message, cross-thread, lineage]
 doc_kind: spec
 created: 2026-08-11
-updated: 2026-08-22
+updated: 2026-10-25
 description: "让用户从一条 Thread 精确选择整条消息、普通/CLI 文字片段或单个 Rich Block，以同一份有来源的 Message Bundle 导出、留言转发，并安全衔接 Collective 发布。"
 description_source: human
 description_author: codex-sol
@@ -72,6 +72,12 @@ Alpha 实测后的 Phase B 增量：
 
 因此本 Feature 不是重做 F017/F063/F193，而是把“整条消息 ref”与 F063 已有“消息 Quote”归一为
 同一种可解析选择项，再补上 Message Bundle 产品对象及其导出/转发出口。
+
+## 2026-10-25 转发 v3 增量交付
+
+- [PR #6066](https://github.com/zts212653/clowder-ai/pull/6066) 经 Argon exact-HEAD APPROVE 后合入 `14c2b08a2e09ab1ca7402f26c94704002076a974`：卡片转发统一从消息多选进入，支持逐卡勾选、消息圆勾三态、遗漏卡提示与面板摘要；转发和 MD/TXT/PNG 消费同一选择。整条去掉部分卡片沿用 `quote + rich_block`，不新增 Bundle schema。
+- [PR #6071](https://github.com/zts212653/clowder-ai/pull/6071) 经 Argon 独立 APPROVE 后合入 `a856274f50e8146c1930d0a94c2d357a48d132a0`，补齐该浏览器旅程的 F294 归属、显式三文件额度和真实 consumer 影响选择，第四文件与旧侧 unknown 拒绝边界保留。
+- 本次只结算原转发 v3 托付；Phase C 的 Collective public-projection 依赖与整个 F294 的完成状态继续沿原记录。
 
 ## What
 
@@ -310,7 +316,7 @@ F294 不新造一套“选中文字”浮层，也不把转发塞进 Composer �
 ### Phase B（同 Café 富文本合并转发）
 
 > **operator Alpha UAT accepted (2026-08-19):** operator确认此前多轮真实 Alpha dogfood、反馈与修正即为
-> Phase B 验收（`0001787099180174-000132-187f47eb`）。已合入实现的 automated contract/browser
+> Phase B 验收（`private-source-id`）。已合入实现的 automated contract/browser
 > evidence 覆盖安全与负向路径；以下 AC-B1–B11 随该明确验收勾选完成。
 
 - [x] AC-B1: TTL=0 Message Bundle 持久化源 Thread、按序 exact refs、可选整包留言、创建者与创建时间；

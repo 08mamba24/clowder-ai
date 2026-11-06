@@ -115,6 +115,8 @@ export function isTransientCliExitCode1(message: string | undefined): boolean {
   // formatCliExitError appends the classified reasonCode to the message, so the tag is the
   // reliable channel here; the humanized text is i18n-mutable and must not be matched on.
   if (/\[incompatible_cli_arguments\]/.test(message)) return false;
+  // A rejected or missing login needs owner action; repeating it cannot restore credentials.
+  if (/\[auth_failed\]/.test(message)) return false;
   return true;
 }
 
@@ -138,6 +140,15 @@ export function isContextWindowOverflowError(message: string | undefined): boole
 export function isCliTimeoutError(message: string | undefined): boolean {
   if (!message) return false;
   return /CLI (?:响应超时|idle-silent 超时)/i.test(message);
+}
+
+/**
+ * A CLI timeout before its first event (a startup watchdog such as tmux's): the member never came
+ * up. Silence after it started is the member output timeout's (F117 KD-22), which stops the member
+ * instead of surfacing here.
+ */
+export function isCliStartupTimeoutError(message: string | undefined): boolean {
+  return isCliTimeoutError(message) && /未收到首帧/.test(message ?? '');
 }
 
 /** F215: Detect malformed tool-call error emitted by ClaudeAgentService (form A / B).

@@ -10,12 +10,12 @@ import { it } from 'node:test';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { NativeAppServer } from '../../dist/domains/cats/services/agents/providers/acp/zcode-acp-native.js';
+import { NativeAppServer } from '../../dist/domains/cats/services/agents/providers/acp/zcode/zcode-acp-native.js';
 import {
   parseTurnEvent,
   readZcodeSessionId,
   zcodeWorkspace,
-} from '../../dist/domains/cats/services/agents/providers/acp/zcode-acp-protocol.js';
+} from '../../dist/domains/cats/services/agents/providers/acp/zcode/zcode-acp-protocol.js';
 
 function syntheticMessage(res, model, toolName) {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'close' });
@@ -171,7 +171,7 @@ it(
     const start = async () => {
       const native = new NativeAppServer(bin, env);
       clients.push(native);
-      assert.equal((await native.request('session/list', { includeArchived: false }, 10000)).error, undefined);
+      assert.equal((await native.request('session/list', {}, 10000)).error, undefined);
       return native;
     };
     const config = (token) => [

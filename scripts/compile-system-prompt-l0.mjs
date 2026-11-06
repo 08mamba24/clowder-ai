@@ -40,11 +40,20 @@ import { accessSync, existsSync, readFileSync, realpathSync, writeFileSync } fro
 import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { catRegistry } from '@cat-cafe/shared';
+import {
+  catRegistry,
+  collectRosterFamilyLabels,
+  formatRosterLabel,
+  resolveL0Projections,
+  resolvePromptTemplateVariables,
+} from '@cat-cafe/shared';
 import { getDossierL0Pronouns, getDossierL0RoutingNote, getDossierL0SelfDescription } from '@cat-cafe/shared/dossier';
 import {
+  CURRENT_CORPUS_PROFILE_URI,
   CURRENT_RELATIONSHIP_PROFILE_URI,
   DEFAULT_PROFILE_USER_ID,
+  profileCapsuleReadRelativePath,
+  profileCorpusRelativePath,
   profileUserRelativePath,
   relationshipPrimerRelativePath,
   renderUserCapsuleSection,
@@ -55,6 +64,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
 const TEMPLATE_PATH = resolve(REPO_ROOT, 'assets/system-prompts/system-prompt-l0.md');
 const PROMPT_TEMPLATES_DIR = resolve(REPO_ROOT, 'assets/prompt-templates');
+const PUBLIC_PARTICIPATION_TEMPLATE_PATH = resolve(PROMPT_TEMPLATES_DIR, 'l0-public-participation.md');
 const PROMPT_OVERLAYS_DIR = resolve(findWorkspaceRoot(process.cwd()), '.cat-cafe', 'prompt-overlays');
 const DISPLAY_SEGMENT_LABEL_RE = /^── \[[A-Z]\d+] .+──$/;
 const MERGE_GATE_SOURCE_PROVENANCE_TRIGGER = '- MG provenance override：外部finding修完后等PR truth，不@旧reviewer。';
@@ -195,10 +205,15 @@ function parseWorkflowTriggersFile(filePath) {
   const result = {};
   for (const [breed, content] of Object.entries(parsed)) {
     if (typeof content === 'string') {
-      result[breed] = ensureMergeGateSourceProvenanceTrigger(content.trimEnd());
+      result[breed] = ensureMergeGateSourceProvenanceTrigger(renderEditionVariables(content.trimEnd()));
     }
   }
   return result;
+}
+
+function renderEditionVariables(template, dynamic = {}) {
+  const variables = { ...resolvePromptTemplateVariables(), ...dynamic };
+  return template.replace(/\{\{(\w+)\}\}/g, (match, key) => (Object.hasOwn(variables, key) ? variables[key] : match));
 }
 
 function ensureMergeGateSourceProvenanceTrigger(content) {
@@ -233,7 +248,7 @@ function loadWorkflowTriggers() {
   }
 }
 
-function buildIdentityBlock(config, runtimeModel) {
+function buildIdentityBlock(config, runtimeModel, dossierRoot) {
   const lines = [];
   const nameLabel = config.nickname
     ? `${config.displayName}/${config.nickname}（${config.name}）`
@@ -242,7 +257,7 @@ function buildIdentityBlock(config, runtimeModel) {
   if (config.nickname) {
     lines.push(`昵称 "${config.nickname}" 的由来见 \`docs/stories/cat-names/\`。`);
   }
-  const selfDescription = getDossierL0SelfDescription(config.catId, REPO_ROOT);
+  const selfDescription = getDossierL0SelfDescription(config.catId, dossierRoot);
   if (selfDescription) {
     lines.push(`角色与自我校准：${selfDescription}`);
   } else {
@@ -262,10 +277,24 @@ function buildIdentityBlock(config, runtimeModel) {
   return lines.join('\n');
 }
 
-function rosterLabel(cfg) {
-  if (cfg.variantLabel) return `${cfg.displayName} ${cfg.variantLabel}`;
-  if (cfg.nickname) return `${cfg.displayName}/${cfg.nickname}`;
-  return cfg.displayName;
+/**
+ * Public participation may use only identity fields already declared by the
+ * participation profile. It must not inherit dossier text, restrictions,
+ * teammate routing, model bindings, owner references, or local overlays.
+ */
+function buildPublicIdentityBlock(catId) {
+  // The signed Host prompt supplies revision-bound published profile fields.
+  // L0 keeps only the stable addressee; rereading mutable local catalog text
+  // here could expose bytes that were never part of that published revision.
+  return `Identity constant: \`@${catId}\``;
+}
+
+function compilePublicParticipationL0(catId) {
+  return readFileSync(PUBLIC_PARTICIPATION_TEMPLATE_PATH, 'utf8')
+    .split('\n')
+    .filter((line) => !isCompilerAnnotationLine(line))
+    .join('\n')
+    .replace('{{PUBLIC_IDENTITY_BLOCK}}', buildPublicIdentityBlock(catId));
 }
 
 // 云端 review round-2 P2: roster 列标"当前模型"，必须 runtime resolve
@@ -283,15 +312,15 @@ function resolveModel(id, cfg) {
   return cfg.defaultModel ?? '';
 }
 
-function buildRosterRow(id, cfg) {
+function buildRosterRow(id, cfg, dossierRoot, familyLabels) {
   const mention = cfg.mentionPatterns?.[0] ?? `@${id}`;
   const model = resolveModel(id, cfg);
   const cell = model ? `${mention} · ${model}` : mention;
-  const pronouns = getDossierL0Pronouns(id, REPO_ROOT)?.split('/')[0]?.trim();
+  const pronouns = getDossierL0Pronouns(id, dossierRoot)?.split('/')[0]?.trim();
   // Chinese L0 only needs the Chinese pronoun. The dossier marker limits this
   // scarce surface to evidence-backed repeat failures instead of every profile.
   // Prefer the shorter nickname for marked rows so the reminder is token-negative.
-  const baseLabel = rosterLabel(cfg);
+  const baseLabel = formatRosterLabel(cfg, familyLabels);
   const label = pronouns ? `${cfg.nickname ?? baseLabel}（${pronouns}）` : baseLabel;
   const hasRestrictions = cfg.restrictions && cfg.restrictions.length > 0;
   const restrictions = hasRestrictions ? `**硬限制**：${cfg.restrictions.join('、')}` : null;
@@ -299,12 +328,12 @@ function buildRosterRow(id, cfg) {
   // capability dossier. Prefer the explicit compact route note; keep config
   // caution as a compatibility fallback for runtime/custom cats that have not
   // yet acquired a structured dossier profile. Hard restrictions always stay.
-  const routingNote = getDossierL0RoutingNote(id, REPO_ROOT) ?? cfg.caution;
+  const routingNote = getDossierL0RoutingNote(id, dossierRoot) ?? cfg.caution;
   const routeContract = [routingNote, restrictions].filter(Boolean).join('；') || '—';
   return `| ${label} | ${cell} | ${routeContract} |`;
 }
 
-function buildTeammateRoster(currentCatId) {
+function buildTeammateRoster(currentCatId, dossierRoot) {
   const allConfigs = catRegistry.getAllConfigs();
   const teammates = filterAvailableTeammates(
     allConfigs,
@@ -314,8 +343,9 @@ function buildTeammateRoster(currentCatId) {
   if (teammates.length === 0) return '（无其他可用队友）';
 
   const rows = ['## 队友名册', '| 猫猫 | @mention · 当前模型 | 路由边界 |', '|------|---------|------|'];
+  const familyLabels = collectRosterFamilyLabels(teammates.map(([, cfg]) => cfg));
   for (const [id, cfg] of teammates) {
-    rows.push(buildRosterRow(id, cfg));
+    rows.push(buildRosterRow(id, cfg, dossierRoot, familyLabels));
   }
   return rows.join('\n');
 }
@@ -345,7 +375,9 @@ function buildWorkflowTriggers(breedId, catId, displayName) {
   const workflowTriggers = loadWorkflowTriggers();
   const direct = workflowTriggers[breedId] ?? workflowTriggers[catId];
   if (direct) return direct;
-  const familyBreed = DISPLAY_NAME_TO_BREED[displayName];
+  const familyBreed = Object.entries(DISPLAY_NAME_TO_BREED).find(([familyName]) =>
+    displayName?.startsWith(familyName),
+  )?.[1];
   if (familyBreed && workflowTriggers[familyBreed]) {
     return workflowTriggers[familyBreed];
   }
@@ -365,7 +397,7 @@ function renderCvoRef() {
 // ─── F231: User profile capsule resolution ────────────────────────────────
 // Contract (F231 spec KD-7 + Phase A plan §三):
 //   profileDir is supplied by the canonical data-root repository; this compiler never guesses cwd.
-//   capsulePath = join(profileDir, 'operator-capsule.md')
+//   capsule.md is canonical; the old filename is read only when it is absent.
 //   Three states:
 //     missing/unreadable → '' (empty string, no heading — backward compat)
 //     ≤300 Unicode chars  → '## 主人画像\n\n{body}' + optional primer pointer
@@ -376,37 +408,57 @@ function renderCvoRef() {
 /**
  * Resolve user profile capsule for L0 injection.
  *
- * @param {string} profileDir - directory containing operator-capsule.md
+ * @param {string} profileDir - authenticated owner's profile directory
  * @param {string} relationshipKey - stable persona key from CatConfig.relationshipKey
  * @returns {string} available capsule section and/or logical relationship-profile pointer
  * @throws {Error} if capsule exceeds 300 Unicode characters
  */
 export function resolveUserCapsule(profileDir, relationshipKey) {
-  const capsulePath = resolve(profileDir, 'operator-capsule.md');
+  const capsulePath = resolve(
+    profileDir,
+    profileCapsuleReadRelativePath((path) => existsSync(resolve(profileDir, path))),
+  );
   const primerPath = resolve(profileDir, relationshipPrimerRelativePath(relationshipKey));
+  const corpusPath = resolve(profileDir, profileCorpusRelativePath());
   let primerEntry = '';
+  let corpusEntry = '';
   try {
     accessSync(primerPath);
     primerEntry = `关系轨迹: ${CURRENT_RELATIONSHIP_PROFILE_URI}（cat_cafe_read_profile 按需读）`;
   } catch {
     // No primer for this persona — no pointer line.
   }
+  // Phase E: corpus pointer — existence-gated, never leaks content into L0 (INV-6 no existence leakage
+  // is about non-owner; owner sees pointer only when file exists).
+  try {
+    accessSync(corpusPath);
+    corpusEntry = `共享事实: ${CURRENT_CORPUS_PROFILE_URI}（cat_cafe_read_profile layer=corpus 按需读）`;
+  } catch {
+    // No corpus yet — no pointer line.
+  }
 
-  // State 1: missing / unreadable → primer entry only, if one exists.
-  // Capsule and primer are independently optional profile layers.
+  const entries = [primerEntry, corpusEntry].filter(Boolean);
+  const pointers = entries.length
+    ? [...entries, '读源走本轮绑定的 Clowder AI 连接；勿用独立 App 的同名工具替代。'].join('\n')
+    : '';
+
+  // State 1: missing / unreadable → pointer entries only, if any exist.
+  // Capsule, primer, and corpus are independently optional profile layers.
   let raw;
   try {
     raw = readFileSync(capsulePath, 'utf8');
   } catch {
-    return primerEntry;
+    return pointers;
   }
 
   // The same pure transform is used by F299 when binding durable profile
   // evidence, so the sourceRef describes these exact bytes rather than a
   // later profile revision.
   let section = renderUserCapsuleSection(raw);
-  if (!section) return primerEntry;
-  if (primerEntry) section += `\n\n${primerEntry}`;
+  if (!section) {
+    return pointers;
+  }
+  if (pointers) section += `\n\n${pointers}`;
 
   return section;
 }
@@ -418,16 +470,26 @@ export function resolveUserCapsule(profileDir, relationshipKey) {
  * @param {string} options.catId - cat ID (must be registered in catRegistry)
  * @param {string} [options.runtimeModel] - resolved runtime model (e.g. claude-opus-4-7)
  * @param {string} [options.profileDir] - override for user profile directory (fixture isolation)
+ * @param {string} [options.dossierRoot] - explicit installation dossier root; defaults to the source repository
+ * @param {string} [options.projection='owner'] - must be supported by the active deployment's L0 projection policy
  * @returns {Promise<string>} compiled L0 ready for system-prompt injection
  */
 export async function compileL0(options) {
+  const { catId, runtimeModel, profileDir, projection = 'owner', dossierRoot = REPO_ROOT } = options;
+  if (!resolveL0Projections().includes(projection)) {
+    throw new Error(`compileL0: unsupported projection "${projection}"`);
+  }
   await bootstrapCatRegistry();
-  const { catId, runtimeModel, profileDir } = options;
   const entry = catRegistry.tryGet(catId);
   if (!entry) {
     throw new Error(`compileL0: unknown catId "${catId}". Registered: ${catRegistry.getAllIds().join(', ')}`);
   }
   const config = { ...entry.config, catId };
+  // Public output is constructed from a dedicated allowlist. Branch before
+  // reading owner profiles, governance overlays, workflow overlays, teammate
+  // routing, or the co-creator reference so none can become model-visible.
+  if (projection === 'public') return compilePublicParticipationL0(catId);
+
   // Strip compiler-only annotation lines from the main template (same as
   // loadL0SectionTemplate does for L-section files). Allows rich source labels
   // without changing the compiled output sent to the model.
@@ -440,11 +502,14 @@ export async function compileL0(options) {
   // Runtime callers pass a user-scoped profileDir. Direct compiles use the same
   // canonical repository contract for the default user; legacy worktree-local
   // private/profile trees are migration inputs only.
-  const canonicalDataDir = resolve(process.env.CAT_CAFE_DATA_DIR ?? resolve(homedir(), '.cat-cafe'));
-  const resolvedProfileDir =
-    profileDir ?? resolve(canonicalDataDir, ...profileUserRelativePath(DEFAULT_PROFILE_USER_ID).split('/'));
-  const relationshipKey = resolveRelationshipKey(config, catId);
-  const capsuleSection = resolveUserCapsule(resolvedProfileDir, relationshipKey);
+  let capsuleSection = '';
+  if (projection === 'owner') {
+    const canonicalDataDir = resolve(process.env.CAT_CAFE_DATA_DIR ?? resolve(homedir(), '.cat-cafe'));
+    const resolvedProfileDir =
+      profileDir ?? resolve(canonicalDataDir, ...profileUserRelativePath(DEFAULT_PROFILE_USER_ID).split('/'));
+    const relationshipKey = resolveRelationshipKey(config, catId);
+    capsuleSection = resolveUserCapsule(resolvedProfileDir, relationshipKey);
+  }
 
   // Load L1-L7 section templates (static content extracted to individual files)
   let result = template;
@@ -452,14 +517,16 @@ export async function compileL0(options) {
     result = result.replace(`{{${placeholder}}}`, loadL0SectionTemplate(filename));
   }
 
-  // Dynamic per-cat substitutions
-  return result
-    .replace('{{IDENTITY_BLOCK}}', buildIdentityBlock(config, runtimeModel))
-    .replace('{{USER_CAPSULE}}', capsuleSection)
-    .replace('{{TEAMMATE_ROSTER}}', buildTeammateRoster(catId))
-    .replace('{{GOVERNANCE_L0}}', governanceL0.content)
-    .replace('{{WORKFLOW_TRIGGERS}}', buildWorkflowTriggers(config.breedId, catId, config.displayName))
-    .replace('{{CVO_REF}}', renderCvoRef());
+  // One pass over source placeholders: inserted labels, capsules and overlays
+  // stay opaque, even when their data happens to contain a placeholder spelling.
+  return renderEditionVariables(result, {
+    IDENTITY_BLOCK: buildIdentityBlock(config, runtimeModel, dossierRoot),
+    USER_CAPSULE: capsuleSection,
+    TEAMMATE_ROSTER: buildTeammateRoster(catId, dossierRoot),
+    GOVERNANCE_L0: governanceL0.content,
+    WORKFLOW_TRIGGERS: buildWorkflowTriggers(config.breedId, catId, config.displayName),
+    CVO_REF: renderCvoRef(),
+  });
 }
 
 /**
@@ -484,24 +551,28 @@ export async function writeL0File(options, outPath) {
 //   node scripts/compile-system-prompt-l0.mjs --cat opus-47 --out p.md → write file
 //   node scripts/compile-system-prompt-l0.mjs --cat opus-47 --profile-dir /abs/path
 //     → override profile directory (gpt52 review P1: fixes symlink/packaged layouts)
+//   node scripts/compile-system-prompt-l0.mjs --cat opus-47 --projection public
+//     → allowlisted public identity/collaboration contract; no owner-local overlays
 if (isCliEntrypoint(import.meta.url, process.argv[1])) {
   const args = process.argv.slice(2);
   const catIdx = args.indexOf('--cat');
   if (catIdx < 0 || !args[catIdx + 1]) {
     console.error(
-      'Usage: node scripts/compile-system-prompt-l0.mjs --cat <catId> [--out <path>] [--profile-dir <path>]',
+      `Usage: node scripts/compile-system-prompt-l0.mjs --cat <catId> [--out <path>] [--profile-dir <path>] [--projection ${resolveL0Projections().join('|')}]`,
     );
     process.exit(2);
   }
   const catId = args[catIdx + 1];
   const profileDirIdx = args.indexOf('--profile-dir');
   const profileDir = profileDirIdx >= 0 ? args[profileDirIdx + 1] : undefined;
+  const projectionIdx = args.indexOf('--projection');
+  const projection = projectionIdx >= 0 ? args[projectionIdx + 1] : undefined;
   const outIdx = args.indexOf('--out');
   if (outIdx >= 0 && args[outIdx + 1]) {
     const outPath = args[outIdx + 1];
-    await writeL0File({ catId, profileDir }, outPath);
+    await writeL0File({ catId, profileDir, projection }, outPath);
     console.error(`Wrote compiled L0 for ${catId} → ${outPath}`);
   } else {
-    process.stdout.write(await compileL0({ catId, profileDir }));
+    process.stdout.write(await compileL0({ catId, profileDir, projection }));
   }
 }

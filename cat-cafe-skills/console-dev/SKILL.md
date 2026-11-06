@@ -1,6 +1,6 @@
 ---
 name: console-dev
-tips_exempt: internal shared-reference coordinate repair; no user-visible capability change
+tips_exempt: "Renewed 2026-10-13: relevant state coverage, risk-matched verification and the existing mistakes ledger refine frontend implementation/review practice. File-size guidance adds no product gate or new end-user operation."
 description: >
   Console 前端交付范式：4 道门禁驱动的前端开发流程。Use when:
   新增前端能力、settings section 迁移、新增页面、重构布局、或 F190/Console 级前端流程需要 Product/Design/Implementation/Verification gate。
@@ -11,6 +11,8 @@ description: >
 # Console-Dev
 
 Console 前端开发先定入口和状态，再写组件。这个 skill 不替代 `tdd` / `quality-gate`，它补齐前端特有的产品路径、设计 token、交互状态和视觉证明。
+
+方向已确认且符合 `docs/SOP.md` 产品快车道时，下面四项由同一作者随实现自检，不是四轮 A2A 或新审批：第一小时先争取挂上真实入口，自己走关键交互、对照原约定并贴截图，再跑受影响检查；不等 review/full 才首次打开。复用已成立的设计证据，只验证本次变化涉及的状态；用户不承担首轮 QA。
 
 ## Gate 1: Product Gate
 
@@ -23,9 +25,14 @@ Console 前端开发先定入口和状态，再写组件。这个 skill 不替�
 | L3 settings 子 tab | 只读、分析、运维子视图 | 自助选择合适分区 |
 | L4 独立 route | 需要专属布局/流程的体验 | 先讨论入口理由 |
 
-涉及状态的 UI 必须列状态矩阵：loading / empty / partial / full / error，owner / member / guest / unauthenticated，desktop / mobile。
+涉及状态的 UI 需考虑 loading / empty / partial / full / error、身份权限和 desktop / mobile 中实际相关的状态。
+矩阵用于发现独有风险，不要求全组合各跑完整旅程；测试层级与成本按测试规范选择。
 
 ## Gate 2: Design-System Gate
+
+首启、多步任务或跨界面交接的理解顺序仍不清楚时，按[交互叙事](../.cat-cafe-shared-refs/interaction-narrative.md)核对用户问题、可见结果、真实推进条件与返回位置；已有明确路径的实现/点改不新增设计关卡。
+
+新增或实质改变 UI/UX，先按 `feat-lifecycle` 的 Design Gate 确认用户任务与体验方向，并使用 `../.cat-cafe-shared-refs/design-in-context-checklist.md`：查看同类产品及operator给的参考，保留成立的操作与空间关系，在真实宿主和可信内容态里验证主对象、主动作与状态反馈。需要共创时拿具体稿和推荐及时校准；不能把“使用了 token”当作设计通过。
 
 新代码 token first：颜色、边框、语义状态优先复用现有 CSS variables 和组件 primitive。旧代码迁移可以渐进，但 debt 清单只能减少，不能因为新功能扩大豁免。
 
@@ -39,16 +46,19 @@ Console 前端开发先定入口和状态，再写组件。这个 skill 不替�
 | settings migration | 写清 Source Behavior / Must Preserve Home Behavior / Decision / Proof |
 
 拆分方向优先是视觉独立 sub-component，不是把小工具函数切碎。
+行数本身不构成产品 P1，不为这些阈值另写数行 UT。
 
 ## Gate 4: Verification Gate
 
 必须给证据：
 
 - Golden path 走通
+- 以同一用户任务对照参考与实际运行页面；看着对象操作、输入和提交的连续体验成立，不能只凭控件齐全或无横向溢出判通过
 - 至少覆盖一个非 happy path 状态
 - 改共享 primitive 时抽样兄弟页面
 - modal 检查 footer、滚动容器、sticky action、ESC/关闭行为
 - 暗色/移动端如果会被影响，必须抽样
+- 对照界面错题本，只看本次改动碰到的条目（家里真犯过的反例和自查法；规则正文仍以 DESIGN.md 和在地设计检查单为准）
 
 ## Common Mistakes
 

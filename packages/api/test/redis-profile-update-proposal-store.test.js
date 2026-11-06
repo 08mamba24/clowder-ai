@@ -123,6 +123,37 @@ describe('RedisProfileUpdateProposalStore', { skip: redisIsolationSkipReason(RED
     assert.equal(await store.claimForApproval(p.proposalId, 'operator'), null, 'cannot claim rejected');
   });
 
+  // ──── Phase E: corpus targetLayer ────
+
+  it('corpus targetLayer round-trips through Redis serialize/hydrate', async () => {
+    const p = await store.create(
+      baseInput({
+        targetLayer: 'corpus',
+        targetPath: 'corpus/shared-facts.md',
+        afterContent: 'Owner birthday: Jan 1',
+      }),
+    );
+    const got = await store.get(p.proposalId);
+    assert.equal(got.targetLayer, 'corpus');
+    assert.equal(got.targetPath, 'corpus/shared-facts.md');
+    assert.equal(got.afterContent, 'Owner birthday: Jan 1');
+  });
+
+  it('concurrent corpus proposals: CAS claim still ensures exactly-one-wins', async () => {
+    const p = await store.create(
+      baseInput({
+        targetLayer: 'corpus',
+        targetPath: 'corpus/shared-facts.md',
+      }),
+    );
+    const [a, b] = await Promise.all([
+      store.claimForApproval(p.proposalId, 'operator'),
+      store.claimForApproval(p.proposalId, 'operator'),
+    ]);
+    const winners = [a, b].filter(Boolean);
+    assert.equal(winners.length, 1, 'exactly one corpus claim wins');
+  });
+
   it('rollbackClaim returns to pending + re-adds to pending index; dedup reserve idempotent', async () => {
     const p = await store.create(baseInput());
     await store.claimForApproval(p.proposalId, 'operator');
@@ -138,5 +169,30 @@ describe('RedisProfileUpdateProposalStore', { skip: redisIsolationSkipReason(RED
     // dedup
     assert.equal(await store.reserveDedup('user_landy', 'req_1', 'prop_A'), 'prop_A');
     assert.equal(await store.reserveDedup('user_landy', 'req_1', 'prop_B'), 'prop_A', 'retry returns winner id');
+  });
+
+  it('keeps exact owner/target discovery durable through approving and reads legacy indexes', async () => {
+    const target = await store.create(baseInput({ targetLayer: 'corpus', targetPath: 'corpus/shared-facts.md' }));
+    await store.create(baseInput({ targetPath: 'relationship/other-primer.md' }));
+    await store.create(
+      baseInput({ createdBy: 'other-owner', targetLayer: 'corpus', targetPath: 'corpus/shared-facts.md' }),
+    );
+    await store.claimForApproval(target.proposalId, 'user_landy');
+
+    const fresh = new RedisProfileUpdateProposalStore(redis);
+    assert.deepEqual(
+      (await fresh.listByTarget('user_landy', 'corpus/shared-facts.md')).map(({ proposalId, status }) => ({
+        proposalId,
+        status,
+      })),
+      [{ proposalId: target.proposalId, status: 'approving' }],
+    );
+
+    const legacy = await store.create(baseInput({ targetPath: 'relationship/legacy-primer.md' }));
+    await redis.zrem('profile-update:all:user_landy', legacy.proposalId);
+    assert.equal(
+      (await fresh.listByTarget('user_landy', 'relationship/legacy-primer.md'))[0].proposalId,
+      legacy.proposalId,
+    );
   });
 });

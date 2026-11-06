@@ -52,7 +52,6 @@ describe('useChatHistory runtime admission', () => {
       targetCats: [],
       catStatuses: {},
       catInvocations: {},
-      currentGame: null,
       threadStates: {},
       currentThreadId: THREAD_ID,
       viewMode: 'single',
@@ -62,7 +61,6 @@ describe('useChatHistory runtime admission', () => {
       threads: [],
       isLoadingThreads: false,
       queue: [],
-      queuePaused: false,
     });
     apiFetchMock.mockImplementation((url: string) => {
       if (url.includes('/api/messages')) {

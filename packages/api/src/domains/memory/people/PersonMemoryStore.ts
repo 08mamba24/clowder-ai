@@ -23,6 +23,8 @@ import type {
   PersonRelationship,
   WriteOpportunityLineageV1,
 } from '@cat-cafe/shared';
+import type { SettledHistoryPageOptions, SettledHistorySourcePage } from '../../../utils/settled-history-page.js';
+import type { OwnerMemoryActionStore } from './person-memory-owner-action-contract.js';
 
 export interface StagePersonMemoryCandidateInput {
   candidateId: CaptureCandidateId;
@@ -81,6 +83,7 @@ export interface StoredPersonMemoryCandidate
   dispositionLineageBindingKey?: string;
   latestDecisionReceipt?: PersonMemoryDecisionReceipt;
   latestUndoReceipt?: PersonMemoryUndoReceipt;
+  closedAt?: number;
   replacedByProposalId?: CaptureCandidateId;
 }
 
@@ -234,14 +237,22 @@ export type PersonAliasResolution =
   | { status: 'ambiguous'; people: PersonIdentity[] }
   | { status: 'not_available' };
 
-export interface PersonMemoryStore {
+export interface PersonMemoryStore extends OwnerMemoryActionStore {
   stageCandidate(input: StagePersonMemoryCandidateInput): Promise<StoredPersonMemoryCandidate>;
   renewDeferredCandidateClaim(
     input: RenewDeferredPersonMemoryCandidateClaimInput,
   ): Promise<RenewDeferredPersonMemoryCandidateClaimResult>;
   getCandidateForOwner(ownerUserId: string, candidateId: string): Promise<StoredPersonMemoryCandidate | null>;
   listPending(ownerUserId: string, limit?: number): Promise<StoredPersonMemoryCandidate[]>;
+  listSettledPage?(
+    owner: string,
+    options: SettledHistoryPageOptions,
+  ):
+    | SettledHistorySourcePage<StoredPersonMemorySettledCandidate>
+    | Promise<SettledHistorySourcePage<StoredPersonMemorySettledCandidate>>;
   listSettled(ownerUserId: string, limit?: number): Promise<StoredPersonMemorySettledCandidate[]>;
+  /** Exact decision time from the index committed atomically with the terminal transition. */
+  getSettledDecisionTime(ownerUserId: string, candidateId: string): Promise<number | null>;
   resolvePendingCandidateBySubject(ownerUserId: string, subject: string): Promise<StoredPersonMemoryCandidate | null>;
   resolveDormantCandidateBySubject(ownerUserId: string, subject: string): Promise<PersonMemorySuppressionToken | null>;
   getPublication(candidateId: string, ownerUserId?: string): Promise<ApprovalPublication | null>;
@@ -252,6 +263,8 @@ export interface PersonMemoryStore {
   markNotNow(ownerUserId: string, candidateId: string, decidedAt: number): Promise<StoredPersonMemoryCandidate>;
   withdrawCandidate(ownerUserId: string, candidateId: string, decidedAt: number): Promise<StoredPersonMemoryCandidate>;
   rejectCandidate(input: RejectPersonMemoryCandidateInput): Promise<PersonMemoryRejectResult>;
+  /** Owner-scoped read projection. Derived from canonical candidate indexes; never scans another owner. */
+  listPeople(ownerUserId: string): Promise<PersonIdentity[]>;
   getPerson(ownerUserId: string, personId: PersonId): Promise<PersonIdentity | null>;
   listCandidateIdsForPerson(ownerUserId: string, personId: PersonId): Promise<CaptureCandidateId[]>;
   resolveActivePersonByAlias(ownerUserId: string, alias: string): Promise<PersonAliasResolution>;

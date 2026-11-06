@@ -4,6 +4,7 @@
  * Single resolution path: accounts (cat-catalog.json) + credentials (credentials.json).
  * Outputs RuntimeProviderProfile for backward-compatible consumption.
  */
+import { resolve } from 'node:path';
 import {
   type AccountConfig,
   type AccountProtocol,
@@ -13,11 +14,14 @@ import {
   builtinAccountFamilyForRef,
   builtinAccountIdForClient,
   type ClientId,
+  type CodexManagedAccount,
   type CredentialEntry,
   legacyAccountFamilyForRef,
   protocolForClient,
 } from '@cat-cafe/shared';
 import { readAccountSnapshot, readAccountStoreSnapshot } from './account-store-snapshot.js';
+import { claudeTokenEnvironment } from './claude-token-account.js';
+import { codexManagedStatus } from './codex-account-identity.js';
 import {
   assertProviderCredentialDestination,
   officialProviderFamily,
@@ -27,12 +31,19 @@ import { buildProviderEndpoint } from './provider-endpoint.js';
 
 // ── Types surviving from provider-profiles.types.ts (F136 Phase 4d) ──
 export { type BuiltinAccountClient, builtinAccountIdForClient } from '@cat-cafe/shared';
-export type ProviderProfileKind = 'builtin' | 'api_key';
+export type ProviderProfileKind = 'builtin' | 'api_key' | 'oauth';
 
 export interface RuntimeProviderProfile {
   id: string;
+  /** Resolver-owned catalog context, independent of the later execution cwd. */
+  readonly accountOwnerRoot?: string;
+  displayName?: string;
+  codex?: CodexManagedAccount;
+  claude?: AccountConfig['claude'];
   authType: 'oauth' | 'api_key';
   kind?: ProviderProfileKind;
+  /** Fresh-install CLI-owned identity; its active provider is selected by the CLI config. */
+  syntheticNative?: boolean;
   client?: BuiltinAccountClient;
   /** Preserve explicit non-family identities (e.g. ACP), which must not fall back to an ID alias. */
   persistedClientId?: string;
@@ -150,17 +161,56 @@ function parseHostname(baseUrl: string): string | null {
  */
 export function resolveByAccountRef(projectRoot: string, accountRef: string): RuntimeProviderProfile | null {
   const snapshot = readAccountSnapshot(projectRoot, accountRef);
-  if (snapshot.account) return accountToRuntimeProfile(accountRef, snapshot.account, snapshot.credential);
+  if (snapshot.account) return accountToRuntimeProfile(accountRef, snapshot.account, snapshot.credential, projectRoot);
 
   // Synthetic builtin profile for known OAuth refs
   const builtinClient = builtinAccountFamilyForRef(accountRef);
   const builtinProtocol = builtinClient ? protocolForClient(builtinClient) : null;
   if (builtinClient) {
+    const envKeys =
+      builtinClient === 'anthropic'
+        ? ['ANTHROPIC_API_KEY']
+        : builtinClient === 'openai'
+          ? ['OPENAI_API_KEY']
+          : builtinClient === 'google'
+            ? ['GOOGLE_API_KEY', 'GEMINI_API_KEY']
+            : builtinClient === 'kimi'
+              ? ['MOONSHOT_API_KEY']
+              : builtinClient === 'opencode'
+                ? ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY', 'GEMINI_API_KEY', 'MOONSHOT_API_KEY']
+                : [];
+    const apiKey = envKeys.map((key) => process.env[key]?.trim()).find((value) => value);
+    const baseUrl =
+      builtinClient === 'anthropic'
+        ? process.env.ANTHROPIC_BASE_URL?.trim()
+        : builtinClient === 'openai'
+          ? (process.env.OPENAI_BASE_URL ?? process.env.OPENAI_API_BASE)?.trim()
+          : builtinClient === 'google'
+            ? process.env.GEMINI_BASE_URL?.trim()
+            : builtinClient === 'kimi'
+              ? (process.env.CAT_CAFE_KIMI_BASE_URL ?? process.env.KIMI_BASE_URL)?.trim()
+              : builtinClient === 'opencode'
+                ? (process.env.CAT_CAFE_OC_BASE_URL ?? process.env.OPENCODE_BASE_URL)?.trim()
+                : undefined;
+    if (apiKey) {
+      return {
+        id: accountRef,
+        authType: 'api_key',
+        kind: 'api_key',
+        syntheticNative: true,
+        client: builtinClient,
+        ...(builtinProtocol ? { protocol: builtinProtocol } : {}),
+        ...(baseUrl ? { baseUrl } : {}),
+        apiKey,
+      };
+    }
     return {
       id: accountRef,
       authType: 'oauth',
       kind: 'builtin',
+      syntheticNative: true,
       client: builtinClient,
+      ...(builtinClient === 'openai' ? { accountOwnerRoot: resolve(projectRoot) } : {}),
       ...(builtinProtocol ? { protocol: builtinProtocol } : {}),
     };
   }
@@ -185,26 +235,17 @@ export function resolveForClient(
   // Try preferred first — fail closed if explicit ref doesn't resolve.
   if (preferredAccountRef) {
     const preferred = store.resolve(preferredAccountRef);
-    if (preferred.account) return accountToRuntimeProfile(preferredAccountRef, preferred.account, preferred.credential);
-    // Not in accounts — only allow synthetic builtin (fresh install with empty accounts).
-    const builtinClient = builtinAccountFamilyForRef(preferredAccountRef);
-    const builtinProtocol = builtinClient ? protocolForClient(builtinClient) : null;
-    if (builtinClient) {
-      return {
-        id: preferredAccountRef,
-        authType: 'oauth',
-        kind: 'builtin',
-        client: builtinClient,
-        ...(builtinProtocol ? { protocol: builtinProtocol } : {}),
-      };
-    }
-    return null;
+    if (preferred.account)
+      return accountToRuntimeProfile(preferredAccountRef, preferred.account, preferred.credential, projectRoot);
+    // Preserve the CLI-owned identity, including a fresh-install environment key.
+    return resolveByAccountRef(projectRoot, preferredAccountRef);
   }
 
   // clowder-ai#340: Walk the full discovery chain; prefer accounts with credentials.
   // This ensures installer-${client} (which holds API keys) is chosen over
   // an OAuth builtin that has no stored credential.
   const normalizedClient = normalizeToClient(client);
+  let sawIncompatibleAccount = false;
   if (normalizedClient) {
     const wellKnownId = builtinAccountIdForClient(normalizedClient);
     if (!wellKnownId) return null;
@@ -215,8 +256,14 @@ export function resolveForClient(
     for (const id of candidateIds) {
       const snapshot = store.resolve(id);
       if (snapshot.account) {
-        const profile = accountToRuntimeProfile(id, snapshot.account, snapshot.credential);
-        if (profile.persistedClientId !== undefined && profileFamilyIdentity(profile) !== normalizedClient) continue;
+        const profile = accountToRuntimeProfile(id, snapshot.account, snapshot.credential, projectRoot);
+        if (profile.persistedClientId !== undefined && profileFamilyIdentity(profile) !== normalizedClient) {
+          // Do not let the synthetic builtin fallback below re-read this account
+          // through its well-known alias. A foreign persisted identity is an
+          // explicit negative signal, not an empty fresh-install catalog.
+          sawIncompatibleAccount = true;
+          continue;
+        }
         if (profile.authType === 'api_key' && profile.apiKey) return profile;
         firstMatch ??= profile;
       }
@@ -229,15 +276,8 @@ export function resolveForClient(
   if (normalizedClient) {
     const wellKnownRef = builtinAccountIdForClient(normalizedClient);
     const builtinClient = wellKnownRef ? builtinAccountFamilyForRef(wellKnownRef) : null;
-    const builtinProtocol = builtinClient ? protocolForClient(builtinClient) : null;
-    if (builtinClient && wellKnownRef) {
-      return {
-        id: wellKnownRef,
-        authType: 'oauth',
-        kind: 'builtin',
-        client: builtinClient,
-        ...(builtinProtocol ? { protocol: builtinProtocol } : {}),
-      };
+    if (builtinClient && wellKnownRef && !sawIncompatibleAccount) {
+      return resolveByAccountRef(projectRoot, wellKnownRef);
     }
   }
 
@@ -250,10 +290,11 @@ function normalizeToClient(clientOrProtocol: string): BuiltinAccountClient | nul
   return Object.values(BUILTIN_ACCOUNT_CLIENT_FOR_ID).find((family) => family === clientOrProtocol) ?? null;
 }
 
-function accountToRuntimeProfile(
+export function accountToRuntimeProfile(
   ref: string,
   account: AccountConfig,
   credential?: CredentialEntry,
+  accountOwnerRoot?: string,
 ): RuntimeProviderProfile {
   const apiKey = credential?.apiKey;
 
@@ -263,12 +304,27 @@ function accountToRuntimeProfile(
     account.clientId !== undefined ? normalizeToClient(account.clientId) : legacyAccountFamilyForRef(ref);
   const builtinProtocol = builtinClient ? protocolForClient(builtinClient) : null;
   const isOAuth = account.authType === 'oauth';
-  const isBuiltin = !!builtinClient && isOAuth;
+  const isBuiltin = !!builtinAccountFamilyForRef(ref) && isOAuth;
   return {
     id: ref,
     authType: account.authType,
-    kind: isBuiltin ? 'builtin' : 'api_key',
+    kind: isBuiltin ? 'builtin' : account.authType,
+    ...(account.displayName ? { displayName: account.displayName } : {}),
+    ...(account.codex
+      ? {
+          codex: account.codex,
+          envVars: {
+            // OAuth owns Codex credentials/state, not the host's ordinary tools.
+            // Managed launches force file auth under CODEX_HOME; changing HOME
+            // also hides gh/Git settings, SSH config, browser caches and extensions.
+            CODEX_HOME: account.codex.credentialHome,
+            CODEX_SQLITE_HOME: account.codex.sqliteHome,
+          },
+        }
+      : {}),
+    ...(account.claude ? { claude: account.claude, envVars: claudeTokenEnvironment(credential) } : {}),
     ...(builtinClient ? { client: builtinClient } : {}),
+    ...(builtinClient === 'openai' && accountOwnerRoot ? { accountOwnerRoot: resolve(accountOwnerRoot) } : {}),
     ...(account.clientId !== undefined ? { persistedClientId: account.clientId } : {}),
     ...(builtinProtocol ? { protocol: builtinProtocol } : {}),
     ...(account.baseUrl ? { baseUrl: account.baseUrl } : {}),
@@ -277,7 +333,9 @@ function accountToRuntimeProfile(
     ...(account.modelAliases && Object.keys(account.modelAliases).length > 0
       ? { modelAliases: { ...account.modelAliases } }
       : {}),
-    ...(account.envVars && Object.keys(account.envVars).length > 0 ? { envVars: { ...account.envVars } } : {}),
+    ...(!account.codex && !account.claude && account.envVars && Object.keys(account.envVars).length > 0
+      ? { envVars: { ...account.envVars } }
+      : {}),
   };
 }
 
@@ -288,6 +346,9 @@ export function validateRuntimeProviderBinding(
   profile: RuntimeProviderProfile,
   _defaultModel?: string | null,
 ): string | null {
+  if (profile.claude && clientId !== 'anthropic')
+    return `Claude token accounts require the native anthropic client, not "${clientId}"`;
+  if (profile.codex && codexManagedStatus(profile.codex) !== 'ready') return 'Codex 账号尚未完成登录或身份已改变';
   const protocol = protocolForClient(clientId);
   const concreteProtocol = clientId === 'opencode' ? null : protocol;
   if (profile.baseUrl || concreteProtocol) {

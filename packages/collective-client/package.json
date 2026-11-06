@@ -3,24 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "./dist/server.js",
-  "types": "./dist/server.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/server.d.ts",
-      "default": "./dist/server.js"
-    }
-  },
   "scripts": {
-    "build": "pnpm run clean && pnpm run lint && node ./scripts/build.mjs && tsc -p tsconfig.server.json",
-    "clean": "rm -rf dist",
+    "build": "pnpm run clean && pnpm run lint && node ./scripts/build.mjs",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "lint": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@cat-cafe/shared": "workspace:*",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "^3.22.4",
+    "@cat-cafe/ui": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

@@ -30,8 +30,8 @@ tips_exempt: Repair of the existing isolated repository-read capability; no new 
 
 | 已读依据 | 支持的事实 / 适用边界 |
 |---|---|
-| `packages/api/src/domains/cats/services/agents/providers/acp/zcode-acp-protocol.ts`，`zcodeAppServerEnv` | HOME / XDG 配置隔离；不是 OS sandbox |
-| 同目录 `zcode-acp-native.ts`、`AcpServiceFactory.ts`、`AcpAgentService.ts` | ZCode app-server、ACP 进程池与每次 invoke/session 的生命周期不同；不能把当前窄凭据永久冻进进程池 spawn env |
+| `packages/api/src/domains/cats/services/agents/providers/acp/zcode/zcode-acp-protocol.ts`，`zcodeAppServerEnv` | HOME / XDG 配置隔离；不是 OS sandbox |
+| `acp/zcode/zcode-acp-native.ts`、`acp/AcpServiceFactory.ts`、`acp/AcpAgentService.ts` | ZCode app-server、ACP 进程池与每次 invoke/session 的生命周期不同；不能把当前窄凭据永久冻进进程池 spawn env |
 | `packages/api/src/domains/cats/services/agents/providers/QoderAgentService.ts`、`qoderSandboxPolicy.ts`、`scripts/qoder-shell-sandbox.mjs` | Qoder 子进程环境白名单、Seatbelt 继承、runtime secrets 最终 deny；已有 per-invocation lease |
 | `scripts/guarded-bin/gh` | 当前只针对 verdict PR 发布做 guard，其他参数直接 delegate；不是通用只读授权器 |
 | `packages/api/src/infrastructure/github/gh-cli-env.ts`、`github-object-validator.ts`、`packages/api/src/index.ts` | 宿主已有 credential/env 组装、canonical gh 调用与认证/权限/限流错误分类，可复用 |

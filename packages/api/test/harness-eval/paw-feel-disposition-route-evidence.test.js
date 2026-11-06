@@ -21,6 +21,8 @@ function lease(overrides = {}) {
 function task(overrides = {}) {
   return {
     id: 'task-1',
+    kind: 'work',
+    subjectKey: 'eval-case:repair',
     threadId: 'thread-owner',
     ownerCatId: 'opus',
     status: 'doing',
@@ -82,20 +84,11 @@ describe('PawFeelFixEvidenceResolver', () => {
           : { ok: false, reason: 'lease_not_active' };
       },
     };
-    const truthResolver = new ActionSubjectTruthResolver(
-      leaseStore,
-      {
-        async get() {
-          return null;
-        },
+    const truthResolver = new ActionSubjectTruthResolver(leaseStore, {
+      async get(taskId) {
+        return taskId === storedTask.id ? storedTask : null;
       },
-      undefined,
-      {
-        async get(taskId) {
-          return taskId === storedTask.id ? storedTask : null;
-        },
-      },
-    );
+    });
     const admission = new ActionSuccessorAdmissionService(leaseStore, truthResolver);
     const admitted = await admission.admit({
       tenantScope: 'user-1',
@@ -132,6 +125,13 @@ describe('PawFeelFixEvidenceResolver', () => {
       taskId: 'task-1',
       leaseId: admitted.lease.leaseId,
       leaseGeneration: 1,
+      repairBinding: {
+        kind: 'action_lease',
+        taskId: 'task-1',
+        leaseId: admitted.lease.leaseId,
+        generation: 1,
+        holderThreadId: 'thread-owner',
+      },
       custodyEvidenceRef: `action-lease:${admitted.lease.leaseId}:generation:1`,
     });
   });
@@ -144,6 +144,13 @@ describe('PawFeelFixEvidenceResolver', () => {
       taskId: 'task-1',
       leaseId: 'lease-1',
       leaseGeneration: 3,
+      repairBinding: {
+        kind: 'action_lease',
+        taskId: 'task-1',
+        leaseId: 'lease-1',
+        generation: 3,
+        holderThreadId: 'thread-owner',
+      },
       custodyEvidenceRef: 'action-lease:lease-1:generation:3',
     });
   });
@@ -181,6 +188,104 @@ describe('PawFeelFixEvidenceResolver', () => {
     await assert.rejects(
       resolver({ storedTask: task({ threadId: 'thread-other' }) }).resolve('lease-1'),
       /task thread does not match/i,
+    );
+  });
+
+  it('distinguishes active, done-unverified, and interrupted repair progress', async () => {
+    const active = await resolver({
+      storedLease: lease({ holderOutcomes: {} }),
+    }).resolveProgress({
+      ownerCatId: 'opus',
+      taskId: 'task-1',
+      actionLeaseRef: { leaseId: 'lease-1', generation: 3 },
+      signalId: 'signal-1',
+    });
+    const done = await resolver({
+      storedTask: task({ status: 'done', updatedAt: 7 }),
+      storedLease: lease({
+        status: 'completed',
+        holderOutcomes: { opus: { outcome: 'succeeded', evidenceRef: 'message:done', at: 9 } },
+      }),
+    }).resolveProgress({
+      ownerCatId: 'opus',
+      taskId: 'task-1',
+      actionLeaseRef: { leaseId: 'lease-1', generation: 3 },
+      signalId: 'signal-1',
+    });
+    const interrupted = await resolver({
+      storedLease: lease({
+        status: 'replaceable',
+        holderOutcomes: { opus: { outcome: 'failed', evidenceRef: 'message:failed', at: 9 } },
+      }),
+    }).resolveProgress({
+      ownerCatId: 'opus',
+      taskId: 'task-1',
+      actionLeaseRef: { leaseId: 'lease-1', generation: 3 },
+      signalId: 'signal-1',
+    });
+
+    assert.equal(active.status, 'active');
+    assert.equal(done.status, 'done_unverified');
+    assert.equal(interrupted.status, 'interrupted');
+  });
+
+  it('derives terminal refs only from matching done Task and successful F167 holder truth', async () => {
+    const evidence = resolver({
+      storedTask: task({ status: 'done', updatedAt: 7 }),
+      storedLease: lease({
+        status: 'completed',
+        holderOutcomes: { opus: { outcome: 'succeeded', evidenceRef: 'message:done', at: 9 } },
+      }),
+    });
+    const terminal = await evidence.resolveTerminal(
+      {
+        ownerCatId: 'opus',
+        taskId: 'task-1',
+        actionLeaseRef: { leaseId: 'lease-1', generation: 3 },
+        custodyEvidenceRef: 'action-lease:lease-1:generation:3',
+      },
+      { ownerCatId: 'opus' },
+    );
+
+    assert.deepEqual(terminal, {
+      ownerCatId: 'opus',
+      taskTerminalRef: { ownerFeatureId: 'F310', ownerStateRef: 'task-terminal:task-1', version: '7' },
+      leaseTerminalRef: {
+        ownerFeatureId: 'F167',
+        ownerStateRef: 'action-successor-terminal:lease-1',
+        version: '3:9',
+      },
+    });
+    await assert.rejects(
+      resolver({ storedTask: task({ status: 'done', updatedAt: 7 }) }).resolveTerminal(
+        {
+          ownerCatId: 'opus',
+          taskId: 'task-1',
+          actionLeaseRef: { leaseId: 'lease-1', generation: 3 },
+          custodyEvidenceRef: 'action-lease:lease-1:generation:3',
+        },
+        { ownerCatId: 'opus' },
+      ),
+      /successful terminal/i,
+    );
+    await assert.rejects(
+      resolver({
+        storedTask: task({ status: 'done', updatedAt: 7 }),
+        storedLease: lease({
+          subjectRef: 'subject:task:task-other',
+          status: 'completed',
+          holderOutcomes: { opus: { outcome: 'succeeded', evidenceRef: 'message:done', at: 9 } },
+        }),
+      }).resolveTerminal(
+        {
+          ownerCatId: 'opus',
+          taskId: 'task-1',
+          actionLeaseRef: { leaseId: 'lease-1', generation: 3 },
+          custodyEvidenceRef: 'action-lease:lease-1:generation:3',
+        },
+        { ownerCatId: 'opus' },
+      ),
+      /task subject/i,
     );
   });
 });

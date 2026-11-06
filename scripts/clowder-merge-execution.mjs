@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { getRepositoryCoordinates } from './brand-dictionary-helper.mjs';
 import { classifyStatusChecks, observeMergePrTruth } from './lib/clowder-merge-check-evidence.mjs';
 
-export const CLOWDER_REPOSITORY = 'zts212653/clowder-ai';
-export const CAT_CAFE_REPOSITORY = 'zts212653/cat-cafe';
+export const CLOWDER_REPOSITORY = getRepositoryCoordinates().public;
+export const CAT_CAFE_REPOSITORY = getRepositoryCoordinates().home;
 const CAFE_MESSAGE_ID = /^\d{16,}-\d{6}-[0-9a-f]{8}$/i;
 const INTAKE_DECISIONS = new Set(['absorbed', 'public-only', 'rejected']);
 
@@ -156,8 +157,10 @@ function validateIntakePlan(intakePlan, prNumber) {
       );
     }
     const body = String(truth.body ?? '').toLowerCase();
-    const sourceRefs = [`clowder-ai#${prNumber}`, `/zts212653/clowder-ai/pull/${prNumber}`];
-    if (!sourceRefs.some((sourceRef) => body.includes(sourceRef))) {
+    const sourceRef = new RegExp(
+      String.raw`(?:clowder-ai#${prNumber}\b|/${CLOWDER_REPOSITORY.replaceAll('.', '\\.')}/pull/${prNumber}\b)`,
+    );
+    if (!sourceRef.test(body)) {
       return blocked(
         'intake_intent_issue_source_mismatch',
         'fix_intake_intent_issue',
@@ -368,8 +371,16 @@ function usage() {
     'usage: clowder-merge-execution.mjs --pr <N> --head <SHA> ' +
     '--authorization-ref <messageId> --authorization-subject <pr:repo#N> ' +
     '--authorization-scope <pull_request|exact_head> --intake-decision <absorbed|public-only|rejected> ' +
-    '[--intake-intent-issue <N>] [--authorized-head <SHA>] [--execute]'
+    '[--intake-intent-issue <N>] [--authorized-head <SHA>] [--execute] [--prepare-intake --intake-config <JSON>]'
   );
+}
+
+// The public merge planner is portable. Automatic source intake is a distinct
+// home capability and must be available before any source merge is attempted.
+async function loadSourceIntakeChain(homeDir) {
+  const modulePath = resolve(homeDir, 'scripts/lib/intake-source-chain.mjs');
+  if (!existsSync(modulePath)) throw new Error('automatic_intake_unavailable');
+  return import(pathToFileURL(modulePath).href);
 }
 
 async function main() {
@@ -384,6 +395,21 @@ async function main() {
   ) {
     console.error(usage());
     process.exit(2);
+  }
+
+  if (args.execute && args['intake-decision'] === 'absorbed' && (args['prepare-intake'] || args['intake-config'])) {
+    if (!args['intake-config']) throw new Error('automatic_intake_config_required_before_source_merge');
+    const homeDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+    const { executeSourceIntakeChain } = await loadSourceIntakeChain(homeDir);
+    const result = await executeSourceIntakeChain({
+      args,
+      config: JSON.parse(readFileSync(args['intake-config'], 'utf8')),
+      homeDir,
+      sourceDir: resolve(args['source-dir'] ?? resolve(homeDir, '../clowder-ai')),
+      planMerge: planClowderMergeExecution,
+    });
+    console.log(JSON.stringify(result));
+    return;
   }
 
   let prTruth;
@@ -437,7 +463,7 @@ async function main() {
     intakePlan: args['intake-decision']
       ? {
           decision: args['intake-decision'],
-          intentIssue: args['intake-intent-issue'] ? Number(args['intake-intent-issue']) : undefined,
+          intentIssue: intakeIntentIssue || undefined,
           intentIssueTruth,
         }
       : undefined,
@@ -451,7 +477,11 @@ async function main() {
   process.exit(execution.status ?? 1);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (
+  process.argv[1] &&
+  existsSync(process.argv[1]) &&
+  fileURLToPath(import.meta.url) === realpathSync(process.argv[1])
+) {
   main().catch((error) => {
     console.error(error);
     process.exit(1);

@@ -5,6 +5,7 @@
  */
 import assert from 'node:assert/strict';
 import { beforeEach, describe, test } from 'node:test';
+import { canonicalTestMessageInput } from './helpers/message-from-fixtures.js';
 
 let memory;
 let handlesMod;
@@ -91,6 +92,23 @@ async function expectCode(promise, code) {
 }
 
 describe('AppendService — happy path (AC-4)', () => {
+  test('legacy platform media locator is replaced before append persistence', async () => {
+    const sent = await sendMessage();
+    await service.appendElements(
+      CTX,
+      appendInput(sent.messageHandle, {
+        elements: [
+          { elementId: 'old-media', kind: 'media_ref', payload: { type: 'image', reference: 'url|aeskey=secret' } },
+        ],
+      }),
+    );
+    const stored = messageStore.getById(sent.messageId);
+    const appended = stored.extra.pluginMessage.elements.find((element) => element.elementId === 'old-media');
+    assert.equal(appended.kind, 'media_unavailable');
+    assert.deepEqual(appended.payload, { type: 'image', reason: 'unavailable' });
+    assert.equal(JSON.stringify(stored).includes('aeskey=secret'), false);
+  });
+
   test('append bumps revision, persists elements, emits append event', async () => {
     const sent = await sendMessage();
     const receipt = await service.appendElements(CTX, appendInput(sent.messageHandle));
@@ -297,14 +315,16 @@ describe('AppendService — validation and lock guards (§4d)', () => {
   });
 
   test('a raw non-plugin message id is not an issued message handle', async () => {
-    const user = messageStore.append({
-      userId: 'user-1',
-      catId: null,
-      content: 'human words',
-      mentions: [],
-      timestamp: Date.now(),
-      threadId: 'thread-1',
-    });
+    const user = messageStore.append(
+      canonicalTestMessageInput({
+        userId: 'user-1',
+        catId: null,
+        content: 'human words',
+        mentions: [],
+        timestamp: Date.now(),
+        threadId: 'thread-1',
+      }),
+    );
     await expectCode(service.appendElements(CTX, appendInput(user.id)), 'NOT_FOUND');
   });
 

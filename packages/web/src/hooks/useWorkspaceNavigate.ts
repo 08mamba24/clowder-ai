@@ -1,15 +1,15 @@
-import {
-  APPROVAL_PRODUCER_IDS,
-  type ApprovalProducerId,
-  approvalProducerMeta,
-  type MeetingIntakeRepairAction,
-} from '@cat-cafe/shared';
+import { APPROVAL_PRODUCER_IDS, type ApprovalProducerId, approvalProducerMeta } from '@cat-cafe/shared';
 import { useCallback, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
+import {
+  type CollectiveWorkActionTarget,
+  parseCollectiveWorkActionRef,
+} from '@/components/collective/collective-work-action';
 import { pushThreadRouteWithHistory } from '@/components/ThreadSidebar/thread-navigation';
 import { useChatStore } from '@/stores/chatStore';
 import { API_URL } from '@/utils/api-client';
 import { scrollToMessage } from '@/utils/scrollToMessage';
+import { joinSocketRoomOnConnect } from '@/utils/socket-room';
 import { kickTeleportResolve, planTeleport } from '@/utils/teleport';
 import {
   areWorktreeIdsEquivalent,
@@ -46,20 +46,14 @@ export interface EntrustedWorkMessageAction {
 
 export type EntrustedWorkActionTarget =
   | ({ kind: 'message' } & EntrustedWorkMessageAction)
-  | { kind: 'approval'; producerId: ApprovalProducerId; proposalId: string };
+  | { kind: 'approval'; producerId: ApprovalProducerId; proposalId: string }
+  | CollectiveWorkActionTarget;
 
 export function parseEntrustedWorkMessageAction(actionRef: string): EntrustedWorkMessageAction | null {
   const match = /^message:([^:#]+):([^:#]+)(?:#(.+))?$/u.exec(actionRef);
   if (!match?.[1] || !match[2]) return null;
   return { threadId: match[1], messageId: match[2], ...(match[3] ? { blockId: match[3] } : {}) };
 }
-
-const MEETING_ACTIONS = new Set<MeetingIntakeRepairAction | 'confirm'>([
-  'confirm',
-  'retry',
-  'regrant',
-  'manual_import',
-]);
 
 function decodeActionId(encoded: string): string | null {
   try {
@@ -70,18 +64,9 @@ function decodeActionId(encoded: string): string | null {
   }
 }
 
-function resolveMeetingActionTarget(actionRef: string): EntrustedWorkActionTarget | null {
-  const meeting = /^\/api\/meeting-intakes\/([^/]+)\/([^/]+)$/u.exec(actionRef);
-  if (meeting?.[1] && meeting[2] && MEETING_ACTIONS.has(meeting[2] as MeetingIntakeRepairAction | 'confirm')) {
-    const proposalId = decodeActionId(meeting[1]);
-    return proposalId ? { kind: 'approval', producerId: 'F292', proposalId } : null;
-  }
-  return null;
-}
-
 function resolveApprovalActionTarget(actionRef: string): EntrustedWorkActionTarget | null {
   const producer = APPROVAL_PRODUCER_IDS.find((producerId) => {
-    if (producerId === 'F292' || producerId === 'F306') return false;
+    if (producerId === 'F306') return false;
     const base = approvalProducerMeta(producerId).decisionEndpointBase;
     return base ? actionRef.startsWith(`${base}/`) : false;
   });
@@ -97,7 +82,7 @@ export function resolveEntrustedWorkActionTarget(actionRef: string): EntrustedWo
   const message = parseEntrustedWorkMessageAction(actionRef);
   return message
     ? { kind: 'message', ...message }
-    : (resolveMeetingActionTarget(actionRef) ?? resolveApprovalActionTarget(actionRef));
+    : (parseCollectiveWorkActionRef(actionRef) ?? resolveApprovalActionTarget(actionRef));
 }
 
 function findRichBlock(coordinate: EntrustedWorkMessageAction): HTMLElement | null {
@@ -174,7 +159,16 @@ function readPendingEntrustedAction(threadId: string): EntrustedWorkMessageActio
 export function navigateToEntrustedWorkAction(actionRef: string): boolean {
   if (typeof window === 'undefined') return false;
   const target = resolveEntrustedWorkActionTarget(actionRef);
-  if (!target || target.kind !== 'message') return false;
+  if (!target) return false;
+  if (
+    target.kind === 'collective-work' ||
+    target.kind === 'collective-accountability' ||
+    target.kind === 'collective-project'
+  ) {
+    window.location.assign(target.actionRef);
+    return true;
+  }
+  if (target.kind !== 'message') return false;
   const coordinate: EntrustedWorkMessageAction = target;
   persistEntrustedAction(coordinate);
   const plan = planTeleport({
@@ -216,7 +210,8 @@ export function handleNavigateEvent(
   currentWorktreeId: string | null,
   actions: {
     setWorkspaceWorktreeId: (id: string | null) => void;
-    setWorkspaceRevealPath: (path: string | null, originThreadId?: string) => void;
+    /** Show `path` in that worktree's file tree; false when it could not be recorded for the thread. */
+    revealWorkspacePath: (worktreeId: string, path: string, originThreadId?: string) => boolean;
     setWorkspaceOpenFile: (
       path: string | null,
       line: number | null,
@@ -258,16 +253,16 @@ export function handleNavigateEvent(
     return false;
   }
 
+  // A reveal needs a real worktree to show: the event's (as the current alias when equivalent), else the
+  // current one. Without either there is nothing honest to open.
+  const revealWorktreeId =
+    resolveNavigateTargetWorktreeId(currentWorktreeId, data.worktreeId ?? null, worktreeAliases) ?? currentWorktreeId;
+  if (!revealWorktreeId) return false;
   if (data.worktreeId && !areWorktreeIdsEquivalent(data.worktreeId, currentWorktreeId, worktreeAliases)) {
     actions.setWorkspaceWorktreeId(data.worktreeId);
   }
   actions.setWorkspaceMode?.('dev');
-  if (data.threadId) {
-    actions.setWorkspaceRevealPath(data.path, data.threadId);
-  } else {
-    actions.setWorkspaceRevealPath(data.path);
-  }
-  return true;
+  return actions.revealWorkspacePath(revealWorktreeId, data.path, data.threadId);
 }
 
 function sessionNavigationStorage(): WorkspaceNavigationStorage | null {
@@ -283,7 +278,7 @@ export function useWorkspaceNavigate(
   options: { isChatRoute: boolean; isWorkspaceVisible?: boolean; enabled?: boolean } = { isChatRoute: true },
 ) {
   const setWorkspaceWorktreeId = useChatStore((s) => s.setWorkspaceWorktreeId);
-  const setWorkspaceRevealPath = useChatStore((s) => s.setWorkspaceRevealPath);
+  const openWorkspacePath = useChatStore((s) => s.openWorkspacePath);
   const setWorkspaceOpenFile = useChatStore((s) => s.setWorkspaceOpenFile);
   const setWorkspaceMode = useChatStore((s) => s.setWorkspaceMode);
   const worktreeAliases = useChatStore((s) => s.workspaceWorktreeAliases);
@@ -303,7 +298,12 @@ export function useWorkspaceNavigate(
         state.workspaceWorktreeId,
         {
           setWorkspaceWorktreeId,
-          setWorkspaceRevealPath,
+          revealWorkspacePath: (worktreeId, path, originThreadId) =>
+            openWorkspacePath(originThreadId ?? useChatStore.getState().currentThreadId, {
+              kind: 'reveal',
+              worktreeId,
+              path,
+            }),
           setWorkspaceOpenFile,
           setWorkspaceMode,
         },
@@ -316,7 +316,7 @@ export function useWorkspaceNavigate(
       }
       return processed;
     },
-    [scopedWorktreeAliases, setWorkspaceMode, setWorkspaceOpenFile, setWorkspaceRevealPath, setWorkspaceWorktreeId],
+    [openWorkspacePath, scopedWorktreeAliases, setWorkspaceMode, setWorkspaceOpenFile, setWorkspaceWorktreeId],
   );
   const deliveryStateRef = useRef({
     threadId,
@@ -356,7 +356,7 @@ export function useWorkspaceNavigate(
     const apiUrl = new URL(API_URL);
     const socket = io(`${apiUrl.protocol}//${apiUrl.host}`, { transports: ['websocket'] });
 
-    socket.emit('join_room', WORKSPACE_NAVIGATION_ACK_ROOM);
+    const stopJoiningRoom = joinSocketRoomOnConnect(socket, WORKSPACE_NAVIGATION_ACK_ROOM);
 
     const handler = (data: NavigateEvent, acknowledge?: (receipt: WorkspaceNavigationReceipt) => void) => {
       if (!shouldProcessNavigateEvent(data, lastEventIdRef)) return;
@@ -364,15 +364,27 @@ export function useWorkspaceNavigate(
       const storage = sessionNavigationStorage();
       const queuedData =
         data.threadId || !deliveryState.threadId ? data : { ...data, threadId: deliveryState.threadId };
-      const receipt = deliverWorkspaceNavigateEvent({
+      const presentationLocked = useChatStore.getState().presentationLock != null;
+      const persist = () =>
+        storage
+          ? queuePendingWorkspaceNavigation(storage, queuedData, {
+              requiresExplicitAction: presentationLocked || useChatStore.getState().presentationLock != null,
+            })
+          : false;
+      const delivery = {
         data,
         activeThreadId: deliveryState.threadId,
         isChatRoute: deliveryState.isChatRoute,
         isWorkspaceVisible: deliveryState.isWorkspaceVisible,
-        presentationLocked: useChatStore.getState().presentationLock != null,
         apply: deliveryState.applyNavigate,
-        persist: () => (storage ? queuePendingWorkspaceNavigation(storage, queuedData) : false),
-      });
+        persist,
+      };
+      let receipt = deliverWorkspaceNavigateEvent({ ...delivery, presentationLocked });
+      // The apply boundary can discover a lock that appeared after the delivery precheck.
+      // Retain that exact request too; never re-run its apply while the lock is active.
+      if (receipt.status === 'blocked' && !receipt.reason && useChatStore.getState().presentationLock != null) {
+        receipt = deliverWorkspaceNavigateEvent({ ...delivery, presentationLocked: true });
+      }
       if (acknowledge) {
         acknowledge(receipt);
       }
@@ -381,6 +393,7 @@ export function useWorkspaceNavigate(
     socket.on('workspace:navigate', handler);
 
     return () => {
+      stopJoiningRoom();
       socket.off('workspace:navigate', handler);
       socket.disconnect();
     };

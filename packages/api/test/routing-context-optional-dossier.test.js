@@ -7,6 +7,7 @@ import { afterEach, test } from 'node:test';
 import { catRegistry } from '@cat-cafe/shared';
 import { _resetDossierCache } from '@cat-cafe/shared/dossier';
 import { DossierCapabilityProfileRevisionSource } from '../dist/domains/routing-context/DossierCapabilityProfileRevisionSource.js';
+import { buildRoutingSignalDecisionProjection } from '../dist/domains/routing-context/preflight/RoutingSignalDecisionProjection.js';
 import { RoutingPreferenceKeys } from '../dist/domains/routing-context/RedisRoutingPreferenceStore.js';
 import { RoutingSignalEventKeys } from '../dist/domains/routing-context/RedisRoutingSignalEventStore.js';
 import { createRoutingContextRuntime } from '../dist/domains/routing-context/RoutingContextRuntime.js';
@@ -91,6 +92,9 @@ function fixture(content, { states = ['no_evidence', 'no_evidence'], preferences
     projectRoot: root,
     getConfigs: () => Object.fromEntries(catIds.map((id) => [id, config])),
   });
+  runtime.signalStore.getOwnerRevision = async () => events.length;
+  runtime.signalStore.readDecisionProjection = async () =>
+    buildRoutingSignalDecisionProjection({ ownerId, revision: events.length, events });
   return { root, path, runtime };
 }
 
@@ -203,7 +207,8 @@ for (const [label, broken, expectedState] of [
     assert.equal(byId.get(catIds[1]).profile.state, expectedState);
     const decision = await runtime.dispatchPreflight.preflight(input);
     assert.equal(decision.targets[0].disposition, 'rejected');
-    assert.equal(decision.targets[1].disposition, 'allowed');
+    assert.equal(decision.targets[1].disposition, 'warned');
+    assert.ok(decision.targets[1].reasons.some((reason) => reason.code === 'capability_profile_invalid'));
   });
 }
 

@@ -11,9 +11,11 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { debuglog } from 'node:util';
+import { macProcessEnvironmentCommand } from '#process-environment-snapshot';
 import { CLI_PROCESS_OWNER_ENV } from './cli-process-environment.js';
 
 export { CLI_PROCESS_OWNER_ENV } from './cli-process-environment.js';
@@ -102,10 +104,10 @@ interface CliExecutionOwnerLog {
   warn(bindings: Record<string, unknown>, message: string): void;
 }
 
-export interface ProcessSnapshotOptions {
-  includeEnvironment?: boolean;
-  pids?: readonly number[];
-}
+export type ProcessSnapshotOptions = { pids?: readonly number[] } & (
+  | { includeEnvironment?: false; environmentMarkers?: never }
+  | { includeEnvironment: true; environmentMarkers: readonly string[] }
+);
 
 export type ReadProcessSnapshot = (
   options?: ProcessSnapshotOptions,
@@ -158,7 +160,7 @@ function parseSnapshotLine(line: string, includeEnvironment: boolean): UnixProce
   const pid = Number(parts[0]);
   const ppid = Number(parts[1]);
   const pgid = Number(parts[2]);
-  if (!isPositiveSafeInteger(pid) || !isPositiveSafeInteger(ppid) || !isPositiveSafeInteger(pgid)) return null;
+  if (!isPositiveSafeInteger(pid) || !isNamespaceCoordinate(ppid) || !isNamespaceCoordinate(pgid)) return null;
   return {
     pid,
     ppid,
@@ -187,6 +189,12 @@ function isPositiveSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
+// A parent or process group outside the current PID namespace is observed as 0.
+// This is an observation coordinate, never authority to signal group 0.
+function isNamespaceCoordinate(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -196,8 +204,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function parseProcessIdentity(value: unknown): UnixProcessIdentity | null {
   const record = asRecord(value);
   if (!record) return null;
-  if (!isPositiveSafeInteger(record.pid) || !isPositiveSafeInteger(record.ppid)) return null;
-  if (!isPositiveSafeInteger(record.pgid) || typeof record.startedAt !== 'string' || !record.startedAt.trim()) {
+  if (!isPositiveSafeInteger(record.pid) || !isNamespaceCoordinate(record.ppid)) return null;
+  if (!isNamespaceCoordinate(record.pgid) || typeof record.startedAt !== 'string' || !record.startedAt.trim()) {
     return null;
   }
   return {
@@ -340,12 +348,20 @@ function isKnownEmptyExactPidSnapshot(input: {
 export function readUnixProcessSnapshotSync(
   options: ProcessSnapshotOptions = {},
 ): Map<number, UnixProcessSnapshotEntry> | null {
-  if (process.platform === 'win32') return null;
   const pids = options.pids?.filter(isPositiveSafeInteger);
+  // An explicit empty PID set needs no platform-specific process lookup.
   if (pids && pids.length === 0) return new Map();
-  const args = buildUnixProcessSnapshotArgs(options.includeEnvironment === true, pids);
+  if (process.platform === 'win32') return null;
+  const command =
+    options.includeEnvironment && process.platform === 'darwin'
+      ? macProcessEnvironmentCommand({
+          pids,
+          markers: options.environmentMarkers,
+          retainEnvironmentKeys: [CLI_PROCESS_OWNER_ENV],
+        })
+      : { file: '/bin/ps', args: buildUnixProcessSnapshotArgs(options.includeEnvironment === true, pids) };
   if (options.includeEnvironment) processDebug('ownership-process-table-scan');
-  const result = spawnSync('/bin/ps', args, {
+  const result = spawnSync(command.file, command.args, {
     encoding: 'utf8',
     timeout: CLI_PROCESS_SNAPSHOT_TIMEOUT_MS,
     maxBuffer: options.includeEnvironment ? 32 * 1024 * 1024 : 4 * 1024 * 1024,
@@ -380,21 +396,28 @@ export function readUnixProcessSnapshotSync(
 export function readUnixProcessSnapshot(
   options: ProcessSnapshotOptions = {},
 ): Promise<Map<number, UnixProcessSnapshotEntry> | null> {
-  if (process.platform === 'win32') return Promise.resolve(null);
   const pids = options.pids?.filter(isPositiveSafeInteger);
   if (pids && pids.length === 0) return Promise.resolve(new Map());
-  const args = buildUnixProcessSnapshotArgs(options.includeEnvironment === true, pids);
+  if (process.platform === 'win32') return Promise.resolve(null);
+  const command =
+    options.includeEnvironment && process.platform === 'darwin'
+      ? macProcessEnvironmentCommand({
+          pids,
+          markers: options.environmentMarkers,
+          retainEnvironmentKeys: [CLI_PROCESS_OWNER_ENV],
+        })
+      : { file: '/bin/ps', args: buildUnixProcessSnapshotArgs(options.includeEnvironment === true, pids) };
   if (options.includeEnvironment) processDebug('ownership-process-table-scan');
   return new Promise((resolveSnapshot) => {
     execFile(
-      '/bin/ps',
-      args,
+      command.file,
+      command.args,
       {
         encoding: 'utf8',
         timeout: CLI_PROCESS_SNAPSHOT_TIMEOUT_MS,
         maxBuffer: options.includeEnvironment ? 32 * 1024 * 1024 : 4 * 1024 * 1024,
       },
-      (error, stdout, stderr) => {
+      async (error, stdout, stderr) => {
         if (typeof stdout !== 'string') {
           resolveSnapshot(null);
           return;
@@ -411,7 +434,13 @@ export function readUnixProcessSnapshot(
         for (const line of stdout.split('\n')) {
           const entry = parseSnapshotLine(line, options.includeEnvironment === true);
           if (!entry) continue;
-          attachLinuxProcEnvironment(entry, options.includeEnvironment === true);
+          if (options.includeEnvironment && process.platform === 'linux') {
+            try {
+              entry.commandAndEnvironment = decodeLinuxProcEnvironment(await readFile(`/proc/${entry.pid}/environ`));
+            } catch {
+              delete entry.commandAndEnvironment;
+            }
+          }
           snapshot.set(entry.pid, entry);
         }
         resolveSnapshot(snapshot);
@@ -471,7 +500,7 @@ function signalSafeOwnedGroups(
 ): Set<number> {
   const signaled = new Set<number>();
   for (const target of targets) {
-    if (target.pid !== target.pgid) continue;
+    if (!isPositiveSafeInteger(target.pgid) || target.pid !== target.pgid) continue;
     const members = groupMembers.get(target.pgid) ?? [];
     if (members.length === 0 || members.some((pid) => !ownedPids.has(pid))) continue;
     if (trySignal(kill, -target.pgid, signal)) for (const pid of members) signaled.add(pid);
@@ -485,6 +514,7 @@ export function signalOwnedUnixProcesses(
   signal: NodeJS.Signals,
   kill: (pid: number, signal: NodeJS.Signals) => void = process.kill,
 ): number {
+  targets = targets.filter((target) => isPositiveSafeInteger(target.pid));
   const ownedPids = new Set(targets.map((target) => target.pid));
   const groupMembers = groupProcessIds(snapshot);
   const signaled = signalSafeOwnedGroups(targets, groupMembers, ownedPids, signal, kill);

@@ -1,14 +1,8 @@
 'use client';
 
-import type {
-  ApprovalHubItem,
-  EntityConflictContext,
-  EntityConflictResolutionRequest,
-  HumanDispositionFeedbackInput,
-} from '@cat-cafe/shared';
-import { useCallback, useMemo, useState } from 'react';
+import type { ApprovalHubItem } from '@cat-cafe/shared';
+import { useMemo } from 'react';
 import { useCatNameResolver } from '@/hooks/useCatNameResolver';
-import { approvalFeatureMeta } from '@/lib/approval-features';
 import { approvalOriginThreadId } from '@/lib/approval-navigation';
 import {
   approvalDisplayTitle,
@@ -24,7 +18,8 @@ import { ApprovalFeatureBadge } from './ApprovalFeatureBadge';
 import { ApprovalTechnicalDetailContent } from './ApprovalTechnicalDetails';
 import { GenericApprovalDecisionActions } from './GenericApprovalDecisionActions';
 import { GenericApprovalRecommendation } from './GenericApprovalRecommendation';
-import { HumanDispositionFeedbackDialog } from './HumanDispositionFeedbackDialog';
+import { MailboxApprovalExplanation } from './shell/mailbox/MailboxApprovalExplanation';
+import { useApprovalItemActions } from './useApprovalItemActions';
 
 export function GenericApprovalItemCard({ item }: { item: ApprovalHubItem }) {
   const close = useApprovalHubStore((state) => state.close);
@@ -45,58 +40,17 @@ export function GenericApprovalItemCard({ item }: { item: ApprovalHubItem }) {
     [threads, f193TargetThreadId],
   );
 
-  const isStale = useMemo(() => item.expiresAt != null && item.expiresAt < Date.now(), [item.expiresAt]);
-  const isPersonMemoryClaimSelect = item.sourceFeatureId === 'F276' && item.decisionMode === 'claim-select';
-  const approveProposal = useApprovalHubStore((state) => state.approveProposal);
-  const rejectProposal = useApprovalHubStore((state) => state.rejectProposal);
-  const decisionError = useApprovalHubStore((state) => state.error);
-  const resolveEntityConflict = useApprovalHubStore((state) => state.resolveEntityConflict);
-  const decidingState = useApprovalHubStore((state) => state.deciding[item.proposalId]);
-  const entityConflict =
-    item.sourceFeatureId === 'F260' && isEntityConflictContext(item.detail.conflict) ? item.detail.conflict : undefined;
-  const featureMeta = approvalFeatureMeta(item.sourceFeatureId);
-  const feedbackReasonCodes = featureMeta.humanDispositionReasonCodes;
-  const usesFeedbackDialog = !isStale && feedbackReasonCodes !== null;
-
-  const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false);
-  const [feedbackDialogError, setFeedbackDialogError] = useState<string | null>(null);
-  const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
-
-  const handleApprove = useCallback(() => {
-    void approveProposal(item.proposalId);
-  }, [approveProposal, item.proposalId]);
-
-  const handleReject = useCallback(() => {
-    if (usesFeedbackDialog) {
-      setFeedbackDialogError(null);
-      setFeedbackSubmitted(false);
-      setFeedbackDialogOpen(true);
-      return;
-    }
-    void rejectProposal(item.proposalId);
-  }, [item.proposalId, rejectProposal, usesFeedbackDialog]);
-
-  const handleEntityResolution = useCallback(
-    (resolution: EntityConflictResolutionRequest) => {
-      void resolveEntityConflict(item.proposalId, resolution);
-    },
-    [item.proposalId, resolveEntityConflict],
-  );
-
-  const submitReject = useCallback(
-    async (feedback: HumanDispositionFeedbackInput | undefined) => {
-      setFeedbackSubmitted(true);
-      setFeedbackDialogError(null);
-      const success = await rejectProposal(item.proposalId, feedback);
-      if (success) {
-        setFeedbackDialogOpen(false);
-        setFeedbackSubmitted(false);
-        return;
-      }
-      setFeedbackDialogError('拒绝失败，请检查提案状态后重试。');
-    },
-    [item.proposalId, rejectProposal],
-  );
+  const {
+    isStale,
+    isPersonMemoryClaimSelect,
+    decidingState,
+    entityConflict,
+    handleApprove,
+    handleReject,
+    handleEntityResolution,
+    presentation,
+    feedbackDialog,
+  } = useApprovalItemActions(item);
 
   const f225HandoffDetails =
     item.sourceFeatureId === 'F225'
@@ -108,6 +62,7 @@ export function GenericApprovalItemCard({ item }: { item: ApprovalHubItem }) {
   const f221TasteEvidence =
     item.sourceFeatureId === 'F221'
       ? formatDetailLines([
+          ['猫的判断（假设）', item.detail.takeaway],
           ['场景', item.detail.scene],
           ['引用', item.detail.quote],
         ])
@@ -155,8 +110,9 @@ export function GenericApprovalItemCard({ item }: { item: ApprovalHubItem }) {
     <>
       <ApprovalDecisionCard
         testId={`approval-item-${item.proposalId}`}
+        embedded={presentation === 'mailbox'}
         header={header}
-        title={approvalDisplayTitle(item)}
+        title={approvalDisplayTitle(item, { resolveCatName })}
         actionReason={
           item.resolution === 'open' ? (
             <>由 {resolveCatName(item.requesterCatId)} 发起，需要你作出决定。</>
@@ -164,25 +120,11 @@ export function GenericApprovalItemCard({ item }: { item: ApprovalHubItem }) {
             <>审批决议已记录；后续状态只认 canonical owner receipt。</>
           )
         }
-        recommendation={recommendation}
+        recommendation={presentation === 'mailbox' ? <MailboxApprovalExplanation item={item} /> : recommendation}
         currentDecision={currentDecision}
         details={approvalDetailDisclosure(item.detail)}
       />
-      {feedbackReasonCodes && (
-        <HumanDispositionFeedbackDialog
-          open={feedbackDialogOpen}
-          reasonCodes={feedbackReasonCodes}
-          subjectLabel={item.summary}
-          submitting={decidingState === 'rejecting'}
-          error={feedbackSubmitted ? (feedbackDialogError ?? decisionError) : null}
-          onCancel={() => {
-            setFeedbackDialogOpen(false);
-            setFeedbackDialogError(null);
-            setFeedbackSubmitted(false);
-          }}
-          onSubmit={(feedback) => void submitReject(feedback)}
-        />
-      )}
+      {feedbackDialog}
     </>
   );
 }
@@ -216,17 +158,4 @@ function StatusBadge({ children, testId }: { children: string; testId?: string }
 function formatDetailLines(entries: ReadonlyArray<readonly [label: string, value: unknown]>): string | undefined {
   const lines = entries.flatMap(([label, value]) => (value == null ? [] : [`${label}: ${String(value)}`]));
   return lines.length > 0 ? lines.join('\n') : undefined;
-}
-
-function isEntityConflictContext(value: unknown): value is EntityConflictContext {
-  if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as Partial<EntityConflictContext>;
-  return (
-    candidate.version === 1 &&
-    (candidate.reason === 'existing-entity-change' || candidate.reason === 'surface-collision') &&
-    typeof candidate.fingerprint === 'string' &&
-    typeof candidate.incoming === 'object' &&
-    Array.isArray(candidate.candidates) &&
-    Array.isArray(candidate.allowedActions)
-  );
 }

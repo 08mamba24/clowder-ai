@@ -14,12 +14,14 @@ export function activeExecutionKey(
 interface ActiveExecutionState {
   anchorThreadId: string | null;
   projectPath: string | null;
+  scope: 'project' | 'all';
+  unavailableProjectPaths: readonly string[];
   executionsByKey: Record<string, ActiveExecutionProjection>;
   cancelPendingByKey: Record<string, true>;
   hydration: 'idle' | 'loading' | 'ready' | 'error';
   hydrationError: string | null;
   requestVersion: number;
-  beginHydration(anchorThreadId: string): number;
+  beginHydration(anchorThreadId: string, projectPath: string | null): number;
   applySnapshot(anchorThreadId: string, requestVersion: number, response: ActiveExecutionListResponse): void;
   failHydration(anchorThreadId: string, requestVersion: number, error: unknown): void;
   beginCancellation(execution: ActiveExecutionProjection): boolean;
@@ -31,6 +33,8 @@ interface ActiveExecutionState {
 const INITIAL_STATE = {
   anchorThreadId: null,
   projectPath: null,
+  scope: 'project' as const,
+  unavailableProjectPaths: [] as readonly string[],
   executionsByKey: {},
   cancelPendingByKey: {},
   hydration: 'idle' as const,
@@ -40,16 +44,17 @@ const INITIAL_STATE = {
 
 export const useActiveExecutionStore = create<ActiveExecutionState>((set, get) => ({
   ...INITIAL_STATE,
-  beginHydration(anchorThreadId) {
+  beginHydration(anchorThreadId, projectPath) {
     const current = get();
     const requestVersion = current.requestVersion + 1;
-    const anchorChanged = current.anchorThreadId !== anchorThreadId;
+    const projectChanged = current.projectPath !== projectPath && current.scope !== 'all';
     set({
       anchorThreadId,
+      projectPath,
       requestVersion,
-      hydration: anchorChanged || current.hydration === 'idle' ? 'loading' : current.hydration,
-      ...(anchorChanged
-        ? { projectPath: null, executionsByKey: {}, cancelPendingByKey: {}, hydrationError: null }
+      hydration: projectChanged || current.hydration === 'idle' ? 'loading' : current.hydration,
+      ...(projectChanged || (projectPath === null && current.scope !== 'all')
+        ? { executionsByKey: {}, cancelPendingByKey: {}, hydrationError: null }
         : {}),
     });
     return requestVersion;
@@ -61,7 +66,9 @@ export const useActiveExecutionStore = create<ActiveExecutionState>((set, get) =
       response.executions.map((execution) => [activeExecutionKey(execution), execution]),
     );
     set({
-      projectPath: response.projectPath,
+      projectPath: response.scope === 'all' ? current.projectPath : response.projectPath,
+      scope: response.scope ?? 'project',
+      unavailableProjectPaths: response.scope === 'all' ? (response.unavailableProjectPaths ?? []) : [],
       executionsByKey,
       cancelPendingByKey: Object.fromEntries(
         Object.keys(current.cancelPendingByKey)
@@ -92,6 +99,8 @@ export const useActiveExecutionStore = create<ActiveExecutionState>((set, get) =
     const current = get();
     if (!current.executionsByKey[key]) return;
     set({
+      // A response started before this confirmed cancellation cannot restore its slot.
+      requestVersion: current.requestVersion + 1,
       executionsByKey: Object.fromEntries(
         Object.entries(current.executionsByKey).filter(([entryKey]) => entryKey !== key),
       ),
@@ -108,6 +117,6 @@ export const useActiveExecutionStore = create<ActiveExecutionState>((set, get) =
     });
   },
   reset() {
-    set(INITIAL_STATE);
+    set({ ...INITIAL_STATE, requestVersion: get().requestVersion + 1 });
   },
 }));

@@ -996,14 +996,15 @@ created: 2026-02-26
   2. `CAT_CAFE_RUNTIME_RESTART_OK=1` 显式授权才放行
   3. 新增 `scripts/review-start.sh`（`pnpm review:start`）：review 验证统一入口，自动分配 3201/3202 端口、内存 Redis、review 沙盒路径
   4. review 模板新增"沙盒路径 + 启动命令 + 实际端口"必填字段
+- 2026-09-10 纠正：第 2 条环境变量放行被证明不能表达授权——任意调用者都能设置它，反而让跨 worktree 归属检查失效。该 bypass 已移除；变量取值为 0 或 1 都不能放行 foreign/unknown PID。runtime 的显式生命周期动作只作用于 daemon state 验证出的同一部署，版本一致性检查与行动授权也明确分离。
 - 防护：
   1. `start-dev.sh` 端口归属 guard（基于进程 cwd，不硬编码端口号）——任何端口冲突都能防
-  2. 回归测试覆盖"默认拒绝跨 worktree kill"和"显式授权放行"两条路径
+  2. 回归测试覆盖环境变量未设置、0、1 时都拒绝跨 worktree/unknown PID
   3. `pnpm review:start` 统一入口消除"在哪启动、用什么端口"的歧义
   4. request-review 模板强制证据字段（reviewer 必须填沙盒路径和端口）
 - 来源锚点：
   - 事故报告：`docs/bug-report/2026-04-10-review-dev-direct-runtime-interruption/bug-report.md`
-  - 修复 PR：zts212653/cat-cafe#1077
+  - 修复 PR：zts212653/clowder-ai#1077
   - 端口归属 guard：`scripts/start-dev.sh:450`（`guard_port_kill_ownership`）
   - review 入口：`scripts/review-start.sh`
 - 原理：**"默认安全"优于"靠人记得"**。LL-045 证明纪律文档拦不住猫——写了"不要动 runtime"但多个 session 仍然直接操作。端口保护和 Redis production Redis (sacred)一样，必须在工具层面做到"默认不可能发生"，而非"读了文档就不会发生"。
@@ -1795,7 +1796,7 @@ created: 2026-02-26
   - **测试形态要覆盖 class，不只覆盖路径**：至少一个参数化 regression 把同一不变量跑过 lexical / semantic / hybrid / raw / entity-merge 等现有模式；新增路径必须加入枚举表。
   - **封板审计与点修分离**：cloud 循环达到 LL-072 阈值后，当前轮真 bug 可以修，但终局依据改为本地 stateful reviewer 的全类枚举和 final SHA review，不再 re-trigger 等 “0 P2”。
   - **更深抽象另开 follow-up**：若正确坐标系是单一 `finalizeRanking` / mutation lifecycle 咽喉，且当前 PR 已能正确覆盖现有路径，则登记后续重构，不在封板 commit 里扩大 scope。
-- 来源锚点：PR #2755（final head `7feae0cc80fb11dbfd6a96dd830fef755b881341`，squash `17edde5e3b311cb27b271c6385fe47b22b0676c0`）/ Fable5 seal-board verdict `[thread-id]#0001783259660566-000337-62d016d2` / Opus final stateful review `[thread-id]#0001783261249985-000361-02d0dd2d` / `docs/features/F188-library-stewardship.md` timeline 2026-07-05
+- 来源锚点：PR #2755（final head `7feae0cc80fb11dbfd6a96dd830fef755b881341`，squash `17edde5e3b311cb27b271c6385fe47b22b0676c0`）/ Fable5 seal-board verdict `[thread-id]#private-source-id` / Opus final stateful review `[thread-id]#private-source-id` / `docs/features/F188-library-stewardship.md` timeline 2026-07-05
 - 原理：同类 bug 的最小单位不是 reviewer 当前指出的 line，而是失效的不变量类。先枚举类，再修路径；否则 review loop 会把“系统性漏面”伪装成一串独立小锅。
 
 - 关联：LL-072（cloud review 无不动点，封板协议）| LL-083（封闭集补齐 vs 开放纠缠繁殖）| LL-087（stateful UI 的 plan-time invariant table）| feedback_grep_consumers_before_contract_change | feedback_plan_stateful_lifecycle_state_machine
@@ -1882,7 +1883,7 @@ created: 2026-02-26
 - 根因：把三种不同 claim 压成一个完成态：①文本/编译结构正确；②canonical runtime 真正收到；③触发场景出现时发生正确行动。静态测试只能证明第一层；ToolSearch 可用也不证明 unknown-unknown 会主动唤醒。
 - 修复：F234 durable truth 改为 `structural 8/8` 与 `action journey 0/6 verified` 分账；广泛 diet 冻结。#3329 只迁出三条已有 F203 spec/audit 替代承载的历史账目，保留 active counter-prompt、F218 与 ADR-038 breadcrumb，并用语义断言 + budget guard 锁住边界。
 - 防护：每个删除候选必须回答 replacement carrier 在哪、谁是 authority、真实 delivery 如何证明、哪个 action journey 验行为、失败怎样 rollback。没有 consumer journey 的静态绿只能叫“结构通过”，不能叫“优化完成”。
-- 来源锚点：F234 `Follow-up truth split + diet freeze` | ADR-038 `Generation Diet Completion Gate` | PR #3329 | operator source `0001785553549038-001517-efe0fa4a`
+- 来源锚点：F234 `Follow-up truth split + diet freeze` | ADR-038 `Generation Diet Completion Gate` | PR #3329 | operator source `private-source-id`
 - 原理：**模型看见文字、模型能找到工具、模型在正确时机采取行动，是三件不同的事。** Prompt diet 的风险不在删了多少，而在删除后是否仍有一条可证明的认知与执行路径。
 - 关联：F234 Phase L0-GD | F203 canonical L0 delivery | F192 capability wakeup | LL-095 高频注入措辞放大
 
@@ -1941,7 +1942,7 @@ created: 2026-02-26
   - `docs/features/F294-selective-message-bundles.md`“浏览器部署准入状态机”与 2026-08-17 timeline
   - `packages/web/src/hooks/useConnectionStatus.ts`（`deriveDeploymentAdmission`）
   - `packages/web/test/build-stamp.test.cjs` 与 `packages/web/src/hooks/__tests__/useConnectionStatus-deployment-revision.test.ts`
-  - source thread `[thread-id]#0001786969233723-000003-d8236618`
+  - source thread `[thread-id]#private-source-id`
 - 原理：**Fail-closed 不是“信息不足时关闭最多东西”，而是“信息不足时只拒绝无法证明安全的 claim”。** 护栏的权限应等于它保护的风险域；超过这个范围，护栏本身就成为更高影响的故障源。恢复承诺同样是一种契约——若动作不能推动状态迁移，就不该把它展示为出口。
 
 - 关联：F294 / PR #3744（旧页面兼容性守卫）/ PR #3750（事故修复）/ LL-097（不同完成 claim 必须分账）/ ADR-031（按问题选择机制，不把工具箱当清单）
@@ -1968,7 +1969,7 @@ created: 2026-02-26
 - 触发条件：小改动无客观风险仍跑 full gate；review 多轮继续扩张当前实现而不回读 accepted source；兼容旧实现时出现并行概念；任何方案需要operator日常判断 owner、催 follow-up 或替 main 健康值夜；为一个流程问题同时新增第二 command/file/receipt/registry/lifecycle。
 - 修复：以 accepted source 追溯链重画坐标；逐 claim 选择机制。Reviewer soft anchor、gate-time revision compare/内嵌 risk classifier/R4 自动重投刹车各守自己的确定契约；运行耗时与 main health 归 F153/opt-in guardian；只有“anchor 是否减少 intent drift”进入 F311 单变量 Program，并以 process cost 与 human coordination rescue 为不可抵消 guardrail。
 - 防护：新增流程对象前做 no-second-owner/state/custody/verdict census；review blocker 必须带 source/risk anchor、可核验失败与 diff 因果；classifier 只保留 ephemeral、only-more-strict 的人工 risk flag；无 owner follow-up 当场死亡；automation evidence 缺失时只降级 automation，不锁开发者；每条新机制预注册 keep/tune/sunset。
-- 来源锚点：`[thread-id]#0001788341832434-000718-34804917`（质量与方向纠偏）| `[thread-id]#0001788351266499-000900-e238081f`（保姆税）| `[thread-id]#0001788357372382-000081-190fec0d`（机制/概念增生与 F311 路由）| `[thread-id]#0001788356775127-000080-da443f31`（A2A/lease/verdict 反例）| 收敛蓝图 (internal)
+- 来源锚点：`[thread-id]#private-source-id`（质量与方向纠偏）| `[thread-id]#private-source-id`（保姆税）| `[thread-id]#private-source-id`（机制/概念增生与 F311 路由）| `[thread-id]#private-source-id`（A2A/lease/verdict 反例）| 收敛蓝图 (internal)
 - 原理：**把车造得更坚固不会让它自动开向正确目的地。** 方向靠 accepted-source 追溯，确定风险靠 guard，运行健康靠 observability，不确定效用才靠 eval；机制的数量不是质量，能否更早发现偏航且不增加人类协调税才是质量。
 
 - 关联：ADR-031 v3.5 candidate | LL-071（A2A scope 误读放大）| LL-072/083（review 无不动点与开放纠缠）| LL-095（机制工具箱不是清单）| LL-101（长门禁先收敛）| F100 Process Evolution | F303 Design Gate Integrity | F311 Capability Evolution Workspace
@@ -2006,3 +2007,42 @@ created: 2026-02-26
 - 原理：**正文是给读者的交付物，思考通道是自己的工作台。** 把工作台搬进交付物不是透明——透明靠证据锚点，不靠旁观推理；推理独白对读者是纯噪音，还占 operator 的阅读时间。
 
 - 关联：LL-103（同日同 thread）| glm-5.3 binding（binding 更换需复验本条倾向）| 家规"实事求是"的证据锚点纪律
+### LL-105: 测试替身要封住最外层副作用——内层 stub 会在实现改委托后失效
+
+- 状态：validated
+- 更新时间：2026-09-10
+
+- 坑：运行 `scripts/test-start-dev.sh` 时，旧测试以为 mock `python3 -m venv` 就能隔离 `install_sidecar_venvs`。该生产函数后来把 ASR 安装改为委托统一 shell installer，测试却仍直接执行整段函数；而且 `HOME` 只在函数调用时覆盖，统一 installer 已沿加载期冻结的 `CAT_CAFE_HOME` 指向真实 `~/.cat-cafe`。结果测试短暂执行真实 pip，在用户级 `whisper-venv` 重写了 `pip`、`faster-whisper`、`av`、`ctranslate2`、`flatbuffers`、`onnxruntime` 六个 distribution。
+- 止损与影响：发现后确认测试及 pip 进程均已结束；未启动/重启 runtime，未写 Redis。当前 venv `pip check` 为 green，`faster_whisper` / `av` / `ctranslate2` / `onnxruntime` import 为 green；旧 distribution 版本没有 canonical 账本，故不猜测降级或删除。
+- 根因：测试替身绑定了旧实现细节，而非真实副作用边界；用户级路径在 source-time 决定，却只在 call-time 伪隔离；该 legacy shell test 又长期不在常规 gate 内，已删除的 sidecar helper 断言与真实 installer 逃逸同时腐烂。
+- 修复：删除已无生产函数的 sidecar 断言；在 test 中 mock 统一 installer 的最外层 `bash` delegate，剩余 venv 全落临时 `HOME`，并验证 ASR delegate 与 TTS/LLM/embed 临时路径。shared rules 固化“source 前隔离路径 + mock 最外层 effect boundary + 无账本不盲回滚”。
+- 原理：**测试隔离要对“什么能改变外部世界”负责，不要对“当前实现恰好调用了哪个内层函数”负责。** 委托层一变，内层 stub 就可能静默失效；只有从最外层 effect sink 关门，fixture-only 才是真的 fixture-only。
+
+- 关联：`scripts/test-start-dev.sh` | `scripts/setup.sh::install_sidecar_venvs` | `scripts/services/whisper-install.sh` | shared-rules §14d
+
+### LL-104: 能力表与可调用面必须机制对账——两张分开维护的清单会长出 N 份旁路实现
+
+- 状态：validated
+- 更新时间：2026-09-21
+
+- 坑：F202 C1 把 IM connector 切成插件时，反复撞到"要的接口不在"。每一次的应对都是在旁边**另造一个**：`ConnectorContribution.outboundMethod`（连接器专属出站，Host 从未消费）、`HostInvocationPort`（我在 Core 新造的 Host→插件端口）、`plugin-sdk/src/contract-mirror.ts`（手抄契约运行时常量 212 行，文件自述 DELETION TARGET）、两份 `standalone-host`（SDK 一份且公开导出 + fixture 一份）。**四份实现、四个作者、谁都没发现同一件事已经有了。**
+- 根因：插件面有**两张从未对账的清单**——可声明的 `Capability`（17 项）与可调用的方法。其中 7 项能力（`thread.listMetadata`、`thread.readContent`、`memory.query|append|retrieve`、`whisper.extend`）**声明得出来、授得了权、永远调不到**：既无 wire 方法也无作者面。反向也成立：出站方向 `host.messaging.deliver` 早在 `WIRE_METHOD_NAMES` 里已发布、`stdio-broker-transport.ts:44` 已实现、`control-plane.ts:376` 已读其 grant——而我只读了 `PluginToHostMethod`（6 项，是子集）就断言"契约里没有 Host→插件方向"，随即自己造了一个。
+- 修复：撤掉自造端口、改用 `host.messaging.deliver`；把两项已声明的 `thread.*` 能力接上线（这是补接线，不是扩公共面）；`contract-mirror` 由契约导出运行时枚举值后整体消除；两份 standalone-host 收成一份且不公开导出。当前接口边界见 `docs/features/F202-plugin-framework.md`。
+- 原理：**当"能声明什么"和"能调用什么"是两张分开维护的表时，漂移的症状不是报错，而是每个消费者各自造一个旁路。** 报错会被修，旁路不会——它看起来像正常开发，还自带注释和测试。所以对账必须是**机制**而不是自觉：每一个可声明的能力都必须有可达路径，否则 CI 红。
+- 同源的第二层（2026-09-21 当日两线各踩一次后补记）：**类型是形状，schema 才是约束；只读类型会同时漏掉 `additionalProperties:false` 和 enum 边界。** 现场证据比论证硬——`M0CDeliverInput` 在 schema 里是闭合对象（三字段全必填 + `additionalProperties:false`），而两条独立车道在**同一天、且已经在讨论这个病之后**各自断言"插件声明的方法名由它的参数携带"：一条是从 TypeScript 类型推 payload（看到三个字段以为能加第四个），另一条是从 `CallbackAction.method: string` 无枚举约束推断方法名走参数。**两条不同的推理路径撞进同一个坑，说明这不是谁马虎，是"类型可见、约束不可见"这个结构必然产出的结果。** 因此它不能靠记住——**必须把约束机械地绑回它真正的定义处，让违反在编译/校验期就红**。注意这里有一个当天就被证伪的收窄：最初写成"必须从 schema 生成"，但逐个匹配后发现同一批手抄常量里只有少数源自 schema，多数源自**契约包自己的 TS 接口**（`wire/envelope.ts`、`wire/row-shapes.ts`）。**真相源是哪一种就绑哪一种**——schema 的从 schema 生成，接口的在接口旁导出并用编译期断言绑死。把它一律说成"从 schema 生成"会让实现者发现多数无源可生，然后退回手抄，**正好落回本条教训要治的病**。
+- 附带（个人向，同源）：**在自己那块里找答案，会把子集当全集。** 我查的是"我这块用到的那张表"，结论是"这个方向不存在"；operator 没看代码却先指出"你们开放给 sdk 的接口本身有问题"——因为他问的是**整体形状**，我找的是**局部证据**。凡是要下"X 不存在"这种全称判断，必须先确认自己读的是全集。
+
+- 关联：`@clowder-ai/plugin-contract` `Capability` / `PluginToHostMethod` / `wire/registry` `WIRE_METHOD_NAMES` | `packages/api/src/domains/plugin/external-runtime/stdio-broker-transport.ts:26,44` | `packages/api/src/domains/plugin/host-broker/control-plane.ts:376` | `docs/architecture/plugin-architecture.md`
+
+### LL-105: 共享检出目录不区分"谁在用"——入口闸挡得住手，挡不住流向
+
+- 状态：validated
+- 更新时间：2026-09-21
+
+- 坑：F202 C1 两条车道并行的一夜里，**同一形状出现四次**：① 我在 sol 正在编辑的 worktree 里 `git add -A`，把他 8 个未完成文件全暂存进我的文档 commit（`MM` 状态说明他当时还在写）；② Plugins 线的主仓库被 checkout 到特性分支——主仓库是上游镜像，在其上改代码会污染镜像；③ ②修复之后（分支回 `main`、特性分支转为正规 worktree），**P-1 的 107 行 codegen 工作仍留在主仓库工作区未提交**；④ 双方都只能靠"我保持只读"这类自觉纪律来避让对方未提交的改动。
+- 止损与影响：① 被 pre-commit 的 whitespace/biome 门禁挡下，退暂存后复核对方 10 个文件内容未被触碰；② 被开工自检挡下，工作区干净故零风险修复；③ **无任何机器挡住**，是我在核证对方第②条说法时顺手撞见的，当时未提交、无 stash、无分支引用——而 fork SOP 的 main 同步常规动作正是 `git reset --hard upstream/main`，一次同步即静默抹除。
+- 根因：目录是共享的，但 git 的工作区模型假设单一使用者。更要紧的是**「谁能改」与「改动流向哪里」是两件不同的事**：前三个现场都是入口被挡住，第③个是**入口已经修好、水仍从旁边漫过去**——分支挪走了、worktree 建好了，肌肉记忆还在往主仓库里写。
+- 修复：共享 worktree 内一律**显式路径 add**，不用 `-A`；特性分支一律开 worktree，主仓库只读；并把"下一次 main 同步前先核工作区是否干净"当作同步动作的前置，而不是同步后的补救。
+- 原理（Plugins 线在同一夜给出，本条据此定性）：**闸的价值不在它抓到多少错，而在于把"发现错误的时间"从"下一个人踩到"提前到"写下来的那一刻"。** 本夜四个现场里两个被机器挡下、一个靠交叉核验偶然撞见——而交叉核验成立的前提是"恰好两条线同时在看同一批东西"，**这个条件不可复制，闸才可复制**。
+
+- 关联：LL-104 | `scripts/` pre-commit biome/whitespace guard | SessionStart 开工自检 | fork SOP `git reset --hard upstream/main`

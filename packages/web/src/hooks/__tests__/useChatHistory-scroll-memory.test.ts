@@ -6,6 +6,7 @@ import type { ChatMessage, ThreadState } from '@/stores/chat-types';
 import { useChatStore } from '@/stores/chatStore';
 import { apiFetch } from '@/utils/api-client';
 import { CHAT_LAYOUT_CHANGED_EVENT } from '@/utils/chat-layout-change';
+import { readChatScrollState } from '@/utils/chat-scroll-memory';
 import { MESSAGE_VIEWPORT_MOUNTED_EVENT, MOUNT_DEFERRED_MESSAGE_EVENT } from '@/utils/scrollToMessage';
 import { __resetPendingTeleportForTest, setPendingTeleport } from '@/utils/teleport';
 import { useChatHistory } from '../useChatHistory';
@@ -20,7 +21,7 @@ function HookProbe({ threadId }: { threadId: string }) {
   capturedHook = useChatHistory(threadId);
   return React.createElement(
     'div',
-    { ref: capturedHook.scrollContainerRef },
+    { ref: capturedHook.scrollContainerRef, onClickCapture: capturedHook.handleReadingIntent },
     React.createElement('div', { ref: capturedHook.messagesEndRef }),
   );
 }
@@ -46,12 +47,10 @@ function makeThreadState(messages: ChatMessage[]): ThreadState {
     catStatuses: {},
     catStatusDetails: {},
     catInvocations: {},
-    currentGame: null,
     unreadCount: 0,
     hasUserMention: false,
     lastActivity: Date.now(),
     queue: [],
-    queuePaused: false,
     queueFull: false,
     workspaceWorktreeId: null,
     workspaceOpenTabs: [],
@@ -155,6 +154,78 @@ describe('useChatHistory scroll memory (#27)', () => {
     scrollEl.appendChild(boundary);
     return boundary;
   }
+
+  it('does not overwrite the departing reading anchor with the incoming empty DOM', async () => {
+    const threadA = 'thread-departure-empty-a';
+    const threadB = 'thread-departure-empty-b';
+    const aMessages = [makeMsg('reading-message', 1)];
+    const bMessages = [makeMsg('other-message', 2)];
+    useChatStore.setState({
+      currentThreadId: threadA,
+      messages: aMessages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadA]: makeThreadState(aMessages), [threadB]: makeThreadState(bMessages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId: threadA })));
+    const el = capturedHook!.scrollContainerRef.current!;
+    const top = defineMutableNumberProp(el, 'scrollTop', 200);
+    const height = defineMutableNumberProp(el, 'scrollHeight', 1200);
+    defineMutableNumberProp(el, 'clientHeight', 600);
+    el.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    const boundary = appendMessageBoundary(el, 'reading-message', () => ({ top: 80, bottom: 300 }));
+    cancelInitialRestoreWithWheel(el, -1);
+    act(() => capturedHook?.handleScroll());
+
+    // ThreadChatSurface projects the incoming thread before the parent's passive
+    // setCurrentThread effect. Its DOM is empty when useChatHistory sees old store truth.
+    boundary.remove();
+    top.set(0);
+    height.set(600);
+    await act(async () => root.render(React.createElement(HookHost, { threadId: threadB })));
+    act(() => useChatStore.getState().setCurrentThread(threadB));
+    await act(async () => root.render(React.createElement(HookHost, { threadId: threadA })));
+    height.set(1200);
+    appendMessageBoundary(el, 'reading-message', () => ({
+      top: 280 - top.get(),
+      bottom: 500 - top.get(),
+    }));
+    act(() => useChatStore.getState().setCurrentThread(threadA));
+    act(() => flushAnimationFrames());
+    expect(top.get()).toBe(200);
+  });
+
+  it('places an incoming cached timeline before its first animation frame', async () => {
+    const threadA = 'thread-first-paint-a';
+    const threadB = 'thread-first-paint-b';
+    const aMessages = [makeMsg('first-paint-a', 1)];
+    const bMessages = [makeMsg('first-paint-b', 2)];
+    useChatStore.setState({
+      currentThreadId: threadA,
+      messages: aMessages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: {
+        [threadA]: makeThreadState(aMessages),
+        [threadB]: makeThreadState(bMessages),
+      },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId: threadA })));
+    const el = capturedHook!.scrollContainerRef.current!;
+    const top = defineMutableNumberProp(el, 'scrollTop', 300);
+    defineMutableNumberProp(el, 'clientHeight', 600);
+    defineMutableNumberProp(el, 'scrollHeight', 1800);
+    cancelInitialRestoreWithWheel(el, -1);
+
+    await act(async () => {
+      useChatStore.getState().setCurrentThread(threadB);
+      root.render(React.createElement(HookHost, { threadId: threadB }));
+    });
+
+    // The outgoing offset points into the new timeline's deferred placeholders.
+    // Waiting for RAF would expose them for the first paint of the new thread.
+    expect(top.get()).toBe(1200);
+  });
 
   it('retries saved offset restore until the remounted thread becomes scrollable again', async () => {
     const threadA = 'thread-scroll-a';
@@ -305,7 +376,7 @@ describe('useChatHistory scroll memory (#27)', () => {
     firstTop.set(200);
   });
 
-  it('falls back once to the saved pixel offset when the message anchor is absent', async () => {
+  it('lands on the next survivor when Back history no longer contains the anchor', async () => {
     const threadA = 'thread-missing-anchor-a';
     const threadB = 'thread-missing-anchor-b';
     const aMessages = [makeMsg('missing-anchor', 1)];
@@ -342,25 +413,29 @@ describe('useChatHistory scroll memory (#27)', () => {
       hasMore: false,
       isLoadingHistory: false,
       threadStates: {
-        [threadA]: makeThreadState(aMessages),
+        [threadA]: makeThreadState([makeMsg('replacement-message', 1)]),
         [threadB]: makeThreadState(bMessages),
       },
     });
     await act(async () => root.render(React.createElement(HookHost, { threadId: threadA })));
 
     const restoredEl = capturedHook!.scrollContainerRef.current!;
-    const restoredTop = defineMutableNumberProp(restoredEl, 'scrollTop', 0);
+    const restoredTop = defineMutableNumberProp(restoredEl, 'scrollTop', 75);
     defineMutableNumberProp(restoredEl, 'clientHeight', 600);
     defineMutableNumberProp(restoredEl, 'scrollHeight', 1000);
     restoredEl.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    appendMessageBoundary(restoredEl, 'replacement-message', () => ({
+      top: 400 - restoredTop.get(),
+      bottom: 600 - restoredTop.get(),
+    }));
     act(() => useChatStore.getState().setCurrentThread(threadA));
     act(() => flushAnimationFrames());
 
-    expect(restoredTop.get()).toBe(200);
-    expect(rafCallbacks.size).toBe(1);
+    expect(restoredTop.get()).toBe(320);
+    expect(readChatScrollState(threadA)).toMatchObject({ messageAnchor: { messageId: 'replacement-message' } });
     act(() => flushAnimationFrames());
     expect(rafCallbacks.size).toBe(0);
-    expect(restoredTop.get()).toBe(200);
+    expect(restoredTop.get()).toBe(320);
     firstTop.set(200);
   });
 
@@ -625,6 +700,498 @@ describe('useChatHistory scroll memory (#27)', () => {
     expect(scrollTop.get()).toBe(500);
   });
 
+  it('re-pins the bottom when an existing processing message moves in presentation order', async () => {
+    const threadId = 'thread-reorder-bottom';
+    const messages = [makeMsg('early', 1_000), makeMsg('moving', 3_000)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+
+    const scrollEl = capturedHook!.scrollContainerRef.current!;
+    const scrollTop = defineMutableNumberProp(scrollEl, 'scrollTop', 400);
+    defineMutableNumberProp(scrollEl, 'clientHeight', 600);
+    const scrollHeight = defineMutableNumberProp(scrollEl, 'scrollHeight', 1_000);
+    cancelInitialRestoreWithWheel(scrollEl, 1);
+    act(() => capturedHook?.handleScroll());
+
+    scrollHeight.set(1_200);
+    act(() => {
+      useChatStore.getState().patchMessage('moving', { timelineOrderAt: 500 });
+    });
+
+    expect(scrollTop.get()).toBe(600);
+  });
+
+  it('keeps the viewed message at the same viewport offset when presentation order changes', async () => {
+    const threadId = 'thread-reorder-message-anchor';
+    const messages = [makeMsg('viewed', 1_000), makeMsg('other', 2_000)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+
+    const scrollEl = capturedHook!.scrollContainerRef.current!;
+    const scrollTop = defineMutableNumberProp(scrollEl, 'scrollTop', 200);
+    defineMutableNumberProp(scrollEl, 'clientHeight', 600);
+    defineMutableNumberProp(scrollEl, 'scrollHeight', 1_200);
+    scrollEl.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    let viewedContentTop = 250;
+    appendMessageBoundary(scrollEl, 'viewed', () => ({
+      top: 100 + viewedContentTop - scrollTop.get(),
+      bottom: 280 + viewedContentTop - scrollTop.get(),
+    }));
+    cancelInitialRestoreWithWheel(scrollEl, -1);
+    act(() => capturedHook?.handleScroll());
+
+    viewedContentTop = 450;
+    act(() => {
+      useChatStore.getState().patchMessage('viewed', { timelineOrderAt: 3_000 });
+    });
+
+    expect(scrollTop.get()).toBe(400);
+    expect(100 + viewedContentTop - scrollTop.get()).toBe(150);
+  });
+
+  it.each([
+    'layout',
+    'stream',
+  ] as const)('does not rewind native reading pixels before the scroll event when %s updates an offset reader', async (source) => {
+    const threadId = `thread-offset-native-pixels-${source}`;
+    const messages = [makeMsg('viewed', 1), makeMsg('other', 2)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+    const el = capturedHook!.scrollContainerRef.current!;
+    const top = defineMutableNumberProp(el, 'scrollTop', 200);
+    defineMutableNumberProp(el, 'clientHeight', 600);
+    defineMutableNumberProp(el, 'scrollHeight', 1200);
+    el.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    appendMessageBoundary(el, 'viewed', () => ({ top: 350 - top.get(), bottom: 650 - top.get() }));
+    cancelInitialRestoreWithWheel(el, -1);
+    act(() => capturedHook!.handleScroll());
+    expect(readChatScrollState(threadId)?.anchor).toBe('offset');
+
+    act(() => {
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: -32 }));
+      // Compositor pixels arrive before React receives the native scroll event.
+      top.set(168);
+      if (source === 'layout') {
+        window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+        flushAnimationFrames();
+      } else {
+        useChatStore.getState().patchMessage('other', { content: 'an unrelated live update' });
+      }
+    });
+    expect(top.get()).toBe(168);
+    act(() => {
+      capturedHook!.handleScroll();
+      el.dispatchEvent(new Event('scrollend'));
+      window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+      flushAnimationFrames();
+    });
+    expect(top.get()).toBe(168);
+    expect(readChatScrollState(threadId)).toMatchObject({ top: 168, anchor: 'offset' });
+  });
+
+  it.each([
+    ['bottom', -32, 'before-observation'],
+    ['offset', -32, 'before-observation'],
+    ['offset', 32, 'before-observation'],
+    ['bottom', -32, 'before-pixels'],
+    ['offset', -32, 'before-pixels'],
+    ['offset', 32, 'before-pixels'],
+    ['bottom', -32, 'between-frames'],
+    ['offset', -32, 'between-frames'],
+    ['offset', 32, 'between-frames'],
+  ] as const)('records native scrolling from %s (delta=%s, scrollend=%s)', async (anchor, delta, timing) => {
+    const threadId = `thread-scrollend-${anchor}-${delta}-${timing}`;
+    const messages = [makeMsg('viewed', 1), makeMsg('other', 2)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+    const el = capturedHook!.scrollContainerRef.current!;
+    const top = defineMutableNumberProp(el, 'scrollTop', 600);
+    defineMutableNumberProp(el, 'clientHeight', 600);
+    defineMutableNumberProp(el, 'scrollHeight', 1200);
+    el.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    appendMessageBoundary(el, 'viewed', () => ({ top: 350 - top.get(), bottom: 1250 - top.get() }));
+    capturedHook!.messagesEndRef.current!.scrollIntoView = () => top.set(600);
+    cancelInitialRestoreWithWheel(el, -1);
+    if (anchor === 'offset') {
+      top.set(200);
+      act(() => capturedHook!.handleScroll());
+    }
+    const destination = top.get() + delta;
+    act(() => {
+      if (timing === 'between-frames') {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: delta < 0 ? 'PageUp' : 'PageDown' }));
+        top.set(destination - delta / 2);
+        capturedHook!.handleScroll();
+        el.dispatchEvent(new Event('scrollend'));
+        flushAnimationFrames();
+      } else {
+        el.dispatchEvent(new WheelEvent('wheel', { deltaY: delta }));
+        if (timing === 'before-pixels') el.dispatchEvent(new Event('scrollend'));
+      }
+      top.set(destination);
+      if (timing === 'before-observation') el.dispatchEvent(new Event('scrollend'));
+      capturedHook!.handleScroll();
+      window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+      flushAnimationFrames();
+    });
+    expect(top.get()).toBe(destination);
+    expect(readChatScrollState(threadId)).toMatchObject({
+      top: destination,
+      anchor: 'offset',
+      messageAnchor: { messageId: 'viewed', viewportOffsetPx: 350 - destination - 100 },
+    });
+  });
+
+  it.each([
+    ['bottom', -1],
+    ['offset', -1],
+    ['offset', 1],
+  ] as const)('keeps a held scrollbar through delayed movement and a paused drag from %s (direction=%s)', async (anchor, direction) => {
+    const threadId = `thread-held-pointer-${anchor}-${direction}`;
+    const messages = [makeMsg('viewed', 1), makeMsg('other', 2)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+    const el = capturedHook!.scrollContainerRef.current!;
+    const top = defineMutableNumberProp(el, 'scrollTop', 600);
+    defineMutableNumberProp(el, 'clientHeight', 600);
+    defineMutableNumberProp(el, 'scrollHeight', 1600);
+    el.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    let contentTop = 350;
+    appendMessageBoundary(el, 'viewed', () => ({ top: contentTop - top.get(), bottom: contentTop + 1000 - top.get() }));
+    capturedHook!.messagesEndRef.current!.scrollIntoView = () => top.set(1000);
+    cancelInitialRestoreWithWheel(el, -1);
+    top.set(anchor === 'bottom' ? 1000 : 300);
+    act(() => capturedHook!.handleScroll());
+    const start = top.get();
+    act(() => {
+      el.dispatchEvent(new Event('pointerdown'));
+      for (let frame = 0; frame < 3; frame++) flushAnimationFrames();
+    });
+    // Native scrollbar dragging need not deliver pointermove to the page, and
+    // may emit scrollend while the thumb is still held during a pause.
+    for (const distance of [60, 120, 180]) {
+      act(() => {
+        top.set(start + direction * distance);
+        capturedHook!.handleScroll();
+        el.dispatchEvent(new Event('scrollend'));
+        for (let frame = 0; frame < 3; frame++) flushAnimationFrames();
+        window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+        flushAnimationFrames();
+      });
+      expect(top.get()).toBe(start + direction * distance);
+    }
+    act(() => {
+      // A native drag can leave its last scroll pixels unchanged while skipped
+      // row geometry settles. Release must capture the view the reader sees.
+      contentTop += 80;
+      // Release outside the viewport must also hand layout back to the owner.
+      window.dispatchEvent(new Event('pointerup'));
+      for (let frame = 0; frame < 3; frame++) flushAnimationFrames();
+      expect(top.get()).toBe(start + direction * 180);
+      contentTop += 40;
+      capturedHook!.handleScroll();
+      window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+      flushAnimationFrames();
+    });
+    expect(top.get()).toBe(start + direction * 180 + 40);
+    expect(readChatScrollState(threadId)?.anchor).toBe('offset');
+  });
+
+  it.each([-32, 32])('releases an input that moved and returned to its starting point (delta=%s)', async (delta) => {
+    const threadId = `thread-input-roundtrip-${delta}`;
+    const messages = [makeMsg('viewed', 1), makeMsg('other', 2)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+    const el = capturedHook!.scrollContainerRef.current!;
+    const top = defineMutableNumberProp(el, 'scrollTop', 200);
+    defineMutableNumberProp(el, 'clientHeight', 600);
+    defineMutableNumberProp(el, 'scrollHeight', 1200);
+    el.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    let contentTop = 350;
+    appendMessageBoundary(el, 'viewed', () => ({ top: contentTop - top.get(), bottom: contentTop + 800 - top.get() }));
+    cancelInitialRestoreWithWheel(el, -1);
+    act(() => {
+      capturedHook!.handleScroll();
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: delta }));
+      top.set(200 + delta);
+      capturedHook!.handleScroll();
+      flushAnimationFrames();
+      top.set(200);
+      capturedHook!.handleScroll();
+      el.dispatchEvent(new Event('scrollend'));
+      for (let frame = 0; frame < 3; frame++) flushAnimationFrames();
+      contentTop += 40;
+      // A layout-driven scroll observation must preserve the settled message
+      // anchor, rather than recapture it under an input that should have ended.
+      capturedHook!.handleScroll();
+      window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+      flushAnimationFrames();
+    });
+    expect(top.get()).toBe(240);
+  });
+
+  it('keeps a real small upward gesture inside the near-bottom band through the next live update', async () => {
+    const threadId = 'thread-near-bottom-native-reading';
+    const messages = [makeMsg('viewed', 1), makeMsg('other', 2)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+    const el = capturedHook!.scrollContainerRef.current!;
+    const top = defineMutableNumberProp(el, 'scrollTop', 400);
+    defineMutableNumberProp(el, 'clientHeight', 600);
+    defineMutableNumberProp(el, 'scrollHeight', 1000);
+    el.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    appendMessageBoundary(el, 'viewed', () => ({ top: 300 - top.get(), bottom: 1100 - top.get() }));
+    cancelInitialRestoreWithWheel(el, 1);
+    act(() => capturedHook!.handleScroll());
+    expect(readChatScrollState(threadId)?.anchor).toBe('bottom');
+    act(() => {
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: -2 }));
+      top.set(398);
+      capturedHook!.handleScroll();
+      el.dispatchEvent(new Event('scrollend'));
+      useChatStore.getState().patchMessage('other', { content: 'next live update' });
+    });
+    expect(top.get()).toBe(398);
+    expect(readChatScrollState(threadId)).toMatchObject({ top: 398, anchor: 'offset' });
+  });
+
+  it.each([
+    'layout',
+    'stream',
+    'append',
+  ] as const)('does not follow bottom when %s arrives before an upward wheel moves the scrollport', async (source) => {
+    const threadId = `thread-upward-wheel-before-pixels-${source}`;
+    const messages = [makeMsg('m1', 1), makeMsg('m2', 2)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+    const scrollEl = capturedHook!.scrollContainerRef.current!;
+    const scrollTop = defineMutableNumberProp(scrollEl, 'scrollTop', 400);
+    defineMutableNumberProp(scrollEl, 'clientHeight', 600);
+    const scrollHeight = defineMutableNumberProp(scrollEl, 'scrollHeight', 1000);
+    const endEl = capturedHook!.messagesEndRef.current!;
+    endEl.scrollIntoView = vi.fn();
+    cancelInitialRestoreWithWheel(scrollEl, 1);
+    act(() => capturedHook?.handleScroll());
+    expect(readChatScrollState(threadId)?.anchor).toBe('bottom');
+
+    // The browser can deliver an earlier layout scroll/scrollend after wheel
+    // but before compositor movement. Neither event consumes that new input.
+    act(() => {
+      scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -32 }));
+      scrollHeight.set(1003);
+      capturedHook?.handleScroll();
+      scrollEl.dispatchEvent(new Event('scrollend'));
+      scrollHeight.set(1400);
+      if (source === 'layout') window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+      else if (source === 'stream') {
+        useChatStore.getState().patchMessage('m2', { content: 'Streaming output grows before scroll dispatch' });
+      } else useChatStore.setState({ messages: [...messages, makeMsg('m3', 3)] });
+      flushAnimationFrames();
+    });
+    expect(endEl.scrollIntoView).not.toHaveBeenCalled();
+    expect(scrollTop.get()).toBe(400);
+    act(() => {
+      scrollTop.set(368);
+      capturedHook?.handleScroll();
+      scrollEl.dispatchEvent(new Event('scrollend'));
+    });
+    expect(readChatScrollState(threadId)?.anchor).toBe('offset');
+    act(() => {
+      window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+      flushAnimationFrames();
+    });
+    expect(endEl.scrollIntoView).not.toHaveBeenCalled();
+    expect(scrollTop.get()).toBe(368);
+  });
+
+  it.each([
+    true,
+    false,
+  ])('does not mistake a shrinking bottom clamp for native upward movement (moves=%s)', async (moves) => {
+    const threadId = `thread-shrinking-bottom-${moves}`;
+    const messages = [makeMsg('m1', 1), makeMsg('m2', 2)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+    const el = capturedHook!.scrollContainerRef.current!;
+    const top = defineMutableNumberProp(el, 'scrollTop', 9975);
+    defineMutableNumberProp(el, 'clientHeight', 771);
+    const height = defineMutableNumberProp(el, 'scrollHeight', 10746);
+    const endEl = capturedHook!.messagesEndRef.current!;
+    endEl.scrollIntoView = vi.fn();
+    cancelInitialRestoreWithWheel(el, 1);
+    act(() => {
+      capturedHook?.handleScroll();
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: -403 }));
+      // The closing card shrinks first; the browser clamps the old bottom by5px.
+      height.set(10741);
+      top.set(9970);
+      capturedHook?.handleScroll();
+      el.dispatchEvent(new Event('scrollend'));
+      flushAnimationFrames();
+    });
+    if (moves) {
+      act(() => {
+        height.set(10730);
+        top.set(9567);
+        capturedHook?.handleScroll();
+        el.dispatchEvent(new Event('scrollend'));
+      });
+      expect(readChatScrollState(threadId)?.anchor).toBe('offset');
+      act(() => {
+        height.set(10723);
+        window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+        flushAnimationFrames();
+      });
+      expect(top.get()).toBe(9567);
+      expect(endEl.scrollIntoView).not.toHaveBeenCalled();
+    } else {
+      // A consumed wheel has no movement beyond the clamp and must still expire.
+      act(() => flushAnimationFrames());
+      act(() => {
+        height.set(11000);
+        useChatStore.setState({ messages: [...messages, makeMsg('m3', 3)] });
+      });
+      expect(top.get()).toBe(10229);
+      expect(endEl.scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(readChatScrollState(threadId)?.anchor).toBe('bottom');
+    }
+  });
+
+  it.each([
+    -32,
+    32,
+    'pointerup',
+    'pointercancel',
+    'blur',
+  ] as const)('retires consumed or released input (input=%s)', async (input) => {
+    const threadId = `thread-consumed-input-${input}`;
+    const messages = [makeMsg('m1', 1), makeMsg('m2', 2)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+    const el = capturedHook!.scrollContainerRef.current!;
+    const top = defineMutableNumberProp(el, 'scrollTop', 400);
+    defineMutableNumberProp(el, 'clientHeight', 600);
+    const height = defineMutableNumberProp(el, 'scrollHeight', 1000);
+    const endEl = capturedHook!.messagesEndRef.current!;
+    endEl.scrollIntoView = vi.fn(() => top.set(height.get() - el.clientHeight));
+    cancelInitialRestoreWithWheel(el, 1);
+    act(() => {
+      capturedHook?.handleScroll();
+      el.dispatchEvent(
+        typeof input === 'number' ? new WheelEvent('wheel', { deltaY: input }) : new Event('pointerdown'),
+      );
+      if (typeof input !== 'number') window.dispatchEvent(new Event(input));
+      capturedHook?.handleScroll();
+      el.dispatchEvent(new Event('scrollend'));
+      // A nested scroller consumes the wheel; the outer viewport never moves.
+      flushAnimationFrames();
+      flushAnimationFrames();
+    });
+    expect(top.get()).toBe(400);
+    expect(endEl.scrollIntoView).not.toHaveBeenCalled();
+    act(() => {
+      height.set(1200);
+      useChatStore.setState({ messages: [...messages, makeMsg('m3', 3)] });
+    });
+    expect(top.get()).toBe(600);
+    expect(endEl.scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(readChatScrollState(threadId)?.anchor).toBe('bottom');
+    act(() => {
+      height.set(1400);
+      window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+      flushAnimationFrames();
+    });
+    expect(top.get()).toBe(800);
+    expect(readChatScrollState(threadId)?.top).toBe(800);
+  });
+
+  it('does not hold upward intent when the scrollport cannot move upward', async () => {
+    const threadId = 'thread-upward-wheel-no-scroll-range';
+    const messages = [makeMsg('m1', 1), makeMsg('m2', 2)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+    const el = capturedHook!.scrollContainerRef.current!;
+    defineMutableNumberProp(el, 'scrollTop', 0);
+    defineMutableNumberProp(el, 'clientHeight', 600);
+    const height = defineMutableNumberProp(el, 'scrollHeight', 500);
+    const endEl = capturedHook!.messagesEndRef.current!;
+    endEl.scrollIntoView = vi.fn();
+    cancelInitialRestoreWithWheel(el, -32);
+    act(() => {
+      capturedHook?.handleScroll();
+      height.set(1200);
+      useChatStore.setState({ messages: [...messages, makeMsg('m3', 3)] });
+    });
+    expect(endEl.scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(readChatScrollState(threadId)?.anchor).toBe('bottom');
+  });
+
   it('leaves bottom follow after repeated small user scroll-up inputs', async () => {
     const threadId = 'thread-small-user-scrolls';
     const messages = [makeMsg('m1', 1), makeMsg('m2', 2)];
@@ -791,7 +1358,7 @@ describe('useChatHistory scroll memory (#27)', () => {
 
     const scrollEl = capturedHook!.scrollContainerRef.current!;
     const scrollTop = defineMutableNumberProp(scrollEl, 'scrollTop', 400);
-    defineMutableNumberProp(scrollEl, 'clientHeight', 600);
+    const clientHeight = defineMutableNumberProp(scrollEl, 'clientHeight', 600);
     defineMutableNumberProp(scrollEl, 'scrollHeight', 1000);
     const endEl = capturedHook!.messagesEndRef.current!;
     endEl.scrollIntoView = vi.fn(() => {
@@ -804,6 +1371,7 @@ describe('useChatHistory scroll memory (#27)', () => {
       capturedHook?.handleScroll();
     });
 
+    clientHeight.set(540);
     act(() => {
       window.dispatchEvent(new Event('catcafe:chat-layout-changed'));
       flushAnimationFrames();
@@ -811,6 +1379,11 @@ describe('useChatHistory scroll memory (#27)', () => {
 
     expect(endEl.scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto' });
     expect(scrollTop.get()).toBe(460);
+    act(() => {
+      window.dispatchEvent(new Event('catcafe:chat-layout-changed'));
+      flushAnimationFrames();
+    });
+    expect(endEl.scrollIntoView).toHaveBeenCalledTimes(1);
   });
 
   it('turns a widget disclosure into an offset anchor instead of following the old bottom anchor', async () => {
@@ -839,9 +1412,11 @@ describe('useChatHistory scroll memory (#27)', () => {
 
     act(() => capturedHook?.handleScroll());
 
+    scrollEl.getBoundingClientRect = () => ({ top: 300, bottom: 900 }) as DOMRect;
     let anchorTop = 340;
     const anchor = document.createElement('div');
-    anchor.getBoundingClientRect = () => ({ top: anchorTop }) as DOMRect;
+    anchor.dataset.messageViewportId = 'm2';
+    anchor.getBoundingClientRect = () => ({ top: anchorTop, bottom: anchorTop + 200 }) as DOMRect;
     scrollEl.appendChild(anchor);
     anchorTop = 380;
 
@@ -855,12 +1430,84 @@ describe('useChatHistory scroll memory (#27)', () => {
 
     expect(scrollTop.get()).toBe(440);
     expect(endEl.scrollIntoView).not.toHaveBeenCalled();
+    expect(readChatScrollState(threadId)).toMatchObject({
+      anchor: 'offset',
+      messageAnchor: { messageId: 'm2', timelineOrderAt: 2 },
+    });
 
     act(() => {
       window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
       flushAnimationFrames();
     });
     expect(endEl.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('keeps a deliberately expanded card in view instead of re-pinning bottom', async () => {
+    const threadId = 'thread-reading-disclosure';
+    const messages = [makeMsg('reading', 1)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+
+    const scrollEl = capturedHook!.scrollContainerRef.current!;
+    const scrollTop = defineMutableNumberProp(scrollEl, 'scrollTop', 400);
+    defineMutableNumberProp(scrollEl, 'clientHeight', 600);
+    const scrollHeight = defineMutableNumberProp(scrollEl, 'scrollHeight', 1000);
+    scrollEl.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    const boundary = appendMessageBoundary(scrollEl, 'reading', () => ({ top: 200, bottom: 680 }));
+    const button = document.createElement('button');
+    button.dataset.readingDisclosure = '';
+    button.getBoundingClientRect = () => ({ top: 300, bottom: 340 }) as DOMRect;
+    boundary.firstElementChild?.append(button);
+    const endEl = capturedHook!.messagesEndRef.current!;
+    endEl.scrollIntoView = vi.fn(() => scrollTop.set(600));
+    cancelInitialRestoreWithWheel(scrollEl, 1);
+    act(() => capturedHook?.handleScroll());
+
+    act(() => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    scrollHeight.set(1200);
+    act(() => {
+      window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+      flushAnimationFrames();
+    });
+
+    expect(scrollTop.get()).toBe(400);
+    expect(endEl.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('uses the viewed anchor once when a newly admitted card inserts above it', async () => {
+    const threadId = 'thread-admitted-above-reader';
+    const messages = [makeMsg('viewed', 10), makeMsg('tail', 20)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+    const scrollEl = capturedHook!.scrollContainerRef.current!;
+    const scrollTop = defineMutableNumberProp(scrollEl, 'scrollTop', 300);
+    defineMutableNumberProp(scrollEl, 'clientHeight', 600);
+    defineMutableNumberProp(scrollEl, 'scrollHeight', 1000);
+    scrollEl.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    let contentTop = 500;
+    appendMessageBoundary(scrollEl, 'viewed', () => ({
+      top: contentTop - scrollTop.get(),
+      bottom: contentTop + 300 - scrollTop.get(),
+    }));
+    cancelInitialRestoreWithWheel(scrollEl, -1);
+    act(() => capturedHook?.handleScroll());
+
+    contentTop += 150;
+    act(() => useChatStore.setState({ messages: [makeMsg('new', 5), ...messages] }));
+    expect(scrollTop.get()).toBe(450);
+    expect(contentTop - scrollTop.get()).toBe(200);
   });
 
   it('does not hijack scroll on layout-change events when the user is reading above the bottom', async () => {
@@ -950,5 +1597,109 @@ describe('useChatHistory scroll memory (#27)', () => {
     expect(scrollTop.get()).toBe(600);
     expect(endEl.scrollIntoView).toHaveBeenNthCalledWith(1, { behavior: 'smooth' });
     expect(endEl.scrollIntoView).toHaveBeenNthCalledWith(2, { behavior: 'auto' });
+  });
+  it('keeps smooth wheel to bottom after reading re-enters bottom follow', async () => {
+    const threadId = 'thread-multi-frame-bottom';
+    const messages = [makeMsg('m1', 1), makeMsg('m2', 2)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => {
+      root.render(React.createElement(HookHost, { threadId }));
+    });
+    const scrollEl = capturedHook!.scrollContainerRef.current!;
+    const scrollTop = defineMutableNumberProp(scrollEl, 'scrollTop', 100);
+    defineMutableNumberProp(scrollEl, 'clientHeight', 600);
+    defineMutableNumberProp(scrollEl, 'scrollHeight', 1000);
+    const endEl = capturedHook!.messagesEndRef.current!;
+    endEl.scrollIntoView = vi.fn();
+
+    // user reads above the bottom
+    cancelInitialRestoreWithWheel(scrollEl, -1);
+    act(() => capturedHook?.handleScroll());
+    // one wheel-down tick, browser animates over several frames
+    act(() => scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: 100 })));
+    scrollTop.set(250);
+    act(() => capturedHook?.handleScroll());
+    scrollTop.set(400); // reached bottom on a later animation frame, no new input
+    act(() => capturedHook?.handleScroll());
+
+    act(() => {
+      useChatStore.setState({ messages: [...messages, makeMsg('m3', 3)] });
+    });
+    expect(endEl.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth' });
+  });
+
+  it.each([
+    'layout',
+    'stream',
+  ] as const)('does not cancel native End scrolling when %s reflows an already-recorded frame', async (source) => {
+    const threadId = `thread-end-correction-frame-${source}`;
+    const messages = [makeMsg('m1', 1), makeMsg('m2', 2)];
+    useChatStore.setState({
+      currentThreadId: threadId,
+      messages,
+      hasMore: false,
+      isLoadingHistory: false,
+      threadStates: { [threadId]: makeThreadState(messages) },
+    });
+    await act(async () => root.render(React.createElement(HookHost, { threadId })));
+    const el = capturedHook!.scrollContainerRef.current!;
+    const top = defineMutableNumberProp(el, 'scrollTop', 100);
+    defineMutableNumberProp(el, 'clientHeight', 600);
+    defineMutableNumberProp(el, 'scrollHeight', 1500);
+    el.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    let contentTop = 200;
+    appendMessageBoundary(el, 'm1', () => ({ top: contentTop - top.get(), bottom: contentTop + 800 - top.get() }));
+    cancelInitialRestoreWithWheel(el, -1);
+    act(() => capturedHook?.handleScroll());
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'End' }));
+      top.set(250); // Native scrolling updates the viewport without calling the JS setter.
+      capturedHook?.handleScroll();
+      window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+      top.set(450); // Another native frame arrives before the queued correction.
+      capturedHook?.handleScroll();
+    });
+    const writes = vi.spyOn(el, 'scrollTop', 'set');
+    act(() => flushAnimationFrames());
+
+    expect(top.get()).toBe(450);
+    // Even assigning the current coordinate interrupts an ongoing native scroll.
+    expect(writes).not.toHaveBeenCalled();
+    expect(readChatScrollState(threadId)?.top).toBe(450);
+
+    // The last native frame is already saved, but the gesture is still in flight.
+    // A deferred row above shrinks; re-anchoring now would abort the browser's End animation.
+    contentTop -= 80;
+    act(() => {
+      if (source === 'layout') window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+      else useChatStore.getState().patchMessage('m2', { content: 'deferred content is now measured' });
+      flushAnimationFrames();
+    });
+    expect(top.get()).toBe(450);
+    expect(writes).not.toHaveBeenCalled();
+
+    // A native scroll observation records the new geometry. Once the gesture ends,
+    // later layout changes must again preserve the reader's position.
+    act(() => {
+      capturedHook?.handleScroll();
+      el.dispatchEvent(new Event('scrollend'));
+    });
+    contentTop += 40;
+    act(() => {
+      window.dispatchEvent(new Event(CHAT_LAYOUT_CHANGED_EVENT));
+      flushAnimationFrames();
+      expect(writes).not.toHaveBeenCalled();
+      // A queued end is provisional until two native frames remain quiet.
+      flushAnimationFrames();
+    });
+    expect(top.get()).toBe(490);
+    expect(writes).toHaveBeenCalledOnce();
   });
 });

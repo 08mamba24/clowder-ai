@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '@/utils/api-client';
+import { EvidenceFeatureFlag, type EvidenceFlag } from './EvidenceFeatureFlag';
+import { MemoryReadError } from './page/MemoryReadError';
+import { memoryTime } from './page/memory-time';
 import { RebuildButton } from './RebuildButton';
 
 // F188 Phase K: shared types for config-warning surface (AC-K1/K3/K4)
@@ -32,6 +35,7 @@ interface RawStatusResponse {
   passage_warmup_active?: boolean;
   edges_count?: number;
   last_rebuild_at?: string | null;
+  last_document_updated_at?: string | null;
   embedding_model?: string | null;
   reason?: string;
   // F188 Phase K extension
@@ -51,6 +55,7 @@ export interface IndexStatusData {
   passageWarmupActive: boolean;
   edgesCount: number;
   lastRebuildAt: string | null;
+  lastDocumentUpdatedAt: string | null;
   embeddingModel: string | null;
   reason?: string;
   // F188 Phase K — default `'ok'` + `[]` when API omits them (older backend).
@@ -74,6 +79,7 @@ export function parseIndexStatus(raw: RawStatusResponse): IndexStatusData {
     passageWarmupActive: raw.passage_warmup_active ?? false,
     edgesCount: raw.edges_count ?? 0,
     lastRebuildAt: raw.last_rebuild_at ?? null,
+    lastDocumentUpdatedAt: raw.last_document_updated_at ?? null,
     embeddingModel: raw.embedding_model ?? null,
     reason: raw.reason,
     functionalStatus: raw.functionalStatus ?? 'ok',
@@ -206,14 +212,9 @@ export function parseRebuildJob(raw: RawRebuildJob): RebuildJobData {
 
 // ── Env Config types + helpers ──
 
-interface EnvVar {
-  name: string;
-  defaultValue: string;
-  description: string;
+interface EnvVar extends EvidenceFlag {
   category: string;
   sensitive: boolean;
-  currentValue: string | null;
-  allowedValues?: string[];
 }
 
 interface EnvSummaryResponse {
@@ -243,11 +244,18 @@ function StatusRow({ label, value }: { label: string; value: string | number }) 
   );
 }
 
-export function IndexStatus({ refreshToken = 0 }: { refreshToken?: number }) {
+export function IndexStatus({
+  refreshToken = 0,
+  onConfigChange,
+}: {
+  refreshToken?: number;
+  onConfigChange?: () => void;
+}) {
   const [status, setStatus] = useState<IndexStatusData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [envVars, setEnvVars] = useState<EnvVar[]>([]);
   const [updatingKey, setUpdatingKey] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const [warmupTriggering, setWarmupTriggering] = useState(false);
 
   const evidenceVars = useMemo(() => filterEvidenceVars(envVars), [envVars]);
@@ -259,10 +267,19 @@ export function IndexStatus({ refreshToken = 0 }: { refreshToken?: number }) {
         apiFetch('/api/evidence/status'),
         apiFetch('/api/config/env-summary'),
       ]);
+      if (!statusRes.ok || !envRes.ok) throw new Error('Index settings unavailable');
       const raw = (await statusRes.json()) as RawStatusResponse;
-      setStatus(parseIndexStatus(raw));
       const envData = (await envRes.json()) as EnvSummaryResponse;
-      setEnvVars(envData.variables ?? []);
+      if (
+        !raw ||
+        typeof raw.healthy !== 'boolean' ||
+        typeof raw.backend !== 'string' ||
+        !Array.isArray(envData.variables)
+      ) {
+        throw new Error('Invalid index settings');
+      }
+      setStatus(parseIndexStatus(raw));
+      setEnvVars(envData.variables);
       setError(null);
     } catch {
       setError('获取记忆状态失败');
@@ -272,6 +289,7 @@ export function IndexStatus({ refreshToken = 0 }: { refreshToken?: number }) {
   const cycleEnvVar = useCallback(
     async (name: string, currentValue: string | null, allowedValues?: string[]) => {
       setUpdatingKey(name);
+      setUpdateError(null);
       let newValue: string;
       if (allowedValues && allowedValues.length > 1) {
         const idx = allowedValues.indexOf(currentValue ?? allowedValues[0]!);
@@ -280,19 +298,24 @@ export function IndexStatus({ refreshToken = 0 }: { refreshToken?: number }) {
         newValue = currentValue === 'on' ? 'off' : 'on';
       }
       try {
-        await apiFetch('/api/config/env', {
+        const response = await apiFetch('/api/config/env', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ updates: [{ name, value: newValue }] }),
         });
+        if (!response.ok) {
+          setUpdateError([401, 403].includes(response.status) ? '没有权限更新这个开关' : '请稍后重试');
+          return;
+        }
+        onConfigChange?.();
         await fetchAll();
       } catch {
-        /* fetchAll will refresh state */
+        setUpdateError('没有确认更新成功，请重新读取状态后再试');
       } finally {
         setUpdatingKey(null);
       }
     },
-    [fetchAll],
+    [fetchAll, onConfigChange],
   );
 
   useEffect(() => {
@@ -342,11 +365,8 @@ export function IndexStatus({ refreshToken = 0 }: { refreshToken?: number }) {
 
   if (error) {
     return (
-      <div data-testid="index-status" className="rounded-lg border border-conn-red-ring bg-conn-red-bg p-4">
-        <p className="text-sm text-conn-red-text">{error}</p>
-        <button type="button" onClick={fetchAll} className="mt-2 text-xs text-conn-red-text underline">
-          重试
-        </button>
+      <div data-testid="index-status">
+        <MemoryReadError noun="索引状态" retry={fetchAll} />
       </div>
     );
   }
@@ -434,58 +454,21 @@ export function IndexStatus({ refreshToken = 0 }: { refreshToken?: number }) {
         />
         <StatusRow label="关系边" value={status.edgesCount} />
         {status.embeddingModel && <StatusRow label="嵌入模型" value={status.embeddingModel} />}
-        <StatusRow
-          label="上次重建"
-          value={status.lastRebuildAt ? new Date(status.lastRebuildAt).toLocaleString() : '从未'}
-        />
+        <StatusRow label="上次重建" value={status.lastRebuildAt ? memoryTime(status.lastRebuildAt) : '从未'} />
       </div>
 
       {/* Feature flags */}
       {evidenceVars.length > 0 && (
         <div id="evidence-feature-flags" className="rounded-lg bg-[var(--console-card-bg)] p-3 transition-shadow">
           <h3 className="mb-2 text-xs font-semibold text-cafe-black">功能开关</h3>
-          {evidenceVars.map((v) => {
-            const isOn = v.currentValue === 'on';
-            const hasMultiValues = v.allowedValues && v.allowedValues.length > 2;
-            const isUpdating = updatingKey === v.name;
-            const current = v.currentValue ?? v.defaultValue;
-            return (
-              <div key={v.name} className="flex items-center justify-between rounded-lg px-2 py-2">
-                <div className="flex-1 pr-3">
-                  <div className="text-xs font-medium text-cafe-black">{v.name}</div>
-                  <div className="text-micro text-cafe-secondary">{v.description}</div>
-                </div>
-                {hasMultiValues ? (
-                  <button
-                    type="button"
-                    disabled={isUpdating}
-                    onClick={() => cycleEnvVar(v.name, v.currentValue, v.allowedValues)}
-                    className={`rounded px-2 py-0.5 text-micro font-medium transition-colors ${
-                      current === 'on' || current === 'apply'
-                        ? 'bg-cafe-accent text-[var(--cafe-surface)] hover:bg-cafe-accent-hover'
-                        : current === 'off'
-                          ? 'bg-[var(--console-field-bg)] text-cafe-secondary hover:bg-[var(--console-hover-bg)]'
-                          : 'bg-conn-amber-bg text-conn-amber-text hover:opacity-80'
-                    } ${isUpdating ? 'opacity-50' : ''}`}
-                    title={`点击切换: ${v.allowedValues!.join(' → ')}`}
-                  >
-                    {current}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={isUpdating}
-                    onClick={() => cycleEnvVar(v.name, v.currentValue)}
-                    className={`relative h-5 w-9 rounded-full transition-colors ${isOn ? 'bg-cafe-accent' : 'bg-[var(--console-field-bg)]'} ${isUpdating ? 'opacity-50' : ''}`}
-                  >
-                    <span
-                      className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-[var(--cafe-surface)] shadow transition-transform ${isOn ? 'translate-x-4' : ''}`}
-                    />
-                  </button>
-                )}
-              </div>
-            );
-          })}
+          {evidenceVars.map((flag) => (
+            <EvidenceFeatureFlag
+              key={flag.name}
+              flag={flag}
+              updating={updatingKey === flag.name}
+              onCycle={cycleEnvVar}
+            />
+          ))}
         </div>
       )}
 
@@ -493,7 +476,7 @@ export function IndexStatus({ refreshToken = 0 }: { refreshToken?: number }) {
       {configVars.length > 0 && (
         <div id="evidence-config-vars" className="rounded-lg bg-[var(--console-card-bg)] p-3 transition-shadow">
           <h3 className="mb-2 text-xs font-semibold text-cafe-black">配置参考</h3>
-          <p className="mb-2 text-micro text-cafe-secondary">以下配置需在 .env 中设置，修改后重启生效。</p>
+          <p className="mb-2 text-micro text-cafe-secondary">配置值仅供参考，请在对应功能的设置或启动配置中管理。</p>
           {configVars.map((v) => (
             <div key={v.name} className="rounded-lg px-2 py-2">
               <div className="flex items-center justify-between">
@@ -509,12 +492,18 @@ export function IndexStatus({ refreshToken = 0 }: { refreshToken?: number }) {
       )}
 
       {/* F188: Rebuild + Refresh buttons */}
+      {updateError && (
+        <p role="alert" className="flex items-center gap-2 text-compact text-cafe-secondary">
+          <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-semantic-critical" />
+          没能更新这个开关 · {updateError}
+        </p>
+      )}
       <div id="rebuild-controls" className="flex gap-2 rounded-lg p-1 transition-shadow">
         <RebuildButton onComplete={fetchAll} />
         <button
           type="button"
           onClick={fetchAll}
-          className="rounded-lg bg-cafe-accent px-3 py-1.5 text-xs font-semibold text-[var(--cafe-surface)] transition-colors hover:bg-cafe-accent-hover"
+          className="rounded-lg border border-cafe-subtle px-3 py-1.5 text-xs text-cafe-secondary transition-colors hover:bg-cafe-surface-sunken"
         >
           刷新状态
         </button>

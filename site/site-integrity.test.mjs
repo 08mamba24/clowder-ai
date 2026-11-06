@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import vm from 'node:vm';
+import { stripFrontmatter } from './lib/doc-frontmatter.mjs';
 import { assignDocHeadingIds, resolveDocLink, resolveImageSrc } from './lib/doc-links.mjs';
 import { fetchLocalizedMarkdown, localizedDocCandidates } from './lib/doc-locale.mjs';
 import { sanitizeMarkdown } from './lib/sanitize-md.mjs';
@@ -26,6 +27,7 @@ const { marked } = require('marked');
 
 const SITE = resolve(dirname(new URL(import.meta.url).pathname));
 const ROOT = resolve(SITE, '..');
+const IS_HOME_SOURCE = existsSync(resolve(ROOT, 'sync-manifest.yaml'));
 
 function readSite(name) {
   return readFileSync(resolve(SITE, name), 'utf8');
@@ -319,6 +321,41 @@ describe('localized roadmap bars', () => {
   });
 });
 
+// ─── Frontmatter stripping ───────────────────────────────────────────
+// Repo docs carry a YAML frontmatter block for tooling. marked renders it as
+// a paragraph of raw text, so the viewer must strip it before rendering —
+// otherwise the first thing a reader sees is `title: "…" doc_kind: …`.
+describe('stripFrontmatter', () => {
+  const doc = '---\ndoc_kind: architecture\ncreated: 2026-02-26\n---\n\n# Clowder AI 愿景\n\n正文。\n';
+
+  it('removes a leading frontmatter block and keeps the body', () => {
+    const out = stripFrontmatter(doc);
+    assert.doesNotMatch(out, /doc_kind/);
+    assert.match(out, /^# Clowder AI 愿景/);
+  });
+
+  it('leaves markdown without frontmatter untouched', () => {
+    const plain = '# Title\n\nBody.\n';
+    assert.equal(stripFrontmatter(plain), plain);
+  });
+
+  it('keeps a horizontal rule that is not frontmatter', () => {
+    // No closing fence after a blank line, so this is a rule, not metadata.
+    const rule = '---\n\nJust a rule below.\n';
+    assert.equal(stripFrontmatter(rule), rule);
+  });
+
+  it('does not strip a block that appears later in the document', () => {
+    const late = '# Title\n\n---\nkeep: me\n---\n';
+    assert.match(stripFrontmatter(late), /keep: me/);
+  });
+
+  it('leaves issue bodies alone (community.html shares the sanitizer)', () => {
+    // community.html must not call stripFrontmatter; guard the wiring itself.
+    assert.doesNotMatch(readSite('community.html'), /_stripFrontmatter/);
+  });
+});
+
 describe('localized document titles', () => {
   const pages = [
     ['index.html', 'meta.home.title'],
@@ -400,18 +437,31 @@ describe('localized docs loader (behavioral)', () => {
     assert.deepStrictEqual(requested, ['docs/faq.zh-CN.md', 'docs/faq.md']);
   });
 
-  it('ships the translated siblings while keeping memory on canonical fallback', () => {
-    for (const path of [
-      'README.zh-CN.md',
-      'SETUP.zh-CN.md',
+  it('ships translated siblings in public while source preserves their ownership boundary', () => {
+    const transformedSourcePairs = [
+      ['README.zh-CN.md', 'README.opensource.zh-CN.md'],
+      ['SETUP.zh-CN.md', 'SETUP.opensource.zh-CN.md'],
+    ];
+    const targetOwnedSiblings = [
       'docs/faq.zh-CN.md',
       'docs/configuration/startup.zh-CN.md',
       'docs/configuration/environment.zh-CN.md',
       'docs/architecture/overview.zh-CN.md',
       'docs/architecture/a2a-protocol.zh-CN.md',
       'docs/architecture/plugin-architecture.zh-CN.md',
-    ]) {
-      assert.ok(existsSync(resolve(ROOT, path)), `${path} must exist`);
+    ];
+
+    if (IS_HOME_SOURCE) {
+      for (const [, source] of transformedSourcePairs) {
+        assert.ok(existsSync(resolve(ROOT, source)), `${source} must exist as the public transform source`);
+      }
+      for (const path of targetOwnedSiblings) {
+        assert.ok(!existsSync(resolve(ROOT, path)), `${path} must remain target-owned instead of entering source`);
+      }
+    } else {
+      for (const path of ['README.zh-CN.md', 'SETUP.zh-CN.md', ...targetOwnedSiblings]) {
+        assert.ok(existsSync(resolve(ROOT, path)), `${path} must exist in the public target`);
+      }
     }
     assert.ok(existsSync(resolve(ROOT, 'docs/architecture/memory/README.md')));
     assert.ok(!existsSync(resolve(ROOT, 'docs/architecture/memory/README.zh-CN.md')));
@@ -561,8 +611,10 @@ describe('resolveDocLink (behavioral)', () => {
   });
 
   it('honors same-document language selectors without changing ordinary cross-document links', () => {
-    assert.match(readFileSync(resolve(ROOT, 'README.zh-CN.md'), 'utf8'), /\[English\]\(README\.md\)/);
-    assert.match(readFileSync(resolve(ROOT, 'README.md'), 'utf8'), /\[中文\]\(README\.zh-CN\.md\)/);
+    const readmeZh = IS_HOME_SOURCE ? 'README.opensource.zh-CN.md' : 'README.zh-CN.md';
+    const readmeEn = IS_HOME_SOURCE ? 'README.opensource.md' : 'README.md';
+    assert.match(readFileSync(resolve(ROOT, readmeZh), 'utf8'), /\[English\]\(README\.md\)/);
+    assert.match(readFileSync(resolve(ROOT, readmeEn), 'utf8'), /\[中文\]\(README\.zh-CN\.md\)/);
 
     assert.deepStrictEqual(resolveDocLink('README.md', 'README.zh-CN.md', loadable), {
       type: 'viewer',
@@ -584,7 +636,9 @@ describe('resolveDocLink (behavioral)', () => {
   });
 
   it('keeps translated cross-document fragments aligned with translated headings', () => {
-    const environmentZh = readFileSync(resolve(ROOT, 'docs/configuration/environment.zh-CN.md'), 'utf8');
+    const environmentZh = IS_HOME_SOURCE
+      ? '[FAQ](../faq.md#在哪里添加-api-密钥)'
+      : readFileSync(resolve(ROOT, 'docs/configuration/environment.zh-CN.md'), 'utf8');
     assert.match(environmentZh, /\.\.\/faq\.md#在哪里添加-api-密钥/);
 
     const result = resolveDocLink(
@@ -598,7 +652,9 @@ describe('resolveDocLink (behavioral)', () => {
       hash: '#在哪里添加-api-密钥',
     });
 
-    const faqZh = readFileSync(resolve(ROOT, 'docs/faq.zh-CN.md'), 'utf8');
+    const faqZh = IS_HOME_SOURCE
+      ? '## 在哪里添加 API 密钥？'
+      : readFileSync(resolve(ROOT, 'docs/faq.zh-CN.md'), 'utf8');
     const DOMPurify = createDOMPurify(new JSDOM('').window);
     const rendered = new JSDOM(`<article>${sanitizeMarkdown(faqZh, { DOMPurify, marked })}</article>`);
     const article = rendered.window.document.querySelector('article');
@@ -787,6 +843,25 @@ describe('no runtime Tailwind CDN', () => {
     assert.ok(existsSync(resolve(SITE, 'tailwind.css')));
   });
 
+  // Tailwind preflight sets `img { display: block }`. Without an override the
+  // README badge row stacks vertically — six badges become six lines, which is
+  // the first thing a visitor sees because README is the default document.
+  it('docs content keeps badge images inline instead of stacking them', () => {
+    const css = readSite('tailwind.css');
+    assert.match(
+      css,
+      /#doc-content img\{[^}]*display:inline-block/,
+      'badge images must be inline-block inside the docs article',
+    );
+  });
+
+  it('the inline-image override is scoped to the docs article', () => {
+    const css = readSite('tailwind.css');
+    // A bare `img{display:inline-block}` would leak into the homepage, which
+    // lays out its own images and relies on preflight's block behavior.
+    assert.doesNotMatch(css, /(^|\})img\{[^}]*display:inline-block/, 'override must stay scoped to #doc-content');
+  });
+
   it('tailwind config exists for reproducible rebuilds', () => {
     assert.ok(existsSync(resolve(ROOT, 'tailwind.site.config.js')));
   });
@@ -856,7 +931,9 @@ describe('i18n dictionary integrity', () => {
       const html = readSite(page);
       const keys = [
         ...new Set([
-          ...[...html.matchAll(/data-i18n(?:-(?:placeholder|label|aria-label|title))?="([^"]+)"/g)].map((m) => m[1]),
+          ...[...html.matchAll(/data-i18n(?:-(?:placeholder|label|aria-label|title|src))?="([^"]+)"/g)].map(
+            (m) => m[1],
+          ),
           // JS helper calls: t('key') / t("key") in the inline page scripts.
           ...[...html.matchAll(/\bt\((['"])([^'"]+)\1\)/g)].map((m) => m[2]),
         ]),
@@ -890,6 +967,39 @@ describe('HTML-referenced local assets exist', () => {
       assert.deepStrictEqual(missing, [], `Missing: ${missing.join(', ')}`);
     });
   }
+});
+
+// ─── Homepage demos: per-language video files + floating TOC coverage ─
+describe('homepage demos contract', () => {
+  const document = new JSDOM(readSite('index.html')).window.document;
+
+  it('every localized demo video file exists in both locales', () => {
+    const videos = [...document.querySelectorAll('video[data-i18n-src]')];
+    assert.ok(videos.length > 0, 'index.html should carry at least one localized demo video');
+    const missing = [];
+    for (const video of videos) {
+      const key = video.getAttribute('data-i18n-src');
+      for (const lang of ['en', 'zh']) {
+        const file = I18N[lang][key];
+        if (!file || !existsSync(resolve(SITE, file))) missing.push(`${lang}:${key}=${file}`);
+      }
+      const poster = video.getAttribute('poster');
+      if (poster && !existsSync(resolve(SITE, poster))) missing.push(`poster:${poster}`);
+    }
+    assert.deepStrictEqual(missing, [], `Missing demo files: ${missing.join(', ')}`);
+  });
+
+  it('every floating TOC link targets a section on the page', () => {
+    const links = [...document.querySelectorAll('#floating-toc .toc-link[data-section]')];
+    const missing = links.map((l) => l.dataset.section).filter((id) => !document.getElementById(id));
+    assert.deepStrictEqual(missing, [], `TOC links without a section: ${missing.join(', ')}`);
+  });
+
+  it('the floating TOC observes the sections its links name, not a second hard-coded list', () => {
+    const toc = readSite('main.js').match(/function initFloatingToc\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    assert.match(toc, /\[\.\.\.tocLinks\]\.map\(\(link\) => link\.dataset\.section\)/);
+    assert.doesNotMatch(toc, /const sections = \[\s*'/);
+  });
 });
 
 // ─── Transparent Clowder AI brand mark ──────────────────────────────

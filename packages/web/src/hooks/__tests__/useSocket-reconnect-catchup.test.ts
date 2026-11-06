@@ -46,7 +46,6 @@ const mockGetThreadState = vi.fn(() => ({
   targetCats: [],
   catStatuses: {},
   catInvocations: {},
-  currentGame: null,
   unreadCount: 0,
   lastActivity: 0,
 }));
@@ -76,7 +75,6 @@ const mockStoreState = {
   setThreadLoading: vi.fn(),
   setThreadHasActiveInvocation: vi.fn(),
   setQueue: vi.fn(),
-  setQueuePaused: vi.fn(),
   setQueueFull: vi.fn(),
   setThreadIntentMode: vi.fn(),
   setThreadTargetCats: vi.fn(),
@@ -118,17 +116,13 @@ vi.mock('@/utils/userId', () => ({
 // Mock apiFetch to simulate server response
 const mockApiFetch = vi.fn();
 vi.mock('@/utils/api-client', () => ({
+  refreshApiSession: vi.fn(async () => {}),
   API_URL: 'http://localhost:3100',
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }));
 
 vi.mock('@/utils/sidebar-thread-snapshot', () => ({
   invalidateSidebarProjection: () => mockRefreshSidebarThreadSnapshot(),
-}));
-
-// Mock game reconnect
-vi.mock('../useGameReconnect', () => ({
-  reconnectGame: vi.fn(() => Promise.resolve()),
 }));
 
 import { configureDebug } from '@/debug/invocationEventDebug';

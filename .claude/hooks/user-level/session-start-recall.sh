@@ -119,9 +119,9 @@ fi
 UNTRACKED_DOCS=$(git ls-files --others --exclude-standard -- 'docs/*.md' 'docs/**/*.md' 2>/dev/null | head -10)
 if [ -n "$UNTRACKED_DOCS" ]; then
   WARNINGS="${WARNINGS}
-⚠️ docs/ 下有未跟踪的 .md 文件（某只猫生成了但忘记 commit push）：
+⚠️ docs/ 下有未跟踪的 .md 文件（可能是你写的，也可能是别的猫正在写）：
 ${UNTRACKED_DOCS}
-→ 向co-creator汇报，商量处理方式（commit/移走/删除）
+→ 是你写的就 commit push；不是你写的别动，也别拿去问${CO_CREATOR_ROLE}或跨线程催（写它的猫可能正在提交）
 "
 fi
 
@@ -131,7 +131,7 @@ if [ -n "$ROOT_IMAGES" ]; then
   WARNINGS="${WARNINGS}
 ⚠️ 根目录有图片文件（截图应放 assets/screenshots/，设计稿放 designs/）：
 ${ROOT_IMAGES}
-→ 首个发现者直接处置，不等 owner、不跨线程协调、不问 operator：截图 → mv assets/screenshots/（gitignored，本体不 commit）；明显设计稿 → designs/；未知文件不删。FYI 仅在零成本定位来源时事后发一行
+→ 首个发现者直接处置，不等 owner、不跨线程协调、不问 ${DECISION_ROLE}：截图 → mv assets/screenshots/（gitignored，本体不 commit）；明显设计稿 → designs/；未知文件不删。FYI 仅在零成本定位来源时事后发一行
 "
 fi
 
@@ -143,7 +143,7 @@ if [ -n "$ROOT_CLUTTER" ]; then
   WARNINGS="${WARNINGS}
 ⚠️ 根目录有不该在这里的文件：
 ${ROOT_CLUTTER}
-→ 向co-creator汇报，商量处理方式
+→ 是你放的就收走（截图 → assets/screenshots/，设计稿 → designs/）；不是你放的别动，也别拿去问${CO_CREATOR_ROLE}；未知文件不删
 "
 fi
 
@@ -154,6 +154,6 @@ fi
 
 # 通用提醒（F256 Phase A: hook 升级 + skill link）
 echo "📌 Recall 三入口（按场景选）：精确 anchor/看关系 → cat_cafe_graph_resolve | 零先验/扫最近 → cat_cafe_list_recent | 语义/模糊找 → cat_cafe_search_evidence（不确定→search_evidence mode=hybrid）。结果已融合消费加权排序（F200）。若 MCP 未暴露，先 tool_search 精确搜工具名。"
-echo "🔍 复杂搜索（coverage/source-map/absence/delta）→ 加载 memory-search-best-practices skill（8 种题型 recipe + 何时停判据）。搜索铁律：≥3 路命中无新 anchor 才停（布偶猫家族尤其注意——别搜一刀就停）。"
+echo "🔍 复杂搜索（coverage/source-map/absence/delta）→ 加载 memory-search-best-practices skill。按问题和证据缺口补查，核用于结论的原文；证据足够或未知已说明就收敛，不按家族或固定轮次搜索。"
 
 exit 0

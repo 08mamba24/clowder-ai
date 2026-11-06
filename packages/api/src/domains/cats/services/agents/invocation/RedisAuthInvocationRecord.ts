@@ -1,3 +1,4 @@
+import { parseSharedInvocationContext } from '@cat-cafe/mcp-server/dist/shared-invocation-context.js';
 import type { CatId } from '@cat-cafe/shared';
 import {
   AUTH_TERMINAL_DISPOSITIONS,
@@ -6,6 +7,7 @@ import {
   type InvocationRecord,
 } from './InvocationRegistry.js';
 import { normalizeOwnerAuthProvenance } from './owner-auth-provenance.js';
+import { type RetiredAuthorizationSnapshot, readRetiredAuthorization } from './retired-auth-authorization.js';
 import { parseToolExecutionPolicy } from './tool-execution-policy.js';
 
 const TERMINAL_STATES = new Set<string>(AUTH_TERMINAL_DISPOSITIONS);
@@ -30,14 +32,26 @@ function parseAuthState(value: string | undefined): AuthInvocationState | null {
   return isAuthTerminalState(value) ? value : null;
 }
 
-function applyOptionalFields(record: InvocationRecord, fields: Record<string, string>): void {
+function applyOptionalFields(
+  record: InvocationRecord,
+  fields: Record<string, string>,
+  retiredAuthorization: RetiredAuthorizationSnapshot | undefined,
+): void {
   if (fields.parentInvocationId) record.parentInvocationId = fields.parentInvocationId;
   if (fields.a2aTriggerMessageId) record.a2aTriggerMessageId = fields.a2aTriggerMessageId;
   if (fields.originTriggerMessageId) record.originTriggerMessageId = fields.originTriggerMessageId;
-  if (fields.toolExecutionPolicy) record.toolExecutionPolicy = parseToolExecutionPolicy(fields.toolExecutionPolicy);
+  if (retiredAuthorization) {
+    record.ownerAuthProvenance = 'unknown';
+    record.toolExecutionPolicy = { mode: 'read_only', replayDeniedToolNames: [] };
+  } else if (fields.toolExecutionPolicy) {
+    record.toolExecutionPolicy = parseToolExecutionPolicy(fields.toolExecutionPolicy);
+  }
   if (fields.endedAt) record.endedAt = Number(fields.endedAt);
   if (fields.endReason) record.endReason = fields.endReason;
   if (fields.terminalRef) record.terminalRef = fields.terminalRef;
+  if (fields.expectedCompactionCarrier) record.expectedCompactionCarrier = fields.expectedCompactionCarrier;
+  if (fields.sharedMcpContext)
+    Object.assign(record, { sharedMcpContext: parseSharedInvocationContext(JSON.parse(fields.sharedMcpContext)) });
   if (fields.traceId && fields.spanId) {
     record.traceContext = {
       traceId: fields.traceId,
@@ -47,26 +61,59 @@ function applyOptionalFields(record: InvocationRecord, fields: Record<string, st
   }
 }
 
+/**
+ * Every newly written record carries an independent envelope, so losing a whole
+ * binding payload cannot silently turn a scoped principal into an ordinary one.
+ * Unversioned ordinary/managed records retain their historical decoder;
+ * unversioned Task principals never shipped and are rejected, not backfilled.
+ * This is a corruption check, not protection against arbitrary Redis rewrites.
+ */
+function hasValidPrincipalEnvelope(fields: Record<string, string>): boolean {
+  const task = Object.hasOwn(fields, 'pluginTaskBinding') || Object.hasOwn(fields, 'pluginTaskBindingVersion');
+  const publicPlugin = Object.hasOwn(fields, 'publicInvocationBinding');
+  const managed = Object.hasOwn(fields, 'managedWorkId') || Object.hasOwn(fields, 'managedWorkAttemptId');
+  if (!Object.hasOwn(fields, 'recordSchemaVersion') && !Object.hasOwn(fields, 'principalKind'))
+    return !task && !publicPlugin;
+  if (fields.recordSchemaVersion !== '1') return false;
+  switch (fields.principalKind) {
+    case 'ordinary':
+      return !task && !publicPlugin && !managed;
+    case 'managed_work':
+      return Boolean(fields.managedWorkId && fields.managedWorkAttemptId) && !task && !publicPlugin;
+    default:
+      return false;
+  }
+}
+
 export function authRecordFromRedisHash(fields: Record<string, string>, msgs: Set<string>): InvocationRecord | null {
-  if (!fields.invocationId || !fields.callbackToken) return null;
+  if (!fields.invocationId || !fields.callbackToken || !hasValidPrincipalEnvelope(fields)) return null;
   if (Boolean(fields.managedWorkId) !== Boolean(fields.managedWorkAttemptId)) return null;
   const state = parseAuthState(fields.state);
   if (!state) return null;
-  const record: InvocationRecord = {
-    invocationId: fields.invocationId,
-    callbackToken: fields.callbackToken,
-    userId: fields.userId ?? '',
-    ownerAuthProvenance: normalizeOwnerAuthProvenance(fields.ownerAuthProvenance),
-    ...(fields.managedWorkId && fields.managedWorkAttemptId
-      ? { managedWorkBinding: Object.freeze({ workId: fields.managedWorkId, attemptId: fields.managedWorkAttemptId }) }
-      : {}),
-    catId: (fields.catId ?? '') as CatId,
-    threadId: fields.threadId ?? '',
-    clientMessageIds: msgs,
-    createdAt: Number(fields.createdAt ?? 0),
-    state,
-    expiresAt: fields.expiresAt ? Number(fields.expiresAt) : null,
-  };
-  applyOptionalFields(record, fields);
-  return record;
+  try {
+    const retiredAuthorization = readRetiredAuthorization(fields);
+    if (retiredAuthorization && state === 'active') return null;
+    const record: InvocationRecord = {
+      invocationId: fields.invocationId,
+      callbackToken: fields.callbackToken,
+      userId: fields.userId ?? '',
+      ownerAuthProvenance: normalizeOwnerAuthProvenance(fields.ownerAuthProvenance),
+      ...(fields.managedWorkId && fields.managedWorkAttemptId
+        ? {
+            managedWorkBinding: Object.freeze({ workId: fields.managedWorkId, attemptId: fields.managedWorkAttemptId }),
+          }
+        : {}),
+      catId: (fields.catId ?? '') as CatId,
+      threadId: fields.threadId ?? '',
+      clientMessageIds: msgs,
+      createdAt: Number(fields.createdAt ?? 0),
+      state,
+      ...(retiredAuthorization ? { retiredAuthorization } : {}),
+      expiresAt: fields.expiresAt ? Number(fields.expiresAt) : null,
+    };
+    applyOptionalFields(record, fields, retiredAuthorization);
+    return record;
+  } catch {
+    return null;
+  }
 }

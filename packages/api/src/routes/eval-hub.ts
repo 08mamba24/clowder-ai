@@ -1,12 +1,9 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import type { Redis } from 'ioredis';
 import { getRoster } from '../config/cat-config-loader.js';
-import {
-  requireConnectorWriteNetworkGuard,
-  requireConnectorWriteOwner,
-} from '../config/connector-secret-write-guards.js';
-import type { IMessageStore } from '../domains/cats/services/stores/ports/MessageStore.js';
+import { requireOwnerWrite, requireOwnerWriteNetworkGuard } from '../config/owner-write-guards.js';
 import type { IThreadStore } from '../domains/cats/services/stores/ports/ThreadStore.js';
+import { resolveDesignGateReplayDeps } from '../infrastructure/harness-eval/design-gate/design-gate-replay-preflight.js';
 import { setEvalCatOverride } from '../infrastructure/harness-eval/domain/eval-domain-override.js';
 import { loadDomains } from '../infrastructure/harness-eval/hub/eval-hub-read-model.js';
 import { loadEnrichedEvalHubSummary } from '../infrastructure/harness-eval/hub/eval-hub-summary-service.js';
@@ -15,22 +12,18 @@ import {
   handleTriggerNow,
   type InvokeTriggerProvider,
 } from '../infrastructure/harness-eval/manual-trigger/index.js';
-import {
-  type GitPublisher,
-  handlePublishVerdict,
-  type VerdictGenerator,
-} from '../infrastructure/harness-eval/publish-verdict/publish-verdict.js';
+import { handlePublishVerdict } from '../infrastructure/harness-eval/publish-verdict/publish-verdict.js';
+import type { GitPublisher, VerdictGenerator } from '../infrastructure/harness-eval/publish-verdict/types.js';
 import type { IReevalClosureEventLog } from '../infrastructure/harness-eval/reeval-closure-event-log.js';
 import type { AgentKeyAuthRegistry, CallbackAuthRegistry } from './callback-auth-prehandler.js';
 import { registerCallbackAuthHook, requireCallbackPrincipal } from './callback-auth-prehandler.js';
 import { registerPublishVerdictRefreshRoute } from './publish-verdict-refresh-route.js';
 
 export type {
+  EvalDeliveryLike,
   GenerateNowInput,
   GenerateNowSuccess,
   HandlerError,
-  InvokeTriggerLike,
-  InvokeTriggerOutcome,
   InvokeTriggerProvider,
   ManualTriggerDeps,
   TriggerNowInput,
@@ -51,7 +44,6 @@ export interface EvalHubRoutesOptions {
   /** F192 OQ-21: late-bound invokeTrigger for manual eval wake. */
   invokeTriggerProvider?: InvokeTriggerProvider;
   /** F192 OQ-21: message store for delivering invocation packet on manual trigger. */
-  messageStore?: IMessageStore;
   /** F192 Phase H: GitPublisher impl (real = git worktree + gh; tests inject mock). */
   gitPublisher?: GitPublisher;
   /**
@@ -186,12 +178,12 @@ export const evalHubRoutes: FastifyPluginAsync<EvalHubRoutesOptions> = async (ap
     // client spam cat invocations (DoS + cost attack). Mirror generate-now's
     // network + owner gate chain so both manual surfaces have symmetric
     // privilege requirements.
-    const networkError = requireConnectorWriteNetworkGuard(request);
+    const networkError = requireOwnerWriteNetworkGuard(request);
     if (networkError) {
       return reply.status(networkError.status).send({ error: networkError.error });
     }
 
-    const ownerError = requireConnectorWriteOwner(userId);
+    const ownerError = requireOwnerWrite(userId);
     if (ownerError) {
       return reply.status(ownerError.status).send({ error: ownerError.error });
     }
@@ -201,7 +193,6 @@ export const evalHubRoutes: FastifyPluginAsync<EvalHubRoutesOptions> = async (ap
       {
         harnessFeedbackRoot: opts.harnessFeedbackRoot,
         invokeTriggerProvider: opts.invokeTriggerProvider,
-        messageStore: opts.messageStore,
         threadStore: opts.threadStore,
         redis: opts.redis,
         // cloud R5 P2 (PR-2): pass wired publish-verdict domain set so
@@ -224,11 +215,11 @@ export const evalHubRoutes: FastifyPluginAsync<EvalHubRoutesOptions> = async (ap
     if (!userId) return;
 
     // Cloud codex R8 P1 (network): single-user mode (no DEFAULT_OWNER_USER_ID)
-    // makes requireConnectorWriteOwner() a no-op, and /api/session mints
+    // makes requireOwnerWrite() a no-op, and /api/session mints
     // default-user for any client. Without this guard, an exposed non-loopback
     // instance would let any remote client dirty docs/harness-feedback/.
     // Match push.ts / config-secrets.ts ordering: network guard first.
-    const networkError = requireConnectorWriteNetworkGuard(request);
+    const networkError = requireOwnerWriteNetworkGuard(request);
     if (networkError) {
       return reply.status(networkError.status).send({ error: networkError.error });
     }
@@ -238,7 +229,7 @@ export const evalHubRoutes: FastifyPluginAsync<EvalHubRoutesOptions> = async (ap
     // without proving ownership — same as other repo-mutating surfaces
     // (push.ts, config-secrets.ts, connector-hub.ts), require owner privilege
     // before dirtying the working tree.
-    const ownerError = requireConnectorWriteOwner(userId);
+    const ownerError = requireOwnerWrite(userId);
     if (ownerError) {
       return reply.status(ownerError.status).send({ error: ownerError.error });
     }
@@ -303,8 +294,14 @@ export const evalHubRoutes: FastifyPluginAsync<EvalHubRoutesOptions> = async (ap
     // 砚砚 R4 P1 #2 + cloud R4 P1: inject real generator (handler's default throws).
     const generator = opts.verdictGenerators?.[domainId];
 
+    const abort = new AbortController();
+    const abortOnClose = () => {
+      if (!reply.raw.writableEnded) abort.abort();
+    };
+    reply.raw.once('close', abortOnClose);
     const result = await handlePublishVerdict(
       {
+        signal: abort.signal,
         harnessFeedbackRoot: opts.harnessFeedbackRoot,
         gitPublisher: opts.gitPublisher,
         generator,
@@ -313,19 +310,25 @@ export const evalHubRoutes: FastifyPluginAsync<EvalHubRoutesOptions> = async (ap
         redis: opts.redis,
         taskOutcomeDbPath: opts.taskOutcomeDbPath,
         eventMemoryDbPath: opts.eventMemoryDbPath,
+        // R12: domain-scoped replay identity deps (design-gate only; R4 P1-1)
+        ...resolveDesignGateReplayDeps(domainId),
       },
       {
         packet: body.packet,
         domain: domainId,
         catId: principal.catId,
         ownerUserId: principal.userId,
+        // Invocation-authenticated sourceThreadId for provenance traceability.
+        // Only invocation principals carry threadId; agent_key principals don't.
+        // Server-side only — never read from body (prevents client forgery).
+        ...(principal.kind === 'invocation' && principal.threadId ? { sourceThreadId: principal.threadId } : {}),
         // PR-2 (砚砚 R1 Q3): sourceRefs is a discriminated union (a2a vs capability-wakeup-trial-window);
         // adapter discriminates by `kind` field. Cast through unknown — handler/adapter validate shape.
         sourceRefs: (body.sourceRefs ??
           {}) as unknown as import('../infrastructure/harness-eval/publish-verdict/types.js').VerdictSourceRefs,
         ...(body.analysisFindings !== undefined ? { analysisFindings: body.analysisFindings } : {}),
       },
-    );
+    ).finally(() => reply.raw.off('close', abortOnClose));
 
     if ('error' in result) {
       return reply.status(result.status).send({ error: result.error, detail: result.detail });

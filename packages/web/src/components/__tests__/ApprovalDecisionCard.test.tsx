@@ -91,13 +91,8 @@ describe('F305 ApprovalDecisionCard presentation contract', () => {
     const settled = readFileSync(resolve(process.cwd(), 'src/components/SettledHistoryCard.tsx'), 'utf8');
     const approvalPresentation = readFileSync(resolve(process.cwd(), 'src/lib/approval-presentation.ts'), 'utf8');
     const genericAdapter = readFileSync(resolve(process.cwd(), 'src/components/GenericApprovalItemCard.tsx'), 'utf8');
-    const meetingAdapter = readFileSync(resolve(process.cwd(), 'src/components/MeetingIntakeCard.tsx'), 'utf8');
     const candidate = readFileSync(
       resolve(process.cwd(), 'src/app/dev/f305-approval-design-gate/candidate-card.tsx'),
-      'utf8',
-    );
-    const demoContract = readFileSync(
-      resolve(process.cwd(), '../../docs/discussions/2026-08-22-f305-ui-design-gate-closure/demo-contract.md'),
       'utf8',
     );
     const workspacePane = readFileSync(resolve(process.cwd(), 'src/components/ApprovalPendingPane.tsx'), 'utf8');
@@ -114,10 +109,12 @@ describe('F305 ApprovalDecisionCard presentation contract', () => {
     expect(approvalPresentation).toMatch(/item\.resolution/);
     expect(approvalPresentation).toMatch(/item\.materialization/);
     expect(genericAdapter).toMatch(/<ApprovalDecisionCard/);
-    expect(meetingAdapter).toMatch(/<ApprovalDecisionCard/);
     expect(candidate).toMatch(/<ApprovalDecisionCard/);
     expect(candidate).not.toMatch(/MeetingIntake(?:Summary|Form|RepairActions)/);
-    expect(demoContract).toContain('冻结为设计证据快照');
+    // The design discussion is installation-owned; the exported fixture itself
+    // must remain frozen and disconnected from live approval mutations.
+    expect(candidate).toContain('Frozen design-evidence fixture');
+    expect(candidate).not.toMatch(/useApprovalHubStore|apiFetch|\/api\//);
     expect(workspacePane).toMatch(/<ApprovalItemCard/);
     expect(mobileDrawer).toMatch(/<ApprovalItemCard/);
   });

@@ -17,6 +17,16 @@ if (!catRegistry.has('codex-sol')) {
   });
 }
 
+for (const [id, clientId, defaultModel] of [
+  ['cloud-pro-effort-test', 'openai', 'gpt-pro'],
+  ['cloud-claude-effort-test', 'anthropic', 'claude-opus-4-6'],
+  ['cloud-kimi-effort-test', 'kimi', 'k3'],
+]) {
+  if (catRegistry.has(id)) continue;
+  const { cli: _cli, ...base } = catRegistry.getOrThrow('codex').config;
+  catRegistry.register(id, { ...base, id: createCatId(id), displayName: id, clientId, defaultModel });
+}
+
 function createMockThreadStore() {
   const threads = new Map();
   const efforts = new Map();
@@ -130,6 +140,122 @@ describe('F262 thread member effort routes', () => {
     assert.equal(cleared.source, 'inherited');
     assert.equal(cleared.effective, cleared.inherited);
     assert.equal(cleared.compatibility, 'compatible');
+  });
+
+  for (const catId of ['cloud-pro-effort-test', 'cloud-claude-effort-test', 'cloud-kimi-effort-test']) {
+    it(`does not expose CLI effort controls for ${catId} without a CLI runtime`, async () => {
+      threadStore._addThread(THREAD_ID, 'test-user', [catId, 'codex-sol']);
+      threadStore._setEffort(THREAD_ID, catId, 'high');
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/threads/${THREAD_ID}/members/effort`,
+        headers: HEADERS,
+      });
+      assert.equal(response.statusCode, 200);
+      assert.equal(
+        response.json().members.some((row) => row.catId === catId),
+        false,
+      );
+      assert.ok(response.json().members.find((row) => row.catId === 'codex-sol'));
+      assert.equal(threadStore.getMemberEffort(THREAD_ID, catId), 'high');
+    });
+
+    it(`rejects ineffective CLI effort writes for ${catId} without changing stored overrides`, async () => {
+      threadStore._setEffort(THREAD_ID, catId, 'high');
+      for (const effort of ['low', null]) {
+        const response = await app.inject({
+          method: 'PATCH',
+          url: `/api/threads/${THREAD_ID}/members/${catId}/effort`,
+          headers: HEADERS,
+          payload: { effort },
+        });
+        assert.equal(response.statusCode, 400);
+        assert.equal(response.json().error, 'Cat does not support effort overrides');
+        assert.equal(threadStore.getMemberEffort(THREAD_ID, catId), 'high');
+      }
+    });
+  }
+
+  it('offers and accepts GPT-6 model effort tiers through the thread API', async () => {
+    const previousSolModel = process.env.CAT_CODEX_SOL_MODEL;
+    try {
+      process.env.CAT_CODEX_SOL_MODEL = 'gpt-6-sol';
+      const solList = await app.inject({
+        method: 'GET',
+        url: `/api/threads/${THREAD_ID}/members/effort`,
+        headers: HEADERS,
+      });
+      const sol = JSON.parse(solList.payload).members.find((row) => row.catId === 'codex-sol');
+      assert.deepEqual(sol.options, ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+
+      const solMax = await app.inject({
+        method: 'PATCH',
+        url: `/api/threads/${THREAD_ID}/members/codex-sol/effort`,
+        headers: HEADERS,
+        payload: { effort: 'max' },
+      });
+      assert.equal(solMax.statusCode, 200);
+      assert.equal(JSON.parse(solMax.payload).effective, 'max');
+
+      process.env.CAT_CODEX_SOL_MODEL = 'gpt-6-luna';
+      const lunaList = await app.inject({
+        method: 'GET',
+        url: `/api/threads/${THREAD_ID}/members/effort`,
+        headers: HEADERS,
+      });
+      const luna = JSON.parse(lunaList.payload).members.find((row) => row.catId === 'codex-sol');
+      assert.deepEqual(luna.options, ['low', 'medium', 'high', 'xhigh', 'max']);
+
+      const lunaUltra = await app.inject({
+        method: 'PATCH',
+        url: `/api/threads/${THREAD_ID}/members/codex-sol/effort`,
+        headers: HEADERS,
+        payload: { effort: 'ultra' },
+      });
+      assert.equal(lunaUltra.statusCode, 400);
+    } finally {
+      if (previousSolModel === undefined) delete process.env.CAT_CODEX_SOL_MODEL;
+      else process.env.CAT_CODEX_SOL_MODEL = previousSolModel;
+    }
+  });
+
+  it('offers, persists and clears GPT-6.1 ultra through the thread API', async () => {
+    const previousModel = process.env.CAT_CODEX_SOL_MODEL;
+    try {
+      process.env.CAT_CODEX_SOL_MODEL = 'gpt-6.1-sol';
+      const list = await app.inject({
+        method: 'GET',
+        url: `/api/threads/${THREAD_ID}/members/effort`,
+        headers: HEADERS,
+      });
+      assert.ok(
+        list
+          .json()
+          .members.find((row) => row.catId === 'codex-sol')
+          .options.includes('ultra'),
+      );
+      const set = await app.inject({
+        method: 'PATCH',
+        url: `/api/threads/${THREAD_ID}/members/codex-sol/effort`,
+        headers: HEADERS,
+        payload: { effort: 'ultra' },
+      });
+      assert.equal(set.statusCode, 200);
+      assert.equal(set.json().effective, 'ultra');
+      assert.equal(threadStore.getMemberEffort(THREAD_ID, 'codex-sol'), 'ultra');
+      const clear = await app.inject({
+        method: 'PATCH',
+        url: `/api/threads/${THREAD_ID}/members/codex-sol/effort`,
+        headers: HEADERS,
+        payload: { effort: null },
+      });
+      assert.equal(clear.statusCode, 200);
+      assert.equal(clear.json().source, 'inherited');
+      assert.equal(threadStore.getMemberEffort(THREAD_ID, 'codex-sol'), undefined);
+    } finally {
+      if (previousModel === undefined) delete process.env.CAT_CODEX_SOL_MODEL;
+      else process.env.CAT_CODEX_SOL_MODEL = previousModel;
+    }
   });
 
   it('projects options and validates overrides against the runtime-effective model', async () => {

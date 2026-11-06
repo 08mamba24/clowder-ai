@@ -11,7 +11,10 @@ interface DirectoryBreadcrumbProps {
   view: 'directory' | 'drives';
   onEnterDrivesView: () => void;
   onNavigateTo: (path: string | undefined) => void;
-  onStartCreateDir: () => void;
+  onStartCreateDir?: (() => void) | undefined;
+  thisPcLabel?: string;
+  newFolderTitle?: string;
+  newFolderLabel?: string;
 }
 
 export function DirectoryBreadcrumb({
@@ -21,6 +24,9 @@ export function DirectoryBreadcrumb({
   onEnterDrivesView,
   onNavigateTo,
   onStartCreateDir,
+  thisPcLabel = '此电脑',
+  newFolderTitle = '新建文件夹',
+  newFolderLabel = '新建',
 }: DirectoryBreadcrumbProps) {
   return (
     <div className="flex items-center gap-1 px-5 h-10 bg-cafe-white console-divider-b flex-shrink-0 overflow-x-auto">
@@ -29,7 +35,7 @@ export function DirectoryBreadcrumb({
           {view === 'drives' ? (
             <span className="text-xs font-semibold text-cafe-black flex items-center gap-1">
               <PcIcon />
-              此电脑
+              {thisPcLabel}
             </span>
           ) : (
             <button
@@ -38,7 +44,7 @@ export function DirectoryBreadcrumb({
               className="text-xs font-medium text-cafe-accent hover:underline flex items-center gap-1"
             >
               <PcIcon />
-              此电脑
+              {thisPcLabel}
             </button>
           )}
         </span>
@@ -83,17 +89,17 @@ export function DirectoryBreadcrumb({
           );
         })}
       {/* [+] New folder button - hidden in drives view (no current dir, codex review P2) */}
-      {view !== 'drives' && (
+      {view !== 'drives' && onStartCreateDir && (
         <button
           type="button"
           onClick={onStartCreateDir}
           className="ml-auto flex-shrink-0 px-2 py-1 flex items-center gap-1 rounded-md border border-cafe-accent/30 bg-cafe-surface/50 text-cafe-accent hover:bg-cafe-surface hover:border-cafe-accent/50 transition-colors text-xs font-medium"
-          title="新建文件夹"
+          title={newFolderTitle}
         >
           <svg aria-hidden="true" className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
             <path d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" />
           </svg>
-          新建
+          {newFolderLabel}
         </button>
       )}
     </div>

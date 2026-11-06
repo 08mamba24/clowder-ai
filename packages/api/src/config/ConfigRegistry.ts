@@ -6,7 +6,7 @@
  * 安全：Redis URL 不暴露，只显示连接状态。
  */
 
-import { catRegistry } from '@cat-cafe/shared';
+import { catRegistry, deploymentDefaults } from '@cat-cafe/shared';
 import { DEFAULT_CLI_TIMEOUT_MS, readCliTimeoutMsFromEnv } from '../utils/cli-timeout.js';
 import { configStore } from './ConfigStore.js';
 import { getAllCatCapacities } from './cat-budgets.js';
@@ -15,6 +15,8 @@ import { getCatModel } from './cat-models.js';
 import { getCodexApprovalPolicy, getCodexSandboxMode } from './codex-cli.js';
 import type { CodexAuthMode, ConfigSnapshot } from './config-snapshot.js';
 import { parseBoolean, parseEnum } from './parse-utils.js';
+import { readCurationPreference } from './user-preferences-curation.js';
+import { resolveCliOutputBubbleDefault } from './user-preferences-store.js';
 
 export type { CodexAuthMode, ConfigSnapshot } from './config-snapshot.js';
 
@@ -40,9 +42,9 @@ function formatTtl(raw: string | undefined, defaultSeconds: number): string {
 
 /**
  * Collect a snapshot of all runtime configuration values.
- * Sources: process.env + hardcoded defaults + catRegistry.
+ * Sources: process.env + hot overlay + persisted owner preferences + hardcoded defaults + catRegistry.
  */
-export function collectConfigSnapshot(): ConfigSnapshot {
+export function collectConfigSnapshot(projectRoot?: string): ConfigSnapshot {
   const env = process.env;
 
   const coCreator = getCoCreatorConfig();
@@ -65,7 +67,7 @@ export function collectConfigSnapshot(): ConfigSnapshot {
   const maxFiles = 5;
 
   // Server
-  const port = parseInt(env.API_SERVER_PORT ?? '3004', 10);
+  const port = parseInt(env.API_SERVER_PORT ?? String(deploymentDefaults.apiPort), 10);
   const host = env.API_SERVER_HOST ?? '127.0.0.1';
   const redis: 'connected' | 'memory' = env.REDIS_URL ? 'connected' : 'memory';
 
@@ -92,13 +94,15 @@ export function collectConfigSnapshot(): ConfigSnapshot {
   const bubbleThinking = (configStore.get('ui.bubble.thinking') ?? env.UI_BUBBLE_THINKING_DEFAULT ?? 'collapsed') as
     | 'expanded'
     | 'collapsed';
-  const bubbleCli = (configStore.get('ui.bubble.cliOutput') ?? env.UI_BUBBLE_CLI_OUTPUT_DEFAULT ?? 'collapsed') as
-    | 'expanded'
-    | 'collapsed';
+  const bubbleCliFallback = (configStore.get('ui.bubble.cliOutput') ??
+    env.UI_BUBBLE_CLI_OUTPUT_DEFAULT ??
+    'collapsed') as 'expanded' | 'collapsed';
+  const bubbleCli = projectRoot ? resolveCliOutputBubbleDefault(projectRoot, bubbleCliFallback) : bubbleCliFallback;
 
   return {
     coCreator: {
       name: coCreator.name,
+      ...(coCreator.nickname ? { nickname: coCreator.nickname } : {}),
       aliases: [...coCreator.aliases],
       mentionPatterns: [...coCreator.mentionPatterns],
       ...(coCreator.timeZone ? { timeZone: coCreator.timeZone } : {}),
@@ -115,7 +119,7 @@ export function collectConfigSnapshot(): ConfigSnapshot {
     memory: { enabled: true, maxKeysPerThread: 50 },
     f102: {
       embedMode: env.EMBED_MODE ?? 'off',
-      abstractiveEnabled: env.F102_ABSTRACTIVE === 'on',
+      abstractiveEnabled: projectRoot ? readCurationPreference(projectRoot).enabled : env.F102_ABSTRACTIVE === 'on',
     },
     governance: {
       degradationEnabled: true,

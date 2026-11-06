@@ -22,24 +22,30 @@ function surface(id: string, type: WorkspaceSurfaceDescriptor['type'] = 'file'):
     artifact: 'artifact-view',
     browser: 'browser-preview',
     code: 'code-editor',
+    'content-editor': 'content-editor',
     'evolution-program': 'evolution-program',
     file: 'file-preview',
     'agent-run': 'agent-run',
     review: 'review-summary',
     terminal: 'terminal-session',
+    'thread-replay': 'thread-replay',
     workspace: 'workspace-destination',
+    'video-project': 'video-project-review',
   };
   const objectKindByType: Record<WorkspaceSurfaceDescriptor['type'], WorkspaceSurfaceDescriptor['objectRef']['kind']> =
     {
       artifact: 'artifact',
       browser: 'preview-session',
       code: 'file',
+      'content-editor': 'content-editor-session',
       'evolution-program': 'evolution-program',
       file: 'file',
       'agent-run': 'agent-run',
       review: 'review',
       terminal: 'terminal-session',
+      'thread-replay': 'thread-replay',
       workspace: 'workspace-destination',
+      'video-project': 'video-project',
     };
   return {
     id,

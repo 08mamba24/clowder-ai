@@ -3,6 +3,7 @@
  * 导出所有 MCP 工具
  */
 
+export { artifactReviewTools } from './artifact-review-tools.js';
 export {
   audioCaptureStartInputSchema,
   audioCaptureStatusInputSchema,
@@ -48,8 +49,6 @@ export {
   handleAckMentions,
   handleAdmitEntrustedWork,
   handleCloseEntrustedWork,
-  handleCompleteA2ADispatch,
-  handleCompleteManagedHold,
   handleCrossPostMessage,
   handleDrillMemoryCue,
   handleFeatIndex,
@@ -62,7 +61,6 @@ export {
   handleOfferCustody,
   handlePostMessage,
   handleRecordMemoryCueOutcome,
-  handleRegisterPrTracking,
   handleRetryCustodyAdmission,
   handleUpdateEntrustedWork,
   handleUpdateTask,
@@ -70,7 +68,6 @@ export {
   listThreadsInputSchema,
   offerCustodyInputSchema,
   postMessageInputSchema,
-  registerPrTrackingInputSchema,
   retryCustodyAdmissionInputSchema,
   updateEntrustedWorkInputSchema,
   updateTaskInputSchema,
@@ -80,6 +77,14 @@ export {
   capabilityEvolutionChangeTools,
   handleAdvanceEvolutionProgramChange,
 } from './capability-evolution-change-tools.js';
+export {
+  beginEvolutionPreparationInputSchema,
+  capabilityEvolutionPreparationTools,
+  handleBeginEvolutionPreparationWork,
+  handleSubmitEvolutionPreparation,
+  submitEvolutionPreparationCommandSchema,
+  submitEvolutionPreparationInputSchema,
+} from './capability-evolution-preparation-tools.js';
 export {
   capabilityEvolutionRoundTools,
   constituteEvolutionProgramInputSchema,
@@ -99,10 +104,19 @@ export {
   updateEvolutionProgramInputSchema,
 } from './capability-evolution-tools.js';
 export {
-  communityRouteAcceptanceInputSchema,
-  communityRouteAcceptanceTools,
-  handleCommunityRouteAcceptance,
-} from './community-route-acceptance-tool.js';
+  contentEditorTools,
+  editOfficeDocumentInputSchema,
+  handleEditOfficeDocument,
+  handleInspectOfficeDocument,
+  inspectOfficeDocumentInputSchema,
+} from './content-editor-tools.js';
+export { contentModificationTools } from './content-modification-tools.js';
+export {
+  developmentReturnInputSchema,
+  developmentReturnTools,
+  handleDevelopmentReturn,
+} from './development-return-tools.js';
+export { developmentWorkInputSchema, developmentWorkTools, handleDevelopmentWork } from './development-work-tools.js';
 export {
   distillationTools,
   handleMarkGeneralizable,
@@ -139,11 +153,6 @@ export {
   searchEvidenceInputSchema,
 } from './evidence-tools.js';
 export {
-  externalReviewVerdictInputSchema,
-  externalReviewVerdictTools,
-  handleExternalReviewVerdict,
-} from './external-review-verdict-tool.js';
-export {
   externalRuntimeSessionCallbackTools,
   externalRuntimeSessionReadTools,
   externalRuntimeSessionTools,
@@ -166,15 +175,18 @@ export {
   handleFinanceQuery,
 } from './finance-tools.js';
 export {
-  gameActionTools,
-  handleSubmitGameAction,
-  submitGameActionInputSchema,
-} from './game-action-tools.js';
-export {
   graphResolveInputSchema,
   graphTools,
   handleGraphResolve,
 } from './graph-tools.js';
+export { handleGetHarnessHistory, handlePublishHarnessHistory, harnessHistoryTools } from './harness-history-tools.js';
+export {
+  capabilitiesSnapshotInputSchema,
+  handleCapabilitiesSnapshot,
+  handleHomeStateSelf,
+  homeStateSelfInputSchema,
+  homeStateTools,
+} from './home-state-tools.js';
 export {
   handlePreviewOpen,
   handleWorkspaceNavigate,
@@ -207,11 +219,6 @@ export {
   limbTools,
 } from './limb-tools.js';
 export {
-  handleReadMeetingArtifact,
-  meetingArtifactTools,
-  readMeetingArtifactInputSchema,
-} from './meeting-artifact-tools.js';
-export {
   createMemoryCueTools,
   drillMemoryCueInputSchema,
   recordMemoryCueOutcomeInputSchema,
@@ -224,10 +231,36 @@ export {
   triagePawFeelInputSchema,
 } from './paw-feel-disposition-tools.js';
 export {
+  handleScanPawFeelInbox,
+  pawFeelInboxAuditScanTools,
+  scanPawFeelInboxInputSchema,
+} from './paw-feel-inbox-audit-scan-tool.js';
+export {
   handleRunPerspective,
   perspectiveTools,
   runPerspectiveInputSchema,
 } from './perspective-tools.js';
+export {
+  createPluginManagementHandlers,
+  createPluginManagerHttpClient,
+  handlePluginCall,
+  handlePluginGet,
+  handlePluginInstall,
+  handlePluginList,
+  handlePluginListTools,
+  handlePluginSearch,
+  handlePluginSetEnabled,
+  handlePluginUninstall,
+  pluginCallInputSchema,
+  pluginGetInputSchema,
+  pluginInstallInputSchema,
+  pluginListInputSchema,
+  pluginListToolsInputSchema,
+  pluginManagementTools,
+  pluginSearchInputSchema,
+  pluginSetEnabledInputSchema,
+  pluginUninstallInputSchema,
+} from './plugin-management-tools.js';
 export {
   buildCredentialsFromEnv,
   buildProviderFromEnv,
@@ -235,6 +268,16 @@ export {
 } from './protocol-tools.js';
 // F192 Phase H AC-H4: cat_cafe_publish_verdict tool
 export { handlePublishVerdict, publishVerdictInputSchema, publishVerdictTools } from './publish-verdict-tool.js';
+export {
+  handleRealtimeCompanionStart,
+  handleRealtimeCompanionStatus,
+  handleRealtimeCompanionStop,
+  realtimeCompanionStartInputSchema,
+  realtimeCompanionStatusInputSchema,
+  realtimeCompanionStopInputSchema,
+  realtimeCompanionTools,
+} from './realtime-companion-tools.js';
+export { recallMetricsTools } from './recall-metrics-tool.js';
 export {
   handleListRecent,
   listRecentInputSchema,
@@ -246,6 +289,11 @@ export {
   richBlockRulesInputSchema,
   richBlockRulesTools,
 } from './rich-block-rules-tool.js';
+export {
+  handleRequestUserInput,
+  requestUserInputInputSchema,
+  runtimeInteractionTools,
+} from './runtime-interaction-tools.js';
 export {
   handleListScheduleTemplates,
   handlePreviewScheduledTask,
@@ -292,12 +340,23 @@ export {
   signalsTools,
 } from './signals-tools.js';
 export {
+  bindRequestReviewConsumptionInputSchema,
   createSkillConsumptionTools,
+  dismissRequestReviewConsumptionInputSchema,
   dismissSkillConsumptionInputSchema,
+  handleBindRequestReviewConsumption,
+  handleDismissRequestReviewConsumption,
   handleDismissSkillConsumption,
   handleOpenWithWorkspaceNavigator,
+  handlePrepareRequestReviewConsumption,
   handlePrepareSkillConsumption,
+  handleRecordRequestReviewConsumption,
+  handleRecordRequestReviewOwnerFact,
   openWithWorkspaceNavigatorInputSchema,
+  prepareRequestReviewConsumptionInputSchema,
   prepareSkillConsumptionInputSchema,
+  recordRequestReviewConsumptionInputSchema,
+  recordRequestReviewOwnerFactInputSchema,
   skillConsumptionTools,
 } from './skill-consumption-tools.js';
+export { workTools } from './work-tools.js';

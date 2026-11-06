@@ -76,6 +76,7 @@ describe('ChatMessage owner live update', () => {
           message: {
             id: 'owner-msg',
             type: 'user',
+            from: { kind: 'user', userId: 'test-user' },
             content: '你好',
             timestamp: Date.now(),
             contentBlocks: [],
@@ -86,7 +87,9 @@ describe('ChatMessage owner live update', () => {
     });
 
     expect(container.textContent).toContain('始皇帝');
-    expect(container.querySelector('img[alt="始皇帝"]')?.getAttribute('src')).toBe('/uploads/qin-owner.png');
+    expect(container.querySelector('[data-sender-avatar="message"] img')?.getAttribute('src')).toBe(
+      '/uploads/qin-owner.png',
+    );
 
     act(() => {
       primeCoCreatorConfigCache({
@@ -100,6 +103,8 @@ describe('ChatMessage owner live update', () => {
 
     expect(container.textContent).toContain('嬴政');
     expect(container.textContent).not.toContain('始皇帝');
-    expect(container.querySelector('img[alt="嬴政"]')?.getAttribute('src')).toBe('/uploads/yingzheng.png');
+    expect(container.querySelector('[data-sender-avatar="message"] img')?.getAttribute('src')).toBe(
+      '/uploads/yingzheng.png',
+    );
   });
 });

@@ -1,3 +1,4 @@
+import { coCreatorDisplay } from '@cat-cafe/shared';
 /**
  * Export Route Tests
  * 测试聊天记录导出为 Markdown / 纯文本
@@ -5,7 +6,9 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { getCoCreatorConfig } from '../dist/config/cat-config-loader.js';
 import './helpers/setup-cat-registry.js';
+import { canonicalTestMessageInput } from './helpers/message-from-fixtures.js';
 
 const { formatThreadAsMarkdown, formatThreadAsText } = await import('../dist/routes/export.js');
 
@@ -25,7 +28,7 @@ function makeThread(overrides = {}) {
 
 /** Helper to create a stored message */
 function makeMessage(overrides = {}) {
-  return {
+  return canonicalTestMessageInput({
     id: 'msg-1',
     threadId: 'thread-1',
     userId: 'user-1',
@@ -34,7 +37,7 @@ function makeMessage(overrides = {}) {
     mentions: [],
     timestamp: new Date('2026-02-07T10:30:00').getTime(),
     ...overrides,
-  };
+  });
 }
 
 describe('formatThreadAsMarkdown', () => {
@@ -57,7 +60,8 @@ describe('formatThreadAsMarkdown', () => {
     assert.ok(md.includes('布偶猫'));
     assert.ok(md.includes('你好布偶猫'));
     assert.ok(md.includes('你好co-creator！'));
-    assert.ok(md.includes('co-creator'));
+    const coCreator = getCoCreatorConfig();
+    assert.ok(md.includes(` ${coCreator.nickname ?? coCreatorDisplay(coCreator).nickname}]`));
   });
 
   test('uses consistent timezone basis across header and message body', () => {
@@ -109,7 +113,8 @@ describe('formatThreadAsMarkdown', () => {
 
     const md = formatThreadAsMarkdown(thread, messages);
 
-    assert.ok(md.includes('co-creator'));
+    const coCreator = getCoCreatorConfig();
+    assert.ok(md.includes(` ${coCreator.nickname ?? coCreatorDisplay(coCreator).nickname}]`));
     assert.ok(md.includes('布偶猫'));
     assert.ok(md.includes('缅因猫'));
     assert.ok(md.includes('请问一下'));
@@ -281,14 +286,18 @@ describe('Export Route (endpoint)', () => {
     const { MessageStore } = await import('../dist/domains/cats/services/stores/ports/MessageStore.js');
     const thread = makeThread();
     const messageStore = new MessageStore();
-    messageStore.append({
-      ...makeMessage({ catId: 'codex-sol', content: 'published source-cat seed' }),
-      deliveryStatus: 'queued',
-    });
-    messageStore.append({
-      ...makeMessage({ id: 'msg-system', userId: 'system', catId: 'system', content: 'queued internal event' }),
-      deliveryStatus: 'queued',
-    });
+    messageStore.append(
+      canonicalTestMessageInput({
+        ...makeMessage({ catId: 'codex-sol', content: 'published source-cat seed' }),
+        deliveryStatus: 'queued',
+      }),
+    );
+    messageStore.append(
+      canonicalTestMessageInput({
+        ...makeMessage({ id: 'msg-system', userId: 'system', catId: 'system', content: 'queued internal event' }),
+        deliveryStatus: 'queued',
+      }),
+    );
     const app = await buildApp(mockThreadStore({ 'thread-1': thread }), messageStore);
 
     const res = await app.inject({

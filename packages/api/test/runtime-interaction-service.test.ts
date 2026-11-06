@@ -62,7 +62,8 @@ function questionRequest(interactionId = 'interaction-secret'): RuntimeInteracti
 }
 
 function makeHarness(input?: {
-  publish?: (request: RuntimeInteractionRequest) => Promise<RuntimeInteractionCardRef>;
+  prepare?: (request: RuntimeInteractionRequest) => Promise<RuntimeInteractionCardRef>;
+  publish?: (request: RuntimeInteractionRequest, cardRef: RuntimeInteractionCardRef) => Promise<void>;
   isLive?: (request: RuntimeInteractionRequest, cardRef: RuntimeInteractionCardRef) => Promise<boolean>;
   store?: InMemoryRuntimeInteractionStore;
   hostEpoch?: string;
@@ -75,12 +76,13 @@ function makeHarness(input?: {
     hostEpoch: input?.hostEpoch ?? 'host-epoch-1',
     now: () => 1_777_000_000_100,
     cardPublisher: {
-      publish:
-        input?.publish ??
+      prepare:
+        input?.prepare ??
         (async (request) => {
           published.push(request.interactionId);
           return { ...cardRef, blockId: `runtime-interaction:${request.interactionId}` };
         }),
+      publish: input?.publish ?? (async () => {}),
       isLive: input?.isLive ?? (async () => true),
     },
     onRecordUpdated: (record) => updated.push(record),
@@ -125,6 +127,51 @@ describe('RuntimeInteractionService', () => {
     assert.equal(statusWhenResolved, 'answered', 'durable CAS must happen before provider waiter resolution');
   });
 
+  it('accepts an exact-owner answer while anchor persistence is returning to the requester', async () => {
+    const store = new InMemoryRuntimeInteractionStore();
+    const originalAnchor = store.anchor.bind(store);
+    let announcePending: ((record: RuntimeInteractionRecord) => void) | undefined;
+    const pendingCommitted = new Promise<RuntimeInteractionRecord>((resolve) => {
+      announcePending = resolve;
+    });
+    let releaseAnchor: (() => void) | undefined;
+    const anchorReleased = new Promise<void>((resolve) => {
+      releaseAnchor = resolve;
+    });
+    store.anchor = async (interactionId, hostEpoch, nextCardRef, now) => {
+      const pending = await originalAnchor(interactionId, hostEpoch, nextCardRef, now);
+      if (pending) announcePending?.(pending);
+      await anchorReleased;
+      return pending;
+    };
+    const { service, updated } = makeHarness({ store });
+    const providerResponse = service.request(approvalRequest());
+    void providerResponse.catch(() => {});
+    const pending = await pendingCommitted;
+    if (!pending.cardRef) throw new Error('expected the committed pending interaction to have a card reference');
+
+    let answerError: unknown;
+    try {
+      await service.respond({
+        interactionId: 'interaction-1',
+        ownerUserId: 'user-1',
+        cardRef: pending.cardRef,
+        response: { kind: 'decision', decisionId: 'accept' },
+      });
+    } catch (error) {
+      answerError = error;
+    } finally {
+      releaseAnchor?.();
+    }
+
+    assert.equal(answerError, undefined, 'a durable pending card must already have its provider waiter');
+    assert.deepEqual(await providerResponse, { kind: 'decision', decisionId: 'accept' });
+    assert.deepEqual(
+      updated.map((record) => record.status),
+      ['answered'],
+    );
+  });
+
   it('allows exactly one concurrent answer and never replays a terminal response', async () => {
     const { service, store } = makeHarness();
     const responsePromise = service.request(approvalRequest());
@@ -158,6 +205,22 @@ describe('RuntimeInteractionService', () => {
     );
   });
 
+  it('admits at most one active interaction for an invocation', async () => {
+    const { service, store } = makeHarness();
+    const firstResponse = service.request(approvalRequest('interaction-first'));
+    await waitForStatus(store, 'interaction-first', 'pending');
+
+    const question = questionRequest('interaction-second');
+    const secondRequest = { ...question, owner: { ...question.owner, invocationId: 'inv-1' } };
+    await assert.rejects(
+      service.request(secondRequest),
+      (error: unknown) => error instanceof RuntimeInteractionError && error.code === 'duplicate',
+    );
+
+    await service.invalidateInvocation('inv-1', 'provider_cancelled');
+    await assert.rejects(firstResponse, /provider_cancelled/);
+  });
+
   it('does not persist secret or ordinary answer values', async () => {
     const { service, store } = makeHarness();
     const responsePromise = service.request(questionRequest());
@@ -184,6 +247,68 @@ describe('RuntimeInteractionService', () => {
       answeredQuestionIds: ['environment', 'token'],
       secretQuestionIds: ['token'],
     });
+  });
+
+  it('retains public option indexes through the canonical terminal without retaining private or free answers', async () => {
+    const { service, store } = makeHarness();
+    const request = questionRequest();
+    if (request.kind !== 'question') throw new Error('expected a question');
+    request.questions[0].options = [{ label: 'Alpha' }, { label: 'Production' }];
+    request.questions[1].options = [{ label: 'Private A' }, { label: 'Private B' }];
+    request.questions.push({ id: 'comment', header: 'Comment', question: 'Anything else?' });
+    const providerWait = service.request(request);
+    const pending = await waitForStatus(store, request.interactionId, 'pending');
+    if (!pending.cardRef) throw new Error('expected the canonical card');
+    const response = {
+      kind: 'answers' as const,
+      answers: {
+        environment: ['Production'],
+        token: ['Private B'],
+        comment: ['unpublished free answer'],
+      },
+    };
+    await service.respond({
+      interactionId: request.interactionId,
+      ownerUserId: 'user-1',
+      cardRef: pending.cardRef,
+      response,
+    });
+    assert.deepEqual(await providerWait, response, 'the provider still receives the complete authorized response');
+    const restored = JSON.parse(JSON.stringify(await store.get(request.interactionId))) as RuntimeInteractionRecord;
+    assert.deepEqual(restored.terminal?.response, {
+      kind: 'answers',
+      answeredQuestionIds: ['environment', 'token', 'comment'],
+      secretQuestionIds: ['token'],
+      selectedOptionIndexes: { environment: [1] },
+    });
+    assert.doesNotMatch(JSON.stringify(restored.terminal), /Private B|unpublished free answer/);
+    const freshReader = makeHarness({ store, hostEpoch: 'new-reader' });
+    assert.deepEqual(await freshReader.store.get(request.interactionId), restored);
+  });
+
+  it('settles an explicit question rejection before rejecting the same provider waiter', async () => {
+    const { service, store } = makeHarness();
+    let statusWhenRejected: RuntimeInteractionRecord['status'] | undefined;
+    const responsePromise = service.request(questionRequest()).catch(async (error: unknown) => {
+      statusWhenRejected = (await store.get('interaction-secret'))?.status;
+      throw error;
+    });
+    const pending = await waitForStatus(store, 'interaction-secret', 'pending');
+    if (!pending.cardRef) throw new Error('expected pending interaction to have a card reference');
+
+    const rejected = await service.reject({
+      interactionId: 'interaction-secret',
+      ownerUserId: 'user-1',
+      cardRef: pending.cardRef,
+    });
+
+    assert.equal(rejected.status, 'declined');
+    assert.equal(rejected.terminal?.reasonCode, 'user_rejected');
+    await assert.rejects(
+      responsePromise,
+      (error: unknown) => error instanceof RuntimeInteractionError && error.reasonCode === 'user_rejected',
+    );
+    assert.equal(statusWhenRejected, 'declined', 'durable CAS must happen before provider waiter rejection');
   });
 
   it('rejects cross-owner and copied-card responses without mutating pending truth', async () => {
@@ -241,7 +366,7 @@ describe('RuntimeInteractionService', () => {
   it('preserves provider cancellation when the invocation closes during card publication', async () => {
     let finishPublication: ((value: RuntimeInteractionCardRef) => void) | undefined;
     const { service, store } = makeHarness({
-      publish: async () =>
+      prepare: async () =>
         new Promise<RuntimeInteractionCardRef>((resolve) => {
           finishPublication = resolve;
         }),
@@ -339,12 +464,16 @@ describe('RuntimeInteractionService', () => {
     await assert.rejects(providerResponse, /provider_cancelled/);
   });
 
-  it('terminalizes publication failure and exposes no actionable record', async () => {
-    const { service, store } = makeHarness({ publish: async () => Promise.reject(new Error('append failed')) });
-    await assert.rejects(service.request(approvalRequest()), /surface_publication_failed/);
-    const record = await store.get('interaction-1');
-    assert.equal(record?.status, 'invalidated');
-    assert.equal(record?.terminal?.reasonCode, 'surface_publication_failed');
-    assert.equal(record?.cardRef, undefined);
+  it('terminalizes preparation or activation failure and exposes no actionable record', async () => {
+    for (const failingPublisher of [
+      { prepare: async () => Promise.reject(new Error('append failed')) },
+      { publish: async () => Promise.reject(new Error('broadcast failed')) },
+    ]) {
+      const { service, store } = makeHarness(failingPublisher);
+      await assert.rejects(service.request(approvalRequest()), /surface_publication_failed/);
+      const record = await store.get('interaction-1');
+      assert.equal(record?.status, 'invalidated');
+      assert.equal(record?.terminal?.reasonCode, 'surface_publication_failed');
+    }
   });
 });

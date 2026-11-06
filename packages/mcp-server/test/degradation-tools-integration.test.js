@@ -7,7 +7,28 @@
  */
 
 import assert from 'node:assert/strict';
-import { describe, test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, test } from 'node:test';
+
+let originalEnv;
+let outboxDir;
+
+beforeEach(() => {
+  originalEnv = { ...process.env };
+  outboxDir = mkdtempSync(join(tmpdir(), 'cat-cafe-degradation-outbox-test-'));
+  process.env.CAT_CAFE_CALLBACK_OUTBOX_DIR = outboxDir;
+  process.env.CAT_CAFE_CALLBACK_OUTBOX_ENABLED = 'true';
+});
+
+afterEach(() => {
+  for (const key of Object.keys(process.env)) {
+    if (!(key in originalEnv)) delete process.env[key];
+  }
+  Object.assign(process.env, originalEnv);
+  rmSync(outboxDir, { recursive: true, force: true });
+});
 
 async function withMockedCallbackPost(fn) {
   const callbackToolsMod = await import('../dist/tools/callback-tools.js');
@@ -83,41 +104,19 @@ describe('write-class tool degradation policy declarations (F174-E AC-E2/E5)', (
     });
   });
 
-  test('register_pr_tracking with kind:none surfaces failure', async () => {
-    await withMockedCallbackPost(async ({ handleRegisterPrTracking }) => {
-      const result = await handleRegisterPrTracking({
-        repoFullName: 'a/b',
-        prNumber: 1,
-        when: [{ kind: 'pr_head_changed' }],
-        nextStep: 'Inspect the new HEAD.',
-        expiresAt: Date.now() + 60_000,
+  test('register_deployment_wait forwards the bounded Task-owned wait contract', async () => {
+    await withCapturedCallbackPosts(async ({ handleRegisterDeploymentWait }, requests) => {
+      const result = await handleRegisterDeploymentWait({
+        taskId: 'task-1',
+        deploymentId: 'runtime',
+        when: { kind: 'revision_included', revision: 'a'.repeat(40), services: ['api', 'web'] },
+        nextStep: 'Verify the landed behavior.',
       });
-      assert.ok(result.isError);
-      const text = result.content[0].text;
-      assert.ok(text.includes('[degrade]') && text.includes('reason=unknown_invocation'));
-    });
-  });
-
-  test('register_issue_tracking forwards the typed one-shot wait contract', async () => {
-    await withCapturedCallbackPosts(async ({ handleRegisterIssueTracking }, requests) => {
-      const result = await handleRegisterIssueTracking({
-        repoFullName: 'a/b',
-        issueNumber: 2,
-        when: [{ kind: 'issue_comment_added' }],
-        nextStep: 'Inspect the comment.',
-        expiresAt: 1_785_500_000_000,
-      });
-
       assert.equal(result.isError, undefined);
       assert.equal(requests.length, 1);
-      assert.equal(requests[0].url, 'http://localhost:3003/api/callbacks/register-issue-tracking');
-      assert.deepEqual(requests[0].body, {
-        repoFullName: 'a/b',
-        issueNumber: 2,
-        when: [{ kind: 'issue_comment_added' }],
-        nextStep: 'Inspect the comment.',
-        expiresAt: 1_785_500_000_000,
-      });
+      assert.equal(requests[0].url, 'http://localhost:3003/api/callbacks/register-deployment-wait');
+      assert.equal(requests[0].body.taskId, 'task-1');
+      assert.equal(requests[0].body.when.kind, 'revision_included');
     });
   });
 

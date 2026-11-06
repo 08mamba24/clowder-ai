@@ -14,11 +14,11 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-const { contentRevision } = await import('../dist/domains/cats/services/session/content-revision.js');
-const { mapToPresentation } = await import('../dist/domains/cats/services/session/context-presentation.js');
-const { mintDeliveryReceipt } = await import('../dist/domains/cats/services/session/delivery-receipt.js');
+const { contentRevision } = await import('../dist/domains/cats/services/session/context/content-revision.js');
+const { mapToPresentation } = await import('../dist/domains/cats/services/session/context/context-presentation.js');
+const { mintDeliveryReceipt } = await import('../dist/domains/cats/services/session/context/delivery-receipt.js');
 const { InMemoryPresentationLedgerStore, PresentationLedger } = await import(
-  '../dist/domains/cats/services/session/PresentationLedger.js'
+  '../dist/domains/cats/services/session/context/PresentationLedger.js'
 );
 
 describe('F296 B3a gate 4: content-derived revision', () => {
@@ -137,7 +137,7 @@ describe('F296 B3a gate 4: content-derived revision', () => {
 
     const project = (content) =>
       mapToPresentation({
-        subjectKey: 'pr:zts212653/cat-cafe#3776',
+        subjectKey: 'pr:zts212653/clowder-ai#3776',
         asOf: contentRevision(content),
         sourceTier: 'T1',
         invalidator,

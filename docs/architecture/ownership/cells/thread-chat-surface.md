@@ -14,6 +14,9 @@ created: 2026-08-28
 updated: 2026-08-29
 canonical_features: [F229]
 code_anchors:
+  - packages/web/src/components/message-search/MessageSearchAnswerCard.tsx
+  - packages/web/src/components/message-search/message-find-destinations.ts
+  - packages/web/src/lib/feature-demo-trial.ts
   - packages/web/src/components/thread-chat/ThreadChatRuntimeProvider.tsx
   - packages/web/src/components/thread-chat/ThreadChatSurface.tsx
   - packages/web/src/components/thread-chat/ThreadChatExport.tsx
@@ -23,9 +26,12 @@ code_anchors:
   - packages/web/src/components/ChatContainer.tsx
   - packages/web/src/components/concierge/ConciergePanel.tsx
   - packages/web/src/hooks/useChatHistory.ts
+  - packages/web/src/components/thread-chat/useThreadChatReadingPort.ts
+  - packages/web/src/utils/chat-scroll-memory.ts
   - packages/web/src/hooks/useSendMessage.ts
   - packages/web/src/hooks/useConnectionStatus.ts
 doc_anchors:
+  - feature-specs/2026-10-22-f331-demo-entry.md
   - docs/features/F229-cat-ball-concierge.md
   - feature-discussions/2026-08-27-f229-chat-surface-convergence.md
   - feature-specs/2026-08-27-f229-chat-runtime-owner-m1.md
@@ -33,9 +39,11 @@ doc_anchors:
   - feature-specs/2026-08-29-f229-chat-surface-vertical-m2-m4.md
 static_scan_hints: [ThreadChatRuntimeProvider, useThreadChatRuntime, ThreadChatSurface, ThreadChatDensity, useSocket, useChatHistory, useSendMessage, useThreadLiveness, splitPaneThreadIds]
 cited_by:
+  - {feature: F331, date: 2026-10-22, delta: "the demo trial consumes the original durable composer draft reader/writer before navigation; no parallel conversation or send owner"}
   - {feature: F229-M1a, date: 2026-08-28, delta: AppShell-scoped provider becomes the sole browser socket and visible-thread room owner; ChatContainer consumes the runtime registration while later history/send/surface migration remains explicit}
   - {feature: F229-M1b, date: 2026-08-29, delta: the AppShell runtime admits one bootstrap and one equal-key history request per thread while each mounted surface retains independent viewport state}
   - {feature: F229-M2-M4, date: 2026-08-29, delta: one ThreadChatSurface now owns the normal full and compact conversation path; Cat Ball is a density adapter and the legacy mini-chat core is deleted}
+  - {feature: F322-C, date: 2026-10-02, delta: the foreground conversation registers original reading-ref and exact-arrival operations for search navigation; paging and geometry remain in useChatHistory}
 ---
 
 # Thread Chat Surface
@@ -69,6 +77,8 @@ M1a–M4 now establish the canonical full/compact path end to end:
 - Equal `(threadId, requestKey)` history work returns the same Promise while the originating consumer remains valid. Catch-up keys include the observed stream version so a response issued before a gap cannot acknowledge it; an origin that unmounts marks the shared result abandoned so live consumers re-enter admission instead of accepting its stale/no-op result.
 - Different threads, cursors and freshness keys remain independent, and stale settlement cannot delete replacement work.
 - History admission never owns viewport state: scroll containers, message-end refs, pointer intent and anchor restoration remain surface-local.
+- `onReadingPort` exposes the original `useChatHistory` capture/restore/release/navigation methods only after the canonical current thread matches the surface. Composer-only history withdraws the registration. A product adapter cannot create another pager or scroll engine through this port.
+- Durable reading references retain immutable owner snapshots in the existing browser carrier, with no expiry and no copied message bodies. Pixel-only recovery cannot certify an exact return. Only an exact owner-settled return releases its original reference.
 - A surface cannot gain a second history, socket, send, liveness, renderer or action pipeline by calling itself compact, embedded or concierge.
 - Full and compact instances for the same `threadId` expose the same durable message IDs, ordering, variants, diagnostics and typed actions. Interactive action sends are instance-scoped; an action rendered by one density cannot be admitted twice by another mounted density.
 - Product adapters may provide bounded chrome, empty-state, composer seed/placeholder and read-only activity callbacks. They cannot supply alternate fetch/send/socket/liveness inputs or filter/map/reorder canonical messages.

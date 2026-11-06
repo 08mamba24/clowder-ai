@@ -23,14 +23,13 @@ import {
   getWorkflowTriggers,
   pickVariantMentionForBridge,
 } from '../cats/services/context/SystemPromptBuilder.js';
-import { buildConciergePromptLines } from '../concierge/ConciergePromptSection.js';
+import { buildConversationDutyPromptLines } from '../concierge/conversation-duty.js';
 import { buildGuidePromptLines } from '../guides/GuidePromptSection.js';
 import {
   extractPackBlocks,
   flattenWorldContext,
   formatAlwaysOnDocs,
   formatHandleFreeLabel,
-  formatSignalsBlock,
   PROVIDER_LABELS,
   resolveActiveParticipants,
   resolveDirectMessage,
@@ -145,7 +144,6 @@ export function assembleForSession(catId: CatId, options?: StaticIdentityOptions
     conciergeLines: null,
     worldContext: null,
     alwaysOnDocsBlock: null,
-    activeSignalsBlock: null,
     a2aBallCheckContent: null,
     handoffDecisionTreeContent: null,
   };
@@ -160,7 +158,10 @@ export function assembleForTurn(context: InvocationContext): AssemblerInput {
   const session = gatherSessionFields(context.catId as string, context.mcpAvailable, context.packBlocks);
   const shouldA2A = context.mode !== 'parallel' && context.a2aEnabled === true && !context.nativeL0Injected;
   const routingItems: string[] =
-    context.mentionRoutingFeedback?.items?.slice(0, 2).map((it) => `@${it.targetCatId}`) ?? [];
+    context.mentionRoutingFeedback?.items
+      ?.filter((item) => item.reason !== 'void_hold')
+      .slice(0, 2)
+      .map((it) => `@${it.targetCatId}`) ?? [];
 
   return {
     catId: context.catId as string,
@@ -191,6 +192,7 @@ export function assembleForTurn(context: InvocationContext): AssemblerInput {
       : null,
     teammates: resolveTeammates(context.teammates),
     mentionRoutingItems: routingItems,
+    voidHoldFeedback: context.mentionRoutingFeedback?.items.some((item) => item.reason === 'void_hold') ?? false,
     promptTags: context.promptTags ? [...context.promptTags] : [],
     activeParticipants: resolveActiveParticipants(context.activeParticipants),
     routingPolicyParts: formatRoutingPolicy(context.routingPolicy),
@@ -215,15 +217,10 @@ export function assembleForTurn(context: InvocationContext): AssemblerInput {
     guidePromptLines: context.guideCandidate
       ? buildGuidePromptLines(context.guideCandidate, context.threadId).join('\n')
       : null,
-    conciergeLines:
-      context.threadKind === 'concierge' && context.conciergeConfig
-        ? buildConciergePromptLines(context.conciergeConfig, context.threadId)
-        : null,
+    conciergeLines: buildConversationDutyPromptLines(context),
     worldContext: context.worldContext ? flattenWorldContext(context.worldContext) : null,
     alwaysOnDocsBlock:
       context.alwaysOnDocs && context.alwaysOnDocs.length > 0 ? formatAlwaysOnDocs(context.alwaysOnDocs) : null,
-    activeSignalsBlock:
-      context.activeSignals && context.activeSignals.length > 0 ? formatSignalsBlock(context.activeSignals) : null,
     a2aBallCheckContent: shouldA2A ? loadA2aBallCheck() || null : null,
     handoffDecisionTreeContent: null,
   };

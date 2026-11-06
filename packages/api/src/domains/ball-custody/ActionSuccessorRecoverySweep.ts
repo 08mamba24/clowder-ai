@@ -1,5 +1,6 @@
 import { createModuleLogger } from '../../infrastructure/logger.js';
 import { returnDeliveryOverdueTotal } from '../../infrastructure/telemetry/instruments.js';
+import type { ITaskStore } from '../cats/services/stores/ports/TaskStore.js';
 import { type ActionSuccessorFence, buildActionSuccessorFence } from './ActionSuccessorAdmissionService.js';
 import {
   ActionSuccessorDispatchRecovery,
@@ -9,6 +10,7 @@ import {
 } from './ActionSuccessorDispatchRecovery.js';
 import type { ActionSuccessorLeaseStore } from './ActionSuccessorLeaseStore.js';
 import { type ActionSuccessorLease, isRecoverableActionSuccessorReturn } from './action-successor-state-machine.js';
+import { isRetiredTaskAction } from './retired-task-action.js';
 
 export {
   type ActionSuccessorDispatchDeliveryResult,
@@ -43,6 +45,7 @@ export type ActionSuccessorReturnDeliveryResult =
   | { readonly outcome: 'enqueued' | 'unavailable' };
 
 export interface ActionSuccessorRecoverySweepDeps {
+  readonly tasks?: Pick<ITaskStore, 'get'>;
   readonly leaseStore: Pick<
     ActionSuccessorLeaseStore,
     'listPendingReturns' | 'recordReturnDeliveryAttempt' | 'markReturnDelivered'
@@ -85,6 +88,7 @@ function carrierFor(lease: ActionSuccessorLease): ActionSuccessorReturnCarrier {
 }
 
 export class ActionSuccessorRecoverySweep {
+  private inFlight: Promise<ActionSuccessorRecoveryStats> | undefined;
   private readonly now: () => number;
   private readonly scanLimit: number;
   private readonly dispatchRecovery?: ActionSuccessorDispatchRecovery;
@@ -101,7 +105,16 @@ export class ActionSuccessorRecoverySweep {
     }
   }
 
-  async runOnce(): Promise<ActionSuccessorRecoveryStats> {
+  runOnce(): Promise<ActionSuccessorRecoveryStats> {
+    if (this.inFlight) return this.inFlight;
+    const cycle = this.runCycle().finally(() => {
+      if (this.inFlight === cycle) this.inFlight = undefined;
+    });
+    this.inFlight = cycle;
+    return cycle;
+  }
+
+  private async runCycle(): Promise<ActionSuccessorRecoveryStats> {
     const leases = (await this.deps.leaseStore.listPendingReturns(this.scanLimit)).filter(
       isRecoverableActionSuccessorReturn,
     );
@@ -128,6 +141,7 @@ export class ActionSuccessorRecoverySweep {
   }
 
   private async recoverLease(candidate: ActionSuccessorLease): Promise<ReturnRecoveryResult> {
+    if (await isRetiredTaskAction(this.deps.tasks, candidate)) return { outcome: 'ignored', overdue: false };
     const now = this.now();
     const attempt = await this.deps.leaseStore.recordReturnDeliveryAttempt(candidate.leaseId, {
       expectedGeneration: candidate.generation,

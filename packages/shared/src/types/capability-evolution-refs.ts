@@ -11,11 +11,14 @@ import { z } from 'zod';
  * as MCP `pattern`, DeepSeek ACP rejects it with `is not a "regex"` and aborts the whole turn
  * before any tool call (observed on dsh-v41-flash / `@点点 hi`). Escaping `\]` also trips Biome
  * `noUselessEscapeInRegex`, so allowlist is the interoperable shape.
+ *
+ * `%` belongs to the allowlist: public-archive owner refs carry percent-encoded non-ASCII ids
+ * (e.g. `capability:%E7%8C%AB%E7%8C%AB...`). It is ASCII, bracket-free, and therefore portable.
  */
 export const bounded = (max: number) => z.string().trim().min(1).max(max);
 export const timestampSchema = z.string().datetime({ offset: true });
 /** Portable `kind:id` pattern — safe for Node Zod, Biome, and DeepSeek ACP JSON Schema `pattern`. */
-export const OWNER_STATE_REF_PATTERN = /^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#-]+$/;
+export const OWNER_STATE_REF_PATTERN = /^[a-z][a-z0-9-]*:[a-zA-Z0-9._/:+@#%-]+$/;
 const ownerStateRefSchema = bounded(500).regex(
   OWNER_STATE_REF_PATTERN,
   'owner state refs must use non-payload kind:id syntax',

@@ -2,6 +2,9 @@ import { execFile } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deploymentDefaults } from '@cat-cafe/shared';
+import { retainPublishedTasteSnapshot } from './PublishedTasteSnapshot.js';
+import { prepareTastePublicationToolchain } from './TastePublicationToolchain.js';
 
 export interface GitTastePublicationAttempt {
   attempt: number;
@@ -101,12 +104,37 @@ function sanitizeBranchSuffix(value: string): string {
 async function prepareCheckout(sourceRoot: string, checkoutRoot: string, branchName: string): Promise<string> {
   const originUrl = await runGit(sourceRoot, ['remote', 'get-url', 'origin']);
   const hooksPath = await runGit(sourceRoot, ['rev-parse', '--path-format=absolute', '--git-path', 'hooks']);
-  await runGit(sourceRoot, ['clone', '--no-checkout', '--shared', sourceRoot, checkoutRoot]);
+  // Unrelated local branches/tags also inflate fetch/push negotiation in this disposable clone.
+  await runGit(sourceRoot, [
+    'clone',
+    '--no-checkout',
+    '--shared',
+    '--single-branch',
+    '--no-tags',
+    sourceRoot,
+    checkoutRoot,
+  ]);
   await runGit(checkoutRoot, ['remote', 'set-url', 'origin', originUrl]);
+  // Shared-object connectivity needs publication ancestry, not every ref in the source repository.
+  await runGit(checkoutRoot, ['config', 'core.alternateRefsPrefixes', 'refs/heads/main refs/remotes/origin/main']);
   await runGit(checkoutRoot, ['config', 'core.hooksPath', hooksPath]);
-  await runGit(checkoutRoot, ['config', 'user.name', 'Clowder AI Taste Publisher']);
+  await runGit(checkoutRoot, ['config', 'user.name', `${deploymentDefaults.brand.name} Taste Publisher`]);
   await runGit(checkoutRoot, ['config', 'user.email', 'taste-publisher@cat-cafe.local']);
   await runGit(checkoutRoot, ['fetch', '--no-tags', 'origin', '+refs/heads/main:refs/remotes/origin/main']);
+  // .githooks/pre-commit's Brand/Inbound guards read scripts/ and its dictionary from this checkout.
+  // Retain ancestor Git metadata and only that asset, without unrelated evidence or media trees.
+  await runGit(checkoutRoot, [
+    'sparse-checkout',
+    'set',
+    '--no-cone',
+    '/*',
+    '!/*/',
+    '/docs/.gitattributes',
+    '/docs/.gitignore',
+    '/docs/taste/',
+    '/scripts/',
+    '/assets/brand-dictionary.yaml',
+  ]);
   const baseSha = await runGit(checkoutRoot, ['rev-parse', 'refs/remotes/origin/main']);
   await runGit(checkoutRoot, ['checkout', '-b', branchName, baseSha]);
   return baseSha;
@@ -183,13 +211,14 @@ export async function publishTasteProjection(
       const baseSha = await prepareCheckout(input.sourceRoot, checkoutRoot, branchName);
       const materialized = input.materialize(checkoutRoot);
       if (materialized === 'already-published') {
-        return {
+        return await retainResult(input.sourceRoot, checkoutRoot, {
           commitSha: await findExistingProjectionCommit(checkoutRoot, input.filesToCommit[0]),
           alreadyPublished: true,
-        };
+        });
       }
 
       await runGit(checkoutRoot, ['add', '--', ...input.filesToCommit]);
+      await prepareTastePublicationToolchain(input.sourceRoot, checkoutRoot, input.filesToCommit);
       await runGit(checkoutRoot, ['commit', '--only', '-m', input.commitMessage, '--', ...input.filesToCommit]);
       const commitSha = await runGit(checkoutRoot, ['rev-parse', 'HEAD']);
       await options.beforePush?.({ attempt, checkoutRoot, baseSha, commitSha });
@@ -203,9 +232,9 @@ export async function publishTasteProjection(
       } catch (pushError) {
         const resolution = await resolveFailedPush(pushError, checkoutRoot, baseSha, attempt, input);
         if (resolution === 'retry') continue;
-        return resolution;
+        return await retainResult(input.sourceRoot, checkoutRoot, resolution);
       }
-      return { commitSha, alreadyPublished: false };
+      return await retainResult(input.sourceRoot, checkoutRoot, { commitSha, alreadyPublished: false });
     } catch (error) {
       if (isTastePublicationIndeterminateError(error)) throw error;
       throw new Error(`Taste publication failed: ${errorMessage(error)}`);
@@ -215,4 +244,15 @@ export async function publishTasteProjection(
   }
 
   throw new Error(`Taste publication failed after ${PUBLICATION_ATTEMPTS} attempts`);
+}
+
+async function retainResult(sourceRoot: string, checkoutRoot: string, result: GitTastePublicationResult) {
+  try {
+    await retainPublishedTasteSnapshot(sourceRoot, checkoutRoot);
+    return result;
+  } catch (error) {
+    throw new TastePublicationIndeterminateError(
+      `Taste reached origin/main but its canonical read snapshot could not be retained: ${errorMessage(error)}`,
+    );
+  }
 }

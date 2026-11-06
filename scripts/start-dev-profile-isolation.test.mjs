@@ -10,10 +10,7 @@ import { buildWindowsStatus, resolveWindowsStatusPorts } from './lib/platform-st
 
 const ROOT = resolve(process.cwd());
 const localRequire = createRequire(import.meta.url);
-const BUILD_CHILD_ENV_INHERITED_CWD_EXCEPTIONS = [
-  // Antigravity never sets spawn.cwd, so its process and shell cwd intentionally inherit together.
-  'packages/api/src/domains/cats/services/agents/providers/GeminiAgentService.ts::buildChildEnv(options.callbackEnv)',
-];
+const BUILD_CHILD_ENV_INHERITED_CWD_EXCEPTIONS = [];
 
 function resolvePackageBin(packageName) {
   const pkgPath = localRequire.resolve(`${packageName}/package.json`);
@@ -26,6 +23,14 @@ function resolvePackageBin(packageName) {
 function createSandbox(envFile = '') {
   const dir = mkdtempSync(join(tmpdir(), 'cc-start-dev-profile-'));
   mkdirSync(join(dir, 'scripts'), { recursive: true });
+  mkdirSync(join(dir, 'packages/shared/src'), { recursive: true });
+  for (const relative of [
+    'scripts/read-deployment-default.mjs',
+    'packages/shared/src/deployment-defaults.ts',
+    'packages/shared/src/deployment-profiles.json',
+  ]) {
+    cpSync(join(ROOT, relative), join(dir, relative));
+  }
   mkdirSync(join(dir, 'scripts/lib'), { recursive: true });
   cpSync(resolve(ROOT, 'scripts/start-dev.sh'), join(dir, 'scripts', 'start-dev.sh'));
   cpSync(resolve(ROOT, 'scripts/lib/node-runtime-guard.sh'), join(dir, 'scripts/lib', 'node-runtime-guard.sh'));
@@ -91,6 +96,7 @@ function collectBuildChildEnvCallsMissingWorkingDirectory() {
   return findings.sort();
 }
 
+// Fixture commands must preserve the supplied environment and avoid host login/logout hooks.
 function runSourceOnly({ sandboxDir, env = {}, extraArgs = [], commands }) {
   const command = (
     commands ?? [
@@ -99,7 +105,7 @@ function runSourceOnly({ sandboxDir, env = {}, extraArgs = [], commands }) {
     ]
   ).join('; ');
 
-  return spawnSync('bash', ['-lc', command], {
+  return spawnSync('bash', ['-c', command], {
     cwd: sandboxDir,
     env: {
       PATH: process.env.PATH ?? '',
@@ -117,7 +123,7 @@ function runApiLaunchCommand({ sandboxDir, env = {}, extraArgs = [] }) {
     'printf "%s\\n" "$(api_launch_command)"',
   ].join('; ');
 
-  return spawnSync('bash', ['-lc', command], {
+  return spawnSync('bash', ['-c', command], {
     cwd: sandboxDir,
     env: {
       PATH: process.env.PATH ?? '',
@@ -129,7 +135,136 @@ function runApiLaunchCommand({ sandboxDir, env = {}, extraArgs = [] }) {
   });
 }
 
+function shellFailureDetails(result) {
+  return `shell exit=${result.status}, signal=${result.signal ?? 'none'}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
+}
+
 describe('start-dev strict profile isolation', () => {
+  it('renders the startup banner from the same selected deployment artifact', () => {
+    const sandboxDir = createSandbox();
+    try {
+      const file = join(sandboxDir, 'packages/shared/src/deployment-profiles.json');
+      const input = JSON.parse(readFileSync(file, 'utf8'));
+      input.profiles[input.activeProfile].brand.displayName = 'Startup Fixture Écran';
+      writeFileSync(file, JSON.stringify(input));
+      const result = runSourceOnly({ sandboxDir, extraArgs: ['--memory'] });
+      assert.equal(result.status, 0, shellFailureDetails(result));
+      assert.ok(result.stdout.startsWith('🐱 Startup Fixture Écran 启动\n'), result.stdout);
+    } finally {
+      rmSync(sandboxDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads unprofiled startup defaults instead of a second shell definition', () => {
+    const sandboxDir = createSandbox();
+    try {
+      const file = join(sandboxDir, 'packages/shared/src/deployment-profiles.json');
+      const input = JSON.parse(readFileSync(file, 'utf8'));
+      input.startupProfiles.unprofiled = structuredClone(input.startupProfiles.dev);
+      input.startupProfiles.unprofiled.common.ANTHROPIC_PROXY_ENABLED = '1';
+      input.startupProfiles.unprofiled.common.REDIS_PROFILE = 'opensource';
+      writeFileSync(file, JSON.stringify(input));
+      const commands =
+        'source scripts/start-dev.sh --source-only --memory >/dev/null && trap - EXIT INT TERM && printf "%s/%s" "$ANTHROPIC_PROXY_ENABLED" "$REDIS_PROFILE"';
+      const result = spawnSync('bash', ['-c', commands], {
+        cwd: sandboxDir,
+        env: { PATH: process.env.PATH },
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, shellFailureDetails(result));
+      assert.equal(result.stdout, '1/opensource');
+      const overridden = spawnSync('bash', ['-c', commands], {
+        cwd: sandboxDir,
+        env: { PATH: process.env.PATH, ANTHROPIC_PROXY_ENABLED: '0', REDIS_PROFILE: 'dev' },
+        encoding: 'utf8',
+      });
+      assert.equal(overridden.status, 0, shellFailureDetails(overridden));
+      assert.equal(overridden.stdout, '0/dev');
+    } finally {
+      rmSync(sandboxDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads synthetic startup switches from the deployment artifact while preserving explicit overrides', () => {
+    const sandboxDir = createSandbox();
+    try {
+      const file = join(sandboxDir, 'packages/shared/src/deployment-profiles.json');
+      const input = JSON.parse(readFileSync(file, 'utf8'));
+      input.startupProfiles = {
+        dev: {
+          common: {
+            ANTHROPIC_PROXY_ENABLED: '0',
+            ASR_ENABLED: '1',
+            TTS_ENABLED: '0',
+            LLM_POSTPROCESS_ENABLED: '0',
+            MESSAGE_TTL_SECONDS: '0',
+            THREAD_TTL_SECONDS: '0',
+            TASK_TTL_SECONDS: '0',
+            SUMMARY_TTL_SECONDS: '0',
+            REDIS_PROFILE: 'opensource',
+          },
+          posix: { AUDIO_SERVICE_ENABLED: '0' },
+          win32: { ASR_ENABLED: '0' },
+        },
+      };
+      writeFileSync(file, JSON.stringify(input));
+      const commands = [
+        'source scripts/start-dev.sh --source-only --profile=dev',
+        'printf "PROXY=%s\\nREDIS_PROFILE=%s\\nAPI_ASR=%s\\n" "$ANTHROPIC_PROXY_ENABLED" "$REDIS_PROFILE" "$CAT_CAFE_SERVICE_ASR_ENABLED"',
+      ];
+      let result = runSourceOnly({ sandboxDir, commands });
+      assert.equal(result.status, 0, shellFailureDetails(result));
+      assert.match(result.stdout, /PROXY=0\nREDIS_PROFILE=opensource\nAPI_ASR=\n/);
+      result = runSourceOnly({ sandboxDir, commands, env: { ANTHROPIC_PROXY_ENABLED: '1', ASR_ENABLED: '0' } });
+      assert.equal(result.status, 0, shellFailureDetails(result));
+      assert.match(result.stdout, /PROXY=1\nREDIS_PROFILE=opensource\nAPI_ASR=0/);
+    } finally {
+      rmSync(sandboxDir, { recursive: true, force: true });
+    }
+  });
+  it('reuses wrapper-verified production artifacts without changing user start arguments', () => {
+    const sandboxDir = createSandbox();
+    try {
+      const result = runSourceOnly({
+        sandboxDir,
+        env: {
+          CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED: '1',
+          CAT_CAFE_DEPLOYMENT_ID: 'runtime',
+          CAT_CAFE_RUNTIME_ROOT: sandboxDir,
+        },
+        commands: [
+          'source scripts/start-dev.sh --source-only --prod-web',
+          'reuse_verified_runtime_artifacts',
+          'printf "QUICK=%s\\n" "$QUICK_MODE"',
+        ],
+      });
+      assert.equal(result.status, 0, shellFailureDetails(result));
+      assert.match(result.stdout, /QUICK=true/);
+    } finally {
+      rmSync(sandboxDir, { recursive: true, force: true });
+    }
+  });
+
+  it('waits for HTTP readiness after port listen before reporting startup complete', () => {
+    const sandboxDir = createSandbox();
+    const callsPath = join(sandboxDir, 'ready-calls');
+    try {
+      const result = runSourceOnly({
+        sandboxDir,
+        commands: [
+          'source scripts/start-dev.sh --source-only --quick',
+          `curl() { local n=0; [ ! -f '${callsPath}' ] || n=$(cat '${callsPath}'); n=$((n+1)); printf '%s' "$n" > '${callsPath}'; [ "$n" -lt 2 ] && printf 503 || printf 200; }`,
+          'sleep() { :; }',
+          'wait_for_api_readiness 3102 "$$" 5',
+        ],
+      });
+      assert.equal(result.status, 0, shellFailureDetails(result));
+      assert.equal(readFileSync(callsPath, 'utf8'), '2', '503 must not count as ready');
+    } finally {
+      rmSync(sandboxDir, { recursive: true, force: true });
+    }
+  });
+
   it('ignores inherited shell env for profile-controlled vars when strict mode is on', () => {
     const sandboxDir = createSandbox();
     try {
@@ -151,7 +286,7 @@ describe('start-dev strict profile isolation', () => {
         extraArgs: ['--', '--profile=opensource'],
       });
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /PROFILE=opensource/);
       assert.match(result.stdout, /ASR=0/);
       assert.match(result.stdout, /PROXY=0/);
@@ -176,7 +311,7 @@ describe('start-dev strict profile isolation', () => {
         extraArgs: ['--', '--profile=production'],
       });
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /PROFILE=production/);
       assert.match(result.stdout, /ASR=0/);
       assert.match(result.stdout, /PROXY=0/);
@@ -203,7 +338,7 @@ describe('start-dev strict profile isolation', () => {
         extraArgs: ['--', '--profile=opensource'],
       });
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /PROFILE=opensource/);
       assert.match(result.stdout, /ASR=0/);
       assert.match(result.stdout, /EMBED=0/);
@@ -221,7 +356,7 @@ describe('start-dev strict profile isolation', () => {
         'source scripts/start-dev.sh --source-only -- --profile=opensource',
         'printf "ASR=%s\\nTTS=%s\\nLEGACY_ASR=%s\\nLEGACY_TTS=%s\\n" "$ASR_ENABLED" "$TTS_ENABLED" "${CAT_CAFE_SERVICE_ASR_ENABLED:-}" "${CAT_CAFE_SERVICE_TTS_ENABLED:-}"',
       ].join('; ');
-      const result = spawnSync('bash', ['-lc', command], {
+      const result = spawnSync('bash', ['-c', command], {
         cwd: sandboxDir,
         env: {
           PATH: process.env.PATH ?? '',
@@ -232,7 +367,7 @@ describe('start-dev strict profile isolation', () => {
         encoding: 'utf8',
       });
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /ASR=0/);
       assert.match(result.stdout, /TTS=0/);
       assert.match(result.stdout, /LEGACY_ASR=1/);
@@ -257,7 +392,7 @@ describe('start-dev strict profile isolation', () => {
         extraArgs: ['--', '--profile=opensource'],
       });
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /PROFILE=opensource/);
       assert.match(result.stdout, /EMBED=0/);
     } finally {
@@ -277,7 +412,7 @@ describe('start-dev strict profile isolation', () => {
         'source scripts/start-dev.sh --source-only',
         'printf "SERVICE_EMBED=%s\\n" "${CAT_CAFE_SERVICE_EMBED_ENABLED:-unset}"',
       ].join('; ');
-      const result = spawnSync('bash', ['-lc', command], {
+      const result = spawnSync('bash', ['-c', command], {
         cwd: sandboxDir,
         env: {
           PATH: process.env.PATH ?? '',
@@ -286,7 +421,7 @@ describe('start-dev strict profile isolation', () => {
         },
         encoding: 'utf8',
       });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(
         result.stdout,
         /SERVICE_EMBED=1/,
@@ -308,7 +443,7 @@ describe('start-dev strict profile isolation', () => {
         extraArgs: ['--', '--profile=opensource'],
       });
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /PROFILE=opensource/);
       assert.match(result.stdout, /EMBED=0/);
     } finally {
@@ -320,7 +455,7 @@ describe('start-dev strict profile isolation', () => {
     const sandboxDir = createSandbox();
     try {
       const result = runApiLaunchCommand({ sandboxDir });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /NODE_ENV=development/, result.stdout);
       assert.match(result.stdout, /pnpm run dev/, result.stdout);
     } finally {
@@ -331,10 +466,13 @@ describe('start-dev strict profile isolation', () => {
   it('keeps API dev watcher away from build artifacts', () => {
     const pkg = JSON.parse(readFileSync(resolve(ROOT, 'packages/api/package.json'), 'utf8'));
     const devScript = pkg.scripts.dev;
+    const supervisor = readFileSync(resolve(ROOT, 'packages/api/scripts/dev-supervisor.mjs'), 'utf8');
 
-    assert.match(devScript, /\btsx watch\b/, devScript);
-    assert.match(devScript, /--exclude "dist\/\*\*"/, devScript);
-    assert.match(devScript, /--exclude "\.\.\/shared\/dist\/\*\*"/, devScript);
+    assert.match(devScript, /(?:^| && )node scripts\/dev-supervisor\.mjs$/);
+    assert.match(supervisor, /'watch'/);
+    assert.match(supervisor, /'--exclude',\s*'dist\/\*\*'/);
+    assert.match(supervisor, /'--exclude',\s*'\.\.\/shared\/dist\/\*\*'/);
+    assert.match(supervisor, /'src\/index\.ts'/);
 
     const help = spawnSync(process.execPath, [resolvePackageBin('tsx'), 'watch', '--help'], {
       cwd: resolve(ROOT, 'packages/api'),
@@ -358,7 +496,7 @@ describe('start-dev strict profile isolation', () => {
         env: { CAT_CAFE_STRICT_PROFILE_DEFAULTS: '1' },
         extraArgs: ['--', '--profile=opensource'],
       });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /NODE_ENV=development/, result.stdout);
     } finally {
       rmSync(sandboxDir, { recursive: true, force: true });
@@ -373,7 +511,7 @@ describe('start-dev strict profile isolation', () => {
         env: { CAT_CAFE_STRICT_PROFILE_DEFAULTS: '1' },
         extraArgs: ['--prod-web', '--', '--profile=opensource'],
       });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /NODE_ENV=production/, result.stdout);
     } finally {
       rmSync(sandboxDir, { recursive: true, force: true });
@@ -387,7 +525,7 @@ describe('start-dev strict profile isolation', () => {
         sandboxDir,
         extraArgs: ['--prod-web'],
       });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /pnpm run start/, result.stdout);
       assert.doesNotMatch(result.stdout, /pnpm run dev/, result.stdout);
     } finally {
@@ -466,7 +604,7 @@ describe('cross-platform pnpm-start profile propagation (#421)', () => {
         ],
       });
 
-      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /CONTINUED=1/);
       assert.match(result.stdout, /OWNER=empty/);
       assert.match(result.stdout, /F247 cloud supporting services degraded/i);
@@ -490,7 +628,7 @@ describe('cross-platform pnpm-start profile propagation (#421)', () => {
         ],
       });
 
-      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.status, 0, shellFailureDetails(result));
       assert.match(result.stdout, /F247 cloud: degraded/i);
       assert.match(result.stdout, /NODE_ARGS=.*status --summary/);
       assert.match(result.stdout, /RESULT=0/);
@@ -499,45 +637,17 @@ describe('cross-platform pnpm-start profile propagation (#421)', () => {
     }
   });
 
-  it('official runtime launchers opt in to connector autostart without overriding explicit false', () => {
-    const runtimeScript = readFileSync(resolve(ROOT, 'scripts/runtime-worktree.sh'), 'utf8');
-    const windowsScript = readFileSync(resolve(ROOT, 'scripts/start-windows.ps1'), 'utf8');
-    const unixOptIns = runtimeScript.match(
-      /export CONNECTOR_GATEWAY_AUTOSTART="\$\{CONNECTOR_GATEWAY_AUTOSTART:-1\}"/g,
-    );
-
-    assert.equal(unixOptIns?.length, 2, 'both Unix runtime paths must explicitly opt in');
-    assert.match(windowsScript, /CONNECTOR_GATEWAY_AUTOSTART\s*=\s*\$connectorGatewayAutostart/);
-    assert.match(
-      windowsScript,
-      /\$connectorGatewayAutostart\s*=\s*if\s*\(\$env:CONNECTOR_GATEWAY_AUTOSTART\)[\s\S]*?elseif\s*\(-not \$Dev\)/,
-      'Windows production runtime must compute an explicit connector opt-in',
-    );
-  });
-
-  it('Windows launcher snapshots connector authority before dotenv and restores only that wrapper decision', () => {
-    const windowsScript = readFileSync(resolve(ROOT, 'scripts/start-windows.ps1'), 'utf8');
-    const snapshot =
-      '$connectorGatewayAutostartOverride = [System.Environment]::GetEnvironmentVariable("CONNECTOR_GATEWAY_AUTOSTART", "Process")';
-    const dotenvLoad = '# -- Load .env';
-    const restore = '# -- Restore connector launcher authority after dotenv';
-    const runtimeProjection = '$connectorGatewayAutostart = if ($env:CONNECTOR_GATEWAY_AUTOSTART)';
-
-    assert.ok(windowsScript.indexOf(snapshot) >= 0, 'Windows launcher must snapshot wrapper authority');
-    assert.ok(
-      windowsScript.indexOf(snapshot) < windowsScript.indexOf(dotenvLoad),
-      'wrapper authority must be captured before dotenv mutates the process environment',
-    );
-    assert.ok(
-      windowsScript.indexOf(restore) > windowsScript.indexOf(dotenvLoad) &&
-        windowsScript.indexOf(restore) < windowsScript.indexOf(runtimeProjection),
-      'dotenv-only grants must be removed before runtimeEnvOverrides are computed',
-    );
-    assert.match(
-      windowsScript,
-      /SetEnvironmentVariable\("CONNECTOR_GATEWAY_AUTOSTART", \$null, "Process"\)/,
-      'an absent wrapper decision must remain absent after dotenv loading',
-    );
+  it('startup entrypoints no longer project a retired connector gateway capability', () => {
+    for (const path of [
+      'start-entry.mjs',
+      'start-dev.sh',
+      'runtime-worktree.sh',
+      'start-windows.ps1',
+      'review-start.sh',
+    ]) {
+      const source = readFileSync(resolve(ROOT, 'scripts', path), 'utf8');
+      assert.doesNotMatch(source, /CONNECTOR_GATEWAY_AUTOSTART|connectorGatewayAutostart/, path);
+    }
   });
 
   it('does not advertise connector lifecycle authority through the .env template', () => {
@@ -555,12 +665,32 @@ describe('cross-platform pnpm-start profile propagation (#421)', () => {
       resolve(ROOT, 'packages/api/src/domains/cats/services/agents/providers/acp/AcpHttpStreamClient.ts'),
       'utf8',
     );
-    const tmuxGateway = readFileSync(resolve(ROOT, 'packages/api/src/domains/terminal/tmux-gateway.ts'), 'utf8');
+    const runtimeOnlyEnv = readFileSync(resolve(ROOT, 'packages/api/src/utils/runtime-only-env.ts'), 'utf8');
 
-    assert.match(acpClient, /buildChildEnv\(this\.config\.env, \{ workingDirectory: this\.config\.cwd \}\)/);
-    assert.match(acpHttpClient, /buildChildEnv\(this\.config\.env, \{ workingDirectory: this\.config\.cwd \}\)/);
-    assert.match(tmuxGateway, /'CONNECTOR_GATEWAY_AUTOSTART'/);
-    assert.match(tmuxGateway, /'CAT_CAFE_PROVISION_GLOBAL_SIDECAR'/);
+    // Official AGY profiles may also opt out of inheriting the parent env (#5792); stripping still applies.
+    const scopedChildEnv =
+      /buildChildEnv\(this\.config\.env, \{\s*workingDirectory: this\.config\.cwd,?\s*(?:inheritParentEnv: this\.config\.inheritParentEnv,?\s*)?\}\)/;
+    assert.match(acpClient, scopedChildEnv);
+    assert.match(acpHttpClient, scopedChildEnv);
+    // One list, owned by one module…
+    assert.match(
+      runtimeOnlyEnv,
+      /export const RUNTIME_ONLY_LIFECYCLE_ENV_KEYS = \[\s*'CONNECTOR_GATEWAY_AUTOSTART',\s*'CAT_CAFE_PROVISION_GLOBAL_SIDECAR',\s*'CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED',\s*'CAT_CAFE_ALPHA_COORDINATES',?\s*\] as const;/,
+    );
+    // …consumed by every spawn path that runs cat-authored commands, never re-copied.
+    for (const consumer of [
+      'packages/api/src/domains/terminal/tmux-gateway.ts',
+      'packages/api/src/utils/cli-spawn.ts',
+      'packages/api/src/infrastructure/managed-runner-environment.ts',
+    ]) {
+      const source = readFileSync(resolve(ROOT, consumer), 'utf8');
+      assert.match(
+        source,
+        /import \{ RUNTIME_ONLY_LIFECYCLE_ENV_KEYS \} from '[./]+(utils\/)?runtime-only-env\.js';/,
+        `${consumer} must consume the shared runtime-only list`,
+      );
+      assert.doesNotMatch(source, /'CONNECTOR_GATEWAY_AUTOSTART'|'CAT_CAFE_PROVISION_GLOBAL_SIDECAR'/, consumer);
+    }
   });
 
   it('requires every buildChildEnv caller to declare its intended working directory or a narrow exception', () => {
@@ -665,35 +795,6 @@ describe('cross-platform pnpm-start profile propagation (#421)', () => {
     assert.ok(source.includes('env: childEnv'), 'Windows spawn must use childEnv (which contains profile env vars)');
   });
 
-  it('start-entry.mjs defaults direct Unix starts to connector gateway autostart off', () => {
-    const source = readFileSync(resolve(ROOT, 'scripts/start-entry.mjs'), 'utf8');
-    const unixDispatchStart = source.indexOf('// Unix: dispatch based on mode');
-    const startDirectBlock = source.slice(
-      source.indexOf("mode === 'start:direct'", unixDispatchStart),
-      source.indexOf("} else if (mode === 'dev:direct'", unixDispatchStart),
-    );
-    const devDirectBlock = source.slice(
-      source.indexOf("mode === 'dev:direct'", unixDispatchStart),
-      source.indexOf('} else {', source.indexOf("mode === 'dev:direct'", unixDispatchStart)),
-    );
-
-    assert.match(
-      source,
-      /CONNECTOR_GATEWAY_AUTOSTART:\s*'0'/,
-      'direct fail-closed helper must default CONNECTOR_GATEWAY_AUTOSTART=0',
-    );
-    assert.match(
-      startDirectBlock,
-      /directConnectorAutostartFailClosed/,
-      'start:direct must explicitly fail closed for preconfigured IM connector autostart',
-    );
-    assert.match(
-      devDirectBlock,
-      /directConnectorAutostartFailClosed/,
-      'dev:direct must explicitly fail closed for preconfigured IM connector autostart',
-    );
-  });
-
   it('start-entry.mjs marks Unix runtime-worktree starts as no-watch before dispatch', () => {
     const source = readFileSync(resolve(ROOT, 'scripts/start-entry.mjs'), 'utf8');
     const unixDispatchStart = source.indexOf('// Unix: dispatch based on mode');
@@ -707,6 +808,54 @@ describe('cross-platform pnpm-start profile propagation (#421)', () => {
       /CAT_CAFE_DIRECT_NO_WATCH:\s*'1'/,
       'pnpm start must mark runtime-worktree startup as no-watch before dispatching',
     );
+  });
+
+  it('legacy restart environment cannot bypass foreign process ownership', () => {
+    const sandboxDir = createSandbox();
+    try {
+      const script = `
+source "$1" --source-only >/dev/null
+pid_cwd() { printf '%s\\n' /tmp/foreign-runtime-owner; }
+CAT_CAFE_RUNTIME_RESTART_OK=1
+guard_fn=guard_port_kill_ownership
+"$guard_fn" 39876 API 424242
+`;
+      const result = spawnSync('bash', ['-c', script, '_', join(sandboxDir, 'scripts', 'start-dev.sh')], {
+        cwd: sandboxDir,
+        encoding: 'utf8',
+        env: { ...process.env, API_SERVER_PORT: '39876', FRONTEND_PORT: '39875', PREVIEW_GATEWAY_PORT: '0' },
+      });
+
+      assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.match(`${result.stdout}\n${result.stderr}`, /cross worktree|跨 worktree/i);
+      assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /继续强制释放/);
+    } finally {
+      rmSync(sandboxDir, { recursive: true, force: true });
+    }
+  });
+
+  it('legacy restart environment cannot bypass an unreadable process owner', () => {
+    const sandboxDir = createSandbox();
+    try {
+      const script = `
+source "$1" --source-only >/dev/null
+pid_cwd() { return 1; }
+CAT_CAFE_RUNTIME_RESTART_OK=1
+guard_fn=guard_port_kill_ownership
+"$guard_fn" 39876 API 424242
+`;
+      const result = spawnSync('bash', ['-c', script, '_', join(sandboxDir, 'scripts', 'start-dev.sh')], {
+        cwd: sandboxDir,
+        encoding: 'utf8',
+        env: { ...process.env, API_SERVER_PORT: '39876', FRONTEND_PORT: '39875', PREVIEW_GATEWAY_PORT: '0' },
+      });
+
+      assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.match(`${result.stdout}\n${result.stderr}`, /unknown-cwd/);
+      assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /继续强制释放/);
+    } finally {
+      rmSync(sandboxDir, { recursive: true, force: true });
+    }
   });
 
   it('start-windows.ps1 clears inherited profile vars when strict mode is on', () => {
@@ -731,9 +880,25 @@ describe('cross-platform pnpm-start profile propagation (#421)', () => {
   it('start-windows.ps1 applies profile defaults matching start-dev.sh opensource profile', () => {
     const ps1 = readFileSync(resolve(ROOT, 'scripts/start-windows.ps1'), 'utf8');
 
-    assert.match(ps1, /'opensource'/, 'start-windows.ps1 must define opensource profile');
-    assert.match(ps1, /'production'/, 'start-windows.ps1 must define production profile');
-    assert.match(ps1, /'dev'/, 'start-windows.ps1 must define dev profile');
+    assert.ok(
+      ps1.includes('--startup-profile $startupProfile win32'),
+      'Windows must consume the source startup artifact',
+    );
+    for (const profile of ['dev', 'production', 'opensource']) {
+      const result = spawnSync(
+        process.execPath,
+        ['scripts/read-deployment-default.mjs', '--startup-profile', profile, 'win32'],
+        { cwd: ROOT, encoding: 'utf8' },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const defaults = JSON.parse(result.stdout);
+      assert.equal(defaults.ANTHROPIC_PROXY_ENABLED, profile === 'dev' ? '1' : '0');
+      assert.equal(defaults.ASR_ENABLED, profile === 'dev' ? '1' : '0');
+      assert.equal(defaults.TTS_ENABLED, profile === 'dev' ? '1' : '0');
+      assert.equal(defaults.LLM_POSTPROCESS_ENABLED, profile === 'dev' ? '1' : '0');
+      for (const key of ['MESSAGE_TTL_SECONDS', 'THREAD_TTL_SECONDS', 'TASK_TTL_SECONDS', 'SUMMARY_TTL_SECONDS'])
+        assert.equal(defaults[key], '0');
+    }
 
     assert.ok(
       ps1.includes('GetEnvironmentVariable'),
@@ -1039,7 +1204,7 @@ describe('Whisper sidecar startup guards', () => {
     const result = spawnSync(
       'bash',
       [
-        '-lc',
+        '-c',
         [
           `source "${helperPath}"`,
           'HTTP_PROXY=socks://127.0.0.1:7897/',
@@ -1052,7 +1217,7 @@ describe('Whisper sidecar startup guards', () => {
       { encoding: 'utf8' },
     );
 
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, 0, shellFailureDetails(result));
     assert.equal(
       result.stdout,
       ['socks5://127.0.0.1:7897/', 'socks5://127.0.0.1:7897/', 'socks5h://127.0.0.1:7897/'].join('\n') + '\n',

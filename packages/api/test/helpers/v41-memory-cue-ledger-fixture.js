@@ -1,4 +1,7 @@
+import { installLegacyEntityRevisionFixture } from './legacy-entity-revision-fixture.js';
+
 export function installV41CueLedgerFixture(db) {
+  installLegacyEntityRevisionFixture(db);
   db.exec(`
     CREATE TABLE schema_version (
       version INTEGER PRIMARY KEY,

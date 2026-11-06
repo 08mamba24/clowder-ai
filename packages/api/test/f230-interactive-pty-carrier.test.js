@@ -18,6 +18,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { CAT_CAFE_SPLIT_ENTRYPOINTS } from '../../mcp-server/dist/mcp-launch-contract.js';
 import {
   ClaudeInteractivePtyCarrierService,
   ptyTranscriptDir,
@@ -122,7 +124,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 1: happy path (B-hook)', {
       transcriptDirOverride: tmpDir,
       hookSidecarPathOverride: sidecarPath,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 5_000,
     });
 
     const msgs = await collect(carrier.invoke('test prompt'));
@@ -166,7 +167,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 1: happy path (B-hook)', {
       transcriptDirOverride: tmpDir,
       hookSidecarPathOverride: sidecarPath,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 5_000,
     });
 
     await collect(carrier.invoke('test prompt', { reasoningEffortOverride: 'low' }));
@@ -190,7 +190,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 1: happy path (B-hook)', {
       hookSidecarPathOverride: sidecarPath,
       mcpServerPath: sidecarPath,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 5_000,
     });
     const policy = { mode: 'read_only', replayDeniedToolNames: ['cat_cafe_post_message'] };
 
@@ -212,6 +211,43 @@ describe('ClaudeInteractivePtyCarrierService — Step 1: happy path (B-hook)', {
   });
 });
 
+describe('ClaudeInteractivePtyCarrierService — silence is not completion', { timeout: 5_000 }, () => {
+  it('keeps the turn open without a Stop hook and cancels only on the caller signal', async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), 'f117-pty-silence-'));
+    try {
+      const sidecarPath = await writeSidecar(tmpDir, []);
+      const mock = new MockPtyDriver();
+      mock.injectResult = { transcriptPath: join(tmpDir, 'stub.jsonl'), sessionId: TEST_SESSION_ID };
+      const controller = new AbortController();
+      const carrier = new ClaudeInteractivePtyCarrierService({
+        driverFactory: () => mock,
+        transcriptDirOverride: tmpDir,
+        hookSidecarPathOverride: sidecarPath,
+        pollIntervalMs: 10,
+        terminalTimeoutMs: 20, // Legacy silence fallback: ignored by G1, false success on the baseline.
+      });
+
+      const timer = setTimeout(() => controller.abort(), 100);
+      try {
+        const messages = await collect(carrier.invoke('quiet tool', { signal: controller.signal }));
+        assert.ok(
+          messages.some((message) => message.type === 'error'),
+          'caller abort reports cancellation',
+        );
+        assert.ok(
+          messages.some((message) => message.type === 'done'),
+          'caller abort ends the local stream',
+        );
+        assert.equal(mock.calls.cancel, 1, 'caller abort reaches the PTY driver');
+      } finally {
+        clearTimeout(timer);
+      }
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── Step 2: abort signal ────────────────────────────────────────────────────
 
 describe('ClaudeInteractivePtyCarrierService — Step 2: abort signal', { timeout: 10_000 }, () => {
@@ -224,7 +260,7 @@ describe('ClaudeInteractivePtyCarrierService — Step 2: abort signal', { timeou
   });
 
   it('abort after session_init → cancel() called; stream ends with error+done', async () => {
-    // Empty sidecar — no Stop event, loop would run indefinitely without abort
+    // Empty sidecar — no Stop event, so only caller abort can end this turn.
     const sidecarPath = await writeSidecar(tmpDir, []);
 
     const mock = new MockPtyDriver();
@@ -237,7 +273,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 2: abort signal', { timeou
       transcriptDirOverride: tmpDir,
       hookSidecarPathOverride: sidecarPath,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 30_000, // long — we abort before silence timeout
     });
 
     // Abort as soon as we see session_init
@@ -290,7 +325,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 3: tool_use (B-hook)', { t
       transcriptDirOverride: tmpDir,
       hookSidecarPathOverride: sidecarPath,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 5_000,
     });
 
     const msgs = await collect(carrier.invoke('call a tool'));
@@ -334,7 +368,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 5: env delta contract', { 
       transcriptDirOverride: tmpDir,
       hookSidecarPathOverride: sidecarPath,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 5_000,
     });
 
     await collect(carrier.invoke('test prompt'));
@@ -358,7 +391,7 @@ describe('ClaudeInteractivePtyCarrierService — Step 5: env delta contract', { 
 
 // ─── Step 6: MCP config shape (P1-2 regression) ─────────────────────────────
 // When callbackEnv + mcpServerPath present, --mcp-config must point to a
-// JSON config file ({ mcpServers: { "cat-cafe": { command, args } } }),
+// JSON config file containing the installed split-family servers,
 // NOT directly to the MCP server JS path.
 
 describe('ClaudeInteractivePtyCarrierService — Step 6: MCP config shape', { timeout: 10_000 }, () => {
@@ -371,9 +404,7 @@ describe('ClaudeInteractivePtyCarrierService — Step 6: MCP config shape', { ti
   });
 
   it('callbackEnv + mcpServerPath → extraArgs has --mcp-config <json-file> with correct shape', async () => {
-    // Create a fake MCP server JS file so existsSync passes
-    const fakeMcpServerPath = join(tmpDir, 'fake-mcp-index.js');
-    await writeFile(fakeMcpServerPath, '// fake mcp server', 'utf8');
+    const installedMcpServerPath = fileURLToPath(new URL('../../mcp-server/dist/index.js', import.meta.url));
 
     const sidecarPath = await writeSidecar(tmpDir, [stopEventLine('ok')]);
     let capturedOpts = null;
@@ -388,8 +419,7 @@ describe('ClaudeInteractivePtyCarrierService — Step 6: MCP config shape', { ti
       transcriptDirOverride: tmpDir,
       hookSidecarPathOverride: sidecarPath,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 5_000,
-      mcpServerPath: fakeMcpServerPath, // test seam
+      mcpServerPath: installedMcpServerPath,
     });
 
     await collect(carrier.invoke('test', { callbackEnv: { CAT_CAFE_SOME_CALLBACK: 'val' } }));
@@ -406,7 +436,7 @@ describe('ClaudeInteractivePtyCarrierService — Step 6: MCP config shape', { ti
 
     // Value must be a JSON FILE path (not the JS server path directly)
     assert.ok(mcpConfigValue.endsWith('.json'), `--mcp-config value must be a .json file, got: ${mcpConfigValue}`);
-    assert.notEqual(mcpConfigValue, fakeMcpServerPath, '--mcp-config must NOT be the raw JS path');
+    assert.notEqual(mcpConfigValue, installedMcpServerPath, '--mcp-config must NOT be the raw JS path');
 
     // JSON file must have the correct mcpServers shape
     let config;
@@ -416,10 +446,12 @@ describe('ClaudeInteractivePtyCarrierService — Step 6: MCP config shape', { ti
       assert.fail(`--mcp-config file is not valid JSON at ${mcpConfigValue}: ${err.message}`);
     }
     assert.ok(config.mcpServers, 'config.mcpServers present');
-    const catCafe = config.mcpServers['cat-cafe'];
-    assert.ok(catCafe, 'mcpServers["cat-cafe"] present');
-    assert.equal(catCafe.command, 'node', 'mcpServers["cat-cafe"].command === "node"');
-    assert.deepEqual(catCafe.args, [fakeMcpServerPath], 'mcpServers["cat-cafe"].args === [mcpServerPath]');
+    for (const [name, entrypoint] of CAT_CAFE_SPLIT_ENTRYPOINTS) {
+      const server = config.mcpServers[name];
+      assert.ok(server, `${name} present`);
+      assert.equal(server.command, process.execPath, `${name} uses the installed Node executable`);
+      assert.deepEqual(server.args, [join(dirname(installedMcpServerPath), entrypoint)]);
+    }
 
     // --strict-mcp-config must also be present
     assert.ok(extraArgs.includes('--strict-mcp-config'), '--strict-mcp-config present in extraArgs');
@@ -443,7 +475,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 6: MCP config shape', { ti
       transcriptDirOverride: tmpDir,
       hookSidecarPathOverride: sidecarPath2,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 5_000,
       mcpServerPath: fakeMcpServerPath,
     });
 
@@ -487,7 +518,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 7a: resume sessionId', { t
       transcriptDirOverride: tmpDir,
       hookSidecarPathOverride: sidecarPath,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 5_000,
     });
 
     await collect(carrier.invoke('continue', { sessionId: resumeId }));
@@ -511,7 +541,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 7a: resume sessionId', { t
       transcriptDirOverride: tmpDir,
       hookSidecarPathOverride: sidecarPath2,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 5_000,
     });
 
     await collect(carrier.invoke('test', { sessionId: 'short-invalid-id' }));
@@ -535,7 +564,7 @@ describe('ClaudeInteractivePtyCarrierService — Step 8: trailing partial drain 
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('Stop event with no trailing \\n → detected via final drain, not silence timeout', async () => {
+  it('Stop event with no trailing \\n → detected via partial-line drain', async () => {
     // Write sidecar WITHOUT trailing \n — triggers the partial drain path.
     const path = join(tmpDir, 'hook-sidecar-partial.jsonl');
     // intentionally NO trailing \n
@@ -550,18 +579,16 @@ describe('ClaudeInteractivePtyCarrierService — Step 8: trailing partial drain 
       transcriptDirOverride: tmpDir,
       hookSidecarPathOverride: path,
       pollIntervalMs: 20,
-      // Short timeout: without fix, done arrives via silence timeout.
-      terminalTimeoutMs: 200,
     });
 
     const msgs = await collect(carrier.invoke('test trailing partial'));
 
     // Stop event (no trailing newline) must be detected via the final drain
-    // (readNew({includeTrailingPartial:true})), NOT the silence-timeout fallback.
+    // (readNew({includeTrailingPartial:true})), not a timeout fallback.
     const done = msgs.find((m) => m.type === 'done');
     assert.ok(done, 'done yielded (terminal reached)');
 
-    // Text content proves the Stop event was actually read (not silence timeout)
+    // Text content proves the Stop event was actually read.
     const text = msgs.find((m) => m.type === 'text');
     assert.ok(text, 'text from Stop event must be yielded');
     assert.ok(text.content.includes('hello from partial test'), 'text content matches');
@@ -576,8 +603,8 @@ describe('ClaudeInteractivePtyCarrierService — Step 8: trailing partial drain 
 //   emittedLines starts at 0 → reads old assistant text + old turn_duration →
 //   emits OLD_CONTENT and signals terminal immediately (RED).
 //
-// After fix: carrier creates TranscriptTailer(path, 2) → emittedLines starts at 2 →
-//   no old content returned → silence timeout → done without old text (GREEN).
+// After fix: each invoke reads a fresh sidecar and waits for its own Stop event,
+// so old transcript content cannot be replayed.
 
 describe('ClaudeInteractivePtyCarrierService — Step 9: resume uses fresh sidecar (B-hook)', { timeout: 10_000 }, () => {
   let tmpDir;
@@ -604,7 +631,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 9: resume uses fresh sidec
       transcriptDirOverride: tmpDir,
       hookSidecarPathOverride: sidecarPath,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 5_000,
     });
 
     const msgs = await collect(carrier.invoke('continue', { sessionId: resumeId }));
@@ -636,7 +662,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 10: pre-aborted signal ear
     const carrier = new ClaudeInteractivePtyCarrierService({
       driverFactory: () => mock,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 100,
     });
 
     const ac = new AbortController();
@@ -688,7 +713,6 @@ describe(
           return new MockPtyDriver();
         },
         pollIntervalMs: 20,
-        terminalTimeoutMs: 100,
       });
 
       // Kick off invoke (fire-and-forget; we only care about driver opts)
@@ -725,7 +749,6 @@ describe(
             return new MockPtyDriver();
           },
           pollIntervalMs: 20,
-          terminalTimeoutMs: 100,
         });
 
         const iter = carrier.invoke('test prompt', { sessionId: validId });
@@ -773,7 +796,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 12: mid-start abort guard'
     const carrier = new ClaudeInteractivePtyCarrierService({
       driverFactory: () => mock,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 5_000,
     });
 
     const msgs = await collect(carrier.invoke('test prompt', { signal: ac.signal }));
@@ -806,7 +828,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 4: start() throws', { time
     const carrier = new ClaudeInteractivePtyCarrierService({
       driverFactory: () => mock,
       pollIntervalMs: 20,
-      terminalTimeoutMs: 5_000,
     });
 
     const msgs = await collect(carrier.invoke('should fail fast'));
@@ -871,7 +892,6 @@ describe(
           return new MockPtyDriver();
         },
         pollIntervalMs: 20,
-        terminalTimeoutMs: 1_000,
       });
 
       await collect(
@@ -911,7 +931,6 @@ describe(
         transcriptDirOverride: tmpDir,
         hookSidecarPathOverride: sidecarPath,
         pollIntervalMs: 20,
-        terminalTimeoutMs: 5_000,
       });
 
       await collect(
@@ -1006,7 +1025,6 @@ describe(
           dispose: () => Promise.resolve(),
         }),
         pollIntervalMs: 10,
-        terminalTimeoutMs: 500,
       });
 
       const drain = async (iter) => {
@@ -1126,7 +1144,6 @@ describe(
           };
         },
         pollIntervalMs: 10,
-        terminalTimeoutMs: 500,
       });
 
       const msgs = [];
@@ -1195,7 +1212,6 @@ describe(
             };
           },
           pollIntervalMs: 10,
-          terminalTimeoutMs: 500,
         });
 
         const msgs = [];
@@ -1249,7 +1265,6 @@ describe(
             };
           },
           pollIntervalMs: 10,
-          terminalTimeoutMs: 500,
         });
 
         const msgs = [];
@@ -1292,7 +1307,6 @@ describe('ClaudeInteractivePtyCarrierService — Step 18: pre-abort hook cleanup
         cwd: tmpDir,
         driverFactory: () => new MockPtyDriver(),
         pollIntervalMs: 20,
-        terminalTimeoutMs: 500,
       });
 
       const msgs = await collect(carrier.invoke('test', { signal: controller.signal }));
@@ -1348,7 +1362,6 @@ describe(
             return d;
           },
           pollIntervalMs: 20,
-          terminalTimeoutMs: 2_000,
         });
 
         const msgs = await collect(carrier.invoke('test-s18p2', {}));
@@ -1408,7 +1421,6 @@ describe(
             return d;
           },
           pollIntervalMs: 20,
-          terminalTimeoutMs: 2_000,
         });
 
         const msgs = await collect(carrier.invoke('test-s19', {}));
@@ -1452,7 +1464,6 @@ describe(
           hookSidecarPathOverride: sidecarPath,
           driverFactory: () => mock,
           pollIntervalMs: 20,
-          terminalTimeoutMs: 2_000,
         });
         const msgs = await collect(carrier.invoke('test-s20'));
         const done = msgs.find((m) => m.type === 'done');
@@ -1475,7 +1486,6 @@ describe(
           hookSidecarPathOverride: sidecarPath,
           driverFactory: () => mock,
           pollIntervalMs: 20,
-          terminalTimeoutMs: 2_000,
         });
         const msgs = await collect(carrier.invoke('test-s20b'));
         const done = msgs.find((m) => m.type === 'done');

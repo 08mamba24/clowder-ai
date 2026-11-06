@@ -18,8 +18,15 @@ import {
   type TaskItem,
 } from '@cat-cafe/shared';
 import { z } from 'zod';
-import type { EntrustedWorkTerminalClosure, ITaskStore } from '../cats/services/stores/ports/TaskStoreContract.js';
-import { containsEntrustedWorkTimeSignal } from './EntrustedWorkSourceSignals.js';
+import type {
+  AdmitEntrustedWorkStoreInput,
+  EntrustedWorkTerminalClosure,
+  ITaskStore,
+  TaskMutationWriteFence,
+} from '../cats/services/stores/ports/TaskStoreContract.js';
+import { captureCompletionArtifact } from './EntrustedWorkCompletion.js';
+import type { PreparedArtifactReader } from './EntrustedWorkOwnerReadService.js';
+import { classifyEntrustedWorkSourceTime } from './EntrustedWorkSourceSignals.js';
 
 const boundedRef = z.string().trim().min(1).max(1_000);
 
@@ -63,6 +70,7 @@ export type EntrustedWorkLifecycleErrorCode =
   | 'ENTRUSTED_WORK_SOURCE_CUSTODY_MISMATCH'
   | 'ENTRUSTED_WORK_NOT_FOUND'
   | 'ENTRUSTED_WORK_CONTRACT_MISSING'
+  | 'ENTRUSTED_WORK_THREAD_CONFLICT'
   | 'ENTRUSTED_WORK_REVISION_CONFLICT'
   | 'ENTRUSTED_WORK_ALREADY_CLOSED'
   | 'ENTRUSTED_WORK_NO_OP';
@@ -78,8 +86,13 @@ export class EntrustedWorkLifecycleError extends Error {
 }
 
 export interface EntrustedWorkLifecycleOptions {
+  readonly expectedThreadId?: string;
   readonly now?: () => number;
   readonly custodyGrantRegistry?: F310CustodyGrantRegistryV1;
+  readonly onChanged?: (ownerUserId: string) => void;
+  readonly artifactReader?: PreparedArtifactReader;
+  /** Checked by the Task store at the aggregate's actual write boundary. */
+  readonly writeFence?: TaskMutationWriteFence;
 }
 
 export interface EntrustedWorkAdmissionSourceContext {
@@ -88,14 +101,22 @@ export interface EntrustedWorkAdmissionSourceContext {
 }
 
 export class EntrustedWorkLifecycleService {
+  private readonly expectedThreadId: string | undefined;
   private readonly now: () => number;
   private readonly custodyGrantRegistry: F310CustodyGrantRegistryV1;
+  private readonly onChanged: EntrustedWorkLifecycleOptions['onChanged'];
+  private readonly artifactReader: PreparedArtifactReader | undefined;
+  private readonly writeFence: TaskMutationWriteFence | undefined;
 
   constructor(
     private readonly tasks: ITaskStore,
     options: EntrustedWorkLifecycleOptions = {},
   ) {
+    this.expectedThreadId = options.expectedThreadId;
     this.now = options.now ?? Date.now;
+    this.onChanged = options.onChanged;
+    this.artifactReader = options.artifactReader;
+    this.writeFence = options.writeFence;
     const registry = options.custodyGrantRegistry ?? PHASE_B_INITIAL_CUSTODY_GRANT_REGISTRY;
     this.custodyGrantRegistry = Object.fromEntries(
       Object.entries(registry).map(([grantRef, grant]) => [grantRef, registeredCustodyGrantV1Schema.parse(grant)]),
@@ -106,6 +127,24 @@ export class EntrustedWorkLifecycleService {
     input: EntrustedWorkAdmissionCommandV1,
     sourceContext?: EntrustedWorkAdmissionSourceContext,
   ): Promise<CustodyAdmissionResultV1> {
+    const prepared = this.prepareAdmission(input, sourceContext);
+    if ('result' in prepared) return prepared;
+    const result = await this.tasks.admitEntrustedWork(prepared);
+    if (result.kind === 'admitted') this.notifyChanged(result.task);
+    return custodyAdmissionResultV1Schema.parse({
+      result: result.kind,
+      subjectRef: `task:work:${result.task.id}`,
+      ownerRef: `task:item:${result.task.id}`,
+      revision: result.task.entrustedWork?.revision,
+      receiptRef: result.task.entrustedWork?.admission.receiptRef,
+    });
+  }
+
+  /** Shared source/time/closure preparation; it creates no Task or custody side effect. */
+  prepareAdmission(
+    input: EntrustedWorkAdmissionCommandV1,
+    sourceContext?: EntrustedWorkAdmissionSourceContext,
+  ): AdmitEntrustedWorkStoreInput | Extract<CustodyAdmissionResultV1, { result: 'needs_clarification' }> {
     const command = entrustedWorkAdmissionCommandV1Schema.parse(input);
     if (!command.admission.intendedOutcome) {
       return {
@@ -122,17 +161,23 @@ export class EntrustedWorkLifecycleService {
     if (command.admission.basis === 'authorized_source') {
       this.assertCurrentAuthorization(command.admission);
     }
-    const canonicalTimeFacts = [command.time?.businessDeadline, command.time?.reviewBy].filter(
+    const canonicalTimeFacts = Object.values(command.time ?? {}).filter(
       (fact): fact is NonNullable<typeof fact> => fact != null,
     );
-    const sourceRequiresCanonicalTime =
-      (command.admission.timeHints?.length ?? 0) > 0 ||
-      (sourceContext !== undefined && containsEntrustedWorkTimeSignal(sourceContext.content));
-    if (sourceRequiresCanonicalTime && canonicalTimeFacts.length === 0) {
+    const sourceTimeRelation = sourceContext ? classifyEntrustedWorkSourceTime(sourceContext.content) : 'none';
+    if (sourceTimeRelation === 'ambiguous') {
       return {
         result: 'needs_clarification',
         clarificationReason:
-          'Source time requires a canonical businessDeadline or reviewBy before Task can claim custody.',
+          'Relative time in the source could be a deadline or a past reference; clarify before Task can claim custody.',
+      };
+    }
+    const sourceRequiresCanonicalTime =
+      (command.admission.timeHints?.length ?? 0) > 0 || sourceTimeRelation === 'deadline';
+    if (sourceRequiresCanonicalTime && canonicalTimeFacts.length === 0) {
+      return {
+        result: 'needs_clarification',
+        clarificationReason: 'Source time requires a canonical typed time fact before Task can claim custody.',
       };
     }
     const canonicalTimeSourceRefs = sourceContext ? [sourceContext.sourceRef] : command.admission.sourceRefs;
@@ -167,7 +212,7 @@ export class EntrustedWorkLifecycleService {
         evidenceRefs: [],
       },
     });
-    const result = await this.tasks.admitEntrustedWork({
+    return {
       subjectKey: `entrusted:${digest}`,
       task: {
         ...command.task,
@@ -175,24 +220,26 @@ export class EntrustedWorkLifecycleService {
         ownerCatId: command.task.ownerCatId as CreateTaskInput['ownerCatId'],
       },
       entrustedWork,
-    });
-    return custodyAdmissionResultV1Schema.parse({
-      result: result.kind,
-      subjectRef: `task:work:${result.task.id}`,
-      ownerRef: `task:item:${result.task.id}`,
-      revision: result.task.entrustedWork?.revision,
-      receiptRef: result.task.entrustedWork?.admission.receiptRef,
-    });
+    };
   }
 
-  async close(input: CloseEntrustedWorkCommandV1): Promise<TaskItem> {
+  async close(input: CloseEntrustedWorkCommandV1, beforeWrite?: () => Promise<void>): Promise<TaskItem> {
     const command = closeEntrustedWorkCommandV1Schema.parse(input);
-    const result = await this.tasks.closeEntrustedWork(command.taskId, {
-      expectedRevision: command.expectedRevision,
-      closure: command.closure as EntrustedWorkTerminalClosure,
-    });
+    const artifactSnapshot = await captureCompletionArtifact(this.tasks, this.artifactReader, command);
+    await beforeWrite?.();
+    const result = await this.tasks.closeEntrustedWork(
+      command.taskId,
+      {
+        expectedRevision: command.expectedRevision,
+        ...(this.expectedThreadId === undefined ? {} : { expectedThreadId: this.expectedThreadId }),
+        closure: command.closure as EntrustedWorkTerminalClosure,
+        ...(artifactSnapshot ? { artifactSnapshot } : {}),
+      },
+      this.writeFence,
+    );
     switch (result.kind) {
       case 'closed':
+        this.notifyChanged(result.task);
         return result.task;
       case 'not_found':
         throw new EntrustedWorkLifecycleError('ENTRUSTED_WORK_NOT_FOUND', 'Task not found');
@@ -201,6 +248,8 @@ export class EntrustedWorkLifecycleService {
           'ENTRUSTED_WORK_CONTRACT_MISSING',
           'Task does not own an entrusted-work contract',
         );
+      case 'thread_conflict':
+        throw new EntrustedWorkLifecycleError('ENTRUSTED_WORK_THREAD_CONFLICT', 'Task thread is no longer current');
       case 'revision_conflict':
         throw new EntrustedWorkLifecycleError(
           'ENTRUSTED_WORK_REVISION_CONFLICT',
@@ -213,19 +262,30 @@ export class EntrustedWorkLifecycleService {
 
   async update(input: EntrustedWorkUpdateActionV1): Promise<TaskItem> {
     const command = entrustedWorkUpdateActionV1Schema.parse(input);
-    const hasTimePatch =
-      command.time !== undefined &&
-      (Object.hasOwn(command.time, 'businessDeadline') || Object.hasOwn(command.time, 'reviewBy'));
-    if (command.artifactRefs === undefined && !hasTimePatch) {
+    const hasTimePatch = command.time !== undefined && Object.values(command.time).some((value) => value !== undefined);
+    if (
+      command.status === undefined &&
+      command.artifactRefs === undefined &&
+      command.progress === undefined &&
+      !hasTimePatch
+    ) {
       throw new EntrustedWorkLifecycleError('ENTRUSTED_WORK_NO_OP', 'Entrusted-work update has no mutation');
     }
-    const result = await this.tasks.updateEntrustedWork(command.taskId, {
-      expectedRevision: command.expectedRevision,
-      ...(command.time !== undefined ? { time: command.time } : {}),
-      ...(command.artifactRefs !== undefined ? { artifactRefs: command.artifactRefs } : {}),
-    });
+    const result = await this.tasks.updateEntrustedWork(
+      command.taskId,
+      {
+        expectedRevision: command.expectedRevision,
+        ...(this.expectedThreadId === undefined ? {} : { expectedThreadId: this.expectedThreadId }),
+        ...(command.status !== undefined ? { status: command.status } : {}),
+        ...(command.time !== undefined ? { time: command.time } : {}),
+        ...(command.artifactRefs !== undefined ? { artifactRefs: command.artifactRefs } : {}),
+        ...(command.progress !== undefined ? { progress: command.progress } : {}),
+      },
+      this.writeFence,
+    );
     switch (result.kind) {
       case 'updated':
+        this.notifyChanged(result.task);
         return result.task;
       case 'not_found':
         throw new EntrustedWorkLifecycleError('ENTRUSTED_WORK_NOT_FOUND', 'Task not found');
@@ -234,6 +294,8 @@ export class EntrustedWorkLifecycleService {
           'ENTRUSTED_WORK_CONTRACT_MISSING',
           'Task does not own an entrusted-work contract',
         );
+      case 'thread_conflict':
+        throw new EntrustedWorkLifecycleError('ENTRUSTED_WORK_THREAD_CONFLICT', 'Task thread is no longer current');
       case 'revision_conflict':
         throw new EntrustedWorkLifecycleError(
           'ENTRUSTED_WORK_REVISION_CONFLICT',
@@ -246,9 +308,11 @@ export class EntrustedWorkLifecycleService {
     }
   }
 
-  private assertCurrentAuthorization(
-    admission: Extract<CustodyAdmissionRequestV1, { basis: 'authorized_source' }>,
-  ): void {
+  private notifyChanged(task: TaskItem): void {
+    if (task.userId) this.onChanged?.(task.userId);
+  }
+
+  assertCurrentAuthorization(admission: Extract<CustodyAdmissionRequestV1, { basis: 'authorized_source' }>): void {
     const provenance = admission.authorityProvenance;
     const grant = this.custodyGrantRegistry[provenance.grantRef];
     if (!grant) {

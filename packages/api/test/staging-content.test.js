@@ -190,20 +190,16 @@ describe('L0 Staging Protocol PR-B-impl (ADR-038)', () => {
       assert.ok(out.includes('[爪感差:'));
     });
 
-    sourceOnlyTest('freshness handling names the full current-thread read surface', () => {
+    sourceOnlyTest('retired freshness handling is absent from rendered staging and its manifest', () => {
       const out = buildStagingPrepend('codex');
-      const freshnessClause = out.match(/\*\*Freshness notice 处理\*\*[^\n]*/)?.[0] ?? '';
-      assert.match(freshnessClause, /get_thread_context/);
-      assert.match(freshnessClause, /responseMode.*full/);
-      assert.doesNotMatch(freshnessClause, /list_recent/);
+      assert.doesNotMatch(out, /\*\*Freshness notice 处理\*\*|收到来信提示/);
+      assert.ok(!loadStagingManifest().items.some((item) => item.id === 'freshness-notice-handling'));
     });
 
-    sourceOnlyTest('四象限 renders as an unknowns-first Magic Word', () => {
+    sourceOnlyTest('四象限 is owned by compiled L0, not duplicated in staging', () => {
       const out = buildStagingPrepend('codex');
-      assert.match(out, /「四象限」/);
-      assert.match(out, /KK\/KU\/UK\/UU/);
-      assert.match(out, /最大盲区/);
-      assert.match(out, /禁止只填表/);
+      assert.doesNotMatch(out, /四象限|unknown-first/);
+      assert.ok(!loadStagingManifest().items.some((item) => item.id === 'four-quadrants-magic-word'));
     });
 
     sourceOnlyTest('F302 renders one portable workspace reflex with runtime ports and repo truth', () => {

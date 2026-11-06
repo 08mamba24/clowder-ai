@@ -29,10 +29,27 @@ function buildDeps() {
       getExecutionId: (threadId) => executions.get(threadId)?.executionId,
     },
     dynamicTaskStore: { getAll: () => [] },
+    turnExecutions: {
+      get: mock.fn(async (id) => ({
+        invocationId: id,
+        parentInvocationId: 'inv-a',
+        threadId: 'thread-a',
+        userId: USER_ID,
+        catId: 'codex-sol',
+        status: 'running',
+      })),
+    },
     resolveLiveExecutions: mock.fn(async (threadId, userId) => {
       const execution = executions.get(threadId);
       if (!execution || userId !== USER_ID) return [];
-      return [{ ...execution, ownerUserId: USER_ID, controlSource: 'tracker' }];
+      return [
+        {
+          ...execution,
+          invocationId: `child-${execution.executionId}`,
+          ownerUserId: USER_ID,
+          controlSource: 'tracker',
+        },
+      ];
     }),
     cancelExactLiveInvocation: mock.fn(async () => ({ cancelled: true })),
   };
@@ -67,6 +84,294 @@ describe('F295 user/project active execution resource', () => {
 
   afterEach(async () => {
     await app?.close();
+  });
+
+  it('uses the same user-wide resource across project anchors and hydrates only admitted live candidates', async () => {
+    const candidateRead = mock.fn(async (userId, ids) =>
+      userId === USER_ID && ids.includes('thread-c')
+        ? [{ id: 'thread-c', title: 'C', projectPath: '/project/other', createdBy: USER_ID }]
+        : [],
+    );
+    deps.threadStore.listCandidates = candidateRead;
+    deps.buildLiveCandidateSnapshot = async () => ({ threadIds: ['thread-c', 'foreign'], complete: true });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/executions/active?scope=all',
+      headers: { 'x-cat-cafe-user': USER_ID },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(candidateRead.mock.calls[0].arguments, [USER_ID, ['thread-c', 'foreign']]);
+    assert.deepEqual(
+      response.json().executions.map((row) => [row.threadId, row.projectPath]),
+      [['thread-c', '/project/other']],
+    );
+    assert.equal(deps.threadStore.listByProject.mock.callCount(), 0);
+    assert.deepEqual(
+      deps.resolveLiveExecutions.mock.calls.map((call) => call.arguments[0]),
+      ['thread-c'],
+    );
+  });
+
+  it('falls back to complete visible enumeration when a global candidate snapshot is incomplete', async () => {
+    deps.threadStore.list = mock.fn(async () => [
+      { id: 'thread-c', title: 'C', projectPath: '/project/other', createdBy: USER_ID },
+    ]);
+    deps.threadStore.listCandidates = mock.fn(async () => []);
+    deps.buildLiveCandidateSnapshot = async () => ({ threadIds: [], complete: false });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/executions/active?scope=all',
+      headers: { 'x-cat-cafe-user': USER_ID },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(
+      response.json().executions.map((row) => row.threadId),
+      ['thread-c'],
+    );
+    assert.equal(deps.threadStore.listCandidates.mock.callCount(), 0);
+  });
+
+  it('keeps other projects fresh when one project live read fails and does not reuse its previous rows', async () => {
+    deps.threadStore.list = async () => [
+      { id: 'thread-a', title: 'A', projectPath: '/project/cafe', createdBy: USER_ID },
+      { id: 'thread-c', title: 'C', projectPath: '/project/other', createdBy: USER_ID },
+    ];
+    const resolve = deps.resolveLiveExecutions;
+    deps.resolveLiveExecutions = async (...args) => {
+      if (args[0] === 'thread-c') throw new Error('provider secret must not escape');
+      return resolve(...args);
+    };
+    const response = await app.inject({
+      url: '/api/executions/active?scope=all',
+      headers: { 'x-cat-cafe-user': USER_ID },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(
+      response.json().executions.map((row) => row.threadId),
+      ['thread-a'],
+    );
+    assert.deepEqual(response.json().unavailableProjectPaths, ['/project/other']);
+    assert.equal(response.body.includes('provider secret'), false);
+  });
+
+  it('keeps pre-admission tracker reservations out of running replies without dropping exact cancellation', async () => {
+    deps.resolveLiveExecutions.mock.mockImplementation(async (threadId) =>
+      threadId === 'thread-a'
+        ? [
+            {
+              catId: 'codex-sol',
+              executionId: 'inv-a',
+              startedAt: 100,
+              ownerUserId: USER_ID,
+              controlSource: 'tracker',
+            },
+          ]
+        : [],
+    );
+    const list = await app.inject({
+      method: 'GET',
+      url: '/api/executions/active?projectPath=%2Fproject%2Fcafe',
+      headers: { 'x-cat-cafe-user': USER_ID },
+    });
+    assert.equal(list.statusCode, 200, list.body);
+    assert.deepEqual(list.json().executions, []);
+    const cancel = await app.inject({
+      method: 'POST',
+      url: '/api/threads/thread-a/executions/live/inv-a/cancel',
+      headers: { 'x-cat-cafe-user': USER_ID },
+      payload: { catId: 'codex-sol' },
+    });
+    assert.equal(cancel.statusCode, 200, cancel.body);
+    assert.equal(deps.cancelExactLiveInvocation.mock.callCount(), 1);
+  });
+
+  it('a frozen child selector cannot cancel a replacement child under the same parent execution', async () => {
+    let child = 'child-original';
+    deps.resolveLiveExecutions.mock.mockImplementation(async () => [
+      {
+        catId: 'codex-sol',
+        executionId: 'inv-a',
+        invocationId: child,
+        startedAt: 100,
+        ownerUserId: USER_ID,
+        controlSource: 'tracker',
+      },
+    ]);
+    const cancel = () =>
+      app.inject({
+        method: 'POST',
+        url: '/api/threads/thread-a/executions/live/inv-a/cancel',
+        headers: { 'x-cat-cafe-user': USER_ID },
+        payload: { catId: 'codex-sol', expectedInvocationId: 'child-original' },
+      });
+    const first = await cancel();
+    assert.equal(first.statusCode, 200, first.body);
+    assert.equal(deps.cancelExactLiveInvocation.mock.calls[0].arguments[0].candidate.invocationId, 'child-original');
+    child = 'child-replacement';
+    const stale = await cancel();
+    assert.equal(stale.statusCode, 409, stale.body);
+    assert.equal(stale.json().code, 'EXECUTION_REPLACED');
+    assert.equal(deps.cancelExactLiveInvocation.mock.callCount(), 1);
+  });
+
+  it('rechecks the tracker after an awaited canonical child read before sending any cancel', async () => {
+    deps.resolveLiveExecutions.mock.mockImplementation(async () => [
+      {
+        catId: 'codex-sol',
+        executionId: 'inv-a',
+        invocationId: 'child-original',
+        startedAt: 100,
+        ownerUserId: USER_ID,
+        controlSource: 'tracker',
+      },
+    ]);
+    deps.turnExecutions.get.mock.mockImplementation(async (id) => {
+      deps.invocationTracker.getExecutionId = () => 'inv-replacement';
+      return {
+        invocationId: id,
+        parentInvocationId: 'inv-a',
+        threadId: 'thread-a',
+        userId: USER_ID,
+        catId: 'codex-sol',
+        status: 'running',
+      };
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/threads/thread-a/executions/live/inv-a/cancel',
+      headers: { 'x-cat-cafe-user': USER_ID },
+      payload: { catId: 'codex-sol', expectedInvocationId: 'child-original' },
+    });
+    assert.equal(response.statusCode, 409, response.body);
+    assert.equal(response.json().code, 'EXECUTION_REPLACED');
+    assert.equal(deps.cancelExactLiveInvocation.mock.callCount(), 0);
+  });
+
+  it('a projection pairing an old child with a newer tracker parent cannot stop that newer parent', async () => {
+    deps.resolveLiveExecutions.mock.mockImplementation(async () => [
+      {
+        catId: 'codex-sol',
+        executionId: 'inv-new',
+        invocationId: 'child-original',
+        startedAt: 100,
+        ownerUserId: USER_ID,
+        controlSource: 'tracker',
+      },
+    ]);
+    const stale = await app.inject({
+      method: 'POST',
+      url: '/api/threads/thread-a/executions/live/inv-new/cancel',
+      headers: { 'x-cat-cafe-user': USER_ID },
+      payload: { catId: 'codex-sol', expectedInvocationId: 'child-original' },
+    });
+    assert.equal(stale.statusCode, 409, stale.body);
+    assert.equal(stale.json().code, 'EXECUTION_REPLACED');
+    assert.equal(deps.cancelExactLiveInvocation.mock.callCount(), 0);
+  });
+
+  it('a frozen child selector never inherits the legacy per-cat replacement intent', async () => {
+    deps.resolveLiveExecutions.mock.mockImplementation(async () => [
+      {
+        catId: 'codex-sol',
+        executionId: 'new-parent',
+        invocationId: 'new-child',
+        startedAt: 200,
+        ownerUserId: USER_ID,
+      },
+    ]);
+    deps.reconcileInactiveLiveInvocation = mock.fn(async () => ({ reconciled: true }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/threads/thread-a/executions/live/inv-a/cancel',
+      headers: { 'x-cat-cafe-user': USER_ID },
+      payload: { catId: 'codex-sol', expectedInvocationId: 'child-original' },
+    });
+    assert.equal(response.statusCode, 409, response.body);
+    assert.equal(response.json().code, 'EXECUTION_REPLACED');
+    assert.equal(deps.cancelExactLiveInvocation.mock.callCount(), 0);
+    assert.equal(deps.reconcileInactiveLiveInvocation.mock.callCount(), 0);
+  });
+
+  it('an absent frozen child with incomplete control truth cannot trigger legacy read-repair', async () => {
+    deps.resolveLiveExecutions.mock.mockImplementation(async () => []);
+    deps.isLiveExecutionControlPlaneComplete = async () => false;
+    deps.reconcileInactiveLiveInvocation = mock.fn(async () => ({ reconciled: true }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/threads/thread-a/executions/live/inv-a/cancel',
+      headers: { 'x-cat-cafe-user': USER_ID },
+      payload: { catId: 'codex-sol', expectedInvocationId: 'child-original' },
+    });
+    assert.equal(response.statusCode, 503, response.body);
+    assert.equal(deps.reconcileInactiveLiveInvocation.mock.callCount(), 0);
+    assert.equal(deps.cancelExactLiveInvocation.mock.callCount(), 0);
+  });
+
+  it('unknown canonical child truth refuses an exact Stop without replacing its authority', async () => {
+    deps.resolveLiveExecutions.mock.mockImplementation(async () => [
+      {
+        catId: 'codex-sol',
+        executionId: 'inv-a',
+        invocationId: 'child-original',
+        startedAt: 100,
+        ownerUserId: USER_ID,
+      },
+    ]);
+    deps.turnExecutions.get.mock.mockImplementation(async () => null);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/threads/thread-a/executions/live/inv-a/cancel',
+      headers: { 'x-cat-cafe-user': USER_ID },
+      payload: { catId: 'codex-sol', expectedInvocationId: 'child-original' },
+    });
+    assert.equal(response.statusCode, 503, response.body);
+    assert.equal(deps.cancelExactLiveInvocation.mock.callCount(), 0);
+  });
+
+  it('native control receipts preserve the exact authorized child and observe only a real cancel', async () => {
+    await app.close();
+    let authorized = false;
+    const port = {
+      authorize: mock.fn(() => authorized),
+      observe: mock.fn(),
+    };
+    deps.controlReceipts = () => port;
+    deps.resolveLiveExecutions.mock.mockImplementation(async () => [
+      {
+        catId: 'codex-sol',
+        executionId: 'inv-a',
+        invocationId: 'child-original',
+        startedAt: 100,
+        ownerUserId: USER_ID,
+      },
+    ]);
+    app = Fastify();
+    registerActiveExecutionRoutes(app, deps);
+    const cancel = () =>
+      app.inject({
+        method: 'POST',
+        url: '/api/threads/thread-a/executions/live/inv-a/cancel?controlReceiptRef=owned-receipt',
+        headers: { 'x-cat-cafe-user': USER_ID },
+        payload: { catId: 'codex-sol', expectedInvocationId: 'child-original' },
+      });
+    assert.equal((await cancel()).statusCode, 409);
+    assert.equal(deps.cancelExactLiveInvocation.mock.callCount(), 0);
+    assert.equal(port.observe.mock.callCount(), 0);
+    authorized = true;
+    const success = await cancel();
+    assert.equal(success.statusCode, 200, success.body);
+    assert.deepEqual(port.authorize.mock.calls.at(-1).arguments, [
+      'owned-receipt',
+      USER_ID,
+      {
+        kind: 'live',
+        threadId: 'thread-a',
+        executionId: 'inv-a',
+        catId: 'codex-sol',
+        invocationId: 'child-original',
+      },
+    ]);
+    assert.deepEqual(port.observe.mock.calls.at(-1).arguments, ['owned-receipt', USER_ID, 200, true, undefined]);
   });
 
   it('emits queryable stage traces without encoding a latency threshold', async () => {
@@ -130,6 +435,10 @@ describe('F295 user/project active execution resource', () => {
     const listByProject = deps.threadStore.listByProject;
     let activeBuilders = 0;
     let maxBuildersAcrossKeys = 0;
+    let signalOtherEntered;
+    const otherEntered = new Promise((resolve) => {
+      signalOtherEntered = resolve;
+    });
     let releaseCafe;
     let signalCafeEntered;
     const cafeGate = new Promise((resolve) => {
@@ -144,6 +453,8 @@ describe('F295 user/project active execution resource', () => {
       if (projectPath === '/project/cafe') {
         signalCafeEntered();
         await cafeGate;
+      } else {
+        signalOtherEntered();
       }
       activeBuilders -= 1;
       return listByProject(userId, projectPath);
@@ -152,7 +463,7 @@ describe('F295 user/project active execution resource', () => {
     const cafe = inject(app, '/project/cafe');
     await cafeEntered;
     const other = inject(app, '/project/other');
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await otherEntered;
     releaseCafe();
     const [cafeResponse, otherResponse] = await Promise.all([cafe, other]);
 

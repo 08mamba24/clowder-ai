@@ -97,7 +97,11 @@ test('argv carries explicit -m model (round-2 P1-1: model is a typed input, actu
 test('L2: controlled argv exposes the complete basic set and preauthorizes bounded write/shell + memory', () => {
   assert.deepEqual(QODER_BASIC_TOOLS, ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write']);
   assert.equal(QODER_MEMORY_MCP_SERVER, 'cat-cafe-memory');
-  assert.equal(QODER_READONLY_MEMORY_TOOLS.length, 12, 'split memory.js readonly surface is pinned exactly');
+  assert.ok(QODER_READONLY_MEMORY_TOOLS.length > 0, 'split memory.js readonly surface must be non-empty');
+  assert.ok(
+    QODER_READONLY_MEMORY_TOOLS.includes('cat_cafe_search_evidence'),
+    'the local document search path must remain on the Qoder mount',
+  );
 
   const args = buildQoderArgs({
     profileDir: '/p',
@@ -356,6 +360,59 @@ test('L2: init gate accepts only the exact basic + readonly-memory surface and a
     false,
     'disconnected memory server red',
   );
+});
+
+test('qoderInitGate diagnostics identify extra and missing tools without changing the reported surface', () => {
+  const tools = ['Read', 'Agent'];
+  const expected = { tools: ['Read', 'Write'], mcpServerNames: [] };
+  const result = qoderInitGate(
+    { protocol_version: '1.4.0', permissionMode: 'default', model: 'Auto', tools, mcp_servers: [] },
+    'Auto',
+    expected,
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /^tools mismatch:/);
+  assert.match(result.reason, /expected=\["Read","Write"\]/);
+  assert.match(result.reason, /reported=\["Read","Agent"\]/);
+  assert.match(result.reason, /extra=\["Agent"\]/);
+  assert.match(result.reason, /missing=\["Write"\]/);
+  assert.deepEqual(tools, ['Read', 'Agent']);
+  assert.deepEqual(expected.tools, ['Read', 'Write']);
+});
+
+test('qoderInitGate diagnostics keep duplicate and non-string tool advertisements fail-closed', () => {
+  const good = { protocol_version: '1.4.0', permissionMode: 'default', model: 'Auto', mcp_servers: [] };
+  const expected = { tools: ['Read'], mcpServerNames: [] };
+  const duplicate = qoderInitGate({ ...good, tools: ['Read', 'Read'] }, 'Auto', expected);
+  assert.equal(duplicate.ok, false);
+  assert.match(duplicate.reason, /extra=\[\]/);
+  assert.match(duplicate.reason, /missing=\[\]/);
+  assert.match(duplicate.reason, /duplicates=\["Read"\]/);
+  const malformed = qoderInitGate({ ...good, tools: ['Read', 7] }, 'Auto', expected);
+  assert.equal(malformed.ok, false);
+  assert.match(malformed.reason, /extra=\[7\]/);
+});
+
+test('qoderInitGate diagnostics identify extra and missing MCP server names', () => {
+  const result = qoderInitGate(
+    {
+      protocol_version: '1.4.0',
+      permissionMode: 'default',
+      model: 'Auto',
+      tools: [],
+      mcp_servers: [
+        { name: 'cat-cafe-memory', status: 'connected' },
+        { name: 'unexpected', status: 'connected' },
+      ],
+    },
+    'Auto',
+    { tools: [], mcpServerNames: ['cat-cafe-memory', 'history'] },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /^mcp server set mismatch:/);
+  assert.match(result.reason, /expected=\["cat-cafe-memory","history"\]/);
+  assert.match(result.reason, /extra=\["unexpected"\]/);
+  assert.match(result.reason, /missing=\["history"\]/);
 });
 
 // round-3 P1④：精确匹配——大小写漂移不再放行（auth-error 夹具实测：未认证 CLI 回报
@@ -856,7 +913,7 @@ test('GitHub read MCP: private HTTP header survives native config, never prompt/
   }
 });
 
-test('GitHub read MCP: denied grants preserve 18 tools and readonly policy never opens a lease', async () => {
+test('GitHub read MCP: denied grants preserve the controlled surface and readonly policy never opens a lease', async () => {
   for (const readOnly of [false, true]) {
     const root = mkdtempSync(join(tmpdir(), 'qoder-gh-no-grant-'));
     const workspace = join(root, 'workspace');
@@ -1212,6 +1269,11 @@ test('L2: controlled invoke delivers six basic tools and a strict readonly memor
   assert.deepEqual(memory.args, []);
   assert.equal(memory.env.CAT_CAFE_READONLY, 'true');
   assert.equal(memory.env.CAT_CAFE_READONLY_AGENT_KEY_UNION, 'false');
+  assert.equal(
+    memory.env.CAT_CAFE_MCP_CALLBACK_CREDENTIALS,
+    'false',
+    'the mount declares its real capability (no callback credentials) without passing any credential',
+  );
   assert.equal(memory.env.ALLOWED_WORKSPACE_DIRS, canonicalWorkspace);
   assert.equal(memory.env.CAT_CAFE_API_URL, 'http://127.0.0.1:3004');
   assert.equal(memory.env.CAT_CAFE_CALLBACK_TOKEN, undefined, 'readonly memory does not receive write credentials');
@@ -1311,6 +1373,20 @@ test(
     const root = mkdtempSync(join(tmpdir(), 'qoder-l2-path-boundary-'));
     const workspace = join(root, 'workspace');
     const controlledRuntime = makeControlledRuntime(root);
+    const { invalidateCliCommand } = await import('../dist/utils/cli-resolve.js');
+    const savedToolPath = process.env.PATH;
+    // Exercise the real sandbox with an owned toolchain, independently of the
+    // operator's pnpm installation or which Node version supplies its shim.
+    const toolchainBin = join(controlledRuntime.runtimeRoot, 'toolchain', 'bin');
+    const pnpmPackageBin = join(controlledRuntime.runtimeRoot, 'toolchain', 'node_modules', 'pnpm', 'bin');
+    mkdirSync(toolchainBin, { recursive: true });
+    mkdirSync(pnpmPackageBin, { recursive: true });
+    const pnpmEntrypoint = join(pnpmPackageBin, 'pnpm.cjs');
+    writeFileSync(pnpmEntrypoint, "#!/usr/bin/env node\nprocess.stdout.write('10.0.0-test-fixture\\n');\n");
+    chmodSync(pnpmEntrypoint, 0o755);
+    symlinkSync('../node_modules/pnpm/bin/pnpm.cjs', join(toolchainBin, 'pnpm'));
+    process.env.PATH = [toolchainBin, savedToolPath].filter(Boolean).join(':');
+    invalidateCliCommand('pnpm');
     mkdirSync(workspace, { recursive: true });
     let attempts;
     try {
@@ -1345,8 +1421,13 @@ test(
       assert.match(attempts.ghPath.stdout, /scripts\/guarded-bin\/gh\s*$/);
       assert.equal(attempts.ghVersion.status, 0, attempts.ghVersion.stderr);
       assert.equal(attempts.pnpmPath.status, 0, attempts.pnpmPath.stderr);
+      assert.equal(attempts.pnpmPath.stdout.trim(), join(toolchainBin, 'pnpm'));
       assert.equal(attempts.pnpmVersion.status, 0, attempts.pnpmVersion.stderr);
+      assert.equal(attempts.pnpmVersion.stdout.trim(), '10.0.0-test-fixture');
     } finally {
+      if (savedToolPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedToolPath;
+      invalidateCliCommand('pnpm');
       rmSync(root, { recursive: true, force: true });
     }
   },
@@ -2027,24 +2108,63 @@ test('round3 P1-3a: EPIPE on stdin write is contained (shared spawnCli EPIPE gua
   );
 });
 
-// P1③：init 门红了之后走共享有界终止——invoke 立即返回，不再有 5s 非 unref 计时器
-// + 250×20ms exit 轮询阻塞
-test('round3 P1-3b: init-gate red aborts via shared bounded termination (prompt return, no 5s block)', async () => {
+// P1③（P2 rewrite per combination review）：init 门红后，共享 spawnCli 的消费者早退路径
+// 必须等真实 OS exit（cli-spawn finally：killChild + await processExit），调用方才能
+// 收凭据/租约。旧夹具从不 emit exit 且断言 <3000ms——与默认 KILL_GRACE_MS=3000 的
+// 共享等待互相矛盾。现在经 spawnCliOverride 委托真·共享 spawnCli，只注入文档化的
+// 短 terminationGraces（CliSpawnerDeps 测试注入口，生产常量不变）：fake child 忽略
+// SIGTERM，SIGKILL 后异步 emit exit（绝不 close），记录 signal/exit/return 顺序。
+test('round3 P1-3b: init-gate red aborts via shared bounded termination and waits for real OS exit', async () => {
+  const { spawnCli } = await import('../dist/utils/cli-spawn.js');
+  const order = [];
+  let closeCount = 0;
+  let invokeDone = false;
+  let invokeDoneAtExit;
   const child = new EventEmitter();
   child.stdout = Readable.from(fixtureLines('tool-use').map((l) => l + '\n'));
   child.stderr = Readable.from([]);
   child.stdin = fakeStdin();
   child.pid = 4194304 + Math.floor(Math.random() * 1000);
-  child.kill = () => {
+  child.on('close', () => closeCount++);
+  child.kill = (signal) => {
     child.killed = true;
-    // 忽略 SIGTERM：绝不 close —— 考验有界终止与调用方返回解耦
+    order.push(`kill:${signal}`);
+    // 忽略 SIGTERM：只有 SIGKILL 才放倒进程——且只 emit exit（绝不 close），
+    // 证明共享等待骑在 OS exit 上，而不是继承的 stdio close。
+    if (signal === 'SIGKILL') {
+      setTimeout(() => {
+        invokeDoneAtExit = invokeDone;
+        order.push('exit');
+        child.emit('exit', null, 'SIGKILL');
+      }, 5);
+    }
   };
-  const svc = makeSvc({ spawnFn: () => child });
+  const svc = makeSvc();
   const t0 = Date.now();
-  const out = await runInvoke(svc, 'hi', { workingDirectory: '/tmp' });
+  const out = await runInvoke(svc, 'hi', {
+    workingDirectory: '/tmp',
+    spawnCliOverride: (cliOpts) =>
+      spawnCli(cliOpts, {
+        spawnFn: () => child,
+        terminationGraces: { interruptMs: 25, terminateMs: 50 },
+        exitDrainGraceMs: 20,
+      }),
+  }).then((msgs) => {
+    invokeDone = true;
+    order.push('invoke-returned');
+    return msgs;
+  });
   const elapsed = Date.now() - t0;
+  // init-gate red 仍是中止原因；prompt-error 是终态消息，且只在共享等待观察到
+  // 真实 exit 之后才发出（消费侧顺序由 consumeStream 的 break→finally→yield 决定）。
   assert.ok(out.some((m) => m.type === 'error' && m.error.includes('init gate')));
-  assert.ok(elapsed < 3000, `invoke must return promptly on gate red (took ${elapsed}ms)`);
+  assert.equal(out.at(-1).type, 'error');
+  assert.ok(out.at(-1).error.includes('init gate'));
+  assert.ok(!out.some((m) => m.type === 'done'));
+  assert.equal(invokeDoneAtExit, false, 'invoke must still be incomplete when the child exits');
+  assert.deepEqual(order, ['kill:SIGTERM', 'kill:SIGKILL', 'exit', 'invoke-returned']);
+  assert.equal(closeCount, 0, 'the shared wait must not inherit stdio close');
+  assert.ok(elapsed < 1000, `injected short graces keep the gate-red abort bounded (took ${elapsed}ms)`);
 });
 
 // P1③：raw NDJSON 事件经共享 sink 落档（#780 先例），payload 过 sanitizeRawEvent

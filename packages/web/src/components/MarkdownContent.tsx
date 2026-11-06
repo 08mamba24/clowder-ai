@@ -1,5 +1,6 @@
 'use client';
 
+import { MarkdownSurface } from '@cat-cafe/ui';
 import {
   Children,
   type CSSProperties,
@@ -13,9 +14,8 @@ import {
   useRef,
   useState,
 } from 'react';
-import ReactMarkdown, { type Components, defaultUrlTransform } from 'react-markdown';
+import { type Components, defaultUrlTransform } from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
-import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import remarkParse from 'remark-parse';
@@ -23,21 +23,39 @@ import { unified } from 'unified';
 import 'katex/dist/katex.min.css';
 import { UNKNOWN_CAT_COLOR } from '@/lib/color-defaults';
 import { createListenSentenceRemarkPlugin, type ListenSentence } from '@/lib/listen-mode/markdown-sentences';
-import { getMentionColor, getMentionRe, getMentionToCat } from '@/lib/mention-highlight';
+import {
+  getDisplayMentionRe,
+  getDisplayMentionToCat,
+  getMentionColor,
+  getMentionLabel,
+  isCanonicalOnlyMentionAlias,
+} from '@/lib/mention-highlight';
 import { useChatStore } from '@/stores/chatStore';
 import { ChatWorkspaceLink } from './ChatWorkspaceLink';
+import { ChatReference } from './chat-references/ChatReference';
+import { ChatReferenceGroup } from './chat-references/ChatReferenceGroup';
+import { useChatReferenceThread } from './chat-references/ChatReferenceScope';
+import { remarkChatReferences } from './chat-references/remark-chat-references';
+import { ChatReferenceDemand, useChatReferenceDemand } from './chat-references/useChatReferenceDemand';
 import { ListenSentenceSpan } from './listen-mode/ListenSentenceSpan';
 import { MermaidDiagram } from './MermaidDiagram';
 import { createWorkspaceImageComponent, createWorkspaceLinkComponent } from './workspace-md-components';
 
 const BARE_MARKDOWN_LINE_HREF_RE = /^[^/:\\?#]+\.mdx?:\d+$/i;
-const WINDOWS_MARKDOWN_HREF_RE = /^[a-z]:[\\/].*\.mdx?(?::\d+)?$/i;
+const WINDOWS_ABSOLUTE_PATH_HREF_RE = /^[a-z]:[\\/].*$/i;
+const WINDOWS_UNC_PATH_HREF_RE = /^\\\\[^\\]+\\[^\\]+/;
 
 /** Preserve safe file-like forms that react-markdown mistakes for custom URI schemes. */
 export function transformChatMarkdownUrl(url: string): string {
   const transformed = defaultUrlTransform(url);
   if (transformed) return transformed;
-  if (BARE_MARKDOWN_LINE_HREF_RE.test(url) || WINDOWS_MARKDOWN_HREF_RE.test(url)) return url;
+  if (
+    BARE_MARKDOWN_LINE_HREF_RE.test(url) ||
+    WINDOWS_ABSOLUTE_PATH_HREF_RE.test(url) ||
+    WINDOWS_UNC_PATH_HREF_RE.test(url)
+  ) {
+    return url;
+  }
   return transformed;
 }
 
@@ -131,14 +149,16 @@ function highlightMentions(text: string): ReactNode[] {
   let lastIdx = 0;
   let m: RegExpExecArray | null;
 
-  const re = getMentionRe();
-  const toCat = getMentionToCat();
+  const re = getDisplayMentionRe();
+  const toCat = getDisplayMentionToCat();
   const colorMap = getMentionColor();
+  const labelMap = getMentionLabel();
 
   re.lastIndex = 0;
   while ((m = re.exec(text)) !== null) {
     if (m.index > lastIdx) parts.push(text.slice(lastIdx, m.index));
-    const catId = toCat[m[1].toLowerCase()] ?? 'opus';
+    const alias = m[1].toLowerCase();
+    const catId = toCat[alias] ?? 'opus';
     const catColor = colorMap[catId] ?? UNKNOWN_CAT_COLOR.primary;
     const r = Number.parseInt(catColor.slice(1, 3), 16);
     const g = Number.parseInt(catColor.slice(3, 5), 16);
@@ -149,7 +169,8 @@ function highlightMentions(text: string): ReactNode[] {
       borderRadius: 4,
       padding: '1px 5px',
     };
-    parts.push(<Mention key={`m${m.index}`} catId={catId} text={m[0]} style={style} />);
+    const displayText = isCanonicalOnlyMentionAlias(alias) ? `@${labelMap[catId] ?? catId}` : m[0];
+    parts.push(<Mention key={`m${m.index}`} catId={catId} text={displayText} style={style} />);
     lastIdx = re.lastIndex;
   }
   if (lastIdx < text.length) parts.push(text.slice(lastIdx));
@@ -191,121 +212,6 @@ function CodeBlock({ children }: { children: ReactNode }) {
       </pre>
     </div>
   );
-}
-
-/* ── File path → VSCode link ──────────────────────────────── */
-const PROJECT_ROOT = process.env.NEXT_PUBLIC_PROJECT_ROOT ?? '';
-const FILE_PATH_RE = /(?:^|\s)`?((?:\/[\w.@-]+)+(?:\.[\w]+)(?::(\d+))?)(?:`?)/g;
-const REL_PATH_RE = /(?:^|\s)`?((?:packages|src|docs|tests?)\/[\w./@-]+(?:\.[\w]+)(?::(\d+))?)(?:`?)/g;
-const WT_TAG_RE = /^\s*\[wt:([a-zA-Z0-9_/-]+)\]/;
-
-function linkifyFilePaths(text: string): ReactNode[] {
-  const parts: ReactNode[] = [];
-  let lastIdx = 0;
-  const combined = new RegExp(`${FILE_PATH_RE.source}|${REL_PATH_RE.source}`, 'g');
-  let m: RegExpExecArray | null;
-
-  combined.lastIndex = 0;
-  while ((m = combined.exec(text)) !== null) {
-    const fullMatch = m[0];
-    const leading = fullMatch.match(/^\s/)?.[0] ?? '';
-    const path = m[1] ?? m[3];
-    const line = m[2] ?? m[4];
-    if (!path) continue;
-
-    const start = m.index + leading.length;
-    if (start > lastIdx) parts.push(text.slice(lastIdx, start));
-
-    // Check for [wt:ID] tag immediately after the match
-    const afterMatch = text.slice(m.index + fullMatch.length);
-    const wtMatch = afterMatch.match(WT_TAG_RE);
-    const worktreeId = wtMatch?.[1] ?? undefined;
-
-    // Strip backticks from display
-    const display = path;
-    const isAbsolute = path.startsWith('/');
-    const filePath = path.split(':')[0];
-    const absPath = isAbsolute ? filePath : PROJECT_ROOT ? `${PROJECT_ROOT}/${filePath}` : null;
-    const href = absPath ? `vscode://file${absPath}${line ? `:${line}` : ''}` : null;
-
-    parts.push(
-      href ? (
-        <FilePathLink
-          key={`fp${m.index}`}
-          display={display}
-          href={href}
-          filePath={filePath!}
-          line={line ? parseInt(line, 10) : undefined}
-          worktreeId={worktreeId}
-        />
-      ) : (
-        <span key={`fp${m.index}`} className="text-[var(--semantic-info)] font-mono text-[0.85em]">
-          {display}
-        </span>
-      ),
-    );
-    // Skip past the [wt:ID] tag so it's not rendered as visible text
-    if (wtMatch) {
-      lastIdx = m.index + fullMatch.length + wtMatch[0].length;
-      combined.lastIndex = lastIdx;
-    } else {
-      lastIdx = m.index + fullMatch.length;
-    }
-  }
-  if (lastIdx < text.length) parts.push(text.slice(lastIdx));
-  return parts.length > 0 ? parts : [text];
-}
-
-/** F063: File path link — click opens in workspace panel, Cmd/Ctrl+click opens in VSCode */
-function FilePathLink({
-  display,
-  href,
-  filePath,
-  line,
-  worktreeId,
-}: {
-  display: string;
-  href: string;
-  filePath: string;
-  line?: number;
-  worktreeId?: string;
-}) {
-  const setOpenFile = useChatStore((s) => s.setWorkspaceOpenFile);
-
-  const handleClick = useCallback(
-    (e: React.MouseEvent) => {
-      // Cmd/Ctrl+click → VSCode (default link behavior)
-      if (e.metaKey || e.ctrlKey) return;
-      e.preventDefault();
-      // Regular click → open in workspace panel (with optional worktree switch)
-      setOpenFile(filePath, line ?? null, worktreeId ?? null);
-    },
-    [setOpenFile, filePath, line, worktreeId],
-  );
-
-  return (
-    <a
-      href={href}
-      onClick={handleClick}
-      className="text-[var(--semantic-info)] hover:text-[var(--semantic-info)] hover:underline font-mono text-[0.85em] cursor-pointer"
-      title={`点击在工作区中查看 · Cmd+Click 打开 VSCode\n${display}`}
-    >
-      {display}
-    </a>
-  );
-}
-
-/** Process string children → @mentions + file path links */
-function withMentionsAndLinks(children: ReactNode): ReactNode {
-  return Children.map(children, (child) => {
-    if (typeof child !== 'string') return child;
-    // First pass: file paths → ReactNode[]
-    const linked = linkifyFilePaths(child);
-    // Second pass: highlight @mentions in remaining text nodes
-    return (
-      <>{linked.map((node, i) => (typeof node === 'string' ? <span key={i}>{highlightMentions(node)}</span> : node))}</>
-    );
-  });
 }
 
 function hasMermaidLanguage(className = ''): boolean {
@@ -352,31 +258,81 @@ interface ListenSentenceRendering {
   onStart: (index: number) => void;
 }
 
-function buildMdComponents(tp?: (children: ReactNode) => ReactNode, listen?: ListenSentenceRendering): Components {
+function buildMdComponents(
+  tp?: (children: ReactNode) => ReactNode,
+  listen?: ListenSentenceRendering,
+  referenceThreadId?: string,
+): Components {
   // Compose text processing: tp runs first (e.g. replace markers with buttons),
   // then withMentions/withMentionsAndLinks processes remaining strings.
   const m = tp ? (c: ReactNode) => withMentions(tp(c)) : withMentions;
-  const ml = tp ? (c: ReactNode) => withMentionsAndLinks(tp(c)) : withMentionsAndLinks;
+  const ml = m;
 
   const components: Components = {
-    p: ({ children }) => <p className="mb-2 last:mb-0 leading-relaxed">{ml(children)}</p>,
+    p: ({ children, node }) => (
+      <ChatReferenceGroup
+        sourceLine={node?.position?.start.line}
+        threadId={referenceThreadId}
+        grid={node?.properties?.['data-chat-reference-group'] === 'grid'}
+        candidates={
+          Array.isArray(node?.properties?.['data-chat-reference-candidates'])
+            ? node.properties['data-chat-reference-candidates'].filter(
+                (value): value is string => typeof value === 'string',
+              )
+            : undefined
+        }
+      >
+        {ml(children)}
+      </ChatReferenceGroup>
+    ),
     strong: ({ children }) => <strong className="font-semibold">{m(children)}</strong>,
     em: ({ children }) => <em>{m(children)}</em>,
     del: ({ children }) => <del className="opacity-60">{m(children)}</del>,
 
-    h1: ({ children }) => <h1 className="text-lg font-bold mb-2 mt-3 first:mt-0">{m(children)}</h1>,
-    h2: ({ children }) => <h2 className="text-base font-bold mb-2 mt-3 first:mt-0">{m(children)}</h2>,
-    h3: ({ children }) => <h3 className="text-sm font-bold mb-1 mt-2 first:mt-0">{m(children)}</h3>,
-    h4: ({ children }) => <h4 className="text-sm font-semibold mb-1 mt-2 first:mt-0">{m(children)}</h4>,
-    h5: ({ children }) => (
-      <h5 className="text-xs font-semibold mb-1 mt-1.5 first:mt-0 uppercase tracking-wide">{m(children)}</h5>
+    h1: ({ children, node }) => (
+      <h1 data-source-line={node?.position?.start.line} className="text-lg font-bold mb-2 mt-3 first:mt-0">
+        {m(children)}
+      </h1>
     ),
-    h6: ({ children }) => <h6 className="text-xs font-medium mb-1 mt-1.5 first:mt-0 text-cafe-muted">{m(children)}</h6>,
+    h2: ({ children, node }) => (
+      <h2 data-source-line={node?.position?.start.line} className="text-base font-bold mb-2 mt-3 first:mt-0">
+        {m(children)}
+      </h2>
+    ),
+    h3: ({ children, node }) => (
+      <h3 data-source-line={node?.position?.start.line} className="text-sm font-bold mb-1 mt-2 first:mt-0">
+        {m(children)}
+      </h3>
+    ),
+    h4: ({ children, node }) => (
+      <h4 data-source-line={node?.position?.start.line} className="text-sm font-semibold mb-1 mt-2 first:mt-0">
+        {m(children)}
+      </h4>
+    ),
+    h5: ({ children, node }) => (
+      <h5
+        data-source-line={node?.position?.start.line}
+        className="text-xs font-semibold mb-1 mt-1.5 first:mt-0 uppercase tracking-wide"
+      >
+        {m(children)}
+      </h5>
+    ),
+    h6: ({ children, node }) => (
+      <h6
+        data-source-line={node?.position?.start.line}
+        className="text-xs font-medium mb-1 mt-1.5 first:mt-0 text-cafe-muted"
+      >
+        {m(children)}
+      </h6>
+    ),
 
     ul: ({ children }) => <ul className="list-disc pl-5 mb-2 space-y-0.5">{children}</ul>,
     ol: ({ children }) => <ol className="list-decimal pl-5 mb-2 space-y-0.5">{children}</ol>,
-    li: ({ children, className }) => (
-      <li className={className === 'task-list-item' ? 'list-none -ml-5 flex items-start gap-1.5' : undefined}>
+    li: ({ children, className, node }) => (
+      <li
+        data-source-line={node?.position?.start.line}
+        className={className === 'task-list-item' ? 'list-none -ml-5 flex items-start gap-1.5' : undefined}
+      >
         {m(children)}
       </li>
     ),
@@ -392,18 +348,38 @@ function buildMdComponents(tp?: (children: ReactNode) => ReactNode, listen?: Lis
         <input type={type} />
       ),
 
-    blockquote: ({ children }) => (
-      <blockquote className="border-l-[3px] border-cafe pl-3 my-2 italic opacity-80">{children}</blockquote>
+    blockquote: ({ children, node }) => (
+      <blockquote
+        data-source-line={node?.position?.start.line}
+        className="border-l-[3px] border-cafe pl-3 my-2 italic opacity-80"
+      >
+        {children}
+      </blockquote>
     ),
-    a: ({ href, children }) => (
+    a: ({ href, children, node }) => (
       <InsideMarkdownLinkContext.Provider value={true}>
-        <ChatWorkspaceLink href={href}>{m(children)}</ChatWorkspaceLink>
+        {referenceThreadId && typeof node?.properties?.['data-chat-reference'] === 'string' ? (
+          <ChatReference
+            reference={node.properties['data-chat-reference']}
+            format={String(node.properties['data-chat-format'] ?? 'link')}
+            layout={String(node.properties['data-chat-layout'] ?? 'inline')}
+            threadId={referenceThreadId}
+          >
+            {m(children)}
+          </ChatReference>
+        ) : (
+          <ChatWorkspaceLink href={href}>{m(children)}</ChatWorkspaceLink>
+        )}
       </InsideMarkdownLinkContext.Provider>
     ),
     hr: () => <hr className="my-3 border-cafe" />,
 
     /* Code blocks with copy button — textProcessor intentionally excluded */
-    pre: ({ children }) => (isMermaidPre(children) ? children : <CodeBlock>{children}</CodeBlock>),
+    pre: ({ children, node }) => (
+      <div data-source-line={node?.position?.start.line}>
+        {isMermaidPre(children) ? children : <CodeBlock>{children}</CodeBlock>}
+      </div>
+    ),
     code: ({ className = '', children }) =>
       hasMermaidLanguage(className) ? (
         <MermaidDiagram source={codeChildrenToString(children)} />
@@ -412,8 +388,8 @@ function buildMdComponents(tp?: (children: ReactNode) => ReactNode, listen?: Lis
       ),
 
     /* Tables (GFM) */
-    table: ({ children }) => (
-      <div className="overflow-x-auto my-2">
+    table: ({ children, node }) => (
+      <div data-source-line={node?.position?.start.line} className="overflow-x-auto my-2">
         <table className="min-w-full text-sm border-collapse">{children}</table>
       </div>
     ),
@@ -454,11 +430,14 @@ const mdComponents = buildMdComponents();
 /* ── Exported component ────────────────────────────────────── */
 interface Props {
   content: string;
+  referenceThreadId?: string;
   className?: string;
   /** Skip slash-command prefix detection (e.g. for rich block bodyMarkdown) */
   disableCommandPrefix?: boolean;
   /** Base directory path for resolving relative links (e.g. "docs/features") */
   basePath?: string;
+  /** Actual owner file, used only to return from a relative document link. */
+  sourcePath?: string;
   /** Worktree ID for resolving workspace-relative image paths */
   worktreeId?: string;
   /** Pre-process text children in all text-containing components (p, strong, em,
@@ -501,15 +480,21 @@ export function resolveRelativePath(base: string, relative: string): string {
 
 export const MarkdownContent = memo(function MarkdownContent({
   content,
+  referenceThreadId: sourceThreadId,
   className,
   disableCommandPrefix,
   basePath,
+  sourcePath,
   worktreeId,
   textProcessor,
   listenSentences,
   activeListenAnchor,
   onListenSentenceStart,
 }: Props) {
+  const currentThreadId = useChatReferenceThread();
+  const referenceThreadId = basePath == null ? (sourceThreadId ?? currentThreadId) : undefined;
+  const referenceAnchor = useRef<HTMLDivElement>(null);
+  const referenceDemand = useChatReferenceDemand(referenceAnchor, !!referenceThreadId);
   const cmdMatch = disableCommandPrefix ? null : /^(\/\w+)/.exec(content);
   const md = normalizeMathDelimiters(cmdMatch ? content.slice(cmdMatch[1].length) : content);
 
@@ -521,7 +506,10 @@ export const MarkdownContent = memo(function MarkdownContent({
     [activeListenAnchor, listenSentences, onListenSentenceStart],
   );
   const components = useMemo(() => {
-    let nextComponents: Components = textProcessor || listen ? buildMdComponents(textProcessor, listen) : mdComponents;
+    let nextComponents: Components =
+      textProcessor || listen || referenceThreadId
+        ? buildMdComponents(textProcessor, listen, referenceThreadId)
+        : mdComponents;
 
     if (basePath != null) {
       // When textProcessor is active, the workspace link component must also compose it
@@ -530,31 +518,35 @@ export const MarkdownContent = memo(function MarkdownContent({
           {textProcessor ? withMentions(textProcessor(children)) : withMentions(children)}
         </InsideMarkdownLinkContext.Provider>
       );
-      nextComponents = { ...nextComponents, a: createWorkspaceLinkComponent(basePath, mentionsFn, worktreeId) };
+      nextComponents = {
+        ...nextComponents,
+        a: createWorkspaceLinkComponent(basePath, mentionsFn, worktreeId, sourcePath),
+      };
       if (worktreeId) {
         nextComponents = { ...nextComponents, img: createWorkspaceImageComponent(basePath, worktreeId) };
       }
     }
 
     return nextComponents;
-  }, [basePath, listen, textProcessor, worktreeId]);
+  }, [basePath, sourcePath, listen, textProcessor, worktreeId, referenceThreadId]);
 
   return (
-    <div className={`markdown-content text-sm break-words ${className ?? ''}`}>
-      {cmdMatch && <span className="font-semibold text-[var(--semantic-info)]">{cmdMatch[1]}</span>}
-      <ReactMarkdown
-        remarkPlugins={[
-          remarkGfm,
-          remarkBreaks,
-          [remarkMath, { singleDollarTextMath: false }],
-          ...(listenSentences?.length ? [createListenSentenceRemarkPlugin(listenSentences)] : []),
-        ]}
-        rehypePlugins={[rehypeKatex]}
-        components={components}
-        urlTransform={transformChatMarkdownUrl}
-      >
-        {md}
-      </ReactMarkdown>
-    </div>
+    <ChatReferenceDemand.Provider value={referenceDemand}>
+      <div ref={referenceAnchor} className={`markdown-content text-sm break-words ${className ?? ''}`}>
+        {cmdMatch && <span className="font-semibold text-[var(--semantic-info)]">{cmdMatch[1]}</span>}
+        <MarkdownSurface
+          remarkPlugins={[
+            ...(referenceThreadId ? [remarkChatReferences] : []),
+            [remarkMath, { singleDollarTextMath: false }],
+            ...(listenSentences?.length ? [createListenSentenceRemarkPlugin(listenSentences)] : []),
+          ]}
+          rehypePlugins={[rehypeKatex]}
+          components={components}
+          urlTransform={transformChatMarkdownUrl}
+        >
+          {md}
+        </MarkdownSurface>
+      </div>
+    </ChatReferenceDemand.Provider>
   );
 });

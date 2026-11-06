@@ -5,12 +5,16 @@ topics: [observability, telemetry, metrics, health-check, infrastructure]
 doc_kind: spec
 created: 2026-04-09
 community_issue: "zts212653/clowder-ai#388"
-tips_exempt: "Renewed 2026-09-04 for the current F308 public-link projection only; no observability capability or user action changed."
+tips_exempt: "Renewed 2026-10-15 for the public repository-name projection in historical intake provenance; observability behavior, ownership and user actions are unchanged."
 ---
 
 # F153: Observability Infrastructure — 运行时可观测基础设施
 
 > **Status**: done | **Owner**: Community + Ragdoll | **Priority**: P2
+
+Architecture cell: observability
+Map delta: new cell landed 2026-09-07（架构归一裁决卡 1）——F153 是 raw telemetry / redaction / health 的 canonical owner；F299 是唯一人形 invocation 面；两者只以 `inv:<invocationId>` / traceId join，不复制事件。见 `docs/architecture/ownership/cells/observability.md`。
+Why: 此前 F153 被 `harness-eval` / `capability-evolution-control` 引用为 telemetry owner 却没有自己的 cell（30 cells 无 observability），归属关系只存在于别的 cell 的引用里。
 
 ## Why
 
@@ -115,7 +119,7 @@ Phase E 只回答"发生了什么"（traces、metrics、健康状态），不做
 > **Status**: merged | **Owner**: Ragdoll
 > **Provenance**: zts212653/clowder-ai#592
 > **Implementation PR**: zts212653/clowder-ai#579 (merged 2026-04-28, commit `8cc6f9a1`)
-> **Cat-cafe intake**: zts212653/cat-cafe#1449 (commit `254c6e2fa`)
+> **Cat-cafe intake**: zts212653/clowder-ai#1449 (commit `254c6e2fa`)
 > **Trigger**: 重启后 trace 数据全丢（LocalTraceStore 纯内存）
 > **Discussion**: 2026-04-22，三猫讨论（Ragdoll + Sonnet + GPT-5.4）
 >

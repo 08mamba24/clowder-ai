@@ -5,11 +5,12 @@ import {
   type MemoryCueResolverContext,
   type MemoryCueSourceProjection,
 } from '../MemoryCueResolverRegistry.js';
+import type { PrimerMemoryCueSource } from '../sources/PrimerMemoryCueSource.js';
 
 export interface ProfileCueSource {
   resolve(input: {
     ownerUserId: string;
-    profileUri: 'cat-cafe-profile://relationship/current';
+    profileUri: 'cat-cafe-profile://relationship/current' | 'cat-cafe-profile://corpus/current';
     sourceRevision: string;
   }): Promise<MemoryCueSourceProjection | null>;
 }
@@ -18,9 +19,32 @@ export class ProfileCueResolver implements MemoryCueResolver {
   readonly family = 'profile' as const;
   readonly resolverVersion = 2;
 
-  constructor(private readonly source?: ProfileCueSource) {}
+  constructor(
+    private readonly source?: ProfileCueSource,
+    private readonly primerSource?: PrimerMemoryCueSource,
+  ) {}
 
   async resolve(opportunity: RecallOpportunityV1, context: MemoryCueResolverContext) {
+    if (opportunity.kind === 'fresh_context_sources' || opportunity.kind === 'authorized_task_sources') {
+      if (!context.consumerCatId || !this.primerSource) return [];
+      const source = this.primerSource.resolvePrimer(opportunity.scope.ownerUserId, context.consumerCatId, {
+        opening: opportunity.kind === 'fresh_context_sources',
+      });
+      if (!source) {
+        context.recordOmission?.('source_unavailable');
+        return [];
+      }
+      return [
+        buildCueEnvelope({
+          opportunity,
+          family: this.family,
+          resolverVersion: this.resolverVersion,
+          whyNow: 'A current approved source is available to read.',
+          source,
+          context,
+        }),
+      ];
+    }
     if (opportunity.kind !== 'profile_revision_available' || !this.source) return [];
     const source = await this.source.resolve({
       ownerUserId: opportunity.scope.ownerUserId,

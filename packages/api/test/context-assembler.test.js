@@ -1,3 +1,4 @@
+import { coCreatorDisplay } from '@cat-cafe/shared';
 /**
  * ContextAssembler Tests
  * 测试历史 context 组装和消息格式化
@@ -6,6 +7,7 @@
 import './helpers/setup-cat-registry.js';
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
+import { getCoCreatorConfig } from '../dist/config/cat-config-loader.js';
 
 /** Helper: create a mock StoredMessage */
 function mockMsg(overrides) {
@@ -22,12 +24,13 @@ function mockMsg(overrides) {
 }
 
 describe('formatMessage', () => {
-  test('formats user message with co-creator', async () => {
+  test('formats user message with the configured familiar address', async () => {
     const { formatMessage } = await import('../dist/domains/cats/services/context/ContextAssembler.js');
     const msg = mockMsg({ content: '你好', timestamp: new Date('2026-02-07T14:02:00Z').getTime() });
     const result = formatMessage(msg);
     assert.ok(result.includes('14:02 UTC'));
-    assert.ok(result.includes('co-creator'));
+    const coCreator = getCoCreatorConfig();
+    assert.ok(result.includes(` ${coCreator.nickname ?? coCreatorDisplay(coCreator).nickname}]`));
     assert.ok(result.includes('你好'));
   });
 
@@ -96,7 +99,8 @@ describe('assembleContext', () => {
     const { assembleContext } = await import('../dist/domains/cats/services/context/ContextAssembler.js');
     const result = assembleContext([mockMsg({ content: '你好世界' })]);
     assert.ok(result.contextText.includes('[对话历史 - 最近 1 条]'));
-    assert.ok(result.contextText.includes('co-creator'));
+    const coCreator = getCoCreatorConfig();
+    assert.ok(result.contextText.includes(` ${coCreator.nickname ?? coCreatorDisplay(coCreator).nickname}]`));
     assert.ok(result.contextText.includes('你好世界'));
     assert.ok(result.contextText.endsWith('[/对话历史]'));
     assert.equal(result.messageCount, 1);
@@ -110,7 +114,8 @@ describe('assembleContext', () => {
       mockMsg({ catId: 'codex', content: '我也在', timestamp: 3000 }),
     ];
     const result = assembleContext(msgs);
-    assert.ok(result.contextText.includes('co-creator'));
+    const coCreator = getCoCreatorConfig();
+    assert.ok(result.contextText.includes(` ${coCreator.nickname ?? coCreatorDisplay(coCreator).nickname}]`));
     assert.ok(result.contextText.includes('布偶猫'));
     assert.ok(result.contextText.includes('缅因猫'));
     assert.equal(result.messageCount, 3);
@@ -160,7 +165,63 @@ describe('assembleContext', () => {
     assert.ok(result.contextText.includes('你好'), 'user message should be included');
     assert.ok(result.contextText.includes('猫猫回复'), 'cat message should be included');
     assert.ok(!result.contextText.includes('stream_idle_stall'), 'system error should NOT enter prompt');
-    assert.ok(!result.contextText.includes('co-creator] Error:'), 'system error must not appear as co-creator');
+    const coCreator = getCoCreatorConfig();
+    assert.ok(
+      !result.contextText.includes(`${coCreator.nickname ?? coCreatorDisplay(coCreator).nickname}] Error:`),
+      'system error must not appear as the configured human',
+    );
+  });
+
+  test('includes delivered owner-bound managed hold facts for the shared user/cat view', async () => {
+    const { assembleContext } = await import('../dist/domains/cats/services/context/ContextAssembler.js');
+    const hold = mockMsg({
+      from: { kind: 'system', service: 'hold-ball' },
+      userId: 'user-1',
+      content: '持球中：等待 CI 完成；完成后复核结果',
+      timestamp: 2_000,
+      source: {
+        connector: 'hold-ball',
+        label: '等待状态',
+        icon: '🏓',
+        meta: {
+          managedHold: true,
+          phase: 'waiting',
+          taskId: 'hold-ball-1',
+          threadId: 'thread-1',
+          catId: 'codex',
+        },
+      },
+    });
+
+    const result = assembleContext([hold]);
+    assert.equal(result.messageCount, 1);
+    assert.match(result.contextText, /等待 CI 完成/);
+    assert.match(result.contextText, /等待状态/);
+  });
+
+  test('keeps managed-hold wake sources out of cat context until Queue admission', async () => {
+    const { assembleContext } = await import('../dist/domains/cats/services/context/ContextAssembler.js');
+    const wake = mockMsg({
+      from: { kind: 'system', service: 'managed-command-wake' },
+      userId: 'user-1',
+      content: '门禁已结束，请检查结果',
+      deliveryStatus: 'queued',
+      source: {
+        connector: 'hold-ball',
+        label: '持球唤醒',
+        icon: '🏓',
+        meta: {
+          managedHold: true,
+          phase: 'wake',
+          taskId: 'hold-ball-2',
+          threadId: 'thread-1',
+          catId: 'codex',
+        },
+      },
+    });
+
+    assert.equal(assembleContext([wake]).messageCount, 0);
+    assert.match(assembleContext([{ ...wake, deliveryStatus: 'delivered' }]).contextText, /门禁已结束/);
   });
 
   test('default token ceiling does not reintroduce a message-count cap', async () => {
@@ -533,7 +594,11 @@ describe('assembleContext — F8 token-based truncation', () => {
     });
     const result = formatMessage(msg);
     assert.ok(result.includes('GitHub Review'), 'should use source.label instead of co-creator');
-    assert.ok(!result.includes('co-creator'), 'should NOT show co-creator for connector messages');
+    const coCreator = getCoCreatorConfig();
+    assert.ok(
+      !result.includes(` ${coCreator.nickname ?? coCreatorDisplay(coCreator).nickname}]`),
+      'connector must retain its own speaker',
+    );
     assert.ok(result.includes('GitHub Review 通知'));
   });
 });

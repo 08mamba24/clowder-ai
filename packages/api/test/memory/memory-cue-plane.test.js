@@ -51,7 +51,7 @@ const deliveryOpportunity = {
   scope,
   occurredAt: 1_000,
   payload: {
-    repoFullName: 'zts212653/cat-cafe',
+    repoFullName: 'zts212653/clowder-ai',
     prNumber: 3366,
     headSha: 'b83ce623eff16b0085be39801844e9b6b04c9313',
     phase: 'merge_gate',
@@ -298,6 +298,7 @@ function makeHarness(overrides = {}) {
     new DecisionCueResolver(decisionSource),
     new ProjectKnowledgeCueResolver(projectSource),
     new CatOwnedSeedCueResolver(catOwnedSeedSource),
+    { family: 'thread_overview', resolverVersion: 1, resolve: async () => [] },
   ]);
   const service = new MemoryCuePlaneService(registry, overrides.episodeStore);
   return { calls, registry, service };
@@ -313,10 +314,12 @@ const productionSizedDrillHandle =
 
 describe('F287 RecallOpportunity catalog', () => {
   it('is closed, versioned and binds scope to server truth', () => {
-    assert.equal(RECALL_OPPORTUNITY_CATALOG_V5.version, 5);
+    assert.equal(RECALL_OPPORTUNITY_CATALOG_V5.version, 7);
     assert.deepEqual(
       RECALL_OPPORTUNITY_CATALOG_V5.entries.map(({ kind, producer }) => ({ kind, producer })),
       [
+        { kind: 'fresh_context_sources', producer: 'context_epoch' },
+        { kind: 'authorized_task_sources', producer: 'task_action_custody' },
         { kind: 'subject_seen', producer: 'entity_nudge' },
         { kind: 'delivery_decision', producer: 'github_ci' },
         { kind: 'judgment_surface_entered', producer: 'workflow_sop' },
@@ -326,6 +329,7 @@ describe('F287 RecallOpportunity catalog', () => {
         { kind: 'accepted_decision_required', producer: 'owner_message' },
         { kind: 'project_source_required', producer: 'task_context' },
         { kind: 'owned_seed_available', producer: 'present_loop' },
+        { kind: 'thread_opened', producer: 'owner_message' },
       ],
     );
     assert.deepEqual(admitRecallOpportunity(subjectOpportunity, scope), subjectOpportunity);
@@ -346,7 +350,7 @@ describe('F287 RecallOpportunity catalog', () => {
 });
 
 describe('F287 MemoryCueResolverRegistry', () => {
-  it('registers all eight families with the cat-owned Seed lane admitted in v5', async () => {
+  it('registers all nine families with the cat-owned Seed lane admitted in v5', async () => {
     const { registry } = makeHarness();
     assert.deepEqual(registry.families(), [
       'person_entity',
@@ -357,6 +361,7 @@ describe('F287 MemoryCueResolverRegistry', () => {
       'decision',
       'project_knowledge',
       'cat_owned_seed',
+      'thread_overview',
     ]);
     assert.equal(RECALL_RESOLVER_ADMISSION_V5.profile, 'catalog');
     assert.equal(RECALL_RESOLVER_ADMISSION_V5.event, 'catalog');
@@ -602,7 +607,7 @@ describe('F287 MemoryCuePlaneService', () => {
         );
       }
       if (expectedFamily === 'project_knowledge') {
-        assert.match(pointer, /record applied only if this exact feature source grounds the current task response/i);
+        assert.match(pointer, /record applied only if this project source grounds the current task response/i);
       }
       if (expectedFamily === 'cat_owned_seed') {
         assert.match(pointer, /same-invocation intent for this seed/i);
@@ -614,8 +619,8 @@ describe('F287 MemoryCuePlaneService', () => {
         opportunityKind: 'recall',
         producerOwner: candidate.producer,
         consumerScope: { kind: 'invocation', ...scope },
-        entryVersion: `recall-catalog:5:${candidate.kind}:${candidate.producer}`,
-        subjectKey: `memory-cue:${expectedFamily}:${result.cues[0].source.anchor}`,
+        entryVersion: `recall-catalog:7:${candidate.kind}:${candidate.producer}`,
+        subjectKey: `memory-cue:${expectedFamily}:${expectedFamily === 'project_knowledge' ? 'project:cat-cafe:' : ''}${result.cues[0].source.anchor}${expectedFamily === 'profile' || expectedFamily === 'project_knowledge' ? ':consumer:codex-sol' : ''}`,
         asOf: { kind: 'version', value: result.cues[0].source.revision },
         sourceRefs: [result.cues[0].source.anchor],
         eligibleSurfaces: ['dynamic_context', 'pointer'],
@@ -669,7 +674,7 @@ describe('F287 MemoryCuePlaneService', () => {
         sourceRevision: 'revision-1',
         axis: 'consumption',
         consumptionOutcome: 'presented',
-        catalogVersion: 5,
+        catalogVersion: 7,
         resolverVersion: 1,
         occurredAt: subjectOpportunity.occurredAt,
       },
@@ -780,4 +785,49 @@ describe('F287 MemoryCuePlaneService', () => {
     assert.equal(overBudget.text, '');
     assert.equal(overBudget.estimatedTokens, 0);
   });
+});
+
+describe('F321 closed context source discovery catalog', () => {
+  for (const [kind, producer] of [
+    ['fresh_context_sources', 'context_epoch'],
+    ['authorized_task_sources', 'task_action_custody'],
+  ]) {
+    it(`admits only the exact typed ${kind} pair and bounded navigation contract`, () => {
+      const candidate = {
+        v: 1,
+        kind,
+        producer,
+        opportunityId: `context-${kind}`,
+        consumer: 'agent_route',
+        scope,
+        occurredAt: 1000,
+        payload: {
+          sourceMessageId: 'exact-message-1',
+          contextEpoch: 2,
+          evidence: { transition: 'fresh', reason: 'no_prior_session', evidenceRef: 'provider:turn-1' },
+        },
+      };
+      const admitted = admitRecallOpportunity(candidate, scope);
+      assert.ok(admitted, 'a server-bound current typed opportunity must enter the real catalog');
+      const entry = getRecallOpportunityCatalogEntry(admitted);
+      assert.deepEqual(entry.resolverFamilies, ['profile', 'project_knowledge']);
+      assert.equal(entry.maxCues, 3);
+      assert.equal(entry.maxPromptTokens, 900);
+      assert.equal(entry.expiresAfterMs, 300000);
+      assert.equal(admitRecallOpportunity({ ...candidate, producer: 'owner_message' }, scope), null);
+      assert.equal(
+        admitRecallOpportunity({ ...candidate, payload: { ...candidate.payload, ownerUserId: 'other' } }, scope),
+        null,
+      );
+      for (const reason of ['carrier_forces_fresh', 'unknown', 'binding_mismatch']) {
+        assert.equal(
+          admitRecallOpportunity(
+            { ...candidate, payload: { ...candidate.payload, evidence: { ...candidate.payload.evidence, reason } } },
+            scope,
+          ),
+          null,
+        );
+      }
+    });
+  }
 });

@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import type { PackageAdmissionContractRuntime } from './manifest-verifier.js';
 import type {
-  GrantStore,
   PackageInventoryStore,
   PluginInstanceStore,
   PluginInventoryStore,
@@ -13,27 +13,32 @@ import {
   emptyPluginInventorySnapshot,
   parsePluginInventorySnapshot,
 } from './snapshot.js';
-import type { PluginGrantRecord, PluginInstanceRecord, PluginInventorySnapshot, PluginPackageRecord } from './types.js';
+import { serializeInventoryPackage } from './stored-manifest.js';
+import type { PluginInstanceRecord, PluginInventorySnapshot, PluginPackageRecord } from './types.js';
 import { PluginInventoryError } from './types.js';
+import { canonicalInventoryPath, requireInventoryWriterLease } from './writer-lease.js';
 
 interface TransactionState {
   readonly packages: Map<string, PluginPackageRecord>;
   readonly instances: Map<string, PluginInstanceRecord>;
-  readonly grants: Map<string, PluginGrantRecord>;
 }
 
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-function transactionFor(snapshot: PluginInventorySnapshot): {
+function transactionFor(
+  snapshot: PluginInventorySnapshot,
+  contract: PackageAdmissionContractRuntime | undefined,
+): {
   readonly transaction: PluginInventoryTransaction;
+  readonly hasWrites: () => boolean;
   readonly snapshot: () => PluginInventorySnapshot;
 } {
+  let written = false;
   const state: TransactionState = {
     packages: new Map(snapshot.packages.map((record) => [record.packageDigest, clone(record)])),
     instances: new Map(snapshot.instances.map((record) => [record.pluginInstanceId, clone(record)])),
-    grants: new Map(snapshot.grants.map((record) => [record.pluginInstanceId, clone(record)])),
   };
   const packages: PackageInventoryStore = {
     get: (digest) => {
@@ -41,7 +46,10 @@ function transactionFor(snapshot: PluginInventorySnapshot): {
       return value ? clone(value) : undefined;
     },
     list: () => [...state.packages.values()].map(clone),
-    put: (record) => state.packages.set(record.packageDigest, clone(record)),
+    put: (record) => {
+      state.packages.set(record.packageDigest, clone(record));
+      written = true;
+    },
   };
   const instances: PluginInstanceStore = {
     get: (instanceId) => {
@@ -55,25 +63,23 @@ function transactionFor(snapshot: PluginInventorySnapshot): {
       return value ? clone(value) : undefined;
     },
     list: () => [...state.instances.values()].map(clone),
-    put: (record) => state.instances.set(record.pluginInstanceId, clone(record)),
-  };
-  const grants: GrantStore = {
-    get: (instanceId) => {
-      const value = state.grants.get(instanceId);
-      return value ? clone(value) : undefined;
+    put: (record) => {
+      state.instances.set(record.pluginInstanceId, clone(record));
+      written = true;
     },
-    list: () => [...state.grants.values()].map(clone),
-    put: (record) => state.grants.set(record.pluginInstanceId, clone(record)),
   };
   return {
-    transaction: { packages, instances, grants },
+    transaction: { packages, instances },
+    hasWrites: () => written,
     snapshot: () =>
-      parsePluginInventorySnapshot({
-        schemaVersion: 1,
-        packages: [...state.packages.values()],
-        instances: [...state.instances.values()],
-        grants: [...state.grants.values()],
-      }),
+      parsePluginInventorySnapshot(
+        {
+          schemaVersion: 1,
+          packages: [...state.packages.values()],
+          instances: [...state.instances.values()],
+        },
+        contract,
+      ),
   };
 }
 
@@ -102,10 +108,11 @@ class TransactionQueue {
 const fileTransactionQueues = new Map<string, TransactionQueue>();
 
 function fileQueue(path: string): TransactionQueue {
-  let queue = fileTransactionQueues.get(path);
+  const key = canonicalInventoryPath(path);
+  let queue = fileTransactionQueues.get(key);
   if (!queue) {
     queue = new TransactionQueue();
-    fileTransactionQueues.set(path, queue);
+    fileTransactionQueues.set(key, queue);
   }
   return queue;
 }
@@ -120,14 +127,23 @@ export interface InventoryFileOps {
 
 export interface FilePluginInventoryStoreOptions {
   readonly fileOps?: Partial<InventoryFileOps>;
+  readonly contract?: PackageAdmissionContractRuntime;
+}
+
+export interface MemoryPluginInventoryStoreOptions {
+  readonly contract?: PackageAdmissionContractRuntime;
 }
 
 export class MemoryPluginInventoryStore implements PluginInventoryStore {
   private state: PluginInventorySnapshot;
   private readonly queue = new TransactionQueue();
 
-  constructor(initial?: unknown) {
-    this.state = initial === undefined ? emptyPluginInventorySnapshot() : parsePluginInventorySnapshot(initial);
+  constructor(
+    initial?: unknown,
+    private readonly options: MemoryPluginInventoryStoreOptions = {},
+  ) {
+    this.state =
+      initial === undefined ? emptyPluginInventorySnapshot() : parsePluginInventorySnapshot(initial, options.contract);
   }
 
   async snapshot(): Promise<PluginInventorySnapshot> {
@@ -135,12 +151,20 @@ export class MemoryPluginInventoryStore implements PluginInventoryStore {
     return clonePluginInventorySnapshot(this.state);
   }
 
-  async transaction<T>(work: (transaction: PluginInventoryTransaction) => Promise<T> | T): Promise<T> {
+  async transaction<T>(
+    work: (transaction: PluginInventoryTransaction) => Promise<T> | T,
+    options?: { onCommitFailure?(): void },
+  ): Promise<T> {
     return this.queue.run(async () => {
-      const candidate = transactionFor(this.state);
-      const result = await work(candidate.transaction);
-      this.state = candidate.snapshot();
-      return result;
+      try {
+        const candidate = transactionFor(this.state, this.options.contract);
+        const result = await work(candidate.transaction);
+        this.state = candidate.snapshot();
+        return result;
+      } catch (error) {
+        options?.onCommitFailure?.();
+        throw error;
+      }
     });
   }
 }
@@ -153,11 +177,13 @@ export class FilePluginInventoryStore implements PluginInventoryStore {
   readonly path: string;
   private readonly queue: TransactionQueue;
   private readonly fileOps: InventoryFileOps;
+  private readonly contract: PackageAdmissionContractRuntime | undefined;
 
   constructor(path: string, options: FilePluginInventoryStoreOptions = {}) {
     this.path = resolve(path);
     this.queue = fileQueue(this.path);
     this.fileOps = { readFile, mkdir, writeFile, rename, unlink, ...options.fileOps };
+    this.contract = options.contract;
   }
 
   private async load(): Promise<PluginInventorySnapshot> {
@@ -174,36 +200,55 @@ export class FilePluginInventoryStore implements PluginInventoryStore {
     } catch {
       throw new PluginInventoryError('CORRUPT_SNAPSHOT', `plugin inventory at ${this.path} is not valid JSON`);
     }
-    return parsePluginInventorySnapshot(parsed);
+    return parsePluginInventorySnapshot(parsed, this.contract);
   }
 
   async snapshot(): Promise<PluginInventorySnapshot> {
     await this.queue.settled();
-    return clonePluginInventorySnapshot(await this.load());
+    // Each load parses current file bytes into an unshared snapshot.
+    return this.load();
   }
 
-  async transaction<T>(work: (transaction: PluginInventoryTransaction) => Promise<T> | T): Promise<T> {
+  async transaction<T>(
+    work: (transaction: PluginInventoryTransaction) => Promise<T> | T,
+    options?: { onCommitFailure?(): void },
+  ): Promise<T> {
     return this.queue.run(async () => {
-      const candidate = transactionFor(await this.load());
-      const result = await work(candidate.transaction);
-      const next = candidate.snapshot();
-      await this.fileOps.mkdir(dirname(this.path), { recursive: true });
-      const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID()}`;
-      await this.fileOps.writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, {
-        encoding: 'utf8',
-        mode: 0o600,
-      });
+      const releaseWriter = requireInventoryWriterLease(this.path);
       try {
-        await this.fileOps.rename(temporaryPath, this.path);
-      } catch (error) {
+        const candidate = transactionFor(await this.load(), this.contract);
+        const result = await work(candidate.transaction);
+        // The writer lease and queue still cover every authority check. Only
+        // callbacks with an explicit put require validation and atomic commit.
+        if (!candidate.hasWrites()) return result;
+        const next = candidate.snapshot();
+        await this.fileOps.mkdir(dirname(this.path), { recursive: true });
+        const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID()}`;
+        await this.fileOps.writeFile(
+          temporaryPath,
+          `${JSON.stringify({ ...next, packages: next.packages.map(serializeInventoryPackage) }, null, 2)}\n`,
+          {
+            encoding: 'utf8',
+            mode: 0o600,
+          },
+        );
         try {
-          await this.fileOps.unlink(temporaryPath);
-        } catch {
-          // Preserve the commit failure; temporary cleanup is best effort.
+          await this.fileOps.rename(temporaryPath, this.path);
+        } catch (error) {
+          try {
+            await this.fileOps.unlink(temporaryPath);
+          } catch {
+            // Preserve the commit failure; temporary cleanup is best effort.
+          }
+          throw error;
         }
+        return result;
+      } catch (error) {
+        options?.onCommitFailure?.();
         throw error;
+      } finally {
+        releaseWriter();
       }
-      return result;
     });
   }
 }

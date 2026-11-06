@@ -16,6 +16,7 @@ const DENSITY_CAT: CatData = {
   color: { primary: '#6b8f34', secondary: '#c8d8b5' },
   mentionPatterns: ['codex-sol'],
   clientId: 'openai',
+  carrier: 'cli',
   defaultModel: 'gpt-5.6-sol',
   avatar: '/avatars/codex.png',
   roleDescription: '小太阳型攻坚猫',
@@ -54,6 +55,16 @@ const DENSITY_FOLLOWUP_MESSAGE: ChatMessageData = {
       executionKind: 'ordinary',
     },
   },
+};
+
+const UNKNOWN_AUTHOR_MESSAGE: ChatMessageData = {
+  id: 'f294-unknown-author-message',
+  type: 'assistant',
+  catId: 'codex61-sol-uncatalogued',
+  from: { kind: 'agent', catId: 'codex61-sol-uncatalogued' },
+  content: '[打开第一行文件](#f294-unknown-author-click)',
+  timestamp: 1_786_985_954_485,
+  projectionSourceMessageIds: ['f294-unknown-author-message'],
 };
 
 const CLI_MARKDOWN_TABLE = [
@@ -240,6 +251,24 @@ export default function F294QuotePlaneFixtures() {
         />
         <output data-testid="f294-density-enter-count">{selectionEnterCount}</output>
         <output data-testid="f294-density-enter-message">{selectionEnterMessageId}</output>
+      </section>
+
+      <section data-testid="f294-unknown-author-source">
+        <ChatMessageRow
+          message={UNKNOWN_AUTHOR_MESSAGE}
+          threadId="f294-quote-plane-fixtures"
+          timelineMessages={[UNKNOWN_AUTHOR_MESSAGE]}
+          getCatById={() => undefined}
+          onEditCat={() => {}}
+          onEditCoCreator={() => {}}
+          selectionMode={false}
+          selected={false}
+          selectionEligible
+          onEnterSelection={() => {}}
+          onToggleSelection={() => {}}
+          forwardingDisabled={false}
+          eager
+        />
       </section>
 
       <MessageActions

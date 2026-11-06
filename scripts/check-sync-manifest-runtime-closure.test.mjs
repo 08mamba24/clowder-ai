@@ -4,11 +4,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { describe, it } from 'node:test';
-
 import ts from 'typescript';
 import YAML from 'yaml';
-
 import { resolvePublicTestFiles } from '../packages/api/scripts/resolve-public-test-files.mjs';
+import { rootCheckChain } from './lib/root-check-chain.mjs';
+import { isCoveredByPublicExport, loadPublicExportCoverage } from './lib/sync-public-export-coverage.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const MANIFEST_PATH = resolve(ROOT, 'sync-manifest.yaml');
@@ -41,23 +41,21 @@ function resolveLocalImport(importer, specifier) {
   return candidates.find((candidate) => existsSync(candidate)) ?? base;
 }
 
-function collectRelativeImports(source) {
-  const sourceFile = ts.createSourceFile(
-    'exported-script.mjs',
-    source,
-    ts.ScriptTarget.Latest,
-    false,
-    ts.ScriptKind.JS,
-  );
+function collectRelativeImports(source, filename = 'exported-script.mjs') {
+  const sourceFile = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, false);
   const specifiers = new Set();
 
   function visit(node) {
     const moduleSpecifier =
       (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier
         ? node.moduleSpecifier
-        : ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+        : ts.isCallExpression(node) &&
+            (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+              (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
           ? node.arguments[0]
-          : undefined;
+          : ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)
+            ? node.argument.literal
+            : undefined;
     if (moduleSpecifier && ts.isStringLiteralLike(moduleSpecifier) && moduleSpecifier.text.startsWith('.')) {
       specifiers.add(moduleSpecifier.text);
     }
@@ -79,6 +77,96 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
     if (managedFiles.has(repoPath) || managedScripts.has(repoPath)) return true;
     return [...managedRoots].some((root) => repoPath === root || repoPath.startsWith(`${root}/`));
   }
+
+  it('exports every pnpm dependency patch required by frozen installation as an exact file', () => {
+    const packageJson = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'));
+    const coverage = loadPublicExportCoverage(ROOT);
+    assert.ok(!managedRoots.has('patches'), 'dependency patches must not expose the whole patches directory');
+    for (const [dependency, path] of Object.entries(packageJson.pnpm?.patchedDependencies ?? {})) {
+      assert.equal(typeof path, 'string', `${dependency} must name its patch file`);
+      assert.ok(existsSync(resolve(ROOT, path)), `${dependency} patch is missing: ${path}`);
+      assert.ok(managedFiles.has(path), `${dependency} patch needs an exact managed_files entry: ${path}`);
+      assert.ok(isCoveredByPublicExport(path, coverage), `${dependency} patch is omitted by public export: ${path}`);
+    }
+  });
+
+  it('keeps source-only docs sync assertions with their private home-script inputs', () => {
+    const coverage = loadPublicExportCoverage(ROOT);
+    for (const path of ['scripts/check-sync-docs-runtime-assets.test.mjs', 'scripts/home-package-scripts.mjs']) {
+      assert.ok(!isCoveredByPublicExport(path, coverage), `${path} is a private sync input`);
+    }
+  });
+
+  it('owns the revision template and its Git archive attributes in the source-only manifest', () => {
+    for (const path of ['.cat-cafe-runtime-revision', '.gitattributes']) {
+      assert.ok(managedFiles.has(path), `${path} must be exported`);
+      assert.ok(!excluded.has(path), `${path} must not be excluded`);
+    }
+  });
+
+  it('exports the manual desktop acceptance entry and its checked-in support files', () => {
+    const supportFiles = execFileSync('git', ['ls-files', '.github/desktop-acceptance'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    })
+      .trim()
+      .split('\n')
+      .filter(Boolean);
+    assert.ok(supportFiles.length > 0, 'desktop acceptance support must exist');
+    const requiredPaths = [
+      '.github/workflows/verify-desktop-candidate.yml',
+      'scripts/vendor-stylesheet-checkout.test.mjs',
+      ...supportFiles,
+    ];
+    const coverage = loadPublicExportCoverage(ROOT);
+    const missing = requiredPaths.filter((path) => !isCoveredByPublicExport(path, coverage));
+    assert.deepEqual(missing, [], `Desktop acceptance export omits: ${missing.join(', ')}`);
+  });
+
+  it('preserves templates during repository sync so a public archive binds its own commit', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'sync-archive-identity-'));
+    const revisionPath = '.cat-cafe-runtime-revision';
+    const git = (cwd, ...args) =>
+      execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const commitFixture = (directory, name) => {
+      git(directory, 'init', '-b', 'main');
+      git(directory, 'config', 'user.name', 'Archive Identity Test');
+      git(directory, 'config', 'user.email', 'archive-identity@test.invalid');
+      git(directory, 'add', '.');
+      git(directory, 'commit', '-m', name);
+      return git(directory, 'rev-parse', 'HEAD');
+    };
+    try {
+      const source = join(fixture, 'source');
+      const exported = join(fixture, 'exported');
+      mkdirSync(source);
+      mkdirSync(exported);
+      for (const path of [revisionPath, '.gitattributes']) {
+        writeFileSync(join(source, path), readFileSync(join(ROOT, path)));
+      }
+      const sourceHead = commitFixture(source, 'source archive identity');
+      // Execute the real writer; assertions describe the two-repository identity contract.
+      const command = readFileSync(SYNC_SCRIPT_PATH, 'utf8').match(
+        /^ {2}git -C "\$SOURCE_SYNC_DIR" archive [^\n]+/m,
+      )?.[0];
+      assert.ok(command, 'canonical writer must provide the clean-tree export command');
+      execFileSync('bash', ['-euo', 'pipefail', '-c', command], {
+        env: { ...process.env, SOURCE_SYNC_DIR: source, STAGING_DIR: exported },
+        stdio: 'pipe',
+      });
+      assert.equal(
+        readFileSync(join(exported, revisionPath), 'utf8'),
+        readFileSync(join(source, revisionPath), 'utf8'),
+      );
+      const publicHead = commitFixture(exported, 'public archive identity');
+      assert.notEqual(publicHead, sourceHead, 'fixture must distinguish the two repositories');
+      const archive = execFileSync('git', ['archive', '--format=tar', 'HEAD'], { cwd: exported });
+      const revision = execFileSync('tar', ['-xOf', '-', revisionPath], { input: archive, encoding: 'utf8' }).trim();
+      assert.equal(revision, publicHead, 'public distribution identity must come from its own Git commit');
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
 
   it('claims ownership of the public release notes template', () => {
     // Regression guard for clowder-ai#1370: this template existed in both source and
@@ -268,10 +356,42 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
       preMergeTest,
       /skip:\s*[\s\S]*?!existsSync\(GATE_TERMINAL_RECEIPT_SCRIPT\)[\s\S]*?home-only route and terminal-receipt control plane is absent from public export/u,
     );
+
+    const sourceFile = ts.createSourceFile(
+      'pre-merge-check.test.mjs',
+      preMergeTest,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.JS,
+    );
+    const optionReferences = [];
+    const boundTestReferences = [];
+    const declarationReferences = [];
+
+    function visit(node) {
+      if (ts.isIdentifier(node) && node.text === 'SOURCE_GATE_CONTROL_TEST_OPTIONS') {
+        optionReferences.push(node);
+        if (ts.isVariableDeclaration(node.parent) && node.parent.name === node) {
+          declarationReferences.push(node);
+        } else if (
+          ts.isCallExpression(node.parent) &&
+          ts.isIdentifier(node.parent.expression) &&
+          node.parent.expression.text === 'it' &&
+          node.parent.arguments[1] === node
+        ) {
+          boundTestReferences.push(node);
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+
+    visit(sourceFile);
+    assert.equal(declarationReferences.length, 1, 'the public-skip options must have one declaration');
+    assert.ok(boundTestReferences.length > 0, 'at least one source-only gate-control test must use the options');
     assert.equal(
-      [...preMergeTest.matchAll(/SOURCE_GATE_CONTROL_TEST_OPTIONS/g)].length,
-      4,
-      'the option declaration and all three source-only gate-control tests must stay bound together',
+      optionReferences.length,
+      declarationReferences.length + boundTestReferences.length,
+      'every public-skip options reference must be either its declaration or an it() options argument',
     );
   });
 
@@ -331,6 +451,37 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
     assert.ok(!excluded.has(absorbedScript), `${absorbedScript} must not be excluded from export`);
   });
 
+  it('keeps the public-test CI workflow and its launcher fixtures in one ownership lane', () => {
+    // clowder-ai#1483 moved public-test isolation into a launcher script that
+    // ci.yml invokes and that check-public-test-ci-contract.mjs reads. All three
+    // are one unit: ci.yml is target-owned (KD-4), so its fixtures must be too.
+    // Registering only some of them is the release-notes-template.md failure mode
+    // — rsync --delete silently removes the unregistered file on the next full
+    // sync, and the public CI loses the kernel boundary it advertises. The home
+    // repo cannot read ci.yml to discover these fixtures, so the pairing is
+    // asserted directly.
+    const targetOwned = new Set(manifest.target_owned_files ?? []);
+    const workflow = '.github/workflows/ci.yml';
+    const launcherFixtures = [
+      '.github/scripts/check-public-test-ci-contract.mjs',
+      '.github/scripts/run-public-test-distributable.sh',
+      '.github/scripts/public-test-namespace-init.py',
+      '.github/scripts/public-test-namespace-init.test.py',
+    ];
+    assert.ok(targetOwned.has(workflow), `${workflow} must stay target-owned per F308 KD-4`);
+    for (const fixture of launcherFixtures) {
+      assert.ok(
+        targetOwned.has(fixture),
+        `${fixture} is a fixture of ${workflow} and must share its target-owned lane, ` +
+          'otherwise a full sync deletes it from the public repository',
+      );
+      assert.ok(
+        !managedFiles.has(fixture),
+        `${fixture} must not also be source-exported; one owner per surviving surface`,
+      );
+    }
+  });
+
   it('owns the public site and target companions absorbed from clowder-ai#1405', () => {
     // clowder-ai#1405 introduced the public website as a community contribution.
     // A full sync uses rsync --delete, so every surviving surface needs one explicit
@@ -350,6 +501,12 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
       'docs/configuration/environment.md',
       'docs/configuration/startup.md',
       'docs/faq.md',
+      'docs/architecture/a2a-protocol.zh-CN.md',
+      'docs/architecture/overview.zh-CN.md',
+      'docs/architecture/plugin-architecture.zh-CN.md',
+      'docs/configuration/environment.zh-CN.md',
+      'docs/configuration/startup.zh-CN.md',
+      'docs/faq.zh-CN.md',
     ];
 
     for (const [kind, path, ownerSet] of sourceOwned) {
@@ -389,6 +546,17 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
     assert.ok(!isExported(localEnvironment), `${localEnvironment} must never be exported from source`);
   });
 
+  it('preserves the generated public MCP baseline without transferring bootstrap authority', () => {
+    const targetOwned = new Set(manifest.target_owned_files ?? []);
+    const baseline = 'packages/mcp-server/governance/mcp-surface-baseline.json';
+    const attestation = 'packages/mcp-server/governance/mcp-surface-bootstrap-attestation.json';
+
+    assert.ok(isExported(baseline), 'a new public target must receive the source baseline before projection');
+    assert.ok(targetOwned.has(baseline), 'an established public target must retain its reviewed projected baseline');
+    assert.ok(isExported(attestation), 'the source attestation must remain exported');
+    assert.ok(!targetOwned.has(attestation), 'public sync must never preserve a target-authored bootstrap attestation');
+  });
+
   it('preserves target-owned file metadata across backup and restore', () => {
     const syncScript = readFileSync(SYNC_SCRIPT_PATH, 'utf8');
     const backupFunction = syncScript.match(/backup_target_owned_items\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
@@ -400,23 +568,42 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
     assert.match(restoreFunction, /cp -p /, 'target-owned files must retain timestamps during restore');
   });
 
-  it('exports every direct local import of an exported script', () => {
+  it('exports static relative dependencies of public runtime, build configuration and selected tests', async () => {
+    const coverage = loadPublicExportCoverage(ROOT);
+    const { selectedFiles } = await resolvePublicTestFiles();
+    const selectedPublicTests = new Set(selectedFiles.map((path) => `packages/api/${path}`));
+    const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    }).split('\0');
     const missing = [];
 
-    for (const importer of managedScripts) {
-      if (!/\.(?:mjs|js)$/.test(importer)) continue;
+    for (const importer of new Set(files)) {
+      if (!/\.(?:[cm]?[jt]s|[jt]sx)$/.test(importer) || !isCoveredByPublicExport(importer, coverage)) continue;
+      // The public API resolver deliberately excludes home-only provider/OS
+      // fixtures. Browser journeys are another home-gate resource contract,
+      // not public API inputs. Never make their private dependencies public
+      // just to satisfy a wider filename scan. Runtime/config modules and
+      // explicitly exported scripts remain covered regardless of package.
+      if (
+        /(?:^|\/)(?:test|tests|__tests__)\//.test(importer) &&
+        !selectedPublicTests.has(importer) &&
+        !managedScripts.has(importer)
+      )
+        continue;
       const importerPath = resolve(ROOT, importer);
       if (!existsSync(importerPath)) continue;
 
       const source = readFileSync(importerPath, 'utf8');
-      for (const specifier of collectRelativeImports(source)) {
+      for (const specifier of collectRelativeImports(source, importer)) {
         const dependency = resolveLocalImport(importer, specifier);
         const dependencyPath = toRepoPath(dependency);
         assert.ok(
           !dependencyPath.startsWith('../'),
           `${importer} imports local module outside the repository: ${specifier}`,
         );
-        if (!isExported(dependencyPath)) missing.push(`${importer} -> ${dependencyPath}`);
+        if (!isCoveredByPublicExport(dependencyPath, coverage)) missing.push(`${importer} -> ${dependencyPath}`);
       }
     }
 
@@ -425,6 +612,25 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
       [],
       `sync-manifest omits direct runtime dependencies:\n${[...new Set(missing)].sort().join('\n')}`,
     );
+  });
+
+  it('exports shellcheck-declared local dependencies of public shell scripts', () => {
+    const missing = [];
+    for (const importer of managedScripts) {
+      if (!importer.endsWith('.sh')) continue;
+      const source = readFileSync(resolve(ROOT, importer), 'utf8');
+      for (const [, dependency] of source.matchAll(/^# shellcheck source=(scripts\/[^\s]+)$/gm)) {
+        assert.ok(existsSync(resolve(ROOT, dependency)), `${importer} declares missing source ${dependency}`);
+        if (!isExported(dependency) || excluded.has(dependency)) missing.push(`${importer} -> ${dependency}`);
+      }
+    }
+    assert.deepEqual(missing, [], `sync-manifest omits sourced shell dependencies:\n${missing.join('\n')}`);
+  });
+
+  it('exports the managed-stop consumer exercised by the public API producer contract', () => {
+    const dependency = 'scripts/lib/gate-execution-managed-stop.mjs';
+    assert.ok(isExported(dependency), `${dependency} must accompany its public producer test`);
+    assert.ok(!excluded.has(dependency), `${dependency} must not be excluded`);
   });
 
   it('exports every direct local import of a selected public API test', async () => {
@@ -486,15 +692,57 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
     assert.ok(!excluded.has(hook), `${hook} must not be excluded from the public filtered tree`);
   });
 
-  it('exports every project hook read by the public F296 authentication contract', () => {
-    const contract = 'packages/api/test/f296-session-hook-source-auth.test.js';
-    const source = readFileSync(resolve(ROOT, contract), 'utf8');
-    const hookReferences = [...source.matchAll(/['"](\.\.\/\.\.\/\.\.\/\.claude\/hooks\/[^'"]+)['"]/g)].map((match) =>
-      toRepoPath(resolveLocalImport(contract, match[1])),
+  it('exports the packaged managed compaction carrier as source-owned runtime data', () => {
+    const planSource = readFileSync(
+      resolve(ROOT, 'packages/api/src/domains/cats/services/agents/providers/claude-compaction-launch-plan.ts'),
+      'utf8',
     );
+    const carrierName = planSource.match(/const CARRIER_SCRIPT_NAME = '([^']+)'/);
+    assert.ok(carrierName, 'the launch plan must declare its packaged carrier asset');
+    const carrierPath = `.claude/hooks/${carrierName[1]}`;
+    const desktop = JSON.parse(readFileSync(resolve(ROOT, 'desktop/package.json'), 'utf8'));
+    assert.ok(
+      desktop.build.extraResources.some((resource) => resource.from === `../${carrierPath}`),
+      'the runtime carrier must be the asset shipped by desktop packaging',
+    );
+    assert.ok(managedFiles.has(carrierPath), `${carrierPath} must survive the next source-owned full sync`);
+    assert.ok(!excluded.has(carrierPath), `${carrierPath} must not be excluded`);
+    assert.ok(!(manifest.target_owned_files ?? []).includes(carrierPath), 'the absorbed carrier is source-owned');
+  });
 
-    assert.ok(hookReferences.length > 0, `${contract} must keep its real project-hook references`);
-    for (const hook of hookReferences) {
+  it('exports every project hook exercised by the public credential-file HTTP contract', () => {
+    const contract = 'packages/api/test/f333-cli-hook-credentials.test.js';
+    const source = readFileSync(resolve(ROOT, contract), 'utf8');
+    const importedHooks = collectRelativeImports(source, contract)
+      .filter((specifier) => specifier.includes('/.claude/hooks/'))
+      .map((specifier) => toRepoPath(resolveLocalImport(contract, specifier)));
+    const runtimeHooks = new Set();
+    const file = ts.createSourceFile(contract, source, ts.ScriptTarget.Latest, true);
+    function wrapperNames(call, filename) {
+      assert.ok(ts.isIdentifier(filename), `${contract} must use its declared wrapper iteration`);
+      let loop = call.parent;
+      while (loop && !ts.isForOfStatement(loop)) loop = loop.parent;
+      assert.ok(loop && ts.isArrayLiteralExpression(loop.expression), `${contract} must enumerate its wrappers`);
+      assert.ok(ts.isVariableDeclarationList(loop.initializer));
+      assert.equal(loop.initializer.declarations[0].name.getText(file), filename.text);
+      return loop.expression.elements.map((wrapper) => {
+        assert.ok(ts.isStringLiteralLike(wrapper) && wrapper.text.endsWith('.sh'));
+        return wrapper.text;
+      });
+    }
+    function visit(node) {
+      ts.forEachChild(node, visit);
+      if (!ts.isCallExpression(node) || node.expression.getText(file) !== 'resolve') return;
+      const [directory, filename] = node.arguments;
+      if (!directory || !ts.isStringLiteralLike(directory) || !directory.text.startsWith('../../.claude/hooks')) return;
+      for (const wrapper of filename ? wrapperNames(node, filename) : ['']) {
+        runtimeHooks.add(toRepoPath(resolve(ROOT, 'packages/api', directory.text, wrapper)));
+      }
+    }
+    visit(file);
+
+    assert.ok(runtimeHooks.size >= 4, `${contract} must exercise the Node carrier and its three real shell wrappers`);
+    for (const hook of new Set([...importedHooks, ...runtimeHooks])) {
       assert.ok(
         managedFiles.has(hook),
         `${hook} must be exported with ${contract}, otherwise test:public reads a missing runtime asset`,
@@ -526,6 +774,8 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
       .filter(Boolean);
     const exportedClaudePaths = trackedClaudePaths.filter((repoPath) => isExported(repoPath)).sort();
     const expectedClaudePaths = [
+      '.claude/hooks/f236-anchor-posttool.mjs',
+      '.claude/hooks/f24-compaction.mjs',
       '.claude/hooks/f24-post-compact-bootstrap.sh',
       '.claude/hooks/f24-pre-compact.sh',
       '.claude/hooks/sop-stage-bookmark.sh',
@@ -653,8 +903,39 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
     );
   });
 
-  it('does not make public magic-word tests depend on private L0 staging content', () => {
+  it('keeps private prompt and Claude-wrapper assertions strict at home and scoped publicly', () => {
+    for (const [consumer, privateRef] of [
+      ['packages/api/test/f254-freshness-instruction-surface.test.js', 'cat-cafe-skills/refs/l0-staging-content.md'],
+      [
+        'packages/api/test/f306-native-effect-target-guard-git-context.test.js',
+        '.claude/hooks/runtime-sanctuary-guard.sh',
+      ],
+      [
+        'packages/api/test/f306-native-effect-target-guard-unknown-allow.test.js',
+        '.claude/hooks/runtime-sanctuary-guard.sh',
+      ],
+    ]) {
+      assert.ok(existsSync(resolve(ROOT, privateRef)), `${privateRef} must exist in the source tree`);
+      assert.ok(!isExported(privateRef) || excluded.has(privateRef), `${privateRef} must stay private`);
+      const source = readFileSync(resolve(ROOT, consumer), 'utf8');
+      assert.match(
+        source,
+        /!existsSync[^\n]*sync-manifest\.yaml/,
+        `${consumer} must not silently skip a missing source file`,
+      );
+      assert.match(source, /skip:/, `${consumer} must isolate its private assertion`);
+      assert.ok(isExported(consumer) && !excluded.has(consumer), `${consumer} must keep public assertions runnable`);
+    }
+    const providerTest = readFileSync(
+      resolve(ROOT, 'packages/api/test/f306-native-effect-target-guard-git-context.test.js'),
+      'utf8',
+    );
+    assert.match(providerTest, /skip: provider === 'claude' && publicWithoutClaudeWrapper/);
+  });
+
+  it('keeps public magic-word tests on exported governance, independent of private staging', () => {
     const stagingRef = 'cat-cafe-skills/refs/l0-staging-content.md';
+    const sharedRulesRef = 'cat-cafe-skills/refs/shared-rules.md';
     const magicWordTest = readFileSync(
       resolve(ROOT, 'packages/api/test/harness-eval/task-outcome-magic-word-detector.test.js'),
       'utf8',
@@ -662,15 +943,24 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
     const eventsRouteTest = readFileSync(resolve(ROOT, 'packages/api/test/events-route.test.js'), 'utf8');
 
     assert.ok(excluded.has(stagingRef), 'raw L0 staging content must remain private in public exports');
+    assert.ok(
+      isExported(sharedRulesRef) && !excluded.has(sharedRulesRef),
+      'the current shared-governance definitions must remain in the public export closure',
+    );
+    assert.match(
+      readFileSync(resolve(ROOT, sharedRulesRef), 'utf8'),
+      /^\|\s*「四象限／unknown-first」\s*\|/m,
+      '四象限 and its alias now belong to exported shared governance, not private staging',
+    );
     assert.match(
       magicWordTest,
       /skip:\s*!existsSync\(STAGING_CONTENT_URL\)/,
       'the full home-governance parity assertion must skip when private L0 staging content is absent',
     );
-    assert.match(
+    assert.doesNotMatch(
       eventsRouteTest,
-      /if\s*\(hasSourceStagingContent\)[\s\S]*staging 四象限 meaning present[\s\S]*assert\.equal\(quadrants,\s*undefined/,
-      'the meanings endpoint test must require private meanings at home and require their absence publicly',
+      /hasSourceStagingContent|l0-staging-content\.md/,
+      'the meanings endpoint assertions must run unchanged when private staging is absent',
     );
   });
 
@@ -718,16 +1008,36 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
     );
   });
 
-  // Behavioural, not textual: run the real blocking grep the way Step 4 runs it, over file types
-  // the sanitizer exports but cannot redact. A secret in exported CommonJS used to be invisible.
-  it('blocks a secret sentinel in every sanitized text type the scan must see', () => {
+  // Exercise the secret scanner and retained privacy grep separately. Both must
+  // see every sanitized type; the content scanner additionally covers binary/unlisted paths.
+  it('blocks secret and private-path sentinels in every sanitized text type', () => {
     const syncScript = readFileSync(SYNC_SCRIPT_PATH, 'utf8');
     const includes = readSanitizedTextExtensions(syncScript).map((ext) => `--include=*.${ext}`);
     const fixtureDir = mkdtempSync(join(tmpdir(), 'scan-includes-'));
     try {
       const sentinels = ['cjs', 'ps1', 'py', 'bat', 'iss', 'html', 'mjs', 'css'];
+      const secret = ['ghp', '_', 'V'.repeat(36)].join('');
       for (const ext of sentinels) {
-        writeFileSync(join(fixtureDir, `sentinel.${ext}`), 'const key = "sk-ant-fixture-not-a-real-key";\n', 'utf8');
+        writeFileSync(join(fixtureDir, `sentinel.${ext}`), `const key = "${secret}";\n`, 'utf8');
+      }
+      const block = syncScript.slice(syncScript.indexOf('# 4b-BLOCK:'), syncScript.indexOf('# Separate you check'));
+      assert.match(block, /secret-content-files\.mjs/, 'Step 4 must invoke the shared content scanner');
+      const output = execFileSync('bash', ['-c', `${block}\nprintf '\\nSCAN_FAILED=%s\\n' "$SCAN_FAILED"`], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          SOURCE_SYNC_DIR: ROOT,
+          FILTERED_DIR: fixtureDir,
+          SCAN_INCLUDES: includes.join(' '),
+          RED: '',
+          NC: '',
+        },
+      });
+      assert.match(output, /SCAN_FAILED=true/);
+      assert.ok(!output.includes(secret));
+      for (const ext of sentinels) {
+        assert.ok(output.includes(`sentinel.${ext}`), `content scanner must see *.${ext}`);
+        writeFileSync(join(fixtureDir, `sentinel.${ext}`), 'const home = "/home/user/project";\n', 'utf8');
       }
       const matched = execFileSync('grep', ['-rEl', readBlockingScanPattern(syncScript), fixtureDir, ...includes], {
         encoding: 'utf8',
@@ -767,7 +1077,7 @@ describe('outbound sync runtime closure', { skip: !isHomeRepo && 'sync manifest 
       'the boundary round-trip suite must run in that entry point',
     );
     assert.ok(
-      pkg.scripts.check.includes('check:outbound-sanitizer'),
+      rootCheckChain(pkg.scripts).includes('check:outbound-sanitizer'),
       'pnpm check must invoke check:outbound-sanitizer',
     );
   });

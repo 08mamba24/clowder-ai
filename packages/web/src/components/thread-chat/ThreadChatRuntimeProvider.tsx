@@ -15,8 +15,6 @@ import { useAgentMessages } from '@/hooks/useAgentMessages';
 import { useChatSocketCallbacks } from '@/hooks/useChatSocketCallbacks';
 import { type SocketCallbacks, useSocket } from '@/hooks/useSocket';
 import { useChatStore } from '@/stores/chatStore';
-import { getUserId } from '@/utils/userId';
-import { pushThreadRouteWithHistory } from '../ThreadSidebar/thread-navigation';
 import { createThreadChatHistoryAdmission, type ThreadChatHistoryAdmission } from './thread-chat-history-admission';
 import { createThreadChatRuntimeRegistry, normalizeThreadIds } from './thread-chat-runtime-registry';
 
@@ -24,7 +22,6 @@ type IndexEventHandler = NonNullable<SocketCallbacks['onIndexEvent']>;
 
 export interface ThreadChatRuntimeRegistration {
   socketConnected: boolean | null;
-  resetAgentMessageRefs: () => void;
   registerIndexEventHandler: (handler: IndexEventHandler) => () => void;
 }
 
@@ -59,7 +56,7 @@ export function ThreadChatRuntimeProvider({ children, routeThreadId }: ThreadCha
   const indexEventHandlersRef = useRef(new Map<symbol, IndexEventHandler>());
   const storeThreadId = useChatStore((state) => state.currentThreadId);
   const activeThreadId = routeThreadId || storeThreadId;
-  const { handleAgentMessage, resetRefs, resetTimeout, clearDoneTimeout } = useAgentMessages();
+  const { handleAgentMessage } = useAgentMessages();
 
   useLayoutEffect(() => {
     runtimeMountedRef.current = true;
@@ -68,19 +65,12 @@ export function ThreadChatRuntimeProvider({ children, routeThreadId }: ThreadCha
     };
   }, []);
 
-  const navigateToThread = useCallback((threadId: string) => {
-    pushThreadRouteWithHistory(threadId, typeof window === 'undefined' ? undefined : window);
-  }, []);
   const dispatchIndexEvent = useCallback<IndexEventHandler>((event, data) => {
     for (const handler of [...indexEventHandlersRef.current.values()]) handler(event, data);
   }, []);
   const socketCallbacks = useChatSocketCallbacks({
     threadId: activeThreadId,
-    userId: getUserId(),
     handleAgentMessage,
-    resetTimeout,
-    clearDoneTimeout,
-    onNavigateToThread: navigateToThread,
     onIndexEvent: dispatchIndexEvent,
   });
   const foregroundThreadIds = registryRef.current.snapshot();
@@ -117,12 +107,11 @@ export function ThreadChatRuntimeProvider({ children, routeThreadId }: ThreadCha
   const contextValue = useMemo<ThreadChatRuntimeContextValue>(
     () => ({
       socketConnected,
-      resetAgentMessageRefs: resetRefs,
       registerIndexEventHandler,
       replaceConsumerRegistration,
       removeConsumerRegistration,
     }),
-    [socketConnected, resetRefs, registerIndexEventHandler, replaceConsumerRegistration, removeConsumerRegistration],
+    [socketConnected, registerIndexEventHandler, replaceConsumerRegistration, removeConsumerRegistration],
   );
 
   return (
@@ -144,13 +133,8 @@ export function useThreadChatRuntime(threadIds: readonly string[]): ThreadChatRu
 
   const consumerId = useId();
   const registrationKey = JSON.stringify(normalizeThreadIds(threadIds));
-  const {
-    socketConnected,
-    resetAgentMessageRefs,
-    registerIndexEventHandler,
-    replaceConsumerRegistration,
-    removeConsumerRegistration,
-  } = runtime;
+  const { socketConnected, registerIndexEventHandler, replaceConsumerRegistration, removeConsumerRegistration } =
+    runtime;
 
   useLayoutEffect(() => {
     replaceConsumerRegistration(consumerId, JSON.parse(registrationKey) as string[]);
@@ -165,7 +149,6 @@ export function useThreadChatRuntime(threadIds: readonly string[]): ThreadChatRu
 
   return {
     socketConnected,
-    resetAgentMessageRefs,
     registerIndexEventHandler,
   };
 }

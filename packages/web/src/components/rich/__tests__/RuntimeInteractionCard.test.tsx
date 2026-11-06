@@ -2,7 +2,9 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiFetch } from '@/utils/api-client';
+import { observeApiSessionOwner } from '@/utils/api-session-identity';
 import { RichBlocks } from '../RichBlocks';
+import { RuntimeInteractionCard } from '../RuntimeInteractionCard';
 import { approvalRequest, block, cardRef, messageId, okJson, record } from './runtime-interaction-test-fixtures';
 
 vi.mock('@/utils/api-client', () => ({ apiFetch: vi.fn() }));
@@ -17,6 +19,7 @@ describe('RuntimeInteractionCard', () => {
   });
   afterAll(() => delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT);
   beforeEach(() => {
+    observeApiSessionOwner('user-1');
     vi.mocked(apiFetch).mockReset();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -25,6 +28,83 @@ describe('RuntimeInteractionCard', () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+  });
+
+  it.each([
+    ['another owner', 'another-user', 2000],
+    ['another observed version', 'user-1', 1999],
+  ] as const)('a hosted %s read cannot enable the canonical writer', async (_reason, ownerUserId, revision) => {
+    vi.mocked(apiFetch).mockResolvedValue(okJson({ interaction: record(approvalRequest()) }));
+    await act(async () =>
+      root.render(
+        <RuntimeInteractionCard
+          block={block}
+          messageId={messageId}
+          host={{ ownerUserId, revision, cardRef, readCurrent: true, verifyCurrentRead: () => true }}
+        />,
+      ),
+    );
+    expect([...container.querySelectorAll('button')].filter((button) => !button.disabled)).toHaveLength(0);
+    expect(vi.mocked(apiFetch).mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false);
+  });
+
+  it('locks an aligned hosted card while its containing owner read is being refreshed', async () => {
+    vi.mocked(apiFetch).mockResolvedValue(okJson({ interaction: record(approvalRequest()) }));
+    await act(async () =>
+      root.render(
+        <RuntimeInteractionCard
+          block={block}
+          messageId={messageId}
+          host={{ ownerUserId: 'user-1', revision: 2000, cardRef, readCurrent: true, verifyCurrentRead: () => true }}
+        />,
+      ),
+    );
+    expect([...container.querySelectorAll('button')].some((button) => !button.disabled)).toBe(true);
+    await act(async () =>
+      root.render(
+        <RuntimeInteractionCard
+          block={block}
+          messageId={messageId}
+          host={{ ownerUserId: 'user-1', revision: 2000, cardRef, readCurrent: false, verifyCurrentRead: () => true }}
+        />,
+      ),
+    );
+    expect([...container.querySelectorAll('button')].some((button) => !button.disabled)).toBe(false);
+  });
+
+  it('keeps the original request title once in its hosted mailbox presentation', async () => {
+    vi.mocked(apiFetch).mockResolvedValue(okJson({ interaction: record(approvalRequest()) }));
+    await act(async () =>
+      root.render(
+        <RuntimeInteractionCard
+          block={block}
+          messageId={messageId}
+          host={{ ownerUserId: 'user-1', revision: 2000, cardRef, readCurrent: true, verifyCurrentRead: () => true }}
+          presentation="mailbox"
+        />,
+      ),
+    );
+    expect([...container.querySelectorAll('h3')].map((heading) => heading.textContent)).toEqual(['Run tests?']);
+    expect([...container.querySelectorAll('button')].some((button) => !button.disabled)).toBe(true);
+  });
+
+  it('checks the latest host generation at press time before React rerenders', async () => {
+    let current = true;
+    vi.mocked(apiFetch).mockResolvedValue(okJson({ interaction: record(approvalRequest()) }));
+    await act(async () =>
+      root.render(
+        <RuntimeInteractionCard
+          block={block}
+          messageId={messageId}
+          host={{ ownerUserId: 'user-1', revision: 2000, cardRef, readCurrent: true, verifyCurrentRead: () => current }}
+        />,
+      ),
+    );
+    const button = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Allow once');
+    expect(button?.disabled).toBe(false);
+    current = false;
+    await act(async () => button?.click());
+    expect(vi.mocked(apiFetch).mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false);
   });
 
   it('hydrates exact approval decisions and submits through the canonical card ref', async () => {

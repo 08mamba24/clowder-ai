@@ -1,8 +1,4 @@
 import type {
-  RecoverActiveExternalReviewVerdictInput,
-  RecoverActiveExternalReviewVerdictResult,
-} from './action-successor-external-review-recovery-state-machine.js';
-import type {
   ActionCompletionVerdict,
   ActionSuccessorDispatchFailureReason,
   ActionSuccessorIdentityInput,
@@ -14,6 +10,8 @@ import type {
   ContinueActionSuccessorFreshRevisionResult,
   MarkActionSuccessorReturnDeliveredResult,
   RecordActionSuccessorReturnDeliveryAttemptResult,
+  RefreshHandledActionSuccessorInput,
+  RefreshHandledActionSuccessorResult,
   ReplaceActionSuccessorInput,
   ReplaceActionSuccessorResult,
   RetirePendingDispatchForFreshnessMismatchResult,
@@ -46,6 +44,10 @@ export type ActionSuccessorClaimStoreResult =
 
 export type ActionSuccessorReplaceStoreResult =
   | ReplaceActionSuccessorResult
+  | { outcome: 'subject_terminal'; lease: ActionSuccessorLease };
+
+export type ActionSuccessorRefreshStoreResult =
+  | RefreshHandledActionSuccessorResult
   | { outcome: 'subject_terminal'; lease: ActionSuccessorLease };
 
 export type ActionSuccessorReturnStoreResult =
@@ -107,10 +109,6 @@ export type ActionSuccessorCommitOutcomeResult =
       lease: ActionSuccessorLease | null;
     };
 
-export type ActionSuccessorExternalReviewRecoveryStoreResult =
-  | RecoverActiveExternalReviewVerdictResult
-  | { outcome: 'subject_terminal'; lease: ActionSuccessorLease };
-
 export interface ActionSuccessorLeaseStore {
   get(leaseId: string): Promise<ActionSuccessorLease | null>;
   getByIdentity(input: ActionSuccessorIdentityInput): Promise<ActionSuccessorLease | null>;
@@ -128,10 +126,6 @@ export interface ActionSuccessorLeaseStore {
       now: number;
     },
   ): Promise<ActionSuccessorCommitOutcomeResult>;
-  recoverExternalReviewVerdict(
-    leaseId: string,
-    input: RecoverActiveExternalReviewVerdictInput,
-  ): Promise<ActionSuccessorExternalReviewRecoveryStoreResult>;
   recordCompletionCandidate(
     leaseId: string,
     input: { generation: number; catId: string; evidenceRefs: string[]; now: number },
@@ -157,6 +151,15 @@ export interface ActionSuccessorLeaseStore {
     input: ContinueActionSuccessorFreshRevisionInput,
   ): Promise<ContinueActionSuccessorFreshRevisionResult>;
   replace(leaseId: string, input: ReplaceActionSuccessorInput): Promise<ActionSuccessorReplaceStoreResult>;
+  /**
+   * Advance an active, outcome-free direct lease one generation so its handled carrier can be
+   * dispatched again. One CAS: of two concurrent refreshes exactly one commits, the other reads
+   * the advanced generation and gets `stale_generation`.
+   */
+  refreshHandledCarrier(
+    leaseId: string,
+    input: RefreshHandledActionSuccessorInput,
+  ): Promise<ActionSuccessorRefreshStoreResult>;
   returnToPredecessor(
     leaseId: string,
     input: {

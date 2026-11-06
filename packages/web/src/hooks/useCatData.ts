@@ -5,6 +5,8 @@
  * Fetches once per session, caches module-level. All consumers share same data.
  */
 
+import type { AgyProfileConfig, MemberVisualAssets } from '@cat-cafe/shared';
+import { type BuiltinCloudIdentityProtection, CAT_CARRIERS, type CatCarrier } from '@cat-cafe/shared';
 import { useEffect, useMemo, useState } from 'react';
 import { formatCatDisplayName } from '@/lib/cat-display-name';
 import { UNKNOWN_CAT_COLOR } from '@/lib/color-defaults';
@@ -14,6 +16,8 @@ import { apiFetch } from '@/utils/api-client';
 import { refreshSpeechAliases } from '@/utils/transcription-corrector';
 
 export interface CatData {
+  visualAssets?: MemberVisualAssets;
+  configurationRevision?: string;
   id: string;
   name?: string;
   displayName: string;
@@ -21,10 +25,23 @@ export interface CatData {
   color: { primary: string; secondary: string };
   mentionPatterns: string[];
   breedId?: string;
+  /** Stable relationship owner; never infer it from a nickname or model. */
+  relationshipKey?: string;
   accountRef?: string;
+  accountBindingMode?: 'follow' | 'override';
   /** clowder-ai#340 P5: CLI client identity (renamed from provider). */
   clientId: string;
+  configurationSource?: 'native_tool' | 'managed_account';
+  agentProvider?: string | null;
+  /** Canonical member access mode resolved by the server config boundary. */
+  carrier: CatCarrier;
   defaultModel: string;
+  /** Runtime-configured responder used when a new thread has no routing history. */
+  isDefaultResponder?: boolean;
+  /** Static concrete-client delivery truth used before opening a Steer cutover. */
+  messageDeliveryCapabilities?: {
+    guideReply: boolean;
+  };
   cli?: {
     command?: string;
     outputFormat?: string;
@@ -32,20 +49,16 @@ export interface CatData {
     effort?: string;
     /** F291: requested Codex OAuth service tier. Absent = inherit Codex user config. */
     serviceTier?: 'standard' | 'fast';
-    /** F254 D2: Codex carrier override (openai only). Absent = follow server env. */
-    carrier?: 'exec_json' | 'app_server';
   };
   commandArgs?: string[];
   cliConfigArgs?: string[];
-  /** F254 D2: effective carrier truth for openai cats (per-cat > env > default), resolved server-side. */
-  codexCarrier?: {
-    effective: 'exec_json' | 'app_server';
-    source: 'per-cat' | 'env' | 'default';
-  };
+  /** Public settings only; operator-issued task grants are never returned to this form. */
+  agyProfile?: AgyProfileConfig;
   /** clowder-ai#340 P5: Model provider name (renamed from ocProviderName). */
   provider?: string;
   /** F161: ACP transport config. Presence means this member runs through ACP instead of legacy CLI. */
   acp?: {
+    agentProvider?: string;
     command: string;
     startupArgs: string[];
     /** F161 Phase C: wire transport. 'stdio' (default) or 'httpstream'. */
@@ -78,6 +91,7 @@ export interface CatData {
     observesCompression?: boolean;
   } | null;
   avatar: string;
+  banner?: string;
   roleDescription: string;
   personality: string;
   teamStrengths?: string;
@@ -86,6 +100,8 @@ export interface CatData {
   sessionChain?: boolean;
   /** #712: MCP support toggle — when false, disables all MCP for this cat. */
   mcpSupport?: boolean;
+  /** F247: immutable transport identity for the built-in ChatGPT Pro cloud member. */
+  identityProtection?: BuiltinCloudIdentityProtection;
   /** F32-b P4: Human-readable variant label (e.g. "4.5", "Sonnet") */
   variantLabel?: string;
   /** F32-b P4: Whether this is the default variant for its breed */
@@ -101,8 +117,6 @@ export interface CatData {
     instruct?: string;
     temperature?: number;
   };
-  /** F149: Adapter mode for Google provider cats (ACP vs legacy CLI) */
-  adapterMode?: 'acp' | 'cli';
   /** F127: Roster metadata used by Hub ownership/lead markers */
   roster?: {
     family: string;
@@ -132,9 +146,9 @@ interface FetchResult {
   fromApi: boolean;
 }
 
-async function fetchCatOrder(): Promise<string[]> {
+async function fetchCatOrder(headers?: HeadersInit): Promise<string[]> {
   try {
-    const res = await apiFetch('/api/config/cat-order');
+    const res = await apiFetch('/api/config/cat-order', headers ? { headers } : undefined);
     if (!res.ok) return [];
     const data = await res.json();
     if (!Array.isArray(data?.catOrder)) return [];
@@ -144,9 +158,12 @@ async function fetchCatOrder(): Promise<string[]> {
   }
 }
 
-async function fetchCats(): Promise<FetchResult> {
+async function fetchCats(headers?: HeadersInit): Promise<FetchResult> {
   try {
-    const [catsRes, orderIds] = await Promise.all([apiFetch('/api/cats'), fetchCatOrder()]);
+    const [catsRes, orderIds] = await Promise.all([
+      apiFetch('/api/cats', headers ? { headers } : undefined),
+      fetchCatOrder(headers),
+    ]);
     _catOrder = orderIds;
     if (!catsRes.ok) return { cats: [], fromApi: false };
     const data = await catsRes.json();
@@ -157,9 +174,17 @@ async function fetchCats(): Promise<FetchResult> {
   }
 }
 
+function requireCarrier(value: unknown, catId: string | undefined): CatCarrier {
+  if (typeof value === 'string' && CAT_CARRIERS.includes(value as CatCarrier)) {
+    return value as CatCarrier;
+  }
+  throw new Error(`Invalid /api/cats response: member ${catId ?? '<unknown>'} has no valid carrier`);
+}
+
 function normalizeCats(rawCats: unknown[]): CatData[] {
   return rawCats.map((raw) => {
     const cat = raw as Partial<CatData>;
+    const carrier = requireCarrier(cat.carrier, cat.id);
     return {
       ...cat,
       id: cat.id ?? '',
@@ -168,9 +193,11 @@ function normalizeCats(rawCats: unknown[]): CatData[] {
       mentionPatterns: Array.isArray(cat.mentionPatterns) ? cat.mentionPatterns : [],
       accountRef: cat.accountRef,
       clientId: cat.clientId ?? 'openai',
+      carrier,
       defaultModel: cat.defaultModel ?? '',
       cli: cat.cli,
       avatar: cat.avatar ?? '',
+      ...(cat.banner ? { banner: cat.banner } : {}),
       roleDescription: cat.roleDescription ?? '',
       personality: cat.personality ?? '',
       teamStrengths: cat.teamStrengths,
@@ -182,10 +209,10 @@ function normalizeCats(rawCats: unknown[]): CatData[] {
   });
 }
 
-async function refreshCatsNow(): Promise<FetchResult> {
+export async function refreshCatsNow(headers?: HeadersInit): Promise<FetchResult> {
   const prev = _cached;
   _cached = null;
-  _fetchPromise = fetchCats();
+  _fetchPromise = fetchCats(headers);
   const result = await _fetchPromise;
   if (result.fromApi) {
     _cached = result.cats;
@@ -199,6 +226,10 @@ async function refreshCatsNow(): Promise<FetchResult> {
   refreshSpeechAliases(effective);
   notifyListeners(effective);
   return { cats: effective, fromApi: result.fromApi };
+}
+
+function refreshCatsOnConfigChange(): void {
+  void refreshCatsNow();
 }
 
 // ── Hook ────────────────────────────────────────────────
@@ -226,8 +257,10 @@ export function useCatData({ fetch: shouldFetch = true }: UseCatDataOptions = {}
       setIsLoading(false);
     };
     _listeners.add(listener);
+    if (_listeners.size === 1) window.addEventListener('cat-config-changed', refreshCatsOnConfigChange);
     return () => {
       _listeners.delete(listener);
+      if (_listeners.size === 0) window.removeEventListener('cat-config-changed', refreshCatsOnConfigChange);
     };
   }, []);
 
@@ -275,9 +308,9 @@ export function useCatData({ fetch: shouldFetch = true }: UseCatDataOptions = {}
   }, [retryCount, shouldFetch]);
 
   const refresh = useMemo(
-    () => async () => {
+    () => async (headers?: HeadersInit) => {
       setIsLoading(true);
-      const result = await refreshCatsNow();
+      const result = await refreshCatsNow(headers);
       setCats(result.cats);
       if (result.fromApi) setHasFetched(true);
       setIsLoading(false);

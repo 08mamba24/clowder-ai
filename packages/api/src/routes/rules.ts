@@ -236,9 +236,8 @@ const PROVIDER_GUIDE_FILES: Record<string, { path: string; consumption: PromptCo
   },
   gemini: {
     path: 'GEMINI.md',
-    consumption: CONSUMPTION.harnessInjected(
-      'Gemini project guide is provider-level prompt context; Gemini native L0 migration is not part of F203 #747/#749.',
-      ['Gemini CLI project-doc loader'],
+    consumption: CONSUMPTION.reference(
+      'Historical Gemini CLI guide. AGY Native receives identity from the compiled L0 native agent file.',
     ),
   },
 };
@@ -262,8 +261,8 @@ async function findSkillPath(root: string, name: string, projectPath?: string): 
     join(home, '.codex', 'skills'),
     join(projectRoot, '.gemini', 'skills'),
     join(home, '.gemini', 'skills'),
-    join(projectRoot, '.kimi', 'skills'),
-    join(home, '.kimi', 'skills'),
+    join(projectRoot, '.kimi-code', 'skills'),
+    join(home, '.kimi-code', 'skills'),
   ];
   for (const dir of candidateDirs) {
     const candidate = join(dir, name, 'SKILL.md');

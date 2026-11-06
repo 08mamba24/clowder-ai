@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict';
 import { beforeEach, describe, test } from 'node:test';
 import Fastify from 'fastify';
+import { canonicalTestMessageInput } from '../helpers/message-from-fixtures.js';
 
 const { InvocationRegistry } = await import('../../dist/domains/cats/services/agents/invocation/InvocationRegistry.js');
 const { MessageStore } = await import('../../dist/domains/cats/services/stores/ports/MessageStore.js');
@@ -90,22 +91,26 @@ describe('MCP Prompt Injection E2E', () => {
 
   test('injected thread-context endpoint succeeds with real credentials', async () => {
     // Pre-populate some messages
-    messageStore.append({
-      userId: 'user-1',
-      catId: null,
-      content: '你好',
-      mentions: [],
-      timestamp: Date.now(),
-      threadId: 'thread-e2e',
-    });
-    messageStore.append({
-      userId: 'user-1',
-      catId: 'opus',
-      content: '你好co-creator',
-      mentions: [],
-      timestamp: Date.now() + 1,
-      threadId: 'thread-e2e',
-    });
+    messageStore.append(
+      canonicalTestMessageInput({
+        userId: 'user-1',
+        catId: null,
+        content: '你好',
+        mentions: [],
+        timestamp: Date.now(),
+        threadId: 'thread-e2e',
+      }),
+    );
+    messageStore.append(
+      canonicalTestMessageInput({
+        userId: 'user-1',
+        catId: 'opus',
+        content: '你好co-creator',
+        mentions: [],
+        timestamp: Date.now() + 1,
+        threadId: 'thread-e2e',
+      }),
+    );
 
     const { invocationId, callbackToken } = await registry.create('user-1', 'gemini', 'thread-e2e');
 
@@ -150,6 +155,7 @@ describe('MCP Prompt Injection E2E', () => {
     const task = taskStore.create({
       threadId: 'thread-e2e',
       title: '设计图标',
+      userId: 'user-1',
       why: '暹罗猫负责视觉',
       createdBy: 'user',
       ownerCatId: 'gemini',

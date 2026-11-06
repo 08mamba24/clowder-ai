@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { getCodexCarrierMode } from '../dist/config/codex-cli.js';
 import { ClaudeAgentService } from '../dist/domains/cats/services/agents/providers/ClaudeAgentService.js';
+import { ClaudeSdkAgentService } from '../dist/domains/cats/services/agents/providers/ClaudeSdkAgentService.js';
 import { CodexAgentService } from '../dist/domains/cats/services/agents/providers/CodexAgentService.js';
 import { CodexAppServerClient } from '../dist/domains/cats/services/agents/providers/CodexAppServerClient.js';
 import { ClaudeNativeToolBoundaryClassifier } from '../dist/domains/cats/services/agents/providers/claude-native-tool-boundary.js';
@@ -10,13 +10,7 @@ import {
   classifyCodexSafeBoundary,
 } from '../dist/domains/cats/services/agents/providers/codex-app-server-boundary.js';
 import { KimiAgentService } from '../dist/domains/cats/services/agents/providers/KimiAgentService.js';
-import { createProviderNativeFreshnessFactory } from '../dist/domains/cats/services/freshness/createProviderNativeFreshnessFactory.js';
 import { FreshnessAttentionEventLog } from '../dist/domains/cats/services/freshness/FreshnessAttentionEventLog.js';
-import {
-  createContentFreeFreshnessNotice,
-  FreshnessNoticeBroker,
-} from '../dist/domains/cats/services/freshness/FreshnessNoticeBroker.js';
-import { ThreadUnseenChecker } from '../dist/domains/cats/services/freshness/ThreadUnseenChecker.js';
 import { buildTmuxAgentCarrierPaneCommand } from '../dist/domains/terminal/tmux-agent-carrier-session.js';
 import { buildProviderNativeFreshnessCoverage } from '../dist/infrastructure/harness-eval/freshness/provider-native-freshness-coverage.js';
 import { fakeL0Compiler } from './helpers/fake-l0-compiler.js';
@@ -66,8 +60,16 @@ class FakeAppServerWire {
         id: message.id,
         result: { userAgent: 'fake', platformFamily: 'unix', platformOs: 'test', codexHome: '/tmp' },
       });
+    } else if (message.method === 'config/read') {
+      this.inbox.push({ id: message.id, result: { config: { model_provider: 'openai' } } });
+    } else if (message.method === 'configRequirements/read') {
+      this.inbox.push({ id: message.id, result: { requirements: null } });
+    } else if (message.method === 'account/read') {
+      this.inbox.push({ id: message.id, result: { account: { type: 'chatgpt' } } });
     } else if (message.method === 'thread/start') {
       this.inbox.push({ id: message.id, result: { thread: { id: 'thread-1', turns: [] } } });
+    } else if (message.method === 'thread/turns/list') {
+      this.inbox.push({ id: message.id, result: { data: [], nextCursor: null } });
     } else if (message.method === 'turn/start') {
       this.inbox.push({ id: message.id, result: { turn: { id: 'turn-1', status: 'inProgress', items: [] } } });
     } else if (message.method === 'turn/steer') {
@@ -114,100 +116,32 @@ class FakeRedis {
       .sort((left, right) => left.score - right.score)
       .map((entry) => entry.member);
   }
+  multi() {
+    const operations = [];
+    const pipeline = {
+      rpush: (...args) => {
+        operations.push(() => this.rpush(...args));
+        return pipeline;
+      },
+      expire: (...args) => {
+        operations.push(() => this.expire(...args));
+        return pipeline;
+      },
+      zadd: (...args) => {
+        operations.push(() => this.zadd(...args));
+        return pipeline;
+      },
+      zremrangebyscore: (...args) => {
+        operations.push(() => this.zremrangebyscore(...args));
+        return pipeline;
+      },
+      exec: async () => Promise.all(operations.map(async (operation) => [null, await operation()])),
+    };
+    return pipeline;
+  }
 }
 
 describe('F254 D2 provider-native freshness truth', () => {
-  it('carries the exact active parent into queued freshness at provider-native safe boundaries', async () => {
-    const { InvocationQueue } = await import('../dist/domains/cats/services/agents/invocation/InvocationQueue.js');
-    const { createProviderNativeFreshnessFactory } = await import(
-      '../dist/domains/cats/services/freshness/createProviderNativeFreshnessFactory.js'
-    );
-    const queue = new InvocationQueue();
-    queue.enqueue({
-      ownerAuthProvenance: 'strict',
-      threadId: 'thread-current-parent',
-      userId: 'user-1',
-      content: 'continue in the active provider turn',
-      source: 'user',
-      targetCats: ['opus'],
-      authorIntentByCatId: {
-        opus: { requested: 'continue_current', boundParentInvocationId: 'parent-active' },
-      },
-      intent: 'execute',
-    });
-    const factory = createProviderNativeFreshnessFactory({
-      redis: new FakeRedis(),
-      cursorStore: { getSeenCursor: async () => 'seen-cursor' },
-      messageStore: { getByThreadAfter: async () => [] },
-      threadStore: { get: async () => ({ thinkingMode: 'debug' }) },
-      getQueue: () => queue,
-    });
-
-    const controller = await factory({
-      invocationId: 'parent-active',
-      threadId: 'thread-current-parent',
-      userId: 'user-1',
-      catId: 'opus',
-      provider: 'openai_codex',
-      capability: {
-        provider: 'openai_codex',
-        carrier: 'codex_app_server',
-        deliverySemantics: 'exact_active_turn',
-      },
-    });
-    const notice = await controller.prepare({
-      threadId: 'thread-current-parent',
-      turnId: 'turn-active',
-      toolSurface: 'command_execution',
-    });
-
-    assert.ok(notice, 'the current parent must receive a content-free queued freshness notice');
-    assert.match(notice.text, /get_thread_context/);
-  });
-
-  it('treats a visible other-cat stream body as unread at a play-mode safe boundary', async () => {
-    const visibleCatMessage = {
-      id: '0000000000000002-000001-bbbbbbbb',
-      visibilitySeq: 2,
-      threadId: 'thread-visible-cat-message',
-      userId: 'user-1',
-      catId: 'codex-sol',
-      content: 'visible cat analysis',
-      mentions: [],
-      origin: 'stream',
-      timestamp: 2,
-    };
-    const factory = createProviderNativeFreshnessFactory({
-      redis: new FakeRedis(),
-      cursorStore: { getSeenCursor: async () => 'v2:0000000000000001:0000000000000001-000001-aaaaaaaa' },
-      messageStore: {
-        getByThreadAfter: async () => [visibleCatMessage],
-        getById: async () => undefined,
-      },
-      threadStore: { get: async () => ({ thinkingMode: 'play' }) },
-    });
-
-    const controller = await factory({
-      invocationId: 'inv-visible-cat-message',
-      threadId: visibleCatMessage.threadId,
-      userId: 'user-1',
-      catId: 'opus',
-      provider: 'openai_codex',
-      capability: {
-        provider: 'openai_codex',
-        carrier: 'codex_app_server',
-        deliverySemantics: 'exact_active_turn',
-      },
-    });
-    const notice = await controller.prepare({
-      threadId: visibleCatMessage.threadId,
-      turnId: 'turn-visible-cat-message',
-      toolSurface: 'command_execution',
-    });
-
-    assert.ok(notice, 'visible unread cat speech must produce the same freshness notice as unread user speech');
-  });
-
   it('classifies only completed supported tool surfaces as safe boundaries', () => {
     const completed = (type) => ({
       method: 'item/completed',
@@ -271,60 +205,6 @@ describe('F254 D2 provider-native freshness truth', () => {
     );
   });
 
-  it('keeps opportunity, delivered, and seen separate while coalescing a frontier', async () => {
-    const events = [];
-    let unseen = { count: 1, senders: ['operator'], maxMessageId: 'm-1' };
-    const broker = new FreshnessNoticeBroker({
-      context: { invocationId: 'inv-1', threadId: 'thread-1', catId: 'codex-sol' },
-      checkUnseen: async () => unseen,
-      appendEvent: async (event) => events.push(event),
-      now: () => 123,
-    });
-
-    const prepared = await broker.prepare({
-      provider: 'openai_codex',
-      carrier: 'codex_app_server',
-      deliverySemantics: 'exact_active_turn',
-      toolSurface: 'command_execution',
-      turnId: 'turn-1',
-    });
-    assert.ok(prepared);
-    assert.equal(
-      events.some((event) => event.kind === 'provider_notice_delivered'),
-      false,
-    );
-    assert.equal(events.filter((event) => event.kind === 'provider_notice_opportunity').length, 1);
-    assert.equal(events.filter((event) => event.kind === 'provider_notice_prepared').length, 1);
-
-    await broker.commitDelivered(prepared, { acceptedTurnId: 'turn-1' });
-    assert.equal(events.filter((event) => event.kind === 'provider_notice_delivered').length, 1);
-    assert.equal(
-      events.some((event) => event.kind === 'queued_seen'),
-      false,
-    );
-    assert.equal(
-      await broker.prepare({
-        provider: 'openai_codex',
-        carrier: 'codex_app_server',
-        deliverySemantics: 'exact_active_turn',
-        toolSurface: 'file_change',
-        turnId: 'turn-1',
-      }),
-      null,
-    );
-
-    unseen = { count: 2, senders: ['operator'], maxMessageId: 'm-2' };
-    assert.ok(
-      await broker.prepare({
-        provider: 'openai_codex',
-        carrier: 'codex_app_server',
-        deliverySemantics: 'exact_active_turn',
-        toolSurface: 'file_change',
-        turnId: 'turn-1',
-      }),
-    );
-  });
-
   it('projects delivered to seen only after exact Queue read, then handled on same-invocation success', async () => {
     const eventLog = new FreshnessAttentionEventLog(new FakeRedis());
     const delivered = {
@@ -375,195 +255,6 @@ describe('F254 D2 provider-native freshness truth', () => {
     assert.deepEqual(
       events.map((event) => event.kind),
       ['provider_notice_delivered', 'provider_notice_seen', 'provider_notice_handled'],
-    );
-  });
-
-  it('correlates a queued-only synthetic frontier with exact Queue message identities', async () => {
-    const queueMessageId = 'queued-message-1';
-    const mergedMessageId = 'queued-message-2';
-    const queueEntries = [
-      {
-        entryId: 'queue-1',
-        source: 'user',
-        content: 'exact queued body',
-        messageId: queueMessageId,
-        mergedMessageIds: [mergedMessageId],
-      },
-    ];
-    const unseenChecker = new ThreadUnseenChecker({
-      userId: 'user-1',
-      cursorStore: { getSeenCursor: async () => 'seen-cursor' },
-      messageStore: { getByThreadAfter: async () => [] },
-      queueChecker: {
-        getQueuedForThread: () => queueEntries,
-      },
-    });
-    const eventLog = new FreshnessAttentionEventLog(new FakeRedis());
-    const broker = new FreshnessNoticeBroker({
-      context: { invocationId: 'inv-queued', threadId: 'thread-1', catId: 'codex-sol' },
-      checkUnseen: () => unseenChecker.checkUnseen({ threadId: 'thread-1', catId: 'codex-sol' }),
-      appendEvent: (event) => eventLog.append(event),
-      now: () => 200,
-    });
-
-    const prepared = await broker.prepare({
-      provider: 'openai_codex',
-      carrier: 'codex_app_server',
-      deliverySemantics: 'exact_active_turn',
-      toolSurface: 'command_execution',
-      turnId: 'turn-queued',
-    });
-    assert.ok(prepared);
-    assert.notEqual(prepared.frontier, queueMessageId, 'cursor-safe frontier remains synthetic');
-    await broker.commitDelivered(prepared, { acceptedTurnId: 'turn-queued' });
-
-    assert.equal(
-      await broker.prepare({
-        provider: 'openai_codex',
-        carrier: 'codex_app_server',
-        deliverySemantics: 'exact_active_turn',
-        toolSurface: 'command_execution',
-        turnId: 'turn-queued-duplicate',
-      }),
-      null,
-      'the same unread Queue identity must not be re-steered at a later boundary',
-    );
-
-    const laterMergedMessageId = 'queued-message-3';
-    queueEntries[0].mergedMessageIds.push(laterMergedMessageId);
-    const newlyEligible = await broker.prepare({
-      provider: 'openai_codex',
-      carrier: 'codex_app_server',
-      deliverySemantics: 'exact_active_turn',
-      toolSurface: 'command_execution',
-      turnId: 'turn-queued-new-identity',
-    });
-    assert.ok(newlyEligible, 'a newly coalesced durable message must permit one new notice');
-    assert.deepEqual(newlyEligible.correlationMessageIds, [queueMessageId, mergedMessageId, laterMergedMessageId]);
-    await broker.commitDelivered(newlyEligible, { acceptedTurnId: 'turn-queued-new-identity' });
-    queueEntries[0].mergedMessageIds.reverse();
-    assert.equal(
-      await broker.prepare({
-        provider: 'openai_codex',
-        carrier: 'codex_app_server',
-        deliverySemantics: 'exact_active_turn',
-        toolSurface: 'command_execution',
-        turnId: 'turn-queued-new-identity-duplicate',
-      }),
-      null,
-      'the newly coalesced identity must also be eligible only once',
-    );
-
-    assert.equal(
-      await eventLog.markProviderNoticesSeen({
-        invocationId: 'inv-queued',
-        catId: 'codex-sol',
-        exactMessageIds: [queueMessageId],
-        evidenceKind: 'queue_exact_read',
-      }),
-      0,
-      'a partial read of a coalesced Queue entry must fail closed',
-    );
-    assert.equal(
-      await eventLog.markProviderNoticesSeen({
-        invocationId: 'inv-queued',
-        catId: 'codex-sol',
-        exactMessageIds: [queueMessageId, mergedMessageId, laterMergedMessageId],
-        evidenceKind: 'queue_exact_read',
-      }),
-      2,
-    );
-    assert.equal(
-      await eventLog.markProviderNoticesHandled({
-        invocationId: 'inv-queued',
-        catId: 'codex-sol',
-        queueEntryId: 'queue-1',
-        messageIds: [queueMessageId, mergedMessageId, laterMergedMessageId],
-        evidenceRef: { kind: 'invocation_lineage', invocationId: 'inv-queued' },
-      }),
-      2,
-    );
-
-    const events = await eventLog.queryByInvocation('inv-queued');
-    const delivered = events.filter((event) => event.kind === 'provider_notice_delivered');
-    assert.deepEqual(
-      delivered.map((event) => event.correlationMessageIds),
-      [
-        [queueMessageId, mergedMessageId],
-        [queueMessageId, mergedMessageId, laterMergedMessageId],
-      ],
-    );
-    assert.deepEqual(
-      events.map((event) => event.kind),
-      [
-        'provider_notice_opportunity',
-        'provider_notice_prepared',
-        'provider_notice_delivered',
-        'provider_notice_opportunity',
-        'provider_notice_prepared',
-        'provider_notice_delivered',
-        'provider_notice_seen',
-        'provider_notice_seen',
-        'provider_notice_handled',
-        'provider_notice_handled',
-      ],
-    );
-  });
-
-  it('fails closed when a queued-only frontier has no durable message identity', async () => {
-    const unseenChecker = new ThreadUnseenChecker({
-      userId: 'user-1',
-      cursorStore: { getSeenCursor: async () => 'seen-cursor' },
-      messageStore: { getByThreadAfter: async () => [] },
-      queueChecker: {
-        getQueuedForThread: () => [
-          {
-            entryId: 'queue-missing-id',
-            source: 'user',
-            content: 'queued body without durable identity',
-          },
-        ],
-      },
-    });
-    const eventLog = new FreshnessAttentionEventLog(new FakeRedis());
-    const broker = new FreshnessNoticeBroker({
-      context: { invocationId: 'inv-missing-id', threadId: 'thread-1', catId: 'codex-sol' },
-      checkUnseen: () => unseenChecker.checkUnseen({ threadId: 'thread-1', catId: 'codex-sol' }),
-      appendEvent: (event) => eventLog.append(event),
-      now: () => 300,
-    });
-
-    const prepared = await broker.prepare({
-      provider: 'openai_codex',
-      carrier: 'codex_app_server',
-      deliverySemantics: 'exact_active_turn',
-      toolSurface: 'command_execution',
-      turnId: 'turn-missing-id',
-    });
-    assert.ok(prepared);
-    assert.deepEqual(prepared.correlationMessageIds, []);
-    await broker.commitDelivered(prepared, { acceptedTurnId: 'turn-missing-id' });
-    assert.equal(
-      await broker.prepare({
-        provider: 'openai_codex',
-        carrier: 'codex_app_server',
-        deliverySemantics: 'exact_active_turn',
-        toolSurface: 'command_execution',
-        turnId: 'turn-missing-id-duplicate',
-      }),
-      null,
-      'missing receipt identity must remain fail-closed without repeat-steering the same Queue entry',
-    );
-
-    assert.equal(
-      await eventLog.markProviderNoticesSeen({
-        invocationId: 'inv-missing-id',
-        catId: 'codex-sol',
-        exactMessageIds: [prepared.frontier],
-        evidenceKind: 'queue_exact_read',
-      }),
-      0,
-      'the synthetic cursor frontier cannot substitute for missing Queue identity',
     );
   });
 
@@ -630,300 +321,46 @@ describe('F254 D2 provider-native freshness truth', () => {
     assert.equal(report.cells.find((cell) => cell.toolSurface === 'unknown').observedCount, 1);
   });
 
-  it('builds a content-free notice with no Queue body or sender preview', () => {
-    const text = createContentFreeFreshnessNotice({ threadId: 'thread-1', unseenCount: 3 });
-    assert.match(text, /get_thread_context/);
-    assert.match(text, /thread-1/);
-    assert.match(text, /responseMode.*full/);
-    assert.doesNotMatch(text, /list_recent/);
-    assert.doesNotMatch(text, /secret body|operator/);
-  });
-
-  it('steers the exact active turn after a native command completion', async () => {
+  it('ignores retired freshness hooks at native tool completion without steering', async () => {
     const wire = new FakeAppServerWire();
-    const delivered = [];
-    const missed = [];
-    const client = new CodexAppServerClient({
-      wire,
-      freshnessController: {
-        prepare: async (boundary) => ({
-          noticeId: 'notice-1',
-          frontier: 'm-1',
-          expectedTurnId: boundary.turnId,
-          text: '📬 freshness notice: read the current thread in full',
-          boundary,
-        }),
-        commitDelivered: async (notice, result) => delivered.push({ notice, result }),
-        markMissed: async (notice, reason) => missed.push({ notice, reason }),
-        markTurnCompleted: async () => {},
-      },
-    });
-
-    const output = [];
-    const run = (async () => {
-      for await (const event of client.run({ prompt: { kind: 'frozen', prompt: 'work' }, thread: { kind: 'start' } }))
-        output.push(event);
-    })();
-
-    while (!wire.writes.some((write) => write.method === 'turn/start'))
-      await new Promise((resolve) => setImmediate(resolve));
-    wire.inbox.push({
-      method: 'item/completed',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        completedAtMs: 1,
-        item: { id: 'cmd-1', type: 'commandExecution', command: 'echo ok', status: 'completed' },
-      },
-    });
-
-    while (!wire.writes.some((write) => write.method === 'turn/steer'))
-      await new Promise((resolve) => setImmediate(resolve));
-    wire.inbox.push({
-      method: 'turn/completed',
-      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [] } },
-    });
-    await run;
-
-    const steer = wire.writes.find((write) => write.method === 'turn/steer');
-    assert.equal(steer.params.expectedTurnId, 'turn-1');
-    assert.equal(steer.params.threadId, 'thread-1');
-    assert.deepEqual(steer.params.input, [
-      { type: 'text', text: '📬 freshness notice: read the current thread in full' },
-    ]);
-    assert.equal(delivered.length, 1);
-    assert.equal(missed.length, 0);
-    assert.equal(
-      output.some((event) => event.type === 'turn.completed'),
-      true,
-    );
-  });
-
-  it('records an unknown completed app-server item as bounded protocol telemetry', async () => {
-    const wire = new FakeAppServerWire();
-    const observed = [];
-    const client = new CodexAppServerClient({
-      wire,
-      freshnessController: {
-        prepare: async () => null,
-        commitDelivered: async () => {},
-        markMissed: async () => {},
-        markTurnCompleted: async () => {},
-        observeProtocolItem: async (observation) => observed.push(observation),
-      },
-    });
-    const run = (async () => {
-      for await (const _event of client.run({
-        prompt: { kind: 'frozen', prompt: 'work' },
-        thread: { kind: 'start' },
-      })) {
-        /* drain */
-      }
-    })();
-    while (!wire.writes.some((write) => write.method === 'turn/start')) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-    wire.inbox.push({
-      method: 'item/completed',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        item: { id: 'future-1', type: 'futureTool', status: 'completed' },
-      },
-    });
-    wire.inbox.push({
-      method: 'turn/completed',
-      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
-    });
-    await run;
-
-    assert.deepEqual(observed, [
-      {
-        itemType: 'unknown',
-        status: 'completed',
-        classification: 'unknown',
-        toolSurface: 'unknown',
-        boundedUnknownSample: 'futureTool',
-      },
-    ]);
-  });
-
-  it('bounds unknown item samples while retaining every normalized observation', async () => {
-    const events = [];
-    const broker = new FreshnessNoticeBroker({
-      context: { invocationId: 'inv-unknown', threadId: 'thread-1', catId: 'codex-sol' },
-      checkUnseen: async () => null,
-      appendEvent: async (event) => events.push(event),
-      now: () => 123,
-    });
-    const capability = {
-      provider: 'openai_codex',
-      carrier: 'codex_app_server',
-      deliverySemantics: 'exact_active_turn',
-    };
-    for (let index = 0; index < 10; index++) {
-      await broker.observeProtocolItem(capability, {
-        itemType: 'unknown',
-        status: 'completed',
-        classification: 'unknown',
-        toolSurface: 'unknown',
-        boundedUnknownSample: `futureTool${index}`,
-      });
-    }
-
-    assert.equal(events.length, 10);
-    assert.equal(events.filter((event) => event.boundedUnknownSample !== undefined).length, 8);
-    assert.equal(
-      events.every((event) => event.itemType === 'unknown'),
-      true,
-    );
-  });
-
-  it('records a turn mismatch as missed and never retargets another turn', async () => {
-    const wire = new FakeAppServerWire();
-    wire.write = async function write(message) {
-      this.writes.push(message);
-      if (message.method === 'initialize') this.inbox.push({ id: message.id, result: {} });
-      else if (message.method === 'thread/start')
-        this.inbox.push({ id: message.id, result: { thread: { id: 'thread-1' } } });
-      else if (message.method === 'turn/start') this.inbox.push({ id: message.id, result: { turn: { id: 'turn-1' } } });
-      else if (message.method === 'turn/steer') this.inbox.push({ id: message.id, result: { turnId: 'turn-2' } });
-    };
-    const missed = [];
-    const client = new CodexAppServerClient({
-      wire,
-      freshnessController: {
-        prepare: async (boundary) => ({
-          noticeId: 'n',
-          frontier: 'm',
-          expectedTurnId: boundary.turnId,
-          text: 'notice',
-          boundary,
-        }),
-        commitDelivered: async () => assert.fail('mismatched turn must not commit delivered'),
-        markMissed: async (_notice, reason) => missed.push(reason),
-        markTurnCompleted: async () => {},
-      },
-    });
-    const run = (async () => {
-      for await (const _event of client.run({
-        prompt: { kind: 'frozen', prompt: 'work' },
-        thread: { kind: 'start' },
-      })) {
-        /* drain */
-      }
-    })();
-    while (!wire.writes.some((write) => write.method === 'turn/start'))
-      await new Promise((resolve) => setImmediate(resolve));
-    wire.inbox.push({
-      method: 'item/completed',
-      params: { threadId: 'thread-1', turnId: 'turn-1', item: { id: 'c', type: 'commandExecution' } },
-    });
-    while (missed.length === 0) await new Promise((resolve) => setImmediate(resolve));
-    wire.inbox.push({
-      method: 'turn/completed',
-      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [] } },
-    });
-    await run;
-    assert.deepEqual(missed, ['turn_mismatch']);
-    assert.equal(wire.writes.filter((write) => write.method === 'turn/steer').length, 1);
-  });
-
-  it('ignores tool completions that do not belong to the exact active thread and turn', async () => {
-    const wire = new FakeAppServerWire();
-    let prepareCalls = 0;
-    let observedCalls = 0;
+    const calls = [];
     const client = new CodexAppServerClient({
       wire,
       freshnessController: {
         prepare: async () => {
-          prepareCalls++;
-          return null;
+          calls.push('prepare');
+          throw new Error('retired');
         },
-        commitDelivered: async () => {},
-        markMissed: async () => {},
-        markTurnCompleted: async () => {},
-        observeProtocolItem: async () => {
-          observedCalls++;
-        },
+        markTurnCompleted: async () => calls.push('completed'),
       },
     });
     const run = (async () => {
-      for await (const _event of client.run({
-        prompt: { kind: 'frozen', prompt: 'work' },
-        thread: { kind: 'start' },
-      })) {
-        /* drain */
-      }
+      const output = [];
+      for await (const event of client.run({ prompt: { kind: 'frozen', prompt: 'work' }, thread: { kind: 'start' } }))
+        output.push(event);
+      return output;
     })();
     while (!wire.writes.some((write) => write.method === 'turn/start'))
       await new Promise((resolve) => setImmediate(resolve));
     wire.inbox.push({
       method: 'item/completed',
-      params: { threadId: 'foreign-thread', turnId: 'turn-1', item: { id: 'c1', type: 'commandExecution' } },
-    });
-    wire.inbox.push({
-      method: 'item/completed',
-      params: { threadId: 'thread-1', turnId: 'foreign-turn', item: { id: 'c2', type: 'fileChange' } },
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        item: { id: 'cmd-1', type: 'commandExecution', command: 'echo ok', status: 'completed' },
+      },
     });
     wire.inbox.push({
       method: 'turn/completed',
-      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [] } },
     });
-    await run;
-    assert.equal(prepareCalls, 0);
-    assert.equal(observedCalls, 0);
+    const output = await run;
+    assert.deepEqual(calls, []);
     assert.equal(
       wire.writes.some((write) => write.method === 'turn/steer'),
       false,
     );
-  });
-
-  it('does not relabel an accepted steer as missed when delivery telemetry persistence fails', async () => {
-    const wire = new FakeAppServerWire();
-    const missed = [];
-    const client = new CodexAppServerClient({
-      wire,
-      freshnessController: {
-        prepare: async (boundary) => ({
-          noticeId: 'notice-telemetry',
-          frontier: 'm-1',
-          expectedTurnId: boundary.turnId,
-          text: 'notice',
-          boundary,
-          provider: 'openai_codex',
-          carrier: 'codex_app_server',
-          deliverySemantics: 'exact_active_turn',
-        }),
-        commitDelivered: async () => {
-          throw new Error('redis unavailable');
-        },
-        markMissed: async (_notice, reason) => missed.push(reason),
-        markTurnCompleted: async () => {},
-      },
-    });
-    const run = (async () => {
-      for await (const _event of client.run({
-        prompt: { kind: 'frozen', prompt: 'work' },
-        thread: { kind: 'start' },
-      })) {
-        /* drain */
-      }
-    })();
-    while (!wire.writes.some((write) => write.method === 'turn/start'))
-      await new Promise((resolve) => setImmediate(resolve));
-    wire.inbox.push({
-      method: 'item/completed',
-      params: { threadId: 'thread-1', turnId: 'turn-1', item: { id: 'c', type: 'commandExecution' } },
-    });
-    while (!wire.writes.some((write) => write.method === 'turn/steer'))
-      await new Promise((resolve) => setImmediate(resolve));
-    wire.inbox.push({
-      method: 'turn/completed',
-      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
-    });
-    await run;
-    assert.deepEqual(missed, []);
+    assert.equal(output.filter((event) => event.type === 'turn.completed').length, 1);
   });
 
   it('fails closed on app-server approval requests while preserving the active turn', async () => {
@@ -1004,18 +441,13 @@ describe('F254 D2 provider-native freshness truth', () => {
     );
   });
 
-  it('keeps exec_json as default and selects app_server only by explicit opt-in', () => {
-    assert.equal(getCodexCarrierMode({}), 'exec_json');
-    assert.equal(getCodexCarrierMode({ CAT_CAFE_CODEX_CARRIER: 'unknown' }), 'exec_json');
-    assert.equal(getCodexCarrierMode({ CAT_CAFE_CODEX_CARRIER: ' app_server ' }), 'app_server');
-  });
-
   it('reports carrier capability without extrapolating MCP coverage', () => {
     assert.deepEqual(
       new CodexAgentService({ carrierMode: 'exec_json', model: 'gpt-test' }).freshnessCarrierCapability(),
       {
         provider: 'openai_codex',
         carrier: 'codex_exec_json',
+        activeInvocationGuidance: 'unsupported',
         deliverySemantics: 'unsupported',
       },
     );
@@ -1024,17 +456,26 @@ describe('F254 D2 provider-native freshness truth', () => {
       {
         provider: 'openai_codex',
         carrier: 'codex_app_server',
+        activeInvocationGuidance: 'supported',
         deliverySemantics: 'exact_active_turn',
       },
     );
     assert.deepEqual(new ClaudeAgentService({ model: 'claude-test' }).freshnessCarrierCapability(), {
       provider: 'anthropic',
       carrier: 'claude_print_sdk',
+      activeInvocationGuidance: 'unsupported',
       deliverySemantics: 'unsupported',
+    });
+    assert.deepEqual(new ClaudeSdkAgentService({ model: 'claude-test' }).freshnessCarrierCapability(), {
+      provider: 'anthropic',
+      carrier: 'claude_agent_sdk',
+      activeInvocationGuidance: 'supported',
+      deliverySemantics: 'queued_internal_turn',
     });
     assert.deepEqual(new KimiAgentService({ model: 'kimi-test' }).freshnessCarrierCapability(), {
       provider: 'kimi',
       carrier: 'kimi_stream_json',
+      activeInvocationGuidance: 'unsupported',
       deliverySemantics: 'unsupported',
     });
     const policy = { mode: 'read_only', allowedToolNames: [], deniedToolNames: [], replayDeniedToolNames: [] };
@@ -1082,7 +523,7 @@ describe('F254 D2 provider-native freshness truth', () => {
       '/tmp/exit-code',
     );
     assert.match(command, /< '\/tmp\/in\.fifo'/);
-    assert.match(command, /tee '\/tmp\/out\.fifo'/);
+    assert.match(command, /\/tee' '\/tmp\/out\.fifo'/);
     assert.doesNotMatch(command, /turn\/steer|expectedTurnId|freshness notice/);
   });
 
@@ -1235,6 +676,7 @@ describe('F254 D2 provider-native freshness truth', () => {
     const archived = [];
     const service = new CodexAgentService({
       carrierMode: 'app_server',
+      cliCommand: process.execPath,
       l0CompilerFn: fakeL0Compiler,
       model: 'gpt-5.3-codex',
       rawArchive: { append: async (invocationId, payload) => archived.push({ invocationId, payload }) },
@@ -1282,6 +724,7 @@ describe('F254 D2 provider-native freshness truth', () => {
     let attempts = 0;
     const service = new CodexAgentService({
       carrierMode: 'app_server',
+      cliCommand: process.execPath,
       l0CompilerFn: fakeL0Compiler,
       model: 'gpt-5.3-codex',
     });
@@ -1316,6 +759,7 @@ describe('F254 D2 provider-native freshness truth', () => {
 
   it('projects app-server lifecycle and routes user cancel through turn/interrupt', async () => {
     const wire = new FakeAppServerWire();
+    const { promise: turnStarted, resolve: onTurnStarted } = Promise.withResolvers();
     const controller = new AbortController();
     const originalWrite = wire.write.bind(wire);
     wire.write = async (message) => {
@@ -1333,6 +777,7 @@ describe('F254 D2 provider-native freshness truth', () => {
     let factoryInput;
     const service = new CodexAgentService({
       carrierMode: 'app_server',
+      cliCommand: process.execPath,
       l0CompilerFn: fakeL0Compiler,
       model: 'gpt-5.3-codex',
     });
@@ -1347,12 +792,11 @@ describe('F254 D2 provider-native freshness truth', () => {
         },
       })) {
         messages.push(message);
+        if (message.metadata?.diagnostics?.appServerLifecycle?.stage === 'turn_accepted') onTurnStarted();
       }
     })();
 
-    while (!wire.writes.some((message) => message.method === 'turn/start')) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
+    await Promise.race([turnStarted, run.then(() => assert.fail('invocation ended before turn/start'))]);
     controller.abort('user_cancel');
     await run;
 
@@ -1394,7 +838,7 @@ describe('F254 D2 provider-native freshness truth', () => {
     assert.equal(messages.at(-1).type, 'done');
   });
 
-  it('honors the global CLI_TIMEOUT_MS opt-in through protocol interruption', async () => {
+  it('arms no app-server idle interrupt from CLI_TIMEOUT_MS; only a stop interrupts the turn (F117 KD-22)', async () => {
     const previousTimeout = process.env.CLI_TIMEOUT_MS;
     process.env.CLI_TIMEOUT_MS = '20';
     const wire = new FakeAppServerWire();
@@ -1414,6 +858,7 @@ describe('F254 D2 provider-native freshness truth', () => {
     };
     const service = new CodexAgentService({
       carrierMode: 'app_server',
+      cliCommand: process.execPath,
       l0CompilerFn: fakeL0Compiler,
       model: 'gpt-5.3-codex',
     });
@@ -1439,13 +884,13 @@ describe('F254 D2 provider-native freshness truth', () => {
       .filter(Boolean);
     assert.equal(
       lifecycle.some((event) => event.interruptReason === 'timeout'),
-      true,
-      'the process-level /config timeout must reach the app-server client',
+      false,
+      "the member's one timeout is its invocation's, not an app-server idle interrupt",
     );
     assert.equal(
       lifecycle.some((event) => event.interruptReason === 'user_cancel'),
-      false,
-      'the failsafe should not be the source of interruption',
+      true,
+      'the turn ran until its signal stopped it',
     );
   });
 
@@ -1473,6 +918,7 @@ describe('F254 D2 provider-native freshness truth', () => {
     };
     const service = new CodexAgentService({
       carrierMode: 'app_server',
+      cliCommand: process.execPath,
       l0CompilerFn: fakeL0Compiler,
       model: 'gpt-5.3-codex',
       spawnFn: () => assert.fail('failed app-server turn must not replay through exec'),

@@ -1,3 +1,4 @@
+import { contentFileMime } from '@cat-cafe/shared';
 /**
  * Memory-bounded workspace file reading (F063 OOM fix).
  *
@@ -19,47 +20,13 @@
 
 import { createHash } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
-import { extname } from 'node:path';
 
 /** Hard cap on bytes read into memory for a text preview / hash. */
 export const MAX_PREVIEW_BYTES = 1024 * 1024; // 1 MB
 
-const MIME_MAP: Record<string, string> = {
-  '.ts': 'text/typescript',
-  '.tsx': 'text/tsx',
-  '.js': 'text/javascript',
-  '.jsx': 'text/jsx',
-  '.json': 'application/json',
-  '.md': 'text/markdown',
-  '.css': 'text/css',
-  '.html': 'text/html',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.ico': 'image/x-icon',
-  '.yaml': 'text/yaml',
-  '.yml': 'text/yaml',
-  '.toml': 'text/toml',
-  '.sh': 'text/x-shellscript',
-  '.py': 'text/x-python',
-  // Audio
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-  '.m4a': 'audio/mp4',
-  '.ogg': 'audio/ogg',
-  '.flac': 'audio/flac',
-  // Video
-  '.mp4': 'video/mp4',
-  '.webm': 'video/webm',
-  '.mov': 'video/quicktime',
-};
-
-/** Guess a MIME type from a file extension; 'text/plain' when unknown. */
+/** MIME is a shared fact. Byte-based text readability does not invent a MIME for an unknown format. */
 export function guessMime(filepath: string): string {
-  return MIME_MAP[extname(filepath)] ?? 'text/plain';
+  return contentFileMime(filepath);
 }
 
 function isMediaMime(mime: string): boolean {
@@ -94,8 +61,8 @@ export interface WorkspaceFilePreview {
   mime: string;
 }
 
-function hashUtf8(content: string): string {
-  return createHash('sha256').update(content, 'utf8').digest('hex');
+function hashBytes(content: Buffer): string {
+  return createHash('sha256').update(content).digest('hex');
 }
 
 /**
@@ -120,8 +87,14 @@ async function readPrefix(absPath: string, byteCount: number): Promise<Buffer> {
  * is the same rule git uses and reliably catches video/image/audio/compiled
  * blobs even when the file extension is unknown.
  */
-function looksBinary(buf: Buffer): boolean {
-  return buf.includes(0);
+function looksBinary(buf: Buffer, truncated = false): boolean {
+  if (buf.includes(0)) return true;
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buf, { stream: truncated });
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -145,14 +118,14 @@ export async function readWorkspaceFilePreview(
   const truncated = size > maxBytes;
   const prefix = await readPrefix(absPath, Math.min(size, maxBytes));
 
-  if (looksBinary(prefix)) {
+  if (looksBinary(prefix, truncated)) {
     return { content: '', sha256: '', size, truncated: false, binary: true, mime };
   }
 
   const content = prefix.toString('utf-8');
   return {
     content,
-    sha256: truncated ? '' : hashUtf8(content),
+    sha256: truncated ? '' : hashBytes(prefix),
     size,
     truncated,
     binary: false,
@@ -183,7 +156,7 @@ export async function computeWorkspaceFileSha256(
     if (isKnownBinaryPath(absPath)) return '';
     const prefix = await readPrefix(absPath, Math.min(size, maxBytes));
     if (looksBinary(prefix)) return '';
-    return hashUtf8(prefix.toString('utf-8'));
+    return hashBytes(prefix);
   } catch {
     return null;
   }

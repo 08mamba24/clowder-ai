@@ -17,7 +17,7 @@ describe('F287 memory cue MCP tools', () => {
       toolset.tools.map((tool) => tool.name),
       ['cat_cafe_drill_memory_cue', 'cat_cafe_record_memory_cue_outcome'],
     );
-    assert.deepEqual(Object.keys(drillMemoryCueInputSchema).sort(), ['clientRequestId', 'handle']);
+    assert.deepEqual(Object.keys(drillMemoryCueInputSchema).sort(), ['clientRequestId', 'handle', 'window']);
     assert.deepEqual(Object.keys(recordMemoryCueOutcomeInputSchema).sort(), ['clientRequestId', 'handle', 'outcome']);
     for (const forbidden of [
       'ownerUserId',
@@ -33,6 +33,16 @@ describe('F287 memory cue MCP tools', () => {
     }
 
     await toolset.handleDrillMemoryCue({ handle: 'opaque-handle', clientRequestId: 'drill-1' });
+    await toolset.handleDrillMemoryCue({
+      handle: 'opaque-handle',
+      window: { query: 'release sequence' },
+      clientRequestId: 'locate-1',
+    });
+    await toolset.handleDrillMemoryCue({
+      handle: 'opaque-handle',
+      window: { offset: 8_000 },
+      clientRequestId: 'continue-1',
+    });
     await toolset.handleRecordMemoryCueOutcome({
       handle: 'opaque-handle',
       outcome: 'dismissed',
@@ -42,6 +52,14 @@ describe('F287 memory cue MCP tools', () => {
       {
         path: '/api/callbacks/memory-cues/drill',
         body: { handle: 'opaque-handle', requestId: 'drill-1' },
+      },
+      {
+        path: '/api/callbacks/memory-cues/drill',
+        body: { handle: 'opaque-handle', window: { query: 'release sequence' }, requestId: 'locate-1' },
+      },
+      {
+        path: '/api/callbacks/memory-cues/drill',
+        body: { handle: 'opaque-handle', window: { offset: 8_000 }, requestId: 'continue-1' },
       },
       {
         path: '/api/callbacks/memory-cues/outcome',
@@ -58,9 +76,16 @@ describe('F287 memory cue MCP tools', () => {
 
     assert.match(drill.description, /owner-authenticated/i);
     assert.match(drill.description, /current source revision/i);
+    assert.match(drill.description, /source_read_failed/i);
+    assert.match(drill.description, /retryable/i);
     assert.match(drill.description, /not for.*raw/i);
     assert.match(outcome.description, /applied.*dismissed/i);
     assert.match(outcome.description, /no rationale/i);
     assert.match(outcome.description, /presented/i);
+    assert.match(outcome.description, /late_after_drill/i);
+    assert.match(outcome.description, /successful drill/i);
+    assert.match(outcome.description, /410 expired/i);
+    assert.match(outcome.description, /source_read_failed/i);
+    assert.match(outcome.description, /corrected.*forgotten.*revoked/i);
   });
 });

@@ -7,12 +7,23 @@ import { connect } from 'node:net';
 import { join } from 'node:path';
 import WebSocket from 'ws';
 import { MCP_CALLBACK_ENV_KEYS } from '../../../../../config/capabilities/mcp-constants.js';
+import { assertCodexManagedCarrierSupport } from '../../../../../config/codex-managed-support.js';
+import { assertCodexSharedStateCarrier } from '../../../../../config/codex-shared-state.js';
 import { buildChildEnv } from '../../../../../utils/cli-spawn.js';
 import { buildUnixSupervisedSpawnPlan } from '../../../../../utils/cli-supervised-process.js';
-import { sanitizeCliStderr } from '../../../../../utils/sanitize-cli-stderr.js';
+import { DEFAULT_MAX_NDJSON_RECORD_BYTES, NdjsonRecordTooLargeError } from '../../../../../utils/ndjson-parser.js';
+import { excerptSanitizedStderr, sanitizeCliStderr } from '../../../../../utils/sanitize-cli-stderr.js';
+import { createStderrTail, type StderrTail } from '../../../../../utils/stderr-tail.js';
 import type { AgentCarrierSession, AgentCarrierSessionOptions } from '../../types.js';
+import { readCodexHostAuthIdentity } from './codex-host-auth-identity.js';
+import { codexHostServedModels } from './codex-served-model.js';
 
-const SOCKET_READY_TIMEOUT_MS = 10_000;
+/** Bounded stderr kept per host for socket-readiness diagnostics (pre-F319 value). */
+const HOST_STDERR_TAIL_CHARS = 8_192;
+
+// Native cold startup can index an existing rollout history before opening its socket.
+// Keep one bounded startup budget rather than interrupting that initialization at ten seconds.
+const SOCKET_READY_TIMEOUT_MS = 120_000;
 const CLOSE_GRACE_MS = 1_500;
 const MAX_TERMINAL_DIAGNOSTIC_LENGTH = 256;
 const SESSION_SCOPED_ENV_KEYS = new Set<string>([...MCP_CALLBACK_ENV_KEYS, 'CAT_CAFE_CREDENTIAL_FILE']);
@@ -34,10 +45,13 @@ export interface CodexAppServerHostProcess {
 
 export interface PreparedCodexHostLaunch {
   signature: string;
+  authIdentity: string;
   launch: Omit<CodexAppServerHostLaunch, 'socketDirectory' | 'socketPath'>;
 }
 
-export function prepareCodexHostLaunch(options: AgentCarrierSessionOptions): PreparedCodexHostLaunch {
+export async function prepareCodexHostLaunch(options: AgentCarrierSessionOptions): Promise<PreparedCodexHostLaunch> {
+  assertCodexSharedStateCarrier(options.env);
+  await assertCodexManagedCarrierSupport(options.env, options.command);
   const signatureEnv = Object.fromEntries(
     Object.entries(options.env ?? {}).filter(([key]) => !SESSION_SCOPED_ENV_KEYS.has(key)),
   );
@@ -54,6 +68,7 @@ export function prepareCodexHostLaunch(options: AgentCarrierSessionOptions): Pre
   };
   return {
     signature: createHash('sha256').update(JSON.stringify(signaturePayload)).digest('hex'),
+    authIdentity: await readCodexHostAuthIdentity(buildChildEnv(env, { workingDirectory: options.cwd }), options.cwd),
     launch: {
       command: options.command,
       args,
@@ -133,7 +148,13 @@ class CodexUnixWebSocketSession implements AgentCarrierSession {
         this.inbox.end(error instanceof Error ? error : new Error(String(error)));
       }
     });
-    socket.once('error', (error) => this.inbox.end(error));
+    socket.once('error', (error: Error & { code?: string }) =>
+      this.inbox.end(
+        error.code === 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH'
+          ? new NdjsonRecordTooLargeError(undefined, DEFAULT_MAX_NDJSON_RECORD_BYTES)
+          : error,
+      ),
+    );
     socket.once('close', (_code, reason) => {
       const diagnostic = sanitizeCliStderr(reason.toString('utf8').trim()).slice(0, MAX_TERMINAL_DIAGNOSTIC_LENGTH);
       this.inbox.end(diagnostic ? new Error(diagnostic) : undefined);
@@ -172,7 +193,7 @@ class SpawnedCodexAppServerHost implements CodexAppServerHostProcess {
   constructor(
     private readonly child: ChildProcess,
     readonly socketPath: string,
-    private readonly stderr: string[],
+    private readonly stderr: StderrTail,
   ) {}
 
   get isAlive(): boolean {
@@ -192,7 +213,7 @@ class SpawnedCodexAppServerHost implements CodexAppServerHostProcess {
   }
 
   diagnostic(): string {
-    return sanitizeCliStderr(this.stderr.join('').slice(-1_000));
+    return excerptSanitizedStderr(this.stderr.value, { edge: 'tail', maxLength: 1_000 });
   }
 }
 
@@ -211,7 +232,13 @@ export async function removeCodexSocketDirectory(path: string): Promise<void> {
 }
 
 export async function spawnCodexAppServerHost(launch: CodexAppServerHostLaunch): Promise<CodexAppServerHostProcess> {
-  const stderr: string[] = [];
+  // F319 Phase B: the host serves many threads; every stderr line is offered to
+  // the served-model registry (trace lines only exist when observation is on),
+  // while the retained diagnostic tail stays bounded as before.
+  const stderr = createStderrTail({
+    maxChars: HOST_STDERR_TAIL_CHARS,
+    onLine: (line) => codexHostServedModels.ingestStderrLine(line),
+  });
   const childCwd = launch.cwd ?? process.cwd();
   const supervised = buildUnixSupervisedSpawnPlan(launch.command, launch.args, {
     env: normalizeEnv(launch.env, childCwd),
@@ -224,9 +251,8 @@ export async function spawnCodexAppServerHost(launch: CodexAppServerHostLaunch):
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   child.stderr?.setEncoding('utf8');
-  child.stderr?.on('data', (chunk: string) => {
-    if (stderr.join('').length < 8_192) stderr.push(chunk);
-  });
+  child.stderr?.on('data', (chunk: string) => stderr.append(chunk));
+  child.stderr?.once('end', () => stderr.flush());
   const spawnState: { error?: Error } = {};
   child.once('error', (error) => {
     spawnState.error = error;
@@ -244,10 +270,14 @@ export async function spawnCodexAppServerHost(launch: CodexAppServerHostLaunch):
 
 export async function connectCodexAppServerHost(host: CodexAppServerHostProcess): Promise<AgentCarrierSession> {
   const socket = new WebSocket('ws://localhost/', {
+    maxPayload: DEFAULT_MAX_NDJSON_RECORD_BYTES,
     handshakeTimeout: 3_000,
     perMessageDeflate: false,
     createConnection: () => connect({ path: host.socketPath }),
   });
+  // The peer can send its first frame in the same packet as the handshake.
+  // Install read/error observers before yielding to the open event.
+  const session = new CodexUnixWebSocketSession(socket);
   await new Promise<void>((resolve, reject) => {
     const onOpen = () => {
       socket.off('error', onError);
@@ -260,7 +290,7 @@ export async function connectCodexAppServerHost(host: CodexAppServerHostProcess)
     socket.once('open', onOpen);
     socket.once('error', onError);
   });
-  return new CodexUnixWebSocketSession(socket);
+  return session;
 }
 
 function waitForWebSocketClose(socket: WebSocket, timeoutMs: number): Promise<boolean> {

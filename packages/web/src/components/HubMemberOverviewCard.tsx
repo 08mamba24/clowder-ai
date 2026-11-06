@@ -1,16 +1,17 @@
-import type { DragEvent as ReactDragEvent } from 'react';
-import type { CatData } from '@/hooks/useCatData';
+import type { DragEvent as ReactDragEvent, ReactNode } from 'react';
+import { type CatData, formatCatName } from '@/hooks/useCatData';
 import { CO_CREATOR_COLOR } from '@/lib/color-defaults';
+import { readableInkOn } from '@/lib/readable-ink';
 import { AvatarImageWithFallback } from './AvatarImageWithFallback';
 import type { CatConfig, CoCreatorConfig } from './config-viewer-types';
 import { HubIcon } from './hub-icons';
-import { SettingsResourceIconButton, SettingsResourceToggleSwitch } from './SettingsResourceCard';
+import { MemberAvailabilityToggle } from './MemberAvailabilityToggle';
+import { SettingsResourceIconButton } from './SettingsResourceCard';
 import {
   SettingsBadge,
   SettingsFilterTabs,
   SettingsPrimaryButton,
   SettingsRow,
-  SettingsStatusStrip,
   SettingsText,
 } from './settings/primitives';
 
@@ -32,6 +33,18 @@ function humanizeClientId(clientId: string) {
 }
 
 function clientRuntimeLabel(cat: CatData, configCat?: CatConfig) {
+  if (cat.configurationSource === 'native_tool' && cat.acp)
+    return /dsh|deepseek/i.test(JSON.stringify(cat.acp)) ? 'DSH' : 'ACP 工具';
+  if (cat.configurationSource === 'native_tool' && cat.clientId === 'kimi') return 'Kimi';
+  if (cat.configurationSource === 'native_tool' && cat.clientId === 'opencode') return 'OpenCode';
+  if (cat.configurationSource === 'native_tool')
+    return cat.clientId === 'openai'
+      ? 'Codex'
+      : cat.clientId === 'anthropic'
+        ? 'Claude Code'
+        : /dsh|deepseek/i.test(JSON.stringify(cat.acp))
+          ? 'DSH'
+          : 'ACP 工具';
   const accountRef = (cat.accountRef ?? '').toLowerCase();
   if (accountRef.includes('claude')) return 'Claude';
   if (accountRef.includes('codex')) return 'Codex';
@@ -45,6 +58,7 @@ function clientRuntimeLabel(cat: CatData, configCat?: CatConfig) {
 }
 
 function accountSummary(cat: CatData) {
+  if (cat.configurationSource === 'native_tool') return cat.accountRef?.trim() || '';
   const accountRef = cat.accountRef?.trim() ?? '';
   if (!accountRef) return humanizeClientId(cat.clientId);
   if (
@@ -61,6 +75,21 @@ function accountSummary(cat: CatData) {
 }
 
 function getMetaSummary(cat: CatData, configCat?: CatConfig) {
+  let modelLabel = cat.defaultModel;
+  // DSH's [provider, model] wire value stays intact; the overview needs only the model name.
+  if (cat.acp && /dsh|deepseek/i.test(JSON.stringify(cat.acp))) {
+    try {
+      const value: unknown = JSON.parse(cat.defaultModel);
+      if (Array.isArray(value) && value.length === 2 && value.every((v) => typeof v === 'string'))
+        modelLabel = value[1];
+    } catch {
+      /* Legacy plain model names remain readable. */
+    }
+  }
+  if (cat.configurationSource === 'native_tool')
+    return [clientRuntimeLabel(cat, configCat), modelLabel || '跟随工具模型', accountSummary(cat)]
+      .filter(Boolean)
+      .join(' · ');
   if (cat.clientId === 'antigravity') {
     return `Antigravity · ${configCat?.model ?? cat.defaultModel} · CLI Bridge`;
   }
@@ -77,7 +106,7 @@ function getStatusBadge(cat: CatData): { enabled: boolean; label: string; tone: 
 function formatMentionPreview(patterns: string[], max = 3) {
   const visible = patterns.slice(0, max);
   const rest = patterns.length - visible.length;
-  return rest > 0 ? `${visible.join('')}  +${rest}` : visible.join('');
+  return rest > 0 ? `${visible.join(' · ')}  +${rest}` : visible.join(' · ');
 }
 
 function OwnerBadge() {
@@ -99,10 +128,12 @@ function OwnerBadge() {
 function OwnerAvatar({ coCreator }: { coCreator: CoCreatorConfig }) {
   const primary = coCreator.color?.primary ?? CO_CREATOR_COLOR.primary;
   const avatarSrc = safeAvatarSrc(coCreator.avatar);
+  // The initials sit on the identity fill, so the ink is chosen from that fill: a theme surface can be as dark as the fill.
+  const ink = readableInkOn(primary) ?? 'var(--cafe-surface)';
   return (
     <div
       className="flex h-8 w-8 items-center justify-center overflow-hidden text-xs font-bold"
-      style={{ backgroundColor: primary, color: 'var(--cafe-surface)', borderRadius: '9999px' }}
+      style={{ backgroundColor: primary, color: ink, borderRadius: '9999px' }}
     >
       {avatarSrc ? (
         <AvatarImageWithFallback
@@ -118,7 +149,6 @@ function OwnerAvatar({ coCreator }: { coCreator: CoCreatorConfig }) {
 }
 
 export function HubCoCreatorOverviewCard({ coCreator, onEdit }: { coCreator: CoCreatorConfig; onEdit?: () => void }) {
-  const primary = coCreator.color?.primary ?? CO_CREATOR_COLOR.primary;
   return (
     <SettingsRow
       icon={<OwnerAvatar coCreator={coCreator} />}
@@ -126,7 +156,7 @@ export function HubCoCreatorOverviewCard({ coCreator, onEdit }: { coCreator: CoC
       meta={
         <>
           <span>别名: {coCreator.aliases.join(' · ') || '无'} · 只能编辑，不能新增或删除</span>
-          <span className="mt-0.5 block" style={{ color: primary }}>
+          <span className="mt-0.5 block" style={{ color: 'var(--color-cocreator-text)' }}>
             {formatMentionPreview(coCreator.mentionPatterns, 2)}
           </span>
         </>
@@ -154,12 +184,11 @@ export function HubOverviewToolbar({
   activeFilter?: string;
   onFilterChange?: (key: string) => void;
 }) {
+  if (!onAddMember && !onFilterChange) return null;
   return (
-    <div className="flex items-center justify-between gap-3">
-      {onFilterChange ? (
+    <div className={`flex items-center gap-3 ${onFilterChange ? 'justify-between' : 'justify-end'}`}>
+      {onFilterChange && (
         <SettingsFilterTabs tabs={MEMBER_FILTER_TABS} activeKey={activeFilter ?? '全部'} onTabChange={onFilterChange} />
-      ) : (
-        <SettingsStatusStrip tone="muted">全部 · 已启用 · 已停用 · CLI（OAuth） · CLI（配置）</SettingsStatusStrip>
       )}
       {onAddMember && (
         <SettingsPrimaryButton
@@ -174,59 +203,29 @@ export function HubOverviewToolbar({
   );
 }
 
-function AvailabilityToggle({
-  cat,
-  enabled,
-  onToggle,
-  busy,
-}: {
-  cat: CatData;
-  enabled: boolean;
-  onToggle?: (cat: CatData) => void;
-  busy: boolean;
-}) {
-  if (!onToggle) return null;
-  const label = enabled ? '停用成员' : '启用成员';
-  return (
-    <SettingsResourceToggleSwitch
-      enabled={enabled}
-      busy={busy}
-      onClick={(e) => {
-        e.stopPropagation();
-        onToggle(cat);
-      }}
-      title={`${label}：${cat.displayName}`}
-      ariaLabel={`${label}：${cat.displayName}`}
-    />
-  );
-}
-
 function MemberMeta({ cat, configCat }: { cat: CatData; configCat?: CatConfig }) {
   return (
     <>
       <span>
-        <SettingsText tone="muted" className="mr-1.5 font-mono text-micro">
-          {cat.id}
-        </SettingsText>
         {getMetaSummary(cat, configCat)}
-        {cat.adapterMode && (
+        {cat.carrier && cat.configurationSource !== 'native_tool' && (
+          <SettingsBadge tone={cat.carrier === 'cli' ? 'slate' : 'emerald'} size="xxs" className="ml-1.5 inline-block">
+            {cat.carrier.replace('_', ' ').toUpperCase()}
+          </SettingsBadge>
+        )}
+        {cat.identityProtection ? (
           <SettingsBadge
-            tone={cat.adapterMode === 'acp' || cat.codexCarrier?.effective === 'app_server' ? 'emerald' : 'slate'}
+            tone={cat.identityProtection.state === 'healthy' ? 'emerald' : 'amber'}
             size="xxs"
             className="ml-1.5 inline-block"
           >
-            {/* F254 D2: ACP wins over the Codex carrier (assembly checks getAcpConfig first) */}
-            {cat.adapterMode === 'acp'
-              ? 'ACP'
-              : cat.codexCarrier?.effective === 'app_server'
-                ? 'APP SERVER'
-                : cat.adapterMode.toUpperCase()}
+            {cat.identityProtection.state === 'healthy' ? '云端身份' : '云端身份异常'}
           </SettingsBadge>
-        )}
+        ) : null}
       </span>
       <span className="mt-0.5 flex flex-wrap items-center gap-2">
+        {cat.nickname?.trim() && <span>昵称：{cat.nickname}</span>}
         <SettingsText tone="purple">{formatMentionPreview(cat.mentionPatterns)}</SettingsText>
-        <SettingsBadge tone="emerald">Session Chain 始终可见</SettingsBadge>
       </span>
     </>
   );
@@ -234,6 +233,7 @@ function MemberMeta({ cat, configCat }: { cat: CatData; configCat?: CatConfig })
 
 export function HubMemberOverviewCard({
   cat,
+  accountControl,
   configCat,
   onEdit,
   onToggleAvailability,
@@ -248,6 +248,7 @@ export function HubMemberOverviewCard({
   guideTargetId,
 }: {
   cat: CatData;
+  accountControl?: ReactNode;
   configCat?: CatConfig;
   onEdit?: (cat: CatData) => void;
   onToggleAvailability?: (cat: CatData) => void;
@@ -262,7 +263,7 @@ export function HubMemberOverviewCard({
   guideTargetId?: string;
 }) {
   const status = getStatusBadge(cat);
-  const title = [cat.breedDisplayName ?? cat.displayName, cat.nickname].filter(Boolean).join(' · ');
+  const title = formatCatName(cat);
 
   return (
     <SettingsRow
@@ -273,7 +274,17 @@ export function HubMemberOverviewCard({
       onDragOver={draggable ? (event) => onDragOver?.(cat, event) : undefined}
       onDrop={draggable ? (event) => onDrop?.(cat, event) : undefined}
       onDragEnd={draggable ? (event) => onDragEnd?.(cat, event) : undefined}
-      onClick={() => onEdit?.(cat)}
+      onClick={onEdit ? () => onEdit(cat) : undefined}
+      onKeyDown={
+        onEdit
+          ? (event) => {
+              if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+                event.preventDefault();
+                onEdit(cat);
+              }
+            }
+          : undefined
+      }
       isDragging={isDragging}
       dragHandle={
         draggable ? (
@@ -283,30 +294,41 @@ export function HubMemberOverviewCard({
         ) : undefined
       }
       title={title}
-      meta={<MemberMeta cat={cat} configCat={configCat} />}
-      badges={<SettingsBadge tone={status.tone}>{status.label}</SettingsBadge>}
-      actions={
+      meta={
         <>
-          <AvailabilityToggle
-            cat={cat}
-            enabled={status.enabled}
-            onToggle={onToggleAvailability}
-            busy={togglingAvailability}
-          />
-          {onDelete && (
-            <SettingsResourceIconButton
-              tone="danger"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete(cat);
-              }}
-              title="删除成员"
-              aria-label="删除成员"
-            >
-              <HubIcon name="trash" className="h-3.5 w-3.5" />
-            </SettingsResourceIconButton>
-          )}
+          <MemberMeta cat={cat} configCat={configCat} />
+          {accountControl}
         </>
+      }
+      badges={!onToggleAvailability && <SettingsBadge tone={status.tone}>{status.label}</SettingsBadge>}
+      stackActionsOnMobile
+      actions={
+        onToggleAvailability || (onDelete && !cat.identityProtection) ? (
+          <>
+            {onToggleAvailability && (
+              <MemberAvailabilityToggle
+                cat={cat}
+                enabled={status.enabled}
+                onToggle={onToggleAvailability}
+                busy={togglingAvailability}
+              />
+            )}
+            {onDelete && !cat.identityProtection && (
+              <SettingsResourceIconButton
+                tone="danger"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(cat);
+                }}
+                title={`删除成员：${cat.displayName}`}
+                aria-label={`删除成员：${cat.displayName}`}
+                className="min-h-11 min-w-11"
+              >
+                <HubIcon name="trash" className="h-3.5 w-3.5" />
+              </SettingsResourceIconButton>
+            )}
+          </>
+        ) : undefined
       }
       tone={status.enabled ? 'active' : 'inactive'}
     />

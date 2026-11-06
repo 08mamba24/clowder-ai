@@ -4,8 +4,8 @@ related_features: [F148, F209, F192]
 topics: [context-engineering, token-budget, mcp, harness]
 doc_kind: spec
 created: 2026-06-15
-updated: 2026-08-25
-tips_exempt: Bounded full-thread pagination and workflow-SOP drills preserve the existing responseMode contract while adding no new user-operable capability
+updated: 2026-09-10
+tips_exempt: "Renewed 2026-09-27 for F324 Phase A: bounded evidence and queued full-read exposure repair existing cat-side contracts without adding a user-operable action or discovery moment."
 user_journey_exempt: "Harness/internal tool-return contract for cats and eval telemetry — no end-user journey surface"
 mcp_admission_status: accepted
 mcp_admission_ref: "file:docs/features/F236-anchor-first-context-entry.md"
@@ -22,6 +22,8 @@ mcp_admission_claims:
 > **Status**: done | **Completed**: 2026-06-29 | **Owner**: Ragdoll (Ragdoll opus-48 愿景守护；Track-2/AC-E3 实现 opus-4.6) + Maine Coon/Maine Coon (gpt-5.5 close sync) | **Priority**: P1 | **Created**: 2026-06-15 | **Companion ADR**: ADR-203 | **Close evidence**: Clowder AI-owned anchor-first path merged and verified; AC-C3/AC-C0d accepted by operator as runtime-compat future-scope after RTK/Headroom/Codex/OpenCode/AGY source-audited refresh.
 >
 > **Timeline**: 2026-06-18 — Phase A + B merged (PR #2381, squash `9af8b2093`)：anchor-first 协作读工具（thread-context/pending-mentions/list-tasks 默认 preview + drillDown）+ get-message bounded drill（mode=preview|full + fullDrillChars telemetry）。本地 gpt52/codex 跨族 review + 云端 Codex 2 轮（封板）。**2026-06-18 — Phase A/B-Eval Track-1（anchor telemetry OTel chars/volume substrate）merged（PR #2411，squash `21ae2c83b`）：gpt52 跨族 review + 云端 Codex 3 轮（round-2 逼出 open-rate 信号模型岔路 → Maine Coon eval-owner 裁定收口 chars/volume，open-rate→Track-2）。** **2026-06-22 — Phase A/B-Eval Track-2（per-event open-rate model + `eval:anchor-first` domain）merged（PR #2490，squash `5251c2f75`）：Maine Coon本地 3 轮跨族 review + 云端 Codex 5 轮（封板 LL-072）。25 tests。** **2026-06-22 — AC-E3 sunset 触发（PR #2507，squash `d09024c90`）：per-tool sunset signal flags + eval 猫双信号判据 + verdict.md sunset section。gpt52 本地 3 轮跨族 review + 云端 Codex 1 轮（2 P1 pushback→P3 + 1 P2 fixed）。10 tests。** **2026-06-25 — Phase C Track-1 MCP cat-mode V1（`responseMode=anchor|full` on `get_thread_context` + `get_pending_mentions`）merged（PR #2546）：per-call mode 参数 + telemetry adoption eval fields（modeResolved/modeSource/catId）+ full-mode telemetry isolation（OTel + rollup）。gpt52 本地 2 轮跨族 review + 云端 Codex 2 轮（1 P1 fixed frontmatter + 2 P2 pushback→P3）。7 new tests。** **2026-06-25 — Phase C cc native anchor（PostToolUse hook for Read/Grep/Glob + MCP `cat_cafe_set_read_mode` + session mode file）merged（PR #2552，squash `68dd499d9`）：AC-C1/C2/C5 ✅，AC-C4 partial（type+shape ready, consumer→Phase E）。gpt52 本地 3 轮跨族 review + 云端 Codex 2 轮（R1: P1 hookSpecificOutput + P2 Glob truncation fixed；R2: 封板 stale 67%、1 new P1 scope pushback→Phase E）。68 tests。** **2026-06-25 — Phase E eval consumer bridge（PR #2559）：AnchorEvalBridgeConsumer（pure transform + lifecycle helpers）+ carrier eval tailer wiring + hook-setup anchor hook registration。gpt52 本地 review + 云端 Codex 5 轮（R1: P2 timeout unit；R2: P1 frontmatter + P2 matcher；R3: P2 tool name validation；R4: P1 carrier file-size extraction；R5: 0 findings）。AC-C4 preview side done, drill side remaining。30 tests。** **2026-06-26 — F236 cleanup batch（PR #2565，squash `145bd52b2`）：AC-C4 drill side closure（hook `appendDrillEvalEvent()` + consumer `evalEntriesToDrillEvents()` + `AnchorDrillTool` cc extension）+ modeSource `'legacy_equivalent'` schema/consumer ready + `/tmp` session file cleanup（mode + eval）+ MCP description per-invocation clarification。gpt52 本地 review（0 blocking）+ 云端 Codex 1 轮（0 findings）。12 new tests（118 total F236）。** **2026-06-26 — Stale Read detection + per-tool strategy（PR #2585，squash `7f73b2ffb`）：per-invocation mtime state file + `checkFileStale()` on bounded drill → `⚠️ [F236-STALE]` warning prepend + eval `stale` field + `fullDrillChars` counts delivered content（gpt52 R1 P2 fix）。KD-7 per-tool strategy DECIDED（Bash/WebFetch 不做 anchor）。gpt52 本地 R1 review（1 P2 fixed → 0 blocking `03b36ef85`）+ 云端 Codex 1 轮（1 P1 pushback→dismissed: rule scope mismatch `.claude/hooks/` ≠ `packages/`）。131 tests（+13 new stale tests）。** **2026-06-28 — modeSource `legacy_equivalent` wiring merged（PR #2641，squash `9141e43c`）：`get-message` preview/full + `list-tasks` preview/full emit Track-2 legacy-equivalent adoption events; rollup exposes adoption lens counts; live verdict snapshot/markdown renders Adoption Detail。cloud review R1-R4 fixed 3 P2 + 1 P1, final cloud pass on `86b2f326`; pnpm gate passed。** **2026-06-29 — runtime-compat evidence refresh + close accepted**：RTK/Headroom/OpenAI Codex/OpenCode/AGY source-audited matrix added; opus-48 VG APPROVE; operator accepted AC-C3/C0d as runtime-compat future-scope; formal close gate/reflection/harness-feedback added; F236 removed from BACKLOG.
+
+## Thread context selection contract (2026-10-02 repair)
 
 ## Completion Boundary (2026-06-29)
 
@@ -49,6 +51,37 @@ Architecture cell: mcp-surface-governance
 Related existing cell: `dispatch`（queued/freshness custody semantics）
 Map delta: none
 Why: the repair promotes the existing tool's changed schema/description through the canonical MCP surface and preserves Dispatch's existing Queue/seen ownership; it introduces no new Store/Queue/Router/Adapter/Dispatcher/Binding.
+
+### 2026-09-10 oversized queued drill repair
+
+Architecture cell: `thread-chat-surface` + `ball-custody`
+Map delta: none
+Why: `get_message(mode=full)` becomes a consumer of the existing exact Queue exposure writer only when it
+resolves a live oversized queued anchor. `InvocationQueue`, `QueueProcessor`, and MessageStore custody CAS retain
+their existing ownership; the in-process turn-custody registry reserves its route owner across exposure commit.
+No store, queue, authority, or user-visible lifecycle is added.
+
+Canonical source: `packages/api/src/domains/cats/services/agents/invocation/QueueProcessor.ts#markPromptMessagesSeen`
+
+Consumer evidence: `rg -n "cat_cafe_get_message|handleGetMessage|/api/callbacks/get-message" packages/mcp-server/src packages/api/src`
+finds the MCP definition/handler, callback route, and anchor producer. The fresh F242 MCP graph currently returns
+zero targets for this registered legacy `defineTool`, so that extractor result is recorded as a gap rather than
+used as absence evidence.
+
+Claim guard: "an oversized persisted queued anchor is fully drillable only by its exact current invocation scope;
+every fallible custody adoption dependency is prepared before exposure, then published synchronously after the
+append-only witness commits" → callback tests `F236 regression: an oversized persisted queued anchor drills the
+exact body and binds the current child` plus `F236 queued drill rejects wrong turn scope, foreign cats, foreign
+threads, and unbound queued rows` → RED was a 404 for the advertised drill, a 200 for a hidden managed-hold exact
+read, a durable witness left by failed adoption, and missing rich blocks on live Queue reads; GREEN requires the
+complete primary + merged text/content blocks/image hints, no witness on adoption-preparation failure, a teardown-
+safe reservation, idempotent current-child exposure/adoption, and the existing owner/hidden/scope denials.
+
+### 2026-09-27 bounded read continuity (F324 Phase A)
+
+`get_thread_context(responseMode=full)` 在已有 seenCursor 后只读未读窗口；窗口为空时返回真实空页，不回退旧历史。`limit=2` 对五条未读按 2/2/1 续页；只有完整正文实际出现在本页，才推进 seen/queued exposure。相同 invocation 再读尚未 handled 的 user queued 工作时保留 `alreadyExposed/pendingWork` 锚，不重发正文；connector/agent 的 adoption 路径继续保留正文重试。另一 invocation 仍可按原 Queue custody 重新读取。已注册的 `cat_cafe_read_file_slice` 对超长单行提供同一文件/行的 `charOffset` 续读，行数限制不再掩盖字符体积。
+
+Architecture cell: `thread-chat-surface` + `mcp-surface-governance`; Map delta: none. Why: MessageStore、InvocationQueue 与文件仍是原 authority，新增的只是现有 read path 的有界投影。Canonical source: `packages/api/src/routes/callbacks.ts#readThreadContext` 与 `packages/mcp-server/src/tools/file-tools.ts#handleReadFileSlice`。Consumer evidence: `rg -n "getQueuedBodyMessagesForCat|pageThreadContextEnvelope|handleReadFileSlice" packages/api/src packages/mcp-server/src`。Claim guard: `callback-routes.test.js` 的 F324 5/2/1 + queued 重读/超大 queued 回归，及 `file-tools.test.js` 的 250k 单行哈希等价续读。
 
 ## Why
 

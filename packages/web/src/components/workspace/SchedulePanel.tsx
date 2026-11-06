@@ -1,13 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useShellCopy } from '@/components/shell/shell-copy';
+import { useShellLanguage } from '@/components/shell/shell-language';
+import { useWorkspaceSurfaceVisibility } from '@/components/workbench/WorkspaceSurfaceVisibility';
 import { useChatStore } from '@/stores/chatStore';
-import { apiFetch } from '@/utils/api-client';
 import { CompactLabel, CriticalText, ExpandableProse } from '../content-overflow';
-
-import type { GlobalControlState, RunLedgerRow, ScheduleTask } from './schedule-helpers';
 import {
-  CATEGORY_LABELS,
   CATEGORY_STYLES,
   fallbackCategory,
   formatTrigger,
@@ -17,6 +16,8 @@ import {
   outcomeLabel,
   timeAgo,
 } from './schedule-helpers';
+import { schedulePanelCopy } from './schedule-panel.shell-copy';
+import { useSchedulePanelData } from './useSchedulePanelData';
 
 /* ── Component ───────────────────────────────── */
 
@@ -27,141 +28,28 @@ type ScopeFilter = 'all' | 'current-thread';
  * UX V2: flat list + colored type tags + scope filter + NL CTA
  */
 export function SchedulePanel() {
-  const [tasks, setTasks] = useState<ScheduleTask[]>([]);
-  const [loading, setLoading] = useState(true);
+  const t = useShellCopy(schedulePanelCopy);
+  const language = useShellLanguage();
   const [scope, setScope] = useState<ScopeFilter>('all');
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [runHistory, setRunHistory] = useState<RunLedgerRow[]>([]);
-  const [globalControl, setGlobalControl] = useState<GlobalControlState | null>(null);
   const currentThreadId = useChatStore((s) => s.currentThreadId);
-
-  const fetchTasks = useCallback(async () => {
-    try {
-      // #320: When scope is "current-thread", pass threadId to server for unified filtering
-      const params =
-        scope === 'current-thread' && currentThreadId ? `?threadId=${encodeURIComponent(currentThreadId)}` : '';
-      const res = await apiFetch(`/api/schedule/tasks${params}`);
-      if (res.ok) {
-        const json = await res.json();
-        setTasks(json.tasks ?? []);
-      }
-    } catch {
-      // fail-open
-    } finally {
-      setLoading(false);
-    }
-  }, [scope, currentThreadId]);
-
-  const fetchControl = useCallback(async () => {
-    try {
-      const res = await apiFetch('/api/schedule/control');
-      if (res.ok) {
-        const json = await res.json();
-        setGlobalControl(json.global ?? null);
-      }
-    } catch {
-      // fail-open — governance not configured
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchTasks();
-    fetchControl();
-    const timer = setInterval(() => {
-      fetchTasks();
-      fetchControl();
-    }, 30000);
-    return () => clearInterval(timer);
-  }, [fetchTasks, fetchControl]);
-
-  const handleGlobalToggle = useCallback(async () => {
-    if (!globalControl) return;
-    const next = !globalControl.enabled;
-    try {
-      await apiFetch('/api/schedule/control', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: next, reason: next ? null : 'Paused from panel', updatedBy: 'user' }),
-      });
-      fetchControl();
-    } catch {
-      /* fail-open */
-    }
-  }, [globalControl, fetchControl]);
-
-  // #320: Server-side filtering via ?threadId= — no client-side extractThreadId needed
-  const filteredTasks = tasks;
-
-  const handleToggleExpand = useCallback(
-    async (taskId: string) => {
-      if (expandedId === taskId) {
-        setExpandedId(null);
-        setRunHistory([]);
-        return;
-      }
-      setExpandedId(taskId);
-      try {
-        const params =
-          scope === 'current-thread' && currentThreadId ? `&threadId=${encodeURIComponent(currentThreadId)}` : '';
-        const res = await apiFetch(`/api/schedule/tasks/${encodeURIComponent(taskId)}/runs?limit=5${params}`);
-        if (res.ok) {
-          const json = await res.json();
-          setRunHistory(json.runs ?? []);
-        }
-      } catch {
-        setRunHistory([]);
-      }
-    },
-    [currentThreadId, expandedId, scope],
-  );
-
-  /** AC-H4: toggle pause/resume for any task — routes to correct API by source */
-  const handleToggleTask = useCallback(
-    async (task: ScheduleTask) => {
-      const isActive = task.effectiveEnabled ?? task.enabled;
-      try {
-        if (task.source === 'dynamic' && task.dynamicTaskId) {
-          await apiFetch(`/api/schedule/tasks/${encodeURIComponent(task.dynamicTaskId)}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled: !isActive }),
-          });
-        } else {
-          await apiFetch(`/api/schedule/control/tasks/${encodeURIComponent(task.id)}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled: !isActive, updatedBy: 'user' }),
-          });
-        }
-        fetchTasks();
-        fetchControl();
-      } catch {
-        /* fail-open */
-      }
-    },
-    [fetchTasks, fetchControl],
-  );
-
-  const handleDeleteDynamic = useCallback(
-    async (taskId: string) => {
-      try {
-        const res = await apiFetch(`/api/schedule/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
-        if (res.ok) fetchTasks();
-      } catch {
-        /* fail-open */
-      }
-    },
-    [fetchTasks],
-  );
+  const surfaceVisible = useWorkspaceSurfaceVisibility();
+  const {
+    tasks,
+    loading,
+    tasksError,
+    globalControl,
+    expandedId,
+    runHistory,
+    handleGlobalToggle,
+    handleToggleTask,
+    handleDeleteDynamic,
+    handleToggleExpand,
+  } = useSchedulePanelData(scope === 'all' ? undefined : currentThreadId || null, surfaceVisible);
 
   const activeCount = tasks.filter((t) => t.effectiveEnabled ?? t.enabled).length;
   const pausedCount = tasks.length - activeCount;
   // Health: check if ANY task's most recent run failed (not cumulative total)
   const hasAttention = tasks.some((t) => t.lastRun?.outcome === 'RUN_FAILED');
-
-  if (loading) {
-    return <div className="flex-1 flex items-center justify-center text-sm text-cafe-muted">Loading schedule...</div>;
-  }
 
   return (
     <div className="flex flex-col h-full bg-cafe-surface">
@@ -176,7 +64,7 @@ export function SchedulePanel() {
               : 'text-cafe-muted hover:text-cafe'
           }`}
         >
-          All
+          {t.all}
         </button>
         <button
           type="button"
@@ -187,10 +75,10 @@ export function SchedulePanel() {
               : 'text-cafe-muted hover:text-cafe'
           }`}
         >
-          Current Thread
+          {t.currentThread}
         </button>
         <span className="ml-auto text-micro text-cafe-muted">
-          {tasks.length} tasks · {activeCount} active{pausedCount > 0 ? ` · ${pausedCount} paused` : ''}
+          {loading ? t.loading : tasksError ? t.unverified : t.counts(tasks.length, activeCount, pausedCount)}
         </span>
       </div>
 
@@ -207,7 +95,7 @@ export function SchedulePanel() {
             className={`relative w-7 h-4 rounded-full transition-colors ${
               globalControl.enabled ? 'bg-conn-emerald-text' : 'bg-conn-red-text'
             }`}
-            title={globalControl.enabled ? 'Scheduler active — click to pause' : 'Scheduler paused — click to resume'}
+            title={globalControl.enabled ? t.pauseHint : t.resumeHint}
           >
             <span
               className={`absolute top-0.5 w-3 h-3 rounded-full bg-cafe-surface shadow transition-transform ${
@@ -218,11 +106,11 @@ export function SchedulePanel() {
           <span
             className={`text-micro font-medium ${globalControl.enabled ? 'text-conn-emerald-text' : 'text-conn-red-text'}`}
           >
-            {globalControl.enabled ? 'Scheduler active' : 'Scheduler paused'}
+            {globalControl.enabled ? t.active : t.paused}
           </span>
           {!globalControl.enabled && globalControl.reason && (
             <div data-testid="schedule-global-reason" className="min-w-0 flex-1">
-              <CriticalText summary="Scheduler paused" details={globalControl.reason} tone="warning" />
+              <CriticalText summary={t.paused} details={globalControl.reason} tone="warning" />
             </div>
           )}
         </div>
@@ -231,18 +119,22 @@ export function SchedulePanel() {
       {/* Current Thread context banner (V2 design) */}
       {scope === 'current-thread' && currentThreadId && (
         <div className="flex items-center gap-1.5 px-4 py-1.5 bg-cafe-surface-elevated/60 border-b border-cafe-subtle">
-          <span className="text-micro text-cafe-muted">Showing tasks for:</span>
+          <span className="text-micro text-cafe-muted">{t.currentScope}</span>
           <span className="text-micro font-medium text-cafe">{currentThreadId.slice(0, 12)}</span>
         </div>
       )}
 
       {/* Task list */}
       <div className="flex-1 overflow-y-auto">
-        {filteredTasks.length === 0 ? (
-          <div className="flex items-center justify-center h-32 text-sm text-cafe-muted">No scheduled tasks</div>
+        {tasksError && <output className="block px-4 py-2 text-sm text-cafe-muted">{tasksError}</output>}
+        {loading ? (
+          <div className="flex items-center justify-center h-32 text-sm text-cafe-muted">{t.loading}</div>
+        ) : tasks.length === 0 ? (
+          !tasksError && <div className="flex items-center justify-center h-32 text-sm text-cafe-muted">{t.empty}</div>
         ) : (
           <div className="space-y-0.5">
-            {filteredTasks.map((task) => {
+            {tasks.map((task) => {
+              const taskEnabled = task.effectiveEnabled ?? task.enabled;
               const category = task.display?.category ?? fallbackCategory(task.id);
               const label = task.display?.label ?? humanizeId(task.id);
               const preview = task.subjectPreview ?? task.display?.description ?? null;
@@ -272,33 +164,37 @@ export function SchedulePanel() {
                     <div className="flex items-center gap-2">
                       <span
                         className={`w-2 h-2 rounded-full shrink-0 ${statusDot}`}
-                        title={task.lastRun?.outcome ?? 'never run'}
+                        title={task.lastRun ? outcomeLabel(task.lastRun.outcome, language) : t.neverRun}
                       />
                       <span
                         className={`px-1.5 py-0.5 rounded text-micro font-bold uppercase ${CATEGORY_STYLES[category]}`}
                       >
-                        {CATEGORY_LABELS[category]}
+                        {t.categories[category]}
                       </span>
                       <span className="text-xs font-medium text-cafe truncate flex-1">{label}</span>
                       {task.source === 'dynamic' && (
                         <span className="px-1 py-0.5 rounded text-micro font-medium bg-conn-violet-bg text-conn-violet-text">
-                          user
+                          {t.dynamic}
                         </span>
                       )}
-                      <span className="text-micro text-cafe-muted font-mono">{formatTrigger(task.trigger)}</span>
+                      <span className="text-micro text-cafe-muted font-mono">
+                        {formatTrigger(task.trigger, language)}
+                      </span>
                       <span className="text-micro text-cafe-muted">{isExpanded ? '\u25B4' : '\u25BE'}</span>
                     </div>
                     <div className="flex items-center gap-2 mt-1 ml-[52px]">
                       {task.lastRun ? (
                         <>
                           <span className={`text-xs font-medium ${outcomeColor(task.lastRun.outcome)}`}>
-                            {outcomeIcon(task.lastRun.outcome)} {outcomeLabel(task.lastRun.outcome)}
+                            {outcomeIcon(task.lastRun.outcome)} {outcomeLabel(task.lastRun.outcome, language)}
                           </span>
-                          <span className="text-micro text-cafe-muted">{timeAgo(task.lastRun.started_at)}</span>
+                          <span className="text-micro text-cafe-muted">
+                            {timeAgo(task.lastRun.started_at, language)}
+                          </span>
                           {task.lastRun.outcome === 'RUN_FAILED' && task.lastRun.error_summary && (
                             <div data-testid={`schedule-latest-error-${task.id}`} className="min-w-0 flex-1">
                               <CriticalText
-                                summary="最近运行失败"
+                                summary={t.latestFailure}
                                 details={task.lastRun.error_summary}
                                 tone="critical"
                               />
@@ -306,15 +202,15 @@ export function SchedulePanel() {
                           )}
                         </>
                       ) : (
-                        <span className="text-micro text-cafe-muted italic">never run</span>
+                        <span className="text-micro text-cafe-muted italic">{t.neverRun}</span>
                       )}
                       {task.runStats.delivered > 0 && (
                         <span className="ml-auto text-micro text-conn-emerald-text">
-                          {task.runStats.delivered} delivered
+                          {t.deliveredCount(task.runStats.delivered)}
                         </span>
                       )}
-                      {!(task.effectiveEnabled ?? task.enabled) && (
-                        <span className="ml-auto text-micro text-conn-red-text font-medium">PAUSED</span>
+                      {!taskEnabled && (
+                        <span className="ml-auto text-micro text-conn-red-text font-medium">{t.taskPaused}</span>
                       )}
                     </div>
                   </div>
@@ -343,9 +239,9 @@ export function SchedulePanel() {
                           data-testid={`schedule-subject-key-${task.id}`}
                           className="flex min-w-0 items-center gap-2"
                         >
-                          <span className="shrink-0 text-micro font-medium text-cafe-muted">Canonical subject:</span>
+                          <span className="shrink-0 text-micro font-medium text-cafe-muted">{t.subject}</span>
                           <CompactLabel
-                            label="调度目标"
+                            label={t.subjectLabel}
                             value={subjectKey}
                             className="min-w-0 flex-1 text-micro text-cafe-secondary"
                           />
@@ -361,7 +257,7 @@ export function SchedulePanel() {
                           }}
                           className="text-micro text-cafe hover:text-cafe-accent transition-colors"
                         >
-                          {(task.effectiveEnabled ?? task.enabled) ? '\u23F8 Pause' : '\u25B6 Resume'}
+                          {taskEnabled ? '\u23F8' : '\u25B6'} {taskEnabled ? t.pauseTask : t.resumeTask}
                         </button>
                         {task.source === 'dynamic' && task.dynamicTaskId && (
                           <button
@@ -372,24 +268,24 @@ export function SchedulePanel() {
                             }}
                             className="text-micro text-cafe-muted hover:text-conn-red-text transition-colors"
                           >
-                            Delete
+                            {t.deleteTask}
                           </button>
                         )}
                       </div>
                       {/* Run history */}
-                      <div className="text-micro text-cafe-muted font-medium">Recent runs:</div>
+                      <div className="text-micro text-cafe-muted font-medium">{t.recentRuns}</div>
                       {runHistory.length === 0 ? (
-                        <div className="text-micro text-cafe-muted italic">No run history</div>
+                        <div className="text-micro text-cafe-muted italic">{t.noRuns}</div>
                       ) : (
                         <div className="space-y-1">
                           {runHistory.map((r, i) => (
                             <div key={i} className="flex items-start gap-2 text-micro">
                               <span className={outcomeColor(r.outcome)}>{outcomeIcon(r.outcome)}</span>
-                              <span className="text-cafe-muted">{timeAgo(r.started_at)}</span>
-                              <span className="text-cafe-muted">{r.duration_ms}ms</span>
+                              <span className="text-cafe-muted">{timeAgo(r.started_at, language)}</span>
+                              <span className="text-cafe-muted">{t.duration(r.duration_ms)}</span>
                               {r.error_summary && (
                                 <div data-testid={`schedule-history-error-${task.id}-${i}`} className="min-w-0 flex-1">
-                                  <CriticalText summary="运行失败详情" details={r.error_summary} tone="critical" />
+                                  <CriticalText summary={t.failureDetails} details={r.error_summary} tone="critical" />
                                 </div>
                               )}
                             </div>
@@ -406,20 +302,20 @@ export function SchedulePanel() {
       </div>
 
       {/* Footer: health summary (AC-F1) */}
-      <div className="px-4 py-1.5 border-t border-cafe-subtle text-micro text-cafe-muted flex items-center">
-        <span>
-          {tasks.length} tasks · {activeCount} active{pausedCount > 0 ? ` · ${pausedCount} paused` : ''}
-        </span>
-        <span className={`ml-auto font-medium ${hasAttention ? 'text-conn-red-text' : 'text-conn-emerald-text'}`}>
-          {hasAttention ? 'Attention needed' : 'All healthy'}
-        </span>
-      </div>
+      {!loading && !tasksError && (
+        <div className="px-4 py-1.5 border-t border-cafe-subtle text-micro text-cafe-muted flex items-center">
+          <span>{t.counts(tasks.length, activeCount, pausedCount)}</span>
+          <span className={`ml-auto font-medium ${hasAttention ? 'text-conn-red-text' : 'text-conn-emerald-text'}`}>
+            {tasksError ? t.unverified : hasAttention ? t.attention : t.healthy}
+          </span>
+        </div>
+      )}
 
       {/* Conversational CTA (AC-G5: replaces NL input — W1 vision) */}
       <div className="px-4 py-2.5 bg-cafe-surface-elevated border-t border-cafe-subtle">
         <p className="text-xs text-cafe-muted text-center">
-          Want to add a scheduled task? Tell any cat in the chat — e.g.
-          <span className="text-cafe font-medium"> &quot;every morning at 9, check Anthropic news&quot;</span>
+          {t.cta}
+          <span className="text-cafe font-medium"> {t.example}</span>
         </p>
       </div>
     </div>

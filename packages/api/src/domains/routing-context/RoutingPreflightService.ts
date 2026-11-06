@@ -1,22 +1,24 @@
+import { type RoutingPreflightDecisionV1, routingPreflightDecisionV1Schema } from '@cat-cafe/shared';
 import {
-  type RoutingContextSnapshotV1,
-  type RoutingPreflightDecisionV1,
-  type RoutingReasonV1,
-  routingPreflightDecisionV1Schema,
-} from '@cat-cafe/shared';
+  type FreshRoutingContextResolution,
+  freshTargetDecision,
+  unavailableReason,
+} from './preflight/RoutingPreflightDecisionProjector.js';
+import {
+  RoutingPreflightObserver,
+  type RoutingPreflightTelemetryEvent,
+  type RoutingPreflightTelemetrySink,
+} from './preflight/RoutingPreflightTelemetry.js';
 import type {
   ResolveRoutingContextInput,
   RoutingContextResolution,
   RoutingContextResolver,
 } from './RoutingContextResolver.js';
-import {
-  RoutingPreflightObserver,
-  type RoutingPreflightTelemetryEvent,
-  type RoutingPreflightTelemetrySink,
-} from './RoutingPreflightTelemetry.js';
 
 export interface RoutingPreflightInput extends ResolveRoutingContextInput {
   targetCatIds: readonly string[];
+  ownerRequestedAttempt?: boolean;
+  requireCapacityProof?: boolean;
 }
 
 export interface RoutingPreflightAuditEvent {
@@ -62,38 +64,6 @@ class ResolverBudgetTimeoutError extends Error {
 
 const NULL_AUDIT_SINK: RoutingPreflightAuditSink = { record: () => undefined };
 const SYSTEM_CLOCK: RoutingPreflightClock = { now: () => Date.now() };
-
-function reasonRefsForAlternative(snapshot: RoutingContextSnapshotV1, catId: string): string[] {
-  const candidate = snapshot.candidates.find((entry) => entry.binding.catId === catId);
-  const refs = [
-    snapshot.catalogRevision,
-    ...(candidate?.profile.state === 'applied' ? [candidate.profile.revision.dossierRevision] : []),
-    ...(candidate?.reasons.flatMap((reason) => reason.sourceRefs) ?? []),
-  ];
-  return [...new Set(refs)].slice(0, 16);
-}
-
-function alternativesFor(snapshot: RoutingContextSnapshotV1, targetCatId: string) {
-  return snapshot.candidates
-    .filter(
-      (candidate) =>
-        candidate.binding.catId !== targetCatId &&
-        candidate.effect === 'eligible' &&
-        candidate.profile.state === 'applied',
-    )
-    .map((candidate) => ({
-      catId: candidate.binding.catId,
-      reasonRefs: reasonRefsForAlternative(snapshot, candidate.binding.catId),
-    }));
-}
-
-function unavailableReason(failureClass: string): RoutingReasonV1 {
-  return {
-    code: 'routing_context_unavailable',
-    summary: 'Routing context is temporarily unavailable; the requested target remains unchanged',
-    sourceRefs: [`routing-context:${failureClass}`],
-  };
-}
 
 export class RoutingPreflightService {
   private readonly resolver: Pick<RoutingContextResolver, 'resolve'>;
@@ -173,12 +143,13 @@ export class RoutingPreflightService {
   }
 
   private async resolveWithinBudget(input: RoutingPreflightInput): Promise<RoutingContextResolution> {
+    const startedAt = performance.now();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const budgetExpired = new Promise<never>((_resolve, reject) => {
       timeout = setTimeout(() => reject(new ResolverBudgetTimeoutError()), this.readBudgetMs);
     });
     try {
-      return await Promise.race([
+      const result = await Promise.race([
         Promise.resolve().then(() =>
           this.resolver.resolve({
             ownerId: input.ownerId,
@@ -190,6 +161,9 @@ export class RoutingPreflightService {
         ),
         budgetExpired,
       ]);
+      // A CPU-bound resolver can starve setTimeout. Elapsed truth is independent of the timer's turn.
+      if (performance.now() - startedAt > this.readBudgetMs) throw new ResolverBudgetTimeoutError();
+      return result;
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
     }
@@ -248,37 +222,9 @@ export class RoutingPreflightService {
 
   private freshDecision(
     input: RoutingPreflightInput,
-    resolution: Extract<RoutingContextResolution, { status: 'fresh' }>,
+    resolution: FreshRoutingContextResolution,
   ): RoutingPreflightDecisionV1 {
-    const targets = input.targetCatIds.map((targetCatId) => {
-      const candidate = resolution.snapshot.candidates.find((entry) => entry.binding.catId === targetCatId);
-      if (candidate === undefined) {
-        return {
-          targetCatId,
-          disposition: 'warned' as const,
-          reasons: [
-            {
-              code: 'routing_target_not_in_catalog',
-              summary: 'The requested target has no binding in the resolved runtime catalog',
-              sourceRefs: [resolution.snapshot.catalogRevision],
-            },
-          ],
-          alternatives: alternativesFor(resolution.snapshot, targetCatId),
-        };
-      }
-      const disposition =
-        candidate.availability === 'unavailable'
-          ? ('rejected' as const)
-          : candidate.availability === 'available'
-            ? ('allowed' as const)
-            : ('warned' as const);
-      return {
-        targetCatId,
-        disposition,
-        reasons: candidate.reasons,
-        alternatives: disposition === 'allowed' ? [] : alternativesFor(resolution.snapshot, targetCatId),
-      };
-    });
+    const targets = input.targetCatIds.map((targetCatId) => freshTargetDecision(input, resolution, targetCatId));
     return routingPreflightDecisionV1Schema.parse({
       v: 1,
       ownerId: input.ownerId,

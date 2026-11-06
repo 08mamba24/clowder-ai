@@ -1,16 +1,14 @@
 import type { RedisClient } from '@cat-cafe/shared/utils';
+import { createModuleLogger } from '../../infrastructure/logger.js';
+import { hydrateTask } from '../cats/services/stores/redis/RedisTaskCodec.js';
+import { TaskKeys } from '../cats/services/stores/redis-keys/task-keys.js';
 import type {
   ActionSubjectTerminalTruth,
   ActionSuccessorClaimStoreResult,
   ActionSuccessorCommitOutcomeResult,
-  ActionSuccessorExternalReviewRecoveryStoreResult,
   ActionSuccessorLeaseStore,
   ActionSuccessorOutputPreflightResult,
 } from './ActionSuccessorLeaseStore.js';
-import {
-  type RecoverActiveExternalReviewVerdictInput,
-  recoverActiveExternalReviewVerdict,
-} from './action-successor-external-review-recovery-state-machine.js';
 import { ActionSuccessorKeys } from './action-successor-keys.js';
 import { preflightActionSuccessorOutputInRedis } from './action-successor-output-preflight.js';
 import { parseActionSubjectTerminal, parseActionSuccessorLease } from './action-successor-redis-codecs.js';
@@ -23,6 +21,7 @@ import {
   MARK_ACTION_SUBJECT_TERMINAL_LUA,
   PREFLIGHT_ACTION_SUCCESSOR_LUA,
 } from './action-successor-redis-scripts.js';
+import { ActionSuccessorStandingError } from './action-successor-standing.js';
 import {
   type ActionSuccessorIdentityInput,
   type ActionSuccessorLease,
@@ -38,12 +37,50 @@ import {
   recordActionCompletionCandidate,
   recordActionSuccessorOutcome,
   recordActionSuccessorReturnDeliveryAttempt,
+  refreshHandledActionSuccessor,
   replaceActionSuccessor,
   retirePendingDispatchForFreshnessMismatch,
   returnActionSuccessorToPredecessor,
 } from './action-successor-state-machine.js';
+import { runTaskContinuationFencedCommand } from './approved-task-continuation-fence.js';
+import { isRetiredTaskAction } from './retired-task-action.js';
 
 const MAX_CAS_ATTEMPTS = 20;
+const MAX_MALFORMED_CENSUS_SAMPLES = 5;
+const MALFORMED_CENSUS_REPORT_DEDUP_MS = 10_000;
+const log = createModuleLogger('ball-custody/action-successor-lease-store');
+
+interface MalformedCensusSample {
+  detailKey: string;
+  reason: string;
+}
+
+function parseCensusBatch(
+  keys: readonly string[],
+  raws: readonly (string | null)[],
+  predicate: (lease: ActionSuccessorLease | null) => lease is ActionSuccessorLease,
+): { matches: ActionSuccessorLease[]; malformedCount: number; malformedSamples: MalformedCensusSample[] } {
+  const matches: ActionSuccessorLease[] = [];
+  const malformedSamples: MalformedCensusSample[] = [];
+  let malformedCount = 0;
+  for (const [index, raw] of raws.entries()) {
+    const detailKey = keys[index];
+    if (!detailKey) throw new Error('ActionSuccessor recovery census received an unkeyed Redis value');
+    try {
+      const lease = parseActionSuccessorLease(raw);
+      if (predicate(lease)) matches.push(lease);
+    } catch (error) {
+      malformedCount += 1;
+      if (malformedSamples.length < MAX_MALFORMED_CENSUS_SAMPLES) {
+        malformedSamples.push({
+          detailKey,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+  return { matches, malformedCount, malformedSamples };
+}
 
 function isPendingReturn(lease: ActionSuccessorLease | null): lease is ActionSuccessorLease {
   return Boolean(
@@ -95,6 +132,8 @@ function validateFreshRevisionReplay(lease: ActionSuccessorLease, expected: Acti
 }
 
 export class RedisActionSuccessorLeaseStore implements ActionSuccessorLeaseStore {
+  private lastMalformedCensusReport?: { signature: string; at: number };
+
   constructor(private readonly redis: RedisClient) {}
 
   async get(leaseId: string): Promise<ActionSuccessorLease | null> {
@@ -133,27 +172,71 @@ export class RedisActionSuccessorLeaseStore implements ActionSuccessorLeaseStore
       .map((key) => (keyPrefix && key.startsWith(keyPrefix) ? key.slice(keyPrefix.length) : key))
       .sort();
     const matches: ActionSuccessorLease[] = [];
+    const malformedSamples: MalformedCensusSample[] = [];
+    let malformedCount = 0;
     const batchSize = 100;
     for (let offset = 0; offset < keys.length && matches.length < limit; offset += batchSize) {
       const batch = keys.slice(offset, offset + batchSize);
       const raws = await this.redis.mget(...batch);
-      matches.push(...raws.map(parseActionSuccessorLease).filter(predicate));
+      const parsed = parseCensusBatch(batch, raws, predicate);
+      for (const lease of parsed.matches) {
+        const retired = await isRetiredTaskAction(
+          {
+            get: async (id) => {
+              const raw = await this.redis.hgetall(TaskKeys.detail(id));
+              return raw.id ? hydrateTask(raw) : null;
+            },
+          },
+          lease,
+        );
+        if (!retired) matches.push(lease);
+      }
+      malformedCount += parsed.malformedCount;
+      malformedSamples.push(
+        ...parsed.malformedSamples.slice(0, MAX_MALFORMED_CENSUS_SAMPLES - malformedSamples.length),
+      );
+    }
+    if (malformedCount > 0) {
+      this.reportMalformedCensus(label, malformedCount, malformedSamples);
     }
     return matches.slice(0, limit);
   }
 
+  private reportMalformedCensus(
+    label: string,
+    malformedCount: number,
+    malformedSamples: MalformedCensusSample[],
+  ): void {
+    const signature = JSON.stringify({ malformedCount, malformedSamples });
+    const now = Date.now();
+    if (
+      this.lastMalformedCensusReport?.signature === signature &&
+      now - this.lastMalformedCensusReport.at < MALFORMED_CENSUS_REPORT_DEDUP_MS
+    ) {
+      return;
+    }
+    this.lastMalformedCensusReport = { signature, at: now };
+    log.warn(
+      { label, malformedCount, malformedSamples },
+      'ActionSuccessor recovery census skipped malformed persisted leases',
+    );
+  }
+
   async claim(input: ClaimActionSuccessorInput): Promise<ActionSuccessorClaimStoreResult> {
     const candidate = claimActionSuccessor(null, input).lease;
-    const raw = (await this.redis.eval(
-      CLAIM_ACTION_SUCCESSOR_LUA,
-      4,
-      ActionSuccessorKeys.detail(candidate.leaseId),
-      ActionSuccessorKeys.identity(candidate),
-      ActionSuccessorKeys.subjectTerminal(candidate.subjectRef),
-      ActionSuccessorKeys.ALL,
-      candidate.dispatchId,
-      JSON.stringify(candidate),
-    )) as [string, string];
+    const fenced = await runTaskContinuationFencedCommand(this.redis, candidate, {
+      script: CLAIM_ACTION_SUCCESSOR_LUA,
+      keys: [
+        ActionSuccessorKeys.detail(candidate.leaseId),
+        ActionSuccessorKeys.identity(candidate),
+        ActionSuccessorKeys.subjectTerminal(candidate.subjectRef),
+        ActionSuccessorKeys.ALL,
+      ],
+      args: [candidate.dispatchId, JSON.stringify(candidate)],
+    });
+    if (!fenced.ok)
+      throw new ActionSuccessorStandingError('mismatch', 'approved Task contract changed before lease admission');
+    const raw = fenced.result as [string, string];
     const [outcome, payload] = raw;
     if (outcome === 'subject_terminal') {
       const terminal = parseActionSubjectTerminal(payload);
@@ -184,27 +267,11 @@ export class RedisActionSuccessorLeaseStore implements ActionSuccessorLeaseStore
       if (current.holderOutcomes[input.catId]) return { outcome: 'holder_outcome_exists', lease: current };
 
       const next = recordActionSuccessorOutcome(current, input);
-      const committed = await this.compareAndSetUnlessSubjectTerminal(current, next);
+      const committed = await this.compareAndSetUnlessSubjectTerminal(current, next, 'record');
       if (committed === 'written') return { outcome: 'recorded', lease: next };
       if (committed === 'subject_terminal') return { outcome: 'subject_terminal', lease: current };
     }
     throw new Error(`action successor commit CAS exhausted: ${leaseId}`);
-  }
-
-  async recoverExternalReviewVerdict(
-    leaseId: string,
-    input: RecoverActiveExternalReviewVerdictInput,
-  ): Promise<ActionSuccessorExternalReviewRecoveryStoreResult> {
-    for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
-      const current = await this.require(leaseId);
-      const result = recoverActiveExternalReviewVerdict(current, input);
-      if (result.outcome === 'replayed') return result;
-      if (result.outcome !== 'recovered') return result;
-      const committed = await this.compareAndSetUnlessSubjectTerminal(current, result.lease);
-      if (committed === 'written') return result;
-      if (committed === 'subject_terminal') return { outcome: 'subject_terminal', lease: current };
-    }
-    throw new Error(`action successor external-review recovery CAS exhausted: ${leaseId}`);
   }
 
   async recordCompletionCandidate(
@@ -222,7 +289,7 @@ export class RedisActionSuccessorLeaseStore implements ActionSuccessorLeaseStore
       if (current.holderOutcomes[input.catId]) return { outcome: 'holder_outcome_exists', lease: current };
       const next = recordActionCompletionCandidate(current, input);
       if (next === current) return { outcome: 'recorded', lease: next };
-      const committed = await this.compareAndSetUnlessSubjectTerminal(current, next);
+      const committed = await this.compareAndSetUnlessSubjectTerminal(current, next, 'record');
       if (committed === 'written') return { outcome: 'recorded', lease: next };
       if (committed === 'subject_terminal') return { outcome: 'subject_terminal', lease: current };
     }
@@ -249,7 +316,7 @@ export class RedisActionSuccessorLeaseStore implements ActionSuccessorLeaseStore
         return { outcome: 'candidate_changed', lease: current };
       }
       const next = commitActionCompletionVerdict(current, input);
-      const committed = await this.compareAndSetUnlessSubjectTerminal(current, next);
+      const committed = await this.compareAndSetUnlessSubjectTerminal(current, next, 'record');
       if (committed === 'written') return { outcome: 'committed', lease: next };
       if (committed === 'subject_terminal') return { outcome: 'subject_terminal', lease: current };
     }
@@ -263,18 +330,20 @@ export class RedisActionSuccessorLeaseStore implements ActionSuccessorLeaseStore
     const current = await this.require(leaseId);
     const result = continueActionSuccessorFreshRevision(current, input);
     if (result.outcome !== 'continued') return result;
-    const raw = (await this.redis.eval(
-      CONTINUE_ACTION_SUCCESSOR_FRESH_REVISION_LUA,
-      5,
-      ActionSuccessorKeys.detail(current.leaseId),
-      ActionSuccessorKeys.detail(result.lease.leaseId),
-      ActionSuccessorKeys.identity(current),
-      ActionSuccessorKeys.subjectTerminal(current.subjectRef),
-      ActionSuccessorKeys.ALL,
-      String(current.revision),
-      result.lease.dispatchId,
-      JSON.stringify(result.lease),
-    )) as [string, string];
+    const fenced = await runTaskContinuationFencedCommand(this.redis, result.lease, {
+      script: CONTINUE_ACTION_SUCCESSOR_FRESH_REVISION_LUA,
+      keys: [
+        ActionSuccessorKeys.detail(current.leaseId),
+        ActionSuccessorKeys.detail(result.lease.leaseId),
+        ActionSuccessorKeys.identity(current),
+        ActionSuccessorKeys.subjectTerminal(current.subjectRef),
+        ActionSuccessorKeys.ALL,
+      ],
+      args: [String(current.revision), result.lease.dispatchId, JSON.stringify(result.lease)],
+    });
+    if (!fenced.ok)
+      throw new ActionSuccessorStandingError('mismatch', 'approved Task contract changed before lease admission');
+    const raw = fenced.result as [string, string];
     const [outcome, payload] = raw;
     if (outcome === 'subject_terminal') return { outcome, lease: current };
     if (outcome === 'continued') {
@@ -301,11 +370,26 @@ export class RedisActionSuccessorLeaseStore implements ActionSuccessorLeaseStore
       const current = await this.require(leaseId);
       const result = replaceActionSuccessor(current, input);
       if (result.outcome !== 'replaced' && result.outcome !== 'reattached') return result;
-      const committed = await this.compareAndSetUnlessSubjectTerminal(current, result.lease);
+      const committed = await this.compareAndSetUnlessSubjectTerminal(current, result.lease, 'admission');
       if (committed === 'written') return result;
       if (committed === 'subject_terminal') return { outcome: 'subject_terminal', lease: current };
     }
     throw new Error(`action successor CAS exhausted: ${leaseId}`);
+  }
+
+  async refreshHandledCarrier(
+    leaseId: string,
+    input: Parameters<ActionSuccessorLeaseStore['refreshHandledCarrier']>[1],
+  ): ReturnType<ActionSuccessorLeaseStore['refreshHandledCarrier']> {
+    for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+      const current = await this.require(leaseId);
+      const result = refreshHandledActionSuccessor(current, input);
+      if (result.outcome !== 'refreshed') return result;
+      const committed = await this.compareAndSetUnlessSubjectTerminal(current, result.lease, 'admission');
+      if (committed === 'written') return result;
+      if (committed === 'subject_terminal') return { outcome: 'subject_terminal', lease: current };
+    }
+    throw new Error(`action successor refresh CAS exhausted: ${leaseId}`);
   }
 
   async returnToPredecessor(
@@ -316,7 +400,7 @@ export class RedisActionSuccessorLeaseStore implements ActionSuccessorLeaseStore
       const current = await this.require(leaseId);
       const result = returnActionSuccessorToPredecessor(current, input);
       if (result.lease.revision === current.revision) return result;
-      const committed = await this.compareAndSetUnlessSubjectTerminal(current, result.lease);
+      const committed = await this.compareAndSetUnlessSubjectTerminal(current, result.lease, 'record');
       if (committed === 'written') return result;
       if (committed === 'subject_terminal') return { outcome: 'subject_terminal', lease: current };
     }
@@ -378,7 +462,7 @@ export class RedisActionSuccessorLeaseStore implements ActionSuccessorLeaseStore
         revision: current.revision + 1,
         updatedAt: input.now,
       };
-      const committed = await this.compareAndSetUnlessSubjectTerminal(current, next);
+      const committed = await this.compareAndSetUnlessSubjectTerminal(current, next, 'admission');
       if (committed === 'subject_terminal') return { outcome: 'subject_terminal', lease: current };
       if (committed === 'written') return { outcome: 'recorded', lease: next };
     }
@@ -424,7 +508,7 @@ export class RedisActionSuccessorLeaseStore implements ActionSuccessorLeaseStore
         revision: current.revision + 1,
         updatedAt: input.now,
       };
-      const committed = await this.compareAndSetUnlessSubjectTerminal(current, next);
+      const committed = await this.compareAndSetUnlessSubjectTerminal(current, next, 'admission');
       if (committed === 'subject_terminal') return { outcome: 'subject_terminal', lease: current };
       if (committed === 'written') return { outcome: 'reserved', lease: next };
     }
@@ -445,7 +529,7 @@ export class RedisActionSuccessorLeaseStore implements ActionSuccessorLeaseStore
         now: input.now,
       });
       if (result.outcome !== 'retired') return result;
-      const committed = await this.compareAndSetUnlessSubjectTerminal(current, result.lease);
+      const committed = await this.compareAndSetUnlessSubjectTerminal(current, result.lease, 'record');
       if (committed === 'written') return result;
       if (committed === 'subject_terminal') return { outcome: 'subject_terminal', lease: current };
     }
@@ -586,16 +670,13 @@ export class RedisActionSuccessorLeaseStore implements ActionSuccessorLeaseStore
   ): Promise<ActionSuccessorPreflightResult | { ok: false; reason: 'lease_missing' }> {
     const current = await this.get(leaseId);
     if (!current) return { ok: false, reason: 'lease_missing' };
-    const reason = String(
-      await this.redis.eval(
-        PREFLIGHT_ACTION_SUCCESSOR_LUA,
-        2,
-        ActionSuccessorKeys.detail(leaseId),
-        ActionSuccessorKeys.subjectTerminal(current.subjectRef),
-        String(generation),
-        terminalPredicateDigest ?? '',
-      ),
-    );
+    const fenced = await runTaskContinuationFencedCommand(this.redis, current, {
+      script: PREFLIGHT_ACTION_SUCCESSOR_LUA,
+      keys: [ActionSuccessorKeys.detail(leaseId), ActionSuccessorKeys.subjectTerminal(current.subjectRef)],
+      args: [String(generation), terminalPredicateDigest ?? ''],
+    });
+    if (!fenced.ok) return { ok: false, reason: 'predicate_mismatch' };
+    const reason = String(fenced.result);
     if (reason === 'active') return { ok: true, reason };
     if (
       reason === 'subject_terminal' ||
@@ -646,18 +727,29 @@ export class RedisActionSuccessorLeaseStore implements ActionSuccessorLeaseStore
   private async compareAndSetUnlessSubjectTerminal(
     current: ActionSuccessorLease,
     next: ActionSuccessorLease,
+    purpose: 'admission' | 'record',
   ): Promise<'written' | 'retry' | 'subject_terminal'> {
-    const result = Number(
-      await this.redis.eval(
-        COMMIT_ACTION_SUCCESSOR_CAS_LUA,
-        3,
+    const command = {
+      script: COMMIT_ACTION_SUCCESSOR_CAS_LUA,
+      keys: [
         ActionSuccessorKeys.detail(current.leaseId),
         ActionSuccessorKeys.identity(current),
         ActionSuccessorKeys.subjectTerminal(current.subjectRef),
-        String(current.revision),
-        JSON.stringify(next),
-      ),
-    );
+      ],
+      args: [String(current.revision), JSON.stringify(next)],
+    };
+    // Advancing/recovering work must revalidate the destination's authority at the write boundary.
+    // Recording outcomes or returning custody remains possible after the delegate contract is revoked.
+    const fenced =
+      purpose === 'admission'
+        ? await runTaskContinuationFencedCommand(this.redis, next, command)
+        : {
+            ok: true as const,
+            result: await this.redis.eval(command.script, command.keys.length, ...command.keys, ...command.args),
+          };
+    if (!fenced.ok)
+      throw new ActionSuccessorStandingError('mismatch', 'approved Task contract changed before lease admission');
+    const result = Number(fenced.result);
     if (result === 1) return 'written';
     if (result === -1) return 'retry';
     if (result === -3) return 'subject_terminal';

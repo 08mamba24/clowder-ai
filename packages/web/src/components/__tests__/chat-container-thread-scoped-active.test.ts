@@ -52,8 +52,6 @@ function createMockStoreState() {
     clearCatStatuses: vi.fn(),
     setCurrentThread: vi.fn(),
     updateThreadTitle: vi.fn(),
-    setCurrentGame: vi.fn(),
-    currentGame: null,
     viewMode: 'single' as const,
     setViewMode: vi.fn(),
     clearUnread: vi.fn(),
@@ -90,13 +88,13 @@ vi.mock('@/hooks/useAgentMessages', () => ({
   useAgentMessages: () => ({
     handleAgentMessage: vi.fn(),
     handleStop: vi.fn(),
-    resetRefs: vi.fn(),
-    resetTimeout: vi.fn(),
   }),
 }));
 
 vi.mock('@/hooks/useChatHistory', () => ({
   useChatHistory: () => ({
+    messages: storeState.messages,
+    handleReadingIntent: vi.fn(),
     handleScroll: vi.fn(),
     scrollContainerRef: { current: null },
     messagesEndRef: { current: null },
@@ -119,13 +117,11 @@ vi.mock('../ChatInput', () => ({
   },
 }));
 vi.mock('../ChatMessage', () => ({ ChatMessage: () => null }));
-vi.mock('../game/GameOverlayConnector', () => ({ GameOverlayConnector: () => null }));
 vi.mock('../HubListModal', () => ({ HubListModal: () => null }));
 vi.mock('../MessageActions', () => ({
   MessageActions: ({ children }: { children: React.ReactNode }) => children,
 }));
 vi.mock('../MessageNavigator', () => ({ MessageNavigator: () => null }));
-vi.mock('../ParallelStatusBar', () => ({ ParallelStatusBar: () => null }));
 vi.mock('../ProjectSetupCard', () => ({ ProjectSetupCard: () => null }));
 vi.mock('../QueuePanel', () => ({ QueuePanel: () => null }));
 vi.mock('../RightStatusPanel', () => ({ RightStatusPanel: () => null }));
@@ -134,7 +130,6 @@ vi.mock('../SplitPaneView', () => ({
   SplitPaneView: ({ children }: { children?: React.ReactNode }) => children ?? null,
   SplitPaneChatView: ({ children }: { children?: React.ReactNode }) => children ?? null,
 }));
-vi.mock('../ThinkingIndicator', () => ({ ThinkingIndicator: () => null }));
 vi.mock('../ThreadExecutionBar', () => ({ ThreadExecutionBar: () => null }));
 vi.mock('../ThreadSidebar', () => ({ ThreadSidebar: () => null }));
 vi.mock('../VoteActiveBar', () => ({ VoteActiveBar: () => null }));
@@ -189,12 +184,10 @@ describe('F173 Phase C Task 2 — ChatContainer.hasActiveInvocation thread-scope
         targetCats: ['opus'],
         catStatuses: { opus: 'streaming' },
         catInvocations: {},
-        currentGame: null,
         unreadCount: 0,
         hasUserMention: false,
         lastActivity: 0,
         queue: [],
-        queuePaused: false,
         queueFull: false,
         workspaceWorktreeId: null,
         workspaceOpenTabs: [],
@@ -244,12 +237,10 @@ describe('F173 Phase C Task 2 — ChatContainer.hasActiveInvocation thread-scope
         targetCats: [],
         catStatuses: {},
         catInvocations: {},
-        currentGame: null,
         unreadCount: 0,
         hasUserMention: false,
         lastActivity: 0,
         queue: [],
-        queuePaused: false,
         queueFull: false,
         workspaceWorktreeId: null,
         workspaceOpenTabs: [],

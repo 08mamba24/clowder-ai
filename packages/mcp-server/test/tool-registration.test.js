@@ -7,8 +7,11 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import { useInvocationAuth } from './helpers/invocation-auth.js';
 
 const { CANONICAL_TOOL_REGISTRY } = await import('../dist/server-toolsets.js');
 
@@ -126,10 +129,16 @@ describe('MCP Server Tool Registration', () => {
     const server = createServer();
     const holdTool = server._registeredTools.cat_cafe_hold_ball;
     assert.ok(holdTool, 'hold_ball tool should exist');
-    const desc = holdTool.description;
+    const { renderCoCreatorText } = await import('../dist/co-creator-presentation.js');
+    const desc = renderCoCreatorText(holdTool.description, {
+      name: 'Nora',
+      nickname: 'operator',
+      role: 'operator',
+      mention: '@nora',
+    });
     assert.ok(typeof desc === 'string' && desc.length > 0, 'hold_ball must have a description string');
     // #1-misuse exclusion: waiting on a person's reply is @co-creator/@cat, never a hold.
-    assert.match(desc, /waiting for co-creator\/user OR another cat to reply/);
+    assert.match(desc, /waiting for operator\/user OR another cat to reply/);
     assert.match(desc, /redundant 2nd trigger/);
     // an inbound co-creator/cat message counts as a callback (Phase M clarifier extension)
     assert.match(desc, /sending a message into this thread IS such a callback/);
@@ -155,7 +164,8 @@ describe('MCP Server Tool Registration', () => {
     );
   });
 
-  test('structured action descriptions expose the canonical subjectRef grammar (F177 production friction)', async () => {
+  test('invocation action descriptions expose the supported Task identity (F167 dispatch guidance)', async (t) => {
+    useInvocationAuth(t);
     const { createServer } = await import('../dist/index.js');
     const server = createServer();
 
@@ -163,9 +173,9 @@ describe('MCP Server Tool Registration', () => {
       const tool = server._registeredTools[toolName];
       assert.ok(tool, `${toolName} tool should exist`);
       const actionDescription = tool.inputSchema._def.shape().action.description;
-      assert.match(actionDescription, /pr:<owner>\/<repo>#<positive-number>/, toolName);
-      assert.match(actionDescription, /subject:<namespace>:<opaque-id>/, toolName);
-      assert.match(actionDescription, /SHA suffixes.*invalid/i, toolName);
+      assert.match(actionDescription, /subject:task:<taskId>/, toolName);
+      assert.match(actionDescription, /existing Task\.id/, toolName);
+      assert.match(actionDescription, /changing their prefix does not create Task authority/, toolName);
     }
   });
 
@@ -194,13 +204,22 @@ describe('MCP Server Tool Registration', () => {
     assert.match(tool.description, /resume capsule/i);
   });
 
-  test('thread-context description does not discourage the full contiguous freshness path', async () => {
+  test('thread-context description documents the explicit full catch-up path without freshness prompting', async () => {
     const { callbackTools } = await import('../dist/tools/callback-tools.js');
     const tool = callbackTools.find((candidate) => candidate.name === 'cat_cafe_get_thread_context');
     assert.ok(tool);
-    assert.match(tool.description, /freshness notice/i);
+    assert.doesNotMatch(tool.description, /freshness notice/i);
+    assert.match(tool.description, /readIntent="unread"/);
+    assert.equal(tool.inputSchema.readIntent.parse(undefined), 'history');
     assert.match(tool.description, /same-target queued bodies/i);
+    assert.match(tool.description, /complete catch-up/i);
+    assert.match(tool.description, /contextScope="unread_delta"/);
+    assert.match(tool.description, /hasMore=false.*not all thread history/i);
+    assert.match(tool.inputSchema.responseMode.description, /contextScope="unread_delta"/);
+    assert.match(tool.inputSchema.responseMode.description, /hasMore=false.*all thread history/i);
     assert.match(tool.description, /GOTCHA:/);
+    assert.match(tool.description, /cursor.*limit/i);
+    assert.match(tool.inputSchema.cursor.description, /same.*limit/i);
     assert.doesNotMatch(tool.description, /full" ONLY.*bulk analysis, export/i);
   });
 
@@ -264,21 +283,22 @@ describe('MCP Server Tool Registration', () => {
     const agentKeyUnsafeTools = [
       'cat_cafe_get_pending_mentions',
       'cat_cafe_ack_mentions',
-      'cat_cafe_get_thread_cats',
       'cat_cafe_feat_index',
       'cat_cafe_list_tasks',
       'cat_cafe_update_task',
       'cat_cafe_create_task',
       'cat_cafe_create_rich_block',
       'cat_cafe_generate_document',
-      'cat_cafe_register_pr_tracking',
-      'cat_cafe_register_issue_tracking',
-      'cat_cafe_community_await_external',
-      'cat_cafe_validate_community_route',
+      'cat_cafe_register_deployment_wait',
+      'cat_cafe_register_pr_tracking', // mcp-cutover-negative-reference: absence
+      'cat_cafe_register_issue_tracking', // mcp-cutover-negative-reference: absence
+      'cat_cafe_community_await_external', // mcp-cutover-negative-reference: absence
+      'cat_cafe_validate_community_route', // mcp-cutover-negative-reference: absence
       'cat_cafe_update_workflow',
       'cat_cafe_multi_mention',
       'cat_cafe_start_vote',
       'cat_cafe_propose_thread',
+      'cat_cafe_continue_approved_task',
       'cat_cafe_propose_session_handoff',
       'cat_cafe_propose_profile_update',
       'cat_cafe_propose_taste',
@@ -293,8 +313,8 @@ describe('MCP Server Tool Registration', () => {
       'cat_cafe_get_thread_metadata',
       'cat_cafe_set_thread_metadata',
       'cat_cafe_set_read_mode',
-      // Game action uses game-phase env identity headers rather than agent-key principal auth.
-      'cat_cafe_submit_game_action',
+      // Retired game tools must never reappear in agent-key profiles.
+      'cat_cafe_submit_game_action', // mcp-cutover-negative-reference: absence
     ];
 
     const exposed = agentKeyUnsafeTools.filter((name) => AGENT_KEY_TOOLS.has(name));
@@ -306,25 +326,29 @@ describe('MCP Server Tool Registration', () => {
     const expected = [
       'cat_cafe_advance_evolution_program_change',
       'cat_cafe_backfill_events',
+      'cat_cafe_census_legacy_paw_feel_blockers',
       'cat_cafe_cross_post_message',
       'cat_cafe_get_evolution_program',
       'cat_cafe_get_message',
+      'cat_cafe_get_thread_cats',
       'cat_cafe_get_thread_context',
       'cat_cafe_get_workflow_sop',
       'cat_cafe_link_evolution_program_observation',
+      'cat_cafe_link_paw_feel_repair_outcome',
       'cat_cafe_list_events',
       'cat_cafe_list_labels',
       'cat_cafe_list_paw_feel_inbox',
+      'cat_cafe_scan_paw_feel_inbox',
       'cat_cafe_list_schedule_templates',
       'cat_cafe_list_threads',
       'cat_cafe_post_message',
+      'cat_cafe_prepare_message_search_answer',
       'cat_cafe_preview_open',
       'cat_cafe_offer_custody',
       'cat_cafe_preview_scheduled_task',
       'cat_cafe_publish_verdict',
       'cat_cafe_record_eval_lifecycle',
       'cat_cafe_read_diary',
-      'cat_cafe_read_meeting_artifact',
       'cat_cafe_read_profile',
       'cat_cafe_read_entrusted_work',
       'cat_cafe_list_diaries',
@@ -333,9 +357,8 @@ describe('MCP Server Tool Registration', () => {
       'cat_cafe_recall_person_relationship',
       'cat_cafe_drill_person_memory',
       'cat_cafe_register_external_runtime_session',
-      'cat_cafe_community_request_guardian',
-      'cat_cafe_community_guardian_signoff',
       'cat_cafe_constitute_evolution_program',
+      'cat_cafe_rebind_evolution_program_measurement',
       'cat_cafe_open_evolution_round',
       'cat_cafe_record_evolution_evaluation',
       'cat_cafe_register_scheduled_task',
@@ -346,6 +369,15 @@ describe('MCP Server Tool Registration', () => {
       'cat_cafe_triage_paw_feel',
       'cat_cafe_update_evolution_program',
       'cat_cafe_workspace_navigate',
+      'cat_cafe_inspect_office_document',
+      'cat_cafe_read_artifact_review',
+      'cat_cafe_prepare_artifact_review',
+      'cat_cafe_act_artifact_review',
+      'cat_cafe_respond_artifact_review',
+      'cat_cafe_take_over_content_modification',
+      'cat_cafe_read_content_modification',
+      'cat_cafe_respond_content_modification',
+      'cat_cafe_edit_office_document',
     ];
 
     assert.deepEqual([...AGENT_KEY_TOOLS].sort(), expected.sort());
@@ -500,10 +532,14 @@ describe('F061 READONLY_ALLOWED_TOOLS whitelist', () => {
     assert.deepEqual([...agentKeyNames].filter((name) => name.startsWith('cat_cafe_')).sort(), expected);
   });
 
-  test('F317 P1: readonly mode with only CAT_CAFE_AGENT_KEY_FILES configured is STRICT (no write leak)', () => {
+  test('readonly mode with only CAT_CAFE_AGENT_KEY_FILES configured is STRICT (no write leak)', () => {
     const distIndexUrl = new URL('../dist/index.js', import.meta.url).href;
     const script = `
       process.env.CAT_CAFE_READONLY = 'true';
+      delete process.env.CAT_CAFE_INVOCATION_ID;
+      delete process.env.CAT_CAFE_CALLBACK_TOKEN;
+      delete process.env.CAT_CAFE_CREDENTIAL_FILE;
+      delete process.env.CAT_CAFE_DESKTOP_MODE;
       delete process.env.CAT_CAFE_AGENT_KEY_SECRET;
       delete process.env.CAT_CAFE_AGENT_KEY_FILE;
       process.env.CAT_CAFE_AGENT_KEY_FILES = JSON.stringify({
@@ -547,20 +583,28 @@ describe('F061 READONLY_ALLOWED_TOOLS whitelist', () => {
 
   test('readonly mode exposes agent-key tools with explicit CAT_CAFE_READONLY_AGENT_KEY_UNION opt-in', () => {
     const distIndexUrl = new URL('../dist/index.js', import.meta.url).href;
+    // #1494: the union needs USABLE credentials — fake /tmp paths no longer
+    // count, so hand the subprocess real sidecar files.
+    const keyDir = mkdtempSync(join(tmpdir(), 'tool-registration-agent-key-'));
+    const antigravityKey = join(keyDir, 'antigravity.secret');
+    const opusKey = join(keyDir, 'antig-opus.secret');
+    writeFileSync(antigravityKey, 'agent-key-material\n', 'utf-8');
+    writeFileSync(opusKey, 'agent-key-material\n', 'utf-8');
     const script = `
       process.env.CAT_CAFE_READONLY = 'true';
       process.env.CAT_CAFE_READONLY_AGENT_KEY_UNION = 'true';
       delete process.env.CAT_CAFE_AGENT_KEY_SECRET;
       delete process.env.CAT_CAFE_AGENT_KEY_FILE;
       process.env.CAT_CAFE_AGENT_KEY_FILES = JSON.stringify({
-        antigravity: '/tmp/antigravity.secret',
-        'antig-opus': '/tmp/antig-opus.secret',
+        antigravity: ${JSON.stringify(antigravityKey)},
+        'antig-opus': ${JSON.stringify(opusKey)},
       });
       const { createServer } = await import(${JSON.stringify(distIndexUrl)});
       const server = createServer();
       const names = Object.keys(server._registeredTools);
       if (
         !names.includes('cat_cafe_post_message') ||
+        !names.includes('cat_cafe_get_thread_cats') ||
         !names.includes('cat_cafe_get_thread_context') ||
         !names.includes('cat_cafe_workspace_navigate') ||
         !names.includes('cat_cafe_preview_open') ||
@@ -571,15 +615,88 @@ describe('F061 READONLY_ALLOWED_TOOLS whitelist', () => {
         !names.includes('cat_cafe_register_scheduled_task') ||
         !names.includes('cat_cafe_remove_scheduled_task') ||
         names.includes('cat_cafe_create_rich_block') ||
-        names.includes('cat_cafe_get_thread_cats') ||
         names.includes('cat_cafe_list_tasks') ||
         names.includes('cat_cafe_multi_mention') ||
         names.includes('cat_cafe_hold_ball') ||
         names.includes('cat_cafe_propose_thread') ||
-        names.includes('cat_cafe_unregister_tracking') ||
-        names.includes('cat_cafe_submit_game_action') ||
+        names.includes('cat_cafe_unregister_tracking') || // mcp-cutover-negative-reference: absence
+        names.includes('cat_cafe_submit_game_action') || // mcp-cutover-negative-reference: absence
         // 砚砚 R9 P1: shared-MCP cats must see publish-verdict
         !names.includes('cat_cafe_publish_verdict')
+      ) {
+        console.error(JSON.stringify(names.sort()));
+        process.exit(1);
+      }
+    `;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: process.cwd(),
+      encoding: 'utf-8',
+    });
+    rmSync(keyDir, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
+  test('readonly + opt-in + unusable BOUND identity stays strict (real stdio entry surface)', () => {
+    const distIndexUrl = new URL('../dist/index.js', import.meta.url).href;
+    // #1494 round 2: the bound identity's map entry is missing, so the union
+    // must not fire even with an explicit opt-in and an unrelated readable
+    // sidecar in the variant map.
+    const keyDir = mkdtempSync(join(tmpdir(), 'tool-registration-agent-key-'));
+    const antigravityKey = join(keyDir, 'antigravity.secret');
+    writeFileSync(antigravityKey, 'agent-key-material\n', 'utf-8');
+    const script = `
+      process.env.CAT_CAFE_READONLY = 'true';
+      process.env.CAT_CAFE_READONLY_AGENT_KEY_UNION = 'true';
+      process.env.CAT_CAFE_AGENT_KEY_BOUND_CAT_ID = 'gpt-pro';
+      delete process.env.CAT_CAFE_AGENT_KEY_SECRET;
+      delete process.env.CAT_CAFE_AGENT_KEY_FILE;
+      process.env.CAT_CAFE_AGENT_KEY_FILES = JSON.stringify({ antigravity: ${JSON.stringify(antigravityKey)} });
+      const { createServer } = await import(${JSON.stringify(distIndexUrl)});
+      const server = createServer();
+      const names = Object.keys(server._registeredTools);
+      if (
+        !names.includes('cat_cafe_search_evidence') ||
+        names.includes('cat_cafe_post_message') ||
+        names.includes('cat_cafe_cross_post_message') ||
+        names.includes('cat_cafe_teleport') ||
+        names.includes('cat_cafe_register_scheduled_task') ||
+        names.includes('cat_cafe_remove_scheduled_task') ||
+        names.includes('cat_cafe_publish_verdict')
+      ) {
+        console.error(JSON.stringify(names.sort()));
+        process.exit(1);
+      }
+    `;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: process.cwd(),
+      encoding: 'utf-8',
+    });
+    rmSync(keyDir, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
+  test('readonly + opt-in + blank SECRET stays strict (real stdio entry surface)', () => {
+    const distIndexUrl = new URL('../dist/index.js', import.meta.url).href;
+    // #1494 round 3: a whitespace-only secret is no material — the union must
+    // not fire even with an explicit opt-in, so the entry stays strict.
+    const script = `
+      process.env.CAT_CAFE_READONLY = 'true';
+      process.env.CAT_CAFE_READONLY_AGENT_KEY_UNION = 'true';
+      process.env.CAT_CAFE_AGENT_KEY_SECRET = '   ';
+      delete process.env.CAT_CAFE_AGENT_KEY_FILE;
+      delete process.env.CAT_CAFE_AGENT_KEY_FILES;
+      delete process.env.CAT_CAFE_AGENT_KEY_BOUND_CAT_ID;
+      const { createServer } = await import(${JSON.stringify(distIndexUrl)});
+      const server = createServer();
+      const names = Object.keys(server._registeredTools);
+      if (
+        !names.includes('cat_cafe_search_evidence') ||
+        names.includes('cat_cafe_post_message') ||
+        names.includes('cat_cafe_cross_post_message') ||
+        names.includes('cat_cafe_teleport') ||
+        names.includes('cat_cafe_register_scheduled_task') ||
+        names.includes('cat_cafe_remove_scheduled_task') ||
+        names.includes('cat_cafe_publish_verdict')
       ) {
         console.error(JSON.stringify(names.sort()));
         process.exit(1);

@@ -8,9 +8,11 @@ import { describe, it } from 'node:test';
 import { startAdapter } from './helpers/zcode-acp-test-harness.mjs';
 
 const { resolveZcodeBin } = await import(
-  '../../dist/domains/cats/services/agents/providers/acp/zcode-acp-bootstrap.js'
+  '../../dist/domains/cats/services/agents/providers/acp/zcode/zcode-acp-bootstrap.js'
 );
-const { NativeAppServer } = await import('../../dist/domains/cats/services/agents/providers/acp/zcode-acp-native.js');
+const { NativeAppServer } = await import(
+  '../../dist/domains/cats/services/agents/providers/acp/zcode/zcode-acp-native.js'
+);
 
 /** A real stdio child checks the environment before accepting any native RPC. */
 function fixture(layout = 'bundle', behavior = 'ready') {
@@ -56,6 +58,11 @@ if (behavior === 'exit') {
     fs.appendFileSync(${JSON.stringify(join(dir, 'rpc.log'))}, JSON.stringify(msg)+'\\n');
     const reply = payload => process.stdout.write(JSON.stringify({id: msg.id, ...payload})+'\\n');
     if (msg.method !== 'session/list') return reply({error:{code:-32601,message:'unknown method'}});
+    if (behavior === 'strict-list') {
+      const allowed = new Set(['workspace', 'sessionIds', 'limit']);
+      const unexpected = Object.keys(msg.params ?? {}).filter(key => !allowed.has(key));
+      if (unexpected.length) return reply({error:{code:-32602,message:'Invalid params — unrecognized keys: '+unexpected.join(', ')}});
+    }
     if (behavior === 'hang') return;
     if (behavior === 'error') return reply({error:{code:-32000,message:'provider registry unavailable api_key=secret-value'}});
     if (behavior === 'malformed') return reply({result:{unexpected:true}});
@@ -80,6 +87,19 @@ async function stop(acp) {
 }
 
 describe('ZCode native startup readiness', () => {
+  it('initializes against a native session/list schema that rejects unknown parameters', async () => {
+    const { dir, bin } = fixture('bundle', 'strict-list');
+    const acp = startAdapter(dir, { ZCODE_BIN: bin });
+    try {
+      const initialized = await acp.request('initialize', { protocolVersion: 1 });
+      assert.equal(initialized.error, undefined, JSON.stringify(initialized.error));
+      assert.equal(initialized.result?.protocolVersion, 1);
+      assert.equal(acp.rpcLog()[0]?.method, 'session/list');
+    } finally {
+      await stop(acp);
+    }
+  });
+
   it('revokes temporary credentials before a slow native shutdown finishes', async () => {
     const { dir, bin } = fixture('bundle', 'stubborn');
     const native = new NativeAppServer(bin, {

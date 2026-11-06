@@ -124,7 +124,8 @@ export const CLASSIFIER_PATTERNS: Array<{ code: CliErrorReasonCode; regex: RegEx
   // Highly-specific phrase so ordering-insensitive, but keep near top for provenance clarity.
   {
     code: 'upstream_policy_reject',
-    regex: /flagged for possible cybersecurity risk/i,
+    // AGY 2026-10-18, human3195: response rejected after four upstream output attempts.
+    regex: /flagged for possible cybersecurity risk|Your previous response was blocked by content safety filters/i,
   },
   // clowder-ai#1324 (refs #848 "CLI upgrade with format incompatibility"): the CLI's own
   // argument parser rejected the argv the harness built. Deterministic — the same argv is
@@ -163,12 +164,12 @@ export const CLASSIFIER_PATTERNS: Array<{ code: CliErrorReasonCode; regex: RegEx
   {
     code: 'model_not_found',
     regex:
-      /(model.*not found|Unknown model|supported API model names|model.*not supported|No available channel for model|deployment.*not found|neither PlanModel nor RequestedModel specified|Please use the \/model command|没有可用的账号侧默认模型)/i,
+      /(model.*not found|Unknown model|supported API model names|model.*not supported|model[^\r\n]+is not recognized as a known model or custom model in settings|No available channel for model|deployment.*not found|neither PlanModel nor RequestedModel specified|Please use the \/model command|没有可用的账号侧默认模型)/i,
   },
   {
     code: 'auth_failed',
     regex:
-      /(\b401\b|Unauthorized|invalid api key|authentication failed|forbidden.*api|profile is not authenticated|Authentication required\. Please visit the URL to log in|authentication interrupted)/i,
+      /(\b401\b|Unauthorized|invalid api key|authentication failed|forbidden.*api|profile is not authenticated|Authentication required\. Please visit the URL to log in|authentication interrupted|Not logged in\s*[·.:-]?\s*Please run \/login|The provided authorization grant is invalid|provider managed:kimi-code has no credential configured)/i,
   },
   // F212 Phase E (cloud codex P1 fix per @co-creator organic 2026-05-29): server-side temporary
   // throttling is NOT a user quota problem. CC explicitly disambiguates with "(not your usage
@@ -180,16 +181,27 @@ export const CLASSIFIER_PATTERNS: Array<{ code: CliErrorReasonCode; regex: RegEx
   {
     code: 'server_overloaded',
     regex:
-      /(temporarily limiting requests|not your usage limit|server is (overloaded|busy)|Selected model is at capacity\.|\b529\b|\bOverloaded\b)/i,
+      /(temporarily limiting requests|not your usage limit|server is (overloaded|busy)|Selected model is at capacity\.|currently experiencing high demand, which may cause temporary errors\.|\b529\b|\bOverloaded\b)/i,
   },
   {
     code: 'quota_exceeded',
     regex: /(\b429\b|quota|rate limit|too many requests|usage limit)/i,
   },
+  // Witness: 2026-10-11 Codex archive 5f771d02..., final request 7ab62694...
+  // A stream wrapper alone says nothing about the cause. Explicit provider wording wins.
+  {
+    code: 'upstream_service_error',
+    regex: /An error occurred while processing your request\./i,
+  },
   {
     code: 'network_error',
     regex:
-      /(ETIMEDOUT|ECONNREFUSED|ENOTFOUND|ECONNRESET|socket hang up|fetch failed|connect ECONN|getaddrinfo|stream disconnected before completion|error sending request for url)/i,
+      /(ETIMEDOUT|ECONNREFUSED|ENOTFOUND|ECONNRESET|socket hang up|fetch failed|connect ECONN|getaddrinfo|error sending request for url)/i,
+  },
+  {
+    code: 'stream_disconnected',
+    // Exact carrier EOF is also an incomplete stream, not evidence of a local network cause.
+    regex: /stream disconnected before completion|Codex app-server stream ended before turn completion/i,
   },
   {
     code: 'invalid_config',

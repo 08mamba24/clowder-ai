@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   isStableThreadAttentionAnchor,
+  recordRecentThreadAttentionGroup,
   resolveThreadAttentionPreferences,
   saveThreadAttentionPreference,
 } from '../config/user-preferences-thread-attention.js';
@@ -34,11 +35,20 @@ const putSchema = z
     anchor: stableAnchorSchema,
     alias: z.string().trim().min(1).max(120).nullable().optional(),
     open: z.boolean().nullable().optional(),
+    collapsedPeek: z.boolean().nullable().optional(),
+    memberSort: z.enum(['manual', 'running-first']).nullable().optional(),
   })
   .strict()
-  .refine((value) => value.alias !== undefined || value.open !== undefined, {
-    message: 'alias or open is required',
-  });
+  .refine(
+    (value) =>
+      value.alias !== undefined ||
+      value.open !== undefined ||
+      value.memberSort !== undefined ||
+      value.collapsedPeek !== undefined,
+    {
+      message: 'alias, open, memberSort or collapsedPeek is required',
+    },
+  );
 type GroupCommand = z.infer<typeof groupCommandSchema>;
 type GroupStore = Pick<IThreadStore, 'list' | 'getThreadMetadata' | 'atomicMergeThreadMetadata'>;
 
@@ -74,6 +84,11 @@ async function applyGroupCommand(
       const created = groups.find((group) => command.threadIds.every((threadId) => group.threadIds.includes(threadId)));
       if (!created) throw new Error('Created Group not found');
       saveThreadAttentionPreference(projectRoot, { anchor: `group:${created.id}`, alias: command.name });
+    }
+    if (command.action === 'create' || command.action === 'organize' || command.action === 'move') {
+      const threadId = command.action === 'move' ? command.threadId : command.threadIds[0];
+      const target = groups.find((group) => group.threadIds.includes(threadId!));
+      if (target) recordRecentThreadAttentionGroup(projectRoot, target.id);
     }
   });
   return undo;

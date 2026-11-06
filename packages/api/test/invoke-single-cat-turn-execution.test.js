@@ -67,15 +67,79 @@ async function collect(iterable) {
 }
 
 describe('invokeSingleCat durable child execution lifecycle', () => {
+  test('a fallback child cannot inherit the admission observation of a mixed fan-out sibling', async () => {
+    const store = new InMemoryTurnExecutionStore();
+    await collect(
+      invokeSingleCat(makeDeps(store, 'child-without-B'), {
+        catId: 'codex',
+        prompt: 'fallback after exact continuation',
+        userId: 'user-1',
+        threadId: 'thread-1',
+        isLastCat: true,
+        service: {
+          async *invoke() {
+            yield { type: 'done', catId: 'codex', timestamp: Date.now() };
+          },
+        },
+        routingDispatchPreflightDecision: routingDecision(),
+        routingAdmission: {
+          stage: 'queue_admitted',
+          observedAt: 0,
+          snapshotRef: 'B:other-target',
+          targets: [{ targetCatId: 'opus', factsRef: 'facts:opus' }],
+        },
+      }),
+    );
+    const child = await store.get('child-without-B');
+    assert.equal(child.causal.routingPreflight.snapshotRef, 'routing-snapshot:1');
+    assert.equal(
+      child.causal.routingPreflight.admission,
+      undefined,
+      'B.targets is an explicit subset, not a fan-out verdict',
+    );
+  });
+
+  test('a cancellation-only terminal never succeeds or schedules a freshness invocation', async () => {
+    const store = new InMemoryTurnExecutionStore();
+    let reinvokes = 0;
+    await collect(
+      invokeSingleCat(
+        {
+          ...makeDeps(store, 'child-cancelled'),
+          freshnessReinvokeCheck: async () => {
+            reinvokes++;
+            return null;
+          },
+        },
+        {
+          catId: 'codex',
+          service: {
+            async *invoke() {
+              yield { type: 'done', catId: 'codex', errorCode: 'INVOCATION_CANCELLED', timestamp: Date.now() };
+            },
+          },
+          prompt: 'cancelled request',
+          userId: 'user-1',
+          threadId: 'thread-1',
+          isLastCat: true,
+        },
+      ),
+    );
+    assert.equal((await store.get('child-cancelled')).status, 'canceled');
+    assert.equal(reinvokes, 0);
+  });
+
   test('creates running before prompt exposure/provider and terminalizes success', async () => {
     const store = new InMemoryTurnExecutionStore();
     const exposureCalls = [];
+    const lifecycleCalls = [];
     let providerObservedStatus;
     let providerRecoveryAnchor;
     const service = {
       async *invoke(_prompt, options) {
         providerObservedStatus = (await store.get('child-success'))?.status;
         providerRecoveryAnchor = options.recoveryAnchor;
+        assert.equal(lifecycleCalls.length, 1, 'processing response must exist before provider starts');
         assert.equal(exposureCalls.length, 1, 'body exposure must be durable before provider starts');
         yield { type: 'text', catId: 'codex', content: 'ok', timestamp: Date.now() };
         yield { type: 'done', catId: 'codex', timestamp: Date.now() };
@@ -90,18 +154,32 @@ describe('invokeSingleCat durable child execution lifecycle', () => {
         userId: 'user-1',
         threadId: 'thread-1',
         parentInvocationId: 'parent-1',
-        executionKind: 'freshness_supplement',
+        executionKind: 'routing_guard',
         executionCausal: {
           triggerMessageId: 'msg-trigger',
-          freshnessSupplementId: 'supplement-1',
+          routingGuardReason: 'missing_routing_exit',
         },
         promptMessageIds: ['msg-queued'],
+        onLifecycleInvocationStarted: async (input) => {
+          lifecycleCalls.push(input);
+          return { responseMessageId: 'response-child-success', priorFrontierMessageId: 'message-before-response' };
+        },
         onPromptMessagesExposed: async (input) => exposureCalls.push(input),
         isLastCat: true,
       }),
     );
 
     assert.equal(providerObservedStatus, 'running');
+    assert.deepEqual(lifecycleCalls, [
+      {
+        threadId: 'thread-1',
+        userId: 'user-1',
+        catId: 'codex',
+        invocationId: 'child-success',
+        parentInvocationId: 'parent-1',
+        startedAt: lifecycleCalls[0].startedAt,
+      },
+    ]);
     assert.deepEqual(providerRecoveryAnchor, {
       threadId: 'thread-1',
       invocationId: 'child-success',
@@ -120,11 +198,12 @@ describe('invokeSingleCat durable child execution lifecycle', () => {
       type: 'invocation_created',
       invocationId: 'child-success',
       parentInvocationId: 'parent-1',
-      executionKind: 'freshness_supplement',
+      executionKind: 'routing_guard',
       startedAt: createdBody.startedAt,
       freshnessCarrierCapability: {
         provider: 'other',
         carrier: 'other',
+        activeInvocationGuidance: 'undeclared',
         deliverySemantics: 'undeclared',
       },
       effectiveStrategy: {
@@ -151,19 +230,21 @@ describe('invokeSingleCat durable child execution lifecycle', () => {
     });
     assert.match(createdBody.effectiveStrategy.revision, /^provider_default:[a-f0-9]{64}$/);
     assert.equal(created.turnInvocationId, 'child-success');
+    assert.equal(created.lifecycleResponseMessageId, 'response-child-success');
+    assert.equal(created.lifecyclePriorFrontierMessageId, 'message-before-response');
     assert.equal(created.turnExecutionStartedAt, createdBody.startedAt);
     assert.deepEqual(created.extra?.turnExecution, {
       invocationId: 'child-success',
       parentInvocationId: 'parent-1',
-      executionKind: 'freshness_supplement',
+      executionKind: 'routing_guard',
     });
 
     const terminal = await store.get('child-success');
     assert.equal(terminal.status, 'succeeded');
-    assert.equal(terminal.executionKind, 'freshness_supplement');
+    assert.equal(terminal.executionKind, 'routing_guard');
     assert.deepEqual(terminal.causal, {
       triggerMessageId: 'msg-trigger',
-      freshnessSupplementId: 'supplement-1',
+      routingGuardReason: 'missing_routing_exit',
       coveredMessageIds: ['msg-queued'],
     });
     assert.equal(terminal.endedAt >= terminal.startedAt, true);
@@ -298,6 +379,12 @@ describe('invokeSingleCat durable child execution lifecycle', () => {
         threadId: 'thread-1',
         parentInvocationId: 'parent-1',
         routingDispatchPreflightDecision: exactDecision,
+        routingAdmission: {
+          stage: 'queue_admitted',
+          observedAt: 0,
+          snapshotRef: 'snapshot:B',
+          targets: [{ targetCatId: 'codex', factsRef: 'facts:codex' }],
+        },
         isLastCat: true,
       }),
     );
@@ -307,6 +394,12 @@ describe('invokeSingleCat durable child execution lifecycle', () => {
     assert.equal(observed[0].observationId, 'child-routing-success');
     assert.equal(observed[0].evidenceRef, 'turn-execution:child-routing-success');
     assert.equal(observed[0].preflightDecision, exactDecision);
+    assert.deepEqual((await store.get('child-routing-success')).causal.routingPreflight, {
+      stage: 'execution_preflight',
+      observedAt: exactDecision.observedAt,
+      snapshotRef: exactDecision.snapshotRef,
+      admission: { stage: 'queue_admitted', observedAt: 0, snapshotRef: 'snapshot:B' },
+    });
     assert.equal(observed[0].observedAt, (await store.get('child-routing-success')).endedAt);
   });
 
@@ -444,6 +537,8 @@ describe('invokeSingleCat durable child execution lifecycle', () => {
 
     assert.equal(providerCalled, false);
     assert.deepEqual(await store.get('child-returned'), {
+      providerLifecycleTracked: true,
+      providerTeardownAt: (await store.get('child-returned')).endedAt,
       invocationId: 'child-returned',
       parentInvocationId: 'parent-1',
       threadId: 'thread-1',
@@ -454,6 +549,7 @@ describe('invokeSingleCat durable child execution lifecycle', () => {
       status: 'interrupted',
       endedAt: (await store.get('child-returned')).endedAt,
       terminalReason: 'generator_returned_without_completion',
+      outputFence: 'open',
     });
   });
 

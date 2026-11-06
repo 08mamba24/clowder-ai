@@ -123,7 +123,7 @@ describe('F286 canonical MCP registry projections', () => {
         (definition) => definition.name,
       ),
       ['cat_cafe_read', 'limb_control'],
-      'F317 P1: agent-key union requires explicit opt-in',
+      'agent-key union requires explicit opt-in',
     );
     assert.deepEqual(
       projectCanonicalToolRegistry(canonical, { desktopMode: 'fable-phase0' }).map((definition) => definition.name),

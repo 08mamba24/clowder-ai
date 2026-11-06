@@ -1,19 +1,13 @@
-import type { GameView } from '@cat-cafe/shared';
 import { useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { SocketCallbacks } from '@/hooks/useSocket';
 import { type Thread, useChatStore } from '@/stores/chatStore';
-import { useGameStore } from '@/stores/gameStore';
 import { type TaskItem, useTaskStore } from '@/stores/taskStore';
 import { invalidateSidebarProjection } from '@/utils/sidebar-thread-snapshot';
 
 interface ExternalDeps {
   threadId: string;
-  userId: string;
   handleAgentMessage: SocketCallbacks['onMessage'];
-  resetTimeout: () => void;
-  clearDoneTimeout: (threadId?: string) => void;
-  onNavigateToThread?: (threadId: string) => void;
   onIndexEvent?: SocketCallbacks['onIndexEvent'];
 }
 
@@ -21,15 +15,7 @@ interface ExternalDeps {
  * Socket event callbacks for a chat thread.
  * Extracted from ChatContainer to reduce file size.
  */
-export function useChatSocketCallbacks({
-  threadId,
-  userId,
-  handleAgentMessage,
-  resetTimeout,
-  clearDoneTimeout,
-  onNavigateToThread,
-  onIndexEvent,
-}: ExternalDeps): SocketCallbacks {
+export function useChatSocketCallbacks({ threadId, handleAgentMessage, onIndexEvent }: ExternalDeps): SocketCallbacks {
   const {
     updateThreadTitle,
     updateThreadParticipants,
@@ -51,11 +37,12 @@ export function useChatSocketCallbacks({
       requestStreamCatchUp: s.requestStreamCatchUp,
     })),
   );
-  const { addTask, updateTask } = useTaskStore();
+  const { addTask, updateTask } = useTaskStore(
+    useShallow((state) => ({ addTask: state.addTask, updateTask: state.updateTask })),
+  );
 
   return useMemo<SocketCallbacks>(
     () => ({
-      clearDoneTimeout,
       onMessage: (msg) => {
         handleAgentMessage(msg);
         return true;
@@ -97,9 +84,6 @@ export function useChatSocketCallbacks({
         updateTask(task as unknown as TaskItem);
       },
       // onThreadSummary removed (clowder-ai#343): summaries no longer injected into chat flow.
-      onHeartbeat: (data) => {
-        if (data.threadId === threadId) resetTimeout();
-      },
       onMessageDeleted: (data: { messageId: string; threadId: string }) =>
         removeThreadMessage(data.threadId, data.messageId),
       onMessageRestored: (data: { messageId: string; threadId: string }) => {
@@ -121,18 +105,6 @@ export function useChatSocketCallbacks({
       onThreadBranched: () => {
         void invalidateSidebarProjection();
       },
-      onGameStateUpdate: (data) => {
-        const view = data.view as GameView;
-        // P1-3 fix: Only accept updates for the current thread
-        if (view.threadId !== threadId) return;
-        useGameStore.getState().setGameView(view, data.gameId, threadId);
-      },
-      onGameThreadCreated: (data) => {
-        // Only navigate the initiator — other users in the room should not be auto-redirected
-        if (data.initiatorUserId === userId) {
-          onNavigateToThread?.(data.gameThreadId);
-        }
-      },
       // B-5: Guide events now flow directly from useSocket → guideStore.reduceServerEvent
       // (CustomEvent bridge removed — no onGuideStart/onGuideControl/onGuideComplete needed)
       onIndexEvent,
@@ -149,12 +121,8 @@ export function useChatSocketCallbacks({
       updateTask,
       removeThreadMessage,
       requestStreamCatchUp,
-      resetTimeout,
-      clearDoneTimeout,
-      onNavigateToThread,
       onIndexEvent,
       threadId,
-      userId,
     ],
   );
 }

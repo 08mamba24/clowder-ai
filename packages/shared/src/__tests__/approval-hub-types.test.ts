@@ -3,10 +3,11 @@
  */
 
 import assert from 'node:assert/strict';
-import { describe, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type {
   ApprovalDecisionMode,
   ApprovalEnvelope,
+  ApprovalHubItem,
   ApprovalItem,
   ApprovalItemStatus,
   ApprovalNavigation,
@@ -25,6 +26,16 @@ import {
   type LegacyApprovalLifecycleInput,
   normalizeApprovalLifecycleProjection,
 } from '../types/approval-lifecycle.js';
+import { type UnifiedAttentionReadV1, unifiedAttentionApprovalsSourceSchema } from '../types/unified-attention.js';
+
+// ApprovalItemCard consumes the canonical item, with the verified read owner restored.
+function approvalsForRenderer(
+  read: Pick<UnifiedAttentionReadV1, 'items' | 'approvals' | 'identity'>,
+): ApprovalHubItem[] {
+  return [...read.items.flatMap((item) => (item.approval ? [item.approval] : [])), ...(read.approvals ?? [])].map(
+    (item) => ({ ...item, ownerUserId: read.identity.ownerUserId }),
+  );
+}
 
 describe('F246 Phase I approval provenance contract', () => {
   it('represents an anchored item with distinct origin and approval-card refs', () => {
@@ -132,9 +143,21 @@ describe('F246 Phase I approval provenance contract', () => {
     );
   });
 
-  it('keeps the admitted producer union exhaustive through F276 and excludes F028', () => {
-    const ids: ApprovalProducerId[] = ['F128', 'F139', 'F193', 'F221', 'F225', 'F231', 'F260', 'F266', 'F276', 'F292'];
-    assert.equal(ids.length, 10);
+  it('keeps the admitted producer union exhaustive through F321 and excludes F028', () => {
+    const ids: ApprovalProducerId[] = [
+      'F128',
+      'F139',
+      'F193',
+      'F221',
+      'F225',
+      'F231',
+      'F260',
+      'F266',
+      'F276',
+      'F306',
+      'F321',
+    ];
+    assert.equal(ids.length, 11);
     assert.equal(ids.includes('F028' as ApprovalProducerId), false);
   });
 
@@ -144,8 +167,8 @@ describe('F246 Phase I approval provenance contract', () => {
   });
 
   it('admits feature-owned exact-claim selection without changing generic approval modes', () => {
-    const modes: ApprovalDecisionMode[] = ['approve-reject', 'claim-select', 'meeting-intake'];
-    assert.deepEqual(modes, ['approve-reject', 'claim-select', 'meeting-intake']);
+    const modes: ApprovalDecisionMode[] = ['approve-reject', 'claim-select'];
+    assert.deepEqual(modes, ['approve-reject', 'claim-select']);
   });
 });
 
@@ -163,6 +186,7 @@ describe('canonical Approval lifecycle projection', () => {
     assert.deepEqual(normalizeApprovalLifecycleProjection({ status }), {
       resolution,
       materialization: { state: materialization },
+      ...(status === 'withdrawn' ? { closedReason: status } : {}),
     });
   });
 
@@ -195,5 +219,108 @@ describe('canonical Approval lifecycle projection', () => {
       () => normalizeApprovalLifecycleProjection({ status: 'magic_done' } as unknown as LegacyApprovalLifecycleInput),
       /unknown legacy Approval status/i,
     );
+  });
+});
+
+describe('unified attention preserves the canonical approval renderer contract', () => {
+  const approval: ApprovalHubItem = {
+    proposalId: 'claim-1',
+    sourceFeatureId: 'F276',
+    requesterCatId: 'opus',
+    ownerUserId: 'owner',
+    summary: 'Choose the exact person',
+    detail: { choices: ['person:one'] },
+    navigation: { state: 'legacy_unanchored', legacyThreadId: 'thread-original' },
+    inlineApprovable: true,
+    decisionMode: 'claim-select',
+    createdAt: 10,
+    resolution: 'open',
+    materialization: { state: 'not_started' },
+  };
+
+  it('feeds both unified and transitional approvals to the existing renderer without casts', () => {
+    const [parsed] = unifiedAttentionApprovalsSourceSchema.parse({ items: [approval] }).items;
+    assert.ok(parsed);
+    const { ownerUserId: _owner, ...visible } = parsed;
+    const renderable = approvalsForRenderer({
+      identity: { ownerUserId: 'owner' },
+      items: [
+        {
+          decisionRef: 'approval:F276:claim-1',
+          kind: 'approval',
+          summary: visible.summary,
+          approval: visible,
+          linkedNeedsMe: [],
+        },
+      ],
+      approvals: [visible],
+    });
+    assert.equal(renderable.length, 2);
+    assert.deepEqual(renderable[0], { ...visible, ownerUserId: 'owner' });
+    assert.equal(renderable[0]?.requesterCatId, 'opus');
+    assert.equal(renderable[0]?.decisionMode, 'claim-select');
+    assert.equal(renderable[0]?.navigation.state, 'legacy_unanchored');
+  });
+
+  it.each([
+    { sourceFeatureId: 'F999' },
+    { decisionMode: 'resume-only' },
+    { requesterCatId: undefined },
+    { navigation: { state: 'anchored' } },
+    {
+      navigation: {
+        state: 'anchored',
+        originRef: { kind: 'message', threadId: 't', messageId: ' ' },
+        approvalCardRef: { threadId: 't', messageId: 'm' },
+      },
+    },
+    { materialization: { state: 'succeeded' } },
+    { materialization: { state: 'succeeded', effectProofRef: 'proof:one' } },
+  ])('rejects malformed canonical approval facts: %j', (delta) => {
+    assert.equal(
+      unifiedAttentionApprovalsSourceSchema.safeParse({ items: [{ ...approval, ...delta }] }).success,
+      false,
+    );
+  });
+
+  it('keeps original anchored navigation and materialization proof intact', () => {
+    const anchored: ApprovalHubItem = {
+      ...approval,
+      resolution: 'accepted',
+      materialization: { state: 'succeeded', effectProofRef: 'proof:one' },
+      navigation: {
+        state: 'anchored',
+        originRef: { kind: 'event', anchor: 'event:one', summary: 'Original request' },
+        approvalCardRef: { threadId: 't', messageId: 'm' },
+      },
+    };
+    assert.deepEqual(unifiedAttentionApprovalsSourceSchema.parse({ items: [anchored] }).items[0], anchored);
+  });
+});
+
+describe('canonical closed approval result projection', () => {
+  it.each([
+    'expired',
+    'withdrawn',
+  ] as const)('preserves the original %s reason without inventing a decision or execution', (status) => {
+    expect(normalizeApprovalLifecycleProjection({ status })).toEqual({
+      resolution: 'closed_without_decision',
+      materialization: { state: 'not_started' },
+      closedReason: status,
+    });
+  });
+  it('does not guess a reason for a legacy closed row', () => {
+    expect(normalizeApprovalLifecycleProjection({ status: 'closed_without_decision' })).not.toHaveProperty(
+      'closedReason',
+    );
+  });
+  it('does not accept a closed reason attached to an approved decision', () => {
+    expect(
+      approvalLifecycleProjectionSchema.safeParse({
+        resolution: 'accepted',
+        materialization: { state: 'outcome_unknown' },
+        closedReason: 'expired',
+      }).success,
+    ).toBe(false);
   });
 });

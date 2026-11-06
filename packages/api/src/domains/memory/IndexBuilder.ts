@@ -2,9 +2,12 @@
 // F152 Phase A: refactored to use RepoScanner strategy (KD-5)
 
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
-import { CatCafeScanner, extractFrontmatter, extractSupersedes, isFeatureDocPath } from './CatCafeScanner.js';
+import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
+import { access, readFile } from 'node:fs/promises';
+import { join, relative, resolve } from 'node:path';
+import { createInterface } from 'node:readline';
+import { setImmediate as yieldToIo } from 'node:timers/promises';
+import { CatCafeScanner } from './CatCafeScanner.js';
 import { GenericRepoScanner } from './GenericRepoScanner.js';
 import type {
   ConsistencyReport,
@@ -15,19 +18,37 @@ import type {
   MessageRecallSuppressionLease,
   RebuildResult,
   RepoScanner,
+  ThreadIndexRefreshOptions,
 } from './interfaces.js';
 
 // Re-export for backward compatibility — external code imports KIND_DIRS from IndexBuilder
 export { KIND_DIRS } from './CatCafeScanner.js';
 
 import { mirrorDocAliases } from './doc-alias-mirror.js';
-import { extractDocLinkEdges, extractFeatureRefEdges, extractWikiLinkEdges } from './edge-extractors.js';
-import { embedIndexedItems, embedPassages, type PassageEmbeddingRow } from './embed-utils.js';
-import { isMarkdownSourcePath, MARKDOWN_DOC_PASSAGE_PREFIX } from './MarkdownPassageIndexer.js';
+import {
+  documentSourceClaims,
+  publishDocumentSourceClaims,
+  readDocumentSourceClaims,
+} from './document-source-claims.js';
+import {
+  DOCUMENT_SOURCE_EDGE_PREDICATE,
+  documentPathToAnchor,
+  extractDocumentSourceEdges,
+} from './document-source-edges.js';
+import { embedPassages, INDEX_EMBED_BATCH_SIZE } from './embed-utils.js';
+import { isMarkdownSourcePath } from './MarkdownPassageIndexer.js';
+import { runMemoryScan } from './MemoryProcess.js';
+import { buildSearchableMessageContent } from './message-search-content.js';
 import { type PassageVectorStore, passageVectorKey } from './PassageVectorStore.js';
+import { readPassageEmbeddingPage } from './passage-embedding-page.js';
+import { PassageWarmupDiagnostics } from './passage-warmup-diagnostics.js';
+import { prepareDocumentVectors } from './prepare-document-vectors.js';
+import { type DocumentPassageSource, replaceDocumentPassages } from './replace-document-passages.js';
 import type { SqliteEvidenceStore } from './SqliteEvidenceStore.js';
 import { SIGNAL_FLAGS } from './summary-config.js';
+import { projectThreadMessageSummary } from './thread-summary-projection.js';
 import type { VectorStore } from './VectorStore.js';
+import { createVectorInvalidator } from './vector-invalidation.js';
 
 /**
  * Bump when scanner extraction logic changes (e.g., new fields derived from
@@ -47,8 +68,12 @@ import type { VectorStore } from './VectorStore.js';
  *  10 — feature assets use path anchors; top-level feature specs own Fxxx
  *  11 — F287: approved Taste vignettes materialize complete decision passages
  *  12 — external-knowledge artifact roles, study tags, and authority backfill
+ *  13 — pathToAuthority normalizes Windows backslash source paths (re-derive authority)
+ *  14 — F321: quote text and owner comments backfill into canonical message passages
+ *  15 — explicitly anchored supporting docs retain feature keywords across all scanners
+ *  16 — split lessons hash and index their exact section body rather than only the title
  */
-export const INDEXING_VERSION = 12;
+export const INDEXING_VERSION = 16;
 
 /** Higher number = higher priority for anchor ownership */
 const KIND_PRIORITY: Record<EvidenceKind, number> = {
@@ -66,11 +91,7 @@ const KIND_PRIORITY: Record<EvidenceKind, number> = {
 };
 
 const PASSAGE_EMBED_SCAN_BATCH_SIZE = 256;
-
-type DocumentPassageSource = {
-  item: Pick<EvidenceItem, 'anchor' | 'sourcePath' | 'updatedAt'>;
-  passages: string[];
-};
+const PASSAGE_WRITE_BATCH_SIZE = 16;
 
 /**
  * Minimal thread snapshot for indexing — avoids coupling to full IThreadStore interface.
@@ -90,65 +111,12 @@ function computeThreadSourceHash(title: string, summary: string, keywords: strin
   return createHash('sha256').update(JSON.stringify({ title, summary, keywords })).digest('hex').slice(0, 16);
 }
 
-function projectThreadIndexTitle(thread: ThreadSnapshot, hasRecallSuppression: boolean): string {
+function projectThreadIndexTitle(thread: Pick<ThreadSnapshot, 'id' | 'title'>, hasRecallSuppression: boolean): string {
   // Thread titles may be generated from the first user message. Without title
   // provenance, a prepared/committed true recall must fail closed instead of
   // keeping a derived copy of the recalled body searchable.
   if (hasRecallSuppression) return `Thread ${thread.id.slice(0, 12)}`;
   return thread.title ?? `Thread ${thread.id.slice(0, 12)}`;
-}
-
-const SEARCHABLE_BLOCK_TEXT_FIELDS = [
-  'text',
-  'alt',
-  'caption',
-  'title',
-  'subtitle',
-  'label',
-  'description',
-  'body',
-  'bodyMarkdown',
-  'markdown',
-  'summary',
-];
-
-function buildSearchableMessageContent(message: StoredMessageSnapshot): string {
-  const parts: string[] = [];
-  const seen = new Set<string>();
-  const push = (value: unknown): void => {
-    if (typeof value !== 'string') return;
-    const text = value.replace(/\s+/g, ' ').trim();
-    if (!text) return;
-    const key = text.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    parts.push(text);
-  };
-
-  push(message.content);
-  for (const block of message.contentBlocks ?? []) collectBlockText(block, push);
-  for (const block of message.richBlocks ?? []) collectBlockText(block, push);
-
-  return parts.join('\n');
-}
-
-function collectBlockText(block: unknown, push: (value: unknown) => void): void {
-  if (!block || typeof block !== 'object') return;
-  const obj = block as Record<string, unknown>;
-
-  for (const field of SEARCHABLE_BLOCK_TEXT_FIELDS) {
-    push(obj[field]);
-  }
-
-  const items = obj.items;
-  if (Array.isArray(items)) {
-    for (const item of items) collectBlockText(item, push);
-  }
-
-  const sections = obj.sections;
-  if (Array.isArray(sections)) {
-    for (const section of sections) collectBlockText(section, push);
-  }
 }
 
 /** Callback that returns all threads for indexing. */
@@ -209,9 +177,20 @@ function detectScanner(docsRoot: string, exclude?: string[]): { scanner: RepoSca
   return { scanner: new CatCafeScanner(exclude), scanRoot: docsRoot };
 }
 
+class ThreadIndexSourceUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super(`Thread index source unavailable: ${String(cause)}`, { cause });
+  }
+}
+
 export class IndexBuilder implements IIndexBuilder {
+  private readonly pendingMentionDocAnchors = new Set<string>();
+  private indexMutationTail: Promise<unknown> = Promise.resolve();
+  private readonly pendingDocumentVectorAnchors = new Set<string>();
   /** E-2: Set of threadIds that have been modified since last flush */
   private dirtyThreads = new Set<string>();
+  private threadIndexRefresh: Promise<RebuildResult> | null = null;
+  private dirtyFlushInFlight: Promise<number> | null = null;
 
   private passageEmbeddingWarmupInFlight: Promise<void> | null = null;
 
@@ -238,6 +217,7 @@ export class IndexBuilder implements IIndexBuilder {
     scanner?: RepoScanner,
     exclude?: string[],
   ) {
+    this.store.invalidateVectorProjection();
     if (scanner) {
       this.scanner = scanner;
       this.scanRoot = docsRoot;
@@ -258,6 +238,13 @@ export class IndexBuilder implements IIndexBuilder {
         }
       | undefined,
   ): void {
+    if (
+      this.embedDeps?.embedding !== deps?.embedding ||
+      this.embedDeps?.vectorStore !== deps?.vectorStore ||
+      this.embedDeps?.passageVectorStore !== deps?.passageVectorStore
+    ) {
+      this.store.invalidateVectorProjection();
+    }
     this.embedDeps = deps;
   }
 
@@ -304,10 +291,50 @@ export class IndexBuilder implements IIndexBuilder {
     }
   }
 
-  async rebuild(options?: {
+  rebuild(options?: Parameters<IndexBuilder['rebuildOnce']>[0]): Promise<RebuildResult> {
+    return this.serializeIndexMutation(() => this.rebuildOnce(options));
+  }
+
+  private serializeIndexMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.indexMutationTail.then(async () => {
+      try {
+        return await operation();
+      } finally {
+        await this.flushPendingMentions();
+      }
+    });
+    this.indexMutationTail = result.catch(() => undefined);
+    return result;
+  }
+
+  private async flushPendingMentions(): Promise<void> {
+    if (!this.pendingMentionDocAnchors.size) return;
+    await this.store.refreshEntityMentions([...this.pendingMentionDocAnchors]);
+    this.pendingMentionDocAnchors.clear();
+  }
+
+  private async discover(): Promise<import('./interfaces.js').ScannedEvidence[]> {
+    await access(this.scanRoot);
+    if (this.scanner instanceof CatCafeScanner || this.scanner instanceof GenericRepoScanner) {
+      return runMemoryScan({
+        kind: 'scan',
+        scanner: this.scanner instanceof CatCafeScanner ? 'cat-cafe' : 'generic',
+        root: this.scanRoot,
+        excludes: this.scanner instanceof CatCafeScanner ? this.scanner.getExcludePatterns() : undefined,
+        options: this.buildScanOptions(),
+      });
+    }
+    await yieldToIo();
+    return this.scanner.discover(this.scanRoot, this.buildScanOptions());
+  }
+
+  private async rebuildOnce(options?: {
     force?: boolean;
+    deferThreadIndexing?: boolean;
+    deferDocumentEmbedding?: boolean;
     onProgress?: (phase: string, percent: number) => void;
   }): Promise<RebuildResult> {
+    this.store.invalidateVectorProjection();
     const report = options?.onProgress ?? (() => {});
     const start = Date.now();
     let indexed = 0;
@@ -319,13 +346,13 @@ export class IndexBuilder implements IIndexBuilder {
 
     report('scanning', 0);
     // F152 Phase A: delegate to pluggable scanner (KD-5)
-    const scannedItems = this.scanner.discover(this.scanRoot, this.buildScanOptions());
+    const scannedItems = await this.discover();
     report('scanning', 15);
     const currentAnchors = new Set<string>();
-    const indexedItems: EvidenceItem[] = [];
     const documentPassageSources: DocumentPassageSource[] = [];
 
     for (const scanned of scannedItems) {
+      await yieldToIo();
       const sourceHash = scanned.rawContent
         ? createHash('sha256').update(scanned.rawContent).digest('hex').slice(0, 16)
         : ((scanned.item as EvidenceItem).sourceHash ??
@@ -372,8 +399,13 @@ export class IndexBuilder implements IIndexBuilder {
         }
       }
 
-      await this.store.upsert([item]);
-      indexedItems.push(item);
+      this.pendingMentionDocAnchors.add(item.anchor);
+      // A matching hash means passages completed, not merely metadata written.
+      // Persist an incomplete stamp until the replacement transaction commits.
+      await this.store.upsertForDocumentIndex(
+        isMarkdownSourcePath(item.sourcePath) ? { ...item, sourceHash: undefined } : item,
+      );
+      this.pendingDocumentVectorAnchors.add(item.anchor);
       if (isMarkdownSourcePath(item.sourcePath)) {
         documentPassageSources.push({ item, passages: scanned.passages });
       }
@@ -382,110 +414,7 @@ export class IndexBuilder implements IIndexBuilder {
 
     report('indexing', 30);
 
-    // Phase D: auto-extract edges from frontmatter cross-references (AC-D18, KD-29)
-    // Phase F: clear both legacy 'related' and normalized 'related_to'; write 'related_to' with provenance
-    // M15: clear and rebuild temporal supersedes frontmatter edges in the same pass.
-    await this.store.runExclusive(() => {
-      this.store
-        .getDb()
-        .prepare(
-          "DELETE FROM edges WHERE relation IN ('related', 'related_to', 'supersedes') AND provenance = 'frontmatter'",
-        )
-        .run();
-    });
-
-    for (const scanned of scannedItems) {
-      if (!scanned.rawContent) continue;
-      const fm = extractFrontmatter(scanned.rawContent);
-      if (!fm) continue;
-      // Use the item's already-assigned anchor (which respects path-based rules)
-      // instead of re-extracting from raw content (which could produce a stale/wrong anchor)
-      const anchor = scanned.item.anchor;
-      if (!anchor) continue;
-
-      for (const ref of extractSupersedes(fm)) {
-        if (ref !== anchor) {
-          await this.store.addEdge({
-            fromAnchor: anchor,
-            toAnchor: ref,
-            relation: 'supersedes',
-            provenance: 'frontmatter',
-          });
-        }
-      }
-
-      const relatedFeatures = fm.related_features;
-      if (Array.isArray(relatedFeatures)) {
-        for (const ref of relatedFeatures) {
-          if (typeof ref === 'string' && ref !== anchor) {
-            await this.store.addEdge({
-              fromAnchor: anchor,
-              toAnchor: ref,
-              relation: 'related_to',
-              provenance: 'frontmatter',
-            });
-          }
-        }
-      }
-
-      // Non-feature docs: promote feature_ids to graph edges (they no longer become anchors)
-      const featureIds = fm.feature_ids;
-      const sp = scanned.item.sourcePath ?? '';
-      if (Array.isArray(featureIds) && !isFeatureDocPath(sp)) {
-        for (const fid of featureIds) {
-          if (typeof fid === 'string' && fid !== anchor) {
-            await this.store.addEdge({
-              fromAnchor: anchor,
-              toAnchor: fid,
-              relation: 'related_to',
-              provenance: 'frontmatter',
-            });
-          }
-        }
-      }
-    }
-
-    // Phase C (F188): extract wikilink / doc_link / feature_ref edges from content
-    await this.store.runExclusive(() => {
-      this.store.getDb().prepare("DELETE FROM edges WHERE provenance = 'content'").run();
-    });
-
-    const toPosix = (p: string): string => p.replace(/\\/g, '/');
-    const sourcePathKey = (sourcePath: string): string =>
-      toPosix(isAbsolute(sourcePath) ? relative(this.scanRoot, sourcePath) : sourcePath);
-    const pathToAnchor = new Map<string, string>();
-    const setAlias = (key: string, anchor: string): void => {
-      if (!pathToAnchor.has(key)) pathToAnchor.set(key, anchor);
-    };
-    for (const scanned of scannedItems) {
-      const sp = scanned.item.sourcePath;
-      if (sp) {
-        const key = sourcePathKey(sp);
-        pathToAnchor.set(key, scanned.item.anchor);
-        if (key.startsWith('docs/')) {
-          setAlias(key.slice('docs/'.length), scanned.item.anchor);
-        } else {
-          setAlias(`docs/${key}`, scanned.item.anchor);
-        }
-      }
-    }
-
-    for (const scanned of scannedItems) {
-      if (!scanned.rawContent) continue;
-      const anchor = scanned.item.anchor;
-      if (!anchor) continue;
-
-      const body = scanned.rawContent.replace(/^---\n[\s\S]*?\n---\n?/, '');
-      const relSourcePath = scanned.item.sourcePath ? sourcePathKey(scanned.item.sourcePath) : undefined;
-      const allEdges = [
-        ...extractWikiLinkEdges(body, anchor),
-        ...extractFeatureRefEdges(body, anchor),
-        ...extractDocLinkEdges(body, anchor, pathToAnchor, relSourcePath),
-      ];
-      for (const edge of allEdges) {
-        await this.store.addEdge(edge);
-      }
-    }
+    await this.refreshRebuiltDocumentEdges(scannedItems);
 
     report('indexing', 40);
     await this.indexDocumentPassages(documentPassageSources);
@@ -493,7 +422,7 @@ export class IndexBuilder implements IIndexBuilder {
     // Phase D-6: Index session digests (kind=session)
     if (this.transcriptDataDir) {
       const excludedThreadIds = this.excludeThreadIdsFn ? await this.excludeThreadIdsFn() : undefined;
-      const sessionItems = this.discoverSessionDigests(excludedThreadIds);
+      const sessionItems = await this.discoverSessionDigests(excludedThreadIds);
       for (const item of sessionItems) {
         currentAnchors.add(item.anchor);
         if (!options?.force) {
@@ -504,72 +433,41 @@ export class IndexBuilder implements IIndexBuilder {
           }
         }
         await this.store.upsert([item]);
-        indexedItems.push(item);
+        this.pendingDocumentVectorAnchors.add(item.anchor);
         indexed++;
       }
     }
 
-    // Phase E-1: Index thread summaries
-    let threadListFailed = false;
-    if (this.threadListFn) {
-      let threads: ThreadSnapshot[];
+    // Runtime startup reuses persisted chat history; hydrate it only after listen.
+    if (!options?.deferThreadIndexing) {
       try {
-        threads = await this.threadListFn();
-      } catch {
-        threads = [];
-        threadListFailed = true;
-      }
-
-      for (const thread of threads) {
-        const item = await this.buildThreadEvidenceItem(thread);
-        const anchor = item.anchor;
-
-        currentAnchors.add(anchor);
-        if (!options?.force) {
-          const existing = await this.store.getByAnchor(anchor);
-          if (existing?.sourceHash === item.sourceHash) {
-            skipped++;
-            continue;
-          }
-        }
-        await this.store.upsert([item]);
-        indexedItems.push(item);
-        indexed++;
-      }
-    }
-
-    report('indexing', 55);
-    // Phase E-3: Index thread message passages
-    let threads: ThreadSnapshot[] = [];
-    if (this.messageListFn && this.threadListFn && !threadListFailed) {
-      try {
-        threads = await this.threadListFn();
-      } catch {
-        threads = [];
-      }
-      await this.indexPassages(threads);
-    }
-
-    // Phase I (AC-I1/I3): Backfill from JSONL transcripts for threads with expired Redis messages
-    if (this.transcriptDataDir && threads.length > 0) {
-      for (const thread of threads) {
-        await this.backfillPassagesFromTranscript(thread.id);
+        const result = await this.refreshThreadIndex({ force: options?.force, onProgress: report });
+        indexed += result.docsIndexed;
+        skipped += result.docsSkipped;
+      } catch (error) {
+        if (!(error instanceof ThreadIndexSourceUnavailableError)) throw error;
+        console.warn(`[IndexBuilder] thread index refresh failed; preserving existing history: ${String(error)}`);
       }
     }
 
     report('cleanup', 70);
     // Remove stale anchors that no longer exist on disk
-    // P1 fix: if threadListFn failed, preserve existing thread-* anchors (don't delete on transient error)
+    // Thread refresh owns thread cleanup, including transient listing failures.
     const db = this.store.getDb();
     const allAnchors = db.prepare('SELECT anchor FROM evidence_docs').all() as Array<{ anchor: string }>;
     const removedAnchors: string[] = [];
     for (const row of allAnchors) {
       if (!currentAnchors.has(row.anchor)) {
-        if (threadListFailed && row.anchor.startsWith('thread-')) continue;
+        if (row.anchor.startsWith('thread-')) continue;
         await this.store.deleteByAnchor(row.anchor);
-        this.embedDeps?.vectorStore.delete(row.anchor);
+        this.pendingDocumentVectorAnchors.delete(row.anchor);
         removedAnchors.push(row.anchor);
       }
+    }
+    if (removedAnchors.length > 0) {
+      await this.store.runExclusive(() =>
+        db.prepare('DELETE FROM document_vector_sources WHERE anchor NOT IN (SELECT anchor FROM evidence_docs)').run(),
+      );
     }
 
     // F260 Phase A: mirror doc titles → doc_aliases (after stale removal, before embeddings)
@@ -580,37 +478,180 @@ export class IndexBuilder implements IIndexBuilder {
     }
 
     report('embedding', 80);
-    // Phase C: generate embeddings for indexed items (shared utility with batch splitting)
-    if (this.embedDeps) {
-      const { embedding, vectorStore } = this.embedDeps;
-      const store = this.store;
+    // The model may have become ready after this pass began. Vector catch-up
+    // reads the indexed rows and their source hashes without rescanning files.
+    if (options?.deferDocumentEmbedding) {
+      const deps = this.embedDeps;
+      if (deps) {
+        await prepareDocumentVectors(
+          this.store,
+          deps,
+          this.pendingDocumentVectorAnchors,
+          () => this.embedDeps?.embedding === deps.embedding && this.embedDeps.vectorStore === deps.vectorStore,
+          Boolean(options.force),
+        );
+      }
+    } else {
       try {
-        await embedIndexedItems({
-          items: indexedItems,
-          embedding,
-          vectorStore,
-          onVectorReset: () => this.embedDeps?.passageVectorStore?.clearAll(),
-          allDocsProvider: () => {
-            const db = store.getDb();
-            const allDocs = db.prepare('SELECT anchor, title, summary FROM evidence_docs').all() as Array<{
-              anchor: string;
-              title: string;
-              summary: string | null;
-            }>;
-            return allDocs.map(
-              (d) => ({ anchor: d.anchor, title: d.title, summary: d.summary ?? undefined }) as EvidenceItem,
-            );
-          },
-        });
+        await this.embedMissingDocumentVectors(Boolean(options?.force));
       } catch {
-        // fail-open: embedding errors don't block indexing
+        // fail-open: lexical evidence remains usable without embeddings
       }
     }
+    await publishDocumentSourceClaims(this.store, documentSourceClaims(scannedItems.map(({ item }) => item)));
     // Persist current indexing version so next startup can detect changes
     await this.storeIndexingVersion();
+    await this.flushPendingMentions();
     report('done', 100);
 
     return { docsIndexed: indexed, docsSkipped: skipped, durationMs: Date.now() - start };
+  }
+
+  /** Catch up chat history without rescanning documents or blocking startup. */
+  refreshThreadIndex(options: ThreadIndexRefreshOptions = {}): Promise<RebuildResult> {
+    if (this.threadIndexRefresh) {
+      return options.force
+        ? this.threadIndexRefresh.then(() => this.refreshThreadIndex(options))
+        : this.threadIndexRefresh;
+    }
+    const refresh = Promise.resolve(this.dirtyFlushInFlight)
+      .then(() => this.refreshThreadIndexOnce(options))
+      .finally(() => {
+        if (this.threadIndexRefresh === refresh) this.threadIndexRefresh = null;
+      });
+    this.threadIndexRefresh = refresh;
+    return refresh;
+  }
+
+  private async refreshThreadIndexOnce(options: ThreadIndexRefreshOptions): Promise<RebuildResult> {
+    const start = Date.now();
+    let indexed = 0;
+    let skipped = 0;
+    const { signal, onProgress: report = () => {} } = options;
+    signal?.throwIfAborted();
+    if (!this.threadListFn) return { docsIndexed: 0, docsSkipped: 0, durationMs: 0 };
+    // Capture cleanup candidates before awaiting the live snapshot. Threads added
+    // by a concurrent dirty flush must not be mistaken for deleted history.
+    const previous = this.store
+      .getDb()
+      .prepare("SELECT anchor FROM evidence_docs WHERE anchor LIKE 'thread-%'")
+      .all() as Array<{ anchor: string }>;
+    let threads: ThreadSnapshot[];
+    try {
+      threads = await this.threadListFn();
+    } catch (error) {
+      throw new ThreadIndexSourceUnavailableError(error);
+    }
+    signal?.throwIfAborted();
+    const anchors = new Set(threads.map((thread) => `thread-${thread.id}`));
+    report('thread-summaries', 40);
+    for (const thread of threads) {
+      await yieldToIo(undefined, { signal });
+      const suppressionVersion = this.threadSuppressionVersion(thread.id);
+      const item = await this.buildThreadEvidenceItem(thread);
+      signal?.throwIfAborted();
+      const existing = await this.store.getByAnchor(item.anchor);
+      if (!options.force && existing?.sourceHash === item.sourceHash) {
+        skipped++;
+        continue;
+      }
+      let current = true;
+      await this.store.upsert([item], () => {
+        signal?.throwIfAborted();
+        if (suppressionVersion === this.threadSuppressionVersion(thread.id)) return true;
+        this.markThreadDirty(thread.id);
+        current = false;
+        return false;
+      });
+      if (!current) {
+        skipped++;
+        continue;
+      }
+      this.pendingDocumentVectorAnchors.add(item.anchor);
+      indexed++;
+    }
+    report('thread-passages', 55);
+    await this.indexPassages(threads, signal);
+    report('transcript-backfill', 62);
+    if (this.transcriptDataDir) {
+      for (const thread of threads) {
+        await yieldToIo(undefined, { signal });
+        await this.backfillPassagesFromTranscript(thread.id, signal);
+      }
+    }
+    let removed = false;
+    for (const { anchor } of previous) {
+      signal?.throwIfAborted();
+      if (anchors.has(anchor) || this.dirtyThreads.has(anchor.slice('thread-'.length))) continue;
+      await this.store.deleteByAnchor(anchor);
+      this.pendingDocumentVectorAnchors.delete(anchor);
+      removed = true;
+    }
+    if (removed) {
+      await this.store.runExclusive(() =>
+        this.store
+          .getDb()
+          .prepare('DELETE FROM document_vector_sources WHERE anchor NOT IN (SELECT anchor FROM evidence_docs)')
+          .run(),
+      );
+    }
+    if (indexed > 0 || removed) {
+      await this.store.runExclusive(() => mirrorDocAliases(this.store.getDb()));
+    }
+    return { docsIndexed: indexed, docsSkipped: skipped, durationMs: Date.now() - start };
+  }
+
+  private async storeDocumentVectorIfCurrent(
+    row: { anchor: string; sourceHash: string | null },
+    vector: Float32Array,
+    vectorStore: VectorStore,
+  ): Promise<boolean> {
+    return this.store.runExclusive(() => {
+      const db = this.store.getDb();
+      const current = db
+        .prepare('SELECT source_hash AS sourceHash FROM evidence_docs WHERE anchor = ?')
+        .get(row.anchor) as { sourceHash: string | null } | undefined;
+      if (!current || current.sourceHash !== row.sourceHash || this.embedDeps?.vectorStore !== vectorStore) {
+        if (current) this.pendingDocumentVectorAnchors.add(row.anchor);
+        return false;
+      }
+      vectorStore.upsert(row.anchor, vector);
+      db.prepare('INSERT OR REPLACE INTO document_vector_sources (anchor, source_hash) VALUES (?, ?)').run(
+        row.anchor,
+        row.sourceHash ?? '',
+      );
+      this.pendingDocumentVectorAnchors.delete(row.anchor);
+      return true;
+    });
+  }
+
+  async embedMissingDocumentVectors(force = false): Promise<{ docsEmbedded: number; durationMs: number }> {
+    const start = Date.now();
+    const deps = this.embedDeps;
+    if (!deps) return { docsEmbedded: 0, durationMs: Date.now() - start };
+    const { embedding, vectorStore } = deps;
+    const isCurrent = () => this.embedDeps?.embedding === embedding && this.embedDeps.vectorStore === vectorStore;
+    await embedding.reprobeIfNeeded();
+    if (!embedding.isReady() || !isCurrent()) return { docsEmbedded: 0, durationMs: Date.now() - start };
+
+    const db = this.store.getDb();
+    const pending = await prepareDocumentVectors(this.store, deps, this.pendingDocumentVectorAnchors, isCurrent, force);
+    let docsEmbedded = 0;
+    for (let offset = 0; offset < pending.length; offset += INDEX_EMBED_BATCH_SIZE) {
+      if (!isCurrent()) break;
+      const anchors = pending.slice(offset, offset + INDEX_EMBED_BATCH_SIZE);
+      const batch = db
+        .prepare(`SELECT anchor, title, summary, source_hash AS sourceHash FROM evidence_docs
+          WHERE anchor IN (${anchors.map(() => '?').join(',')}) ORDER BY anchor`)
+        .all(...anchors) as Array<{ anchor: string; title: string; summary: string | null; sourceHash: string | null }>;
+      if (batch.length === 0) continue;
+      const vectors = await embedding.embed(batch.map((row) => `${row.title} ${row.summary ?? ''}`));
+      for (let i = 0; i < batch.length; i++) {
+        if (!isCurrent()) break;
+        if (await this.storeDocumentVectorIfCurrent(batch[i], vectors[i], vectorStore)) docsEmbedded++;
+      }
+    }
+    return { docsEmbedded, durationMs: Date.now() - start };
   }
 
   isPassageWarmupActive(): boolean {
@@ -628,82 +669,97 @@ export class IndexBuilder implements IIndexBuilder {
   private runPassageEmbeddingWarmup(): Promise<void> {
     if (this.passageEmbeddingWarmupInFlight) return this.passageEmbeddingWarmupInFlight;
 
-    const warmup = this.embedMissingPassages()
+    const observation = new PassageWarmupDiagnostics();
+    const warmup = this.embedMissingPassages(undefined, observation)
       .catch(() => {
+        observation.stop('rejected', 'unexpected-error');
         /* fail-open: passage vectors are an accelerator; passage_fts remains canonical */
       })
       .finally(() => {
         if (this.passageEmbeddingWarmupInFlight === warmup) {
           this.passageEmbeddingWarmupInFlight = null;
         }
+        observation.finish();
       });
     this.passageEmbeddingWarmupInFlight = warmup;
     return warmup;
   }
 
-  async incrementalUpdate(changedPaths: string[]): Promise<void> {
+  incrementalUpdate(changedPaths: string[]): Promise<void> {
+    return this.serializeIndexMutation(() => this.incrementalUpdateOnce(changedPaths));
+  }
+
+  private async incrementalUpdateOnce(changedPaths: string[]): Promise<void> {
     // Two-pass: deletions first, then upserts.
     // This ensures that when a higher-priority owner is deleted and a lower-priority
     // doc is updated in the same batch, the deletion clears the way for the upsert.
     const toUpsert: Array<{ parsed: EvidenceItem; passages: string[]; rawContent?: string }> = [];
-    const toDelete: string[] = [];
+    const anchorsToDelete = new Set<string>();
+    const claims = await this.loadDocumentSourceClaims();
+    const affectedAnchors = new Set<string>();
     const documentPassageSources: DocumentPassageSource[] = [];
 
     for (const filePath of changedPaths) {
-      const parsed = this.parseSingleFile(filePath);
+      const parsed = await this.parseSingleFile(filePath);
+      const path = relative(this.scanRoot, filePath);
+      const oldClaim = claims.get(path);
+      if (oldClaim) affectedAnchors.add(oldClaim);
+      if (parsed) {
+        claims.set(path, parsed.parsed.anchor);
+        affectedAnchors.add(parsed.parsed.anchor);
+      } else claims.delete(path);
+      // A changed explicit anchor transfers this source to a new identity. Release
+      // its old identity through the same deletion/backfill path as a removed file.
+      const previous = this.store
+        .getDb()
+        .prepare('SELECT anchor FROM evidence_docs WHERE source_path = ?')
+        .all(relative(this.scanRoot, filePath)) as Array<{ anchor: string }>;
+      for (const row of previous) {
+        if (!parsed || row.anchor !== parsed.parsed.anchor) anchorsToDelete.add(row.anchor);
+      }
       if (parsed) {
         toUpsert.push(parsed);
-      } else {
-        toDelete.push(filePath);
       }
     }
 
     // Pass 1: deletions (P1: sync vector deletion) + backfill from candidate docs
     const deletedAnchors: string[] = [];
-    for (const filePath of toDelete) {
-      // P1-5 fix: use scanRoot (not docsRoot) — source_path stored relative to scanRoot
-      const relPath = relative(this.scanRoot, filePath);
-      const db = this.store.getDb();
-      const row = db.prepare('SELECT anchor FROM evidence_docs WHERE source_path = ?').get(relPath) as
-        | { anchor: string }
-        | undefined;
-      if (row) {
-        await this.store.deleteByAnchor(row.anchor);
-        this.embedDeps?.vectorStore.delete(row.anchor);
-        await this.refreshFrontmatterSupersedesEdges(row.anchor);
-        deletedAnchors.push(row.anchor);
-      }
+    // Even a losing source affected its shared anchor and may have suppressed a self-path link.
+    const pathLinkDependents = new Set(affectedAnchors);
+    const db = this.store.getDb();
+    for (const anchor of new Set([...affectedAnchors, ...anchorsToDelete])) {
+      const inbound = db
+        .prepare(
+          "SELECT DISTINCT from_anchor AS anchor FROM edges WHERE to_anchor = ? AND relation = 'doc_link' AND provenance = 'content'",
+        )
+        .all(anchor) as Array<{ anchor: string }>;
+      for (const source of inbound) pathLinkDependents.add(source.anchor);
+    }
+    for (const anchor of anchorsToDelete) {
+      await this.store.deleteByAnchor(anchor);
+      this.pendingDocumentVectorAnchors.delete(anchor);
+      await this.store.runExclusive(() =>
+        db.prepare('DELETE FROM document_vector_sources WHERE anchor = ?').run(anchor),
+      );
+      await this.refreshDocumentSourceEdges(anchor);
+      deletedAnchors.push(anchor);
     }
 
-    // Backfill: for each deleted anchor, scan for remaining docs that claim it
-    if (deletedAnchors.length > 0) {
-      const allScanned = this.scanner.discover(this.scanRoot, this.buildScanOptions());
-      for (const anchor of deletedAnchors) {
-        const candidates = allScanned
-          .filter((s) => s.item.anchor === anchor)
-          .map((s) => ({
-            parsed: {
-              ...s.item,
-              sourceHash: s.rawContent
-                ? createHash('sha256').update(s.rawContent).digest('hex').slice(0, 16)
-                : undefined,
-              provenance: s.provenance,
-            } as EvidenceItem,
-            passages: s.passages,
-            rawContent: s.rawContent,
-          }));
-        if (candidates.length > 0) {
-          candidates.sort((a, b) => (KIND_PRIORITY[b.parsed.kind] ?? 0) - (KIND_PRIORITY[a.parsed.kind] ?? 0));
-          const best = candidates[0];
-          if (best && !toUpsert.some((u) => u.parsed.anchor === anchor)) {
-            toUpsert.push(best);
-          }
-        }
+    // Backfill only remaining claimants of retired identities; no corpus rediscovery.
+    for (const anchor of deletedAnchors) {
+      const candidates: typeof toUpsert = [];
+      for (const [path, claimedAnchor] of claims) {
+        if (claimedAnchor !== anchor) continue;
+        const candidate = await this.parseSingleFile(resolve(this.scanRoot, path));
+        if (candidate?.parsed.anchor === anchor) candidates.push(candidate);
       }
+      candidates.sort((a, b) => (KIND_PRIORITY[b.parsed.kind] ?? 0) - (KIND_PRIORITY[a.parsed.kind] ?? 0));
+      const best = candidates[0];
+      if (best && !toUpsert.some((item) => item.parsed.anchor === anchor)) toUpsert.push(best);
     }
 
     // Pass 2: upserts (with kind-priority guard) + embed new/changed docs
-    for (const { parsed, passages, rawContent } of toUpsert) {
+    for (const { parsed, passages } of toUpsert) {
       const existing = await this.store.getByAnchor(parsed.anchor);
       if (existing) {
         const existingPriority = KIND_PRIORITY[existing.kind] ?? 0;
@@ -712,8 +768,11 @@ export class IndexBuilder implements IIndexBuilder {
           continue;
         }
       }
-      await this.store.upsert([parsed]);
-      await this.refreshFrontmatterSupersedesEdges(parsed.anchor, rawContent);
+      this.pendingMentionDocAnchors.add(parsed.anchor);
+      await this.store.upsertForDocumentIndex(
+        isMarkdownSourcePath(parsed.sourcePath) ? { ...parsed, sourceHash: undefined } : parsed,
+      );
+      this.pendingDocumentVectorAnchors.add(parsed.anchor);
       if (isMarkdownSourcePath(parsed.sourcePath)) {
         documentPassageSources.push({ item: parsed, passages });
       }
@@ -722,13 +781,24 @@ export class IndexBuilder implements IIndexBuilder {
         try {
           const [vec] = await this.embedDeps.embedding.embed([`${parsed.title} ${parsed.summary ?? ''}`]);
           this.embedDeps.vectorStore.upsert(parsed.anchor, vec);
+          await this.store.runExclusive(() =>
+            this.store
+              .getDb()
+              .prepare('INSERT OR REPLACE INTO document_vector_sources (anchor, source_hash) VALUES (?, ?)')
+              .run(parsed.anchor, parsed.sourceHash ?? ''),
+          );
+          this.pendingDocumentVectorAnchors.delete(parsed.anchor);
         } catch {
           // fail-open: skip embedding on error
         }
       }
     }
 
+    await this.refreshIncrementalDocumentEdges(toUpsert, pathLinkDependents, claims);
+
     await this.indexDocumentPassages(documentPassageSources);
+
+    await publishDocumentSourceClaims(this.store, claims);
 
     // F260 Phase A: refresh doc_aliases after incremental doc changes.
     // delete-rebuild pattern is O(N) but correct; acceptable for Phase A shadow-only scope.
@@ -755,13 +825,22 @@ export class IndexBuilder implements IIndexBuilder {
   // ── Private ──────────────────────────────────────────────────────
 
   /** F152: Bridge — delegate single-file parsing to scanner (for incrementalUpdate) */
-  private parseSingleFile(filePath: string): {
+  private async parseSingleFile(filePath: string): Promise<{
     parsed: EvidenceItem;
     passages: string[];
     rawContent: string;
-  } | null {
+  } | null> {
     if ('parseSingle' in this.scanner && typeof this.scanner.parseSingle === 'function') {
-      const scanned = this.scanner.parseSingle(filePath, this.scanRoot);
+      const scanned =
+        this.scanner instanceof CatCafeScanner || this.scanner instanceof GenericRepoScanner
+          ? await runMemoryScan<import('./interfaces.js').ScannedEvidence | null>({
+              kind: 'scan',
+              scanner: this.scanner instanceof CatCafeScanner ? 'cat-cafe' : 'generic',
+              root: this.scanRoot,
+              excludes: this.scanner instanceof CatCafeScanner ? this.scanner.getExcludePatterns() : undefined,
+              singlePath: filePath,
+            })
+          : this.scanner.parseSingle(filePath, this.scanRoot);
       if (!scanned) return null;
       const sourceHash = scanned.rawContent
         ? createHash('sha256').update(scanned.rawContent).digest('hex').slice(0, 16)
@@ -775,26 +854,80 @@ export class IndexBuilder implements IIndexBuilder {
     return null;
   }
 
-  private async refreshFrontmatterSupersedesEdges(anchor: string, rawContent = ''): Promise<void> {
+  private async refreshRebuiltDocumentEdges(scanned: import('./interfaces.js').ScannedEvidence[]): Promise<void> {
+    await this.store.runExclusive(() => {
+      this.store.getDb().prepare(`DELETE FROM edges WHERE ${DOCUMENT_SOURCE_EDGE_PREDICATE}`).run();
+    });
+    const owners = this.store
+      .getDb()
+      .prepare('SELECT anchor, source_path AS sourcePath FROM evidence_docs')
+      .all() as Array<{ anchor: string; sourcePath: string | null }>;
+    const winners = new Map(owners.map((row) => [row.anchor, row.sourcePath]));
+    const pathToAnchor = documentPathToAnchor(
+      scanned.map(({ item }) => item),
+      this.scanRoot,
+    );
+    for (const source of scanned) {
+      await yieldToIo();
+      if (!source.rawContent || winners.get(source.item.anchor) !== source.item.sourcePath) continue;
+      for (const edge of extractDocumentSourceEdges(source.item, source.rawContent, pathToAnchor, this.scanRoot)) {
+        await this.store.addEdge(edge);
+      }
+    }
+  }
+
+  private async loadDocumentSourceClaims(): Promise<Map<string, string>> {
+    const existing = readDocumentSourceClaims(this.store);
+    if (existing) return existing;
+    // Legacy direct incremental entry lacks loser history. Initialize its derived graph once,
+    // without rewriting document rows, passages or vectors. Normal startup rebuild already does this.
+    const scanned = await this.discover();
+    await this.refreshRebuiltDocumentEdges(scanned);
+    return documentSourceClaims(scanned.map(({ item }) => item));
+  }
+
+  private async refreshIncrementalDocumentEdges(
+    changed: Array<{ parsed: EvidenceItem; rawContent?: string }>,
+    pathLinkDependents: Set<string>,
+    claims: ReadonlyMap<string, string>,
+  ): Promise<void> {
+    const pathToAnchor = documentPathToAnchor(
+      [...claims].map(([sourcePath, anchor]) => ({ sourcePath, anchor })),
+      this.scanRoot,
+    );
+    const replacements = new Map<string, { parsed: EvidenceItem; rawContent?: string }>();
+    for (const change of changed) {
+      const winner = await this.store.getByAnchor(change.parsed.anchor);
+      if (winner?.sourcePath === change.parsed.sourcePath) replacements.set(change.parsed.anchor, change);
+    }
+    // A Markdown path still names the same file after rekey, unlike an explicit [[old-anchor]] reference.
+    // Reparse only sources whose resolved doc_link depended on an identity retired in this mutation.
+    for (const anchor of pathLinkDependents) {
+      if (replacements.has(anchor)) continue;
+      const current = await this.store.getByAnchor(anchor);
+      if (!current?.sourcePath) continue;
+      const parsed = await this.parseSingleFile(resolve(this.scanRoot, current.sourcePath));
+      if (parsed?.parsed.anchor === anchor) replacements.set(anchor, parsed);
+    }
+    for (const { parsed, rawContent } of replacements.values()) {
+      await this.refreshDocumentSourceEdges(parsed.anchor, rawContent, parsed.sourcePath, pathToAnchor);
+    }
+  }
+
+  private async refreshDocumentSourceEdges(
+    anchor: string,
+    rawContent = '',
+    sourcePath?: string,
+    pathToAnchor = new Map<string, string>(),
+  ): Promise<void> {
     await this.store.runExclusive(() => {
       this.store
         .getDb()
-        .prepare("DELETE FROM edges WHERE relation = 'supersedes' AND provenance = 'frontmatter' AND from_anchor = ?")
+        .prepare(`DELETE FROM edges WHERE from_anchor = ? AND ${DOCUMENT_SOURCE_EDGE_PREDICATE}`)
         .run(anchor);
     });
-
-    const fm = extractFrontmatter(rawContent);
-    if (!fm) return;
-
-    for (const ref of extractSupersedes(fm)) {
-      if (ref !== anchor) {
-        await this.store.addEdge({
-          fromAnchor: anchor,
-          toAnchor: ref,
-          relation: 'supersedes',
-          provenance: 'frontmatter',
-        });
-      }
+    for (const edge of extractDocumentSourceEdges({ anchor, sourcePath }, rawContent, pathToAnchor, this.scanRoot)) {
+      await this.store.addEdge(edge);
     }
   }
 
@@ -802,7 +935,7 @@ export class IndexBuilder implements IIndexBuilder {
    * D6: Discover sealed session digests from transcript data directory.
    * Scans dataDir/threads/{threadId}/{catId}/sessions/{sessionId}/digest.extractive.json
    */
-  private discoverSessionDigests(excludedThreadIds?: Set<string>): EvidenceItem[] {
+  private async discoverSessionDigests(excludedThreadIds?: Set<string>): Promise<EvidenceItem[]> {
     if (!this.transcriptDataDir) return [];
     const results: EvidenceItem[] = [];
     const threadsDir = join(this.transcriptDataDir, 'threads');
@@ -854,7 +987,7 @@ export class IndexBuilder implements IIndexBuilder {
         for (const sessionId of sessionIds) {
           const digestPath = join(sessionsPath, sessionId, 'digest.extractive.json');
           try {
-            const raw = readFileSync(digestPath, 'utf-8');
+            const raw = await readFile(digestPath, 'utf-8');
             const digest = JSON.parse(raw) as {
               sessionId: string;
               threadId: string;
@@ -910,6 +1043,10 @@ export class IndexBuilder implements IIndexBuilder {
     this.dirtyThreads.add(threadId);
   }
 
+  private threadSuppressionVersion(threadId: string): string {
+    return [...this.suppressedMessageIds(threadId)].sort().join('\n');
+  }
+
   private suppressedMessageIds(threadId: string): Set<string> {
     const rows = this.store
       .getDb()
@@ -930,17 +1067,7 @@ export class IndexBuilder implements IIndexBuilder {
     let summary = '';
     if (this.messageListFn) {
       try {
-        const messages = (await this.messageListFn(thread.id, 100)).filter((message) => !suppressed.has(message.id));
-        if (messages.length > 0) {
-          const turns = messages
-            .map((message) => {
-              const content = buildSearchableMessageContent(message);
-              return content ? `[${message.catId ?? 'user'}] ${content}` : '';
-            })
-            .filter(Boolean);
-          const joined = turns.join('\n');
-          summary = joined.length > 3000 ? `${joined.slice(0, 2997)}...` : joined;
-        }
+        summary = projectThreadMessageSummary(await this.messageListFn(thread.id, 100), suppressed);
       } catch {
         // Message projection is fail-open; the title remains the minimal index body.
       }
@@ -972,6 +1099,8 @@ export class IndexBuilder implements IIndexBuilder {
     const lease: MessageRecallSuppressionLease = { threadId, messageId, leaseId: randomUUID() };
     await this.store.runExclusive(() => {
       const db = this.store.getDb();
+      const invalidatePassage = createVectorInvalidator(db, 'passage_vectors');
+      const invalidateDocument = createVectorInvalidator(db, 'evidence_vectors');
       db.transaction(() => {
         const passage = db
           .prepare(
@@ -1015,12 +1144,17 @@ export class IndexBuilder implements IIndexBuilder {
         db.prepare('DELETE FROM evidence_passages WHERE doc_anchor = ? AND passage_id = ?').run(docAnchor, passageId);
         db.prepare(
           `UPDATE evidence_docs
-           SET summary = '', source_hash = COALESCE(source_hash, '') || ?
+           SET title = ?, summary = '', source_hash = COALESCE(source_hash, '') || ?
            WHERE anchor = ?`,
-        ).run(`:recall-suppressed:${messageId}`, docAnchor);
+        ).run(
+          projectThreadIndexTitle({ id: threadId, title: null }, true),
+          `:recall-suppressed:${messageId}`,
+          docAnchor,
+        );
+        db.prepare("DELETE FROM doc_aliases WHERE doc_anchor = ? AND source = 'doc-title'").run(docAnchor);
+        invalidatePassage(passageVectorKey(docAnchor, passageId));
+        invalidateDocument(docAnchor);
       })();
-      this.embedDeps?.passageVectorStore?.delete(passageVectorKey(docAnchor, passageId));
-      this.embedDeps?.vectorStore.delete(docAnchor);
     });
     try {
       await this.store.refreshEntityMentions([docAnchor]);
@@ -1044,6 +1178,8 @@ export class IndexBuilder implements IIndexBuilder {
     const passageId = `msg-${lease.messageId}`;
     const restored = await this.store.runExclusive(() => {
       const db = this.store.getDb();
+      const invalidatePassage = createVectorInvalidator(db, 'passage_vectors');
+      const invalidateDocument = createVectorInvalidator(db, 'evidence_vectors');
       return db.transaction(() => {
         const row = db
           .prepare(
@@ -1115,12 +1251,13 @@ export class IndexBuilder implements IIndexBuilder {
           docAnchor,
           passageId,
         );
+        mirrorDocAliases(db);
+        invalidatePassage(passageVectorKey(docAnchor, passageId));
+        invalidateDocument(docAnchor);
         return true;
       })();
     });
     if (!restored) return false;
-    this.embedDeps?.passageVectorStore?.delete(passageVectorKey(docAnchor, passageId));
-    this.embedDeps?.vectorStore.delete(docAnchor);
     await this.store.refreshEntityMentions([docAnchor]);
     await this.restoreSuppressionEmbeddings(docAnchor);
     return true;
@@ -1132,6 +1269,8 @@ export class IndexBuilder implements IIndexBuilder {
     const passageId = `msg-${lease.messageId}`;
     await this.store.runExclusive(() => {
       const db = this.store.getDb();
+      const invalidatePassage = createVectorInvalidator(db, 'passage_vectors');
+      const invalidateDocument = createVectorInvalidator(db, 'evidence_vectors');
       db.transaction(() => {
         const exists = db
           .prepare(
@@ -1168,9 +1307,9 @@ export class IndexBuilder implements IIndexBuilder {
              abstractive_token_count = NULL
            WHERE thread_id = ?`,
         ).run(lease.threadId);
+        invalidatePassage(passageVectorKey(docAnchor, passageId));
+        invalidateDocument(docAnchor);
       })();
-      this.embedDeps?.passageVectorStore?.delete(passageVectorKey(docAnchor, passageId));
-      this.embedDeps?.vectorStore.delete(docAnchor);
     });
     await this.store.refreshEntityMentions([docAnchor]);
   }
@@ -1179,12 +1318,16 @@ export class IndexBuilder implements IIndexBuilder {
     if (this.embedDeps?.embedding.isReady()) {
       const doc = this.store
         .getDb()
-        .prepare('SELECT title, summary FROM evidence_docs WHERE anchor = ?')
-        .get(docAnchor) as { title: string; summary: string | null } | undefined;
+        .prepare('SELECT title, summary, source_hash AS sourceHash FROM evidence_docs WHERE anchor = ?')
+        .get(docAnchor) as { title: string; summary: string | null; sourceHash: string | null } | undefined;
       if (doc) {
         try {
           const [vector] = await this.embedDeps.embedding.embed([`${doc.title} ${doc.summary ?? ''}`]);
-          this.embedDeps.vectorStore.upsert(docAnchor, vector);
+          await this.storeDocumentVectorIfCurrent(
+            { anchor: docAnchor, sourceHash: doc.sourceHash },
+            vector,
+            this.embedDeps.vectorStore,
+          );
         } catch {
           // Lexical restoration is authoritative; vector repair retries during warmup.
         }
@@ -1267,7 +1410,8 @@ export class IndexBuilder implements IIndexBuilder {
         ON CONFLICT(thread_id) DO UPDATE SET
           pending_message_count = pending_message_count + 1,
           pending_token_count = pending_token_count + ?,
-          pending_signal_flags = pending_signal_flags | ?
+          pending_signal_flags = pending_signal_flags | ?,
+          pending_input_revision = pending_input_revision + 1
       `).run(threadId, tokenEstimate, signalFlags, tokenEstimate, signalFlags);
       })
       .catch(() => {
@@ -1277,12 +1421,21 @@ export class IndexBuilder implements IIndexBuilder {
 
   /** Flush dirty threads: re-index only the threads that have been marked dirty. */
   async flushDirtyThreads(): Promise<number> {
+    if (this.threadIndexRefresh) return 0;
+    if (this.dirtyFlushInFlight) return this.dirtyFlushInFlight;
+    const flush = this.flushDirtyThreadsOnce().finally(() => {
+      if (this.dirtyFlushInFlight === flush) this.dirtyFlushInFlight = null;
+    });
+    this.dirtyFlushInFlight = flush;
+    return flush;
+  }
+
+  private async flushDirtyThreadsOnce(): Promise<number> {
     if (this.dirtyThreads.size === 0 || !this.threadListFn) return 0;
 
     const dirtyIds = [...this.dirtyThreads];
     this.dirtyThreads.clear();
 
-    let flushed = 0;
     let threads: ThreadSnapshot[];
     try {
       threads = await this.threadListFn();
@@ -1292,92 +1445,153 @@ export class IndexBuilder implements IIndexBuilder {
     }
 
     const threadMap = new Map(threads.map((t) => [t.id, t]));
+    const dirtySnapshots = dirtyIds
+      .map((id) => threadMap.get(id))
+      .filter((thread): thread is ThreadSnapshot => thread !== undefined);
+    try {
+      const documentsToEmbed = await this.upsertDirtyThreadDocuments(dirtySnapshots);
 
-    for (const threadId of dirtyIds) {
-      const thread = threadMap.get(threadId);
-      if (!thread) continue;
+      // Lexical message recall must be available for the entire dirty batch before
+      // any document embedding can wait on a provider. Vectors remain accelerators.
+      if (dirtySnapshots.length > 0) await this.indexPassages(dirtySnapshots);
+      await this.embedDirtyThreadDocuments(documentsToEmbed);
+      if (dirtySnapshots.length > 0) {
+        await this.embedMissingPassages(dirtySnapshots.map((t) => `thread-${t.id}`));
+      }
+      return documentsToEmbed.length;
+    } catch (error) {
+      // A batch may already be committed. Idempotent retry must still visit the
+      // remaining messages/threads, preserving marks that arrived during flush.
+      for (const threadId of dirtyIds) this.dirtyThreads.add(threadId);
+      throw error;
+    }
+  }
 
+  private async upsertDirtyThreadDocuments(threads: ThreadSnapshot[]): Promise<EvidenceItem[]> {
+    const items: EvidenceItem[] = [];
+    for (const thread of threads) {
+      const suppressionVersion = this.threadSuppressionVersion(thread.id);
       const item = await this.buildThreadEvidenceItem(thread);
       const anchor = item.anchor;
 
       const existing = await this.store.getByAnchor(anchor);
       if (existing?.sourceHash === item.sourceHash) continue; // unchanged
 
-      await this.store.upsert([item]);
+      let current = true;
+      await this.store.upsert([item], () => {
+        if (suppressionVersion === this.threadSuppressionVersion(thread.id)) return true;
+        this.markThreadDirty(thread.id);
+        current = false;
+        return false;
+      });
+      if (!current) continue;
+      this.pendingDocumentVectorAnchors.add(anchor);
+      items.push(item);
+    }
+    return items;
+  }
 
-      // Embed if available
-      if (this.embedDeps?.embedding.isReady()) {
-        try {
-          const [vec] = await this.embedDeps.embedding.embed([`${item.title} ${item.summary ?? ''}`]);
-          this.embedDeps.vectorStore.upsert(anchor, vec);
-        } catch {
-          // fail-open
-        }
+  private async embedDirtyThreadDocuments(items: EvidenceItem[]): Promise<void> {
+    const deps = this.embedDeps;
+    if (!deps?.embedding.isReady()) return;
+    for (const item of items) {
+      try {
+        const [vec] = await deps.embedding.embed([`${item.title} ${item.summary ?? ''}`]);
+        const stored = await this.storeDocumentVectorIfCurrent(
+          { anchor: item.anchor, sourceHash: item.sourceHash ?? null },
+          vec,
+          deps.vectorStore,
+        );
+        if (!stored) this.markThreadDirty(item.anchor.slice('thread-'.length));
+      } catch {
+        // Keep the pending source stamp for a later vector retry.
       }
-
-      flushed++;
     }
-
-    // #652: Also index passages for dirty threads so new messages are immediately searchable
-    const dirtySnapshots = dirtyIds.map((id) => threadMap.get(id)).filter(Boolean) as ThreadSnapshot[];
-    if (dirtySnapshots.length > 0) {
-      await this.indexPassages(dirtySnapshots);
-      await this.embedMissingPassages(dirtySnapshots.map((t) => `thread-${t.id}`));
-    }
-
-    return flushed;
   }
 
   /** F209 Phase A: embed newly indexed raw passages without blocking lexical recall. */
-  private async embedMissingPassages(docAnchors?: string[]): Promise<void> {
+  private async embedMissingPassages(docAnchors?: string[], observation?: PassageWarmupDiagnostics): Promise<void> {
     const deps = this.embedDeps;
-    if (!deps?.passageVectorStore) return;
+    const passageVectors = deps?.passageVectorStore;
+    if (!passageVectors) {
+      observation?.stop('retired', 'no-dependencies');
+      return;
+    }
 
+    try {
+      await deps.embedding.reprobeIfNeeded();
+    } catch {
+      observation?.stop('rejected', 'probe-error');
+      return; // Optional vector work cannot fail a canonical dirty-thread flush.
+    }
     const db = this.store.getDb();
-    const existingStmt = db.prepare('SELECT 1 AS present FROM passage_vectors WHERE passage_key = ? LIMIT 1');
     let lastId = 0;
     let consecutiveErrors = 0;
 
     for (;;) {
-      const whereClauses = ['id > ?'];
-      const params: unknown[] = [lastId];
-      if (docAnchors?.length) {
-        whereClauses.push(`doc_anchor IN (${docAnchors.map(() => '?').join(',')})`);
-        params.push(...docAnchors);
-      }
-
-      let rows: Array<PassageEmbeddingRow & { id: number }>;
-      try {
-        rows = db
-          .prepare(
-            `SELECT id, doc_anchor AS docAnchor, passage_id AS passageId, content
-             FROM evidence_passages
-             WHERE ${whereClauses.join(' AND ')}
-             ORDER BY id
-             LIMIT ?`,
-          )
-          .all(...params, PASSAGE_EMBED_SCAN_BATCH_SIZE) as Array<PassageEmbeddingRow & { id: number }>;
-      } catch {
-        // DB read error — stop scanning (structural problem, not transient)
+      // Resolved promises only yield to microtasks. Warm pages still need an
+      // actual I/O turn, and service deactivation must stop the remaining scan.
+      await yieldToIo();
+      if (this.embedDeps !== deps || !deps.embedding.isReady()) {
+        observation?.stop('retired', 'dependencies-unavailable');
         return;
       }
-      if (rows.length === 0) return;
-
-      lastId = rows[rows.length - 1]!.id;
-      const missing = rows.filter((r) => !existingStmt.get(passageVectorKey(r.docAnchor, r.passageId)));
+      let page: ReturnType<typeof readPassageEmbeddingPage>;
+      try {
+        page = readPassageEmbeddingPage(db, passageVectors, lastId, PASSAGE_EMBED_SCAN_BATCH_SIZE, docAnchors);
+      } catch {
+        observation?.stop('rejected', 'metadata-read-error');
+        // Structural read errors cannot be repaired by scanning the next page.
+        return;
+      }
+      if (!page) {
+        if (observation) observation.scanExhausted = true;
+        return;
+      }
+      if (observation) {
+        observation.pagesRead++;
+        observation.metadataRows += page.metadataRows;
+        observation.missingBodies += page.passages.length;
+      }
+      lastId = page.lastId;
 
       try {
         await embedPassages({
-          passages: missing,
+          passages: page.passages,
           embedding: deps.embedding,
-          passageVectorStore: deps.passageVectorStore,
+          passageVectorStore: passageVectors,
+          commitBatch: (batch, vectors) => {
+            // Provider work has returned even if writer admission or its dependency fence retires the commit.
+            if (observation) observation.returnedBatches++;
+            return this.store.runExclusive(() => {
+              if (this.embedDeps !== deps) {
+                observation?.stop('retired', 'dependencies-changed');
+                return;
+              }
+              const current = db.prepare(
+                'SELECT content FROM evidence_passages WHERE doc_anchor = ? AND passage_id = ?',
+              );
+              for (let i = 0; i < batch.length; i++) {
+                const row = batch[i];
+                const live = current.get(row.docAnchor, row.passageId) as { content: string } | undefined;
+                if (live?.content !== row.content) {
+                  if (observation) observation.sourceChanged++;
+                  continue;
+                }
+                passageVectors.upsert(passageVectorKey(row.docAnchor, row.passageId), vectors[i]);
+                if (observation) observation.committedVectors++;
+              }
+            });
+          },
         });
         consecutiveErrors = 0;
       } catch {
         // Batch-level fail-open: skip this batch, continue with the next.
         // passage_fts remains canonical — vectors are an accelerator.
         consecutiveErrors++;
+        if (observation) observation.batchFailures++;
         if (consecutiveErrors >= 3) {
+          observation?.stop('rejected', 'consecutive-batch-errors');
           // 3 consecutive batch failures → embedding service likely down, stop gracefully
           return;
         }
@@ -1389,66 +1603,31 @@ export class IndexBuilder implements IIndexBuilder {
     const docs = sources.filter((source) => isMarkdownSourcePath(source.item.sourcePath));
     if (docs.length === 0) return;
 
+    // A document is the atomic replacement unit. A corpus-sized transaction
+    // blocks both the API loop and unrelated writers sharing evidence.sqlite.
     const db = this.store.getDb();
-    const existingStmt = db.prepare(
-      `SELECT passage_id AS passageId, content, created_at AS createdAt
-       FROM evidence_passages
-       WHERE doc_anchor = ? AND passage_id LIKE ?`,
-    );
-    const deleteStmt = db.prepare(
-      `DELETE FROM evidence_passages
-       WHERE doc_anchor = ? AND passage_id LIKE ?`,
-    );
-    const insertStmt = db.prepare(`
-      INSERT INTO evidence_passages
-      (doc_anchor, passage_id, content, speaker, position, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    const tx = db.transaction((items: DocumentPassageSource[]) => {
-      for (const source of items) {
-        const passageLike = `${MARKDOWN_DOC_PASSAGE_PREFIX}%`;
-        const oldPassages = existingStmt.all(source.item.anchor, passageLike) as Array<{
-          passageId: string;
-          content: string;
-          createdAt: string;
-        }>;
-        const nextById = new Map<string, string>(
-          source.passages.map((content, index) => [`${MARKDOWN_DOC_PASSAGE_PREFIX}${index}`, content]),
-        );
-        const oldById = new Map(oldPassages.map((passage) => [passage.passageId, passage]));
-        for (const old of oldPassages) {
-          if (nextById.get(old.passageId) !== old.content) {
-            this.embedDeps?.passageVectorStore?.delete(passageVectorKey(source.item.anchor, old.passageId));
-          }
-        }
-        deleteStmt.run(source.item.anchor, passageLike);
-
-        for (const [position, content] of source.passages.entries()) {
-          const passageId = `${MARKDOWN_DOC_PASSAGE_PREFIX}${position}`;
-          const old = oldById.get(passageId);
-          insertStmt.run(
-            source.item.anchor,
-            passageId,
-            content,
-            null,
-            position,
-            old?.content === content ? old.createdAt : source.item.updatedAt,
-          );
-        }
-      }
-    });
-
-    await this.store.runExclusive(() => tx(docs));
-    await this.store.refreshEntityMentions(docs.map((doc) => doc.item.anchor));
+    const complete = db.prepare('UPDATE evidence_docs SET source_hash = ? WHERE anchor = ?');
+    for (const source of docs) {
+      await this.store.runCheckpointedBatch(() =>
+        db.transaction(() => {
+          replaceDocumentPassages(db, [source], createVectorInvalidator(db, 'passage_vectors'));
+          complete.run(source.item.sourceHash ?? null, source.item.anchor);
+        })(),
+      );
+    }
+    for (const doc of docs) this.pendingMentionDocAnchors.add(doc.item.anchor);
   }
 
   /**
    * E-3: Index thread messages as passages in evidence_passages table.
    * For each thread, fetches messages via messageListFn and upserts into evidence_passages.
    */
-  private async indexPassages(threads: ThreadSnapshot[]): Promise<void> {
+  private async indexPassages(threads: ThreadSnapshot[], signal?: AbortSignal): Promise<void> {
     if (!this.messageListFn) return;
     const db = this.store.getDb();
+    const contentChangedStmt = db.prepare(
+      'SELECT content IS NOT ? AS changed FROM evidence_passages WHERE doc_anchor = ? AND passage_id = ?',
+    );
 
     // Phase I (AC-I2): never delete missing passages on rebuild.
     // Existing returned messages still need to refresh so new block metadata can backfill.
@@ -1468,36 +1647,58 @@ export class IndexBuilder implements IIndexBuilder {
     `);
 
     for (const thread of threads) {
+      await yieldToIo(undefined, { signal });
       let messages: StoredMessageSnapshot[];
       try {
-        const suppressed = this.suppressedMessageIds(thread.id);
-        messages = (await this.messageListFn(thread.id, 2000)).filter((message) => !suppressed.has(message.id));
+        messages = await this.messageListFn(thread.id, 2000);
       } catch {
+        signal?.throwIfAborted();
         continue;
       }
 
-      const tx = db.transaction((msgs: StoredMessageSnapshot[]) => {
-        for (let i = 0; i < msgs.length; i++) {
-          const msg = msgs[i];
-          const content = buildSearchableMessageContent(msg);
-          if (!content) continue;
-          const docAnchor = `thread-${thread.id}`;
-          const passageId = `msg-${msg.id}`;
-          const result = upsertStmt.run(
-            docAnchor,
-            passageId,
-            content,
-            msg.catId ?? 'user',
-            i,
-            new Date(msg.timestamp).toISOString(),
-          );
-          if (result.changes > 0) this.embedDeps?.passageVectorStore?.delete(passageVectorKey(docAnchor, passageId));
-        }
-      });
+      const tx = db.transaction(
+        (msgs: StoredMessageSnapshot[], offset: number, invalidateVector: (key: string) => void) => {
+          signal?.throwIfAborted();
+          const suppressed = this.suppressedMessageIds(thread.id);
+          for (let i = 0; i < msgs.length; i++) {
+            const msg = msgs[i];
+            if (suppressed.has(msg.id)) continue;
+            const content = buildSearchableMessageContent(msg);
+            if (!content) continue;
+            const docAnchor = `thread-${thread.id}`;
+            const passageId = `msg-${msg.id}`;
+            const previous = contentChangedStmt.get(content, docAnchor, passageId) as { changed: number } | undefined;
+            const result = upsertStmt.run(
+              docAnchor,
+              passageId,
+              content,
+              msg.catId ?? 'user',
+              offset + i,
+              new Date(msg.timestamp).toISOString(),
+            );
+            if (result.changes > 0) {
+              if (previous?.changed !== 0) invalidateVector(passageVectorKey(docAnchor, passageId));
+            }
+          }
+        },
+      );
 
       // Route batch insert through single-writer queue (F163 AC-A5)
-      await this.store.runExclusive(() => tx(messages));
-      await this.store.refreshEntityMentions([`thread-${thread.id}`]);
+      for (let offset = 0; offset < messages.length; offset += PASSAGE_WRITE_BATCH_SIZE) {
+        await this.store.runCheckpointedBatch(() =>
+          tx(
+            messages.slice(offset, offset + PASSAGE_WRITE_BATCH_SIZE),
+            offset,
+            createVectorInvalidator(db, 'passage_vectors'),
+          ),
+        );
+      }
+      // Passage triggers persist this marker in the same transaction as the
+      // source rows. Maintenance can reject after commit; unchanged retry must
+      // still finish the publication (startup consumes the same durable queue).
+      const docAnchor = `thread-${thread.id}`;
+      const pending = db.prepare('SELECT 1 FROM entity_mention_pending_docs WHERE doc_anchor = ?').get(docAnchor);
+      if (pending) await this.store.refreshEntityMentions([docAnchor]);
     }
   }
 
@@ -1507,7 +1708,8 @@ export class IndexBuilder implements IIndexBuilder {
    * and inserts as passages with INSERT OR IGNORE (idempotent).
    * Returns count of newly added passages.
    */
-  async backfillPassagesFromTranscript(threadId: string): Promise<number> {
+  async backfillPassagesFromTranscript(threadId: string, signal?: AbortSignal): Promise<number> {
+    signal?.throwIfAborted();
     if (!this.transcriptDataDir) return 0;
     const db = this.store.getDb();
     const threadDir = join(this.transcriptDataDir, 'threads', threadId);
@@ -1526,54 +1728,85 @@ export class IndexBuilder implements IIndexBuilder {
     `);
 
     let added = 0;
-    let position = 10000; // offset to avoid collision with Redis-sourced positions (0-based)
+    let position =
+      10000 +
+      (
+        db
+          .prepare(
+            "SELECT COALESCE(MAX(position) - 9999, 0) AS count FROM evidence_passages WHERE doc_anchor = ? AND passage_id LIKE 'transcript-%'",
+          )
+          .get(`thread-${threadId}`) as { count: number }
+      ).count;
+    const checkpointRead = db.prepare('SELECT fingerprint FROM transcript_backfill_files WHERE file_path = ?');
+    const checkpointWrite = db.prepare(
+      'INSERT OR REPLACE INTO transcript_backfill_files (file_path, fingerprint) VALUES (?, ?)',
+    );
+    const completedFiles: Array<{ path: string; fingerprint: string }> = [];
 
     for (const catId of catDirs) {
+      signal?.throwIfAborted();
       const sessionsDir = join(threadDir, catId, 'sessions');
       let sessionDirs: string[];
       try {
         sessionDirs = readdirSync(sessionsDir).filter((e) => !e.startsWith('.'));
       } catch {
+        signal?.throwIfAborted();
         continue;
       }
 
       for (const sessionId of sessionDirs) {
+        signal?.throwIfAborted();
         const eventsPath = join(sessionsDir, sessionId, 'events.jsonl');
-        let content: string;
+        const checkpointPath = `${threadId}/${catId}/${sessionId}/events.jsonl`;
+        let fingerprint: string;
         try {
-          content = readFileSync(eventsPath, 'utf-8');
+          const stat = statSync(eventsPath);
+          fingerprint = `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
         } catch {
           continue;
         }
+        const checkpoint = checkpointRead.get(checkpointPath) as { fingerprint: string } | undefined;
+        if (checkpoint?.fingerprint === fingerprint) continue;
 
         // Accumulate text chunks by invocationId
         const invocationTexts = new Map<string, { text: string; t: number; catId: string }>();
 
-        for (const line of content.split('\n')) {
-          if (!line.trim()) continue;
-          try {
-            const evt = JSON.parse(line);
-            if (evt.event?.type === 'text' && typeof evt.event?.content === 'string') {
-              const invId = evt.invocationId ?? `${sessionId}-noninv`;
-              const existing = invocationTexts.get(invId);
-              if (existing) {
-                existing.text += evt.event.content;
-              } else {
-                invocationTexts.set(invId, {
-                  text: evt.event.content,
-                  catId: evt.catId ?? catId,
-                  t: evt.t,
-                });
+        try {
+          const lines = createInterface({
+            input: createReadStream(eventsPath, { encoding: 'utf-8', signal }),
+            crlfDelay: Infinity,
+          });
+          for await (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const evt = JSON.parse(line);
+              if (evt.event?.type === 'text' && typeof evt.event?.content === 'string') {
+                const invId = evt.invocationId ?? `${sessionId}-noninv`;
+                const existing = invocationTexts.get(invId);
+                if (existing) {
+                  existing.text += evt.event.content;
+                } else {
+                  invocationTexts.set(invId, {
+                    text: evt.event.content,
+                    catId: evt.catId ?? catId,
+                    t: evt.t,
+                  });
+                }
               }
+            } catch {
+              /* skip malformed lines */
             }
-          } catch {
-            /* skip malformed lines */
           }
+        } catch {
+          continue;
         }
 
         // Insert accumulated text per invocation — routed through single-writer queue (F163 AC-A5)
-        const tx = db.transaction(() => {
-          for (const [invId, data] of invocationTexts) {
+        const exists = db.prepare('SELECT 1 FROM evidence_passages WHERE doc_anchor=? AND passage_id=?');
+        const tx = db.transaction((entries: Array<[string, { text: string; t: number; catId: string }]>) => {
+          signal?.throwIfAborted();
+          for (const [invId, data] of entries) {
+            if (exists.get(`thread-${threadId}`, `transcript-${invId}`)) continue;
             if (!data.text.trim()) continue;
             // Guard: skip entries with missing/invalid timestamp (P1 fix)
             const ts = new Date(data.t);
@@ -1589,10 +1822,22 @@ export class IndexBuilder implements IIndexBuilder {
             if (result.changes > 0) added++;
           }
         });
-        await this.store.runExclusive(() => tx());
+        const entries = [...invocationTexts];
+        for (let offset = 0; offset < entries.length; offset += PASSAGE_WRITE_BATCH_SIZE) {
+          await this.store.runCheckpointedBatch(() => tx(entries.slice(offset, offset + PASSAGE_WRITE_BATCH_SIZE)));
+        }
+        completedFiles.push({ path: checkpointPath, fingerprint });
+        if (completedFiles.length % 16 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
       }
     }
-    if (added > 0) await this.store.refreshEntityMentions([`thread-${threadId}`]);
+    if (completedFiles.length > 0) {
+      await this.store.refreshEntityMentions([`thread-${threadId}`]);
+      await this.store.runExclusive(() =>
+        db.transaction(() => {
+          for (const file of completedFiles) checkpointWrite.run(file.path, file.fingerprint);
+        })(),
+      );
+    }
     return added;
   }
 }

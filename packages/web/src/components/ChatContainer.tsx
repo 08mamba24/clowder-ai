@@ -1,14 +1,16 @@
 'use client';
 
+import { deploymentDefaults } from '@cat-cafe/shared';
+import Link from 'next/link';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { useActiveExecutionProjection } from '@/hooks/useActiveExecutionProjection';
 import { useAgentHookHealth } from '@/hooks/useAgentHookHealth';
 import { formatCatName, useCatData } from '@/hooks/useCatData';
+import { useCoCreatorConfig } from '@/hooks/useCoCreatorConfig';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
-import { godAction, submitAction } from '@/hooks/useGameApi';
-import { reconnectGame } from '@/hooks/useGameReconnect';
+import { useConversationViewPreference } from '@/hooks/useConversationViewPreference';
+import { useConversationViewReadingCheckpoint } from '@/hooks/useConversationViewReadingCheckpoint';
 import { useGovernanceStatus } from '@/hooks/useGovernanceStatus';
 import { useIndexState } from '@/hooks/useIndexState';
 import { useIsDesktop } from '@/hooks/useIsDesktop';
@@ -21,50 +23,72 @@ import { useVoiceAutoPlay } from '@/hooks/useVoiceAutoPlay';
 import { useVoiceStream } from '@/hooks/useVoiceStream';
 import { useActiveExecutionStore } from '@/stores/activeExecutionStore';
 import { type ChatMessage, type Thread, useChatStore } from '@/stores/chatStore';
-import { useGameStore } from '@/stores/gameStore';
 import { useGuideStore } from '@/stores/guideStore';
+import { withQueuedInputPreviews } from '@/stores/queued-input-preview';
 import { useSidebarProjectionStore } from '@/stores/sidebarProjectionStore';
 import { useSidebarStore } from '@/stores/sidebarStore';
 import { useTaskStore } from '@/stores/taskStore';
 import { apiFetch } from '@/utils/api-client';
+import { captureChatReadingBeforeLayoutChange } from '@/utils/chat-layout-change';
+import { notifyHandledMentionRead } from '@/utils/mention-read-receipt';
 import { invalidateSidebarProjection } from '@/utils/sidebar-thread-snapshot';
 import { AgentHookHealthNotice, shouldRenderAgentHookHealthNotice } from './AgentHookHealthNotice';
 import { BootcampListModal } from './BootcampListModal';
 import { BootstrapOrchestrator } from './BootstrapOrchestrator';
 import { ChatContainerHeader } from './ChatContainerHeader';
+import { hydrateEvolutionFromCurrentUrl } from './capability-evolution/evolution-navigation';
 import { useConciergeConfirmations } from './concierge/useConciergeConfirmations';
-import { FirstRunQuestWizard } from './FirstRunQuestWizard';
+import { ArtworkLightboxHost } from './content-review/ArtworkLightboxHost';
+import { ArtworkLightboxProvider, useArtworkLightboxScope } from './content-review/ArtworkLightboxScope';
+import { ArtworkWorkModeScope } from './content-review/ArtworkWorkModeScope';
+import { scopedQueue } from './execution-row/thread-queue';
 import { BootcampGuideOverlay } from './first-run-quest/BootcampGuideOverlay';
+import { FirstRunEntryReminder } from './first-run-quest/FirstRunEntryReminder';
+import { restoreJourneyState } from './first-run-quest/onboarding-journey';
 import { QuestBanner } from './first-run-quest/QuestBanner';
 import { syncLocalBootcampState } from './first-run-quest/syncLocalBootcampState';
 import { useFirstProjectMistakeTipGate } from './first-run-quest/useFirstProjectMistakeTipGate';
 import { useFirstProjectPreviewAutoOpen } from './first-run-quest/useFirstProjectPreviewAutoOpen';
-import { GameOverlayConnector } from './game/GameOverlayConnector';
+import { useFirstRealMessageSync } from './first-run-quest/useFirstRealMessageSync';
 import { BootcampIcon } from './icons/BootcampIcon';
-import { GameIcon } from './icons/GameIcon';
 import { PawIcon } from './icons/PawIcon';
-import { MobileApprovalSheet } from './MobileApprovalSheet';
-import { ParallelStatusBar } from './ParallelStatusBar';
+import { MessageSearchOverlay } from './message-search/MessageSearchOverlay';
+import { openMessageFindDestination, restoreFindWorkspaceOrigin } from './message-search/message-find-destinations';
+import { useMessageSearchHost } from './message-search/useMessageSearchHost';
+import { NewConversationPage } from './new-conversation/NewConversationPage';
+import { DEMO_SETTINGS_URL } from './onboarding-demo/demo-story';
+import { GuidedOnboarding } from './onboarding-demo/GuidedOnboarding';
+import { useDemoAdmission } from './onboarding-demo/useDemoAdmission';
 import { ProjectSetupCard } from './ProjectSetupCard';
-import { RightStatusPanel } from './RightStatusPanel';
 import { RuntimeUpdateRequiredDialog } from './RuntimeUpdateRequiredDialog';
 import { SplitPaneChatView } from './SplitPaneView';
-import { ThinkingIndicator } from './ThinkingIndicator';
+import { useShellPresentation } from './shell/shell-presentation';
+import { useSettingsReadingPort } from './shell/useSettingsSourceReturn';
 import { ThreadSidebar } from './ThreadSidebar';
 import { assignDocumentRoute, pushThreadRouteWithHistory } from './ThreadSidebar/thread-navigation';
 import { ThreadChatExport, ThreadChatSurface, useThreadChatRuntime } from './thread-chat';
+import type { RegisterChatReadingPort } from './thread-chat/useThreadChatReadingPort';
 import { type VoteConfig, VoteConfigModal } from './VoteConfigModal';
 import { WorkspacePanel } from './WorkspacePanel';
+import { DEFAULT_ARTIFACT_WORK_CHAT_BASIS } from './workbench/artifact-work-presentation';
+import { toggleArtifactWorkFullWindow } from './workbench/artifact-work-presentation-actions';
 import { useF307ExperienceWorkbenchStore } from './workbench/experience-workbench-store';
+import { useArtifactWorkHostPresentation } from './workbench/useArtifactWorkHostPresentation';
+import { WorkspaceChatRevealProvider } from './workbench/WorkspaceChatReveal';
+import { WorkspaceChatWorkScopeProvider } from './workbench/WorkspaceChatWorkScope';
+import type { MainAreaAttentionPresentation } from './workbench/workspace-work-host-projection';
 import { ContextualWorkspaceChrome } from './workspace/ContextualWorkspaceChrome';
 import { FloatingTranscriptContainer } from './workspace/FloatingTranscriptContainer';
 import { ResizeHandle } from './workspace/ResizeHandle';
 import { TranscriptPanel } from './workspace/TranscriptPanel';
 import { hydrateInvocationTrajectoryFromCurrentUrl } from './workspace/trajectory/trajectory-navigation';
+import { StatusPresentation } from './workspace-status/StatusPresentation';
 
 interface ChatContainerProps {
   threadId: string;
 }
+
+const EMPTY_CONVERSATION_QUEUE = [] as const;
 
 function hasConciergeConfirmationActions(messages: readonly ChatMessage[]): boolean {
   return messages.some((message) =>
@@ -78,18 +102,39 @@ function hasConciergeConfirmationActions(messages: readonly ChatMessage[]): bool
   );
 }
 
+function coversChatHistory(presentation: MainAreaAttentionPresentation): boolean {
+  if (presentation.kind === 'overlay') return true;
+  return presentation.mode === 'full-window';
+}
+
 export function ChatContainer({ threadId }: ChatContainerProps) {
+  return (
+    <ArtworkLightboxProvider threadId={threadId}>
+      <ChatContainerContent threadId={threadId} />
+    </ArtworkLightboxProvider>
+  );
+}
+
+function ChatContainerContent({ threadId }: ChatContainerProps) {
   const searchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
   if (searchParams?.get('export') === 'true') {
-    return <ThreadChatExport threadId={threadId} messageIds={searchParams.getAll('messageId')} />;
+    return (
+      <ThreadChatExport
+        threadId={threadId}
+        messageIds={searchParams.getAll('messageId')}
+        selectionItems={window.__catCafeImageExportItems}
+      />
+    );
   }
   return <InteractiveChatContainer threadId={threadId} />;
 }
 
 function InteractiveChatContainer({ threadId }: ChatContainerProps) {
+  const artworkLightbox = useArtworkLightboxScope();
   const bottomChromeRef = useRef<HTMLDivElement | null>(null);
   const bottomChromeObserverRef = useRef<ResizeObserver | null>(null);
   const bottomChromeObserverRafRef = useRef<number | null>(null);
+  const [bottomChromeHeight, setBottomChromeHeight] = useState(0);
   const {
     setCurrentThread,
     viewMode,
@@ -99,7 +144,6 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
     settleUnreadAck,
     armUnreadSuppression,
     rightPanelMode,
-    workspaceMode,
     workspaceSurface,
     presentationLock,
     setWorkspaceMode,
@@ -119,7 +163,6 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
       settleUnreadAck: s.settleUnreadAck,
       armUnreadSuppression: s.armUnreadSuppression,
       rightPanelMode: s.rightPanelMode,
-      workspaceMode: s.workspaceMode,
       workspaceSurface: s.workspaceSurface,
       presentationLock: s.presentationLock,
       setWorkspaceMode: s.setWorkspaceMode,
@@ -154,30 +197,25 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
   const navigateToThread = useCallback((tid: string) => {
     pushThreadRouteWithHistory(tid, typeof window !== 'undefined' ? window : undefined);
   }, []);
-  // F101: Game state from Zustand store
-  const gameView = useGameStore((s) => s.gameView);
-  const isGameActive = useGameStore((s) => s.isGameActive);
-  const isNight = useGameStore((s) => s.isNight);
-  const selectedTarget = useGameStore((s) => s.selectedTarget);
-  const godScopeFilter = useGameStore((s) => s.godScopeFilter);
-  const myRole = useGameStore((s) => s.myRole);
-  const myRoleIcon = useGameStore((s) => s.myRoleIcon);
-  const myActionLabel = useGameStore((s) => s.myActionLabel);
-  const myActionHint = useGameStore((s) => s.myActionHint);
-  const isGodView = useGameStore((s) => s.isGodView);
-  const isDetective = useGameStore((s) => s.isDetective);
-  const detectiveBoundName = useGameStore((s) => s.detectiveBoundName);
-  const godSeats = useGameStore((s) => s.godSeats);
-  const godNightSteps = useGameStore((s) => s.godNightSteps);
-  const hasTargetedAction = useGameStore((s) => s.hasTargetedAction);
-  const altActionName = useGameStore((s) => s.altActionName);
-  const overlayMinimized = useGameStore((s) => s.overlayMinimized);
-
   const searchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
   // AC-6: research=multi hint from Signal study "多猫研究" button
   const isResearchMode = searchParams?.get('research') === 'multi';
-  const { clearTasks } = useTaskStore();
-  const { cats, isLoading, hasFetched } = useCatData();
+  const { clearTasks } = useTaskStore(useShallow((state) => ({ clearTasks: state.clearTasks })));
+  const { cats, hasFetched: registryKnown, isLoading: registryRefreshing } = useCatData();
+  const isV2 = useShellPresentation() === 'v2';
+  const conversationViewQueue = useChatStore((state) => scopedQueue(state, threadId)) ?? EMPTY_CONVERSATION_QUEUE;
+  const conversationViewMessages = useMemo(
+    () => withQueuedInputPreviews(allMessages, conversationViewQueue, threadId),
+    [allMessages, conversationViewQueue, threadId],
+  );
+  const conversationViewController = useConversationViewPreference(threadId, isV2 && threadId !== 'default');
+  const conversationViewReading = useConversationViewReadingCheckpoint({
+    threadId,
+    controller: conversationViewController,
+    messages: conversationViewMessages,
+    queue: conversationViewQueue,
+  });
+  const coCreator = useCoCreatorConfig();
   const workspaceWorktreeId = useChatStore((s) => s.workspaceWorktreeId);
   useTeleport(); // F227: drive the Hub to a teleport target message (thread:teleport)
   const { isOpen: sidebarOpen, open: openSidebar, close: closeSidebar, toggle: toggleSidebar } = useSidebarStore();
@@ -188,11 +226,14 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
   const statusPanelOpen = useChatStore((s) => s.rightPanelOpen);
   const setRightPanelOpen = useChatStore((s) => s.setRightPanelOpen);
   const mainAreaAttentionSurfaceId = useF307ExperienceWorkbenchStore((state) => state.mainAreaAttentionSurfaceId);
+  const attentionPresentation = useF307ExperienceWorkbenchStore((state) => state.mainAreaAttentionPresentation);
+  const setAttentionChatBasis = useF307ExperienceWorkbenchStore((state) => state.setMainAreaAttentionChatBasis);
   const exitMainAreaAttention = useF307ExperienceWorkbenchStore((state) => state.exitMainAreaAttention);
   const [workspacePanelMounted, setWorkspacePanelMounted] = useState(rightPanelMode === 'workspace');
   const [activityPanelMounted, setActivityPanelMounted] = useState(false);
   const [showBootcampList, setShowBootcampList] = useState(false);
-  const [showFirstRunQuestPrompt, setShowFirstRunQuestPrompt] = useState(false);
+  const [showOnboardingHint, setShowOnboardingHint] = useState(false);
+  const [onboardingSyncError, setOnboardingSyncError] = useState(false);
   const [showQuestWizard, setShowQuestWizard] = useState(false);
   // F106: fetch bootcamp count independently of sidebar lifecycle
   // refreshKey increments only on modal close → avoids duplicate fetch on open
@@ -203,6 +244,34 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
     setBootcampRefreshKey((k) => k + 1);
   }, []);
   const [bootcampCount, setBootcampCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch(`/api/threads/${encodeURIComponent(threadId)}`)
+      .then(async (res) =>
+        res.ok ? ((await res.json()) as { bootcampState?: { journeyId?: string; completedAt?: number } }) : null,
+      )
+      .then((thread) => {
+        if (cancelled) return;
+        try {
+          const journey = restoreJourneyState(localStorage.getItem('cat-cafe:onboarding-journey'));
+          setShowOnboardingHint(
+            Boolean(
+              thread?.bootcampState?.journeyId &&
+                thread.bootcampState.completedAt === undefined &&
+                journey?.threadId === threadId &&
+                journey.stage === 'ready' &&
+                journey.completedAt === undefined,
+            ),
+          );
+        } catch {
+          setShowOnboardingHint(false);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId]);
   useEffect(() => {
     let cancelled = false;
     apiFetch('/api/bootcamp/threads')
@@ -226,6 +295,48 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
     'cat-cafe:statusPanelWidth',
     STATUS_PANEL_DEFAULT,
   );
+  const isDesktop = useIsDesktop();
+  const currentWorkspaceThreadId = useChatStore((state) =>
+    state.currentThreadId === threadId && (!state.presentationLock || state.presentationLock.ownerThreadId === threadId)
+      ? threadId
+      : null,
+  );
+  const [mediaComposerSurfaceId, setMediaComposerSurfaceId] = useState<string | null>(null);
+  const workModeRequest = useChatStore((state) => state.workspaceOpenRequest);
+  const registeredWorkId = useRef<string | null>(null);
+  const onRegisteredWorkChange = useCallback((id: string | null) => {
+    if (registeredWorkId.current === id) return;
+    captureChatReadingBeforeLayoutChange();
+    registeredWorkId.current = id;
+    setMediaComposerSurfaceId(id);
+  }, []);
+  const {
+    splitPreferenceActive: artifactSplitPreferenceActive,
+    fullWindowActive: artifactFullWindowActive,
+    narrowWorkComposerActive,
+    workspaceWideActive,
+    workModeActive,
+    chatBasis: artifactWorkChatBasis,
+    invalidateHost: invalidateArtifactWorkHost,
+    resizeChatBasis: resizeArtifactWorkChatBasis,
+    resetChatBasis: resetArtifactWorkChatBasis,
+  } = useArtifactWorkHostPresentation({
+    threadId,
+    currentThreadId: currentWorkspaceThreadId,
+    mediaComposerSurfaceId,
+    viewMode,
+    isDesktop,
+    statusPanelOpen,
+    rightPanelMode,
+    workModeRequested: workModeRequest?.threadId === threadId && workModeRequest.presentation === 'work-mode',
+  });
+  const workComposerOnlyActive = artifactFullWindowActive || narrowWorkComposerActive;
+  const activeChatBasis =
+    workspaceWideActive && attentionPresentation.kind === 'chat-workspace'
+      ? attentionPresentation.chatBasis
+      : artifactSplitPreferenceActive
+        ? artifactWorkChatBasis
+        : chatBasis;
   const containerRef = useRef<HTMLDivElement>(null);
   const handleHorizontalResize = useCallback(
     (delta: number) => {
@@ -233,9 +344,25 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
       const totalWidth = containerRef.current.offsetWidth;
       if (totalWidth === 0) return;
       const pct = (delta / totalWidth) * 100;
-      setChatBasis((prev) => Math.min(80, Math.max(20, prev + pct)));
+      if (workspaceWideActive && attentionPresentation.kind === 'chat-workspace') {
+        captureChatReadingBeforeLayoutChange();
+        setAttentionChatBasis(attentionPresentation.chatBasis + pct);
+        return;
+      }
+      if (artifactSplitPreferenceActive) {
+        resizeArtifactWorkChatBasis(pct);
+        return;
+      }
+      setChatBasis((previous) => Math.min(80, Math.max(20, previous + pct)));
     },
-    [setChatBasis],
+    [
+      artifactSplitPreferenceActive,
+      resizeArtifactWorkChatBasis,
+      setChatBasis,
+      workspaceWideActive,
+      attentionPresentation,
+      setAttentionChatBasis,
+    ],
   );
   // clowder-ai#28: drag-to-resize for right status panel (negative delta = panel wider)
   const handleStatusPanelResize = useCallback(
@@ -258,39 +385,91 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
   // effect 立即重开，关不掉），再关闭。所有 close 入口（header toggle / ResizeHandle 折叠）统一走这里。
   // F284 × F120: closeRightPanel 同时退出 mode 并关闭 canonical visibility。
   const closeStatusPanel = useCallback(() => {
+    if (isV2) captureChatReadingBeforeLayoutChange();
     exitMainAreaAttention();
+    invalidateArtifactWorkHost();
     closeRightPanel();
-  }, [closeRightPanel, exitMainAreaAttention]);
+  }, [closeRightPanel, exitMainAreaAttention, invalidateArtifactWorkHost, isV2]);
 
   const openWorkspaceLauncher = useCallback(() => {
+    if (isV2) captureChatReadingBeforeLayoutChange();
     setWorkspacePanelMounted(true);
     setWorkspaceMode('dev');
     setWorkspaceSurface('home');
     setRightPanelMode('workspace');
     setRightPanelOpen(true);
-  }, [setRightPanelMode, setWorkspaceMode, setWorkspaceSurface, setRightPanelOpen]);
+  }, [isV2, setRightPanelMode, setWorkspaceMode, setWorkspaceSurface, setRightPanelOpen]);
 
-  const isDesktop = useIsDesktop();
   const mainAreaAttentionActive =
     viewMode === 'single' &&
     isDesktop &&
     statusPanelOpen &&
     rightPanelMode === 'workspace' &&
-    mainAreaAttentionSurfaceId !== null;
+    mainAreaAttentionSurfaceId !== null &&
+    (attentionPresentation.kind !== 'chat-workspace' || attentionPresentation.threadId === threadId);
+  const mainAreaOverlayActive = mainAreaAttentionActive && coversChatHistory(attentionPresentation);
+  const revealWorkspaceChat = useCallback(() => {
+    if (!isV2 || useChatStore.getState().currentThreadId !== threadId) return;
+    // Full-window Artifact work leaves room for the original composer; the other overlay hosts cover it.
+    if (
+      statusPanelOpen &&
+      rightPanelMode === 'workspace' &&
+      !narrowWorkComposerActive &&
+      (!isDesktop || (mainAreaOverlayActive && !artifactFullWindowActive))
+    )
+      closeStatusPanel();
+  }, [
+    isV2,
+    threadId,
+    statusPanelOpen,
+    rightPanelMode,
+    isDesktop,
+    mainAreaOverlayActive,
+    artifactFullWindowActive,
+    narrowWorkComposerActive,
+    closeStatusPanel,
+  ]);
+  const messageSearchAvailable =
+    isV2 &&
+    viewMode === 'single' &&
+    !artworkLightbox?.work &&
+    !workComposerOnlyActive &&
+    !mainAreaOverlayActive &&
+    (isDesktop || !statusPanelOpen);
+  const messageSearch = useMessageSearchHost({
+    threadId,
+    pushThreadRoute: navigateToThread,
+    available: messageSearchAvailable,
+    onOpenDestination: openMessageFindDestination,
+    beforeFindReturn: restoreFindWorkspaceOrigin,
+  });
 
   useEffect(() => {
     if (
       mainAreaAttentionSurfaceId !== null &&
-      (viewMode !== 'single' || !isDesktop || !statusPanelOpen || rightPanelMode !== 'workspace')
+      (viewMode !== 'single' ||
+        !isDesktop ||
+        !statusPanelOpen ||
+        rightPanelMode !== 'workspace' ||
+        (attentionPresentation.kind === 'chat-workspace' && attentionPresentation.threadId !== threadId))
     ) {
       exitMainAreaAttention();
     }
-  }, [exitMainAreaAttention, isDesktop, mainAreaAttentionSurfaceId, rightPanelMode, statusPanelOpen, viewMode]);
+  }, [
+    exitMainAreaAttention,
+    isDesktop,
+    mainAreaAttentionSurfaceId,
+    rightPanelMode,
+    statusPanelOpen,
+    viewMode,
+    attentionPresentation,
+    threadId,
+  ]);
 
   useEffect(() => {
     if (isDesktop || !statusPanelOpen) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
       event.preventDefault();
       closeStatusPanel();
     };
@@ -313,7 +492,7 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
         : [threadId],
     [viewMode, splitPaneThreadIds, threadId],
   );
-  const { socketConnected, resetAgentMessageRefs, registerIndexEventHandler } = useThreadChatRuntime(runtimeThreadIds);
+  const { socketConnected, registerIndexEventHandler } = useThreadChatRuntime(runtimeThreadIds);
   // F079: Vote modal
   const handleVoteSubmit = useCallback(
     async (config: VoteConfig) => {
@@ -380,20 +559,45 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
   const setCurrentProject = useChatStore((s) => s.setCurrentProject);
   const storeThreads = useChatStore((s) => s.threads);
   const sidebarRows = useSidebarProjectionStore((state) => state.rows);
-  const setThreads = useChatStore((s) => s.setThreads);
-  const handleSkipFirstRunQuest = useCallback(() => {
-    // #707: Persist skip to localStorage so refreshing doesn't re-trigger
-    try {
-      localStorage.setItem('cat-cafe:first-run-quest-skipped', '1');
-    } catch {
-      /* localStorage may be unavailable in some contexts */
-    }
-    setShowFirstRunQuestPrompt(false);
-  }, []);
+  const sourceThread = sidebarRows.find((row) => row.id === threadId) ?? storeThreads.find((t) => t.id === threadId);
+  const originTitle = sourceThread?.title?.trim() ? sourceThread.title : null;
+  const registerSettingsReadingPort = useSettingsReadingPort(originTitle);
+  const registerShellReadingPort = useCallback<RegisterChatReadingPort>(
+    (port) => {
+      conversationViewReading.setReadingPort(port);
+      const releaseSearch = messageSearchAvailable ? messageSearch.registerReadingPort(port) : () => {};
+      const releaseSettings = isV2 && viewMode === 'single' ? registerSettingsReadingPort(port) : () => {};
+      return () => {
+        conversationViewReading.setReadingPort(null);
+        releaseSettings();
+        releaseSearch();
+      };
+    },
+    [
+      conversationViewReading.setReadingPort,
+      isV2,
+      viewMode,
+      registerSettingsReadingPort,
+      messageSearchAvailable,
+      messageSearch.registerReadingPort,
+    ],
+  );
+
+  // The virtual default conversation uses the startup repository; a real route
+  // waits for its own metadata instead of borrowing another thread's root.
+  const workspaceProjectPath = sourceThread
+    ? sourceThread.projectPath || 'default'
+    : threadId === 'default'
+      ? 'default'
+      : null;
   const handleStartFirstRunQuest = useCallback(() => {
-    setShowFirstRunQuestPrompt(false);
     setShowQuestWizard(true);
   }, []);
+  const demoAdmission = useDemoAdmission(
+    threadId === 'default',
+    handleStartFirstRunQuest,
+    registryKnown && !registryRefreshing,
+  );
   const currentBootcampState = storeThreads.find((thread) => thread.id === threadId)?.bootcampState;
   const currentBootcampPhase = currentBootcampState?.phase;
   const showFirstProjectMistakeTip = useFirstProjectMistakeTipGate({
@@ -449,28 +653,6 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
       mistakeTipAdvanceKeyRef.current = null;
     }
   }, [currentBootcampPhase, threadId]);
-  useEffect(() => {
-    // Pure backend-driven: show prompt only when no cats AND no bootcamp thread
-    const isCurrentBootcamp = Boolean(storeThreads.find((thread) => thread.id === threadId)?.bootcampState);
-    const hasAnyBootcamp = storeThreads.some((t) => t.bootcampState);
-    if (isCurrentBootcamp || hasAnyBootcamp || cats.length > 0 || isLoading) {
-      setShowFirstRunQuestPrompt(false);
-      return;
-    }
-    // Wait for thread store to populate before deciding — prevents flash on page refresh
-    if (storeThreads.length === 0) return;
-    // Only show first-run prompt after a successful cat fetch — prevents false
-    // positives when /api/cats fails transiently (returns [] on network error).
-    if (!hasFetched) return;
-    // #707: Don't re-show if user previously skipped
-    try {
-      if (localStorage.getItem('cat-cafe:first-run-quest-skipped') === '1') return;
-    } catch {
-      /* localStorage unavailable */
-    }
-    setShowFirstRunQuestPrompt(true);
-  }, [cats.length, isLoading, hasFetched, storeThreads, threadId]);
-
   // ── Data sync: re-fetch thread state ──
   // MCP callbacks update Redis directly; the companion WebSocket `thread_updated`
   // may not reach this frontend (e.g. worktree port isolation). Re-fetching the
@@ -490,6 +672,7 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
         const local = useChatStore.getState().threads.find((t) => t.id === threadId);
         if (thread.bootcampState || local?.bootcampState) {
           syncLocalBootcampState(threadId, thread.bootcampState);
+          if (thread.bootcampState?.completedAt !== undefined) setShowOnboardingHint(false);
         }
         const localQuest = (local as Record<string, unknown> | undefined)?.firstRunQuestState;
         if (thread.firstRunQuestState || localQuest) {
@@ -520,6 +703,11 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
   // ── Bootcamp add-teammate: trigger guide engine when user interacts with input ──
   // Subscribe reactively so the effect re-runs when guide exits (session cleared).
   const activeGuideFlowId = useGuideStore((s) => s.session?.flow.id ?? null);
+  useEffect(() => {
+    if (!showOnboardingHint || showQuestWizard || activeGuideFlowId) return;
+    if (useGuideStore.getState().completedGuides.has(`${threadId}::first-run-entry`)) return;
+    useGuideStore.getState().reduceServerEvent({ action: 'start', guideId: 'first-run-entry', threadId });
+  }, [activeGuideFlowId, showOnboardingHint, showQuestWizard, threadId]);
   useEffect(() => {
     if (currentBootcampPhase !== 'phase-7.5-add-teammate') return;
     // Guide already running — don't re-register
@@ -585,39 +773,31 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
   }, [currentBootcampPhase, threadId, activeGuideFlowId, hasActiveInvocation, chatIsLoading]);
 
   const prevThreadRef = useRef(threadId);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (prevThreadRef.current !== threadId) {
       // Thread switch: store saves/restores per-thread state automatically
       setCurrentThread(threadId);
-      // F173 A.12 — resetRefs no longer touches suppression markers (invocation-driven cleanup).
-      // It still clears activeRefs / finalizedStreamRef / sawStreamData per the original purpose.
-      resetAgentMessageRefs();
       clearTasks();
       prevThreadRef.current = threadId;
     }
     // First mount — sync threadId to store without save/restore
     setCurrentThread(threadId);
-    // F101: Recover game state for the new thread (or clear stale game from previous thread)
-    reconnectGame(threadId).catch(() => {});
   }, [
     threadId,
     clearTasks, // Clean up non-thread-scoped refs
-    resetAgentMessageRefs, // First mount — sync threadId to store without save/restore
     setCurrentThread,
   ]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     hydrateInvocationTrajectoryFromCurrentUrl();
+    hydrateEvolutionFromCurrentUrl();
   }, []);
 
   // Restore projectPath from the canonical Sidebar projection; the legacy store
   // remains only as a compatibility fallback for non-Sidebar flows.
   useEffect(() => {
-    const cached = sidebarRows.find((row) => row.id === threadId) ?? storeThreads?.find((t) => t.id === threadId);
-    if (cached) {
-      setCurrentProject(cached.projectPath || 'default');
-    }
-  }, [threadId, sidebarRows, storeThreads, setCurrentProject]);
+    if (workspaceProjectPath !== null) setCurrentProject(workspaceProjectPath);
+  }, [workspaceProjectPath, setCurrentProject]);
 
   // F302: read project facts; governance is never a readiness gate.
   const currentProjectPath = useChatStore((s) => s.currentProjectPath);
@@ -706,14 +886,16 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
     (node: HTMLDivElement | null) => {
       bottomChromeRef.current = node;
       disconnectBottomChromeObserver();
+      setBottomChromeHeight(node ? Math.ceil(node.getBoundingClientRect().height) : 0);
 
       if (typeof window === 'undefined' || typeof window.ResizeObserver !== 'function' || !node) return;
 
       let lastHeight = node.getBoundingClientRect().height;
-      const observer = new window.ResizeObserver(([entry]) => {
-        const nextHeight = entry?.contentRect.height ?? node.getBoundingClientRect().height;
+      const observer = new window.ResizeObserver(() => {
+        const nextHeight = node.getBoundingClientRect().height;
         if (Math.abs(nextHeight - lastHeight) <= 1) return;
         lastHeight = nextHeight;
+        setBottomChromeHeight(Math.ceil(nextHeight));
 
         if (bottomChromeObserverRafRef.current !== null) {
           cancelAnimationFrame(bottomChromeObserverRafRef.current);
@@ -731,8 +913,10 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
   );
 
   useEffect(() => {
+    // StrictMode replays effects after the ref callback; reconnect the subscription cleaned up by that replay.
+    if (bottomChromeRef.current && !bottomChromeObserverRef.current) attachBottomChromeRef(bottomChromeRef.current);
     return disconnectBottomChromeObserver;
-  }, [disconnectBottomChromeObserver]);
+  }, [attachBottomChromeRef, disconnectBottomChromeObserver]);
 
   // F069-R5: Ack read cursor server-side. The backend finds the latest real message
   // and acks it atomically — no frontend ID guessing, no timing races with fetchHistory.
@@ -762,6 +946,7 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
         const payload = (await res.json()) as { caughtUp?: unknown };
         const caughtUp = payload.caughtUp === true;
         settleUnreadAck(threadId, caughtUp);
+        if (caughtUp) notifyHandledMentionRead(payload);
         if (!caughtUp) useSidebarProjectionStore.getState().clearSidebarCommand(threadId, 'attention');
         void invalidateSidebarProjection();
       })
@@ -780,23 +965,13 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
     [setViewMode, navigateToThread],
   );
 
-  const handleQuestCreated = useCallback(
-    async (questThreadId: string) => {
-      setShowQuestWizard(false);
-      try {
-        const res = await apiFetch('/api/threads');
-        if (res.ok) {
-          const data = (await res.json()) as { threads: Thread[] };
-          setThreads(data.threads);
-        }
-      } catch {
-        // Ignore refresh errors — navigation is the priority
-      }
-      void invalidateSidebarProjection();
-      navigateToThread(questThreadId);
-    },
-    [navigateToThread, setThreads],
-  );
+  const { handleRealOnboardingMessage, requestRetry: requestFirstRealMessageRetry } = useFirstRealMessageSync({
+    threadId,
+    currentBootcampState,
+    onboardingSyncError,
+    setOnboardingSyncError,
+    setShowOnboardingHint,
+  });
 
   const handleSearchKnowledge = useCallback(() => {
     const fromParam = threadId ? `?from=${encodeURIComponent(threadId)}` : '';
@@ -817,344 +992,406 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
     );
   }
 
+  const showNewConversationLanding = isV2 && threadId === 'default' && !artifactFullWindowActive;
+
   return (
-    <div ref={containerRef} className="relative flex h-screen h-dvh">
-      {connectionStatus.updateRequired && <RuntimeUpdateRequiredDialog onReload={() => window.location.reload()} />}
-      {/* Mobile-only sidebar overlay — desktop sidebar is in AppShell */}
-      {sidebarOpen && !isDesktop && (
-        <>
-          <div
-            className="fixed inset-0 bg-[var(--console-overlay-backdrop)] backdrop-blur-sm z-20"
-            onClick={closeSidebar}
-            aria-hidden="true"
-          />
-          <div className="fixed inset-y-0 left-0 z-30 w-[240px]">
-            <ThreadSidebar onClose={closeSidebar} className="w-full" routeThreadId={threadId} />
-          </div>
-        </>
-      )}
-
-      <div
-        className={`flex min-w-0 flex-col ${mainAreaAttentionActive ? 'invisible pointer-events-none' : ''}`}
-        aria-hidden={mainAreaAttentionActive || undefined}
-        data-testid="thread-chat-host"
-        style={
-          statusPanelOpen && isDesktop && (rightPanelMode === 'workspace' || rightPanelMode === 'transcript')
-            ? { flexBasis: `${chatBasis}%`, flexGrow: 0, flexShrink: 0 }
-            : { flex: '1 1 0%' }
-        }
-      >
-        <ChatContainerHeader
-          sidebarOpen={sidebarOpen}
-          onToggleSidebar={toggleSidebar}
-          threadId={threadId}
-          viewMode={viewMode}
-          onToggleViewMode={() => setViewMode(viewMode === 'single' ? 'split' : 'single')}
-          statusPanelOpen={statusPanelOpen && rightPanelMode === 'workspace'}
-          hasWorkspaceActivity={hasProjectedExecution || workspaceSurface !== 'home' || presentationLock !== null}
-          onToggleStatusPanel={() => {
-            if (statusPanelOpen && rightPanelMode === 'workspace') {
-              closeStatusPanel();
-            } else {
-              setWorkspacePanelMounted(true);
-              setRightPanelMode('workspace');
-              setRightPanelOpen(true);
-            }
-          }}
-        />
-
-        {intentMode === 'ideate' && <ParallelStatusBar threadId={threadId} />}
-        <ThinkingIndicator threadId={threadId} />
-
-        <ThreadChatSurface
-          threadId={threadId}
-          density="full"
-          messageConfirmations={messageConfirmations}
-          acceptUnscopedInteractiveSend
-          footerRef={attachBottomChromeRef}
-          timelineLead={
-            showAgentHookNotice ? (
-              <div className="mb-3 flex justify-center text-left">
-                <div className="max-w-[85%] w-full">
-                  <AgentHookHealthNotice
-                    health={agentHookHealth.health}
-                    error={agentHookHealth.error}
-                    syncing={agentHookHealth.syncing}
-                    synced={agentHookHealth.synced}
-                    syncAttempted={agentHookHealth.syncAttempted}
-                    onSync={agentHookHealth.sync}
-                  />
-                </div>
-              </div>
-            ) : undefined
-          }
-          emptyState={
-            <div className="text-center mt-20">
-              <PawIcon className="w-12 h-12 text-cafe-muted mx-auto mb-4" />
-              <p className="text-lg text-cafe-secondary mb-1">欢迎来到 Clowder AI!</p>
-              <p className="text-sm text-cafe-muted" suppressHydrationWarning>
-                {cats.length > 0 ? '输入 @布偶 召唤布偶猫开始聊天' : '还没有可用成员，先开始新手教程创建第一只猫猫'}
-              </p>
-              {showSetupCard && govStatus && (
-                <div className="mt-6 text-left">
-                  <ProjectSetupCard
-                    key={threadId}
-                    projectPath={currentProjectPath}
-                    isEmptyDir={govStatus.isEmptyDir}
-                    isGitRepo={govStatus.isGitRepo}
-                    gitAvailable={govStatus.gitAvailable}
-                    agentHookHealth={agentHookHealth.health}
-                    agentHookHealthError={agentHookHealth.error}
-                    agentHookSyncing={agentHookHealth.syncing}
-                    agentHookSynced={agentHookHealth.synced}
-                    agentHookSyncAttempted={agentHookHealth.syncAttempted}
-                    onSyncAgentHooks={agentHookHealth.sync}
-                    onComplete={() => {
-                      setSetupDone(true);
-                      govRefetch();
-                      void agentHookHealth.refresh();
-                    }}
-                  />
-                </div>
-              )}
-              {!showSetupCard &&
-                currentProjectPath &&
-                currentProjectPath !== 'default' &&
-                currentProjectPath !== 'lobby' && (
-                  <div className="mt-4 text-left">
-                    <BootstrapOrchestrator
-                      projectPath={currentProjectPath}
-                      indexState={indexState}
-                      isSnoozed={isSnoozed}
-                      progress={bootstrapProgress}
-                      summary={bootstrapSummary}
-                      durationMs={bootstrapDurationMs}
-                      isNewProject={setupDone}
-                      governanceDone={setupDone}
-                      onStartBootstrap={startBootstrap}
-                      onSnooze={snoozeBootstrap}
-                      onSearchKnowledge={handleSearchKnowledge}
-                      onGoToMemoryHub={handleGoToMemoryHub}
-                    />
-                  </div>
-                )}
-              {(() => {
-                const isCurrentBootcamp = storeThreads.find((thread) => thread.id === threadId)?.bootcampState;
-                if (isCurrentBootcamp) return null;
-                if (bootcampCount > 0) {
-                  return (
-                    <button
-                      type="button"
-                      onClick={() => setShowBootcampList(true)}
-                      className="mt-6 inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-cafe-accent/20 bg-accent-50 text-cafe-accent hover:bg-accent-100 transition-colors text-sm font-medium"
-                      data-testid="empty-state-bootcamp-list"
-                    >
-                      <BootcampIcon className="w-4 h-4" />
-                      我的训练营（{bootcampCount}）
-                    </button>
-                  );
-                }
-                return (
-                  <button
-                    type="button"
-                    onClick={() => setShowBootcampList(true)}
-                    className="mt-6 inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-cafe-accent/20 bg-accent-50 text-cafe-accent hover:bg-accent-100 transition-colors text-sm font-medium"
-                    data-testid="empty-state-bootcamp"
-                  >
-                    <BootcampIcon className="w-4 h-4" />
-                    第一次来？开始猫猫训练营
-                  </button>
-                );
-              })()}
+    <WorkspaceChatWorkScopeProvider
+      threadId={threadId}
+      onRegisteredWorkChange={onRegisteredWorkChange}
+      getActiveSurfaceId={() =>
+        artworkLightbox?.work?.surface?.id ?? useF307ExperienceWorkbenchStore.getState().layout.activeSurfaceId
+      }
+      isHostVisible={() => {
+        const chat = useChatStore.getState();
+        return (
+          isV2 &&
+          chat.currentThreadId === threadId &&
+          (!chat.presentationLock || chat.presentationLock.ownerThreadId === threadId) &&
+          (!!artworkLightbox?.work || (chat.rightPanelOpen && chat.rightPanelMode === 'workspace')) &&
+          document.visibilityState === 'visible'
+        );
+      }}
+    >
+      <div ref={containerRef} className="relative flex h-screen h-dvh">
+        <ArtworkLightboxHost />
+        {connectionStatus.updateRequired && <RuntimeUpdateRequiredDialog onReload={() => window.location.reload()} />}
+        {/* Mobile-only sidebar overlay — desktop sidebar is in AppShell */}
+        {sidebarOpen && !isDesktop && (
+          <>
+            <div
+              className="fixed inset-0 bg-[var(--console-overlay-backdrop)] backdrop-blur-sm z-20"
+              onClick={closeSidebar}
+              aria-hidden="true"
+            />
+            <div className="fixed inset-y-0 left-0 z-30 w-[240px]">
+              <ThreadSidebar onClose={closeSidebar} className="w-full" routeThreadId={threadId} />
             </div>
-          }
-          footerLead={
-            <>
-              {!showFirstRunQuestPrompt &&
-                !showQuestWizard &&
-                (() => {
-                  const currentThread = storeThreads.find((thread) => thread.id === threadId);
-                  const questState = (currentThread as Record<string, unknown> | undefined)?.firstRunQuestState as
-                    | { phase: string; firstCatName?: string }
-                    | undefined;
-                  if (!questState) return null;
-                  return (
-                    <QuestBanner
-                      phase={questState.phase}
-                      firstCatName={questState.firstCatName}
-                      onAddSecondCat={() => setShowQuestWizard(true)}
-                      onStartBootcamp={() => setShowBootcampList(true)}
-                      onComplete={() => assignDocumentRoute('/hub', typeof window !== 'undefined' ? window : undefined)}
-                    />
-                  );
-                })()}
-              {isResearchMode && (
-                <div className="mx-4 mb-2 rounded-lg border border-[var(--semantic-success)] bg-[var(--semantic-success-surface)] px-3 py-2 text-xs text-conn-emerald-text">
-                  多猫研究模式 — 文章上下文已注入。请输入研究问题，猫猫会自动调用 multi_mention 邀请其他猫参与分析。
-                </div>
-              )}
-            </>
-          }
-          composerClassName={(() => {
-            if (showFirstRunQuestPrompt || showQuestWizard) return '';
-            const currentThread = storeThreads.find((thread) => thread.id === threadId);
-            const bootcampState = currentThread?.bootcampState as { phase: string } | undefined;
-            if (bootcampState?.phase === 'phase-1-intro' && messages.length === 0) {
-              return 'relative z-[70] quest-input-highlight rounded-xl mx-1';
-            }
-            const questState = (currentThread as Record<string, unknown> | undefined)?.firstRunQuestState as
-              | { phase: string }
-              | undefined;
-            return questState?.phase === 'quest-2-cat-intro' ? 'quest-input-highlight rounded-xl mx-1' : '';
-          })()}
-          footerTail={
-            isGameActive && overlayMinimized && gameView?.threadId === threadId ? (
-              <button
-                type="button"
-                onClick={() => useGameStore.getState().restoreOverlay()}
-                className="mx-4 mb-2 flex items-center justify-center gap-2 rounded-lg border border-[var(--color-cafe-accent)] bg-[var(--accent-50)] px-3 py-2 text-sm text-[var(--color-cafe-accent)] hover:bg-[var(--color-cocreator-surface)] transition-colors"
-              >
-                <GameIcon />
-                返回游戏
-              </button>
-            ) : undefined
-          }
-        />
+          </>
+        )}
 
-        {/* F101: Game overlay — renders when a game is active */}
-        <GameOverlayConnector
-          gameView={gameView}
-          isGameActive={isGameActive}
-          overlayMinimized={overlayMinimized}
-          currentThreadId={threadId}
-          isNight={isNight}
-          selectedTarget={selectedTarget}
-          godScopeFilter={godScopeFilter}
-          isGodView={isGodView}
-          isDetective={isDetective}
-          detectiveBoundName={detectiveBoundName ?? undefined}
-          godSeats={godSeats}
-          godNightSteps={godNightSteps}
-          hasTargetedAction={hasTargetedAction}
-          myRole={myRole ?? undefined}
-          myRoleIcon={myRoleIcon ?? undefined}
-          myActionLabel={myActionLabel ?? undefined}
-          myActionHint={myActionHint ?? undefined}
-          altActionName={altActionName ?? undefined}
-          onClose={() => {
-            useGameStore.getState().minimizeOverlay();
-          }}
-          onSelectTarget={(seatId) => useGameStore.getState().setSelectedTarget(seatId)}
-          onGodScopeChange={(scope) => useGameStore.getState().setGodScopeFilter(scope)}
-          onGodAction={(action) => godAction(threadId, action)}
-          onVote={() => {
-            const state = useGameStore.getState();
-            if (state.selectedTarget && state.mySeatId) {
-              submitAction(threadId, state.mySeatId, 'vote', state.selectedTarget);
-              state.setSelectedTarget(null);
-            }
-          }}
-          onSpeak={(content) => {
-            const state = useGameStore.getState();
-            if (state.mySeatId) {
-              submitAction(threadId, state.mySeatId, 'speak', undefined, { content });
-            }
-          }}
-          onConfirmAction={() => {
-            const state = useGameStore.getState();
-            if (state.selectedTarget && state.mySeatId && state.currentActionName) {
-              submitAction(threadId, state.mySeatId, state.currentActionName, state.selectedTarget);
-              state.setSelectedTarget(null);
-            }
-          }}
-          onConfirmAltAction={() => {
-            const state = useGameStore.getState();
-            if (state.selectedTarget && state.mySeatId && state.altActionName) {
-              submitAction(threadId, state.mySeatId, state.altActionName, state.selectedTarget);
-              state.setSelectedTarget(null);
-            }
-          }}
-        />
-      </div>
-
-      {/* F284: visited Workspace/Activity panels stay mounted across fold and sibling-host switches.
-          At 768px+ they use the split host; below 768px the same host becomes a full-screen overlay. */}
-      {statusPanelOpen &&
-        isDesktop &&
-        !mainAreaAttentionActive &&
-        (rightPanelMode === 'status' ? (
-          <ResizeHandle
-            direction="horizontal"
-            label="右侧面板"
-            onResize={handleStatusPanelResize}
-            onCollapse={closeStatusPanel}
-            onDoubleClick={resetStatusPanelWidth}
-          />
-        ) : (
-          <ResizeHandle
-            direction="horizontal"
-            label="右侧面板"
-            onResize={handleHorizontalResize}
-            onCollapse={closeStatusPanel}
-            onDoubleClick={resetChatBasis}
-          />
-        ))}
-      {(statusPanelOpen || workspacePanelMounted || activityPanelMounted) && (
         <div
-          className={
-            !statusPanelOpen || (!isDesktop && rightPanelMode === 'workspace' && workspaceMode === 'approval')
-              ? 'hidden'
-              : mainAreaAttentionActive
-                ? 'absolute inset-0 z-40 flex min-h-0 flex-col overflow-hidden bg-[var(--console-panel-bg)]'
-                : isDesktop
-                  ? 'flex min-h-0 flex-col overflow-hidden'
-                  : 'fixed inset-0 z-50 flex min-h-0 flex-col overflow-hidden bg-[var(--console-panel-bg)]'
+          className={`flex min-w-0 flex-col ${mainAreaOverlayActive ? 'invisible pointer-events-none' : ''} ${
+            workComposerOnlyActive ? 'absolute inset-0 z-50 pointer-events-none' : 'relative'
+          }`}
+          aria-hidden={mainAreaOverlayActive || undefined}
+          data-testid="thread-chat-host"
+          data-presentation={
+            narrowWorkComposerActive
+              ? 'narrow-work-composer'
+              : artifactFullWindowActive
+                ? 'artifact-full-window'
+                : 'conversation'
           }
           style={
-            statusPanelOpen && isDesktop && !mainAreaAttentionActive
-              ? rightPanelMode === 'status'
-                ? { width: statusPanelWidth, flexShrink: 0 }
-                : { flex: '1 1 0%', minWidth: 0 }
-              : undefined
+            !workComposerOnlyActive &&
+            statusPanelOpen &&
+            isDesktop &&
+            (rightPanelMode === 'workspace' || rightPanelMode === 'transcript')
+              ? { flexBasis: `${activeChatBasis}%`, flexGrow: 0, flexShrink: 0 }
+              : { flex: '1 1 0%' }
           }
-          role="region"
-          aria-label={mainAreaAttentionActive ? '主区 Workspace' : '上下文侧栏'}
-          aria-hidden={!statusPanelOpen}
-          data-testid="contextual-workspace-host"
-          data-presentation={mainAreaAttentionActive ? 'main-area-attention' : 'right-rail'}
-          data-attention-surface={mainAreaAttentionActive ? mainAreaAttentionSurfaceId : undefined}
         >
-          <ContextualWorkspaceChrome
-            mode={rightPanelMode}
-            onFold={closeStatusPanel}
-            onNavigateHome={rightPanelMode === 'workspace' ? undefined : openWorkspaceLauncher}
-            showFold={!isDesktop && rightPanelMode === 'workspace'}
+          {!workComposerOnlyActive && !showNewConversationLanding && (
+            <ChatContainerHeader
+              sidebarOpen={sidebarOpen}
+              onToggleSidebar={toggleSidebar}
+              threadId={threadId}
+              viewMode={viewMode}
+              onOpenMessageSearch={messageSearchAvailable ? messageSearch.openSearch : undefined}
+              messageSearchOpen={messageSearch.open}
+              onToggleViewMode={() => setViewMode(viewMode === 'single' ? 'split' : 'single')}
+              statusPanelOpen={statusPanelOpen && rightPanelMode === 'workspace'}
+              hasWorkspaceActivity={hasProjectedExecution || workspaceSurface !== 'home' || presentationLock !== null}
+              onToggleStatusPanel={() => {
+                if (statusPanelOpen && rightPanelMode === 'workspace') {
+                  closeStatusPanel();
+                } else {
+                  if (isV2) captureChatReadingBeforeLayoutChange();
+                  setWorkspacePanelMounted(true);
+                  setRightPanelMode('workspace');
+                  setRightPanelOpen(true);
+                }
+              }}
+              conversationViewController={conversationViewController}
+              conversationViewMessages={conversationViewMessages}
+              conversationViewQueue={conversationViewQueue}
+            />
+          )}
+
+          {/* Reading controls occupy their own row so the existing history owner
+              measures a viewport whose beginning is actually readable. */}
+          <MessageSearchOverlay
+            threadId={threadId}
+            host={messageSearch}
+            available={messageSearchAvailable}
+            resolveSpeaker={(speaker) => {
+              if (speaker === 'user') return coCreator.name;
+              const cat = cats.find((candidate) => candidate.id === speaker);
+              return cat ? formatCatName(cat) : speaker;
+            }}
+          />
+
+          {showNewConversationLanding ? (
+            <NewConversationPage
+              sidebarOpen={sidebarOpen}
+              statusPanelOpen={statusPanelOpen && rightPanelMode === 'workspace'}
+              hasWorkspaceActivity={hasProjectedExecution || workspaceSurface !== 'home' || presentationLock !== null}
+              onToggleSidebar={toggleSidebar}
+              onToggleStatusPanel={() => {
+                if (statusPanelOpen && rightPanelMode === 'workspace') {
+                  closeStatusPanel();
+                } else {
+                  captureChatReadingBeforeLayoutChange();
+                  setWorkspacePanelMounted(true);
+                  setRightPanelMode('workspace');
+                  setRightPanelOpen(true);
+                }
+              }}
+              onNavigate={navigateToThread}
+              onShowCollaboration={handleStartFirstRunQuest}
+            />
+          ) : (
+            <>
+              <ThreadChatSurface
+                threadId={threadId}
+                density="full"
+                presentation={workComposerOnlyActive ? 'composer-only' : 'conversation'}
+                onReadingPort={isV2 ? registerShellReadingPort : undefined}
+                messageConfirmations={messageConfirmations}
+                conversationViewController={conversationViewController}
+                conversationViewQueue={conversationViewQueue}
+                acceptUnscopedInteractiveSend
+                onRealMessageSent={() => handleRealOnboardingMessage(threadId)}
+                footerRef={attachBottomChromeRef}
+                timelineLead={
+                  <>
+                    {showOnboardingHint && (
+                      <div className="mb-3 rounded-lg border border-conn-amber-ring bg-conn-amber-bg px-3 py-2 text-sm text-conn-amber-text">
+                        团队已创建。发送第一条消息后，首启旅程就完成了。成员和账号已固定在设置中。
+                        {onboardingSyncError && (
+                          <button
+                            type="button"
+                            className="ml-2 underline"
+                            onClick={() => {
+                              requestFirstRealMessageRetry();
+                            }}
+                          >
+                            重试同步
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {showAgentHookNotice ? (
+                      <div className="mb-3 flex justify-center text-left">
+                        <div className="max-w-[85%] w-full">
+                          <AgentHookHealthNotice
+                            configurationOnly={
+                              cats.length > 0 && cats.every((cat) => cat.configurationSource === 'native_tool')
+                            }
+                            health={agentHookHealth.health}
+                            error={agentHookHealth.error}
+                            syncing={agentHookHealth.syncing}
+                            synced={agentHookHealth.synced}
+                            syncAttempted={agentHookHealth.syncAttempted}
+                            onSync={agentHookHealth.sync}
+                          />
+                        </div>
+                      </div>
+                    ) : undefined}
+                  </>
+                }
+                emptyState={
+                  <div className="text-center mt-20">
+                    <PawIcon className="w-12 h-12 text-cafe-muted mx-auto mb-4" />
+                    <p className="text-lg text-cafe-secondary mb-1">欢迎来到 {deploymentDefaults.brand.displayName}!</p>
+                    <p className="text-sm text-cafe-muted" suppressHydrationWarning>
+                      {cats.length > 0 ? '选择一位伙伴，开始你的下一个目标' : '先看看猫猫如何协作，再创建自己的伙伴'}
+                    </p>
+                    {showSetupCard && govStatus && (
+                      <div className="mt-6 text-left">
+                        <ProjectSetupCard
+                          key={threadId}
+                          projectPath={currentProjectPath}
+                          isEmptyDir={govStatus.isEmptyDir}
+                          isGitRepo={govStatus.isGitRepo}
+                          gitAvailable={govStatus.gitAvailable}
+                          agentHookHealth={agentHookHealth.health}
+                          agentHookHealthError={agentHookHealth.error}
+                          agentHookSyncing={agentHookHealth.syncing}
+                          agentHookSynced={agentHookHealth.synced}
+                          agentHookSyncAttempted={agentHookHealth.syncAttempted}
+                          onSyncAgentHooks={agentHookHealth.sync}
+                          onComplete={() => {
+                            setSetupDone(true);
+                            govRefetch();
+                            void agentHookHealth.refresh();
+                          }}
+                        />
+                      </div>
+                    )}
+                    {!showSetupCard &&
+                      currentProjectPath &&
+                      currentProjectPath !== 'default' &&
+                      currentProjectPath !== 'lobby' && (
+                        <div className="mt-4 text-left">
+                          <BootstrapOrchestrator
+                            projectPath={currentProjectPath}
+                            indexState={indexState}
+                            isSnoozed={isSnoozed}
+                            progress={bootstrapProgress}
+                            summary={bootstrapSummary}
+                            durationMs={bootstrapDurationMs}
+                            isNewProject={setupDone}
+                            governanceDone={setupDone}
+                            onStartBootstrap={startBootstrap}
+                            onSnooze={snoozeBootstrap}
+                            onSearchKnowledge={handleSearchKnowledge}
+                            onGoToMemoryHub={handleGoToMemoryHub}
+                          />
+                        </div>
+                      )}
+                    {(() => {
+                      const isCurrentBootcamp = storeThreads.find((thread) => thread.id === threadId)?.bootcampState;
+                      if (isCurrentBootcamp) return null;
+                      if (bootcampCount > 0) {
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => setShowBootcampList(true)}
+                            className="mt-6 inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-cafe-accent/20 bg-accent-50 text-cafe-accent hover:bg-accent-100 transition-colors text-sm font-medium"
+                            data-testid="empty-state-bootcamp-list"
+                          >
+                            <BootcampIcon className="w-4 h-4" />
+                            我的训练营（{bootcampCount}）
+                          </button>
+                        );
+                      }
+                      return (
+                        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+                          <button
+                            type="button"
+                            onClick={handleStartFirstRunQuest}
+                            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-cafe-accent/20 bg-accent-50 text-cafe-accent hover:bg-accent-100 transition-colors text-sm font-medium"
+                            data-testid="empty-state-bootcamp"
+                          >
+                            <BootcampIcon className="w-4 h-4" />
+                            看看团队如何协作
+                          </button>
+                          <Link href={DEMO_SETTINGS_URL} className="px-4 py-2 text-sm text-cafe-accent">
+                            创建我的猫猫
+                          </Link>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                }
+                footerLead={
+                  <>
+                    {!showQuestWizard &&
+                      (() => {
+                        const currentThread = storeThreads.find((thread) => thread.id === threadId);
+                        const questState = (currentThread as Record<string, unknown> | undefined)?.firstRunQuestState as
+                          | { phase: string; firstCatName?: string }
+                          | undefined;
+                        if (!questState) return null;
+                        return (
+                          <QuestBanner
+                            phase={questState.phase}
+                            firstCatName={questState.firstCatName}
+                            onAddSecondCat={() => assignDocumentRoute(DEMO_SETTINGS_URL, window)}
+                            onStartBootcamp={() => setShowBootcampList(true)}
+                            onComplete={() =>
+                              assignDocumentRoute('/hub', typeof window !== 'undefined' ? window : undefined)
+                            }
+                          />
+                        );
+                      })()}
+                    {isResearchMode && (
+                      <div className="mx-4 mb-2 rounded-lg border border-[var(--semantic-success)] bg-[var(--semantic-success-surface)] px-3 py-2 text-xs text-conn-emerald-text">
+                        多猫研究模式 — 文章上下文已注入。请输入研究问题，猫猫会自动调用 multi_mention
+                        邀请其他猫参与分析。
+                      </div>
+                    )}
+                  </>
+                }
+                composerClassName={(() => {
+                  if (showQuestWizard) return '';
+                  const currentThread = storeThreads.find((thread) => thread.id === threadId);
+                  const bootcampState = currentThread?.bootcampState as { phase: string } | undefined;
+                  if (bootcampState?.phase === 'phase-1-intro' && messages.length === 0) {
+                    return 'relative z-[70] quest-input-highlight rounded-xl mx-1';
+                  }
+                  const questState = (currentThread as Record<string, unknown> | undefined)?.firstRunQuestState as
+                    | { phase: string }
+                    | undefined;
+                  return questState?.phase === 'quest-2-cat-intro' ? 'quest-input-highlight rounded-xl mx-1' : '';
+                })()}
+              />
+            </>
+          )}
+        </div>
+
+        {/* F284: visited Workspace/Activity panels stay mounted across fold and sibling-host switches.
+          At 768px+ they use the split host; below 768px the same host becomes a full-screen overlay. */}
+        {statusPanelOpen &&
+          isDesktop &&
+          !mainAreaOverlayActive &&
+          !artifactFullWindowActive &&
+          (rightPanelMode === 'status' ? (
+            <ResizeHandle
+              direction="horizontal"
+              label="右侧面板"
+              onResize={handleStatusPanelResize}
+              onCollapse={closeStatusPanel}
+              onDoubleClick={resetStatusPanelWidth}
+            />
+          ) : (
+            <ResizeHandle
+              direction="horizontal"
+              label="右侧面板"
+              onResize={handleHorizontalResize}
+              onCollapse={closeStatusPanel}
+              onDoubleClick={() => {
+                if (workspaceWideActive) {
+                  captureChatReadingBeforeLayoutChange();
+                  setAttentionChatBasis(DEFAULT_ARTIFACT_WORK_CHAT_BASIS);
+                  return;
+                }
+                if (artifactSplitPreferenceActive) {
+                  resetArtifactWorkChatBasis();
+                  return;
+                }
+                resetChatBasis();
+              }}
+            />
+          ))}
+        {(statusPanelOpen || workspacePanelMounted || activityPanelMounted) && (
+          <div
+            className={
+              !statusPanelOpen
+                ? 'hidden'
+                : workComposerOnlyActive
+                  ? 'absolute inset-x-0 top-0 z-40 flex min-h-0 flex-col overflow-hidden bg-[var(--console-panel-bg)]'
+                  : mainAreaOverlayActive
+                    ? 'absolute inset-0 z-40 flex min-h-0 flex-col overflow-hidden bg-[var(--console-panel-bg)]'
+                    : isDesktop
+                      ? 'flex min-h-0 flex-col overflow-hidden'
+                      : 'fixed inset-0 z-50 flex min-h-0 flex-col overflow-hidden bg-[var(--console-panel-bg)]'
+            }
+            style={
+              workComposerOnlyActive
+                ? { bottom: bottomChromeHeight }
+                : statusPanelOpen && isDesktop && !mainAreaOverlayActive
+                  ? rightPanelMode === 'status'
+                    ? { width: statusPanelWidth, flexShrink: 0 }
+                    : { flex: '1 1 0%', minWidth: 0 }
+                  : undefined
+            }
+            role="region"
+            aria-label={
+              workComposerOnlyActive ? '整窗 Workspace' : mainAreaOverlayActive ? '主区 Workspace' : '上下文侧栏'
+            }
+            aria-hidden={!statusPanelOpen}
+            data-testid="contextual-workspace-host"
+            data-presentation={
+              narrowWorkComposerActive
+                ? 'narrow-work-composer'
+                : artifactFullWindowActive
+                  ? 'artifact-full-window'
+                  : workspaceWideActive
+                    ? 'wide-workspace'
+                    : workModeActive
+                      ? 'artwork-work-mode'
+                      : mainAreaOverlayActive
+                        ? 'main-area-attention'
+                        : 'right-rail'
+            }
+            data-attention-surface={mainAreaAttentionActive ? mainAreaAttentionSurfaceId : undefined}
           >
-            {activityPanelMounted && (
-              <div className={rightPanelMode === 'status' ? 'flex min-h-0 flex-1' : 'hidden'}>
-                <RightStatusPanel
-                  intentMode={intentMode}
-                  targetCats={targetCats}
-                  catStatuses={catStatuses}
-                  catInvocations={catInvocations}
-                  activeInvocations={activeInvocations}
-                  hasActiveInvocation={hasActiveInvocation}
-                  threadId={threadId}
-                  messageSummary={messageSummary}
-                  width={isDesktop ? statusPanelWidth : '100%'}
-                />
-              </div>
-            )}
-            {workspacePanelMounted && (
-              <div
-                className={rightPanelMode === 'workspace' ? 'flex min-h-0 min-w-0 flex-1' : 'hidden'}
-                data-testid="workspace-host-pane"
+            <ArtworkWorkModeScope
+              onReturn={workModeActive ? closeStatusPanel : null}
+              fullWindowAction={
+                isDesktop
+                  ? {
+                      active: artifactFullWindowActive,
+                      onToggle: () => {
+                        const { layout } = useF307ExperienceWorkbenchStore.getState();
+                        const surface = layout.surfaces.find((item) => item.id === layout.activeSurfaceId);
+                        if (surface) toggleArtifactWorkFullWindow(threadId, surface);
+                      },
+                    }
+                  : undefined
+              }
+            >
+              <ContextualWorkspaceChrome
+                mode={rightPanelMode}
+                onFold={closeStatusPanel}
+                onNavigateHome={rightPanelMode === 'workspace' ? undefined : openWorkspaceLauncher}
+                showFold={rightPanelMode === 'workspace' && (isV2 || !isDesktop)}
               >
-                <WorkspacePanel
-                  threadId={threadId}
-                  defaultCatId={targetCats[0] || 'opus'}
-                  statusSurface={
-                    <RightStatusPanel
+                {activityPanelMounted && (
+                  <div className={rightPanelMode === 'status' ? 'flex min-h-0 flex-1' : 'hidden'}>
+                    <StatusPresentation
                       intentMode={intentMode}
                       targetCats={targetCats}
                       catStatuses={catStatuses}
@@ -1163,75 +1400,87 @@ function InteractiveChatContainer({ threadId }: ChatContainerProps) {
                       hasActiveInvocation={hasActiveInvocation}
                       threadId={threadId}
                       messageSummary={messageSummary}
-                      width="100%"
+                      width={isDesktop ? statusPanelWidth : '100%'}
                     />
-                  }
-                />
-              </div>
-            )}
-            {rightPanelMode === 'transcript' && statusPanelOpen && <TranscriptPanel />}
-          </ContextualWorkspaceChrome>
-        </div>
-      )}
-      <FloatingTranscriptContainer />
-      <MobileApprovalSheet
-        open={!isDesktop && rightPanelMode === 'workspace' && workspaceMode === 'approval'}
-        onClose={closeStatusPanel}
-      />
-      {showFirstRunQuestPrompt &&
-        createPortal(
-          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-[var(--console-overlay-medium)] px-4 backdrop-blur-sm">
-            <div
-              className="w-full max-w-md rounded-2xl border border-conn-amber-ring bg-[var(--console-card-bg)] p-6 shadow-2xl"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <h3 className="text-lg font-semibold text-cafe">开始猫猫新手教程？</h3>
-              <p className="mt-2 text-sm text-cafe-secondary">
-                当前还没有可用成员。我们可以先带你创建第一只猫猫，再开始首个协作任务。
-              </p>
-              <div className="mt-5 flex justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={handleSkipFirstRunQuest}
-                  className="rounded-lg border border-[var(--console-border-soft)] px-3 py-2 text-sm text-cafe-secondary hover:bg-[var(--console-hover-bg)]"
-                >
-                  跳过
-                </button>
-                <button
-                  type="button"
-                  onClick={handleStartFirstRunQuest}
-                  className="rounded-lg bg-cafe-accent px-3 py-2 text-sm font-medium text-[var(--cafe-surface)] hover:opacity-90"
-                >
-                  开始教程
-                </button>
-              </div>
-            </div>
-          </div>,
-          document.body,
+                  </div>
+                )}
+                {workspacePanelMounted && (
+                  <div
+                    className={rightPanelMode === 'workspace' ? 'flex min-h-0 min-w-0 flex-1' : 'hidden'}
+                    data-testid="workspace-host-pane"
+                  >
+                    <WorkspaceChatRevealProvider threadId={threadId} onReveal={revealWorkspaceChat}>
+                      <WorkspacePanel
+                        threadId={threadId}
+                        projectPath={isV2 ? workspaceProjectPath : undefined}
+                        defaultCatId={targetCats[0] || 'opus'}
+                        visible={statusPanelOpen && rightPanelMode === 'workspace' && documentVisible}
+                        artifactWorkHostAvailable
+                        statusSurface={
+                          <StatusPresentation
+                            intentMode={intentMode}
+                            targetCats={targetCats}
+                            catStatuses={catStatuses}
+                            catInvocations={catInvocations}
+                            activeInvocations={activeInvocations}
+                            hasActiveInvocation={hasActiveInvocation}
+                            threadId={threadId}
+                            messageSummary={messageSummary}
+                            width="100%"
+                          />
+                        }
+                      />
+                    </WorkspaceChatRevealProvider>
+                  </div>
+                )}
+                {rightPanelMode === 'transcript' && statusPanelOpen && <TranscriptPanel />}
+              </ContextualWorkspaceChrome>
+            </ArtworkWorkModeScope>
+          </div>
         )}
-      <FirstRunQuestWizard
-        open={showQuestWizard}
-        onClose={() => setShowQuestWizard(false)}
-        onCreated={handleQuestCreated}
-      />
-      <BootcampListModal open={showBootcampList} onClose={handleBootcampModalClose} currentThreadId={threadId} />
-      {showVoteModal && <VoteConfigModal onSubmit={handleVoteSubmit} onCancel={() => setShowVoteModal(false)} />}
-      {/* Bootcamp guide overlay: intro phase tips + lifecycle tips (phase-7.5 uses guide engine) */}
-      {(() => {
-        if (showFirstRunQuestPrompt || showQuestWizard) return null;
-        const bt = storeThreads.find((t) => t.id === threadId);
-        const raw = bt?.bootcampState;
-        if (!raw) return null;
-        const phase = raw.phase;
-        // Guide engine handles phase-7.5 and phase-10 — no custom overlay needed
-        if (phase === 'phase-7.5-add-teammate' || phase === 'phase-10-retro') return null;
-        const isLifecyclePhase = /^phase-(5|6|7|8|9|10|11)-/.test(phase);
-        if (!isLifecyclePhase && messages.length > 0) return null;
-        const leadCat = cats.find((c) => c.id === raw.leadCat) ?? cats[0];
-        const catName = leadCat ? formatCatName(leadCat) : undefined;
-        if (!catName) return null;
-        return <BootcampGuideOverlay phase={phase} catName={catName} hasMessages={messages.length > 0} />;
-      })()}
-    </div>
+        <FloatingTranscriptContainer />
+        <GuidedOnboarding
+          open={showQuestWizard}
+          storageScope={demoAdmission.storageScope}
+          onCompleted={demoAdmission.complete}
+          onClose={() => {
+            setShowQuestWizard(false);
+            demoAdmission.dismiss();
+          }}
+        />
+        {demoAdmission.error && (
+          <p role="status" className="text-sm text-cafe-secondary">
+            {demoAdmission.error}{' '}
+            <button type="button" onClick={demoAdmission.retry}>
+              重试保存引导记录
+            </button>
+          </p>
+        )}
+        <FirstRunEntryReminder
+          enabled={
+            threadId === 'default' && registryKnown && !registryRefreshing && cats.length > 0 && !showQuestWizard
+          }
+          threadId={threadId}
+        />
+        <BootcampListModal open={showBootcampList} onClose={handleBootcampModalClose} currentThreadId={threadId} />
+        {showVoteModal && <VoteConfigModal onSubmit={handleVoteSubmit} onCancel={() => setShowVoteModal(false)} />}
+        {/* Bootcamp guide overlay: intro phase tips + lifecycle tips (phase-7.5 uses guide engine) */}
+        {(() => {
+          if (showQuestWizard) return null;
+          const bt = storeThreads.find((t) => t.id === threadId);
+          const raw = bt?.bootcampState;
+          if (!raw) return null;
+          const phase = raw.phase;
+          // Guide engine handles phase-7.5 and phase-10 — no custom overlay needed
+          if (phase === 'phase-7.5-add-teammate' || phase === 'phase-10-retro') return null;
+          const isLifecyclePhase = /^phase-(5|6|7|8|9|10|11)-/.test(phase);
+          if (!isLifecyclePhase && messages.length > 0) return null;
+          const leadCat = cats.find((c) => c.id === raw.leadCat) ?? cats[0];
+          const catName = leadCat ? formatCatName(leadCat) : undefined;
+          if (!catName) return null;
+          return <BootcampGuideOverlay phase={phase} catName={catName} hasMessages={messages.length > 0} />;
+        })()}
+      </div>
+    </WorkspaceChatWorkScopeProvider>
   );
 }

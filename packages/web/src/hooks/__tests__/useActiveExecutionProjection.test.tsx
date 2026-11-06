@@ -85,11 +85,54 @@ describe('F295 canonical execution hydration', () => {
     vi.useRealTimers();
   });
 
+  it('preserves verified project work during navigation and hides it while scope is unresolved', async () => {
+    const execution = liveExecution();
+    mocks.apiFetch.mockResolvedValueOnce(Response.json({ projectPath: '/project/cafe', executions: [execution] }));
+    await act(async () => {
+      root.render(<Harness threadId="thread-a" connected={false} />);
+    });
+    useActiveExecutionStore.getState().beginCancellation(execution);
+    mocks.apiFetch.mockImplementation(() => new Promise<Response>(() => {}));
+    await act(async () => {
+      root.render(<Harness threadId="thread-b" connected={false} />);
+    });
+    expect(useActiveExecutionStore.getState()).toMatchObject({
+      hydration: 'ready',
+      projectPath: '/project/cafe',
+      executionsByKey: { [activeExecutionKey(execution)]: execution },
+      cancelPendingByKey: { [activeExecutionKey(execution)]: true },
+    });
+    await act(async () => {
+      root.render(<Harness threadId="thread-missing" connected={false} />);
+    });
+    expect(useActiveExecutionStore.getState()).toMatchObject({
+      hydration: 'loading',
+      projectPath: null,
+      executionsByKey: {},
+    });
+  });
+
+  it('cold-discovers another project without a sidebar start event or a current project', async () => {
+    const execution = { ...liveExecution(), threadId: 'unseen-planet-thread', projectPath: '/project/planet' };
+    mocks.apiFetch.mockResolvedValueOnce(Response.json({ scope: 'all', executions: [execution] }));
+    useSidebarProjectionStore.setState({ rows: [] });
+    await act(async () => root.render(<Harness threadId="unindexed-current" connected={false} />));
+    expect(mocks.apiFetch).toHaveBeenCalledWith('/api/executions/active?scope=all', {
+      signal: expect.any(AbortSignal),
+    });
+    expect(useActiveExecutionStore.getState()).toMatchObject({
+      projectPath: null,
+      scope: 'all',
+      hydration: 'ready',
+      executionsByKey: { [activeExecutionKey(execution)]: execution },
+    });
+  });
+
   it('hydrates on first mount, reconnect, navigation, and bounded cold-discovery polling', async () => {
     await act(async () => {
       root.render(<Harness threadId="thread-a" connected={false} />);
     });
-    expect(mocks.apiFetch).toHaveBeenLastCalledWith('/api/executions/active?projectPath=%2Fproject%2Fcafe', {
+    expect(mocks.apiFetch).toHaveBeenLastCalledWith('/api/executions/active?scope=all', {
       signal: expect.any(AbortSignal),
     });
 
@@ -106,12 +149,12 @@ describe('F295 canonical execution hydration', () => {
     await act(async () => {
       root.render(<Harness threadId="thread-b" connected />);
     });
-    expect(mocks.apiFetch).toHaveBeenLastCalledWith('/api/executions/active?projectPath=%2Fproject%2Fcafe', {
+    expect(mocks.apiFetch).toHaveBeenLastCalledWith('/api/executions/active?scope=all', {
       signal: expect.any(AbortSignal),
     });
   });
 
-  it('keeps one project resource identity across a slow same-project navigation and rejects the late generation', async () => {
+  it('switches exact thread resource identity and rejects the late generation', async () => {
     let resolveThreadA!: (response: Response) => void;
     let resolveThreadB!: (response: Response) => void;
     mocks.apiFetch
@@ -167,8 +210,8 @@ describe('F295 canonical execution hydration', () => {
 
     expect(mocks.apiFetch).toHaveBeenCalledTimes(2);
     expect(mocks.apiFetch.mock.calls.map(([url]) => url)).toEqual([
-      '/api/executions/active?projectPath=%2Fproject%2Fcafe',
-      '/api/executions/active?projectPath=%2Fproject%2Fcafe',
+      '/api/executions/active?scope=all',
+      '/api/executions/active?scope=all',
     ]);
     expect(useActiveExecutionStore.getState().anchorThreadId).toBe('thread-b');
     expect(useActiveExecutionStore.getState().executionsByKey).toEqual({
@@ -211,7 +254,7 @@ describe('F295 canonical execution hydration', () => {
 
   it('treats an exact 409 retry as terminal convergence and refreshes the projection', async () => {
     const execution = liveExecution();
-    const request = useActiveExecutionStore.getState().beginHydration('thread-a');
+    const request = useActiveExecutionStore.getState().beginHydration('thread-a', '/project/cafe');
     useActiveExecutionStore.getState().applySnapshot('thread-a', request, {
       projectPath: '/project/cafe',
       executions: [execution],
@@ -245,7 +288,7 @@ describe('F295 canonical execution hydration', () => {
       }),
     );
     const store = useActiveExecutionStore.getState();
-    store.applySnapshot('thread-a', store.beginHydration('thread-a'), {
+    store.applySnapshot('thread-a', store.beginHydration('thread-a', '/project/cafe'), {
       projectPath: '/project/cafe',
       executions,
     });

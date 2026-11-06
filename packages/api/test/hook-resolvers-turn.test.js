@@ -58,7 +58,6 @@ function makeInput(overrides = {}) {
     conciergeLines: null,
     worldContext: null,
     alwaysOnDocsBlock: null,
-    activeSignalsBlock: null,
     a2aBallCheckContent: null,
     handoffDecisionTreeContent: null,
     coCreatorFirstMention: '@lang',
@@ -226,7 +225,8 @@ describe('Turn resolvers D1-D10', () => {
     const result = new mod.D9Resolver().resolve(input);
     assert.equal(result.status, 'fired');
     // Only first 2 items
-    assert.equal(result.vars.UNROUTED_MENTIONS, '@unknown1、@unknown2');
+    assert.match(result.vars.ROUTING_FEEDBACK, /@unknown1、@unknown2/);
+    assert.doesNotMatch(result.vars.ROUTING_FEEDBACK, /@unknown3/);
   });
 
   it('D10 fires with critique tag', () => {
@@ -254,7 +254,7 @@ describe('Turn resolvers D11-D21, R1-R2, N1', () => {
     assert.equal(result.vars.SKILL_NAME, 'tdd');
   });
 
-  it('D12 fires with qualifying active participant', () => {
+  it('D12 fires with a qualifying recent speaker', () => {
     const input = makeInput({
       activeParticipants: [
         { catId: 'codex', label: '缅因猫(codex)', lastMessageAt: 1000 },
@@ -263,7 +263,7 @@ describe('Turn resolvers D11-D21, R1-R2, N1', () => {
     });
     const result = new mod.D12Resolver().resolve(input);
     assert.equal(result.status, 'fired');
-    assert.equal(result.vars.ACTIVE_LABEL, '缅因猫(codex)');
+    assert.equal(result.vars.RECENT_SPEAKER_LABEL, '缅因猫(codex)');
   });
 
   it('D12 skips when only self is active', () => {
@@ -346,11 +346,6 @@ describe('Turn resolvers D11-D21, R1-R2, N1', () => {
   it('D19 fires with always-on docs', () => {
     const input = makeInput({ alwaysOnDocsBlock: '### Doc1\n\nContent' });
     assert.equal(new mod.D19Resolver().resolve(input).status, 'fired');
-  });
-
-  it('D20 fires with signals', () => {
-    const input = makeInput({ activeSignalsBlock: '### [S1] Title (HN/T1)\nContent' });
-    assert.equal(new mod.D20Resolver().resolve(input).status, 'fired');
   });
 
   it('D21 fires when a2a needed and returns CC_MENTION', () => {

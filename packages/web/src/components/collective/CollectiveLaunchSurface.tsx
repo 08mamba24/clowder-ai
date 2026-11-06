@@ -1,340 +1,337 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { apiFetch } from '@/utils/api-client';
+import type { CollectiveHostParticipationReady } from '@cat-cafe/shared';
+import { type RefObject, useEffect, useMemo, useRef, useState } from 'react';
+import { useContentOpen } from '../content-review/useContentOpen';
+import { CollectiveCafeHost } from './CollectiveCafeHost';
+import { CollectiveDocumentWorkspace } from './CollectiveDocumentWorkspace';
+import { CollectiveEntryReview } from './CollectiveEntryReview';
 import {
-  type CollectiveConnectionProjection,
-  type CollectiveConnectorStatus,
-  type CollectivePairingIntentMessage,
-  canonicalClientUrl,
-  type LocalCollectiveServiceLaunch,
-  normalizeCollectiveServiceUrl,
-} from './collective-client';
-import { localServiceAction, localServiceDescription } from './collective-launch-copy';
+  CollectiveConnectorBoundary,
+  CollectiveLaunchNotice,
+  CollectiveServiceSetup,
+  CollectiveWorldUnavailable,
+} from './CollectiveLaunchChrome';
+import { CollectiveMediaShare } from './CollectiveMediaShare';
+import { CollectiveMediaSurface } from './CollectiveMediaSurface';
+import { hasActiveCollectiveConnection } from './collective-connection-selection';
+import { parseCollectiveWorkActionRef } from './collective-work-action';
+import { parseCollectiveWorldTarget } from './collective-world-directory';
+import { useAcceptedWorkReconciliation } from './use-accepted-work-reconciliation';
+import { useCollectiveActionRef } from './use-collective-action-ref';
+import { useCollectiveAppearanceBridge } from './use-collective-appearance-bridge';
+import { useCollectiveConnectorLaunch } from './use-collective-connector-launch';
+import { useCollectiveContextBridge } from './use-collective-context-bridge';
+import { useCollectiveDocumentBridge } from './use-collective-document-bridge';
+import { useCollectiveEntryPairing } from './use-collective-entry-pairing';
+import { useCollectiveFrameRecovery } from './use-collective-frame-recovery';
+import { useCollectiveMediaRpc } from './use-collective-media-rpc';
+import { useCollectiveMediaShare } from './use-collective-media-share';
 import { useCollectivePairingBridge } from './use-collective-pairing-bridge';
+import { useCollectiveWorkPolicyBridge } from './use-collective-work-policy-bridge';
+import { useCollectiveWorldNavigation } from './use-collective-world-navigation';
 
-const STATUS_REFRESH_MS = 5_000;
-
-function preferredConnection(
-  connections: readonly CollectiveConnectionProjection[],
-): CollectiveConnectionProjection | undefined {
-  let latestAuthorized: CollectiveConnectionProjection | undefined;
-  let latestOnline: CollectiveConnectionProjection | undefined;
-  let latestRevoked: CollectiveConnectionProjection | undefined;
-  for (const connection of connections) {
-    if (connection.authorityStatus === 'revoked') {
-      latestRevoked = connection;
-      continue;
-    }
-    latestAuthorized = connection;
-    if (connection.liveStatus === 'online') latestOnline = connection;
-  }
-  return latestOnline ?? latestAuthorized ?? latestRevoked;
-}
+const MESSAGE_ACTION_RESERVE = { width: 256, height: 320 } as const;
 
 export function CollectiveLaunchSurface({
   initialServiceUrl = process.env.NEXT_PUBLIC_COLLECTIVE_SERVICE_URL ?? '',
 }: {
   readonly initialServiceUrl?: string;
 }) {
+  const contentOpening = useContentOpen();
+  const [documentWorkspace, setDocumentWorkspace] = useState(false);
+  const [documentWorkspaceMounted, setDocumentWorkspaceMounted] = useState(false);
+  const actionRef = useCollectiveActionRef();
+  const workTarget = useMemo(() => parseCollectiveWorkActionRef(actionRef), [actionRef]);
+  const parsedWorldTarget = useMemo(() => parseCollectiveWorldTarget(actionRef), [actionRef]);
+  const explicitWorldTarget = parsedWorldTarget.kind === 'target' ? parsedWorldTarget.target : undefined;
+  const hasExplicitWorldIntent = parsedWorldTarget.kind !== 'none';
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [status, setStatus] = useState<CollectiveConnectorStatus>();
-  const [serviceInput, setServiceInput] = useState(initialServiceUrl);
-  const [serviceUrl, setServiceUrl] = useState(() => normalizeCollectiveServiceUrl(initialServiceUrl));
-  const [launchUrl, setLaunchUrl] = useState(() => normalizeCollectiveServiceUrl(initialServiceUrl));
-  const [error, setError] = useState<string>();
-  const [busy, setBusy] = useState<'provision' | 'pair' | 'reconnect' | 'revoke'>();
-
-  const load = useCallback(async (afterMutation = false) => {
-    try {
-      const response = await apiFetch(
-        '/api/plugins/collective-connector',
-        undefined,
-        afterMutation ? { afterCurrentGet: true } : undefined,
-      );
-      const body = (await response.json().catch(() => ({}))) as CollectiveConnectorStatus & { error?: string };
-      if (!response.ok) throw new Error(body.error ?? `Connector status failed (${response.status})`);
-      setStatus(body);
-      const active = preferredConnection(body.connections);
-      if (active) {
-        setServiceUrl(active.serviceUrl);
-        setLaunchUrl(active.serviceUrl);
-        setServiceInput(active.serviceUrl);
-      } else if (body.localService?.state === 'ready') {
-        setServiceUrl(body.localService.serviceUrl);
-        setLaunchUrl(body.localService.serviceUrl);
-        setServiceInput(body.localService.serviceUrl);
-      }
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Connector status failed');
-    }
-  }, []);
-
-  const provisionLocalService = useCallback(async () => {
-    setBusy('provision');
-    setError(undefined);
-    try {
-      const response = await apiFetch('/api/plugins/collective-connector/service/provision', { method: 'POST' });
-      const body = (await response.json().catch(() => ({}))) as LocalCollectiveServiceLaunch & { error?: string };
-      if (!response.ok || !body.service || !body.launchUrl) {
-        throw new Error(body.error ?? `Service creation failed (${response.status})`);
-      }
-      const normalized = normalizeCollectiveServiceUrl(body.service.serviceUrl);
-      if (!normalized || new URL(body.launchUrl).origin !== normalized) {
-        throw new Error('Host returned an invalid local Service address');
-      }
-      setStatus((current) => (current ? { ...current, localService: body.service } : current));
-      setServiceUrl(normalized);
-      setServiceInput(normalized);
-      setLaunchUrl(body.launchUrl);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Service creation failed');
-    } finally {
-      setBusy(undefined);
-    }
-  }, []);
-
+  const [frameAttempt, setFrameAttempt] = useState(0);
+  const workResult = useAcceptedWorkReconciliation();
+  const connector = useCollectiveConnectorLaunch({
+    initialServiceUrl,
+    targetConnectionId: workTarget?.connectionId,
+    serviceInputUrl: explicitWorldTarget?.serviceUrl,
+    automaticallySelectService: !hasExplicitWorldIntent,
+  });
+  const entry = useCollectiveEntryPairing(connector.onPaired);
+  const world = useCollectiveWorldNavigation({
+    iframeRef,
+    parsedTarget: parsedWorldTarget,
+    status: connector.status,
+    selectedConnectionId: connector.selectedConnectionId,
+    initialServiceUrl,
+    launchUrl: connector.launchUrl,
+  });
+  const { connection } = world;
+  const {
+    busy,
+    error,
+    mutateConnection,
+    provisionLocalService,
+    selectConnection,
+    serviceInput,
+    setError,
+    setServiceAddress,
+    setServiceInput,
+    status,
+  } = connector;
+  const pairingBridge = useCollectivePairingBridge({
+    iframeRef,
+    serviceUrl: world.activeLaunchUrl,
+    pair: entry.receive,
+  });
+  const contextBridge = useCollectiveContextBridge(iframeRef, connection, workResult.reconcile, workTarget);
+  useCollectiveDocumentBridge({
+    iframe: iframeRef,
+    connection,
+    context: contextBridge.context,
+    onOpen: (target, hostKey) => {
+      void contentOpening.openContent({ kind: 'collective', target, hostKey }).then((opened) => {
+        if (opened) {
+          setDocumentWorkspaceMounted(true);
+          setDocumentWorkspace(true);
+        }
+      });
+    },
+    onReturn: () => setDocumentWorkspace(false),
+  });
   useEffect(() => {
-    void load();
-    const refresh = window.setInterval(() => void load(), STATUS_REFRESH_MS);
-    return () => window.clearInterval(refresh);
-  }, [load]);
+    const showHost = (event: Event) => {
+      const hostKey =
+        connection &&
+        JSON.stringify([
+          'collective',
+          connection.serviceInstanceId,
+          connection.collectiveId,
+          connection.connectionId,
+          connection.authorizedHumanId,
+        ]);
+      if (documentWorkspace || (event as CustomEvent<{ hostKey?: string }>).detail?.hostKey === hostKey)
+        setDocumentWorkspace(false);
+    };
+    window.addEventListener('collective:show-document-host', showHost);
+    return () => window.removeEventListener('collective:show-document-host', showHost);
+  }, [connection, documentWorkspace]);
+  const mediaRpc = useCollectiveMediaRpc(iframeRef, connection, contextBridge.context, contextBridge.mediaRef);
+  const mediaShare = useCollectiveMediaShare(iframeRef, connection, contextBridge.context);
+  const policyBridge = useCollectiveWorkPolicyBridge(iframeRef, connection, contextBridge.context);
+  useCollectiveAppearanceBridge({ iframeRef, frameGeneration: world.frameGeneration });
+  const frameUrl = world.frameUrl;
+  useCollectiveFrameRecovery({
+    iframeRef,
+    frameGeneration: world.frameGeneration,
+    remoteState: status?.remoteService?.state,
+    remoteServiceInstanceId: status?.remoteService?.serviceInstanceId,
+    setFrameAttempt,
+  });
 
-  const pair = useCallback(
-    async (message: CollectivePairingIntentMessage) => {
-      setBusy('pair');
-      setError(undefined);
-      try {
-        const response = await apiFetch('/api/plugins/collective-connector/pair', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            serviceUrl: message.serviceUrl,
-            endpointLabel: `Clowder AI on ${window.location.host}`,
-            intent: message.intent,
-          }),
-        });
-        const body = (await response.json().catch(() => ({}))) as { error?: string };
-        if (!response.ok) throw new Error(body.error ?? `Pairing failed (${response.status})`);
-        await load(true);
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : 'Pairing failed');
-      } finally {
-        setBusy(undefined);
-      }
-    },
-    [load],
-  );
-  const pairingBridge = useCollectivePairingBridge({ iframeRef, serviceUrl, pair });
-
-  const mutateConnection = useCallback(
-    async (operation: 'reconnect' | 'revoke', connectionId: string) => {
-      if (operation === 'revoke' && !window.confirm('撤销后 Service 与 Host 都会拒绝此 endpoint 凭据。确认撤销？'))
-        return;
-      setBusy(operation);
-      setError(undefined);
-      try {
-        const response = await apiFetch(
-          `/api/plugins/collective-connector/${encodeURIComponent(connectionId)}/${operation}`,
-          { method: 'POST' },
-        );
-        const body = (await response.json().catch(() => ({}))) as { error?: string };
-        if (!response.ok) throw new Error(body.error ?? `${operation} failed (${response.status})`);
-        await load(true);
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : `${operation} failed`);
-      } finally {
-        setBusy(undefined);
-      }
-    },
-    [load],
-  );
-
-  const connection = status ? preferredConnection(status.connections) : undefined;
-  const frameUrl = useMemo(
-    () =>
-      launchUrl && typeof window !== 'undefined' ? canonicalClientUrl(launchUrl, window.location.origin) : undefined,
-    [launchUrl],
-  );
-
-  if (!status) {
-    return (
-      <div className="grid h-full place-items-center bg-[var(--cafe-surface-canvas)] p-6 text-sm text-cafe-muted">
-        {error ? (
-          <section role="alert" className="max-w-md text-center">
-            <h1 className="text-lg font-semibold text-cafe-primary">现在还进不去 Collective</h1>
-            <p className="mt-2 leading-6 text-cafe-secondary">Connector 状态暂时不可达；数据没有被清空。</p>
-            <p className="mt-2 text-xs text-conn-red-text">{error}</p>
-          </section>
-        ) : (
-          '正在打开 Collective…'
-        )}
-      </div>
-    );
-  }
-  if (status.runtimeStatus === 'inactive') {
-    return (
-      <div className="grid h-full place-items-center bg-[var(--cafe-surface-canvas)] p-6">
-        <section className="max-w-lg rounded-2xl bg-[var(--console-card-bg)] p-7 shadow-[var(--console-elevation-2)]">
-          <p className="text-xs font-semibold uppercase tracking-wider text-cafe-accent">Official Connector</p>
-          <h1 className="mt-2 text-2xl font-semibold text-cafe-primary">先安装并启用 Collective Connector</h1>
-          <p className="mt-3 text-sm leading-6 text-cafe-secondary">
-            Connector 负责 Host 凭据、重连、重放与撤销；Collective Service 仍是独立进程。
-          </p>
-          <a
-            href="/settings?s=plugins"
-            className="mt-5 inline-flex rounded-lg bg-cafe-accent px-4 py-2 text-sm font-semibold"
-            style={{ color: 'var(--cafe-accent-foreground)' }}
-          >
-            打开插件设置
-          </a>
-        </section>
-      </div>
-    );
-  }
+  if (!status || status.runtimeStatus === 'inactive')
+    return <CollectiveConnectorBoundary status={status} error={error} />;
 
   return (
     <div
-      className="relative h-full min-h-0 overflow-hidden bg-[var(--cafe-surface-canvas)]"
+      className="cafe-presentation relative h-full min-h-0 overflow-hidden bg-[var(--cafe-surface-canvas)]"
       data-testid="collective-launch-surface"
+      style={{ containerType: 'inline-size', containerName: 'collective-host' }}
     >
       {frameUrl ? (
-        <iframe
-          ref={iframeRef}
-          src={frameUrl}
-          title="Collective"
-          sandbox="allow-forms allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-          onLoad={pairingBridge.handleFrameLoad}
-          className="h-full w-full border-0 bg-[var(--cafe-surface-sunken)]"
+        <CollectiveWorldFrame
+          iframeRef={iframeRef}
+          frameUrl={frameUrl}
+          frameKey={world.frameKey}
+          frameAttempt={frameAttempt}
+          hidden={Boolean(documentWorkspace || contextBridge.mediaRef || mediaShare.reference)}
+          onLoad={() => {
+            pairingBridge.handleFrameLoad();
+            contextBridge.reset();
+          }}
+          retryable={world.retryable}
+          error={world.error}
+          displayName={world.displayName}
+          onRetry={() => {
+            setFrameAttempt((attempt) => attempt + 1);
+            void connector.refresh(true);
+          }}
         />
       ) : (
-        <div className="grid h-full place-items-center p-6">
-          <section className="w-full max-w-lg rounded-2xl bg-[var(--console-card-bg)] p-6 shadow-[var(--console-elevation-2)]">
-            <p className="text-xs font-semibold uppercase tracking-wider text-cafe-accent">Collective Service</p>
-            <h1 className="mt-2 text-2xl font-semibold text-cafe-primary">建立共同家园</h1>
-            <p className="mt-3 text-sm leading-6 text-cafe-secondary">
-              Clowder AI 会创建并守护一份独立运行的本机 Service。登录凭据由 Service 保存，不需要打开终端或复制 secret。
-            </p>
-            <button
-              type="button"
-              disabled={busy !== undefined || status.localService?.state === 'starting'}
-              onClick={() => void provisionLocalService()}
-              className="mt-5 rounded-lg bg-cafe-accent px-4 py-2 text-sm font-semibold disabled:opacity-50"
-              style={{ color: 'var(--cafe-accent-foreground)' }}
-            >
-              {localServiceAction(status.localService?.state, busy === 'provision')}
-            </button>
-            {status.localService && (
-              <div className="mt-4 rounded-xl bg-[var(--cafe-surface-sunken)] px-3 py-3 text-xs leading-5 text-cafe-muted">
-                <p>{localServiceDescription(status.localService.state)}</p>
-                <p className="mt-1 break-all">数据：{status.localService.dataDirectory}</p>
-                {status.localService.error && <p className="mt-1 text-conn-red-text">{status.localService.error}</p>}
-              </div>
-            )}
-            <details className="mt-5 border-t border-[var(--console-border-soft)] pt-4 text-sm text-cafe-secondary">
-              <summary className="cursor-pointer font-medium text-cafe-primary">连接已有 Service</summary>
-              <form
-                className="mt-3 flex gap-2"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  const normalized = normalizeCollectiveServiceUrl(serviceInput);
-                  if (!normalized) {
-                    setError('请输入有效的 http(s) Service 地址');
-                    return;
-                  }
-                  setServiceUrl(normalized);
-                  setLaunchUrl(normalized);
-                  setError(undefined);
-                }}
-              >
-                <input
-                  aria-label="Collective Service 地址"
-                  value={serviceInput}
-                  onChange={(event) => setServiceInput(event.target.value)}
-                  placeholder="https://collective.example.com"
-                  className="min-w-0 flex-1 rounded-lg border border-[var(--console-border-soft)] bg-[var(--cafe-surface-sunken)] px-3 py-2 text-sm text-cafe-primary outline-none focus:border-cafe-accent"
-                />
-                <button
-                  type="submit"
-                  className="rounded-lg border border-[var(--console-border-soft)] px-4 py-2 text-sm font-semibold hover:bg-[var(--console-hover-bg)]"
-                >
-                  打开
-                </button>
-              </form>
-            </details>
-          </section>
-        </div>
+        <CollectiveServiceSetup
+          status={status}
+          busy={busy}
+          serviceInput={serviceInput}
+          onServiceInput={setServiceInput}
+          onProvision={() => void provisionLocalService()}
+          onOpen={setServiceAddress}
+          onError={setError}
+        />
       )}
-      {(error || pairingBridge.error || busy === 'pair') && (
-        <div
-          className={`absolute inset-x-0 top-0 z-10 px-4 py-2 text-center text-xs ${error || pairingBridge.error ? 'bg-conn-red-bg text-conn-red-text' : 'bg-conn-amber-bg text-conn-amber-text'}`}
-        >
-          {error ?? pairingBridge.error ?? 'Clowder AI 正在安全托管连接凭据…'}
-        </div>
+      <CollectiveWorldStatusNotice
+        connectorError={error}
+        worldError={world.error}
+        worldRetryable={world.retryable}
+        sessionRequired={world.sessionRequired}
+        workNotice={workResult.notice}
+        pairingError={pairingBridge.error}
+        entryError={entry.error}
+        entryBusy={entry.busy}
+      />
+      {documentWorkspaceMounted && (
+        <CollectiveDocumentWorkspace visible={documentWorkspace} onBack={() => setDocumentWorkspace(false)} />
       )}
-      {connection && (
-        <details className="absolute bottom-3 right-3 z-10 w-64 rounded-xl border border-[var(--console-border-soft)] bg-[var(--console-card-bg)]/95 text-xs text-cafe-secondary shadow-[var(--console-elevation-2)] backdrop-blur">
-          <summary className="cursor-pointer list-none px-3 py-2 font-medium">
-            {connection.authorityStatus === 'revoked'
-              ? 'Café 连接已撤销'
-              : `Café 连接${connection.liveStatus === 'online' ? '在线' : '暂时离线'}`}
-          </summary>
-          <div className="border-t border-[var(--console-border-soft)] px-3 py-3">
-            {connection.authorityStatus === 'revoked' ? (
-              <>
-                <p className="mb-3 text-cafe-muted">
-                  此 endpoint 凭据已撤销并从 Host 删除。可从当前 Collective 重新发起一次配对。
-                </p>
-                <button
-                  type="button"
-                  aria-label="重新配对"
-                  disabled={pairingBridge.state !== 'ready' || busy !== undefined}
-                  onClick={pairingBridge.requestPairing}
-                  className="rounded-lg border border-[var(--console-border-soft)] px-2.5 py-1.5 hover:bg-[var(--console-hover-bg)] disabled:opacity-50"
-                >
-                  {pairingBridge.state === 'waiting' ? '准备中…' : '重新配对'}
-                </button>
-              </>
-            ) : (
-              <>
-                <p className="mb-3 text-cafe-muted">
-                  已接收到第 {connection.lastAckedSequence} 条；排队 {connection.outbox.queued}{' '}
-                  条。这里不把“已请求”说成“猫已接住”。
-                </p>
-                {!connection.route.configured && connection.inbox.pending > 0 && (
-                  <p className="mb-3 rounded-lg bg-conn-amber-bg px-2.5 py-2 text-conn-amber-text">
-                    {connection.inbox.pending} 条消息正在等待设置 Café Thread 去向。
-                  </p>
-                )}
-                {connection.inbox.failed > 0 && (
-                  <p className="mb-3 rounded-lg bg-conn-amber-bg px-2.5 py-2 text-conn-amber-text">
-                    {connection.inbox.failed} 条消息还没有进入配置的 Thread。更新消息去向后会自动重试。
-                  </p>
-                )}
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    disabled={busy !== undefined}
-                    onClick={() => void mutateConnection('reconnect', connection.connectionId)}
-                    className="rounded-lg border border-[var(--console-border-soft)] px-2.5 py-1.5 hover:bg-[var(--console-hover-bg)] disabled:opacity-50"
-                  >
-                    {busy === 'reconnect' ? '重连中…' : '重连'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy !== undefined}
-                    onClick={() => void mutateConnection('revoke', connection.connectionId)}
-                    className="rounded-lg border border-[var(--console-border-soft)] px-2.5 py-1.5 text-conn-red-text hover:bg-conn-red-bg disabled:opacity-50"
-                  >
-                    {busy === 'revoke' ? '撤销中…' : '撤销连接'}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </details>
+      {connection && contextBridge.context && (
+        <CollectiveCafeHost
+          key={`${connection.connectionId}:${contextBridge.context.contextId}:${contextBridge.context.channelId}`}
+          connection={connection}
+          context={contextBridge.context}
+          iframeRef={iframeRef}
+          policyBridge={policyBridge}
+          onParticipationReady={({ revision, catCount }) => {
+            const activeContext = contextBridge.context;
+            if (!activeContext) return;
+            const message: CollectiveHostParticipationReady = {
+              type: 'collective:host-participation-ready',
+              bridgeId: activeContext.bridgeId,
+              serviceInstanceId: connection.serviceInstanceId,
+              collectiveId: connection.collectiveId,
+              connectionId: connection.connectionId,
+              humanId: activeContext.humanId,
+              participationRevision: revision,
+              catCount,
+            };
+            iframeRef.current?.contentWindow?.postMessage(message, new URL(connection.serviceUrl).origin);
+          }}
+          busy={busy}
+          pairingState={pairingBridge.state}
+          onClose={contextBridge.close}
+          onOpenMembers={contextBridge.openMembers}
+          onPair={pairingBridge.requestPairing}
+          onMutate={(operation) => void mutateConnection(operation, connection.connectionId)}
+          connections={status.connections}
+          onSelectConnection={(id) => {
+            const selected = status.connections.find((item) => item.connectionId === id);
+            if (!selected) return;
+            contextBridge.close();
+            selectConnection(selected);
+          }}
+        />
+      )}
+      {entry.pending && (
+        <CollectiveEntryReview
+          intent={entry.pending}
+          existing={hasActiveCollectiveConnection(
+            status.connections,
+            entry.pending.intent.serviceInstanceId,
+            entry.pending.intent.collectiveId,
+          )}
+          busy={entry.busy}
+          pairingError={entry.error}
+          onConfirm={(selection) => void entry.confirm(selection)}
+          onClose={entry.clear}
+          onRetry={entry.clearError}
+        />
+      )}
+      {contextBridge.mediaRef && (
+        <CollectiveMediaSurface
+          key={JSON.stringify(contextBridge.mediaRef)}
+          reference={contextBridge.mediaRef}
+          rpc={mediaRpc}
+          onBack={contextBridge.closeMedia}
+        />
+      )}
+      {mediaShare.reference && (
+        <CollectiveMediaShare
+          key={JSON.stringify(mediaShare.reference)}
+          reference={mediaShare.reference}
+          onDone={mediaShare.finish}
+        />
       )}
     </div>
+  );
+}
+
+function CollectiveWorldFrame({
+  iframeRef,
+  frameUrl,
+  frameKey,
+  frameAttempt,
+  hidden,
+  onLoad,
+  retryable,
+  error,
+  displayName,
+  onRetry,
+}: {
+  readonly iframeRef: RefObject<HTMLIFrameElement>;
+  readonly frameUrl: string;
+  readonly frameKey?: string;
+  readonly frameAttempt: number;
+  readonly hidden: boolean;
+  readonly onLoad: () => void;
+  readonly retryable: boolean;
+  readonly error?: string;
+  readonly displayName?: string;
+  readonly onRetry: () => void;
+}) {
+  return (
+    <>
+      <iframe
+        key={`${frameKey ?? frameUrl}:${frameAttempt}`}
+        ref={iframeRef}
+        src={frameUrl}
+        title="Collective"
+        aria-hidden={hidden}
+        tabIndex={hidden ? -1 : undefined}
+        style={hidden ? { visibility: 'hidden' } : undefined}
+        sandbox="allow-forms allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+        allow="microphone"
+        onLoad={onLoad}
+        className="h-full w-full border-0 bg-[var(--cafe-surface-sunken)]"
+      />
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          right: 0,
+          bottom: 0,
+          width: `min(${MESSAGE_ACTION_RESERVE.width}px, 100%)`,
+          height: `min(${MESSAGE_ACTION_RESERVE.height}px, 100%)`,
+          pointerEvents: 'none',
+        }}
+      />
+      {retryable && error && <CollectiveWorldUnavailable name={displayName} onRetry={onRetry} />}
+    </>
+  );
+}
+
+function CollectiveWorldStatusNotice({
+  connectorError,
+  worldError,
+  worldRetryable,
+  sessionRequired,
+  workNotice,
+  pairingError,
+  entryError,
+  entryBusy,
+}: {
+  readonly connectorError?: string;
+  readonly worldError?: string;
+  readonly worldRetryable: boolean;
+  readonly sessionRequired: boolean;
+  readonly workNotice?: string;
+  readonly pairingError?: string;
+  readonly entryError?: string;
+  readonly entryBusy?: boolean;
+}) {
+  return (
+    <CollectiveLaunchNotice
+      connectorError={connectorError}
+      worldError={worldRetryable ? undefined : worldError}
+      sessionRequired={sessionRequired}
+      workNotice={workNotice}
+      pairingError={worldRetryable ? undefined : pairingError}
+      entryError={worldRetryable ? undefined : entryError}
+      entryBusy={worldRetryable ? false : entryBusy}
+    />
   );
 }

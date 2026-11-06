@@ -978,7 +978,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     assert.equal(replay.outcome, 'replayed');
     assert.deepEqual(first.receipt, replay.receipt);
     assert.equal((await store.getCandidateForOwner(input.ownerUserId, input.candidateId)).state, 'withdrawn');
-    assert.deepEqual(await store.listSettled(input.ownerUserId), []);
+    assert.equal((await store.listSettled(input.ownerUserId))[0]?.candidate.state, 'withdrawn');
     assert.equal(await store.getPerson(input.ownerUserId, approved.receipt.personId), null);
     assert.deepEqual(await store.listClaims(input.ownerUserId, approved.receipt.personId), []);
     assert.deepEqual(await store.listRelationships(input.ownerUserId, approved.receipt.personId), []);
@@ -1031,6 +1031,150 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     assert.deepEqual([...candidate.remainingDraftIds].sort(), [claimDraft.draftId, eventDraft.draftId].sort());
     assert.deepEqual(await store.listPending(input.ownerUserId), [candidate]);
     assert.deepEqual(await store.listClaims(input.ownerUserId, approved.receipt.personId), []);
+  });
+
+  it('keeps a partially-materialized person discoverable after undoing a later approval', async () => {
+    const secondClaimDraft = {
+      ...claimDraft,
+      draftId: 'person_draft_fact_undo_discovery_2',
+      payload: {
+        kind: 'reported_fact',
+        predicate: 'project_role',
+        value: '负责桌面协作',
+        assertedBy: 'owner',
+      },
+      normalizedDraft: '黄挺负责桌面协作',
+      evidenceExcerpt: '黄挺负责桌面协作',
+    };
+    const thirdClaimDraft = {
+      ...claimDraft,
+      draftId: 'person_draft_fact_undo_discovery_3',
+      payload: {
+        kind: 'reported_fact',
+        predicate: 'location',
+        value: '深圳',
+        assertedBy: 'owner',
+      },
+      normalizedDraft: '黄挺在深圳',
+      evidenceExcerpt: '黄挺在深圳',
+    };
+    const input = await stageAndAnchor(
+      candidateInput({
+        candidateId: 'person_candidate_undo_discovery_partial',
+        claimDrafts: [claimDraft, secondClaimDraft, thirdClaimDraft],
+        interactionDraft: undefined,
+        remainingDraftIds: [claimDraft.draftId, secondClaimDraft.draftId, thirdClaimDraft.draftId],
+      }),
+    );
+    const first = await store.approveDrafts({
+      ownerUserId: input.ownerUserId,
+      candidateId: input.candidateId,
+      selectedDraftIds: [claimDraft.draftId],
+      decisionId: 'decision_undo_discovery_partial_1',
+      authorizedAt: 200,
+    });
+    const second = await store.approveDrafts({
+      ownerUserId: input.ownerUserId,
+      candidateId: input.candidateId,
+      selectedDraftIds: [secondClaimDraft.draftId],
+      decisionId: 'decision_undo_discovery_partial_2',
+      authorizedAt: 300,
+    });
+    assert.equal(first.outcome, 'applied');
+    assert.equal(second.outcome, 'applied');
+    assert.equal(second.receipt.state, 'partially_materialized');
+
+    const undone = await store.undoDecision({
+      ownerUserId: input.ownerUserId,
+      candidateId: input.candidateId,
+      decisionId: second.receipt.decisionId,
+      requestId: 'undo_discovery_partial_2',
+      undoneAt: 350,
+    });
+
+    assert.equal(undone.outcome, 'applied');
+    const candidate = await store.getCandidateForOwner(input.ownerUserId, input.candidateId);
+    assert.equal(candidate.state, 'partially_materialized');
+    assert.equal(candidate.materializedPersonId, undefined);
+    const retainedPerson = await store.getPerson(input.ownerUserId, first.receipt.personId);
+    assert.ok(retainedPerson);
+    assert.deepEqual(
+      (await store.listClaims(input.ownerUserId, retainedPerson.personId)).map((claim) => claim.claimId),
+      first.receipt.materializedClaimIds,
+    );
+    assert.deepEqual(await store.listPeople(input.ownerUserId), [retainedPerson]);
+  });
+
+  it('keeps a surviving person discoverable after terminal undo leaves candidate indexes', async () => {
+    const input = await stageAndAnchor(candidateInput({ candidateId: 'person_candidate_undo_discovery_terminal' }));
+    const first = await store.approveDrafts({
+      ownerUserId: input.ownerUserId,
+      candidateId: input.candidateId,
+      selectedDraftIds: [claimDraft.draftId],
+      decisionId: 'decision_undo_discovery_terminal_1',
+      authorizedAt: 200,
+    });
+    const second = await store.approveDrafts({
+      ownerUserId: input.ownerUserId,
+      candidateId: input.candidateId,
+      selectedDraftIds: [eventDraft.draftId],
+      decisionId: 'decision_undo_discovery_terminal_2',
+      authorizedAt: 300,
+    });
+    assert.equal(first.outcome, 'applied');
+    assert.equal(second.outcome, 'applied');
+    assert.equal(second.receipt.state, 'materialized');
+
+    const undone = await store.undoDecision({
+      ownerUserId: input.ownerUserId,
+      candidateId: input.candidateId,
+      decisionId: second.receipt.decisionId,
+      requestId: 'undo_discovery_terminal_2',
+      undoneAt: 350,
+    });
+
+    assert.equal(undone.outcome, 'applied');
+    assert.equal((await store.getCandidateForOwner(input.ownerUserId, input.candidateId)).state, 'withdrawn');
+    assert.deepEqual(await store.listPending(input.ownerUserId), []);
+    assert.equal((await store.listSettled(input.ownerUserId))[0]?.candidate.state, 'withdrawn');
+    const retainedPerson = await store.getPerson(input.ownerUserId, first.receipt.personId);
+    assert.ok(retainedPerson);
+    assert.deepEqual(await store.listPeople(input.ownerUserId), [retainedPerson]);
+    assert.deepEqual(await store.listPeople('owner-2'), []);
+
+    const forgotten = await store.hardForget({
+      ownerUserId: input.ownerUserId,
+      personId: retainedPerson.personId,
+      requestId: 'person_forget_undo_discovery_terminal',
+      requestedAt: 400,
+    });
+    assert.equal(forgotten.verdict, 'purged');
+    assert.deepEqual(await store.listPeople(input.ownerUserId), []);
+  });
+
+  it('rejects inconsistent settled page membership instead of claiming empty history', async () => {
+    const input = candidateInput({ candidateId: 'person_candidate_page_owner' });
+    await stageAndAnchor(input);
+    await store.rejectCandidate({
+      ownerUserId: input.ownerUserId,
+      candidateId: input.candidateId,
+      decisionId: 'page-reject',
+      decidedAt: 300,
+    });
+    let page;
+    for (let batch = 0; batch < 30; batch++) {
+      try {
+        page = await store.listSettledPage(input.ownerUserId, { limit: 30 });
+        break;
+      } catch (error) {
+        if (error.code !== 'APPROVAL_HISTORY_PREPARING') throw error;
+      }
+    }
+    assert.equal(page.records.length, 1);
+    const key = PersonMemoryKeys.candidate(input.ownerUserId, input.candidateId);
+    const canonical = JSON.parse(await redis.get(key));
+    await redis.set(key, JSON.stringify({ ...canonical, ownerUserId: 'other-owner' }));
+    await assert.rejects(store.listSettledPage(input.ownerUserId, { limit: 30 }), /canonical.*mismatch/i);
   });
 
   it('keeps not-now owner-visible but non-recallable, then rejects and purges payload', async () => {
@@ -1199,6 +1343,11 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     assert.deepEqual(await store.listSettled(input.ownerUserId), [{ candidate: result.candidate, decidedAt: 300 }]);
     assert.equal((await store.listClaims(input.ownerUserId, approved.receipt.personId)).length, 1);
     assert.equal((await store.getPerson(input.ownerUserId, approved.receipt.personId)).status, 'active');
+    const { F276ApprovalAdapter } = await import('../dist/domains/approval-hub/adapters/F276ApprovalAdapter.js');
+    const [settled] = await new F276ApprovalAdapter(store).listSettled(input.ownerUserId);
+    assert.equal(settled.status, 'rejected');
+    assert.equal(settled.detail.hasRetainedWrites, true, 'rejecting remaining drafts does not undo previous writes');
+    assert.deepEqual(settled.detail.materialized, { claims: 1, relationships: 1, events: 0 });
   });
 
   it('does not overwrite a fully materialized candidate with rejection feedback', async () => {
@@ -1247,6 +1396,11 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     const superseded = await store.getCandidateForOwner(original.ownerUserId, original.candidateId);
     const corrected = await store.getCandidateForOwner(replacement.ownerUserId, replacement.candidateId);
     assert.equal(superseded.state, 'withdrawn');
+    assert.ok(
+      (await store.listSettled(original.ownerUserId)).some(
+        (row) => row.candidate.candidateId === original.candidateId && row.candidate.state === 'withdrawn',
+      ),
+    );
     assert.equal(superseded.replacedByProposalId, replacement.candidateId);
     assert.equal(superseded.personDraft, undefined);
     assert.deepEqual(superseded.claimDrafts, []);
@@ -2587,6 +2741,8 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     assert.deepEqual(withdrawn.claimDrafts, []);
     assert.deepEqual(withdrawn.remainingDraftIds, []);
     assert.equal(withdrawn.sourceBundle, undefined);
+    assert.equal((await store.listSettled(input.ownerUserId))[0]?.candidate.state, 'withdrawn');
+    assert.equal((await store.listSettled(input.ownerUserId))[0]?.decidedAt, 300);
     assert.deepEqual(await store.listPending(input.ownerUserId), []);
     assert.equal(await redis.get(PersonMemoryKeys.suppression(input.ownerUserId, input.candidateId)), null);
     assert.equal(await store.resolveDormantCandidateBySubject(input.ownerUserId, '黄挺'), null);
@@ -2782,7 +2938,7 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
     });
     const [original] = await store.listInteractionEvents(input.ownerUserId, approved.receipt.personId);
 
-    const amended = await store.amendInteractionEvent({
+    const amendmentInput = {
       ownerUserId: input.ownerUserId,
       personId: approved.receipt.personId,
       expectedEventId: original.eventId,
@@ -2797,13 +2953,86 @@ describe('RedisPersonMemoryStore', { skip: redisIsolationSkipReason(REDIS_URL) }
       sourceMessageRef,
       requestId: 'event_amend_1',
       amendedAt: 400,
-    });
+    };
+    const amended = await store.amendInteractionEvent(amendmentInput);
     assert.equal(amended.outcome, 'applied');
+    const replayed = await store.amendInteractionEvent(amendmentInput);
+    assert.equal(replayed.outcome, 'replayed');
+    assert.equal(replayed.event.eventId, amended.event.eventId);
 
     const events = await store.listInteractionEvents(input.ownerUserId, approved.receipt.personId);
     assert.equal(events.length, 2);
     assert.equal(events[0].amendsEventId, undefined);
+    assert.equal(events[0].status, 'superseded');
     assert.equal(events[1].amendsEventId, original.eventId);
+    assert.equal(events[1].status, 'active');
+    assert.equal(
+      (
+        await store.amendInteractionEvent({
+          ownerUserId: input.ownerUserId,
+          personId: approved.receipt.personId,
+          expectedEventId: original.eventId,
+          payload: { ...eventDraft.payload, headline: '不允许从旧事件分叉' },
+          sourceMessageRef,
+          requestId: 'event_amend_competing',
+          amendedAt: 500,
+        })
+      ).outcome,
+      'not_available',
+    );
+  });
+
+  it('rejects amendment forks left by the legacy writer before successor pointers existed', async () => {
+    const input = candidateInput({
+      candidateId: 'person_candidate_legacy_amendment',
+      claimDrafts: [],
+      remainingDraftIds: [eventDraft.draftId],
+    });
+    await stageAndAnchor(input);
+    const approved = await store.approveDrafts({
+      ownerUserId: input.ownerUserId,
+      candidateId: input.candidateId,
+      selectedDraftIds: [eventDraft.draftId],
+      decisionId: 'decision_legacy_amendment_seed',
+      authorizedAt: 200,
+    });
+    const [original] = await store.listInteractionEvents(input.ownerUserId, approved.receipt.personId);
+    const legacyChild = {
+      ...original,
+      eventId: 'person_event_legacy_amendment_child',
+      headline: '旧 writer 已经写出的分支',
+      recordedAt: 300,
+      amendsEventId: original.eventId,
+    };
+    await redis.set(PersonMemoryKeys.event(input.ownerUserId, legacyChild.eventId), JSON.stringify(legacyChild));
+    await redis.zadd(
+      PersonMemoryKeys.personEvents(input.ownerUserId, approved.receipt.personId),
+      legacyChild.recordedAt,
+      legacyChild.eventId,
+    );
+    await redis.zadd(
+      PersonMemoryKeys.relationshipEvents(input.ownerUserId, original.relationshipId),
+      legacyChild.recordedAt,
+      legacyChild.eventId,
+    );
+
+    const competing = await store.amendInteractionEvent({
+      ownerUserId: input.ownerUserId,
+      personId: approved.receipt.personId,
+      expectedEventId: original.eventId,
+      payload: { ...eventDraft.payload, headline: '不能从旧数据继续分叉' },
+      sourceMessageRef,
+      requestId: 'event_amend_after_legacy_child',
+      amendedAt: 400,
+    });
+
+    assert.equal(competing.outcome, 'not_available');
+    assert.equal(
+      (await store.listInteractionEvents(input.ownerUserId, approved.receipt.personId)).filter(
+        (event) => event.amendsEventId === original.eventId && event.status === 'active',
+      ).length,
+      1,
+    );
   });
 
   it('keeps a stable relationship ID and appends status transitions', async () => {

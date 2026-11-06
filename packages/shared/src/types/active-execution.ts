@@ -1,5 +1,7 @@
 /** F295 canonical read projection shared by API and every running-work UI surface. */
 
+import type { LifecycleInputCapabilities } from './message-lifecycle.js';
+
 export type ActiveExecutionKind = 'live_invocation' | 'managed_command';
 export type ManagedCommandActivity = 'full_gate' | 'test' | 'build' | 'lint' | 'check' | 'command';
 
@@ -30,17 +32,26 @@ export type ActiveExecutionCancelability =
 
 export interface ActiveExecutionProjection {
   readonly executionId: string;
+  /** Canonical per-cat child for trajectory navigation; never substitute the parent/control identity. */
+  readonly turnInvocationId?: string;
   readonly threadId: string;
   readonly threadTitle: string | null;
+  /** Owning project from the readable thread; supplied by all-project snapshots. */
+  readonly projectPath?: string;
   readonly catId: string;
   readonly kind: ActiveExecutionKind;
   /** Allowlisted category only; raw managed-command text never crosses this boundary. */
   readonly activity?: ManagedCommandActivity;
   readonly startedAt: number;
   readonly cancelability: ActiveExecutionCancelability;
+  /** Exact live input affordances projected by the server; absence fails closed. */
+  readonly inputCapabilities?: LifecycleInputCapabilities;
 }
 
-export interface ActiveExecutionListResponse {
-  readonly projectPath: string;
-  readonly executions: ActiveExecutionProjection[];
-}
+export type ActiveExecutionListResponse =
+  | { readonly scope?: 'project'; readonly projectPath: string; readonly executions: ActiveExecutionProjection[] }
+  | {
+      readonly scope: 'all';
+      readonly executions: ActiveExecutionProjection[];
+      readonly unavailableProjectPaths?: readonly string[];
+    };

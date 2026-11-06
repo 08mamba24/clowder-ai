@@ -31,7 +31,7 @@ const NATIVE_L0_CLIENT_IDS = new Set(['anthropic', 'openai', 'opencode']);
 
 /**
  * kimi injects L0 natively only when the new kimi-code CLI is the resolvable
- * binary (legacy `kimi-cli` has no native channel) — probe the machine instead
+ * Kimi Code binary — probe the machine instead
  * of hard-coding the clientId (gpt52 review on PR #3201).
  */
 function isNativeL0Client(clientId: string): boolean {
@@ -135,7 +135,7 @@ export const promptInjectionPreviewRoutes: FastifyPluginAsync = async (app) => {
         '── [D11] Skill 触发（条件：Signal 触发）──',
         tpl('D11'),
         '',
-        '── [D12] 活跃参与者 ──',
+        '── [D12] 最近发言者（不表示执行态）──',
         tpl('D12'),
         '',
         '── [D13] 路由策略（条件：线程有路由策略）──',
@@ -159,9 +159,6 @@ export const promptInjectionPreviewRoutes: FastifyPluginAsync = async (app) => {
         '',
         '── [D19] Constitutional 知识（条件：always_on 文档）──',
         tpl('D19'),
-        '',
-        '── [D20] Signal 文章（条件：线程关联文章）──',
-        tpl('D20'),
         '',
         '── [D21] 传球决策树（条件：A2A 非并行模式）──',
         tpl('D21'),

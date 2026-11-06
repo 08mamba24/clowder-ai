@@ -1,152 +1,60 @@
-import type { AwaitStateV1, TaskItem, TaskKind, TaskStatus } from '@cat-cafe/shared';
-import type { ITaskStore } from '../../../stores/ports/TaskStore.js';
+import { resolveTypedWaitContinuation } from '../../../../../ball-custody/TypedWaitContinuation.js';
+import type { TypedWaitReference } from '../../../../../ball-custody/TypedWaitRegistration.js';
+import type { ITaskStore } from '../../../stores/ports/TaskStoreContract.js';
 
 export type EventBackedRoutingExitRejectReason =
   | 'state_source_unavailable'
-  | 'missing_invocation'
+  | 'missing_identity'
   | 'no_candidate'
-  | 'task_done'
-  | 'owner_mismatch'
-  | 'thread_mismatch'
-  | 'subject_mismatch'
-  | 'generation_mismatch'
-  | 'predicate_missing'
   | 'query_failed';
 
 export type EventBackedRoutingExitResolution =
-  | {
-      kind: 'bypass';
-      taskId: string;
-      subjectKey: string;
-      expectedSignal: 'review_posted';
-      proof: EventBackedRoutingExitProof;
-    }
+  | { kind: 'bypass'; reference: TypedWaitReference }
   | { kind: 'reject'; reason: EventBackedRoutingExitRejectReason };
 
-export interface EventBackedRoutingExitProof {
-  task: {
-    kind: TaskKind;
-    status: TaskStatus;
-    ownerCatId: string | null;
-    threadId: string;
-    subjectKey: string | null;
-    generation: number;
-  };
-  predicate: {
-    kind: 'pr_review_result_available';
-    triggerCommentId: number;
-  };
+export interface EventBackedRoutingSourceIdentity {
+  sourceMessageId: string;
+  holdTaskId?: string;
 }
 
 interface ResolveEventBackedRoutingExitInput {
-  taskStore: Pick<ITaskStore, 'listByThread'> | undefined;
+  taskStore: Pick<ITaskStore, 'listByThread' | 'getWaitRegistration'> | undefined;
+  userId: string;
   threadId: string;
   catId: string;
   invocationId: string | undefined;
-}
-
-type EventBackedRoutingExitIdentity = Omit<ResolveEventBackedRoutingExitInput, 'taskStore'>;
-
-function reviewResultPredicate(active: AwaitStateV1) {
-  return active.continuation.when.find(
-    (
-      predicate,
-    ): predicate is Extract<AwaitStateV1['continuation']['when'][number], { kind: 'pr_review_result_available' }> & {
-      triggerCommentId: number;
-    } => predicate.kind === 'pr_review_result_available' && predicate.triggerCommentId !== undefined,
-  );
-}
-
-export function isEventBackedRoutingBypassProofValid(
-  resolution: EventBackedRoutingExitResolution,
-  identity: EventBackedRoutingExitIdentity,
-): boolean {
-  if (resolution.kind !== 'bypass' || !identity.invocationId) return false;
-  const { task, predicate } = resolution.proof;
-  return (
-    task.kind === 'pr_tracking' &&
-    task.status !== 'done' &&
-    task.ownerCatId === identity.catId &&
-    task.threadId === identity.threadId &&
-    task.subjectKey === resolution.subjectKey &&
-    task.generation > 0 &&
-    predicate.kind === 'pr_review_result_available' &&
-    Number.isSafeInteger(predicate.triggerCommentId) &&
-    predicate.triggerCommentId > 0
-  );
-}
-
-function rejectCandidate(
-  task: TaskItem,
-  active: AwaitStateV1,
-  input: Omit<ResolveEventBackedRoutingExitInput, 'taskStore'> & { invocationId: string },
-): EventBackedRoutingExitRejectReason | null {
-  if (task.kind !== 'pr_tracking') return 'no_candidate';
-  if (task.status === 'done') return 'task_done';
-  if (task.ownerCatId !== input.catId) return 'owner_mismatch';
-  if (task.threadId !== input.threadId) return 'thread_mismatch';
-  if (!task.subjectKey || active.subjectRef !== task.subjectKey) return 'subject_mismatch';
-  if (active.ownerFence.kind !== 'containing_task' || active.ownerFence.generation !== active.generation) {
-    return 'generation_mismatch';
-  }
-  if (!reviewResultPredicate(active)) return 'predicate_missing';
-  return null;
+  sources: readonly EventBackedRoutingSourceIdentity[];
+  now?: number;
 }
 
 /**
- * Resolve an invocation exit from the live typed wait.
- *
- * Coverage is verified by the registration route before this state exists. The
- * wait never copies invocation/cat/thread identity; this resolver binds the
- * authenticated invocation to the containing task at read time.
+ * An event-backed routing exit is authoritative only when one current private
+ * Task registration binds this exact child invocation and one of its exact
+ * lifecycle input messages. Public Task fields alone never grant the bypass.
  */
 export async function resolveEventBackedRoutingExit(
   input: ResolveEventBackedRoutingExitInput,
 ): Promise<EventBackedRoutingExitResolution> {
-  if (!input.taskStore) return { kind: 'reject', reason: 'state_source_unavailable' };
-  if (!input.invocationId) return { kind: 'reject', reason: 'missing_invocation' };
+  if (!input.taskStore?.getWaitRegistration) return { kind: 'reject', reason: 'state_source_unavailable' };
+  if (!input.invocationId || input.sources.length === 0) return { kind: 'reject', reason: 'missing_identity' };
 
-  let tasks: TaskItem[];
-  try {
-    tasks = await input.taskStore.listByThread(input.threadId);
-  } catch {
-    return { kind: 'reject', reason: 'query_failed' };
-  }
-
-  let firstReject: EventBackedRoutingExitRejectReason | null = null;
-  for (const task of tasks) {
-    const active = task.automationState?.await;
-    if (!active) continue;
-    const reason = rejectCandidate(task, active, {
-      threadId: input.threadId,
-      catId: input.catId,
+  let observedReject: EventBackedRoutingExitRejectReason = 'no_candidate';
+  for (const source of input.sources) {
+    const resolution = await resolveTypedWaitContinuation({
+      taskStore: input.taskStore,
       invocationId: input.invocationId,
+      userId: input.userId,
+      catId: input.catId,
+      threadId: input.threadId,
+      sourceMessageId: source.sourceMessageId,
+      ...(source.holdTaskId ? { holdTaskId: source.holdTaskId } : {}),
+      ...(input.now === undefined ? {} : { now: input.now }),
     });
-    const predicate = reviewResultPredicate(active);
-    if (!reason && predicate) {
-      return {
-        kind: 'bypass',
-        taskId: task.id,
-        subjectKey: active.subjectRef,
-        expectedSignal: 'review_posted',
-        proof: {
-          task: {
-            kind: task.kind,
-            status: task.status,
-            ownerCatId: task.ownerCatId,
-            threadId: task.threadId,
-            subjectKey: task.subjectKey,
-            generation: active.generation,
-          },
-          predicate: {
-            kind: predicate.kind,
-            triggerCommentId: predicate.triggerCommentId,
-          },
-        },
-      };
+    if (resolution.kind === 'bypass') return resolution;
+    if (resolution.reason === 'query_failed' || resolution.reason === 'state_source_unavailable') {
+      return resolution;
     }
-    firstReject ??= reason;
+    observedReject = resolution.reason;
   }
-
-  return { kind: 'reject', reason: firstReject ?? 'no_candidate' };
+  return { kind: 'reject', reason: observedReject };
 }

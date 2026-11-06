@@ -1,30 +1,26 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, watch } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync, unwatchFile, watch, watchFile } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { deploymentDefaults } from '../../shared/src/deployment-defaults.ts';
+import { FEATURE_DEMOS } from '../../shared/src/feature-demos.ts';
+import { syncBrandManifest } from './sync-brand-manifest.mjs';
+import { copyAsset } from './vendor-asset-publication.mjs';
+import { appGlobalCssFiles, syncStylesheets } from './vendor-stylesheets.mjs';
+
+export { copyAsset } from './vendor-asset-publication.mjs';
 
 const require = createRequire(import.meta.url);
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(scriptDir, '..');
 const vendorRoot = resolve(webRoot, 'public', 'vendor');
-const appGlobalCssFiles = [
-  'theme-tokens.css',
-  'cat-persona-tokens.css',
-  'cat-persona-derived.css',
-  'console-shell.css',
-  'console-controls.css',
-  'console-tokens.css',
-  'connector-tokens.css',
-  'theme-extras.css',
-  'werewolf-theme.css',
-];
+const sharedUiCssPath = resolve(webRoot, '../ui/src/styles.css');
 
-function ensureDir(path) {
-  mkdirSync(path, { recursive: true });
-}
+export { appGlobalCssFiles } from './vendor-stylesheets.mjs';
 
 function resolvePackageDir(pkgName) {
   try {
@@ -39,12 +35,6 @@ function resolvePackageDir(pkgName) {
     }
     throw new Error(`Cannot resolve package root for ${pkgName}`);
   }
-}
-
-function copyAsset(src, dest) {
-  ensureDir(dirname(dest));
-  copyFileSync(src, dest);
-  console.log(`[sync-vendor-assets] ${src} -> ${dest}`);
 }
 
 function copyVadAssets() {
@@ -82,12 +72,12 @@ function copyEsbuildWasm() {
   copyAsset(esbuildWasmPath, resolve(vendorRoot, 'esbuild', 'esbuild.wasm'));
 }
 
-function copyXtermCss() {
+function copyStylesheets() {
   const xtermCssPath = resolve(resolvePackageDir('@xterm/xterm'), 'css', 'xterm.css');
   if (!existsSync(xtermCssPath)) {
     throw new Error(`Missing xterm CSS: ${xtermCssPath}`);
   }
-  copyAsset(xtermCssPath, resolve(vendorRoot, 'xterm', 'xterm.css'));
+  syncStylesheets(webRoot, xtermCssPath);
 }
 
 function appGlobalCssPaths(file) {
@@ -97,18 +87,12 @@ function appGlobalCssPaths(file) {
   };
 }
 
-function copyAppGlobalCssFile(file) {
-  const { src, dest } = appGlobalCssPaths(file);
-  if (!existsSync(src)) {
-    throw new Error(`Missing app global CSS: ${src}`);
-  }
-  copyAsset(src, dest);
-}
-
-function copyAppGlobalCss() {
-  for (const file of appGlobalCssFiles) {
-    copyAppGlobalCssFile(file);
-  }
+export function pollVendorCssFiles(paths, changed, interval = 1000) {
+  return paths.map((src) => {
+    const listener = () => changed(src);
+    watchFile(src, { persistent: true, interval }, listener);
+    return { close: () => unwatchFile(src, listener) };
+  });
 }
 
 function watchAppGlobalCss() {
@@ -118,17 +102,40 @@ function watchAppGlobalCss() {
       throw new Error(`Missing app global CSS: ${src}`);
     }
   }
+  // Match Next/Watchpack's existing polling mode when native file-event admission is exhausted.
+  if (process.env.WATCHPACK_POLLING === 'true' || /^[1-9]\d*$/.test(process.env.WATCHPACK_POLLING ?? '')) {
+    const interval = Math.max(500, Math.min(10000, Number(process.env.WATCHPACK_POLLING) || 1000));
+    const paths = [...appGlobalCssFiles.map((file) => appGlobalCssPaths(file).src), sharedUiCssPath];
+    console.log(`[sync-vendor-assets] polling ${paths.length} app CSS files every ${interval}ms`);
+    return pollVendorCssFiles(
+      paths,
+      () => {
+        try {
+          copyStylesheets();
+        } catch (error) {
+          console.error(
+            '[sync-vendor-assets] CSS polling failed:',
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      },
+      interval,
+    );
+  }
   return [
+    ...pollVendorCssFiles([sharedUiCssPath], () => {
+      try {
+        copyStylesheets();
+      } catch (error) {
+        console.error('[sync-vendor-assets] shared UI CSS failed:', String(error));
+      }
+    }),
     watch(resolve(webRoot, 'src', 'app'), { persistent: true }, (_eventType, filename) => {
       const file = typeof filename === 'string' ? filename : filename?.toString();
       const exact = file && appGlobalCssFiles.includes(file);
       if (file && !exact && !file.endsWith('.css') && !file.includes('.css.')) return;
       try {
-        if (exact) {
-          copyAppGlobalCssFile(file);
-        } else {
-          copyAppGlobalCss();
-        }
+        copyStylesheets();
       } catch (error) {
         console.error('[sync-vendor-assets] watch failed:', error instanceof Error ? error.message : String(error));
       }
@@ -136,12 +143,36 @@ function watchAppGlobalCss() {
   ];
 }
 
+/**
+ * @param {{demos?: Record<string, {assetSource: string, posterAssetSource: string, src: string, poster: string, sha256: string}>, repoRoot?: string, publicRoot?: string}} [options]
+ */
+export function syncFeatureDemoAssets({
+  demos = FEATURE_DEMOS,
+  repoRoot = resolve(webRoot, '../..'),
+  publicRoot = resolve(webRoot, 'public'),
+} = {}) {
+  // F331: publish every fixed cut from the same catalogue used by the UI and statistics.
+  for (const demo of Object.values(demos)) {
+    const bytes = readFileSync(resolve(repoRoot, demo.assetSource));
+    if (createHash('sha256').update(bytes).digest('hex') !== demo.sha256) {
+      throw new Error('Published demo bytes changed: register a new cut/version before shipping.');
+    }
+    for (const [source, target] of [
+      [demo.assetSource, demo.src],
+      [demo.posterAssetSource, demo.poster],
+    ]) {
+      copyAsset(resolve(repoRoot, source), resolve(publicRoot, target.slice(1)));
+    }
+  }
+}
+
 function syncVendorAssets() {
+  syncFeatureDemoAssets();
+  syncBrandManifest(webRoot, deploymentDefaults.brand);
   copyVadAssets();
   copyOnnxRuntimeAssets();
   copyEsbuildWasm();
-  copyXtermCss();
-  copyAppGlobalCss();
+  copyStylesheets();
 }
 
 function closeWatchers(watchers) {
@@ -199,14 +230,16 @@ function parseArgs(argv) {
   };
 }
 
-try {
-  const { watchMode, commandArgs } = parseArgs(process.argv.slice(2));
-  if (watchMode) {
-    runWatchMode(commandArgs);
-  } else {
-    syncVendorAssets();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const { watchMode, commandArgs } = parseArgs(process.argv.slice(2));
+    if (watchMode) {
+      runWatchMode(commandArgs);
+    } else {
+      syncVendorAssets();
+    }
+  } catch (error) {
+    console.error('[sync-vendor-assets] failed:', error instanceof Error ? error.message : String(error));
+    process.exit(1);
   }
-} catch (error) {
-  console.error('[sync-vendor-assets] failed:', error instanceof Error ? error.message : String(error));
-  process.exit(1);
 }

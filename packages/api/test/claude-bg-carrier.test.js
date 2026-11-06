@@ -72,6 +72,33 @@ test('parses short id from successful claude --bg stdout', async () => {
   assert.equal(shortId, 'abcd1234');
 });
 
+test('background launch and resume propagate only the member native window', async () => {
+  for (const native of [1_000_000, null, undefined]) {
+    const fakeSpawn = buildFakeSpawn({ stdout: 'backgrounded · abcd1234\n' });
+    const service = new ClaudeBgCarrierService({
+      l0CompilerFn: fakeL0Compiler,
+      spawnFn: fakeSpawn,
+      model: 'claude-test-model',
+      enableJobOwnership: false,
+    });
+    await service.startJob('fixture', {
+      callbackEnv: {
+        CAT_CAFE_ANTHROPIC_PROFILE_MODE: 'api_key',
+        CAT_CAFE_ANTHROPIC_API_KEY: 'fixture-not-a-real-key',
+        CAT_CAFE_ANTHROPIC_MODEL_OVERRIDE: 'glm-5.3-flash',
+      },
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      contextNativeWindowTokens: native,
+      contextCapacity: { windowTokens: 258_400 },
+    });
+    assert.equal(fakeSpawn.lastEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS, native ? '1000000' : undefined);
+    assert.equal(
+      fakeSpawn.lastArgs[fakeSpawn.lastArgs.indexOf('--resume') + 1],
+      '11111111-1111-4111-8111-111111111111',
+    );
+  }
+});
+
 test('throws CarrierError when claude --bg exits non-zero', async () => {
   const fakeSpawn = buildFakeSpawn({ exitCode: 1, stderr: 'auth required' });
   const service = new ClaudeBgCarrierService({
@@ -84,6 +111,27 @@ test('throws CarrierError when claude --bg exits non-zero', async () => {
     (err) => {
       assert.ok(err instanceof CarrierError, `expected CarrierError, got ${err.constructor.name}`);
       assert.match(err.message, /exited code=1/);
+      return true;
+    },
+  );
+});
+
+test('sanitizes claude --bg stderr before taking its head excerpt', async () => {
+  const token = `sk-${'X'.repeat(40)}`;
+  const fakeSpawn = buildFakeSpawn({
+    exitCode: 1,
+    stderr: `${'A'.repeat(290)}${token}${'B'.repeat(500)}`,
+  });
+  const service = new ClaudeBgCarrierService({
+    l0CompilerFn: fakeL0Compiler,
+    spawnFn: fakeSpawn,
+    model: 'claude-test-model',
+  });
+  await assert.rejects(
+    () => service.startJob('hi'),
+    (error) => {
+      assert.doesNotMatch(error.message, /sk-X+/);
+      assert.match(error.message, /\[TOKEN_RE/);
       return true;
     },
   );
@@ -224,7 +272,7 @@ test('provider-native job-terminal states retire their active owner manifests', 
   }
 });
 
-test('Claude bg timeout retains its active manifest when native stop exits nonzero', async () => {
+test('Claude bg abort retains its active manifest when native stop exits nonzero', async () => {
   const ownerDataDir = mkdtempSync(join(tmpdir(), 'cat-cafe-bg-owner-timeout-'));
   const jobsDir = mkdtempSync(join(tmpdir(), 'cat-cafe-bg-owner-timeout-jobs-'));
   const shortId = 'dead0001';
@@ -255,22 +303,50 @@ test('Claude bg timeout retains its active manifest when native stop exits nonze
     jobsDir,
     ownerDataDir,
     pollMs: 5,
-    timeoutMs: 20,
     ownerKillGraceMs: 100,
   });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30);
   try {
     await assert.rejects(async () => {
-      for await (const _message of service.invoke('time out')) {
-        // The fixture remains working until the carrier timeout fires.
+      for await (const _message of service.invoke('stop', { signal: controller.signal })) {
+        // The fixture remains working until the member owner aborts.
       }
-    }, /timeout/);
+    }, /aborted/);
     await new Promise((resolve) => setTimeout(resolve, 20));
     const stopCall = spawnCalls.find(({ args }) => args[0] === 'stop');
     assert.ok(stopCall);
     assert.equal(stopCall.options.env.CAT_CAFE_PROCESS_OWNER_ID, undefined);
     assert.equal(readdirSync(join(ownerDataDir, 'claude-bg-job-owners')).length, 1);
   } finally {
+    clearTimeout(timer);
     rmSync(ownerDataDir, { recursive: true, force: true });
+    rmSync(jobsDir, { recursive: true, force: true });
+  }
+});
+
+test('Claude bg keeps a producing job alive beyond its legacy whole-turn deadline', async () => {
+  const jobsDir = mkdtempSync(join(tmpdir(), 'cat-cafe-bg-no-deadline-'));
+  const shortId = 'f1170001';
+  const jobDir = seedJobState(jobsDir, shortId, { state: 'working', timelineLines: [] });
+  const service = new ClaudeBgCarrierService({
+    l0CompilerFn: fakeL0Compiler,
+    spawnFn: buildFakeSpawn({ stdout: `backgrounded · ${shortId}\n` }),
+    model: 'claude-test-model',
+    jobsDir,
+    pollMs: 5,
+    timeoutMs: 10, // Legacy carrier deadline: ignored by G1, fatal on the baseline.
+  });
+  const timer = setTimeout(() => {
+    writeFileSync(join(jobDir, 'state.json'), JSON.stringify({ state: 'done', output: { result: 'completed later' } }));
+  }, 45);
+  try {
+    const messages = [];
+    for await (const message of service.invoke('long work')) messages.push(message);
+    assert.ok(messages.some((message) => message.type === 'text' && message.content === 'completed later'));
+    assert.ok(messages.some((message) => message.type === 'done'));
+  } finally {
+    clearTimeout(timer);
     rmSync(jobsDir, { recursive: true, force: true });
   }
 });

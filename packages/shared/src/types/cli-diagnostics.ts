@@ -22,6 +22,10 @@ export type CliErrorReasonCode =
   | 'auth_failed'
   | 'quota_exceeded'
   | 'network_error'
+  /** Provider explicitly reported failure while processing the request. */
+  | 'upstream_service_error'
+  /** Stream ended without evidence that identifies a network or provider cause. */
+  | 'stream_disconnected'
   | 'invalid_config'
   | 'spawn_failed'
   | 'context_window_exceeded'
@@ -36,8 +40,6 @@ export type CliErrorReasonCode =
    *  per se but surfaced via cliDiagnostics so users get evidence instead of generic
    *  "completed without textual output" message. */
   | 'silent_completion'
-  /** Codex preserved the native session after a bounded active-writer recovery refusal. */
-  | 'active_writer_recovery'
   /** Phase H (Sol runtime forensics 2026-07-09): upstream provider (Codex 0.98+) sent
    *  `{type:"error", message:"This content was flagged for possible cybersecurity risk..."}`
    *  followed by `turn.failed` + exit 1. NOT a Clowder AI bug — upstream policy engine decision.
@@ -52,8 +54,6 @@ export type CliErrorReasonCode =
    *  invalid_config (a config *file* is malformed) and spawn_failed (binary missing). */
   | 'incompatible_cli_arguments';
 
-export type CliActiveWriterRecoveryState = 'owner_busy' | 'retiring' | 'external_or_unknown';
-
 /**
  * Structured CLI error payload (Phase A KD-1 white-list admission).
  *
@@ -63,6 +63,28 @@ export type CliActiveWriterRecoveryState = 'owner_busy' | 'retiring' | 'external
  *  - web side: `ChatMessage.extra.cliDiagnostics` (after useAgentMessages error-path unpacking)
  */
 export interface CliDiagnostics {
+  /** Same-request evidence from Codex's startup account check. No arbitrary error.data. */
+  accountCheck?: {
+    category:
+      | 'discovery_failed'
+      | 'discovery_timeout'
+      | 'network_error'
+      | 'rate_limited'
+      | 'upstream_error'
+      | 'auth_rejected'
+      | 'configuration_conflict'
+      | 'unknown';
+    rpcMethod?: string;
+    rpcCode?: number;
+    httpStatus?: number;
+    causeCode?: string;
+    causeMessage?: string;
+    causeProvided: boolean;
+    attempt: number;
+    /** Which attempt actually returned this evidence, distinct from the total startup attempts. */
+    evidenceAttempt?: number;
+    elapsedMs: number;
+  };
   /** Whitelist classification; undefined = unknown stderr / stream error */
   reasonCode?: CliErrorReasonCode;
   /** Always present; humanized title for error bubble (i18n: zh-CN in Phase A) */
@@ -83,10 +105,6 @@ export interface CliDiagnostics {
    *  malformed payloads (no source) AND fails closed when older clients see a future
    *  source value they don't recognize (e.g. a hypothetical 'pii_redacted'). */
   excerptSource?: 'classifier' | 'cc_structured' | 'unknown_raw';
-  /** Present only for typed active_writer_recovery diagnostics. */
-  activeWriterRecovery?: {
-    state: CliActiveWriterRecoveryState;
-  };
   /** Debug correlation metadata — safe to expose */
   debugRef: {
     command: string;
@@ -94,6 +112,8 @@ export interface CliDiagnostics {
     exitCode?: number | null;
     signal: NodeJS.Signals | string | null;
     invocationId?: string;
+    /** Provider request correlation ID; admitted only as a UUID from an error event. */
+    upstreamRequestId?: string;
     /**
      * Provider-owned, path-safe spawn context. Values must be finite enum/hash
      * tokens only: no raw cwd/HOME/prompt/env values.
@@ -103,4 +123,18 @@ export interface CliDiagnostics {
     spawnCwdKey?: string;
     profileId?: string;
   };
+}
+
+/** Runner-owned projection on the invocation's original response, including no-text waits. */
+export interface CodexStartupRecovery {
+  invocationId: string;
+  stage: 'checking' | 'retry_wait' | 'ready' | 'failed' | 'cancelled';
+  sequence: number;
+  attempt: number;
+  maxAttempts: number;
+  startedAt: number;
+  deadlineAt: number;
+  updatedAt: number;
+  nextRetryAt?: number;
+  diagnostics?: CliDiagnostics;
 }

@@ -8,37 +8,34 @@ import { freezeF200Flags } from '../domains/memory/f200-types.js';
 import { LifecycleTraceStore } from '../domains/memory/LifecycleTraceStore.js';
 import { OutputVerifiedDetector } from '../domains/memory/output-verified-detector.js';
 import { RecallMetricsComputer } from '../domains/memory/RecallMetricsComputer.js';
+import { RecallMetricsReader } from '../domains/memory/RecallMetricsReader.js';
 import { SqliteSignalSources } from '../domains/memory/SqliteSignalSources.js';
-import {
-  type SignalMessageStore,
-  type SignalTaskStore,
-  ThreadAwareSignalSources,
-} from '../domains/memory/ThreadAwareSignalSources.js';
+import { type SignalMessageStore, ThreadAwareSignalSources } from '../domains/memory/ThreadAwareSignalSources.js';
 import { TrajectoryQueryService } from '../domains/memory/TrajectoryQueryService.js';
 import { resolveHeaderUserId } from '../utils/request-identity.js';
+import { type RecallSourceReaders, readRecallSourceViews } from './recall-candidate-view.js';
+import { withRecallMetricsSignal } from './recall-metrics-request.js';
+import {
+  nextRecallReplyCursor,
+  parseRecallReplyCursor,
+  projectRecallReplies,
+  type RecallReplyMessageStore,
+} from './recall-reply-index.js';
 
 export interface RecallMetricsRoutesOptions {
   evidenceDb: Database.Database;
   /** Optional: pass messageStore + taskStore to enable AC-D2.1/D2.2/D2.3 auto-detection. */
-  messageStore?: SignalMessageStore;
-  taskStore?: SignalTaskStore;
+  messageStore?: SignalMessageStore & RecallReplyMessageStore;
+  personMemoryStore?: RecallSourceReaders['personMemoryStore'];
+  cueSourceReader?: RecallSourceReaders['cueSourceReader'];
+  profileMemoryStore?: RecallSourceReaders['profileMemoryStore'];
+  tasteSources?: RecallSourceReaders['tasteSources'];
+  eventSources?: RecallSourceReaders['eventSources'];
   /** Optional: pass threadStore to enable thread ownership validation on /api/recall/events. */
   threadStore?: Pick<IThreadStore, 'get' | 'list'>;
 }
 
-interface CacheEntry {
-  key: string;
-  data: unknown;
-  expiresAt: number;
-}
-
-const CACHE_TTL_MS = 60_000;
-const cache = new Map<string, CacheEntry>();
-const MAX_CACHE = 20;
-
-export function clearRecallMetricsCache(): void {
-  cache.clear();
-}
+export { clearRecallMetricsCache } from '../domains/memory/RecallMetricsReader.js';
 
 async function isThreadIndexedForUser(
   threadStore: Pick<IThreadStore, 'list'>,
@@ -51,6 +48,7 @@ async function isThreadIndexedForUser(
 
 export const recallMetricsRoutes: FastifyPluginAsync<RecallMetricsRoutesOptions> = async (app, opts) => {
   const computer = new RecallMetricsComputer(opts.evidenceDb);
+  const metricsReader = new RecallMetricsReader(opts.evidenceDb.name);
   const trajectoryService = new TrajectoryQueryService(opts.evidenceDb);
   const crossCatComputer = new CrossCatMetricsComputer(opts.evidenceDb);
 
@@ -64,21 +62,14 @@ export const recallMetricsRoutes: FastifyPluginAsync<RecallMetricsRoutesOptions>
     const catId = request.query.catId || undefined;
     const toolName = request.query.toolName || undefined;
     const forceRefresh = request.query.refresh === '1';
-    const cacheKey = `recall:${days}:${catId ?? ''}:${toolName ?? ''}`;
-
-    if (!forceRefresh) {
-      const cached = cache.get(cacheKey);
-      if (cached && cached.expiresAt > Date.now()) return cached.data;
+    try {
+      return await withRecallMetricsSignal(request, reply, (signal) =>
+        metricsReader.read({ days, catId, toolName }, signal, forceRefresh),
+      );
+    } catch {
+      // Failed/cancelled computations are never cached or retried on the API loop.
+      return reply.code(503).send({ error: 'Recall metrics unavailable' });
     }
-
-    const report = computer.computeMetrics({ days, catId, toolName });
-
-    if (cache.size >= MAX_CACHE) {
-      const oldestKey = cache.keys().next().value as string;
-      cache.delete(oldestKey);
-    }
-    cache.set(cacheKey, { key: cacheKey, data: report, expiresAt: Date.now() + CACHE_TTL_MS });
-    return report;
   });
 
   app.get<{
@@ -148,10 +139,9 @@ export const recallMetricsRoutes: FastifyPluginAsync<RecallMetricsRoutesOptions>
     const unverified = trajectoryService.listRecent({ verified: false, days, limit: 100, oldestFirst: true });
     // AC-D2: Use ThreadAwareSignalSources when messageStore + taskStore are available;
     // fall back to SqliteSignalSources (v1 behavior) otherwise.
-    const sources =
-      opts.messageStore && opts.taskStore
-        ? new ThreadAwareSignalSources(opts.evidenceDb, opts.messageStore, opts.taskStore)
-        : new SqliteSignalSources(opts.evidenceDb);
+    const sources = opts.messageStore
+      ? new ThreadAwareSignalSources(opts.evidenceDb, opts.messageStore)
+      : new SqliteSignalSources(opts.evidenceDb);
     const detector = new OutputVerifiedDetector(sources);
 
     let verifiedCount = 0;
@@ -200,7 +190,7 @@ export const recallMetricsRoutes: FastifyPluginAsync<RecallMetricsRoutesOptions>
   // F102 bugfix: RecallFeed history — query recall_events by threadId
   // so the UI can show recall history beyond the HISTORY_PAGE_SIZE message window.
   app.get<{
-    Querystring: { threadId: string; limit?: string };
+    Querystring: { threadId: string; limit?: string; replyBeforeTs?: string; replyBeforeId?: string };
   }>('/api/recall/events', async (request, reply) => {
     const userId = resolveHeaderUserId(request);
     if (!userId) return reply.status(401).send({ error: 'Missing X-Cat-Cafe-User header' });
@@ -225,7 +215,7 @@ export const recallMetricsRoutes: FastifyPluginAsync<RecallMetricsRoutesOptions>
 
     const rows = opts.evidenceDb
       .prepare(
-        `SELECT recall_id, cat_id, tool_name, query, mode, scope,
+        `SELECT recall_id, cat_id, invocation_id, source_event_id, tool_name, query, mode, scope,
               candidates_json, consumed_json, result_count, result_status, timestamp,
               source, push_surface, presented, inspected, outcome
        FROM recall_events
@@ -236,6 +226,8 @@ export const recallMetricsRoutes: FastifyPluginAsync<RecallMetricsRoutesOptions>
       .all(threadId, limit) as Array<{
       recall_id: string;
       cat_id: string;
+      invocation_id: string;
+      source_event_id: string | null;
       tool_name: string;
       query: string;
       mode: string | null;
@@ -252,7 +244,35 @@ export const recallMetricsRoutes: FastifyPluginAsync<RecallMetricsRoutesOptions>
       outcome: string | null;
     }>;
 
+    // Bound the read; no message bodies or tool payloads cross this projection.
+    // Coordinates are read only after the existing thread access guard above.
+    const cursor = parseRecallReplyCursor(request.query.replyBeforeTs, request.query.replyBeforeId);
+    if (cursor === 'invalid') return reply.status(400).send({ error: 'Invalid reply cursor' });
+    if (cursor && !opts.messageStore?.getThreadReplyProjection && !opts.messageStore?.getByThreadBefore)
+      return reply.status(503).send({ error: 'Reply reader unavailable' });
+    const replyMessages = !opts.messageStore
+      ? []
+      : opts.messageStore.getThreadReplyProjection
+        ? await opts.messageStore.getThreadReplyProjection(threadId, userId, 500, cursor ?? undefined)
+        : cursor && opts.messageStore.getByThreadBefore
+          ? await opts.messageStore.getByThreadBefore(threadId, cursor.timestamp, 500, cursor.messageId, userId)
+          : await opts.messageStore.getByThread(threadId, 500, userId);
+    const replies = projectRecallReplies(replyMessages);
+    const cueInvocationIds = (
+      opts.evidenceDb
+        .prepare(
+          `SELECT invocation_id FROM memory_cue_events WHERE owner_user_id = ? AND thread_id = ?
+       GROUP BY invocation_id ORDER BY MAX(occurred_at) DESC LIMIT 100`,
+        )
+        .all(userId, threadId) as Array<{ invocation_id: string }>
+    ).map((row) => row.invocation_id);
+    const sourceViews = await readRecallSourceViews(opts.evidenceDb, userId, threadId, rows, cueInvocationIds, opts);
+    const views = new Map(sourceViews.filter((view) => !view.cueId).map((view) => [view.anchor, view]));
     return {
+      replies,
+      replyCursor: nextRecallReplyCursor(replyMessages),
+      cueInvocationIds,
+      sourceViews,
       events: rows.map((r) => {
         const candidates = JSON.parse(r.candidates_json || '[]') as Array<{ anchor: string; docKind?: string }>;
         const consumed = JSON.parse(r.consumed_json || '[]') as Array<{ anchor: string }>;
@@ -267,6 +287,10 @@ export const recallMetricsRoutes: FastifyPluginAsync<RecallMetricsRoutesOptions>
         const resultCount = resultStatus === 'legacy_unknown' ? undefined : (r.result_count ?? undefined);
         return {
           id: r.recall_id,
+          catId: r.cat_id,
+          invocationId: r.invocation_id,
+          sourceEventId: r.source_event_id ?? undefined,
+          consumedCount: consumedAnchors.size,
           toolName: r.tool_name,
           query: r.query,
           mode: r.mode ?? undefined,
@@ -280,9 +304,11 @@ export const recallMetricsRoutes: FastifyPluginAsync<RecallMetricsRoutesOptions>
           ...(resultCount != null ? { resultCount } : {}),
           resultStatus,
           results: candidates.map((c) => ({
-            title: c.anchor,
+            title: views.get(c.anchor)?.title ?? '',
+            ...(views.get(c.anchor)?.titleStatus ? { titleStatus: views.get(c.anchor)?.titleStatus } : {}),
+            href: views.get(c.anchor)?.href ?? null,
             anchor: c.anchor,
-            sourceType: c.docKind,
+            sourceType: views.get(c.anchor)?.kind ?? c.docKind,
             consumed: consumedAnchors.has(c.anchor),
           })),
         };

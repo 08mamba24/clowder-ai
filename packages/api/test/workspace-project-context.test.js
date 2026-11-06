@@ -24,6 +24,8 @@ describe('project-aware workspace worktrees', () => {
     // Create a temporary git repo to use as repoRoot
     await mkdir(TEMP_REPO, { recursive: true });
     execFileSync('git', ['init'], { cwd: TEMP_REPO });
+    execFileSync('git', ['config', 'user.name', 'Workspace Fixture'], { cwd: TEMP_REPO });
+    execFileSync('git', ['config', 'user.email', 'workspace-fixture@example.invalid'], { cwd: TEMP_REPO });
     execFileSync('git', ['checkout', '-b', 'main'], { cwd: TEMP_REPO });
     await writeFile(join(TEMP_REPO, 'README.md'), '# temp\n');
     await writeFile(join(TEMP_REPO, '100%-done.md'), '# Literal percent\n');
@@ -35,6 +37,8 @@ describe('project-aware workspace worktrees', () => {
     // Create a second temp repo with different content
     await mkdir(TEMP_REPO_2, { recursive: true });
     execFileSync('git', ['init'], { cwd: TEMP_REPO_2 });
+    execFileSync('git', ['config', 'user.name', 'Workspace Fixture'], { cwd: TEMP_REPO_2 });
+    execFileSync('git', ['config', 'user.email', 'workspace-fixture@example.invalid'], { cwd: TEMP_REPO_2 });
     execFileSync('git', ['checkout', '-b', 'main'], { cwd: TEMP_REPO_2 });
     await writeFile(join(TEMP_REPO_2, 'README.md'), '# repo two\n');
     await writeFile(join(TEMP_REPO_2, 'only-in-two.txt'), 'unique\n');
@@ -118,6 +122,53 @@ describe('project-aware workspace worktrees', () => {
     // Should contain README.md we created in before()
     const readme = treeData.tree.find((n) => n.name === 'README.md');
     assert.ok(readme, 'should find README.md in foreign repo tree');
+  });
+
+  it('answers 404 for a tree path that does not exist, so a caller can say it is missing', async () => {
+    // F309 Phase U: the Hub file tree turns this answer into "工作区里没有 …" instead of an unknown failure.
+    const listRes = await app.inject({
+      method: 'GET',
+      url: `/api/workspace/worktrees?repoRoot=${encodeURIComponent(TEMP_REPO)}`,
+    });
+    const foreignWt = JSON.parse(listRes.body).worktrees.find((w) => !w.id.startsWith('linked_'));
+    const tree = (path) =>
+      app.inject({
+        method: 'GET',
+        url: `/api/workspace/tree?worktreeId=${encodeURIComponent(foreignWt.id)}&path=${encodeURIComponent(path)}&depth=1`,
+      });
+    assert.equal((await tree('no-such-dir')).statusCode, 404);
+    assert.equal((await tree('no-such-dir/deeper')).statusCode, 404);
+  });
+
+  it('says whether a listable path is one the tree itself does not show, using the listing rule', async () => {
+    // F309 Phase U: "exists but the tree hides it" must be the owner's answer, not the client's inference.
+    await mkdir(join(TEMP_REPO, '.cache-f309', 'inner'), { recursive: true });
+    await mkdir(join(TEMP_REPO, 'node_modules', 'pkg'), { recursive: true });
+    await mkdir(join(TEMP_REPO, 'visible-f309', 'inner'), { recursive: true });
+    const listRes = await app.inject({
+      method: 'GET',
+      url: `/api/workspace/worktrees?repoRoot=${encodeURIComponent(TEMP_REPO)}`,
+    });
+    const foreignWt = JSON.parse(listRes.body).worktrees.find((w) => !w.id.startsWith('linked_'));
+    const answer = async (path) => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/workspace/tree?worktreeId=${encodeURIComponent(foreignWt.id)}&path=${encodeURIComponent(path)}&depth=1`,
+      });
+      return { status: res.statusCode, hiddenFromTree: JSON.parse(res.body).hiddenFromTree };
+    };
+    assert.deepEqual(await answer('.cache-f309'), { status: 200, hiddenFromTree: true });
+    assert.deepEqual(await answer('.cache-f309/inner'), { status: 200, hiddenFromTree: true });
+    assert.deepEqual(await answer('node_modules/pkg'), { status: 200, hiddenFromTree: true });
+    assert.deepEqual(await answer('visible-f309/inner'), { status: 200, hiddenFromTree: false });
+    // The root listing itself agrees: the visible directory is listed, the hidden ones are not.
+    const rootRes = await app.inject({
+      method: 'GET',
+      url: `/api/workspace/tree?worktreeId=${encodeURIComponent(foreignWt.id)}&depth=1`,
+    });
+    const names = JSON.parse(rootRes.body).tree.map((node) => node.name);
+    assert.ok(names.includes('visible-f309'));
+    assert.ok(!names.includes('.cache-f309') && !names.includes('node_modules'));
   });
 
   it('does not collide when two foreign repos are listed sequentially', async () => {

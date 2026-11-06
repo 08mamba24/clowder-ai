@@ -5,17 +5,32 @@
 
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, mock, test } from 'node:test';
 import { catRegistry } from '@cat-cafe/shared';
+import { upstreamMcpServersFromArgs } from './helpers/direct-mcp-contract.js';
+import { assertSelectedApiAccount, installAmbientCodexAccount } from './helpers/f320-auth-environment.js';
 import { fakeL0Compiler } from './helpers/fake-l0-compiler.js';
 
-const { CodexAgentService, buildCodexReasoningArgs, isGitRepositoryPath } = await import(
-  '../dist/domains/cats/services/agents/providers/CodexAgentService.js'
-);
+const {
+  CodexAgentService: ProductionCodexAgentService,
+  buildCodexReasoningArgs,
+  codexConfigObjectFromArgs,
+  isGitRepositoryPath,
+  resolveCodexApiKeyIsolationRoot,
+} = await import('../dist/domains/cats/services/agents/providers/CodexAgentService.js');
 const { _resetCachedConfig } = await import('../dist/config/cat-config-loader.js');
+
+// Every invocation in this suite injects a mock spawn function. Resolve a
+// guaranteed executable first so the public runner never needs Codex itself
+// merely to reach that mock. Production still defaults to `codex`.
+class CodexAgentService extends ProductionCodexAgentService {
+  constructor(options = {}) {
+    super({ ...options, cliCommand: process.execPath });
+  }
+}
 
 /** Helper: collect all items from async iterable */
 async function collect(iterable) {
@@ -34,12 +49,25 @@ function createMockProcess() {
   const stderr = new PassThrough();
   const emitter = new EventEmitter();
   const originalEmit = emitter.emit.bind(emitter);
+  let pendingExit;
   emitter.emit = (event, ...args) => {
+    // Invoke-time source validation can await filesystem I/O before spawn.
+    // A fixture cannot exit before the mock child is observed by spawnCli.
+    if (event === 'exit' && emitter.listenerCount('exit') === 0) {
+      pendingExit = args;
+      return false;
+    }
     const emitted = originalEmit(event, ...args);
     if (event === 'exit') {
       process.nextTick(() => originalEmit('close', ...args));
     }
     return emitted;
+  };
+  const flushPendingExit = () => {
+    if (!pendingExit || emitter.listenerCount('exit') === 0) return;
+    const args = pendingExit;
+    pendingExit = undefined;
+    setImmediate(() => emitter.emit('exit', ...args));
   };
   let stdinData = '';
   const proc = {
@@ -65,10 +93,12 @@ function createMockProcess() {
     }),
     on: (event, listener) => {
       emitter.on(event, listener);
+      flushPendingExit();
       return proc;
     },
     once: (event, listener) => {
       emitter.once(event, listener);
+      flushPendingExit();
       return proc;
     },
     get stdinData() {
@@ -83,6 +113,100 @@ function createMockProcess() {
 function createMockSpawnFn(proc) {
   return mock.fn(() => proc);
 }
+
+for (const selectedRouting of [{}, { OPENAI_ORGANIZATION: 'org-b', OPENAI_PROJECT: 'project-b' }])
+  test(
+    `F320 API/custom actual spawn receives selected routing and an existing CODEX_HOME (selectedRouting=${Object.keys(selectedRouting).length})`,
+    { timeout: 5000 },
+    async (t) => {
+      installAmbientCodexAccount(t);
+      const proc = createMockProcess();
+      const spawnFn = mock.fn(() => {
+        setImmediate(() => emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 'fixture-api' }]));
+        return proc;
+      });
+      const service = new CodexAgentService({ l0CompilerFn: fakeL0Compiler, spawnFn });
+      const run = collect(
+        service.invoke('fixture', {
+          callbackEnv: {
+            CODEX_AUTH_MODE: 'api_key',
+            OPENAI_API_KEY: 'fixture-key',
+            OPENAI_BASE_URL: 'http://127.0.0.1:1/v1',
+            ...selectedRouting,
+          },
+        }),
+      );
+      await run;
+      assertSelectedApiAccount(spawnFn.mock.calls[0]?.arguments[2].env, 'fixture-key', selectedRouting);
+      const home = spawnFn.mock.calls[0]?.arguments[2].env.CODEX_HOME;
+      assert.ok(home);
+      t.after(() => rmSync(dirname(home), { recursive: true, force: true }));
+      assert.equal(existsSync(home), true, 'native rejects a nonexistent explicit home');
+    },
+  );
+
+test('F320 explicit OAuth clears credentials after accountEnv composition', { timeout: 5000 }, async (t) => {
+  const proc = createMockProcess();
+  const spawnFn = createMockSpawnFn(proc);
+  const service = new CodexAgentService({ l0CompilerFn: fakeL0Compiler, spawnFn });
+  const keys = [
+    'CODEX_API_KEY',
+    'CODEX_ACCESS_TOKEN',
+    'OPENAI_API_KEY',
+    'OPENAI_FEDERATION_RULE_ID',
+    'OPENAI_IDENTITY_TOKEN_FILE',
+  ];
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  t.after(() => {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  });
+  for (const key of keys) process.env[key] = 'fixture-ambient';
+  const promise = collect(
+    service.invoke('OAuth account selection', {
+      callbackEnv: { CODEX_AUTH_MODE: 'oauth' },
+      accountEnv: Object.fromEntries(keys.map((key) => [key, 'fixture-account-override'])),
+    }),
+  );
+  setTimeout(() => emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 'f320-final-env' }]), 50);
+  await promise;
+  assert.equal(spawnFn.mock.callCount(), 1);
+  const childEnv = spawnFn.mock.calls[0].arguments[2].env;
+  for (const key of keys) assert.equal(childEnv[key], undefined, `${key} must not override the selected OAuth account`);
+});
+
+test('F320 actual capability entry uses the selected account home rather than ambient home', async () => {
+  const chosenHome = join(process.env.HOME, 'chosen-codex-home');
+  let launch;
+  const service = new CodexAgentService({
+    l0CompilerFn: fakeL0Compiler,
+    carrierMode: 'app_server',
+    appServerHostPool: {
+      createSession: async (options) => {
+        launch = options;
+        throw new Error('fixture_spawn_boundary');
+      },
+    },
+  });
+  await assert.rejects(
+    service.requestNativeCapabilitySource({
+      invocationId: 'chosen-probe',
+      timeoutMs: 1000,
+      cwd: process.cwd(),
+      account: {
+        id: 'codex-chosen',
+        authType: 'oauth',
+        client: 'openai',
+        envVars: { CODEX_HOME: chosenHome },
+      },
+    }),
+    /fixture_spawn_boundary/,
+  );
+  assert.equal(launch.env.CODEX_HOME, chosenHome);
+  assert.equal(launch.env.CODEX_API_KEY, null);
+});
 
 /**
  * Write NDJSON events to mock process stdout, then end with exit 0.
@@ -192,6 +316,23 @@ async function collectCodexSpawnArgs(workingDirectory) {
 
   try {
     writeMcpDistStubs(runtimeRoot, CAT_CAFE_SPLIT_ENTRYPOINTS);
+    const workspace = process.env.CAT_CAFE_WORKSPACE_ROOT;
+    if (workspace) {
+      // These cases test allowed workspace arguments, with an explicitly configured default source.
+      writeCapabilitiesConfig(
+        workspace,
+        CAT_CAFE_SPLIT_SERVER_IDS.map((id, index) => ({
+          id,
+          type: 'mcp',
+          source: 'cat-cafe',
+          globalEnabled: true,
+          mcpServer: {
+            command: 'node',
+            args: [join(runtimeRoot, 'packages/mcp-server/dist', CAT_CAFE_SPLIT_ENTRYPOINTS[index + 1])],
+          },
+        })),
+      );
+    }
     await withRuntimeRootEnv(runtimeRoot, async () => {
       const promise = collect(
         service.invoke('hello from workspace env test', {
@@ -205,7 +346,8 @@ async function collectCodexSpawnArgs(workingDirectory) {
         }),
       );
       emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-mcp-workspace-env' }]);
-      await promise;
+      const messages = await promise;
+      assert.equal(spawnFn.mock.callCount(), 1, JSON.stringify(messages));
     });
 
     return spawnFn.mock.calls[0].arguments[1];
@@ -215,11 +357,9 @@ async function collectCodexSpawnArgs(workingDirectory) {
 }
 
 function assertWorkspaceScopedServersUseAllowedWorkspaceDirs(args, expected, reason) {
+  const servers = upstreamMcpServersFromArgs(args);
   for (const serverId of CAT_CAFE_WORKSPACE_ENV_SERVER_IDS) {
-    assert.ok(
-      args.includes(`mcp_servers.${serverId}.env.ALLOWED_WORKSPACE_DIRS="${expected}"`),
-      `${serverId} must use ${reason}`,
-    );
+    assert.equal(servers[serverId].env.ALLOWED_WORKSPACE_DIRS, expected, `${serverId} must use ${reason}`);
   }
 }
 
@@ -422,60 +562,27 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
         ['cat-cafe-audio', 'audio.js'],
         ['cat-cafe-finance', 'finance.js'],
       ];
-      const runtimeNodeCommand = JSON.stringify(process.execPath);
+      const servers = upstreamMcpServersFromArgs(args);
       for (const [serverId, entrypoint] of splitServers) {
-        assert.ok(
-          args.includes(`mcp_servers.${serverId}.command=${runtimeNodeCommand}`),
-          `must inject ${serverId} runtime Node command`,
+        const server = servers[serverId];
+        assert.equal(server.command, process.execPath, `${serverId} uses runtime Node`);
+        assert.deepEqual(
+          server.args,
+          [join(mcpDistDir, entrypoint)],
+          'upstream binary belongs to runtime, not thread cwd',
         );
-        const argsConfig = args.find((arg) => arg.startsWith(`mcp_servers.${serverId}.args=[`));
-        assert.ok(argsConfig, `must inject ${serverId} mcp args config`);
-        assert.ok(
-          argsConfig.includes(`packages/mcp-server/dist/${entrypoint}`),
-          `${serverId} args must point at ${entrypoint}`,
-        );
-        assert.ok(
-          !argsConfig.includes(threadWorkspace),
-          `${serverId} args must not resolve MCP binary from thread workingDirectory`,
-        );
-        assert.ok(args.includes(`mcp_servers.${serverId}.enabled=true`), `must inject ${serverId} enabled=true`);
-        assert.ok(
-          args.includes(`mcp_servers.${serverId}.default_tools_approval_mode="approve"`),
-          `${serverId} must have default_tools_approval_mode="approve" for non-interactive codex exec`,
-        );
-        assert.ok(
-          args.includes(`mcp_servers.${serverId}.env.ALLOWED_WORKSPACE_DIRS="${threadWorkspace}"`),
-          `${serverId} must receive the thread workspace as ALLOWED_WORKSPACE_DIRS`,
-        );
-        // full callback env coverage on every split server (regression guard for F168/F140 cross-thread auth)
-        assert.ok(
-          args.includes(`mcp_servers.${serverId}.env.CAT_CAFE_API_URL="http://127.0.0.1:3004"`),
-          `must inject CAT_CAFE_API_URL on ${serverId}`,
-        );
-        assert.ok(
-          args.includes(`mcp_servers.${serverId}.env.CAT_CAFE_INVOCATION_ID="inv-test-1"`),
-          `must inject CAT_CAFE_INVOCATION_ID on ${serverId}`,
-        );
-        assert.ok(
-          args.includes(`mcp_servers.${serverId}.env.CAT_CAFE_CALLBACK_TOKEN="tok-test-1"`),
-          `must inject CAT_CAFE_CALLBACK_TOKEN on ${serverId}`,
-        );
-        assert.ok(
-          args.includes(`mcp_servers.${serverId}.env.CAT_CAFE_THREAD_ID="thread-test-1"`),
-          `must inject CAT_CAFE_THREAD_ID on ${serverId}`,
-        );
-        assert.ok(
-          args.includes(`mcp_servers.${serverId}.env.CAT_CAFE_USER_ID="user-test-1\\nline2"`),
-          `must inject CAT_CAFE_USER_ID on ${serverId}`,
-        );
-        assert.ok(
-          args.includes(`mcp_servers.${serverId}.env.CAT_CAFE_CAT_ID="codex"`),
-          `must inject CAT_CAFE_CAT_ID on ${serverId} for game action auth`,
-        );
-        assert.ok(
-          args.includes(`mcp_servers.${serverId}.env.CAT_CAFE_SIGNAL_USER="codex"`),
-          `must inject CAT_CAFE_SIGNAL_USER on ${serverId}`,
-        );
+        assert.equal(server.enabled, true);
+        assert.equal(server.default_tools_approval_mode, 'approve');
+        assert.deepEqual(server.env, {
+          ALLOWED_WORKSPACE_DIRS: threadWorkspace,
+          CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
+          CAT_CAFE_INVOCATION_ID: 'inv-test-1',
+          CAT_CAFE_CALLBACK_TOKEN: 'tok-test-1',
+          CAT_CAFE_THREAD_ID: 'thread-test-1',
+          CAT_CAFE_USER_ID: 'user-test-1\nline2',
+          CAT_CAFE_CAT_ID: 'codex',
+          CAT_CAFE_SIGNAL_USER: 'codex',
+        });
       }
 
       // F213 (2026-05-26, post 砚砚 review P2 fix): legacy `cat-cafe` server gets
@@ -491,26 +598,10 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
       // - NO env.* overlay (env-only would be partial definition if transport missing
       //   from another source — but with our complete transport above, env is irrelevant
       //   because enabled=false short-circuits server startup)
-      assert.ok(
-        args.includes('mcp_servers.cat-cafe.command="echo"'),
-        'F213: L4 must inject dummy disabled command="echo" for legacy cat-cafe (covers sources outside L5 cleanup reach)',
-      );
-      assert.ok(
-        args.some((arg) => arg.startsWith('mcp_servers.cat-cafe.args=') && arg.includes('legacy-shim')),
-        'F213: L4 must inject dummy disabled args=["legacy-shim"] for legacy cat-cafe',
-      );
-      assert.ok(
-        args.includes('mcp_servers.cat-cafe.enabled=false'),
-        'F213: L4 must inject enabled=false for legacy cat-cafe (server not actually started)',
-      );
-      assert.ok(
-        !args.some((arg) => arg.startsWith('mcp_servers.cat-cafe.env.')),
-        'F213: legacy cat-cafe env overlay must NOT be injected — enabled=false short-circuits, env irrelevant',
-      );
-      assert.ok(
-        !args.includes('mcp_servers.cat-cafe.command="node"'),
-        'legacy cat-cafe MCP server command="node" should not be injected (split-only invariant)',
-      );
+      assert.equal(servers['cat-cafe'].command, 'echo');
+      assert.deepEqual(servers['cat-cafe'].args, ['legacy-shim']);
+      assert.equal(servers['cat-cafe'].enabled, false);
+      assert.equal(servers['cat-cafe'].env, undefined, 'disabled legacy shim cannot receive credentials');
     } finally {
       if (previousAllowedWorkspaceDirs === undefined) {
         delete process.env.ALLOWED_WORKSPACE_DIRS;
@@ -594,29 +685,14 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
       // args + enabled=false) to suppress any stale .codex/config.toml entries.
       // Bare `enabled=false` fails Codex ≥0.142 schema validation; including
       // command+args satisfies the schema (same principle as legacy cat-cafe shim).
-      assert.ok(
-        args.includes('mcp_servers.cat-cafe-collab.command="echo"'),
-        'disabled entry must emit dummy command to suppress stale config.toml',
-      );
-      assert.ok(
-        args.some((a) => a.includes('mcp_servers.cat-cafe-collab.args=') && a.includes('disabled-shim')),
-        'disabled entry must emit dummy args for schema compliance',
-      );
-      assert.ok(args.includes('mcp_servers.cat-cafe-collab.enabled=false'), 'disabled entry must emit enabled=false');
-      // No callback env or workspace injection for disabled entries
-      assert.ok(
-        !args.some((a) => a.includes('mcp_servers.cat-cafe-collab.env.')),
-        'disabled entry must not receive env injection',
-      );
-      assert.ok(
-        args.includes(`mcp_servers.cat-cafe-memory.command=${JSON.stringify(process.execPath)}`),
-        'enabled runtime capability is injected with runtime Node',
-      );
-      assert.ok(args.includes('mcp_servers.runtime-tool.command="node"'), 'external runtime capability is injected');
-      assert.ok(
-        args.includes(`mcp_servers.cat-cafe-memory.env.ALLOWED_WORKSPACE_DIRS="${projectDir}"`),
-        'workspace authorization still uses the thread workingDirectory',
-      );
+      const servers = upstreamMcpServersFromArgs(args);
+      assert.equal(servers['cat-cafe-collab'].command, 'echo');
+      assert.deepEqual(servers['cat-cafe-collab'].args, ['disabled-shim']);
+      assert.equal(servers['cat-cafe-collab'].enabled, false);
+      assert.equal(servers['cat-cafe-collab'].env, undefined, 'disabled entries do not receive callback/workspace env');
+      assert.equal(servers['cat-cafe-memory'].command, process.execPath);
+      assert.equal(servers['runtime-tool'].command, 'node');
+      assert.equal(servers['cat-cafe-memory'].env.ALLOWED_WORKSPACE_DIRS, projectDir);
     } finally {
       if (previousRuntimeRoot === undefined) {
         delete process.env.CAT_CAFE_RUNTIME_ROOT;
@@ -769,30 +845,17 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
           await promise;
 
           const args = spawnFn.mock.calls[0].arguments[1];
-          // Same-repo external split should be injected (enabled, stdio transport)
-          assert.ok(
-            args.includes('mcp_servers.cat-cafe-limb.enabled=true'),
-            'same-repo external split must be injected as enabled',
-          );
-          // Must use current runtime binary, not stale worktree path
-          assert.ok(
-            args.some((a) => a.includes(`mcp_servers.cat-cafe-limb.args=`) && a.includes(currentLimbPath)),
-            'same-repo external split must resolve binary from current mcpDistDir, not stale args[0]',
+          const server = upstreamMcpServersFromArgs(args)['cat-cafe-limb'];
+          assert.equal(server.enabled, true);
+          assert.deepEqual(
+            server.args,
+            [currentLimbPath],
+            'managed upstream must resolve to the current runtime binary',
           );
           assert.ok(!args.some((a) => a.includes('/old/worktree/')), 'stale worktree path must not appear in CLI args');
-          // Must receive managed approval mode and callback env injection
-          assert.ok(
-            args.some((a) => a.includes('mcp_servers.cat-cafe-limb.default_tools_approval_mode=')),
-            'same-repo external split must receive approval mode injection',
-          );
-          assert.ok(
-            args.some((a) => a.includes('mcp_servers.cat-cafe-limb.env.ALLOWED_WORKSPACE_DIRS=')),
-            'same-repo external split must receive workspace dir injection',
-          );
-          assert.ok(
-            args.some((a) => a.includes('mcp_servers.cat-cafe-limb.env.CAT_CAFE_API_URL=')),
-            'same-repo external split must receive callback env injection',
-          );
+          assert.equal(server.default_tools_approval_mode, 'approve');
+          assert.equal(server.env.ALLOWED_WORKSPACE_DIRS, projectDir);
+          assert.equal(server.env.CAT_CAFE_API_URL, 'http://127.0.0.1:3004');
         });
       });
     } finally {
@@ -873,17 +936,10 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
           await promise;
 
           const args = spawnFn.mock.calls[0].arguments[1];
-          // streamableHttp entry should be injected with url, not command/args
-          assert.ok(
-            args.includes('mcp_servers.remote-mcp.url="https://mcp.example.com/v1"'),
-            'streamableHttp entry must inject url',
-          );
-          assert.ok(args.includes('mcp_servers.remote-mcp.enabled=true'), 'streamableHttp entry must be enabled');
-          // Must NOT have command/args (URL-based transport)
-          assert.ok(
-            !args.some((a) => a.includes('mcp_servers.remote-mcp.command=')),
-            'streamableHttp entry must not inject command',
-          );
+          const server = upstreamMcpServersFromArgs(args)['remote-mcp'];
+          assert.equal(server.url, 'https://mcp.example.com/v1');
+          assert.equal(server.enabled, true);
+          assert.equal(server.command, undefined, 'upstream remains a remote transport behind the inspected relay');
         });
       });
     } finally {
@@ -971,34 +1027,15 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
 
           const args = spawnFn.mock.calls[0].arguments[1];
           const spawnOpts = spawnFn.mock.calls[0].arguments[2];
-          // URL must still be injected
+          const server = upstreamMcpServersFromArgs(args)['authed-remote'];
+          assert.equal(server.url, 'https://mcp.secure.example.com/v1');
+          assert.equal(server.enabled, true);
+          assert.match(server.bearer_token_env_var, /^CAT_CAFE_MCP_BEARER_AUTHED_REMOTE_/);
+          assert.equal(spawnOpts.env[server.bearer_token_env_var], 'sk-test-secret-token-123');
+          assert.equal(server.command, undefined);
           assert.ok(
-            args.includes('mcp_servers.authed-remote.url="https://mcp.secure.example.com/v1"'),
-            'authed streamableHttp must inject url',
-          );
-          assert.ok(args.includes('mcp_servers.authed-remote.enabled=true'), 'authed streamableHttp must be enabled');
-          // bearer_token_env_var must reference the generated env var (includes hash suffix)
-          const bearerArg = args.find((a) => a.includes('bearer_token_env_var'));
-          assert.ok(bearerArg, 'must inject bearer_token_env_var config');
-          assert.ok(
-            bearerArg.includes('CAT_CAFE_MCP_BEARER_AUTHED_REMOTE_'),
-            'bearer_token_env_var must reference CAT_CAFE_MCP_BEARER_AUTHED_REMOTE_<hash>',
-          );
-          // Extract actual env var name from the config arg
-          const envVarMatch = bearerArg.match(/CAT_CAFE_MCP_BEARER_[A-Za-z0-9_]+/);
-          assert.ok(envVarMatch, 'bearer env var name must be extractable');
-          const actualEnvVar = envVarMatch[0];
-          // Token must be in process env (Codex reads bearer_token_env_var from process env)
-          assert.ok(spawnOpts?.env, 'spawn options must include env');
-          assert.strictEqual(
-            spawnOpts.env[actualEnvVar],
-            'sk-test-secret-token-123',
-            'bearer token must be in child process env',
-          );
-          // Must NOT have command/args
-          assert.ok(
-            !args.some((a) => a.includes('mcp_servers.authed-remote.command=')),
-            'authed streamableHttp must not inject command',
+            !args.some((arg) => arg.includes('sk-test-secret-token-123')),
+            'bearer values must remain outside argv',
           );
         });
       });
@@ -1100,32 +1137,14 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
           const args = spawnFn.mock.calls[0].arguments[1];
           const spawnOpts = spawnFn.mock.calls[0].arguments[2];
 
-          // Both MCPs must have distinct bearer_token_env_var configs
-          const bearerArgs = args.filter((a) => a.includes('bearer_token_env_var'));
-          assert.strictEqual(bearerArgs.length, 2, 'must have two distinct bearer_token_env_var configs');
-
-          // Extract env var names from the config args
-          const envVarNames = bearerArgs.map((a) => {
-            const m = a.match(/CAT_CAFE_MCP_BEARER_[A-Za-z0-9_]+/);
-            return m ? m[0] : null;
-          });
-          assert.ok(envVarNames[0] && envVarNames[1], 'both env var names must be extractable');
-          assert.notStrictEqual(envVarNames[0], envVarNames[1], 'env var names must differ (collision-proof)');
-
-          // Each env var must carry the correct token
-          assert.ok(spawnOpts?.env, 'spawn options must include env');
-          const tokenA = spawnOpts.env[envVarNames[0]];
-          const tokenB = spawnOpts.env[envVarNames[1]];
-          // Determine which env var goes with which MCP by checking the args ordering
-          const fooBarDashIdx = args.findIndex((a) => a.includes('mcp_servers.foo-bar.bearer'));
-          const fooBarUnderIdx = args.findIndex((a) => a.includes('mcp_servers.foo_bar.bearer'));
-          if (fooBarDashIdx < fooBarUnderIdx) {
-            assert.strictEqual(tokenA, 'token-A', 'foo-bar must carry token-A');
-            assert.strictEqual(tokenB, 'token-B', 'foo_bar must carry token-B');
-          } else {
-            assert.strictEqual(tokenA, 'token-B', 'foo_bar must carry token-B');
-            assert.strictEqual(tokenB, 'token-A', 'foo-bar must carry token-A');
-          }
+          const servers = upstreamMcpServersFromArgs(args);
+          const dash = servers['foo-bar'].bearer_token_env_var;
+          const underscore = servers.foo_bar.bearer_token_env_var;
+          assert.match(dash, /^CAT_CAFE_MCP_BEARER_/);
+          assert.match(underscore, /^CAT_CAFE_MCP_BEARER_/);
+          assert.notEqual(dash, underscore, 'normalizing IDs must not collapse bearer identity');
+          assert.equal(spawnOpts.env[dash], 'token-A');
+          assert.equal(spawnOpts.env[underscore], 'token-B');
         });
       });
     } finally {
@@ -1213,16 +1232,12 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
           const args = spawnFn.mock.calls[0].arguments[1];
           const spawnOpts = spawnFn.mock.calls[0].arguments[2];
 
-          const bearerArg = args.find((a) => a.includes('bearer_token_env_var'));
-          assert.ok(bearerArg, 'AUTHORIZATION (all-caps) must still map to bearer_token_env_var');
-
-          const envVarMatch = bearerArg.match(/CAT_CAFE_MCP_BEARER_[A-Za-z0-9_]+/);
-          assert.ok(envVarMatch, 'env var name must be extractable');
-          assert.strictEqual(
-            spawnOpts.env[envVarMatch[0]],
-            'sk-upper-token',
-            'bearer token must be in child process env',
+          const server = Object.values(upstreamMcpServersFromArgs(args)).find(
+            (entry) => entry.url === 'https://mcp.upper.example.com',
           );
+          assert.ok(server, 'AUTHORIZATION (all-caps) must retain its remote transport');
+          assert.match(server.bearer_token_env_var, /^CAT_CAFE_MCP_BEARER_/);
+          assert.equal(spawnOpts.env[server.bearer_token_env_var], 'sk-upper-token');
         });
       });
     } finally {
@@ -1312,23 +1327,12 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
           const args = spawnFn.mock.calls[0].arguments[1];
           const spawnOpts = spawnFn.mock.calls[0].arguments[2];
 
-          const bearerArg = args.find((a) => a.includes('bearer_token_env_var'));
-          assert.ok(bearerArg, 'env-backed header must still map to bearer_token_env_var');
-          assert.match(bearerArg, new RegExp(`${envKey}["']?$`));
-          assert.doesNotMatch(args.join('\n'), /resolved-secret-token-456/);
-          assert.equal(spawnOpts.env[envKey], 'resolved-secret-token-456');
-          // Prefix is CAT_CAFE_MCP_BEARER_, which is what the merged source mints:
-          // main named it CLOWDER_MCP_BEARER_, but that is the single CLOWDER_*
-          // identifier against 92 CAT_CAFE_* ones, and upstream's #1074 uses
-          // CAT_CAFE_. Left as CLOWDER_ this assertion matches nothing and passes
-          // vacuously.
+          const server = Object.values(upstreamMcpServersFromArgs(args)).find((entry) => entry.bearer_token_env_var);
+          assert.ok(server, 'env-backed authorization must retain its bearer reference');
           assert.equal(
-            Object.entries(spawnOpts.env).some(
-              ([key, value]) =>
-                key !== envKey && key.startsWith('CAT_CAFE_MCP_BEARER_') && value === process.env[envKey],
-            ),
-            false,
-            'native environment reference should not duplicate this token into a generated variable',
+            spawnOpts.env[server.bearer_token_env_var],
+            'resolved-secret-token-456',
+            'resolved token, not placeholder',
           );
         });
       });
@@ -1573,25 +1577,11 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
           await promise;
 
           const args = spawnFn.mock.calls[0].arguments[1];
-          // Pencil entry must be resolved and injected with command + args + enabled
-          const pencilCommandArg = args.find((a) => a.includes('mcp_servers.pencil.command='));
-          assert.ok(pencilCommandArg, 'pencil entry must inject resolved command');
-          assert.ok(
-            pencilCommandArg.includes('mock-pencil-mcp-server'),
-            `pencil command must contain resolved binary path, got: ${pencilCommandArg}`,
-          );
-          const pencilArgsArg = args.find((a) => a.includes('mcp_servers.pencil.args='));
-          assert.ok(pencilArgsArg, 'pencil entry must inject args');
-          assert.ok(pencilArgsArg.includes('--app'), 'pencil args must include --app');
-          assert.ok(
-            pencilArgsArg.includes('visual_studio_code'),
-            'legacy vscode override must emit the current Pencil host identifier',
-          );
-          // Must explicitly enable to override any stale config.toml disabled state
-          assert.ok(
-            args.includes('mcp_servers.pencil.enabled=true'),
-            'pencil entry must inject enabled=true to override stale config',
-          );
+          const server = upstreamMcpServersFromArgs(args).pencil;
+          assert.ok(server.command.includes('mock-pencil-mcp-server'), 'upstream must use the resolved Pencil binary');
+          assert.ok(server.args.includes('--app'));
+          assert.ok(server.args.includes('visual_studio_code'), 'keep the current Pencil host identifier');
+          assert.equal(server.enabled, true, 'enabled state overrides stale user config');
         });
       });
     } finally {
@@ -1688,42 +1678,49 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
 
   test('Codex MCP config prefers explicit ALLOWED_WORKSPACE_DIRS over thread workingDirectory', async () => {
     const tmpRoot = makeTempDir('.tmp-mcp-explicit-env-');
+    const allowedRoot = makeTempDir('.tmp-mcp-allowed-root-');
+    const startupRoot = makeTempDir('.tmp-mcp-startup-root-');
 
     try {
       await withWorkspaceEnv(
-        { ALLOWED_WORKSPACE_DIRS: '/explicit/workspace', CAT_CAFE_WORKSPACE_ROOT: '/stale/workspace-root' },
+        { ALLOWED_WORKSPACE_DIRS: allowedRoot, CAT_CAFE_WORKSPACE_ROOT: startupRoot },
         async () => {
           const args = await collectCodexSpawnArgs(tmpRoot);
-          assertWorkspaceScopedServersUseAllowedWorkspaceDirs(
-            args,
-            '/explicit/workspace',
-            'explicit ALLOWED_WORKSPACE_DIRS',
-          );
+          assertWorkspaceScopedServersUseAllowedWorkspaceDirs(args, allowedRoot, 'explicit ALLOWED_WORKSPACE_DIRS');
         },
       );
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
+      rmSync(allowedRoot, { recursive: true, force: true });
+      rmSync(startupRoot, { recursive: true, force: true });
     }
   });
 
   test('Codex MCP config prefers thread workingDirectory over CAT_CAFE_WORKSPACE_ROOT', async () => {
     const tmpRoot = makeTempDir('.tmp-mcp-workspace-root-');
+    const startupRoot = makeTempDir('.tmp-mcp-startup-root-');
 
     try {
-      await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: '/stale/startup-workspace' }, async () => {
+      await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: startupRoot }, async () => {
         const args = await collectCodexSpawnArgs(tmpRoot);
         assertWorkspaceScopedServersUseAllowedWorkspaceDirs(args, tmpRoot, 'thread workingDirectory');
       });
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
+      rmSync(startupRoot, { recursive: true, force: true });
     }
   });
 
   test('Codex MCP config uses CAT_CAFE_WORKSPACE_ROOT when thread workingDirectory is absent', async () => {
-    await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: '/workspace/root' }, async () => {
-      const args = await collectCodexSpawnArgs();
-      assertWorkspaceScopedServersUseAllowedWorkspaceDirs(args, '/workspace/root', 'CAT_CAFE_WORKSPACE_ROOT fallback');
-    });
+    const startupRoot = makeTempDir('.tmp-mcp-fallback-root-');
+    try {
+      await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: startupRoot }, async () => {
+        const args = await collectCodexSpawnArgs();
+        assertWorkspaceScopedServersUseAllowedWorkspaceDirs(args, startupRoot, 'CAT_CAFE_WORKSPACE_ROOT fallback');
+      });
+    } finally {
+      rmSync(startupRoot, { recursive: true, force: true });
+    }
   });
 
   test('Codex MCP external env stays out of argv and command-only servers stay enabled', async () => {
@@ -1747,32 +1744,92 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
         },
       ]);
 
-      await withRuntimeRootEnv(projectDir, async () => {
-        const promise = collect(
-          service.invoke('hello external env', {
-            workingDirectory: projectDir,
-            callbackEnv: {
-              CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
-              CAT_CAFE_INVOCATION_ID: 'inv-secret',
-              CAT_CAFE_CALLBACK_TOKEN: 'tok-secret',
-              CAT_CAFE_CAT_ID: 'codex',
-            },
-          }),
-        );
-        emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-secret' }]);
-        await promise;
+      await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: projectDir }, () =>
+        withRuntimeRootEnv(projectDir, async () => {
+          const promise = collect(
+            service.invoke('hello external env', {
+              workingDirectory: projectDir,
+              callbackEnv: {
+                CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
+                CAT_CAFE_INVOCATION_ID: 'inv-secret',
+                CAT_CAFE_CALLBACK_TOKEN: 'tok-secret',
+                CAT_CAFE_CAT_ID: 'codex',
+              },
+            }),
+          );
+          emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-secret' }]);
+          const messages = await promise;
+          assert.equal(spawnFn.mock.callCount(), 1, JSON.stringify(messages));
 
-        const args = spawnFn.mock.calls[0].arguments[1];
-        assert.ok(
-          args.includes(`mcp_servers.secret-tool.command=${JSON.stringify(process.execPath)}`),
-          'env-wrapped external server must use runtime Node for the wrapper',
-        );
-        assert.ok(args.includes('mcp_servers.secret-tool.enabled=true'), 'external server must stay enabled');
-        assert.ok(
-          !args.some((arg) => arg.includes('SECRET_TOKEN') || arg.includes('super-secret-token')),
-          'external MCP env names and values must not be exposed in argv',
-        );
-      });
+          const args = spawnFn.mock.calls[0].arguments[1];
+          const server = upstreamMcpServersFromArgs(args)['secret-tool'];
+          assert.equal(server.command, process.execPath, 'credential-file wrapper must use runtime Node');
+          assert.equal(server.enabled, true);
+          const privateSpec = JSON.parse(readFileSync(server.args.at(-1), 'utf8'));
+          assert.equal(privateSpec.command, 'node');
+          assert.equal(privateSpec.env.SECRET_TOKEN, 'super-secret-token');
+          assert.ok(
+            !args.some((arg) => arg.includes('SECRET_TOKEN') || arg.includes('super-secret-token')),
+            'external MCP env names and values must not be exposed in argv',
+          );
+        }),
+      );
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  test('Codex MCP plugin-shaped IDs with dots retain one literal server namespace', async () => {
+    const projectDir = makeTempDir('.tmp-codex-dotted-plugin-');
+    const proc = createMockProcess();
+    const spawnFn = createMockSpawnFn(proc);
+    const service = new CodexAgentService({ l0CompilerFn: fakeL0Compiler, spawnFn, model: 'gpt-5.3-codex' });
+    try {
+      writeMcpDistStubs(projectDir);
+      // Activation/admission is tested by the installed-plugin suites. This
+      // registry entry isolates the provider's handling of the same ID shape.
+      writeCapabilitiesConfig(projectDir, [
+        {
+          id: 'plugin:dev.clowder.xiangqi:xiangqi-analysis',
+          type: 'mcp',
+          globalEnabled: true,
+          source: 'external',
+          mcpServer: { command: 'node', args: ['/fixture/xiangqi.mjs'] },
+        },
+      ]);
+      await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: projectDir }, () =>
+        withRuntimeRootEnv(projectDir, async () => {
+          const pending = collect(
+            service.invoke('hello plugin', {
+              workingDirectory: projectDir,
+              callbackEnv: {
+                CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
+                CAT_CAFE_INVOCATION_ID: 'inv-plugin',
+                CAT_CAFE_CALLBACK_TOKEN: 'tok-plugin',
+                CAT_CAFE_CAT_ID: 'codex',
+              },
+            }),
+          );
+          emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-plugin' }]);
+          const messages = await pending;
+          assert.equal(spawnFn.mock.callCount(), 1, JSON.stringify(messages));
+          const args = spawnFn.mock.calls[0].arguments[1];
+          const servers = codexConfigObjectFromArgs(args).mcp_servers;
+          const server = upstreamMcpServersFromArgs(args)['plugin__dev.clowder.xiangqi__xiangqi-analysis'];
+          assert.deepEqual(
+            Object.keys(servers).filter((name) => name.startsWith('plugin__')),
+            ['plugin__dev.clowder.xiangqi__xiangqi-analysis'],
+          );
+          assert.equal(server.enabled, true);
+          assert.equal(server.command, 'node');
+          assert.deepEqual(server.args, ['/fixture/xiangqi.mjs']);
+          assert.equal(
+            args.some((arg) => arg.startsWith('mcp_servers."')),
+            false,
+            'literal server keys must be carried in a root value; Codex splits quoted dotted override keys',
+          );
+        }),
+      );
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }
@@ -1802,25 +1859,29 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
         },
       ]);
 
-      await withRuntimeRootEnv(projectDir, async () => {
-        const promise = collect(
-          service.invoke('hello relative command', {
-            workingDirectory: projectDir,
-            callbackEnv: {
-              CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
-              CAT_CAFE_INVOCATION_ID: 'inv-relative-command',
-              CAT_CAFE_CALLBACK_TOKEN: 'tok-relative-command',
-              CAT_CAFE_CAT_ID: 'codex',
-            },
-          }),
-        );
-        emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-relative-command' }]);
-        await promise;
+      await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: projectDir }, () =>
+        withRuntimeRootEnv(projectDir, async () => {
+          const promise = collect(
+            service.invoke('hello relative command', {
+              workingDirectory: projectDir,
+              callbackEnv: {
+                CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
+                CAT_CAFE_INVOCATION_ID: 'inv-relative-command',
+                CAT_CAFE_CALLBACK_TOKEN: 'tok-relative-command',
+                CAT_CAFE_CAT_ID: 'codex',
+              },
+            }),
+          );
+          emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-relative-command' }]);
+          const messages = await promise;
+          assert.equal(spawnFn.mock.callCount(), 1, JSON.stringify(messages));
 
-        const args = spawnFn.mock.calls[0].arguments[1];
-        assert.ok(args.includes(`mcp_servers.relative-tool.command="${toolPath}"`));
-        assert.ok(!args.includes('mcp_servers.relative-tool.command="./server"'));
-      });
+          const args = spawnFn.mock.calls[0].arguments[1];
+          const server = upstreamMcpServersFromArgs(args)['relative-tool'];
+          assert.equal(server.command, toolPath);
+          assert.notEqual(server.command, './server');
+        }),
+      );
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
       rmSync(toolDir, { recursive: true, force: true });
@@ -1856,35 +1917,38 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
         },
       ]);
 
-      await withRuntimeRootEnv(projectDir, async () => {
-        const promise = collect(
-          service.invoke('hello relative workingDir', {
-            workingDirectory: projectDir,
-            callbackEnv: {
-              CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
-              CAT_CAFE_INVOCATION_ID: 'inv-relative-workdir',
-              CAT_CAFE_CALLBACK_TOKEN: 'tok-relative-workdir',
-              CAT_CAFE_CAT_ID: 'codex',
-            },
-          }),
-        );
-        emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-relative-workdir' }]);
-        await promise;
+      await withWorkspaceEnv({ CAT_CAFE_WORKSPACE_ROOT: projectDir }, () =>
+        withRuntimeRootEnv(projectDir, async () => {
+          const promise = collect(
+            service.invoke('hello relative workingDir', {
+              workingDirectory: projectDir,
+              callbackEnv: {
+                CAT_CAFE_API_URL: 'http://127.0.0.1:3004',
+                CAT_CAFE_INVOCATION_ID: 'inv-relative-workdir',
+                CAT_CAFE_CALLBACK_TOKEN: 'tok-relative-workdir',
+                CAT_CAFE_CAT_ID: 'codex',
+              },
+            }),
+          );
+          emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-relative-workdir' }]);
+          const messages = await promise;
+          assert.equal(spawnFn.mock.callCount(), 1, JSON.stringify(messages));
 
-        const args = spawnFn.mock.calls[0].arguments[1];
-        const serverArgsConfig = args.find((arg) => arg.startsWith('mcp_servers.relative-root-tool.args=['));
-        assert.ok(serverArgsConfig, 'env-wrapped external server must emit wrapper args');
-        const specPath = serverArgsConfig.match(/, "([^"]+mcp-env-spec\.json)"\]$/)?.[1];
-        assert.ok(specPath, 'wrapper args must include a readable spec path');
-        const spec = JSON.parse(readFileSync(specPath, 'utf8'));
-        assert.equal(spec.command, toolPath);
-        assert.deepEqual(spec.args, [dataPath]);
-        assert.equal(spec.cwd, toolDir);
-        assert.ok(
-          !args.some((arg) => arg.includes('SECRET_TOKEN') || arg.includes('super-secret-token')),
-          'external MCP env names and values must not be exposed in argv',
-        );
-      });
+          const args = spawnFn.mock.calls[0].arguments[1];
+          const server = upstreamMcpServersFromArgs(args)['relative-root-tool'];
+          assert.equal(server.command, process.execPath);
+          const specPath = server.args.at(-1);
+          assert.ok(specPath.endsWith('mcp-env-spec.json'), 'private upstream wrapper still owns env/cwd');
+          const spec = JSON.parse(readFileSync(specPath, 'utf8'));
+          assert.equal(spec.command, toolPath);
+          assert.deepEqual(spec.args, [dataPath]);
+          assert.equal(spec.cwd, toolDir);
+          assert.ok(
+            !args.some((arg) => arg.includes('SECRET_TOKEN') || arg.includes('super-secret-token')),
+            'external MCP env names and values must not be exposed in argv',
+          );
+        }),
+      );
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }
@@ -2034,6 +2098,28 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     const args = spawnFn.mock.calls[0].arguments[1];
     assert.ok(args.includes('model_reasoning_effort="xhigh"'));
     assert.ok(!args.includes('model_reasoning_effort="ultra"'));
+  });
+
+  test('GPT-6.1 sends ultra reasoning and Fast speed together to Codex', async () => {
+    const proc = createMockProcess();
+    const spawnFn = createMockSpawnFn(proc);
+    const service = new CodexAgentService({
+      l0CompilerFn: fakeL0Compiler,
+      spawnFn,
+      catId: 'runtime-sol61',
+      model: 'gpt-6.1-sol',
+    });
+    const promise = collect(
+      service.invoke('hello', {
+        reasoningEffortOverride: 'ultra',
+        requestedServiceTier: 'fast',
+      }),
+    );
+    emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-sol61-ultra-fast' }]);
+    await promise;
+    const args = spawnFn.mock.calls[0].arguments[1];
+    assert.ok(args.includes('model_reasoning_effort="ultra"'), JSON.stringify(args));
+    assert.ok(args.includes('service_tier="fast"'), JSON.stringify(args));
   });
 
   test('F291 maps requested Standard/Fast speed to reserved Codex exec config', async () => {
@@ -2257,13 +2343,14 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     const promise = collect(
       service.invoke('hello', {
         contextCapacity: { windowTokens: 372000, inputCeilingTokens: 356000, actionable: true },
+        // API identity is account-owned; ordinary context/reasoning preferences are still configurable.
+        callbackEnv: { CODEX_AUTH_MODE: 'api_key', OPENAI_API_KEY: 'fixture-key' },
         cliConfigArgs: [
           '--config model_context_window=111000',
           '--config=model_auto_compact_token_limit=95000',
           '-c=model_context_window=222000',
           '-cmodel_auto_compact_token_limit=96000',
           '--config model_reasoning_effort="low"',
-          '--config model_provider="custom"',
         ],
       }),
     );
@@ -2295,7 +2382,7 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     );
     assert.ok(
       args.includes('model_provider="custom"'),
-      'provider selection is not part of the capacity binding and must retain its existing precedence',
+      'account-owned API provider must coexist with the context-capacity binding',
     );
   });
 
@@ -2655,6 +2742,25 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     assert.ok(args.includes('model="qwen-plus"'), 'model must be passed as-is via --config');
     assert.ok(args.includes('model_provider="custom"'), 'must set model_provider=custom');
     assert.ok(!args.includes('model_provider="openai_https"'), 'custom provider must not force OpenAI OAuth provider');
+    const spawnOptions = spawnFn.mock.calls[0].arguments[2];
+    assert.equal(basename(dirname(spawnOptions.env.HOME)), 'codex-api-execution');
+    assert.match(
+      basename(spawnOptions.env.HOME),
+      /^[a-f0-9]{64}$/,
+      'account/base/cwd own one stable private state home',
+    );
+    assert.equal(spawnOptions.env.CODEX_HOME, join(spawnOptions.env.HOME, '.codex'));
+  });
+
+  test('API-key isolation lives under user cache rather than the OS temporary directory', () => {
+    assert.equal(
+      resolveCodexApiKeyIsolationRoot({ HOME: '/home/user', XDG_CACHE_HOME: '/home/user/.cache' }, 'darwin'),
+      '/home/user/Library/Caches/clowder-ai/codex-api-key-homes',
+    );
+    assert.equal(
+      resolveCodexApiKeyIsolationRoot({ HOME: '/home/example', XDG_CACHE_HOME: '/var/cache/example' }, 'linux'),
+      '/var/cache/example/clowder-ai/codex-api-key-homes',
+    );
   });
 
   test('custom provider: multi-segment model slug preserved as-is', async () => {
@@ -2704,12 +2810,16 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     assert.ok(!args.includes('model_provider="custom"'), 'must not set model_provider when no custom URL');
   });
 
-  test('oauth default provider preserves the built-in OpenAI transport', async () => {
+  test('oauth default provider preserves the built-in OpenAI transport (F319 observation off)', async () => {
     const proc = createMockProcess();
     const spawnFn = createMockSpawnFn(proc);
     const service = new CodexAgentService({ l0CompilerFn: fakeL0Compiler, spawnFn, model: 'gpt-5.3-codex' });
 
     const originalTransport = process.env.CAT_CAFE_CODEX_OAUTH_TRANSPORT;
+    // F319: served-model observation (default on) rides HTTPS; this test pins the
+    // pre-F319 transport contract that `off` must restore exactly.
+    const originalObservation = process.env.CAT_CAFE_CODEX_SERVED_MODEL_OBSERVATION;
+    process.env.CAT_CAFE_CODEX_SERVED_MODEL_OBSERVATION = 'off';
     try {
       delete process.env.CAT_CAFE_CODEX_OAUTH_TRANSPORT;
       const promise = collect(service.invoke('test oauth transport'));
@@ -2736,6 +2846,8 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     } finally {
       if (originalTransport === undefined) delete process.env.CAT_CAFE_CODEX_OAUTH_TRANSPORT;
       else process.env.CAT_CAFE_CODEX_OAUTH_TRANSPORT = originalTransport;
+      if (originalObservation === undefined) delete process.env.CAT_CAFE_CODEX_SERVED_MODEL_OBSERVATION;
+      else process.env.CAT_CAFE_CODEX_SERVED_MODEL_OBSERVATION = originalObservation;
     }
   });
 
@@ -2821,6 +2933,56 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
       textMsgs.map((msg) => msg.content),
       ['第一段。', '\n\n第二段。', '\n\n[砚砚/gpt-5.6-sol🐾]'],
     );
+  });
+
+  test('#1398: service treats the configured display name as a canonical signature alias', async () => {
+    const savedConfigs = catRegistry.getAllConfigs();
+    const catId = 'cat-signature-alias-test';
+    catRegistry.reset();
+    catRegistry.register(catId, {
+      id: catId,
+      name: 'dragon-li',
+      displayName: '狸花猫',
+      nickname: '小狸花',
+      avatar: '',
+      color: 'brown',
+      mentionPatterns: ['@小狸花'],
+      clientId: 'openai',
+      defaultModel: 'deepseek-chat',
+      mcpSupport: true,
+      roleDescription: 'test',
+      personality: 'test',
+    });
+
+    try {
+      const proc = createMockProcess();
+      const service = new CodexAgentService({
+        catId,
+        l0CompilerFn: fakeL0Compiler,
+        spawnFn: createMockSpawnFn(proc),
+        model: 'deepseek-chat',
+        carrierMode: 'exec_json',
+      });
+      const promise = collect(service.invoke('Hello'));
+      emitCodexEvents(proc, [
+        { type: 'thread.started', thread_id: 'thread-signature-alias' },
+        {
+          type: 'item.completed',
+          item: { id: 'msg-1', type: 'agent_message', text: 'Hello～ 狸花猫在 🐾\n\n[狸花猫/deepseek-chat🐾]' },
+        },
+        { type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 20 } },
+      ]);
+
+      const messages = await promise;
+      const text = messages
+        .filter((message) => message.type === 'text')
+        .map((message) => message.content)
+        .join('');
+      assert.equal(text, 'Hello～ 狸花猫在 🐾\n\n[小狸花/deepseek-chat🐾]');
+    } finally {
+      catRegistry.reset();
+      for (const [id, config] of Object.entries(savedConfigs)) catRegistry.register(id, config);
+    }
   });
 
   test('#1272: multiple completed turns keep the canonical signature at the real stream end', async () => {
@@ -3415,7 +3577,68 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     const spawnOpts = spawnFn.mock.calls[0].arguments[2];
     const args = spawnFn.mock.calls[0].arguments[1];
     assert.equal(spawnOpts.env.OPENAI_API_KEY, 'sk-test-api-mode');
-    assert.ok(!args.includes('model_provider="openai_https"'), 'api_key mode must not force OpenAI OAuth provider');
+    assert.ok(args.includes('model_provider="custom"'), 'explicit API mode must use its selected env_key');
+    assert.ok(args.includes('model_providers.custom.base_url="https://api.openai.com/v1"'));
+    assert.ok(args.includes('model_providers.custom.env_key="OPENAI_API_KEY"'));
+  });
+
+  test('auto mode inherits the active Codex config provider instead of forcing OpenAI OAuth', async () => {
+    const proc = createMockProcess();
+    const spawnFn = createMockSpawnFn(proc);
+    const service = new ProductionCodexAgentService({
+      l0CompilerFn: fakeL0Compiler,
+      spawnFn,
+      model: 'gpt-5.3-codex',
+      cliCommand: 'node',
+    });
+    const promise = collect(service.invoke('native config test', { callbackEnv: { CODEX_AUTH_MODE: 'auto' } }));
+    emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 'native-config-thread' }]);
+    await promise;
+    const args = spawnFn.mock.calls[0].arguments[1];
+    assert.ok(!args.includes('model_provider="openai"'));
+    assert.ok(!args.includes('model_provider="openai_https"'));
+  });
+
+  test('explicit OAuth binding still selects the built-in provider and strips ambient API keys', async () => {
+    const proc = createMockProcess();
+    const spawnFn = createMockSpawnFn(proc);
+    const service = new ProductionCodexAgentService({
+      l0CompilerFn: fakeL0Compiler,
+      spawnFn,
+      model: 'gpt-5.3-codex',
+      cliCommand: 'node',
+    });
+    const promise = collect(
+      service.invoke('explicit oauth test', {
+        callbackEnv: { CODEX_AUTH_MODE: 'oauth', OPENAI_API_KEY: 'fixture-key' },
+      }),
+    );
+    emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 'explicit-oauth-thread' }]);
+    await promise;
+    const [, args, opts] = spawnFn.mock.calls[0].arguments;
+    assert.ok(args.includes('model_provider="openai"'));
+    assert.equal(opts.env.OPENAI_API_KEY, undefined);
+  });
+
+  test('explicit API Key binding retains its key without forcing the OAuth provider', async () => {
+    const proc = createMockProcess();
+    const spawnFn = createMockSpawnFn(proc);
+    const service = new ProductionCodexAgentService({
+      l0CompilerFn: fakeL0Compiler,
+      spawnFn,
+      model: 'gpt-5.3-codex',
+      cliCommand: 'node',
+    });
+    const promise = collect(
+      service.invoke('explicit key test', {
+        callbackEnv: { CODEX_AUTH_MODE: 'api_key', OPENAI_API_KEY: 'fixture-key' },
+      }),
+    );
+    emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 'explicit-key-thread' }]);
+    await promise;
+    const [, args, opts] = spawnFn.mock.calls[0].arguments;
+    assert.ok(!args.includes('model_provider="openai"'));
+    assert.equal(opts.env.OPENAI_API_KEY, 'fixture-key');
   });
 
   test('callbackEnv auth mode overrides process default when launching codex child env', async () => {
@@ -3773,6 +3996,32 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     );
   });
 
+  test('Host-verified HMR image path reaches the local CLI without a public upload URL', async () => {
+    const proc = createMockProcess();
+    const spawnFn = createMockSpawnFn(proc);
+    const service = new CodexAgentService({ l0CompilerFn: fakeL0Compiler, spawnFn });
+    const hmrId = `hmr_${'x'.repeat(32)}`;
+    const seen = [];
+    const promise = collect(
+      service.invoke('describe private image', {
+        contentBlocks: [{ type: 'image', url: `hmr:${hmrId}` }],
+        resolveTrustedImagePath: async (id) => {
+          seen.push(id);
+          return '/private/media/verified-image';
+        },
+      }),
+    );
+    emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 'hmr-image-thread' }]);
+    await promise;
+    assert.deepEqual(seen, [hmrId]);
+    const args = spawnFn.mock.calls[0].arguments[1];
+    assert.equal(args[args.indexOf('--image') + 1], '/private/media/verified-image');
+    assert.equal(
+      args.some((arg) => String(arg).includes('/uploads/')),
+      false,
+    );
+  });
+
   test('fresh exec with --image inserts "--" before prompt to avoid varargs swallowing prompt', async () => {
     const proc = createMockProcess();
     const spawnFn = createMockSpawnFn(proc);
@@ -3924,18 +4173,18 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     const startMs = Date.now();
     const promise = collect(service.invoke('test'));
 
-    proc.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-116' }) + '\n');
+    proc.stdout.write(`${JSON.stringify({ type: 'thread.started', thread_id: 'thread-116' })}\n`);
     proc.stdout.write(
-      JSON.stringify({
+      `${JSON.stringify({
         type: 'item.completed',
         item: { id: 'msg-1', type: 'agent_message', text: 'Done!' },
-      }) + '\n',
+      })}\n`,
     );
     proc.stdout.write(
-      JSON.stringify({
+      `${JSON.stringify({
         type: 'turn.completed',
         usage: { input_tokens: 100, output_tokens: 50 },
-      }) + '\n',
+      })}\n`,
     );
     proc.stdout.end();
 

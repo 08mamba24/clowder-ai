@@ -1,4 +1,23 @@
-import type { CollectiveEventEnvelope, CollectivePairingIntent, CollectiveTarget } from '@cat-cafe/shared';
+import type {
+  CollectiveAttentionRequest,
+  CollectiveBindingVoteChoice,
+  CollectiveBindingVoteProjection,
+  CollectiveChannelProjection,
+  CollectiveCollaborationProjection,
+  CollectiveDecisionRecord,
+  CollectiveEventEnvelope,
+  CollectiveLocation,
+  CollectiveMemberDirectory,
+  CollectivePairingIntent,
+  CollectiveParticipant,
+  CollectiveReactionEmoji,
+  CollectiveReactionSummary,
+  CollectiveRecipient,
+  CollectiveRoadmapRecord,
+  CollectiveTarget,
+  CollectiveVoteProjection,
+  CollectiveWorkProjection,
+} from '@cat-cafe/shared';
 
 export type { GitHubAppManifestBeginResult } from './github-app-manifest.js';
 
@@ -7,6 +26,10 @@ export interface CollectiveMeta {
   readonly bootstrapNeeded: boolean;
   readonly onboardingComplete: boolean;
   readonly clientBuildId: string;
+  readonly capabilities?: {
+    readonly workResultFiles?: 1;
+    readonly channels?: 1;
+  };
 }
 
 export interface CollectiveHuman {
@@ -47,7 +70,15 @@ export interface HumanAuthBeginResult {
 }
 
 export interface ClientTarget {
-  readonly target: CollectiveTarget;
+  readonly draftReceipt?: { revision: number; rootEventId?: string };
+  readonly attachments?: import('@cat-cafe/shared').CollectiveMessageAttachment[];
+  readonly contextAttachments?: import('@cat-cafe/shared').CollectiveMessageQuote[];
+  readonly richBlocks?: import('@cat-cafe/shared').CollectiveMessageRichBlock[];
+  readonly target?: CollectiveTarget;
+  readonly location?: CollectiveLocation;
+  readonly recipient?: CollectiveRecipient;
+  readonly attentionRequest?: CollectiveAttentionRequest;
+  readonly workRequest?: 'entrust';
   readonly replyToEventId?: string;
 }
 
@@ -68,6 +99,14 @@ export type PairingIntentResult = CollectivePairingIntent;
 
 export type ClientPhase = 'loading' | 'entry' | 'bind-identity' | 'create-collective' | 'ready' | 'unavailable';
 
+/** Recovery coordinates, never membership or permission authority. */
+export interface RestrictedCollectiveScope {
+  readonly serviceInstanceId: string;
+  readonly collectiveId: string;
+  readonly humanId: string;
+  readonly reason: 'checking' | 'membership_lost' | 'unavailable' | 'session_expired';
+}
+
 export type DeliveryState =
   | { readonly kind: 'idle' }
   | { readonly kind: 'requesting'; readonly label: string }
@@ -81,10 +120,33 @@ export interface ClientSnapshot {
   readonly collective?: CollectiveMembership;
   readonly providers: readonly HumanAuthProviderStatus[];
   readonly events: readonly CollectiveEventEnvelope[];
+  readonly channels?: readonly CollectiveChannelProjection[];
+  readonly collaboration?: CollectiveCollaborationProjection;
+  readonly participants?: readonly CollectiveParticipant[];
+  readonly members?: CollectiveMemberDirectory;
   readonly connection: 'online' | 'offline';
   readonly delivery: DeliveryState;
   readonly notice?: string;
   readonly error?: string;
+  readonly restrictedScope?: RestrictedCollectiveScope;
 }
 
-export type { CollectiveEventEnvelope, CollectiveTarget };
+export type {
+  CollectiveAttentionRequest,
+  CollectiveBindingVoteChoice,
+  CollectiveBindingVoteProjection,
+  CollectiveChannelProjection,
+  CollectiveCollaborationProjection,
+  CollectiveDecisionRecord,
+  CollectiveEventEnvelope,
+  CollectiveTarget,
+  CollectiveLocation,
+  CollectiveRecipient,
+  CollectiveReactionEmoji,
+  CollectiveReactionSummary,
+  CollectiveParticipant,
+  CollectiveMemberDirectory,
+  CollectiveRoadmapRecord,
+  CollectiveVoteProjection,
+  CollectiveWorkProjection,
+};

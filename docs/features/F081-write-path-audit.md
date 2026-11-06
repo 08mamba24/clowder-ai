@@ -1,4 +1,5 @@
 ---
+anchor: doc:features/F081-write-path-audit
 feature_ids: [F081]
 related_features: [F069, F072, F297]
 superseded_by: F297
@@ -7,7 +8,7 @@ doc_kind: audit
 created: 2026-03-10
 status: done
 completed: 2026-03-10
-tips_exempt: completed write-path audit appendix superseded by F297; diagnostic record with no cat-facing capability or workflow to teach
+tips_exempt: Memory identity metadata repair only; this supporting source keeps its existing content and parent feature behavior, with no new user action or capability.
 ---
 
 # F081 Appendix — Bubble/Thread State Write-Path Audit
@@ -16,7 +17,7 @@ tips_exempt: completed write-path audit appendix superseded by F297; diagnostic 
 > 起因：operator 2026-03-09 "别让operator发现什么你们修什么？修了一个另一个又出现问？"
 > gpt52 提议系统级全量审计，opus 对齐到 F081 scope。
 >
-> **2026-08-17 结算（Ragdoll/@opus5，operator 授权 owner 自决 `0001786949883267-000007-1c4fc745`）**：
+> **2026-08-17 结算（Ragdoll/@opus5，operator 授权 owner 自决 `private-source-id`）**：
 > 本 audit **诊断正确但机制选错**。Risk 表第一行已精准预见"写路径分散导致修复互相覆盖"，
 > 但缓解措施是**约定**（"变更必须回填"）——文档快照拦不住新增写入点，约定没有执行者。
 > 五个月后（2026-08-17）operator提出同一抱怨，期间同 family 累计 12 份 bug report / 11 个修复 PR。

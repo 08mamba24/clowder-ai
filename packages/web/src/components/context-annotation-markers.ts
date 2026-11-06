@@ -1,4 +1,5 @@
 import type { QuoteContextAttachment } from '@cat-cafe/shared';
+import { visibleAnnotationPosition } from './context-annotation-visibility';
 
 export interface ContextAnnotationMarker {
   attachment: QuoteContextAttachment;
@@ -7,6 +8,8 @@ export interface ContextAnnotationMarker {
 }
 
 function annotationSourceRoot(root: HTMLElement, attachment: QuoteContextAttachment): HTMLElement | null {
+  // Uploaded file offsets name its own leaf, not the enclosing message's text.
+  if (attachment.source.kind === 'message' && attachment.source.artifactFile) return null;
   if (attachment.source.kind === 'cli_output') {
     const { segmentId } = attachment.source;
     if (!segmentId) return null;
@@ -68,16 +71,13 @@ export function positionAnnotationMarkers(
     const range = rangeFromTextOffsets(sourceRoot, attachment.selectionStart, attachment.selectionEnd);
     if (!range || typeof range.getBoundingClientRect !== 'function') return [];
     if (range.toString().trim() !== attachment.text) return [];
-    const rect = range.getBoundingClientRect();
-    if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) return [];
+    const position = visibleAnnotationPosition(sourceRoot, range);
+    if (!position) return [];
     return [
       {
         attachment,
         number,
-        position: {
-          top: Math.round(Math.max(8, rect.top - 8)),
-          left: Math.round(Math.min(window.innerWidth - 32, rect.right + 8)),
-        },
+        position,
       },
     ];
   });

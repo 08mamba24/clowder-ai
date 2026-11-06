@@ -5,6 +5,7 @@ import { markApiGetGeneration } from '@/utils/api-get-generation';
 
 const hoistedMocks = vi.hoisted(() => ({
   addToastMock: vi.fn(),
+  getCatByIdMock: vi.fn<(id: string) => null>(() => null),
   mockApiFetch: vi.fn(),
   mockPush: vi.fn(),
 }));
@@ -12,8 +13,12 @@ const hoistedMocks = vi.hoisted(() => ({
 export const mockPush = hoistedMocks.mockPush;
 export const mockApiFetch = hoistedMocks.mockApiFetch;
 export const addToastMock = hoistedMocks.addToastMock;
+export const getCatByIdMock = hoistedMocks.getCatByIdMock;
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mockPush }) }));
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: mockPush }),
+  usePathname: () => window.location.pathname,
+}));
 
 vi.mock('@/utils/api-client', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
@@ -61,7 +66,7 @@ vi.mock('@/stores/toastStore', () => ({
 
 vi.mock('../TaskPanel', () => ({ TaskPanel: () => null }));
 vi.mock('@/hooks/useCatData', () => ({
-  useCatData: () => ({ getCatById: () => null, cats: [] }),
+  useCatData: () => ({ getCatById: hoistedMocks.getCatByIdMock, cats: [] }),
 }));
 
 import { useSidebarProjectionStore } from '@/stores/sidebarProjectionStore';
@@ -124,6 +129,7 @@ export function resetThreadSidebarMocks() {
   mockApiFetch.mockReset();
   mockPush.mockReset();
   addToastMock.mockReset();
+  getCatByIdMock.mockClear();
   mockApiFetch.mockImplementation((path: string) => defaultSidebarApiMock(path));
 
   const storage: Record<string, string> = {};

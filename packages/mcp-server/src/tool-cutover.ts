@@ -1,4 +1,8 @@
+import { resolveCutoverCompositions } from './tool-cutover-composition.js';
+import { type CutoverConsumerScan, classifyCutoverReferences } from './tool-cutover-negative-references.js';
 import type { EvidenceRef, McpRuntimeProfile } from './tool-governance-types.js';
+
+export type { CutoverConsumerScan, CutoverNegativeReference } from './tool-cutover-negative-references.js';
 
 export const FIXED_CUTOVER_CONSUMER_ROOTS = [
   'packages/mcp-server/src',
@@ -53,14 +57,11 @@ export type AtomicCutoverManifest = {
   canonicalNames: readonly string[];
   expectedProfiles: Readonly<Record<string, readonly McpRuntimeProfile[]>>;
   rollbackRevision: string;
+  composition?: {
+    protectedTargetSha: string;
+    historicalManifestDigests: readonly string[];
+  };
   layers: Partial<Record<CutoverLayer, CutoverLayerDisposition>>;
-};
-
-export type CutoverConsumerScan = {
-  retiredName: string;
-  scannedRoots: readonly string[];
-  matches: readonly { root: string; path: string; line: number }[];
-  resolvedConsumers: readonly string[];
 };
 
 export type CutoverFinding = {
@@ -69,11 +70,13 @@ export type CutoverFinding = {
     | 'cutover-set-mismatch'
     | 'missing-cutover-layer'
     | 'consumer-root-coverage-mismatch'
+    | 'invalid-negative-reference-evidence'
     | 'stale-retired-reference'
     | 'cross-family-cutover'
     | 'invalid-rollback-revision'
     | 'dual-surface-exposure'
-    | 'profile-expectation-mismatch';
+    | 'profile-expectation-mismatch'
+    | 'invalid-cutover-composition';
   manifestIndex?: number;
   name?: string;
   message: string;
@@ -84,6 +87,7 @@ type ValidationInput = {
   after: readonly CutoverSurfaceEntry[];
   manifests: readonly AtomicCutoverManifest[];
   scans: readonly CutoverConsumerScan[];
+  protectedTargetSha?: string;
 };
 
 function sorted(values: Iterable<string>): string[] {
@@ -114,6 +118,7 @@ function manifestSetFindings(
   index: number,
   beforeByName: ReadonlyMap<string, CutoverSurfaceEntry>,
   afterByName: ReadonlyMap<string, CutoverSurfaceEntry>,
+  historicalCompositionMember = false,
 ): CutoverFinding[] {
   const findings: CutoverFinding[] = [];
   const families = familiesForManifest(manifest);
@@ -139,6 +144,7 @@ function manifestSetFindings(
   const hasCurrentDelta = expectedRetired.length > 0 || expectedCanonical.length > 0 || expectedProfileNames.length > 0;
   if (
     hasCurrentDelta &&
+    !historicalCompositionMember &&
     (!equalSet(manifest.retiredNames, expectedRetired) ||
       !equalSet(manifest.canonicalNames, expectedCanonical) ||
       !equalSet(Object.keys(manifest.expectedProfiles), expectedProfileNames))
@@ -190,44 +196,65 @@ function manifestIntegrityFindings(manifest: AtomicCutoverManifest, index: numbe
   return findings;
 }
 
+function retiredNameScanFindings(
+  manifest: AtomicCutoverManifest,
+  index: number,
+  retiredName: string,
+  scan: CutoverConsumerScan | undefined,
+): CutoverFinding[] {
+  const findings: CutoverFinding[] = [];
+  if (!scan || !equalSet(scan.scannedRoots, FIXED_CUTOVER_CONSUMER_ROOTS)) {
+    findings.push({
+      code: 'consumer-root-coverage-mismatch',
+      manifestIndex: index,
+      name: retiredName,
+      message: `${retiredName} was not scanned across the fixed consumer-root set`,
+    });
+    return findings;
+  }
+  const fixtureTest = manifest.layers['fixture-test'];
+  const classified = classifyCutoverReferences(
+    scan,
+    fixtureTest?.status === 'covered' ? fixtureTest.consumers : undefined,
+  );
+  if (classified.invalidEvidence.length > 0) {
+    findings.push({
+      code: 'invalid-negative-reference-evidence',
+      manifestIndex: index,
+      name: retiredName,
+      message: `${retiredName} has invalid negative-test evidence: ${classified.invalidEvidence.join('; ')}`,
+    });
+  }
+  if (classified.activeMatches.length > 0 || scan.resolvedConsumers.length > 0) {
+    findings.push({
+      code: 'stale-retired-reference',
+      manifestIndex: index,
+      name: retiredName,
+      message: `${retiredName} still has production or resolved consumers`,
+    });
+  }
+  for (const layer of REQUIRED_CUTOVER_LAYERS) {
+    const disposition = manifest.layers[layer];
+    if (disposition?.status === 'not-applicable' && !disposition.absenceEvidence.includes(retiredName)) {
+      findings.push({
+        code: 'stale-retired-reference',
+        manifestIndex: index,
+        name: retiredName,
+        message: `${layer} not-applicable lacks absence evidence for ${retiredName}`,
+      });
+    }
+  }
+  return findings;
+}
+
 function scanFindings(
   manifest: AtomicCutoverManifest,
   index: number,
   scansByName: ReadonlyMap<string, CutoverConsumerScan>,
 ): CutoverFinding[] {
-  const findings: CutoverFinding[] = [];
-  for (const retiredName of manifest.retiredNames) {
-    const scan = scansByName.get(retiredName);
-    if (!scan || !equalSet(scan.scannedRoots, FIXED_CUTOVER_CONSUMER_ROOTS)) {
-      findings.push({
-        code: 'consumer-root-coverage-mismatch',
-        manifestIndex: index,
-        name: retiredName,
-        message: `${retiredName} was not scanned across the fixed consumer-root set`,
-      });
-      continue;
-    }
-    if (scan.matches.length > 0 || scan.resolvedConsumers.length > 0) {
-      findings.push({
-        code: 'stale-retired-reference',
-        manifestIndex: index,
-        name: retiredName,
-        message: `${retiredName} still has production or resolved consumers`,
-      });
-    }
-    for (const layer of REQUIRED_CUTOVER_LAYERS) {
-      const disposition = manifest.layers[layer];
-      if (disposition?.status === 'not-applicable' && !disposition.absenceEvidence.includes(retiredName)) {
-        findings.push({
-          code: 'stale-retired-reference',
-          manifestIndex: index,
-          name: retiredName,
-          message: `${layer} not-applicable lacks absence evidence for ${retiredName}`,
-        });
-      }
-    }
-  }
-  return findings;
+  return manifest.retiredNames.flatMap((retiredName) =>
+    retiredNameScanFindings(manifest, index, retiredName, scansByName.get(retiredName)),
+  );
 }
 
 function profileExpectationFindings(
@@ -292,6 +319,8 @@ export function validateAtomicCutovers(input: ValidationInput): { ok: boolean; f
   const afterByName = new Map(input.after.map((entry) => [entry.name, entry]));
   const scansByName = new Map(input.scans.map((scan) => [scan.retiredName, scan]));
   const findings: CutoverFinding[] = [];
+  const composition = resolveCutoverCompositions(input);
+  findings.push(...composition.findings);
   const manifestedRetirements = new Set(input.manifests.flatMap((manifest) => manifest.retiredNames));
   const manifestedProfileChanges = new Set(
     input.manifests.flatMap((manifest) => Object.keys(manifest.expectedProfiles)),
@@ -315,7 +344,15 @@ export function validateAtomicCutovers(input: ValidationInput): { ok: boolean; f
     }
   }
   input.manifests.forEach((manifest, index) => {
-    findings.push(...manifestSetFindings(manifest, index, beforeByName, afterByName));
+    findings.push(
+      ...manifestSetFindings(
+        manifest,
+        index,
+        beforeByName,
+        afterByName,
+        composition.historicalManifestIndexes.has(index),
+      ),
+    );
     findings.push(...manifestIntegrityFindings(manifest, index));
     findings.push(...scanFindings(manifest, index, scansByName));
     findings.push(...profileFindings(manifest, index, afterByName));

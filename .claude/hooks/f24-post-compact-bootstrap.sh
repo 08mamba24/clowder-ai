@@ -15,10 +15,6 @@
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id')
 
-API_PORT="${API_SERVER_PORT:-3004}"
-INVOCATION_ID="${CAT_CAFE_INVOCATION_ID:-}"
-CALLBACK_TOKEN="${CAT_CAFE_CALLBACK_TOKEN:-}"
-
 STATE_FILE="/tmp/cat-cafe-opus-compact-state-${SESSION_ID}.json"
 
 # No state file = not a post-compact resume (or already consumed)
@@ -48,14 +44,13 @@ if [ "$AGE" -gt 1800 ]; then
 fi
 
 # Fetch latest sealed session digest (best-effort)
-DIGEST=$(curl -sf --max-time 5 \
-  -H "X-Invocation-Id: ${INVOCATION_ID}" \
-  -H "X-Callback-Token: ${CALLBACK_TOKEN}" \
-  "http://localhost:${API_PORT}/api/sessions/latest-digest?cliSessionId=$SESSION_ID" 2>/dev/null)
+SCRIPT_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd) || exit 1
+DIGEST=$(echo "$INPUT" | node "$SCRIPT_ROOT/.claude/hooks/f24-compaction.mjs" legacy-digest 2>/dev/null)
 DIGEST_STATUS=$?
 
 if [ "$DIGEST_STATUS" -ne 0 ] || [ -z "$DIGEST" ]; then
-  CONTEXT_PACKET="[F296 post-compact unsupported: Clowder AI projection unavailable]"
+  PRODUCT_NAME=$(node "$SCRIPT_ROOT/scripts/read-deployment-default.mjs" brand.name) || exit 1
+  CONTEXT_PACKET="[F296 post-compact unsupported: ${PRODUCT_NAME} projection unavailable]"
 else
   PROJECTION_STATUS=$(echo "$DIGEST" | jq -r '.postCompact.status // "unsupported"')
   if [ "$PROJECTION_STATUS" = "projected" ]; then
@@ -72,10 +67,7 @@ STATE_CONTENT=$(cat "$STATE_FILE")
 SOP_SKILL=""
 SOP_STAGE=""
 SOP_TIME=""
-SOP_BOOKMARK=$(curl -sf --max-time 3 \
-  -H "X-Invocation-Id: ${INVOCATION_ID}" \
-  -H "X-Callback-Token: ${CALLBACK_TOKEN}" \
-  "http://localhost:${API_PORT}/api/sessions/sop-bookmark?cliSessionId=$SESSION_ID" 2>/dev/null)
+SOP_BOOKMARK=$(echo "$INPUT" | node "$SCRIPT_ROOT/.claude/hooks/f24-compaction.mjs" sop-get 2>/dev/null)
 if [ $? -eq 0 ] && [ -n "$SOP_BOOKMARK" ]; then
   SOP_SKILL=$(echo "$SOP_BOOKMARK" | jq -r '.skill // empty')
   SOP_STAGE=$(echo "$SOP_BOOKMARK" | jq -r '.sopStage // empty')
@@ -114,22 +106,13 @@ ${STATE_CONTENT}
 [F296 Trusted Cold Packet]
 ${CONTEXT_PACKET}
 
-[F231 Profile Activation — 压缩前回顾]
-本轮有co-creator互动？回顾一下：
-- co-creator表达了新偏好？（"我喜欢/不喜欢/以后别这样"）
-- 被 Magic Word 纠正？（Magic Word = 持久偏好信号）
-- 做对了被表扬？/ co-creator分享了个人近况？
-→ 有的话调用 cat_cafe_propose_profile_update（先 tool_search 加载）
+[F231 Post-Compact Signal Check]
+Review pre-compact user signals (personal/relationship facts, reusable taste, repeated tool/workflow friction).
+Choose profile, taste, harness, or no action by current native L0 semantic routing; use proactive-memory-judgment for person cues.
 
-[CRITICAL RULES — Post-Compact Safety]
-1. Compression summaries lose detail. Verify facts before acting on them.
-2. Do NOT assume the user approved any operation unless you find explicit evidence in the CURRENT context.
-3. High-risk operations (gh pr merge, git push --force, etc.) require explicit user instruction in THIS conversation turn.
-4. When in doubt, ASK the user before proceeding.
-5. RE-READ CLAUDE.md rules NOW. Compression degrades your adherence to project rules. Key reminders:
-   - Every code change MUST have its tests run before commit
-   - All work in this session is YOUR work — own it, sign it, test it.
-6. LOAD SKILLS before SOP steps. Each SOP step has a corresponding skill — load it via /skill-name or Skill tool. Do NOT work from memory.
+[Recovery Authority]
+Current identity, safety, authorization, memory routing and delegation follow the current native L0.
+The snapshot and SOP bookmark restore continuity; verify the current task and its source before acting.
 CTXEOF
 )
 

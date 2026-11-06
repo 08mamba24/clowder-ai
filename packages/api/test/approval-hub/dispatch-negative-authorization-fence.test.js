@@ -7,7 +7,7 @@ import '../helpers/setup-cat-registry.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import Fastify from 'fastify';
-import { proposedReviewAction } from './helpers.js';
+import { proposedTaskAction } from './helpers.js';
 
 function implementAction(overrides = {}) {
   return {
@@ -52,12 +52,14 @@ function createMockRouter() {
 async function createFixture(t, options = {}) {
   const [
     { InvocationRegistry },
+    { InvocationQueue },
     { MessageStore },
     { ThreadStore },
     { InMemoryDispatchProposalStore },
     { callbacksRoutes },
   ] = await Promise.all([
     import('../../dist/domains/cats/services/agents/invocation/InvocationRegistry.js'),
+    import('../../dist/domains/cats/services/agents/invocation/InvocationQueue.js'),
     import('../../dist/domains/cats/services/stores/ports/MessageStore.js'),
     import('../../dist/domains/cats/services/stores/ports/ThreadStore.js'),
     import('../../dist/domains/approval-hub/stores/ports/IDispatchProposalStore.js'),
@@ -65,6 +67,7 @@ async function createFixture(t, options = {}) {
   ]);
 
   const registry = new InvocationRegistry();
+  const invocationQueue = new InvocationQueue();
   const messageStore = new MessageStore();
   const threadStore = new ThreadStore();
   const dispatchProposalStore = new InMemoryDispatchProposalStore();
@@ -78,11 +81,14 @@ async function createFixture(t, options = {}) {
 
   const app = Fastify();
   await app.register(callbacksRoutes, {
+    actionSuccessorAdmissionService: { async preflightStructuredTransferStanding() {} },
     registry,
     messageStore,
     threadStore,
     dispatchProposalStore,
     invocationRecordStore,
+    invocationQueue,
+    queueProcessor: { async requestDrain() {} },
     router: createMockRouter(),
     socketManager: { broadcastAgentMessage() {}, broadcastToRoom() {}, emitToUser() {} },
     approvalIngress: { async publish() {} },
@@ -111,8 +117,6 @@ async function createFixture(t, options = {}) {
               };
             },
           },
-          invocationQueue: {},
-          queueProcessor: {},
         }
       : {}),
   });
@@ -161,7 +165,7 @@ async function post(fixture, auth, payload) {
   });
 }
 
-async function createAssignWorkProposal(fixture, proposedAction = proposedReviewAction()) {
+async function createAssignWorkProposal(fixture, proposedAction = proposedTaskAction()) {
   const response = await post(fixture, fixture.auth, {
     effectClass: 'assign_work',
     proposedAction,

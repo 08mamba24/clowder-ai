@@ -205,12 +205,12 @@ async function runCheckOnReceiptTree(
 
 async function executeMainHealth(
   input: MainHealthSignal,
+  instanceId: string,
   subjectKey: string,
   ctx: ExecuteContext,
   deps: MainHealthExecutionDeps,
 ): Promise<void> {
   if (!ctx.deliver) throw new Error('deliver not available');
-  if (!ctx.invokeTrigger) throw new Error('invokeTrigger not available');
   const observed = await readReceipt(input, deps.inspectReceipt, ctx.signal);
   const verified = await runCheckOnReceiptTree(input, observed.receipt, deps, ctx.signal);
   const project = await readProjectQuarantine(input, deps.readQuarantine, deps.now);
@@ -231,11 +231,16 @@ async function executeMainHealth(
     quarantine: project.quarantine,
   });
   const threadId = subjectKey.slice('thread-'.length);
-  const messageId = await ctx.deliver({ threadId, content, userId: 'scheduler' });
-  await ctx.invokeTrigger.trigger(threadId, input.guardianCatId, deps.triggerUserId, content, messageId, undefined, {
-    reason: 'scheduled_main_health_triage',
-    sourceCategory: 'scheduled',
+  // The stored owner and the Queue owner are the same tenant by construction now: one admission
+  // cannot disagree with itself, where the old two-step could persist under a different userId.
+  await ctx.deliver({
+    threadId,
+    content,
+    userId: deps.triggerUserId,
+    targetCatId: input.guardianCatId,
+    idempotencyKey: `main-health:${instanceId}:${ctx.occurrenceId}:${threadId}`,
     priority: status === 'red' ? 'urgent' : 'normal',
+    sourceCategory: 'scheduled',
   });
 }
 
@@ -273,6 +278,7 @@ export function createMainHealthTemplate(options: MainHealthTemplateOptions = {}
         trigger: p.trigger,
         actor: { role: 'health-monitor', costTier: 'cheap' },
         admission: {
+          dependsOnThreadActivity: false,
           async gate() {
             if (!repo || !branch || !healthCommand || !guardianCatId) {
               return { run: false, reason: 'repo, branch, healthCommand, and guardianCatId are required' };
@@ -298,7 +304,7 @@ export function createMainHealthTemplate(options: MainHealthTemplateOptions = {}
           overlap: 'skip',
           timeoutMs: 10 * 60_000,
           async execute(signal, subjectKey, ctx) {
-            await executeMainHealth(signal as MainHealthSignal, subjectKey, ctx, {
+            await executeMainHealth(signal as MainHealthSignal, instanceId, subjectKey, ctx, {
               inspectReceipt,
               inspectLocalTree,
               runHealthCheck,

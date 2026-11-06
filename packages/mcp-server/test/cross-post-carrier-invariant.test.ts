@@ -2,7 +2,7 @@
  * Cross-post carrier invariant — upstream #577/#1397 mitigation pin.
  *
  * The sender-side rule lives in tool descriptions (prompt layer can be
- * re-budgeted; these schema surfaces must keep the rule):
+ * re-budgeted; these exposed MCP tool surfaces must keep the rule):
  *   - carrier is decided by subject ownership, not recipient name/activity;
  *   - stay in-thread only when the current thread owns the subject;
  *   - feature-id lookup to locate an owner thread stays legal.
@@ -10,7 +10,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { crossPostMessageInputSchema, listThreadsInputSchema } from '../src/tools/callback-tools.js';
+import { digestMcpInputSchema } from '../src/tool-governance-snapshot.js';
+import { callbackTools, crossPostMessageInputSchema, listThreadsInputSchema } from '../src/tools/callback-tools.js';
 
 describe('cross-post carrier invariant (F193 round-2, upstream #577/#1397)', () => {
   test('cross_post_message threadId description states the subject-ownership carrier rule', () => {
@@ -26,8 +27,10 @@ describe('cross-post carrier invariant (F193 round-2, upstream #577/#1397)', () 
     );
   });
 
-  test('list_threads keyword description marks the lookup-aid boundary', () => {
-    const desc = listThreadsInputSchema.keyword.description ?? '';
+  test('list_threads preserves its protected input schema and exposes the lookup-aid boundary', () => {
+    const tool = callbackTools.find((entry) => entry.name === 'cat_cafe_list_threads');
+    assert.ok(tool);
+    const desc = tool.description;
     assert.ok(/Lookup aid only/.test(desc), 'must be marked as a lookup aid');
     assert.ok(
       /locating a subject-owner thread by feature id is fine/.test(desc),
@@ -36,6 +39,11 @@ describe('cross-post carrier invariant (F193 round-2, upstream #577/#1397)', () 
     assert.ok(
       /cat-name\/activity matches as the delivery destination .* is not/.test(desc),
       'must forbid cat-name/activity matches as delivery destination',
+    );
+    assert.equal(
+      digestMcpInputSchema(listThreadsInputSchema),
+      'sha256:fd14f43788f885039c589ece4b0984be22135f0383a917b2f6c3dcee2e936813',
+      'lookup guidance must not drift the protected migration-candidate input schema',
     );
   });
 });

@@ -1,218 +1,83 @@
 'use client';
 
-import { type ConnectorIconSpec, getConnectorDefinition } from '@cat-cafe/shared';
-import { useCallback, useEffect, useState } from 'react';
-import { tintedLight } from '@/lib/color-utils';
-import { connectorThemeToken } from '@/lib/connector-theme-token';
-import { useActiveExecutionStore } from '@/stores/activeExecutionStore';
-import type { ChatMessage as ChatMessageType, MessageContent } from '@/stores/chatStore';
-import { API_URL, apiFetch } from '@/utils/api-client';
-import { ExecutionCancelButton } from './ExecutionCancelButton';
 import {
-  AuthKeyIcon,
-  ConnectorImage,
-  GitHubIcon,
-  HoldBallIcon,
-  RobotIcon,
-  SchedulerIcon,
-  SearchIcon,
-  SettingsIcon,
-  UsersIcon,
-} from './icons/ConnectorIcons';
-import { BallotIcon } from './icons/VoteIcons';
+  type ConnectorSource,
+  decideHoldCancelEntry,
+  isStaticConnectorId,
+  readHoldCardCancelability,
+  readWorktreeNotice,
+} from '@cat-cafe/shared';
+import type { ReactNode } from 'react';
+import type { CatData } from '@/hooks/useCatData';
+import { useCoCreatorConfig } from '@/hooks/useCoCreatorConfig';
+import { connectorThemeToken } from '@/lib/connector-theme-token';
+import { resolveMessageSender } from '@/lib/resolve-sender';
+import type { ChatMessage as ChatMessageType } from '@/stores/chatStore';
+import { compareMessageTimelineCursor, compareMessageTimelineOrder } from '@/stores/message-timeline';
+import { ContentBlocks } from './ContentBlocks';
+import { isAbsorbedManagedJobMessage, isHiddenChatRow } from './chat-row-surface';
+import { HOST_CONTENT_REVIEW_CONNECTOR, hostReturnHeadline } from './content-review/host-return-headline';
+import { DevelopmentReturnBody } from './development-return/DevelopmentReturnBody';
+import { HoldBallCancelButton } from './HoldBallCancelButton';
 import { MarkdownContent } from './MarkdownContent';
+import { MessageActionSlot } from './MessageActionSlot';
 import { MessageBubble } from './MessageBubble';
+import { MessageNameplate } from './MessageNameplate';
+import { ManagedJobCard } from './managed-job/ManagedJobCard';
+import { ReplyPill } from './ReplyPill';
+import { frustrationHistoryCopy } from './rich/frustration-history.shell-copy';
+import { trustedFrustrationMeta, useFrustrationVisibility } from './rich/frustration-visibility';
 import { RichBlocks } from './rich/RichBlocks';
-
-/** SVG icon component lookup — maps definition `iconId` to React component.
- *  Single source of truth: add new SVG icons here + in ConnectorIcons.tsx. */
-const SVG_ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
-  github: GitHubIcon,
-  ballot: BallotIcon,
-  users: UsersIcon,
-  scheduler: SchedulerIcon,
-  settings: SettingsIcon,
-  'hold-ball': HoldBallIcon,
-  'auth-key': AuthKeyIcon,
-  search: SearchIcon,
-  robot: RobotIcon,
-};
+import { SenderAvatar } from './SenderAvatar';
+import { useShellCopy } from './shell/shell-copy';
+import { useShellPresentation } from './shell/shell-presentation';
+import { WorktreeNoticeBody } from './worktrees/WorktreeNoticeBody';
 
 function formatTime(ts: number): string {
   const d = new Date(ts);
   return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
-function renderContentBlocks(blocks: MessageContent[]) {
-  return blocks.map((block, i) => {
-    if (block.type === 'text') {
-      return <MarkdownContent key={i} content={block.text} />;
-    }
-    if (block.type === 'image') {
-      const src = block.url.startsWith('/uploads/') ? `${API_URL}${block.url}` : block.url;
-      const isSafeUrl = src.startsWith('/') || src.startsWith('http://') || src.startsWith('https://');
-      return (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          key={i}
-          src={src}
-          alt="attachment"
-          className="max-w-full sm:max-w-sm rounded-lg mt-2 border border-cafe cursor-pointer hover:opacity-90 transition-opacity"
-          onClick={() => isSafeUrl && window.open(src, '_blank', 'noopener')}
-        />
-      );
-    }
-    return null;
-  });
-}
-
-/** Data-driven icon rendering from ConnectorDefinition.icon spec.
- *  Registered connectors always use the registry icon (SVG or PNG).
- *  Falls back to source.icon (emoji/URL) only for unregistered connectors. */
-function ConnectorIcon({ iconSpec, fallbackIcon }: { iconSpec?: ConnectorIconSpec; fallbackIcon: string }) {
-  // Registered connector → always use registry icon
-  if (iconSpec) {
-    if ('src' in iconSpec && iconSpec.src) {
-      return <ConnectorImage src={iconSpec.src} alt="connector" className="w-5 h-5" />;
-    }
-    if (iconSpec.type === 'svg') {
-      const SvgComponent = SVG_ICON_MAP[iconSpec.iconId];
-      if (SvgComponent) return <SvgComponent className="w-4 h-4" />;
-    }
-  }
-
-  // Fallback for unregistered connectors
-  if (fallbackIcon.startsWith('/') || fallbackIcon.startsWith('http')) {
-    return <ConnectorImage src={fallbackIcon} alt="connector" className="w-5 h-5" />;
-  }
-  return <span>{fallbackIcon}</span>;
-}
-
-type HoldTerminalStatus = 'retired_by_event' | 'fired' | 'escalated' | 'ended' | null;
-
-function projectHoldTerminalStatus(body: { status?: unknown; cancelable?: unknown } | null): HoldTerminalStatus {
-  if (body?.cancelable !== false) return null;
-  if (body.status === 'retired_by_event') return 'retired_by_event';
-  if (body.status === 'fired') return 'fired';
-  if (body.status === 'escalated') return 'escalated';
-  return 'ended';
-}
-
-function HoldBallCancelButton({ taskId, threadId, catId }: { taskId: string; threadId?: string; catId?: string }) {
-  const [state, setState] = useState<'idle' | 'loading' | 'done'>('idle');
-  const [terminalStatus, setTerminalStatus] = useState<HoldTerminalStatus>(null);
-  const managedExecution = useActiveExecutionStore((store) => store.executionsByKey[`managed_command:${taskId}`]);
-
-  useEffect(() => {
-    if (managedExecution) return;
-    let cancelled = false;
-    void apiFetch(`/api/callbacks/hold-ball/${encodeURIComponent(taskId)}/status`)
-      .then(async (res) => {
-        if (cancelled) return;
-        if (res.status === 404) {
-          setTerminalStatus('ended');
-          return;
-        }
-        if (!res.ok) return;
-        const body = (await res.json().catch(() => null)) as { status?: unknown; cancelable?: unknown } | null;
-        setTerminalStatus(projectHoldTerminalStatus(body));
-      })
-      .catch(() => {
-        // Status is a read-side affordance. Keep the existing cancel controls if it fails.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [managedExecution, taskId]);
-
-  const handleCancel = useCallback(
-    async (withFeedback = false) => {
-      setState('loading');
-      try {
-        const feedbackQuery = withFeedback ? '?withFeedback=1' : '';
-        const res = await apiFetch(`/api/callbacks/hold-ball/${encodeURIComponent(taskId)}${feedbackQuery}`, {
-          method: 'DELETE',
-        });
-        if (res.ok || (res.status === 404 && !withFeedback)) {
-          setState('done');
-          return;
-        }
-        if (res.status === 404 && withFeedback && threadId) {
-          const fallbackRes = await apiFetch('/api/callbacks/hold-ball/feedback', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              threadId,
-              taskId,
-              ...(catId ? { catId } : {}),
-            }),
-          });
-          setState(fallbackRes.ok ? 'done' : 'idle');
-          return;
-        }
-        setState('idle');
-      } catch {
-        setState('idle');
-      }
-    },
-    [catId, taskId, threadId],
-  );
-
-  if (terminalStatus === 'retired_by_event') {
-    return <span className="text-xs text-cafe-muted">已被事件唤醒</span>;
-  }
-  if (terminalStatus === 'fired') return <span className="text-xs text-cafe-muted">已完成</span>;
-  if (terminalStatus === 'escalated') return <span className="text-xs text-cafe-muted">已升级处理</span>;
-  if (terminalStatus === 'ended') return <span className="text-xs text-cafe-muted">已结束</span>;
-  if (state === 'done') return <span className="text-xs text-cafe-muted">已取消</span>;
-  if (managedExecution) {
-    return (
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-cafe-secondary">托管命令运行中</span>
-        <ExecutionCancelButton execution={managedExecution} label="取消命令" />
-      </div>
-    );
-  }
+/** Host returns keep the machine instructions available behind the human headline. */
+function HostReturnBody({ content }: { content: string }) {
   return (
-    <div className="flex items-center gap-2">
-      <button
-        type="button"
-        onClick={() => void handleCancel(false)}
-        disabled={state === 'loading'}
-        className="text-xs px-2 py-0.5 rounded bg-cafe-surface hover:bg-cafe-hover border border-cafe-border disabled:opacity-50 transition-colors"
-      >
-        {state === 'loading' ? '取消中…' : '取消持球'}
-      </button>
-      <button
-        type="button"
-        onClick={() => void handleCancel(true)}
-        disabled={state === 'loading'}
-        className="text-xs px-2 py-0.5 rounded bg-cafe-surface text-cafe-accent hover:bg-cafe-accent/10 border border-cafe-accent/40 disabled:opacity-50 transition-colors"
-        title="取消持球并提交问题反馈"
-      >
-        取消并反馈
-      </button>
-    </div>
+    <details className="text-sm">
+      <summary className="cursor-pointer select-none">{hostReturnHeadline(content)} · 已交给猫继续处理</summary>
+      <div className="mt-2 text-xs text-cafe-secondary">
+        <MarkdownContent content={content} />
+      </div>
+    </details>
   );
 }
 
-function getHoldStatusRefreshKey(
+/**
+ * Every card of one hold carries the same `taskId`. Collected once so the
+ * refresh key and the cancel-entry owner read the same set instead of each
+ * re-deriving it and drifting apart.
+ */
+function collectHoldCards(
   message: ChatMessageType,
   timelineMessages: readonly ChatMessageType[] | undefined,
-): string {
+): ChatMessageType[] {
   const source = message.source;
-  if (source?.connector !== 'hold-ball') return '';
-  const taskId = source.meta?.taskId;
-  const related =
-    typeof taskId === 'string'
-      ? (timelineMessages ?? []).filter(
-          (candidate) => candidate.source?.connector === 'hold-ball' && candidate.source.meta?.taskId === taskId,
-        )
-      : [];
-  const latest =
-    [...related, message]
-      .sort((left, right) => left.timestamp - right.timestamp || left.id.localeCompare(right.id))
-      .at(-1) ?? message;
+  const taskId = source?.meta?.taskId;
+  if (source?.connector !== 'hold-ball' || typeof taskId !== 'string') return [];
+  const byId = new Map<string, ChatMessageType>(
+    (timelineMessages ?? [])
+      .filter((candidate) => candidate.source?.connector === 'hold-ball' && candidate.source.meta?.taskId === taskId)
+      .map((card) => [card.id, card]),
+  );
+  byId.set(message.id, message);
+  return [...byId.values()].sort(compareMessageTimelineOrder);
+}
+
+function getHoldStatusRefreshKey(cards: readonly ChatMessageType[], message: ChatMessageType): string {
+  // Arrival updates status even when the stable presentation clock places the
+  // source earlier in history. Card ordering is not a freshness watermark.
+  const latest = cards.reduce(
+    (current, candidate) => (compareMessageTimelineCursor(current, candidate) < 0 ? candidate : current),
+    message,
+  );
   return `${latest.id}:${latest.timestamp}:${latest.content}:${JSON.stringify(latest.source?.meta ?? {})}`;
 }
 
@@ -220,88 +85,195 @@ interface ConnectorBubbleProps {
   message: ChatMessageType;
   threadId?: string;
   timelineMessages?: readonly ChatMessageType[];
+  footer?: ReactNode;
+  getCatById?: (id: string) => CatData | undefined;
+  replyPreview?: NonNullable<ChatMessageType['replyPreview']> & { expandedContent?: string };
 }
 
 /**
- * F97: Connector message bubble for external information sources (GitHub Review, etc.)
- * Uses MessageBubble for shared layout; adds connector-specific avatar, header, and actions.
+ * Renders connector-owned content inside the same message shell used by members.
+ * Specialized hold/job/card bodies stay content-level concerns rather than defining
+ * a separate visual identity or navigation surface for the whole message.
  */
-export function ConnectorBubble({ message, threadId, timelineMessages }: ConnectorBubbleProps) {
-  const source = message.source;
-  if (!source) return null;
-  if (message.extra?.scheduler?.hiddenTrigger) return null;
+export function ConnectorBubble({
+  message,
+  threadId,
+  timelineMessages,
+  footer,
+  getCatById = () => undefined,
+  replyPreview,
+}: ConnectorBubbleProps) {
+  const coCreator = useCoCreatorConfig();
+  const shellPresentation = useShellPresentation();
+  const source: ConnectorSource = message.source ?? { connector: '', label: '', icon: '' };
+  const t = useShellCopy(frustrationHistoryCopy);
+  const visibility = useFrustrationVisibility(message.extra?.rich?.blocks ?? [], source?.connector);
+  const feedbackOnly =
+    visibility.length > 0 && visibility.every(({ block }) => trustedFrustrationMeta(block, source?.connector));
+  const retiredOnly = feedbackOnly && visibility.every((entry) => entry.visibility === 'retired');
+  const unknownFeedback = visibility.some((entry) => entry.visibility === 'unknown');
+  const withdrawnFeedback = visibility.some((entry) => entry.visibility !== 'allowed');
+  if (isHiddenChatRow(message)) return null;
+  const jobId = source.connector === 'hold-ball' && typeof source.meta?.jobId === 'string' ? source.meta.jobId : null;
+  const taskId = typeof source.meta?.taskId === 'string' ? source.meta.taskId : null;
+  if (isAbsorbedManagedJobMessage(message, timelineMessages ?? [])) {
+    return <div data-message-id={message.id} aria-hidden="true" className="h-0" />;
+  }
+  if (retiredOnly && !message.contentBlocks?.length) {
+    // Retirement withdraws the detection body, not its still-valid input receipt.
+    return footer ? (
+      <div data-message-id={message.id}>{footer}</div>
+    ) : (
+      <div data-message-id={message.id} aria-hidden="true" className="h-0" />
+    );
+  }
 
   const connId = source.connector;
+  const worktreeNotice =
+    message.from?.kind === 'system' && message.from.service === 'worktree-lifecycle' && connId === 'worktree-lifecycle'
+      ? readWorktreeNotice(source.meta?.worktreeNotice, message.content)
+      : null;
   const themeToken = connectorThemeToken(connId);
-  const connDef = getConnectorDefinition(connId);
-  const themeHex = connDef?.themeColor;
+  const sender = resolveMessageSender({ from: message.from, source }, () => undefined, coCreator);
+  const externalPerson =
+    message.from?.kind === 'external' &&
+    Boolean(message.from.sender?.id) &&
+    !isStaticConnectorId(message.from.connectorId);
+  const platform = source.label || (message.from?.kind === 'external' ? message.from.connectorId : source.connector);
+  const senderRole = message.from?.kind === 'plugin' ? 'Plugin' : externalPerson ? `External · ${platform}` : 'Host';
+  const avatarShape = externalPerson ? 'round' : 'rounded-square';
+  const nameplateSender = externalPerson
+    ? { ...sender, color: 'var(--shell-body)', textColor: 'var(--shell-body)' }
+    : sender;
+  const pluginColor = message.from?.kind === 'plugin' ? source.themeColor : undefined;
+  const nameColor = pluginColor ?? `var(--color-${themeToken}-bubble, var(--cafe-text))`;
+  const surfaceColor = pluginColor
+    ? `color-mix(in srgb, ${pluginColor} 10%, var(--cafe-surface))`
+    : `var(--color-${themeToken}-surface, var(--cafe-surface))`;
   const hasBlocks = message.contentBlocks && message.contentBlocks.length > 0;
-  const richBlocks = message.extra?.rich?.blocks;
-  const rawUrl = source.url;
-  const srcUrl = rawUrl && /^https?:\/\//.test(rawUrl) ? rawUrl : undefined;
+  const richBlocks = visibility
+    .filter((entry) => entry.visibility === 'allowed')
+    .map(({ block, signal }) =>
+      signal && block.kind === 'card' ? { ...block, meta: { ...block.meta, signalType: signal } } : block,
+    );
   const sourceCatId = typeof source.meta?.catId === 'string' ? source.meta.catId : undefined;
-  const holdStatusRefreshKey = getHoldStatusRefreshKey(message, timelineMessages);
-
-  const avatar = (
-    <div
-      className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-base"
-      style={{
-        backgroundColor: themeHex ? tintedLight(themeHex, 0.5) : 'var(--cafe-surface)',
-        boxShadow: themeHex ? `0 0 0 2px ${themeHex}` : '0 0 0 2px var(--cafe-border)',
-      }}
-    >
-      <ConnectorIcon iconSpec={connDef?.icon} fallbackIcon={source.icon} />
-    </div>
+  const holdCards = collectHoldCards(message, timelineMessages);
+  const holdStatusRefreshKey = getHoldStatusRefreshKey(holdCards, message);
+  const holdCancelEntry = decideHoldCancelEntry(
+    message.id,
+    holdCards.map((card) => ({
+      id: card.id,
+      timestamp: card.timestamp,
+      cancelability: readHoldCardCancelability(card.source?.meta),
+    })),
   );
+  const publication =
+    threadId && !message.isStreaming
+      ? { threadId, messageId: message.id, messageRevision: String(message.timestamp) }
+      : undefined;
 
-  const header = (
-    <div className="flex items-center gap-2 mb-1">
-      {srcUrl ? (
-        <a
-          href={srcUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-xs font-semibold hover:underline"
-          style={{ color: `var(--color-${themeToken}-bubble, var(--cafe-text))` }}
-        >
-          {source.label}
-        </a>
-      ) : (
-        <span
-          className="text-xs font-semibold"
-          style={{ color: `var(--color-${themeToken}-bubble, var(--cafe-text))` }}
-        >
-          {source.label}
+  const avatar = <SenderAvatar sender={sender} presentation="message" />;
+
+  const displayName = withdrawnFeedback ? t.title : sender.label;
+  const header =
+    shellPresentation === 'v2' ? (
+      <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-4 min-w-0" data-message-author-row="">
+        <MessageNameplate
+          id={`connector:${source.connector}`}
+          name={displayName}
+          sender={nameplateSender}
+          surface="var(--shell-selected)"
+          ink="var(--shell-body)"
+          avatarShape={avatarShape}
+        />
+        <span data-sender-role="" className="shrink-0 text-micro font-medium" style={{ color: 'var(--shell-muted)' }}>
+          {senderRole}
         </span>
-      )}
-      {source.sender && (
-        <span className="text-xs text-cafe-secondary">{source.sender.name || source.sender.id} 说</span>
-      )}
-      <span className="text-xs text-cafe-muted">{formatTime(message.timestamp)}</span>
-    </div>
-  );
+        <span className="text-xs shrink-0" style={{ color: 'var(--shell-muted)' }}>
+          {formatTime(message.timestamp)}
+        </span>
+        {message.replyTo && replyPreview && (
+          <ReplyPill
+            replyPreview={replyPreview}
+            expandedContent={replyPreview.expandedContent}
+            replyToId={message.replyTo}
+            getCatById={getCatById}
+          />
+        )}
+        <MessageActionSlot />
+      </div>
+    ) : (
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-xs font-semibold" style={{ color: nameColor }}>
+          {displayName}
+        </span>
+        <span className="text-xs text-cafe-muted">{formatTime(message.timestamp)}</span>
+        {message.replyTo && replyPreview && (
+          <ReplyPill
+            replyPreview={replyPreview}
+            expandedContent={replyPreview.expandedContent}
+            replyToId={message.replyTo}
+            getCatById={getCatById}
+          />
+        )}
+        <MessageActionSlot />
+      </div>
+    );
 
   return (
     <MessageBubble
       messageId={message.id}
       avatar={avatar}
       header={header}
-      bubbleStyle={{
-        backgroundColor: `var(--color-${themeToken}-surface, var(--cafe-surface))`,
-        color: 'var(--cat-msg-text, var(--cafe-text))',
-      }}
+      footer={footer}
+      presentation={shellPresentation === 'v2' ? 'nameplate' : 'bubble'}
+      railColor={shellPresentation === 'v2' ? 'var(--shell-hairline)' : undefined}
+      bubbleStyle={
+        shellPresentation === 'v2'
+          ? undefined
+          : { backgroundColor: surfaceColor, color: 'var(--cat-msg-text, var(--cafe-text))' }
+      }
     >
-      {hasBlocks ? renderContentBlocks(message.contentBlocks!) : <MarkdownContent content={message.content} />}
-      {richBlocks && richBlocks.length > 0 && <RichBlocks blocks={richBlocks} messageSource={message.source} />}
-      {source.connector === 'hold-ball' && typeof source.meta?.taskId === 'string' && (
-        <div className="mt-2 pt-2 border-t border-cafe-border">
-          <HoldBallCancelButton
-            key={holdStatusRefreshKey}
-            taskId={source.meta.taskId}
-            threadId={threadId}
-            catId={sourceCatId}
-          />
-        </div>
+      {jobId && taskId ? (
+        <ManagedJobCard
+          taskId={taskId}
+          jobId={jobId}
+          threadId={threadId}
+          catId={sourceCatId}
+          title={typeof source.meta?.reason === 'string' ? source.meta.reason : undefined}
+          refreshKey={holdStatusRefreshKey}
+        />
+      ) : hasBlocks ? (
+        <ContentBlocks
+          blocks={message.contentBlocks!}
+          publication={publication}
+          messageSource={threadId ? { threadId, messageId: message.id } : undefined}
+        />
+      ) : unknownFeedback ? (
+        <p className="text-xs text-cafe-muted">{t.unknown}</p>
+      ) : withdrawnFeedback ? null : source.connector === HOST_CONTENT_REVIEW_CONNECTOR ? (
+        <HostReturnBody content={message.content} />
+      ) : source.connector === 'development-return' ? (
+        <DevelopmentReturnBody
+          content={message.content}
+          reason={typeof source.meta?.reason === 'string' ? source.meta.reason : undefined}
+        />
+      ) : worktreeNotice ? (
+        <WorktreeNoticeBody notice={worktreeNotice} getCatById={getCatById} />
+      ) : (
+        <MarkdownContent referenceThreadId={threadId} content={message.content} />
+      )}
+      {richBlocks && richBlocks.length > 0 && (
+        <RichBlocks blocks={richBlocks} messageSource={message.source} publication={publication} />
+      )}
+      {!jobId && source.connector === 'hold-ball' && typeof source.meta?.taskId === 'string' && (
+        <HoldBallCancelButton
+          key={holdStatusRefreshKey}
+          taskId={source.meta.taskId}
+          threadId={threadId}
+          catId={sourceCatId}
+          cancelEntry={holdCancelEntry}
+        />
       )}
     </MessageBubble>
   );

@@ -45,7 +45,6 @@ const mockStoreState = () => ({
     targetCats: [],
     catStatuses: {},
     catInvocations: {},
-    currentGame: null,
 
     unreadCount: 0,
     lastActivity: 0,
@@ -129,7 +128,7 @@ describe('SplitPaneView input routing (P1-1)', () => {
       (btn as HTMLElement).click();
     });
 
-    // SplitPaneView preserves the typed disposition after injecting the split-pane target thread.
+    // SplitPaneView injects the target thread without adding a client-side delivery policy.
     expect(mockOnSend).toHaveBeenCalledWith(
       'test message',
       undefined,

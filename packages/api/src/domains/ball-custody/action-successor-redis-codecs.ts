@@ -2,6 +2,19 @@ import type { ActionSubjectTerminalTruth } from './ActionSuccessorLeaseStore.js'
 import { createActionCompletionCandidateSnapshot } from './action-successor-completion-state-machine.js';
 import type { ActionSuccessorLease } from './action-successor-state-machine.js';
 
+function normalizeTransitionHistory(
+  lease: Pick<
+    ActionSuccessorLease,
+    'returnTransitions' | 'replacementTransitions' | 'orphanCarrierRecoveryTransitions'
+  >,
+): Pick<ActionSuccessorLease, 'returnTransitions' | 'replacementTransitions' | 'orphanCarrierRecoveryTransitions'> {
+  return {
+    returnTransitions: lease.returnTransitions ?? [],
+    replacementTransitions: lease.replacementTransitions ?? [],
+    orphanCarrierRecoveryTransitions: lease.orphanCarrierRecoveryTransitions ?? [],
+  };
+}
+
 export function parseActionSuccessorLease(raw: string | null): ActionSuccessorLease | null {
   if (!raw) return null;
   const persisted = JSON.parse(raw) as Omit<ActionSuccessorLease, 'completionCandidates' | 'terminalPredicateState'> & {
@@ -40,11 +53,12 @@ export function parseActionSuccessorLease(raw: string | null): ActionSuccessorLe
   );
   const base = {
     ...lease,
+
     claimOrigin: lease.claimOrigin ?? 'structured_transfer',
     holderThreadId: lease.holderThreadId ?? 'legacy:unknown',
     issuerStandingEvidenceRef: lease.issuerStandingEvidenceRef ?? lease.evidenceRefs[0] ?? 'legacy:unknown',
     completionCandidates,
-    returnTransitions: lease.returnTransitions ?? [],
+    ...normalizeTransitionHistory(lease),
   };
   const persistedPredicateKind = persistedPredicateState?.kind;
   if (

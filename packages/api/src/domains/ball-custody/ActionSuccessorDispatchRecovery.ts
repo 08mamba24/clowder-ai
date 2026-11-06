@@ -1,6 +1,7 @@
 import type { DispatchProposal } from '@cat-cafe/shared';
 import { createModuleLogger } from '../../infrastructure/logger.js';
 import { normalizeOwnerAuthProvenance, type OwnerAuthProvenance } from '../cats/services/owner-auth-provenance.js';
+import type { ITaskStore } from '../cats/services/stores/ports/TaskStore.js';
 import type { ActionFreshnessResolution, ActionSubjectTruthResolver } from './ActionSubjectTruthResolver.js';
 import {
   type ActionSuccessorFence,
@@ -9,6 +10,7 @@ import {
 } from './ActionSuccessorAdmissionService.js';
 import type { ActionSuccessorLeaseStore } from './ActionSuccessorLeaseStore.js';
 import type { ActionSuccessorDispatchFailureReason, ActionSuccessorLease } from './action-successor-state-machine.js';
+import { isRetiredTaskAction } from './retired-task-action.js';
 
 export type { ApprovedActionCarrierClassification } from './approved-action-carrier-classification.js';
 export { classifyApprovedActionCarrier } from './approved-action-carrier-classification.js';
@@ -33,6 +35,7 @@ export type ActionSuccessorDispatchDeliveryResult =
     };
 
 export interface ActionSuccessorDispatchRecoveryDeps {
+  readonly tasks?: Pick<ITaskStore, 'get'>;
   readonly leaseStore: Pick<
     ActionSuccessorLeaseStore,
     | 'listPendingDispatches'
@@ -95,6 +98,7 @@ function classifyApprovedDispatchProposal(
 }
 
 export class ActionSuccessorDispatchRecovery {
+  private inFlight: Promise<ActionSuccessorDispatchRecoveryStats> | undefined;
   private readonly now: () => number;
   private readonly scanLimit: number;
 
@@ -103,7 +107,16 @@ export class ActionSuccessorDispatchRecovery {
     this.scanLimit = deps.scanLimit ?? DEFAULT_SCAN_LIMIT;
   }
 
-  async runOnce(): Promise<ActionSuccessorDispatchRecoveryStats> {
+  runOnce(): Promise<ActionSuccessorDispatchRecoveryStats> {
+    if (this.inFlight) return this.inFlight;
+    const cycle = this.runCycle().finally(() => {
+      if (this.inFlight === cycle) this.inFlight = undefined;
+    });
+    this.inFlight = cycle;
+    return cycle;
+  }
+
+  private async runCycle(): Promise<ActionSuccessorDispatchRecoveryStats> {
     const leases = await this.deps.leaseStore.listPendingDispatches(this.scanLimit);
     let delivered = 0;
     let pending = 0;
@@ -118,6 +131,7 @@ export class ActionSuccessorDispatchRecovery {
   }
 
   async recover(candidate: ActionSuccessorLease): Promise<DispatchRecoveryResult> {
+    if (await isRetiredTaskAction(this.deps.tasks, candidate)) return { outcome: 'ignored' };
     if (candidate.dispatchDeliveryState === 'delivered' && candidate.dispatchDeliveredMessageId) {
       return { outcome: 'delivered', deliveredMessageId: candidate.dispatchDeliveredMessageId };
     }
@@ -125,6 +139,12 @@ export class ActionSuccessorDispatchRecovery {
     if (!predicate) return { outcome: 'pending' };
 
     const now = this.now();
+    return this.recoverAuthorized(candidate, now);
+  }
+
+  private async recoverAuthorized(candidate: ActionSuccessorLease, now: number): Promise<DispatchRecoveryResult> {
+    const predicate = candidate.terminalPredicate;
+    if (!predicate) return { outcome: 'pending' };
     if (candidate.dispatchDeliveryReservation) {
       return this.recoverReserved(candidate, now);
     }

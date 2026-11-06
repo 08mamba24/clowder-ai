@@ -1,24 +1,32 @@
 'use client';
 
+import type { LifecycleActiveRun, ResolvedMessageSelectionItem } from '@cat-cafe/shared';
 import { useEffect, useMemo, useState } from 'react';
 import { useCatData } from '@/hooks/useCatData';
 import { useChatHistory } from '@/hooks/useChatHistory';
 import { useThreadLiveness, useThreadMessages } from '@/hooks/useThreadScopedSelectors';
 import { computeCliDiagnosticsDedup } from '@/utils/cli-diagnostics-dedup';
 import { ChatMessage } from '../ChatMessage';
+import { projectMessagePartsForImage } from '../message-export-parts';
 import { loadExportThreadTitle, selectMessagesForExport } from '../message-export-selection';
-import { collectExactLiveInvocationIds } from '../queue-receipt-projection';
 
-export function ThreadChatExport({ threadId, messageIds }: { threadId: string; messageIds: string[] }) {
+export function ThreadChatExport({
+  threadId,
+  messageIds,
+  selectionItems,
+}: {
+  threadId: string;
+  messageIds: string[];
+  selectionItems?: readonly ResolvedMessageSelectionItem[];
+}) {
   const messages = useThreadMessages(threadId);
   const { isLoadingHistory } = useChatHistory(threadId);
-  const { activeInvocations, catInvocations } = useThreadLiveness(threadId);
+  const { catInvocations } = useThreadLiveness(threadId);
   const { getCatById, isLoading } = useCatData();
   const [threadTitle, setThreadTitle] = useState<string | null | undefined>(undefined);
-  const cliDedupMap = useMemo(() => computeCliDiagnosticsDedup(messages), [messages]);
-  const activeInvocationIds = useMemo(
-    () => collectExactLiveInvocationIds(activeInvocations, catInvocations),
-    [activeInvocations, catInvocations],
+  const lifecycleActiveRuns = useMemo<readonly LifecycleActiveRun[]>(
+    () => Object.values(catInvocations).flatMap((invocation) => (invocation.activeRun ? [invocation.activeRun] : [])),
+    [catInvocations],
   );
 
   useEffect(() => {
@@ -37,6 +45,8 @@ export function ThreadChatExport({ threadId, messageIds }: { threadId: string; m
   }, [threadId]);
 
   const selection = selectMessagesForExport(messages, messageIds);
+  // Dedup only what this export draws: a duplicate is hidden only under a head that is exported too.
+  const cliDedupMap = computeCliDiagnosticsDedup(selection.messages, messages);
   const ready = !isLoadingHistory && !isLoading && selection.ready && threadTitle !== undefined;
 
   return (
@@ -56,9 +66,10 @@ export function ThreadChatExport({ threadId, messageIds }: { threadId: string; m
           return (
             <ChatMessage
               key={message.id}
-              message={message}
+              message={selectionItems ? projectMessagePartsForImage(message, selectionItems) : message}
               threadId={threadId}
-              activeInvocationIds={activeInvocationIds}
+              timelineMessages={messages}
+              activeRuns={lifecycleActiveRuns}
               getCatById={getCatById}
               hideDiagnosticsPanel={dedupInfo?.hideDiagnosticsPanel}
               dedupCount={dedupInfo?.dedupCount}

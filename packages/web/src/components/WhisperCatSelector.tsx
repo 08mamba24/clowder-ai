@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ExpandableProse } from '@/components/content-overflow';
 import { type CatData, formatCatName } from '@/hooks/useCatData';
+import { resolveAvatarUrl } from '@/lib/avatar-url';
 import { catColorVar } from '@/lib/cat-slug';
 import { isRowPrimaryActionTarget } from '@/utils/row-primary-action';
 
@@ -29,7 +30,7 @@ export function WhisperCatSelector({ cats, selected, activeCatIds, onToggle }: W
   }, []);
 
   return (
-    <div className="absolute bottom-full left-4 mb-2 bg-cafe-surface rounded-xl shadow-lg border border-cafe overflow-hidden w-64 z-10 max-h-80 flex flex-col">
+    <div className="absolute bottom-full left-4 mb-2 bg-cafe-surface-canvas rounded-xl shadow-lg border border-cafe overflow-hidden w-64 z-10 max-h-80 flex flex-col">
       <div className="px-4 py-1.5 text-xs text-semantic-warning font-medium border-b border-cafe-subtle shrink-0">
         悄悄话目标 · 可多选
       </div>
@@ -132,7 +133,7 @@ function CatRow({
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={cat.avatar}
+          src={resolveAvatarUrl(cat.avatar)}
           alt={formatCatName(cat)}
           className="w-7 h-7 rounded-full shrink-0"
           onError={(e) => {

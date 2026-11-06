@@ -2,9 +2,11 @@ import { type DragEvent as ReactDragEvent, useCallback, useEffect, useMemo, useR
 import { type CatData, saveCatOrder } from '@/hooks/useCatData';
 import { sortCatsByOrder } from '@/lib/sort-cats-by-order';
 import { apiFetch } from '@/utils/api-client';
+import { MemberCodexAccount } from './codex-accounts/MemberCodexAccount';
 import type { ConfigData } from './config-viewer-types';
 import { DefaultCatSelector } from './DefaultCatSelector';
 import { HubCoCreatorOverviewCard, HubMemberOverviewCard, HubOverviewToolbar } from './HubMemberOverviewCard';
+import { useMemberAccounts } from './members/useMemberAccounts';
 import { BubbleToggle } from './settings/BubbleToggle';
 import { SettingsField, SettingsSection, SettingsStatusStrip } from './settings/primitives';
 
@@ -52,11 +54,13 @@ export function CatOverviewTab({
   onToggleAvailability?: (cat: CatData) => void;
   togglingCatId?: string | null;
 }) {
+  const accounts = useMemberAccounts();
   // F154 Phase B (AC-B2): Fetch and manage global default cat
   const [defaultCatId, setDefaultCatId] = useState<string | null>(null);
   const [defaultCatLoading, setDefaultCatLoading] = useState(false);
   const [defaultCatFetchError, setDefaultCatFetchError] = useState(false);
   const [defaultCatSaveError, setDefaultCatSaveError] = useState<string | null>(null);
+  const defaultCatFetchSequence = useRef(0);
 
   // F166: Local optimistic cat order; null = follow props. Re-sorted against incoming cats.
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
@@ -113,20 +117,34 @@ export function CatOverviewTab({
   );
 
   const fetchDefaultCat = useCallback(() => {
+    const sequence = ++defaultCatFetchSequence.current;
     setDefaultCatFetchError(false);
     apiFetch('/api/config/default-cat')
-      .then((r) => r.json())
-      .then((data: { catId: string }) => setDefaultCatId(data.catId))
-      .catch(() => setDefaultCatFetchError(true));
+      .then((r) => {
+        if (!r.ok) throw new Error('Default responder read failed');
+        return r.json();
+      })
+      .then((data: { catId: string }) => {
+        if (sequence === defaultCatFetchSequence.current) setDefaultCatId(data.catId);
+      })
+      .catch(() => {
+        if (sequence === defaultCatFetchSequence.current) setDefaultCatFetchError(true);
+      });
   }, []);
 
+  // The resolver can change after first registration; read it again without writing a new preference.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: registry changes affect the server's resolved default.
   useEffect(() => {
     fetchDefaultCat();
-  }, [fetchDefaultCat]);
+    return () => {
+      defaultCatFetchSequence.current += 1;
+    };
+  }, [fetchDefaultCat, cats]);
 
   const handleDefaultCatSelect = useCallback(
     async (catId: string) => {
       if (catId === defaultCatId) return;
+      defaultCatFetchSequence.current += 1;
       setDefaultCatLoading(true);
       setDefaultCatSaveError(null);
       try {
@@ -137,6 +155,9 @@ export function CatOverviewTab({
         });
         if (res.ok) {
           const data = (await res.json()) as { warning?: string };
+          // A read started during PUT must not overwrite its acknowledged choice.
+          defaultCatFetchSequence.current += 1;
+          setDefaultCatFetchError(false);
           setDefaultCatId(catId);
           if (data.warning) setDefaultCatSaveError(data.warning);
         } else {
@@ -171,6 +192,7 @@ export function CatOverviewTab({
           <HubMemberOverviewCard
             key={catData.id}
             cat={catData}
+            accountControl={<MemberCodexAccount cat={catData} accounts={accounts} />}
             configCat={config.cats[catData.id]}
             onEdit={onEditMember}
             onDelete={onDeleteMember}
@@ -195,6 +217,7 @@ export function CatOverviewTab({
             <HubMemberOverviewCard
               key={catData.id}
               cat={catData}
+              accountControl={<MemberCodexAccount cat={catData} accounts={accounts} />}
               configCat={config.cats[catData.id]}
               onEdit={onEditMember}
               onDelete={onDeleteMember}

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { routingCapacityFactsV1Schema } from './routing-capacity-facts.js';
 import {
   addRoutingDuplicateIssues,
   ROUTING_CONTEXT_VERSION,
@@ -43,7 +44,9 @@ const recoveredRoutingSignalV1Schema = z
     ...routingSignalBaseShape,
     eventType: z.literal('recovered'),
     state: z.literal('available'),
-    closesSignalIds: z.array(routingIdentifierSchema).min(1).max(64),
+    closesSignalIds: z.array(routingIdentifierSchema).max(64),
+    /** A successful exact-cat dispatch proves recovery of automatic facts observed before this attempt. */
+    probeStartedAt: routingEpochMsSchema.optional(),
   })
   .strict();
 
@@ -83,6 +86,25 @@ export const routingSignalEventV1Schema = z
       return;
     }
     addRoutingDuplicateIssues(event.closesSignalIds, ['closesSignalIds'], ctx);
+    if (event.eventType === 'recovered' && event.probeStartedAt !== undefined) {
+      if (
+        event.source !== 'dispatch_success' ||
+        event.subjectRef.type !== 'cat' ||
+        event.probeStartedAt > event.observedAt
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['probeStartedAt'],
+          message: 'a dispatch probe requires exact-cat success and a start no later than its terminal',
+        });
+      }
+    } else if (event.closesSignalIds.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['closesSignalIds'],
+        message: 'recovery without a dispatch probe must close an exact assertion',
+      });
+    }
   });
 
 const routingPreferenceBaseShape = {
@@ -202,6 +224,7 @@ export const routingCandidateBindingV1Schema = z
     catId: routingOwnerIdSchema,
     providerId: routingIdentifierSchema,
     provenQuotaPools: z.array(routingQuotaPoolBindingV1Schema).max(32),
+    capacityFacts: routingCapacityFactsV1Schema.optional(),
   })
   .strict()
   .superRefine((candidate, ctx) => {

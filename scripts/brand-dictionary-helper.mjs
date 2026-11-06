@@ -14,7 +14,7 @@
 // Module usage (from Node):
 //   import { classifyPath, getHomeTerms, getPublicTerms, getBrandSensitivePatterns } from './brand-dictionary-helper.mjs';
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -184,7 +184,7 @@ function parsePathPolicies(lines) {
   return pathPolicies;
 }
 
-function parseDictionary(raw) {
+export function parseDictionary(raw) {
   const lines = raw.split(/\r?\n/);
   return {
     terms: parseTerms(sectionLines(lines, 'terms')),
@@ -203,15 +203,14 @@ function globToRegex(pattern) {
     .replace(/\*\*/g, '<<<GLOBSTAR>>>')
     .replace(/\*/g, '[^/]*')
     .replace(/<<<GLOBSTAR>>>/g, '.*');
-  return new RegExp(`^${re}$`);
+  return new RegExp(`^${re}$(?!.)`, 's');
 }
 
 /**
  * Classify a file path according to dictionary path_policies.
  * Returns { classification, risk, reason }.
  */
-export function classifyPath(filePath) {
-  const dict = loadDictionary();
+export function classifyPath(filePath, dict = loadDictionary()) {
   const policies = dict.path_policies || [];
 
   for (const policy of policies) {
@@ -233,8 +232,7 @@ export function classifyPath(filePath) {
  * Get all home-only terms for brand validation.
  * Returns [{ id, severity, homePatterns: string[] }].
  */
-export function getHomeTerms() {
-  const dict = loadDictionary();
+export function getHomeTerms(dict = loadDictionary()) {
   const terms = dict.terms || [];
 
   return terms.map((t) => ({
@@ -251,8 +249,7 @@ export function getHomeTerms() {
  * Get public-side terms for inbound contamination detection.
  * Returns [{ id, severity, publicPatterns: string[] }].
  */
-export function getPublicTerms() {
-  const dict = loadDictionary();
+export function getPublicTerms(dict = loadDictionary()) {
   const terms = dict.terms || [];
 
   return terms
@@ -285,12 +282,38 @@ export function getManualPortPatterns() {
   return policies.filter((p) => p.inbound === 'manual-port').map((p) => p.pattern);
 }
 
+/** Fixed roles stay independent of the selected runtime deployment profile. */
+export function getRepositoryCoordinates(dict = loadDictionary()) {
+  const term = dict.terms.find((entry) => entry.id === 'deployment.repository');
+  const coordinate = (side) => {
+    const value = term?.[side]?.canonical;
+    if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value)) {
+      throw new Error(`Invalid canonical repository coordinate: ${side}`);
+    }
+    return value;
+  };
+  return Object.freeze({ home: coordinate('home'), public: coordinate('public') });
+}
+
 // ── CLI interface ──
-const args = process.argv.slice(2);
+// Importing this helper must never interpret the importing program's options.
+// Resolve entry aliases too: /tmp and /private/tmp identify the same executable.
+let isMain = false;
+if (process.argv[1]) {
+  try {
+    isMain = realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    // An importing eval/test process can have a non-file entry point.
+  }
+}
+const args = isMain ? process.argv.slice(2) : [];
 
 if (args[0] === '--classify-path' && args[1]) {
   const result = classifyPath(args[1]);
   console.log(JSON.stringify(result));
+} else if (args[0] === '--repository') {
+  if (!['home', 'public'].includes(args[1]) || args.length !== 2) throw new Error('Usage: --repository <home|public>');
+  console.log(getRepositoryCoordinates()[args[1]]);
 } else if (args[0] === '--manual-port-patterns') {
   for (const p of getManualPortPatterns()) console.log(p);
 } else if (args[0] === '--brand-sensitive-patterns') {

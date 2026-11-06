@@ -3,17 +3,32 @@
  * Shared types, interfaces, and helper functions for route-serial and route-parallel.
  */
 
-import type { CatId, MessageContent, RichBlock, RichBlockBase } from '@cat-cafe/shared';
-import { isCrossThreadProvenance } from '@cat-cafe/shared';
+import { randomUUID } from 'node:crypto';
+import type {
+  CatId,
+  MessageContent,
+  MessageFrom,
+  RichBlock,
+  RichBlockBase,
+  RoutingPreflightDecisionV1,
+} from '@cat-cafe/shared';
+import { catRegistry, isCrossThreadProvenance } from '@cat-cafe/shared';
 import { resolveUnboundHistoryContextTokenCeiling } from '../../../../../config/context-capacity.js';
 import { DEFAULT_HIERARCHICAL_CONTEXT } from '../../../../../config/hierarchical-context-config.js';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
+import type { CallerTraceContext } from '../../../../../infrastructure/telemetry/genai-semconv.js';
 import { visibilityCursorDeferredBoundaryRejected } from '../../../../../infrastructure/telemetry/instruments.js';
+import { isHomeSession } from '../../session/session-scope.js';
 import {
   assertCanonicalVisibilityCursor,
   type CanonicalVisibilityCursor,
   compareCursors,
 } from '../../stores/cursor.js';
+import { createRoutedOutputTransform } from '../message-output-stream-transform.js';
+import {
+  type AgentRegistrationFailure,
+  AgentServiceUnavailableError,
+} from '../registry/AgentServiceUnavailableError.js';
 
 const log = createModuleLogger('context-transport');
 const PROMPT_MESSAGE_SAFETY_CHAR_LIMIT = 100_000;
@@ -22,28 +37,38 @@ import { estimateTokens } from '../../../../../utils/token-counter.js';
 import { matchExplicitApprovedTasteTrigger } from '../../../../memory/cue/ExplicitApprovedTasteTriggerCatalog.js';
 import type { MemoryCueOpportunitySeed } from '../../../../memory/cue/MemoryCueInvocationPromptService.js';
 import type { NudgeProcessResult } from '../../../../memory/EntityNudgeService.js';
+import { formatRoadmapPointer, readNavigationRoadmap } from '../../../../workspace/thread-roadmap-source.js';
 import type { CloudDispatchProvenance } from '../../cloud-bridge/types.js';
 import { buildMessageMap, formatMessage } from '../../context/ContextAssembler.js';
-import { BRIEFING_TIMEZONE } from '../../duty-briefing/constants.js';
-import { formatPromptTime } from '../../format-time.js';
-import { isSameUserWaveSiblingReply } from '../../freshness/FreshnessRelevancePolicy.js';
+import { CO_CREATOR_TIME_ZONE, formatPromptTime } from '../../format-time.js';
 import type { DegradationResult } from '../../orchestration/DegradationPolicy.js';
-import { mapToPresentation } from '../../session/context-presentation.js';
+import { mapToPresentation } from '../../session/context/context-presentation.js';
 import {
   type ContextModeProjection,
   type ContextSurfaceProjection,
   countPresentedTiers,
   projectContextMode,
   withSurfaceShape,
-} from '../../session/context-surface-projection.js';
+} from '../../session/context/context-surface-projection.js';
 import { cursorFor } from '../../stores/cursor.js';
+import { isDisplayOnlySystemMessage } from '../../stores/host-message-policy.js';
+import { messageFrom } from '../../stores/message-from.js';
 import { DeliveryCursorStore } from '../../stores/ports/DeliveryCursorStore.js';
 import type { IDraftStore } from '../../stores/ports/DraftStore.js';
-import type { IMessageStore, StoredMessage, StoredToolEvent } from '../../stores/ports/MessageStore.js';
+import type {
+  AppendMessageInput,
+  IMessageStore,
+  StoredMessage,
+  StoredToolEvent,
+} from '../../stores/ports/MessageStore.js';
 import type { Thread } from '../../stores/ports/ThreadStore.js';
-import { canViewMessage, isTimelinePublished, resolveVisibleReplyParent } from '../../stores/visibility.js';
+import {
+  canViewMessage,
+  isAgentReadableManagedHoldMessage,
+  isTimelinePublished,
+  resolveVisibleReplyParent,
+} from '../../stores/visibility.js';
 import type { AgentMessage, AgentRouteIntent, AgentService, ToolExecutionPolicy } from '../../types.js';
-import type { InvocationTracker } from '../invocation/InvocationTracker.js';
 import type { InvocationDeps } from '../invocation/invoke-single-cat.js';
 import type { OwnerAuthProvenance } from '../invocation/owner-auth-provenance.js';
 import { extractRecentArtifacts, mergeLedger } from './artifact-tracking.js';
@@ -61,8 +86,10 @@ import {
   selectAnchors,
   stripStructuralEnvelope,
 } from './context-transport.js';
+import { legacyBatonHasSucceededReply, recoverableDeliveryBoundary } from './delivery-boundary-recovery.js';
 import type { HumanDispositionInvocationOrigin } from './human-disposition-invocation-origin.js';
 import { extractBatonContext, formatNavigationHeader, summarizeActiveTasks } from './navigation-context.js';
+import { isSameUserWaveSiblingReply } from './same-user-wave-sibling.js';
 import { projectRankedSource, rankArtifactSources, selectDirectiveSources } from './source-ranking.js';
 import { resolveReachableArtifactRefs } from './source-reachability.js';
 
@@ -100,10 +127,14 @@ export interface RouteBroadcaster {
 
 /** Dependencies shared across route strategies */
 export interface RouteStrategyDeps {
-  services: Record<string, AgentService>;
-  invocationDeps: InvocationDeps;
-  /** F293: fresh advisory/rejection decision at each actual child boundary. */
+  messageSearchAnswerService?: import('../../../../memory/MessageSearchAnswerPublicationService.js').MessageSearchAnswerPublicationService;
   routingDispatchPreflight?: import('../../../../routing-context/RoutingDispatchPreflightPort.js').RoutingDispatchPreflightPort;
+  services: Record<string, AgentService>;
+  unavailableServices?: ReadonlyMap<string, AgentRegistrationFailure>;
+  invocationDeps: InvocationDeps;
+  dotReplyTarget?: (
+    source: import('../../cloud-bridge/dot/dot-reply-authority.js').DotReplyCandidate,
+  ) => Promise<boolean>;
   messageStore: IMessageStore;
   deliveryCursorStore?: DeliveryCursorStore;
   /** #80: Streaming draft persistence store */
@@ -126,6 +157,9 @@ export interface RouteStrategyDeps {
   skillLoadEventLog?: import('../../tool-usage/SkillLoadEventLog.js').SkillLoadEventLog;
   /** F148 Phase F: Task store for navigation context (optional, fail-open) */
   taskStore?: import('../../stores/ports/TaskStore.js').ITaskStore;
+  ownedWaitStatusReader?: import('../../../../ball-custody/OwnedWaitStatus.js').OwnedWaitStatusReader;
+  /** RFC A79: exact lifecycle situation shared with UI and read-only thread context. */
+  threadExecutionSituationSource?: import('../invocation/thread-execution-situation.js').ThreadExecutionSituationSource;
   /** F222: Frustration auto-issue store (optional, fail-open) */
   frustrationIssueStore?: import('../../stores/ports/FrustrationIssueStore.js').IFrustrationIssueStore;
   /** F093: World context provider for world-building mode (optional, fail-open) */
@@ -198,15 +232,15 @@ export async function hydrateVisibleA2ATriggerPromptMessage(
     log.warn({ err, threadId, catId: catId as string }, 'A2A trigger hydration failed');
     return undefined;
   }
+  if (!message) return undefined;
+  const from = messageFrom(message);
   if (
-    !message ||
     message.threadId !== threadId ||
     message.deletedAt ||
     message._tombstone ||
-    message.userId === 'system' ||
     message.origin === 'briefing' ||
-    message.catId === null ||
-    message.catId === catId ||
+    from.kind !== 'agent' ||
+    from.catId === catId ||
     !isTimelinePublished(message)
   ) {
     return undefined;
@@ -235,6 +269,18 @@ export function mergePersistedPromptMessages(
 
 /** Common options for both strategies */
 export interface RouteOptions {
+  /** Trusted Queue provenance for comparing B with C; never an execution grant. */
+  routingAdmission?: import('@cat-cafe/shared').RoutingAdmissionProvenanceV1;
+  /** Server-owned ingress only; never copied from an HTTP/MCP request body. */
+  contextSourceIngress?: import('../../../../memory/cue/ContextSourceAdmission.js').ContextSourceIngress;
+  /** Persist the exact policy refusal before publishing its receipt; Queue owns recovery. */
+  onRoutingPreflightRejected?: (target: RoutingPreflightDecisionV1['targets'][number]) => Promise<void>;
+  /** Server-owned one-shot owner click for this exact pending target. */
+  routingOwnerRetryTarget?: string;
+  /** Execution-owned fan-out policy. Queue dequeue uses parallel fan-out for one source
+   *  with multiple targets; ordinary routes retain their intent-derived default. */
+  targetDispatchMode?: 'serial' | 'parallel' | undefined;
+  liveCompanion?: import('../../types.js').AgentServiceOptions['liveCompanion'];
   /** Route-owned intent plus whether the user explicitly selected it. */
   routeIntent?: AgentRouteIntent;
   /** F293: deterministic scope used to resolve sparse routing cognition. */
@@ -243,6 +289,10 @@ export interface RouteOptions {
   ownerAuthProvenance?: OwnerAuthProvenance;
   /** F281 Phase C: explicit first-party ingress provenance; omitted legacy callers fail closed. */
   humanDispositionInvocationOrigin?: HumanDispositionInvocationOrigin;
+  /** Canonical Queue source class for admission/retry policy. */
+  routingQueueSource?: 'user' | 'connector' | 'agent' | 'system';
+  /** Retained legacy record discriminator. The retired Host executor is rejected; current plugins use public invocation. */
+  executionScope?: 'collective-participation' | 'collective-work';
   /** F167 Phase T: exact protocol wake carrier for this route, never inferred from response prose. */
   turnCustodyWake?: import('../../../../ball-custody/TurnCustodyProjectionService.js').TurnCustodyWakeProvenance;
   /** Per-cat carrier resolver for multi-holder routes. Takes precedence over turnCustodyWake. */
@@ -257,6 +307,8 @@ export interface RouteOptions {
    *  canceling one concurrent cat does not abort its siblings (并发取消误伤根因修复).
    *  Absent → fall back to the shared `signal` (route-serial / legacy callers). */
   signalForCat?: ((catId: CatId) => AbortSignal | undefined) | undefined;
+  /** F117 KD-22 (J4): Queue-owned stop for one member whose output timeout fired. Absent → no timeout. */
+  stopMember?: import('../invocation/member-output-timeout.js').MemberTimeoutStop | undefined;
   promptTags?: readonly string[] | undefined;
   /** Trusted server-owned Cue seeds supplied by connector/workflow ingress. */
   memoryCueOpportunitySeeds?: readonly MemoryCueOpportunitySeed[] | undefined;
@@ -282,11 +334,7 @@ export interface RouteOptions {
   requiresExactCloudDispatchProvenance?: boolean | undefined;
   /** Max A2A chain depth for routeSerial (default: MAX_A2A_DEPTH env or 2) */
   maxA2ADepth?: number | undefined;
-  /** Queue fairness hook: when true for current thread, routeSerial must stop extending A2A chain.
-   *  F185 Phase B: should use hasQueuedNonAgentForThread (user + connector), not user-only. */
-  queueHasQueuedMessages?: ((threadId: string) => boolean) | undefined;
-  /** F254 D1.1: Target-aware queued freshness input. Unlike queueHasQueuedMessages,
-   *  this must return only queued messages that the current cat would actually process. */
+  /** F254 D1.1: Target-aware queued freshness input. */
   getQueuedFreshnessMessagesForCat?:
     | ((
         threadId: string,
@@ -295,41 +343,57 @@ export interface RouteOptions {
         parentInvocationId?: string,
       ) => Array<{
         entryId?: string;
-        source: string;
+        from: MessageFrom;
         content: string;
-        callerCatId?: string;
         messageId?: string | null;
-        mergedMessageIds?: string[];
         sourceCategory?: string;
       }>)
     | undefined;
-  /** A2A dedup hook: skip text-scan @mention if cat already dispatched via callback path. */
-  hasQueuedOrActiveAgentForCat?: ((threadId: string, catId: string) => boolean) | undefined;
   /** F254 D1.1: Any-source same-cat coverage check for stream freshness fallback. */
   hasPendingForCat?: ((threadId: string, userId: string, catId: string) => boolean) | undefined;
-  /** F185 Phase B: deferred A2A enqueue — called when fairness gate blocks text-scan expansion
-   *  but A2A targets were detected. Entry is queued behind non-agent entries instead of being silently dropped. */
-  deferA2AEnqueue?:
-    | ((entry: {
-        threadId: string;
+  /** Canonical completed-final path: terminalize the existing response and publish one durable message wake. */
+  commitCompletedA2AWake?:
+    | ((input: {
+        responseMessageId: string;
+        invocationId: string;
+        terminal: {
+          status: 'completed';
+          completedAt: number;
+          reason?: string;
+          expectedInputMessageIds?: readonly string[];
+        };
+        message: AppendMessageInput;
+        targetCats: CatId[];
         userId: string;
         ownerAuthProvenance: OwnerAuthProvenance;
-        content: string;
-        source: 'agent';
-        sourceCategory: 'a2a';
-        targetCats: string[];
-        callerCatId: string;
-        messageId?: string;
-        a2aTriggerMessageId?: string;
-        autoExecute: true;
-        priority: 'normal';
-        intent: 'execute';
-        /** F153 Phase I: trace context of the mention_dispatch span, so the dispatched
-         *  route picked up by QueueProcessor reuses it as the parent — preserving cross-route
-         *  causality through the fairness-gate deferred path. */
+        threadId: string;
+        callerCatId: CatId;
+        parentInvocationId?: string;
         callerTraceContext?: import('../../../../../infrastructure/telemetry/genai-semconv.js').CallerTraceContext;
-      }) => { outcome: 'enqueued' | 'full' | string } | undefined)
+      }) => Promise<StoredMessage>)
     | undefined;
+  /**
+   * Canonical failed-final transaction. Always persists the terminal response;
+   * durable receipts select eligible callers and suppress failure-report bounces.
+   * Calling this hook does not itself imply a caller wake was admitted.
+   */
+  commitFailedA2AReport?:
+    | ((input: {
+        responseMessageId: string;
+        invocationId: string;
+        terminal: { status: 'failed'; completedAt: number; reason?: string };
+        message: AppendMessageInput;
+        userId: string;
+        ownerAuthProvenance: OwnerAuthProvenance;
+        threadId: string;
+        reporterCatId: CatId;
+        predecessorCatId?: CatId;
+        parentInvocationId?: string;
+        callerTraceContext?: import('../../../../../infrastructure/telemetry/genai-semconv.js').CallerTraceContext;
+      }) => Promise<StoredMessage>)
+    | undefined;
+  /** Failure-control carriers never recursively wake the caller that reported them. */
+  a2aFailureReport?: boolean | undefined;
   /** ADR-008 S3: When provided, cursor boundaries are collected here instead of acking immediately.
    *  Caller acks after invocation succeeds. If absent, legacy immediate ack behavior. */
   cursorBoundaries?: Map<string, string>;
@@ -347,6 +411,8 @@ export interface RouteOptions {
   /** F108: Unique invocation ID for WorklistRegistry isolation in concurrent execution.
    *  When provided, worklist is keyed by this ID instead of threadId. */
   parentInvocationId?: string | undefined;
+  /** A recovery proof cannot acknowledge an older wake that still awaits this target. */
+  resolvePendingWakeMessageIds?: (catId: string, messageIds: readonly string[]) => Promise<readonly string[]>;
   /** Exact, non-trigger message bodies exposed by incremental context to this invocation. */
   onPromptMessagesExposed?:
     | ((input: {
@@ -356,28 +422,33 @@ export interface RouteOptions {
         invocationId: string;
         messageIds: readonly string[];
         seenAt: number;
-      }) => Promise<
-        readonly import('../../../../ball-custody/TurnCustodyProjectionService.js').TurnCustodyWakeProvenance[] | void
-      >)
+      }) => Promise<void>)
+    | undefined;
+  /** Create the exact child's durable processing response before provider startup. */
+  onLifecycleInvocationStarted?:
+    | ((input: {
+        threadId: string;
+        userId: string;
+        catId: CatId;
+        invocationId: string;
+        parentInvocationId: string;
+        startedAt: number;
+      }) => Promise<{
+        responseMessageId: string;
+        priorFrontierMessageId: string | null;
+        activeRun: import('@cat-cafe/shared').LifecycleActiveRun;
+      }>)
+    | undefined;
+  /** Bind a provider-native exact-turn dispatcher after the client accepts the run. */
+  onAgentClientActiveRunReady?:
+    | ((input: {
+        catId: CatId;
+        dispatcher: import('../../types.js').AgentClientActiveRunDispatcher;
+      }) => (() => void) | undefined)
     | undefined;
   /** F254 Phase E stable sibling-exclusion identity for one parallel fan-out. */
   parallelBatchId?: string | undefined;
-  /** F254 Phase E typed queue adoption proof for this route execution. */
-  freshnessClosureId?: string | undefined;
-  freshnessClosureRequiredMessageIds?: readonly string[] | undefined;
-  freshnessSupplementId?: string | undefined;
-  freshnessSupplementRequiredMessageIds?: readonly string[] | undefined;
-  /** ADR-042 provider/callback hard boundary for an automatic supplement. */
   toolExecutionPolicy?: ToolExecutionPolicy | undefined;
-  /** Parent invocation controller used to keep A2A worklist slots tied to the same cancel signal. */
-  invocationController?: AbortController | undefined;
-  /**
-   * Atomically claim an A2A worklist target in the outer invocation tracker.
-   * False means another live route owns the slot, so the caller must defer instead of invoking inline.
-   */
-  trackA2ASlot?: ((threadId: string, catId: CatId, userId: string, controller: AbortController) => boolean) | undefined;
-  /** Cleanup registered A2A worklist slots if the route exits before every target emits done. */
-  completeA2ASlots?: ((threadId: string, catIds: readonly CatId[], controller: AbortController) => void) | undefined;
   /** F153 Phase E: Root route span — invocation spans become children of this. */
   routeSpan?: import('@opentelemetry/api').Span | undefined;
   /** F222 P1: Whether this route is eligible for frustration auto-issue detection.
@@ -391,39 +462,22 @@ export interface RouteOptions {
    *  Separate from frustrationAutoIssueEligible because A2A/multi-mention callbacks
    *  suppress frustration issues but still need verdict-pass handoff guards. */
   verdictPassWarningEnabled?: boolean | undefined;
-  /** F254 B3: Freshness re-invoke enqueue — called when doneMsg.metadata.freshnessReinvoke.shouldReinvoke
-   *  is true. Enqueues a new invocation for the same (cat, thread) to address unseen messages. */
-  freshnessReinvokeEnqueue?:
-    | ((entry: {
-        threadId: string;
-        userId: string;
-        ownerAuthProvenance: OwnerAuthProvenance;
-        content: string;
-        source: 'agent';
-        sourceCategory: 'freshness';
-        targetCats: string[];
-        callerCatId: string;
-        autoExecute: true;
-        priority: 'normal';
-        intent: 'execute';
-        idempotencyKey?: string;
-        /** Closure successors must ignore the attempt that is currently processing while still coalescing queued duplicates. */
-        dedupeProcessing?: boolean;
-        freshnessClosureId?: string;
-        freshnessRequiredFrontierMessageId?: string;
-        freshnessSupplementId?: string;
-        freshnessSupplementLineageId?: string;
-        freshnessSupplementSeq?: 1 | 2;
-        readOnlyToolPolicy?: ToolExecutionPolicy;
-        /** Notice IDs that triggered this re-invoke (for event log correlation) */
-        freshnessContext: {
-          sourceNoticeIds: string[];
-          senders: string[];
-          reason: string;
-        };
-      }) => undefined | { outcome?: 'enqueued' | 'full' | string } | undefined)
-    | undefined;
 }
+
+/**
+ * Public execution boundary owned jointly by QueueProcessor and AgentRouter.
+ * Keep this derived from RouteOptions so adding a strategy option cannot be
+ * silently dropped by an intermediate hand-written parameter list.
+ */
+export type RouteExecutionOptions = Omit<
+  RouteOptions,
+  'promptTags' | 'currentUserMessageId' | 'thinkingMode' | 'routeSpan' | 'humanDispositionInvocationOrigin'
+> & {
+  ownerAuthProvenance: NonNullable<RouteOptions['ownerAuthProvenance']>;
+  onPromptMessagesExposed: NonNullable<RouteOptions['onPromptMessagesExposed']>;
+  humanDispositionInvocationOrigin: HumanDispositionInvocationOrigin;
+  callerTraceContext?: CallerTraceContext;
+};
 
 const TASTE_JUDGMENT_STAGES = new Set(['quality_gate', 'review']);
 const TASTE_JUDGMENT_SKILLS = new Set(['writing-plans', 'co-creation-docs', 'fresh-context-review', 'request-review']);
@@ -562,44 +616,6 @@ export function operationalKnowledgeCueSeeds(input: {
     });
   }
   return seeds;
-}
-
-/**
- * Bind every routeExecution ingress to the same atomic A2A slot-admission contract.
- * The returned controller is the parent batch gate; trackExternalSlot creates an
- * independent per-target controller while preserving exact cleanup ownership.
- */
-export type A2ASlotTrackingOptions = {
-  invocationController: NonNullable<RouteOptions['invocationController']>;
-  trackA2ASlot: NonNullable<RouteOptions['trackA2ASlot']>;
-  completeA2ASlots: NonNullable<RouteOptions['completeA2ASlots']>;
-};
-
-export function createA2ASlotTrackingBridge(
-  invocationTracker:
-    | {
-        trackExternalSlot?: InvocationTracker['trackExternalSlot'];
-        completeAll?: InvocationTracker['completeAll'];
-      }
-    | undefined,
-  invocationController: AbortController,
-  executionId?: string,
-): A2ASlotTrackingOptions {
-  return {
-    invocationController,
-    trackA2ASlot: (threadId, catId, userId, controller) => {
-      if (!invocationTracker?.trackExternalSlot || !invocationTracker.completeAll) {
-        throw new Error('A2A slot admission unavailable: InvocationTracker bridge missing');
-      }
-      return invocationTracker.trackExternalSlot(threadId, catId, controller, userId, [catId], executionId);
-    },
-    completeA2ASlots: (threadId, catIds, controller) => {
-      if (!invocationTracker?.completeAll) {
-        throw new Error('A2A slot cleanup unavailable: InvocationTracker bridge missing');
-      }
-      invocationTracker.completeAll(threadId, [...catIds], controller);
-    },
-  };
 }
 
 function canonicalDeferredBoundary(
@@ -872,10 +888,22 @@ export function upsertMaxBoundary(cursorBoundaries: Map<string, string>, catId: 
 }
 
 /** Get the agent service for a given cat ID */
-export function getService(services: Record<string, AgentService>, catId: CatId): AgentService {
-  const service = services[catId];
-  if (!service) throw new Error(`Unknown cat ID: ${catId as string}`);
-  return service;
+export function getService(
+  services: Record<string, AgentService>,
+  catId: CatId,
+  unavailableServices?: ReadonlyMap<string, AgentRegistrationFailure>,
+): AgentService {
+  const service = Object.hasOwn(services, catId) ? services[catId] : undefined;
+  if (service) return service;
+  const reason = unavailableServices?.get(catId);
+  if (reason) throw new AgentServiceUnavailableError(catId, reason);
+  if (catRegistry.has(catId)) {
+    throw new AgentServiceUnavailableError(catId, {
+      code: 'not-registered',
+      message: 'This member is configured but its service is not registered; check runtime registration diagnostics.',
+    });
+  }
+  throw new Error(`Unknown cat ID: ${catId as string}`);
 }
 
 export function getThreadBootcampMemberCount(thread: Thread | null | undefined): number | undefined {
@@ -945,25 +973,34 @@ export function truncateDetail(text: string, maxLength: number): string {
  * deferred per KD-41) still produce a valid StoredToolEvent that the hydrate path
  * skips for span synthesis but still surfaces in the Hub history view.
  */
-export function toStoredToolEvent(msg: AgentMessage): StoredToolEvent | null {
+export function toStoredToolEvent(
+  msg: AgentMessage,
+  executionRef = msg.turnInvocationId ?? msg.invocationId,
+): StoredToolEvent | null {
+  if (msg.type !== 'tool_use' && msg.type !== 'tool_result') return null;
+  // Event IDs are born once in the API and then carried unchanged through every consumer.
+  const prefix = msg.type === 'tool_use' ? 'tool-' : 'toolr-';
+  if (!msg.toolEventId?.startsWith(prefix)) msg.toolEventId = `${prefix}${randomUUID()}`;
+  if (executionRef) msg.toolExecutionRef = executionRef;
+  const instance = { id: msg.toolEventId, ...(msg.toolExecutionRef ? { executionRef: msg.toolExecutionRef } : {}) };
+  let inputDetail: string | undefined;
+  if (msg.toolInput !== undefined) {
+    try {
+      inputDetail = truncateDetail(JSON.stringify(msg.toolInput), 200);
+    } catch {
+      inputDetail = '[unserializable]';
+    }
+  }
   if (msg.type === 'tool_use') {
     const toolName = msg.toolName ?? 'unknown';
-    let detail: string | undefined;
-    if (msg.toolInput) {
-      try {
-        detail = truncateDetail(JSON.stringify(msg.toolInput), 200);
-      } catch {
-        detail = '[unserializable]';
-      }
-    }
     return {
-      id: `tool-${msg.timestamp}-${Math.random().toString(36).slice(2, 6)}`,
+      ...instance,
       type: 'tool_use',
       label: `${msg.catId as string} → ${toolName}`,
       // R6 maintainer: persist native tool name as data field (decoupled from display label).
       // Hydrate prefers this for span naming; label parse becomes legacy fallback only.
       toolName,
-      ...(detail ? { detail } : {}),
+      ...(inputDetail !== undefined ? { detail: inputDetail } : {}),
       timestamp: msg.timestamp,
       ...(msg.toolUseId ? { toolUseId: msg.toolUseId } : {}),
       ...(msg.toolTracing ? { tracing: msg.toolTracing } : {}),
@@ -975,10 +1012,11 @@ export function toStoredToolEvent(msg: AgentMessage): StoredToolEvent | null {
     const raw = (msg.content ?? '').trimEnd();
     const detail = raw.length > 0 ? truncateDetail(raw, 1500) : '(no output)';
     return {
-      id: `toolr-${msg.timestamp}-${Math.random().toString(36).slice(2, 6)}`,
+      ...instance,
       type: 'tool_result',
       label: `${msg.catId as string} ← result`,
       detail,
+      ...(inputDetail !== undefined ? { inputDetail } : {}),
       timestamp: msg.timestamp,
       ...(msg.toolUseId ? { toolUseId: msg.toolUseId } : {}),
       ...(msg.toolResultStatus ? { status: msg.toolResultStatus } : {}),
@@ -1005,7 +1043,6 @@ const USER_FACING_SYSTEM_INFO_TYPES = new Set([
   'session_rollover_lifecycle',
   'session_seal_requested',
   'silent_completion',
-  'warning',
 ]);
 
 /**
@@ -1015,7 +1052,8 @@ const USER_FACING_SYSTEM_INFO_TYPES = new Set([
  */
 export function isUserFacingSystemInfoContent(content: string): boolean {
   try {
-    const parsed = JSON.parse(content) as { type?: unknown };
+    const parsed = JSON.parse(content) as { type?: unknown; presentation?: unknown };
+    if (parsed.type === 'warning') return parsed.presentation === 'user_action_required';
     return typeof parsed.type === 'string' && USER_FACING_SYSTEM_INFO_TYPES.has(parsed.type);
   } catch {
     return true;
@@ -1125,20 +1163,23 @@ export function stripLeakedToolCallPayload(content: string): string {
   return content;
 }
 
-export interface RoutedMessageTransform {
-  transform(msg: AgentMessage): AgentMessage[];
-}
+export type RoutedMessageTransform = import('../message-output-stream-transform.js').RoutedOutputTransform;
 
 export interface LeakedToolCallStreamStripper {
   push(content: string): string;
   flush(): string;
+  hasPendingContent(): boolean;
+  wasRewritten(): boolean;
 }
 
 export function createLeakedToolCallStreamStripper(): LeakedToolCallStreamStripper {
   let pending = '';
   let pendingEmittedLength = 0;
+  let rewritten = false;
 
   return {
+    hasPendingContent: () => pending.length > 0,
+    wasRewritten: () => rewritten,
     push(content: string): string {
       if (!content) return content;
 
@@ -1149,6 +1190,7 @@ export function createLeakedToolCallStreamStripper(): LeakedToolCallStreamStripp
 
       const stripped = stripLeakedToolCallPayload(combined);
       if (stripped !== combined) {
+        rewritten = true;
         return stripped.slice(alreadyEmittedLength);
       }
 
@@ -1169,39 +1211,15 @@ export function createLeakedToolCallStreamStripper(): LeakedToolCallStreamStripp
       const alreadyEmittedLength = pendingEmittedLength;
       pending = '';
       pendingEmittedLength = 0;
-      return stripLeakedToolCallPayload(remaining).slice(alreadyEmittedLength);
+      const stripped = stripLeakedToolCallPayload(remaining);
+      rewritten ||= stripped !== remaining;
+      return stripped.slice(alreadyEmittedLength);
     },
   };
 }
 
 export function createRoutingMessageTransform(explicitCatId?: CatId): RoutedMessageTransform {
-  const leakedPayloadStripper = createLeakedToolCallStreamStripper();
-
-  return {
-    transform(msg: AgentMessage): AgentMessage[] {
-      if (msg.type === 'text') {
-        const content = msg.content ? leakedPayloadStripper.push(msg.content) : msg.content;
-        return content ? [{ ...msg, content }] : [];
-      }
-
-      if (msg.type === 'done') {
-        const transformed: AgentMessage[] = [];
-        const flushedText = leakedPayloadStripper.flush();
-        if (flushedText) {
-          transformed.push({
-            type: 'text',
-            catId: msg.catId ?? explicitCatId,
-            content: flushedText,
-            timestamp: msg.timestamp,
-          });
-        }
-        transformed.push(msg);
-        return transformed;
-      }
-
-      return [msg];
-    },
-  };
+  return createRoutedOutputTransform(createLeakedToolCallStreamStripper, explicitCatId);
 }
 
 export function sanitizeInjectedContent(content: string): string {
@@ -1234,6 +1252,36 @@ export function sanitizeInjectedContent(content: string): string {
   }
 
   return stripLeakedToolCallPayload(kept.join('\n')).trim();
+}
+
+function projectLifecycleResponsePromptContent(message: StoredMessage, content: string): string {
+  if (content.trim() || message.lifecycle?.kind !== 'response') return content;
+  switch (message.lifecycle.status) {
+    case 'completed':
+      return '已完成，没有返回可显示内容。';
+    case 'failed':
+      return '回复失败。';
+    case 'canceled':
+      if (message.lifecycle.reason === 'user_cancel' || message.lifecycle.reason === 'cancel_all') {
+        return '用户已取消该回复。';
+      }
+      return '已停止回复。';
+    case 'interrupted':
+      if (message.lifecycle.reason === 'preempted') return '该回复已被后续消息中断。';
+      return '回复已中断。';
+    case 'processing':
+      return content;
+  }
+}
+
+function isEmptyTerminalLifecycleResponse(message: StoredMessage): boolean {
+  return (
+    message.content.trim().length === 0 &&
+    (message.contentBlocks?.length ?? 0) === 0 &&
+    (message.extra?.rich?.blocks?.length ?? 0) === 0 &&
+    message.lifecycle?.kind === 'response' &&
+    message.lifecycle.status !== 'processing'
+  );
 }
 
 /**
@@ -1330,6 +1378,8 @@ export async function fetchAfterCursor(
 
 /** Options for caller-specified budget overrides */
 export interface IncrementalContextOptions {
+  /** Pending wakes cap recovery only; they remain visible in the actual projection. */
+  resolvePendingWakeMessageIds?: (messageIds: readonly string[]) => Promise<readonly string[]>;
   /**
    * Invocation-owned history ceiling for the token-trim pass.
    * The routing layer should calculate this as:
@@ -1410,7 +1460,7 @@ function projectVisibleMessages(messages: readonly StoredMessage[]) {
   );
 }
 
-type SameRouteBoundaryCap = { active: false } | { active: true; boundary: CanonicalVisibilityCursor | undefined };
+type IncrementalBoundaryCap = { active: false } | { active: true; boundary: CanonicalVisibilityCursor | undefined };
 
 interface SameRouteIsolationContext {
   readonly laterUserTurnBoundary?: CanonicalVisibilityCursor;
@@ -1467,17 +1517,14 @@ function incrementalDeferralReason(
   return undefined;
 }
 
-function resolveSameRouteBoundaryCap(
+function resolveIncrementalBoundaryCap(
   unseen: StoredMessage[],
   cursor: string | undefined,
   catId: CatId,
   playMode: boolean,
   options: IncrementalContextOptions | undefined,
   isolation: SameRouteIsolationContext,
-): SameRouteBoundaryCap {
-  if (!playMode || (!options?.sameRouteOutputMessageIds?.size && !options?.sameUserWaveTriggerMessageId)) {
-    return { active: false };
-  }
+): IncrementalBoundaryCap {
   const firstWithheldIndex = unseen.findIndex(
     (message) => incrementalDeferralReason(message, catId, playMode, options, isolation) !== undefined,
   );
@@ -1487,7 +1534,7 @@ function resolveSameRouteBoundaryCap(
     firstWithheldIndex === 0 ? cursor : cursorFor(unseen[firstWithheldIndex - 1] as StoredMessage);
   return {
     active: true,
-    boundary: canonicalDeferredBoundary(precedingCursor, 'same-route-withheld-predecessor'),
+    boundary: canonicalDeferredBoundary(precedingCursor, 'incremental-withheld-predecessor'),
   };
 }
 
@@ -1574,9 +1621,9 @@ function isVisibleTargetTrigger(trigger: StoredMessage | null, threadId: string,
   );
 }
 
-function clampToSameRouteBoundaryCap(
+function clampToIncrementalBoundaryCap(
   candidate: CanonicalVisibilityCursor | undefined,
-  cap: SameRouteBoundaryCap,
+  cap: IncrementalBoundaryCap,
 ): CanonicalVisibilityCursor | undefined {
   if (!cap.active) return candidate;
   if (!candidate || !cap.boundary) return undefined;
@@ -1598,17 +1645,21 @@ async function resolveRecentFilesTouched(
 
   try {
     const activeSession = await Promise.resolve(sessionChainStore.getActive(catId, threadId, userId));
-    if (activeSession?.userId === userId) {
-      return transcriptWriter.getFilesTouched(activeSession.id, { threadId, catId });
+    if (isHomeSession(activeSession) && activeSession.userId === userId) {
+      return await transcriptWriter.getFilesTouched(activeSession.id, { threadId, catId });
     }
 
     const threadSessions = await Promise.resolve(sessionChainStore.getChainByThread(threadId));
     const callerSession = [...threadSessions]
       .reverse()
-      .find((session) => session.status === 'active' && session.catId === catId && session.userId === userId);
+      .find(
+        (session) =>
+          isHomeSession(session) && session.status === 'active' && session.catId === catId && session.userId === userId,
+      );
     if (!callerSession) return [];
-    return transcriptWriter.getFilesTouched(callerSession.id, { threadId, catId: callerSession.catId });
+    return await transcriptWriter.getFilesTouched(callerSession.id, { threadId, catId: callerSession.catId });
   } catch {
+    log.warn({ threadId, catId }, 'Optional recent file observations unavailable; preserving authoritative context');
     return [];
   }
 }
@@ -1731,7 +1782,32 @@ async function assembleIncrementalContextInternal(
       }
     }
   }
-  const unseen = await fetchAfterCursor(deps.messageStore, threadId, cursor, userId);
+  const fetchedUnseen = await fetchAfterCursor(deps.messageStore, threadId, cursor, userId);
+  // Public speech stays in the unread projection. Queue coverage is committed
+  // for the exact fully projected IDs before the provider sees this prompt.
+  const loadedUnseen = fetchedUnseen;
+  const pendingWakes = new Set(
+    await options?.resolvePendingWakeMessageIds?.(fetchedUnseen.map((message) => message.id)),
+  );
+  const firstPending = fetchedUnseen.findIndex((message) => pendingWakes.has(message.id));
+  const recoveryPrefix = firstPending < 0 ? fetchedUnseen : fetchedUnseen.slice(0, firstPending);
+  const deliveryRecovery = recoverableDeliveryBoundary(recoveryPrefix, { userId, threadId, catId });
+  let unreadCandidates = fetchedUnseen;
+  if (deliveryRecovery.cursor && (!cursor || compareCursors(deliveryRecovery.cursor, cursor) > 0)) {
+    try {
+      await deps.deliveryCursorStore.ackCursor(userId, catId, threadId, deliveryRecovery.cursor);
+      // ackCursor owns concurrent monotonicity; this proven prefix is safe even
+      // when another reader has already advanced the durable slot further.
+      cursor = deliveryRecovery.cursor;
+      const recoveredCursor = cursor;
+      unreadCandidates = fetchedUnseen.filter(
+        (message) => message.visibilitySeq === undefined || compareCursors(cursorFor(message), recoveredCursor) > 0,
+      );
+    } catch (err) {
+      log.warn({ err, catId, threadId }, 'Delivery boundary recovery failed; retaining unread context');
+    }
+  }
+  const unseen = unreadCandidates;
 
   // Debug mode: cats see all whispers (full transparency). Play mode: cats only see their own whispers.
   const playMode = thinkingMode !== 'debug';
@@ -1750,8 +1826,8 @@ async function assembleIncrementalContextInternal(
       sameRouteOutputMessageIds: options?.sameRouteOutputMessageIds,
     }),
   };
-  const sameRouteBoundaryCap = resolveSameRouteBoundaryCap(
-    unseen,
+  const incrementalBoundaryCap = resolveIncrementalBoundaryCap(
+    unreadCandidates,
     cursor,
     catId,
     playMode,
@@ -1760,8 +1836,8 @@ async function assembleIncrementalContextInternal(
   );
   const filteredReasons = new Map<string, ProjectionAuditCandidate['filteredReason']>();
   const relevant = unseen.filter((m) => {
-    // System-generated messages (persisted error badges) are display-only — never enter prompt
-    if (m.userId === 'system') {
+    // Only typed Host business receipts extend canonical system-message eligibility.
+    if (messageFrom(m).kind === 'system' && isDisplayOnlySystemMessage(m) && !isAgentReadableManagedHoldMessage(m)) {
       filteredReasons.set(m.id, 'system_display_only');
       return false;
     }
@@ -1783,7 +1859,13 @@ async function assembleIncrementalContextInternal(
     // Exclude own messages (only include user messages and other cats' messages).
     // F052: only distinct source/target provenance earns the same-cat cross-post exemption.
     const isActualCrossPost = isCrossThreadProvenance(m.extra?.crossPost?.sourceThreadId, m.threadId);
-    if (!isActualCrossPost && m.catId !== null && m.catId === catId) {
+    const from = messageFrom(m);
+    const authorCatId = from.kind === 'agent' ? from.catId : null;
+    // Native provider memory cannot be trusted to retain a turn that ended
+    // before producing content. Preserve only the durable empty terminal
+    // marker so the next invocation can distinguish interrupted/failed/stopped
+    // work; ordinary own output remains excluded to avoid replaying it.
+    if (!isActualCrossPost && authorCatId !== null && authorCatId === catId && !isEmptyTerminalLifecycleResponse(m)) {
       filteredReasons.set(m.id, 'self_output');
       return false;
     }
@@ -1813,10 +1895,31 @@ async function assembleIncrementalContextInternal(
 
   // F148 Phase F (KD-7): Navigation context — injected on ALL paths (cold + warm)
   // P1 fix: extract baton from unseen (pre-stream-filter) so cat→cat @ mentions via stream are visible
-  const batonCandidates = unseen.filter(
-    (m) => (m.userId !== 'system' || m.catId !== null) && m.origin !== 'briefing' && canViewMessage(m, viewer),
+  const unseenIds = new Set(unseen.map((message) => message.id));
+  const batonCandidates = loadedUnseen.filter(
+    (m) =>
+      (m.id === currentUserMessageId || (unseenIds.has(m.id) && !deliveryRecovery.answeredSourceIds.has(m.id))) &&
+      messageFrom(m).kind !== 'system' &&
+      m.origin !== 'briefing' &&
+      canViewMessage(m, viewer),
   );
-  const baton = extractBatonContext(batonCandidates, catId);
+  let baton = extractBatonContext(batonCandidates, catId);
+  if (
+    baton &&
+    (await legacyBatonHasSucceededReply({
+      messages: loadedUnseen,
+      sourceMessageId: baton.fromMessageId,
+      explicitSourceMessageId: currentUserMessageId,
+      target: { userId, threadId, catId },
+      turnExecutionStore: deps.invocationDeps.turnExecutionStore,
+    }))
+  ) {
+    baton = null;
+  }
+  // The current direct request is already rendered verbatim in the delta. It
+  // is not a prior handoff and repeating it as co-creator→cat navigation adds
+  // duplicate instructions. Keep genuine cat handoffs and older provenance.
+  if (baton?.fromSpeaker === 'user' && baton.fromMessageId === currentUserMessageId) baton = null;
   let activeTasks: import('./navigation-context.js').TaskSummary[] = [];
   let allThreadTasks: import('./artifact-tracking.js').ArtifactExtractionInput['prTasks'] = [];
   if (deps.taskStore) {
@@ -1824,6 +1927,27 @@ async function assembleIncrementalContextInternal(
       const tasks = await Promise.resolve(deps.taskStore.listByThread(threadId));
       activeTasks = summarizeActiveTasks(tasks);
       allThreadTasks = tasks;
+      if (deps.ownedWaitStatusReader) {
+        try {
+          const hasActiveWait = await deps.ownedWaitStatusReader({ userId, threadId, catId }, tasks);
+          if (hasActiveWait !== undefined) {
+            const ownedIds = new Set(
+              tasks
+                .filter(
+                  (task) =>
+                    task.kind === 'work' &&
+                    task.userId === userId &&
+                    task.threadId === threadId &&
+                    task.ownerCatId === catId,
+                )
+                .map((task) => task.id),
+            );
+            activeTasks = activeTasks.map((task) => (ownedIds.has(task.id) ? { ...task, hasActiveWait } : task));
+          }
+        } catch {
+          // Unknown wait state must not erase the existing Task/navigation context.
+        }
+      }
     } catch {
       // fail-open: tasks stay empty
     }
@@ -1864,10 +1988,30 @@ async function assembleIncrementalContextInternal(
   );
   const topSource = selectDirectiveSources(rankedSources)[0] ?? null;
   const bestNextSource = topSource ? `先看 ${topSource.label}: ${topSource.ref}` : undefined;
+  let executionSituation: import('../invocation/thread-execution-situation.js').ThreadExecutionSituation | undefined;
+  if (deps.threadExecutionSituationSource) {
+    try {
+      executionSituation = await deps.threadExecutionSituationSource.resolve(threadId);
+    } catch {
+      executionSituation = {
+        kind: 'thread_execution_situation.v1',
+        complete: false,
+        activeRuns: [],
+      };
+    }
+  }
+  const roadmap =
+    threadStore && options?.contextProjection?.contextMode !== 'hot'
+      ? await readNavigationRoadmap(threadStore, userId, threadId)
+      : undefined;
   const navigationHeader = formatNavigationHeader({
     threadId,
+    currentCatId: catId,
+    recentWorkDirectory: Boolean(threadStore) && options?.contextProjection?.contextMode !== 'hot',
+    ...(roadmap ? { roadmapPointer: formatRoadmapPointer(roadmap) } : {}),
     baton,
     tasks: activeTasks,
+    ...(executionSituation ? { executionSituation } : {}),
     // Epoch-owned packets admit only a validated truth source. A recency-only
     // artifact list is not canonical state and must wait for the B3b mapper.
     artifacts: options?.contextProjection ? [] : recentArtifacts,
@@ -1932,7 +2076,7 @@ async function assembleIncrementalContextInternal(
       rankedSources,
       storedLedgerArtifacts,
       viewer,
-      sameRouteBoundaryCap,
+      incrementalBoundaryCap,
       contextMode ?? 'cold',
       deltaSize,
     );
@@ -1954,9 +2098,9 @@ async function assembleIncrementalContextInternal(
           contextText: options?.contextProjection
             ? `${formatContextProjection(options.contextProjection, deltaSize)}\n${navigationHeader}`
             : navigationHeader,
-          boundaryId: clampToSameRouteBoundaryCap(
+          boundaryId: clampToIncrementalBoundaryCap(
             canonicalDeferredBoundary(cursor, 'warm-empty-cursor'),
-            sameRouteBoundaryCap,
+            incrementalBoundaryCap,
           ),
           projectedMessageIds: [],
           exposedMessageIds: [],
@@ -2006,12 +2150,12 @@ async function assembleIncrementalContextInternal(
         formatPromptTime(epochMs, {
           nowMs: options.nowMs,
           includeAge: 'stale',
-          staleComparisonTimeZone: BRIEFING_TIMEZONE,
+          staleComparisonTimeZone: CO_CREATOR_TIME_ZONE,
         })
     : undefined;
   const lines = capped.map((m) => {
     // F22: Digest rich blocks into compact summaries for context
-    const contentWithDigest = digestRichBlocks(m);
+    const contentWithDigest = projectLifecycleResponsePromptContent(m, digestRichBlocks(m));
     const cleanContent = sanitizeInjectedContent(contentWithDigest);
     const normalized: StoredMessage = cleanContent === m.content ? m : { ...m, content: cleanContent };
     const rendered = formatMessage(normalized, {
@@ -2030,9 +2174,9 @@ async function assembleIncrementalContextInternal(
     const zeroBudgetDegradation = `⚠️ 增量上下文预算耗尽: 系统提示已占满 prompt 预算，${capped.length} 条未读消息全部丢弃`;
     // #1200/#3444: only canonical evidence may enter the deferred ACK slot.
     const zeroLastMsg = capped[capped.length - 1];
-    const zeroBoundaryId = clampToSameRouteBoundaryCap(
+    const zeroBoundaryId = clampToIncrementalBoundaryCap(
       canonicalDeferredBoundary(zeroLastMsg ? cursorFor(zeroLastMsg) : undefined, 'warm-zero-budget-tail'),
-      sameRouteBoundaryCap,
+      incrementalBoundaryCap,
     );
     return {
       ...projectionOutput,
@@ -2086,9 +2230,9 @@ async function assembleIncrementalContextInternal(
           contextText: options?.contextProjection
             ? `${formatContextProjection(options.contextProjection, deltaSize)}\n${navigationHeader}`
             : navigationHeader,
-          boundaryId: clampToSameRouteBoundaryCap(
+          boundaryId: clampToIncrementalBoundaryCap(
             canonicalDeferredBoundary(cursor, 'warm-trimmed-empty-cursor'),
-            sameRouteBoundaryCap,
+            incrementalBoundaryCap,
           ),
           projectedMessageIds: [],
           exposedMessageIds: [],
@@ -2117,9 +2261,9 @@ async function assembleIncrementalContextInternal(
   // #1200/#3444: cursorFor remains graded for general consumers; this producer
   // admits only the canonical branch into deferred delivery state.
   const lastCappedMsg = finalCapped[finalCapped.length - 1];
-  const boundaryId = clampToSameRouteBoundaryCap(
+  const boundaryId = clampToIncrementalBoundaryCap(
     canonicalDeferredBoundary(lastCappedMsg ? cursorFor(lastCappedMsg) : undefined, 'warm-visible-tail'),
-    sameRouteBoundaryCap,
+    incrementalBoundaryCap,
   );
   return {
     ...projectionOutput,
@@ -2161,7 +2305,7 @@ async function assembleSmartWindowContext(
   rankedSources: import('./source-ranking.js').RankedSource[],
   preReadStoredArtifacts: import('./artifact-tracking.js').RecentArtifact[],
   viewer: { type: 'cat'; catId: CatId } | { type: 'user' },
-  sameRouteBoundaryCap: SameRouteBoundaryCap,
+  incrementalBoundaryCap: IncrementalBoundaryCap,
   contextMode: 'cold' | 'hot',
   deltaSize: 'small' | 'large',
 ): Promise<IncrementalContextResult> {
@@ -2216,7 +2360,7 @@ async function assembleSmartWindowContext(
   const compositeQueryTerms = [threadTitle, currentMsgText]
     .concat(
       burst
-        .filter((m) => m.catId === null && m.userId !== 'system')
+        .filter((m) => messageFrom(m).kind === 'user')
         .slice(-2)
         .map((m) => stripStructuralEnvelope(m.content).slice(0, 200)),
     )
@@ -2289,7 +2433,7 @@ async function assembleSmartWindowContext(
 
   // 3.8 Evidence recall (fail-open) — must run before coverage map so hints are populated
   const currentMsg = currentUserMessageId ? burst.find((m) => m.id === currentUserMessageId) : undefined;
-  const nonSystemRecent = burst.filter((m) => m.catId === null && m.userId !== 'system').slice(-2);
+  const nonSystemRecent = burst.filter((m) => messageFrom(m).kind === 'user').slice(-2);
   const recalledEvidence = usesLegacyRecall
     ? await recallEvidenceWithProvenance(
         deps.evidenceStore,
@@ -2359,11 +2503,11 @@ async function assembleSmartWindowContext(
         formatPromptTime(epochMs, {
           nowMs: options.nowMs,
           includeAge: 'stale',
-          staleComparisonTimeZone: BRIEFING_TIMEZONE,
+          staleComparisonTimeZone: CO_CREATOR_TIME_ZONE,
         })
     : undefined;
   const burstLines = scrubbedBurst.map((m) => {
-    const contentWithDigest = digestRichBlocks(m);
+    const contentWithDigest = projectLifecycleResponsePromptContent(m, digestRichBlocks(m));
     const cleanContent = sanitizeInjectedContent(contentWithDigest);
     const normalized: StoredMessage = cleanContent === m.content ? m : { ...m, content: cleanContent };
     const rendered = formatMessage(normalized, {
@@ -2379,9 +2523,9 @@ async function assembleSmartWindowContext(
   // #1200/#3444: cursorFor remains graded for general consumers; this producer
   // admits only the canonical branch into deferred delivery state.
   const lastRelevantMsg = relevant[relevant.length - 1];
-  const boundaryId = clampToSameRouteBoundaryCap(
+  const boundaryId = clampToIncrementalBoundaryCap(
     canonicalDeferredBoundary(lastRelevantMsg ? cursorFor(lastRelevantMsg) : undefined, 'cold-visible-tail'),
-    sameRouteBoundaryCap,
+    incrementalBoundaryCap,
   );
   const directiveSource = selectDirectiveSources(rankedSources)[0];
   const navigationPresentations = [
@@ -2608,4 +2752,22 @@ async function assembleSmartWindowContext(
         }
       : {}),
   };
+}
+
+/**
+ * F309: a publication names a message by its stored time, which the live bubble cannot know on its
+ * own clock. Read it back with the stored id; an unreadable time is left unknown, never guessed.
+ */
+export async function storedMessageTimestamp(
+  store: Pick<IMessageStore, 'getById'>,
+  messageId: string | undefined,
+): Promise<{ messageTimestamp: number } | Record<string, never>> {
+  if (!messageId) return {};
+  try {
+    const stored = await store.getById(messageId);
+    return stored?.id === messageId ? { messageTimestamp: stored.timestamp } : {};
+  } catch (err) {
+    log.warn({ err, messageId }, 'stored message time unreadable; done leaves it unknown');
+    return {};
+  }
 }

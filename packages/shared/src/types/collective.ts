@@ -1,4 +1,26 @@
 import { z } from 'zod';
+import {
+  collectiveDraftSendReceiptSchema,
+  collectiveMessageContentFields,
+  requireCollectiveMessageContent,
+} from './collective-message-content.js';
+
+export * from './collective-message-content.js';
+
+import {
+  collectiveWorkAcceptanceNoticeSchema,
+  collectiveWorkExecutionNoticeSchema,
+} from './collective-work-acceptance.js';
+import {
+  collectiveWorkProgressIntentSchema,
+  collectiveWorkProgressReceiptSchema,
+  collectiveWorkResultFileSchema,
+  collectiveWorkResultIntentSchema,
+  collectiveWorkResultReceiptSchema,
+} from './collective-work-return.js';
+import { collectiveWorkWakeNoticeSchema } from './collective-work-wake.js';
+
+export * from './collective-work-return.js';
 
 const stableId = (prefix: string) =>
   z
@@ -74,6 +96,41 @@ export const collectiveActorSchema = z.discriminatedUnion('kind', [
   collectiveAgentActorSchema,
 ]);
 
+export const collectiveLocationSchema = z
+  .object({
+    channelId: z.string().trim().min(1).max(160),
+    rootEventId: collectiveEventIdSchema.optional(),
+  })
+  .strict();
+
+export const collectiveRecipientSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('channel') }).strict(),
+  z.object({ kind: z.literal('human'), humanId: collectiveHumanIdSchema }).strict(),
+  z
+    .object({
+      kind: z.literal('agent'),
+      humanId: collectiveHumanIdSchema,
+      agentId: z.string().trim().min(1).max(120),
+      connectionId: collectiveConnectionIdSchema,
+      participationRevision: z.number().int().positive(),
+    })
+    .strict(),
+]);
+
+export const collectiveAttentionRequestSchema = z.literal('response_requested');
+
+/** Service-issued pointer carried by a Human feedback event for the same Work. */
+export const collectiveWorkRevisionNoticeSchema = z
+  .object({
+    v: z.literal(1),
+    workId: stableId('work_'),
+    workRevision: z.number().int().positive(),
+    assignmentEventId: collectiveEventIdSchema,
+    resultEventId: collectiveEventIdSchema,
+    resultRevision: z.number().int().positive(),
+  })
+  .strict();
+
 export const collectiveTargetSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('channel'), channelId: z.string().trim().min(1).max(160) }).strict(),
   z.object({ kind: z.literal('message'), eventId: collectiveEventIdSchema }).strict(),
@@ -94,11 +151,69 @@ export const collectiveEventEnvelopeSchema = collectiveCoordinatesSchema
     sequence: z.number().int().positive(),
     actor: collectiveActorSchema,
     target: collectiveTargetSchema,
+    // Optional only for durable legacy history; new events always receive both.
+    location: collectiveLocationSchema.optional(),
+    recipient: collectiveRecipientSchema.optional(),
     replyToEventId: collectiveEventIdSchema.optional(),
-    body: z.string().trim().min(1).max(32_000),
+    attentionRequest: collectiveAttentionRequestSchema.optional(),
+    workRequest: z.enum(['entrust', 'revise', 'continue', 'resume']).optional(),
+    workRevisionNotice: collectiveWorkRevisionNoticeSchema.optional(),
+    workAcceptanceNotice: collectiveWorkAcceptanceNoticeSchema.optional(),
+    workExecutionNotice: collectiveWorkExecutionNoticeSchema.optional(),
+    workWakeNotice: collectiveWorkWakeNoticeSchema.optional(),
+    workResultReceipt: collectiveWorkResultReceiptSchema.optional(),
+    workProgressReceipt: collectiveWorkProgressReceiptSchema.optional(),
+    ...collectiveMessageContentFields,
     acceptedAt: z.string().datetime(),
   })
-  .strict();
+  .strict()
+  .superRefine((event, context) => {
+    requireCollectiveMessageContent(event, context);
+    if (event.workProgressReceipt && (event.actor.kind !== 'agent' || event.workResultReceipt)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['workProgressReceipt'],
+        message: 'Progress needs a named Agent and cannot also be a result',
+      });
+    }
+    if (
+      (event.workRequest === 'continue') !== Boolean(event.workExecutionNotice) ||
+      (event.workExecutionNotice && (event.actor.kind !== 'agent' || event.recipient?.kind !== 'agent'))
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['workExecutionNotice'],
+        message: 'Continuation requires a Service-issued current execution notice',
+      });
+    }
+    if (
+      event.workAcceptanceNotice &&
+      (event.workRequest !== 'entrust' || event.actor.kind !== 'agent' || event.recipient?.kind !== 'agent')
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['workAcceptanceNotice'],
+        message: 'Cat acceptance requires an exact Service-issued assignment',
+      });
+    }
+    if ((event.workRequest === 'revise') !== Boolean(event.workRevisionNotice)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['workRevisionNotice'],
+        message: 'Work revision feedback requires one Service-issued revision notice',
+      });
+    }
+    if (
+      (event.workRequest === 'resume') !== Boolean(event.workWakeNotice) ||
+      (event.workWakeNotice && (event.actor.kind !== 'human' || event.recipient?.kind !== 'agent'))
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['workWakeNotice'],
+        message: 'Same-Task wake requires one Service-issued Human trigger for an exact Agent',
+      });
+    }
+  });
 
 export const collectivePairingIntentSchema = collectiveCoordinatesSchema
   .extend({
@@ -182,11 +297,17 @@ export const collectivePollRequestSchema = collectiveConnectionCoordinatesSchema
 export const collectiveHumanMessageRequestSchema = collectiveCoordinatesSchema
   .extend({
     clientEventId: z.string().trim().min(1).max(200),
-    target: collectiveTargetSchema,
+    target: collectiveTargetSchema.optional(),
+    location: collectiveLocationSchema.optional(),
+    recipient: collectiveRecipientSchema.optional(),
     replyToEventId: collectiveEventIdSchema.optional(),
-    body: z.string().trim().min(1).max(32_000),
+    attentionRequest: collectiveAttentionRequestSchema.optional(),
+    workRequest: z.literal('entrust').optional(),
+    draftReceipt: collectiveDraftSendReceiptSchema.optional(),
+    ...collectiveMessageContentFields,
   })
-  .strict();
+  .strict()
+  .superRefine(requireCollectiveMessageContent);
 
 export const collectiveAgentMessageRequestSchema = collectiveConnectionCoordinatesSchema
   .extend({
@@ -199,19 +320,57 @@ export const collectiveAgentMessageRequestSchema = collectiveConnectionCoordinat
         sessionRef: z.string().trim().min(1).max(240),
       })
       .strict(),
-    target: collectiveTargetSchema,
+    target: collectiveTargetSchema.optional(),
+    location: collectiveLocationSchema.optional(),
+    recipient: collectiveRecipientSchema.optional(),
+    participationRevision: z.number().int().positive().optional(),
     replyToEventId: collectiveEventIdSchema.optional(),
-    body: z.string().trim().min(1).max(32_000),
+    workResultIntent: collectiveWorkResultIntentSchema.optional(),
+    workResultFile: collectiveWorkResultFileSchema.optional(),
+    workProgressIntent: collectiveWorkProgressIntentSchema.optional(),
+    ...collectiveMessageContentFields,
+  })
+  .strict()
+  .superRefine((input, context) => {
+    requireCollectiveMessageContent(input, context);
+    if (input.workResultIntent && input.workProgressIntent)
+      context.addIssue({ code: 'custom', message: 'Choose result or progress, not both' });
+    if (input.workResultFile && !input.workResultIntent)
+      context.addIssue({
+        code: 'custom',
+        path: ['workResultFile'],
+        message: 'A result file requires one exact Work result intent',
+      });
+  });
+
+/** Connector-owned idempotent binding for a result event accepted before file publication existed. */
+export const collectiveWorkResultFileBindingRequestSchema = collectiveConnectionCoordinatesSchema
+  .extend({
+    resultEventId: collectiveEventIdSchema,
+    workResultFile: collectiveWorkResultFileSchema,
+  })
+  .strict();
+
+export const collectiveWorkResultFileBindingResponseSchema = z
+  .object({
+    resultEventId: collectiveEventIdSchema,
+    fileId: collectiveWorkResultFileSchema.shape.fileId,
   })
   .strict();
 
 export type CollectiveCoordinates = z.infer<typeof collectiveCoordinatesSchema>;
 export type CollectiveConnectionCoordinates = z.infer<typeof collectiveConnectionCoordinatesSchema>;
+export type CollectiveWorkResultFileBindingRequest = z.infer<typeof collectiveWorkResultFileBindingRequestSchema>;
+export type CollectiveWorkResultFileBindingResponse = z.infer<typeof collectiveWorkResultFileBindingResponseSchema>;
 export type CollectiveClientAnchor = z.infer<typeof collectiveClientAnchorSchema>;
 export type CollectiveHumanActor = z.infer<typeof collectiveHumanActorSchema>;
 export type CollectiveAgentActor = z.infer<typeof collectiveAgentActorSchema>;
 export type CollectiveActor = z.infer<typeof collectiveActorSchema>;
+export type CollectiveAttentionRequest = z.infer<typeof collectiveAttentionRequestSchema>;
+export type CollectiveWorkRevisionNotice = z.infer<typeof collectiveWorkRevisionNoticeSchema>;
 export type CollectiveTarget = z.infer<typeof collectiveTargetSchema>;
+export type CollectiveLocation = z.infer<typeof collectiveLocationSchema>;
+export type CollectiveRecipient = z.infer<typeof collectiveRecipientSchema>;
 export type CollectiveEventEnvelope = z.infer<typeof collectiveEventEnvelopeSchema>;
 export type CollectivePairingIntent = z.infer<typeof collectivePairingIntentSchema>;
 export type CollectivePairingIntentMessage = z.infer<typeof collectivePairingIntentMessageSchema>;

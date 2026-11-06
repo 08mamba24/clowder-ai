@@ -1,7 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { _resetDossierCache, loadDossierProfiles, loadDossierSnapshot } from '../dossier/load-dossier-profiles.js';
 import { parseDossierProfilesWithDiagnostics } from '../dossier/parse-dossier-profiles.js';
@@ -46,13 +45,6 @@ describe('dossier read snapshots', () => {
     rmSync(path);
     expect(loadDossierSnapshot(root).state).toBe('absent');
   });
-
-  test('canonical dossier produces no syntax or identity diagnostics', () => {
-    const root = fileURLToPath(new URL('../../../../', import.meta.url));
-    const snapshot = loadDossierSnapshot(root);
-    expect(snapshot).toMatchObject({ state: 'loaded', diagnostics: [] });
-    expect(snapshot.profiles.size).toBeGreaterThan(0);
-  });
 });
 
 describe('canonical parser diagnostic projection', () => {
@@ -68,7 +60,11 @@ describe('canonical parser diagnostic projection', () => {
     ['duplicate_profile', valid + valid],
   ])('%s is observable beside surviving valid profiles', (reason, broken) => {
     const parsed = parseDossierProfilesWithDiagnostics(broken);
-    expect(parsed.diagnostics).toContainEqual({ catId: 'fixture', reason });
+    expect(parsed.diagnostics).toContainEqual({
+      catId: 'fixture',
+      reason,
+      line: reason === 'duplicate_profile' ? 7 : 2,
+    });
   });
 
   test('supports CRLF blocks without changing the canonical field projection', () => {

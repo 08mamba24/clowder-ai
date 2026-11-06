@@ -26,7 +26,14 @@ import type {
   SessionUsageSnapshot,
 } from '@cat-cafe/shared';
 import type { RedisClient } from '@cat-cafe/shared/utils';
+import { isHomeSession } from '../../session/session-scope.js';
+import {
+  observeSessionChainRead,
+  type SessionChainReadOptions,
+  type SessionIndexBuildObservation,
+} from '../ports/SessionChainReadOptions.js';
 import type {
+  CliSessionBinding,
   CompressionEventResult,
   CreateSessionInput,
   ISessionChainStore,
@@ -34,6 +41,7 @@ import type {
   RestoreActiveSessionResult,
   SessionRecordPatch,
 } from '../ports/SessionChainStore.js';
+import { assertScopedSessionCreation } from '../ports/SessionChainStore.js';
 import type { StoreReadOptions } from '../ports/StoreReadOptions.js';
 import { awaitStoreRead, throwIfStoreReadAborted } from '../ports/StoreReadOptions.js';
 import { SessionChainKeys } from '../redis-keys/session-chain-keys.js';
@@ -83,13 +91,16 @@ if ARGV[8] ~= '' then
 end
 if ARGV[9] ~= '' then redis.call('HSET', KEYS[3], 'workingDirectory', ARGV[9]) end
 if ARGV[10] ~= '' then redis.call('HSET', KEYS[3], 'workspaceFingerprint', ARGV[10]) end
+if ARGV[14] ~= '' then redis.call('HSET', KEYS[3], 'scopedInvocation', ARGV[14]) end
 ${DEFAULT_TTL_SECONDS > 0 ? `redis.call('EXPIRE', KEYS[3], ${DEFAULT_TTL_SECONDS})` : '-- persistent mode: no EXPIRE'}
 redis.call('ZADD', KEYS[2], seq, ARGV[1])
 ${DEFAULT_TTL_SECONDS > 0 ? `redis.call('EXPIRE', KEYS[2], ${DEFAULT_TTL_SECONDS})` : '-- persistent mode: no EXPIRE'}
 redis.call('SADD', KEYS[6], ARGV[11])
 ${DEFAULT_TTL_SECONDS > 0 ? `redis.call('EXPIRE', KEYS[6], ${DEFAULT_TTL_SECONDS})` : '-- persistent mode: no EXPIRE'}
-${DEFAULT_TTL_SECONDS > 0 ? `redis.call('SET', KEYS[1], ARGV[1], 'EX', ${DEFAULT_TTL_SECONDS})` : `redis.call('SET', KEYS[1], ARGV[1])`}
-${DEFAULT_TTL_SECONDS > 0 ? `redis.call('SET', KEYS[7], ARGV[1], 'EX', ${DEFAULT_TTL_SECONDS})` : `redis.call('SET', KEYS[7], ARGV[1])`}
+if ARGV[14] == '' then
+  ${DEFAULT_TTL_SECONDS > 0 ? `redis.call('SET', KEYS[1], ARGV[1], 'EX', ${DEFAULT_TTL_SECONDS})` : `redis.call('SET', KEYS[1], ARGV[1])`}
+  ${DEFAULT_TTL_SECONDS > 0 ? `redis.call('SET', KEYS[7], ARGV[1], 'EX', ${DEFAULT_TTL_SECONDS})` : `redis.call('SET', KEYS[7], ARGV[1])`}
+end
 if ARGV[2] ~= '' then
   ${DEFAULT_TTL_SECONDS > 0 ? `redis.call('SET', KEYS[4], ARGV[1], 'EX', ${DEFAULT_TTL_SECONDS})` : `redis.call('SET', KEYS[4], ARGV[1])`}
 end
@@ -97,6 +108,7 @@ return {'created', ARGV[1], tostring(seq)}
 `;
 
 const BIND_CLI_LUA = `
+if redis.call('HEXISTS', KEYS[1], 'scopedInvocation') == 1 then return {'scoped'} end
 if redis.call('EXISTS', KEYS[1]) == 0 then return {'missing'} end
 if redis.call('HGET', KEYS[1], 'status') ~= 'active' then return {'inactive'} end
 local claimedBy = redis.call('GET', KEYS[2])
@@ -153,6 +165,9 @@ if redis.call('HGET', KEYS[1], 'userId') ~= ARGV[5]
 end
 local actualActive = redis.call('GET', KEYS[3]) or ''
 local targetStatus = redis.call('HGET', KEYS[1], 'status') or ''
+if redis.call('HEXISTS', KEYS[1], 'scopedInvocation') == 1 then
+  return {'target_not_restorable', targetStatus}
+end
 if targetStatus == 'active' and actualActive == ARGV[1] then
   return {'already_active'}
 end
@@ -299,12 +314,19 @@ return 1
 export class RedisSessionChainStore implements ISessionChainStore {
   private readonly redis: RedisClient;
   private threadIndexReady = false;
+  private threadIndexBuild: {
+    promise: Promise<void>;
+    controller: AbortController;
+    readers: number;
+    observation: SessionIndexBuildObservation;
+  } | null = null;
 
   constructor(redis: RedisClient) {
     this.redis = redis;
   }
 
   async create(input: CreateSessionInput): Promise<SessionRecord> {
+    assertScopedSessionCreation(input);
     const { randomUUID } = await import('node:crypto');
     const cliKey = SessionChainKeys.byCli(input.cliSessionId ?? '__unbound__');
 
@@ -343,17 +365,22 @@ export class RedisSessionChainStore implements ISessionChainStore {
         chainSetKey,
         input.reuseExistingActive ? '1' : '0',
         input.compressionCount == null ? '' : String(input.compressionCount),
+        input.scopedInvocation ? JSON.stringify(input.scopedInvocation) : '',
       )) as [string, string, string?];
 
       const [status, recordId, seqRaw] = result;
       if (status === 'existing' || status === 'existing_active') {
         const existing = await this.get(recordId);
         if (status === 'existing') {
-          if (existing) return existing;
+          if (existing) {
+            if (existing.scopedInvocation) throw new Error('scoped_session_not_resumable');
+            return existing;
+          }
           await this.redis.eval(COMPARE_DELETE_LUA, 1, cliKey, recordId);
         } else {
           if (
             existing?.status === 'active' &&
+            !existing.scopedInvocation &&
             existing.userId === input.userId &&
             existing.catId === input.catId &&
             existing.threadId === input.threadId
@@ -373,6 +400,7 @@ export class RedisSessionChainStore implements ISessionChainStore {
       const seq = Number.parseInt(seqRaw ?? '0', 10);
       return {
         id: recordId,
+        ...(input.scopedInvocation ? { scopedInvocation: Object.freeze({ ...input.scopedInvocation }) } : {}),
         ...(input.cliSessionId ? { cliSessionId: input.cliSessionId } : {}),
         threadId: input.threadId,
         catId: input.catId as CatId,
@@ -395,6 +423,7 @@ export class RedisSessionChainStore implements ISessionChainStore {
   }
 
   async getOrCreateActive(input: CreateSessionInput): Promise<SessionRecord> {
+    if (input.scopedInvocation) throw new Error('scoped_session_not_resumable');
     const active = await this.getActive(input.catId, input.threadId, input.userId);
     if (active) return active;
     if (!input.cliSessionId) return this.create({ ...input, reuseExistingActive: true });
@@ -576,7 +605,8 @@ export class RedisSessionChainStore implements ISessionChainStore {
     const activeId = await this.redis.get(activeKey);
     if (activeId) {
       const record = await this.get(activeId);
-      if (record?.status === 'active' && (userId === undefined || record.userId === userId)) return record;
+      if (isHomeSession(record) && record.status === 'active' && (userId === undefined || record.userId === userId))
+        return record;
       await this.redis.eval(COMPARE_DELETE_LUA, 1, activeKey, activeId);
     }
     if (userId === undefined) return null;
@@ -585,7 +615,7 @@ export class RedisSessionChainStore implements ISessionChainStore {
     // the existing durable chain once, then materializing the owner index.
     const active = [...(await this.getChain(catId, threadId, userId))]
       .reverse()
-      .find((record) => record.status === 'active');
+      .find((record) => isHomeSession(record) && record.status === 'active');
     if (!active) return null;
     if (DEFAULT_TTL_SECONDS > 0) await this.redis.set(activeKey, active.id, 'EX', DEFAULT_TTL_SECONDS);
     else await this.redis.set(activeKey, active.id);
@@ -615,12 +645,14 @@ export class RedisSessionChainStore implements ISessionChainStore {
     return records.sort((a, b) => a.seq - b.seq);
   }
 
-  async getChainByThread(threadId: string, options?: StoreReadOptions): Promise<SessionRecord[]> {
+  async getChainByThread(threadId: string, options?: SessionChainReadOptions): Promise<SessionRecord[]> {
     throwIfStoreReadAborted(options);
     await this.ensureThreadIndex(options);
     throwIfStoreReadAborted(options);
+    observeSessionChainRead(options, { phase: 'chain_keys' });
     const chainKeys = await awaitStoreRead(this.redis.smembers(SessionChainKeys.byThread(threadId)), options);
 
+    observeSessionChainRead(options, { phase: 'chain_members' });
     const allIds: string[] = [];
     for (const chainKey of chainKeys) {
       throwIfStoreReadAborted(options);
@@ -629,6 +661,7 @@ export class RedisSessionChainStore implements ISessionChainStore {
     }
     if (!allIds.length) return [];
 
+    observeSessionChainRead(options, { phase: 'session_records' });
     const pipeline = this.redis.pipeline();
     for (const id of allIds) {
       throwIfStoreReadAborted(options);
@@ -651,14 +684,81 @@ export class RedisSessionChainStore implements ISessionChainStore {
   }
 
   /**
-   * Phase A shipped before the per-thread index existed. Rebuild it once per
-   * store instance from the durable chain keys, then keep it current in the
-   * create Lua transaction. A failed/aborted rebuild deliberately leaves the
-   * flag false so the next caller retries instead of trusting a partial index.
+   * Phase A shipped before the per-thread index existed. Backfill legacy chains
+   * once per database, then keep the index current in the create Lua transaction.
+   * A durable completion marker avoids scanning the whole database on every API
+   * restart. Failed/aborted backfills never certify a partial index.
    */
-  private async ensureThreadIndex(options?: StoreReadOptions): Promise<void> {
-    if (this.threadIndexReady) return;
-    const chainKeys = await this.scanKeys('session-chain:*', options);
+  private async ensureThreadIndex(options?: SessionChainReadOptions): Promise<void> {
+    if (this.threadIndexReady) {
+      observeSessionChainRead(options, { phase: 'index_wait', index: { mode: 'ready' } });
+      return;
+    }
+    const mode = this.threadIndexBuild ? 'joined' : 'started';
+    if (!this.threadIndexBuild) {
+      const controller = new AbortController();
+      const observation: SessionIndexBuildObservation = {
+        id: crypto.randomUUID(),
+        phase: 'checking',
+        scanBatches: 0,
+        chainKeys: 0,
+      };
+      const build = (async () => {
+        const readOptions = { signal: controller.signal };
+        const complete = await awaitStoreRead(this.redis.get(SessionChainKeys.threadIndexComplete()), readOptions);
+        controller.signal.throwIfAborted();
+        if (complete === '1') {
+          this.threadIndexReady = true;
+          observation.phase = 'ready';
+          return;
+        }
+        observation.phase = 'scan';
+        const scanStarted = performance.now();
+        const chainKeys = await this.scanKeys('session-chain:*', { signal: controller.signal }, (count) => {
+          observation.scanBatches += 1;
+          observation.chainKeys += count;
+        });
+        observation.scanMs = Math.round(performance.now() - scanStarted);
+        observation.phase = 'backfill';
+        const backfillStarted = performance.now();
+        await this.backfillThreadIndex(chainKeys, readOptions);
+        controller.signal.throwIfAborted();
+        // No TTL: this proof belongs to the same persistent dataset as its indexes.
+        // Old binaries already maintain byThread in CREATE_LUA and can ignore it.
+        await awaitStoreRead(this.redis.set(SessionChainKeys.threadIndexComplete(), '1'), readOptions);
+        this.threadIndexReady = true;
+        observation.backfillMs = Math.round(performance.now() - backfillStarted);
+        observation.phase = 'ready';
+      })();
+      const state = { promise: build, controller, readers: 0, observation };
+      this.threadIndexBuild = state;
+      // A canceled caller may have stopped waiting before the shared promise
+      // rejects. Observe that rejection and leave the next cold read free to retry.
+      void build.then(
+        () => {
+          if (this.threadIndexBuild === state) this.threadIndexBuild = null;
+        },
+        () => {
+          observation.phase = controller.signal.aborted ? 'aborted' : 'failed';
+          if (this.threadIndexBuild === state) this.threadIndexBuild = null;
+        },
+      );
+    }
+    const state = this.threadIndexBuild;
+    observeSessionChainRead(options, { phase: 'index_wait', index: { mode, build: state.observation } });
+    state.readers += 1;
+    try {
+      await awaitStoreRead(state.promise, options);
+    } finally {
+      state.readers -= 1;
+      if (state.readers === 0 && !this.threadIndexReady && !state.controller.signal.aborted) {
+        if (this.threadIndexBuild === state) this.threadIndexBuild = null;
+        state.controller.abort(options?.signal?.reason ?? new Error('Session index build has no active readers'));
+      }
+    }
+  }
+
+  private async backfillThreadIndex(chainKeys: string[], options: StoreReadOptions): Promise<void> {
     const BATCH_SIZE = 500;
     for (let i = 0; i < chainKeys.length; i += BATCH_SIZE) {
       throwIfStoreReadAborted(options);
@@ -667,16 +767,23 @@ export class RedisSessionChainStore implements ISessionChainStore {
         const threadId = parseThreadIdFromChainKey(chainKey);
         if (threadId) pipeline.sadd(SessionChainKeys.byThread(threadId), chainKey);
       }
-      await awaitStoreRead(pipeline.exec(), options);
+      const results = await awaitStoreRead(pipeline.exec(), options);
+      if (!results) throw new Error('Session thread index backfill returned no results');
+      for (const [error] of results) {
+        if (error) throw error;
+      }
     }
-    throwIfStoreReadAborted(options);
-    this.threadIndexReady = true;
   }
 
   async update(id: string, patch: SessionRecordPatch): Promise<SessionRecord | null> {
+    if ('scopedInvocation' in patch) throw new Error('scoped_session_identity_immutable');
     const detailKey = SessionChainKeys.detail(id);
     const exists = await this.redis.exists(detailKey);
     if (!exists) return null;
+    if (patch.cliSessionId !== undefined && (await this.redis.hexists(detailKey, 'scopedInvocation')))
+      throw new Error('scoped_session_identity_immutable');
+    if (patch.status === 'active' && (await this.redis.hexists(detailKey, 'scopedInvocation')))
+      throw new Error('scoped_session_not_resumable');
 
     const pairs: string[] = [];
     const deleteFields: string[] = [];
@@ -708,7 +815,7 @@ export class RedisSessionChainStore implements ISessionChainStore {
       if (catId && threadId && userId) {
         const activeKey = SessionChainKeys.active(catId, threadId);
         const ownerActiveKey = SessionChainKeys.activeOwner(userId, catId, threadId);
-        if (patch.status === 'active') {
+        if (patch.status === 'active' && !(await this.redis.hexists(detailKey, 'scopedInvocation'))) {
           if (DEFAULT_TTL_SECONDS > 0) {
             await this.redis.set(activeKey, id, 'EX', DEFAULT_TTL_SECONDS);
             await this.redis.set(ownerActiveKey, id, 'EX', DEFAULT_TTL_SECONDS);
@@ -734,6 +841,9 @@ export class RedisSessionChainStore implements ISessionChainStore {
     if (patch.lastUsage !== undefined) {
       pairs.push('lastUsage', JSON.stringify(patch.lastUsage));
     }
+    if (patch.externalImport !== undefined) pairs.push('externalImport', JSON.stringify(patch.externalImport));
+    if (patch.nativeSessionBinding !== undefined)
+      pairs.push('nativeSessionBinding', JSON.stringify(patch.nativeSessionBinding));
     if (patch.messageCount !== undefined) {
       pairs.push('messageCount', String(patch.messageCount));
     }
@@ -800,6 +910,43 @@ export class RedisSessionChainStore implements ISessionChainStore {
     const id = await this.redis.get(SessionChainKeys.byCli(cliSessionId));
     if (!id) return null;
     return this.get(id);
+  }
+
+  async getCliSessionBindings(cliSessionIds: readonly string[]): Promise<Map<string, CliSessionBinding>> {
+    const bindings = new Map<string, CliSessionBinding>();
+    const cliIds = [...new Set(cliSessionIds)];
+    if (cliIds.length === 0) return bindings;
+    const ids = await this.redis.mget(...cliIds.map(SessionChainKeys.byCli));
+    const indexed = ids.flatMap((id, index) => (id ? [{ id, cliSessionId: cliIds[index] as string }] : []));
+    if (indexed.length === 0) return bindings;
+    const pipe = this.redis.pipeline();
+    for (const { id } of indexed)
+      pipe.hmget(SessionChainKeys.detail(id), 'id', 'cliSessionId', 'threadId', 'catId', 'userId', 'externalImport');
+    const results = await pipe.exec();
+    if (!results) throw new Error('Session claim index read failed');
+    for (const [index, [error, fields]] of results.entries()) {
+      if (error) throw error;
+      const expected = indexed[index];
+      if (!expected || !Array.isArray(fields)) continue;
+      const [id, cliSessionId, threadId, catId, userId, externalImport] = fields;
+      if (
+        id !== expected.id ||
+        cliSessionId !== expected.cliSessionId ||
+        typeof threadId !== 'string' ||
+        typeof catId !== 'string' ||
+        typeof userId !== 'string'
+      )
+        continue;
+      bindings.set(cliSessionId, {
+        id,
+        cliSessionId,
+        threadId,
+        catId: catId as CatId,
+        userId,
+        isExternalImport: Boolean(externalImport),
+      });
+    }
+    return bindings;
   }
 
   async getByChainKey(chainKey: string): Promise<SessionRecord | null> {
@@ -899,10 +1046,26 @@ export class RedisSessionChainStore implements ISessionChainStore {
     const consecutiveRestoreFailures = data.consecutiveRestoreFailures
       ? parseInt(data.consecutiveRestoreFailures, 10)
       : undefined;
+    const scopedInvocation = data.scopedInvocation
+      ? (JSON.parse(data.scopedInvocation) as SessionRecord['scopedInvocation'])
+      : undefined;
+    if (data.scopedInvocation) {
+      if (!scopedInvocation) throw new Error('scoped_session_identity_invalid');
+      assertScopedSessionCreation({
+        threadId: data.threadId!,
+        catId: data.catId as CatId,
+        userId: data.userId!,
+        scopedInvocation,
+      });
+    }
 
     return {
       id: data.id!,
+      ...(scopedInvocation ? { scopedInvocation: Object.freeze(scopedInvocation) } : {}),
       ...(data.cliSessionId ? { cliSessionId: data.cliSessionId } : {}),
+      ...(data.externalImport
+        ? { externalImport: JSON.parse(data.externalImport) as SessionRecord['externalImport'] }
+        : {}),
       threadId: data.threadId!,
       catId: data.catId as CatId,
       userId: data.userId!,
@@ -912,6 +1075,9 @@ export class RedisSessionChainStore implements ISessionChainStore {
       status: (data.status as SessionStatus) ?? 'active',
       ...(contextHealth ? { contextHealth } : {}),
       ...(capacityPin ? { capacityPin } : {}),
+      ...(data.nativeSessionBinding
+        ? { nativeSessionBinding: JSON.parse(data.nativeSessionBinding) as SessionRecord['nativeSessionBinding'] }
+        : {}),
       ...(lastUsage ? { lastUsage } : {}),
       messageCount: parseInt(data.messageCount ?? '0', 10),
       compressionCount,
@@ -936,7 +1102,11 @@ export class RedisSessionChainStore implements ISessionChainStore {
    * We must manually add the keyPrefix for matching, then strip it from results
    * so that subsequent commands (which DO auto-prefix) work correctly.
    */
-  private async scanKeys(pattern: string, options?: StoreReadOptions): Promise<string[]> {
+  private async scanKeys(
+    pattern: string,
+    options?: StoreReadOptions,
+    onBatch?: (count: number) => void,
+  ): Promise<string[]> {
     throwIfStoreReadAborted(options);
     const prefix = (this.redis.options as { keyPrefix?: string }).keyPrefix ?? '';
     const prefixedPattern = `${prefix}${pattern}`;
@@ -958,6 +1128,7 @@ export class RedisSessionChainStore implements ISessionChainStore {
         else resolve(keys);
       };
       const onData = (batch: string[]): void => {
+        onBatch?.(batch.length);
         for (const k of batch) {
           // Strip prefix so subsequent auto-prefixing commands work
           const stripped = prefix && k.startsWith(prefix) ? k.slice(prefix.length) : k;

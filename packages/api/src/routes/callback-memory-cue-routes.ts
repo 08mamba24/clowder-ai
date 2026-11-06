@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
-import type { RecallScopeV1 } from '@cat-cafe/shared';
+import {
+  type MemoryCueDocumentWindowRequest,
+  memoryCueDocumentWindowRequestSchema,
+  type OwnerTruthRefV1,
+  ownerTruthRefV1Schema,
+  type RecallScopeV1,
+} from '@cat-cafe/shared';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import {
@@ -12,19 +18,28 @@ import type {
 } from '../domains/memory/cue/MemoryCueDrillHandleService.js';
 import {
   MemoryCueEpisodeStore,
+  type MemoryCueEvent,
   MemoryCueInvalidatedError,
   type MemoryCueInvalidationReason,
   MemoryCuePresentationRequiredError,
+  memoryCueConsumptionIdempotencyKey,
 } from '../domains/memory/cue/MemoryCueEpisodeStore.js';
+import {
+  type CurrentMemoryCueSource,
+  readMemoryCueCurrentSource,
+  resolveMemoryCueOutcomeSettlement,
+} from '../domains/memory/cue/MemoryCueOutcomeSettlement.js';
 import type { MemoryCueSourceReader } from '../domains/memory/cue/MemoryCueSourceReader.js';
 import { catOwnedSeedDrillPayloadSchema } from '../domains/memory/cue/sources/CatOwnedSeedMemoryCueSource.js';
 import { TASTE_TASK_BUNDLE_SOURCE_ANCHOR_PREFIX } from '../domains/memory/cue/TasteTaskBundleCatalog.js';
 import { requireCallbackAuth } from './callback-auth-prehandler.js';
+import { memoryCueOutcomeReadyOrReply } from './callback-memory-cue-outcome-response.js';
 
 const drillBodySchema = z
   .object({
     handle: z.string().trim().min(1).max(2_000),
     requestId: z.string().trim().min(1).max(200),
+    window: memoryCueDocumentWindowRequestSchema.optional(),
   })
   .strict();
 
@@ -97,19 +112,15 @@ function appendConsumption(
   outcome: 'drilled' | 'applied' | 'dismissed',
   requestId: string,
   occurredAt: number,
-): void {
-  const idempotencyKey = consumptionIdempotencyKey(coordinate.cueId, outcome, requestId);
-  store.append({
+): MemoryCueEvent {
+  const idempotencyKey = memoryCueConsumptionIdempotencyKey(coordinate.cueId, outcome, requestId);
+  return store.append({
     ...eventBase(coordinate, occurredAt),
     eventId: idempotencyKey,
     idempotencyKey,
     axis: 'consumption',
     consumptionOutcome: outcome,
   });
-}
-
-function consumptionIdempotencyKey(cueId: string, outcome: 'drilled' | 'applied' | 'dismissed', requestId: string) {
-  return `memory-cue-consumption-${eventHash('consumption', cueId, outcome, requestId)}`;
 }
 
 function serverScope(auth: { userId: string; threadId: string; invocationId: string }): RecallScopeV1 {
@@ -139,14 +150,21 @@ function appendConsumptionOrReply(
   requestId: string,
   now: number,
   reply: FastifyReply,
-): boolean {
+): MemoryCueEvent | null {
   try {
-    appendConsumption(deps.episodeStore, coordinate, outcome, requestId, now);
-    return true;
+    return appendConsumption(deps.episodeStore, coordinate, outcome, requestId, now);
   } catch (error) {
-    if (replyLedgerConflict(reply, error)) return false;
+    if (replyLedgerConflict(reply, error)) return null;
     throw error;
   }
+}
+
+function memoryCueOutcomeRef(event: MemoryCueEvent): OwnerTruthRefV1 {
+  return ownerTruthRefV1Schema.parse({
+    ownerFeatureId: 'F287',
+    ownerStateRef: `memory-cue-consumption:${event.eventId}`,
+    version: event.createdAt,
+  });
 }
 
 function verifyCoordinate(
@@ -178,18 +196,11 @@ async function readCurrentSource(
   consumerCatId: string,
   now: number,
   reply: FastifyReply,
-): Promise<{ status: 'ok'; payload: unknown } | null> {
-  let source: Awaited<ReturnType<MemoryCueSourceReader['read']>>;
-  try {
-    source = await deps.sourceReader.read({
-      family: coordinate.family,
-      anchor: coordinate.anchor,
-      expectedRevision: coordinate.revision,
-      scope: coordinate.scope,
-      consumerCatId,
-    });
-  } catch {
-    reply.status(404).send({ error: 'not_available' });
+  window?: MemoryCueDocumentWindowRequest,
+): Promise<CurrentMemoryCueSource | null> {
+  const source = await readMemoryCueCurrentSource(deps.sourceReader, coordinate, consumerCatId, window);
+  if (source.status === 'source_read_failed') {
+    reply.status(503).send({ error: 'source_read_failed', retryable: true });
     return null;
   }
   if (source.status === 'ok') return source;
@@ -208,8 +219,9 @@ async function verifyApplicationEvidence(input: {
   auth: { threadId: string; catId: string; invocationId: string };
   now: number;
   reply: FastifyReply;
+  currentSource?: CurrentMemoryCueSource;
 }): Promise<boolean> {
-  const { coordinate, deps, outcome, requestId, auth, now, reply } = input;
+  const { coordinate, deps, outcome, requestId, auth, now, reply, currentSource } = input;
   if (outcome !== 'applied') {
     return true;
   }
@@ -224,13 +236,13 @@ async function verifyApplicationEvidence(input: {
       scope: coordinate.scope,
       cueId: coordinate.cueId,
       outcome,
-      idempotencyKey: consumptionIdempotencyKey(coordinate.cueId, outcome, requestId),
+      idempotencyKey: memoryCueConsumptionIdempotencyKey(coordinate.cueId, outcome, requestId),
       ...(coordinate.consumerCatId ? { consumerCatId: coordinate.consumerCatId } : {}),
     })
   ) {
     return true;
   }
-  const source = await readCurrentSource(deps, coordinate, auth.catId, now, reply);
+  const source = currentSource ?? (await readCurrentSource(deps, coordinate, auth.catId, now, reply));
   if (!source) return false;
   const hasDrilled = deps.episodeStore.hasConsumptionOutcome(
     coordinate.scope,
@@ -276,7 +288,16 @@ export function registerCallbackMemoryCueRoutes(app: FastifyInstance, deps: Call
     const now = deps.now();
     const coordinate = verifyCoordinate(deps, body.data.handle, serverScope(auth), auth.catId as string, now, reply);
     if (!coordinate) return;
-    const source = await readCurrentSource(deps, coordinate, auth.catId as string, now, reply);
+    if (
+      body.data.window &&
+      (coordinate.family !== 'evidence' || !/^(?:project-collection:|F\d{3,}$|ADR-\d{3}$)/.test(coordinate.anchor))
+    ) {
+      return reply.status(400).send({
+        error: 'window_not_supported',
+        details: 'window requires a canonical project document cue; omit window for other sources.',
+      });
+    }
+    const source = await readCurrentSource(deps, coordinate, auth.catId as string, now, reply, body.data.window);
     if (!source) return;
     if (!appendConsumptionOrReply(deps, coordinate, 'drilled', body.data.requestId, now, reply)) return;
     return { status: 'ok', payload: source.payload };
@@ -288,8 +309,22 @@ export function registerCallbackMemoryCueRoutes(app: FastifyInstance, deps: Call
     const body = outcomeBodySchema.safeParse(request.body);
     if (!body.success) return invalid(reply, body.error);
     const now = deps.now();
-    const coordinate = verifyCoordinate(deps, body.data.handle, serverScope(auth), auth.catId as string, now, reply);
-    if (!coordinate) return;
+    const resolution = await resolveMemoryCueOutcomeSettlement({
+      handles: deps.handles,
+      episodeStore: deps.episodeStore,
+      sourceReader: deps.sourceReader,
+      handle: body.data.handle,
+      scope: serverScope(auth),
+      catId: auth.catId as string,
+      outcome: body.data.outcome,
+      requestId: body.data.requestId,
+      now,
+    });
+    const ready = memoryCueOutcomeReadyOrReply(resolution, reply, (coordinate, reason) =>
+      appendInvalidation(deps.episodeStore, coordinate, reason, now),
+    );
+    if (!ready) return;
+    const { coordinate, currentSource } = ready;
     if (
       !(await verifyApplicationEvidence({
         deps,
@@ -299,10 +334,17 @@ export function registerCallbackMemoryCueRoutes(app: FastifyInstance, deps: Call
         auth: { threadId: auth.threadId, catId: auth.catId as string, invocationId: auth.invocationId },
         now,
         reply,
+        ...(currentSource ? { currentSource } : {}),
       }))
     )
       return;
-    if (!appendConsumptionOrReply(deps, coordinate, body.data.outcome, body.data.requestId, now, reply)) return;
-    return { status: 'recorded', outcome: body.data.outcome };
+    const event = appendConsumptionOrReply(deps, coordinate, body.data.outcome, body.data.requestId, now, reply);
+    if (!event) return;
+    return {
+      status: 'recorded',
+      outcome: body.data.outcome,
+      outcomeRef: memoryCueOutcomeRef(event),
+      ...(ready.settlement ? { settlement: ready.settlement } : {}),
+    };
   });
 }

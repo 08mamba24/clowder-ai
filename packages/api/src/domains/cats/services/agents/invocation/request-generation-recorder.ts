@@ -6,18 +6,23 @@ import type {
   RequestGenerationRetryReason,
   RequestGenerationSourceRef,
   RequestGenerationTerminalEvent,
+  SessionRecord,
 } from '@cat-cafe/shared';
 import {
   requestGenerationEnvelopeV1Schema,
   requestGenerationObservedEventSchema,
   requestGenerationTerminalEventSchema,
 } from '@cat-cafe/shared';
-import { CURRENT_RELATIONSHIP_PROFILE_URI, renderUserCapsuleSection } from '@cat-cafe/shared/profile-contract';
-import type { FileProfileRepository } from '../../profile/ProfileRepository.js';
-import { encodeProfileSourceRef } from '../../session/request-generation-source-policy.js';
+import type { NativeProfileOpeningDelivery } from '../../../../memory/profile/native-profile-opening.js';
 import type { TranscriptSessionInfo, TranscriptWriter } from '../../session/TranscriptWriter.js';
 import type { ISessionChainStore } from '../../stores/ports/SessionChainStore.js';
 import type { PreparedProviderRequestV1, ProviderRequestGenerationCommitV1 } from '../../types.js';
+
+import {
+  type CapsuleSourceRepository,
+  nativeOpeningCapsuleRevision,
+  requestGenerationCapsuleSourceRefs,
+} from './request-generation-capsule-source.js';
 
 export interface RequestGenerationRecorderSnapshot {
   readonly continuity: RequestGenerationEnvelopeV1['continuity'];
@@ -52,6 +57,7 @@ interface GenerationState {
   readonly runtime: PreparedProviderRequestV1['runtime'];
   observed: boolean;
   terminal: boolean;
+  openingCapsuleRevision?: string;
 }
 
 function transcriptSession(record: {
@@ -166,45 +172,6 @@ function persistedRetryBoundary(
   };
 }
 
-type ProfileSourceRepository = Pick<FileProfileRepository, 'readCapsule' | 'scope' | 'readPrimer'>;
-
-async function embeddedCapsuleSourceRef(input: {
-  readonly body: string;
-  readonly userId: string;
-  readonly profileRepository?: ProfileSourceRepository;
-  readonly digest: (value: string) => Promise<string>;
-}): Promise<RequestGenerationSourceRef | undefined> {
-  if (!input.body.includes('## 主人画像')) return undefined;
-  let rendered = '';
-  try {
-    const capsule = input.profileRepository?.readCapsule(input.userId);
-    rendered = capsule ? renderUserCapsuleSection(capsule.content) : '';
-  } catch {
-    rendered = '';
-  }
-  const digest = rendered && input.body.includes(rendered) ? await input.digest(rendered) : 'unresolved';
-  return { owner: 'home_state', ref: encodeProfileSourceRef('capsule', digest) };
-}
-
-async function embeddedPrimerSourceRef(input: {
-  readonly body: string;
-  readonly userId: string;
-  readonly catId: CatId;
-  readonly profileRepository?: ProfileSourceRepository;
-  readonly digest: (value: string) => Promise<string>;
-}): Promise<RequestGenerationSourceRef | undefined> {
-  if (!input.body.includes(CURRENT_RELATIONSHIP_PROFILE_URI)) return undefined;
-  let primer: { content: string } | null = null;
-  try {
-    const scope = input.profileRepository?.scope(input.userId, input.catId);
-    primer = scope && input.profileRepository ? input.profileRepository.readPrimer(scope) : null;
-  } catch {
-    primer = null;
-  }
-  const digest = primer ? await input.digest(primer.content) : 'unresolved';
-  return { owner: 'home_state', ref: encodeProfileSourceRef('primer', digest) };
-}
-
 export function createRequestGenerationRecorder(input: {
   readonly invocationId: string;
   readonly threadId: string;
@@ -212,7 +179,10 @@ export function createRequestGenerationRecorder(input: {
   readonly catId: CatId;
   readonly transcriptWriter: Pick<TranscriptWriter, 'appendDurableEvent' | 'keyedContentDigest'>;
   readonly sessionChainStore: Pick<ISessionChainStore, 'getActive'>;
-  readonly profileRepository?: ProfileSourceRepository;
+  /** Scoped one-shot nodes have an explicit owner and never enter the home active index. */
+  readonly resolveSession?: () => SessionRecord | null | Promise<SessionRecord | null>;
+  readonly profileRepository?: CapsuleSourceRepository;
+  readonly onProfileOpeningObserved?: (delivery: NativeProfileOpeningDelivery) => Promise<void>;
   readonly snapshot: () => RequestGenerationRecorderSnapshot;
   readonly now?: () => number;
   readonly createId?: () => string;
@@ -229,25 +199,19 @@ export function createRequestGenerationRecorder(input: {
   };
 
   const lifecycleSession = async (state: GenerationState): Promise<TranscriptSessionInfo> => {
-    const active = await input.sessionChainStore.getActive(input.catId, input.threadId, input.userId);
+    const active = await (input.resolveSession
+      ? input.resolveSession()
+      : input.sessionChainStore.getActive(input.catId, input.threadId, input.userId));
     return active ? transcriptSession(active) : state.session;
   };
 
-  const profileSourceRefs = async (body: string): Promise<RequestGenerationSourceRef[]> => {
-    const digest = input.transcriptWriter.keyedContentDigest.bind(input.transcriptWriter);
-    return (
-      await Promise.all([
-        embeddedCapsuleSourceRef({ body, userId: input.userId, profileRepository: input.profileRepository, digest }),
-        embeddedPrimerSourceRef({
-          body,
-          userId: input.userId,
-          catId: input.catId,
-          profileRepository: input.profileRepository,
-          digest,
-        }),
-      ])
-    ).filter((sourceRef): sourceRef is RequestGenerationSourceRef => Boolean(sourceRef));
-  };
+  const profileSourceRefs = (body: string) =>
+    requestGenerationCapsuleSourceRefs({
+      body,
+      userId: input.userId,
+      profileRepository: input.profileRepository,
+      digest: input.transcriptWriter.keyedContentDigest.bind(input.transcriptWriter),
+    });
 
   const persistedNativeChannels = async (
     prepared: PreparedProviderRequestV1,
@@ -270,19 +234,30 @@ export function createRequestGenerationRecorder(input: {
 
   return {
     async recordPrepared(prepared, boundary) {
-      const active = await input.sessionChainStore.getActive(input.catId, input.threadId, input.userId);
+      const active = await (input.resolveSession
+        ? input.resolveSession()
+        : input.sessionChainStore.getActive(input.catId, input.threadId, input.userId));
       if (!active) throw new Error('request_generation_active_session_unavailable');
       generationOrdinal += 1;
       const snapshot = input.snapshot();
       const requestGenerationId = (input.createId ?? randomUUID)();
       const digest = input.transcriptWriter.keyedContentDigest.bind(input.transcriptWriter);
       const { channel: messageChannel, messageDigest } = await persistedMessageChannel({
-        message: prepared.message,
+        message: {
+          ...prepared.message,
+          sourceRefs: [
+            ...(prepared.message.sourceRefs ?? snapshot.messageSourceRefs),
+            ...('body' in prepared.message ? await profileSourceRefs(prepared.message.body) : []),
+          ],
+        },
         fallbackSourceRefs: snapshot.messageSourceRefs,
         requestGenerationId,
         digest,
       });
       const nativeChannels = await persistedNativeChannels(prepared, snapshot);
+      const openingCapsuleRevision = input.onProfileOpeningObserved
+        ? nativeOpeningCapsuleRevision(prepared, snapshot.continuity, input.userId, input.profileRepository)
+        : undefined;
       const tools = await persistedToolSurface(prepared.tools, digest);
       const envelope = requestGenerationEnvelopeV1Schema.parse({
         v: 1,
@@ -316,7 +291,13 @@ export function createRequestGenerationRecorder(input: {
         { type: 'request_generation_assembled', envelope },
         input.invocationId,
       );
-      generations.set(requestGenerationId, { session, runtime: prepared.runtime, observed: false, terminal: false });
+      generations.set(requestGenerationId, {
+        session,
+        runtime: prepared.runtime,
+        observed: false,
+        terminal: false,
+        ...(openingCapsuleRevision ? { openingCapsuleRevision } : {}),
+      });
       return { requestGenerationId, generationOrdinal, sessionId: active.id };
     },
     async recordObserved(commit, evidence) {
@@ -337,6 +318,15 @@ export function createRequestGenerationRecorder(input: {
         },
       });
       await input.transcriptWriter.appendDurableEvent(await lifecycleSession(state), event, input.invocationId);
+      if (state.openingCapsuleRevision && input.onProfileOpeningObserved) {
+        await input.onProfileOpeningObserved({
+          scope: { ownerUserId: input.userId, threadId: input.threadId, invocationId: input.invocationId },
+          consumerCatId: input.catId,
+          sourceRevision: state.openingCapsuleRevision,
+          requestGenerationId: commit.requestGenerationId,
+          observedAt: event.observedAt,
+        });
+      }
       state.observed = true;
     },
     async recordTerminal(commit, outcome, reason) {

@@ -118,4 +118,50 @@ describe('apiFetch body normalization for mutating requests', () => {
     expect(headers['content-type']).toBe('application/json');
     expect(headers['x-custom']).toBe('value');
   });
+
+  it('keeps confirmed owner intent through real body normalization and session CSRF', async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockImplementation((url: string) =>
+        Promise.resolve(
+          url.includes('/api/session') ? Response.json({ csrfToken: 'session-csrf' }) : Response.json({ ok: true }),
+        ),
+      );
+    const apiFetch = await loadApiFetch();
+    const { confirmedActionRequest } = await import('../../components/settings/primitives/actionConfirmation');
+    await apiFetch(
+      '/api/plugins/chrome/actions/hostChromeSetup/install',
+      confirmedActionRequest({ method: 'POST' }, 'Confirm local setup', true),
+    );
+    const calls = vi.mocked(globalThis.fetch).mock.calls.filter((call) => !String(call[0]).includes('/api/session'));
+    const request = calls[0][1]!;
+    const headers = new Headers(request.headers);
+    expect(headers.get('x-cat-cafe-owner-confirmed')).toBe('true');
+    expect(headers.get('x-csrf-token')).toBe('session-csrf');
+    expect(headers.get('content-type')).toBe('application/json');
+    expect(request.body).toBe('{}');
+  });
+
+  it('attaches the server-issued session CSRF token to mutations without adding it to reads', async () => {
+    const mockFetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/api/session')) {
+        return Promise.resolve(Response.json({ csrfToken: 'csrf-from-session-bootstrap' }));
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }));
+    });
+    globalThis.fetch = mockFetch;
+
+    const apiFetch = await loadApiFetch();
+    await apiFetch('/api/memory/people/person_1/actions', {
+      method: 'POST',
+      body: '{}',
+    });
+    await apiFetch('/api/memory/people/person_1');
+
+    const dataCalls = mockFetch.mock.calls.filter((call) => !(call[0] as string).includes('/api/session'));
+    expect(new Headers((dataCalls[0][1] as RequestInit).headers).get('x-csrf-token')).toBe(
+      'csrf-from-session-bootstrap',
+    );
+    expect(new Headers((dataCalls[1][1] as RequestInit).headers).has('x-csrf-token')).toBe(false);
+  });
 });

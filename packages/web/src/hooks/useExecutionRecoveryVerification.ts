@@ -12,6 +12,8 @@ export interface ExecutionRecoveryVerification {
   readonly canonicalProjectionReady: boolean;
   /** Canonical truth covers the thread but its last sync failed. */
   readonly canonicalProjectionStale: boolean;
+  /** Canonical truth for this thread has not settled yet. */
+  readonly canonicalProjectionLoading: boolean;
   /**
    * The legacy socket still reports a live turn while canonical truth is empty
    * and unsettled. Nothing can confirm or deny that a turn is running, so the
@@ -47,6 +49,8 @@ export function useExecutionRecoveryVerification(
   );
   const executionAnchorThreadId = useActiveExecutionStore((state) => state.anchorThreadId);
   const executionProjectPath = useActiveExecutionStore((state) => state.projectPath);
+  const executionScope = useActiveExecutionStore((state) => state.scope);
+  const unavailableProjects = useActiveExecutionStore((state) => state.unavailableProjectPaths);
   const executionHydration = useActiveExecutionStore((state) => state.hydration);
   const executionsByKey = useActiveExecutionStore((state) => state.executionsByKey);
   // Counted here rather than accepted as a parameter: callers previously supplied
@@ -65,20 +69,25 @@ export function useExecutionRecoveryVerification(
   const legacyHasActiveInvocation = threadId
     ? scopedHasActiveInvocation
     : (unscopedLegacyActive ?? unscopedHasActiveInvocation);
-  // The endpoint returns a project-wide snapshot. In split view its route anchor
-  // can be thread A while the surface targets same-project thread B; that
-  // snapshot still authoritatively covers B. A different/unknown project remains
-  // fail-closed until its own projection is hydrated.
+  // Global snapshots cover every readable project; legacy project snapshots
+  // remain authoritative only for their anchor or another thread in that project.
   const canonicalSnapshotCoversThread =
-    executionAnchorThreadId === effectiveThreadId ||
-    (executionProjectPath !== null && executionProjectPath === effectiveThreadProjectPath);
+    executionScope === 'all'
+      ? unavailableProjects.length === 0 ||
+        (effectiveThreadProjectPath !== null && !unavailableProjects.includes(effectiveThreadProjectPath))
+      : executionAnchorThreadId === effectiveThreadId ||
+        (executionProjectPath !== null && executionProjectPath === effectiveThreadProjectPath);
   const canonicalProjectionReady = canonicalSnapshotCoversThread && executionHydration === 'ready';
   const canonicalProjectionStale = canonicalSnapshotCoversThread && executionHydration === 'error';
+  const canonicalProjectionLoading =
+    !canonicalProjectionReady &&
+    (!canonicalSnapshotCoversThread || executionHydration === 'idle' || executionHydration === 'loading');
 
   return {
     canonicalSnapshotCoversThread,
     canonicalProjectionReady,
     canonicalProjectionStale,
+    canonicalProjectionLoading,
     hasUnverifiedLegacyExecution: Boolean(
       legacyHasActiveInvocation && canonicalExecutionCount === 0 && !canonicalProjectionReady,
     ),

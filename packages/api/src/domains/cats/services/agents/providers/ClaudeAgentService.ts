@@ -1,3 +1,8 @@
+import { applyClaudeTokenAccountEnv, redactClaudeLaunchToken } from '../../../../../config/claude-token-account.js';
+import {
+  claudeSettingSources,
+  composeClaudeTokenSettingsDocument,
+} from '../../../../../config/claude-token-settings.js';
 /**
  * Claude Agent Service
  * 使用 Claude CLI 子进程调用布偶猫 (Opus)
@@ -19,28 +24,21 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { type CatId, type CliEffortPreset, createCatId, resolveCliEffortOverride } from '@cat-cafe/shared';
-import {
-  CAT_CAFE_SPLIT_ENTRYPOINTS,
-  expandManagedMcpNamesForUserMerge,
-  MCP_CALLBACK_ENV_KEYS,
-  resolveCatCafeNodeCommand,
-  resolvePencilCommand,
-  resolveServersForCat,
-  summarizeMcpInjection,
-} from '../../../../../config/capabilities/capability-orchestrator.js';
-import {
-  assertMcpServerEnvReferencesAvailable,
-  MissingMcpEnvironmentVariableError,
-} from '../../../../../config/capabilities/mcp-env-reference.js';
-import { isRetiredGithubMcpConfigEntry } from '../../../../../config/capabilities/retired-github-mcp.js';
+import { type CatId, type CliEffortPreset, catRegistry, createCatId, resolveCliEffortOverride } from '@cat-cafe/shared';
+import { summarizeMcpInjection } from '../../../../../config/capabilities/capability-orchestrator.js';
 import { getCatEffort } from '../../../../../config/cat-config-loader.js';
 import { getCatModel } from '../../../../../config/cat-models.js';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
 import { buildCliDiagnostics, buildSilentCompletionDiagnostic } from '../../../../../utils/cli-diagnostics.js';
 import { formatCliExitError } from '../../../../../utils/cli-format.js';
 import { formatCliNotFoundError, resolveCliCommand } from '../../../../../utils/cli-resolve.js';
-import { isCliError, isCliTimeout, isLivenessWarning, spawnCli } from '../../../../../utils/cli-spawn.js';
+import {
+  buildChildEnv,
+  isCliError,
+  isCliTimeout,
+  isLivenessWarning,
+  spawnCli,
+} from '../../../../../utils/cli-spawn.js';
 import type { SpawnFn } from '../../../../../utils/cli-types.js';
 import { findMonorepoRoot } from '../../../../../utils/monorepo-root.js';
 import { CliRawArchive } from '../../session/CliRawArchive.js';
@@ -56,16 +54,19 @@ import type {
 import type { RawArchiveSink } from '../providers/codex-audit-hooks.js';
 import { sanitizeRawEvent } from '../providers/codex-audit-hooks.js';
 import { appendLocalImagePathHints, collectImageAccessDirectories } from '../providers/image-cli-bridge.js';
-import { extractImagePaths } from '../providers/image-paths.js';
+import { extractTrustedImagePaths } from '../providers/image-paths.js';
 import { findGitBashPath } from './claude-agent-win.js';
-import { ClaudeNativeToolBoundaryClassifier } from './claude-native-tool-boundary.js';
+import { composeManagedSettingsDocument } from './claude-compaction-launch-plan.js';
+import { resolveClaudeMcpConfig } from './claude-mcp-config.js';
 import { extractClaudeUsage, isResultErrorEvent, transformClaudeEvent } from './claude-ndjson-parser.js';
+import { withClaudeSecretHooks } from './claude-secret-hook-settings.js';
 import { compileL0ViaSubprocess } from './l0-compiler.js';
 import {
   createMcpSchemaDeliveryLaunchConfig,
   resolveMcpSchemaDeliveryDiscoverySurface,
   resolveMcpSchemaDeliveryForProviderLaunch,
 } from './mcp-schema-delivery-capability.js';
+import { writeInvocationMcpConfigFile } from './session-credential-file.js';
 
 const log = createModuleLogger('claude-agent');
 
@@ -138,6 +139,7 @@ export function resolveClaudeEffortLevel(
   override: CliEffortPreset | null | undefined,
 ): string {
   const inherited = getCatEffort(catId, undefined, 'anthropic', effectiveModel);
+  if (!inherited && !override && catRegistry.tryGet(catId)?.config.configurationSource === 'native_tool') return '';
   return resolveCliEffortOverride('anthropic', effectiveModel, inherited, override).effective;
 }
 
@@ -215,16 +217,28 @@ function removeAppendPromptTempDir(path: string | undefined): void {
   }
 }
 
-function resolveMcpWorkspaceRoot(workingDirectory?: string): string {
-  const explicitAllowed = process.env.ALLOWED_WORKSPACE_DIRS?.trim();
-  if (explicitAllowed) return explicitAllowed;
-  const threadWorkspace = workingDirectory?.trim();
-  if (threadWorkspace) return resolve(threadWorkspace);
-  const explicitWorkspace = process.env.CAT_CAFE_WORKSPACE_ROOT?.trim();
-  if (explicitWorkspace) return explicitWorkspace;
-  return process.cwd();
+/**
+ * #1542: write the harness-injected PreCompact registration to a temp settings
+ * file passed via `--settings`. The CLI merges it above project/local sources
+ * for this session only, so the carrier no longer depends on where the CLI
+ * resolves `$CLAUDE_PROJECT_DIR` or which settings files the cwd can see.
+ */
+function writePreCompactSettingsToTempFile(content: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'cat-cafe-precompact-'));
+  const path = join(dir, 'precompact-settings.json');
+  writeFileSync(path, content, 'utf8');
+  return path;
 }
 
+function removePreCompactSettingsTempDir(path: string | undefined): void {
+  if (!path) return;
+  const settingsDir = dirname(path);
+  try {
+    rmSync(settingsDir, { recursive: true, force: true });
+  } catch (err) {
+    log.warn({ err, settingsDir }, 'Failed to remove Claude PreCompact settings temp directory');
+  }
+}
 /**
  * Build env overrides for spawning the `claude` CLI.
  *
@@ -238,8 +252,25 @@ function resolveMcpWorkspaceRoot(workingDirectory?: string): string {
  * - Windows git bash path resolution
  * - subscription mode → strip all ANTHROPIC_* (avoid silent api_key billing)
  * - api_key mode → inject ANTHROPIC_API_KEY / BASE_URL / model override
+ * - unknown third-party models → inject CLAUDE_CODE_MAX_CONTEXT_TOKENS from
+ *   member config, because the CLI otherwise assumes its 200k default window
  */
-export function buildClaudeEnvOverrides(callbackEnv?: Record<string, string>): Record<string, string | null> {
+export interface ClaudeEnvWindowOptions {
+  /** Raw/native provider window owned by member config; never an effective session capacity. */
+  contextNativeWindowTokens?: number | null;
+}
+
+function resolveClaudeNativeWindowTokens(windowOptions?: ClaudeEnvWindowOptions): number | undefined {
+  const nativeWindowTokens = windowOptions?.contextNativeWindowTokens;
+  return typeof nativeWindowTokens === 'number' && Number.isSafeInteger(nativeWindowTokens) && nativeWindowTokens > 0
+    ? nativeWindowTokens
+    : undefined;
+}
+
+export function buildClaudeEnvOverrides(
+  callbackEnv?: Record<string, string>,
+  windowOptions?: ClaudeEnvWindowOptions,
+): Record<string, string | null> {
   const env: Record<string, string | null> = { ...(callbackEnv ?? {}) };
 
   env.CLAUDECODE = null;
@@ -275,6 +306,16 @@ export function buildClaudeEnvOverrides(callbackEnv?: Record<string, string>): R
     const effectiveModel = modelOverride || undefined;
     if (effectiveModel && !isKnownAnthropicModel(effectiveModel)) {
       env.ANTHROPIC_MODEL = effectiveModel;
+
+      // Plain custom IDs can use the member-owned native window. The CLI owns
+      // recognized Claude IDs/aliases and [1m] spellings; leave those alone.
+      // https://code.claude.com/docs/en/model-config#which-ids-claude_code_max_context_tokens-applies-to
+      // Never feed a contracted effective/pinned window back into native configuration.
+      const nativeWindowTokens = resolveClaudeNativeWindowTokens(windowOptions);
+      const cliOwnedWindow = /claude-|^(?:default|best|fable|opus(?:plan)?|sonnet|haiku)$|\[1m\]/i.test(effectiveModel);
+      if (nativeWindowTokens !== undefined && !cliOwnedWindow) {
+        env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(nativeWindowTokens);
+      }
     }
   } else if (mode === 'subscription') {
     // Subscription mode must not inherit shell-level Anthropic credentials.
@@ -335,7 +376,6 @@ export class ClaudeAgentService implements AgentService {
   /** F203: compiles per-cat L0 → file for --system-prompt-file. */
   private readonly l0CompilerFn: typeof compileL0ViaSubprocess;
   /** Windows: cached MCP config file path (created once per instance, reused across invocations) */
-  private mcpConfigFilePath: string | undefined;
   /** #780: Raw NDJSON archive for post-mortem diagnostics */
   private readonly rawArchive: RawArchiveSink;
 
@@ -363,7 +403,12 @@ export class ClaudeAgentService implements AgentService {
   }
 
   freshnessCarrierCapability(): AgentFreshnessCarrierCapability {
-    return { provider: 'anthropic', carrier: 'claude_print_sdk', deliverySemantics: 'unsupported' };
+    return {
+      provider: 'anthropic',
+      carrier: 'claude_print_sdk',
+      deliverySemantics: 'unsupported',
+      activeInvocationGuidance: 'unsupported',
+    };
   }
 
   contextCapability(): import('../../types.js').AgentContextCapability {
@@ -395,14 +440,23 @@ export class ClaudeAgentService implements AgentService {
   async *invoke(prompt: string, options?: AgentServiceOptions): AsyncIterable<AgentMessage> {
     const readOnly = options?.toolExecutionPolicy?.mode === 'read_only';
     let effectivePrompt = prompt;
-    const imagePaths = extractImagePaths(options?.contentBlocks, options?.uploadDir);
+    const imagePaths = await extractTrustedImagePaths(
+      options?.contentBlocks,
+      options?.uploadDir,
+      options?.resolveTrustedImagePath,
+    );
     const imageAccessDirs = collectImageAccessDirectories(imagePaths);
     // Claude CLI print mode has no direct image attach flag; provide path hints and grant dir access.
     effectivePrompt = appendLocalImagePathHints(effectivePrompt, imagePaths);
 
     // F198 B-prime refactor: model selection delegates to shared helper so
     // ClaudeBgCarrierService reuses the same rules (single source of truth).
-    const { effectiveModel, useEnvModelOverride } = resolveClaudeModelSelection(options?.callbackEnv, this.model);
+    const { effectiveModel, useEnvModelOverride } = resolveClaudeModelSelection(
+      options?.callbackEnv,
+      catRegistry.tryGet(this.catId)?.config.configurationSource === 'native_tool'
+        ? getCatModel(this.catId)
+        : this.model,
+    );
     const isApiKeyMode = options?.callbackEnv?.[ANTHROPIC_PROFILE_MODE_KEY] === 'api_key';
     // #840 R2 (砚砚 review 2026-06-02): the main prompt must NOT ride argv.
     // A2A briefings + memory + image hints push `effectivePrompt` past the
@@ -432,8 +486,7 @@ export class ClaudeAgentService implements AgentService {
       '--include-partial-messages',
       '--verbose',
       ...modelArgs,
-      '--effort',
-      effortLevel,
+      ...(effortLevel ? ['--effort', effortLevel] : []),
       '--permission-mode',
       readOnly ? 'plan' : PERMISSION_MODE,
       // api_key mode: skip user-level ~/.claude/settings.json to prevent config pollution.
@@ -456,150 +509,59 @@ export class ClaudeAgentService implements AgentService {
       args.push('--add-dir', dir);
     }
 
+    // F171/#883/F320: build the CLI env override set exactly once. The same object
+    // is both the MCP environment-reference precondition and the env handed to
+    // spawnCli, so a variable that exists only in the API process (or one added by
+    // accountEnv, or removed by the subscription deny-list / selected-token filter)
+    // is judged by what the child will actually inherit.
+    const envOverrides = buildClaudeEnvOverrides(options?.callbackEnv, {
+      contextNativeWindowTokens: options?.contextNativeWindowTokens,
+    });
+    // Account env vars applied LAST — user overrides provider-injected values
+    if (options?.accountEnv) {
+      for (const [k, v] of Object.entries(options.accountEnv)) envOverrides[k] = v;
+    }
+    // #883: Subscription mode deny-list must survive accountEnv merge.
+    // Account-level env (e.g. ANTHROPIC_AUTH_TOKEN from a proxy profile)
+    // could re-introduce the proxy token that buildClaudeEnvOverrides cleared.
+    if (options?.callbackEnv?.[ANTHROPIC_PROFILE_MODE_KEY] === 'subscription') {
+      for (const key of SUBSCRIPTION_MODE_DENY_KEYS) envOverrides[key] = null;
+    }
+    if (readOnly) envOverrides.CAT_CAFE_READONLY = 'true';
+    applyClaudeTokenAccountEnv(envOverrides, options?.claudeTokenAccount);
+    // buildChildEnv applies the same inherit/strip/delete rules spawnCli uses, so
+    // `${VAR}` validation below sees the real child environment.
+    const claudeChildEnv = buildChildEnv(envOverrides, {
+      workingDirectory: options?.workingDirectory,
+    });
+
     // #712: Inject ALL enabled MCP servers from capabilities.json at invoke time.
     // Built-in cat-cafe servers resolve paths from distDir; externals use descriptor values.
     // On Windows, Claude CLI treats inline JSON as a file path — write to temp file.
-    if (!readOnly && options?.callbackEnv && this.mcpServerPath) {
-      const distDir = dirname(this.mcpServerPath);
-      const binaryProjectRoot = resolve(distDir, '../../..');
-      const capabilitiesProjectRoot = binaryProjectRoot;
-      const catId = options.callbackEnv.CAT_CAFE_CAT_ID;
-
-      const catCafeEnvEntries: Record<string, string> = {
-        ALLOWED_WORKSPACE_DIRS: resolveMcpWorkspaceRoot(options.workingDirectory),
-      };
-      for (const key of MCP_CALLBACK_ENV_KEYS) {
-        const val = options.callbackEnv![key];
-        if (val) catCafeEnvEntries[key] = val;
+    if (!readOnly) {
+      const mcpResolution = await resolveClaudeMcpConfig({
+        callbackEnv: options?.callbackEnv,
+        workingDirectory: options?.workingDirectory,
+        mcpServerPath: this.mcpServerPath,
+        childEnv: claudeChildEnv,
+      });
+      if (mcpResolution) {
+        const mcpServers = mcpResolution.servers;
+        log.debug(
+          summarizeMcpInjection(mcpServers, {
+            catId: options?.callbackEnv?.CAT_CAFE_CAT_ID,
+            resolvedFrom: mcpResolution.source,
+            provider: 'claude',
+          }),
+          '#712: MCP invoke-time injection',
+        );
+        // #712: Always pass --mcp-config + --strict-mcp-config in managed invocations.
+        // --strict-mcp-config ensures only the merged config (capabilities.json +
+        // user project .mcp.json) is active — no auto-discovered entries leak through.
+        args.push('--mcp-config', writeInvocationMcpConfigFile({ mcpServers }, options?.callbackEnv));
+        args.push('--strict-mcp-config');
+        declaredMcpServerNames = Object.keys(mcpServers).sort();
       }
-
-      const mcpServers: Record<string, Record<string, unknown>> = {};
-      const managedMcpServerNames = new Set<string>();
-      let resolved = false;
-      try {
-        // F249: Project config is the single truth source for MCP resolution.
-        // Try project first; fall back to global for uninitialized projects.
-        let capConfig = null;
-        let accessScope: 'global' | 'project' = 'global';
-        if (options?.workingDirectory && options.workingDirectory !== capabilitiesProjectRoot) {
-          try {
-            const projectRaw = readFileSync(join(options.workingDirectory, '.cat-cafe', 'capabilities.json'), 'utf-8');
-            const parsed = JSON.parse(projectRaw);
-            if (parsed?.version === 1 || parsed?.version === 2) {
-              capConfig = parsed;
-              accessScope = 'project';
-            }
-          } catch {
-            /* No project config — fall back to global */
-          }
-        }
-        if (!capConfig) {
-          const raw = readFileSync(join(capabilitiesProjectRoot, '.cat-cafe', 'capabilities.json'), 'utf-8');
-          const parsed = JSON.parse(raw);
-          if (parsed?.version === 1 || parsed?.version === 2) capConfig = parsed;
-        }
-        if (capConfig && catId) {
-          for (const s of resolveServersForCat(capConfig, catId, { accessScope })) {
-            managedMcpServerNames.add(s.name);
-            if (!s.enabled) continue;
-            // Claude Code expands `${VAR}` natively in env and headers. Validate
-            // first so a missing secret aborts the invocation, but keep the
-            // reference in --mcp-config rather than materializing it in argv.
-            assertMcpServerEnvReferencesAvailable(s, process.env);
-            if (s.source === 'cat-cafe' && CAT_CAFE_SPLIT_ENTRYPOINTS.has(s.name)) {
-              const ep = CAT_CAFE_SPLIT_ENTRYPOINTS.get(s.name)!;
-              const epPath = join(distDir, ep);
-              if (existsSync(epPath)) {
-                mcpServers[s.name] = {
-                  command: resolveCatCafeNodeCommand(),
-                  args: [epPath],
-                  env: catCafeEnvEntries,
-                };
-              }
-            } else if (s.resolver === 'pencil') {
-              const pencil = await resolvePencilCommand({ projectRoot: capabilitiesProjectRoot });
-              if (pencil) mcpServers[s.name] = { command: pencil.command, args: pencil.args };
-            } else if (s.transport === 'streamableHttp' && s.url) {
-              const entry: Record<string, unknown> = { type: 'http', url: s.url };
-              if (s.headers && Object.keys(s.headers).length > 0) entry.headers = s.headers;
-              mcpServers[s.name] = entry;
-            } else if (s.command) {
-              const entry: Record<string, unknown> = { command: s.command, args: s.args };
-              if (s.env && Object.keys(s.env).length > 0) entry.env = s.env;
-              if (s.workingDir) entry.cwd = s.workingDir;
-              mcpServers[s.name] = entry;
-            }
-          }
-          resolved = true;
-        }
-      } catch (error) {
-        if (error instanceof MissingMcpEnvironmentVariableError) throw error;
-        // best-effort fallback below
-      }
-      if (!resolved) {
-        for (const [name, ep] of CAT_CAFE_SPLIT_ENTRYPOINTS) {
-          const epPath = join(distDir, ep);
-          if (existsSync(epPath)) {
-            mcpServers[name] = {
-              command: resolveCatCafeNodeCommand(),
-              args: [epPath],
-              env: catCafeEnvEntries,
-            };
-          }
-        }
-      }
-      // Merge user project .mcp.json: include user-owned servers (e.g.
-      // `filesystem`) that are NOT managed by capabilities.json. Our managed
-      // entries always take precedence — stale user copies are ignored.
-      // --strict-mcp-config still applies: only the merged set is active.
-      if (options?.workingDirectory) {
-        try {
-          const userMcpPath = join(options.workingDirectory, '.mcp.json');
-          if (existsSync(userMcpPath)) {
-            const userMcp = JSON.parse(readFileSync(userMcpPath, 'utf-8')) as {
-              mcpServers?: Record<string, unknown>;
-            };
-            if (userMcp.mcpServers && typeof userMcp.mcpServers === 'object') {
-              const excludedMcpServerNames = expandManagedMcpNamesForUserMerge([
-                ...managedMcpServerNames,
-                ...Object.keys(mcpServers),
-              ]);
-              for (const [name, entry] of Object.entries(userMcp.mcpServers)) {
-                if (isRetiredGithubMcpConfigEntry(name, entry)) continue;
-                if (!excludedMcpServerNames.has(name) && !(name in mcpServers) && entry && typeof entry === 'object') {
-                  mcpServers[name] = entry as Record<string, unknown>;
-                }
-              }
-            }
-          }
-        } catch {
-          // best-effort: unreadable user config → capabilities-only
-        }
-      }
-
-      log.debug(
-        summarizeMcpInjection(mcpServers, {
-          catId,
-          resolvedFrom: resolved ? 'capabilities.json' : 'fallback',
-          provider: 'claude',
-        }),
-        '#712: MCP invoke-time injection',
-      );
-      // #712: Always pass --mcp-config + --strict-mcp-config in managed invocations.
-      // --strict-mcp-config ensures only the merged config (capabilities.json +
-      // user project .mcp.json) is active — no auto-discovered entries leak through.
-      if (IS_WINDOWS) {
-        if (!this.mcpConfigFilePath) {
-          const dir = mkdtempSync(join(tmpdir(), 'cat-cafe-mcp-'));
-          this.mcpConfigFilePath = join(dir, 'mcp-config.json');
-        }
-        writeFileSync(this.mcpConfigFilePath, JSON.stringify({ mcpServers }), 'utf-8');
-        args.push('--mcp-config', this.mcpConfigFilePath);
-      } else {
-        args.push('--mcp-config', JSON.stringify({ mcpServers }));
-      }
-      args.push('--strict-mcp-config');
-      declaredMcpServerNames = Object.keys(mcpServers).sort();
     }
 
     const metadata: MessageMetadata = { provider: 'anthropic', model: effectiveModel };
@@ -612,6 +574,7 @@ export class ClaudeAgentService implements AgentService {
 
     let l0Path: string | undefined;
     let appendPromptPath: string | undefined;
+    let preCompactSettingsPath: string | undefined;
     try {
       l0Path = await this.compileL0ToTempFile(options?.callbackEnv?.CAT_CAFE_USER_ID);
       args.push('--system-prompt-file', l0Path);
@@ -633,9 +596,34 @@ export class ClaudeAgentService implements AgentService {
         cliConfigArgs ? cliConfigArgs.flatMap((arg) => arg.trim().split(/\s+/)) : [],
         this.catId as string,
       );
-      if (userParts.length > 0) {
+      // #1542 P1 guard: a user-supplied `--settings` must never silently
+      // replace or drop the managed compaction carrier, and two `--settings`
+      // flags must never both reach the CLI. Extract it here; the managed
+      // injection below composes ONE final document (user settings preserved
+      // verbatim, `disableAllHooks` semantics intact).
+      let userSettingsValue: string | undefined;
+      const cleanedUserParts: string[] = [];
+      for (let i = 0; i < userParts.length; i++) {
+        const part = userParts[i];
+        if (part === '--settings') {
+          const value = userParts[i + 1];
+          if (!value || value.startsWith('-')) {
+            throw new Error('cli_config_args_settings_missing_value');
+          }
+          userSettingsValue = value;
+          i++;
+        } else if (typeof part === 'string' && part.startsWith('--settings=')) {
+          userSettingsValue = part.slice('--settings='.length);
+          if (!userSettingsValue) {
+            throw new Error('cli_config_args_settings_missing_value');
+          }
+        } else {
+          cleanedUserParts.push(part);
+        }
+      }
+      if (cleanedUserParts.length > 0) {
         const accumulativeFlags = new Set(['--add-dir']);
-        const userFlags = new Set(userParts.filter((p) => p.startsWith('-')));
+        const userFlags = new Set(cleanedUserParts.filter((p) => p.startsWith('-')));
         const deduped: string[] = [];
         for (let i = 0; i < args.length; i++) {
           if (args[i].startsWith('-') && userFlags.has(args[i]) && !accumulativeFlags.has(args[i])) {
@@ -645,8 +633,31 @@ export class ClaudeAgentService implements AgentService {
           deduped.push(args[i]);
         }
         args.length = 0;
-        args.push(...deduped, ...userParts);
+        args.push(...deduped, ...cleanedUserParts);
       }
+
+      // #1542: inject the managed PreCompact/SessionStart carrier as the single
+      // final `--settings` file, derived from the same launch plan that drives
+      // compaction readiness. Positioned AFTER user-arg normalization so it can
+      // never be deduped away by a user `--settings` (P1). The CLI resolves
+      // project settings and $CLAUDE_PROJECT_DIR from the spawn cwd, so a
+      // repo-root carrier never loads for thread-workspace or external-project
+      // cwds — this injection is the carrier of record for every managed spawn.
+      const compactionPlan = options?.compactionLaunchPlan;
+      const effectiveUserSettings = options?.claudeTokenAccount
+        ? await composeClaudeTokenSettingsDocument(
+            userSettingsValue,
+            options?.workingDirectory,
+            claudeSettingSources(args),
+          )
+        : userSettingsValue;
+      const composedSettings = compactionPlan?.ready
+        ? composeManagedSettingsDocument(compactionPlan, effectiveUserSettings, options?.workingDirectory)
+        : effectiveUserSettings;
+      preCompactSettingsPath = writePreCompactSettingsToTempFile(
+        withClaudeSecretHooks(composedSettings, options?.workingDirectory),
+      );
+      args.push('--settings', preCompactSettingsPath);
 
       const claudeCommand = resolveCliCommand('claude');
       log.info({ catId: this.catId, resolved: claudeCommand ?? null }, 'Resolving claude CLI command');
@@ -664,18 +675,8 @@ export class ClaudeAgentService implements AgentService {
       }
 
       let sawResultError = false;
-      const envOverrides = buildClaudeEnvOverrides(options?.callbackEnv);
-      // F171: Account env vars applied LAST — user overrides provider-injected values
-      if (options?.accountEnv) {
-        for (const [k, v] of Object.entries(options.accountEnv)) envOverrides[k] = v;
-      }
-      // #883: Subscription mode deny-list must survive accountEnv merge.
-      // Account-level env (e.g. ANTHROPIC_AUTH_TOKEN from a proxy profile)
-      // could re-introduce the proxy token that buildClaudeEnvOverrides cleared.
-      if (options?.callbackEnv?.[ANTHROPIC_PROFILE_MODE_KEY] === 'subscription') {
-        for (const key of SUBSCRIPTION_MODE_DENY_KEYS) envOverrides[key] = null;
-      }
-      if (readOnly) envOverrides.CAT_CAFE_READONLY = 'true';
+      // envOverrides was assembled before MCP resolution so the `${VAR}`
+      // precheck and the spawn see one environment (see comment above).
 
       // Debug: log full invocation details (env values redacted by pino redact paths)
       const safeEnvSummary: Record<string, string> = {};
@@ -683,7 +684,7 @@ export class ClaudeAgentService implements AgentService {
         if (v === null) {
           safeEnvSummary[k] = '(cleared)';
         } else if (/key|secret|token|password|cookie|auth|session|bearer|credential/i.test(k)) {
-          safeEnvSummary[k] = v.slice(0, 6) + '***';
+          safeEnvSummary[k] = '[REDACTED]';
         } else {
           safeEnvSummary[k] = v;
         }
@@ -723,12 +724,12 @@ export class ClaudeAgentService implements AgentService {
           : []),
       ];
       const schemaDeliveryProfile = readOnly ? ('readonly' as const) : ('full' as const);
-      const schemaDelivery = resolveMcpSchemaDeliveryForProviderLaunch({
+      const schemaDelivery = await resolveMcpSchemaDeliveryForProviderLaunch({
         repoRoot: findMonorepoRoot(dirname(fileURLToPath(import.meta.url))),
         command: claudeCommand,
         provider: 'anthropic',
         carrier: 'print_sdk',
-        modelFamily: effectiveModel ?? 'provider-default',
+        modelFamily: effectiveModel || 'provider-default',
         profileClass: schemaDeliveryProfile,
         profileId: schemaDeliveryProfile,
         config: createMcpSchemaDeliveryLaunchConfig({
@@ -750,7 +751,7 @@ export class ClaudeAgentService implements AgentService {
           carrier: 'print_sdk',
           ...(effectiveModel ? { model: effectiveModel } : {}),
           protocol: 'stream-json',
-          reasoningEffort: effortLevel,
+          ...(effortLevel ? { reasoningEffort: effortLevel } : {}),
           ...(readOnly ? { toolExecutionPolicy: 'read_only' as const } : {}),
         }),
         tools: Object.freeze({
@@ -810,8 +811,11 @@ export class ClaudeAgentService implements AgentService {
       let hasAssistantEvent = false;
       let lastAssistantHasToolUseBlock = false;
       let lastAssistantHasTextBlock = false;
-      const nativeToolBoundaries = new ClaudeNativeToolBoundaryClassifier();
-      for await (const event of events) {
+      for await (const rawEvent of events) {
+        const event = redactClaudeLaunchToken(
+          rawEvent,
+          options?.claudeTokenAccount ? options.accountEnv?.CLAUDE_CODE_OAUTH_TOKEN : undefined,
+        );
         eventCount++;
         // #780: Archive raw event for post-mortem diagnostics (fire-and-forget)
         if (options?.invocationId) {
@@ -825,20 +829,6 @@ export class ClaudeAgentService implements AgentService {
             : '__unknown';
         uniqueEventTypes.add(evtType);
         log.debug({ catId: this.catId, eventIndex: eventCount, type: evtType }, 'CLI event received');
-        if (options?.activeInvocationFreshness) {
-          for (const toolSurface of nativeToolBoundaries.observe(event)) {
-            try {
-              const notice = await options.activeInvocationFreshness.prepare({
-                threadId: options.auditContext?.threadId ?? 'unknown',
-                turnId: options.invocationId ?? 'claude-print-sdk',
-                toolSurface,
-              });
-              if (notice) await options.activeInvocationFreshness.markMissed(notice, 'unsupported_carrier');
-            } catch (err) {
-              log.warn({ err, invocationId: options.invocationId }, '[F254-D2] Claude freshness telemetry failed');
-            }
-          }
-        }
         // F215: Inspect assistant events for content blocks (before transformClaudeEvent runs).
         // Reset per-turn tracking on each new assistant event so multi-turn tool-using sessions are handled
         // correctly: an earlier turn's blocks must not suppress detection on a later malformed turn.
@@ -999,12 +989,6 @@ export class ClaudeAgentService implements AgentService {
         }
       }
 
-      try {
-        await options?.activeInvocationFreshness?.markTurnCompleted(options.invocationId ?? 'claude-print-sdk');
-      } catch (err) {
-        log.warn({ err, invocationId: options?.invocationId }, '[F254-D2] Claude terminal freshness audit failed');
-      }
-
       log.info(
         { catId: this.catId, totalEvents: eventCount, textEvents: textEventCount, sessionId: metadata.sessionId },
         'Claude CLI invocation completed',
@@ -1106,6 +1090,7 @@ export class ClaudeAgentService implements AgentService {
     } finally {
       removeL0TempDir(l0Path);
       removeAppendPromptTempDir(appendPromptPath);
+      removePreCompactSettingsTempDir(preCompactSettingsPath);
     }
   }
 }

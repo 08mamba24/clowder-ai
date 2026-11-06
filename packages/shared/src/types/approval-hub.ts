@@ -20,8 +20,8 @@ export type ApprovalProducerId =
   | 'F260'
   | 'F266'
   | 'F276'
-  | 'F292'
-  | 'F306';
+  | 'F306'
+  | 'F321';
 
 /** @deprecated Use ApprovalProducerId. Kept as a source-compatible alias during Phase I. */
 export type ApprovalFeatureId = ApprovalProducerId;
@@ -77,7 +77,7 @@ export type ApprovalNavigation =
 export type ApprovalItemStatus = 'pending' | 'stale';
 
 /** Canonical renderer affordance. Legacy recovery modes stop at the API registry boundary. */
-export type ApprovalDecisionMode = 'approve-reject' | 'claim-select' | 'meeting-intake';
+export type ApprovalDecisionMode = 'approve-reject' | 'claim-select';
 export type LegacyApprovalDecisionMode = ApprovalDecisionMode | 'resume-only';
 
 /** Unified DTO that all producer adapters return. */
@@ -96,6 +96,12 @@ export interface ApprovalItem {
   expiresAt?: number;
   createdAt: number;
   entrustedWorkTaskRef?: EntrustedWorkTaskRefV1;
+  /** Read-only exact aliases issued by the canonical F292/F306 projection, never a writer revision. */
+  needsMeDecisionRefs?: {
+    producerId: 'f292.repair' | 'f306.runtime_interaction';
+    subjectRef: string;
+    revision: number;
+  }[];
 }
 
 /** Canonical renderer DTO. Legacy producer status words stop at the API registry boundary. */
@@ -107,7 +113,13 @@ export interface ApprovalHubItem
 }
 
 /** Legacy adapter vocabulary; canonical renderers consume SettledApprovalHubItem. */
-export type SettledStatus = 'approved' | 'rejected' | 'withdrawn' | 'superseded';
+export type SettledStatus =
+  | 'approved'
+  | 'rejected'
+  | 'withdrawn'
+  | 'superseded'
+  | 'expired'
+  | 'closed_without_decision';
 
 export interface SettledApprovalItem extends Omit<ApprovalItem, 'status' | 'expiresAt' | 'inlineApprovable'> {
   status: SettledStatus;

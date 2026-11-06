@@ -1,9 +1,29 @@
+import './helpers/setup-cat-registry.js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+
+const { getCoCreatorConfig } = await import('../dist/config/cat-config-loader.js');
+const coCreator = getCoCreatorConfig();
+const userLabel = coCreator.nickname ?? coCreator.name;
 
 const { extractBatonContext, summarizeActiveTasks, formatNavigationHeader } = await import(
   '../dist/domains/cats/services/agents/routing/navigation-context.js'
 );
+
+it('shows known absent waits only for the current owner, without treating unknown as absent', () => {
+  const text = formatNavigationHeader({
+    currentCatId: 'codex',
+    baton: null,
+    tasks: [
+      { id: '1', title: '自己的待办', status: 'doing', ownerCatId: 'codex', hasActiveWait: false },
+      { id: '2', title: '别猫的待办', status: 'todo', ownerCatId: 'opus', hasActiveWait: false },
+      { id: '3', title: '状态未知', status: 'todo', ownerCatId: 'codex' },
+      { id: '4', title: '已登记等待', status: 'blocked', ownerCatId: 'codex', hasActiveWait: true },
+    ],
+  });
+  assert.match(text, /自己的待办.*\[未挂等待\]/);
+  assert.doesNotMatch(text, /(?:别猫的待办|状态未知|已登记等待).*\[未挂等待\]/);
+});
 
 describe('extractBatonContext', () => {
   const messages = [
@@ -33,13 +53,12 @@ describe('extractBatonContext', () => {
   it('identifies human speaker as "user"', () => {
     const baton = extractBatonContext(messages, 'opus');
     assert.equal(baton.fromSpeaker, 'user');
-    assert.equal(baton.fromSpeakerDisplay, 'co-creator');
+    assert.equal(baton.fromSpeakerDisplay, userLabel);
   });
 
-  it('detects stale hold contradiction', () => {
-    // codex said "别动" at t=1000, then @opus at t=2000 — same speaker held then passed
+  it('does not infer custody changes from same-author prose', () => {
     const baton = extractBatonContext(messages.slice(0, 2), 'opus');
-    assert.equal(baton.staleHoldWarning, true);
+    assert.equal(baton.staleHoldWarning, false);
   });
 
   it('no stale hold when different speaker @ mentions', () => {
@@ -118,13 +137,13 @@ describe('extractBatonContext', () => {
     assert.equal(baton.staleHoldWarning, false, '"正在review" is work status, not hold');
   });
 
-  it('uses persisted stream-origin speech for stale-hold detection', () => {
+  it('keeps persisted stream speech without declaring a hold superseded', () => {
     const msgs = [
       { id: 'm60', catId: 'codex', content: '别动，等我看完这段代码', timestamp: 1000, userId: 'u1', origin: 'stream' },
       { id: 'm61', catId: 'codex', content: '@opus 帮我看看', timestamp: 2000, userId: 'u1', origin: 'callback' },
     ];
     const baton = extractBatonContext(msgs, 'opus');
-    assert.equal(baton.staleHoldWarning, true, 'persisted hold speech must remain semantically visible');
+    assert.equal(baton.staleHoldWarning, false, 'navigation cannot override custody from prose');
   });
 
   it('finds baton via canonical mentions field (alias @宪宪 → catId opus)', () => {
@@ -240,7 +259,7 @@ describe('extractBatonContext', () => {
     assert.ok(baton !== null);
     assert.equal(
       baton.fromSpeakerDisplay,
-      'co-creator',
+      userLabel,
       `expected 'co-creator', got '${baton.fromSpeakerDisplay}' — internal userId leaked to display`,
     );
   });
@@ -253,7 +272,8 @@ describe('extractBatonContext', () => {
         content: '@opus CI pipeline failed',
         timestamp: 1000,
         userId: 'system',
-        source: { label: 'GitHub CI' },
+        from: { kind: 'external', connectorId: 'github' },
+        source: { connector: 'github', label: 'GitHub CI', icon: 'github' },
       },
     ];
     const baton = extractBatonContext(msgs, 'opus');
@@ -261,7 +281,7 @@ describe('extractBatonContext', () => {
     assert.equal(baton.fromSpeakerDisplay, 'GitHub CI', 'connector baton must show source.label, not co-creator');
   });
 
-  it('still detects real hold instructions after P2-R2 narrowing', () => {
+  it('does not declare any human or agent hold superseded by an excerpt', () => {
     const holdPhrases = ['别动，我来', '你等等', '稍等一下', 'hold on', 'wait for me'];
     for (const phrase of holdPhrases) {
       const msgs = [
@@ -269,7 +289,7 @@ describe('extractBatonContext', () => {
         { id: 'h1', catId: 'codex', content: '@opus 好了你来', timestamp: 2000, userId: 'u1' },
       ];
       const baton = extractBatonContext(msgs, 'opus');
-      assert.equal(baton.staleHoldWarning, true, `"${phrase}" should trigger stale hold`);
+      assert.equal(baton.staleHoldWarning, false, `"${phrase}" requires an explicit custody action`);
     }
   });
 });
@@ -306,6 +326,71 @@ describe('summarizeActiveTasks', () => {
 });
 
 describe('formatNavigationHeader', () => {
+  it('renders exact other-member lifecycle state with its source handoff', () => {
+    const header = formatNavigationHeader({
+      baton: null,
+      tasks: [],
+      currentCatId: 'codex',
+      executionSituation: {
+        kind: 'thread_execution_situation.v1',
+        complete: true,
+        activeRuns: [
+          {
+            phase: 'processing',
+            targetId: 'kimi',
+            invocationId: 'inv-kimi',
+            responseMessageId: 'response-kimi',
+            startedAt: 200,
+            sources: [{ messageId: 'source-opus', from: { kind: 'agent', catId: 'opus' } }],
+          },
+        ],
+      },
+    });
+
+    assert.match(header, /成员运行态（生命周期真相）/);
+    assert.match(header, /\(kimi\).*来源 source-opus ← 布偶猫.*response=response-kimi.*invocation=inv-kimi/);
+  });
+
+  it('states that no other member is running only when the exact projection is complete', () => {
+    const header = formatNavigationHeader({
+      baton: null,
+      tasks: [],
+      currentCatId: 'codex',
+      executionSituation: {
+        kind: 'thread_execution_situation.v1',
+        complete: true,
+        activeRuns: [
+          {
+            phase: 'processing',
+            targetId: 'codex',
+            invocationId: 'self-invocation',
+            responseMessageId: 'self-response',
+            startedAt: 100,
+            sources: [{ messageId: 'source-user', from: { kind: 'user', userId: 'owner' } }],
+          },
+        ],
+      },
+    });
+
+    assert.match(header, /成员运行态: 当前无其他成员执行/);
+    assert.doesNotMatch(header, /self-invocation/);
+  });
+
+  it('does not infer execution from recent speech when the lifecycle join is incomplete', () => {
+    const header = formatNavigationHeader({
+      baton: null,
+      tasks: [],
+      executionSituation: {
+        kind: 'thread_execution_situation.v1',
+        complete: false,
+        activeRuns: [],
+      },
+    });
+
+    assert.match(header, /当前无法完整验证（不按最近发言推断）/);
+    assert.doesNotMatch(header, /当前无其他成员执行/);
+  });
+
   it('formats baton with @ message excerpt', () => {
     const header = formatNavigationHeader({
       baton: {
@@ -335,13 +420,13 @@ describe('formatNavigationHeader', () => {
       },
       tasks: [],
     });
-    assert.ok(header.includes('co-creator本地 2026-05-31 23:20 America/Los_Angeles / 2026-06-01 06:20 UTC'), header);
+    assert.ok(header.includes(`${userLabel}本地 2026-05-31 23:20 America/Los_Angeles / 2026-06-01 06:20 UTC`), header);
   });
 
   it('injects a per-invocation temporal envelope with local and UTC dates', () => {
     const header = formatNavigationHeader({ baton: null, tasks: [] }, { nowMs: Date.UTC(2026, 6, 6, 3, 14, 0, 0) });
     assert.ok(
-      header.includes('当前时间: co-creator本地 2026-07-05 20:14 America/Los_Angeles / 2026-07-06 03:14 UTC'),
+      header.includes(`当前时间: ${userLabel}本地 2026-07-05 20:14 America/Los_Angeles / 2026-07-06 03:14 UTC`),
       header,
     );
     assert.ok(header.includes('relative terms use this now'), header);

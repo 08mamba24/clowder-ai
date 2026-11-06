@@ -8,15 +8,18 @@
  * revive a `hot` binding for a runtime that no longer holds that memory.
  * Iron Rule #5 (LL-048): recoverable state is persistent, TTL=0.
  *
- * Uses test Redis infrastructure (port 6398, never 6399).
+ * Runs only against an isolated test Redis (test:redis); an inherited address never qualifies.
  */
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import Redis from 'ioredis';
+import { assertRedisIsolationOrThrow, redisIsolationSkipReason } from './helpers/redis-test-helpers.js';
 
 const TEST_PREFIX = `test:context-epoch:${Date.now()}:`;
 
-describe('F296 B1: RedisContextEpochStore', () => {
+const REDIS_URL = process.env.REDIS_URL;
+
+describe('F296 B1: RedisContextEpochStore', { skip: redisIsolationSkipReason(REDIS_URL) }, () => {
   /** @type {import('ioredis').default} */
   let redis;
   let store;
@@ -24,7 +27,8 @@ describe('F296 B1: RedisContextEpochStore', () => {
   let connectionFailed = false;
 
   before(async () => {
-    const redisUrl = process.env.REDIS_URL || 'redis://localhost:6398';
+    assertRedisIsolationOrThrow(REDIS_URL, 'F296 B1: RedisContextEpochStore');
+    const redisUrl = REDIS_URL;
     redis = new Redis(redisUrl, {
       keyPrefix: TEST_PREFIX,
       lazyConnect: true,
@@ -84,6 +88,35 @@ describe('F296 B1: RedisContextEpochStore', () => {
     assert.equal(read.contextMode, 'hot');
     assert.equal(read.boundRuntimeSessionId, 'runtime-a');
     assert.equal(read.lastTransitionRef, 'ev:resumed');
+  });
+
+  it('round-trips authoritative pending compaction proof across store instances and clears it by full CAS rewrite', async () => {
+    assert.equal(available, true, 'this regression requires a real isolated Redis');
+    const { RedisContextEpochStore } = await import(
+      '../dist/domains/cats/services/stores/redis/RedisContextEpochStore.js'
+    );
+    const key = 'compaction-owner::codex-sol::compaction-thread';
+    const pendingCompaction = { eventId: 'stable-event', runtimeSessionId: 'runtime', evidenceRef: 'provider:compact' };
+    await store.compareAndPut(
+      {
+        scopeKey: key,
+        contextEpoch: 2,
+        contextMode: 'cold',
+        boundRuntimeSessionId: 'runtime',
+        lastTransitionRef: 'provider:compact',
+        pendingCompaction,
+        consumedCompactionEventIds: ['stable-event'],
+        version: 1,
+        updatedAt: Date.now(),
+      },
+      0,
+    );
+    const reopened = new RedisContextEpochStore(redis);
+    const current = await reopened.get(key);
+    assert.deepEqual(current.pendingCompaction, pendingCompaction);
+    const { pendingCompaction: _proof, ...withoutProof } = current;
+    await reopened.compareAndPut({ ...withoutProof, contextMode: 'hot', version: 2 }, 1);
+    assert.equal((await store.get(key)).pendingCompaction, undefined);
   });
 
   it('persists with no expiry (Iron Rule #5)', async () => {
@@ -162,7 +195,7 @@ describe('F296 B1: RedisContextEpochStore', () => {
     const { RedisContextEpochStore } = await import(
       '../dist/domains/cats/services/stores/redis/RedisContextEpochStore.js'
     );
-    const { ContextEpochOwner } = await import('../dist/domains/cats/services/session/ContextEpochOwner.js');
+    const { ContextEpochOwner } = await import('../dist/domains/cats/services/session/context/ContextEpochOwner.js');
     const rebuilt = new ContextEpochOwner(new RedisContextEpochStore(redis));
 
     const next = await rebuilt.resolve({
@@ -198,7 +231,7 @@ describe('F296 B1: RedisContextEpochStore', () => {
     const { RedisContextEpochStore } = await import(
       '../dist/domains/cats/services/stores/redis/RedisContextEpochStore.js'
     );
-    const { ContextEpochOwner } = await import('../dist/domains/cats/services/session/ContextEpochOwner.js');
+    const { ContextEpochOwner } = await import('../dist/domains/cats/services/session/context/ContextEpochOwner.js');
     const scope = { userId: 'user-1', catId: 'opus', threadId: 'thread-race' };
     const unknown = { state: 'unknown', reason: 'signal_unavailable', evidenceRef: 'ev:unknown' };
 

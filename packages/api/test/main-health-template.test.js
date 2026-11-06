@@ -53,6 +53,7 @@ async function execute(template, overrides = {}) {
   const deliver = mock.fn(async () => 'message-health');
   const trigger = mock.fn(async () => 'dispatched');
   await spec.run.execute(admitted.workItems[0].signal, admitted.workItems[0].subjectKey, {
+    occurrenceId: 'test-occurrence',
     assignedCatId: 'fallback-health-monitor',
     deliver,
     invokeTrigger: { trigger },
@@ -190,7 +191,7 @@ describe('main-health schedule template', () => {
     assert.match(content, /status: green/i);
     assert.match(content, /run-green/);
     assert.doesNotMatch(content, /pnpm gate/i);
-    assert.equal(trigger.mock.calls[0].arguments[1], 'codex-terra');
+    assert.equal(deliver.mock.calls[0].arguments[0].targetCatId, 'codex-terra');
   });
 
   it('verifies the default local checkout projection against the receipt HEAD and tree', async () => {
@@ -299,8 +300,8 @@ describe('main-health schedule template', () => {
     assert.match(content, /lint failed in packages\/api/);
     assert.match(content, /commit-1.*commit-2/s);
     assert.match(content, /triage/i);
-    assert.equal(deliver.mock.calls.length, 1);
-    assert.equal(trigger.mock.calls.length, 1);
+    assert.equal(deliver.mock.calls.length, 1, 'one envelope, one admission — admission is the wake');
+    assert.ok(deliver.mock.calls[0].arguments[0].targetCatId, 'the envelope names the guardian');
   });
 
   it('warns open as degraded unknown when receipt automation is unavailable', async () => {
@@ -315,7 +316,7 @@ describe('main-health schedule template', () => {
     assert.match(content, /status: unknown/i);
     assert.match(content, /check: pnpm check → not_run/i);
     assert.match(content, /degraded.*receipt reader unavailable/is);
-    assert.equal(trigger.mock.calls.length, 1);
+    assert.ok(deliver.mock.calls[0].arguments[0].targetCatId, 'the envelope names the guardian');
   });
 
   it('reports only an unexpired project quarantine supplied by the project-owned reader', async () => {

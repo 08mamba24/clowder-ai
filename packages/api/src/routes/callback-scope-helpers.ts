@@ -30,11 +30,8 @@ export function deriveCallbackActor(record: InvocationRecord): CallbackActor {
   };
 }
 
-/**
- * #573: identity used for cross-handler broadcast/persistence dedup.
- * QueueProcessor:761 broadcasts agent_message with parent (outer) id; route-serial
- * persists with parent (outer) id. Callback path must use the same to keep the
- * frontend's `(catId, invocationId)` dedup contract intact across stream + callback.
+/** Parent execution scope for queue, cancellation and callback attribution.
+ * Callback messages and final responses retain independent message/source identities.
  */
 export function effectiveInvocationId(actor: Pick<CallbackActor, 'invocationId' | 'parentInvocationId'>): string {
   return actor.parentInvocationId ?? actor.invocationId;
@@ -121,7 +118,10 @@ export async function resolveScopedThreadId(
   return { ok: true, threadId: requestedThreadId };
 }
 
-export function derivePrincipal(record: InvocationRecord | AgentKeyRecord): CallbackPrincipal {
+export function derivePrincipal(
+  record: InvocationRecord | AgentKeyRecord,
+  options: { readonly cloudBoundary?: boolean } = {},
+): CallbackPrincipal {
   if ('agentKeyId' in record) {
     return {
       kind: 'agent_key',
@@ -129,6 +129,7 @@ export function derivePrincipal(record: InvocationRecord | AgentKeyRecord): Call
       userId: record.userId,
       catId: createCatId(record.catId),
       scope: record.scope,
+      cloudBoundary: options.cloudBoundary === true,
     };
   }
   return {

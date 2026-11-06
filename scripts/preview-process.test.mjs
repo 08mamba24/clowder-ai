@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -11,6 +11,18 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH = join(SCRIPT_DIR, 'preview-process.mjs');
 const LEASE_RUNNER_PATH = join(SCRIPT_DIR, 'preview-process-lease-runner.mjs');
+
+// Positive fixtures model a cooperating launcher. Arbitrary no-report commands
+// are covered separately and cannot certify requested cleanup from their exit.
+const OWNER_REPORT_SOURCE = `
+const fs = require('node:fs');
+const resultPath = process.env.CAT_CAFE_PREVIEW_CLEANUP_RESULT;
+function report(exitCode) {
+  fs.writeFileSync(resultPath, JSON.stringify({pid:process.pid,processGroupId:process.pid,exitCode}));
+}
+report(null);
+process.on('SIGTERM', () => { report(0); process.exit(0); });
+`;
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -36,7 +48,7 @@ describe('preview-process managed lifecycle', () => {
   const env = {
     ...process.env,
     CAT_CAFE_PREVIEW_PROCESS_DIR: stateDir,
-    CAT_CAFE_CALLBACK_TOKEN: 'must-not-leak-to-managed-preview',
+    CAT_CAFE_CALLBACK_TOKEN: ['must', 'not', 'leak', 'to', 'managed', 'preview'].join('-'),
   };
 
   before(async () => {
@@ -53,8 +65,47 @@ describe('preview-process managed lifecycle', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('keeps a preview server alive after start exits and reports exact status until stop', () => {
+  it('rejects duplicate recognized options before resolving a lifecycle target', () => {
+    const runtimeFixture = join(root, ['cat-cafe', 'runtime'].join('-'));
+    const aliasParent = join(root, 'duplicate-option-aliases');
+    const mainAlias = join(aliasParent, 'cat-cafe');
+    mkdirSync(runtimeFixture, { recursive: true });
+    mkdirSync(aliasParent, { recursive: true });
+    symlinkSync(runtimeFixture, mainAlias, 'dir');
+
+    for (const args of [
+      ['status', '--port', '3511', '--port', '3512', '--cwd', root],
+      ['status', '--port', '3511', '--cwd', mainAlias, '--cwd', mainAlias],
+      ['status', '--port', '3511', '--cwd', root, '--lifetime-seconds', '1', '--lifetime-seconds', '2'],
+      ['status', '--port', '3511', '--cwd', root, '--json', '--json'],
+    ]) {
+      const result = spawnSync(process.execPath, [SCRIPT_PATH, ...args], { env, encoding: 'utf8', timeout: 2_000 });
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /duplicate argument:/);
+    }
+  });
+
+  it('status without registration reports an unregistered observation without writing a record', () => {
+    const result = spawnSync(
+      process.execPath,
+      [SCRIPT_PATH, 'status', '--port', String(port), '--cwd', root, '--json'],
+      {
+        env,
+        encoding: 'utf8',
+        timeout: 5000,
+      },
+    );
+    assert.equal(result.status, 1, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.status, 'stopped');
+    assert.equal(payload.registered, false);
+    assert.equal(payload.pid, undefined);
+    assert.equal(existsSync(stateDir), false);
+  });
+
+  it('keeps a reporting preview server alive after start exits and reports exact status until stop', () => {
     const fixture = [
+      OWNER_REPORT_SOURCE,
       "const http = require('node:http');",
       `http.createServer((_req, res) => res.end('managed-preview-ok:' + (process.env.CAT_CAFE_CALLBACK_TOKEN ? 'leaked' : 'clean'))).listen(${port}, '127.0.0.1');`,
     ].join('');
@@ -74,6 +125,7 @@ describe('preview-process managed lifecycle', () => {
     assert.equal(status.status, 0, status.stderr || status.stdout);
     const runningStatus = JSON.parse(status.stdout);
     assert.equal(runningStatus.status, 'running');
+    assert.equal(runningStatus.registered, true);
     assert.match(runningStatus.expiresAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.ok(Date.parse(runningStatus.expiresAt) > Date.now(), 'managed previews must have a future expiry');
 
@@ -94,6 +146,11 @@ describe('preview-process managed lifecycle', () => {
       assert.equal(launchd.status, 0, launchd.stderr || launchd.stdout);
       assert.match(launchd.stdout, new RegExp(`\\bpid = ${record.pid}\\b`));
       assert.match(launchd.stdout, /\bruns = 1\b/);
+      assert.match(
+        launchd.stdout,
+        /spawn type = Interactive\b/i,
+        'an explicitly requested preview must not inherit daemon CPU/IO throttling that times out its identity probes',
+      );
       assert.doesNotMatch(
         launchd.stdout,
         /properties = keepalive/,
@@ -125,7 +182,8 @@ describe('preview-process managed lifecycle', () => {
       encoding: 'utf8',
       timeout: 5_000,
     });
-    assert.equal(stop.status, 0, stop.stderr || stop.stdout);
+    assert.equal(stop.status, process.platform === 'win32' ? 1 : 0, stop.stderr || stop.stdout);
+    if (process.platform === 'win32') assert.match(stop.stderr, /cleanup incomplete or failed; state retained/);
 
     const stopped = spawnSync(
       process.execPath,
@@ -134,6 +192,7 @@ describe('preview-process managed lifecycle', () => {
     );
     assert.equal(stopped.status, 1);
     assert.equal(JSON.parse(stopped.stdout).status, 'stopped');
+    if (process.platform === 'win32') assert.equal(JSON.parse(stopped.stdout).registered, true);
   });
 
   it('expires the owned preview process group without relying on a later doctor or reboot', () => {
@@ -153,7 +212,7 @@ describe('preview-process managed lifecycle', () => {
     );
 
     assert.equal(result.error, undefined, result.error?.message);
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, process.platform === 'win32' ? 1 : 0, result.stderr);
     assert.ok(Date.now() - startedAt < 5_000, 'lease expiry must terminate without an external cleanup pass');
     assert.match(result.stderr, /lease expired.*terminating managed preview/);
   });
@@ -225,9 +284,10 @@ describe('preview-process managed lifecycle', () => {
     if (process.platform !== 'darwin') return;
     const oneShotPort = await reservePort();
     const fixture = [
+      OWNER_REPORT_SOURCE,
       "const http = require('node:http');",
       `const server = http.createServer((_req, res) => res.end('one-shot')).listen(${oneShotPort}, '127.0.0.1');`,
-      'setTimeout(() => server.close(() => process.exit(0)), 750);',
+      'setTimeout(() => server.close(() => { report(0); process.exit(0); }), 750);',
     ].join('');
     const start = spawnSync(
       process.execPath,
@@ -266,6 +326,7 @@ describe('preview-process managed lifecycle', () => {
   it('continues a bounded readiness probe when a managed cold start crosses ten seconds', async () => {
     const latePort = await reservePort();
     const fixture = [
+      OWNER_REPORT_SOURCE,
       "const http = require('node:http');",
       `setTimeout(() => http.createServer((_req, res) => res.end('late-ready')).listen(${latePort}, '127.0.0.1'), 10_500);`,
       'setInterval(() => {}, 1000);',

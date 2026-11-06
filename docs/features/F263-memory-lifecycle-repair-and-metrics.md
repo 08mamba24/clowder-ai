@@ -2,7 +2,7 @@
 feature_ids: [F263]
 related_features: [F152, F186, F200, F227, F231, F237, F255, F256, F260, F271, F276]
 topics: [memory, lifecycle, eval, telemetry, contract, envelope, privacy, dashboard]
-tips_exempt: existing coverage continuation correctness fix; no new user-facing capability or action surface
+tips_exempt: "Renewed 2026-10-23 for F332 consolidation: existing search envelopes, memory-consumption contracts and lifecycle measurements retain their entry points and evidence. Carrying their unfinished validation into F332 introduces no new dashboard, user control or discovery surface."
 doc_kind: spec
 created: 2026-07-11
 updated: 2026-07-27
@@ -14,7 +14,16 @@ description_updated_at: 2026-07-11T13:10:00Z
 
 # F263: Memory Lifecycle Repair & Metrics — 记忆 lifecycle 修复与度量
 
-> **Status**: in-progress（Phase A/B/C complete；Phase D pending） | **Owner**: Ragdoll (fable-5，spec/plan own；Phase A/B 实现由 codex-sol 承接) | **Priority**: P1
+> **Status**: closed (consolidated into F332; 未完成结果继续承接，非全部交付) | **Owner**: Ragdoll (fable-5，spec/plan own；Phase A/B 实现由 codex-sol 承接) | **Priority**: P1
+
+## 2026-10-23 项目收拢至 F332
+
+You 在 `[thread-id]#private-source-id` 明确要求关闭旧记忆项目、
+保留有价值的结果并新立一项。本项目登记据此归入 [F332](F332-experience-informed-memory.md)；
+**本文件仍保留原合同及历史证据的权威，未被逐项替代的合同继续有效。**
+原 AC 实情、Task、owner、accepted scope 和等待不变；本次不声称全部完成、不关闭来源、不迁移数据。
+
+> **关闭前状态快照**: in-progress（Phase A/B/C complete；Phase D pending） | **Owner**: Ragdoll (fable-5，spec/plan own；Phase A/B 实现由 codex-sol 承接) | **Priority**: P1
 
 Architecture cell: memory
 Map delta: complete — Phase C 已把 `LifecycleTraceStore`、`lifecycle_traces`、`VerificationEvent` 与 `ThreeAxisSnapshot` 回填既有 `memory` cell；未新建平行 Store / Router / cursor state。
@@ -95,7 +104,7 @@ in_context_observability:
 - [x] AC-A2: `confidence` 三义拆轴，类型层（lint/tsc guard）禁止裸 `confidence` 字段新增（复核：guard 测试 + grep 零残留）
 - [x] AC-A3: 搜索结果主行渲染 `match/authority/updated` 三轴；snapshot test 断言禁 `[high]`；`updated:unknown` 不许省略（复核：snapshot fixture）
 - [x] AC-A4: `?? 1` 删除，direct hit 语义由 `matchType` 表达（复核：CoverageSearchService diff + 测试）
-- [x] AC-A5: coverage 响应体积与 continuation 契约红测先红后绿——`hybrid + scope=threads + limit=15` 的 API/MCP 序列化响应均受声明预算约束；`hasMore` 只由 lookahead 或已知未消费候选证明，drill pointer 严格前进；同一稳定 index 下连续页 anchor 集合互斥，页间不得通过改变 retrieval k 重算非前缀稳定候选流；单个 oversize 候选以有界可见 placeholder 表示并计为已消费，且必须提供有界可调用 drill 或显式 `drill_unavailable`；partial timeout 保留已完成 source，all-source timeout 显式为 retryable incomplete，telemetry 只记录实际执行的 graph；正常调用不再触发 context-cap spill（复核：状态表 fixtures + serializedChars 断言 + PR #2909 后 canonical runtime offset 0/5 两页 anchor 互斥）
+- [x] AC-A5: coverage 响应体积与 continuation 契约红测先红后绿——`hybrid + scope=threads + limit=15` 的 API/MCP 序列化响应均受声明预算约束；`hasMore` 只由 lookahead 或已知未消费候选证明，drill pointer 严格前进；同一稳定 index 下连续页 anchor 集合互斥，页间不得通过改变 retrieval k 重算非前缀稳定候选流；单个 oversize 候选以有界可见 placeholder 表示并计为已消费，且必须提供有界可调用 drill 或显式 `drill_unavailable`；partial timeout 保留已完成 source，all-source timeout 显式为 retryable incomplete，telemetry 只记录实际执行的 graph；正常调用不再触发 context-cap spill（复核：状态表 fixtures + serializedChars 断言 + PR #2909 后 canonical runtime offset 0/5 两页 anchor 互斥）。**topk 覆盖扩展（2026-09-28，F324 Phase A，PR #4858 `77376ea15c`）**：完整序列化 topk envelope（含 `entityMatches` 派生附录）在 API 与 MCP 两层均 ≤ 24,000 字符；2,456 项 live 附录形状复刻为红测，ranked anchors 保留，附录省略以 `entityMatchesOmitted` 计数守恒并显式标 `entityMatchesDrillUnavailable='derived-appendix-not-pageable'`（复核：`packages/api/test/evidence-route.test.js:761-773`、`packages/mcp-server/test/evidence-tools.test.js:351-353`）。合同文本仍归本 feat，F324 只持编排与验收
 
 ### Phase B（注入面纳管 + privacy gate）
 - [x] AC-B1: SessionBootstrap 与 cold-context recall 的 presented→inspected→used/ignored 事件可查询（`source=push`）（复核：`session-bootstrap.test.js`、`f148-context-transport.test.js`、`recall-correlation-integration.test.js`、`recall-events-route.test.js`）

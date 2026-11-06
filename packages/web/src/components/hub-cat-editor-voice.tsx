@@ -4,6 +4,9 @@ import { useRef, useState } from 'react';
 import type { HubCatEditorFormState } from './hub-cat-editor.model';
 import { SelectField, TextField } from './hub-cat-editor-fields';
 
+import { useEditorText, useMemberEditorPresentation } from './members/editor-presentation';
+import { MemberOperationFeedback } from './members/MemberOperationFeedback';
+
 type FormPatch = Partial<HubCatEditorFormState>;
 
 const VOICE_LANG_OPTIONS: Array<{ value: string; label: string }> = [
@@ -21,40 +24,47 @@ function refAudioDisplayName(path: string): string {
 }
 
 function RefAudioField({ value, onUpload }: { value: string; onUpload: (file: File) => Promise<void> }) {
+  const page = useMemberEditorPresentation();
+  const t = useEditorText();
   const fileRef = useRef<HTMLInputElement | null>(null);
   const filename = refAudioDisplayName(value);
 
   return (
-    <div className="flex flex-col gap-1.5 text-cafe-secondary sm:flex-row sm:items-center sm:gap-3">
-      <span className="text-xs font-bold text-cafe-secondary sm:w-[150px] sm:shrink-0">Ref Audio</span>
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span
-          className="min-w-0 flex-1 truncate rounded-[10px] border-transparent bg-[var(--console-field-bg,var(--console-card-bg))] px-3 py-2 text-compact leading-5 text-cafe"
-          title={value}
-        >
-          {filename ? filename : <span className="text-cafe-muted">未设置</span>}
+    <div className="space-y-2">
+      <div className="flex flex-col gap-1.5 text-cafe-secondary sm:flex-row sm:items-center sm:gap-3">
+        <span className="text-xs font-bold text-cafe-secondary sm:w-[150px] sm:shrink-0">
+          {page ? t('参考音频') : 'Ref Audio'}
         </span>
-        <button
-          type="button"
-          onClick={() => fileRef.current?.click()}
-          className="shrink-0 rounded-[10px] bg-[var(--console-field-bg,var(--console-card-bg))] px-3 py-2 text-compact font-semibold text-cafe-secondary transition hover:opacity-80"
-        >
-          上传
-        </button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="audio/wav,audio/mpeg,audio/mp3,audio/webm,audio/ogg,.wav,.mp3,.webm,.ogg"
-          className="hidden"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (!file) return;
-            void onUpload(file).finally(() => {
-              if (fileRef.current) fileRef.current.value = '';
-            });
-          }}
-        />
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <span
+            className="min-w-0 flex-1 truncate rounded-[10px] border-transparent bg-[var(--console-field-bg,var(--console-card-bg))] px-3 py-2 text-compact leading-5 text-cafe"
+            title={value}
+          >
+            {filename ? filename : <span className="text-cafe-muted">{t('未设置')}</span>}
+          </span>
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            className="shrink-0 rounded-[10px] bg-[var(--console-field-bg,var(--console-card-bg))] px-3 py-2 text-compact font-semibold text-cafe-secondary transition hover:opacity-80"
+          >
+            {t('上传')}
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="audio/wav,audio/mpeg,audio/mp3,audio/webm,audio/ogg,.wav,.mp3,.webm,.ogg"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (!file) return;
+              void onUpload(file).finally(() => {
+                if (fileRef.current) fileRef.current.value = '';
+              });
+            }}
+          />
+        </div>
       </div>
+      <MemberOperationFeedback source="audio" />
     </div>
   );
 }
@@ -68,6 +78,8 @@ export function VoiceConfigSection({
   onChange: (patch: FormPatch) => void;
   onRefAudioUpload: (file: File) => Promise<void>;
 }) {
+  const page = useMemberEditorPresentation();
+  const t = useEditorText();
   const hasVoiceConfig = Boolean(
     form.voiceVoice ||
       form.voiceLangCode ||
@@ -77,7 +89,7 @@ export function VoiceConfigSection({
       form.voiceInstruct ||
       form.voiceTemperature,
   );
-  const [expanded, setExpanded] = useState(hasVoiceConfig);
+  const [expanded, setExpanded] = useState(page || hasVoiceConfig);
   const summary = hasVoiceConfig ? `${form.voiceLangCode ? form.voiceLangCode : '?'}` : '';
 
   return (
@@ -87,9 +99,17 @@ export function VoiceConfigSection({
         onClick={() => setExpanded(!expanded)}
         className="w-full text-left text-sm font-semibold text-cafe-muted"
       >
-        {expanded ? '▾' : '▸'} Voice Config{summary ? ` — ${summary}` : ''}
+        {page ? (
+          t('语音设置')
+        ) : (
+          <>
+            {expanded ? '▾' : '▸'} Voice Config{summary ? ` — ${summary}` : ''}
+          </>
+        )}
       </button>
-      {!expanded && <p className="mt-0.5 text-xs leading-4 text-cafe-muted">展开后可配置 TTS clone 参考音频和文本。</p>}
+      {!expanded && (
+        <p className="mt-0.5 text-xs leading-4 text-cafe-muted">{t('展开后可配置 TTS clone 参考音频和文本。')}</p>
+      )}
       {expanded && (
         <div className="space-y-2">
           <SelectField

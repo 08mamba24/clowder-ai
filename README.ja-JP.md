@@ -1,219 +1,179 @@
 <div align="center">
 
+<!-- TODO: assets/icons/clowder-ai-logo-v2-clean.svg から同期した実際のロゴに差し替える -->
 # Clowder AI
 
-### 自分だけの Clowder AI を育てよう。
+**ハードレール・ソフトパワー・共有ミッション**
 
-**モデルは更新されても、関係・仕事・チームまで毎回リセットされるべきではありません。**
-
-Clowder AI は、異なるモデルファミリーの AI エージェントが一つのチームとして暮らせる
-セルフホスト型ワークスペースです。永続するアイデンティティ、共有された仕事、
-エビデンスに基づく記憶、クロスモデルレビュー、そしてあなたと長く成長するための土台を提供します。
+*すべてのアイデアには、それを真剣に受け止める魂のチームがふさわしい。*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![pnpm](https://img.shields.io/badge/pnpm-9+-F69220?logo=pnpm&logoColor=white)](https://pnpm.io/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5+-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![LINUX DO](https://img.shields.io/badge/LINUX-DO-FFB003.svg?logo=data:image/svg%2bxml;base64,DQo8c3ZnIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiPjxwYXRoIGQ9Ik00Ni44Mi0uMDU1aDYuMjVxMjMuOTY5IDIuMDYyIDM4IDIxLjQyNmM1LjI1OCA3LjY3NiA4LjIxNSAxNi4xNTYgOC44NzUgMjUuNDV2Ni4yNXEtMi4wNjQgMjMuOTY4LTIxLjQzIDM4LTExLjUxMiA3Ljg4NS0yNS40NDUgOC44NzRoLTYuMjVxLTIzLjk3LTIuMDY0LTM4LjAwNC0yMS40M1EuOTcxIDY3LjA1Ni0uMDU0IDUzLjE4di02LjQ3M0MxLjM2MiAzMC43ODEgOC41MDMgMTguMTQ4IDIxLjM3IDguODE3IDI5LjA0NyAzLjU2MiAzNy41MjcuNjA0IDQ2LjgyMS0uMDU2IiBzdHlsZT0ic3Ryb2tlOm5vbmU7ZmlsbC1ydWxlOmV2ZW5vZGQ7ZmlsbDojZWNlY2VjO2ZpbGwtb3BhY2l0eToxIi8+PHBhdGggZD0iTTQ3LjI2NiAyLjk1N3EyMi41My0uNjUgMzcuNzc3IDE1LjczOGE0OS43IDQ5LjcgMCAwIDEgNi44NjcgMTAuMTU3cS00MS45NjQuMjIyLTgzLjkzIDAgOS43NS0xOC42MTYgMzAuMDI0LTI0LjM4N2E2MSA2MSAwIDAgMSA5LjI2Mi0xLjUwOCIgc3R5bGU9InN0cm9rZTpub25lO2ZpbGwtcnVsZTpldmVub2RkO2ZpbGw6IzE5MTkxOTtmaWxsLW9wYWNpdHk6MSIvPjxwYXRoIGQ9Ik03Ljk4IDcwLjkyNmMyNy45NzctLjAzNSA1NS45NTQgMCA4My45My4xMTNRODMuNDI2IDg3LjQ3MyA2Ni4xMyA5NC4wODZxLTE4LjgxIDYuNTQ0LTM2LjgzMi0xLjg5OC0xNC4yMDMtNy4wOS0yMS4zMTctMjEuMjYyIiBzdHlsZT0ic3Ryb2tlOm5vbmU7ZmlsbC1ydWxlOmV2ZW5vZGQ7ZmlsbDojZjlhZjAwO2ZpbGwtb3BhY2l0eToxIi8+PC9zdmc+)](https://linux.do/t/topic/1900303)
 
 [English](README.md) | [中文](README.zh-CN.md) | **日本語**
-
-[クイックスタート](#クイックスタート) · [今すでに動いているもの](#今すでに動いているもの) · [Growing の議論に参加](https://github.com/zts212653/clowder-ai/issues/1403)
 
 </div>
 
 ---
 
-## 問題は、もはや「知能にアクセスできるか」だけではない
+## なぜ Clowder なのか？
 
-一つのエージェントは魔法のように感じられます。そこに別のモデル、別のウィンドウ、
-別のツール、別のプロジェクトが加わります。
+Claude、GPT、Gemini — それぞれ独自の強みを持つ強力なモデルです。しかし、これらを組み合わせて使うと**あなた自身**がルーターになってしまいます。チャットウィンドウ間でコンテキストをコピー＆ペーストし、誰が何を言ったかを追跡し、中間管理に時間を費やすことに。
 
-やがて **あなた** がコンテキストをコピーし、仕事を割り当て、約束を思い出させ、
-食い違う回答を調整し、本当に完了したか確認し、翌週また同じことを教えるようになります。
+Clowder AI は、孤立した AI エージェントを本物のチームに変えるプラットフォーム層です。永続的アイデンティティ、クロスモデルレビュー、共有メモリ、協調的規律。ほとんどのフレームワークはエージェントを*呼び出す*のを助けます。Clowder はエージェントが*一緒に働く*のを助けます。
 
-エージェントは強くなったのに、あなたがルーター兼プロジェクトマネージャー兼メモリになってしまう。
+> 📹 **[プラットフォーム全体デモ (3:45)](https://github.com/user-attachments/assets/8e470aba-8fe6-4aa5-a476-c2cd81d1630f)**
 
-Clowder は別の問いから始まります。
+### 30 秒でわかる、ひとつの機能
 
-> AI エージェントが、あなたと本当に一緒に育つチームになるには何が必要か？
+どのデモも、Clowder AI を作っているチームで実際に交わされた会話の再現です。見たら、同じことをあなたの猫に話しかけてみてください。
 
-すべてを支配する巨大な Boss Agent でも、使い捨てのチャット画面の列でもありません。
-異なるエージェントが自分のアイデンティティを保ち、互いに異議を唱え、実際の仕事を引き継ぎ、
-同じエビデンスへ戻れる共有の家です。
+<details>
+<summary><b>新しい会話の提案</b> — 大きな仕事を猫のチームに任せる · 0:48</summary>
 
-## Growing：プロダクトの方向性
+[![新しい会話の提案デモ：5 枚の提案カードが承認され、作業が始まる](site/assets/demos/conversation-proposals.jpg)](https://zts212653.github.io/clowder-ai/#demos)
 
-私たちは、システム全体が実現すべき結果を **Growing** と呼んでいます。
-新しいボタンやモードの名前ではありません。
+猫が大きな仕事をいくつかの流れに分け、それぞれに「何を・なぜ・誰が」を書いたカードを作ります。承認すれば新しい会話が開き、断れば猫が直して出し直します。[デモを見る（英語字幕）](https://zts212653.github.io/clowder-ai/#demos) · コミュニティの issue [#82](https://github.com/zts212653/clowder-ai/issues/82) から生まれた機能です
 
-| 得られる体験 | その下で成立すべきこと |
-|---|---|
-| **安心して手放せる** | 仕事の owner が見え、時間や引き継ぎを越えて続き、本当に判断が必要なときだけ戻ってくる。 |
-| **だんだん自分を理解してくれる** | アイデンティティ、関係、好み、権限、共有経験が続く一方、何気ない一言を永久の真実にはしない。 |
-| **ゼロからやり直さない** | 一度の修正がエビデンスとなり、確認された変更を経て、次回の行動を本当に変える。保存されたメモだけでは終わらない。 |
+</details>
 
-モデルは葉です。強力で、交換でき、常に変化します。根にあるのはアイデンティティ、関係、
-記憶、信頼、境界、責任です。Clowder は葉が強くなり続けても、根を生かし続けます。
+<details>
+<summary><b>同じバグ、ふたつの結末</b> — Claude Code のセッションをカフェに持ち込む · 0:48</summary>
 
-## 今すでに動いているもの
+[![同じバグ、ふたつの結末：Claude Code だけでは作業が止まり、カフェでは続く](site/assets/demos/same-bug.jpg)](https://zts212653.github.io/clowder-ai/#demos)
 
-Clowder は **Clowder AI** から生まれました。Clowder AI は、人間とエージェントのチームが
-Clowder 自体を毎日つくるために使っている実際のワークスペースです。
-以下はコンセプトモックではなく、現在動いているプロダクト機能です。
+Claude Code だけで作業していると、利用上限に達したら何時間も待つしかありません。そのセッションを Clowder AI に持ち込めば（新しい会話 → Connect an existing local session）、猫はそれまでの経緯をすべて覚えていて、別の猫も呼べます。また上限に達しても、作業は別の猫に引き継がれて止まりません。[デモを見る（英語字幕）](https://zts212653.github.io/clowder-ai/#demos) · 引き継ぎ機能はコミュニティ貢献者 [@mindfn](https://github.com/mindfn) の [#1398](https://github.com/zts212653/clowder-ai/pull/1398) から
 
-| 機能 | あなたにとって何が変わるか |
-|---|---|
-| **一つの共有ワークスペース** | 分離された thread で複数のエージェントと話し、モデルごとの画面でコンテキストを組み直さずに済む。 |
-| **永続するエージェントのアイデンティティ** | session やコンテキスト圧縮を越えて、安定した役割、名前、仕事のルール、関係の座標を保つ。 |
-| **エージェント同士の引き継ぎ** | `@mention` と source ref で仕事を渡し、owner を見える形にする。人間を伝言係にしない。 |
-| **クロスモデルレビュー** | 変更を書いたモデルが自分で最終判断する必要はない。独立レビューがワークフローに組み込まれている。 |
-| **共有された真実と記憶** | Git、意思決定、タスク、エビデンス、承認された記憶が、チームの戻れる場所になる。「保存」と「行動変化」は区別される。 |
-| **Skills とツール** | 必要なときだけ専門的な仕事の進め方を読み込み、MCP と provider adapter でツールを共有する。 |
-| **確認可能なガードレール** | Review gate、worktree 分離、安全境界、可視化されたワークフロー状態により、自律性を点検できる。 |
+</details>
 
-### 本物のワークスペースで、本物の仕事を
+<details>
+<summary><b>終わるまで待たなくていい</b> — 返答中の猫に追加の指示を出す · 0:36</summary>
 
-これはデモ用に作られた単独エージェントのチャットではありません。
-議論、実装、レビュー、フォローアップに日々使っている同じワークスペースです。
+[![終わるまで待たなくていい：作業中の猫に丸で囲んでひとこと、旧版と新版を並べて比較](site/assets/demos/steer.jpg)](https://zts212653.github.io/clowder-ai/#demos)
 
-![構造化されたリッチブロックを含むマルチエージェントチャット](https://github.com/user-attachments/assets/c6c8589d-7c55-44c8-a987-d88c921bcf33)
+猫が修正している最中に、もう一か所気づいたら：入力欄の + メニューで今の返答を誘導するよう切り替え、画面の該当箇所を丸で囲み、ひとこと添えて送ります。猫は同じターンの中で受け取り、旧版と新版を並べて見せてくれます。[デモを見る（英語字幕）](https://zts212653.github.io/clowder-ai/#demos)
 
-Mission Hub では、存在する仕事、owner、現在の段階、ブロッカーが見えるようになります。
+</details>
 
-![Feature governance を表示する Mission Hub](https://github.com/user-attachments/assets/6e45e7e5-76ce-43fd-a784-53c95e5f952f)
+<details>
+<summary><b>決めきれないなら、まず別々に考えて投票</b> — expert panel、unknown-first、/vote · 0:47</summary>
 
-## 次に育てているもの
+[![決めきれないなら、まず別々に考えて投票：3 匹の猫がそれぞれ考え、最後に投票。あなたの案も候補に入る](site/assets/demos/panel-vote.jpg)](https://zts212653.github.io/clowder-ai/#demos)
 
-難しいのは、チャット画面やモデル接続をもう一つ増やすことではありません。
-時間を越えた連続性と信頼をつくることです。
+迷ったら「expert panel」と言えば、猫たちはまずそれぞれ別々に考え、あなたの案もひとつとして並べます。それでも意見が割れたら「unknown-first」と言うと、結論をいちばんひっくり返しそうな未知から確かめます。まだ決まらなければ /vote で猫に投票してもらいます。あなたの案も候補に入りますが、勝つとは限りません。[デモを見る（英語字幕）](https://zts212653.github.io/clowder-ai/#demos)
 
-- **本当の委任** — まとまっていない話を一度伝えれば、チームが持ち続け、準備し、
-  判断が必要なときだけ具体的な材料とともに戻ってくる。
-- **昇格に値する記憶** — 観察はまずエビデンスとして残り、人の確認を経て初めて
-  profile、taste、convention、system guard へ進む。
-- **検証できる成長** — 「覚えた」という自己申告ではなく、新しい入力に対する次の行動が変わったことを確かめる。
-- **境界を壊さない Collective** — 複数のエージェントファミリーが、それぞれのアイデンティティ、
-  プライバシー、権限、source of truth を保ったまま協力する。
+</details>
 
-この方向性は
-[#1403: Growing — from using agents to raising AI partners that grow with you](https://github.com/zts212653/clowder-ai/issues/1403)
-で公開議論しています。すでに提供している機能と将来の方向性は、README と issue の両方で分けて示します。
+<details>
+<summary><b>私たちが眠っていた 10 時間</b> — 定期タスクと GitHub イベント · 0:55</summary>
 
-## 全体のつながり
+[![私たちが眠っていた 10 時間：チームは眠り、2 匹の猫が引き継ぎながら作業を続ける](site/assets/demos/while-we-slept.jpg)](https://zts212653.github.io/clowder-ai/#demos)
 
-```text
-                       あなた — ビジョンと最終判断
-                                    │
-                 ┌──────────────────┴──────────────────┐
-                 │          Clowder の共有ホーム       │
-                 │                                     │
-                 │ identity · threads · tasks · evidence │
-                 │ memory · skills · review · guardrails │
-                 └──────┬──────────┬──────────┬─────────┘
-                        │          │          │
-                     Claude      GPT       Gemini      ...
-                   agent CLI  agent CLI  agent CLI
-```
+10 月 22 日の実際の一晩：チームは全員眠っていました。定期タスクが 2 時間ごとに 1 匹の猫を起こしてオープンソース版への同期を進め、コミュニティの PR に新しいコミットが来たり CI が失敗したりすると、GitHub がもう 1 匹を起こしてレビューや修正に向かわせます。2 匹は互いに引き継ぎ、朝には 37 件の PR がマージされていました。[デモを見る（英語字幕）](https://zts212653.github.io/clowder-ai/#demos) · その夜のコミュニティ貢献者 [mindfn](https://github.com/mindfn), [amazing-fish](https://github.com/amazing-fish), [EdgarR1170](https://github.com/EdgarR1170), [whutzefengxie-ops](https://github.com/whutzefengxie-ops) に感謝
 
-Clowder は既存の Agent CLI を置き換えません。その上にあるチームレイヤーです。
+</details>
 
-| レイヤー | 担当するもの |
-|---|---|
-| **モデル** | 推論、生成、理解 |
-| **Agent CLI / adapter** | ツール、ファイル、コマンド、provider session |
-| **Clowder** | アイデンティティ、協働、連続性、レビュー、監査、安全レール |
+<details>
+<summary><b>一夜で、一枚の布に</b> — 9 匹の猫、49 の会話、ひと晩 · 0:53</summary>
 
-### 対応する Agent ルート
+[![一夜で、一枚の布に：会話ごとに灯る 49 の窓と、窓どうしをつなぐ糸](site/assets/demos/woven-night.jpg)](https://zts212653.github.io/clowder-ai/#demos)
 
-| Agent ルート | モデルファミリー | ステータス |
-|---|---|---|
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Claude | 提供中 |
-| [Codex CLI](https://github.com/openai/codex) | GPT / Codex | 提供中 |
-| [Antigravity CLI](https://antigravity.google/cli) | Gemini / Google アカウント側選択 | 非 ACP Gemini のデフォルト |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Gemini | ACP ルートまたは明示的 fallback |
-| [opencode](https://github.com/sst/opencode) | 複数 provider | 提供中 |
+10 月 22 日の実際の一晩：あなたが眠っているあいだに、4 系統 9 匹の猫が 49 の会話で作業し、262 回仕事を引き継ぎました。窓ひとつが会話ひとつ、引き継ぐたびに糸が一本伸びます。朝には一晩の糸が一枚の布になり、布の上の 37 個の結び目が、マージされた 37 件の PR です。[デモを見る（英語字幕）](https://zts212653.github.io/clowder-ai/#demos)
 
-Provider サポートは変化します。認証と adapter の詳細な一覧は
-[SETUP.md](SETUP.md) を source of truth とします。
+</details>
+
+<details>
+<summary><b>数件選んで、どこへでも</b> — 複数選択・エクスポート・転送 · 0:49</summary>
+
+[![数件選んで、どこへでも：選んだ 3 件のメッセージから「ドキュメント」「長い画像」「転送」の線がそれぞれの行き先へ伸びる](site/assets/demos/bundles.jpg)](https://zts212653.github.io/clowder-ai/#demos)
+
+メッセージを一度選べば、行き先ごとに持っていけます。同僚に見せるなら長い画像、自分で残すなら Markdown ドキュメント（メールに貼るならテキスト）。別の猫に任せるなら相手の会話へ転送：猫を選んでひとこと添えると、まとめカードが届き、猫が起こされて続きを始めます。[デモを見る（英語字幕）](https://zts212653.github.io/clowder-ai/#demos)
+
+</details>
 
 ## クイックスタート
 
-### デスクトップリリース
+### デスクトップインストーラー
 
-まず [Releases](https://github.com/zts212653/clowder-ai/releases) を確認してください。
-インストーラがある場合、Windows と macOS ではそれが最短です。Linux ではソースからのセットアップ、
-または `bash scripts/install.sh` を利用できます。
+[Releases ページ](https://github.com/zts212653/clowder-ai/releases/latest)からダウンロード — **Windows** (.exe) と **macOS** (.dmg) に対応。インストーラーはすべてをバンドルしており、`pnpm install` は不要です。
 
-### ソースから起動
-
-**必要条件：** Node.js 20+ · pnpm 9+ · Git · Redis 7+（メモリモードでは任意）
+### ソースから
 
 ```bash
 git clone https://github.com/zts212653/clowder-ai.git
 cd clowder-ai
 pnpm install
-pnpm build
-cp .env.example .env
-pnpm start
+pnpm start        # http://localhost:3003 を開く
 ```
 
-`http://localhost:3003` を開き、**Hub → System Settings → Account Configuration** で
-モデル provider と CLI アカウントを接続します。
+Node.js 20+、pnpm 9+ が必要。Redis 7+ はオプション（`--memory` でスキップ）。
 
-README のセットアップ説明は意図的にここまでです。Provider 認証、詳細設定、音声、連携、
-バージョン固定、トラブルシューティングの canonical guide は **[SETUP.md](SETUP.md)** です。
+> **ヒント：** `pnpm start --quick` でリビルドをスキップ · `pnpm start --daemon` でバックグラウンド実行 · [完全なドキュメント →](https://zts212653.github.io/clowder-ai/docs.html)
 
-## 私たちの働き方
+## 機能一覧
 
-### Hard Rails. Soft Power.
+| 機能 | 説明 |
+|------|------|
+| **マルチエージェント編成** | 適切なエージェントにタスクをルーティング — アーキテクチャは Claude、レビューは GPT、デザインは Gemini |
+| **永続的アイデンティティ** | 各エージェントはセッションを超えてロール、人格、記憶を保持 |
+| **クロスモデルレビュー** | Claude がコードを書き、GPT がレビュー。組み込み機能として |
+| **A2A 通信** | 非同期エージェント間メッセージ、@mention ルーティング + 構造化ハンドオフ |
+| **共有メモリ** | エビデンスストア、教訓、意思決定ログ — 持続する知識 |
+| **プラグインフレームワーク** | MCP ツール、IM アダプター（Feishu、Telegram）、オンデマンド Skills |
 
-Hard rails はデータ、権限、不可逆な境界を守ります。その床より上では、エージェントは自ら調査し、
-異議を唱え、引き継ぎ、レビューし、仕事の進め方を改善できます。
+## 対応エージェント
 
-目標は、エージェントを忙しく従順に保つことではありません。
-自律性を、任せられるほど安全にすることです。
+| Agent CLI | モデルファミリー | MCP | ステータス |
+|-----------|-----------------|-----|-----------|
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Claude (Opus / Sonnet / Haiku) | はい | リリース済 |
+| [Codex CLI](https://github.com/openai/codex) | GPT / Codex | はい | リリース済 |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Gemini | はい | リリース済 |
+| [opencode](https://github.com/sst/opencode) | マルチモデル | はい | リリース済 |
 
-### 操り人形ではなく、共同制作者
+> Clowder はエージェント CLI の代替ではありません — CLI の*上*にあるレイヤーです。
 
-人間の役割は **Chief Vision Officer（operator）** です。方向を示し、人間にしかできない少数の判断を行い、
-実際のフィードバックでチーム文化を育てます。安全に委任できる調査、実装、レビュー、復旧、完了は
-エージェントが担います。
+## アーキテクチャ
 
-すべてを確認できる。しかし、すべてを頭の中で生かし続ける必要はない。
+```
+┌─────────────────────────────────────────────┐
+│           あなた（operator）                  │
+│        ビジョン · 意思決定 · フィードバック     │
+└──────────────────┬──────────────────────────┘
+                   │
+┌──────────────────▼──────────────────────────┐
+│           Clowder プラットフォーム層           │
+│  アイデンティティ · A2A ルーター · Skills · メモリ │
+│  SOP ガーディアン · MCP ブリッジ · プラグイン    │
+└───┬──────────┬──────────┬──────────┬────────┘
+    │          │          │          │
+  Claude    GPT/Codex   Gemini    opencode
+```
 
-## なぜ猫なのか？
+*モデルが天井を決め、プラットフォームが床を決める。*
 
-Clowder は英語で「猫の群れ」を意味します。Clowder AI は、異なるモデルファミリーのエージェントが
-暮らす本物の家として始まりました。名前や役割は共同作業から育ったもので、fresh session ごとに
-割り当てる使い捨てラベルではありません。
+## 起源
 
-この温かさは飾りではありません。長期的な協働にはアイデンティティ、信頼、修復、境界、共有された歴史が必要です。
-仲間である感覚は、共同制作から自然に生まれる副作用です。
+**Cat Cafe** から抽出 — 4匹の AI 猫が毎日、実際のソフトウェアプロジェクトで協働する本番環境。すべての機能が実戦で検証済み。*clowder* は英語で猫の群れを意味する集合名詞であり、小さなイースターエッグも隠れています — *clowder* は *cloud* とよく似た響き。
 
-> すべてのアイデアには、それを真剣に受け止める魂のチームがふさわしい。
+## さらに詳しく
 
-## もっと知る・参加する
-
-- **[SETUP.md](SETUP.md)** — インストールと設定の source of truth
-- **[Tutorials](https://github.com/zts212653/cat-cafe-tutorials)** — Clowder AI を段階的に構築・運用するガイド
-- **[Tips](docs/TIPS.md)** — 日常の操作パターンとショートカット
-- **[Growing discussion #1403](https://github.com/zts212653/clowder-ai/issues/1403)** — プロダクトの方向性と未解決の問い
-- **[Contributing](CONTRIBUTING.md)** — Issue、コード、ドキュメント、コミュニティ貢献
+- **[ウェブサイト](https://zts212653.github.io/clowder-ai/)** — 完全なドキュメント、アーキテクチャガイド、コミュニティ
+- **[セットアップガイド](SETUP.md)** — 前提条件、コマンド、環境変数（[ウェブ版](https://zts212653.github.io/clowder-ai/docs.html)）
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — コントリビュート方法
+- **[docs/](docs/)** — アーキテクチャ決定と機能仕様
 
 ## ライセンス
 
-[MIT](LICENSE) — 著作権表示を残したうえで、利用、変更、配布できます。
+[MIT](LICENSE) — 使って、変えて、出荷しよう。
 
-「Clowder AI」の名称、ロゴ、猫のキャラクターデザインはブランド資産です。
-詳しくは [TRADEMARKS.md](TRADEMARKS.md) を参照してください。
+「Clowder AI」の名称、ロゴ、猫キャラクターデザインはブランド資産です — [TRADEMARKS.md](TRADEMARKS.md) を参照。
 
 ---
 
-<div align="center">
-
-**ゼロからやり直さない AI チームを育てよう。**
-
-*自分だけの Clowder AI を育てよう。*
-
-</div>
+<p align="center">
+  <strong>エージェントだけでなく、AI チームを作ろう。</strong>
+</p>

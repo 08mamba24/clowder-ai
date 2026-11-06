@@ -30,8 +30,6 @@ type StoreState = {
   clearCatStatuses: ReturnType<typeof vi.fn>;
   setCurrentThread: ReturnType<typeof vi.fn>;
   updateThreadTitle: ReturnType<typeof vi.fn>;
-  setCurrentGame: ReturnType<typeof vi.fn>;
-  currentGame: null;
   viewMode: 'single' | 'split';
   setViewMode: ReturnType<typeof vi.fn>;
   setCurrentProject: ReturnType<typeof vi.fn>;
@@ -49,8 +47,6 @@ type StoreState = {
   uiThinkingExpandedByDefault: boolean;
   workspaceWorktreeId: string | null;
   queue: [];
-  queuePaused: boolean;
-  queuePauseReason: null;
   queueFull: boolean;
   queueFullSource: null;
   threads: [];
@@ -74,8 +70,6 @@ const makeStoreState = (): StoreState => ({
   clearCatStatuses: vi.fn(),
   setCurrentThread: vi.fn(),
   updateThreadTitle: vi.fn(),
-  setCurrentGame: vi.fn(),
-  currentGame: null,
   viewMode: 'single',
   setViewMode: vi.fn(),
   setCurrentProject: vi.fn(),
@@ -93,8 +87,6 @@ const makeStoreState = (): StoreState => ({
   uiThinkingExpandedByDefault: false,
   workspaceWorktreeId: null,
   queue: [],
-  queuePaused: false,
-  queuePauseReason: null,
   queueFull: false,
   queueFullSource: null,
   threads: [],
@@ -122,33 +114,6 @@ vi.mock('@/stores/chatStore', () => {
   return { useChatStore: hook };
 });
 
-vi.mock('@/stores/gameStore', () => {
-  const gameState = {
-    gameView: null,
-    isGameActive: false,
-    isNight: false,
-    selectedTarget: null,
-    godScopeFilter: null,
-    myRole: null,
-    myRoleIcon: null,
-    myActionLabel: null,
-    myActionHint: null,
-    isGodView: false,
-    isDetective: false,
-    detectiveBoundName: null,
-    godSeats: [],
-    godNightSteps: [],
-    hasTargetedAction: false,
-    altActionName: null,
-    overlayMinimized: false,
-  };
-  const hook = (selector?: (s: typeof gameState) => unknown) => {
-    return selector ? selector(gameState) : gameState;
-  };
-  hook.getState = () => ({ restoreOverlay: vi.fn() });
-  return { useGameStore: hook };
-});
-
 vi.mock('@/utils/api-client', () => ({
   API_URL: 'http://localhost:3004',
   apiFetch: vi.fn(async () => ({ ok: true, json: async () => ({ threads: [] }) })),
@@ -170,14 +135,13 @@ vi.mock('@/hooks/useAgentMessages', () => ({
   useAgentMessages: () => ({
     handleAgentMessage: vi.fn(),
     handleStop: vi.fn(),
-    resetRefs: vi.fn(),
-    resetTimeout: vi.fn(),
-    clearDoneTimeout: vi.fn(),
   }),
 }));
 
 vi.mock('@/hooks/useChatHistory', () => ({
   useChatHistory: () => ({
+    messages: storeState.messages,
+    handleReadingIntent: vi.fn(),
     handleScroll: vi.fn(),
     scrollContainerRef: { current: null },
     messagesEndRef: { current: document.createElement('div') },
@@ -229,8 +193,6 @@ vi.mock('../ChatInput', () => ({
 vi.mock('../ChatContainerHeader', () => ({ ChatContainerHeader: () => null }));
 vi.mock('../ThreadSidebar', () => ({ ThreadSidebar: () => null }));
 vi.mock('../RightStatusPanel', () => ({ RightStatusPanel: () => null }));
-vi.mock('../ParallelStatusBar', () => ({ ParallelStatusBar: () => null }));
-vi.mock('../ThinkingIndicator', () => ({ ThinkingIndicator: () => null }));
 vi.mock('../MessageNavigator', () => ({ MessageNavigator: () => null }));
 vi.mock('../MessageActions', () => ({
   MessageActions: ({ children }: { children: React.ReactNode }) => children,
@@ -254,7 +216,6 @@ vi.mock('../BootstrapOrchestrator', () => ({ BootstrapOrchestrator: () => null }
 vi.mock('../BootcampListModal', () => ({ BootcampListModal: () => null }));
 vi.mock('@/components/HubListModal', () => ({ HubListModal: () => null }));
 vi.mock('@/components/ProjectSetupCard', () => ({ ProjectSetupCard: () => null }));
-vi.mock('@/components/game/GameOverlayConnector', () => ({ GameOverlayConnector: () => null }));
 vi.mock('@/components/icons/PawIcon', () => ({ PawIcon: () => null }));
 vi.mock('@/components/icons/BootcampIcon', () => ({ BootcampIcon: () => null }));
 vi.mock('@/components/workspace/ResizeHandle', () => ({ ResizeHandle: () => null }));
@@ -302,6 +263,26 @@ describe('ChatContainer bottom chrome observer', () => {
     globalThis.ResizeObserver = originalResizeObserver;
   });
 
+  it('retains the reading viewport and composer home across route thread switches', async () => {
+    await act(async () => root.render(renderChatContainer('thread-a')));
+    const history = container.querySelector('[data-chat-container]');
+    const composerHome = container.querySelector('[data-thread-composer-home]');
+    expect(history).not.toBeNull();
+    expect(composerHome).not.toBeNull();
+
+    await act(async () => root.render(renderChatContainer('thread-b')));
+    expect(container.querySelector('[data-thread-chat-surface]')?.getAttribute('data-thread-id')).toBe('thread-b');
+    expect(container.querySelector('[data-chat-container]')).toBe(history);
+    expect(container.querySelector('[data-thread-composer-home]')).toBe(composerHome);
+    expect(container.querySelector('[data-thread-composer-host]')?.getAttribute('data-thread-composer-host')).toBe(
+      'thread-b',
+    );
+
+    await act(async () => root.render(renderChatContainer('thread-a')));
+    expect(container.querySelector('[data-chat-container]')).toBe(history);
+    expect(container.querySelector('[data-thread-composer-home]')).toBe(composerHome);
+  });
+
   it('re-observes the new bottom chrome after split view toggles back to single', async () => {
     await act(async () => {
       root.render(renderChatContainer('thread-1'));
@@ -331,5 +312,14 @@ describe('ChatContainer bottom chrome observer', () => {
     expect(secondBottomChrome).not.toBe(firstBottomChrome);
     expect(resizeObserverInstances).toHaveLength(2);
     expect(resizeObserverInstances[1]?.observe.mock.calls[0]?.[0]).toBe(secondBottomChrome);
+  });
+
+  it('keeps the composer size subscription alive after StrictMode replays its effect', async () => {
+    await act(async () => {
+      root.render(React.createElement(React.StrictMode, null, renderChatContainer('thread-1')));
+    });
+    const active = resizeObserverInstances.filter((observer) => observer.disconnect.mock.calls.length === 0);
+    expect(active).toHaveLength(1);
+    expect(active[0]?.observe.mock.calls[0]?.[0]).toBe(container.querySelector('[data-thread-chat-footer]'));
   });
 });

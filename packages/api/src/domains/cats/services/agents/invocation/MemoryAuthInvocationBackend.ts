@@ -15,6 +15,7 @@ import {
   type VerifyResult,
 } from './InvocationRegistry.js';
 import { normalizeOwnerAuthProvenance } from './owner-auth-provenance.js';
+import { assertCurrentAuthPrincipal } from './retired-auth-authorization.js';
 
 const DEFAULT_MAX_RECORDS = 500;
 const DEFAULT_TOMBSTONE_GC_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -37,6 +38,7 @@ export class MemoryAuthInvocationBackend implements IAuthInvocationBackend {
   }
 
   async create(input: AuthInvocationInput): Promise<void> {
+    assertCurrentAuthPrincipal(input);
     this.cleanupTerminalTombstones();
     if (this.records.size >= this.maxRecords) throw new AuthInvocationAdmissionError();
 
@@ -83,12 +85,14 @@ export class MemoryAuthInvocationBackend implements IAuthInvocationBackend {
 
   async getRecord(invocationId: string): Promise<InvocationRecord | null> {
     this.cleanupTerminalTombstones();
-    return this.records.get(invocationId) ?? null;
+    const record = this.records.get(invocationId);
+    return record ?? null;
   }
 
   async peekRecord(invocationId: string): Promise<InvocationRecord | null> {
     this.cleanupTerminalTombstones();
-    return this.records.get(invocationId) ?? null;
+    const record = this.records.get(invocationId);
+    return record ?? null;
   }
 
   async listActiveRecords(): Promise<InvocationRecord[]> {
@@ -142,6 +146,11 @@ export class MemoryAuthInvocationBackend implements IAuthInvocationBackend {
   async setTraceContext(invocationId: string, ctx: CallerTraceContext): Promise<void> {
     const record = this.records.get(invocationId);
     if (record?.state === 'active') record.traceContext = ctx;
+  }
+
+  async setExpectedCompactionCarrier(invocationId: string, identity: string): Promise<void> {
+    const record = this.records.get(invocationId);
+    if (record?.state === 'active') record.expectedCompactionCarrier = identity;
   }
 
   private verifyInTurn(invocationId: string, callbackToken: string, requireLatest: boolean): VerifyResult {

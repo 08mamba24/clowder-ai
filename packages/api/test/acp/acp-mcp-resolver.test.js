@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
 const { resolveAcpMcpServers, resolveDisabledServerIds, resolveUserProjectMcpServers, summarizeAcpMcpServers } =
@@ -56,6 +56,49 @@ describe('resolveAcpMcpServers', () => {
   it('returns [] for empty whitelist', async () => {
     const result = await resolveAcpMcpServers('/nonexistent', []);
     assert.deepStrictEqual(result, []);
+  });
+
+  it('projects plugin capability IDs to the same native server name used by HTTP nomination', async () => {
+    const id = 'plugin:fixture:forwarder';
+    const config = toCapabilities({ [id]: { command: 'node', args: ['fixture.js'] } });
+    Object.assign(config.capabilities[0], { source: 'plugin', pluginId: 'fixture' });
+    const root = makeTempRoot({ capabilities: config });
+    for (const source of ['plugin', 'cat-cafe']) {
+      config.capabilities[0].source = source;
+      const servers = await resolveAcpMcpServers(root, [id], undefined, { catId: 'codex', capabilitiesConfig: config });
+      assert.equal(servers[0].name, 'plugin__fixture__forwarder');
+      assert.equal(servers[0].hostSource, 'plugin', 'legacy installed policies retain their trusted plugin ownership');
+    }
+  });
+
+  it('uses explicit project grants and blockedCats consistently with ordinary member discovery', async () => {
+    const config = toCapabilities({ forwarder: { command: 'node', args: ['fixture.js'] } });
+    config.capabilities[0].globalEnabled = false;
+    config.capabilities[0].blockedCats = [];
+    const root = makeTempRoot({ capabilities: config });
+    const options = { accessScope: 'project' };
+    const disabled = resolveDisabledServerIds(root, 'codex', config, options);
+    assert.equal(disabled.has('forwarder'), false, 'an explicit project grant survives the global board toggle');
+    const servers = await resolveAcpMcpServers(root, ['forwarder'], undefined, {
+      ...options,
+      catId: 'codex',
+      capabilitiesConfig: config,
+      disabledServerIds: disabled,
+    });
+    assert.equal(servers.length, 1);
+    config.capabilities[0].blockedCats = ['codex'];
+    const revoked = resolveDisabledServerIds(root, 'codex', config, options);
+    assert.equal(revoked.has('forwarder'), true);
+    assert.deepEqual(
+      await resolveAcpMcpServers(root, ['forwarder'], undefined, {
+        ...options,
+        catId: 'codex',
+        capabilitiesConfig: config,
+        disabledServerIds: revoked,
+      }),
+      [],
+    );
+    assert.equal(resolveDisabledServerIds(root, 'codex', config).has('forwarder'), true);
   });
 
   it('#712: resolves external whitelist entries from capabilities.json', async () => {
@@ -278,7 +321,7 @@ describe('resolveAcpMcpServers — builtin auto-provision (F145 Phase C)', () =>
     assert.equal(result.length, 1);
     assert.equal(result[0].name, 'cat-cafe-collab');
     assert.equal(result[0].command, process.execPath);
-    assert.ok(result[0].args[0].endsWith('packages/mcp-server/dist/collab.js'));
+    assert.ok(result[0].args[0].endsWith(join('packages', 'mcp-server', 'dist', 'collab.js')));
   });
 
   it('auto-generates cat-cafe-limb from projectRoot', async () => {
@@ -288,7 +331,7 @@ describe('resolveAcpMcpServers — builtin auto-provision (F145 Phase C)', () =>
     assert.equal(result.length, 1);
     assert.equal(result[0].name, 'cat-cafe-limb');
     assert.equal(result[0].command, process.execPath);
-    assert.ok(result[0].args[0].endsWith('packages/mcp-server/dist/limb.js'));
+    assert.ok(result[0].args[0].endsWith(join('packages', 'mcp-server', 'dist', 'limb.js')));
   });
 
   it('auto-generates cat-cafe-audio from projectRoot (F195)', async () => {
@@ -298,7 +341,7 @@ describe('resolveAcpMcpServers — builtin auto-provision (F145 Phase C)', () =>
     assert.equal(result.length, 1);
     assert.equal(result[0].name, 'cat-cafe-audio');
     assert.equal(result[0].command, process.execPath);
-    assert.ok(result[0].args[0].endsWith('packages/mcp-server/dist/audio.js'));
+    assert.ok(result[0].args[0].endsWith(join('packages', 'mcp-server', 'dist', 'audio.js')));
   });
 
   it('auto-generates cat-cafe-finance from projectRoot (F207 Phase B0)', async () => {
@@ -308,7 +351,7 @@ describe('resolveAcpMcpServers — builtin auto-provision (F145 Phase C)', () =>
     assert.equal(result.length, 1);
     assert.equal(result[0].name, 'cat-cafe-finance');
     assert.equal(result[0].command, process.execPath);
-    assert.ok(result[0].args[0].endsWith('packages/mcp-server/dist/finance.js'));
+    assert.ok(result[0].args[0].endsWith(join('packages', 'mcp-server', 'dist', 'finance.js')));
   });
 
   it('auto-generates all canonical 6-split builtins (F193/F195/F207)', async () => {
@@ -333,7 +376,7 @@ describe('resolveAcpMcpServers — builtin auto-provision (F145 Phase C)', () =>
       'cat-cafe-finance',
     ]);
 
-    const entrypoints = result.map((s) => s.args[0].split('/').pop());
+    const entrypoints = result.map((s) => basename(s.args[0]));
     assert.deepStrictEqual(entrypoints, ['collab.js', 'memory.js', 'signals.js', 'limb.js', 'audio.js', 'finance.js']);
   });
 
@@ -366,7 +409,7 @@ describe('resolveAcpMcpServers — builtin auto-provision (F145 Phase C)', () =>
     assert.equal(result.length, 2);
 
     const collab = result.find((s) => s.name === 'cat-cafe-collab');
-    assert.ok(collab.args[0].endsWith('packages/mcp-server/dist/collab.js'), 'builtin auto-generated');
+    assert.ok(collab.args[0].endsWith(join('packages', 'mcp-server', 'dist', 'collab.js')), 'builtin auto-generated');
 
     const pencil = result.find((s) => s.name === 'pencil');
     assert.deepStrictEqual(pencil.args, ['/path/to/pencil'], 'external from capabilities.json');
@@ -473,7 +516,7 @@ describe('resolveAcpMcpServers — per-project MCP (F145 Phase E)', () => {
     const result = await resolveAcpMcpServers(projectRoot, ['cat-cafe-collab'], userRoot);
     const collab = result.find((s) => s.name === 'cat-cafe-collab');
     assert.equal(collab.command, process.execPath); // builtin runtime Node, not python
-    assert.ok(collab.args[0].endsWith('packages/mcp-server/dist/collab.js'));
+    assert.ok(collab.args[0].endsWith(join('packages', 'mcp-server', 'dist', 'collab.js')));
     assert.ok(!result.some((s) => s.name === 'cat-cafe'), 'legacy monolith alias must not merge with split builtin');
     assert.ok(
       result.find((s) => s.name === 'my-tool'),

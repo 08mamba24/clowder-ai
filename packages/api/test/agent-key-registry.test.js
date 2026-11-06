@@ -1,65 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-
-class FakeRedis {
-  constructor() {
-    this.hashes = new Map();
-    this.sets = new Map();
-    this.values = new Map();
-  }
-
-  async hset(key, ...fields) {
-    const hash = this.hashes.get(key) ?? new Map();
-    for (let i = 0; i < fields.length; i += 2) {
-      hash.set(String(fields[i]), String(fields[i + 1]));
-    }
-    this.hashes.set(key, hash);
-    return fields.length / 2;
-  }
-
-  async hgetall(key) {
-    const hash = this.hashes.get(key);
-    if (!hash) return {};
-    return Object.fromEntries(hash.entries());
-  }
-
-  async hget(key, field) {
-    return this.hashes.get(key)?.get(field) ?? null;
-  }
-
-  async sadd(key, member) {
-    const set = this.sets.get(key) ?? new Set();
-    const before = set.size;
-    set.add(member);
-    this.sets.set(key, set);
-    return set.size === before ? 0 : 1;
-  }
-
-  async srem(key, member) {
-    return this.sets.get(key)?.delete(member) ? 1 : 0;
-  }
-
-  async smembers(key) {
-    return [...(this.sets.get(key) ?? new Set())];
-  }
-
-  async pexpireat() {
-    return 1;
-  }
-
-  async exists(key) {
-    return this.hashes.has(key) || this.sets.has(key) || this.values.has(key) ? 1 : 0;
-  }
-
-  async set(key, value, expiryMode, ttlMs, setMode) {
-    if (expiryMode !== 'PX' || typeof ttlMs !== 'number' || setMode !== 'NX') {
-      throw new Error('FakeRedis only supports SET key value PX ttl NX');
-    }
-    if (this.values.has(key)) return null;
-    this.values.set(key, value);
-    return 'OK';
-  }
-}
+import { FakeRedis } from './helpers/fake-agent-key-redis.js';
+import { assertRedisIsolationOrThrow, redisIsolationSkipReason } from './helpers/redis-test-helpers.js';
 
 describe('AgentKeyRegistry', () => {
   test('issue() returns agentKeyId and one-time secret', async () => {
@@ -230,79 +172,59 @@ describe('AgentKeyRegistry', () => {
   });
 });
 
-describe('RedisAgentKeyBackend', () => {
+describe('RedisAgentKeyBackend', { skip: redisIsolationSkipReason(process.env.REDIS_URL) }, () => {
   const REDIS_URL = process.env.REDIS_URL;
+  assertRedisIsolationOrThrow(REDIS_URL, 'agent-key-registry');
 
-  if (!REDIS_URL || REDIS_URL.includes(':6399')) {
-    test('skipped: REDIS_URL not set or points at 圣域 6399', () => {
-      assert.ok(true);
+  test('a sidecar key issued by one registry verifies from another registry instance', async () => {
+    const { createRedisClient } = await import('@cat-cafe/shared/utils');
+    const { AgentKeyRegistry } = await import('../dist/domains/cats/services/agents/agent-key/AgentKeyRegistry.js');
+    const { RedisAgentKeyBackend } = await import(
+      '../dist/domains/cats/services/agents/agent-key/RedisAgentKeyBackend.js'
+    );
+
+    const redis = createRedisClient({
+      url: REDIS_URL,
+      keyPrefix: `cat-cafe-agent-key-registry-test:${process.pid}:${Date.now()}:`,
     });
-  } else {
-    test('a sidecar key issued by one registry verifies from another registry instance', async () => {
-      const { createRedisClient } = await import('@cat-cafe/shared/utils');
-      const { AgentKeyRegistry } = await import('../dist/domains/cats/services/agents/agent-key/AgentKeyRegistry.js');
-      const { RedisAgentKeyBackend } = await import(
-        '../dist/domains/cats/services/agents/agent-key/RedisAgentKeyBackend.js'
-      );
+    try {
+      const issuer = new AgentKeyRegistry({ backend: new RedisAgentKeyBackend(redis) });
+      const verifier = new AgentKeyRegistry({ backend: new RedisAgentKeyBackend(redis) });
+      const issued = await issuer.issue('antig-opus', 'default-user');
 
-      const redis = createRedisClient({ url: REDIS_URL, keyPrefix: 'cat-cafe-agent-key-registry-test:' });
-      try {
-        const leftover = await redis.keys('cat-cafe-agent-key-registry-test:*');
-        if (leftover.length > 0) {
-          await redis.del(...leftover.map((k) => k.replace('cat-cafe-agent-key-registry-test:', '')));
-        }
-
-        const issuer = new AgentKeyRegistry({ backend: new RedisAgentKeyBackend(redis) });
-        const verifier = new AgentKeyRegistry({ backend: new RedisAgentKeyBackend(redis) });
-        const issued = await issuer.issue('antig-opus', 'default-user');
-
-        const result = await verifier.verify(issued.secret);
-        assert.equal(result.ok, true);
-        if (result.ok) {
-          assert.equal(result.record.agentKeyId, issued.agentKeyId);
-          assert.equal(result.record.catId, 'antig-opus');
-          assert.equal(result.record.userId, 'default-user');
-        }
-      } finally {
-        const leftover = await redis.keys('cat-cafe-agent-key-registry-test:*');
-        if (leftover.length > 0) {
-          await redis.del(...leftover.map((k) => k.replace('cat-cafe-agent-key-registry-test:', '')));
-        }
-        await redis.quit();
+      const result = await verifier.verify(issued.secret);
+      assert.equal(result.ok, true);
+      if (result.ok) {
+        assert.equal(result.record.agentKeyId, issued.agentKeyId);
+        assert.equal(result.record.catId, 'antig-opus');
+        assert.equal(result.record.userId, 'default-user');
       }
-    });
+    } finally {
+      await redis.quit();
+    }
+  });
 
-    test('lazy-cleans expired index members when Redis reaps the record hash', async () => {
-      const { createRedisClient } = await import('@cat-cafe/shared/utils');
-      const { AgentKeyRegistry } = await import('../dist/domains/cats/services/agents/agent-key/AgentKeyRegistry.js');
-      const { RedisAgentKeyBackend } = await import(
-        '../dist/domains/cats/services/agents/agent-key/RedisAgentKeyBackend.js'
-      );
+  test('lazy-cleans expired index members when Redis reaps the record hash', async () => {
+    const { createRedisClient } = await import('@cat-cafe/shared/utils');
+    const { AgentKeyRegistry } = await import('../dist/domains/cats/services/agents/agent-key/AgentKeyRegistry.js');
+    const { RedisAgentKeyBackend } = await import(
+      '../dist/domains/cats/services/agents/agent-key/RedisAgentKeyBackend.js'
+    );
 
-      const redis = createRedisClient({ url: REDIS_URL, keyPrefix: 'cat-cafe-agent-key-registry-test:' });
-      try {
-        const leftover = await redis.keys('cat-cafe-agent-key-registry-test:*');
-        if (leftover.length > 0) {
-          await redis.del(...leftover.map((k) => k.replace('cat-cafe-agent-key-registry-test:', '')));
-        }
+    const redis = createRedisClient({ url: REDIS_URL, keyPrefix: 'cat-cafe-agent-key-registry-test:' });
+    try {
+      await redis.sadd('auth:agent-key:index', 'stale-agent-key-id');
+      const registry = new AgentKeyRegistry({ backend: new RedisAgentKeyBackend(redis) });
 
-        await redis.sadd('auth:agent-key:index', 'stale-agent-key-id');
-        const registry = new AgentKeyRegistry({ backend: new RedisAgentKeyBackend(redis) });
+      await registry.verify('not-a-real-secret');
+      await registry.list({});
 
-        await registry.verify('not-a-real-secret');
-        await registry.list({});
-
-        const isMember = await redis.sismember('auth:agent-key:index', 'stale-agent-key-id');
-        assert.equal(isMember, 0);
-      } finally {
-        const leftover = await redis.keys('cat-cafe-agent-key-registry-test:*');
-        if (leftover.length > 0) {
-          await redis.del(...leftover.map((k) => k.replace('cat-cafe-agent-key-registry-test:', '')));
-        }
-        await redis.quit();
-      }
-    });
-  }
+      const isMember = await redis.sismember('auth:agent-key:index', 'stale-agent-key-id');
+      assert.equal(isMember, 0);
+    } finally {
+      await redis.quit();
+    }
+  });
 });
 
 describe('RedisAgentKeyBackend idempotency', () => {

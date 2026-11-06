@@ -1,37 +1,49 @@
 ---
 cell_id: plugin
 title: Plugin Framework
-summary: Repository-local plugin activation plus Host-governed external package inventory, Broker sessions, supervised stdio execution, grants, durable call settlement, owned resource adapters, and narrow receipt-bearing Host capabilities.
+summary: Plugin Manager, verified package inventory, Host-bound clients, module lifecycle, ordinary actions/messages/streams and Console/Agent management; plugin business stays in packages.
 canonical_features: [F202, F247, F285, F290, F292]
 code_anchors:
-  - packages/api/src/domains/plugin/PluginRegistry.ts
-  - packages/api/src/domains/plugin/PluginResourceActivator.ts
-  - packages/api/src/domains/plugin/ScheduleFactoryRegistry.ts
-  - packages/api/src/domains/plugin/plugin-manifest.ts
+  - packages/api/src/domains/plugin/chatgpt-dot-manifest.ts
+  - packages/api/src/domains/cats/services/cloud-bridge/dot/DotConnectionService.ts
+  - packages/api/src/domains/cats/services/cloud-bridge/dot/DotConnectionStore.ts
+  - packages/api/src/domains/cats/services/cloud-bridge/dot/DotConnectionTestService.ts
+  - packages/api/src/domains/cats/services/cloud-bridge/dot/DotConnectionRuntime.ts
+  - packages/api/src/domains/cats/services/cloud-bridge/dot/DotPluginStateProjection.ts
+  - packages/api/src/routes/chatgpt-dot-connection-routes.ts
+  - packages/api/src/routes/chatgpt-dot-test-routes.ts
+  - packages/web/src/components/settings/plugin-manager/DotConnectionDetail.tsx
   - packages/api/src/domains/plugin/plugin-config-store.ts
   - packages/api/src/domains/plugin/host-inventory/index.ts
+  - packages/api/src/domains/plugin/builtin-runtime/carriers/module-plugin-runtime.ts
+  - packages/api/src/domains/plugin/host-surface/plugin-neutral-host.ts
+  - packages/api/src/domains/plugin/host-surface/collective-artifact-owner.ts
+  - packages/api/src/domains/plugin/carrier/plugin-response-stream.ts
   - packages/api/src/domains/plugin/host-broker/index.ts
-  - packages/api/src/domains/plugin/host-broker/events-publish-handler.ts
   - packages/api/src/domains/plugin/external-runtime/index.ts
+  - packages/api/src/domains/plugin/content-editor-runtime/runtime.ts
+  - packages/api/src/domains/plugin/host-broker/static-feature-authority.ts
   - packages/api/src/domains/plugin/runtime-composition.ts
-  - packages/api/src/domains/plugin/builtin-runtime/hybrid-supervisor.ts
+  - packages/api/src/domains/plugin/desktop-window-runtime/runtime.ts
+  - packages/api/src/domains/plugin/desktop-window-runtime/desktop-component.ts
+  - packages/api/src/routes/concierge-desktop.ts
+  - packages/api/src/domains/plugin/manager/plugin-manager-service.ts
+  - packages/api/src/domains/plugin/manager/plugin-manager-projection.ts
   - packages/api/src/domains/plugin/official-catalog.ts
-  - packages/api/src/domains/plugin/official-catalog-provider.ts
+  - packages/api/src/domains/plugin/manager/official-catalog-provider.ts
   - packages/api/src/domains/plugin/official-package-installer.ts
-  - packages/api/src/routes/plugin-official-routes.ts
-  - packages/api/src/routes/plugin-routes.ts
+  - packages/api/src/routes/plugin-manager-routes.ts
   - packages/shared/src/types/plugin.ts
+  - packages/mcp-server/src/tools/plugin-management-tools.ts
+  - packages/web/src/components/settings/plugin-manager/PluginManagerContent.tsx
   - packages/api/src/domains/cats/services/cloud-bridge/conversation-host-adapter.ts
-  - packages/api/src/domains/cats/services/cloud-bridge/personal-chrome-host/personal-chrome-host-adapter.ts
-  - packages/api/src/plugins/cloud-cat-personal-host/native-host/native-host.mjs
-  - packages/api/src/plugins/cloud-cat-personal-host/native-host/conversation-binding.mjs
-  - packages/api/src/plugins/cloud-cat-personal-host/extension/manifest.json
 doc_anchors:
   - docs/features/F202-plugin-framework.md
   - docs/features/F285-stackchan-physical-limb-plugin.md
   - docs/features/F247-cloud-cat-family.md
-static_scan_hints: [PluginRegistry, PluginResourceActivator, ScheduleFactoryRegistry, PluginInventoryStore, HostBrokerControlPlane, HostBrokerStore, BrokerMethodHandler, IConversationHostAdapter, append_message, plugin.yaml, pluginId, plugin-owned, factoryId, schedule, PluginConfigPanel]
+static_scan_hints: [PluginManagerService, PluginInventoryStore, ModulePluginRuntime, createPluginNeutralHost, NativePluginActions, PluginConfigPanel, plugin.yaml]
 cited_by:
+  - {feature: F247, date: 2026-10-10, delta: dot G1 source-bound Events and private original image consumer}
   - {feature: F202, date: 2026-05-31, delta: new cell}
   - {feature: F202, date: 2026-06-08, delta: schedule resources}
   - {feature: F285, date: 2026-08-01, delta: external official-plugin and physical-limb contribution boundary}
@@ -44,158 +56,76 @@ cited_by:
   - {feature: F202, date: 2026-08-11, delta: K-2D supervised stdio runtime and dormant production composition}
   - {feature: F292, date: 2026-08-15, delta: Host-policy-pinned hot official release discovery with explicit release-fenced update}
   - {feature: F290, date: 2026-08-28, delta: bundled official Connector distribution and hybrid builtin/external lifecycle seam; Collective Service truth stays in collective-runtime}
+  - {feature: F309, date: 2026-09-06, delta: archive-bound static editor admission and a separately declared private semantic worker reuse the same inventory and Broker feature authority}
+  - {feature: F202, date: 2026-09-01, delta: terminal unified Manager projection, external catalog ownership, and same-source Console/Agent operations}
 ---
 
 # Plugin Framework
 
-## Canonical Owner
+## Current C1 Ownership
 
-F202 owns the trusted, repository-local plugin layer: plugin manifest discovery,
-manifest validation, configuration persistence, plugin-owned capability records,
-and activation of declared skill, MCP, limb, and schedule resources.
+F202 owns verified package admission, installation/configuration/grant inventory, the Host-bound
+client, lifecycle invocation, declared action routing, message delivery and stream access. Console,
+REST and Agent management tools use the same Plugin Manager. Package-specific collection, business
+mappings, external connections, helpers and retry state belong to each plugin.
 
-F285 adds the external **official-plugin** seam without moving authority out of
-the Host. `clowder-ai-plugins` owns public contribution schemas, SDK/runtime
-primitives, conformance assets, and official plugin source. Clowder AI owns
-package admission, artifact identity, effective grants, runtime isolation,
-resource adapters, and the existing domain control planes that those adapters
-invoke. A plugin-declared contribution is a candidate resource, never proof of
-identity, installation, permission, health, or execution authority.
+The canonical public baseline is `clowder-ai-plugins/docs/plugin-development.md`: identity/Host
+client, Plugin→Host, and Host→Plugin including lifecycle. Module lifecycle is
+`preStart/start/configRefresh/preStop/stop/preUninstall/uninstall`. An absent refresh hook is a no-op;
+config changes do not imply restart or invalidate the same activation. Stop, package replacement,
+revoked grants and expired calls still invalidate access. The plugin manages its own helper process.
 
-K-2A through K-2D make that Host authority executable without loading community
-code into the API process. The inventory owns admitted package, installation,
-grant, and activation truth. The Broker owns one-use handshake sessions,
-runtime leases, and a durable call ledger whose recovery consults the owning
-domain's canonical settlement before it can redispatch. Builtin loopback and a
-supervised child-process stdio bridge exercise the same state machine. Production
-composition constructs and restart-recovers these boundaries, but exposes no
-activation route and starts no package, so live runtime remains dormant.
+Host→Plugin `delivery` carries either a message or execution-status update; its receipt acknowledges
+one delivery, not successful model execution. Both directions read bytes through `streams.read`;
+ending a reader does not delete its source. Actions are ordinary declared handlers with transient
+results. Host persists declared configuration and credentials, not QR challenges or old receipts.
 
-F292 keeps official-plugin policy and release metadata on opposite sides of the
-trust boundary. Clowder AI statically owns catalog identity, package name, plugin
-identity, grants, owner-auth runner/domains, and the permitted release channel.
-Only a newer exact version, fixed-registry tarball, SHA512 integrity, and npm
-provenance may refresh from that channel. Refresh is a bounded process-local
-projection with monotonic last-known-good fallback, not installation truth.
-Package update remains an explicit owner mutation fenced to the version+digest
-that Settings displayed, and enable remains a later explicit lifecycle action.
-
-F247 owns the first narrow conversation Host capability seam:
-`append_message(conversationId, text, idempotencyKey)` returns a durable Host
-message ID. The seam is an admission point, not proof that a provider exposes
-the capability. A missing adapter fails closed; foreground browser/composer
-automation is a separate, explicitly enabled legacy transport.
-
-The personal Chrome path is one concrete, explicitly user-installed adapter
-behind that seam. Clowder AI owns the authenticated local socket and pairing;
-the Native Messaging helper owns native framing, durable idempotency settlement,
-and ambiguous-effect recovery; the extension owns the minimum-permission page
-operation and may settle success only from a DOM-provided Host message ID. The
-adapter may be composed explicitly from a validated socket path and pairing
-secret, but that operator-only seam neither installs into a user's normal Chrome
-profile nor makes fixture selectors evidence of the live ChatGPT contract. Missing
-or partial configuration fails closed and cannot silently enable foreground control.
-Clowder AI's owner-only `cloudCatBindings(threadId, catId)` remains route truth; it is
-not copied into the extension/helper. Separately, the extension may authorize one
-exact open conversation only from the user's explicit “绑定此会话” action, and the
-helper persists that authorization in its private Host root. Append admission
-requires the routed ID to match the authorization before ledger/browser effects.
-Missing authorization is typed `NEEDS_BINDING`; health checks, gates, retries, and
-delivery may inspect/reuse Host state but may not select, focus, navigate, reload,
-close, or restore owner tabs/windows.
-
-## Use This When
-
-- Adding or changing `plugins/<plugin-id>/plugin.yaml` manifest semantics.
-- Changing plugin enable/disable, config persistence, resource activation, or
-  plugin ownership metadata in `.cat-cafe/capabilities.json`.
-- Adding plugin-facing Settings UI that configures, tests, enables, disables, or
-  explains plugin-owned resources.
-- Adding an external official contribution such as `physical-limb`, or changing
-  the Host adapter that admits such a contribution into an existing control plane.
-- Adding a provider Host capability such as background conversation append, or
-  changing its receipt/idempotency contract.
-- Deciding whether a new capability belongs in the local plugin framework,
-  the MCP marketplace/control plane, or a built-in integration surface.
+Plugin→Host uses ordinary threads/messages/members and existing granted capabilities. Business
+bindings live in package storage; there is no plugin-specific thread visibility registry. Meeting
+notifications use `messaging.send` and package-owned pending state. Static signal declarations do
+not expose a runtime publication API. The `signal-intake` cell records the retained Host message
+consumer and the superseded historical intake boundary.
 
 ## Extend By
 
-- Keep plugin manifests declarative and repository-local unless a later feature
-  defines remote package trust, signing, and network policy.
-- Route skill, MCP, limb, and schedule declarations through `PluginResourceActivator`
-  instead of adding parallel writers.
-- Keep schedule factories behind `ScheduleFactoryRegistry`; plugin manifests may
-  name a whitelisted `factoryId`, not arbitrary executable code.
-- Preserve explicit plugin ownership metadata and reject cross-plugin ownership
-  collisions.
-- Keep config writes inside the existing secret/update boundary; manifests do
-  not store user secrets.
-- Keep external official plugin source and its conformance fixtures in
-  `clowder-ai-plugins`; core consumes a versioned contribution contract through
-  a reusable Host-owned adapter rather than adding product-specific branches.
-- Keep official catalog policy static in Host code. Refresh only exact release
-  coordinates from a fixed registry/channel, require SemVer monotonicity plus
-  tarball/SHA512/provenance validation, retain last-known-good metadata on
-  failure, and reject rollback or same-version equivocation.
-- Fence an explicit official package update to the version and digest the owner
-  confirmed. A refresh must never auto-install, auto-update, auto-start, or
-  widen identity, grants, auth runners, domains, or release channels.
-- Bind package digest, installation instance, runtime session, grants, and
-  resource identity from Host-owned state. External runtimes cannot choose or
-  widen those identities through self-report.
-- Admit only methods marked ready by the exact published wire registry. Validate
-  every frame with contract-owned validators and never mirror public wire
-  schemas or method registries in core.
-- Launch external packages only from Host-owned immutable digest paths, through
-  the supervised process adapter, with the closed non-secret bootstrap environment.
-- Persist dispatch intent before invoking a domain handler. Recovery may return
-  a domain's canonical receipt, but must not blindly replay an ambiguous effect.
-- Keep domain adapters narrow: the Broker owns transport settlement, while the
-  receiving domain owns authorization, idempotency, and durable product truth.
-- Keep C-2 signal declaration, wire, generated types, SDK helpers, conformance,
-  and official input-source plugin code in the public plugin seam. Route
-  admission, idempotent settlement, durable workflow intake, source access,
-  and Needs Me eligibility belong to `signal-intake`, not this cell.
-- Keep Host capability interfaces narrow and receipt-bearing. Do not synthesize
-  provider success or silently substitute a more invasive transport.
-- Keep personal browser adapters user-installed and origin-pinned. Authenticate
-  the local caller before dispatch, strip local secrets before Native Messaging,
-  persist intent before browser effects, and fail closed on missing or ambiguous
-  Host receipts.
-- Route physical actions through F126 Registry / Policy / Lease / Action Log.
-  Physical observations may enter only through a typed, grant-checked Host seam;
-  raw sensor media and plugin-originated user identity are not admissible.
+- Keep `plugin.yaml` the static contribution truth and use the activation's handler map; do not add
+  a second dynamic registration surface.
+- Join catalog candidates to verified inventory; installation, desired enablement and live runtime
+  state are distinct facts. Catalog refresh cannot install or enable a plugin.
+- Keep package schemas, SDK and source in `clowder-ai-plugins`; reuse ordinary Host capabilities
+  instead of adding package-specific Host models or compatibility routes.
+- Keep secrets/configuration in the existing Manager boundary and package business state private.
+- Use the existing Host runtime validity checks; configuration revision is not activation identity.
+- Keep public interface documentation synchronized with actual SDK types and consumers.
 
-## Do NOT Unify With
+## Retained Specialized Consumers
 
-- Do not merge this cell into `action-plane`: plugin activation may expose
-  actions, but this cell owns the local extension lifecycle, not vendor action
-  execution.
-- Do not merge this cell into `transport`: plugin MCP resources are tools, not
-  message transport adapters.
-- Do not treat remote marketplace install/signing as already solved by F202
-  Phase 1. That trust boundary needs a separate design slice.
-- Do not load external executable plugins into the API process. Do not treat a
-  constructed/recovered dormant supervisor as proof that any package was started
-  or that an external plugin runtime is live.
-- Do not let an external physical plugin register a parallel Limb registry,
-  bypass F126 for actions, or turn device observations directly into cat intent.
-- Do not absorb K-3a routes, `MeetingIntake`, source-resolution authority, or
-  Needs Me state into plugin activation merely because the producer is a plugin.
-- Do not treat ChatGPT conversation visibility in a desktop host as proof of an
-  arbitrary-conversation append API, and do not use private endpoints to fill
-  a missing official adapter.
+Dot remains a built-in exception in this C1; its deferred alias/addressable-plugin proposal and
+remaining Host-specific dispatch are recorded in F202. This does not authorize a Dot migration.
+The installed personal Chrome companion owns its browser/native-helper business; Host provides
+its existing generic conversation-host capability. Plugin-local HTTP services and their assets are
+owned by the plugin lifecycle; they do not require a Host browser-service binding.
 
-## Static Scan Hints
+## F317 Desktop Consumer
 
-Watch for new or renamed `PluginRegistry`, `PluginResourceActivator`,
-`ScheduleFactoryRegistry`, `PluginInventoryStore`, `HostBrokerControlPlane`,
-`HostBrokerStore`, `ExternalPluginRuntimeSupervisor`, `PluginRuntimePersistencePaths`,
-`BrokerMethodHandler`, `PluginConfigStore`, `plugin.yaml`, `pluginId`,
-`plugin-owned`, `OfficialPluginCatalog`, `RefreshingOfficialPluginCatalog`,
-`OfficialPluginPackageInstaller`, `factoryId`, `schedule`, `PluginConfigPanel`, and direct writers
-to plugin-owned capability records. Also watch `IConversationHostAdapter`,
-`append_message`, provider receipts, and implicit browser/composer fallbacks.
-For the personal Chrome path also watch `PersonalChromeHostAdapter`,
-`createNativeHostBridge`, Native Messaging manifests, extension host permissions,
-and any browser API that can activate, focus, navigate, or inspect credentials.
+
+The desktop companion is a verified declarative `desktop-window` contribution with
+an explicit `windows.create` grant. It uses existing inventory, Broker and static
+feature leases. The Host loads package HTML in a sandboxed Electron window; package
+code cannot supply an executable, preload, credentials or conversation identity.
+Explicit installation prepares the Host's pinned desktop component in a private
+cache. The installing API retains its owner cookie and invokes existing conversation
+routes through a closed bridge. Window creation does not grant media capture.
+
+Presence is an expiring observation of the actual window process under its current
+feature lease. The owner-local projection suppresses only the duplicate Hub body;
+the canonical chat panel remains available. Failed, expired or revoked observations
+restore the Hub entry without rewriting durable preferences or installation truth.
+
+## Historical Checkpoints
+
+The dated `cited_by` entries retain feature provenance. Earlier repository-local registries,
+Host-owned personal Chrome adapters and K-2 signal-publication wiring are superseded by the current
+C1 boundary above. Removed code is available in Git history, not in the current anchor list.
+Internal carrier transport and retained declarative editor/desktop mechanisms are implementation
+references, not additional public SDK interfaces or permission to supervise a plugin's own helper.

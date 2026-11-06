@@ -18,7 +18,8 @@ function createWarningSystemInfoService(catId) {
         catId,
         content: JSON.stringify({
           type: 'warning',
-          message: '当前 opencode/CodeAgent 适配器未返回 token 用量，自动 handoff 无法按上下文比例触发。',
+          presentation: 'user_action_required',
+          message: '当前 opencode适配器未返回 token 用量，自动 handoff 无法按上下文比例触发。',
         }),
         timestamp: Date.now(),
       };
@@ -36,7 +37,8 @@ function createTextWithWarningService(catId) {
         catId,
         content: JSON.stringify({
           type: 'warning',
-          message: '当前 opencode/CodeAgent 适配器未返回 token 用量，自动 handoff 无法按上下文比例触发。',
+          presentation: 'user_action_required',
+          message: '当前 opencode适配器未返回 token 用量，自动 handoff 无法按上下文比例触发。',
         }),
         timestamp: Date.now(),
       };
@@ -214,11 +216,106 @@ function createMockDeps(services, appendCalls, feedbackWrites, broadcasts) {
 }
 
 describe('route-serial notice contract', () => {
-  it('emits routing-syntax-hint with explicit system_notice presentation metadata', async () => {
-    // F167 Phase H AC-H5 (2026-04-24): Phase H `routing-syntax-hint` is now the
-    // primary emission for slot-internal inline @handles. It suppresses the
-    // legacy `inline-mention-hint` (#417) on the same turn. The legacy
-    // setMentionRoutingFeedback path remains — cats get next-turn correction.
+  it('keeps inline-routing and unbacked-wait facts in one feedback record', async () => {
+    const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
+    const feedbackWrites = [];
+    const service = {
+      async *invoke() {
+        yield {
+          type: 'text',
+          catId: 'opus',
+          content: '今天不回也没关系，我先请 @codex 补分母。',
+          timestamp: Date.now(),
+        };
+        yield { type: 'done', catId: 'opus', timestamp: Date.now() };
+      },
+    };
+    const deps = createMockDeps({ opus: service }, [], feedbackWrites, []);
+    for await (const _msg of routeSerial(deps, ['opus'], '继续', 'user1', 'thread-both')) {
+    }
+    assert.equal(feedbackWrites.length, 1);
+    assert.deepEqual(feedbackWrites[0].payload.items.map((item) => item.reason).sort(), ['inline_action', 'void_hold']);
+  });
+
+  it('passes the canonical owned-wait fact into the next invocation navigation', async () => {
+    const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
+    const { DeliveryCursorStore } = await import('../dist/domains/cats/services/stores/ports/DeliveryCursorStore.js');
+    const { MessageStore } = await import('../dist/domains/cats/services/stores/ports/MessageStore.js');
+    let invocationPrompt = '';
+    const scopes = [];
+    const service = {
+      async *invoke(prompt) {
+        invocationPrompt = prompt;
+        yield { type: 'text', catId: 'opus', content: '处理完成。', timestamp: Date.now() };
+        yield { type: 'done', catId: 'opus', timestamp: Date.now() };
+      },
+    };
+    const deps = createMockDeps({ opus: service }, [], [], []);
+    deps.messageStore = new MessageStore();
+    deps.deliveryCursorStore = new DeliveryCursorStore();
+    const source = await deps.messageStore.append({
+      from: { kind: 'user', userId: 'user1' },
+      userId: 'user1',
+      threadId: 'thread-nav',
+      content: '继续',
+      mentions: [],
+      timestamp: Date.now(),
+    });
+    deps.taskStore = {
+      listByThread: () => [
+        {
+          id: 'task-next',
+          kind: 'work',
+          title: '继续原工作',
+          status: 'doing',
+          ownerCatId: 'opus',
+          userId: 'user1',
+          threadId: 'thread-nav',
+          updatedAt: Date.now(),
+        },
+      ],
+    };
+    deps.ownedWaitStatusReader = async (scope) => {
+      scopes.push(scope);
+      return false;
+    };
+    for await (const _msg of routeSerial(deps, ['opus'], '继续', 'user1', 'thread-nav', {
+      currentUserMessageId: source.id,
+    })) {
+    }
+    assert.deepEqual(scopes, [{ userId: 'user1', threadId: 'thread-nav', catId: 'opus' }]);
+    assert.match(invocationPrompt, /继续原工作.*\[未挂等待\]/);
+  });
+
+  it('persists an unbacked wait as private feedback without public notices or a second invocation', async () => {
+    const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
+    const appendCalls = [],
+      feedbackWrites = [],
+      broadcasts = [];
+    let invocations = 0;
+    const service = {
+      async *invoke() {
+        invocations++;
+        yield { type: 'text', catId: 'opus', content: '等 gate 跑完我再汇报。', timestamp: Date.now() };
+        yield { type: 'done', catId: 'opus', timestamp: Date.now() };
+      },
+    };
+    const deps = createMockDeps({ opus: service }, appendCalls, feedbackWrites, broadcasts);
+    for await (const _msg of routeSerial(deps, ['opus'], '继续处理', 'user1', 'thread-wait')) {
+    }
+    assert.equal(invocations, 1);
+    assert.equal(appendCalls.length, 1);
+    assert.equal(appendCalls[0].content, '等 gate 跑完我再汇报。');
+    assert.ok(
+      feedbackWrites.some(
+        (write) =>
+          write.threadId === 'thread-wait' &&
+          write.catId === 'opus' &&
+          write.payload.items.some((item) => item.reason === 'void_hold'),
+      ),
+    );
+  });
+  it('keeps an inline action @handle as text without adding a public correction bubble', async () => {
     const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
     const appendCalls = [];
     const feedbackWrites = [];
@@ -228,26 +325,22 @@ describe('route-serial notice contract', () => {
     for await (const _msg of routeSerial(deps, ['opus'], 'review this', 'user1', 'thread-1')) {
     }
 
-    assert.equal(feedbackWrites.length, 1, 'should still write routing feedback (next-turn correction preserved)');
-
-    const hintAppend = appendCalls.find((msg) => msg.source?.connector === 'routing-syntax-hint');
-    assert.ok(hintAppend, 'should append a routing-syntax-hint (Phase H primary)');
-    assert.equal(hintAppend.userId, 'system');
-    assert.equal(hintAppend.catId, null);
-    assert.equal(hintAppend.source.meta.presentation, 'system_notice');
-    assert.equal(hintAppend.source.meta.noticeTone, 'warning');
-
-    // AC-H5: legacy inline-mention-hint is suppressed when Phase H hits
-    const legacyHint = appendCalls.find((msg) => msg.source?.connector === 'inline-mention-hint');
-    assert.equal(legacyHint, undefined, 'AC-H5: legacy inline-mention-hint must be suppressed when Phase H hits');
-
-    const hintBroadcast = broadcasts.find(
-      (entry) =>
-        entry.event === 'connector_message' && entry.payload.message.source?.connector === 'routing-syntax-hint',
+    assert.equal(
+      appendCalls.some((msg) => msg.content?.includes('Ready for @codex review')),
+      true,
     );
-    assert.ok(hintBroadcast, 'should broadcast the routing-syntax-hint in real-time');
-    assert.equal(hintBroadcast.payload.message.source.meta.presentation, 'system_notice');
-    assert.equal(hintBroadcast.payload.message.source.meta.noticeTone, 'warning');
+    assert.equal(
+      appendCalls.some((msg) => ['routing-syntax-hint', 'inline-mention-hint'].includes(msg.source?.connector)),
+      false,
+    );
+    assert.equal(
+      broadcasts.some(
+        (entry) =>
+          entry.event === 'connector_message' &&
+          ['routing-syntax-hint', 'inline-mention-hint'].includes(entry.payload.message.source?.connector),
+      ),
+      false,
+    );
   });
 
   it('issue #1208 P2: persists user-facing warning system_info to messageStore', async () => {
@@ -274,7 +367,7 @@ describe('route-serial notice contract', () => {
     const warningAppend = appendCalls.find((msg) => msg.source?.connector === 'system-warning');
     assert.ok(warningAppend, 'warning system_info must be persisted to messageStore');
     assert.equal(warningAppend.userId, 'system');
-    assert.equal(warningAppend.catId, null);
+    assert.deepEqual(warningAppend.from, { kind: 'system', service: 'system-info-warning' });
     assert.ok(
       warningAppend.content.includes('未返回 token 用量'),
       'persisted warning content should include the original warning message',
@@ -306,7 +399,11 @@ describe('route-serial notice contract', () => {
       // consume
     }
 
-    assert.ok(appendCalls.some((msg) => msg.catId === 'opus' && msg.content === 'Here is the result.'));
+    assert.ok(
+      appendCalls.some(
+        (msg) => msg.from?.kind === 'agent' && msg.from.catId === 'opus' && msg.content === 'Here is the result.',
+      ),
+    );
     assert.ok(
       appendCalls.some((msg) => msg.source?.connector === 'system-warning'),
       'warning must survive refresh when the same turn also produced text',
@@ -333,7 +430,8 @@ describe('route-serial notice contract', () => {
         `thread-cloud-${testCase.name}`,
         { currentUserMessageId: `source-cloud-${testCase.name}` },
       )) {
-        if (message.type === 'system_info' && message.content) yieldedPayloads.push(JSON.parse(message.content));
+        if (message.type === 'system_info' && message.content?.trim().startsWith('{'))
+          yieldedPayloads.push(JSON.parse(message.content));
       }
 
       assert.equal(yieldedPayloads.filter((payload) => payload.type === 'cloud_bridge_status').length, 1);

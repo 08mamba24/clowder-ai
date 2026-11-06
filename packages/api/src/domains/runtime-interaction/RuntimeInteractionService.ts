@@ -1,73 +1,63 @@
 import type {
+  RuntimeConversationDecisionRequest,
   RuntimeInteractionCardRef,
   RuntimeInteractionRecord,
   RuntimeInteractionRequest,
   RuntimeInteractionResponse,
-  RuntimeInteractionTerminal,
   RuntimeInteractionTerminalReasonCode,
 } from '@cat-cafe/shared';
-import {
-  parseRuntimeInteractionRequest,
-  parseRuntimeInteractionResponse,
-  redactRuntimeInteractionResponse,
-} from '@cat-cafe/shared';
+import { parseRuntimeInteractionRequest, parseRuntimeInteractionResponse } from '@cat-cafe/shared';
+import type { RuntimeConversationReturnGateway } from './ports/RuntimeConversationReturnGateway.js';
 import type { RuntimeInteractionStore } from './ports/RuntimeInteractionStore.js';
+import type {
+  RuntimeConversationOwnerMessageAuth,
+  RuntimeConversationRequester,
+} from './RuntimeConversationDecisionModel.js';
+import { RuntimeConversationDecisionService } from './RuntimeConversationDecisionService.js';
+import { RuntimeInteractionError } from './RuntimeInteractionError.js';
+import type {
+  RuntimeInteractionRejectInput,
+  RuntimeInteractionRespondInput,
+  RuntimeInteractionServiceDeps,
+} from './RuntimeInteractionServiceContract.js';
+import { RuntimeInteractionWaiterRegistry } from './RuntimeInteractionWaiterRegistry.js';
+import {
+  providerInteractionErrorMessage,
+  providerTerminalFrom,
+  runtimeInteractionAbortReason,
+  sameProviderCard,
+  throwIfRuntimeInteractionAborted,
+} from './RuntimeProviderInteractionModel.js';
 
-export type RuntimeInteractionErrorCode =
-  | 'duplicate'
-  | 'not_found'
-  | 'unauthorized'
-  | 'stale'
-  | 'invalid_response'
-  | 'unavailable';
-
-export class RuntimeInteractionError extends Error {
-  constructor(
-    readonly code: RuntimeInteractionErrorCode,
-    message: string,
-    readonly reasonCode?: RuntimeInteractionTerminalReasonCode,
-  ) {
-    super(message);
-    this.name = 'RuntimeInteractionError';
-  }
-}
-
-export interface RuntimeInteractionCardPublisher {
-  publish(request: RuntimeInteractionRequest): Promise<RuntimeInteractionCardRef>;
-  isLive(request: RuntimeInteractionRequest, cardRef: RuntimeInteractionCardRef): Promise<boolean>;
-}
-
-export interface RuntimeInteractionServiceDeps {
-  store: RuntimeInteractionStore;
-  cardPublisher: RuntimeInteractionCardPublisher;
-  hostEpoch: string;
-  now?: () => number;
-  onRecordUpdated?: (record: RuntimeInteractionRecord) => void;
-}
-
-export interface RuntimeInteractionRespondInput {
-  interactionId: string;
-  ownerUserId: string;
-  cardRef: RuntimeInteractionCardRef;
-  response: unknown;
-}
-
-interface ActiveWaiter {
-  resolve(response: RuntimeInteractionResponse): void;
-  reject(error: Error): void;
-  cleanup(): void;
-}
+export type { RuntimeConversationReturnGateway } from './ports/RuntimeConversationReturnGateway.js';
+export type { RuntimeInteractionCardPublisher } from './ports/RuntimeInteractionCardPublisher.js';
+export { RuntimeInteractionError, type RuntimeInteractionErrorCode } from './RuntimeInteractionError.js';
+export type {
+  RuntimeInteractionRejectInput,
+  RuntimeInteractionRespondInput,
+  RuntimeInteractionServiceDeps,
+} from './RuntimeInteractionServiceContract.js';
 
 export class RuntimeInteractionService {
   private readonly store: RuntimeInteractionStore;
   private readonly hostEpoch: string;
   private readonly now: () => number;
-  private readonly waiters = new Map<string, ActiveWaiter>();
+  private readonly waiters = new RuntimeInteractionWaiterRegistry();
+  private readonly conversation: RuntimeConversationDecisionService;
 
   constructor(private readonly deps: RuntimeInteractionServiceDeps) {
     this.store = deps.store;
     this.hostEpoch = deps.hostEpoch;
     this.now = deps.now ?? Date.now;
+    this.conversation = new RuntimeConversationDecisionService({
+      store: this.store,
+      cardPublisher: deps.cardPublisher,
+      hostEpoch: this.hostEpoch,
+      now: this.now,
+      ...(deps.onRecordUpdated ? { onRecordUpdated: deps.onRecordUpdated } : {}),
+      ...(deps.onRecoveryError ? { onRecoveryError: deps.onRecoveryError } : {}),
+      ...(deps.conversationReturnGateway ? { gateway: deps.conversationReturnGateway } : {}),
+    });
   }
 
   async request(
@@ -75,61 +65,90 @@ export class RuntimeInteractionService {
     options?: { signal?: AbortSignal },
   ): Promise<RuntimeInteractionResponse> {
     const request = parseRuntimeInteractionRequest(input);
-    try {
-      await this.store.createStaged({ request, hostEpoch: this.hostEpoch, now: this.now() });
-    } catch (error) {
-      throw new RuntimeInteractionError('duplicate', errorMessage(error));
+    if (request.kind === 'conversation_decision') {
+      throw new RuntimeInteractionError('invalid_response', 'use createConversationDecision for conversation requests');
     }
+    try {
+      const staged = await this.store.createStaged({ request, hostEpoch: this.hostEpoch, now: this.now() });
+      return this.requestProvider(request, staged, options);
+    } catch (error) {
+      if (error instanceof RuntimeInteractionError) throw error;
+      throw new RuntimeInteractionError('duplicate', providerInteractionErrorMessage(error));
+    }
+  }
+
+  private async requestProvider(
+    request: Exclude<RuntimeInteractionRequest, { kind: 'conversation_decision' }>,
+    staged: RuntimeInteractionRecord,
+    options?: { signal?: AbortSignal },
+  ): Promise<RuntimeInteractionResponse> {
+    const { responsePromise, waiter } = this.waiters.register(request.interactionId, options?.signal, () => {
+      void this.invalidateOne(request.interactionId, runtimeInteractionAbortReason(options?.signal));
+    });
 
     let cardRef: RuntimeInteractionCardRef;
     let pending: RuntimeInteractionRecord;
     try {
-      cardRef = await this.deps.cardPublisher.publish(request);
-      if (options?.signal?.aborted) throw new Error(runtimeInteractionAbortReason(options.signal));
-      const anchored = await this.store.anchor(request.interactionId, this.hostEpoch, cardRef, this.now());
+      throwIfRuntimeInteractionAborted(options?.signal);
+      cardRef = await this.deps.cardPublisher.prepare(request);
+      throwIfRuntimeInteractionAborted(options?.signal);
+      const anchored = await this.store.anchor(
+        request.interactionId,
+        this.hostEpoch,
+        cardRef,
+        this.now(),
+        staged.revision,
+      );
       if (!anchored || anchored.status !== 'pending') throw new Error('runtime interaction could not be anchored');
       pending = anchored;
+      throwIfRuntimeInteractionAborted(options?.signal);
+      await this.deps.cardPublisher.publish(request, cardRef);
+      throwIfRuntimeInteractionAborted(options?.signal);
     } catch (error) {
-      const failureReason = errorMessage(error);
+      const failureReason = providerInteractionErrorMessage(error);
       const invalidationReason =
         failureReason === 'provider_cancelled' || failureReason === 'transport_lost'
           ? failureReason
           : 'surface_publication_failed';
+      this.waiters.discard(request.interactionId, waiter);
       const invalidated = await this.store.invalidate({
         interactionId: request.interactionId,
         reasonCode: invalidationReason,
         now: this.now(),
       });
       if (invalidated) this.emit(invalidated);
-      const terminalReason = invalidated?.terminal?.reasonCode ?? 'surface_publication_failed';
+      const terminalReason =
+        invalidated?.terminal?.reasonCode ??
+        (options?.signal?.aborted ? runtimeInteractionAbortReason(options.signal) : 'surface_publication_failed');
       throw new RuntimeInteractionError('unavailable', terminalReason, terminalReason);
     }
 
-    return new Promise<RuntimeInteractionResponse>((resolve, reject) => {
-      const abort = (): void => {
-        void this.invalidateOne(request.interactionId, runtimeInteractionAbortReason(options?.signal));
-      };
-      options?.signal?.addEventListener('abort', abort, { once: true });
-      const cleanup = (): void => options?.signal?.removeEventListener('abort', abort);
-      this.waiters.set(request.interactionId, { resolve, reject, cleanup });
-      this.emit(pending);
-      if (options?.signal?.aborted) abort();
-    });
+    if (this.waiters.get(request.interactionId) === waiter) this.emit(pending);
+    return responsePromise;
   }
 
   async respond(input: RuntimeInteractionRespondInput): Promise<RuntimeInteractionRecord> {
     const record = await this.store.get(input.interactionId);
     if (!record) throw new RuntimeInteractionError('not_found', 'runtime interaction not found');
-    if (record.request.owner.userId !== input.ownerUserId || !sameCard(record.cardRef, input.cardRef)) {
+    if (record.request.kind === 'conversation_decision') {
+      return this.respondConversation(input);
+    }
+    if (record.request.owner.userId !== input.ownerUserId || !sameProviderCard(record.cardRef, input.cardRef)) {
       throw new RuntimeInteractionError('unauthorized', 'runtime interaction is not owned by this surface');
     }
     if (record.status !== 'pending') throw new RuntimeInteractionError('stale', 'runtime interaction is not pending');
+    if (input.expectedRevision !== undefined && input.expectedRevision !== record.revision) {
+      throw new RuntimeInteractionError('stale', 'runtime interaction revision changed');
+    }
 
     let response: RuntimeInteractionResponse;
     try {
       response = parseRuntimeInteractionResponse(record.request, input.response);
     } catch (error) {
-      throw new RuntimeInteractionError('invalid_response', errorMessage(error));
+      throw new RuntimeInteractionError('invalid_response', providerInteractionErrorMessage(error));
+    }
+    if (response.kind === 'selection' || response.kind === 'text') {
+      throw new RuntimeInteractionError('invalid_response', 'provider interaction requires a provider response');
     }
 
     const waiter = this.waiters.get(input.interactionId);
@@ -153,12 +172,13 @@ export class RuntimeInteractionService {
       );
     }
 
-    const terminal = terminalFrom(record.request, response, this.now());
+    const terminal = providerTerminalFrom(record.request, response, this.now());
     const settled = await this.store.settle({
       interactionId: input.interactionId,
       hostEpoch: this.hostEpoch,
       terminal,
       now: terminal.settledAt,
+      expectedRevision: record.revision,
     });
     if (!settled) throw new RuntimeInteractionError('stale', 'runtime interaction was already settled');
 
@@ -166,6 +186,69 @@ export class RuntimeInteractionService {
     waiter.cleanup();
     this.emit(settled);
     waiter.resolve(response);
+    return settled;
+  }
+
+  private respondConversation(input: RuntimeInteractionRespondInput): Promise<RuntimeInteractionRecord> {
+    if (input.expectedRevision === undefined || !input.operationId) {
+      throw new RuntimeInteractionError('invalid_response', 'expectedRevision and operationId are required');
+    }
+    return this.conversation.respond({
+      ...input,
+      expectedRevision: input.expectedRevision,
+      operationId: input.operationId,
+    });
+  }
+
+  async reject(input: RuntimeInteractionRejectInput): Promise<RuntimeInteractionRecord> {
+    const record = await this.store.get(input.interactionId);
+    if (!record) throw new RuntimeInteractionError('not_found', 'runtime interaction not found');
+    if (record.request.kind === 'conversation_decision') {
+      throw new RuntimeInteractionError('invalid_response', 'conversation decisions do not use provider rejection');
+    }
+    if (record.request.owner.userId !== input.ownerUserId || !sameProviderCard(record.cardRef, input.cardRef)) {
+      throw new RuntimeInteractionError('unauthorized', 'runtime interaction is not owned by this surface');
+    }
+    if (record.status !== 'pending') throw new RuntimeInteractionError('stale', 'runtime interaction is not pending');
+    if (record.request.kind !== 'question') {
+      throw new RuntimeInteractionError('invalid_response', 'only question interactions can use explicit rejection');
+    }
+
+    const waiter = this.waiters.get(input.interactionId);
+    if (!waiter) {
+      await this.invalidateOne(input.interactionId, 'transport_lost');
+      throw new RuntimeInteractionError('stale', 'runtime interaction has no active provider waiter', 'transport_lost');
+    }
+
+    let canonicalCardIsLive: boolean;
+    try {
+      canonicalCardIsLive = await this.deps.cardPublisher.isLive(record.request, input.cardRef);
+    } catch {
+      throw new RuntimeInteractionError('unavailable', 'runtime interaction confirmation check unavailable; retry');
+    }
+    if (!canonicalCardIsLive) {
+      await this.invalidateOne(input.interactionId, 'confirmation_unavailable');
+      throw new RuntimeInteractionError(
+        'stale',
+        'runtime interaction canonical card is no longer available',
+        'confirmation_unavailable',
+      );
+    }
+
+    const settledAt = this.now();
+    const settled = await this.store.settle({
+      interactionId: input.interactionId,
+      hostEpoch: this.hostEpoch,
+      terminal: { status: 'declined', reasonCode: 'user_rejected', settledAt },
+      now: settledAt,
+      expectedRevision: record.revision,
+    });
+    if (!settled) throw new RuntimeInteractionError('stale', 'runtime interaction was already settled');
+
+    this.waiters.delete(input.interactionId);
+    waiter.cleanup();
+    this.emit(settled);
+    waiter.reject(new RuntimeInteractionError('stale', 'user_rejected', 'user_rejected'));
     return settled;
   }
 
@@ -187,6 +270,65 @@ export class RuntimeInteractionService {
   async getForOwner(interactionId: string, ownerUserId: string): Promise<RuntimeInteractionRecord | null> {
     const record = await this.store.get(interactionId);
     return record?.request.owner.userId === ownerUserId ? record : null;
+  }
+
+  createConversationDecision(input: RuntimeConversationDecisionRequest): Promise<RuntimeInteractionRecord> {
+    return this.conversation.create(input);
+  }
+
+  bindConversationReturnGateway(gateway: RuntimeConversationReturnGateway): void {
+    this.conversation.bindGateway(gateway);
+  }
+
+  settleFromOwnerMessage(input: {
+    interactionId: string;
+    requester: RuntimeConversationRequester;
+    ownerMessageAuth: RuntimeConversationOwnerMessageAuth;
+    expectedRevision: number;
+    operationId: string;
+    responseMessageId: string;
+  }): Promise<RuntimeInteractionRecord> {
+    return this.conversation.settleFromOwnerMessage(input);
+  }
+
+  withdrawConversationDecision(input: {
+    interactionId: string;
+    requester: RuntimeConversationRequester;
+    expectedRevision: number;
+    operationId: string;
+  }): Promise<RuntimeInteractionRecord> {
+    return this.conversation.withdraw(input);
+  }
+
+  supersedeConversationDecision(input: {
+    interactionId: string;
+    requester: RuntimeConversationRequester;
+    expectedRevision: number;
+    operationId: string;
+    replacementInteractionId: string;
+  }): Promise<RuntimeInteractionRecord> {
+    return this.conversation.supersede(input);
+  }
+
+  recoverConversationSubmissions(): Promise<RuntimeInteractionRecord[]> {
+    return this.conversation.recoverSubmissions();
+  }
+
+  recoverConversationCreations(): Promise<RuntimeInteractionRecord[]> {
+    return this.conversation.recoverCreations();
+  }
+
+  reconcileConversationDeadlines(): Promise<RuntimeInteractionRecord[]> {
+    return this.conversation.reconcileDeadlines();
+  }
+
+  pendingConversationDecisionPrompt(
+    userId: string,
+    threadId: string,
+    catId: string,
+    originTriggerMessageId?: string,
+  ): Promise<string> {
+    return this.conversation.pendingPrompt(userId, threadId, catId, originTriggerMessageId);
   }
 
   private async invalidateOne(
@@ -212,40 +354,4 @@ export class RuntimeInteractionService {
   private emit(record: RuntimeInteractionRecord): void {
     this.deps.onRecordUpdated?.(record);
   }
-}
-
-function terminalFrom(
-  request: RuntimeInteractionRequest,
-  response: RuntimeInteractionResponse,
-  settledAt: number,
-): RuntimeInteractionTerminal {
-  if (response.kind === 'answers') {
-    return {
-      status: 'answered',
-      reasonCode: 'answered',
-      settledAt,
-      response: redactRuntimeInteractionResponse(request, response),
-    };
-  }
-  const decision =
-    request.kind === 'question' ? undefined : request.decisions.find(({ id }) => id === response.decisionId);
-  if (!decision) throw new RuntimeInteractionError('invalid_response', 'decision is not allowed');
-  const status = decision.outcome === 'accept' ? 'answered' : decision.outcome === 'decline' ? 'declined' : 'cancelled';
-  const reasonCode =
-    decision.outcome === 'accept' ? 'answered' : decision.outcome === 'decline' ? 'user_rejected' : 'user_cancelled';
-  return { status, reasonCode, settledAt, response: redactRuntimeInteractionResponse(request, response) };
-}
-
-function sameCard(left: RuntimeInteractionCardRef | undefined, right: RuntimeInteractionCardRef): boolean {
-  return Boolean(
-    left && left.threadId === right.threadId && left.messageId === right.messageId && left.blockId === right.blockId,
-  );
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function runtimeInteractionAbortReason(signal: AbortSignal | undefined): RuntimeInteractionTerminalReasonCode {
-  return signal?.reason === 'provider_cancelled' ? 'provider_cancelled' : 'transport_lost';
 }

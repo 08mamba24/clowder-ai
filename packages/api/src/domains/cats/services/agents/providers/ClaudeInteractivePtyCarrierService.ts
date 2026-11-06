@@ -10,7 +10,7 @@
  *   - Hook sidechannel: Stop/PostToolUse hooks write structured JSON to sidecar jsonl
  *   - TranscriptTailer reads sidecar (not transcript) for output events
  *   - hookEntriesToAgentMessages transforms hook events to AgentMessages
- *   - Terminal state: Stop hook event + silence fallback
+ *   - Terminal state: Stop hook event only; invocation owner handles no-output timeout
  *   - Cancel: options.signal → driver.cancel() (ESC) → drain → driver.dispose()
  *   - Usage: degraded (hooks carry no token data)
  *
@@ -22,12 +22,15 @@
  * deferred to a later phase) to stay minimal and avoid dependency on
  * compileL0ViaSubprocess machinery.
  */
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { type CatId, createCatId } from '@cat-cafe/shared';
 import { getCatModel } from '../../../../../config/cat-models.js';
+import { applyClaudeTokenAccountEnv } from '../../../../../config/claude-token-account.js';
+import { composeClaudeTokenSettingsDocument } from '../../../../../config/claude-token-settings.js';
 import { createModuleLogger } from '../../../../../infrastructure/logger.js';
+import { buildChildEnv } from '../../../../../utils/cli-spawn.js';
 import type {
   AgentMessage,
   AgentService,
@@ -50,6 +53,7 @@ import {
   resolveClaudeModelSelection,
   resolveDefaultClaudeMcpServerPath,
 } from './ClaudeAgentService.js';
+import { resolveClaudeMcpConfig } from './claude-mcp-config.js';
 import {
   extractEntrypointFromHookEntries,
   extractSessionIdFromHookEntries,
@@ -57,11 +61,12 @@ import {
   isHookTerminalEvent,
 } from './HookSidechannelConsumer.js';
 import { appendLocalImagePathHints, collectImageAccessDirectories } from './image-cli-bridge.js';
-import { extractImagePaths } from './image-paths.js';
+import { extractTrustedImagePaths } from './image-paths.js';
 import { type HookInfrastructureResult, setupHookInfrastructure } from './pty/hook-setup.js';
 import type { PtyDriverOptions } from './pty/PtyDriver.js';
 import { PtyDriver } from './pty/PtyDriver.js';
 import { ptyTranscriptDir, sleep } from './pty/pty-utils.js';
+import { writeInvocationMcpConfigFile } from './session-credential-file.js';
 export { ptyTranscriptDir }; // re-export for consumers (f230-interactive-pty-carrier.test.js)
 
 import { TranscriptTailer } from './TranscriptTailer.js';
@@ -72,8 +77,6 @@ export interface ClaudeInteractivePtyCarrierServiceOptions {
   catId?: CatId;
   /** Test seam: polling interval for TranscriptTailer (ms). Default 500. */
   pollIntervalMs?: number;
-  /** Test seam: terminal timeout (silence fallback, ms). Default 5 min. */
-  terminalTimeoutMs?: number;
   /** Test seam: working directory for PtyDriver (default to resolved cwd). */
   cwd?: string;
   /** Test seam: inject a custom PtyDriver factory. Default creates real PtyDriver. */
@@ -102,7 +105,6 @@ export class ClaudeInteractivePtyCarrierService implements AgentService {
   // biome-ignore lint/correctness/noUnusedPrivateClassMembers: used via `const { model } = this` destructuring in invoke()
   private readonly model: string;
   private readonly pollIntervalMs: number;
-  private readonly terminalTimeoutMs: number;
   private readonly cwd: string;
   private readonly driverFactory: (opts: PtyDriverOptions) => PtyDriver;
   private readonly transcriptDirOverride: string | undefined;
@@ -110,13 +112,11 @@ export class ClaudeInteractivePtyCarrierService implements AgentService {
   private readonly claudeBinary: string | undefined;
   private readonly hookSidecarPathOverride: string | undefined;
   /** Cached MCP config file path (created once per instance, reused across invocations). */
-  private mcpConfigFilePath: string | undefined;
 
   constructor(options?: ClaudeInteractivePtyCarrierServiceOptions) {
     this.catId = options?.catId ?? createCatId('opus');
     this.model = getCatModel(this.catId) ?? 'claude-opus-4-8';
     this.pollIntervalMs = options?.pollIntervalMs ?? 500;
-    this.terminalTimeoutMs = options?.terminalTimeoutMs ?? 5 * 60 * 1_000; // 5 min
     this.cwd = options?.cwd ?? process.cwd();
     this.driverFactory = options?.driverFactory ?? ((opts) => new PtyDriver(opts));
     this.transcriptDirOverride = options?.transcriptDirOverride;
@@ -160,7 +160,7 @@ export class ClaudeInteractivePtyCarrierService implements AgentService {
    */
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: async generator with cancellation, multiple error paths, and inline polling loop — extracting would worsen readability
   async *invoke(prompt: string, options?: AgentServiceOptions): AsyncIterable<AgentMessage> {
-    const { catId, model, pollIntervalMs, terminalTimeoutMs } = this;
+    const { catId, model, pollIntervalMs } = this;
     const readOnly = options?.toolExecutionPolicy?.mode === 'read_only';
 
     // ─── Env construction (F230 D3 + KD-7: reuse buildClaudeEnvOverrides) ─────
@@ -168,12 +168,15 @@ export class ClaudeInteractivePtyCarrierService implements AgentService {
       [ANTHROPIC_PROFILE_MODE_KEY]: 'subscription',
       ...(options?.callbackEnv ?? {}),
     };
-    const envOverrides = buildClaudeEnvOverrides(callbackEnvWithMode);
+    const envOverrides = buildClaudeEnvOverrides(callbackEnvWithMode, {
+      contextNativeWindowTokens: options?.contextNativeWindowTokens,
+    });
     if (options?.accountEnv) {
       for (const [k, v] of Object.entries(options.accountEnv)) {
         envOverrides[k] = v;
       }
     }
+    applyClaudeTokenAccountEnv(envOverrides, options?.claudeTokenAccount);
     // Hardcoded guard — always unset entrypoint vars (D3 double-safety)
     // These will map to env -u flags in PtyDriver.buildClaudeCommand().
     envOverrides.CLAUDE_CODE_ENTRYPOINT = null;
@@ -192,6 +195,10 @@ export class ClaudeInteractivePtyCarrierService implements AgentService {
       ),
     );
 
+    // The PTY child inherits the process env plus the delta above; MCP ${VAR}
+    // interpolation must validate against that real environment.
+    const childEnv = buildChildEnv(envOverrides, { workingDirectory: options?.workingDirectory ?? this.cwd });
+
     // ─── Model + args ──────────────────────────────────────────────────────────
     const { effectiveModel, useEnvModelOverride } = resolveClaudeModelSelection(options?.callbackEnv, model);
     const extraArgs: string[] = [];
@@ -206,23 +213,21 @@ export class ClaudeInteractivePtyCarrierService implements AgentService {
     extraArgs.push('--effort', effortLevel);
     // --mcp-config + --strict-mcp-config (F230 AC-B3): gated on callbackEnv (no callback = MCP unusable).
     if (!readOnly && options?.callbackEnv && this.mcpServerPath && existsSync(this.mcpServerPath)) {
-      // Write MCP config to temp file (file-based avoids inline JSON shell quoting issues).
-      if (!this.mcpConfigFilePath || !existsSync(this.mcpConfigFilePath)) {
-        const dir = mkdtempSync(join(tmpdir(), 'cat-cafe-pty-mcp-'));
-        this.mcpConfigFilePath = join(dir, 'mcp-config.json');
-        writeFileSync(
-          this.mcpConfigFilePath,
-          JSON.stringify({
-            mcpServers: {
-              'cat-cafe': { command: 'node', args: [this.mcpServerPath] },
-            },
-          }),
-          'utf-8',
-        );
-      }
-      extraArgs.push('--mcp-config', this.mcpConfigFilePath, '--strict-mcp-config');
+      const resolution = await resolveClaudeMcpConfig({
+        callbackEnv: options.callbackEnv,
+        workingDirectory: options.workingDirectory ?? this.cwd,
+        mcpServerPath: this.mcpServerPath,
+        childEnv,
+      });
+      const configPath = writeInvocationMcpConfigFile({ mcpServers: resolution?.servers ?? {} }, options.callbackEnv);
+      extraArgs.push('--mcp-config', configPath, '--strict-mcp-config');
     }
     const cwd = options?.workingDirectory ?? this.cwd;
+    if (options?.claudeTokenAccount)
+      extraArgs.push(
+        '--settings',
+        await composeClaudeTokenSettingsDocument(undefined, cwd, ['user', 'project', 'local']),
+      );
     // R8: use accountEnv.HOME (if set) for transcriptDir derivation instead of API process homedir.
     const effectiveHome = options?.accountEnv?.HOME;
     const transcriptDir = this.transcriptDirOverride ?? ptyTranscriptDir(cwd, effectiveHome);
@@ -239,7 +244,11 @@ export class ClaudeInteractivePtyCarrierService implements AgentService {
     // `--session-id` removed (R10): flag writes ai-title only; real events go to a different UUID. PtyDriver watches via watchForTranscriptFile.
 
     // ─── Image inputs: extract paths, grant --add-dir, append path hints (F230 P2-image-inputs fix) ──
-    const imagePaths = extractImagePaths(options?.contentBlocks, options?.uploadDir);
+    const imagePaths = await extractTrustedImagePaths(
+      options?.contentBlocks,
+      options?.uploadDir,
+      options?.resolveTrustedImagePath,
+    );
     const imageAccessDirs = collectImageAccessDirectories(imagePaths);
     const effectivePrompt = appendLocalImagePathHints(prompt, imagePaths);
     for (const dir of imageAccessDirs) {
@@ -341,7 +350,7 @@ export class ClaudeInteractivePtyCarrierService implements AgentService {
             carrier: 'interactive_pty',
             ...(effectiveModel ? { model: effectiveModel } : {}),
             protocol: 'pty_hooks',
-            reasoningEffort: effortLevel,
+            ...(effortLevel ? { reasoningEffort: effortLevel } : {}),
             ...(readOnly ? { toolExecutionPolicy: 'read_only' as const } : {}),
           }),
           tools: Object.freeze({
@@ -384,7 +393,6 @@ export class ClaudeInteractivePtyCarrierService implements AgentService {
       // ─── Tail hook sidecar (F230 B-hook: replaces transcript tailing) ─────────
       // Sidecar is always fresh per invocation (created empty by setupHookInfrastructure).
       const tailer = new TranscriptTailer(sidecarPath, 0);
-      let lastActivityMs = Date.now();
       let terminal = false;
       let hookSessionId: string | undefined;
       let hookEntrypoint: string | undefined;
@@ -411,8 +419,6 @@ export class ClaudeInteractivePtyCarrierService implements AgentService {
           entries = await tailer.readNew({ includeTrailingPartial: true });
         }
         if (entries.length > 0) {
-          lastActivityMs = Date.now();
-
           // Extract hook session_id and propagate to session_init (R2 P1-3)
           if (!hookSessionId) {
             hookSessionId = extractSessionIdFromHookEntries(entries);
@@ -450,12 +456,7 @@ export class ClaudeInteractivePtyCarrierService implements AgentService {
         if (evalTailer) await ingestEvalEntries(evalTailer);
 
         if (entries.length === 0) {
-          if (Date.now() - lastActivityMs > terminalTimeoutMs) {
-            log.warn({ catId, sessionId, terminalTimeoutMs }, 'hook sidecar silence timeout, treating as done');
-            terminal = true;
-          } else {
-            await sleep(pollIntervalMs);
-          }
+          await sleep(pollIntervalMs);
         }
       }
 

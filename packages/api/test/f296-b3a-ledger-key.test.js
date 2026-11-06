@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 const { presentationLedgerKey, decodePresentationLedgerKey, encodeLedgerFields, decodeLedgerFields } = await import(
-  '../dist/domains/cats/services/session/ledger-key.js'
+  '../dist/domains/cats/services/session/context/ledger-key.js'
 );
 
 const US = '\u001f';
@@ -77,7 +77,7 @@ describe('F296 B3a gate 1: ledger key encoding is injective', () => {
     '12:not-really-twelve',
     ':',
     '::',
-    'pr:zts212653/cat-cafe#3776',
+    'pr:zts212653/clowder-ai#3776',
     'subject:memory:ab:c',
     ' ',
     'emoji-\u{1F43E}-multibyte',

@@ -7,20 +7,46 @@ let encodeProfileSourceRef;
 let requestGenerationMessageSourceRefs;
 let requestGenerationPresentations;
 let resolveRequestGenerationSourceStates;
+let codexActiveWorkContext;
 
 before(async () => {
+  ({ codexActiveWorkContext } = await import(
+    '../dist/domains/cats/services/agents/providers/codex-active-work-context.js'
+  ));
   ({
     encodeMemoryCueSourceRef,
     encodeProfileSourceRef,
     requestGenerationSourceKey,
     resolveRequestGenerationSourceStates,
-  } = await import('../dist/domains/cats/services/session/request-generation-source-policy.js'));
+  } = await import('../dist/domains/cats/services/session/transcript-index/request-generation-source-policy.js'));
   ({ requestGenerationMessageSourceRefs, requestGenerationPresentations } = await import(
     '../dist/domains/cats/services/agents/invocation/invoke-single-cat.js'
   ));
 });
 
 describe('F299 request-generation source policy', () => {
+  it('resolves native-compaction source coordinates through the same message owner policy', async () => {
+    const context = codexActiveWorkContext({
+      threadId: 'thread-1',
+      invocationId: 'inv-1',
+      promptMessageIds: ['source'],
+    });
+    assert.deepEqual(context.sourceRefs, [{ owner: 'message', ref: 'thread-1:source' }]);
+    assert.match(context.body, /"promptMessageIds":\["source"\]/);
+    for (const [state, message] of [
+      ['available', { id: 'source', threadId: 'thread-1', userId: 'owner-1' }],
+      ['deleted', { id: 'source', threadId: 'thread-1', userId: 'owner-1', _tombstone: true }],
+      ['redacted', { id: 'source', threadId: 'thread-1', userId: 'another-owner' }],
+    ]) {
+      const states = await resolveRequestGenerationSourceStates(context.sourceRefs, {
+        userId: 'owner-1',
+        threadId: 'thread-1',
+        invocationId: 'inv-1',
+        messageStore: { getById: async () => message },
+      });
+      assert.equal([...states.values()][0], state);
+    }
+  });
   it('inherits message hard-delete, soft-delete, and owner scope without inventing absence truth', async () => {
     const messages = new Map([
       ['available', { id: 'available', threadId: 'thread-1', userId: 'owner-1' }],
@@ -213,7 +239,6 @@ describe('F299 request-generation source policy', () => {
       injectSystemPrompt: true,
       hasContextHint: true,
       hasStagingPrepend: true,
-      hasRoutingContextProjection: true,
       hasMissionPrefix: true,
     });
 
@@ -223,7 +248,6 @@ describe('F299 request-generation source policy', () => {
       { owner: 'system_prompt', ref: 'registry:cat-cafe-owned' },
       { owner: 'runtime_context', ref: 'context-management-hint:inv-1' },
       { owner: 'system_prompt', ref: 'staging:adr-038' },
-      { owner: 'runtime_context', ref: 'routing-context:inv-1' },
       { owner: 'home_state', ref: 'thread-mission:thread-1' },
       { owner: 'runtime_context', ref: 'transcript-path-hints:thread-1' },
     ]);

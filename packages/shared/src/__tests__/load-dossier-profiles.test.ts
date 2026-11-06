@@ -8,7 +8,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   _resetDossierCache,
@@ -49,8 +48,6 @@ oneLiner: "Fast and flexible"
 l0RosterSummary: "Quick and versatile coding"
 \`\`\`
 `;
-
-const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 
 afterEach(() => {
   _resetDossierCache();
@@ -106,11 +103,34 @@ describe('R2-P2: hasDossierEntry warning scope', () => {
     }
   });
 
-  test('canonical Fable engagement policy survives the typed loader', () => {
-    const policy = loadDossierProfiles(REPO_ROOT).get('fable-5')?.engagementPolicy;
-
-    expect(policy?.defaultMode).toBe('one_shot_calibration');
-    expect(policy?.reentry).toBe('only_for_new_architecture_or_decision_judgment_or_explicit_cvo_request');
+  test('loads an explicit engagement policy from an independent dossier', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dossier-engagement-'));
+    const directory = join(root, 'docs/team');
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      join(directory, 'cat-dossier.md'),
+      MINIMAL_DOSSIER.replace(
+        'oneLiner: "Main architect"',
+        `oneLiner: "Main architect"
+engagementPolicy:
+  quota: "weekly_subscription_scarce"
+  defaultMode: "one_shot_calibration"
+  highValueUses: ["fixture-one", "fixture-two"]
+  routineRepairReturn: "author_then_routine_reviewer_if_needed"
+  reentry: "only_for_new_architecture_or_decision_judgment_or_explicit_cvo_request"`,
+      ),
+    );
+    try {
+      expect(loadDossierProfiles(root).get('opus')?.engagementPolicy).toEqual({
+        quota: 'weekly_subscription_scarce',
+        defaultMode: 'one_shot_calibration',
+        highValueUses: ['fixture-one', 'fixture-two'],
+        routineRepairReturn: 'author_then_routine_reviewer_if_needed',
+        reentry: 'only_for_new_architecture_or_decision_judgment_or_explicit_cvo_request',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test('hydrates identity.pronouns from the structured dossier profile', () => {
@@ -226,3 +246,5 @@ describe('R2-P2: hasDossierEntry warning scope', () => {
     expect(hasDossierEntry('runtime-spark', '/nonexistent/path')).toBe(false);
   });
 });
+
+// The real installation's roster budget is validated by check:source-evidence.

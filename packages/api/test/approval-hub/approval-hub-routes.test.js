@@ -87,7 +87,7 @@ describe('GET /api/approval-hub/pending', () => {
     assert.ok(body.items.every((i) => i.ownerUserId === 'user-1'));
     assert.deepEqual(
       body.manifest.map((entry) => entry.id),
-      ['F128', 'F139', 'F225', 'F193', 'F231', 'F260', 'F266', 'F221', 'F276', 'F292', 'F306'],
+      ['F128', 'F139', 'F225', 'F193', 'F231', 'F260', 'F266', 'F221', 'F321', 'F276', 'F306'],
     );
   });
 
@@ -266,8 +266,8 @@ describe('F246 approval fan-out telemetry and failure policy', () => {
       'F260',
       'F266',
       'F276',
-      'F292',
       'F306',
+      'F321',
     ]);
     const f128 = adapterMeasurements.find((entry) => entry.producerId === 'F128');
     assert.equal(f128.itemCount, 1);
@@ -530,4 +530,30 @@ describe('GET /api/approval-hub/settled', () => {
     const body = JSON.parse(res.body);
     assert.equal(body.count, 1, 'floor(1.5)=1 → at most 1 item returned');
   });
+});
+
+it('reports bounded history preparation as retryable 503 instead of an empty successful history', async (t) => {
+  const { SettledIndexPreparingError } = await import('../../dist/utils/redis-settled-index.js');
+  const { approvalHubRoutes } = await import('../../dist/routes/approval-hub-routes.js');
+  const api = Fastify();
+  t.after(() => api.close());
+  await api.register(approvalHubRoutes, {
+    registry: await createTestApprovalRegistry([
+      {
+        featureId: 'F306',
+        listPending: async () => [],
+        listSettled: async () => {
+          throw new SettledIndexPreparingError();
+        },
+      },
+    ]),
+  });
+  const response = await api.inject({
+    method: 'GET',
+    url: '/api/approval-hub/settled',
+    headers: { 'x-cat-cafe-user': 'user-1' },
+  });
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.json().code, 'APPROVAL_HISTORY_PREPARING');
+  assert.equal(response.json().items, undefined);
 });

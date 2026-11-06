@@ -1,6 +1,7 @@
 'use client';
 
 import type { CliDiagnostics, CliErrorReasonCode } from '@cat-cafe/shared';
+import { codexAccountCheckCopy } from '@cat-cafe/shared';
 import { useState } from 'react';
 import {
   BrainIcon,
@@ -18,6 +19,9 @@ import {
   UnknownReasonIcon,
   WrenchIcon,
 } from './cli-reason-icons';
+import { codexStartupCopy } from './codex-startup.shell-copy';
+import { useShellCopy } from './shell/shell-copy';
+import { useShellLanguage } from './shell/shell-language';
 
 /**
  * F212 Phase B — CLI error diagnostics folded panel.
@@ -84,13 +88,14 @@ const REASON_PALETTE: Record<CliErrorReasonCode, Palette> = {
   // Tier 2 — transient, retry later
   quota_exceeded: { ...PALETTE_TRANSIENT, Icon: GaugeIcon },
   network_error: { ...PALETTE_TRANSIENT, Icon: CloudOffIcon },
+  upstream_service_error: { ...PALETTE_TRANSIENT, Icon: CloudOffIcon },
+  stream_disconnected: { ...PALETTE_TRANSIENT, Icon: CloudOffIcon },
   // F212 Phase E (cloud codex P1 fix per @co-creator organic 2026-05-29): Anthropic server-side
   // temporary throttling — NOT user quota. Same transient tier (retry 30-60s) but distinct
   // hourglass icon to differentiate from gauge (quota) at-a-glance.
   server_overloaded: { ...PALETTE_TRANSIENT, Icon: HourglassIcon },
   cli_response_timeout: { ...PALETTE_TRANSIENT, Icon: HourglassIcon },
   cli_stall_timeout: { ...PALETTE_TRANSIENT, Icon: HourglassIcon },
-  active_writer_recovery: { ...PALETTE_TRANSIENT, Icon: HourglassIcon },
   // Tier 3 — system / environment
   spawn_failed: { ...PALETTE_SYSTEM, Icon: TerminalIcon },
   missing_rollout: { ...PALETTE_SYSTEM, Icon: FileXIcon },
@@ -187,6 +192,8 @@ function sanitizePathLeaks(s: string): string {
 }
 
 interface CliDiagnosticsPanelProps {
+  /** A failed reply already owns its failure text; append only guidance and detail controls. */
+  detailsOnly?: boolean;
   /** The bubble's display content (`Error: ...`). Falls back if publicSummary missing. */
   errorMessage: string;
   diagnostics: CliDiagnostics;
@@ -199,8 +206,16 @@ interface CliDiagnosticsPanelProps {
   dedupCount?: number;
 }
 
-export function CliDiagnosticsPanel({ errorMessage, diagnostics, dedupCount }: CliDiagnosticsPanelProps) {
+export function CliDiagnosticsPanel({
+  errorMessage,
+  diagnostics,
+  dedupCount,
+  detailsOnly = false,
+}: CliDiagnosticsPanelProps) {
   const [expanded, setExpanded] = useState(false);
+  const t = useShellCopy(codexStartupCopy);
+  const language = useShellLanguage();
+  const copy = codexAccountCheckCopy(diagnostics, language);
 
   // 云端 codex P2 (2026-05-27): membership check before indexing — stale/newer/malformed
   // reasonCode strings must fall through to UNKNOWN_PALETTE rather than crash on destructure.
@@ -208,7 +223,7 @@ export function CliDiagnosticsPanel({ errorMessage, diagnostics, dedupCount }: C
   const palette = knownReason ? REASON_PALETTE[knownReason] : UNKNOWN_PALETTE;
   const { Icon, bg, border, accent, text } = palette;
   // publicSummary is always present per Phase A contract; keep errorMessage as a safety net.
-  const summary = diagnostics.publicSummary || errorMessage;
+  const summary = copy.summary || errorMessage;
   // KD-1 white-list admission (砚砚 review P1-2 / 2026-05-27 → cloud codex P2 / 2026-05-29):
   // disclosure requires (a) non-empty safeExcerpt AND (b) excerptSource in KNOWN_EXCERPT_SOURCES.
   // Migrated from reasonCode-only gate to excerptSource-based for AC-D3 path (unknown reasonCode
@@ -225,40 +240,50 @@ export function CliDiagnosticsPanel({ errorMessage, diagnostics, dedupCount }: C
   const hasExitCode = Object.prototype.hasOwnProperty.call(diagnostics.debugRef, 'exitCode');
 
   return (
-    <div data-testid="cli-diagnostics" className="flex flex-col gap-2.5">
+    <div
+      data-testid="cli-diagnostics"
+      className={`flex flex-col gap-2.5${detailsOnly ? ' [--cli-diag-meta:currentColor] [--cli-diag-hint:currentColor]' : ''}`}
+    >
       {/* Error banner */}
-      <div
-        data-testid="cli-diagnostics-banner"
-        className="flex items-start gap-2.5 rounded-xl"
-        style={{ backgroundColor: bg, border: `1px solid ${border}`, padding: '10px 14px' }}
-      >
-        <Icon
-          className="w-4 h-4 flex-shrink-0 mt-0.5"
-          style={{ color: accent }}
-          ariaLabel={knownReason ?? 'cli-error-unknown'}
-        />
-        <div className="flex flex-col gap-1 min-w-0">
-          <span className="text-sm font-semibold flex items-center gap-2 flex-wrap" style={{ color: text }}>
-            <span>{summary}</span>
-            {dedupCount !== undefined && dedupCount > 1 && (
-              <span
-                data-testid="cli-diagnostics-dedup-badge"
-                role="img"
-                aria-label={`Same error occurred ${dedupCount} times`}
-                className="text-xs font-normal px-1.5 py-0.5 rounded"
-                style={{ backgroundColor: accent, color: bg }}
-              >
-                ×{dedupCount}
+      {!detailsOnly && (
+        <div
+          data-testid="cli-diagnostics-banner"
+          className="flex items-start gap-2.5 rounded-xl"
+          style={{ backgroundColor: bg, border: `1px solid ${border}`, padding: '10px 14px' }}
+        >
+          <Icon
+            className="w-4 h-4 flex-shrink-0 mt-0.5"
+            style={{ color: accent }}
+            ariaLabel={knownReason ?? 'cli-error-unknown'}
+          />
+          <div className="flex flex-col gap-1 min-w-0">
+            <span className="text-sm font-semibold flex items-center gap-2 flex-wrap" style={{ color: text }}>
+              <span>{summary}</span>
+              {dedupCount !== undefined && dedupCount > 1 && (
+                <span
+                  data-testid="cli-diagnostics-dedup-badge"
+                  role="img"
+                  aria-label={`Same error occurred ${dedupCount} times`}
+                  className="text-xs font-normal px-1.5 py-0.5 rounded"
+                  style={{ backgroundColor: accent, color: bg }}
+                >
+                  ×{dedupCount}
+                </span>
+              )}
+            </span>
+            {copy.hint && (
+              <span className="text-xs" style={{ color: 'var(--cli-diag-hint)', lineHeight: 1.5 }}>
+                {copy.hint}
               </span>
             )}
-          </span>
-          {diagnostics.publicHint && (
-            <span className="text-xs" style={{ color: 'var(--cli-diag-hint)', lineHeight: 1.5 }}>
-              {diagnostics.publicHint}
-            </span>
-          )}
+          </div>
         </div>
-      </div>
+      )}
+      {detailsOnly && copy.hint ? (
+        <p className="m-0 text-xs" style={{ color: 'var(--cli-diag-hint)', lineHeight: 1.5 }}>
+          {copy.hint}
+        </p>
+      ) : null}
 
       {/* Excerpt toggle — only shown when Phase A populated safeExcerpt (reasonCode whitelisted) */}
       {hasExcerpt && (
@@ -266,6 +291,7 @@ export function CliDiagnosticsPanel({ errorMessage, diagnostics, dedupCount }: C
           <button
             type="button"
             data-testid="cli-diagnostics-toggle"
+            aria-expanded={expanded}
             onClick={() => setExpanded(!expanded)}
             className="flex items-center gap-1.5 cursor-pointer bg-transparent border-none p-0 self-start"
           >
@@ -274,10 +300,10 @@ export function CliDiagnosticsPanel({ errorMessage, diagnostics, dedupCount }: C
               style={{ color: 'var(--cli-diag-meta)', transform: expanded ? 'rotate(180deg)' : undefined }}
             />
             <span className="text-xs font-semibold" style={{ color: 'var(--cli-diag-meta)' }}>
-              查看详细错误
+              {t.details}
             </span>
           </button>
-          {expanded && (
+          {expanded && hasExcerpt && (
             <pre
               data-testid="cli-diagnostics-excerpt"
               className="rounded-lg overflow-x-auto whitespace-pre-wrap break-words text-xs font-mono m-0"
@@ -294,41 +320,92 @@ export function CliDiagnosticsPanel({ errorMessage, diagnostics, dedupCount }: C
         </>
       )}
 
-      {/* debugRef strip — always shown (no secrets, safe to expose) */}
-      <div
-        data-testid="cli-diagnostics-debug-ref"
-        className="flex flex-wrap gap-x-3 gap-y-1 text-xs"
-        style={{ color: 'var(--cli-diag-meta)' }}
-      >
-        <span>
-          <span className="font-medium">command:</span>{' '}
-          {truncateMiddle(sanitizePathLeaks(diagnostics.debugRef.command), 40)}
-        </span>
-        {hasExitCode && (
-          <span>
-            <span className="font-medium">exit:</span>{' '}
-            {diagnostics.debugRef.exitCode == null ? 'null' : diagnostics.debugRef.exitCode}
-          </span>
-        )}
-        {diagnostics.debugRef.signal != null && (
-          <span>
-            <span className="font-medium">signal:</span> {String(diagnostics.debugRef.signal)}
-          </span>
-        )}
-        {diagnostics.debugRef.invocationId && (
-          <span>
-            <span className="font-medium">invocationId:</span> {truncateMiddle(diagnostics.debugRef.invocationId, 32)}
-          </span>
-        )}
-        {DEBUG_REF_CONTEXT_FIELDS.map(([key, label]) => {
-          const value = diagnostics.debugRef[key];
-          return value ? (
-            <span key={key}>
-              <span className="font-medium">{label}:</span> {String(value)}
+      {/* Standalone error metadata */}
+      {(!diagnostics.accountCheck || expanded) && (
+        <div
+          data-testid="cli-diagnostics-debug-ref"
+          className="flex flex-wrap gap-x-3 gap-y-1 text-xs"
+          style={{ color: 'var(--cli-diag-meta)' }}
+        >
+          {diagnostics.accountCheck && (
+            <span className="basis-full break-words">
+              {t.step}
+              <br />
+              {t.attempts(diagnostics.accountCheck.attempt, Math.round(diagnostics.accountCheck.elapsedMs / 1_000))}
+              <br />
+              {diagnostics.accountCheck.evidenceAttempt !== undefined &&
+              diagnostics.accountCheck.evidenceAttempt !== diagnostics.accountCheck.attempt ? (
+                <>
+                  {t.evidenceAttempt(diagnostics.accountCheck.evidenceAttempt)}
+                  <br />
+                </>
+              ) : null}
+              {diagnostics.accountCheck.rpcMethod && (
+                <>
+                  RPC: {diagnostics.accountCheck.rpcMethod}
+                  <br />
+                </>
+              )}
+              {diagnostics.accountCheck.rpcCode !== undefined && (
+                <>
+                  JSON-RPC code: {diagnostics.accountCheck.rpcCode}
+                  <br />
+                </>
+              )}
+              {diagnostics.accountCheck.httpStatus !== undefined && (
+                <>
+                  HTTP status: {diagnostics.accountCheck.httpStatus}
+                  <br />
+                </>
+              )}
+              {diagnostics.accountCheck.causeCode && (
+                <>
+                  Cause: {diagnostics.accountCheck.causeCode}
+                  <br />
+                </>
+              )}
+              {!diagnostics.accountCheck.causeProvided && t.causeMissing}
             </span>
-          ) : null;
-        })}
-      </div>
+          )}
+          <span>
+            <span className="font-medium">command:</span>{' '}
+            {truncateMiddle(sanitizePathLeaks(diagnostics.debugRef.command), 40)}
+          </span>
+          {hasExitCode && (
+            <span>
+              <span className="font-medium">exit:</span>{' '}
+              {diagnostics.debugRef.exitCode == null ? 'null' : diagnostics.debugRef.exitCode}
+            </span>
+          )}
+          {diagnostics.debugRef.signal != null && (
+            <span>
+              <span className="font-medium">signal:</span> {String(diagnostics.debugRef.signal)}
+            </span>
+          )}
+          {diagnostics.debugRef.invocationId && (
+            <span className="break-all" title={diagnostics.debugRef.invocationId}>
+              <span className="font-medium">invocationId:</span>{' '}
+              {detailsOnly ? diagnostics.debugRef.invocationId : truncateMiddle(diagnostics.debugRef.invocationId, 32)}
+            </span>
+          )}
+          {diagnostics.debugRef.upstreamRequestId &&
+            /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+              diagnostics.debugRef.upstreamRequestId,
+            ) && (
+              <span className="break-all">
+                <span className="font-medium">request ID:</span> {diagnostics.debugRef.upstreamRequestId}
+              </span>
+            )}
+          {DEBUG_REF_CONTEXT_FIELDS.map(([key, label]) => {
+            const value = diagnostics.debugRef[key];
+            return value ? (
+              <span key={key}>
+                <span className="font-medium">{label}:</span> {String(value)}
+              </span>
+            ) : null;
+          })}
+        </div>
+      )}
     </div>
   );
 }

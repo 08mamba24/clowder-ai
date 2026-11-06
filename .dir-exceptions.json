@@ -1,116 +1,179 @@
 {
   "exceptions": [
     {
+      "path": "packages/api/src/domains/cats/services/agents/providers/acp",
+      "owner": "dsh-v41-flash",
+      "reason": "2026-10-31 fork/upstream integration: upstream 51838b4b adds four ACP session modules while the fork keeps dsh-acp-bootstrap and dsh-acp-overlay. Either side alone stays at 24 files, but the union reaches 26. Keep both reviewed module boundaries intact for this merge; reassess an acp/dsh subdirectory split with its import direction before expiry rather than moving one authority-sensitive adapter only to cut the count.",
+      "expiresAt": "2026-11-30",
+      "ticket": "F317 / fork-merge upstream 51838b4b / clowder-ai#62"
+    },
+    {
+      "path": "packages/api/src/domains/collaborative-content/artifact-review",
+      "owner": "codex-astra",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 26 .ts files. Original: 2026-10-21 daily sync: reviewed #5799 adds response-judgment and response-judgment-return, taking this directory from 24 to 26 files. They share the review reducer, return intent, sealed audience and owner revision checks. Keep those reviewed boundaries intact for this export; reassess a response/return subgroup with its store imports before expiry. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
+      "ticket": "F326 / cat-cafe#5799 / clowder-ai#1649"
+    },
+    {
+      "path": "packages/api/src/domains/workspace",
+      "owner": "codex-astra",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 36 .ts files. Original: 2026-10-21 daily sync: reviewed #5799 adds workspace-video-snapshot, taking this directory from 24 to 25 files. The request-scoped immutable copy shares the existing workspace source revision, stream lifetime and security errors. Reassess the content-source/video snapshot subgroup together before expiry rather than move one authority-sensitive adapter only to reduce this count. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
+      "ticket": "F063/F326 / cat-cafe#5799 / clowder-ai#1649"
+    },
+    {
+      "path": "packages/api/src/domains/collaborative-content/collective-artifact",
+      "owner": "codex61-sol",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 36 .ts files. Original: 2026-10-18 W4 source fix-forward: #5670 introduced 28 files for shared Markdown, retained media and custody transfer. Keep the independently reviewed owner/receipt boundaries stable during Alpha acceptance; reassess Markdown, media and custody subdirectories together with their import directions before expiry. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
+      "ticket": "F290 W4 / cat-cafe#5670 / clowder-ai#1614"
+    },
+    {
+      "path": "packages/api/src/domains/collaborative-content/modification",
+      "owner": "codex61-sol",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 28 .ts files. Original: 2026-10-18 W4 source fix-forward: #5670 grew this directory from 23 to 27 files with collective acceptance, custody snapshots and resolution. These adapters share the existing modification journal and settlement lifecycle; reassess a collective adapter subgroup without splitting effect/receipt recovery across owners before expiry. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
+      "ticket": "F290 W4 / cat-cafe#5670 / clowder-ai#1614"
+    },
+    {
+      "path": "packages/api/src/domains/collaborative-content/workspace-review",
+      "owner": "codex61-sol",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 27 .ts files. Original: 2026-10-18 W4 source fix-forward: #5670 grew this directory from 24 to 26 files with the two collective custody adapters. Preserve the reviewed public/private review-source boundary during acceptance; reassess custody and source-adapter grouping with the existing composition root before expiry. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
+      "ticket": "F290 W4 / cat-cafe#5670 / clowder-ai#1614"
+    },
+    {
+      "path": "packages/api/src/domains/video-studio/content-owner",
+      "owner": "codex61-sol",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 34 .ts files. Original: 2026-10-18 W4 source fix-forward: #5670 grew this directory from 20 to 25 files with collective scope, snapshot, custody fence, validation and errors. Keep owner effect/receipt and private/public isolation imports stable; #5712 concurrently changes this owner. Reassess collective custody and publication subgroups with the content owner before expiry. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
+      "ticket": "F290 W4 / cat-cafe#5670 / clowder-ai#1614"
+    },
+    {
+      "path": "packages/api/src/domains/concierge/live",
+      "owner": "codex-astra",
+      "reason": "2026-10-28 daily sync reassessment: 26 TypeScript files; live-call state, transcript projection and observation readers remain coupled through the current CompanionHostBridge and LiveCompanionCall. Keep these reviewed owner boundaries together for this repair; reassess the corresponding reader/adapter groups with their import graph before the bounded renewal expires.",
+      "expiresAt": "2026-11-10",
+      "ticket": "F317 / clowder-ai#1589 / clowder-ai#1731"
+    },
+    {
+      "path": "packages/api/src/domains/concierge/live/host",
+      "owner": "codex-astra",
+      "reason": "2026-10-28 daily sync reassessment: 31 TypeScript files; conversation readers, late-result returns and page-action adapters share the current Host lease and recovery binding. Keep these reviewed owner boundaries together for this repair; reassess the corresponding reader/adapter groups with their import graph before the bounded renewal expires.",
+      "expiresAt": "2026-11-10",
+      "ticket": "F317 / clowder-ai#1589 / clowder-ai#1731"
+    },
+    {
+      "path": "packages/api/src/domains/growing",
+      "owner": "codex-astra",
+      "reason": "2026-10-28 daily sync reassessment: 33 TypeScript files; Task execution evidence, human terminal receipts and artifact return adapters share EntrustedWork lifecycle and custody projections. Keep these reviewed owner boundaries together for this repair; reassess the corresponding reader/adapter groups with their import graph before the bounded renewal expires.",
+      "expiresAt": "2026-11-10",
+      "ticket": "F310 / clowder-ai#1589 / clowder-ai#1731"
+    },
+    {
       "path": "packages/api/src/domains/cats/services/agents/routing",
       "owner": "opus-48",
-      "reason": "2026-09-06 baseline recount: 33 files. Agent routing + artifact tracking remain one unsplit agents subdomain; F23 Phase 2 owns the boundary split.",
-      "expiresAt": "2026-10-31",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 53 .ts files. Original: 2026-08-31 renewal (F23 gate option b — freshness/ real split in same PR). 33 files. Agent routing + artifact tracking remain one unsplit agents subdomain. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
       "ticket": "F23-followup"
     },
     {
       "path": "packages/api/src/routes",
       "owner": "opus",
-      "reason": "2026-09-06 baseline recount: 285 files. Routes need a domain/HTTP-boundary split rather than file shuffling; F23 Phase 2 owns the split plan.",
-      "expiresAt": "2026-10-31",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 536 .ts files. Original: 2026-08-31 renewal (F23 gate option b). 305 files. Routes need a domain/HTTP-boundary split. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
       "ticket": "F23-followup"
     },
     {
       "path": "packages/api/src/config",
       "owner": "opus",
-      "reason": "2026-09-06 baseline recount: 49 files. Config needs a domain audit before choosing stable subdirectories; F23 Phase 2 owns that split.",
-      "expiresAt": "2026-10-31",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 105 .ts files. Original: 2026-08-31 renewal (F23 gate option b). 47 files. Config needs a domain audit before choosing stable subdirectories. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
       "ticket": "F23-followup"
     },
     {
       "path": "packages/api/src/domains/cats/services/agents/invocation",
       "owner": "opus",
-      "reason": "2026-09-06 baseline recount: 66 files. Invocation should split by queue/registry/tracker/progress/reconciliation/delivery/auth; F23 Phase 2 owns the split.",
-      "expiresAt": "2026-10-31",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 93 .ts files. Original: 2026-08-31 renewal (F23 gate option b). 69 files. Invocation should split by queue/registry/tracker/progress/reconciliation/delivery/auth. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
       "ticket": "F23-followup"
     },
     {
       "path": "packages/api/src/domains/cats/services/agents/providers",
       "owner": "opus",
-      "reason": "2026-09-06 baseline recount: 71 files. Providers should split by agents/event transforms/carriers/image/config; F23 Phase 2 owns the split.",
-      "expiresAt": "2026-10-31",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 140 .ts files. Original: 2026-08-31 renewal (F23 gate option b). 81 files. Providers should split by agents/event-transforms/carriers/image/config. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
       "ticket": "F23-followup"
     },
     {
       "path": "packages/api/src/domains/cats/services/stores/ports",
       "owner": "codex",
-      "reason": "2026-09-06 baseline recount: 41 files. Store ports remain centralized and need proposal/profile/session subdomains; F231/F23 follow-up owns the split.",
-      "expiresAt": "2026-10-31",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 56 .ts files. Original: 2026-08-31 renewal (F23 gate option b). 38 files. Store ports need proposal/profile/session subdomains. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
       "ticket": "F231/F23-followup"
     },
     {
       "path": "packages/api/src/domains/memory",
       "owner": "gpt52",
-      "reason": "2026-09-06 baseline recount: 145 files. Memory spans indexing/query/governance/library and needs boundary-led subdirectories; F102 owns the split.",
-      "expiresAt": "2026-10-31",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 221 .ts files. Original: 2026-08-31 renewal. 146 files. Memory spans indexing/query/governance/library; F102 owns the split. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
       "ticket": "F102"
     },
     {
       "path": "packages/api/src/utils",
       "owner": "codex",
-      "reason": "2026-09-06 baseline recount: 48 files. Utils should split by cli/process/media/paths/network/parsing/skills; F23 Phase 2 owns the split.",
-      "expiresAt": "2026-10-31",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 75 .ts files. Original: 2026-08-31 renewal (F23 gate option b). 49 files. Utils should split by cli/process/media/paths/network/parsing/skills. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
       "ticket": "F23-followup"
     },
     {
       "path": "packages/api/src/infrastructure/harness-eval",
       "owner": "opus",
-      "reason": "2026-09-06 baseline recount: 40 files. Harness eval should split by capability-wakeup/a2a/domain/hub; F192 owns the known debt.",
-      "expiresAt": "2026-10-31",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 68 .ts files. Original: 2026-08-31 renewal. 44 files. Harness eval should split by capability-wakeup/a2a/domain/hub; F192 owns the debt. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
+      "ticket": "F192"
+    },
+    {
+      "path": "packages/api/src/infrastructure/harness-eval/publish-verdict",
+      "owner": "opus",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 29 .ts files. Original: 2026-09-20 R10 extraction: validate-publish-input.ts + verdict-source-types.ts split from types.ts/publish-verdict.ts for 350-line cap. 27 files. Reabsorb when adapter files consolidate. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
       "ticket": "F192"
     },
     {
       "path": "packages/api/src/domains/cats/services/stores/redis",
       "owner": "opus",
-      "reason": "2026-09-06 baseline recount: 53 files. Redis implementations should split with their proposal/community/session domains; F23 Phase 2 owns the split.",
-      "expiresAt": "2026-10-31",
-      "ticket": "F23-followup"
-    },
-    {
-      "path": "packages/api/src/domains/cats/services/freshness",
-      "owner": "opus",
-      "reason": "2026-09-06 baseline recount: 31 files. Freshness needs glass-box promotion or closure/store/telemetry subdomains; F23 Phase 2 owns the split.",
-      "expiresAt": "2026-09-30",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 81 .ts files. Original: 2026-08-31 renewal (F23 gate option b). 50 files. Redis implementations should split with their proposal/community/session domains. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
       "ticket": "F23-followup"
     },
     {
       "path": "packages/api/src/domains/ball-custody",
       "owner": "codex-sol",
-      "reason": "2026-09-06 baseline recount: 70 files. Ball custody mixes action-successor, observability, and typed wait termination; F167/F233/F280 own a boundary-led split.",
-      "expiresAt": "2026-10-31",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 126 .ts files. Original: 2026-08-31 renewal. 79 files. Ball custody mixes action-successor, observability, typed wait termination; F167/F233/F280 own split. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
       "ticket": "F167/F233/F280"
     },
     {
       "path": "packages/api/src/domains/memory/people",
       "owner": "codex-sol",
-      "reason": "2026-09-06 baseline recount: 51 files. People memory mixes identity, proposal lifecycle, disposition proofs, and Redis persistence; F276/F281/F282 own a boundary-led split.",
-      "expiresAt": "2026-10-31",
+      "reason": "[F023 (b) route] This PR performs a real split (capability-evolution/adapters -> microduck-control/ + microduck-show/, top-level 25->13) satisfying the same-PR-split gate; remaining exceptions are measured renewals. Measured 2026-11-04: 70 .ts files. Original: 2026-08-31 renewal. 51 files. People memory mixes identity, proposal lifecycle, disposition proofs, Redis persistence; F276/F281/F282 own split. Retention basis is current coupling and this integration round's boundary (upstream sync PR, not a refactor PR): splitting these directories is mechanical file movement plus import rewrites whose blast radius belongs in a dedicated refactor change with its own review, per the F219 coordination ruling (F023 KD-4, 2026-06-02: all five directories are splittable without waiting; historical slow-line waiting text is superseded).",
+      "expiresAt": "2026-11-30",
       "ticket": "F276/F281/F282"
     },
     {
-      "path": "packages/api/src/domains/cats/services/session",
-      "owner": "codex-sol",
-      "reason": "2026-08-22 full-sync census: 30 files. Session lifecycle now mixes transcript IO, compaction/presentation projection, trajectory resolution, and handoff management; F296/F299 own a boundary-led split. 2026-09-16 renewal: expiry turned Lint/dir-size red on every branch (blocked PR #27); re-armed to the 2026-09-30 batch deadline.",
-      "expiresAt": "2026-09-30",
-      "ticket": "F296/F299"
+      "path": "packages/api/src/config/capabilities",
+      "owner": "codex-astra",
+      "reason": "2026-10-28 daily sync audit: 26 TypeScript files; native MCP binding, managed Codex migration and per-project plugin exposure share the invocation capability root and launch owner. Keep the independently reviewed source boundaries for this cut and reassess the launch/migration or evidence/reader grouping with its callers before expiry.",
+      "expiresAt": "2026-11-10",
+      "ticket": "F333/F327 / cat-cafe#6237/#6252 / clowder-ai#1731"
     },
     {
-      "path": "packages/api/src/domains/cats/services/stores/redis-keys",
-      "owner": "codex-sol",
-      "reason": "2026-08-22 full-sync census: 25 files. Root Redis key families need session/presentation/registry grouping while preserving existing community and proposal subdomains; F296/F299 own the split. 2026-09-16 renewal: expiry turned Lint/dir-size red on every branch (blocked PR #27); re-armed to the 2026-09-30 batch deadline.",
-      "expiresAt": "2026-09-30",
-      "ticket": "F296/F299"
-    },
-    {
-      "path": "packages/api/src/domains/auto-dream",
-      "owner": "codex-sol",
-      "reason": "2026-08-31 renewal. 35 files. Auto Dream mixes cat-life settings, seed/store, run lifecycle, proactive relationship; F255/F272 own split.",
-      "expiresAt": "2026-10-31",
-      "ticket": "F255/F272"
+      "path": "packages/api/src/infrastructure/harness-eval/paw-feel-disposition",
+      "owner": "codex-astra",
+      "reason": "2026-10-28 daily sync audit: 25 TypeScript files; Task-native handoff evidence and the bounded inbox scanner share the existing disposition receipt and source projection; the directory already has focused subgroups. Keep the independently reviewed source boundaries for this cut and reassess the launch/migration or evidence/reader grouping with its callers before expiry.",
+      "expiresAt": "2026-11-10",
+      "ticket": "F167/F267/F278 / cat-cafe#6232/#5974 / clowder-ai#1731"
     }
   ]
 }

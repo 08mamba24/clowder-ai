@@ -8,6 +8,7 @@ import type { ThreadArtifactDTO } from '@cat-cafe/shared';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { openFileMenu } from '@/test-utils/open-file-menu';
 
 const { contentState } = vi.hoisted(() => ({
   contentState: {
@@ -15,7 +16,10 @@ const { contentState } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('@/utils/api-client', () => ({ API_URL: 'http://test.local' }));
+vi.mock('@/utils/api-client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/utils/api-client')>()),
+  API_URL: 'http://test.local',
+}));
 vi.mock('@/hooks/useArtifactContent', () => ({ useArtifactContent: () => contentState.value }));
 vi.mock('../MarkdownContent', () => ({
   MarkdownContent: ({ content, basePath, worktreeId }: { content: string; basePath?: string; worktreeId?: string }) =>
@@ -31,10 +35,19 @@ vi.mock('../workspace/CodeViewer', () => ({
 
 import { ArtifactDetailView } from '../artifacts/ArtifactDetailView';
 
+const mountedRoots: Root[] = [];
+afterEach(() => {
+  act(() => {
+    for (const root of mountedRoots.splice(0)) root.unmount();
+  });
+  document.body.innerHTML = '';
+});
+
 function renderDetail(artifact: ThreadArtifactDTO, worktreeId: string | null = 'wt1') {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root: Root = createRoot(container);
+  mountedRoots.push(root);
   act(() => {
     root.render(
       createElement(ArtifactDetailView, {
@@ -57,9 +70,6 @@ describe('F232 AC-A7 text view 看正文', () => {
   });
   beforeEach(() => {
     contentState.value = { content: null, path: '', isMarkdown: false, loading: false, error: false };
-  });
-  afterEach(() => {
-    document.body.innerHTML = '';
   });
 
   it('markdown 产物（backlog）→ MarkdownContent 渲染正文', () => {
@@ -170,11 +180,8 @@ describe('F232 P1-1 download view — binary 产物不空白', () => {
   afterAll(() => {
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   });
-  afterEach(() => {
-    document.body.innerHTML = '';
-  });
 
-  it('uploads binary（有 url）→ 下载/打开链接（不空白）', () => {
+  it('uploads binary（有 url）→ 共享菜单下载/打开（不空白）', async () => {
     const { container } = renderDetail(
       {
         type: 'file',
@@ -186,21 +193,23 @@ describe('F232 P1-1 download view — binary 产物不空白', () => {
       },
       'wt1',
     );
+    await openFileMenu(container);
     const dl = [...container.querySelectorAll('a')].find((a) =>
       a.getAttribute('href')?.includes('/uploads/report.pdf'),
     );
     expect(dl, 'uploads binary 应有下载链接，不空白').toBeTruthy();
   });
 
-  it('repo binary（只有 ref 无 url）→ fallback（不空白，不走 workspace raw 避免 400）', () => {
+  it('repo binary with a real workspace source retains file information and common file actions', async () => {
     const { container } = renderDetail(
       { type: 'file', name: 'report.pdf', ref: 'docs/report.pdf', createdAt: 1, catId: null, sourceMessageId: 'msg-1' },
       'wt1',
     );
+    await openFileMenu(container);
     const raw = [...container.querySelectorAll('a')].find((a) =>
-      a.getAttribute('href')?.includes('/api/workspace/file/raw'),
+      a.getAttribute('href')?.includes('/api/workspace/file/download'),
     );
-    expect(raw, 'repo binary 不应走 workspace raw（非媒体 400）').toBeFalsy();
-    expect(container.textContent, 'repo binary 应降级 fallback 不空白').toMatch(/跳回原消息|无内容源|无法/);
+    expect(raw, 'the authorized byte download supports non-media as an attachment').toBeTruthy();
+    expect(container.textContent).toContain('二进制文件');
   });
 });

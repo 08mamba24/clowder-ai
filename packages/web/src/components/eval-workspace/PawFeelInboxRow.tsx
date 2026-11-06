@@ -1,31 +1,28 @@
 'use client';
 
 import type { PawFeelInboxItem } from '@cat-cafe/shared';
+import { pawFeelCopy, usePawFeelCopy, usePawFeelLanguage } from '../paw-feel/paw-feel.shell-copy';
+import { pawFeelDutyDetail } from '../paw-feel/paw-feel-duty-presentation';
+import { pawFeelIssueDetail, pawFeelIssueStatus } from '../paw-feel/paw-feel-issue-presentation';
 
-const RESPONSIBILITY_LABELS: Record<PawFeelInboxItem['responsibility']['state'], string> = {
-  unreviewed: 'unreviewed · 尚无业务出口',
-  bound_in_repair: 'bound-in-repair · 修复责任已绑定',
-  signature_waiting: 'signature-waiting · 等待独立签署',
-  blocked: 'blocked · 有结构化阻塞',
-  terminal: 'terminal · 已终结',
-};
-
-function responsibilityLabel(item: PawFeelInboxItem): string {
-  const label = RESPONSIBILITY_LABELS[item.responsibility.state];
-  return item.responsibility.validExit ? label : `${label} · 尚未形成有效出口`;
+function responsibilityLabel(item: PawFeelInboxItem, language: 'zh' | 'en'): string {
+  const t = pawFeelCopy[language];
+  const label = t.responsibility[item.responsibility.state];
+  return item.responsibility.validExit ? label : `${label} · ${t.noExit}`;
 }
 
-function formatAge(ageMs: number): string {
+function formatAge(ageMs: number, language: 'zh' | 'en'): string {
+  const t = pawFeelCopy[language];
   const hours = Math.floor(ageMs / 3_600_000);
-  if (hours < 1) return '不到 1 小时';
-  if (hours < 48) return `${hours} 小时`;
-  return `${Math.floor(hours / 24)} 天`;
+  if (hours < 1) return t.lessHour;
+  if (hours < 48) return `${hours} ${t.hours}`;
+  return `${Math.floor(hours / 24)} ${t.days}`;
 }
 
-function formatTimestamp(value: string): string {
+function formatTimestamp(value: string, language: 'zh' | 'en'): string {
   const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return '时间不可读';
-  return new Intl.DateTimeFormat('zh-CN', {
+  if (!Number.isFinite(timestamp)) return pawFeelCopy[language].unreadableTime;
+  return new Intl.DateTimeFormat(language === 'en' ? 'en-US' : 'zh-CN', {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -33,49 +30,21 @@ function formatTimestamp(value: string): string {
   }).format(timestamp);
 }
 
-function dispositionDetail(item: PawFeelInboxItem): string | undefined {
-  const { disposition } = item;
-  const { responsibility } = item;
-  if (responsibility.exitKind === 'pending_proposal') {
-    return `等待 durable proposal ${responsibility.proposalId ?? 'unavailable'} 获批`;
+function rowTone(item: PawFeelInboxItem, issueOverdue: boolean): string {
+  if (item.overdue || issueOverdue) return 'border-conn-red-ring bg-conn-red-bg text-conn-red-text';
+  if (!item.responsibility.validExit || item.issue.resolution === 'open') {
+    return 'border-conn-amber-ring bg-conn-amber-bg text-conn-amber-text';
   }
-  if (responsibility.exitKind === 'explicit_blocker') {
-    return `阻塞 ${responsibility.blocker?.code ?? 'unknown'} · ${responsibility.blocker?.ref ?? 'unavailable'}`;
-  }
-  if (responsibility.exitKind === 'signature_request') {
-    return `排除报告猫 @${responsibility.signerExclusionCatId ?? 'unknown'} 自签${
-      responsibility.preferredSignerCatId ? ` · 首选 @${responsibility.preferredSignerCatId}` : ''
-    }；其他独立签署猫可从此请求恢复`;
-  }
-  if (disposition.state === 'routed') {
-    const target = disposition.targetThreadId ?? disposition.proposalId ?? '目标责任面';
-    return `已移交至 ${target}，不代表已经修复`;
-  }
-  if (disposition.state === 'route_pending') {
-    return disposition.targetThreadId
-      ? `等待 ${disposition.targetThreadId} 接单`
-      : `F128 proposal ${disposition.proposalId ?? 'unavailable'} 当前不是 pending，需重新路由或显式阻塞`;
-  }
-  if (disposition.state === 'duplicate' && disposition.duplicateOf) {
-    return `重复于 ${disposition.duplicateOf}`;
-  }
-  if (disposition.state === 'fix') {
-    const binding = `由 @${disposition.ownerCatId ?? 'unknown'} 负责 · 任务 ${
-      disposition.taskId ?? 'unavailable'
-    } · F167 lease ${disposition.actionLeaseRef?.leaseId ?? 'unavailable'}`;
-    return item.responsibility.validExit ? binding : `${binding} · 当前 active lease 复验失败`;
-  }
-  if (disposition.reasonCode) return `理由：${disposition.reasonCode}`;
-  return undefined;
+  return 'border-cafe bg-cafe-surface text-cafe-secondary';
 }
 
 export function PawFeelInboxRow({ item }: { item: PawFeelInboxItem }) {
-  const detail = dispositionDetail(item);
-  const stateTone = item.overdue
-    ? 'border-conn-red-ring bg-conn-red-bg text-conn-red-text'
-    : !item.responsibility.validExit
-      ? 'border-conn-amber-ring bg-conn-amber-bg text-conn-amber-text'
-      : 'border-cafe bg-cafe-surface text-cafe-secondary';
+  const t = usePawFeelCopy();
+  const language = usePawFeelLanguage();
+  const detail = pawFeelDutyDetail(item, language);
+  const issueDetail = pawFeelIssueDetail(item, language);
+  const issueOverdue = item.issue.resolution === 'open' && item.issue.ageMs >= 72 * 3_600_000;
+  const stateTone = rowTone(item, issueOverdue);
 
   return (
     <article
@@ -84,24 +53,38 @@ export function PawFeelInboxRow({ item }: { item: PawFeelInboxItem }) {
       data-state={item.responsibility.state}
       data-valid-exit={item.responsibility.validExit ? 'true' : 'false'}
       data-disposition-state={item.disposition.state}
+      data-resolution={item.issue.resolution}
+      data-continuation={item.issue.continuation.kind}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 text-micro font-semibold">
-            <span>{responsibilityLabel(item)}</span>
+            <span>
+              {t.receipt} · {responsibilityLabel(item, language)}
+            </span>
             {item.disposition.backfilled ? (
-              <span className="rounded-full border border-current px-1.5 py-0.5">历史回填</span>
+              <span className="rounded-full border border-current px-1.5 py-0.5">{t.backfill}</span>
             ) : null}
-            {item.overdue ? <span className="rounded-full border border-current px-1.5 py-0.5">72h+</span> : null}
+            {item.overdue || issueOverdue ? (
+              <span className="rounded-full border border-current px-1.5 py-0.5">72h+</span>
+            ) : null}
           </div>
+          <div className="mt-1 text-xs font-semibold">{pawFeelIssueStatus(item, language)}</div>
           <div className="mt-1 text-xs opacity-75">
-            报告猫 @{item.disposition.sourceCatId}
-            {item.disposition.lastActorCatId ? ` · 审阅猫 @${item.disposition.lastActorCatId}` : ''}
+            {t.reportCat} @{item.disposition.sourceCatId}
+            {item.disposition.lastActorCatId ? ` · ${t.reviewCat} @${item.disposition.lastActorCatId}` : ''}
           </div>
           <div className="mt-1 text-micro opacity-70">
-            原消息时间 {item.sourceOccurredAt ? formatTimestamp(item.sourceOccurredAt) : '暂不可读'} · 入箱 / SLA{' '}
-            {formatTimestamp(item.disposition.discoveredAt)} ·
-            {item.responsibility.validExit ? ` 处置耗时 ${formatAge(item.ageMs)}` : ` 已运行 ${formatAge(item.ageMs)}`}
+            {t.sourceTime} {item.sourceOccurredAt ? formatTimestamp(item.sourceOccurredAt, language) : t.unreadable} ·{' '}
+            {t.intakeTime} {formatTimestamp(item.disposition.discoveredAt, language)} ·
+            {item.responsibility.validExit
+              ? ` ${t.actionDuration} ${formatAge(item.ageMs, language)}`
+              : ` ${t.runningDuration} ${formatAge(item.ageMs, language)}`}
+          </div>
+          <div className="mt-1 text-micro opacity-70">
+            {item.issue.resolution === 'resolved'
+              ? `${t.resolutionDuration} ${formatAge(item.issue.ageMs, language)}`
+              : `${t.issueDuration} ${formatAge(item.issue.ageMs, language)}`}
           </div>
         </div>
         <span className="max-w-full truncate font-mono text-micro opacity-70" title={item.disposition.signalId}>
@@ -117,14 +100,15 @@ export function PawFeelInboxRow({ item }: { item: PawFeelInboxItem }) {
           {item.source.preview}
         </a>
       ) : (
-        <div className="mt-2 rounded-md border border-current/30 px-2 py-1.5 text-xs" role="status">
-          原始证据暂不可读：{item.source.reason}
-        </div>
+        <output className="mt-2 block rounded-md border border-current/30 px-2 py-1.5 text-xs">
+          {t.sourceMissing(item.source.reason)}
+        </output>
       )}
 
       {detail ? <p className="mt-2 text-xs leading-relaxed opacity-80">{detail}</p> : null}
+      {issueDetail ? <p className="mt-2 text-xs leading-relaxed opacity-80">{issueDetail}</p> : null}
       {item.deterministicGroupKey ? (
-        <div className="mt-2 text-micro opacity-60">确定性分组：{item.deterministicGroupKey}</div>
+        <div className="mt-2 text-micro opacity-60">{t.groupKey(item.deterministicGroupKey)}</div>
       ) : null}
     </article>
   );

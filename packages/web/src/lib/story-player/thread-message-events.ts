@@ -8,9 +8,8 @@
  * supplements.
  */
 
-import { projectCanonicalBubbles } from '@/stores/bubble-projection';
 import type { ChatMessage, MessageContent, ToolEvent } from '@/stores/chat-types';
-import { getMessageTimelineOrderTime } from '@/stores/message-timeline';
+import { getMessageTimelineOrderTime, getOrderedMessageTimeline } from '@/stores/message-timeline';
 import { mergeSessionEvents } from './merge-session-events';
 import type { RawTranscriptEvent } from './types';
 
@@ -98,12 +97,15 @@ function toolEventPayload(tool: ToolEvent): Record<string, unknown> {
     return {
       type: 'tool_use',
       toolName: tool.label,
+      ...(tool.executionRef ? { toolExecutionRef: tool.executionRef } : {}),
       ...(toolUseId ? { toolUseId } : {}),
       ...(tool.detail ? { toolInput: tool.detail } : {}),
     };
   }
   return {
     type: 'tool_result',
+    ...(tool.executionRef ? { toolExecutionRef: tool.executionRef } : {}),
+    ...(tool.inputDetail !== undefined ? { toolInput: tool.inputDetail } : {}),
     ...(toolUseId ? { toolUseId } : {}),
     ...(tool.detail ? { content: tool.detail } : {}),
     ...(tool.status ? { status: tool.status } : {}),
@@ -175,7 +177,7 @@ function appendAssistantSupplementEvents(
 export function chatMessagesToTranscriptEvents(messages: ChatMessage[], threadId: string): RawTranscriptEvent[] {
   const events: RawTranscriptEvent[] = [];
   const streamOriginMessageIds = collectStreamOriginMessageIds(messages);
-  const projectedMessages = projectCanonicalBubbles({ records: messages.map(normalizeProjectionTimestamp) }).messages;
+  const projectedMessages = getOrderedMessageTimeline(messages.map(normalizeProjectionTimestamp));
 
   for (const message of projectedMessages) {
     if (!isReplayableMessage(message)) continue;

@@ -13,6 +13,9 @@ import { resolve } from 'node:path';
 import { after, describe, mock, test } from 'node:test';
 import { migrateRouterOpts } from './helpers/agent-registry-helpers.js';
 
+const previousDefaultCatId = process.env.DEFAULT_CAT_ID;
+process.env.DEFAULT_CAT_ID = 'opus';
+
 // Create mock dependencies for AgentRouter
 function createMockRegistry() {
   let counter = 0;
@@ -236,6 +239,81 @@ function createMockAgentService(catId, responseText = 'Hello from mock') {
 
 const tempProjectRoots = [];
 
+describe('F322 J3 retired chat-content issue detection', () => {
+  for (const entry of ['route', 'routeExecution']) {
+    for (const sample of [
+      { name: 'keyword', messages: ['@opus 不对，请检查', '@opus 还是不行，请继续检查'] },
+      { name: 'retry', messages: Array(3).fill('@opus 请把原消息定位功能接完') },
+    ]) {
+      test(`${entry} routes ${sample.name} messages without creating a problem card`, async () => {
+        const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+        const { InMemoryFrustrationIssueStore } = await import(
+          '../dist/domains/cats/services/stores/memory/InMemoryFrustrationIssueStore.js'
+        );
+        const { resetDedup } = await import('../dist/domains/cats/services/frustration/FrustrationDetector.js');
+        resetDedup();
+        const threadId = `j3-${entry}-${sample.name}`;
+        const messageStore = createMockMessageStore();
+        const issueStore = new InMemoryFrustrationIssueStore();
+        const create = mock.method(issueStore, 'create');
+        const service = createMockAgentService('opus');
+        const broadcastToRoom = mock.fn();
+        const router = new AgentRouter(
+          await migrateRouterOpts({
+            claudeService: service,
+            registry: createMockRegistry(),
+            messageStore,
+            threadStore: createMockThreadStore(),
+            frustrationIssueStore: issueStore,
+            socketManager: { broadcastToRoom },
+          }),
+        );
+        const inputs = entry === 'route' ? sample.messages.slice(0, -1) : sample.messages;
+        let source;
+        for (const [index, content] of inputs.entries())
+          source = messageStore.append({
+            userId: 'owner',
+            catId: null,
+            content,
+            mentions: ['opus'],
+            threadId,
+            timestamp: Date.now() + index,
+          });
+        const message = sample.messages.at(-1);
+        const { targetCats, intent } = await router.resolveTargetsAndIntent(message, threadId);
+        const stream =
+          entry === 'route'
+            ? router.route('owner', message, threadId)
+            : router.routeExecution('owner', message, threadId, source.id, targetCats, intent, {
+                ownerAuthProvenance: 'unknown',
+                humanDispositionInvocationOrigin: 'unknown',
+                onPromptMessagesExposed: async () => undefined,
+                frustrationAutoIssueEligible: true,
+              });
+        const output = [];
+        for await (const event of stream) output.push(event);
+        assert.equal(service.invoke.mock.callCount(), 1);
+        assert.ok(output.some((event) => event.type === 'text'));
+        assert.ok(output.some((event) => event.type === 'done'));
+        assert.equal(create.mock.callCount(), 0);
+        assert.deepEqual(await issueStore.listByThread(threadId), []);
+        assert.equal(
+          messageStore._rows.some((row) => row.source?.connector === 'frustration-auto-issue'),
+          false,
+        );
+        assert.equal(
+          broadcastToRoom.mock.calls.some(
+            (call) =>
+              call.arguments[1] === 'connector_message' &&
+              call.arguments[2]?.source?.connector === 'frustration-auto-issue',
+          ),
+          false,
+        );
+      });
+    }
+  }
+});
+
 function createAvailabilityConfigProject(availabilityOverrides = {}) {
   const projectRoot = mkdtempSync(resolve(tmpdir(), 'agent-router-availability-'));
   tempProjectRoots.push(projectRoot);
@@ -331,12 +409,189 @@ async function withAvailabilityConfig(availabilityOverrides, fn) {
 }
 
 after(() => {
+  if (previousDefaultCatId === undefined) delete process.env.DEFAULT_CAT_ID;
+  else process.env.DEFAULT_CAT_ID = previousDefaultCatId;
   for (const projectRoot of tempProjectRoots) {
     rmSync(projectRoot, { recursive: true, force: true });
   }
 });
 
 describe('AgentRouter', () => {
+  for (const mode of ['serial', 'parallel'])
+    test(`${mode} releases pinned services when Host capacity preflight fails before launch`, async () => {
+      const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+      const pinned = ['opus', 'codex'].map((catId) => ({
+        ...createMockAgentService(catId, 'must not launch'),
+        contextCapability() {
+          throw new Error('pin capacity preflight refused');
+        },
+        releaseInvocation: mock.fn(async () => {}),
+      }));
+      const roots = pinned.map((view) => ({ forInvocation: mock.fn(() => view), invoke: view.invoke }));
+      const router = new AgentRouter(
+        await migrateRouterOpts({
+          claudeService: roots[0],
+          codexService: roots[1],
+          geminiService: createMockAgentService('gemini'),
+          registry: createMockRegistry(),
+          messageStore: createMockMessageStore(),
+          threadStore: createMockThreadStore(),
+        }),
+      );
+      await assert.rejects(async () => {
+        for await (const _ of router.route(
+          'owner',
+          `${mode === 'parallel' ? '#ideate' : '#execute'} @opus @codex blocked`,
+          `pin-refusal-${mode}`,
+        )) {
+        }
+      }, /pin capacity preflight refused/);
+      let selected = 0;
+      for (let i = 0; i < roots.length; i++) {
+        assert.equal(pinned[i].invoke.mock.callCount(), 0);
+        if (!roots[i].forInvocation.mock.callCount()) continue;
+        selected++;
+        assert.ok(
+          pinned[i].releaseInvocation.mock.callCount() > 0,
+          'every selected service releases even without an iterator',
+        );
+      }
+      assert.ok(selected > 0);
+    });
+
+  for (const mode of ['serial', 'parallel'])
+    test(`${mode} reads native L0 and launches from the same invocation view`, async () => {
+      const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+      let unpinnedL0Reads = 0;
+      const pinned = ['opus', 'codex'].map((catId) => ({
+        ...createMockAgentService(catId, 'pinned response'),
+        injectsL0Natively: mock.fn(() => true),
+      }));
+      const roots = pinned.map((view) => ({
+        forInvocation: mock.fn(() => view),
+        injectsL0Natively: () => {
+          unpinnedL0Reads++;
+          return false;
+        },
+        async *invoke() {
+          assert.fail('mutable root carrier was launched');
+        },
+      }));
+      const router = new AgentRouter(
+        await migrateRouterOpts({
+          claudeService: roots[0],
+          codexService: roots[1],
+          geminiService: createMockAgentService('gemini'),
+          registry: createMockRegistry(),
+          messageStore: createMockMessageStore(),
+          threadStore: createMockThreadStore(),
+        }),
+      );
+      const message = `${mode === 'parallel' ? '#ideate' : '#execute'} @opus @codex test snapshot`;
+      for await (const _event of router.route('user-1', message, `pinned-${mode}`)) {
+        /* consume real routing */
+      }
+      assert.equal(unpinnedL0Reads, 0, 'L0 assembly must not read the mutable root');
+      for (let i = 0; i < pinned.length; i++) {
+        assert.equal(roots[i].forInvocation.mock.callCount(), 1);
+        assert.ok(pinned[i].injectsL0Natively.mock.callCount() > 0);
+        assert.equal(pinned[i].invoke.mock.callCount(), 1);
+      }
+    });
+  test('routeExecution preserves lifecycle and active-run callbacks through the strategy boundary', async () => {
+    const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+    const { MessageStore } = await import('../dist/domains/cats/services/stores/ports/MessageStore.js');
+    const lifecycleMessageStore = new MessageStore();
+    const lifecycleStarted = mock.fn(async (input) => {
+      const response = await lifecycleMessageStore.append({
+        from: { kind: 'agent', catId: input.catId },
+        userId: input.userId,
+        content: '',
+        mentions: [],
+        origin: 'stream',
+        timestamp: input.startedAt,
+        threadId: input.threadId,
+        lifecycle: {
+          kind: 'response',
+          orderKey: `${input.startedAt}:${input.invocationId}`,
+          invocationId: input.invocationId,
+          targetId: input.catId,
+          inputEntryIds: ['entry-1'],
+          inputMessageIds: ['source-1'],
+          status: 'processing',
+          startedAt: input.startedAt,
+        },
+      });
+      return {
+        responseMessageId: response.id,
+        priorFrontierMessageId: null,
+        activeRun: {
+          threadId: input.threadId,
+          targetId: input.catId,
+          invocationId: input.invocationId,
+          responseMessageId: response.id,
+          inputEntryIds: ['entry-1'],
+          inputMessageIds: ['source-1'],
+          privateInputEntryIds: [],
+          startedAt: input.startedAt,
+        },
+      };
+    });
+    const activeRunReady = mock.fn();
+    const opusService = {
+      invoke: mock.fn(async function* (_prompt, options) {
+        options.activeRunDispatch?.register({
+          invocationId: options.invocationId,
+          capabilities: { append: true, steer: true },
+          handle: { threadId: 'callback-thread', turnId: 'provider-turn-1' },
+          dispatch: async () => ({
+            accepted: true,
+            handle: { threadId: 'callback-thread', turnId: 'provider-turn-1' },
+          }),
+        });
+        yield { type: 'done', catId: 'opus', invocationId: options.invocationId, timestamp: Date.now() };
+      }),
+    };
+    const router = new AgentRouter(
+      await migrateRouterOpts({
+        claudeService: opusService,
+        codexService: createMockAgentService('codex'),
+        geminiService: createMockAgentService('gemini'),
+        registry: createMockRegistry(),
+        messageStore: lifecycleMessageStore,
+        threadStore: createMockThreadStore({ 'callback-thread': ['opus'] }),
+      }),
+    );
+
+    const output = [];
+    for await (const message of router.routeExecution(
+      'user-1',
+      'source body',
+      'callback-thread',
+      'source-1',
+      ['opus'],
+      { intent: 'execute', promptTags: [] },
+      {
+        ownerAuthProvenance: 'strict',
+        humanDispositionInvocationOrigin: 'direct_owner',
+        parentInvocationId: 'parent-1',
+        onPromptMessagesExposed: async () => [],
+        onLifecycleInvocationStarted: lifecycleStarted,
+        onAgentClientActiveRunReady: activeRunReady,
+      },
+    )) {
+      output.push(message);
+    }
+
+    assert.equal(lifecycleStarted.mock.calls.length, 1);
+    assert.equal(activeRunReady.mock.calls.length, 1);
+    assert.equal(activeRunReady.mock.calls[0].arguments[0].catId, 'opus');
+    assert.equal(
+      output.some((message) => message.lifecycleResponseMessageId),
+      true,
+    );
+  });
+
   test('routingPolicy(review) avoids opus when default routing would pick opus', async () => {
     const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
 
@@ -1983,7 +2238,9 @@ describe('AgentRouter', () => {
 
     // User message + 2 cat responses = 3 appends
     assert.equal(appendedMessages.length, 3);
-    const appendedCatIds = appendedMessages.map((m) => m.catId).filter(Boolean);
+    const appendedCatIds = appendedMessages
+      .filter((message) => message.from?.kind === 'agent')
+      .map((message) => message.from.catId);
     assert.ok(appendedCatIds.includes('opus'), 'Opus response should be stored');
     assert.ok(appendedCatIds.includes('codex'), 'Codex response should be stored');
   });
@@ -2628,6 +2885,24 @@ describe('F078: Group mentions', () => {
     assert.ok(!targetCats.includes('gemini'), '@allison should not broadcast to all cats');
   });
 
+  test('does not turn ordinary Chinese prose after a stray inline @ into one giant missing handle', async () => {
+    const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+    const router = new AgentRouter(
+      await migrateRouterOpts({
+        claudeService: createMockAgentService('opus'),
+        codexService: createMockAgentService('codex'),
+        geminiService: createMockAgentService('gemini'),
+        registry: createMockRegistry(),
+        messageStore: createMockMessageStore(),
+      }),
+    );
+
+    const result = await router.resolveTargetsAndIntent('你@一下缅因猫和狸花猫打个招呼我看看');
+
+    assert.deepEqual(result.routing_warnings, []);
+    assert.deepEqual(result.targetCats, ['opus'], 'ordinary prose keeps normal fallback routing');
+  });
+
   test('@threadsafe does NOT trigger @thread (token boundary)', async () => {
     const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
 
@@ -3008,6 +3283,157 @@ describe('#58: preferredCats candidate scope (not dispatch list)', () => {
     assert.equal(targetCats.length, 1, 'without #ideate, should still route to single cat');
   });
 
+  for (const strategy of ['serial', 'parallel']) {
+    test(`${strategy} reports a known unavailable member's cause and clears it after registry recovery`, async () => {
+      const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+      const { AgentRegistry } = await import('../dist/domains/cats/services/agents/registry/AgentRegistry.js');
+      const registry = new AgentRegistry();
+      const healthyService = createMockAgentService('codex');
+      registry.register('codex', healthyService);
+      registry.markUnavailable('opus', {
+        code: 'rejected-account-binding',
+        message: 'account "fixture" has a torn credential without account metadata; reconcile before use',
+      });
+      const messageStore = createMockMessageStore();
+      const router = new AgentRouter({
+        agentRegistry: registry,
+        registry: createMockRegistry(),
+        messageStore,
+        threadStore: createMockThreadStore(),
+      });
+      const message = `${strategy === 'parallel' ? '#ideate' : '#execute'} @opus @codex hello`;
+      const failures = [];
+      const done = [];
+      for await (const event of router.route('user-1', message, 'unavailable-test')) {
+        if (event.type === 'error') {
+          assert.equal(event.catId, 'opus');
+          failures.push(event.error ?? event.content);
+        }
+        if (event.type === 'done') done.push(event);
+      }
+      assert.match(failures.join('\n'), /opus.*rejected-account-binding.*torn credential without account metadata/);
+      assert.doesNotMatch(failures.join('\n'), /Unknown cat ID/);
+      assert.equal(registry.has('opus'), false, 'a diagnostic must not make a member routable');
+      assert.equal(healthyService.invoke.mock.callCount(), 1, 'unavailable members must not block healthy siblings');
+      assert.ok(
+        done.some((event) => event.catId === 'opus'),
+        'unavailable member must settle its stream',
+      );
+      assert.ok(
+        done.some((event) => event.isFinal),
+        'the batch must settle',
+      );
+      assert.ok(
+        messageStore
+          .getByThread('unavailable-test')
+          .some((row) => row.userId === 'system' && /rejected-account-binding.*torn credential/.test(row.content)),
+        'the cause must survive a page reload',
+      );
+
+      const fenceCalls = [];
+      const persistenceContext = { errors: [] };
+      const source = messageStore.append({
+        userId: 'user-1',
+        catId: null,
+        threadId: 'unavailable-fenced',
+        content: message,
+        mentions: ['opus', 'codex'],
+        timestamp: Date.now(),
+      });
+      const { targetCats, intent } = await router.resolveTargetsAndIntent(message, 'unavailable-fenced');
+      for await (const _event of router.routeExecution(
+        'user-1',
+        message,
+        'unavailable-fenced',
+        source.id,
+        targetCats,
+        intent,
+        {
+          ownerAuthProvenance: 'unknown',
+          humanDispositionInvocationOrigin: 'unknown',
+          onPromptMessagesExposed: async () => undefined,
+          persistenceContext,
+          beforeOutputCommit: async (catId) => {
+            fenceCalls.push(catId);
+            return catId !== 'opus';
+          },
+        },
+      )) {
+      }
+      assert.equal(fenceCalls.filter((catId) => catId === 'opus').length, 1);
+      assert.equal(persistenceContext.actionOutputCommitRejected, true);
+      assert.equal(healthyService.invoke.mock.callCount(), 2, 'rejected output fence must not block a healthy sibling');
+      assert.equal(
+        messageStore
+          .getByThread('unavailable-fenced')
+          .some((row) => row.userId === 'system' && /rejected-account-binding/.test(row.content)),
+        false,
+        'a retired generation must not persist its diagnostic',
+      );
+
+      registry.reset();
+      const recovered = createMockAgentService('opus');
+      registry.register('opus', recovered);
+      registry.register('codex', healthyService);
+      router.refreshFromRegistry(registry);
+      for await (const event of router.route('user-1', '@opus hello', 'unavailable-recovered')) {
+        assert.notEqual(event.type, 'error', 'recovery must clear the old registration diagnosis');
+      }
+      assert.equal(recovered.invoke.mock.callCount(), 1);
+    });
+
+    test(`${strategy} preserves ordinary provider errors when the output fence rejects`, async () => {
+      const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+      const { AgentRegistry } = await import('../dist/domains/cats/services/agents/registry/AgentRegistry.js');
+      const registry = new AgentRegistry();
+      const healthyService = createMockAgentService('codex');
+      registry.register('codex', healthyService);
+      registry.register('opus', {
+        invoke: mock.fn(async function* () {
+          yield { type: 'error', catId: 'opus', error: 'fixture provider failure', timestamp: Date.now() };
+          yield { type: 'done', catId: 'opus', timestamp: Date.now() };
+        }),
+      });
+      const messageStore = createMockMessageStore();
+      const router = new AgentRouter({
+        agentRegistry: registry,
+        registry: createMockRegistry(),
+        messageStore,
+        threadStore: createMockThreadStore(),
+      });
+      const threadId = 'provider-error-fenced';
+      const message = `${strategy === 'parallel' ? '#ideate' : '#execute'} @opus @codex hello`;
+      const source = messageStore.append({
+        userId: 'user-1',
+        catId: null,
+        threadId,
+        content: message,
+        mentions: ['opus', 'codex'],
+        timestamp: Date.now(),
+      });
+      const { targetCats, intent } = await router.resolveTargetsAndIntent(message, threadId);
+      const fenceCalls = [];
+      for await (const _event of router.routeExecution('user-1', message, threadId, source.id, targetCats, intent, {
+        ownerAuthProvenance: 'unknown',
+        humanDispositionInvocationOrigin: 'unknown',
+        onPromptMessagesExposed: async () => undefined,
+        beforeOutputCommit: async (catId) => {
+          fenceCalls.push(catId);
+          return catId !== 'opus';
+        },
+      })) {
+      }
+      assert.equal(fenceCalls.filter((catId) => catId === 'opus').length, 1);
+      assert.equal(healthyService.invoke.mock.callCount(), 1);
+      assert.ok(
+        messageStore
+          .getByThread(threadId)
+          .some((row) => row.userId === 'system' && row.content === 'Error: fixture provider failure'),
+        'registration diagnostics must not change ordinary provider error persistence',
+      );
+    });
+  }
+
   test('refreshFromRegistry updates routable service set after runtime catalog changes', async () => {
     const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
     const { AgentRegistry } = await import('../dist/domains/cats/services/agents/registry/AgentRegistry.js');
@@ -3253,7 +3679,7 @@ describe('#58: preferredCats candidate scope (not dispatch list)', () => {
     );
   });
 
-  test('AC-Z16 R3: time window 1h cutoff — old user mention not used as fallback', async () => {
+  test('AC-Z16: the last Human mention remains the fallback after two hours', async () => {
     const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
 
     const messageStore = createMockMessageStore();
@@ -3284,8 +3710,7 @@ describe('#58: preferredCats candidate scope (not dispatch list)', () => {
     );
 
     const result = await router.resolveTargetsAndIntent('hi', 't_z16_old');
-    // 远古 mention (>1h ago) 不再用 → fallback to legacy participantsWithActivity → opus
-    assert.deepEqual(result.targetCats, ['opus'], 'old user mention beyond 1h window should not win fallback');
+    assert.deepEqual(result.targetCats, ['codex'], 'only a later Human mention changes the remembered recipient');
   });
 
   test('AC-Z16 R4: 51+ non-user messages between user @ and current → pagination still finds user mention (砚砚 R3 P1)', async () => {
@@ -3400,68 +3825,6 @@ describe('#58: preferredCats candidate scope (not dispatch list)', () => {
       result.targetCats,
       ['codex'],
       'system notices (userId=system, catId=null) must not count as user messages — they should not consume the 5-msg lookback limit',
-    );
-  });
-
-  test('AC-Z16 R11: page-level cutoff stops scan when oldestScore < 1h ago (砚砚 R10 P2)', async () => {
-    // 砚砚 R10 P2: 1h cutoff 在 isUserMessage filter 之后判断，导致只扫 user msg 时才 trip。
-    // 高流量 thread (e.g. 300 cat msgs) 全部 > 1h ago + 0 user msg → 当前 R10 实现会扫完整
-    // 历史才退出 (no more history)，浪费 page query。
-    // 修法: 每页反序扫完没命中 user mention 后，检查 page[0].effectiveScore < cutoffTimestamp，
-    // 直接 return null（下一页 effective score 只会更老，不会有可用 user mention）。
-    const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
-
-    const messageStore = createMockMessageStore();
-    const baseTs = Date.now();
-
-    // 300 条 cat msgs 全部 > 1h ago (no user msg at all)
-    for (let i = 0; i < 300; i += 1) {
-      messageStore.append({
-        userId: null,
-        catId: i % 2 === 0 ? 'gemini' : 'opus',
-        content: `vision-guard ancient ${i}`,
-        mentions: [],
-        timestamp: baseTs - 2 * 60 * 60 * 1000 - i * 1000, // 全部 > 2h ago
-        threadId: 't_z16_pcutoff',
-      });
-    }
-
-    // 计数 store calls 验证 early stop
-    let pageCalls = 0;
-    const wrappedStore = {
-      ...messageStore,
-      getByThread: (...args) => {
-        pageCalls += 1;
-        return messageStore.getByThread(...args);
-      },
-      getByThreadBefore: (...args) => {
-        pageCalls += 1;
-        return messageStore.getByThreadBefore(...args);
-      },
-    };
-
-    const threadStore = createMockThreadStore({ t_z16_pcutoff: ['codex', 'opus', 'gemini'] });
-    threadStore.updateParticipantActivity('t_z16_pcutoff', 'gemini');
-
-    const router = new AgentRouter(
-      await migrateRouterOpts({
-        claudeService: createMockAgentService('opus'),
-        codexService: createMockAgentService('codex'),
-        geminiService: createMockAgentService('gemini'),
-        registry: createMockRegistry(),
-        messageStore: wrappedStore,
-        threadStore,
-      }),
-    );
-
-    await router.resolveTargetsAndIntent('继续', 't_z16_pcutoff');
-    // GREEN after R11: page-level cutoff trigger 后 ≤2 page calls (1 from peekTargets + 1 from resolveTargets,
-    //   each finds first page with oldestScore < cutoff and stops immediately)
-    // RED before R11: scans all 300 msgs / 50 = 6 pages × 2 (peek + resolve) = 12 page calls
-    // 用阈值 ≤4 (peek + resolve 各 ≤2 calls) 判断 early stop
-    assert.ok(
-      pageCalls <= 4,
-      `page-level cutoff should stop after first page when oldestScore < 1h cutoff; got ${pageCalls} page calls (expected ≤4)`,
     );
   });
 
@@ -3868,3 +4231,46 @@ describe('F229: Concierge thread routing (duty-cat always takes priority)', () =
     assert.deepEqual(result.targetCats, ['opus'], 'concierge duty cat wins over prior user @mention fallback');
   });
 });
+
+for (const [mode, text, targets] of [
+  ['serial', '@opus ordinary message', ['opus']],
+  ['parallel', '@opus @codex ordinary message', ['opus', 'codex']],
+]) {
+  test(`${mode}: ordinary delivery does not query the signal library`, async () => {
+    const { AgentRouter } = await import('../dist/domains/cats/services/agents/routing/AgentRouter.js');
+    const services = {
+      opus: createMockAgentService('opus', 'Opus response'),
+      codex: createMockAgentService('codex', 'Codex response'),
+      gemini: createMockAgentService('gemini', 'Gemini response'),
+    };
+    // Model a legacy injected dependency: normal delivery must not consult it,
+    // even if the library lookup would return content linked to this thread.
+    const lookup = mock.fn(async () => [
+      {
+        id: 'unrequested-article',
+        title: 'Unrequested article',
+        source: 'synthetic',
+        tier: 1,
+        contentSnippet: 'unrequested-library-content',
+      },
+    ]);
+    const router = new AgentRouter(
+      await migrateRouterOpts({
+        claudeService: services.opus,
+        codexService: services.codex,
+        geminiService: services.gemini,
+        registry: createMockRegistry(),
+        messageStore: createMockMessageStore(),
+        signalArticleLookup: lookup,
+      }),
+    );
+    const output = [];
+    for await (const message of router.route('user-1', text)) output.push(message);
+    for (const target of targets) {
+      assert.equal(services[target].invoke.mock.callCount(), 1);
+      assert.ok(output.some((message) => message.catId === target && message.type === 'done'));
+      assert.ok(!services[target].invoke.mock.calls[0].arguments[0].includes('unrequested-library-content'));
+    }
+    assert.equal(lookup.mock.callCount(), 0, 'normal delivery must perform no article lookup');
+  });
+}

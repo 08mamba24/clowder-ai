@@ -4,12 +4,21 @@ related_features: [F114, F102, F192, F095, F057, F187, F225, F287, F296, F312]
 topics: [memory, observability, harness, magic-words, navigation, cognitive-state]
 doc_kind: spec
 created: 2026-06-06
-tips_exempt: "Renewed 2026-09-02 for F312 Phase C: recent-Event recall is an authenticated cat-side continuity reflex over the existing Event store; it adds no user-invokable action or new Hub discovery surface."
+tips_exempt: "Renewed 2026-10-23 for F332 consolidation: event-list and exact-event readers keep their existing entry points, while unfinished event association and repair evidence retain their original owners. The project-status update introduces no new event action or Hub discovery surface."
 ---
 
 # F227: Event Memory — 事件级记忆索引（拉闸记录）
 
-> **Status**: in-progress | **Owner**: Ragdoll Opus-4.8 | **Priority**: P1
+> **Status**: closed (consolidated into F332; 未完成结果继续承接，非全部交付) | **Owner**: Ragdoll Opus-4.8 | **Priority**: P1
+
+## 2026-10-23 项目收拢至 F332
+
+You 在 `[thread-id]#private-source-id` 明确要求关闭旧记忆项目、
+保留有价值的结果并新立一项。本项目登记据此归入 [F332](F332-experience-informed-memory.md)；
+**本文件仍保留原合同及历史证据的权威，未被逐项替代的合同继续有效。**
+原 AC 实情、Task、owner、accepted scope 和等待不变；本次不声称全部完成、不关闭来源、不迁移数据。
+
+> **关闭前状态快照**: in-progress | **Owner**: Ragdoll Opus-4.8 | **Priority**: P1
 >
 > 家里话：**拉闸记录**（有味道，家族感）。对外 / 正式 UI / 社区化：**Event Memory** / 校准事件 / Alignment Events。
 > 产品内核：**事件级记忆索引**——不是"魔法词面板"，Magic Word 只是第一条 lane。
@@ -78,6 +87,12 @@ append-only ledger 追加 `invalidation_reason=source_forgotten`。这证明 run
 不把单条 Event 夸成 utility causality。
 
 ## What
+
+### 2026-09-27 读侧页界（F324 Phase A）
+
+`EventMemoryStore.listEvents` 省略 limit 时默认读取 50 条，显式读取最大 201 条（供 API 的 200 条窗口加一条 lookahead）；`GET /api/memory/events` 对完整 JSON 页执行 24,000 字符预算，返回 `meta.hasMore/nextOffset`，保持 owner scope 与 newest-first 排序。超大单条保留 Event 坐标和摘要预览，`GET /api/memory/events/:eventId?charOffset=N` 在相同 owner 授权下精确续读原记录；现有 `cat_cafe_list_events` 同名工具以互斥的 `eventId + charOffset` detail mode 暴露这条续读链，agent-key 调用者不必手写内部 HTTP。Web timeline 消费 server `hasMore`，短预算页仍显示“加载更多”。250 条合成事件的默认读不再全量涌出；cue source 的显式 limit 不变。原 Event 和 message 坐标仍由本 store 与 source message 持有，没有新账本。回归：`event-memory-store.test.js`、`events-route.test.js`、`event-memory-tools.test.js`、`event-timeline-data.test.ts` 的 F324 分页/续读用例。
+
+Architecture cell: `memory`; Map delta: none. Why: 原 EventMemoryStore 仍是唯一数据 owner，route、MCP 和 Web 只消费其有界读取。Canonical source: `packages/api/src/domains/memory/EventMemoryStore.ts#listEvents`。Consumer evidence: `rg -n "listEvents\\(|/api/memory/events|loadEventsPage|handleListEvents" packages/api/src packages/mcp-server/src packages/web/src`。Claim guard: “owner 隔离 + 有界页 + MCP 可达的精确续读” → `events-route.test.js` 的 F324 大页/foreign-owner 用例、`event-memory-tools.test.js` 的原文哈希/404 用例与 `event-timeline-data.test.ts` 的短页用例 → RED 于全量返回、误判 terminal、MCP 不可达，GREEN 于预算/nextOffset/原文等价/404。
 
 > **5 条设计原则（贯穿全 Phase，KD 钉死）**：
 > 1. 内核是 Event Memory（事件级记忆索引），不是 Magic Word 面板——Magic Word 只是第一条 lane

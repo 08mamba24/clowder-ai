@@ -1,19 +1,28 @@
+'use client';
+
 import type { EntrustedWorkOwnerReadV1 } from '@cat-cafe/shared';
+import { useCoCreatorDisplay } from '@/hooks/useCoCreatorConfig';
+import { preparedArtifactPresentation } from './prepared-artifact-presentation';
 
 const CURRENT_LABELS = {
   todo: '已接住，待开始',
   doing: '正在推进',
   blocked: '已阻塞',
+  done: '已完成',
 } as const;
 
 const TIME_MILESTONE_LABELS = {
   business_deadline: '业务时间已确认',
   review_by: '审阅时间已确认',
   execution_trigger: '执行时间已确认',
+  planned_start: '计划开始已记录',
+  actual_start: '实际开始已记录',
+  estimated_completion: '预计完成已记录',
 } as const;
 
 function milestoneLabel(brief: EntrustedWorkOwnerReadV1['brief']): string {
   const milestone = brief.verifiedMilestone;
+  if (milestone.kind === 'work_completed') return '工作已完成，依据已留存';
   if (milestone.kind === 'needs_judgment') return '已到需要你判断的节点';
   if (milestone.kind === 'artifact_ready') return 'Artifact 已可查看';
   if (milestone.kind === 'time_committed') return TIME_MILESTONE_LABELS[milestone.role];
@@ -21,8 +30,8 @@ function milestoneLabel(brief: EntrustedWorkOwnerReadV1['brief']): string {
   return 'unknown';
 }
 
-function nextOwnerLabel(nextOwner: EntrustedWorkOwnerReadV1['brief']['nextOwner']): string {
-  if (nextOwner.kind === 'human') return 'You';
+function nextOwnerLabel(nextOwner: EntrustedWorkOwnerReadV1['brief']['nextOwner'], ownerName: string): string {
+  if (nextOwner.kind === 'human') return ownerName;
   if (nextOwner.kind === 'cat') return nextOwner.ownerRef.replace(/^cat:/, '');
   return 'unknown';
 }
@@ -40,11 +49,19 @@ function nextOwnerEvidence(nextOwner: EntrustedWorkOwnerReadV1['brief']['nextOwn
     .join(' / ');
 }
 
-export function EntrustedWorkBrief({ ownerRead }: { ownerRead: EntrustedWorkOwnerReadV1 }) {
+export function EntrustedWorkBrief({
+  ownerRead,
+  artifactLabel,
+}: {
+  ownerRead: EntrustedWorkOwnerReadV1;
+  /** Readable name of the prepared work; the raw ref stays in the details below. */
+  artifactLabel?: string;
+}) {
+  const ownerName = useCoCreatorDisplay().name;
   const { brief, preparedArtifact } = ownerRead;
   const outcome = brief.outcome.state === 'known' ? brief.outcome.value : 'unknown';
   const artifact = preparedArtifact
-    ? `Artifact r${preparedArtifact.artifactRevision} · ${preparedArtifact.artifactRef}`
+    ? (artifactLabel ?? preparedArtifactPresentation(preparedArtifact).label)
     : 'unknown';
 
   return (
@@ -73,11 +90,11 @@ export function EntrustedWorkBrief({ ownerRead }: { ownerRead: EntrustedWorkOwne
         <div className="min-w-0">
           <dt className="text-micro font-medium text-cafe-muted">下一步</dt>
           <dd className="mt-0.5 break-words text-xs font-semibold text-cafe-black">
-            {nextOwnerLabel(brief.nextOwner)}
+            {nextOwnerLabel(brief.nextOwner, ownerName)}
           </dd>
         </div>
         <div className="min-w-0">
-          <dt className="text-micro font-medium text-cafe-muted">Needs Me</dt>
+          <dt className="text-micro font-medium text-cafe-muted">需要你吗</dt>
           <dd className="mt-0.5 break-words text-xs font-semibold text-cafe-black">
             {brief.needsMe.state === 'needed'
               ? '现在需要你'
@@ -87,9 +104,9 @@ export function EntrustedWorkBrief({ ownerRead }: { ownerRead: EntrustedWorkOwne
           </dd>
         </div>
         <div className="min-w-0">
-          <dt className="text-micro font-medium text-cafe-muted">Artifact</dt>
+          <dt className="text-micro font-medium text-cafe-muted">准备好的内容</dt>
           <dd
-            className="mt-0.5 break-all text-xs font-semibold text-cafe-black"
+            className="mt-0.5 break-words text-xs font-semibold text-cafe-black"
             data-testid="entrusted-work-brief-artifact"
           >
             {artifact}

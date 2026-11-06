@@ -7,31 +7,25 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useIMEGuard } from '@/hooks/useIMEGuard';
 import { apiFetch } from '@/utils/api-client';
 import { DirectoryBreadcrumb } from './directory-breadcrumb';
+import { type DirectoryBrowserProps, defaultDirectoryBrowserCopy } from './directory-browser-copy';
 import { FolderIcon, TerminalIcon } from './directory-browser-icons';
+import { DirectoryCreateFolderRow } from './directory-create-folder-row';
 import { type BrowseResult, buildBrowseUrl, pathToSegments, shouldFallbackToHome } from './directory-segments';
 import { DrivesView } from './drives-view';
 import { ThisPcListEntry } from './this-pc-list-entry';
 import { useDrivesLoader } from './use-drives-loader';
 
-interface DirectoryBrowserProps {
-  /** Initially browsed path — defaults to home via API */
-  initialPath?: string;
-  /** Path of the currently active project (highlighted in listing) */
-  activeProjectPath?: string;
-  /** Called whenever the browsed directory changes */
-  onCurrentPathChange?: (path: string) => void;
-  /** Called when browsing a virtual location that is not a concrete directory */
-  onVirtualLocationChange?: () => void;
-  /** Called when user cancels */
-  onCancel: () => void;
-}
-
 export function DirectoryBrowser({
   initialPath,
   activeProjectPath,
   onCurrentPathChange,
+  onNavigationStart,
+  allowCreateDirectory = true,
   onVirtualLocationChange,
   onCancel,
+  onSelectCurrent,
+  selectCurrentLabel = '选择此目录',
+  copy = defaultDirectoryBrowserCopy,
 }: DirectoryBrowserProps) {
   const [browseResult, setBrowseResult] = useState<BrowseResult | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -42,8 +36,10 @@ export function DirectoryBrowser({
   const [creatingDir, setCreatingDir] = useState(false);
   const [newDirName, setNewDirName] = useState('');
   const [mkdirError, setMkdirError] = useState<string | null>(null);
-  const newDirInputRef = useRef<HTMLInputElement>(null);
+  const newDirInputRef = useRef<HTMLInputElement | null>(null);
   const navigationVersionRef = useRef(0);
+  const copyRef = useRef(copy);
+  copyRef.current = copy;
   // Server-owned capability (R4 P2#3): isWindows comes from the browse endpoint
   // (process.platform === win32 on the server), not path-shape heuristic.
   const isWindowsServer = browseResult?.isWindows ?? false;
@@ -51,8 +47,9 @@ export function DirectoryBrowser({
     useDrivesLoader(isWindowsServer);
 
   const fetchDirectory = useCallback(
-    async (path?: string, fallbackOnForbidden = false) => {
+    async (path?: string, fallbackOnUnavailable = false) => {
       const navigationVersion = ++navigationVersionRef.current;
+      onNavigationStart?.();
       setIsLoading(true);
       setError(null);
       showDirectoryView();
@@ -60,16 +57,16 @@ export function DirectoryBrowser({
         const res = await apiFetch(buildBrowseUrl(path));
         if (navigationVersion !== navigationVersionRef.current) return;
         if (!res.ok) {
-          // 403 fallback (initial load only) — otherwise surface the error.
-          if (shouldFallbackToHome(fallbackOnForbidden, path, res.status)) {
-            setInfo('配置路径不可用，已切换到主目录');
+          // Unavailable path fallback (initial load only) — otherwise surface the error.
+          if (shouldFallbackToHome(fallbackOnUnavailable, path, res.status)) {
+            setInfo(copyRef.current.configuredPathUnavailable);
             // await so outer finally doesn't clear isLoading before fallback finishes
             await fetchDirectory(undefined, false);
             return;
           }
           const errData = await res.json();
           if (navigationVersion !== navigationVersionRef.current) return;
-          setError(errData.error || 'Failed to browse directory');
+          setError(errData.error || copyRef.current.browseFailed);
           // Keep previous browseResult — don't destroy current listing on error.
           return;
         }
@@ -80,17 +77,21 @@ export function DirectoryBrowser({
         onCurrentPathChange?.(data.current);
       } catch {
         if (navigationVersion !== navigationVersionRef.current) return;
-        setError('Unable to connect to server');
+        setError(copyRef.current.connectFailed);
       } finally {
         if (navigationVersion === navigationVersionRef.current) setIsLoading(false);
       }
     },
-    [onCurrentPathChange, showDirectoryView],
+    [onCurrentPathChange, onNavigationStart, showDirectoryView],
   );
 
-  // Initial load — try initialPath, fallback to homedir on 403 (with visible info)
+  // Initial load — try initialPath, fallback to homedir on 403/404 (with visible info)
   useEffect(() => {
     fetchDirectory(initialPath, !!initialPath);
+    return () => {
+      // Retire this browser's requests before a replacement can select a path.
+      navigationVersionRef.current += 1;
+    };
   }, [fetchDirectory, initialPath]);
 
   const handlePathSubmit = useCallback(() => {
@@ -136,7 +137,7 @@ export function DirectoryBrowser({
       if (!res.ok) {
         const data = await res.json();
         if (navigationVersion !== navigationVersionRef.current) return;
-        setMkdirError(data.error || '创建失败');
+        setMkdirError(data.error || copyRef.current.createFailed);
         return;
       }
       const data = await res.json();
@@ -146,7 +147,7 @@ export function DirectoryBrowser({
       fetchDirectory(data.createdPath);
     } catch {
       if (navigationVersion !== navigationVersionRef.current) return;
-      setMkdirError('无法连接到服务器');
+      setMkdirError(copyRef.current.connectFailed);
     }
   }, [newDirName, browseResult, fetchDirectory]);
 
@@ -160,60 +161,39 @@ export function DirectoryBrowser({
         view={view}
         onEnterDrivesView={enterDrivesView}
         onNavigateTo={fetchDirectory}
-        onStartCreateDir={handleStartCreateDir}
+        onStartCreateDir={allowCreateDirectory ? handleStartCreateDir : undefined}
+        thisPcLabel={copy.thisPc}
+        newFolderTitle={copy.newFolderTitle}
+        newFolderLabel={copy.newFolder}
       />
 
       {/* ── Directory listing ── */}
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-0.5 min-h-0">
-        {view === 'directory' && showThisPcEntry && <ThisPcListEntry onEnterDrivesView={enterDrivesView} />}
+        {view === 'directory' && showThisPcEntry && (
+          <ThisPcListEntry
+            onEnterDrivesView={enterDrivesView}
+            title={copy.viewAllDrives}
+            label={copy.thisPc}
+            description={copy.switchDrive}
+          />
+        )}
 
         {/* Inline new folder input */}
         {creatingDir && (
-          <div className="px-3 py-2 rounded-lg ring-2 ring-cafe-accent bg-cafe-surface/50 mb-1">
-            <div className="flex items-center gap-2">
-              <FolderIcon className="text-cafe-accent" />
-              <input
-                ref={newDirInputRef}
-                type="text"
-                value={newDirName}
-                onChange={(e) => setNewDirName(e.target.value)}
-                onCompositionStart={ime.onCompositionStart}
-                onCompositionEnd={ime.onCompositionEnd}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && ime.isComposing()) {
-                    e.preventDefault();
-                    return;
-                  }
-                  if (e.key === 'Enter') handleCreateDir();
-                  if (e.key === 'Escape') {
-                    setCreatingDir(false);
-                    setMkdirError(null);
-                  }
-                }}
-                placeholder="文件夹名称..."
-                className="flex-1 text-sm px-2 py-1 rounded border border-cafe-accent/30 bg-cafe-surface-canvas focus:outline-none focus:ring-1 focus:ring-cafe-accent"
-              />
-              <button
-                type="button"
-                onClick={handleCreateDir}
-                disabled={!newDirName.trim()}
-                className="text-xs px-2.5 py-1 rounded bg-cafe-accent text-[var(--cafe-surface)] hover:bg-cafe-interactive disabled:opacity-40 transition-colors"
-              >
-                创建
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setCreatingDir(false);
-                  setMkdirError(null);
-                }}
-                className="text-xs text-cafe-muted hover:text-cafe-secondary"
-              >
-                取消
-              </button>
-            </div>
-            {mkdirError && <p className="text-micro text-conn-red-text mt-1 ml-6">{mkdirError}</p>}
-          </div>
+          <DirectoryCreateFolderRow
+            name={newDirName}
+            error={mkdirError}
+            copy={copy}
+            inputRef={(element) => {
+              newDirInputRef.current = element;
+            }}
+            onNameChange={setNewDirName}
+            onCreate={handleCreateDir}
+            onCancel={() => {
+              setCreatingDir(false);
+              setMkdirError(null);
+            }}
+          />
         )}
 
         {view === 'drives' && (
@@ -223,12 +203,19 @@ export function DirectoryBrowser({
             activeProjectPath={activeProjectPath}
             onSelectDrive={fetchDirectory}
             onRetry={retryLoadDrives}
+            copy={{
+              loading: copy.drivesLoading,
+              failed: copy.drivesFailed,
+              retry: copy.retry,
+              empty: copy.noDrives,
+              currentProject: copy.currentProject,
+            }}
           />
         )}
 
         {view === 'directory' && isLoading && (
           <div className="flex items-center justify-center py-8">
-            <span className="text-xs text-cafe-muted animate-pulse">Loading...</span>
+            <span className="text-xs text-cafe-muted animate-pulse">{copy.loading}</span>
           </div>
         )}
 
@@ -246,7 +233,7 @@ export function DirectoryBrowser({
 
         {view === 'directory' && !isLoading && browseResult && browseResult.entries.length === 0 && (
           <div className="flex items-center justify-center py-8">
-            <span className="text-xs text-cafe-muted">No subdirectories</span>
+            <span className="text-xs text-cafe-muted">{copy.noSubdirectories}</span>
           </div>
         )}
 
@@ -266,7 +253,7 @@ export function DirectoryBrowser({
               >
                 <FolderIcon className={isActive ? 'text-cafe-accent' : 'text-cafe-muted'} />
                 <span className="font-medium text-cafe-black truncate flex-1">{entry.name}</span>
-                {isActive && <span className="text-micro text-cafe-accent flex-shrink-0">当前项目</span>}
+                {isActive && <span className="text-micro text-cafe-accent flex-shrink-0">{copy.currentProject}</span>}
                 <svg
                   aria-hidden="true"
                   className="w-3.5 h-3.5 text-cafe-muted flex-shrink-0"
@@ -291,21 +278,26 @@ export function DirectoryBrowser({
           <input
             type="text"
             value={pathInput}
-            onChange={(e) => setPathInput(e.target.value)}
+            onChange={(e) => {
+              navigationVersionRef.current += 1;
+              setIsLoading(false);
+              onNavigationStart?.();
+              setPathInput(e.target.value);
+            }}
             onCompositionStart={ime.onCompositionStart}
             onCompositionEnd={ime.onCompositionEnd}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !ime.isComposing()) handlePathSubmit();
             }}
-            placeholder="Enter path..."
-            className="flex-1 text-xs px-3 py-2 rounded-lg border border-[var(--console-border-soft)] bg-cafe-white focus:outline-none focus:ring-1 focus:ring-cafe-accent"
+            placeholder={copy.pathPlaceholder}
+            className="min-w-0 flex-1 text-xs px-3 py-2 rounded-lg border border-[var(--console-border-soft)] bg-cafe-white focus:outline-none focus:ring-1 focus:ring-cafe-accent"
           />
           {pathInput.trim() && (
             <button
               type="button"
               onClick={handlePathSubmit}
-              className="px-2.5 py-2 rounded-lg border border-[var(--console-border-soft)] bg-cafe-white text-cafe-secondary hover:bg-cafe-surface transition-colors"
-              aria-label="Go to path"
+              className="shrink-0 px-2.5 py-2 rounded-lg border border-[var(--console-border-soft)] bg-cafe-white text-cafe-secondary hover:bg-cafe-surface transition-colors"
+              aria-label={copy.goToPath}
             >
               <svg aria-hidden="true" className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
                 <path
@@ -321,7 +313,7 @@ export function DirectoryBrowser({
         {/* ── Action bar ── */}
         <div className="flex items-center gap-2 pt-1">
           {view === 'drives' ? (
-            <span className="text-xs text-cafe-secondary truncate flex-1">此电脑</span>
+            <span className="text-xs text-cafe-secondary truncate flex-1">{copy.thisPc}</span>
           ) : (
             browseResult && (
               <span className="text-xs text-cafe-secondary truncate flex-1" title={browseResult.current}>
@@ -329,12 +321,21 @@ export function DirectoryBrowser({
               </span>
             )
           )}
+          {view === 'directory' && browseResult && onSelectCurrent && (
+            <button
+              type="button"
+              onClick={() => onSelectCurrent(browseResult.current)}
+              className="rounded-lg bg-cafe-accent px-4 py-2 text-xs font-medium text-[var(--cafe-surface)] transition-colors hover:bg-cafe-interactive"
+            >
+              {selectCurrentLabel}
+            </button>
+          )}
           <button
             type="button"
             onClick={onCancel}
             className="px-4 py-2 rounded-lg border border-[var(--console-border-soft)] text-cafe-secondary text-xs font-medium transition-colors hover:bg-cafe-surface-elevated"
           >
-            收起浏览
+            {copy.collapseBrowser}
           </button>
         </div>
       </div>

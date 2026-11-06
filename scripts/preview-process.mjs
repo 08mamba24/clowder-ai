@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 
-import { createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { probePort, processGroupExists, waitForPort, waitForProcessGroupExit } from './lib/preview-process-runtime.mjs';
+import { clearPreviewSettlement, readPreviewSettlement } from './lib/preview-alpha-registration-settlement.mjs';
+import { withPreviewMutationLock } from './lib/preview-process-mutex.mjs';
+import { previewProcessRecordId } from './lib/preview-process-record-key.mjs';
+import { probePort, waitForPort } from './lib/preview-process-runtime.mjs';
+import { readPreviewCompletion, stopManagedPreview } from './lib/preview-process-stop.mjs';
 import {
   launchDetached,
   launchWithLaunchd,
-  ownsLaunchdJob,
   ownsLaunchdProcess,
   ownsProcess,
   removeLaunchdJob,
@@ -18,8 +21,6 @@ import {
 const RECORD_VERSION = 1;
 const DEFAULT_START_TIMEOUT_MS = 10_000;
 const DEFAULT_RECOVERY_TIMEOUT_MS = 20_000;
-const STOP_TERM_GRACE_MS = 3_000;
-const STOP_KILL_GRACE_MS = 1_000;
 const LAUNCHD_LABEL_PREFIX = 'com.catcafe.preview';
 const DEFAULT_LIFETIME_SECONDS = 8 * 60 * 60;
 const MAX_LIFETIME_SECONDS = 24 * 60 * 60;
@@ -32,19 +33,27 @@ function usage() {
   pnpm preview:process stop --port PORT --cwd DIR [--json]`;
 }
 
+function claimUniqueOption(seenOptions, option) {
+  if (seenOptions.has(option)) throw new Error(`duplicate argument: ${option}`);
+  seenOptions.add(option);
+}
+
 function parseArgs(argv) {
   const action = argv[0];
   const separator = argv.indexOf('--');
   const optionArgs = separator >= 0 ? argv.slice(1, separator) : argv.slice(1);
   const command = separator >= 0 ? argv.slice(separator + 1) : [];
   const options = { action, command, json: false };
+  const seenOptions = new Set();
   for (let index = 0; index < optionArgs.length; index += 1) {
     const arg = optionArgs[index];
     if (arg === '--json') {
+      claimUniqueOption(seenOptions, arg);
       options.json = true;
       continue;
     }
     if (arg === '--port' || arg === '--cwd' || arg === '--lifetime-seconds') {
+      claimUniqueOption(seenOptions, arg);
       options[arg.slice(2)] = optionArgs[index + 1];
       index += 1;
       continue;
@@ -82,7 +91,7 @@ function resolveConfig(options) {
   const stateDir = resolve(
     process.env.CAT_CAFE_PREVIEW_PROCESS_DIR ?? join(homedir(), '.cat-cafe', 'preview-processes'),
   );
-  const id = createHash('sha256').update(`${cwd}\0${port}`).digest('hex').slice(0, 16);
+  const id = previewProcessRecordId(cwd, port);
   return {
     ...options,
     cwd,
@@ -107,24 +116,17 @@ function writeRecord(config, record) {
 function readRecord(config) {
   try {
     const value = JSON.parse(readFileSync(config.recordPath, 'utf8'));
-    return value.version === RECORD_VERSION && value.id === config.id ? value : null;
-  } catch {
-    return null;
+    if (value.version !== RECORD_VERSION || value.id !== config.id)
+      throw new Error('preview registration is inconsistent');
+    return value;
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
   }
 }
 
 function ownsManagedProcess(config, record) {
   return record?.origin === 'launchd' ? ownsLaunchdProcess(config, record) : ownsProcess(record);
-}
-
-function killOwnedGroup(record, signal, ownershipAlreadyProven = false) {
-  if (!ownershipAlreadyProven && !ownsProcess(record)) return false;
-  try {
-    process.kill(process.platform === 'win32' ? record.pid : -record.pid, signal);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function report(config, payload, exitCode = 0) {
@@ -134,6 +136,16 @@ function report(config, payload, exitCode = 0) {
     process.stdout.write(`[preview-process] ${payload.status} ${payload.cwd}:${payload.port}`);
     if (payload.origin) process.stdout.write(`\norigin: ${payload.origin}`);
     if (payload.logPath) process.stdout.write(`\nlog: ${payload.logPath}`);
+    if (payload.settlement) {
+      process.stdout.write(`\noriginal process exit: ${payload.settlement.originalExitCode}`);
+      process.stdout.write(`\nbusiness exit: ${payload.settlement.businessExitCode ?? 'unknown (legacy)'}`);
+      process.stdout.write(`\ncleanup exit: ${payload.settlement.cleanupExitCode ?? 'unknown (legacy)'}`);
+      if (payload.settlement.commandGroupStatus)
+        process.stdout.write(`\ncommand group: ${payload.settlement.commandGroupStatus} (not a full-stop receipt)`);
+      if (payload.settlement.otherResourcesStatus) process.stdout.write('\nother resources: not verified');
+      if (payload.settlement.leaseStatus) process.stdout.write(`\nproducer lease: ${payload.settlement.leaseStatus}`);
+      process.stdout.write('\nsaved data: not reverified');
+    }
     process.stdout.write('\n');
   }
   process.exitCode = exitCode;
@@ -179,7 +191,7 @@ async function handleExistingStart(config, existing) {
       reportManagedStatus(config, 'starting', existing.record);
       return true;
     }
-    rmSync(config.recordPath, { force: true });
+    if (!existing.record.completionPath) rmSync(config.recordPath, { force: true });
     throw new Error(`preview process exited before listening on port ${config.port}; see ${config.logPath}`);
   }
   if (existing.status === 'unmanaged' || existing.status === 'unavailable') {
@@ -203,23 +215,45 @@ async function finishStartedProcess(config, record) {
     reportManagedStatus(config, 'starting', record);
     return;
   }
-  if (record.origin === 'launchd') {
+  if (!record.completionPath && record.origin === 'launchd') {
     removeLaunchdJob(config);
     rmSync(config.plistPath, { force: true });
   }
-  rmSync(config.recordPath, { force: true });
+  if (!record.completionPath) rmSync(config.recordPath, { force: true });
   throw new Error(`preview process exited before listening on port ${config.port}; see ${config.logPath}`);
 }
 
 async function start(config) {
   const existing = await currentStatus(config);
   if (await handleExistingStart(config, existing)) return;
+  if (existing.record?.completionPath) {
+    const completion = readPreviewCompletion(existing.record);
+    if (
+      !completion ||
+      completion.exitCode !== 0 ||
+      completion.forced ||
+      completion.cleanupOwnerStatus === 'unclaimed' ||
+      (completion.version !== undefined && completion.version !== 2)
+    )
+      throw new Error('preview cleanup remains unsettled; preserve its record and run canonical preview stop');
+  }
   rmSync(config.recordPath, { force: true });
+  clearPreviewSettlement(config);
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const expiresAt = new Date(Date.now() + config.lifetimeSeconds * 1_000).toISOString();
+  const completionPath = join(config.stateDir, `${config.id}.${randomUUID()}.completion.json`);
   const launchConfig = {
     ...config,
-    command: [process.execPath, LEASE_RUNNER_PATH, '--expires-at', expiresAt, '--', ...config.command],
+    command: [
+      process.execPath,
+      LEASE_RUNNER_PATH,
+      '--expires-at',
+      expiresAt,
+      '--completion-path',
+      completionPath,
+      '--',
+      ...config.command,
+    ],
   };
   const processHandle =
     process.platform === 'darwin' ? await launchWithLaunchd(launchConfig) : await launchDetached(launchConfig);
@@ -232,6 +266,7 @@ async function start(config) {
     ...processHandle,
     startedAt: new Date().toISOString(),
     expiresAt,
+    completionPath,
     logPath: config.logPath,
   };
   writeRecord(config, record);
@@ -239,16 +274,30 @@ async function start(config) {
 }
 
 async function status(config) {
-  const result = await currentStatus(config);
+  let result = await currentStatus(config);
   if (result.status === 'running' && result.record && !result.record.readyAt) {
-    writeRecord(config, { ...result.record, readyAt: new Date().toISOString() });
+    // This legacy lazy readiness write is a record writer too. It must not
+    // resurrect an old registration while stop/start owns the same lifecycle.
+    try {
+      await withPreviewMutationLock(config, async () => {
+        result = await currentStatus(config);
+        if (result.status === 'running' && result.record && !result.record.readyAt)
+          writeRecord(config, { ...result.record, readyAt: new Date().toISOString() });
+      });
+    } catch (error) {
+      if (error.code !== 'PREVIEW_MUTATION_BUSY') throw error;
+      result = await currentStatus(config);
+    }
   }
+  const settlement = !result.record ? readPreviewSettlement(config) : null;
   report(
     config,
     {
-      status: result.status,
+      status: result.status === 'stopped' ? (settlement?.status ?? result.status) : result.status,
+      registered: result.record !== null,
       cwd: config.cwd,
       port: config.port,
+      ...(settlement ? { settlement } : {}),
       ...(result.record
         ? {
             pid: result.record.pid,
@@ -258,54 +307,37 @@ async function status(config) {
           }
         : {}),
     },
-    result.status === 'running' || result.status === 'starting' ? 0 : 1,
+    settlement?.status === 'registration_retired'
+      ? 3
+      : result.status === 'running' || result.status === 'starting'
+        ? 0
+        : 1,
   );
 }
 
 async function stop(config) {
-  const result = await currentStatus(config);
-  if (!result.record && result.status === 'stopped') {
-    report(config, { status: 'stopped', cwd: config.cwd, port: config.port });
-    return;
-  }
-  if (result.status === 'stopped' && result.record?.origin === 'launchd' && ownsLaunchdJob(config, result.record)) {
-    removeLaunchdJob(config);
-    rmSync(config.recordPath, { force: true });
-    rmSync(config.plistPath, { force: true });
-    report(config, { status: 'stopped', cwd: config.cwd, port: config.port, logPath: result.record.logPath });
-    return;
-  }
-  if (!result.record || !ownsManagedProcess(config, result.record)) {
-    throw new Error(`refusing to stop ${result.status} port ${config.port}: exact process ownership is not proven`);
-  }
-  if (result.record.origin === 'launchd') {
-    removeLaunchdJob(config);
-    if (!(await waitForPort(config.port, false, STOP_TERM_GRACE_MS + STOP_KILL_GRACE_MS))) {
-      throw new Error(`failed to stop launchd preview ${config.launchdLabel}; state retained at ${config.recordPath}`);
-    }
-    rmSync(config.recordPath, { force: true });
-    rmSync(config.plistPath, { force: true });
-    report(config, { status: 'stopped', cwd: config.cwd, port: config.port, logPath: result.record.logPath });
-    return;
-  }
-  killOwnedGroup(result.record, 'SIGTERM');
-  if (!(await waitForProcessGroupExit(result.record, STOP_TERM_GRACE_MS))) {
-    killOwnedGroup(result.record, 'SIGKILL', true);
-    await waitForProcessGroupExit(result.record, STOP_KILL_GRACE_MS);
-  }
-  if (processGroupExists(result.record)) {
-    throw new Error(
-      `failed to stop owned preview process group ${result.record.pid}; state retained at ${config.recordPath}`,
-    );
-  }
-  await waitForPort(config.port, false, STOP_KILL_GRACE_MS);
-  rmSync(config.recordPath, { force: true });
-  report(config, { status: 'stopped', cwd: config.cwd, port: config.port, logPath: result.record.logPath });
+  let result;
+  const stopped = await stopManagedPreview(config, async () => {
+    result = await currentStatus(config);
+    return result;
+  });
+  const settlement = stopped?.settlement ?? readPreviewSettlement(config);
+  report(
+    config,
+    {
+      status: settlement?.status ?? 'stopped',
+      cwd: config.cwd,
+      port: config.port,
+      logPath: result.record?.logPath,
+      ...(settlement ? { settlement } : {}),
+    },
+    settlement?.status === 'registration_retired' ? 3 : 0,
+  );
 }
 
 try {
   const config = resolveConfig(parseArgs(process.argv.slice(2)));
-  if (config.action === 'start') await start(config);
+  if (config.action === 'start') await withPreviewMutationLock(config, () => start(config));
   if (config.action === 'status') await status(config);
   if (config.action === 'stop') await stop(config);
 } catch (error) {

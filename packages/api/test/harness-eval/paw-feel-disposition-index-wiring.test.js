@@ -26,6 +26,15 @@ describe('F278 API composition-root wiring', () => {
     assert.match(source, /agentKeyRegistry/);
   });
 
+  it('composes the bounded audit scan from the canonical ledger and shared read model', () => {
+    assert.match(source, /await loadOrCreatePawFeelInboxAuditCursorSigner\(redis\)/);
+    assert.match(source, /new PawFeelInboxAuditScanService\(\{/);
+    assert.match(source, /eventLog: pawFeelDispositionEventLog/);
+    assert.match(source, /readModel: pawFeelDispositionReadModel/);
+    assert.match(source, /app\.register\(pawFeelInboxAuditScanRoutes,\s*\{/);
+    assert.match(source, /auditScanService: pawFeelInboxAuditScanService/);
+  });
+
   it('registers reconciliation and duty before the unified scheduler starts', () => {
     const reconciliation = source.indexOf('createPawFeelReconciliationTaskSpec({');
     const duty = source.indexOf('createPawFeelDutyTaskSpec({');
@@ -44,5 +53,26 @@ describe('F278 API composition-root wiring', () => {
     assert.match(source, /appendListener = \(message\) => \{/);
     assert.match(source, /captureAppendedPawFeelMessage\(\s*message,/);
     assert.doesNotMatch(source, /ingestPawFeelMessage\(message/);
+  });
+
+  it('composes continuing responsibility with exact F287 and task-workflow owner providers while legacy mutation stays gated', () => {
+    assert.match(source, /new PawFeelDirectRepairSourceVerifier\(\{/);
+    assert.match(source, /new PawFeelSourceCaseActionResolver\(\{/);
+    assert.match(source, /new PawFeelContinuingResponsibilityResolver\(\{/);
+    assert.match(source, /followUpResolver: pawFeelFollowUpResolver/);
+    assert.doesNotMatch(source, /new PawFeelDirectRepairFederation\(\[\]\)/);
+    assert.match(source, /new MemoryCuePawFeelDirectRepairOwnerProvider\(\{/);
+    assert.match(source, /route:\s*memoryCuePawFeelDirectRepairRoute/);
+    assert.match(source, /provider:\s*memoryCuePawFeelDirectRepairProvider/);
+    assert.match(source, /new TaskWorkflowPawFeelDirectRepairOwnerProvider\(\{/);
+    assert.match(source, /route:\s*taskWorkflowPawFeelDirectRepairRoute/);
+    assert.match(source, /provider:\s*taskWorkflowPawFeelDirectRepairProvider/);
+    assert.match(source, /directRepairResolver: pawFeelDirectRepairResolver/);
+    assert.match(source, /repairOutcomeResolver: pawFeelDirectRepairOutcomeResolver/);
+    assert.match(source, /new PawFeelBlockerReconciler\(/);
+    assert.match(source, /blockerReconciler:\s*pawFeelBlockerReconciler/);
+    assert.match(source, /new LegacyPawFeelBlockerCensusService\(\{/);
+    assert.match(source, /app\.register\(pawFeelLegacyCensusRoutes,\s*\{/);
+    assert.doesNotMatch(source, /executeLegacyPawFeelBlockerRecovery\(/);
   });
 });

@@ -21,6 +21,9 @@ docs/markers/
 docs/features/index.json
 build/
 .next/
+# Isolated browser outputs are rebuildable; worktree:finish preserves them in quarantine.
+/packages/web/.next-test-*/
+/packages/web/tsconfig.next-test-*.json
 
 # PWA generated service worker files
 packages/web/public/sw.js
@@ -55,6 +58,7 @@ packages/web/public/vendor/
 .gemini/
 .antigravitycli/
 .kimi/
+.kimi-code/
 .kiro/
 .trae/
 .dare/
@@ -73,6 +77,9 @@ cat-config.json
 # Claude Code skills — cat-cafe symlinks are tracked; plugin-generated ones are not
 .claude/skills/pencil-renderer
 .claude/skills/pencil-to-code
+# The cat runtime mounts the shared skill tree here per machine (symlinks, not
+# sources). It is runtime state, so a merge gate must not see it as dirty work.
+.claude/skills/
 
 # Claude local project memory / backup files
 .claude/projects/
@@ -151,6 +158,8 @@ assets/prototypes/
 desktop/node_modules/
 desktop-dist/
 bundled/
+# Locally cached prebuilt desktop resources; never add to the source PR.
+desktop/resources-prebuilt/
 docs/bug-report/werewolf-investigation/poster-screenshot.png
 .worktrees/
 .review-worktrees/
@@ -177,6 +186,8 @@ docs/discussions/exported-threads/
 *.mov
 *.mp4
 !site/assets/guides/*.mp4
+# 官网「30 秒看一个功能」的演示片（720p，每支约 4MB）
+!site/assets/demos/*.mp4
 *.avi
 *.mkv
 *.wav
@@ -233,3 +244,8 @@ packages/api/test/__b1_parent_a__/
 .claude/skills/thread-orchestration
 .codex-tmp-*
 .tmp/
+
+# Isolated artwork preview sessions; user-entered drafts and SQLite stay local.
+var/f309-artwork-preview/
+# Host-owned build output; release afterPack compiles its own target binary.
+desktop/plugin-window/native/app-assist

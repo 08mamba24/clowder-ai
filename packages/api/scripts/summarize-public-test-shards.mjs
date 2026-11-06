@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { validatePublicTestShardPlan } from './plan-public-test-shards.mjs';
 import { normalizePublicTestCliArgv } from './public-test-cli-args.mjs';
+import { validateIsolationAttestation } from './public-test-isolation-preflight.mjs';
 import {
   samePublicTestProvenance,
   stablePublicTestValue,
@@ -17,8 +18,7 @@ import {
 } from './public-test-support.mjs';
 
 function expectedLaneFiles(plan, lane) {
-  if (lane === 'serial') return [...plan.lanes.serial.files];
-  const shard = plan.pureShards.find((candidate) => candidate.id === lane);
+  const shard = [plan.sharedSerialLane, ...plan.distributableShards].find((candidate) => candidate.id === lane);
   invariant(shard, `plan has no lane ${lane}`);
   return [...shard.files];
 }
@@ -46,14 +46,21 @@ function assertExactFiles(actual, expected, lane) {
   }
 }
 
-export function summarizePublicTestShardReports({ plan, reports }) {
+export function summarizePublicTestShardReports({ plan, reports, maxCriticalPathMs }) {
   validatePublicTestShardPlan(plan, plan.selectedFiles);
   invariant(Array.isArray(reports), 'reports must be an array');
-  const expectedLanes = ['serial', ...plan.pureShards.map((shard) => shard.id)];
+  if (maxCriticalPathMs !== undefined) {
+    invariant(
+      Number.isFinite(maxCriticalPathMs) && maxCriticalPathMs > 0,
+      'critical-path budget must be a positive finite number',
+    );
+  }
+  const distributableLanes = plan.distributableShards.map((shard) => shard.id);
+  const expectedLanes = [plan.sharedSerialLane.id, ...distributableLanes];
   const byLane = new Map();
   for (const report of reports) {
     invariant(
-      report && report.schemaVersion === 1 && report.kind === 'public_test_shard_run',
+      report && report.schemaVersion === 2 && report.kind === 'public_test_shard_run',
       'invalid public-test shard report',
     );
     invariant(report.planFingerprint === plan.planFingerprint, 'report plan fingerprint does not match');
@@ -66,6 +73,20 @@ export function summarizePublicTestShardReports({ plan, reports }) {
     invariant(!byLane.has(report.lane), `duplicate report for lane ${report.lane}`);
     invariant(report.status === 'succeeded', `${report.lane} report is not green`);
     invariant(report.provenance && typeof report.provenance === 'object', `${report.lane} report lacks provenance`);
+    // Isolation attestation: a distributable lane's timings are only admissible
+    // as evidence if that lane actually proved the kernel boundary its
+    // classification claims. Without this check a locally produced report is
+    // byte-compatible with a target-CI one and can enter measurement history.
+    const laneScope = report.lane === plan.sharedSerialLane.id ? 'shared' : 'distributable';
+    const attestationProblems = validateIsolationAttestation(report.isolation, laneScope);
+    invariant(attestationProblems.length === 0, `${report.lane}: ${attestationProblems.join('; ')}`);
+    if (laneScope === 'distributable') {
+      invariant(
+        report.isolation.boundary === 'verified' && report.isolation.targetGrade === true,
+        `${report.lane} ran without a verified kernel network boundary; its report is development-only ` +
+          'evidence and cannot be summarized as a target-grade public-test result',
+      );
+    }
     byLane.set(report.lane, report);
   }
   invariant(byLane.size === expectedLanes.length, 'missing public-test shard report');
@@ -96,8 +117,8 @@ export function summarizePublicTestShardReports({ plan, reports }) {
     'shard reports do not cover every selected test exactly once',
   );
   const elapsedValues = lanes.map((lane) => lane.elapsedMs);
-  return {
-    schemaVersion: 1,
+  const summary = {
+    schemaVersion: 2,
     kind: 'public_test_shard_summary',
     status: 'succeeded',
     planFingerprint: plan.planFingerprint,
@@ -105,7 +126,9 @@ export function summarizePublicTestShardReports({ plan, reports }) {
     exclusionRegistryHash: plan.exclusionRegistryHash,
     selectedFileCount: selected.length,
     lanes,
-    serialLaneMs: byLane.get('serial').elapsedMs,
+    sharedSerialLaneMs: byLane.get(plan.sharedSerialLane.id).elapsedMs,
+    distributableCriticalPathMs: Math.max(...distributableLanes.map((lane) => byLane.get(lane).elapsedMs)),
+    distributableAggregateMs: distributableLanes.reduce((total, lane) => total + byLane.get(lane).elapsedMs, 0),
     criticalPathMs: Math.max(...elapsedValues),
     runnerMinutes: lanes.reduce((total, lane) => total + lane.runnerMinutes, 0),
     perFileTimings: Object.fromEntries(
@@ -113,6 +136,13 @@ export function summarizePublicTestShardReports({ plan, reports }) {
     ),
     provenance: stablePublicTestValue(referenceProvenance),
   };
+  if (maxCriticalPathMs !== undefined) {
+    invariant(
+      summary.criticalPathMs <= maxCriticalPathMs,
+      `public-test critical path ${summary.criticalPathMs}ms exceeds budget ${maxCriticalPathMs}ms`,
+    );
+  }
+  return summary;
 }
 
 function percentile(values, fraction) {
@@ -179,18 +209,26 @@ async function main() {
   const options = parsePublicTestCliOptions(normalizePublicTestCliArgv(process.argv.slice(2)));
   if (options.help) {
     process.stdout.write(
-      'Usage: node packages/api/scripts/summarize-public-test-shards.mjs --plan <path> --reports-dir <path> --output <path>\n',
+      'Usage: node packages/api/scripts/summarize-public-test-shards.mjs --plan <path> --reports-dir <path> --output <path> [--max-critical-path-ms <milliseconds>]\n',
     );
     return;
   }
   for (const name of ['plan', 'reports-dir', 'output']) invariant(options[name], `--${name} is required`);
+  const maxCriticalPathMs =
+    options['max-critical-path-ms'] === undefined ? undefined : Number(options['max-critical-path-ms']);
+  if (maxCriticalPathMs !== undefined) {
+    invariant(
+      Number.isFinite(maxCriticalPathMs) && maxCriticalPathMs > 0,
+      '--max-critical-path-ms must be a positive finite number',
+    );
+  }
   const plan = JSON.parse(await readFile(resolve(options.plan), 'utf8'));
   const reports = [];
   for (const path of await findJsonFiles(resolve(options['reports-dir']))) {
     const value = JSON.parse(await readFile(path, 'utf8'));
     if (value.kind === 'public_test_shard_run') reports.push(value);
   }
-  const summary = summarizePublicTestShardReports({ plan, reports });
+  const summary = summarizePublicTestShardReports({ plan, reports, maxCriticalPathMs });
   await atomicPublicTestJsonWrite(options.output, summary);
   process.stdout.write(
     `public-test summary: selected=${summary.selectedFileCount} critical_path_ms=${summary.criticalPathMs} runner_minutes=${summary.runnerMinutes.toFixed(2)}\n`,

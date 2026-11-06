@@ -2,7 +2,18 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 describe('F246 proposedAction tools/list contract', () => {
-  test('publishes the two executable approval variants inline', async () => {
+  test('publishes the Task approval shape inline for invocation auth', async (t) => {
+    const keys = ['CAT_CAFE_INVOCATION_ID', 'CAT_CAFE_CALLBACK_TOKEN', 'CAT_CAFE_CREDENTIAL_FILE'];
+    const original = new Map(keys.map((key) => [key, process.env[key]]));
+    t.after(() => {
+      for (const [key, value] of original) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+    delete process.env.CAT_CAFE_CREDENTIAL_FILE;
+    process.env.CAT_CAFE_INVOCATION_ID = 'inv-proposed-action-schema';
+    process.env.CAT_CAFE_CALLBACK_TOKEN = ['token', 'proposed', 'action', 'schema'].join('-');
     const [{ createServer }, { Client }, { InMemoryTransport }] = await Promise.all([
       import('../dist/index.js'),
       import('@modelcontextprotocol/sdk/client/index.js'),
@@ -20,31 +31,15 @@ describe('F246 proposedAction tools/list contract', () => {
 
       const proposedAction = tool.inputSchema.properties.proposedAction;
       assert.equal('$ref' in proposedAction, false, 'proposedAction must not hide behind the generic action $ref');
-      assert.ok(Array.isArray(proposedAction.anyOf), 'proposedAction must expose a concrete discriminated union');
-      assert.match(proposedAction.description, /review \+ reviewer \+ review_delivered/);
+      assert.equal(proposedAction.type, 'object');
+      assert.doesNotMatch(JSON.stringify(proposedAction), /review_delivered/);
       assert.match(proposedAction.description, /implement \+ implementer \+ task_done/);
       assert.match(proposedAction.description, /subject:task:<taskId>/);
 
-      const variants = proposedAction.anyOf.map((branch) => ({
-        actionFamily: branch.properties.actionFamily.const,
-        successorSlot: branch.properties.successorSlot.const,
-        predicateKind: branch.properties.terminalPredicate.properties.kind.const,
-        subjectPattern: branch.properties.subjectRef.pattern,
-      }));
-      assert.deepEqual(variants, [
-        {
-          actionFamily: 'review',
-          successorSlot: 'reviewer',
-          predicateKind: 'review_delivered',
-          subjectPattern: '^pr:[^/\\s]+\\/[^#\\s]+#[1-9]\\d*$',
-        },
-        {
-          actionFamily: 'implement',
-          successorSlot: 'implementer',
-          predicateKind: 'task_done',
-          subjectPattern: '^subject:task:[^\\s\\x1f]{1,200}$',
-        },
-      ]);
+      assert.equal(proposedAction.properties.actionFamily.const, 'implement');
+      assert.equal(proposedAction.properties.successorSlot.const, 'implementer');
+      assert.equal(proposedAction.properties.terminalPredicate.properties.kind.const, 'task_done');
+      assert.match(proposedAction.properties.subjectRef.pattern, /subject:task/);
     } finally {
       await client.close();
       await server.close();
