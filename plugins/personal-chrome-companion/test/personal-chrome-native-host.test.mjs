@@ -311,6 +311,26 @@ describe('personal Chrome native host bridge', () => {
     );
   });
 
+  it('rejects an unobserved successful extension receipt instead of persisting a Host observation', async () => {
+    const paths = testPaths('unobserved-success');
+    let bridge;
+    bridge = await createNativeHostBridge({
+      ...paths,
+      pairingSecret: 'a'.repeat(64),
+      sendNative: (message) => bridge.acceptNativeMessage({
+        v: 2, kind: 'append_result', requestId: message.requestId,
+        idempotencyKey: message.idempotencyKey, status: 'host_observed', hostMessageId: 'unverified-turn',
+        observedRevisions: { ...message.expectedRevisions, pageAdapter: 'unobserved' },
+      }),
+    });
+    bridges.push(bridge);
+    const result = await localAppend(paths.socketPath, 'a'.repeat(64), appendRequest());
+    assert.equal(result.errorCode, 'STALE_ADAPTER');
+    const [entry] = (await loadLedger(paths.ledgerPath)).values();
+    assert.equal(entry.state, 'failed');
+    assert.equal(entry.hostMessageId, undefined);
+  });
+
   it('returns typed needs-binding before ledger admission or Chrome dispatch', async () => {
     const paths = testPaths('needs-binding');
     await unlink(paths.conversationBindingPath);

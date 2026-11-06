@@ -14,7 +14,7 @@ const { resolvePersonalChromeHostPaths } = await load('native-host/pairing-recor
 const { authorizePersonalChromeConversation } = await load('native-host/conversation-binding.mjs');
 const { PersonalChromeHostAdapter } = await load('dist/personal-chrome-host-transport.js');
 const { PERSONAL_CHROME_EXTENSION_REVISION, PERSONAL_CHROME_PAGE_ADAPTER_REVISION } = await load('dist/protocol.js');
-const { default: entrypoint, PERSONAL_CHROME_TEST_METHOD, PERSONAL_CHROME_STATUS_METHOD } = await load('dist/plugin-entrypoint.js');
+const { default: entrypoint, PERSONAL_CHROME_TEST_METHOD, PERSONAL_CHROME_STATUS_METHOD, PERSONAL_CHROME_APPEND_MESSAGE_METHOD } = await load('dist/plugin-entrypoint.js');
 
 /** Actual worker, native bridge, transport and loaded Host Test; only Chrome's page port is simulated. */
 export async function healthChainFixture(t, options = {}) {
@@ -52,16 +52,27 @@ export async function healthChainFixture(t, options = {}) {
   const state = { tabs: [{ id: 7, url: 'https://chatgpt.com/c/conversation-7' }], pageAdapter: revisions.pageAdapter,
     ...options };
   const nativeRequests = [], tabQueries = [], contentRequests = [], revisionContacts = [];
-  let nativeListener;
+  let nativeListener, contentListener;
   const event = { addListener() {} };
   const chrome = {
-    runtime: { getManifest: () => ({ version: state.extension ?? revisions.extension }), onMessage: event,
+    runtime: { getManifest: () => ({ version: state.extension ?? revisions.extension }), onMessage: { addListener: (listener) => { contentListener = listener; } },
       connectNative: () => ({ onMessage: { addListener: (listener) => { nativeListener = listener; } }, onDisconnect: event,
-        postMessage(message) { if (message.kind === 'health_result') void bridge.acceptNativeMessage(message); } }) },
+        postMessage(message) { if (['health_result', 'append_progress', 'append_result'].includes(message.kind)) void bridge.acceptNativeMessage(message); } }) },
     action: { onClicked: event, setBadgeText() {}, setTitle() {} },
     alarms: { onAlarm: event, async create() {} },
     tabs: { async query(query) { tabQueries.push(JSON.parse(JSON.stringify(query))); return state.tabs; }, async sendMessage(tabId, request) {
       contentRequests.push({ tabId, request });
+      if (state.appendOutcome === 'content-unavailable') throw new Error('content port unavailable');
+      if (request.kind === 'append_message_v2') {
+        if (state.appendOutcome === 'lost') {
+          contentListener({ v: 2, kind: 'append_progress', requestId: request.requestId,
+            idempotencyKey: request.idempotencyKey, status: 'submitted' });
+          return undefined;
+        }
+        return { v: 2, kind: 'append_result', requestId: request.requestId,
+          idempotencyKey: request.idempotencyKey, status: 'host_observed', hostMessageId: 'user-turn-7',
+          observedRevisions: { ...revisions, pageAdapter: state.appendOutcome === 'unobserved-success' ? 'unobserved' : state.pageAdapter } };
+      }
       return { v: 2, kind: 'adapter_health_result', requestId: request.requestId, status: 'ready',
         observedRevisions: { ...revisions, pageAdapter: state.pageAdapter } };
     } },
@@ -82,6 +93,8 @@ export async function healthChainFixture(t, options = {}) {
       t.after(() => settings.dispose());
       return settings.actions;
     },
+    hostAppend: (input) => activation.actions[PERSONAL_CHROME_APPEND_MESSAGE_METHOD](input),
+    ledger: async () => JSON.parse(await readFile(pairing.ledgerPath, 'utf8')).entries,
     hostTest: () => activation.actions[PERSONAL_CHROME_TEST_METHOD]({}),
     pageCheckAction: () => activation.actions['personal-chrome-host.check-conversation'],
     revoke: (conversationId) => activation.actions['personal-chrome-host.authorizations.revoke']({ conversationId }),

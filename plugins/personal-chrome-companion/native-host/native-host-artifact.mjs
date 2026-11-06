@@ -4,6 +4,7 @@ import { access, chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, 
 import { join } from 'node:path';
 
 export const NATIVE_HOST_ARTIFACT_FILES = Object.freeze([
+  'append-result.mjs',
   'assistant-return-inbox.mjs',
   'conversation-binding.mjs',
   'conversation-title-exchange.mjs',
