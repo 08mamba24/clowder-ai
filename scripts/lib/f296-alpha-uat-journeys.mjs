@@ -149,29 +149,27 @@ export async function runCompactionJourney({ options, threadId, request, observe
   const compactPath = `/api/threads/${encodeURIComponent(threadId)}/sessions/${encodeURIComponent(
     options.catId,
   )}/compact-native`;
-  let response = await request(options, compactPath, { method: 'POST' });
-  if (response.status === 409) {
-    let busyCode = null;
+  // A response body can only be read once — parse each control response a
+  // single time and carry the parsed code forward instead of re-reading.
+  const readControlCode = async (candidate) => {
     try {
-      busyCode = (await response.json())?.code;
-    } catch {
-      // Unreadable body falls through to the classified handling below.
-    }
-    // NATIVE_SESSION_BUSY is a transient admission state, not a capability
-    // verdict — retry once after a poll interval before classifying.
-    if (busyCode === 'NATIVE_SESSION_BUSY') {
-      await new Promise((resolve) => setTimeout(resolve, options.pollMs));
-      response = await request(options, compactPath, { method: 'POST' });
-    }
-  }
-  if (response.status === 404 || response.status === 409) {
-    let code = null;
-    try {
-      code = (await response.json())?.code;
+      return (await candidate.json())?.code ?? null;
     } catch {
       // An unreadable control-surface error keeps the conservative
       // capability-unavailable classification instead of guessing a cause.
+      return null;
     }
+  };
+  let response = await request(options, compactPath, { method: 'POST' });
+  let code = response.status === 409 ? await readControlCode(response) : null;
+  // NATIVE_SESSION_BUSY is a transient admission state, not a capability
+  // verdict — retry once after a poll interval before classifying.
+  if (code === 'NATIVE_SESSION_BUSY') {
+    await new Promise((resolve) => setTimeout(resolve, options.pollMs));
+    response = await request(options, compactPath, { method: 'POST' });
+    code = response.status === 409 ? await readControlCode(response) : null;
+  }
+  if (response.status === 404 || response.status === 409) {
     const reason =
       code === 'NATIVE_SESSION_UNAVAILABLE'
         ? 'native_session_unavailable'

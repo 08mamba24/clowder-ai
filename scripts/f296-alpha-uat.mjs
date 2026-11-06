@@ -205,27 +205,28 @@ export function invocationRequestBody({ threadId, catId, content }) {
 
 // Upstream #1398 unified message delivery: POST /api/messages answers
 // 202 {status:'queued', userMessageId} and the parent invocation id must be
-// recovered from the response message lifecycle whose inputMessageIds contains
-// the stored user message — matching on inputMessageIds keeps the poll from
-// adopting another message's invocation. The pre-unification immediate
-// contract answered {status:'processing', invocationId} directly; both shapes
-// are accepted so the journey keeps its original trigger + observation
-// semantics on either deployment.
+// recovered from the response message that consumed the stored user message —
+// matching on lifecycle.inputMessageIds keeps the poll from adopting another
+// message. The response message carries BOTH invocation identities
+// (QueueProcessor.ts: stream.invocationId = parent, lifecycle.invocationId =
+// provider turn/child); the downstream awaitInvocation → executions chain is
+// parent-keyed, so extra.stream.invocationId is the one to return. The
+// pre-unification immediate contract answered {status:'processing',
+// invocationId} directly; both shapes are accepted so the journey keeps its
+// original trigger + observation semantics on either deployment.
 async function waitForQueuedInvocation(options, threadId, userMessageId) {
   const deadline = Date.now() + options.timeoutMs;
   while (Date.now() < deadline) {
     const body = await json(options, `/api/messages?threadId=${encodeURIComponent(threadId)}&limit=200`);
     const messages = Array.isArray(body?.messages) ? body.messages : [];
-    const lifecycle = messages
-      .map((message) => message?.lifecycle)
-      .find(
-        (candidate) =>
-          candidate?.kind === 'response' &&
-          Array.isArray(candidate.inputMessageIds) &&
-          candidate.inputMessageIds.includes(userMessageId) &&
-          typeof candidate.invocationId === 'string',
-      );
-    if (lifecycle) return lifecycle.invocationId;
+    const matched = messages.find(
+      (message) =>
+        message?.lifecycle?.kind === 'response' &&
+        Array.isArray(message.lifecycle.inputMessageIds) &&
+        message.lifecycle.inputMessageIds.includes(userMessageId),
+    );
+    const parentInvocationId = matched?.extra?.stream?.invocationId;
+    if (typeof parentInvocationId === 'string') return parentInvocationId;
     await delay(options.pollMs);
   }
   throw new UatError('failed', 'invocation_timeout');
