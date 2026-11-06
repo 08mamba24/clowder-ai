@@ -34,13 +34,13 @@
 | 前置门（契约/坐标/会话/health+revision/ready/canary/metrics） | **全过**（canary 断言 openai+app_server 首次通过；9464 telemetry 就绪） |
 | journey `cold` | **failed / invocation_rejected** |
 | journey `resumed-small` / `resumed-large` | unsupported（prerequisite_not_observed 级联） |
-| journey `replacement` | unsupported（provider_replacement_trigger_unavailable，409） |
-| journey `authoritative-compaction` | unsupported（provider_compaction_trigger_unavailable，**409** 两轮实测） |
+| journey `replacement` | unsupported（provider_replacement_trigger_unavailable）**〔修正 2026-11-06：非 409——candidateIds 为空（未传 --oversized-native-thread-id）时 journeys.mjs:76-78 本地 return，未发任何 HTTP 请求〕** |
+| journey `authoritative-compaction` | unsupported（provider_compaction_trigger_unavailable，**409** 两轮实测：05:51:46.986 / 05:58:43.615） |
 
 ## 6. journey 层两个断点（新发现，P2）
 
 1. **脚本↔同树 API 契约漂移**：`f296-alpha-uat.mjs:209` 发送 `deliveryMode:'immediate'`，而本树 `/api/messages` zod schema 无此键（unrecognized_keys 拒绝，实测 400/0.5ms）→ cold journey 必然 invocation_rejected。同一棵树内 harness 与 API 不同步——疑似上游同步（PR #63 的 14 个 upstream commit）改了 messages schema 而 UAT 脚本未跟。
-2. **api_key 中继会话缺 native 触发面**：compact-native / replace-native 均 409（native compaction/replacement 是 codex 原生会话能力，api_key+中继路径不提供）。即使修了 ①，这两条 journey 在 walle 路径上仍为 unsupported——要跑通需 codex 原生 OAuth（当前不存在，属新凭据授权，未做）。
+2. ~~**api_key 中继会话缺 native 触发面**：compact-native / replace-native 均 409~~ **〔修正 2026-11-06，源码级重析〕** 409 的实际条件是 `native-session-control-routes.ts:139-141` 的 `!session?.cliSessionId` 分支——UAT 线程上 cold 先被 400 拒、**从未建立 native 会话**，compact-native 的 409 是**级联**，不是账号/carrier 能力限制；`requestNativeCompaction` 方法存在（CodexAgentService.ts:1303），agentRegistry 含 canary。api_key 会话上 native compaction 是否可用**未测**（需先修 ① 让 cold 建会话）；"必须新 OAuth"当时结论**证据不足，撤回**。replacement 则另有前置：需 `--oversized-native-thread-id` 运营输入（本两轮未传，candidateIds 为空本地 return）。
 
 ## 7. 结论与下一步
 
