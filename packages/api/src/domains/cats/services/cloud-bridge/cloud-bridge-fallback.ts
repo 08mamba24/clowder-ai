@@ -28,10 +28,20 @@ export interface CloudBridgeAuditContext {
 
 function preSubmitFailureCode(outcome: BridgeDispatchOutcome): string | undefined {
   if (outcome.kind !== 'error' || outcome.reason !== 'host-append-failed') return undefined;
-  const failure = outcome.failureDiagnostic;
-  if (!isCloudBridgeFailureDiagnosticV1(failure) || failure.fingerprint.phase !== 'failed_before_submit') {
-    return undefined;
+  // These typed Host codes are emitted by the initial empty-composer check, before any insertion.
+  if (outcome.errorCode === 'COMPOSER_NOT_EMPTY' || outcome.errorCode === 'COMPOSER_NOT_FOUND') {
+    return outcome.errorCode;
   }
+  const failure = outcome.failureDiagnostic;
+  if (!isCloudBridgeFailureDiagnosticV1(failure)) return undefined;
+  if (
+    outcome.errorCode === 'COMPOSER_DOM_UNSUPPORTED' &&
+    failure.errorCode === outcome.errorCode &&
+    ['empty_check', 'before_submit'].includes(failure.fingerprint.phase)
+  ) {
+    return outcome.errorCode;
+  }
+  if (failure.fingerprint.phase !== 'failed_before_submit') return undefined;
   return [
     'SEND_BUTTON_NOT_FOUND',
     'SEND_BUTTON_DISABLED',
@@ -41,6 +51,21 @@ function preSubmitFailureCode(outcome: BridgeDispatchOutcome): string | undefine
   ].includes(failure.errorCode)
     ? failure.errorCode
     : undefined;
+}
+
+function preSubmitFailureMessage(code: string, catId: CatId | string): string {
+  switch (code) {
+    case 'COMPOSER_NOT_EMPTY':
+      return `未发送给 @${catId}：绑定的 ChatGPT 会话输入框里有草稿，已保留原文。请先在原会话处理草稿，再重新 @${catId} 发一条新消息。`;
+    case 'COMPOSER_NOT_FOUND':
+      return `未发送给 @${catId}：未找到绑定会话的 ChatGPT 输入框，尚未点击发送。请检查原会话页面与扩展状态后，重新 @${catId} 发一条新消息。`;
+    case 'COMPOSER_DOM_UNSUPPORTED':
+      return `未发送给 @${catId}：暂不支持绑定会话的 ChatGPT 输入框结构，尚未点击发送。请检查原会话页面与扩展状态后，重新 @${catId} 发一条新消息。`;
+    case 'CHATGPT_GENERATING':
+      return `未发送给 @${catId}：ChatGPT 正在回复。请等当前回复结束后，重新 @${catId} 发一条新消息。`;
+    default:
+      return `未发送给 @${catId}：ChatGPT 的发送控件暂不可用，尚未点击发送。请检查绑定会话的页面与扩展状态后，重新 @${catId} 发一条新消息。`;
+  }
 }
 
 /** A sent outcome has a Host receipt; only verified pre-submit failures prove no effect. */
@@ -121,10 +146,7 @@ export function buildCloudBridgeStatusContent(args: {
     ) as Record<string, unknown>;
     const noSubmit = preSubmitFailureCode(args.outcome);
     if (noSubmit) {
-      fallback.message =
-        noSubmit === 'CHATGPT_GENERATING'
-          ? `未发送给 @${args.catId}：ChatGPT 正在回复。请等当前回复结束后，重新 @${args.catId} 发一条新消息。`
-          : `未发送给 @${args.catId}：ChatGPT 的发送控件暂不可用，尚未点击发送。请检查绑定会话的页面与扩展状态后，重新 @${args.catId} 发一条新消息。`;
+      fallback.message = preSubmitFailureMessage(noSubmit, args.catId);
     }
     return JSON.stringify({ ...fallback, ...(outboundReceipt ? { outboundReceipt } : {}) });
   }

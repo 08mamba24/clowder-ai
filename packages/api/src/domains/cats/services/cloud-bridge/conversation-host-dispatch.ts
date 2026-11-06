@@ -1,5 +1,9 @@
 import { isCloudBridgeFailureDiagnosticV1 } from '@cat-cafe/shared';
-import { appendMessageThroughHost, type IConversationHostAdapter } from './conversation-host-adapter.js';
+import {
+  appendMessageThroughHost,
+  ConversationHostError,
+  type IConversationHostAdapter,
+} from './conversation-host-adapter.js';
 import type { BridgeDispatchOutcome, BridgeFallbackReason, CloudInvokeDispatchParams } from './types.js';
 
 export interface ConversationHostDispatchDecision {
@@ -102,6 +106,7 @@ export async function dispatchBoundConversationThroughHost(args: {
         reason: 'host-append-failed',
         message: shortMessage(error),
         detail,
+        ...(error instanceof ConversationHostError ? { errorCode: error.code } : {}),
         ...(replayTruth(error) === undefined ? {} : { idempotentReplay: replayTruth(error) }),
         ...(failureDiagnostic(error) === undefined ? {} : { failureDiagnostic: failureDiagnostic(error) }),
       },

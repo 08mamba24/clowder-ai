@@ -79,6 +79,8 @@ export type BridgeDispatchOutcome =
       readonly reason: Extract<BridgeFallbackReason, 'host-append-failed' | 'dispatch-failed'>;
       readonly message: string;
       readonly detail?: string;
+      /** A typed Host rejection; arbitrary thrown errors do not establish this code. */
+      readonly errorCode?: string;
       readonly idempotentReplay?: boolean;
       readonly failureDiagnostic?: CloudBridgeFailureDiagnosticV1;
     };
