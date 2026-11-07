@@ -13,9 +13,7 @@ import { sendMessageSchema } from '../dist/routes/messages.schema.js';
 function isUnrecognizedKey(key) {
   const parsed = sendMessageSchema.safeParse({ [key]: 'sentinel' });
   if (parsed.success) return false;
-  return parsed.error.issues.some(
-    (issue) => issue.code === 'unrecognized_keys' && (issue.keys ?? []).includes(key),
-  );
+  return parsed.error.issues.some((issue) => issue.code === 'unrecognized_keys' && (issue.keys ?? []).includes(key));
 }
 
 describe('f296 alpha UAT contract guard', () => {

@@ -280,10 +280,7 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
           parentInvocationId: `parent-${invocationNumber}`,
           childInvocationId: `child-${invocationNumber}`,
         });
-        return Response.json(
-          { status: 'queued', merged: false, userMessageId },
-          { status: 202 },
-        );
+        return Response.json({ status: 'queued', merged: false, userMessageId }, { status: 202 });
       }
       if (url.pathname.endsWith('/executions')) {
         // Executions are parent-keyed: a harness that wrongly recovers the
@@ -497,7 +494,12 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
         request: driver.request,
         observe: async () => assert.fail('unsupported control must not run the observation journey'),
       }),
-      { journey: 'authoritative-compaction', outcome: 'unsupported', reason: 'native_session_unavailable', observation: null },
+      {
+        journey: 'authoritative-compaction',
+        outcome: 'unsupported',
+        reason: 'native_session_unavailable',
+        observation: null,
+      },
     );
     assert.equal(driver.callCount(), 1);
 
@@ -517,7 +519,12 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
       options,
       threadId: 'thread-1',
       request: driver.request,
-      observe: async () => ({ journey: 'authoritative-compaction', outcome: 'passed', reason: 'observed', observation: null }),
+      observe: async () => ({
+        journey: 'authoritative-compaction',
+        outcome: 'passed',
+        reason: 'observed',
+        observation: null,
+      }),
     });
     assert.equal(observed.outcome, 'passed');
     assert.equal(driver.callCount(), 2);
@@ -549,7 +556,12 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
         request: driver.request,
         observe: async () => assert.fail('unsupported control must not run the observation journey'),
       }),
-      { journey: 'authoritative-compaction', outcome: 'unsupported', reason: 'native_session_unavailable', observation: null },
+      {
+        journey: 'authoritative-compaction',
+        outcome: 'unsupported',
+        reason: 'native_session_unavailable',
+        observation: null,
+      },
     );
   });
 
