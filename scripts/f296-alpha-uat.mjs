@@ -195,6 +195,43 @@ async function awaitProjection(options, invocationId) {
   return null;
 }
 
+export function invocationRequestBody({ threadId, catId, content }) {
+  return {
+    threadId,
+    mentions: [catId],
+    content: `@${catId}\n${content}`,
+  };
+}
+
+// Upstream #1398 unified message delivery: POST /api/messages answers
+// 202 {status:'queued', userMessageId} and the parent invocation id must be
+// recovered from the response message that consumed the stored user message —
+// matching on lifecycle.inputMessageIds keeps the poll from adopting another
+// message. The response message carries BOTH invocation identities
+// (QueueProcessor.ts: stream.invocationId = parent, lifecycle.invocationId =
+// provider turn/child); the downstream awaitInvocation → executions chain is
+// parent-keyed, so extra.stream.invocationId is the one to return. The
+// pre-unification immediate contract answered {status:'processing',
+// invocationId} directly; both shapes are accepted so the journey keeps its
+// original trigger + observation semantics on either deployment.
+async function waitForQueuedInvocation(options, threadId, userMessageId) {
+  const deadline = Date.now() + options.timeoutMs;
+  while (Date.now() < deadline) {
+    const body = await json(options, `/api/messages?threadId=${encodeURIComponent(threadId)}&limit=200`);
+    const messages = Array.isArray(body?.messages) ? body.messages : [];
+    const matched = messages.find(
+      (message) =>
+        message?.lifecycle?.kind === 'response' &&
+        Array.isArray(message.lifecycle.inputMessageIds) &&
+        message.lifecycle.inputMessageIds.includes(userMessageId),
+    );
+    const parentInvocationId = matched?.extra?.stream?.invocationId;
+    if (typeof parentInvocationId === 'string') return parentInvocationId;
+    await delay(options.pollMs);
+  }
+  throw new UatError('failed', 'invocation_timeout');
+}
+
 async function observe(options, threadId, journey, content, expected) {
   const before = await metrics(options);
   const sent = await json(
@@ -202,18 +239,18 @@ async function observe(options, threadId, journey, content, expected) {
     '/api/messages',
     {
       method: 'POST',
-      body: JSON.stringify({
-        threadId,
-        mentions: [options.catId],
-        content: `@${options.catId}\n${content}`,
-        deliveryMode: 'immediate',
-      }),
+      body: JSON.stringify(invocationRequestBody({ threadId, catId: options.catId, content })),
     },
     'invocation_rejected',
   );
-  if (sent.status !== 'processing' || typeof sent.invocationId !== 'string')
-    throw new UatError('failed', 'invocation_rejected');
-  return observeInvocation(options, sent.invocationId, journey, expected, before);
+  let parentInvocationId = null;
+  if (sent?.status === 'processing' && typeof sent.invocationId === 'string') {
+    parentInvocationId = sent.invocationId;
+  } else if (sent?.status === 'queued' && typeof sent.userMessageId === 'string') {
+    parentInvocationId = await waitForQueuedInvocation(options, threadId, sent.userMessageId);
+  }
+  if (!parentInvocationId) throw new UatError('failed', 'invocation_rejected');
+  return observeInvocation(options, parentInvocationId, journey, expected, before);
 }
 
 async function observeInvocation(options, parentInvocationId, journey, expected, before) {
