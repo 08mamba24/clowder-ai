@@ -18,7 +18,7 @@
 | replacement | unsupported / `replacement_input_missing` | 无运营侧 `--oversized-native-thread-id` UUID 输入，harness 按约本地分类、未发请求（PR #67 设计行为） |
 | dynamicPresentation | unsupported / `canonical_dynamic_producer_unavailable` | 真实 alpha 无 canonical dynamic producer 路由，harness 自身设计分类（f296-alpha-uat.mjs:309-316），非失败 |
 
-对照 2026-11-06 基线：当时 cold 卡 `invocation_rejected`（harness↔schema 漂移）、compaction 卡 409 级联——两断点均随 PR #67 消除；本次 400 契约拒绝未再出现，compaction 走到真实 200。
+对照 2026-11-06 基线：当时 cold 卡 `invocation_rejected`（harness↔schema 漂移）、compaction 卡 409 级联。**本轮在 PR #67 代码修复 + §2 两项部署前提修正的共同作用下**，400 契约拒绝未再出现、compaction 走到真实 200；账号拓扑与 web 构建戳修正的贡献属部署前提，不归代码修复本身（第一轮 UAT 在账号拓扑未修正时 compaction 仍报 `native_session_busy` 级联，即为证）。
 
 ## 1. 部署链（全部当场实测）
 
@@ -38,10 +38,11 @@
 - replacement 未执行真实验收：需运营提供 oversized native thread UUID（`--oversized-native-thread-id`），本次无该输入；harness 已按 `replacement_input_missing` 如实分类，**不得**记为 PASS。
 - dynamicPresentation 同理为分类性 unsupported，非 PASS 声明。
 - 第一轮 UAT（账号拓扑修正前，exit 1，cold `invocation_timeout`）留档于 `/tmp/f296-uat-pr67.json`；其价值是暴露坑①，结果不计入验收。
-- alpha 栈验收后保持运行（3011/3012/4111 + 6397），供后续复验；如需释放走 `alpha-worktree.sh stop`（注意：nohup 链下 wrapper 可能报 ownership 未证实，需按 cwd 证据精确处置，见本次过程）。
+- **trace/span 证据边界（UNVERIFIED）**：四条 journey 的 trace/span 引用是 harness canonical 输出的原样记录（格式合法、与归档 JSON 一致，独立复核已确认），但未保存独立的脱敏 span 快照；栈现已关停，无法逐 span 回读——**span 级原始证据标 UNVERIFIED**。journey 的 `passed(observed)` 判定依据是 harness 断言与服务端请求日志（compact-native req-2z 200），不依赖该回读。
+- **alpha 栈状态（区分两个时点）**：验收当时（2026-11-08 04:0x UTC，UAT 运行窗口）3011/3012/4111/9464 全部在服务、redis 6397 PONG（dbsize 112）。**最终交接状态**（04:12 UTC 起砚砚61 与谱谱各自独立实读一致）：三口 + 9464 均 connection refused——daemon 日志以优雅关闭收尾（"正在关闭服务…再见🐾"，非崩溃，非谱谱所停），仅 redis 6397 存活（dbsize 211，数据连续）。复验需按 §1 配方重启（从主仓启动 wrapper，注意 §2 两坑）。
 
-## 4. 工位
+## 4. 工位（最终交接状态）
 
-`cat-cafe-f296-fix`（我的 PR 工位）本次未动，仍 `8e9006bc7`、干净，等 retention 决定；alpha 验收实际在 `cat-cafe-alpha` 栈完成。
+`cat-cafe-f296-fix`（我的 PR 工位）已于交接时 finish：确认 `8e9006bc7` 存在于 origin PR 分支后，`git worktree remove` + 删除本地分支；当前 `git worktree list` 已无该条目（独立复核同读）。alpha 验收实际在 `cat-cafe-alpha` 栈完成，该 worktree 保留。
 
 [谱谱/glm-5.3🐾]
