@@ -39,7 +39,7 @@
 - dynamicPresentation 同理为分类性 unsupported，非 PASS 声明。
 - 第一轮 UAT（账号拓扑修正前，exit 1，cold `invocation_timeout`）留档于 `/tmp/f296-uat-pr67.json`；其价值是暴露坑①，结果不计入验收。
 - **trace/span 证据边界（UNVERIFIED）**：四条 journey 的 trace/span 引用是 harness canonical 输出的原样记录（格式合法、与归档 JSON 一致，独立复核已确认），但未保存独立的脱敏 span 快照；栈现已关停，无法逐 span 回读——**span 级原始证据标 UNVERIFIED**。journey 的 `passed(observed)` 判定依据是 harness 断言与服务端请求日志（compact-native req-2z 200），不依赖该回读。
-- **alpha 栈状态（区分两个时点）**：验收当时（2026-11-08 04:0x UTC，UAT 运行窗口）3011/3012/4111/9464 全部在服务、redis 6397 PONG（dbsize 112）。**最终交接状态**（04:12 UTC 起砚砚61 与谱谱各自独立实读一致）：三口 + 9464 均 connection refused——daemon 日志以优雅关闭收尾（"正在关闭服务…再见🐾"，非崩溃，非谱谱所停），仅 redis 6397 存活（dbsize 211，数据连续）。复验需按 §1 配方重启（从主仓启动 wrapper，注意 §2 两坑）。
+- **alpha 栈状态（区分两个时点）**：验收当时（2026-11-08 04:0x UTC，UAT 运行窗口）3011/3012/4111/9464 全部在服务、redis 6397 PONG（dbsize 112）。**最终交接状态**（04:12 UTC 起砚砚61 与谱谱各自独立实读一致）：三口 + 9464 均 connection refused，仅 redis 6397 存活（dbsize 211，数据连续）。**停止原因未核实**：daemon 自身 JSON 日志至 04:05:19 `/health` 200 无任何错误，随后一行 pnpm `ELIFECYCLE Command failed`（wrapper 某子命令失败）触发 start-dev 收尾 trap 优雅关闭（"正在关闭服务…再见🐾"，非 API 崩溃）；失败的具体子进程与触发因素在留存日志中不可辨。谱谱未执行 stop/kill；砚砚61 声明其核验为只读、未执行 stop。复验需按 §1 配方重启（从主仓启动 wrapper，注意 §2 两坑）。
 
 ## 4. 工位（最终交接状态）
 
