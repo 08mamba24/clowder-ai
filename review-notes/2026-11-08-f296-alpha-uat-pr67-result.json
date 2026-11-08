@@ -1,0 +1,201 @@
+{
+  "schemaVersion": 2,
+  "revision": "cee530314313ab43164536f94a4d2f60bdf3177a",
+  "dynamicPresentation": {
+    "outcome": "unsupported",
+    "reason": "canonical_dynamic_producer_unavailable",
+    "observation": null
+  },
+  "journeys": [
+    {
+      "journey": "cold",
+      "outcome": "passed",
+      "reason": "observed",
+      "observation": {
+        "mode": "cold",
+        "reason": "no_prior_session",
+        "transition": "scope_first_seen",
+        "delta": "small",
+        "tiers": [
+          {
+            "tier": "T0",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "T1",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "T2",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "invalid",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "unrecognized",
+            "count": 0,
+            "bytes": 0
+          }
+        ],
+        "latencyMs": 17682,
+        "ledgerTerminal": "no_reservation",
+        "traceRefs": [
+          {
+            "traceId": "a35cd76ccae5f2050e3450cf08f87598",
+            "spanId": "12f09028cdf695af"
+          }
+        ]
+      }
+    },
+    {
+      "journey": "resumed-small",
+      "outcome": "passed",
+      "reason": "observed",
+      "observation": {
+        "mode": "hot",
+        "reason": "resume_confirmed",
+        "transition": "resumed",
+        "delta": "small",
+        "tiers": [
+          {
+            "tier": "T0",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "T1",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "T2",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "invalid",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "unrecognized",
+            "count": 0,
+            "bytes": 0
+          }
+        ],
+        "latencyMs": 16596,
+        "ledgerTerminal": "no_reservation",
+        "traceRefs": [
+          {
+            "traceId": "b2b6c29918f764f37be8f7a34ebb116d",
+            "spanId": "23b9e42a56bd3c77"
+          }
+        ]
+      }
+    },
+    {
+      "journey": "resumed-large",
+      "outcome": "passed",
+      "reason": "observed",
+      "observation": {
+        "mode": "hot",
+        "reason": "resume_confirmed",
+        "transition": "resumed",
+        "delta": "large",
+        "tiers": [
+          {
+            "tier": "T0",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "T1",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "T2",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "invalid",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "unrecognized",
+            "count": 0,
+            "bytes": 0
+          }
+        ],
+        "latencyMs": 8316,
+        "ledgerTerminal": "no_reservation",
+        "traceRefs": [
+          {
+            "traceId": "05a60d697124c4795a077c5d5fea7ce9",
+            "spanId": "709586ea7d0060a4"
+          }
+        ]
+      }
+    },
+    {
+      "journey": "replacement",
+      "outcome": "unsupported",
+      "reason": "replacement_input_missing",
+      "observation": null
+    },
+    {
+      "journey": "authoritative-compaction",
+      "outcome": "passed",
+      "reason": "observed",
+      "observation": {
+        "mode": "cold",
+        "reason": "resume_confirmed",
+        "transition": "resumed",
+        "delta": "small",
+        "tiers": [
+          {
+            "tier": "T0",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "T1",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "T2",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "invalid",
+            "count": 0,
+            "bytes": 0
+          },
+          {
+            "tier": "unrecognized",
+            "count": 0,
+            "bytes": 0
+          }
+        ],
+        "latencyMs": 15923,
+        "ledgerTerminal": "no_reservation",
+        "traceRefs": [
+          {
+            "traceId": "c3ff4942398a647db9168e86de80c6bc",
+            "spanId": "7608a023fb2ea0a7"
+          }
+        ]
+      }
+    }
+  ]
+}
