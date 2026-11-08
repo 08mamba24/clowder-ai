@@ -58,6 +58,23 @@ function canonicalSpan(overrides = {}) {
   };
 }
 
+// The resumed journeys assert hot/resumed projections; each journey's trace
+// span must carry its own labels or the observation comparison downgrades a
+// fully delivered invocation to a mismatch.
+function journeySpan(kind) {
+  const keys = CONTEXT_PROJECTION_TELEMETRY_CONTRACT.traceAttributes;
+  if (kind === 'resumed-small' || kind === 'resumed-large') {
+    return canonicalSpan({
+      [keys.disposition]: 'resumed',
+      [keys.reason]: 'resume_confirmed',
+      [keys.transition]: 'resumed',
+      [keys.mode]: 'hot',
+      [keys.deltaSize]: kind === 'resumed-small' ? 'small' : 'large',
+    });
+  }
+  return canonicalSpan();
+}
+
 function journey(observation, name = 'cold') {
   return {
     journey: name,
@@ -164,22 +181,23 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
     const sessionCookie = `cat_cafe_session=${'1'.repeat(64)}`;
     const traceReads = new Map();
     let invocationNumber = 0;
+    const deliveredMessages = [];
     let metricsValue = 0;
     let dynamicCanaryRequests = 0;
     t.after(() => {
       globalThis.fetch = originalFetch;
     });
-    const metricText = (value) => {
-      const projection = projectTraceEvidence(canonicalSpan());
+    const metricLinesFor = (span, value) => {
+      const projection = projectTraceEvidence(span);
       const contract = CONTEXT_PROJECTION_TELEMETRY_CONTRACT;
       const name = (entry) => entry.replaceAll('.', '_');
       const attrs = contract.metricAttributes;
       const labels = [
-        `${name(attrs.disposition)}="fresh"`,
-        `${name(attrs.reason)}="no_prior_session"`,
-        `${name(attrs.transition)}="scope_first_seen"`,
-        `${name(attrs.mode)}="cold"`,
-        `${name(attrs.deltaSize)}="small"`,
+        `${name(attrs.disposition)}="${projection.internal.disposition}"`,
+        `${name(attrs.reason)}="${projection.evidence.reason}"`,
+        `${name(attrs.transition)}="${projection.evidence.transition}"`,
+        `${name(attrs.mode)}="${projection.evidence.mode}"`,
+        `${name(attrs.deltaSize)}="${projection.evidence.delta}"`,
       ].join(',');
       return [
         `${name(contract.metricNames.transitionTotal)}{${labels}} ${value}`,
@@ -191,7 +209,11 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
         ]),
       ].join('\n');
     };
-    globalThis.fetch = async (input) => {
+    // Every scrape advances every journey's label family, so whichever
+    // projection a journey compares with, its own series has grown.
+    const metricText = (value) =>
+      ['fresh', 'resumed-small', 'resumed-large'].map((kind) => metricLinesFor(journeySpan(kind), value)).join('\n');
+    globalThis.fetch = async (input, init) => {
       const url = new URL(input);
       if (url.pathname === '/api/session') {
         return Response.json(
@@ -218,11 +240,55 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
         });
       }
       if (url.pathname === '/api/messages') {
+        // Unified delivery lifecycle (#1398): POST answers 202 queued with the
+        // stored user message id. The response message carries the PARENT
+        // invocation id in extra.stream.invocationId and the provider turn id
+        // in lifecycle.invocationId (QueueProcessor writes both); the poll
+        // matches on lifecycle.inputMessageIds and must return the parent,
+        // which is what the downstream executions lookup is keyed on. An
+        // unrelated response message must never be adopted.
+        if ((init?.method ?? 'GET').toUpperCase() === 'GET') {
+          return Response.json({
+            messages: [
+              {
+                id: 'response-unrelated',
+                lifecycle: {
+                  kind: 'response',
+                  invocationId: 'child-unrelated',
+                  inputMessageIds: ['user-unrelated'],
+                  status: 'completed',
+                },
+                extra: { stream: { invocationId: 'parent-unrelated', turnInvocationId: 'child-unrelated' } },
+              },
+              ...deliveredMessages.map(({ userMessageId, parentInvocationId, childInvocationId }) => ({
+                id: `response-${childInvocationId}`,
+                lifecycle: {
+                  kind: 'response',
+                  invocationId: childInvocationId,
+                  inputMessageIds: [userMessageId],
+                  status: 'completed',
+                },
+                extra: { stream: { invocationId: parentInvocationId, turnInvocationId: childInvocationId } },
+              })),
+            ],
+          });
+        }
         invocationNumber += 1;
-        return Response.json({ status: 'processing', invocationId: `parent-${invocationNumber}` });
+        const userMessageId = `user-${invocationNumber}`;
+        deliveredMessages.push({
+          userMessageId,
+          parentInvocationId: `parent-${invocationNumber}`,
+          childInvocationId: `child-${invocationNumber}`,
+        });
+        return Response.json({ status: 'queued', merged: false, userMessageId }, { status: 202 });
       }
       if (url.pathname.endsWith('/executions')) {
-        const parentNumber = url.pathname.split('/').at(-2).split('-').at(-1);
+        // Executions are parent-keyed: a harness that wrongly recovers the
+        // provider CHILD id must get a 404 here instead of a synthesized
+        // match, so the regression cannot be masked by pattern derivation.
+        const parentCandidate = url.pathname.split('/').at(-2);
+        if (!parentCandidate.startsWith('parent-')) return new Response('', { status: 404 });
+        const parentNumber = parentCandidate.split('-').at(-1);
         return Response.json({
           executionCount: 1,
           executions: [
@@ -241,7 +307,15 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
         traceReads.set(invocationId, count);
         if (invocationId?.startsWith('parent-')) return Response.json({ spans: [], count: 0 });
         if (invocationId === 'child-1' && count === 1) return Response.json({ spans: [], count: 0 });
-        return Response.json({ spans: [canonicalSpan()], count: 1 });
+        // child-2/child-3 are the resumed journeys' provider turns; their
+        // spans must carry the hot/resumed labels those journeys assert.
+        const span =
+          invocationId === 'child-2'
+            ? journeySpan('resumed-small')
+            : invocationId === 'child-3'
+              ? journeySpan('resumed-large')
+              : journeySpan('fresh');
+        return Response.json({ spans: [span], count: 1 });
       }
       return Response.json({}, { status: 404 });
     };
@@ -261,6 +335,14 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
     assert.equal(dynamicCanaryRequests, 1);
     assert.equal(traceReads.get('child-1'), 2);
     assert.equal(traceReads.has('parent-1'), false);
+    // The resumed journeys exercise the unified /api/messages path end to
+    // end: asserting they pass keeps a harness that recovers the provider
+    // CHILD id (executions are parent-keyed) from silently downgrading them
+    // to telemetry_signal_missing while journeys[0] stays green.
+    assert.equal(manifest.journeys[1].journey, 'resumed-small');
+    assert.equal(manifest.journeys[1].outcome, 'passed');
+    assert.equal(manifest.journeys[2].journey, 'resumed-large');
+    assert.equal(manifest.journeys[2].outcome, 'passed');
   });
 
   test('bounds unknown and future enum values to unrecognized', () => {
@@ -382,6 +464,105 @@ describe('F296 B4c Alpha UAT runner red contracts', () => {
       reason: 'compaction_cursor_changed',
       observation: null,
     });
+  });
+
+  test('parses each 409 control body once and classifies transient vs capability states', async () => {
+    const options = { catId: 'codex', pollMs: 1 };
+    const sequenceDriver = (factories) => {
+      let index = 0;
+      let calls = 0;
+      return {
+        request: async () => {
+          calls += 1;
+          const factory = factories[Math.min(index, factories.length - 1)];
+          index += 1;
+          return factory();
+        },
+        callCount: () => calls,
+      };
+    };
+
+    // First-shot NATIVE_SESSION_UNAVAILABLE: the busy probe and the
+    // classification must share ONE body read on the same response object —
+    // re-reading a consumed body previously collapsed this into the generic
+    // capability-unavailable reason.
+    let driver = sequenceDriver([() => Response.json({ code: 'NATIVE_SESSION_UNAVAILABLE' }, { status: 409 })]);
+    assert.deepEqual(
+      await runCompactionJourney({
+        options,
+        threadId: 'thread-1',
+        request: driver.request,
+        observe: async () => assert.fail('unsupported control must not run the observation journey'),
+      }),
+      {
+        journey: 'authoritative-compaction',
+        outcome: 'unsupported',
+        reason: 'native_session_unavailable',
+        observation: null,
+      },
+    );
+    assert.equal(driver.callCount(), 1);
+
+    // BUSY once then a successful control response: one retry, then the
+    // observation journey runs.
+    driver = sequenceDriver([
+      () => Response.json({ code: 'NATIVE_SESSION_BUSY' }, { status: 409 }),
+      () =>
+        Response.json({
+          outcome: 'observed',
+          transition: 'context_compacted',
+          contextMode: 'cold',
+          cursorState: 'preserved',
+        }),
+    ]);
+    const observed = await runCompactionJourney({
+      options,
+      threadId: 'thread-1',
+      request: driver.request,
+      observe: async () => ({
+        journey: 'authoritative-compaction',
+        outcome: 'passed',
+        reason: 'observed',
+        observation: null,
+      }),
+    });
+    assert.equal(observed.outcome, 'passed');
+    assert.equal(driver.callCount(), 2);
+
+    // BUSY then still BUSY: the transient state surfaces as native_session_busy.
+    driver = sequenceDriver([
+      () => Response.json({ code: 'NATIVE_SESSION_BUSY' }, { status: 409 }),
+      () => Response.json({ code: 'NATIVE_SESSION_BUSY' }, { status: 409 }),
+    ]);
+    assert.deepEqual(
+      await runCompactionJourney({
+        options,
+        threadId: 'thread-1',
+        request: driver.request,
+        observe: async () => assert.fail('unsupported control must not run the observation journey'),
+      }),
+      { journey: 'authoritative-compaction', outcome: 'unsupported', reason: 'native_session_busy', observation: null },
+    );
+
+    // BUSY then UNAVAILABLE: the retried response classifies on its own code.
+    driver = sequenceDriver([
+      () => Response.json({ code: 'NATIVE_SESSION_BUSY' }, { status: 409 }),
+      () => Response.json({ code: 'NATIVE_SESSION_UNAVAILABLE' }, { status: 409 }),
+    ]);
+    assert.deepEqual(
+      await runCompactionJourney({
+        options,
+        threadId: 'thread-1',
+        request: driver.request,
+        observe: async () => assert.fail('unsupported control must not run the observation journey'),
+      }),
+      {
+        journey: 'authoritative-compaction',
+        outcome: 'unsupported',
+        reason: 'native_session_unavailable',
+        observation: null,
+      },
+    );
   });
 
   test('requires positive deltas from every canonical B4b metric family', () => {

@@ -38,6 +38,13 @@ const REASONS = new Set([
   'prerequisite_not_observed',
   'provider_replacement_trigger_unavailable',
   'provider_compaction_trigger_unavailable',
+  // Post-#1398 unified delivery + native-control classification splits: keep
+  // operational preconditions and transient states distinct from capability
+  // verdicts so unconfigured runs are never read as provider gaps.
+  'replacement_input_missing',
+  'replacement_candidate_unavailable',
+  'native_session_unavailable',
+  'native_session_busy',
   'replacement_state_mismatch',
   'replacement_state_unavailable',
   'compaction_state_mismatch',

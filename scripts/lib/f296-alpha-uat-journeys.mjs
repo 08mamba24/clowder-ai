@@ -74,8 +74,11 @@ async function readReplacementClaims(options, candidateIds) {
 
 export async function runReplacementJourney({ options, createCanaryThread, json, observe }) {
   const candidateIds = replacementTriggerIds(options);
+  // Missing --oversized-native-thread-id input is an operational precondition
+  // of the harness run, not a provider capability verdict — keep it distinct
+  // so an unconfigured run is never read as "carrier does not support it".
   if (candidateIds.length === 0) {
-    return unsupportedJourney('replacement', 'provider_replacement_trigger_unavailable');
+    return unsupportedJourney('replacement', 'replacement_input_missing');
   }
   const claims = await readReplacementClaims(options, candidateIds);
   const selection = selectReplacementTriggerCandidate({
@@ -84,7 +87,7 @@ export async function runReplacementJourney({ options, createCanaryThread, json,
     catId: options.catId,
     userId: options.userId,
   });
-  if (!selection) return unsupportedJourney('replacement', 'provider_replacement_trigger_unavailable');
+  if (!selection) return unsupportedJourney('replacement', 'replacement_candidate_unavailable');
   let threadId = selection.threadId;
   if (selection.mode === 'bind') {
     threadId = await createCanaryThread(options, 'F296 replacement Alpha canary');
@@ -143,13 +146,37 @@ export async function runReplacementJourney({ options, createCanaryThread, json,
 }
 
 export async function runCompactionJourney({ options, threadId, request, observe }) {
-  const response = await request(
-    options,
-    `/api/threads/${encodeURIComponent(threadId)}/sessions/${encodeURIComponent(options.catId)}/compact-native`,
-    { method: 'POST' },
-  );
+  const compactPath = `/api/threads/${encodeURIComponent(threadId)}/sessions/${encodeURIComponent(
+    options.catId,
+  )}/compact-native`;
+  // A response body can only be read once — parse each control response a
+  // single time and carry the parsed code forward instead of re-reading.
+  const readControlCode = async (candidate) => {
+    try {
+      return (await candidate.json())?.code ?? null;
+    } catch {
+      // An unreadable control-surface error keeps the conservative
+      // capability-unavailable classification instead of guessing a cause.
+      return null;
+    }
+  };
+  let response = await request(options, compactPath, { method: 'POST' });
+  let code = response.status === 409 ? await readControlCode(response) : null;
+  // NATIVE_SESSION_BUSY is a transient admission state, not a capability
+  // verdict — retry once after a poll interval before classifying.
+  if (code === 'NATIVE_SESSION_BUSY') {
+    await new Promise((resolve) => setTimeout(resolve, options.pollMs));
+    response = await request(options, compactPath, { method: 'POST' });
+    code = response.status === 409 ? await readControlCode(response) : null;
+  }
   if (response.status === 404 || response.status === 409) {
-    return unsupportedJourney('authoritative-compaction', 'provider_compaction_trigger_unavailable');
+    const reason =
+      code === 'NATIVE_SESSION_UNAVAILABLE'
+        ? 'native_session_unavailable'
+        : code === 'NATIVE_SESSION_BUSY'
+          ? 'native_session_busy'
+          : 'provider_compaction_trigger_unavailable';
+    return unsupportedJourney('authoritative-compaction', reason);
   }
   if (!response.ok) {
     let code;
