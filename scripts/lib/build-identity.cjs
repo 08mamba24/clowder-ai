@@ -390,6 +390,14 @@ if (require.main === module) {
     );
   } else if (action === 'revision') {
     process.stdout.write(JSON.parse(root).revision ?? '');
+  } else if (action === 'target') {
+    // Side-effect-free target read for callers deciding whether to reuse
+    // existing artifacts: the same capture rules as the build transaction
+    // (HEAD^{commit} with clean build inputs), but no directories are created
+    // and no stamps are invalidated. Empty output means the target is
+    // unprovable and reuse must fail closed.
+    const state = captureBuildState(root);
+    process.stdout.write(state?.revision ?? '');
   } else if (!root || !existsSync(path.resolve(root, 'package.json'))) {
     throw new Error('build identity requires a package root');
   } else if (action === 'begin') {

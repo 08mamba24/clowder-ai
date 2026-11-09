@@ -1166,6 +1166,37 @@ frontend_launch_command() {
     fi
 }
 
+# A --prod-web --quick start may only reuse the existing web production build
+# when every required build stamp equals the current source target. Otherwise
+# API/shared and web would run different revisions and /health
+# deploymentRevision would silently become null (stamps must agree).
+prod_web_quick_stamps_fresh() {
+    local target="$1" pkg stamp
+    [ -n "$target" ] || return 1
+    [ -f "$PROJECT_DIR/packages/web/.next/BUILD_ID" ] || return 1
+    for pkg in shared api mcp-server; do
+        stamp="$(cat "$PROJECT_DIR/packages/$pkg/dist/.build-commit" 2>/dev/null)" || return 1
+        [ "$stamp" = "$target" ] || return 1
+    done
+    stamp="$(cat "$PROJECT_DIR/packages/web/.next/.build-commit" 2>/dev/null)" || return 1
+    [ "$stamp" = "$target" ] || return 1
+}
+
+enforce_prod_web_quick_freshness() {
+    [ "$QUICK_MODE" = true ] || return 0
+    [ "$PROD_WEB" = true ] || return 0
+    # The verified runtime artifacts path carries its own stricter precondition.
+    [ "$CLI_CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED_OVERRIDE" = "1" ] && return 0
+    local target
+    target="$(node "$SCRIPT_DIR/lib/build-identity.cjs" target "$PROJECT_DIR" 2>/dev/null || true)"
+    if prod_web_quick_stamps_fresh "$target"; then
+        echo "[start-dev] quick reuse accepted: all build stamps match target ${target}"
+    else
+        echo "[start-dev] quick web reuse refused: required build stamps do not match target ${target:-<unprovable>}; running the full build transaction"
+        QUICK_MODE=false
+    fi
+}
+
 web_production_build_ready() {
     [ -f "$PROJECT_DIR/packages/web/.next/BUILD_ID" ]
 }
@@ -1899,6 +1930,7 @@ main() {
         echo -e "${GREEN}  ✓ 依赖安装完成${NC}"
     fi
     ensure_api_native_addons
+    enforce_prod_web_quick_freshness
 
     # 3. 构建 shared + API (除非 --quick)
     if [ "$QUICK_MODE" = false ]; then
