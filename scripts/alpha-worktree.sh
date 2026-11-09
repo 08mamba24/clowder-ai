@@ -324,8 +324,42 @@ migrate_legacy_alpha_worktree() {
   git -C "$PROJECT_DIR" worktree move "$LEGACY_ALPHA_DIR" "$ALPHA_DIR"
 }
 
+# The managed Alpha workspace root is exported from PROJECT_DIR
+# (apply_alpha_env -> CAT_CAFE_WORKSPACE_ROOT) and the account store resolves
+# its primary root against that workspace root. A wrapper launched from inside
+# a linked worktree silently rebinds every bound-account lookup onto that
+# worktree and only fails much later as "bound account ... not found" queue
+# noise. Fail closed unless the wrapper runs from the repository's primary
+# checkout on branch main.
+wrapper_primary_checkout_ok() {
+  local git_dir common_dir branch
+  git_dir="$(git -C "$PROJECT_DIR" rev-parse --absolute-git-dir 2>/dev/null)" || git_dir=""
+  common_dir="$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || common_dir=""
+  branch="$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null)" || branch=""
+  [ -n "$git_dir" ] && [ "$git_dir" = "$common_dir" ] && [ "$branch" = "main" ]
+}
+
+assert_wrapper_primary_checkout() {
+  if ! wrapper_primary_checkout_ok; then
+    local common_dir primary_root
+    common_dir="$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || common_dir=""
+    primary_root=""
+    if [ -n "$common_dir" ] && [ -d "$(dirname "$common_dir")" ]; then
+      primary_root="$(cd "$(dirname "$common_dir")" && pwd)"
+    fi
+    die "refusing to manage Alpha from a linked worktree; wrapper PROJECT_DIR=$PROJECT_DIR${primary_root:+, primary checkout: $primary_root}. Start from the primary checkout instead: cd <primary-checkout> && ./scripts/alpha-worktree.sh ${COMMAND:-start}"
+  fi
+}
+
+warn_if_wrapper_not_primary_checkout() {
+  if ! wrapper_primary_checkout_ok; then
+    echo "[alpha-worktree] WARN: wrapper runs from a non-primary checkout (PROJECT_DIR=$PROJECT_DIR); manage Alpha from the primary checkout on branch main" >&2
+  fi
+}
+
 init_alpha_worktree() {
   if [ -n "$NAMED_ALPHA_COORDINATES" ]; then init_named_alpha_worktree; return; fi
+  assert_wrapper_primary_checkout
   require_git_repo
   ensure_remote_exists
 
@@ -370,6 +404,7 @@ init_alpha_worktree() {
 
 sync_alpha_worktree() {
   if [ -n "$NAMED_ALPHA_COORDINATES" ]; then sync_named_alpha_worktree; return; fi
+  assert_wrapper_primary_checkout
   require_git_repo
   ensure_remote_exists
   worktree_exists || die "alpha worktree not found at $ALPHA_DIR (run init first)"
@@ -396,6 +431,7 @@ sync_alpha_worktree() {
 }
 
 status_alpha_worktree() {
+  warn_if_wrapper_not_primary_checkout
   require_git_repo
   if ! worktree_exists; then
     echo "alpha worktree: missing"
@@ -441,6 +477,7 @@ status_alpha_worktree() {
 }
 
 stop_alpha_daemon() {
+  warn_if_wrapper_not_primary_checkout
   local root daemon_state_path
   root="$(abs_path "$ALPHA_DIR")"
   [ -d "$root" ] || die "alpha root not found: $root"
@@ -502,6 +539,7 @@ build_alpha_stale_packages() {
 
 start_alpha_worktree() {
   if [ -n "$NAMED_ALPHA_COORDINATES" ]; then start_named_alpha_worktree; return; fi
+  assert_wrapper_primary_checkout
   if ! worktree_exists && legacy_worktree_exists; then
     migrate_legacy_alpha_worktree
   fi
