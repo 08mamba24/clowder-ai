@@ -16,7 +16,7 @@ Authorization: “直接实现！！然后让小星星review”. Author: cat-yan
 
 Reuse the running usage-monitor collector without invoking a model, network request or credential refresh on a dispatch path. Its account/window observations appear through the existing `get_thread_cats(forRole=review|architecture|implementation)` discovery and F293 actual-send preflight. F051/source collection keeps ownership of quota facts; F293 composes routing decisions. No new UI, separate routing ledger, scheduler or MCP server.
 
-The producer change is in `08mamba24/usage-monitor`, branch `feat/routing-snapshot`. Both repository heads must be reviewed together. Existing used-percentage data and display strings remain compatible. The collector adds schema version 2, per-provider UTC epoch milliseconds, credential fingerprints, exact used percentages, absolute resets where available, separate Gemini model/token windows, and atomic cache replacement.
+The producer change is in `08mamba24/usage-monitor`, branch `feat/routing-snapshot`. Both repository heads must be reviewed together. Existing used-percentage data and display strings remain compatible. The collector adds schema version 2, per-provider UTC epoch milliseconds, credential fingerprints, exact used percentages, absolute resets where available, separate Gemini model/token windows, and atomic cache replacement. POSIX files use mode 0600; Windows permissions follow its user-directory ACL and are not represented by Unix mode bits.
 
 ## Operator setup and real entry
 
