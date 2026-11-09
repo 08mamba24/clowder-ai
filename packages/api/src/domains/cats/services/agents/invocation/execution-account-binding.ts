@@ -18,6 +18,7 @@ import { resolveActiveProjectRoot } from '../../../../../utils/active-project-ro
 import type { FrozenExecutionWorkspace } from './execution-workspace.js';
 
 export interface FrozenExecutionBinding {
+  readonly modelId?: string;
   readonly catConfig?: CatConfig;
   readonly workspace: FrozenExecutionWorkspace;
   readonly projectRoot: string;
@@ -89,6 +90,7 @@ export function freezeExecutionAccountBinding(input: {
             })
           : undefined;
   return Object.freeze({
+    modelId: input.model ?? catConfig?.defaultModel,
     catConfig,
     workspace: input.workspace,
     projectRoot,

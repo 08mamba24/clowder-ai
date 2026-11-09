@@ -277,12 +277,22 @@ export function reduceRoutingContext(rawInput: ReduceRoutingContextInput): Routi
         .filter((diagnostic) => diagnostic.catId === binding.catId)
         .map((diagnostic) => diagnostic.reason)
         .slice(0, 32);
-      const signalState = reduceCandidateSignals({
+      let signalState = reduceCandidateSignals({
         candidate: binding,
         events: signalEvents,
         closures,
         observedAt: rawInput.observedAt,
       });
+      const monitor = usageMonitorCapacityPolicy(binding, rawInput.observedAt);
+      if (
+        monitor &&
+        signalState.availability !== 'unavailable' &&
+        (signalState.availability === 'available' ||
+          monitor.availability === 'unavailable' ||
+          (monitor.availability === 'scarce' && signalState.availability === 'unknown'))
+      ) {
+        signalState = { ...monitor, reasons: [...signalState.reasons, ...monitor.reasons].slice(0, 32) };
+      }
       return {
         binding,
         profile:
@@ -326,3 +336,5 @@ export function reduceRoutingContext(rawInput: ReduceRoutingContextInput): Routi
     candidates: projectedCandidates,
   });
 }
+
+import { usageMonitorCapacityPolicy } from './usage-monitor-capacity-policy.js';

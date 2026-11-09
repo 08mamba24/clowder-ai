@@ -6,6 +6,7 @@ import {
 } from '../../../config/account-routing-capacity.js';
 import { resolveOwnerGate } from '../../../utils/owner-gate.js';
 import type { RoutingCandidateCatalogSnapshot, RoutingCandidateCatalogSource } from '../RoutingContextReadService.js';
+import { readUsageMonitorRouting } from '../UsageMonitorRoutingSource.js';
 
 export interface RuntimeRoutingCandidateCatalogSourceOptions {
   getConfigs: () => Record<string, CatConfig>;
@@ -57,6 +58,15 @@ export class RuntimeRoutingCandidateCatalogSource implements RoutingCandidateCat
         );
       }
     }
+    const monitor =
+      this.options.projectRoot && !resolveOwnerGate(input.ownerId)
+        ? readUsageMonitorRouting({
+            projectRoot: this.options.projectRoot,
+            configs,
+            observedAt: input.observedAt ?? Date.now(),
+            executionBindings: input.executionBindings,
+          })
+        : new Map();
     const allCandidates: RoutingCandidateBindingV1[] = entries.map(([catId, config]) => ({
       v: 1,
       catId,
@@ -65,6 +75,14 @@ export class RuntimeRoutingCandidateCatalogSource implements RoutingCandidateCat
         (config.provider?.trim() || config.clientId),
       provenQuotaPools: [],
       ...capacity?.get(catId),
+      ...(monitor.has(catId)
+        ? {
+            capacityFacts: {
+              ...monitor.get(catId),
+              switchRequired: capacity?.get(catId)?.capacityFacts?.switchRequired ?? [],
+            },
+          }
+        : {}),
     }));
     return {
       catalogRevision: catalogDigest(

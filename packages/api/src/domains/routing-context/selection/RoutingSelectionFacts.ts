@@ -3,7 +3,7 @@ import type { RoutingSnapshotReadModel } from '../RoutingContextReadService.js';
 
 const windowNames = { five_hour: '5h', seven_day: '7d', monthly: 'month', credits: 'credits', unknown: 'window?' };
 const column = (window: RoutingCapacityWindowV1) =>
-  `${window.poolKind.replace('codex-', '')}/${windowNames[window.kind]}`;
+  window.label ?? `${window.poolKind.replace('codex-', '')}/${windowNames[window.kind]}`;
 
 /** A compact table shares labels/timestamps, never balances or pool applicability. */
 export function routingSelectionFacts(model: RoutingSnapshotReadModel): string {
@@ -54,7 +54,7 @@ export function routingSelectionFacts(model: RoutingSnapshotReadModel): string {
     return `${account.accountLabel ?? '当前号'} ${account.plan ?? ''} ${account.state}${account.reason ? `(${account.reason})` : ''} obs${account.observedAt === undefined ? '?' : time(account.observedAt)}: ${cells.join('|')}`;
   };
   const lines = [
-    ...(columns.length ? [`账号观测；applicability unknown。列: ${columns.join('|')}`] : []),
+    ...(columns.length ? [`账号观测；applicability unknown 表示未绑定执行，仅供参考。列: ${columns.join('|')}`] : []),
     ...[...current.values()].map(
       ({ cats, account, warnings }) => `${cats.join(',')}: ${accountLine(account)}${warnings}`,
     ),

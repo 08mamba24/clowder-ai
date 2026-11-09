@@ -106,6 +106,7 @@ export interface RoutingExecutionBindingProof {
   catId: string;
   accountRevision?: string;
   providerId?: string;
+  modelId?: string;
 }
 
 /** One physical account-store snapshot per catalog read; no F293 writer or extra ledger. */
