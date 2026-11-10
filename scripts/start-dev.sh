@@ -1175,6 +1175,9 @@ prod_web_quick_stamps_fresh() {
     [ -n "$target" ] || return 1
     [ -f "$PROJECT_DIR/packages/web/.next/BUILD_ID" ] || return 1
     for pkg in shared api mcp-server; do
+        # Required product entry per build-identity PRODUCTS: a surviving
+        # stamp with a deleted entry must not keep the quick reuse alive.
+        [ -f "$PROJECT_DIR/packages/$pkg/dist/index.js" ] || return 1
         stamp="$(cat "$PROJECT_DIR/packages/$pkg/dist/.build-commit" 2>/dev/null)" || return 1
         [ "$stamp" = "$target" ] || return 1
     done
@@ -1185,8 +1188,9 @@ prod_web_quick_stamps_fresh() {
 enforce_prod_web_quick_freshness() {
     [ "$QUICK_MODE" = true ] || return 0
     [ "$PROD_WEB" = true ] || return 0
-    # The verified runtime artifacts path carries its own stricter precondition.
-    [ "$CLI_CAT_CAFE_RUNTIME_ARTIFACTS_VERIFIED_OVERRIDE" = "1" ] && return 0
+    # Only the full verified-runtime predicate earns the exemption; a bare
+    # verified flag from any other deployment or checkout must not.
+    verified_runtime_artifacts_for_current_tree && return 0
     local target
     target="$(node "$SCRIPT_DIR/lib/build-identity.cjs" target "$PROJECT_DIR" 2>/dev/null || true)"
     if prod_web_quick_stamps_fresh "$target"; then
