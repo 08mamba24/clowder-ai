@@ -188,14 +188,61 @@ test('sealed session id retries as an explicit fresh turn instead of wedging aft
   }));
   assert.deepEqual(sealed, ['wedged-session']);
   // Turn B: the pool now hands out canResumeRequestedSession=false for that id
-  // (sealed) — the carrier must take the sealed_fresh path, create a session,
-  // and never wedge on the sealed binding or hit the fail-closed error.
+  // (sealed) — the carrier must take the sealed_fresh path with the controlled
+  // replay, create a session, keep continuity, and never wedge.
   const messages = [];
-  for await (const message of service.invoke('second', { sessionId: 'wedged-session' })) messages.push(message);
+  for await (const message of service.invoke('second', {
+    sessionId: 'wedged-session',
+    rebuildContextPrompt: REBUILD_PREFIX,
+  }))
+    messages.push(message);
   assert.ok(calls.includes('prompt'), 'the follow-up turn must still reach the model');
   const error = messages.find((message) => message.type === 'error');
   assert.ok(!error, `sealed retry must not fail: ${error?.error ?? ''}`);
   assert.ok(prompted.at(-1).includes('second'));
+  const audited = messages.find((message) => message.metadata?.sessionRebuild);
+  assert.ok(audited, 'sealed retry is audited as a rebuild');
+  assert.equal(audited.metadata.sessionRebuild.reason, 'sealed_session_retry');
+  assert.equal(audited.metadata.sessionRebuild.fromSessionId, 'wedged-session');
+  assert.deepEqual(audited.metadata.sessionRebuild.replay, {
+    messageCount: 2,
+    estimatedTokens: 48,
+    truncated: false,
+  });
+});
+
+test('sealed retry without a replay prefix fails closed before any model call', async () => {
+  const { calls, sealed, prompted, service } = fixture({ resumeSupport: 'none', sealLeaseAfterFirstAcquire: true });
+  for await (const message of service.invoke('first', {
+    sessionId: 'wedged-session',
+    rebuildContextPrompt: REBUILD_PREFIX,
+  }));
+  // Turn B without a replay: a sealed fresh turn must never run the model on a
+  // silently amnesiac session.
+  const messages = [];
+  for await (const message of service.invoke('second', { sessionId: 'wedged-session' })) messages.push(message);
+  assert.equal(prompted.length, 1, 'only turn A reached the model; turn B must not prompt without the controlled replay');
+  const error = messages.find((message) => message.type === 'error');
+  assert.ok(error, 'sealed retry without replay must surface a fail-closed error');
+  assert.equal(error.error.includes('受控历史重放缺失'), true);
+});
+
+test('sealed retry with a malformed replay header fails closed the same way', async () => {
+  const { prompted, service } = fixture({ resumeSupport: 'none', sealLeaseAfterFirstAcquire: true });
+  for await (const message of service.invoke('first', {
+    sessionId: 'wedged-session',
+    rebuildContextPrompt: REBUILD_PREFIX,
+  }));
+  const messages = [];
+  for await (const message of service.invoke('second', {
+    sessionId: 'wedged-session',
+    rebuildContextPrompt: MALFORMED_PREFIX,
+  }))
+    messages.push(message);
+  assert.equal(prompted.length, 1, 'only turn A reached the model');
+  const error = messages.find((message) => message.type === 'error');
+  assert.ok(error);
+  assert.equal(error.error.includes('不合规'), true);
 });
 
 test('newSession failure during a rebuild surfaces as an error, never a silent success', async () => {

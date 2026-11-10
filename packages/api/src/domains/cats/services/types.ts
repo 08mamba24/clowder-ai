@@ -140,7 +140,7 @@ export interface MessageMetadata {
    */
   sessionRebuild?: {
     fromSessionId: string;
-    reason: 'provider_without_resume_capability';
+    reason: 'provider_without_resume_capability' | 'sealed_session_retry';
     replay?: { messageCount: number; estimatedTokens: number; truncated: boolean };
   };
   usage?: TokenUsage;

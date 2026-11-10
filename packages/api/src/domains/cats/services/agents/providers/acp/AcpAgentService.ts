@@ -684,10 +684,31 @@ export class AcpAgentService implements AgentService {
           : 'resume_requested'
         : 'fresh_without_resume';
       const resumeSessionId = resumeDisposition === 'resume_requested' ? options?.sessionId : undefined;
-      if (resumeDisposition === 'sealed_fresh') {
+      const sealedSessionId = resumeDisposition === 'sealed_fresh' ? options?.sessionId : undefined;
+      if (resumeDisposition === 'sealed_fresh' && sealedSessionId) {
+        // Same defense line as the rebuilt preflight above: giving up on a
+        // sealed session means the agent-side history is gone, so the fresh
+        // replacement may only reach the model carrying a valid controlled
+        // replay. Missing or malformed replay is wiring damage — block before
+        // the model call, keep the history, audit the rejection.
+        const sealedReplayHeader = options?.rebuildContextPrompt?.match(REBUILD_REPLAY_HEADER);
+        if (!sealedReplayHeader) {
+          throw new AcpSessionBindingError(
+            'ACP 会话已封存且受控历史重放缺失或不合规；已保留原历史并阻断新建会话。',
+          );
+        }
+        metadata.sessionRebuild = {
+          fromSessionId: sealedSessionId,
+          reason: 'sealed_session_retry',
+          replay: {
+            messageCount: Number(sealedReplayHeader[1]),
+            estimatedTokens: Number(sealedReplayHeader[2]),
+            truncated: sealedReplayHeader[3] === 'true',
+          },
+        };
         log.warn(
-          { ...ctx, sealedSessionId: options?.sessionId },
-          'ACP cancelled session is sealed; creating a fresh replacement session',
+          { ...ctx, sealedSessionId },
+          'ACP cancelled session is sealed; creating a fresh replacement session with the controlled replay',
         );
       }
 
