@@ -1823,6 +1823,14 @@ export function applyMigrations(db: Database.Database): void {
       db.prepare('INSERT INTO schema_version(version,applied_at) VALUES (?,?)').run(74, new Date().toISOString());
     })();
   }
+  // V75: cancelled consumed carriers still need their durable terminal receipt.
+  if (currentVersion < 75) {
+    db.transaction(() => {
+      db.exec('DROP INDEX IF EXISTS idx_dynamic_managed_candidates');
+      db.exec(MANAGED_COMMAND_CANDIDATE_INDEX);
+      db.prepare('INSERT INTO schema_version(version,applied_at) VALUES (?,?)').run(75, new Date().toISOString());
+    })();
+  }
 }
 
 /**

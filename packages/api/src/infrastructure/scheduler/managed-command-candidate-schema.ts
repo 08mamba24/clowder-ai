@@ -4,6 +4,8 @@ export const MANAGED_COMMAND_CANDIDATE_FILTER = `template_id = 'reminder'
   AND json_extract(params_json, '$.holdLifecycle.mode') = 'wake_when'
   AND ((enabled = 1 AND json_extract(params_json, '$.holdLifecycle.status') = 'active')
     OR json_extract(params_json, '$.holdLifecycle.managedCommand.state') IN ('command_running', 'condition_met')
+    OR (json_extract(params_json, '$.holdLifecycle.status') = 'cancel_requested'
+      AND json_extract(params_json, '$.holdLifecycle.managedCommand.state') = 'consumed')
     OR (json_extract(params_json, '$.holdLifecycle.managedCommand.state') = 'not_started'
       AND json_extract(params_json, '$.holdLifecycle.managedCommand.admissionFactAppended') = 0))`;
 
