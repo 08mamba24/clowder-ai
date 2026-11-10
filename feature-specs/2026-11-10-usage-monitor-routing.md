@@ -60,9 +60,22 @@ Bindings hot-reload on the next read. Removing an entry removes only its monitor
 - [x] Shared pools, Gemini model isolation, rounding and paid overage are covered. Persistent collectors fetch a new Codex sample each batch.
 - [x] Existing account/privacy/health/manual restriction tests pass.
 - [x] Review P1 regressions: same-home native login changes cannot hard-block; config-only Claude/Gemini launches remain advisory; same-token Codex workspace switches change the source fingerprint while Codex/Spark continue sharing it.
-- [ ] Small Star (`astra`) reviews exact heads of both repositories.
+- [x] Small Star (`astra`) reviews exact heads of both repositories.
 
 Production activation and real account binding are separate from isolated development verification. No deployment or runtime restart is performed as part of preparing review.
+
+## Delivery and activation
+
+Both changes landed in `origin/main` on 2026-11-10:
+
+- Clowder [PR #70](https://github.com/08mamba24/clowder-ai/pull/70): `164fb6952f1b2d5d5cf5215aedae478e130d0d5d`.
+- Producer [PR #5](https://github.com/08mamba24/usage-monitor/pull/5): `908a0ddf1fe05fbd9a1f61f21c9ac744d146484d`.
+
+Astra approved reviewed heads `126dc15a8c5a1e4c33da82a827012940baa34cbe` and `00d8e906171b5c75c7dc732a1b45795697700f40`, respectively, with no remaining P1/P2. Typed review facts are thread messages `0001794299447152-000721-d195de9c` and `0001794299447180-000722-42c84257`. Both squash-merge trees exactly match their reviewed trees; no post-review code delta was introduced. E1-E5 and the selected targeted checks passed; no full-suite claim is made.
+
+Post-merge acceptance used the exact merged Clowder revision in a new worktree with Node 24, frozen-lockfile dependencies and temporary HOME/data. API build and all 20 monitor discovery/preflight/CLI tests passed. The merged producer passed 77 Python tests and 10 Swift regressions with temporary HOME. Its main Windows CI [run 42783596639](https://github.com/08mamba24/usage-monitor/actions/runs/42783596639) passed. The primary Clowder checkout's earlier build attempt failed against pre-existing stale dependencies (plugin-contract beta.12 and missing Claude SDK); the fresh checkout used the locked candidate.0 / SDK 0.3.285 versions and passed. That failed attempt is not counted as passed verification.
+
+`main=landed`; `live=dormant` pending authorized deployment, producer installation and explicit operator binding. Runtime checkout was `93618b04783d0a516ac2e928dc00c08e7edd7d82` at merge verification; no restart or production binding was performed. Original Task `0001794244937302-000453-3aaa1e78` owns deployment wait generation 1 for runtime to contain frozen revision `164fb6952f1b2d5d5cf5215aedae478e130d0d5d` with API ready. The durable wait was successfully registered; it grants no restart authority. Its continuation checks the installed producer/schema, explicit binding, and actual role-discovery/preflight path from a new invocation. Live acceptance remains open on that Task.
 
 Reproduction: install this checkout's locked dependencies with Node 24 and build `@cat-cafe/api` (its build also builds shared and MCP). In `packages/api`, run `node scripts/with-test-home.mjs --env CAT_CAFE_DISABLE_SHARED_STATE_PREFLIGHT=1 node --import ./test/helpers/setup-cat-registry.js --test --test-concurrency=4 test/routing-*.test.js test/usage-monitor-routing.test.js test/quota-routing-signal-wiring.test.js test/callback-thread-cats.test.js`. In the producer checkout run `bash tests/run.sh`. Development `.env` uses Redis 6398; tests isolate their config/data and fake providers. No production Redis or provider inference calls are used.
 
