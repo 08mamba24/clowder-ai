@@ -4,6 +4,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Repo-locating variables inherited from the caller would split the wrapper's
+# git identity: the guard probes one repository while fetch/worktree-add
+# register in whatever GIT_DIR points at. Scrub the full locating set in this
+# process (and every child it launches) so the identity checks and ALL real
+# git operations share one repository: the physical checkout this script
+# lives in. The caller's own environment is never modified.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG
 # shellcheck source=scripts/lib/node-runtime-guard.sh
 source "$SCRIPT_DIR/lib/node-runtime-guard.sh"
 # shellcheck source=scripts/lib/quickstart-freshness.sh
@@ -337,7 +345,8 @@ migrate_legacy_alpha_worktree() {
 # identity is read from the physical path only; the caller environment and
 # git configuration stay untouched.
 git_probe() {
-  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+    -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
     -u GIT_CONFIG git -C "$1" "${@:2}" 2>/dev/null
 }
 

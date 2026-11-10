@@ -76,3 +76,19 @@ test('an inherited GIT_DIR cannot silence the warning for a linked worktree', (t
     else process.env.GIT_DIR = previous;
   }
 });
+
+test('an inherited GIT_COMMON_DIR does not refute a legit primary checkout', (t) => {
+  const { directory, root, git } = makeRepo(t);
+  const other = join(directory, 'other-primary');
+  execFileSync('git', ['init', '-q', '-b', 'main', other]);
+  git(['-C', other, 'config', 'user.name', 'Other']);
+  git(['-C', other, 'config', 'user.email', 'other@example.invalid']);
+  const previous = process.env.GIT_COMMON_DIR;
+  process.env.GIT_COMMON_DIR = join(other, '.git');
+  try {
+    assert.equal(alphaWorkspaceTopologyWarning({ deploymentId: 'alpha', workspaceRoot: root }), null);
+  } finally {
+    if (previous === undefined) delete process.env.GIT_COMMON_DIR;
+    else process.env.GIT_COMMON_DIR = previous;
+  }
+});

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -187,3 +187,54 @@ function mkdirMainSubdirHelper(f) {
   mkdirSync(join(f.mainRoot, 'tools'), { recursive: true });
   symlinkSync(join(f.mainRoot, 'scripts'), join(f.mainRoot, 'tools', 'scripts'));
 }
+
+function makeSecondRepo(f, name) {
+  const root = join(f.directory, name);
+  const ex = (args) => execFileSync('git', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  ex(['init', '-q', '-b', 'main', root]);
+  ex(['-C', root, 'config', 'user.name', 'Second Repo']);
+  ex(['-C', root, 'config', 'user.email', 'second@example.invalid']);
+  ex(['-C', root, 'commit', '--allow-empty', '-m', 'second repo']);
+  ex(['-C', root, 'remote', 'add', 'origin', join(f.directory, 'remote.git')]);
+  return root;
+}
+
+test('an inherited GIT_COMMON_DIR pointing elsewhere does not refute a legit primary', (t) => {
+  const f = namedAlphaFixture(t);
+  writeGuardProbe(f);
+  const other = makeSecondRepo(f, 'other-commondir');
+  const result = spawnSync('bash', [join(f.mainRoot, 'scripts', 'guard-probe.sh')], {
+    cwd: f.mainRoot,
+    encoding: 'utf8',
+    env: { ...probeEnv(f), GIT_COMMON_DIR: join(other, '.git') },
+    timeout: 15_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /GUARD_OK/);
+});
+
+test('a full init with an inherited GIT_DIR never registers into the foreign repository', (t) => {
+  const f = namedAlphaFixture(t);
+  const other = makeSecondRepo(f, 'other-gitdir');
+  const before = f.git(['worktree', 'list', '--porcelain'], other);
+  const target = join(f.directory, 'alpha-init-target');
+  const result = spawnSync(
+    'bash',
+    [join(f.mainRoot, 'scripts/alpha-worktree.sh'), 'init', '--dir', target, '--no-install'],
+    {
+      cwd: f.mainRoot,
+      encoding: 'utf8',
+      env: { ...probeEnv(f), GIT_DIR: join(other, '.git') },
+      timeout: 60_000,
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const after = f.git(['worktree', 'list', '--porcelain'], other);
+  assert.equal(after, before, 'the foreign repository registry must stay untouched');
+  const ownList = f.git(['worktree', 'list', '--porcelain'], f.mainRoot);
+  assert.match(
+    ownList,
+    new RegExp(target.replaceAll('/', '\\/')),
+    'the worktree must register under the wrapper repository',
+  );
+});
