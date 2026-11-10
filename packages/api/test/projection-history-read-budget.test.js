@@ -36,6 +36,8 @@ test('managed selector skips unrelated history but keeps retired running and com
     store.insert(task('retired-live', managed('command_running', 'cancelled_by_user'), false));
     store.insert(task('retired-terminal', managed('condition_met', 'retired_by_replacement'), false));
     store.insert(task('settled', managed('consumed', 'fired'), false));
+    store.insert(task('cancel-consumed', managed('consumed', 'cancel_requested'), false));
+    store.insert(task('cancel-settled', managed('consumed', 'cancelled_by_user'), false));
     const pendingAdmission = managed('consumed');
     Object.assign(pendingAdmission.holdLifecycle.managedCommand, {
       admissionFact: 'accepted command',
@@ -50,7 +52,7 @@ test('managed selector skips unrelated history but keeps retired running and com
   })();
   assert.equal(
     store.listManagedCommandCandidates().length,
-    4,
+    5,
     'retired enqueued/dispatched history is not actionable recovery',
   );
   assert.deepEqual(
@@ -58,7 +60,7 @@ test('managed selector skips unrelated history but keeps retired running and com
       .listManagedCommandCandidates()
       .map((t) => t.id.replace('hold-ball-', ''))
       .sort(),
-    ['admission-pending', 'live', 'retired-live', 'retired-terminal'],
+    ['admission-pending', 'cancel-consumed', 'live', 'retired-live', 'retired-terminal'],
   );
   assert.deepEqual(
     listManagedCommandExecutions(store.listManagedCommandCandidates())
@@ -82,6 +84,7 @@ test('managed selector skips unrelated history but keeps retired running and com
   assert.equal(db.prepare('SELECT version FROM schema_version WHERE version = 51').get().version, 51);
   store.updateParams('hold-ball-live', managed('consumed', 'fired'));
   store.setEnabled('hold-ball-live', false);
+  store.updateParams('hold-ball-cancel-consumed', managed('consumed', 'cancelled_by_user'));
   assert.equal(store.listManagedCommandCandidates().length, 3);
   db.close();
 });

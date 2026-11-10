@@ -4,6 +4,7 @@ import { managedCommandCompletionUnconsumedTotal } from '../../infrastructure/te
 import { readDurableGateRecord } from '../managed-job/durable-managed-gate-job-store.js';
 import { ManagedJobService } from '../managed-job/ManagedJobService.js';
 import { legacyManagedJobOrigins } from '../managed-job/managed-job-legacy-census.js';
+import { recoverConsumedManagedCommandCancellation } from './ConsumedManagedCommandCancellationRecovery.js';
 import { durableManagedGateConsumerLines, projectDurableManagedGateConsumer } from './durable-managed-gate-consumer.js';
 import {
   cancelDurableManagedGateJob,
@@ -145,6 +146,15 @@ export class ManagedCommandWakeRecoverySweep {
       const task = allTasks.get(job.originTaskId) ?? this.deps.dynamicTaskStore.getById(job.originTaskId);
       if (task) allTasks.set(task.id, task);
     }
+    const consumedCancellations = [...allTasks.values()].filter((task) => {
+      const parsed = parseRetiredManagedCommandWakeTask(task);
+      return parsed?.command.state === 'consumed' && parsed.lifecycle.status === 'cancel_requested';
+    });
+    for (const task of consumedCancellations) {
+      const result = await recoverConsumedManagedCommandCancellation(this.deps, task.id, this.now);
+      if (result === 'recovered') recovered += 1;
+      else if (result === 'pending') pending += 1;
+    }
     const running = [...allTasks.values()].flatMap((task) => {
       const command = readManagedCommandWakeProjection(task);
       if (!command || command.state !== 'command_running') return [];
@@ -198,7 +208,7 @@ export class ManagedCommandWakeRecoverySweep {
       if (result === 'recovered') recovered += 1;
       else if (result === 'pending') pending += 1;
     }
-    return { scanned: running.length, recovered, pending };
+    return { scanned: running.length + consumedCancellations.length, recovered, pending };
   }
   private async recoverAdmissionFacts(tasks: DynamicTaskDef[]): Promise<ManagedCommandWakeRecoveryStats> {
     let recovered = 0;
