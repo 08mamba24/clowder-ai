@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -321,7 +330,7 @@ test('build-identity target reads a clean repo and stays silent on dirty inputs 
   assert.equal(readFileSync(stampPath, 'utf-8').trim(), head);
 });
 
-function runMainSequence(root, { env = {} } = {}) {
+function runMainSequence(root, { env = {}, cwd, launcher } = {}) {
   mkdirSync(join(root, 'node_modules', '.bin'), { recursive: true });
   writeFileSync(join(root, 'node_modules', '.bin', 'tsc'), '#!/bin/sh\ntrue\n', { mode: 0o755 });
   return spawnSync(
@@ -332,6 +341,7 @@ function runMainSequence(root, { env = {} } = {}) {
 source "$LAUNCHER" --source-only >/dev/null 2>&1
 trap - EXIT INT TERM
 PROJECT_DIR="$FIXTURE_ROOT"
+cd "$PROJECT_DIR" || exit 9
 QUICK_MODE=true
 PROD_WEB=true
 ORDER_LOG="$FIXTURE_ROOT/order.log"
@@ -371,10 +381,11 @@ printf 'MAIN_EXIT=%s\\n' "$?"
     ],
     {
       encoding: 'utf8',
+      cwd,
       env: {
         PATH: process.env.PATH,
         HOME: process.env.HOME,
-        LAUNCHER,
+        LAUNCHER: launcher ?? LAUNCHER,
         FIXTURE_ROOT: root,
         API_PORT: '3997',
         WEB_PORT: '3996',
@@ -422,4 +433,51 @@ test('a fresh quick start skips the build and still launches the API', (t) => {
   assert.match(result.stdout, /quick reuse accepted/);
   assert.doesNotMatch(order, /CALL:build:/, 'fresh reuse must not rebuild');
   assert.match(order, /CALL:api_launch/);
+});
+
+const LAUNCHER_FILES = [
+  'packages/shared/src/deployment-defaults.ts',
+  'packages/shared/src/deployment-profiles.json',
+  'scripts/start-dev.sh',
+  'scripts/lib/node-runtime-guard.sh',
+  'scripts/lib/redis-rdb-first.sh',
+  'scripts/lib/build-identity.cjs',
+  'scripts/download-source-overrides.sh',
+  'scripts/read-deployment-default.mjs',
+];
+
+test('main-sequence cleanup stays inside the fixture, never the launcher checkout', (t) => {
+  const root = fixture();
+  const launcherRoot = realpathSync(mkdtempSync(join(tmpdir(), 'prod-web-launcher-')));
+  t.after(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(launcherRoot, { recursive: true, force: true });
+  });
+  for (const entry of LAUNCHER_FILES) {
+    mkdirSync(dirname(join(launcherRoot, entry)), { recursive: true });
+    copyFileSync(join(REPO_ROOT, entry), join(launcherRoot, entry));
+  }
+  const head = git(root, 'rev-parse', 'HEAD');
+  stampAll(root, head);
+  // Distinct sentinels: the fixture lock must be cleaned by sanitize_lockfiles;
+  // the launcher-side lock must never be touched.
+  mkdirSync(join(root, 'packages', 'web'), { recursive: true });
+  writeFileSync(join(root, 'packages', 'web', 'package-lock.json'), 'fixture-lock\n');
+  mkdirSync(join(launcherRoot, 'packages', 'web'), { recursive: true });
+  writeFileSync(join(launcherRoot, 'packages', 'web', 'package-lock.json'), 'launcher-lock\n');
+  const result = runMainSequence(root, {
+    cwd: launcherRoot,
+    launcher: join(launcherRoot, 'scripts', 'start-dev.sh'),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    existsSync(join(root, 'packages', 'web', 'package-lock.json')),
+    false,
+    'the fixture lock file must be cleaned inside the fixture',
+  );
+  assert.equal(
+    readFileSync(join(launcherRoot, 'packages', 'web', 'package-lock.json'), 'utf-8'),
+    'launcher-lock\n',
+    'the launcher checkout must remain untouched',
+  );
 });
