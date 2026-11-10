@@ -9,6 +9,7 @@ export class F320AccountWire implements AgentCarrierSession {
   constructor(
     private readonly config: Record<string, unknown>,
     private readonly stopControls = false,
+    private readonly account: Record<string, unknown> | null = { type: 'chatgpt' },
   ) {}
   async *read() {
     while (!this.closed || this.values.length) {
@@ -37,7 +38,7 @@ export class F320AccountWire implements AgentCarrierSession {
     let result: unknown = {};
     if (method === 'config/read') result = { config: this.config };
     if (method === 'configRequirements/read') result = { requirements: null };
-    if (method === 'account/read') result = { account: { type: 'chatgpt' } };
+    if (method === 'account/read') result = { account: this.account };
     if (method === 'thread/turns/list') result = { data: [], nextCursor: null };
     if (method === 'thread/start' || method === 'thread/resume')
       result = { thread: { id: 'fixture-thread', turns: [] } };

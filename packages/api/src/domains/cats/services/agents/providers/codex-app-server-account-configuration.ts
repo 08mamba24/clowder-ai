@@ -35,9 +35,9 @@ export async function validateCodexAccountConfiguration(
   wire: AgentCarrierSession,
   request: Request,
   config: Record<string, unknown> = {},
-): Promise<void> {
+): ReturnType<typeof validateCodexNativeAccount> {
   const expected = expectedByWire.get(wire);
   if (!expected) return;
   if (!expected.sqliteHome) throw new Error('codex_native_account_configuration_unavailable');
-  await validateCodexNativeAccount(request, expected, config);
+  return validateCodexNativeAccount(request, expected, config);
 }

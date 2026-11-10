@@ -8,6 +8,7 @@ import {
 import { readCodexAccountIdentity, sameCodexIdentity } from './codex-account-identity.js';
 import { codexCanonicalPath } from './codex-account-launch.js';
 import { codexConfigRecord, overlayCodexSensitiveConfig } from './codex-launch-config.js';
+import type { CodexObservedAuthType } from './codex-login-status.js';
 
 export interface CodexNativeAccountExpectation {
   readonly authMode: 'oauth' | 'api_key' | 'auto';
@@ -32,7 +33,7 @@ export async function validateCodexNativeAccount(
   request: Request,
   expectation: CodexNativeAccountExpectation,
   rpcConfig: Record<string, unknown> = {},
-): Promise<void> {
+): Promise<CodexObservedAuthType> {
   if (expectation.authMode === 'api_key') validateCodexApiAccountOverrides([], rpcConfig);
   const loaded = requiredRecord(await request('config/read', { cwd: expectation.cwd, includeLayers: false }));
   const config = requiredRecord(loaded.config);
@@ -71,4 +72,6 @@ export async function validateCodexNativeAccount(
       codexCanonicalPath(effective.sqlite_home, expectation.cwd) !== expectation.sqliteHome)
   )
     conflict('sqlite_home');
+  const type = codexConfigRecord(observed.account).type;
+  return type === 'chatgpt' ? 'oauth' : type === 'apiKey' ? 'api_key' : undefined;
 }

@@ -108,9 +108,13 @@ export interface CodexAppServerRunInput {
   validateConfiguration?: (
     request: (method: string, params: JsonObject) => Promise<unknown>,
     config: JsonObject,
-  ) => Promise<void>;
+  ) => Promise<unknown>;
   /** F291: omitted inherits Codex config; null explicitly requests Standard. */
   serviceTier?: string | null;
+  /** Native auto qualifies speed only after this connection has observed its account. */
+  resolveServiceTier?: (
+    authType: import('../../../../../config/codex-login-status.js').CodexObservedAuthType,
+  ) => string | null | undefined;
   /**
    * F306: exact app-server wire enum. There is deliberately no default;
    * production selection of `user` remains blocked on the Phase B interaction
@@ -352,7 +356,14 @@ export class CodexAppServerClient {
       yield { type: 'app_server.account_check', stage: 'checking' };
       input.startupCheckSignal?.throwIfAborted();
       await input.validateConfiguration?.(preflightRequest, input.config ?? {});
-      await validateCodexAccountConfiguration(this.deps.wire, preflightRequest, input.config ?? {});
+      const authType = await validateCodexAccountConfiguration(this.deps.wire, preflightRequest, input.config ?? {});
+      if (input.resolveServiceTier) {
+        const serviceTier = input.resolveServiceTier(authType);
+        input = { ...input };
+        // An own undefined property means explicit Standard in the thread RPC.
+        delete input.serviceTier;
+        if (serviceTier !== undefined) input.serviceTier = serviceTier;
+      }
       input.signal?.throwIfAborted();
       input.startupCheckSignal?.throwIfAborted();
       input.startupCheckSignal?.removeEventListener('abort', startupAbortHandler);

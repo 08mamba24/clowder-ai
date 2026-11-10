@@ -5,6 +5,7 @@ import { usesNativeToolConfiguration } from '../../../../../config/cat-account-b
 import { finalizeCodexAccountEnvironment } from '../../../../../config/codex-account-environment.js';
 import { resolveCodexAccountLaunch, resolveCodexApiExecutionHome } from '../../../../../config/codex-account-launch.js';
 import { codexCliConfig } from '../../../../../config/codex-launch-config.js';
+import { type CodexObservedAuthType, readCodexLoginAuthType } from '../../../../../config/codex-login-status.js';
 import { codexManagedLaunchArgs } from '../../../../../config/codex-managed-launch.js';
 import { assertCodexManagedPlatformSupport } from '../../../../../config/codex-managed-support.js';
 import { assertCodexSharedStateRoots } from '../../../../../config/codex-shared-state.js';
@@ -1210,6 +1211,30 @@ export function buildCodexAppServerArgs(args: readonly string[]): string[] {
   return out;
 }
 
+/** Preserve native login/config selectors without passing exec-only business flags. */
+function buildCodexLoginStatusArgs(args: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const flag = args[index];
+    const config = parseCodexConfigArg(args, index);
+    if (config) {
+      out.push('--config', config.expression);
+      index += config.tokenCount - 1;
+    } else if (['--profile', '-p', '--local-provider'].includes(flag)) {
+      out.push(flag, args[++index]);
+    } else if (/^(?:--profile=|--local-provider=|-p.)/.test(flag) || ['--ignore-user-config', '--oss'].includes(flag)) {
+      out.push(flag);
+    } else {
+      const feature = parseCodexFeatureArg(args, index);
+      if (feature) {
+        out.push(feature.form.startsWith('--enable') ? '--enable' : '--disable', feature.feature);
+        index += feature.tokenCount - 1;
+      }
+    }
+  }
+  return out;
+}
+
 function readInitializedProviderVersion(value: unknown): string {
   if (!isCodexConfigObject(value)) return 'unknown';
   const serverInfo = value.serverInfo;
@@ -1871,13 +1896,15 @@ export class CodexAgentService implements AgentService {
     const catalogApplied = modelCatalogArgs.length > 0;
     const authMode =
       options?.codexAccountLaunch?.authMode ?? (nativeAuthentication ? 'auto' : getCodexAuthMode(options?.callbackEnv));
-    const requestedServiceTier = resolveCodexSpeed({
-      clientId: 'openai',
-      // Native auto preserves CLI login policy; speed uses the frozen account's auth fact.
-      authType: authMode === 'auto' ? options?.executionAccount?.authType : authMode,
-      model: effectiveModel,
-      memberDefault: options?.requestedServiceTier,
-    }).requested;
+    const speedForAuth = (authType: CodexObservedAuthType) =>
+      resolveCodexSpeed({
+        clientId: 'openai',
+        authType,
+        model: effectiveModel,
+        memberDefault: options?.requestedServiceTier,
+      }).requested;
+    // Synthetic account snapshots are declarations, not evidence of native login.
+    let requestedServiceTier = speedForAuth(authMode === 'auto' ? undefined : authMode);
     const serviceTierWire = resolveCodexSpeedWire(requestedServiceTier);
     const serviceTierArgs =
       serviceTierWire.kind === 'inherit'
@@ -2362,6 +2389,28 @@ export class CodexAgentService implements AgentService {
         ...(servedModelTracker ? { onStderrLine: servedModelTracker.onStderrLine } : {}),
       };
       const useAppServer = carrierMode === 'app_server';
+      if (!useAppServer && authMode === 'auto' && options?.requestedServiceTier) {
+        const authType = await readCodexLoginAuthType({
+          command: codexCommand,
+          args: buildCodexLoginStatusArgs(args),
+          cwd: options?.workingDirectory ?? process.cwd(),
+          env: buildChildEnv(codexEnv, {
+            workingDirectory: options?.workingDirectory,
+            ...(native ? { inheritParentEnv: false } : {}),
+          }),
+          ...(options?.signal ? { signal: options.signal } : {}),
+        });
+        requestedServiceTier = speedForAuth(authType);
+        if (requestedServiceTier) {
+          const separator = args.indexOf('--');
+          args.splice(
+            separator < 0 ? args.length : separator,
+            0,
+            '--config',
+            `service_tier="${requestedServiceTier === 'standard' ? 'default' : 'fast'}"`,
+          );
+        }
+      }
       const schemaDeliveryProfile =
         readOnly || native ? ('readonly' as const) : live ? ('desktop' as const) : ('full' as const);
       const schemaDeliveryProfileId = native
@@ -2551,6 +2600,14 @@ export class CodexAgentService implements AgentService {
               ...(collaborationMode ? { collaborationMode } : {}),
               ...(appServerThreadConfig ? { config: appServerThreadConfig } : {}),
               ...(appServerServiceTier !== undefined ? { serviceTier: appServerServiceTier } : {}),
+              ...(authMode === 'auto'
+                ? {
+                    resolveServiceTier: (authType: CodexObservedAuthType) => {
+                      requestedServiceTier = speedForAuth(authType);
+                      return requestedServiceTier === 'standard' ? null : (requestedServiceTier ?? undefined);
+                    },
+                  }
+                : {}),
               imagePaths,
               prepareRequest: (body, boundaryReason) => prepareProviderRequest(body, 'app_server', boundaryReason),
               prepareRecoveryRequest,
