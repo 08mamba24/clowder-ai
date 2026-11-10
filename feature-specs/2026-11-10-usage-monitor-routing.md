@@ -37,7 +37,7 @@ Without `--write` this prints the proposed configuration. `--write` replaces onl
 
 The command is an operator attestation that the selected source account and every relevant window apply to that cat/model, including simultaneous session and weekly limits. It cannot infer this from a provider name. Select exact Gemini model/token window labels from the inspection output; a Flash bucket must not gate Pro. MCP/admin pools must not gate ordinary model calls. Balance-only providers currently remain unknown because money is not a percentage or proof of model eligibility.
 
-Then ask a cat to select a reviewer or implementation partner. The existing MCP role query includes the monitored windows and low-quota warnings. On actual send, F293 reads the file again and compares the frozen provider, model and account revision. It rejects only an exhausted, precisely bound execution. It returns alternatives through its existing contract; it does not silently replace an explicitly requested cat. Explicit owner-attempt behavior is preserved.
+Then ask a cat to select a reviewer or implementation partner. The existing MCP role query includes the monitored windows and low-quota warnings. On actual send, F293 reads the file again and compares the frozen provider, model and account revision, and requires independent evidence that the frozen launch pins and verifies its current principal. Currently only managed Codex OAuth with a matching pinned user/workspace supplies that evidence. Native/legacy Codex, Claude, Gemini and other CLI-owned logins remain advisory even after operator setup; their configuration revisions do not prove a login identity. The CLI reports `advisory` for those bindings. F293 returns alternatives through its existing contract; it does not silently replace an explicitly requested cat. Explicit owner-attempt behavior is preserved.
 
 Bindings hot-reload on the next read. Removing an entry removes only its monitor observation; removing the configuration restores existing quota behavior. No runtime restart is required for binding changes once this code is deployed.
 
@@ -46,19 +46,20 @@ Bindings hot-reload on the next read. Removing an entry removes only its monitor
 - The router reads only a bounded regular JSON file. Missing, malformed, stale, future-dated or failed observations warn as unknown and permit an attempt. File reads cannot spawn the collector or block on a FIFO/device.
 - Freshness is 120 seconds and ends sooner at a selected window's reset. Expiry becomes unknown, never assumed recovery. One failed provider does not erase another provider's data.
 - Display `pct` is used percentage; remaining is `100 - usedPercent`. Exact raw values prevent a rounded `100%` from blocking a still usable window. Legacy caches use file mtime and remain advisory.
-- At or below 10% remaining gives a scarcity warning. Zero rejects only with schema v2, a matching source credential fingerprint, the operator's exact model/window mapping, the frozen execution's account revision and model, and unrounded window data. Enabled Claude paid overage remains advisory.
-- Fingerprints contain SHA-256 of scoped credential material, never reusable credentials. Credential rotation or account/model switches invalidate the pin and require rerunning the explicit binding command. This deliberately avoids guessing that a changed credential is still the same principal.
+- At or below 10% remaining gives a scarcity warning. Zero rejects only with schema v2, a matching source credential fingerprint, the operator's exact model/window mapping, the frozen execution's account revision and model, verified pinned principal evidence, and unrounded window data. Enabled Claude paid overage remains advisory.
+- Fingerprints contain SHA-256 of scoped credential material and actual account selectors, never reusable credentials. Codex includes `ChatGPT-Account-Id`; custom sources include URL path/query and the selected JSON field. Credential rotation or account/model switches invalidate the pin and require rerunning the explicit binding command. A configuration/path revision alone cannot extend an operator attestation across a CLI login change.
 - Cats sharing a source account/window share an opaque pool identity. Percentages are neither summed nor independently replenished per cat. Main, Spark, review, weekly and model buckets stay separate.
 - Monitor observations cannot clear manual or provider-health restrictions. A successful quota query is not a successful inference and cannot certify model availability.
 - The MCP/read model contains only bounded window data, opaque provenance and routing reasons. Private account refs, source paths, source fingerprint and credential contents stay local.
 
 ## Acceptance
 
-- [x] Producer regressions and existing Python/Swift consumers pass (75 Python tests and Swift regression runner).
+- [x] Producer regressions and existing Python/Swift consumers pass (77 Python tests and Swift regression runner).
 - [x] Existing role discovery exposes the source and actual preflight rechecks it; the same journey observes a changed cache and expiry.
 - [x] Exact exhausted execution is rejected; scarce, failed, stale, legacy and changed bindings warn.
 - [x] Shared pools, Gemini model isolation, rounding and paid overage are covered. Persistent collectors fetch a new Codex sample each batch.
 - [x] Existing account/privacy/health/manual restriction tests pass.
+- [x] Review P1 regressions: same-home native login changes cannot hard-block; config-only Claude/Gemini launches remain advisory; same-token Codex workspace switches change the source fingerprint while Codex/Spark continue sharing it.
 - [ ] Small Star (`astra`) reviews exact heads of both repositories.
 
 Production activation and real account binding are separate from isolated development verification. No deployment or runtime restart is performed as part of preparing review.

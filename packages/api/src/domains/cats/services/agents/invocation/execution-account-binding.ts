@@ -9,6 +9,7 @@ import { AccountStoreVerdictError } from '../../../../../config/account-store-fo
 import { resolveBoundAccountRefForCat } from '../../../../../config/cat-account-binding.js';
 import { resolveCatRuntimeAccount } from '../../../../../config/cat-runtime-account.js';
 import { claudeExecutionAccountSnapshot } from '../../../../../config/claude-token-account.js';
+import { inspectCodexLogin, sameCodexIdentity } from '../../../../../config/codex-account-identity.js';
 import {
   type CodexAccountLaunchDescriptor,
   resolveCodexAccountLaunch,
@@ -19,6 +20,7 @@ import type { FrozenExecutionWorkspace } from './execution-workspace.js';
 
 export interface FrozenExecutionBinding {
   readonly modelId?: string;
+  readonly principalVerified: boolean;
   readonly catConfig?: CatConfig;
   readonly workspace: FrozenExecutionWorkspace;
   readonly projectRoot: string;
@@ -89,8 +91,20 @@ export function freezeExecutionAccountBinding(input: {
                 .digest('hex'),
             })
           : undefined;
+  // Native/legacy OAuth and other CLI-owned logins only freeze configuration, not a principal.
+  const principalVerified = Boolean(
+    resolvedAccount?.authType === 'oauth' &&
+      !resolvedAccount.baseUrl &&
+      resolvedAccount.codex?.prepared &&
+      codexAccountLaunch?.identity &&
+      sameCodexIdentity(
+        codexAccountLaunch.identity,
+        inspectCodexLogin(codexAccountLaunch.credentialHome, input.workspace.workingProjectRoot).identity,
+      ),
+  );
   return Object.freeze({
     modelId: input.model ?? catConfig?.defaultModel,
+    principalVerified,
     catConfig,
     workspace: input.workspace,
     projectRoot,

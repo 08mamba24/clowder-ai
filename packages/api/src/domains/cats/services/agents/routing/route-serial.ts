@@ -847,6 +847,7 @@ export async function* routeSerial(
               catId,
               providerId: executionBinding.catConfig?.provider?.trim() || executionBinding.catConfig?.clientId,
               modelId: executionBinding.modelId,
+              principalVerified: executionBinding.principalVerified,
               ...(executionBinding.executionAccount
                 ? { accountRevision: executionBinding.executionAccount.accountRevision }
                 : {}),

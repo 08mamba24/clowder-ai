@@ -89,7 +89,7 @@ export function usageMonitorRoutingCommand(args: string[]) {
     configPath,
     catId,
     source: providerId,
-    mode: frozen.executionAccount && binding.accountKey ? 'execution_checked' : 'advisory',
+    mode: frozen.principalVerified && binding.accountKey ? 'execution_checked' : 'advisory',
   };
 }
 

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { catRegistry } from '@cat-cafe/shared';
 import Fastify from 'fastify';
+import { freezeExecutionAccountBinding } from '../dist/domains/cats/services/agents/invocation/execution-account-binding.js';
 import { freshTargetDecision } from '../dist/domains/routing-context/preflight/RoutingPreflightDecisionProjector.js';
 import { buildRoutingSignalDecisionProjection } from '../dist/domains/routing-context/preflight/RoutingSignalDecisionProjection.js';
 import { RoutingContextReadService } from '../dist/domains/routing-context/RoutingContextReadService.js';
@@ -23,6 +24,22 @@ async function fixture(t) {
   const f = accountCapacityFixture(t);
   const original = await f.source.load({ ownerId: 'owner', observedAt: f.now });
   const revision = original.candidates.find((c) => c.catId === 'first').capacityFacts.current.bindingRevision;
+  const freeze = () =>
+    freezeExecutionAccountBinding({
+      catId: 'first',
+      catConfig: f.configs.first,
+      workspace: { usesDefaultWorkspace: true, workingProjectRoot: f.root },
+    });
+  const proof = () => {
+    const frozen = freeze();
+    return {
+      catId: 'first',
+      accountRevision: frozen.executionAccount?.accountRevision,
+      providerId: frozen.catConfig?.provider || frozen.catConfig?.clientId,
+      modelId: frozen.modelId,
+      principalVerified: frozen.principalVerified,
+    };
+  };
   const cachePath = join(f.root, 'usage.json');
   const payload = { schemaVersion: 2 };
   const row = {
@@ -52,6 +69,7 @@ async function fixture(t) {
     })),
   };
   const save = () => {
+    f.save();
     writeFileSync(cachePath, JSON.stringify({ ...payload, observedAt: f.now, providers: [row] }));
     utimesSync(cachePath, f.now / 1000, f.now / 1000);
     writeFileSync(join(f.root, '.cat-cafe', 'usage-monitor-routing.json'), JSON.stringify(config));
@@ -63,9 +81,7 @@ async function fixture(t) {
       observedAt: at,
       ...(execution
         ? {
-            executionBindings: [
-              { catId: 'first', accountRevision: revision, providerId: 'openai', modelId: 'gpt-6.1-sol' },
-            ],
+            executionBindings: [proof()],
           }
         : {}),
     });
@@ -80,7 +96,7 @@ async function fixture(t) {
     });
     return { catalog, snapshot, first: snapshot.candidates.find((c) => c.binding.catId === 'first') };
   };
-  return { ...f, cachePath, row, payload, config, save, load, revision };
+  return { ...f, cachePath, row, payload, config, save, load, revision, freeze, proof };
 }
 
 test('selection reads used percentages as remaining and warns before launching a model', async (t) => {
@@ -101,6 +117,7 @@ test('selection reads used percentages as remaining and warns before launching a
 test('only the exact frozen execution is rejected; shared-account siblings retain the same pool', async (t) => {
   const f = await fixture(t);
   const { first, snapshot } = await f.load(true);
+  assert.equal(f.freeze().principalVerified, true);
   assert.equal(first.availability, 'unavailable');
   const second = snapshot.candidates.find((c) => c.binding.catId === 'second');
   assert.equal(
@@ -110,6 +127,58 @@ test('only the exact frozen execution is rejected; shared-account siblings retai
   assert.equal(second.availability, 'scarce');
   const verdict = freshTargetDecision({}, { status: 'fresh', snapshot }, 'first');
   assert.equal(verdict.disposition, 'rejected');
+});
+
+for (const clientId of ['openai', 'anthropic', 'google']) {
+  test(`${clientId} CLI-owned login cannot gain hard-block authority from a config revision`, async (t) => {
+    const f = await fixture(t);
+    const account = f.accounts['main-private-ref'];
+    const home = account.codex.credentialHome;
+    delete account.codex;
+    account.clientId = clientId;
+    account.envVars = { CODEX_HOME: home, CLAUDE_CONFIG_DIR: home, GEMINI_CLI_HOME: home };
+    f.configs.first.clientId = clientId;
+    f.configs.first.defaultModel = { openai: 'gpt-6.1-sol', anthropic: 'claude-opus-4-8', google: 'gemini-3-pro' }[
+      clientId
+    ];
+    const binding = f.config.bindings[0];
+    binding.clientId = clientId;
+    binding.modelId = f.configs.first.defaultModel;
+    f.save();
+    const before = f.freeze();
+    binding.accountRevision = before.executionAccount.accountRevision;
+    const oldLogin = readFileSync(join(home, 'auth.json'), 'utf8');
+    const nextLogin = oldLogin.replaceAll('private-principal-main', 'replacement-principal');
+    writeFileSync(join(home, 'auth.json'), nextLogin);
+    assert.notEqual(oldLogin, nextLogin);
+    const after = f.freeze();
+    assert.equal(after.executionAccount.accountRevision, before.executionAccount.accountRevision);
+    assert.equal(after.principalVerified, false);
+    const { first, snapshot } = await f.load(true);
+    assert.ok(first.binding.capacityFacts.current.windows.every((window) => window.applicability === 'unknown'));
+    assert.notEqual(freshTargetDecision({}, { status: 'fresh', snapshot }, 'first').disposition, 'rejected');
+  });
+}
+
+test('managed login mismatch fails admission and missing frozen proof keeps quota advisory', async (t) => {
+  const f = await fixture(t);
+  assert.equal(f.freeze().principalVerified, true);
+  const home = f.accounts['main-private-ref'].codex.credentialHome;
+  writeFileSync(
+    join(home, 'auth.json'),
+    readFileSync(join(home, 'auth.json'), 'utf8').replaceAll('private-principal-main', 'replacement-principal'),
+  );
+  assert.throws(() => f.freeze(), /身份已改变/);
+  f.save();
+  const catalog = await f.source.load({
+    ownerId: 'owner',
+    observedAt: f.now,
+    executionBindings: [{ catId: 'first', accountRevision: f.revision, providerId: 'openai', modelId: 'gpt-6.1-sol' }],
+  });
+  assert.equal(
+    catalog.candidates.find((candidate) => candidate.catId === 'first').capacityFacts.current.windows[0].applicability,
+    'unknown',
+  );
 });
 
 for (const scenario of [
@@ -195,6 +264,11 @@ test('operator CLI previews and atomically saves a binding while preserving exis
   assert.equal(usageMonitorRoutingCommand([...args, '--write']).mode, 'execution_checked');
   assert.equal(JSON.parse(readFileSync(path, 'utf8')).bindings.length, 3);
   assert.equal(statSync(path).mode & 0o777, 0o600);
+  const account = f.accounts['main-private-ref'];
+  account.envVars = { CODEX_HOME: account.codex.credentialHome };
+  delete account.codex;
+  f.save();
+  assert.equal(usageMonitorRoutingCommand([...args, '--write']).mode, 'advisory');
 });
 
 test('model bucket selection never applies another Gemini model zero to this model', async (t) => {
@@ -265,7 +339,7 @@ test('real MCP callback discovery → fresh execution check → changed cache �
   const input = {
     ownerId: 'owner',
     targetCatIds: ['first'],
-    executionBindings: [{ catId: 'first', accountRevision: f.revision, providerId: 'openai', modelId: 'gpt-6.1-sol' }],
+    executionBindings: [f.proof()],
   };
   assert.equal((await port.preflight(input)).targets[0].disposition, 'rejected');
   f.row.wins[0].usedPercent = 40;

@@ -193,6 +193,7 @@ export function readUsageMonitorRouting(input: {
       row.accountKey === binding.accountKey &&
       binding.accountRevision !== undefined &&
       execution?.accountRevision === binding.accountRevision &&
+      execution.principalVerified === true &&
       row.quotaEnforced &&
       selected.every((window) => window.usedPercent !== undefined);
     const evidenceRef = opaque('usage-monitor', [binding, row, observedAt]);
