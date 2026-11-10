@@ -331,18 +331,35 @@ migrate_legacy_alpha_worktree() {
 # worktree and only fails much later as "bound account ... not found" queue
 # noise. Fail closed unless the wrapper runs from the repository's primary
 # checkout on branch main.
+# Repository-locating variables inherited from the caller (GIT_DIR,
+# GIT_WORK_TREE, ...) would make every probe resolve to whatever repository
+# the caller points at. Scrub them in the probe subprocess so checkout
+# identity is read from the physical path only; the caller environment and
+# git configuration stay untouched.
+git_probe() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+    -u GIT_CONFIG git -C "$1" "${@:2}" 2>/dev/null
+}
+
 wrapper_primary_checkout_ok() {
-  local git_dir common_dir branch
-  git_dir="$(git -C "$PROJECT_DIR" rev-parse --absolute-git-dir 2>/dev/null)" || git_dir=""
-  common_dir="$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || common_dir=""
-  branch="$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null)" || branch=""
+  local physical_root toplevel git_dir common_dir branch
+  physical_root="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -P)" || return 1
+  toplevel="$(git_probe "$physical_root" rev-parse --show-toplevel)" || toplevel=""
+  # Being inside the main repository is not enough: the workspace root must
+  # BE the checkout root. A subdirectory (or a scripts symlink inside one)
+  # would rebind CAT_CAFE_WORKSPACE_ROOT onto that subdirectory.
+  [ -n "$toplevel" ] || return 1
+  [ "$physical_root" = "$toplevel" ] || return 1
+  git_dir="$(git_probe "$toplevel" rev-parse --absolute-git-dir)" || git_dir=""
+  common_dir="$(git_probe "$toplevel" rev-parse --path-format=absolute --git-common-dir)" || common_dir=""
+  branch="$(git_probe "$toplevel" branch --show-current)" || branch=""
   [ -n "$git_dir" ] && [ "$git_dir" = "$common_dir" ] && [ "$branch" = "main" ]
 }
 
 assert_wrapper_primary_checkout() {
   if ! wrapper_primary_checkout_ok; then
     local common_dir primary_root
-    common_dir="$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || common_dir=""
+    common_dir="$(git_probe "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir)" || common_dir=""
     primary_root=""
     if [ -n "$common_dir" ] && [ -d "$(dirname "$common_dir")" ]; then
       primary_root="$(cd "$(dirname "$common_dir")" && pwd)"

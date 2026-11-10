@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { namedAlphaFixture } from './lib/alpha-named-fixture.mjs';
@@ -122,3 +122,68 @@ test('the primary checkout guard rejects a detached HEAD even in the primary roo
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /primary checkout/);
 });
+
+function writeProbeAt(f, dir) {
+  const probePath = join(dir, 'guard-probe.sh');
+  writeFileSync(
+    probePath,
+    [
+      '#!/bin/bash',
+      'set -eu',
+      'source "$(dirname "$0")/alpha-worktree.sh" --source-only',
+      'assert_wrapper_primary_checkout',
+      'echo GUARD_OK',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+  return probePath;
+}
+
+test('a main-repo subdirectory reached via a scripts symlink is refused', (t) => {
+  const f = namedAlphaFixture(t);
+  writeProbeAt(f, join(f.mainRoot, 'scripts'));
+  mkdirMainSubdirHelper(f);
+  const result = spawnSync('bash', [join(f.mainRoot, 'tools', 'scripts', 'guard-probe.sh')], {
+    cwd: f.mainRoot,
+    encoding: 'utf8',
+    env: probeEnv(f),
+    timeout: 15_000,
+  });
+  assert.notEqual(result.status, 0, 'must fail closed');
+  assert.match(result.stderr, /primary checkout/);
+});
+
+test('an inherited GIT_DIR cannot smuggle a third worktree past the guard', (t) => {
+  const f = namedAlphaFixture(t);
+  const thirdRoot = makeThirdWorktree(f);
+  writeProbeAt(f, join(thirdRoot, 'scripts'));
+  const result = spawnSync('bash', [join(thirdRoot, 'scripts', 'guard-probe.sh')], {
+    cwd: thirdRoot,
+    encoding: 'utf8',
+    env: { ...probeEnv(f), GIT_DIR: join(f.mainRoot, '.git') },
+    timeout: 15_000,
+  });
+  assert.notEqual(result.status, 0, 'must fail closed');
+  assert.match(result.stderr, /primary checkout/);
+});
+
+test('a whole-repo symlink alias of the main checkout stays legal', (t) => {
+  const f = namedAlphaFixture(t);
+  writeProbeAt(f, join(f.mainRoot, 'scripts'));
+  const alias = join(f.directory, 'main-alias');
+  symlinkSync(f.mainRoot, alias);
+  const result = spawnSync('bash', [join(alias, 'scripts', 'guard-probe.sh')], {
+    cwd: alias,
+    encoding: 'utf8',
+    env: probeEnv(f),
+    timeout: 15_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /GUARD_OK/);
+});
+
+function mkdirMainSubdirHelper(f) {
+  mkdirSync(join(f.mainRoot, 'tools'), { recursive: true });
+  symlinkSync(join(f.mainRoot, 'scripts'), join(f.mainRoot, 'tools', 'scripts'));
+}
