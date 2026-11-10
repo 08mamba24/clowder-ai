@@ -362,6 +362,8 @@ export function readUnixProcessSnapshotSync(
       : { file: '/bin/ps', args: buildUnixProcessSnapshotArgs(options.includeEnvironment === true, pids) };
   if (options.includeEnvironment) processDebug('ownership-process-table-scan');
   const result = spawnSync(command.file, command.args, {
+    // Pin language, but retain TZ: persisted lstart identities use local wall time.
+    env: { ...process.env, LANG: 'C', LC_ALL: 'C' },
     encoding: 'utf8',
     timeout: CLI_PROCESS_SNAPSHOT_TIMEOUT_MS,
     maxBuffer: options.includeEnvironment ? 32 * 1024 * 1024 : 4 * 1024 * 1024,
@@ -413,6 +415,7 @@ export function readUnixProcessSnapshot(
       command.file,
       command.args,
       {
+        env: { ...process.env, LANG: 'C', LC_ALL: 'C' },
         encoding: 'utf8',
         timeout: CLI_PROCESS_SNAPSHOT_TIMEOUT_MS,
         maxBuffer: options.includeEnvironment ? 32 * 1024 * 1024 : 4 * 1024 * 1024,
@@ -449,8 +452,35 @@ export function readUnixProcessSnapshot(
   });
 }
 
+const PS_WEEKDAYS: Record<string, string> = {
+  日: 'Sun',
+  一: 'Mon',
+  二: 'Tue',
+  三: 'Wed',
+  四: 'Thu',
+  五: 'Fri',
+  六: 'Sat',
+};
+const PS_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function normalizeLegacyProcessStart(startedAt: string): string {
+  // zh_CN BSD ps emits four date fields. The former five-field parser also
+  // persisted the first command token; remove it only for that known format.
+  const match = /^([日一二三四五六])\s+(\d{1,2})月\/(\d{1,2})\s+(\d{2}:\d{2}:\d{2})\s+(\d{4})(?:\s+\S+)?$/u.exec(
+    startedAt,
+  );
+  if (!match) return startedAt;
+  const month = PS_MONTHS[Number(match[2]) - 1];
+  const day = Number(match[3]);
+  if (!month || day < 1 || day > 31) return startedAt;
+  return `${PS_WEEKDAYS[match[1]]} ${month} ${day} ${match[4]} ${match[5]}`;
+}
+
 export function sameUnixProcess(expected: UnixProcessIdentity, actual: UnixProcessIdentity | undefined): boolean {
-  return actual?.startedAt === expected.startedAt;
+  return (
+    actual !== undefined &&
+    normalizeLegacyProcessStart(actual.startedAt) === normalizeLegacyProcessStart(expected.startedAt)
+  );
 }
 
 function containsOwnerToken(text: string | undefined, ownerId: string): boolean {
