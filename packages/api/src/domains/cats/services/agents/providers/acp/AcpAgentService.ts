@@ -29,8 +29,8 @@ import { readInvocationMcpConfig } from '../../../../../../config/capabilities/i
 import { getCatEffort } from '../../../../../../config/cat-config-loader.js';
 import { getCatModel } from '../../../../../../config/cat-models.js';
 import { createModuleLogger } from '../../../../../../infrastructure/logger.js';
-import { createPromptDigest } from '../../../context/prompt-digest.js';
 import { REBUILD_REPLAY_HEADER } from '../../../context/ContextAssembler.js';
+import { createPromptDigest } from '../../../context/prompt-digest.js';
 import type {
   AgentMessage,
   AgentService,
@@ -693,9 +693,7 @@ export class AcpAgentService implements AgentService {
         // the model call, keep the history, audit the rejection.
         const sealedReplayHeader = options?.rebuildContextPrompt?.match(REBUILD_REPLAY_HEADER);
         if (!sealedReplayHeader) {
-          throw new AcpSessionBindingError(
-            'ACP 会话已封存且受控历史重放缺失或不合规；已保留原历史并阻断新建会话。',
-          );
+          throw new AcpSessionBindingError('ACP 会话已封存且受控历史重放缺失或不合规；已保留原历史并阻断新建会话。');
         }
         metadata.sessionRebuild = {
           fromSessionId: sealedSessionId,
@@ -980,7 +978,8 @@ export class AcpAgentService implements AgentService {
       const identityPrefix = options?.systemPrompt ?? fallbackSystemPrompt;
       const effectivePrompt = agy
         ? prompt
-        : [identityPrefix, rebuildContextPrefix, prompt].filter((part) => typeof part === 'string' && part.length > 0)
+        : [identityPrefix, rebuildContextPrefix, prompt]
+            .filter((part) => typeof part === 'string' && part.length > 0)
             .join('\n\n');
 
       // Window 4: onAbort listener covers the duration of promptStream

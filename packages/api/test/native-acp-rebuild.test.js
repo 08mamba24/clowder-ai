@@ -20,8 +20,7 @@ const effortOptions = [
 
 const REBUILD_PREFIX =
   '/rebuild-replay v1 messages=2 tokens=48 truncated=false\nuser: 之前的问题\nassistant: 之前的回答';
-const REBUILD_PREFIX_TRUNCATED =
-  '/rebuild-replay v1 messages=1 tokens=2000 truncated=true\nassistant: 只有最后一轮';
+const REBUILD_PREFIX_TRUNCATED = '/rebuild-replay v1 messages=1 tokens=2000 truncated=true\nassistant: 只有最后一轮';
 const MALFORMED_PREFIX = '[受控历史重放]\nuser: 之前的问题（没有自描述头，属于接线损伤）';
 
 function fixture({ resumeSupport, loadSessionError, sealLeaseAfterFirstAcquire = false } = {}) {
@@ -155,8 +154,24 @@ test('legal long reply still produces a usable bounded partial replay', async ()
   // Reviewer P2-a/P2-b counterexamples, measured against the artifact itself.
   for (const len of [2000, 9000]) {
     const history = [
-      { id: 'm1', userId: 'user1', catId: null, content: '请保留上下文再回答', mentions: [], timestamp: 1000, threadId: 't' },
-      { id: 'm2', userId: 'user1', catId: 'dsh', content: '测'.repeat(len), mentions: [], timestamp: 2000, threadId: 't' },
+      {
+        id: 'm1',
+        userId: 'user1',
+        catId: null,
+        content: '请保留上下文再回答',
+        mentions: [],
+        timestamp: 1000,
+        threadId: 't',
+      },
+      {
+        id: 'm2',
+        userId: 'user1',
+        catId: 'dsh',
+        content: '测'.repeat(len),
+        mentions: [],
+        timestamp: 2000,
+        threadId: 't',
+      },
     ];
     const replay = buildRebuildContextReplay(history);
     assert.ok(replay, `len=${len}: a legal long reply must still yield a replay`);
@@ -170,8 +185,24 @@ test('legal long reply still produces a usable bounded partial replay', async ()
   }
   // Distinct head/tail marks prove the cut keeps both ends (not head-only).
   const marked = [
-    { id: 'm1', userId: 'user1', catId: null, content: '请保留上下文再回答', mentions: [], timestamp: 1000, threadId: 't' },
-    { id: 'm2', userId: 'user1', catId: 'dsh', content: `HEAD_MARK${'测'.repeat(9000)}TAIL_MARK`, mentions: [], timestamp: 2000, threadId: 't' },
+    {
+      id: 'm1',
+      userId: 'user1',
+      catId: null,
+      content: '请保留上下文再回答',
+      mentions: [],
+      timestamp: 1000,
+      threadId: 't',
+    },
+    {
+      id: 'm2',
+      userId: 'user1',
+      catId: 'dsh',
+      content: `HEAD_MARK${'测'.repeat(9000)}TAIL_MARK`,
+      mentions: [],
+      timestamp: 2000,
+      threadId: 't',
+    },
   ];
   const markedReplay = buildRebuildContextReplay(marked);
   assert.ok(markedReplay.includes('HEAD_MARK'), 'head of the long reply is kept');
@@ -189,7 +220,13 @@ test('legal long reply still produces a usable bounded partial replay', async ()
   assert.ok(estimateTokens(shortBody) <= 2000, 'short history body within budget');
   // Multi-digit message count keeps the audit exact (wrapper grows with N).
   const manyHistory = Array.from({ length: 12 }, (_, i) => ({
-    id: `m${i}`, userId: 'user1', catId: i % 2 ? 'dsh' : null, content: `消息内容${i}`, mentions: [], timestamp: 1000 + i, threadId: 't',
+    id: `m${i}`,
+    userId: 'user1',
+    catId: i % 2 ? 'dsh' : null,
+    content: `消息内容${i}`,
+    mentions: [],
+    timestamp: 1000 + i,
+    threadId: 't',
   }));
   const manyReplay = buildRebuildContextReplay(manyHistory);
   const manyHeader = manyReplay.match(REBUILD_REPLAY_HEADER);
@@ -199,12 +236,26 @@ test('legal long reply still produces a usable bounded partial replay', async ()
 });
 
 test('long-reply thread rebuilds with the bounded partial replay instead of failing closed', async () => {
-  const { buildRebuildContextReplay } = await import(
-    '../dist/domains/cats/services/context/ContextAssembler.js'
-  );
+  const { buildRebuildContextReplay } = await import('../dist/domains/cats/services/context/ContextAssembler.js');
   const replay = buildRebuildContextReplay([
-    { id: 'm1', userId: 'user1', catId: null, content: '请保留上下文再回答', mentions: [], timestamp: 1000, threadId: 't' },
-    { id: 'm2', userId: 'user1', catId: 'dsh', content: '测'.repeat(2000), mentions: [], timestamp: 2000, threadId: 't' },
+    {
+      id: 'm1',
+      userId: 'user1',
+      catId: null,
+      content: '请保留上下文再回答',
+      mentions: [],
+      timestamp: 1000,
+      threadId: 't',
+    },
+    {
+      id: 'm2',
+      userId: 'user1',
+      catId: 'dsh',
+      content: '测'.repeat(2000),
+      mentions: [],
+      timestamp: 2000,
+      threadId: 't',
+    },
   ]);
   assert.ok(replay, 'assembler-level precondition');
   const { calls, prompted, service } = fixture({ resumeSupport: 'none' });
@@ -302,7 +353,11 @@ test('sealed retry without a replay prefix fails closed before any model call', 
   // silently amnesiac session.
   const messages = [];
   for await (const message of service.invoke('second', { sessionId: 'wedged-session' })) messages.push(message);
-  assert.equal(prompted.length, 1, 'only turn A reached the model; turn B must not prompt without the controlled replay');
+  assert.equal(
+    prompted.length,
+    1,
+    'only turn A reached the model; turn B must not prompt without the controlled replay',
+  );
   const error = messages.find((message) => message.type === 'error');
   assert.ok(error, 'sealed retry without replay must surface a fail-closed error');
   assert.equal(error.error.includes('受控历史重放缺失'), true);
@@ -360,7 +415,8 @@ test('two consecutive turns keep continuity across a cold-started replacement pr
   const second = [];
   for await (const message of service.invoke('第二轮的问题', {
     sessionId: 'fresh',
-    rebuildContextPrompt: '/rebuild-replay v1 messages=2 tokens=40 truncated=false\nuser: 第一轮的问题\nassistant: 第一轮的回答',
+    rebuildContextPrompt:
+      '/rebuild-replay v1 messages=2 tokens=40 truncated=false\nuser: 第一轮的问题\nassistant: 第一轮的回答',
   }))
     second.push(message);
   assert.ok(!calls.includes('load'), 'must not attempt loadSession on a resume-incapable provider');

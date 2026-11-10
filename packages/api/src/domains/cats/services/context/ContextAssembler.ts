@@ -69,7 +69,7 @@ function boundedHeadTailLine(line: string, budgetTokens: number): string | undef
   const marks = '\n…[已截断]…\n';
   const lineTokens = estimateTokens(`${line}\n`);
   if (lineTokens <= budgetTokens) return `${line}\n`;
-  let share = Math.floor((line.length * (budgetTokens - estimateTokens(marks))) / lineTokens);
+  const share = Math.floor((line.length * (budgetTokens - estimateTokens(marks))) / lineTokens);
   let head = Math.max(0, Math.floor(share / 2));
   let tail = Math.max(0, share - head);
   for (let guard = 0; guard < 24; guard++) {
@@ -96,7 +96,7 @@ export function buildRebuildContextReplay(messages: StoredMessage[]): string | u
     maxTotalTokens: REBUILD_CONTEXT_MAX_TOTAL_TOKENS - REBUILD_REPLAY_WRAPPER_RESERVE_TOKENS,
   });
   let contextText = assembled.contextText;
-  let truncated = assembled.messageCount < eligible.length;
+  const truncated = assembled.messageCount < eligible.length;
 
   if (contextText && estimateTokens(contextText) <= REBUILD_CONTEXT_MAX_TOTAL_TOKENS) {
     return `/rebuild-replay v1 messages=${assembled.messageCount} tokens=${estimateTokens(contextText)} truncated=${truncated}\n${contextText}`;
