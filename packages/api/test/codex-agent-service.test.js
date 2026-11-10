@@ -2168,6 +2168,62 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     );
   });
 
+  for (const { name, authMode, authType, requestedServiceTier, expected } of [
+    { name: 'native OAuth Fast', authMode: 'auto', authType: 'oauth', requestedServiceTier: 'fast', expected: 'fast' },
+    {
+      name: 'native OAuth Standard',
+      authMode: 'auto',
+      authType: 'oauth',
+      requestedServiceTier: 'standard',
+      expected: 'default',
+    },
+    { name: 'native OAuth inherit', authMode: 'auto', authType: 'oauth' },
+    { name: 'native API key', authMode: 'auto', authType: 'api_key', requestedServiceTier: 'fast' },
+    { name: 'unknown native auth', authMode: 'auto', requestedServiceTier: 'fast' },
+    {
+      name: 'explicit API key overrides OAuth snapshot',
+      authMode: 'api_key',
+      authType: 'oauth',
+      requestedServiceTier: 'fast',
+    },
+  ]) {
+    test(`F291 exec resume preserves speed eligibility for ${name}`, async () => {
+      const proc = createMockProcess();
+      const spawnFn = createMockSpawnFn(proc);
+      const service = new CodexAgentService({ l0CompilerFn: fakeL0Compiler, spawnFn, model: 'gpt-6.1-sol' });
+      const promise = collect(
+        service.invoke('continue', {
+          sessionId: 't-native-speed',
+          requestedServiceTier,
+          callbackEnv: {
+            CODEX_AUTH_MODE: authMode,
+            ...(authMode === 'api_key' ? { OPENAI_API_KEY: 'fixture-only' } : {}),
+          },
+          ...(authType
+            ? {
+                executionAccount: {
+                  accountRef: 'native-codex',
+                  displayName: 'Native Codex',
+                  authType,
+                  accountRevision: 'fixture-revision',
+                },
+              }
+            : {}),
+        }),
+      );
+      emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-native-speed' }]);
+      await promise;
+      const [, args, options] = spawnFn.mock.calls[0].arguments;
+      assert.ok(args.includes('resume'));
+      assert.equal(options.env.CODEX_AUTH_MODE, authMode, 'speed selection must not change authentication policy');
+      assert.deepEqual(
+        args.filter((arg) => arg.startsWith('service_tier=')),
+        expected ? [`service_tier="${expected}"`] : [],
+        name,
+      );
+    });
+  }
+
   test('F291 strips attached service_tier config spellings across inherit, API-key, and Standard modes', async () => {
     const rawBypasses = ['--config=service_tier="fast"', '-c=service_tier="fast"', '-cservice_tier="fast"'];
     const cases = [

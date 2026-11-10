@@ -1873,7 +1873,8 @@ export class CodexAgentService implements AgentService {
       options?.codexAccountLaunch?.authMode ?? (nativeAuthentication ? 'auto' : getCodexAuthMode(options?.callbackEnv));
     const requestedServiceTier = resolveCodexSpeed({
       clientId: 'openai',
-      authType: authMode === 'oauth' || authMode === 'api_key' ? authMode : undefined,
+      // Native auto preserves CLI login policy; speed uses the frozen account's auth fact.
+      authType: authMode === 'auto' ? options?.executionAccount?.authType : authMode,
       model: effectiveModel,
       memberDefault: options?.requestedServiceTier,
     }).requested;
