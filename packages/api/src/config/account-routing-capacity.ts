@@ -105,7 +105,10 @@ function projectAccount(ref: string, account: AccountConfig, root: string, now: 
 export interface RoutingExecutionBindingProof {
   catId: string;
   accountRevision?: string;
+  /** Set only by the frozen launch after checking its pinned principal against the current login. */
+  principalVerified?: boolean;
   providerId?: string;
+  modelId?: string;
 }
 
 /** One physical account-store snapshot per catalog read; no F293 writer or extra ledger. */

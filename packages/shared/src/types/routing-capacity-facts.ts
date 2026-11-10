@@ -11,8 +11,10 @@ export const routingCapacityWindowV1Schema = z
     poolId: routingIdentifierSchema,
     poolKind: z.enum(['codex-main', 'codex-spark', 'codex-review', 'codex-overflow', 'unknown']),
     // Account-owned observations do not prove an execution/model → provider limitId edge.
-    // A future producer must supply exact frozen-binding evidence before this can become proven.
-    applicability: z.literal('unknown'),
+    // operator_bound is an explicit source/pool attestation plus an exact frozen account/model match.
+    // It does not manufacture a provider-issued limitId edge.
+    applicability: z.enum(['unknown', 'operator_bound']),
+    label: z.string().trim().min(1).max(80).optional(),
     freshness: z.enum(['fresh', 'stale']),
     kind: z.enum(['five_hour', 'seven_day', 'monthly', 'credits', 'unknown']),
     remainingPercent: z.number().finite().min(0).max(100).optional(),
@@ -37,6 +39,7 @@ export const routingCapacityWindowV1Schema = z
 export const routingAccountCapacityV1Schema = z
   .object({
     state: z.enum(['fresh', 'stale', 'unknown']),
+    source: z.literal('usage_monitor').optional(),
     reason: z
       .enum([
         'binding_unknown',

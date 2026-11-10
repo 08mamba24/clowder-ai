@@ -276,6 +276,8 @@ async function* routeParallelPrepared(
         return {
           catId,
           providerId: binding?.catConfig?.provider?.trim() || binding?.catConfig?.clientId,
+          modelId: binding?.modelId,
+          principalVerified: binding?.principalVerified,
           ...(accountRevision ? { accountRevision } : {}),
         };
       }),
