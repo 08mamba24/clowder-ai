@@ -510,19 +510,19 @@ stop_alpha_daemon() {
   root="$(abs_path "$ALPHA_DIR")"
   [ -d "$root" ] || die "alpha root not found: $root"
   export CAT_CAFE_DEPLOYMENT_ID=alpha
-  daemon_state_path="$(node "$SCRIPT_DIR/daemon-state.mjs" path \
+  daemon_state_path="$(alpha_env node "$SCRIPT_DIR/daemon-state.mjs" path \
     --home "$HOME" \
     --project-root "$root" \
     --deployment-id alpha)"
   if [ -f "$daemon_state_path" ]; then
-    node "$SCRIPT_DIR/daemon-state.mjs" stop \
+    alpha_env node "$SCRIPT_DIR/daemon-state.mjs" stop \
       --home "$HOME" \
       --project-root "$root" \
       --deployment-id alpha
   fi
   # Managed Hub previews are the canonical cross-invocation Alpha launcher. Its
   # ownership record proves the exact process group before anything is stopped.
-  node "$SCRIPT_DIR/preview-process.mjs" stop \
+  alpha_env node "$SCRIPT_DIR/preview-process.mjs" stop \
     --port "$ALPHA_FRONTEND_PORT" --cwd "$PROJECT_DIR" --json
   if is_api_running; then
     die "Alpha API remains on $ALPHA_API_PORT without a proven managed owner"

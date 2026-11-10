@@ -344,79 +344,98 @@ test_is_api_running_checks_alpha_api_port() {
 }
 
 test_stop_alpha_uses_owned_preview_lifecycle() (
-  local tmp_root calls
+  local tmp_root calls calls_file
   tmp_root="$(mktemp -d)"
   trap 'echo "Retained alpha test fixture: $tmp_root"' EXIT
   PROJECT_DIR="$tmp_root/cat-cafe"
   ALPHA_DIR="$tmp_root/cat-cafe-alpha"
   mkdir -p "$PROJECT_DIR" "$ALPHA_DIR"
-  calls=""
-  node() {
-    calls="$calls|$*"
-    if [[ "$*" == *preview-process.mjs* ]]; then
-      printf '{"status":"stopped"}\n'
-      return 0
-    fi
-    if [[ "$*" == *"daemon-state.mjs path"* ]]; then
-      printf '%s\n' "$tmp_root/missing-daemon.json"
-      return 0
-    fi
-    echo "unexpected daemon-state stop" >&2
-    return 7
-  }
+  calls_file="$tmp_root/node-calls.log"
+  mkdir -p "$tmp_root/bin"
+  : > "$calls_file"
+  cat > "$tmp_root/bin/node" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$ALPHA_TEST_NODE_CALLS"
+case "${1##*/} ${2-}" in
+  'preview-process.mjs stop') printf '{"status":"stopped"}\n' ;;
+  'daemon-state.mjs path') printf '%s\n' "$ALPHA_TEST_DAEMON_PATH" ;;
+  *) echo "unexpected daemon-state stop" >&2; exit 7 ;;
+esac
+EOF
+  chmod +x "$tmp_root/bin/node"
   is_api_running() { return 1; }
   lsof() { return 1; }
 
-  stop_alpha_daemon
+  PATH="$tmp_root/bin:$PATH" ALPHA_TEST_NODE_CALLS="$calls_file" \
+    ALPHA_TEST_DAEMON_PATH="$tmp_root/missing-daemon.json" stop_alpha_daemon
+  calls="$(cat "$calls_file")"
   assert_contains "$calls" "preview-process.mjs stop --port 3011 --cwd $PROJECT_DIR" \
     "alpha:stop should first stop the exact owned preview session"
   echo "PASS: alpha stop uses the owned managed preview lifecycle"
 )
 
 test_stop_alpha_reports_an_orphaned_service() (
-  local tmp_root
+  local tmp_root calls_file stop_output
   tmp_root="$(mktemp -d)"
   trap 'echo "Retained alpha test fixture: $tmp_root"' EXIT
   PROJECT_DIR="$tmp_root/cat-cafe"
   ALPHA_DIR="$tmp_root/cat-cafe-alpha"
   mkdir -p "$PROJECT_DIR" "$ALPHA_DIR"
-  node() {
-    if [[ "$*" == *"daemon-state.mjs path"* ]]; then
-      printf '%s\n' "$tmp_root/missing-daemon.json"
-    else
-      printf '{"status":"stopped"}\n'
-    fi
-  }
-  is_api_running() { return 1; }
+  calls_file="$tmp_root/node-calls.log"
+  mkdir -p "$tmp_root/bin"
+  : > "$calls_file"
+  cat > "$tmp_root/bin/node" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$ALPHA_TEST_NODE_CALLS"
+case "${1##*/} ${2-}" in
+  'daemon-state.mjs path') printf '%s\n' "$ALPHA_TEST_DAEMON_PATH" ;;
+  'preview-process.mjs stop') printf '{"status":"stopped"}\n' ;;
+  *) echo "unexpected node invocation" >&2; exit 7 ;;
+esac
+EOF
+  chmod +x "$tmp_root/bin/node"
+  is_api_running() { return 0; }
   lsof() { return 0; }
-  if ( stop_alpha_daemon ) 2>/dev/null; then
-    echo "FAIL: alpha:stop must report a still-listening 5211 rather than claim success"
+  if stop_output="$(PATH="$tmp_root/bin:$PATH" ALPHA_TEST_NODE_CALLS="$calls_file" \
+      ALPHA_TEST_DAEMON_PATH="$tmp_root/missing-daemon.json" stop_alpha_daemon 2>&1)"; then
+    echo "FAIL: alpha:stop must report a still-listening $ALPHA_API_PORT rather than claim success"
     exit 1
   fi
+  assert_contains "$stop_output" "Alpha API remains on $ALPHA_API_PORT without a proven managed owner" \
+    "alpha:stop should refuse because the orphaned API still listens"
   echo "PASS: alpha stop reports an orphaned Service"
 )
 
 test_stop_alpha_preserves_daemon_mode() (
-  local tmp_root calls
+  local tmp_root calls calls_file
   tmp_root="$(mktemp -d)"
   trap 'echo "Retained alpha test fixture: $tmp_root"' EXIT
   PROJECT_DIR="$tmp_root/cat-cafe"
   ALPHA_DIR="$tmp_root/cat-cafe-alpha"
   mkdir -p "$PROJECT_DIR" "$ALPHA_DIR"
   touch "$tmp_root/daemon.json"
-  calls=""
-  node() {
-    if [[ "$*" == *"daemon-state.mjs path"* ]]; then
-      printf '%s\n' "$tmp_root/daemon.json"
-      return 0
-    fi
-    calls="$calls|$*"
-    return 0
-  }
+  calls_file="$tmp_root/node-calls.log"
+  mkdir -p "$tmp_root/bin"
+  : > "$calls_file"
+  cat > "$tmp_root/bin/node" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$ALPHA_TEST_NODE_CALLS"
+case "${1##*/} ${2-}" in
+  'daemon-state.mjs path') printf '%s\n' "$ALPHA_TEST_DAEMON_PATH" ;;
+  'daemon-state.mjs stop'|'preview-process.mjs stop') ;;
+  *) echo "unexpected node invocation" >&2; exit 7 ;;
+esac
+EOF
+  chmod +x "$tmp_root/bin/node"
   is_api_running() { return 1; }
   lsof() { return 1; }
 
-  stop_alpha_daemon
+  PATH="$tmp_root/bin:$PATH" ALPHA_TEST_NODE_CALLS="$calls_file" \
+    ALPHA_TEST_DAEMON_PATH="$tmp_root/daemon.json" stop_alpha_daemon
+  calls="$(cat "$calls_file")"
   assert_contains "$calls" "daemon-state.mjs stop" "alpha:stop should preserve daemon ownership handling"
   assert_contains "$calls" "preview-process.mjs stop" "alpha:stop should also close a managed preview when present"
   echo "PASS: alpha stop preserves daemon mode"
@@ -634,6 +653,7 @@ test_resolve_env_source_file_falls_back_to_sibling_cat_cafe
 test_is_api_running_checks_alpha_api_port
 test_stop_alpha_uses_owned_preview_lifecycle
 test_stop_alpha_preserves_daemon_mode
+test_stop_alpha_reports_an_orphaned_service
 test_build_alpha_stale_packages_rebuilds_missing_dist
 test_build_alpha_stale_packages_skips_fresh_packages
 test_build_alpha_stale_packages_rebuilds_when_head_moved

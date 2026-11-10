@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { NAMED_ALPHA_PORTS, namedAlphaFixture } from './lib/alpha-named-fixture.mjs';
+import { unclaimed } from './lib/preview-unclaimed-test-fixture.mjs';
 
 function runWrapper(scriptPath, args, cwd, env) {
   return spawnSync('bash', [scriptPath, ...args], {
@@ -340,6 +341,68 @@ start_alpha_worktree
     assert.deepEqual(foreignGitState(f, other), before, 'launch must not change the foreign repository');
   });
 }
+
+test('stop retires the named registration in A without inheriting the caller Git repository B', (t) => {
+  const f = unclaimed(t);
+  const other = makeSecondRepo(f, 'stop-foreign');
+  const before = foreignGitState(f, other);
+  const foreignDump = join(other, '.cat-cafe', 'redis', 'dump.rdb');
+  mkdirSync(join(other, '.cat-cafe', 'redis'), { recursive: true });
+  writeFileSync(foreignDump, 'foreign fixture data');
+  const originalData = [f.dumpFile, foreignDump].map((path) => readFileSync(path));
+  const completion = readFileSync(f.record.completionPath);
+  const payload = join(f.directory, 'stop-fixture.json');
+  writeFileSync(payload, JSON.stringify({ config: f.config, record: f.record, registryDir: f.recovery.registryDir }));
+  const stopModule = new URL('./lib/preview-process-stop.mjs', import.meta.url).href;
+  // Stub only daemon lookup and OS observations. The preview helper exercises
+  // real named registration settlement, coordinates, and Git verification.
+  writeFileSync(
+    join(f.mainRoot, 'scripts', 'daemon-state.mjs'),
+    `import assert from 'node:assert/strict';
+assert.equal(process.argv[2], 'path');
+process.stdout.write(${JSON.stringify(join(f.directory, 'missing-daemon.json'))});
+`,
+  );
+  writeFileSync(
+    join(f.mainRoot, 'scripts', 'preview-process.mjs'),
+    `import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { stopManagedPreview } from ${JSON.stringify(stopModule)};
+const { config, record, registryDir } = JSON.parse(readFileSync(process.env.STOP_FIXTURE_PAYLOAD, 'utf8'));
+assert.deepEqual(process.argv.slice(2), ['stop', '--port', String(config.port), '--cwd', config.cwd, '--json']);
+const recovery = {
+  registryDir,
+  isRunning: () => false,
+  groupRunning: () => false,
+  readListeners: () => [],
+  readCwds: () => [],
+  run: () => { throw new Error('stop fixture must never contact Redis'); },
+};
+const result = await stopManagedPreview(config, { record, status: 'stopped' }, { recovery });
+console.log(JSON.stringify(result));
+`,
+  );
+  f.git(['add', 'scripts/daemon-state.mjs', 'scripts/preview-process.mjs']);
+  f.git(['commit', '-m', 'exercise stopped registration with no real process or Redis']);
+  const result = f.run(['stop', '--dir', f.alphaRoot], {
+    env: {
+      ...foreignGitEnvironment(other),
+      STOP_FIXTURE_PAYLOAD: payload,
+      CAT_CAFE_ALPHA_FRONTEND_PORT: String(f.config.port),
+      CAT_CAFE_ALPHA_API_PORT: '5312',
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).settlement.status, 'registration_retired');
+  assert.equal(existsSync(f.config.recordPath), false, 'only the terminated registration must be retired');
+  assert.deepEqual(readFileSync(f.record.completionPath), completion);
+  assert.deepEqual(
+    [f.dumpFile, foreignDump].map((path) => readFileSync(path)),
+    originalData,
+  );
+  assert.deepEqual(foreignGitState(f, other), before);
+  assert.doesNotMatch(f.readCalls(), /redis-cli/);
+});
 
 test('an inherited GIT_COMMON_DIR pointing elsewhere does not refute a legit primary', (t) => {
   const f = namedAlphaFixture(t);
