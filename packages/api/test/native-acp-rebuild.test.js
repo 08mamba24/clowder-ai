@@ -148,19 +148,54 @@ test('truncated replay is audited as partial migration, not a full resume', asyn
 });
 
 test('legal long reply still produces a usable bounded partial replay', async () => {
-  const { buildRebuildContextReplay } = await import(
+  const { buildRebuildContextReplay, REBUILD_REPLAY_HEADER } = await import(
     '../dist/domains/cats/services/context/ContextAssembler.js'
   );
-  const history = [
+  const { estimateTokens } = await import('../dist/utils/token-counter.js');
+  // Reviewer P2-a/P2-b counterexamples, measured against the artifact itself.
+  for (const len of [2000, 9000]) {
+    const history = [
+      { id: 'm1', userId: 'user1', catId: null, content: '请保留上下文再回答', mentions: [], timestamp: 1000, threadId: 't' },
+      { id: 'm2', userId: 'user1', catId: 'dsh', content: '测'.repeat(len), mentions: [], timestamp: 2000, threadId: 't' },
+    ];
+    const replay = buildRebuildContextReplay(history);
+    assert.ok(replay, `len=${len}: a legal long reply must still yield a replay`);
+    const header = replay.match(REBUILD_REPLAY_HEADER);
+    const body = replay.slice(replay.indexOf('\n') + 1);
+    assert.equal(header[3], 'true', `len=${len}: partial replay is honestly truncated`);
+    assert.equal(Number(header[2]), estimateTokens(body), `len=${len}: declared tokens equal the measured body`);
+    assert.ok(estimateTokens(body) <= 2000, `len=${len}: measured body stays within the 2000 budget`);
+    assert.ok(replay.includes('测'), `len=${len}: the truncated newest reply stays in the replay`);
+    assert.ok(replay.includes('已截断'), `len=${len}: the cut is visible, never silently dropped`);
+  }
+  // Distinct head/tail marks prove the cut keeps both ends (not head-only).
+  const marked = [
     { id: 'm1', userId: 'user1', catId: null, content: '请保留上下文再回答', mentions: [], timestamp: 1000, threadId: 't' },
-    { id: 'm2', userId: 'user1', catId: 'dsh', content: '测'.repeat(2000), mentions: [], timestamp: 2000, threadId: 't' },
+    { id: 'm2', userId: 'user1', catId: 'dsh', content: `HEAD_MARK${'测'.repeat(9000)}TAIL_MARK`, mentions: [], timestamp: 2000, threadId: 't' },
   ];
-  const replay = buildRebuildContextReplay(history);
-  assert.ok(replay, 'a legal long reply must still yield a replay');
-  const header = replay.split('\n')[0];
-  assert.match(header, /^\/rebuild-replay v1 messages=\d+ tokens=\d+ truncated=true$/);
-  assert.ok(replay.includes('测'), 'the truncated newest reply stays in the replay');
-  assert.ok(replay.includes('…'), 'the cut is visible, never silently dropped');
+  const markedReplay = buildRebuildContextReplay(marked);
+  assert.ok(markedReplay.includes('HEAD_MARK'), 'head of the long reply is kept');
+  assert.ok(markedReplay.includes('TAIL_MARK'), 'tail of the long reply is kept');
+  // Normal short history: audit also equals the measured body, and stays untruncated.
+  const shortHistory = [
+    { id: 'm1', userId: 'user1', catId: null, content: '短问题', mentions: [], timestamp: 1000, threadId: 't' },
+    { id: 'm2', userId: 'user1', catId: 'dsh', content: '短回答', mentions: [], timestamp: 2000, threadId: 't' },
+  ];
+  const shortReplay = buildRebuildContextReplay(shortHistory);
+  const shortHeader = shortReplay.match(REBUILD_REPLAY_HEADER);
+  const shortBody = shortReplay.slice(shortReplay.indexOf('\n') + 1);
+  assert.equal(Number(shortHeader[2]), estimateTokens(shortBody), 'short history audit equals measured body');
+  assert.equal(shortHeader[3], 'false', 'short history is not truncated');
+  assert.ok(estimateTokens(shortBody) <= 2000, 'short history body within budget');
+  // Multi-digit message count keeps the audit exact (wrapper grows with N).
+  const manyHistory = Array.from({ length: 12 }, (_, i) => ({
+    id: `m${i}`, userId: 'user1', catId: i % 2 ? 'dsh' : null, content: `消息内容${i}`, mentions: [], timestamp: 1000 + i, threadId: 't',
+  }));
+  const manyReplay = buildRebuildContextReplay(manyHistory);
+  const manyHeader = manyReplay.match(REBUILD_REPLAY_HEADER);
+  const manyBody = manyReplay.slice(manyReplay.indexOf('\n') + 1);
+  assert.equal(Number(manyHeader[2]), estimateTokens(manyBody), 'multi-digit count audit equals measured body');
+  assert.ok(estimateTokens(manyBody) <= 2000, 'multi-digit count body within budget');
 });
 
 test('long-reply thread rebuilds with the bounded partial replay instead of failing closed', async () => {

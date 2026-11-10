@@ -57,57 +57,76 @@ function deliveredContextMessages(messages: StoredMessage[]): StoredMessage[] {
  */
 export const REBUILD_REPLAY_HEADER = /^\/rebuild-replay v1 messages=(\d+) tokens=(\d+) truncated=(true|false)\n/;
 
+/**
+ * Reserve for the `[对话历史 - 最近 N 条]` + `[/对话历史]` wrapper so the
+ * measured body (wrapper included) stays within REBUILD_CONTEXT_MAX_TOTAL_TOKENS
+ * for both assembly paths, even with multi-digit message counts.
+ */
+const REBUILD_REPLAY_WRAPPER_RESERVE_TOKENS = 32;
+
+/** Cut a single over-budget line head-tail into budgetTokens; both ends and the visible cut marks are kept. */
+function boundedHeadTailLine(line: string, budgetTokens: number): string | undefined {
+  const marks = '\n…[已截断]…\n';
+  const lineTokens = estimateTokens(`${line}\n`);
+  if (lineTokens <= budgetTokens) return `${line}\n`;
+  let share = Math.floor((line.length * (budgetTokens - estimateTokens(marks))) / lineTokens);
+  let head = Math.max(0, Math.floor(share / 2));
+  let tail = Math.max(0, share - head);
+  for (let guard = 0; guard < 24; guard++) {
+    const candidate = `${line.slice(0, head)}${marks}${line.slice(Math.max(0, line.length - tail))}\n`;
+    if (estimateTokens(candidate) <= budgetTokens) return candidate;
+    if (head + tail <= 2) return undefined;
+    head = Math.floor(head * 0.8);
+    tail = Math.floor(tail * 0.8);
+  }
+  return undefined;
+}
+
 /** Assemble the controlled replay block the ACP carrier may inject on a rebuild. */
 export function buildRebuildContextReplay(messages: StoredMessage[]): string | undefined {
   const eligible = deliveredContextMessages(messages);
   if (eligible.length === 0) return undefined;
-  const assembled = assembleContext(messages, { maxTotalTokens: REBUILD_CONTEXT_MAX_TOTAL_TOKENS });
-  let contextText = assembled.contextText;
-  let messageCount = assembled.messageCount;
-  let estimatedTokens = assembled.estimatedTokens;
-  let truncated = messageCount < eligible.length;
 
-  if (!contextText) {
-    // Bounded fallback: the newest eligible message alone exceeds the replay
-    // budget, so the whole-message assembly returned nothing. A legal long
-    // reply must still yield a usable partial replay — truncate the newest
-    // line head-tail into the budget and keep filling older lines backwards.
-    // Never report this as complete: any fallback outcome is truncated=true.
-    const messageMap = buildMessageMap(eligible);
-    const lines: string[] = [];
-    let totalTokens = 0;
-    const headerOverhead = estimateTokens(`[对话历史 - 最近 1 条]\n`);
-    let budget = REBUILD_CONTEXT_MAX_TOTAL_TOKENS - headerOverhead;
-    for (let i = eligible.length - 1; i >= 0 && budget > 0; i--) {
-      let line = `${formatMessage(eligible[i], {
-        truncate: PROMPT_MESSAGE_SAFETY_CHAR_LIMIT,
-        messageMap,
-      })}\n`;
-      let lineTokens = estimateTokens(line);
-      if (lineTokens > budget) {
-        if (lines.length === 0) {
-          // Newest line never gets dropped, only cut into the budget.
-          let charLimit = Math.floor((line.length * budget) / lineTokens);
-          while (charLimit > 0 && estimateTokens(`${line.slice(0, charLimit)}…\n`) > budget) {
-            charLimit = Math.floor(charLimit / 2);
-          }
-          line = `${line.slice(0, charLimit)}…\n`;
-          lineTokens = estimateTokens(line);
-        } else break;
-      }
-      if (lineTokens > budget) break;
-      lines.unshift(line);
-      totalTokens += lineTokens;
-      budget -= lineTokens;
-    }
-    if (lines.length === 0) return undefined;
-    messageCount = lines.length;
-    estimatedTokens = totalTokens + headerOverhead;
-    truncated = true;
-    contextText = `[对话历史 - 最近 ${messageCount} 条]\n${lines.join('')}[/对话历史]`;
+  // Auditing contract (both paths, identical): the header's tokens field is
+  // the measured estimateTokens of the body — the [对话历史] wrapper included,
+  // the fixed `/rebuild-replay v1 …` protocol line excluded (that line is a
+  // constant ~15 tokens on top, by design, and never counted as body budget).
+  // The measured body never exceeds REBUILD_CONTEXT_MAX_TOTAL_TOKENS.
+  const assembled = assembleContext(messages, {
+    maxTotalTokens: REBUILD_CONTEXT_MAX_TOTAL_TOKENS - REBUILD_REPLAY_WRAPPER_RESERVE_TOKENS,
+  });
+  let contextText = assembled.contextText;
+  let truncated = assembled.messageCount < eligible.length;
+
+  if (contextText && estimateTokens(contextText) <= REBUILD_CONTEXT_MAX_TOTAL_TOKENS) {
+    return `/rebuild-replay v1 messages=${assembled.messageCount} tokens=${estimateTokens(contextText)} truncated=${truncated}\n${contextText}`;
   }
 
-  return `/rebuild-replay v1 messages=${messageCount} tokens=${estimatedTokens} truncated=${truncated}\n${contextText}`;
+  // Fallback (also covers a normal-path body that measured over budget): build
+  // line-by-line newest-first. The newest line is never dropped — it is cut
+  // head-tail into the budget with visible marks — and older lines fill what
+  // remains. A final shrink loop drops oldest lines until the measured body
+  // fits, so the audit number always matches the artifact.
+  const messageMap = buildMessageMap(eligible);
+  const lines: string[] = [];
+  let budget = REBUILD_CONTEXT_MAX_TOTAL_TOKENS - REBUILD_REPLAY_WRAPPER_RESERVE_TOKENS;
+  for (let i = eligible.length - 1; i >= 0 && budget > 0; i--) {
+    const raw = `${formatMessage(eligible[i], {
+      truncate: PROMPT_MESSAGE_SAFETY_CHAR_LIMIT,
+      messageMap,
+    })}\n`;
+    const bounded = boundedHeadTailLine(raw, budget);
+    if (bounded === undefined) break;
+    lines.unshift(bounded);
+    budget -= estimateTokens(bounded);
+  }
+  for (; lines.length > 0; ) {
+    contextText = `[对话历史 - 最近 ${lines.length} 条]\n${lines.join('')}[/对话历史]`;
+    if (estimateTokens(contextText) <= REBUILD_CONTEXT_MAX_TOTAL_TOKENS) break;
+    lines.shift();
+  }
+  if (lines.length === 0) return undefined;
+  return `/rebuild-replay v1 messages=${lines.length} tokens=${estimateTokens(contextText)} truncated=true\n${contextText}`;
 }
 
 export interface AssembledContext {
