@@ -454,21 +454,28 @@ test_build_alpha_stale_packages_rebuilds_missing_dist() {
   mkdir -p "$ALPHA_DIR/packages/api/dist"
   mkdir -p "$ALPHA_DIR/packages/mcp-server/dist"
 
-  # Mock pnpm to record calls without actually building
-  local pnpm_calls=""
-  pnpm() { pnpm_calls="$pnpm_calls|$*"; }
+  # Mock pnpm as an executable so child-only env cleanup can still invoke it.
+  local pnpm_calls_file="$tmp_root/pnpm-calls.log"
+  mkdir -p "$tmp_root/bin"
+  : > "$pnpm_calls_file"
+  cat > "$tmp_root/bin/pnpm" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$ALPHA_TEST_PNPM_CALLS"
+EOF
+  chmod +x "$tmp_root/bin/pnpm"
 
-  build_alpha_stale_packages
+  PATH="$tmp_root/bin:$PATH" ALPHA_TEST_PNPM_CALLS="$pnpm_calls_file" build_alpha_stale_packages
 
-  echo "$pnpm_calls" | grep -q "packages/shared" || {
+  grep -q "packages/shared" "$pnpm_calls_file" || {
     echo "FAIL: shared should be rebuilt when dist is missing"
     exit 1
   }
-  echo "$pnpm_calls" | grep -q "packages/api" || {
+  grep -q "packages/api" "$pnpm_calls_file" || {
     echo "FAIL: api should be rebuilt when dist is missing"
     exit 1
   }
-  echo "$pnpm_calls" | grep -q "packages/mcp-server" || {
+  grep -q "packages/mcp-server" "$pnpm_calls_file" || {
     echo "FAIL: mcp-server should be rebuilt when dist is missing"
     exit 1
   }
@@ -512,13 +519,20 @@ test_build_alpha_stale_packages_skips_fresh_packages() {
     echo "$head" > "$ALPHA_DIR/packages/$pkg/dist/.build-commit"
   done
 
-  # Mock pnpm — should NOT be called
-  local pnpm_called=false
-  pnpm() { pnpm_called=true; }
+  # Mock pnpm — the calls file must stay empty for fresh packages.
+  local pnpm_calls_file="$tmp_root/pnpm-calls.log"
+  mkdir -p "$tmp_root/bin"
+  : > "$pnpm_calls_file"
+  cat > "$tmp_root/bin/pnpm" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$ALPHA_TEST_PNPM_CALLS"
+EOF
+  chmod +x "$tmp_root/bin/pnpm"
 
-  build_alpha_stale_packages
+  PATH="$tmp_root/bin:$PATH" ALPHA_TEST_PNPM_CALLS="$pnpm_calls_file" build_alpha_stale_packages
 
-  [ "$pnpm_called" = "false" ] || {
+  [ ! -s "$pnpm_calls_file" ] || {
     echo "FAIL: pnpm should not be called when all dists are fresh"
     exit 1
   }
@@ -578,21 +592,28 @@ test_build_alpha_stale_packages_rebuilds_when_head_moved() {
     exit 1
   }
 
-  # Mock pnpm — should be called since stamps now mismatch HEAD
-  local pnpm_calls=""
-  pnpm() { pnpm_calls="$pnpm_calls|$*"; }
+  # Mock pnpm — should be called since stamps now mismatch HEAD.
+  local pnpm_calls_file="$tmp_root/pnpm-calls.log"
+  mkdir -p "$tmp_root/bin"
+  : > "$pnpm_calls_file"
+  cat > "$tmp_root/bin/pnpm" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$ALPHA_TEST_PNPM_CALLS"
+EOF
+  chmod +x "$tmp_root/bin/pnpm"
 
-  build_alpha_stale_packages
+  PATH="$tmp_root/bin:$PATH" ALPHA_TEST_PNPM_CALLS="$pnpm_calls_file" build_alpha_stale_packages
 
-  echo "$pnpm_calls" | grep -q "packages/shared" || {
+  grep -q "packages/shared" "$pnpm_calls_file" || {
     echo "FAIL: shared should be rebuilt after HEAD moved past its stamp"
     exit 1
   }
-  echo "$pnpm_calls" | grep -q "packages/api" || {
+  grep -q "packages/api" "$pnpm_calls_file" || {
     echo "FAIL: api should be rebuilt after HEAD moved past its stamp"
     exit 1
   }
-  echo "$pnpm_calls" | grep -q "packages/mcp-server" || {
+  grep -q "packages/mcp-server" "$pnpm_calls_file" || {
     echo "FAIL: mcp-server should be rebuilt after HEAD moved past its stamp"
     exit 1
   }

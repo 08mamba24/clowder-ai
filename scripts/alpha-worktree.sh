@@ -4,14 +4,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-# Repo-locating variables inherited from the caller would split the wrapper's
-# git identity: the guard probes one repository while fetch/worktree-add
-# register in whatever GIT_DIR points at. Scrub the full locating set in this
-# process (and every child it launches) so the identity checks and ALL real
-# git operations share one repository: the physical checkout this script
-# lives in. The caller's own environment is never modified.
-unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
-  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG
+# Keep source-only callers' Git values and export attributes intact. Both
+# identity probes and management children resolve their repositories from the
+# selected physical paths, never from the caller's repository-locating env.
+alpha_env() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+    -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+    -u GIT_CONFIG "$@"
+}
+
+alpha_git() {
+  alpha_env git "$@"
+}
 # shellcheck source=scripts/lib/node-runtime-guard.sh
 source "$SCRIPT_DIR/lib/node-runtime-guard.sh"
 # shellcheck source=scripts/lib/quickstart-freshness.sh
@@ -111,22 +115,22 @@ abs_path() {
 }
 
 require_git_repo() {
-  git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+  alpha_git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     || die "project dir is not a git repository: $PROJECT_DIR"
 }
 
 worktree_exists() {
   # Drain the registry: grep -q can SIGPIPE awk/git after a match under pipefail.
-  git -C "$PROJECT_DIR" worktree list --porcelain | awk '/^worktree / {print substr($0, 10)}' | grep -Fx "$ALPHA_DIR" >/dev/null
+  alpha_git -C "$PROJECT_DIR" worktree list --porcelain | awk '/^worktree / {print substr($0, 10)}' | grep -Fx "$ALPHA_DIR" >/dev/null
 }
 
 legacy_worktree_exists() {
   [ "$LEGACY_ALPHA_DIR" != "$ALPHA_DIR" ] || return 1
-  git -C "$PROJECT_DIR" worktree list --porcelain | awk '/^worktree / {print substr($0, 10)}' | grep -Fx "$LEGACY_ALPHA_DIR" >/dev/null
+  alpha_git -C "$PROJECT_DIR" worktree list --porcelain | awk '/^worktree / {print substr($0, 10)}' | grep -Fx "$LEGACY_ALPHA_DIR" >/dev/null
 }
 
 ensure_remote_exists() {
-  git -C "$PROJECT_DIR" remote get-url "$REMOTE_NAME" >/dev/null 2>&1 \
+  alpha_git -C "$PROJECT_DIR" remote get-url "$REMOTE_NAME" >/dev/null 2>&1 \
     || die "remote '$REMOTE_NAME' not found"
 }
 
@@ -152,7 +156,7 @@ is_api_running() {
 
 ensure_alpha_clean() {
   local dirty
-  dirty=$(git -C "$ALPHA_DIR" status --short -uno 2>/dev/null || true)
+  dirty=$(alpha_git -C "$ALPHA_DIR" status --short -uno 2>/dev/null || true)
   if [ -n "$dirty" ] && [ "$FORCE" != "true" ]; then
     die "alpha worktree has local changes. Commit/stash first, or re-run with --force."
   fi
@@ -161,30 +165,30 @@ ensure_alpha_clean() {
 ensure_alpha_branch() {
   local branch dirty
 
-  branch=$(git -C "$ALPHA_DIR" rev-parse --abbrev-ref HEAD)
+  branch=$(alpha_git -C "$ALPHA_DIR" rev-parse --abbrev-ref HEAD)
   if [ "$branch" = "$ALPHA_BRANCH" ]; then
     return 0
   fi
 
-  dirty=$(git -C "$ALPHA_DIR" status --short -uno 2>/dev/null || true)
+  dirty=$(alpha_git -C "$ALPHA_DIR" status --short -uno 2>/dev/null || true)
   if [ -n "$dirty" ] && [ "$FORCE" != "true" ]; then
     die "alpha worktree is on branch '$branch' with local changes. Commit/stash first, or re-run with --force."
   fi
 
-  git -C "$ALPHA_DIR" fetch "$REMOTE_NAME" main
+  alpha_git -C "$ALPHA_DIR" fetch "$REMOTE_NAME" main
 
-  if [ "$branch" = "$LEGACY_ALPHA_BRANCH" ] && ! git -C "$PROJECT_DIR" show-ref --verify --quiet "refs/heads/$ALPHA_BRANCH"; then
+  if [ "$branch" = "$LEGACY_ALPHA_BRANCH" ] && ! alpha_git -C "$PROJECT_DIR" show-ref --verify --quiet "refs/heads/$ALPHA_BRANCH"; then
     info "renaming legacy branch '$LEGACY_ALPHA_BRANCH' to '$ALPHA_BRANCH'"
-    git -C "$ALPHA_DIR" branch -m "$LEGACY_ALPHA_BRANCH" "$ALPHA_BRANCH"
-    git -C "$ALPHA_DIR" branch --set-upstream-to="$REMOTE_NAME/main" "$ALPHA_BRANCH" >/dev/null 2>&1 || true
+    alpha_git -C "$ALPHA_DIR" branch -m "$LEGACY_ALPHA_BRANCH" "$ALPHA_BRANCH"
+    alpha_git -C "$ALPHA_DIR" branch --set-upstream-to="$REMOTE_NAME/main" "$ALPHA_BRANCH" >/dev/null 2>&1 || true
     return 0
   fi
 
   info "repairing alpha worktree branch from '$branch' to '$ALPHA_BRANCH'"
-  if git -C "$PROJECT_DIR" show-ref --verify --quiet "refs/heads/$ALPHA_BRANCH"; then
-    git -C "$ALPHA_DIR" checkout "$ALPHA_BRANCH"
+  if alpha_git -C "$PROJECT_DIR" show-ref --verify --quiet "refs/heads/$ALPHA_BRANCH"; then
+    alpha_git -C "$ALPHA_DIR" checkout "$ALPHA_BRANCH"
   else
-    git -C "$ALPHA_DIR" checkout -B "$ALPHA_BRANCH" "$REMOTE_NAME/main"
+    alpha_git -C "$ALPHA_DIR" checkout -B "$ALPHA_BRANCH" "$REMOTE_NAME/main"
   fi
 }
 
@@ -222,7 +226,7 @@ install_alpha_dependencies() {
   info "installing dependencies in alpha worktree"
   # Always clear production env flags — Claude Code shell often has NODE_ENV=production,
   # which causes pnpm to skip devDependencies and break web builds.
-  env -u NODE_ENV -u npm_config_production -u NPM_CONFIG_PRODUCTION \
+  alpha_env env -u NODE_ENV -u npm_config_production -u NPM_CONFIG_PRODUCTION \
     pnpm -C "$ALPHA_DIR" install --frozen-lockfile
 }
 
@@ -329,7 +333,7 @@ migrate_legacy_alpha_worktree() {
   fi
 
   info "migrating legacy main-test worktree from $LEGACY_ALPHA_DIR to $ALPHA_DIR"
-  git -C "$PROJECT_DIR" worktree move "$LEGACY_ALPHA_DIR" "$ALPHA_DIR"
+  alpha_git -C "$PROJECT_DIR" worktree move "$LEGACY_ALPHA_DIR" "$ALPHA_DIR"
 }
 
 # The managed Alpha workspace root is exported from PROJECT_DIR
@@ -345,9 +349,7 @@ migrate_legacy_alpha_worktree() {
 # identity is read from the physical path only; the caller environment and
 # git configuration stay untouched.
 git_probe() {
-  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
-    -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
-    -u GIT_CONFIG git -C "$1" "${@:2}" 2>/dev/null
+  alpha_git -C "$1" "${@:2}" 2>/dev/null
 }
 
 wrapper_primary_checkout_ok() {
@@ -411,14 +413,14 @@ init_alpha_worktree() {
   fi
 
   info "fetching $REMOTE_NAME/main"
-  git -C "$PROJECT_DIR" fetch "$REMOTE_NAME" main
+  alpha_git -C "$PROJECT_DIR" fetch "$REMOTE_NAME" main
 
-  if git -C "$PROJECT_DIR" show-ref --verify --quiet "refs/heads/$ALPHA_BRANCH"; then
+  if alpha_git -C "$PROJECT_DIR" show-ref --verify --quiet "refs/heads/$ALPHA_BRANCH"; then
     info "adding existing branch '$ALPHA_BRANCH' to $ALPHA_DIR"
-    git -C "$PROJECT_DIR" worktree add "$ALPHA_DIR" "$ALPHA_BRANCH"
+    alpha_git -C "$PROJECT_DIR" worktree add "$ALPHA_DIR" "$ALPHA_BRANCH"
   else
     info "creating branch '$ALPHA_BRANCH' from $REMOTE_NAME/main"
-    git -C "$PROJECT_DIR" worktree add "$ALPHA_DIR" -b "$ALPHA_BRANCH" "$REMOTE_NAME/main"
+    alpha_git -C "$PROJECT_DIR" worktree add "$ALPHA_DIR" -b "$ALPHA_BRANCH" "$REMOTE_NAME/main"
   fi
 
   if [ "$RUN_INSTALL" = "true" ]; then
@@ -439,17 +441,17 @@ sync_alpha_worktree() {
   ensure_alpha_branch
 
   info "syncing alpha worktree with $REMOTE_NAME/main (ff-only)"
-  git -C "$ALPHA_DIR" fetch "$REMOTE_NAME" main
-  git -C "$ALPHA_DIR" merge --ff-only "$REMOTE_NAME/main"
+  alpha_git -C "$ALPHA_DIR" fetch "$REMOTE_NAME" main
+  alpha_git -C "$ALPHA_DIR" merge --ff-only "$REMOTE_NAME/main"
 
   if [ "$RUN_INSTALL" = "true" ]; then
     install_alpha_dependencies
 
     local lock_drift
-    lock_drift=$(git -C "$ALPHA_DIR" diff --name-only 2>/dev/null || true)
+    lock_drift=$(alpha_git -C "$ALPHA_DIR" diff --name-only 2>/dev/null || true)
     if [ "$lock_drift" = "pnpm-lock.yaml" ]; then
       info "lock drift detected — stashing instead of committing"
-      git -C "$ALPHA_DIR" stash push -m "alpha-lock-drift-auto-stash" -- pnpm-lock.yaml
+      alpha_git -C "$ALPHA_DIR" stash push -m "alpha-lock-drift-auto-stash" -- pnpm-lock.yaml
     fi
   fi
 
@@ -469,13 +471,13 @@ status_alpha_worktree() {
   fi
 
   local branch head dirty ahead behind api_running env_source_display resolved_env
-  branch=$(git -C "$ALPHA_DIR" rev-parse --abbrev-ref HEAD)
-  head=$(git -C "$ALPHA_DIR" rev-parse --short HEAD)
-  dirty=$(git -C "$ALPHA_DIR" status --short | wc -l | awk '{print $1}')
+  branch=$(alpha_git -C "$ALPHA_DIR" rev-parse --abbrev-ref HEAD)
+  head=$(alpha_git -C "$ALPHA_DIR" rev-parse --short HEAD)
+  dirty=$(alpha_git -C "$ALPHA_DIR" status --short | wc -l | awk '{print $1}')
 
-  git -C "$ALPHA_DIR" fetch "$REMOTE_NAME" main >/dev/null 2>&1 || true
-  ahead=$(git -C "$ALPHA_DIR" rev-list --count "$REMOTE_NAME/main..HEAD" 2>/dev/null || echo "0")
-  behind=$(git -C "$ALPHA_DIR" rev-list --count "HEAD..$REMOTE_NAME/main" 2>/dev/null || echo "0")
+  alpha_git -C "$ALPHA_DIR" fetch "$REMOTE_NAME" main >/dev/null 2>&1 || true
+  ahead=$(alpha_git -C "$ALPHA_DIR" rev-list --count "$REMOTE_NAME/main..HEAD" 2>/dev/null || echo "0")
+  behind=$(alpha_git -C "$ALPHA_DIR" rev-list --count "HEAD..$REMOTE_NAME/main" 2>/dev/null || echo "0")
   api_running="no"
   if is_api_running; then
     api_running="yes"
@@ -538,27 +540,27 @@ stop_alpha_daemon() {
 # quick-start for unchanged worktrees.
 build_alpha_stale_packages() {
   local head_commit
-  head_commit="$(git -C "$ALPHA_DIR" rev-parse HEAD 2>/dev/null || echo "")"
+  head_commit="$(alpha_git -C "$ALPHA_DIR" rev-parse HEAD 2>/dev/null || echo "")"
 
   # Order: shared first (api/mcp-server depend on it), then api, then mcp-server.
   if needs_rebuild "$ALPHA_DIR/packages/shared/dist/index.js" \
       "$ALPHA_DIR/packages/shared/dist/.build-commit" "$head_commit"; then
     info "alpha dist: shared stale/missing; rebuilding"
-    pnpm -C "$ALPHA_DIR/packages/shared" run build
+    alpha_env pnpm -C "$ALPHA_DIR/packages/shared" run build
     record_build_stamp "$ALPHA_DIR/packages/shared/dist/.build-commit" "$head_commit"
   fi
 
   if needs_rebuild "$ALPHA_DIR/packages/api/dist/index.js" \
       "$ALPHA_DIR/packages/api/dist/.build-commit" "$head_commit"; then
     info "alpha dist: api stale/missing; rebuilding"
-    pnpm -C "$ALPHA_DIR/packages/api" run build
+    alpha_env pnpm -C "$ALPHA_DIR/packages/api" run build
     record_build_stamp "$ALPHA_DIR/packages/api/dist/.build-commit" "$head_commit"
   fi
 
   if needs_rebuild "$ALPHA_DIR/packages/mcp-server/dist/index.js" \
       "$ALPHA_DIR/packages/mcp-server/dist/.build-commit" "$head_commit"; then
     info "alpha dist: mcp-server stale/missing; rebuilding"
-    pnpm -C "$ALPHA_DIR/packages/mcp-server" run build
+    alpha_env pnpm -C "$ALPHA_DIR/packages/mcp-server" run build
     record_build_stamp "$ALPHA_DIR/packages/mcp-server/dist/.build-commit" "$head_commit"
   fi
 }
@@ -617,7 +619,8 @@ start_alpha_worktree() {
     cmd+=("--quick")
   fi
 
-  exec "${cmd[@]}" ${START_ARGS[@]+"${START_ARGS[@]}"}
+  exec env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+    -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_CONFIG "${cmd[@]}" ${START_ARGS[@]+"${START_ARGS[@]}"}
 }
 
 if [[ "${1:-}" == "--source-only" ]]; then
@@ -629,7 +632,7 @@ else
 fi
 MANAGED_ALPHA_ARGS=("$@")
 if [ "$SOURCE_ONLY" != true ] && [ "$COMMAND" = start ] && [ -n "${CAT_CAFE_PREVIEW_EXPIRES_AT:-}" ]; then
-  node "$SCRIPT_DIR/lib/alpha-launch-contract.mjs" ${MANAGED_ALPHA_ARGS[@]+"${MANAGED_ALPHA_ARGS[@]}"} >/dev/null || die "invalid managed Alpha launch contract"
+  alpha_env node "$SCRIPT_DIR/lib/alpha-launch-contract.mjs" ${MANAGED_ALPHA_ARGS[@]+"${MANAGED_ALPHA_ARGS[@]}"} >/dev/null || die "invalid managed Alpha launch contract"
   # pnpm may forward a separator. The bounded contract has already excluded child overrides.
   if [ "${1:-}" = -- ]; then shift; fi
 fi
@@ -714,7 +717,7 @@ if [ -n "$NAMED_ALPHA_INSTANCE" ] || [ -n "$NAMED_ALPHA_PORTS" ]; then
   source "$SCRIPT_DIR/lib/alpha-named-launch.sh"
   select_named_alpha
 elif [ "$COMMAND" = start ] && [ -n "${CAT_CAFE_PREVIEW_EXPIRES_AT:-}" ]; then
-  managed_alpha_ports="$(node "$SCRIPT_DIR/lib/alpha-launch-contract.mjs" --standard-ports)" || die "cannot resolve managed Alpha ports"
+  managed_alpha_ports="$(alpha_env node "$SCRIPT_DIR/lib/alpha-launch-contract.mjs" --standard-ports)" || die "cannot resolve managed Alpha ports"
   IFS=$'\t' read -r ALPHA_FRONTEND_PORT ALPHA_API_PORT ALPHA_PREVIEW_GATEWAY_PORT ALPHA_COLLECTIVE_SERVICE_PORT ALPHA_REDIS_PORT <<< "$managed_alpha_ports"
   ALPHA_DIR="$DEFAULT_ALPHA_DIR"
   ALPHA_BRANCH="$DEFAULT_ALPHA_BRANCH"

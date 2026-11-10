@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { namedAlphaFixture } from './lib/alpha-named-fixture.mjs';
+import { NAMED_ALPHA_PORTS, namedAlphaFixture } from './lib/alpha-named-fixture.mjs';
 
 function runWrapper(scriptPath, args, cwd, env) {
   return spawnSync('bash', [scriptPath, ...args], {
@@ -199,6 +199,148 @@ function makeSecondRepo(f, name) {
   return root;
 }
 
+const GIT_LOCATION_KEYS = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_COMMON_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CONFIG',
+];
+
+function foreignGitEnvironment(root) {
+  return {
+    GIT_DIR: join(root, '.git'),
+    GIT_WORK_TREE: root,
+    GIT_COMMON_DIR: join(root, '.git'),
+    GIT_INDEX_FILE: join(root, '.git/index'),
+    GIT_OBJECT_DIRECTORY: join(root, '.git/objects'),
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: join(root, '.git/objects'),
+    GIT_CONFIG: join(root, '.git/config'),
+  };
+}
+
+function foreignGitState(f, root) {
+  const fetchHead = join(root, '.git', 'FETCH_HEAD');
+  return {
+    registry: f.git(['worktree', 'list', '--porcelain'], root),
+    refs: f.git(['show-ref'], root),
+    fetchHead: existsSync(fetchHead) ? readFileSync(fetchHead, 'utf8') : null,
+  };
+}
+
+for (const attributes of ['exported', 'mixed']) {
+  test(`source and subsequent init preserve the caller's ${attributes} Git environment and target`, (t) => {
+    const f = namedAlphaFixture(t);
+    const other = makeSecondRepo(f, `source-foreign-${attributes}`);
+    const before = foreignGitState(f, other);
+    const target = join(f.directory, 'source-init-target');
+    const probe = join(f.mainRoot, 'scripts', 'source-environment-probe.sh');
+    writeFileSync(
+      probe,
+      `#!/bin/bash
+set -euo pipefail
+GIT_DIR="$FOREIGN_ROOT/.git"
+GIT_WORK_TREE="$FOREIGN_ROOT"
+GIT_COMMON_DIR="$FOREIGN_ROOT/.git"
+GIT_INDEX_FILE="$FOREIGN_ROOT/.git/index"
+GIT_OBJECT_DIRECTORY="$FOREIGN_ROOT/.git/objects"
+GIT_ALTERNATE_OBJECT_DIRECTORIES="$FOREIGN_ROOT/.git/objects"
+GIT_CONFIG="$FOREIGN_ROOT/.git/config"
+export ${GIT_LOCATION_KEYS.join(' ')}
+if [ "$ATTRIBUTES" = mixed ]; then
+  export -n GIT_INDEX_FILE GIT_CONFIG
+  GIT_CONFIG=''
+  unset GIT_ALTERNATE_OBJECT_DIRECTORIES
+fi
+snapshot() {
+  local key
+  for key in ${GIT_LOCATION_KEYS.join(' ')}; do
+    declare -p "$key" 2>/dev/null || printf 'unset:%s\\n' "$key"
+  done
+}
+
+before="$(snapshot)"
+git_before="$(git rev-parse --absolute-git-dir)"
+source "$(dirname "$0")/alpha-worktree.sh" --source-only
+[ "$(snapshot)" = "$before" ] || { echo 'source changed caller Git declarations' >&2; exit 21; }
+[ "$(git rev-parse --absolute-git-dir)" = "$git_before" ] || exit 22
+ALPHA_DIR="$TEST_ALPHA_TARGET"
+RUN_INSTALL=false
+init_alpha_worktree
+[ "$(snapshot)" = "$before" ] || { echo 'init changed caller Git declarations' >&2; exit 23; }
+[ "$(git rev-parse --absolute-git-dir)" = "$git_before" ] || exit 24
+printf 'CALLER_TARGET=%s\\n' "$git_before"
+`,
+    );
+    const result = spawnSync('bash', [probe], {
+      cwd: f.mainRoot,
+      encoding: 'utf8',
+      env: { ...probeEnv(f), FOREIGN_ROOT: other, ATTRIBUTES: attributes, TEST_ALPHA_TARGET: target },
+      timeout: 30_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /CALLER_TARGET=.*source-foreign/);
+    assert.deepEqual(foreignGitState(f, other), before, 'the foreign registry, refs and FETCH_HEAD must be unchanged');
+    assert.ok(f.git(['worktree', 'list', '--porcelain']).includes(target), 'source-loaded init must register in A');
+  });
+}
+
+for (const mode of ['legacy', 'named']) {
+  test(`${mode} launch scrubs inherited and dotenv Git variables from the child`, (t) => {
+    const f = namedAlphaFixture(t);
+    const other = makeSecondRepo(f, `launch-foreign-${mode}`);
+    const before = foreignGitState(f, other);
+    const foreign = foreignGitEnvironment(other);
+    writeFileSync(
+      join(f.mainRoot, '.env'),
+      Object.entries(foreign)
+        .map(([key, value]) => `export ${key}='${value.replaceAll("'", "'\"'\"'")}'`)
+        .join('\n'),
+    );
+    const child = `#!/bin/bash\nnode -e 'console.log(JSON.stringify(${JSON.stringify(GIT_LOCATION_KEYS)}.map(key => process.env[key] ?? null)))'\n`;
+    writeFileSync(join(f.mainRoot, 'scripts/start-dev.sh'), child, { mode: 0o755 });
+    f.git(['add', 'scripts/start-dev.sh']);
+    f.git(['commit', '-m', 'capture Git environment instead of starting services']);
+    f.git(['push', 'origin', 'main']);
+    let result;
+    if (mode === 'named') {
+      result = f.run(['start', '--instance', 'f290-communication', '--ports', NAMED_ALPHA_PORTS], {
+        env: foreign,
+      });
+    } else {
+      f.git(['merge', '--ff-only', 'main'], f.alphaRoot);
+      f.preparedBuilds();
+      const probe = join(f.mainRoot, 'scripts', 'source-launch-probe.sh');
+      writeFileSync(
+        probe,
+        `#!/bin/bash
+source "$(dirname "$0")/alpha-worktree.sh" --source-only
+ALPHA_DIR="$TEST_ALPHA_ROOT"
+SYNC_BEFORE_START=false
+ensure_alpha_dependencies() { :; }
+assert_alpha_redis_isolated() { :; }
+assert_alpha_redis_seeded() { :; }
+start_alpha_worktree
+`,
+      );
+      result = spawnSync('bash', [probe], {
+        cwd: f.mainRoot,
+        encoding: 'utf8',
+        env: { ...f.env, ...foreign, TEST_ALPHA_ROOT: f.alphaRoot },
+        timeout: 30_000,
+      });
+    }
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(
+      JSON.parse(result.stdout.trim().split('\n').at(-1)),
+      GIT_LOCATION_KEYS.map(() => null),
+    );
+    assert.deepEqual(foreignGitState(f, other), before, 'launch must not change the foreign repository');
+  });
+}
+
 test('an inherited GIT_COMMON_DIR pointing elsewhere does not refute a legit primary', (t) => {
   const f = namedAlphaFixture(t);
   writeGuardProbe(f);
@@ -216,7 +358,7 @@ test('an inherited GIT_COMMON_DIR pointing elsewhere does not refute a legit pri
 test('a full init with an inherited GIT_DIR never registers into the foreign repository', (t) => {
   const f = namedAlphaFixture(t);
   const other = makeSecondRepo(f, 'other-gitdir');
-  const before = f.git(['worktree', 'list', '--porcelain'], other);
+  const before = foreignGitState(f, other);
   const target = join(f.directory, 'alpha-init-target');
   const result = spawnSync(
     'bash',
@@ -229,8 +371,7 @@ test('a full init with an inherited GIT_DIR never registers into the foreign rep
     },
   );
   assert.equal(result.status, 0, result.stderr);
-  const after = f.git(['worktree', 'list', '--porcelain'], other);
-  assert.equal(after, before, 'the foreign repository registry must stay untouched');
+  assert.deepEqual(foreignGitState(f, other), before, 'the foreign registry, refs and FETCH_HEAD must be unchanged');
   const ownList = f.git(['worktree', 'list', '--porcelain'], f.mainRoot);
   assert.match(
     ownList,
