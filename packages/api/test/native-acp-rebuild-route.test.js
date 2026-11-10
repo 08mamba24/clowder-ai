@@ -99,6 +99,23 @@ describe('ACP rebuild replay route wiring (serial)', () => {
     });
     assert.equal(dsh.invocations[0].options?.rebuildContextPrompt, undefined);
   });
+
+  test('a legal long reply still yields a bounded partial replay through the real route', async () => {
+    const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
+    const dsh = capturingService('dsh');
+    const history = [
+      historyMessage({ id: 'm1', content: '长回答之前的提问', timestamp: 1000 }),
+      historyMessage({ id: 'm2', catId: 'dsh', content: '答'.repeat(2000), timestamp: 2000 }),
+    ];
+    await runRoute(routeSerial, { dsh }, 'thread-acp-rebuild-route', {
+      targetCats: ['dsh'],
+      routeOptions: { history },
+    });
+    const replay = dsh.invocations[0].options?.rebuildContextPrompt;
+    assert.ok(replay, 'long reply must not leave the replay empty');
+    assert.match(replay, /^\/rebuild-replay v1 messages=\d+ tokens=\d+ truncated=true\n/);
+    assert.ok(replay.includes('答'), 'truncated newest reply is carried');
+  });
 });
 
 describe('ACP rebuild replay route wiring (parallel)', () => {

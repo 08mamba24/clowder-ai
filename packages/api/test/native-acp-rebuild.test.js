@@ -147,6 +147,52 @@ test('truncated replay is audited as partial migration, not a full resume', asyn
   });
 });
 
+test('legal long reply still produces a usable bounded partial replay', async () => {
+  const { buildRebuildContextReplay } = await import(
+    '../dist/domains/cats/services/context/ContextAssembler.js'
+  );
+  const history = [
+    { id: 'm1', userId: 'user1', catId: null, content: '请保留上下文再回答', mentions: [], timestamp: 1000, threadId: 't' },
+    { id: 'm2', userId: 'user1', catId: 'dsh', content: '测'.repeat(2000), mentions: [], timestamp: 2000, threadId: 't' },
+  ];
+  const replay = buildRebuildContextReplay(history);
+  assert.ok(replay, 'a legal long reply must still yield a replay');
+  const header = replay.split('\n')[0];
+  assert.match(header, /^\/rebuild-replay v1 messages=\d+ tokens=\d+ truncated=true$/);
+  assert.ok(replay.includes('测'), 'the truncated newest reply stays in the replay');
+  assert.ok(replay.includes('…'), 'the cut is visible, never silently dropped');
+});
+
+test('long-reply thread rebuilds with the bounded partial replay instead of failing closed', async () => {
+  const { buildRebuildContextReplay } = await import(
+    '../dist/domains/cats/services/context/ContextAssembler.js'
+  );
+  const replay = buildRebuildContextReplay([
+    { id: 'm1', userId: 'user1', catId: null, content: '请保留上下文再回答', mentions: [], timestamp: 1000, threadId: 't' },
+    { id: 'm2', userId: 'user1', catId: 'dsh', content: '测'.repeat(2000), mentions: [], timestamp: 2000, threadId: 't' },
+  ]);
+  assert.ok(replay, 'assembler-level precondition');
+  const { calls, prompted, service } = fixture({ resumeSupport: 'none' });
+  const messages = [];
+  for await (const message of service.invoke('继续', {
+    sessionId: 'long-reply-session',
+    rebuildContextPrompt: replay,
+  }))
+    messages.push(message);
+  assert.equal(
+    messages.some((message) => message.type === 'error'),
+    false,
+    'a usable partial replay must not fail closed',
+  );
+  assert.ok(calls.includes('prompt'));
+  assert.ok(prompted[0].includes('测'), 'carrier injected the truncated partial replay');
+  assert.ok(prompted[0].includes('继续'));
+  const audited = messages.find((message) => message.metadata?.sessionRebuild);
+  assert.ok(audited);
+  assert.equal(audited.metadata.sessionRebuild.replay.truncated, true);
+  assert.ok(audited.metadata.sessionRebuild.replay.messageCount >= 1);
+});
+
 test('rebuilt turn without a replay prefix fails closed instead of running an amnesiac model call', async () => {
   const { calls, sealed, prompted, service } = fixture({ resumeSupport: 'none' });
   const messages = [];

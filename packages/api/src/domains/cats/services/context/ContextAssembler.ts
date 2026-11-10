@@ -59,11 +59,54 @@ export const REBUILD_REPLAY_HEADER = /^\/rebuild-replay v1 messages=(\d+) tokens
 
 /** Assemble the controlled replay block the ACP carrier may inject on a rebuild. */
 export function buildRebuildContextReplay(messages: StoredMessage[]): string | undefined {
-  const { contextText, messageCount, estimatedTokens } = assembleContext(messages, {
-    maxTotalTokens: REBUILD_CONTEXT_MAX_TOTAL_TOKENS,
-  });
-  if (!contextText) return undefined;
-  const truncated = messageCount < deliveredContextMessages(messages).length;
+  const eligible = deliveredContextMessages(messages);
+  if (eligible.length === 0) return undefined;
+  const assembled = assembleContext(messages, { maxTotalTokens: REBUILD_CONTEXT_MAX_TOTAL_TOKENS });
+  let contextText = assembled.contextText;
+  let messageCount = assembled.messageCount;
+  let estimatedTokens = assembled.estimatedTokens;
+  let truncated = messageCount < eligible.length;
+
+  if (!contextText) {
+    // Bounded fallback: the newest eligible message alone exceeds the replay
+    // budget, so the whole-message assembly returned nothing. A legal long
+    // reply must still yield a usable partial replay — truncate the newest
+    // line head-tail into the budget and keep filling older lines backwards.
+    // Never report this as complete: any fallback outcome is truncated=true.
+    const messageMap = buildMessageMap(eligible);
+    const lines: string[] = [];
+    let totalTokens = 0;
+    const headerOverhead = estimateTokens(`[对话历史 - 最近 1 条]\n`);
+    let budget = REBUILD_CONTEXT_MAX_TOTAL_TOKENS - headerOverhead;
+    for (let i = eligible.length - 1; i >= 0 && budget > 0; i--) {
+      let line = `${formatMessage(eligible[i], {
+        truncate: PROMPT_MESSAGE_SAFETY_CHAR_LIMIT,
+        messageMap,
+      })}\n`;
+      let lineTokens = estimateTokens(line);
+      if (lineTokens > budget) {
+        if (lines.length === 0) {
+          // Newest line never gets dropped, only cut into the budget.
+          let charLimit = Math.floor((line.length * budget) / lineTokens);
+          while (charLimit > 0 && estimateTokens(`${line.slice(0, charLimit)}…\n`) > budget) {
+            charLimit = Math.floor(charLimit / 2);
+          }
+          line = `${line.slice(0, charLimit)}…\n`;
+          lineTokens = estimateTokens(line);
+        } else break;
+      }
+      if (lineTokens > budget) break;
+      lines.unshift(line);
+      totalTokens += lineTokens;
+      budget -= lineTokens;
+    }
+    if (lines.length === 0) return undefined;
+    messageCount = lines.length;
+    estimatedTokens = totalTokens + headerOverhead;
+    truncated = true;
+    contextText = `[对话历史 - 最近 ${messageCount} 条]\n${lines.join('')}[/对话历史]`;
+  }
+
   return `/rebuild-replay v1 messages=${messageCount} tokens=${estimatedTokens} truncated=${truncated}\n${contextText}`;
 }
 
