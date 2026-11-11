@@ -1211,30 +1211,6 @@ export function buildCodexAppServerArgs(args: readonly string[]): string[] {
   return out;
 }
 
-/** Preserve native login/config selectors without passing exec-only business flags. */
-function buildCodexLoginStatusArgs(args: readonly string[]): string[] {
-  const out: string[] = [];
-  for (let index = 0; index < args.length; index++) {
-    const flag = args[index];
-    const config = parseCodexConfigArg(args, index);
-    if (config) {
-      out.push('--config', config.expression);
-      index += config.tokenCount - 1;
-    } else if (['--profile', '-p', '--local-provider'].includes(flag)) {
-      out.push(flag, args[++index]);
-    } else if (/^(?:--profile=|--local-provider=|-p.)/.test(flag) || ['--ignore-user-config', '--oss'].includes(flag)) {
-      out.push(flag);
-    } else {
-      const feature = parseCodexFeatureArg(args, index);
-      if (feature) {
-        out.push(feature.form.startsWith('--enable') ? '--enable' : '--disable', feature.feature);
-        index += feature.tokenCount - 1;
-      }
-    }
-  }
-  return out;
-}
-
 function readInitializedProviderVersion(value: unknown): string {
   if (!isCodexConfigObject(value)) return 'unknown';
   const serverInfo = value.serverInfo;
@@ -2392,7 +2368,7 @@ export class CodexAgentService implements AgentService {
       if (!useAppServer && authMode === 'auto' && options?.requestedServiceTier) {
         const authType = await readCodexLoginAuthType({
           command: codexCommand,
-          args: buildCodexLoginStatusArgs(args),
+          args,
           cwd: options?.workingDirectory ?? process.cwd(),
           env: buildChildEnv(codexEnv, {
             workingDirectory: options?.workingDirectory,

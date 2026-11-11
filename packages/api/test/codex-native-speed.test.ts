@@ -1,6 +1,6 @@
 import './helpers/setup-cat-registry.js';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type TestContext, test } from 'node:test';
@@ -17,6 +17,7 @@ interface NativeAccountCase {
   name: string;
   account: Record<string, unknown> | null;
   isChatGpt: boolean;
+  config?: Record<string, unknown>;
 }
 
 const nativeChatGpt: NativeAccountCase = { name: 'ChatGPT', account: { type: 'chatgpt' }, isChatGpt: true };
@@ -25,6 +26,17 @@ const nativeAccounts: readonly NativeAccountCase[] = [
   { name: 'API key', account: { type: 'apiKey' }, isChatGpt: false },
   { name: 'no account', account: null, isChatGpt: false },
   { name: 'unknown account', account: { type: 'fixture-unknown' }, isChatGpt: false },
+  {
+    name: 'custom provider with ChatGPT',
+    account: { type: 'chatgpt' },
+    isChatGpt: false,
+    config: {
+      model_provider: 'fixture-key',
+      model_providers: {
+        'fixture-key': { env_key: 'FIXTURE_API_KEY', requires_openai_auth: false },
+      },
+    },
+  },
 ];
 
 function nativeAccountFixture(t: TestContext, native: NativeAccountCase) {
@@ -84,7 +96,11 @@ async function checkNativeSpeed(
   omitSnapshot = false,
 ) {
   const { root, home, account, launch } = nativeAccountFixture(t, native);
-  const wire = new F320AccountWire({ model_provider: 'openai', sqlite_home: home }, false, native.account);
+  const wire = new F320AccountWire(
+    { model_provider: 'openai', sqlite_home: home, ...native.config },
+    false,
+    native.account,
+  );
   const service = new CodexAgentService({
     cliCommand: process.execPath,
     carrierMode: 'app_server',
@@ -145,12 +161,17 @@ for (const { name, output, code = 0, expected } of [
   { name: 'ambiguous', output: 'Logged in using ChatGPT\nLogged in using an API key' },
   { name: 'failed inspection', output: 'Logged in using ChatGPT', code: 1 },
 ] as const) {
-  test(`native login status rejects unverified speed evidence: ${name}`, async () => {
+  test(`native login status rejects unverified speed evidence: ${name}`, async (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'codex-login-output-')));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const fixture = join(root, 'fixture.cjs');
+    writeFileSync(fixture, `#!${process.execPath}\nconsole.error(${JSON.stringify(output)}); process.exit(${code});\n`);
+    chmodSync(fixture, 0o700);
     const observed = await readCodexLoginAuthType({
-      command: process.execPath,
-      args: ['-e', `console.error(${JSON.stringify(output)}); process.exit(${code})`, '--'],
-      cwd: process.cwd(),
-      env: {},
+      command: fixture,
+      args: [],
+      cwd: root,
+      env: { CODEX_HOME: root, HOME: root },
     });
     assert.equal(observed, expected);
   });

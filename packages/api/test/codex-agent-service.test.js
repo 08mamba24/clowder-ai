@@ -2191,6 +2191,7 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
         mkdirSync(join(root, '.cat-cafe'));
         writeFileSync(join(root, '.cat-cafe/accounts.json'), '{}');
         writeFileSync(join(credentialHome, 'auth.json'), JSON.stringify({ auth_mode: nativeAuth }));
+        writeFileSync(join(credentialHome, 'fixture-native.config.toml'), 'cli_auth_credentials_store="file"\n');
         const fixture = join(root, 'codex-fixture.cjs');
         const observation = join(root, 'login-observation.json');
         writeFileSync(
@@ -2278,8 +2279,8 @@ else { console.error(auth === null ? 'Not logged in' : 'unknown login'); process
           assert.equal(observed.cwd, root);
           assert.equal(observed.home, options.env.CODEX_HOME, 'probe and invocation must use the same login home');
           if (name.includes('profile')) {
-            assert.ok(observed.args.includes('--profile'));
-            assert.ok(observed.args.includes('fixture-native'));
+            assert.ok(!observed.args.includes('--profile'), 'login status does not accept exec profile flags');
+            assert.ok(observed.args.includes('cli_auth_credentials_store="file"'));
           }
         }
       });

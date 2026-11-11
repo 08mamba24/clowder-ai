@@ -73,5 +73,13 @@ export async function validateCodexNativeAccount(
   )
     conflict('sqlite_home');
   const type = codexConfigRecord(observed.account).type;
+  if (type === 'chatgpt' && expectation.authMode === 'auto') {
+    // Stored ChatGPT credentials alone do not qualify a custom provider for Fast.
+    try {
+      validateCodexOAuthRequirements(effective, requirements);
+    } catch {
+      return undefined;
+    }
+  }
   return type === 'chatgpt' ? 'oauth' : type === 'apiKey' ? 'api_key' : undefined;
 }

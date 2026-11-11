@@ -153,12 +153,15 @@ export function readCodexLaunchProjection(
   }
   const systemPath = '/etc/codex/config.toml',
     userPath = join(home, 'config.toml');
+  // Native exec skips both user layers, while retaining system/project/managed layers.
+  const ignoreUserConfig = args.includes('--ignore-user-config');
   const system = readConfig(systemPath),
-    user = readConfig(userPath),
+    user = ignoreUserConfig ? {} : readConfig(userPath),
     cli = codexCliConfig(args);
   const managedPath = '/etc/codex/managed_config.toml',
     managed = readConfig(managedPath);
-  const nativeProfileConfig = nativeProfile ? readConfig(join(home, `${nativeProfile}.config.toml`)) : {};
+  const nativeProfileConfig =
+    nativeProfile && !ignoreUserConfig ? readConfig(join(home, `${nativeProfile}.config.toml`)) : {};
   const selection = [system, user, nativeProfileConfig, cli, managed].reduce(
     (base, layer) =>
       merge(

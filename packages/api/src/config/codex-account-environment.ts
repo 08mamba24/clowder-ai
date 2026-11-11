@@ -25,6 +25,10 @@ const ALTERNATIVE_CREDENTIAL_ENV = [
   'CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL',
   'CODEX_APP_SERVER_LOGIN_CLIENT_ID',
 ];
+/** Stored-login inspection excludes these native authentication selectors. */
+export function hasAlternativeCodexCredentials(env: NodeJS.ProcessEnv): boolean {
+  return [...ALTERNATIVE_CREDENTIAL_ENV, 'OPENAI_API_KEY'].some((key) => Boolean(env[key]?.trim()));
+}
 // Native organization/project headers plus the API fields supported by the existing env map.
 const API_ACCOUNT_ENV = [
   'OPENAI_API_KEY',
