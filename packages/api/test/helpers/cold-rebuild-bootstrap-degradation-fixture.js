@@ -201,13 +201,24 @@ export async function runRoute(
   route,
   services,
   threadId,
-  { targetCats = ['codex'], projectionService, routeOptions = {}, sessionChainStore } = {},
+  { targetCats = ['codex'], projectionService, routeOptions = {}, sessionChainStore, mcpSupportOverrides } = {},
 ) {
   return withCatRegistryLock(async () => {
     const original = catRegistry.getAllConfigs();
     const { loadCatConfig, toAllCatConfigs } = await import('../../dist/config/cat-config-loader.js');
     catRegistry.reset();
-    for (const [id, config] of Object.entries(toAllCatConfigs(loadCatConfig()))) catRegistry.register(id, config);
+    // Test-scoped member override (registry has no per-id re-register): when a
+    // replay-only suite opts in, the whole table is re-registered with the
+    // overridden members declaring mcpSupport:false explicitly — the shared-MCP
+    // preflight (which fail-closes on a missing production capability root) is
+    // skipped for them without touching the real config, the preflight rule
+    // itself, or any other test. Every other field — clientId included — is
+    // preserved. The registry restore in the finally block below undoes this.
+    const mcpOverrides = mcpSupportOverrides ?? {};
+    for (const [id, config] of Object.entries(toAllCatConfigs(loadCatConfig()))) {
+      const mcpSupport = mcpOverrides[id];
+      catRegistry.register(id, mcpSupport === undefined ? config : { ...config, mcpSupport });
+    }
     const appended = [];
     try {
       const deps = createMockDeps(services, appended, {

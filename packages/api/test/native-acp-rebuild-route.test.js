@@ -63,6 +63,10 @@ describe('ACP rebuild replay route wiring (serial)', () => {
     await runRoute(routeSerial, { dsh }, 'thread-acp-rebuild-route', {
       targetCats: ['dsh'],
       routeOptions: { history },
+      // Replay-only case: MCP capability integration is out of scope here; the
+      // member explicitly declares mcpSupport:false so the shared-MCP preflight
+      // is skipped instead of fail-closing on a missing production capability root.
+      mcpSupportOverrides: { dsh: false },
     });
     assert.equal(dsh.invocations.length, 1);
     const replay = dsh.invocations[0].options?.rebuildContextPrompt;
@@ -81,6 +85,7 @@ describe('ACP rebuild replay route wiring (serial)', () => {
     await runRoute(routeSerial, { dsh, codex }, 'thread-acp-rebuild-route', {
       targetCats: ['dsh', 'codex'],
       routeOptions: { history },
+      mcpSupportOverrides: { dsh: false },
     });
     assert.ok(dsh.invocations[0].options?.rebuildContextPrompt, 'ACP carrier keeps the replay');
     assert.equal(
@@ -96,6 +101,7 @@ describe('ACP rebuild replay route wiring (serial)', () => {
     await runRoute(routeSerial, { dsh }, 'thread-acp-rebuild-route', {
       targetCats: ['dsh'],
       routeOptions: { history: [] },
+      mcpSupportOverrides: { dsh: false },
     });
     assert.equal(dsh.invocations[0].options?.rebuildContextPrompt, undefined);
   });
@@ -110,6 +116,10 @@ describe('ACP rebuild replay route wiring (serial)', () => {
     await runRoute(routeSerial, { dsh }, 'thread-acp-rebuild-route', {
       targetCats: ['dsh'],
       routeOptions: { history },
+      // Replay-only case: MCP capability integration is out of scope here; the
+      // member explicitly declares mcpSupport:false so the shared-MCP preflight
+      // is skipped instead of fail-closing on a missing production capability root.
+      mcpSupportOverrides: { dsh: false },
     });
     const replay = dsh.invocations[0].options?.rebuildContextPrompt;
     assert.ok(replay, 'long reply must not leave the replay empty');
@@ -130,6 +140,7 @@ describe('ACP rebuild replay route wiring (parallel)', () => {
     await runRoute(routeParallel, { dsh, 'grok-build': grok }, 'thread-acp-rebuild-route', {
       targetCats: ['dsh', 'grok-build'],
       routeOptions: { history },
+      mcpSupportOverrides: { dsh: false, 'grok-build': false },
     });
     for (const service of [dsh, grok]) {
       assert.ok(service.invocations.length >= 1, 'each ACP cat was invoked');
@@ -151,6 +162,10 @@ describe('ACP rebuild replay route wiring (parallel)', () => {
     await runRoute(routeSerial, { dsh }, 'thread-acp-rebuild-route', {
       targetCats: ['dsh'],
       routeOptions: { history },
+      // Replay-only case: MCP capability integration is out of scope here; the
+      // member explicitly declares mcpSupport:false so the shared-MCP preflight
+      // is skipped instead of fail-closing on a missing production capability root.
+      mcpSupportOverrides: { dsh: false },
     });
     // Persist turn 1's user prompt and assistant reply into the same thread
     // history (what messageStore does for the next turn's read).
@@ -160,6 +175,10 @@ describe('ACP rebuild replay route wiring (parallel)', () => {
     await runRoute(routeSerial, { dsh: second }, 'thread-acp-rebuild-route', {
       targetCats: ['dsh'],
       routeOptions: { history },
+      // Replay-only case: MCP capability integration is out of scope here; the
+      // member explicitly declares mcpSupport:false so the shared-MCP preflight
+      // is skipped instead of fail-closing on a missing production capability root.
+      mcpSupportOverrides: { dsh: false },
     });
     const replay = second.invocations[0].options?.rebuildContextPrompt;
     assert.ok(replay);
