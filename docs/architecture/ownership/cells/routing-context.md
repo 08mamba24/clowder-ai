@@ -1,14 +1,14 @@
 ---
 cell_id: routing-context
 title: Live Routing Context
-summary: 在决策时组合 F208 applied capability revision、owner 条件偏好与带 freshness 的 cat/provider/provable-pool availability，并向 Workspace Team 与显式查询提供可解释 projection；普通消息不消费 availability 预检或提示；不拥有 capability 更新、成员/runtime 配置、quota collection、provider telemetry、identity/session 或 dispatch execution。
-description: F293 路由决策组合边界：持久 signal、版本化 preference、applied capability revision、Team/ledger read model、显式路由查询；普通消息执行不接可用性闸、动态提示或终态回写；不接管 Workspace host、事实采集、画像更新或 dispatch。
+summary: 在决策时组合 F208 applied capability revision、owner 条件偏好与带 freshness 的 cat/provider/provable-pool availability，并向 Workspace Team 与显式查询提供可解释 projection；普通消息不消费全局 availability 预检或提示，新执行仅接 decisionScope=usage_monitor_capacity 的额度容量复核；不拥有 capability 更新、成员/runtime 配置、quota collection、provider telemetry、identity/session 或 dispatch execution。
+description: F293 路由决策组合边界：持久 signal、版本化 preference、applied capability revision、Team/ledger read model、显式路由查询；普通消息的新执行仅接 decisionScope=usage_monitor_capacity 的额度容量复核，不恢复全局可用性闸、动态提示或终态回写；不接管 Workspace host、事实采集、画像更新或 dispatch。
 description_source: model
-description_author: codex-sol
-description_generated_by: codex-sol@gpt-5.6-sol
+description_author: cat-yanyan61
+description_generated_by: cat-yanyan61@gpt-6.1-sol
 description_generated_at: 2026-08-09T06:14:42Z
-description_confirmed_by: codex-sol
-description_updated_at: 2026-09-02T04:45:00Z
+description_confirmed_by: cat-yanyan61
+description_updated_at: 2026-11-11T03:11:19Z
 doc_kind: architecture
 created: 2026-08-08
 canonical_features: [F293]
