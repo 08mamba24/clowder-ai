@@ -2810,6 +2810,7 @@ async function main(): Promise<void> {
     },
   });
   router = new AgentRouter({
+    ...(routingContextRuntime ? { routingDispatchPreflight: routingContextRuntime.dispatchPreflight } : {}),
     openGitHubReadLease: async (id, signal) => (agentGitHubRead ? agentGitHubRead.open(id, signal) : null),
     ordinaryTaskHandoffs,
     messageSearchAnswerService,
@@ -4800,6 +4801,7 @@ async function main(): Promise<void> {
   const callbackOpts = {
     ordinaryTaskHandoffs,
     ...(routingContextRuntime ? { routingSelection: routingContextRuntime.selectionService } : {}),
+    ...(routingContextRuntime ? { routingDispatchPreflight: routingContextRuntime.dispatchPreflight } : {}),
     proposalProjectRoot: resolveActiveProjectRoot(),
     companionCollectiveAccountability: readCollectiveAttention,
     resolveTrustedImagePath: async (hmrId: string) => {
