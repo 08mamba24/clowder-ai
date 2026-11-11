@@ -66,7 +66,7 @@ boundaries:
     - TurnExecution terminal ownership, failure text classification beyond the closed stable routing classes, or delivery outcome mutation
     - Workspace host/chrome, current-thread Now surface or background focus navigation
     - silent target selection or opaque routing scores
-last_reviewed: 2026-10-10
+last_reviewed: 2026-11-11
 ---
 
 # Live Routing Context
@@ -76,6 +76,8 @@ F293 owns the decision-time composition layer between canonical source facts and
 Signals and global preferences are owner-scoped. They are not partitioned by project path because provider health and quota scarcity do not become healthy in another repository. The resolver intersects that truth with the current runtime catalog and candidate set.
 
 The native L0 remains a stable, cached identity/governance surface. Per operator direction in F117/#1398 (2026-10-10, messages 051/054 in `thread_msr51149hym0i79f`), ordinary serial/parallel replies, callbacks, Append and failure returns no longer consult availability preflight or inject routing advice. Requested targets enter the existing delivery lifecycle; actual client results produce the normal success/failure response. Invocation terminals no longer publish global member availability. Team views, explicit routing queries and persisted ledgers remain independent of message execution.
+
+The later usage-monitor task (implementation source `thread_mw9in3e11gpamynj#0001794244814251-000449-332f055d`, activation authorization `0001794363202902-000095-fd592fb7`) adds one narrow quota-capacity recheck, not a restoration of that global gate. Host composition fixes `decisionScope=usage_monitor_capacity`; the catalog supplies only monitor capacity and frozen execution proof, and the existing resolver excludes signal/preference/profile inputs without reading their stores or changing their caches. Explicit queries keep the full global projection. Unbound members gain no restriction; unverified/stale evidence advises; only proven exact managed exhaustion may reject. Invocation-terminal global availability feedback remains retired.
 
 Automatic source adapters do not own their input facts. They validate and translate only canonical F051 refreshes, explicitly scoped F153 observations through `AutomaticRoutingSignalService`. They cannot append the event store directly, import another domain store, derive scope from hidden account identity or instantiate another resolver. The architecture guard ratchets those seams mechanically.
 

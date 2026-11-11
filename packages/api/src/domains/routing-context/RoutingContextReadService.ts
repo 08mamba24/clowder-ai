@@ -27,6 +27,7 @@ export interface RoutingCandidateCatalogSource {
     targetCatIds?: readonly string[];
     observedAt?: number;
     executionBindings?: readonly RoutingExecutionBindingProof[];
+    decisionScope?: ResolveRoutingContextInput['decisionScope'];
   }): Promise<RoutingCandidateCatalogSnapshot>;
 }
 

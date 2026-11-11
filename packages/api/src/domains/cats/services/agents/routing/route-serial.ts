@@ -838,7 +838,7 @@ export async function* routeSerial(
         continue;
       }
 
-      if (deps.routingDispatchPreflight) {
+      if (deps.routingDispatchPreflight && !options.a2aFailureReport) {
         routingDispatchPreflightDecision = await preflightRoutingDispatch(deps.routingDispatchPreflight, {
           ownerId: userId,
           targetCatIds: [catId],

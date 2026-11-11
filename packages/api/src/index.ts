@@ -2810,6 +2810,7 @@ async function main(): Promise<void> {
     },
   });
   router = new AgentRouter({
+    ...(routingContextRuntime ? { routingDispatchPreflight: routingContextRuntime.usageMonitorDispatchPreflight } : {}),
     openGitHubReadLease: async (id, signal) => (agentGitHubRead ? agentGitHubRead.open(id, signal) : null),
     ordinaryTaskHandoffs,
     messageSearchAnswerService,
