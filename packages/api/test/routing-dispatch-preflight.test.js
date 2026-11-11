@@ -69,6 +69,31 @@ function routeDeps(services, routingDispatchPreflight, invocationExtras = {}) {
 }
 
 describe('F293 home routing through canonical Queue dispatch', () => {
+  for (const strategy of ['serial', 'parallel']) {
+    test(`${strategy} failure-control returns do not consume quota preflight`, async () => {
+      const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
+      const { routeParallel } = await import('../dist/domains/cats/services/agents/routing/route-parallel.js');
+      const route = strategy === 'serial' ? routeSerial : routeParallel;
+      const calls = [];
+      let checks = 0;
+      const deps = routeDeps(
+        { opus: service('opus', calls) },
+        {
+          preflight: async (input) => {
+            checks++;
+            return decision(input, { opus: 'rejected' });
+          },
+        },
+      );
+      for await (const _event of route(deps, ['opus'], 'read existing failure result', 'owner-1', 'failure-return', {
+        a2aFailureReport: true,
+      })) {
+        // Failure-control delivery must remain independent of quota admission.
+      }
+      assert.equal(checks, 0);
+      assert.deepEqual(calls, ['opus']);
+    });
+  }
   test('blocked execution history stays concise while durable metadata and live notice retain exact C', async () => {
     const { routingPreflightNotice } = await import(
       '../dist/domains/cats/services/agents/routing/routing-preflight-notice.js'

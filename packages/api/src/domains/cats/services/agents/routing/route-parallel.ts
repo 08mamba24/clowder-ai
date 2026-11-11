@@ -265,7 +265,7 @@ async function* routeParallelPrepared(
     if (originalTargets[0]) yield { type: 'done', catId: originalTargets[0], isFinal: true, timestamp: Date.now() };
     return;
   }
-  if (deps.routingDispatchPreflight) {
+  if (deps.routingDispatchPreflight && !options.a2aFailureReport) {
     const requestedTargetCats = [...targetCats];
     const routingPreflight = await preflightRoutingDispatch(deps.routingDispatchPreflight, {
       ownerId: userId,

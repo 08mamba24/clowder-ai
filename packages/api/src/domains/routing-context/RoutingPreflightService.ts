@@ -157,6 +157,7 @@ export class RoutingPreflightService {
             catalogRevision: input.catalogRevision,
             intent: input.intent,
             candidates: input.candidates,
+            ...(input.decisionScope ? { decisionScope: input.decisionScope } : {}),
           }),
         ),
         budgetExpired,

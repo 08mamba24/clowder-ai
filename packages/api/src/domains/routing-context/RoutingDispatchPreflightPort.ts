@@ -5,6 +5,7 @@ import {
 } from '@cat-cafe/shared';
 import type { RoutingExecutionBindingProof } from '../../config/account-routing-capacity.js';
 import type { RoutingCandidateCatalogSource } from './RoutingContextReadService.js';
+import type { ResolveRoutingContextInput } from './RoutingContextResolver.js';
 import type { RoutingPreflightService } from './RoutingPreflightService.js';
 
 export interface RoutingDispatchPreflightInput {
@@ -82,6 +83,7 @@ export class RuntimeRoutingDispatchPreflight implements RoutingDispatchPreflight
       catalogSource: RoutingCandidateCatalogSource;
       preflightService: Pick<RoutingPreflightService, 'preflight'>;
       now?: () => number;
+      decisionScope?: ResolveRoutingContextInput['decisionScope'];
     },
   ) {}
 
@@ -93,11 +95,13 @@ export class RuntimeRoutingDispatchPreflight implements RoutingDispatchPreflight
       const catalog = await this.dependencies.catalogSource.load({
         ownerId: input.ownerId,
         observedAt,
+        ...(this.dependencies.decisionScope ? { decisionScope: this.dependencies.decisionScope } : {}),
         ...(input.executionBindings ? { executionBindings: input.executionBindings } : {}),
       });
       return await this.dependencies.preflightService.preflight({
         ownerId: input.ownerId,
         observedAt,
+        ...(this.dependencies.decisionScope ? { decisionScope: this.dependencies.decisionScope } : {}),
         catalogRevision: catalog.catalogRevision,
         candidates: catalog.candidates,
         targetCatIds: input.targetCatIds,

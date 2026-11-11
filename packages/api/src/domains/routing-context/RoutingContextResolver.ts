@@ -12,6 +12,7 @@ import type {
 } from './CapabilityProfileRevisionSource.js';
 import { projectRoutingPreferenceHeads } from './preflight/RoutingPreferenceDecisionProjection.js';
 import {
+  buildRoutingSignalDecisionProjection,
   type RoutingSignalDecisionProjectionV1,
   routingSignalDecisionClosureMap,
   routingSignalDecisionSourceEventIds,
@@ -26,6 +27,8 @@ export interface ResolveRoutingContextInput {
   catalogRevision: string;
   intent?: 'review' | 'architecture';
   candidates: readonly RoutingCandidateBindingV1[];
+  /** Host-owned narrow quota check; ordinary delivery must not revive global availability gates. */
+  decisionScope?: 'usage_monitor_capacity';
 }
 
 export type RoutingContextResolution =
@@ -101,6 +104,14 @@ export class RoutingContextResolver {
   constructor(private readonly dependencies: RoutingContextResolverDependencies) {}
 
   async resolve(input: ResolveRoutingContextInput): Promise<RoutingContextResolution> {
+    if (input.decisionScope === 'usage_monitor_capacity') {
+      return this.composeResolution(
+        input,
+        buildRoutingSignalDecisionProjection({ ownerId: input.ownerId, revision: 0, events: [] }),
+        [],
+        { status: 'fresh', profiles: [], absentCatIds: input.candidates.map((candidate) => candidate.catId) },
+      );
+    }
     const [signalProjection, preferenceRevisions, profileResult] = await Promise.all([
       this.loadSignalProjection(input.ownerId),
       this.loadPreferenceHeads(input.ownerId),
@@ -114,6 +125,9 @@ export class RoutingContextResolver {
   }
 
   async resolveWithSources(input: ResolveRoutingContextInput): Promise<RoutingContextResolutionWithSources> {
+    if (input.decisionScope === 'usage_monitor_capacity') {
+      return { resolution: await this.resolve(input), signalEvents: [], preferenceRevisions: [] };
+    }
     const [{ signalProjection, signalEvents }, preferenceRevisions, profileResult] = await Promise.all([
       this.loadSignalProjectionWithTimeline(input.ownerId),
       this.dependencies.preferenceStore.listByOwner(input.ownerId),
@@ -168,6 +182,7 @@ export class RoutingContextResolver {
       preferenceRevisions: preferences,
     });
     const inputRevisionRef = digest({
+      ...(input.decisionScope ? { decisionScope: input.decisionScope } : {}),
       ownerId: input.ownerId,
       observedAt: input.observedAt,
       catalogRevision: input.catalogRevision,

@@ -6,6 +6,7 @@ import {
 } from '../../../config/account-routing-capacity.js';
 import { resolveOwnerGate } from '../../../utils/owner-gate.js';
 import type { RoutingCandidateCatalogSnapshot, RoutingCandidateCatalogSource } from '../RoutingContextReadService.js';
+import type { ResolveRoutingContextInput } from '../RoutingContextResolver.js';
 import { readUsageMonitorRouting } from '../UsageMonitorRoutingSource.js';
 
 export interface RuntimeRoutingCandidateCatalogSourceOptions {
@@ -29,11 +30,12 @@ export class RuntimeRoutingCandidateCatalogSource implements RoutingCandidateCat
     targetCatIds?: readonly string[];
     observedAt?: number;
     executionBindings?: readonly RoutingExecutionBindingProof[];
+    decisionScope?: ResolveRoutingContextInput['decisionScope'];
   }): Promise<RoutingCandidateCatalogSnapshot> {
     const configs = this.options.getConfigs();
     const entries = Object.entries(configs).sort(([left], [right]) => left.localeCompare(right));
     let capacity: ReturnType<typeof readAccountRoutingCapacity> | undefined;
-    if (this.options.projectRoot) {
+    if (this.options.projectRoot && input.decisionScope !== 'usage_monitor_capacity') {
       try {
         if (resolveOwnerGate(input.ownerId)) throw new Error('routing_capacity_owner_required');
         capacity = readAccountRoutingCapacity({
@@ -84,12 +86,15 @@ export class RuntimeRoutingCandidateCatalogSource implements RoutingCandidateCat
           }
         : {}),
     }));
+    const revisionCandidates = allCandidates.map((candidate) => ({
+      ...candidate,
+      modelId: configs[candidate.catId]?.defaultModel,
+    }));
     return {
       catalogRevision: catalogDigest(
-        allCandidates.map((candidate) => ({
-          ...candidate,
-          modelId: configs[candidate.catId]?.defaultModel,
-        })),
+        input.decisionScope
+          ? { decisionScope: input.decisionScope, candidates: revisionCandidates }
+          : revisionCandidates,
       ),
       candidates: input.targetCatIds
         ? allCandidates.filter((candidate) => input.targetCatIds?.includes(candidate.catId))

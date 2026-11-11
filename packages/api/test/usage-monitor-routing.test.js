@@ -10,6 +10,7 @@ import { freshTargetDecision } from '../dist/domains/routing-context/preflight/R
 import { buildRoutingSignalDecisionProjection } from '../dist/domains/routing-context/preflight/RoutingSignalDecisionProjection.js';
 import { RoutingContextReadService } from '../dist/domains/routing-context/RoutingContextReadService.js';
 import { RoutingContextResolver } from '../dist/domains/routing-context/RoutingContextResolver.js';
+import { createRoutingContextRuntime } from '../dist/domains/routing-context/RoutingContextRuntime.js';
 import { RuntimeRoutingDispatchPreflight } from '../dist/domains/routing-context/RoutingDispatchPreflightPort.js';
 import { RoutingPreflightService } from '../dist/domains/routing-context/RoutingPreflightService.js';
 import { reduceRoutingContext } from '../dist/domains/routing-context/routing-context-reducer.js';
@@ -382,3 +383,149 @@ test('source errors preserve manual/provider blocking signals and never export p
   const serialized = JSON.stringify(catalog);
   for (const secret of [f.root, 'main-private-ref', 'a'.repeat(64)]) assert.ok(!serialized.includes(secret), secret);
 });
+
+function scopeResolver(events = [], reads = []) {
+  return new RoutingContextResolver({
+    signalStore: {
+      getOwnerRevision: async () => {
+        reads.push('signals');
+        return 1;
+      },
+      readDecisionProjection: async () =>
+        buildRoutingSignalDecisionProjection({ ownerId: 'owner', revision: 1, events }),
+    },
+    preferenceStore: {
+      listByOwner: async () => {
+        reads.push('preferences');
+        return [];
+      },
+    },
+    profileRevisionSource: {
+      load: async () => {
+        reads.push('profiles');
+        return { status: 'fresh', profiles: [] };
+      },
+    },
+  });
+}
+
+for (const source of ['manual_cvo', 'provider_error', 'health_probe']) {
+  test(`ordinary quota preflight does not restore retired ${source} rejection; explicit query retains it`, async (t) => {
+    const f = await fixture(t);
+    f.row.wins[0].usedPercent = 40;
+    f.save();
+    const event = {
+      v: 1,
+      eventId: source,
+      commandId: source,
+      ownerId: 'owner',
+      subjectRef: { type: 'cat', catId: 'first' },
+      eventType: 'asserted',
+      state: 'unavailable',
+      source,
+      reasonCode: 'retired-global-restriction',
+      observedAt: f.now,
+      validUntil: f.now + 10000,
+      evidenceRef: 'test:global',
+    };
+    const reads = [],
+      resolver = scopeResolver([event], reads);
+    const service = new RoutingPreflightService({ resolver });
+    const global = new RuntimeRoutingDispatchPreflight({
+      catalogSource: f.source,
+      preflightService: service,
+      now: () => f.now,
+    });
+    const quota = new RuntimeRoutingDispatchPreflight({
+      catalogSource: f.source,
+      preflightService: service,
+      now: () => f.now,
+      decisionScope: 'usage_monitor_capacity',
+    });
+    const input = { ownerId: 'owner', targetCatIds: ['first'], executionBindings: [f.proof()] };
+    assert.equal(
+      (await global.preflight({ ...input, decisionScope: 'usage_monitor_capacity' })).targets[0].disposition,
+      'rejected',
+      'caller input cannot change the host-owned scope',
+    );
+    reads.length = 0;
+    const result = await quota.preflight(input);
+    assert.equal(result.targets[0].disposition, 'allowed');
+    assert.equal(result.resolverState, 'fresh');
+    assert.deepEqual(reads, [], 'ordinary quota check must not read global signal/preferences/profiles');
+    assert.equal(
+      (await global.preflight(input)).targets[0].disposition,
+      'rejected',
+      'quota check must not overwrite global cached truth',
+    );
+  });
+}
+
+test('quota and explicit global resolutions have distinct input refs even with identical empty ledgers', async (t) => {
+  const f = await fixture(t);
+  const { catalog } = await f.load(true);
+  const resolver = scopeResolver(),
+    input = { ownerId: 'owner', observedAt: f.now, ...catalog };
+  const global = await resolver.resolve(input);
+  const quota = await resolver.resolve({ ...input, decisionScope: 'usage_monitor_capacity' });
+  assert.equal(global.status, 'fresh');
+  assert.equal(quota.status, 'fresh');
+  assert.notEqual(quota.inputRevisionRef, global.inputRevisionRef);
+  assert.equal((await resolver.resolve(input)).inputRevisionRef, global.inputRevisionRef);
+});
+
+for (const scenario of ['managed_exhausted', 'native_exhausted', 'stale', 'source_changed', 'unbound']) {
+  test(`production quota-only port keeps ${scenario} semantics despite unavailable global stores`, async (t) => {
+    const f = await fixture(t);
+    if (scenario === 'native_exhausted') {
+      const account = f.accounts['main-private-ref'];
+      account.envVars = { CODEX_HOME: account.codex.credentialHome };
+      delete account.codex;
+      f.save();
+      f.config.bindings[0].accountRevision = f.freeze().executionAccount.accountRevision;
+      assert.equal(f.freeze().principalVerified, false);
+    }
+    if (scenario === 'stale') f.row.observedAt -= 121000;
+    if (scenario === 'source_changed') f.row.accountKey = 'b'.repeat(64);
+    if (scenario === 'unbound') f.config.bindings = [];
+    f.save();
+    const calls = [];
+    const redis = new Proxy(
+      {},
+      {
+        get: (_target, key) => async () => {
+          calls.push(String(key));
+          throw new Error('global ledger unavailable');
+        },
+      },
+    );
+    const runtime = createRoutingContextRuntime({ redis, projectRoot: f.root, getConfigs: () => f.configs });
+    const input = { ownerId: 'owner', targetCatIds: ['first'], executionBindings: [f.proof()] };
+    // An unrelated explicit-query circuit must not suppress the ordinary quota check.
+    for (let i = 0; i < 5; i++)
+      assert.equal((await runtime.dispatchPreflight.preflight(input)).resolverState, 'degraded');
+    calls.length = 0;
+    const result = await runtime.usageMonitorDispatchPreflight.preflight(input);
+    assert.equal(result.resolverState, 'fresh');
+    assert.equal(
+      result.targets[0].disposition,
+      scenario === 'managed_exhausted' ? 'rejected' : scenario === 'unbound' ? 'allowed' : 'warned',
+    );
+    assert.deepEqual(calls, [], 'ordinary quota check must not access global Redis');
+    if (scenario === 'managed_exhausted') {
+      const attempt = await runtime.usageMonitorDispatchPreflight.preflight({ ...input, ownerRequestedAttempt: true });
+      assert.equal(attempt.targets[0].disposition, 'warned');
+      assert.equal(attempt.targets[0].ownerAttempt, true);
+    }
+    const catalog = await runtime.catalogSource.load({
+      ...input,
+      observedAt: f.now,
+      decisionScope: 'usage_monitor_capacity',
+    });
+    assert.ok(
+      catalog.candidates.every(
+        (c) => c.capacityFacts === undefined || c.capacityFacts.current.source === 'usage_monitor',
+      ),
+    );
+  });
+}

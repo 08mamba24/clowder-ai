@@ -81,6 +81,13 @@ export function createRoutingContextRuntime(options: CreateRoutingContextRuntime
     telemetry: new OpenTelemetryRoutingPreflightSink(),
   });
   const dispatchPreflight = new RuntimeRoutingDispatchPreflight({ catalogSource, preflightService });
+  // Ordinary delivery checks only the newly authorized monitor capacity. Keep
+  // retired global availability reads and their circuit outside this path.
+  const usageMonitorDispatchPreflight = new RuntimeRoutingDispatchPreflight({
+    catalogSource,
+    preflightService: new RoutingPreflightService({ resolver, telemetry: new OpenTelemetryRoutingPreflightSink() }),
+    decisionScope: 'usage_monitor_capacity',
+  });
   return {
     signalStore,
     automaticSignalService,
@@ -97,6 +104,7 @@ export function createRoutingContextRuntime(options: CreateRoutingContextRuntime
     promptProjection,
     preflightService,
     dispatchPreflight,
+    usageMonitorDispatchPreflight,
   };
 }
 
