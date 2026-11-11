@@ -2168,6 +2168,124 @@ describe('CodexAgentService Tests (CLI mode)', { concurrency: false }, () => {
     );
   });
 
+  for (const resume of [false, true])
+    for (const { name, nativeAuth, speed = 'fast', expected, omitSnapshot, explicitApi } of [
+      { name: 'native OAuth Fast', nativeAuth: 'chatgpt', expected: 'fast' },
+      { name: 'native OAuth profile Fast', nativeAuth: 'chatgpt', expected: 'fast' },
+      { name: 'native OAuth Standard', nativeAuth: 'chatgpt', speed: 'standard', expected: 'default' },
+      { name: 'native OAuth inherit', nativeAuth: 'chatgpt', speed: undefined },
+      { name: 'synthetic OAuth with native API key', nativeAuth: 'apikey' },
+      { name: 'synthetic OAuth with missing login', nativeAuth: null },
+      { name: 'synthetic OAuth with unknown login', nativeAuth: 'unknown' },
+      { name: 'verified OAuth without snapshot', nativeAuth: 'chatgpt', expected: 'fast', omitSnapshot: true },
+      { name: 'explicit API key overrides OAuth snapshot', nativeAuth: 'chatgpt', explicitApi: true },
+    ]) {
+      test(`F291 exec ${resume ? 'resume' : 'start'} preserves speed eligibility for ${name}`, async (t) => {
+        const { resolveByAccountRef } = await import('../dist/config/account-resolver.js');
+        const { resolveCodexAccountLaunch } = await import('../dist/config/codex-account-launch.js');
+        const { codexExecutionAccountSnapshot } = await import('../dist/config/codex-execution-account.js');
+        const root = makeTempDir('codex-native-speed-');
+        t.after(() => rmSync(root, { recursive: true, force: true }));
+        const credentialHome = join(root, '.codex');
+        mkdirSync(credentialHome);
+        mkdirSync(join(root, '.cat-cafe'));
+        writeFileSync(join(root, '.cat-cafe/accounts.json'), '{}');
+        writeFileSync(join(credentialHome, 'auth.json'), JSON.stringify({ auth_mode: nativeAuth }));
+        writeFileSync(join(credentialHome, 'fixture-native.config.toml'), 'cli_auth_credentials_store="file"\n');
+        const fixture = join(root, 'codex-fixture.cjs');
+        const observation = join(root, 'login-observation.json');
+        writeFileSync(
+          fixture,
+          `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args.slice(-2).join(' ') !== 'login status') process.exit(2);
+fs.writeFileSync(${JSON.stringify(observation)}, JSON.stringify({cwd:process.cwd(),home:process.env.CODEX_HOME,args}));
+if (!args.includes('cli_auth_credentials_store="file"')) process.exit(2);
+const auth = JSON.parse(fs.readFileSync(require('node:path').join(process.env.CODEX_HOME, 'auth.json'))).auth_mode;
+if (auth === 'chatgpt') console.error('Logged in using ChatGPT');
+else if (auth === 'apikey') console.error('Logged in using an API key');
+else { console.error(auth === null ? 'Not logged in' : 'unknown login'); process.exit(1); }
+`,
+        );
+        chmodSync(fixture, 0o700);
+        const overrides = {
+          CAT_CAFE_GLOBAL_CONFIG_ROOT: root,
+          CODEX_HOME: credentialHome,
+          CODEX_SQLITE_HOME: credentialHome,
+          OPENAI_API_KEY: undefined,
+          OPENAI_BASE_URL: undefined,
+          OPENAI_API_BASE: undefined,
+        };
+        const previous = new Map(Object.keys(overrides).map((key) => [key, process.env[key]]));
+        for (const [key, value] of Object.entries(overrides)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+        t.after(() => {
+          for (const [key, value] of previous) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+          }
+        });
+        const account = resolveByAccountRef(root, 'codex');
+        assert.equal(account?.syntheticNative, true);
+        assert.equal(account.authType, 'oauth', 'resolver label is a placeholder even for native API key');
+        const launch = resolveCodexAccountLaunch(account, {
+          cwd: root,
+          ...(explicitApi ? { authMode: 'api_key' } : {}),
+        });
+        const proc = createMockProcess();
+        const spawnFn = mock.fn(() => {
+          setImmediate(() => emitCodexEvents(proc, [{ type: 'thread.started', thread_id: 't-native-speed' }]));
+          return proc;
+        });
+        const service = new ProductionCodexAgentService({
+          l0CompilerFn: fakeL0Compiler,
+          spawnFn,
+          model: 'gpt-6.1-sol',
+          cliCommand: fixture,
+        });
+        const events = await collect(
+          service.invoke('continue', {
+            ...(resume ? { sessionId: 't-native-speed' } : {}),
+            workingDirectory: root,
+            requestedServiceTier: name.endsWith('inherit') ? undefined : speed,
+            cliConfigArgs: explicitApi
+              ? []
+              : [
+                  '--config cli_auth_credentials_store="file"',
+                  ...(name.includes('profile') ? ['--profile fixture-native'] : []),
+                ],
+            codexAccountLaunch: launch,
+            ...(!omitSnapshot ? { executionAccount: codexExecutionAccountSnapshot(account, launch) } : {}),
+            ...(explicitApi ? { callbackEnv: { OPENAI_API_KEY: 'fixture-only' } } : {}),
+          }),
+        );
+        assert.deepEqual(
+          events.filter((event) => event.type === 'error'),
+          [],
+        );
+        const [, args, options] = spawnFn.mock.calls[0].arguments;
+        assert.equal(args.includes('resume'), resume);
+        assert.equal(options.env.CODEX_AUTH_MODE, explicitApi ? 'api_key' : 'auto');
+        assert.deepEqual(
+          args.filter((arg) => arg.startsWith('service_tier=')),
+          expected ? [`service_tier="${expected}"`] : [],
+          name,
+        );
+        if (!explicitApi && !name.endsWith('inherit')) {
+          const observed = JSON.parse(readFileSync(observation, 'utf8'));
+          assert.equal(observed.cwd, root);
+          assert.equal(observed.home, options.env.CODEX_HOME, 'probe and invocation must use the same login home');
+          if (name.includes('profile')) {
+            assert.ok(!observed.args.includes('--profile'), 'login status does not accept exec profile flags');
+            assert.ok(observed.args.includes('cli_auth_credentials_store="file"'));
+          }
+        }
+      });
+    }
+
   test('F291 strips attached service_tier config spellings across inherit, API-key, and Standard modes', async () => {
     const rawBypasses = ['--config=service_tier="fast"', '-c=service_tier="fast"', '-cservice_tier="fast"'];
     const cases = [

@@ -5,6 +5,7 @@ import { usesNativeToolConfiguration } from '../../../../../config/cat-account-b
 import { finalizeCodexAccountEnvironment } from '../../../../../config/codex-account-environment.js';
 import { resolveCodexAccountLaunch, resolveCodexApiExecutionHome } from '../../../../../config/codex-account-launch.js';
 import { codexCliConfig } from '../../../../../config/codex-launch-config.js';
+import { type CodexObservedAuthType, readCodexLoginAuthType } from '../../../../../config/codex-login-status.js';
 import { codexManagedLaunchArgs } from '../../../../../config/codex-managed-launch.js';
 import { assertCodexManagedPlatformSupport } from '../../../../../config/codex-managed-support.js';
 import { assertCodexSharedStateRoots } from '../../../../../config/codex-shared-state.js';
@@ -1871,12 +1872,15 @@ export class CodexAgentService implements AgentService {
     const catalogApplied = modelCatalogArgs.length > 0;
     const authMode =
       options?.codexAccountLaunch?.authMode ?? (nativeAuthentication ? 'auto' : getCodexAuthMode(options?.callbackEnv));
-    const requestedServiceTier = resolveCodexSpeed({
-      clientId: 'openai',
-      authType: authMode === 'oauth' || authMode === 'api_key' ? authMode : undefined,
-      model: effectiveModel,
-      memberDefault: options?.requestedServiceTier,
-    }).requested;
+    const speedForAuth = (authType: CodexObservedAuthType) =>
+      resolveCodexSpeed({
+        clientId: 'openai',
+        authType,
+        model: effectiveModel,
+        memberDefault: options?.requestedServiceTier,
+      }).requested;
+    // Synthetic account snapshots are declarations, not evidence of native login.
+    let requestedServiceTier = speedForAuth(authMode === 'auto' ? undefined : authMode);
     const serviceTierWire = resolveCodexSpeedWire(requestedServiceTier);
     const serviceTierArgs =
       serviceTierWire.kind === 'inherit'
@@ -2361,6 +2365,28 @@ export class CodexAgentService implements AgentService {
         ...(servedModelTracker ? { onStderrLine: servedModelTracker.onStderrLine } : {}),
       };
       const useAppServer = carrierMode === 'app_server';
+      if (!useAppServer && authMode === 'auto' && options?.requestedServiceTier) {
+        const authType = await readCodexLoginAuthType({
+          command: codexCommand,
+          args,
+          cwd: options?.workingDirectory ?? process.cwd(),
+          env: buildChildEnv(codexEnv, {
+            workingDirectory: options?.workingDirectory,
+            ...(native ? { inheritParentEnv: false } : {}),
+          }),
+          ...(options?.signal ? { signal: options.signal } : {}),
+        });
+        requestedServiceTier = speedForAuth(authType);
+        if (requestedServiceTier) {
+          const separator = args.indexOf('--');
+          args.splice(
+            separator < 0 ? args.length : separator,
+            0,
+            '--config',
+            `service_tier="${requestedServiceTier === 'standard' ? 'default' : 'fast'}"`,
+          );
+        }
+      }
       const schemaDeliveryProfile =
         readOnly || native ? ('readonly' as const) : live ? ('desktop' as const) : ('full' as const);
       const schemaDeliveryProfileId = native
@@ -2550,6 +2576,14 @@ export class CodexAgentService implements AgentService {
               ...(collaborationMode ? { collaborationMode } : {}),
               ...(appServerThreadConfig ? { config: appServerThreadConfig } : {}),
               ...(appServerServiceTier !== undefined ? { serviceTier: appServerServiceTier } : {}),
+              ...(authMode === 'auto'
+                ? {
+                    resolveServiceTier: (authType: CodexObservedAuthType) => {
+                      requestedServiceTier = speedForAuth(authType);
+                      return requestedServiceTier === 'standard' ? null : (requestedServiceTier ?? undefined);
+                    },
+                  }
+                : {}),
               imagePaths,
               prepareRequest: (body, boundaryReason) => prepareProviderRequest(body, 'app_server', boundaryReason),
               prepareRecoveryRequest,
