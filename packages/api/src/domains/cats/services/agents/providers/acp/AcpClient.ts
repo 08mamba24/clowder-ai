@@ -447,6 +447,18 @@ export class AcpClient {
     await this.sendRequest(ACP_METHODS.authenticate, { methodId }, 0);
   }
 
+  /**
+   * Read-only capability probe derived from the initialize handshake. Lets the
+   * caller pick an explicit, audited rebuild path before loadSession would
+   * fail-closed; loadSession itself keeps its binding-error semantics.
+   */
+  sessionResumeSupport(): 'load' | 'resume' | 'none' | 'unknown' {
+    if (!this.initResult) return 'unknown';
+    if (this.initResult.agentCapabilities?.loadSession) return 'load';
+    if (this.initResult.agentCapabilities?.sessionCapabilities?.resume) return 'resume';
+    return 'none';
+  }
+
   async loadSession(
     sessionId: string,
     cwd?: string,

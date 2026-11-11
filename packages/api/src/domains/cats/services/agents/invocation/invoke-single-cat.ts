@@ -1286,6 +1286,12 @@ export interface InvocationParams {
   }>;
   /** Rebuild route-owned context when a late native binding turns a resume into a fresh session. */
   readonly rebuildPromptAfterSessionSeal?: () => Promise<string>;
+  /**
+   * Bounded history replay for ACP carriers whose provider declares no session
+   * resume capability. Assembled by the route layer; the carrier injects it
+   * exactly once when it must rebuild a fresh replacement session.
+   */
+  readonly rebuildContextPrompt?: string;
   readonly userId: string;
   /** Strict owner authentication is a separate fact from the tenant-scoped userId. */
   readonly ownerAuthProvenance: import('./owner-auth-provenance.js').OwnerAuthProvenance;
@@ -3977,6 +3983,7 @@ async function* invokePreparedSingleCat(deps: InvocationDeps, params: Invocation
       ...(isResume && !injectSystemPrompt && params.systemPrompt
         ? { resumeFallbackSystemPrompt: params.systemPrompt }
         : {}),
+      ...(isResume && params.rebuildContextPrompt ? { rebuildContextPrompt: params.rebuildContextPrompt } : {}),
       // F118: Keep liveness warnings visible, but leave termination to explicit user cancel.
       livenessProbe: { stallAutoKill: false, stallWarningMs: CAT_INVOCATION_STALL_WARNING_MS },
       ...(catConfig?.cliConfigArgs?.length ? { cliConfigArgs: catConfig.cliConfigArgs } : {}),

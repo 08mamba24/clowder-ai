@@ -29,6 +29,7 @@ import { readInvocationMcpConfig } from '../../../../../../config/capabilities/i
 import { getCatEffort } from '../../../../../../config/cat-config-loader.js';
 import { getCatModel } from '../../../../../../config/cat-models.js';
 import { createModuleLogger } from '../../../../../../infrastructure/logger.js';
+import { REBUILD_REPLAY_HEADER } from '../../../context/ContextAssembler.js';
 import { createPromptDigest } from '../../../context/prompt-digest.js';
 import type {
   AgentMessage,
@@ -126,7 +127,13 @@ function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-type ResumeDisposition = 'fresh_without_resume' | 'resume_requested' | 'resumed' | 'load_failed_fresh' | 'sealed_fresh';
+type ResumeDisposition =
+  | 'fresh_without_resume'
+  | 'resume_requested'
+  | 'resumed'
+  | 'load_failed_fresh'
+  | 'sealed_fresh'
+  | 'rebuilt_fresh';
 
 type PromptPhase =
   | 'not_started'
@@ -470,6 +477,7 @@ export class AcpAgentService implements AgentService {
       ): Promise<AcpNewSessionResult>;
       setSessionPermissionHandler(sessionId: string, handler?: AcpPermissionHandler): void;
       readonly agentCapabilities?: AcpInitializeResult['agentCapabilities'];
+      sessionResumeSupport?(): 'load' | 'resume' | 'none' | 'unknown';
       setSessionConfigOption(sessionId: string, configId: string, value: string): Promise<unknown>;
       setSessionModel(sessionId: string, modelId: string): Promise<void>;
       closeSession(sessionId: string): Promise<void>;
@@ -681,10 +689,29 @@ export class AcpAgentService implements AgentService {
           : 'resume_requested'
         : 'fresh_without_resume';
       const resumeSessionId = resumeDisposition === 'resume_requested' ? options?.sessionId : undefined;
-      if (resumeDisposition === 'sealed_fresh') {
+      const sealedSessionId = resumeDisposition === 'sealed_fresh' ? options?.sessionId : undefined;
+      if (resumeDisposition === 'sealed_fresh' && sealedSessionId) {
+        // Same defense line as the rebuilt preflight above: giving up on a
+        // sealed session means the agent-side history is gone, so the fresh
+        // replacement may only reach the model carrying a valid controlled
+        // replay. Missing or malformed replay is wiring damage — block before
+        // the model call, keep the history, audit the rejection.
+        const sealedReplayHeader = options?.rebuildContextPrompt?.match(REBUILD_REPLAY_HEADER);
+        if (!sealedReplayHeader) {
+          throw new AcpSessionBindingError('ACP 会话已封存且受控历史重放缺失或不合规；已保留原历史并阻断新建会话。');
+        }
+        metadata.sessionRebuild = {
+          fromSessionId: sealedSessionId,
+          reason: 'sealed_session_retry',
+          replay: {
+            messageCount: Number(sealedReplayHeader[1]),
+            estimatedTokens: Number(sealedReplayHeader[2]),
+            truncated: sealedReplayHeader[3] === 'true',
+          },
+        };
         log.warn(
-          { ...ctx, sealedSessionId: options?.sessionId },
-          'ACP cancelled session is sealed; creating a fresh replacement session',
+          { ...ctx, sealedSessionId },
+          'ACP cancelled session is sealed; creating a fresh replacement session with the controlled replay',
         );
       }
 
@@ -718,7 +745,46 @@ export class AcpAgentService implements AgentService {
         });
       };
       let resumedSession: AcpNewSessionResult | undefined;
-      if (resumeSessionId) {
+      // Provider without session resume: per-turn process retirement means every
+      // new turn cold-starts a process whose liveSessions cache cannot hold the
+      // previous turn. loadSession would fail-closed before the model call, so
+      // pick the explicit, audited rebuild path instead: seal the unrecoverable
+      // id, create a fresh replacement, and restore identity/context once. The
+      // rebuild is only allowed to reach the model when the controlled history
+      // replay carries a parseable self-description (message count, token
+      // estimate, truncation flag): a missing or malformed replay header means
+      // the route wiring is broken, and an amnesiac replacement turn must fail
+      // closed, not run.
+      if (
+        resumeSessionId &&
+        !agy &&
+        resumeDisposition === 'resume_requested' &&
+        typeof client.sessionResumeSupport === 'function' &&
+        client.sessionResumeSupport() === 'none'
+      ) {
+        const replayHeader = options?.rebuildContextPrompt?.match(REBUILD_REPLAY_HEADER);
+        if (!replayHeader) {
+          throw new AcpSessionBindingError(
+            'ACP 工具无会话恢复能力且受控历史重放缺失或不合规；已保留原历史并阻断新建会话。',
+          );
+        }
+        this.pool.sealSession?.(this.poolKey, resumeSessionId);
+        resumeDisposition = 'rebuilt_fresh';
+        metadata.sessionRebuild = {
+          fromSessionId: resumeSessionId,
+          reason: 'provider_without_resume_capability',
+          replay: {
+            messageCount: Number(replayHeader[1]),
+            estimatedTokens: Number(replayHeader[2]),
+            truncated: replayHeader[3] === 'true',
+          },
+        };
+        log.warn(
+          { ...ctx, sessionId: resumeSessionId, cwd },
+          'ACP provider declares no session resume capability; rebuilding an explicit replacement session',
+        );
+      }
+      if (resumeSessionId && resumeDisposition !== 'rebuilt_fresh') {
         const resumeCreds = prepareInvokeCredentials(resumeSessionId);
         const resumeConfig = buildSessionConfig(resumeCreds);
         // iCode: the per-turn overlay (externals + member gateway with fresh
@@ -905,16 +971,21 @@ export class AcpAgentService implements AgentService {
       // Prepend system prompt (ACP agents have no system prompt flag).
       // Any resumed turn that had to create a fresh session lost the identity it
       // expected session memory to carry, so restore the fallback exactly once.
-      const restoresResumeIdentity = resumeDisposition === 'load_failed_fresh' || resumeDisposition === 'sealed_fresh';
+      // rebuilt_fresh turns additionally replay the controlled context prefix
+      // so the replacement session is migrated, not silently amnesiac.
+      const restoresResumeIdentity =
+        resumeDisposition === 'load_failed_fresh' ||
+        resumeDisposition === 'sealed_fresh' ||
+        resumeDisposition === 'rebuilt_fresh';
       const fallbackSystemPrompt =
         restoresResumeIdentity && options?.resumeFallbackSystemPrompt ? options.resumeFallbackSystemPrompt : undefined;
+      const rebuildContextPrefix = restoresResumeIdentity ? options?.rebuildContextPrompt : undefined;
+      const identityPrefix = options?.systemPrompt ?? fallbackSystemPrompt;
       const effectivePrompt = agy
         ? prompt
-        : options?.systemPrompt
-          ? `${options.systemPrompt}\n\n${prompt}`
-          : fallbackSystemPrompt
-            ? `${fallbackSystemPrompt}\n\n${prompt}`
-            : prompt;
+        : [identityPrefix, rebuildContextPrefix, prompt]
+            .filter((part) => typeof part === 'string' && part.length > 0)
+            .join('\n\n');
 
       // Window 4: onAbort listener covers the duration of promptStream
       promptStreamStartedAt = Date.now();

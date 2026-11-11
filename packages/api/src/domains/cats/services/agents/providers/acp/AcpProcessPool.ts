@@ -75,6 +75,12 @@ export interface AcpPoolClient {
   readonly isSafeForSingleFlightReuse?: boolean;
   /** Session-scoped counterpart used to seal only the cancelled logical session on multiplexed carriers. */
   isSessionSafeForReuse?(sessionId: string): boolean;
+  /**
+   * Read-only resume-capability probe derived from the initialize handshake.
+   * Lets the caller pick an explicit, audited rebuild path for providers that
+   * declare neither loadSession nor sessionCapabilities.resume.
+   */
+  sessionResumeSupport?(): 'load' | 'resume' | 'none' | 'unknown';
   /** Spawn-frozen MCP credential file for harnesses that omit session MCP. */
   readonly mcpCredentialFile?: string;
   closeSession?(sessionId: string): Promise<void>;
