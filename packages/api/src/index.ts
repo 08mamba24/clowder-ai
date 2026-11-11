@@ -55,6 +55,7 @@ import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyReply } from 'fastify';
 import { resolveAnthropicRuntimeProfile, validateRuntimeProviderBinding } from './config/account-resolver.js';
+import { alphaWorkspaceTopologyWarning } from './config/alpha-workspace-topology.js';
 import { resolveInvokeCapabilityRoot } from './config/capabilities/invoke-capability-root.js';
 import { migrateStartupCodexMcpConfig, regenerateStartupCliConfigs } from './config/capabilities/startup-cli-config.js';
 import { resolveBoundAccountRefForCat, usesNativeToolConfiguration } from './config/cat-account-binding.js';
@@ -868,6 +869,16 @@ async function main(): Promise<void> {
     app.log.info(
       `[api] API namespace lease acquired (${leaseResult.holder?.instanceId ?? 'unknown'}) on redis=${redisUrl ?? 'memory'}`,
     );
+  }
+
+  const alphaTopologyWarning = alphaWorkspaceTopologyWarning({
+    deploymentId: declaredDeploymentId,
+    workspaceRoot: process.env.CAT_CAFE_WORKSPACE_ROOT,
+  });
+  if (alphaTopologyWarning) {
+    // Level-50 observability for a degenerate alpha topology; the startup
+    // itself stays available because only the launch context is wrong.
+    app.log.error({ alphaWorkspace: alphaTopologyWarning }, alphaTopologyWarning.message);
   }
 
   if (declaredRuntimeRoot && declaredDeploymentId) {

@@ -2,7 +2,7 @@
 
 # One canonical coordinate module supplies both launch and consumer validation.
 named_alpha_coordinates() {
-  node "$SCRIPT_DIR/lib/alpha-coordinates.mjs" "$@"
+  alpha_env node "$SCRIPT_DIR/lib/alpha-coordinates.mjs" "$@"
 }
 
 select_named_alpha() {
@@ -18,7 +18,7 @@ select_named_alpha() {
 
 read_named_alpha_selection() {
   local selected
-  selected="$(node -e 'const c=JSON.parse(process.argv[1]); console.log([c.alphaRoot,c.branch,...Object.values(c.ports)].join("\t"))' "$NAMED_ALPHA_COORDINATES")" || die "invalid Alpha selection"
+  selected="$(alpha_env node -e 'const c=JSON.parse(process.argv[1]); console.log([c.alphaRoot,c.branch,...Object.values(c.ports)].join("\t"))' "$NAMED_ALPHA_COORDINATES")" || die "invalid Alpha selection"
   IFS=$'\t' read -r ALPHA_DIR ALPHA_BRANCH ALPHA_FRONTEND_PORT ALPHA_API_PORT ALPHA_PREVIEW_GATEWAY_PORT ALPHA_REDIS_PORT <<< "$selected"
 }
 
@@ -36,8 +36,8 @@ assert_named_alpha_prepared() {
 }
 
 hold_named_alpha_lifecycle() {
-  node "$SCRIPT_DIR/lib/alpha-lifecycle-lock.mjs" acquire "$NAMED_ALPHA_COORDINATES" "$$" || die "named Alpha lifecycle already active or unproven"
-  trap 'node "$SCRIPT_DIR/lib/alpha-lifecycle-lock.mjs" release "$NAMED_ALPHA_COORDINATES" "$$"' EXIT
+  alpha_env node "$SCRIPT_DIR/lib/alpha-lifecycle-lock.mjs" acquire "$NAMED_ALPHA_COORDINATES" "$$" || die "named Alpha lifecycle already active or unproven"
+  trap 'alpha_env node "$SCRIPT_DIR/lib/alpha-lifecycle-lock.mjs" release "$NAMED_ALPHA_COORDINATES" "$$"' EXIT
 }
 
 init_named_alpha_worktree() {
@@ -50,11 +50,11 @@ init_named_alpha_worktree() {
     return 0
   fi
   [ ! -e "$ALPHA_DIR" ] || die "preserve the existing unregistered named Alpha path"
-  ! git -C "$PROJECT_DIR" show-ref --verify --quiet "refs/heads/$ALPHA_BRANCH" || die "named Alpha branch already exists without its registered checkout"
-  git -C "$PROJECT_DIR" fetch origin main
+  ! alpha_git -C "$PROJECT_DIR" show-ref --verify --quiet "refs/heads/$ALPHA_BRANCH" || die "named Alpha branch already exists without its registered checkout"
+  alpha_git -C "$PROJECT_DIR" fetch origin main
   local target
-  target="$(git -C "$PROJECT_DIR" rev-parse --verify 'refs/remotes/origin/main^{commit}')"
-  (cd "$PROJECT_DIR" && node "$SCRIPT_DIR/worktree-new.mjs" "$ALPHA_DIR" \
+  target="$(alpha_git -C "$PROJECT_DIR" rev-parse --verify 'refs/remotes/origin/main^{commit}')"
+  (cd "$PROJECT_DIR" && alpha_env node "$SCRIPT_DIR/worktree-new.mjs" "$ALPHA_DIR" \
     --branch "$ALPHA_BRANCH" --base "$target" --policy merged --role alpha --full)
   assert_named_alpha_prepared
   if [ "$RUN_INSTALL" = true ]; then install_alpha_dependencies; fi
@@ -63,10 +63,10 @@ init_named_alpha_worktree() {
 
 sync_named_alpha_worktree() {
   assert_named_alpha_prepared
-  git -C "$PROJECT_DIR" fetch origin main
+  alpha_git -C "$PROJECT_DIR" fetch origin main
   local target
-  target="$(git -C "$PROJECT_DIR" rev-parse --verify 'refs/remotes/origin/main^{commit}')"
-  git -C "$ALPHA_DIR" merge --ff-only "$target"
+  target="$(alpha_git -C "$PROJECT_DIR" rev-parse --verify 'refs/remotes/origin/main^{commit}')"
+  alpha_git -C "$ALPHA_DIR" merge --ff-only "$target"
   NAMED_ALPHA_COORDINATES="$(named_alpha_coordinates derive --main-root "$PROJECT_DIR" --instance "$NAMED_ALPHA_INSTANCE" --ports "$NAMED_ALPHA_PORTS" --target-sha "$target")" || die "cannot freeze Alpha main revision"
   named_alpha_coordinates inspect --record "$NAMED_ALPHA_COORDINATES" >/dev/null || die "Alpha revision changed after exact main sync"
 }
@@ -109,5 +109,6 @@ start_named_alpha_worktree() {
   assert_named_alpha_ports_idle
   info "starting named isolated Alpha from $ALPHA_DIR"
   cd "$ALPHA_DIR"
-  exec ./scripts/start-dev.sh --quick
+  exec env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+    -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_CONFIG ./scripts/start-dev.sh --quick
 }
