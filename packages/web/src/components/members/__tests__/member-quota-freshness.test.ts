@@ -1,4 +1,4 @@
-import type { RoutingContextReadModelV1 } from '@cat-cafe/shared';
+import type { RoutingContextReadModelV1, RoutingSubjectRefV1 } from '@cat-cafe/shared';
 import { describe, expect, it } from 'vitest';
 import type { CatData } from '@/hooks/useCatData';
 import { reduceRoutingContext } from '../../../../../api/src/domains/routing-context/routing-context-reducer';
@@ -83,7 +83,7 @@ describe('quota display uses collection age rather than HTTP arrival', () => {
 });
 
 function exhaustedWithConstraint(state: 'unavailable' | 'degraded' | 'scarce', until = now + 10_000) {
-  const { model, candidate, capacity } = quotaModel();
+  const { model, capacity } = quotaModel();
   capacity.windows[0].applicability = 'operator_bound';
   model.signalEvents = [
     {
@@ -102,6 +102,12 @@ function exhaustedWithConstraint(state: 'unavailable' | 'degraded' | 'scarce', u
       evidenceRef: 'fixture:independent',
     },
   ];
+  return reproject(model);
+}
+
+function reproject(model: RoutingContextReadModelV1, hideSignalReasons = false) {
+  if (model.resolution.state !== 'fresh') throw new Error('fresh fixture');
+  const binding = model.resolution.snapshot.candidates[0].binding;
   model.resolution = {
     state: 'fresh',
     inputRevisionRef: 'fixture:combined',
@@ -110,8 +116,18 @@ function exhaustedWithConstraint(state: 'unavailable' | 'degraded' | 'scarce', u
       ownerId: base.ownerId,
       observedAt: now,
       catalogRevision: base.catalogRevision,
-      candidates: [candidate.binding],
+      candidates: [binding],
       profiles: [],
+      profileDiagnostics: hideSignalReasons
+        ? Array.from({ length: 32 }, (_, index) => ({
+            catId: cat.id,
+            reason: {
+              code: 'capability_profile_invalid',
+              summary: `diagnostic ${index}`,
+              sourceRefs: [`fixture:diagnostic:${index}`],
+            },
+          }))
+        : [],
       signalEvents: model.signalEvents,
       preferenceRevisions: [],
     }),
@@ -135,5 +151,96 @@ describe('quota expiry removes only the quota contribution from the real reducer
   it('does not revive an independent constraint whose own deadline has passed', () => {
     const model = exhaustedWithConstraint('degraded', now + 500);
     expect(memberStatus(cat, model, null, now + 1000).label).toBe('未确认');
+  });
+
+  it.each([
+    ['degraded', '不稳定'],
+    ['scarce', '额度紧张'],
+    ['unavailable', '不可用'],
+  ] as const)('preserves %s when real reducer diagnostics consume the entire reasons budget', (state, label) => {
+    const model = reproject(exhaustedWithConstraint(state), true);
+    if (model.resolution.state !== 'fresh') throw new Error('fresh fixture');
+    const candidate = model.resolution.snapshot.candidates[0];
+    expect(candidate.availability).toBe('unavailable');
+    expect(candidate.reasons).toHaveLength(32);
+    expect(candidate.reasons.flatMap((reason) => reason.sourceRefs)).not.toContain('independent');
+    expect(memberStatus(cat, model, null, now + 1000)).toMatchObject({
+      label,
+      detail: `independent ${state}`,
+      source: state === 'unavailable' ? '你手动设置' : '健康检查',
+    });
+    expect(memberStatus(cat, model, null, now + 10_000).label).toBe('未确认');
+  });
+
+  it.each<RoutingSubjectRefV1>([
+    { type: 'provider', providerId: 'openai' },
+    { type: 'quota_pool', poolId: 'proven-pool' },
+  ])('keeps an unreferenced matching $type assertion independently of the reasons summary', (subjectRef) => {
+    const model = exhaustedWithConstraint('degraded');
+    model.signalEvents[0].subjectRef = subjectRef;
+    if (model.resolution.state !== 'fresh') throw new Error('fresh fixture');
+    model.resolution.snapshot.candidates[0].binding.provenQuotaPools = [
+      { poolId: 'proven-pool', evidenceRef: 'fixture:pool-proof' },
+    ];
+    reproject(model, true);
+    expect(memberStatus(cat, model, null, now + 1000).label).toBe('不稳定');
+  });
+
+  it.each<RoutingSubjectRefV1>([
+    { type: 'cat', catId: 'other-cat' },
+    { type: 'provider', providerId: 'anthropic' },
+    { type: 'quota_pool', poolId: 'unproven-pool' },
+  ])('does not borrow a $type assertion without an exact binding match', (subjectRef) => {
+    const model = exhaustedWithConstraint('unavailable');
+    model.signalEvents[0].subjectRef = subjectRef;
+    reproject(model, true);
+    expect(memberStatus(cat, model, null, now + 1000).label).toBe('未确认');
+  });
+
+  it.each(['foreign owner', 'future observation'])('excludes an unreferenced assertion with %s', (invalid) => {
+    const model = exhaustedWithConstraint('unavailable');
+    if (invalid === 'foreign owner') model.signalEvents[0].ownerId = 'other-owner';
+    else model.signalEvents[0].observedAt = now + 2000;
+    reproject(model, true);
+    expect(memberStatus(cat, model, null, now + 1000).label).toBe('未确认');
+  });
+
+  it.each(['retracted', 'recovered'] as const)('does not revive a %s assertion omitted from reasons', (eventType) => {
+    const model = exhaustedWithConstraint('degraded');
+    model.signalEvents.push({
+      v: 1,
+      eventId: 'closer',
+      commandId: 'closer',
+      ownerId: model.ownerId,
+      subjectRef: { type: 'cat', catId: cat.id },
+      source: 'manual_cvo',
+      ...(eventType === 'recovered' ? { eventType, state: 'available' as const } : { eventType }),
+      reasonCode: 'closed',
+      closesSignalIds: ['independent'],
+      observedAt: now,
+      evidenceRef: 'fixture:closer',
+    });
+    reproject(model, true);
+    expect(memberStatus(cat, model, null, now + 1000).label).toBe('未确认');
+  });
+
+  it('does not apply a future close before its observation time', () => {
+    const model = exhaustedWithConstraint('degraded');
+    model.signalEvents.push({
+      v: 1,
+      eventId: 'future-closer',
+      commandId: 'future-closer',
+      ownerId: model.ownerId,
+      subjectRef: { type: 'cat', catId: cat.id },
+      source: 'manual_cvo',
+      eventType: 'retracted',
+      reasonCode: 'closed',
+      closesSignalIds: ['independent'],
+      observedAt: now + 2000,
+      evidenceRef: 'fixture:future-closer',
+    });
+    reproject(model, true);
+    expect(memberStatus(cat, model, null, now + 1000).label).toBe('不稳定');
+    expect(memberStatus(cat, model, null, now + 2000).label).toBe('未确认');
   });
 });

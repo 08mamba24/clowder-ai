@@ -150,10 +150,13 @@ for (const [width, language, dark] of [
       ];
       candidate.availability = 'unavailable';
       candidate.effect = 'blocked';
-      candidate.reasons = [
-        { code: 'routing_signal_degraded', summary: 'provider_timeout', sourceRefs: ['health'] },
-        { code: 'usage_monitor_quota_exhausted', summary: 'Quota exhausted', sourceRefs: ['fixture:quota'] },
-      ];
+      // Real reducer diagnostics can consume all 32 presentation reasons. The raw
+      // health assertion remains applicable even without a reason's sourceRef.
+      candidate.reasons = Array.from({ length: 32 }, (_, index) => ({
+        code: 'capability_profile_invalid',
+        summary: `Diagnostic ${index}`,
+        sourceRefs: [`fixture:diagnostic:${index}`],
+      }));
       candidate.binding.capacityFacts.current.windows[0].remainingPercent = 0;
       candidate.binding.capacityFacts.current.windows[0].applicability = 'operator_bound';
       routingContextReadModelV1Schema.parse(state.routingData);

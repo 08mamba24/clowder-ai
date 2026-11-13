@@ -1,4 +1,5 @@
 import {
+  type RoutingCandidateBindingV1,
   type RoutingContextReadModelV1,
   type RoutingSignalEventV1,
   type RoutingSubjectRefV1,
@@ -53,6 +54,12 @@ const reasonLabels: Record<string, string> = {
   routing_signal_retracted: '限制已撤回',
   routing_signal_recovered: '已恢复',
 };
+
+function matchesMember(subject: RoutingSubjectRefV1, binding: RoutingCandidateBindingV1): boolean {
+  if (subject.type === 'cat') return subject.catId === binding.catId;
+  if (subject.type === 'provider') return subject.providerId === binding.providerId;
+  return binding.provenQuotaPools.some((pool) => pool.poolId === subject.poolId);
+}
 
 function expiredQuotaStatus(
   quota: 'stale' | 'unknown',
@@ -110,14 +117,22 @@ export function memberStatus(
   const candidate = model.resolution.snapshot.candidates.find((c) => c.binding.catId === cat.id);
   if (!candidate) return { label: '未确认', detail: '没有这个成员的当前记录', tone: 'unknown' };
   const quota = memberQuotaFreshness(candidate.binding.capacityFacts?.current, now);
-  const refs = new Set(candidate.reasons.flatMap((reason) => reason.sourceRefs));
-  const events = model.signalEvents.filter((event) => refs.has(event.eventId));
-  // The owner includes the original assertion in recovery/retraction provenance.
-  // Shared owner rules cover explicit closes and successful-probe coverage.
-  const closed = routingSignalClosures(model.signalEvents);
+  const observedEvents = model.signalEvents.filter(
+    (event) => event.ownerId === model.ownerId && event.observedAt <= now,
+  );
+  const closed = routingSignalClosures(observedEvents);
   // Remove expired quota's contribution; the combined availability may be more severe
-  // than the still-live independent assertions (for example degraded + exhausted).
-  if (quota && quota !== 'fresh') return expiredQuotaStatus(quota, events, closed, now);
+  // than the still-live independent assertions. Reasons are a bounded display summary,
+  // so their sourceRefs cannot determine which raw assertions still apply.
+  if (quota && quota !== 'fresh')
+    return expiredQuotaStatus(
+      quota,
+      observedEvents.filter((event) => matchesMember(event.subjectRef, candidate.binding)),
+      closed,
+      now,
+    );
+  const refs = new Set(candidate.reasons.flatMap((reason) => reason.sourceRefs));
+  const events = observedEvents.filter((event) => refs.has(event.eventId));
   const boundary = events.flatMap((event) =>
     event.eventType === 'asserted' && !closed.has(event.eventId) ? [memberSignalDeadline(event)] : [],
   );
