@@ -163,7 +163,14 @@ for (const [width, language, dark] of [
       await page.clock.runFor(100);
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
       await text(language === 'zh' ? '不可用' : 'Unavailable');
-      await page.clock.runFor(119_900);
+      // Let the intervening real HTTP exchange settle before advancing another
+      // minute. Advancing across its timeout races fixture network I/O with fake time.
+      const polled = page.waitForResponse(
+        (response) => new URL(response.url()).pathname === '/api/routing-context/snapshot',
+      );
+      await page.clock.runFor(60_000);
+      await (await polled).finished();
+      await page.clock.runFor(59_900);
       await text(language === 'zh' ? '不稳定' : 'Degraded');
       await page.screenshot({ path: path.join(evidence, `${width}-${language}-independent-health.png`) });
       assert.deepEqual(state.writes, [], 'Refreshing creates no command, task or configuration write');
