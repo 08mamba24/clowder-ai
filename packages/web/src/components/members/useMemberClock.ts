@@ -2,12 +2,13 @@
 import type { RoutingContextReadModelV1 } from '@cat-cafe/shared';
 import { useEffect, useState } from 'react';
 import { memberSignalDeadline } from './member-projection';
+import { quotaObservationDeadline } from './member-quota-freshness';
 
 // A read-only deadline tick prevents an expired owner fact remaining visibly live.
 export function useMemberClock(
   model:
     | (Pick<RoutingContextReadModelV1, 'signalEvents'> &
-        Partial<Pick<RoutingContextReadModelV1, 'preferenceRevisions'>>)
+        Partial<Pick<RoutingContextReadModelV1, 'preferenceRevisions' | 'resolution'>>)
     | null,
 ) {
   const [now, setNow] = useState(Date.now);
@@ -21,7 +22,17 @@ export function useMemberClock(
       model?.preferenceRevisions?.flatMap((revision) =>
         revision.lifecycle === 'active' && revision.reviewAfter !== undefined ? [revision.reviewAfter] : [],
       ) ?? [];
-    const next = Math.min(current + 60_000, ...[...deadlines, ...reviews].filter((deadline) => deadline > current));
+    const quotas =
+      model?.resolution?.state === 'fresh'
+        ? model.resolution.snapshot.candidates.flatMap((candidate) => {
+            const capacity = candidate.binding.capacityFacts?.current;
+            return capacity?.source === 'usage_monitor' ? [quotaObservationDeadline(capacity)] : [];
+          })
+        : [];
+    const next = Math.min(
+      current + 60_000,
+      ...[...deadlines, ...reviews, ...quotas].filter((deadline) => deadline > current),
+    );
     const timer = window.setTimeout(() => setNow(Date.now()), Math.max(1, next - current));
     return () => window.clearTimeout(timer);
   }, [model, now]);

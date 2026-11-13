@@ -30,7 +30,7 @@ export function MemberCurrentStatus({ cat, onBeforeOpen }: { cat: CatData; onBef
   const detail = work?.detail ?? (routing.data?.resolution.state === 'fresh' ? copy.noRecords : '');
   return (
     <div className="member-detail-summary" data-tone={status.tone}>
-      <span className="member-status-label">
+      <span className="member-status-label" title={status.detail ? t(status.detail) : undefined}>
         <i aria-hidden="true" />
         {t(memberStatusLabel(status))}
       </span>

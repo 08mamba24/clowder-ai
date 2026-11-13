@@ -20,30 +20,84 @@ export function useRoutingContext(): RoutingContextQueryState {
   const [data, setData] = useState<RoutingContextReadModelV1 | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const mounted = useRef(true);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const next = await fetchRoutingContext();
-      if (mounted.current) setData(next);
-      return true;
-    } catch (cause) {
-      if (mounted.current) setError(cause instanceof Error ? cause.message : 'Routing context 暂时无法读取');
-      return false;
-    } finally {
-      if (mounted.current) setLoading(false);
-    }
-  }, []);
+  const reader = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
+  const refresh = useCallback(() => reader.current(), []);
 
   useEffect(() => {
-    mounted.current = true;
-    void refresh();
-    return () => {
-      mounted.current = false;
+    let mounted = true;
+    let generation = 0;
+    let active: Promise<boolean> | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let lastActivation = document.visibilityState === 'hidden' ? -Infinity : Date.now();
+    const controllers = new Set<AbortController>();
+    const visible = () => document.visibilityState !== 'hidden';
+    const clearTimer = () => {
+      clearTimeout(timer);
+      timer = undefined;
     };
-  }, [refresh]);
+    const schedule = () => {
+      clearTimer();
+      if (mounted && visible()) timer = setTimeout(() => void read(false), 60_000);
+    };
+    const read = (afterCurrentGet: boolean): Promise<boolean> => {
+      if (!mounted) return Promise.resolve(false);
+      if (!afterCurrentGet && active) return active;
+      clearTimer();
+      const current = ++generation;
+      const controller = new AbortController();
+      controllers.add(controller);
+      setLoading(true);
+      // Do not clear a prior read error until success: the retained data is still stale.
+      const request = fetchRoutingContext(controller.signal, afterCurrentGet ? { afterCurrentGet: true } : undefined)
+        .then((next) => {
+          if (!mounted || controller.signal.aborted) return false;
+          if (current === generation) {
+            setData(next);
+            setError(null);
+          }
+          return true;
+        })
+        .catch((cause: unknown) => {
+          if (mounted && current === generation && !controller.signal.aborted)
+            setError(cause instanceof Error ? cause.message : 'Routing context 暂时无法读取');
+          return false;
+        })
+        .finally(() => {
+          controllers.delete(controller);
+          if (mounted && current === generation) {
+            active = null;
+            setLoading(false);
+            schedule();
+          }
+        });
+      active = request;
+      return request;
+    };
+    reader.current = () => read(true);
+    const onActivation = () => {
+      if (!visible()) {
+        clearTimer();
+        lastActivation = -Infinity;
+        return;
+      }
+      // Browsers emit visibility and focus together, including after fast local GETs.
+      const now = Date.now();
+      if (now - lastActivation < 100) return;
+      lastActivation = now;
+      void read(false);
+    };
+    document.addEventListener('visibilitychange', onActivation);
+    window.addEventListener('focus', onActivation);
+    if (visible()) void read(false);
+    return () => {
+      mounted = false;
+      clearTimer();
+      document.removeEventListener('visibilitychange', onActivation);
+      window.removeEventListener('focus', onActivation);
+      for (const controller of controllers) controller.abort();
+      reader.current = () => Promise.resolve(false);
+    };
+  }, []);
 
   return { data, loading, error, refresh };
 }

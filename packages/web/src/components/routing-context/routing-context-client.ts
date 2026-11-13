@@ -7,7 +7,7 @@ import {
   type RoutingSignalMarkCommandV1,
   routingContextReadModelV1Schema,
 } from '@cat-cafe/shared';
-import { apiFetch } from '@/utils/api-client';
+import { type ApiFetchOptions, apiFetch } from '@/utils/api-client';
 
 export class RoutingContextCommandError extends Error {
   constructor(
@@ -19,8 +19,11 @@ export class RoutingContextCommandError extends Error {
   }
 }
 
-export async function fetchRoutingContext(signal?: AbortSignal): Promise<RoutingContextReadModelV1> {
-  const response = await apiFetch('/api/routing-context/snapshot', { signal });
+export async function fetchRoutingContext(
+  signal?: AbortSignal,
+  options?: Pick<ApiFetchOptions, 'afterCurrentGet'>,
+): Promise<RoutingContextReadModelV1> {
+  const response = await apiFetch('/api/routing-context/snapshot', { signal }, options);
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { error?: string } | null;
     throw new Error(payload?.error ?? `Routing context request failed (${response.status})`);

@@ -1,7 +1,58 @@
+import type { RoutingContextReadModelV1 } from '@cat-cafe/shared';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
+import type { CatData } from '@/hooks/useCatData';
+import { model as base } from '../../routing-context/__tests__/team-panel-fixtures';
+import { memberStatus } from '../member-projection';
 import { useMemberClock } from '../useMemberClock';
+
+it('removes a quota warning exactly at collection expiry while the HTTP snapshot stays unchanged', () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.useFakeTimers();
+  vi.setSystemTime(base.observedAt);
+  const model = structuredClone(base) as RoutingContextReadModelV1;
+  if (model.resolution.state !== 'fresh') throw Error('fresh fixture');
+  const candidate = model.resolution.snapshot.candidates[0];
+  candidate.reasons = [{ code: 'usage_monitor_quota_low', summary: 'quota low', sourceRefs: [] }];
+  candidate.binding.capacityFacts = {
+    v: 1,
+    current: {
+      source: 'usage_monitor',
+      state: 'fresh',
+      observedAt: base.observedAt - 119_000,
+      validUntil: base.observedAt + 1000,
+      windows: [
+        {
+          poolId: 'quota',
+          poolKind: 'unknown',
+          applicability: 'unknown',
+          kind: 'five_hour',
+          remainingPercent: 0,
+          freshness: 'fresh',
+        },
+      ],
+    },
+    switchRequired: [],
+  };
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  function Status() {
+    return <span>{memberStatus({ id: 'codex-sol' } as CatData, model, null, useMemberClock(model)).label}</span>;
+  }
+  try {
+    act(() => root.render(<Status />));
+    expect(container.textContent).toBe('额度紧张');
+    act(() => vi.advanceTimersByTime(999));
+    expect(container.textContent).toBe('额度紧张');
+    act(() => vi.advanceTimersByTime(1));
+    expect(container.textContent).toBe('未确认');
+  } finally {
+    act(() => root.unmount());
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  }
+});
 
 it('uses current time when a slow owner snapshot arrives, then ticks at its deadline', () => {
   (globalThis as { React?: typeof React }).React = React;
