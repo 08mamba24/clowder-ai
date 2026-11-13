@@ -1,6 +1,7 @@
 import type { RoutingContextReadModelV1 } from '@cat-cafe/shared';
 import { describe, expect, it } from 'vitest';
 import type { CatData } from '@/hooks/useCatData';
+import { reduceRoutingContext } from '../../../../../api/src/domains/routing-context/routing-context-reducer';
 import { model as base } from '../../routing-context/__tests__/team-panel-fixtures';
 import { memberStatus } from '../member-projection';
 
@@ -54,9 +55,7 @@ describe('quota display uses collection age rather than HTTP arrival', () => {
   });
 
   it('does not let quota expiry hide an independently unavailable manual state', () => {
-    const { model, candidate } = quotaModel();
-    candidate.availability = 'unavailable';
-    candidate.reasons.unshift({ code: 'routing_signal_unavailable', summary: 'owner paused', sourceRefs: ['owner'] });
+    const model = exhaustedWithConstraint('unavailable');
     expect(memberStatus(cat, model, null, now + 1000).label).toBe('不可用');
   });
 
@@ -80,5 +79,61 @@ describe('quota display uses collection age rather than HTTP arrival', () => {
     expect(memberStatus(cat, model, null, now).label).toBe('未确认');
     capacity.state = 'unknown';
     expect(memberStatus(cat, model, null, now).label).toBe('未确认');
+  });
+});
+
+function exhaustedWithConstraint(state: 'unavailable' | 'degraded' | 'scarce', until = now + 10_000) {
+  const { model, candidate, capacity } = quotaModel();
+  capacity.windows[0].applicability = 'operator_bound';
+  model.signalEvents = [
+    {
+      v: 1,
+      eventId: 'independent',
+      commandId: 'independent',
+      ownerId: base.ownerId,
+      subjectRef: { type: 'cat', catId: cat.id },
+      source: state === 'unavailable' ? 'manual_cvo' : 'health_probe',
+      eventType: 'asserted',
+      state,
+      reasonCode: 'provider_timeout',
+      note: `independent ${state}`,
+      observedAt: now - 100,
+      validUntil: until,
+      evidenceRef: 'fixture:independent',
+    },
+  ];
+  model.resolution = {
+    state: 'fresh',
+    inputRevisionRef: 'fixture:combined',
+    sourceRefs: { signalEventIds: ['independent'], preferenceRevisionIds: [], dossierRevisions: [] },
+    snapshot: reduceRoutingContext({
+      ownerId: base.ownerId,
+      observedAt: now,
+      catalogRevision: base.catalogRevision,
+      candidates: [candidate.binding],
+      profiles: [],
+      signalEvents: model.signalEvents,
+      preferenceRevisions: [],
+    }),
+  };
+  return model;
+}
+
+describe('quota expiry removes only the quota contribution from the real reducer projection', () => {
+  it.each([
+    ['degraded', '不稳定'],
+    ['scarce', '额度紧张'],
+  ] as const)('returns to the still-live %s constraint at the exact quota deadline', (state, label) => {
+    const model = exhaustedWithConstraint(state);
+    expect(memberStatus(cat, model, null, now + 999).label).toBe('不可用');
+    const expired = memberStatus(cat, model, null, now + 1000);
+    expect(expired.label).toBe(label);
+    expect(expired.source).toBe('健康检查');
+    expect(expired.detail).toBe(`independent ${state}`);
+  });
+
+  it('does not revive an independent constraint whose own deadline has passed', () => {
+    const model = exhaustedWithConstraint('degraded', now + 500);
+    expect(memberStatus(cat, model, null, now + 1000).label).toBe('未确认');
   });
 });

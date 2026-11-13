@@ -26,7 +26,8 @@ Why: 复用现有 snapshot API 与 apiFetch，只增加页面生命周期和本�
 成员列表、详情和共用成员投影的资料卡按额度事实计算时效，HTTP/read-model 的生成时间不会续期采样。
 截止时间取 `capacityFacts.current.validUntil`、`observedAt + 120s` 和窗口 `resetAt` 的最早值。
 缺失采样证明、未来采样或 unknown 显示未确认；过期样本显示未确认并解释正在等待新数据。
-独立的人工/健康限制仍按原成员投影显示，不会因额度过期被隐藏。
+额度过期时从仍有效且未关闭的独立人工/健康断言重新投影显示，不能沿用包含过期额度的合成状态。
+例如健康“不稳定”叠加已验证额度耗尽会先显示“不可用”，额度到期后应回落到“不稳定”；仍有效的人工“不可用”保持不变。
 本地截止计时器使样本在下一次 HTTP 返回前就能过期。
 
 ## 边界
@@ -49,5 +50,5 @@ pnpm --filter @cat-cafe/web run test:browser:member-quota-refresh
 
 测试包含可见/隐藏与 focus、慢请求节奏、错误保留、写后读取、StrictMode/卸载、真实 apiFetch 多实例合并及来源 TTL。
 浏览器使用真实 SettingsShell → MemberListPage → MemberTable，网络和额度数据为隔离 fixture，覆盖桌面中文和窄屏英文深色。
-它验证缓存变化、自动轮询、本地过期与前台刷新，不代表真实 provider 采集或线上新版本已经加载。
+它验证缓存变化、自动轮询、本地过期、前台刷新和额度到期后的独立健康状态，不代表真实 provider 采集或线上新版本已经加载。
 独立 review、精确 HEAD、检查结果及运行加载证据记入原 Task。

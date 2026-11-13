@@ -123,12 +123,46 @@ for (const [width, language, dark] of [
       candidate.binding.capacityFacts.current.observedAt = now + 110_000;
       candidate.binding.capacityFacts.current.validUntil = now + 230_000;
       candidate.binding.capacityFacts.current.windows[0].remainingPercent = 5;
+      state.routingData.observedAt = now + 110_000;
+      state.routingData.resolution.snapshot.observedAt = now + 110_000;
       await page.evaluate(() => {
         document.dispatchEvent(new Event('visibilitychange'));
         window.dispatchEvent(new Event('focus'));
       });
       await text(language === 'zh' ? '额度紧张' : 'Low quota');
       assert.equal(reads(), beforeExpiry + 1, 'A foreground event burst makes one coordinated physical GET');
+      // A quota-exhausted projection can mask a weaker, independently live health state.
+      state.routingData.signalEvents = [
+        {
+          v: 1,
+          ownerId: 'fixture-owner',
+          eventId: 'health',
+          commandId: 'health',
+          subjectRef: { type: 'cat', catId: 'fixture-a' },
+          source: 'health_probe',
+          eventType: 'asserted',
+          state: 'degraded',
+          reasonCode: 'provider_timeout',
+          observedAt: now + 110_000,
+          validUntil: now + 400_000,
+          evidenceRef: 'fixture:health',
+        },
+      ];
+      candidate.availability = 'unavailable';
+      candidate.effect = 'blocked';
+      candidate.reasons = [
+        { code: 'routing_signal_degraded', summary: 'provider_timeout', sourceRefs: ['health'] },
+        { code: 'usage_monitor_quota_exhausted', summary: 'Quota exhausted', sourceRefs: ['fixture:quota'] },
+      ];
+      candidate.binding.capacityFacts.current.windows[0].remainingPercent = 0;
+      candidate.binding.capacityFacts.current.windows[0].applicability = 'operator_bound';
+      routingContextReadModelV1Schema.parse(state.routingData);
+      await page.clock.runFor(100);
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await text(language === 'zh' ? '不可用' : 'Unavailable');
+      await page.clock.runFor(119_900);
+      await text(language === 'zh' ? '不稳定' : 'Degraded');
+      await page.screenshot({ path: path.join(evidence, `${width}-${language}-independent-health.png`) });
       assert.deepEqual(state.writes, [], 'Refreshing creates no command, task or configuration write');
       assert.equal(
         requests.some((r) => new URL(r.url).hostname !== 'f322-members.test'),

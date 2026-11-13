@@ -1,4 +1,9 @@
-import { type RoutingContextReadModelV1, type RoutingSubjectRefV1, routingSignalClosures } from '@cat-cafe/shared';
+import {
+  type RoutingContextReadModelV1,
+  type RoutingSignalEventV1,
+  type RoutingSubjectRefV1,
+  routingSignalClosures,
+} from '@cat-cafe/shared';
 import type { CatData } from '@/hooks/useCatData';
 import { CLIENT_OPTIONS } from '../hub-cat-editor.model';
 import { providerDisplayName } from '../routing-context/team-member-projection';
@@ -48,6 +53,42 @@ const reasonLabels: Record<string, string> = {
   routing_signal_retracted: '限制已撤回',
   routing_signal_recovered: '已恢复',
 };
+
+function expiredQuotaStatus(
+  quota: 'stale' | 'unknown',
+  events: readonly RoutingSignalEventV1[],
+  closed: ReadonlyMap<string, unknown>,
+  now: number,
+): MemberStatus {
+  const rank = { unavailable: 0, degraded: 1, scarce: 2 };
+  const current = events
+    .filter(
+      (event): event is Extract<RoutingSignalEventV1, { eventType: 'asserted' }> =>
+        event.eventType === 'asserted' &&
+        !closed.has(event.eventId) &&
+        event.observedAt <= now &&
+        memberSignalDeadline(event) > now,
+    )
+    .sort((left, right) => rank[left.state] - rank[right.state])[0];
+  if (!current)
+    return {
+      label: '未确认',
+      detail: quota === 'stale' ? '额度采样已过期，等待新数据' : '额度采样暂不可确认',
+      tone: 'unknown',
+    };
+  const until = memberSignalDeadline(current);
+  return {
+    label: statusLabels[current.state],
+    detail: current.note ?? reasonLabels[current.reasonCode] ?? '',
+    detailIsNote: Boolean(current.note),
+    source: SIGNAL_SOURCE_LABELS[current.source],
+    observedAt: current.observedAt,
+    evidenceRef: current.evidenceRef,
+    until: Number.isFinite(until) ? until : undefined,
+    tone: current.state === 'unavailable' ? 'error' : 'warning',
+  };
+}
+
 export function memberStatus(
   cat: CatData,
   model: RoutingContextReadModelV1 | null,
@@ -69,21 +110,14 @@ export function memberStatus(
   const candidate = model.resolution.snapshot.candidates.find((c) => c.binding.catId === cat.id);
   if (!candidate) return { label: '未确认', detail: '没有这个成员的当前记录', tone: 'unknown' };
   const quota = memberQuotaFreshness(candidate.binding.capacityFacts?.current, now);
-  const independentConstraint = candidate.reasons.some((reason) =>
-    ['routing_signal_unavailable', 'routing_signal_degraded', 'routing_signal_scarce'].includes(reason.code),
-  );
-  // Expired quota must not keep its warning live, nor hide independent owner/health facts.
-  if (!independentConstraint && quota && quota !== 'fresh')
-    return {
-      label: '未确认',
-      detail: quota === 'stale' ? '额度采样已过期，等待新数据' : '额度采样暂不可确认',
-      tone: 'unknown',
-    };
   const refs = new Set(candidate.reasons.flatMap((reason) => reason.sourceRefs));
   const events = model.signalEvents.filter((event) => refs.has(event.eventId));
   // The owner includes the original assertion in recovery/retraction provenance.
   // Shared owner rules cover explicit closes and successful-probe coverage.
   const closed = routingSignalClosures(model.signalEvents);
+  // Remove expired quota's contribution; the combined availability may be more severe
+  // than the still-live independent assertions (for example degraded + exhausted).
+  if (quota && quota !== 'fresh') return expiredQuotaStatus(quota, events, closed, now);
   const boundary = events.flatMap((event) =>
     event.eventType === 'asserted' && !closed.has(event.eventId) ? [memberSignalDeadline(event)] : [],
   );
