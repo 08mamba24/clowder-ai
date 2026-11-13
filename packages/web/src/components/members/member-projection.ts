@@ -3,6 +3,7 @@ import type { CatData } from '@/hooks/useCatData';
 import { CLIENT_OPTIONS } from '../hub-cat-editor.model';
 import { providerDisplayName } from '../routing-context/team-member-projection';
 import type { NativeLoginState } from '../settings/members/native-login-state';
+import { memberQuotaFreshness } from './member-quota-freshness';
 
 export type MemberStatus = {
   label: string;
@@ -67,6 +68,17 @@ export function memberStatus(
     return { label: '未确认', detail: readError ? '当前状态读取失败' : '当前状态暂不可读', tone: 'unknown' };
   const candidate = model.resolution.snapshot.candidates.find((c) => c.binding.catId === cat.id);
   if (!candidate) return { label: '未确认', detail: '没有这个成员的当前记录', tone: 'unknown' };
+  const quota = memberQuotaFreshness(candidate.binding.capacityFacts?.current, now);
+  const independentConstraint = candidate.reasons.some((reason) =>
+    ['routing_signal_unavailable', 'routing_signal_degraded', 'routing_signal_scarce'].includes(reason.code),
+  );
+  // Expired quota must not keep its warning live, nor hide independent owner/health facts.
+  if (!independentConstraint && quota && quota !== 'fresh')
+    return {
+      label: '未确认',
+      detail: quota === 'stale' ? '额度采样已过期，等待新数据' : '额度采样暂不可确认',
+      tone: 'unknown',
+    };
   const refs = new Set(candidate.reasons.flatMap((reason) => reason.sourceRefs));
   const events = model.signalEvents.filter((event) => refs.has(event.eventId));
   // The owner includes the original assertion in recovery/retraction provenance.
