@@ -1,6 +1,4 @@
 import { z } from 'zod';
-import type { GhReadLease } from '../../../../../../../infrastructure/github/agent-github-read-types.js';
-import type { AcpMcpServer } from '../types.js';
 
 function isReadEndpoint(value: string): boolean {
   try {
@@ -35,17 +33,6 @@ const servers = z
       .strict(),
   )
   .max(1);
-
-export function zcodeReadMcp(lease: GhReadLease): AcpMcpServer[] {
-  return [
-    {
-      name: 'clowder-repository-read',
-      type: 'http',
-      url: lease.mcpUrl,
-      headers: [{ name: 'Authorization', value: `Bearer ${lease.token}` }],
-    },
-  ];
-}
 
 /** Never forward family MCP or arbitrary credential-bearing config into this isolated provider. */
 export function parseZcodeReadMcp(value: unknown) {

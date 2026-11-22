@@ -14,8 +14,10 @@ import { classifyNativeTarget } from './native-effect-target-classifier.mjs';
 // merged wrapper; update it together with any wrapper change.
 // The secret helpers are dynamic imports after the READ_ONLY gate so the
 // controlled Qoder sandbox can start without scripts/lib mounted; the pin now
-// covers that byte change (P1 gh canary, 2026-10-31).
-const GH_WRAPPER_SHA256 = 'e44e9b5b7d3d1b92a74768adc9d98172d0caae06fd532dfafe2aa3345644522e';
+// covers that byte change (P1 gh canary, 2026-10-31). The ZCode lease carrier
+// gate sits before those imports for the same reason; this pin covers it too
+// (gh read carrier migration, 2026-11-22).
+const GH_WRAPPER_SHA256 = 'f5b1b59a7aab21d7cde4fac17d9984ea43b9305b6af44bd20004ade22f34b1fc';
 const ordinary = (path) => classifyNativeTarget(path, undefined, 'unknown').kind === 'ordinary';
 const literal = (value) => typeof value === 'string' && !/[$`*?[\]{}\n\r]/.test(value);
 

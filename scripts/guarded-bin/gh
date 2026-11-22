@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { dirname, delimiter, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,6 +19,198 @@ if (process.env.CAT_CAFE_GITHUB_READ_ONLY === 'true') {
   }
   process.stderr.write('capability_unavailable: use mcp__clowder-repository-read__github_read\n');
   process.exit(1);
+}
+
+// ZCode lease carrier: the repository-read MCP presentation is retired, so the
+// isolated member keeps the canonical gh CLI as its call surface. This carrier
+// maps the fixed read grammar onto the host-owned query endpoint, where the
+// broker still enforces the invocation binding, repository allowlist, typed
+// query schema, output bounds and timeouts, and where gh itself runs with host
+// credentials that never enter this process. Only the per-attempt lease file
+// (0600, same UID, revoked with the attempt) crosses the boundary. Like the
+// read-only branch above it must answer before the secret helpers load and
+// must not import scripts/lib.
+const READ_CARRIER_COMMANDS = new Map([
+  ['pr view', { op: 'pr_view', number: 'number', json: true }],
+  ['pr diff', { op: 'pr_diff', number: 'number', color: true }],
+  ['pr checks', { op: 'pr_checks', number: 'number' }],
+  ['pr list', { op: 'pr_list', list: true, json: true, state: ['open', 'closed', 'merged', 'all'] }],
+  ['issue view', { op: 'issue_view', number: 'number', json: true }],
+  ['issue list', { op: 'issue_list', list: true, json: true, state: ['open', 'closed', 'all'] }],
+  ['run view', { op: 'run_view', number: 'runId', json: true }],
+  ['run list', { op: 'run_list', list: true, json: true }],
+]);
+const READ_CARRIER_FIELDS = {
+  pr_view: 'body,headRefOid,isDraft,number,state,title,updatedAt,url',
+  pr_list: 'headRefOid,isDraft,number,state,title,updatedAt,url',
+  issue_view: 'body,number,state,title,updatedAt,url',
+  issue_list: 'number,state,title,updatedAt,url',
+  run_view: 'conclusion,databaseId,displayTitle,headSha,status,url,workflowName',
+  run_list: 'conclusion,databaseId,displayTitle,headSha,status,url,workflowName',
+};
+
+if (process.env.CAT_CAFE_GH_READ_CARRIER === 'lease') {
+  process.exit(await runLeaseCarrier(args));
+}
+
+function leaseCarrierFail(code, detail) {
+  process.stderr.write(`${code}: ${detail}\n`);
+  process.exit(1);
+}
+
+function readLeaseCarrierLease() {
+  const file =
+    process.env.CAT_CAFE_GH_READ_LEASE_FILE ??
+    resolve(process.env.HOME ?? '.', '.cat-cafe-gh-read-lease.json');
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return undefined;
+  }
+  try {
+    const url = new URL(parsed.url);
+    if (
+      url.protocol !== 'http:' ||
+      !['127.0.0.1', '[::1]'].includes(url.hostname) ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      url.pathname !== '/api/agent-github-read'
+    )
+      return undefined;
+  } catch {
+    return undefined;
+  }
+  return typeof parsed.token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(parsed.token)
+    ? { url: parsed.url, token: parsed.token }
+    : undefined;
+}
+
+/** Strict local shaping of the eight fixed reads; the broker schema stays the authority. */
+function parseLeaseCarrierQuery(argv) {
+  let repo;
+  let json;
+  let state;
+  let limit;
+  let color;
+  const positional = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    const pair = (name) => (arg === name ? argv[++index] : arg.startsWith(`${name}=`) ? arg.slice(name.length + 1) : undefined);
+    const value = pair('--repo') ?? pair('-R');
+    if (value !== undefined && value !== true) {
+      repo = value;
+      continue;
+    }
+    const jsonValue = pair('--json');
+    if (jsonValue !== undefined && jsonValue !== true) {
+      json = jsonValue;
+      continue;
+    }
+    const stateValue = pair('--state');
+    if (stateValue !== undefined && stateValue !== true) {
+      state = stateValue;
+      continue;
+    }
+    const limitValue = pair('--limit');
+    if (limitValue !== undefined && limitValue !== true) {
+      limit = limitValue;
+      continue;
+    }
+    const colorValue = pair('--color');
+    if (colorValue !== undefined && colorValue !== true) {
+      color = colorValue;
+      continue;
+    }
+    if (arg.startsWith('-')) leaseCarrierFail('capability_unavailable', `unsupported gh option in read carrier: ${arg}`);
+    positional.push(arg);
+  }
+  const head = positional.slice(0, 2).join(' ');
+  const config = READ_CARRIER_COMMANDS.get(head);
+  if (!config || positional.length > (config.list ? 2 : 3))
+    leaseCarrierFail(
+      'capability_unavailable',
+      'read carrier supports only: pr view|diff|checks|list, issue view|list, run view|list --repo owner/name',
+    );
+  const query = { op: config.op };
+  if (!repo) leaseCarrierFail('capability_unavailable', 'read carrier requires an explicit --repo owner/name');
+  const normalized = repo.replace(/^github\.com\//i, '').toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+$/.test(normalized))
+    leaseCarrierFail('capability_unavailable', `unsupported repository: ${repo}`);
+  query.repo = normalized;
+  if (config.list) {
+    query.state = state ?? 'open';
+    if (!config.state.includes(query.state))
+      leaseCarrierFail('capability_unavailable', `unsupported --state for ${config.op}: ${query.state}`);
+    const parsedLimit = limit === undefined ? 30 : Number(limit);
+    if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 50)
+      leaseCarrierFail('capability_unavailable', `unsupported --limit for ${config.op}: ${limit}`);
+    query.limit = parsedLimit;
+    if (color !== undefined) leaseCarrierFail('capability_unavailable', `--color is not valid for ${config.op}`);
+  } else {
+    const id = positional[2];
+    const parsedId = Number(id);
+    if (id === undefined || !Number.isInteger(parsedId) || parsedId < 1)
+      leaseCarrierFail('capability_unavailable', `${config.op} requires a positive integer number`);
+    query[config.number] = parsedId;
+    if (state !== undefined) leaseCarrierFail('capability_unavailable', `--state is not valid for ${config.op}`);
+    if (limit !== undefined) leaseCarrierFail('capability_unavailable', `--limit is not valid for ${config.op}`);
+    if (config.color && color !== undefined && color !== 'never')
+      leaseCarrierFail('capability_unavailable', `unsupported --color for ${config.op}: ${color}`);
+    if (!config.color && color !== undefined)
+      leaseCarrierFail('capability_unavailable', `--color is not valid for ${config.op}`);
+  }
+  if (json !== undefined) {
+    if (!config.json) leaseCarrierFail('capability_unavailable', `--json is not valid for ${config.op}`);
+    const wanted = json.split(',').map((field) => field.trim()).sort().join(',');
+    if (wanted !== READ_CARRIER_FIELDS[config.op])
+      leaseCarrierFail('capability_unavailable', `read carrier serves the fixed field set for ${config.op}`);
+  }
+  return query;
+}
+
+async function runLeaseCarrier(argv) {
+  if (argv.length === 1 && argv[0] === '--version') {
+    process.stdout.write('gh (Clowder readonly carrier)\n');
+    return 0;
+  }
+  const query = parseLeaseCarrierQuery(argv);
+  const lease = readLeaseCarrierLease();
+  if (!lease) leaseCarrierFail('capability_unavailable', 'no active GitHub read lease for this invocation');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error('timeout')), 20_000);
+  const cancel = () => controller.abort(new Error('cancelled'));
+  process.once('SIGINT', cancel);
+  process.once('SIGTERM', cancel);
+  try {
+    const response = await fetch(lease.url, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${lease.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(query),
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let result;
+    try {
+      result = JSON.parse(text);
+    } catch {
+      result = undefined;
+    }
+    if (response.status === 401 || !result)
+      leaseCarrierFail('gh_read_failed', response.status === 401 ? 'authentication_required' : 'unavailable');
+    if (result.ok !== true) leaseCarrierFail('gh_read_failed', `${result.code ?? 'unavailable'}`);
+    process.stdout.write(`${JSON.stringify(result.data)}\n`);
+    return 0;
+  } catch (error) {
+    const reason = error instanceof Error && error.message === 'cancelled' ? 'cancelled' : 'unavailable';
+    leaseCarrierFail('gh_read_failed', reason);
+  } finally {
+    clearTimeout(timer);
+    process.off('SIGINT', cancel);
+    process.off('SIGTERM', cancel);
+  }
 }
 
 // The controlled Qoder sandbox mounts this wrapper but not scripts/lib, and the
