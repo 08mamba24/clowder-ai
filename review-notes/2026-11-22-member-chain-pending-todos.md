@@ -10,8 +10,8 @@
 
 | 项目 | 当前状态 | 下一步 |
 |---|---|---|
-| 1. 点点 ACP 续聊失败 | 增量入口缺少受控重放，已定位；修复已派宪宪 | 补真实消息库入口的重放生产和回归 |
-| 2. 银闪启动 canary 失败 | PR #78 已复审放行，受影响与全 fork 选集通过 | 非作者合入、隔离验收 |
+| 1. 点点 ACP 续聊失败 | 宪宪已提交修复 PR #79 | 砚砚61 非作者审查真实入口与可见性边界 |
+| 2. 银闪启动 canary 失败 | PR #78 已合入，Alpha 隔离验收通过 | 等 runtime 加载目标版本后按原 Task 验收 |
 | 3. Pro 读取 429 | 实测复现 OpenAI MCP 隧道 SSE 探测 429 | 外部通道恢复后验证真实工具读取 |
 | 4. 谱谱 gh 凭据 | 宿主已登录，隔离 HOME 未登录 | 明确实际权限，再接受控宿主 gh CLI |
 
@@ -23,7 +23,7 @@
 - **测试缺口**：`packages/api/test/native-acp-rebuild-route.test.js` 手动注入 `routeOptions: { history }`，没有覆盖线上不传该字段的入口。
 - **修法**：从同一授权、可见性边界内的 canonical 历史生成有界重放，覆盖串行、并行与真实 Queue 入口。回归只向消息库准备历史，不手塞 `options.history`，验证前轮内容进入 replacement session、预算和可见性保持成立。
 - **不采用**：直接省略旧 sessionId、删除旧 session 或放松重放校验；这些做法会掩盖失忆或审计断链。
-- **状态**：根因已定位；12:41 operator 授权并行分工（消息 `0001795351305664-000679-1174615a`），修复请求已送宪宪（`0001795351360491-000681-8415c0d8`），待其接责回执和代码交付。砚砚61 保留四项总收口与后续非作者审查，不并改同一链路。
+- **状态**：宪宪已接责到 `task:work:0001795351395942-000685-f60ff146`，提交 [PR #79](https://github.com/08mamba24/clowder-ai/pull/79)，head `8772e134d85deb82be07c38a60727af84e571c5c`。作者报告真实 MessageStore / DeliveryCursorStore / ContextEpochOwner 增量入口回归 RED→GREEN，已交砚砚61 非作者审查；尚未登记通过或上线。来源为 operator 并行授权 `0001795351305664-000679-1174615a` 与分派 `0001795351360491-000681-8415c0d8`。
 
 ### 2. 银闪 Node 包元数据被沙箱拒绝
 
@@ -31,12 +31,15 @@
 - **复现**：实际 Node 24.22.3、包装器及生产 policy builder，在临时隔离目录执行 `gh --version`。四组对照中，无 literal 和只放行 runtime 根 `package.json` 均报 `ERR_INVALID_PACKAGE_CONFIG`；只放行 `packages/mcp-server/package.json` 与两者均放行都退出 0。包 manifest 单独放行时，根 manifest 的 `/bin/cat` 仍退出 1。
 - **原因**：Node 在执行无扩展名的 `guarded-bin/gh` 之前解析 package scope，包装器的 readonly 提前返回尚未开始执行。不是 gh 登录失败。
 - **修复**：只把包装器实际所属 `@cat-cafe/mcp-server/package.json` 加入 workspace policy 的 literal read allowlist；根 manifest 保持拒读，不开放整个 runtime，不移除 canary。初版额外放行根 manifest，经砚砚独立 review 提出最小权限 P2 后，作者补齐对照并收窄。
-- **交付**：[PR #78](https://github.com/08mamba24/clowder-ai/pull/78)，分支 `fix/member-chain-20261122`，当前代码 commit `a887ef1c34fa64ed36677c5e01f046233e1b4399`，改动 `QoderAgentService.ts` 和现有 service 回归用例。
+- **交付**：[PR #78](https://github.com/08mamba24/clowder-ai/pull/78) 已由非作者砚砚 squash merge；合入 `79d03e16b9f39ee0fa50f3f60c4a008c0a134fd3`，PR truth 为 MERGED（2026-11-22 12:54:36 UTC）。被审代码 head 为 `a887ef1c34fa64ed36677c5e01f046233e1b4399`，改动 `QoderAgentService.ts` 和现有 service 回归用例。
 - **验证**：现有 `L2: macOS controlled PATH resolves guarded gh and a runnable pnpm before provider spawn` 修前以线上同一 canary 错误失败；新增根 manifest 拒读断言在初版补丁上失败，收窄后 Qoder service + 真实 Seatbelt memory policy 共 **99/99** 通过，API 构建和修后 TypeScript 编译通过。对照实验中 `.env` 与 runtime 的 `scripts/lib` 继续拒读。未调用真实模型，未改在线 runtime 或运行配置。
 - **审查**：旧 SHA `37247e5549119b68e499f1d65e07cd9763f2935e` 的 typed verdict 为 changes_requested（消息 `0001795350798827-000675-56f7dbc9`）；修后 exact SHA `a887ef1c34fa64ed36677c5e01f046233e1b4399` 已获同一非作者 reviewer 复审 APPROVED（`0001795351370906-000683-a12a4bea`），无剩余 P1/P2。
 - **合入检查**：canonical `pnpm --filter @cat-cafe/api run test:fork-compat` 的 build 完成，但因基线已过期的 F306 public-test exclusion 在选集前退出 1（job `managed-job-463fbf455a1815994f1027c76bc84d5b258a55c7`），保留此失败。registry、fork config、resolver 与基线 blob 均相同；未改日期或排除项。另从唯一 fork config 派生全部 9 文件，核实存在且与所有排除正则无交集，按原 runner 参数与隔离 test HOME 实跑 **API 151/151 + MCP 6/6 = 157/157**。补充选集 hash 为 `08b0c4b4aaf63efd54aaab296a05067d1a4a51fbbec6c698666860513530f596`；这份 targeted 绿灯不改写原命令失败。
-- **合入证据**：[PR evidence](https://github.com/08mamba24/clowder-ai/pull/78#issuecomment-7079392266) 已远端逐字核对；非作者合入请求已送砚砚（`0001795351884973-000691-05893e1d`）。
-- **状态 / owner**：砚砚61 完成收窄、受影响验证和独立复审闭环，待非作者合入与发布验收；作者继续持有原 Task 的验收责任，线上尚不能登记已恢复。
+- **合入证据**：[PR evidence](https://github.com/08mamba24/clowder-ai/pull/78#issuecomment-7079392266) 已远端逐字核对；非作者合入回执为 `0001795352108766-000698-19b676af`，作者另行回读 PR truth 和同步 main。
+- **隔离验收**：Alpha 以 ff-only 同步到 `79d03e16b9f39ee0fa50f3f60c4a008c0a134fd3` 后重建 API 及依赖；真实 Seatbelt 的 controlled-PATH 与 missing/redirected HOME 两项均通过（**2/2**），job `managed-job-f0b00ee75c999915e6c7a0628d7326cb5679a2ad`、exit 0。Alpha 无运行服务；验收使用临时 HOME 和隔离数据。
+- **工位收尾**：作者工位 `/Users/yuhan/cat-cafe/cat-cafe-member-chain-20261122` 已由 canonical finish 移除，`--check` 复验为 `released/storageDisposition=removed`。独有原件与 Git metadata 归档在 `/Users/yuhan/cat-cafe/.worktree-release-archives/2ef0dc57-e927-4339-8a71-3c0c90310f9f`，分支源码保留；PR 库存复查不代清其他 owner。
+- **部署续办**：原 Task `0001795349706232-000671-8fce4bcd` 已成功登记 `deploymentWait` generation 1，subject 为 `deployment:380f50e6414ee4ba1c352c3c50511ff1f9faa09045f65cd02f452cd4fe6bc7bf:runtime`；条件为 runtime 包含冻结合入 SHA `79d03e16b9f39ee0fa50f3f60c4a008c0a134fd3` 且 API ready。满足后由原 owner 新 invocation 验证实际加载与银闪入口，不轮询或自行重启。
+- **状态 / owner**：`main=landed:79d03e16b9f39ee0fa50f3f60c4a008c0a134fd3`，Alpha 验收通过；`live=dormant`（核对时 runtime HEAD 为 `1322e30e37fd668cc268e797594ee4b12c02b6fe`，不含本修复）。原 Task 保留验收责任，线上尚不能登记已恢复。
 
 ### 3. Pro 429 位于云端 MCP 隧道探测层
 
