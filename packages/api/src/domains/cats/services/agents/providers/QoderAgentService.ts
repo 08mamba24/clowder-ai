@@ -42,6 +42,7 @@ import {
 } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { CatId } from '@cat-cafe/shared';
 import { QODER_READONLY_MEMORY_TOOLS } from '../../../../../generated/fork-memory-tools.js';
 import type { GhReadLease } from '../../../../../infrastructure/github/agent-github-read-types.js';
@@ -559,12 +560,13 @@ function externalGitMetadataAccess(workingDirectory: string): GitMetadataAccess 
 type ControlledToolPath = {
   readonly path: string | null;
   readonly allowedReadRoots: readonly string[];
+  readonly allowedReadLiterals: readonly string[];
   readonly guardedGhPath?: string;
 };
 
 function controlledToolPath(operatorHome: string): ControlledToolPath {
   const inherited = process.env.PATH ?? null;
-  if (process.platform !== 'darwin') return { path: inherited, allowedReadRoots: [] };
+  if (process.platform !== 'darwin') return { path: inherited, allowedReadRoots: [], allowedReadLiterals: [] };
   const result = spawnSync('/usr/bin/xcrun', ['--no-cache', '--find', 'git'], {
     encoding: 'utf8',
     timeout: 5_000,
@@ -574,6 +576,7 @@ function controlledToolPath(operatorHome: string): ControlledToolPath {
   if (!gitPath) throw new Error('qoder controlled PATH resolved an empty git toolchain path');
   const explicitBins: string[] = [];
   const allowedReadRoots: string[] = [];
+  const allowedReadLiterals: string[] = [];
   let guardedGhPath: string | undefined;
   try {
     explicitBins.push(dirname(realpathSync(gitPath)), dirname(realpathSync(process.execPath)));
@@ -582,6 +585,12 @@ function controlledToolPath(operatorHome: string): ControlledToolPath {
     explicitBins.push(guardedBin);
     allowedReadRoots.push(guardedBin);
     guardedGhPath = join(guardedBin, 'gh');
+    // Node reads package scopes before executing the extensionless gh entrypoint.
+    // Resolve the guard's actual package, which may differ from an injected memory runtime.
+    const guardPackageJson = fileURLToPath(
+      new URL('../package.json', import.meta.resolve('@cat-cafe/mcp-server/dist/secret-runtime.js')),
+    );
+    allowedReadLiterals.push(guardPackageJson, resolve(dirname(guardPackageJson), '../../package.json'));
     const resolvedPnpm = resolveCliCommand('pnpm');
     if (resolvedPnpm && isAbsolute(resolvedPnpm) && existsSync(resolvedPnpm)) {
       const pnpmPath = resolve(resolvedPnpm);
@@ -603,6 +612,7 @@ function controlledToolPath(operatorHome: string): ControlledToolPath {
     return {
       path: path || null,
       allowedReadRoots: [...new Set([...allowedReadRoots, dirname(realpathSync(process.execPath))])],
+      allowedReadLiterals,
       ...(guardedGhPath ? { guardedGhPath } : {}),
     };
   } catch (error) {
@@ -721,6 +731,7 @@ function createQoderInvocationLease(input: {
       buildSeatbeltPolicy({
         deniedReadRoots,
         allowedReadRoots: [workspace, scratch, ...gitAccess.readRoots, ...toolPath.allowedReadRoots],
+        allowedReadLiterals: toolPath.allowedReadLiterals,
         deniedReadRootsFinal: protectedRuntimeReadRoots,
         deniedReadLiterals: protectedRuntimeReadLiterals,
         allowedWriteRoots: [workspace, scratch, ...gitAccess.writeRoots],
