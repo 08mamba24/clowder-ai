@@ -28,12 +28,13 @@
 ### 2. 银闪 Node 包元数据被沙箱拒绝
 
 - **现象**：09:07 消息 `0001795338478168-000618-66590a4c`：`qoder sandbox guarded gh execution canary failed`。
-- **复现**：实际 Node 24.22.3、包装器及生产 policy builder，在临时隔离目录执行 `gh --version`。沙箱外退出 0；沙箱内报 `ERR_INVALID_PACKAGE_CONFIG`，无法读取 runtime 根 `package.json`；只放行该文件后，再报无法读取 `packages/mcp-server/package.json`。
+- **复现**：实际 Node 24.22.3、包装器及生产 policy builder，在临时隔离目录执行 `gh --version`。四组对照中，无 literal 和只放行 runtime 根 `package.json` 均报 `ERR_INVALID_PACKAGE_CONFIG`；只放行 `packages/mcp-server/package.json` 与两者均放行都退出 0。包 manifest 单独放行时，根 manifest 的 `/bin/cat` 仍退出 1。
 - **原因**：Node 在执行无扩展名的 `guarded-bin/gh` 之前解析 package scope，包装器的 readonly 提前返回尚未开始执行。不是 gh 登录失败。
-- **修复**：只把包装器实际所属 package 和 workspace 的两个 manifest 加入 workspace policy 的 literal read allowlist，不开放整个 runtime，不移除 canary。
-- **交付**：[PR #78](https://github.com/08mamba24/clowder-ai/pull/78)，分支 `fix/member-chain-20261122`，代码 commit `37247e5549119b68e499f1d65e07cd9763f2935e`，仅修改 `QoderAgentService.ts`。
-- **验证**：现有 `L2: macOS controlled PATH resolves guarded gh and a runnable pnpm before provider spawn` 修前以线上同一 canary 错误失败；修后 Qoder service + 真实 Seatbelt memory policy 共 **99/99** 通过，API 构建和修后 TypeScript 编译通过。对照实验中 `.env` 与 runtime 的 `scripts/lib` 继续拒读。未调用真实模型，未改在线 runtime 或运行配置。
-- **状态 / owner**：砚砚61 完成分支修复，待独立审查与发布验收；线上尚不能登记已恢复。
+- **修复**：只把包装器实际所属 `@cat-cafe/mcp-server/package.json` 加入 workspace policy 的 literal read allowlist；根 manifest 保持拒读，不开放整个 runtime，不移除 canary。初版额外放行根 manifest，经砚砚独立 review 提出最小权限 P2 后，作者补齐对照并收窄。
+- **交付**：[PR #78](https://github.com/08mamba24/clowder-ai/pull/78)，分支 `fix/member-chain-20261122`，当前代码 commit `a887ef1c34fa64ed36677c5e01f046233e1b4399`，改动 `QoderAgentService.ts` 和现有 service 回归用例。
+- **验证**：现有 `L2: macOS controlled PATH resolves guarded gh and a runnable pnpm before provider spawn` 修前以线上同一 canary 错误失败；新增根 manifest 拒读断言在初版补丁上失败，收窄后 Qoder service + 真实 Seatbelt memory policy 共 **99/99** 通过，API 构建和修后 TypeScript 编译通过。对照实验中 `.env` 与 runtime 的 `scripts/lib` 继续拒读。未调用真实模型，未改在线 runtime 或运行配置。
+- **审查**：旧 SHA `37247e5549119b68e499f1d65e07cd9763f2935e` 的 typed verdict 为 changes_requested（消息 `0001795350798827-000675-56f7dbc9`）；修后 SHA 已回同一 reviewer 复审（请求 `0001795351232915-000677-327762f8`）。
+- **状态 / owner**：砚砚61 完成收窄和验证，待新 exact HEAD 的独立复审与发布验收；线上尚不能登记已恢复。
 
 ### 3. Pro 429 位于云端 MCP 隧道探测层
 
