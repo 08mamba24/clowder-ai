@@ -590,7 +590,7 @@ function controlledToolPath(operatorHome: string): ControlledToolPath {
     const guardPackageJson = fileURLToPath(
       new URL('../package.json', import.meta.resolve('@cat-cafe/mcp-server/dist/secret-runtime.js')),
     );
-    allowedReadLiterals.push(guardPackageJson, resolve(dirname(guardPackageJson), '../../package.json'));
+    allowedReadLiterals.push(guardPackageJson);
     const resolvedPnpm = resolveCliCommand('pnpm');
     if (resolvedPnpm && isAbsolute(resolvedPnpm) && existsSync(resolvedPnpm)) {
       const pnpmPath = resolve(resolvedPnpm);

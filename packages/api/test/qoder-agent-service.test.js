@@ -1372,6 +1372,7 @@ test(
   async () => {
     const root = mkdtempSync(join(tmpdir(), 'qoder-l2-path-boundary-'));
     const workspace = join(root, 'workspace');
+    const repositoryManifest = resolve(here, '../../..', 'package.json');
     const controlledRuntime = makeControlledRuntime(root);
     const { invalidateCliCommand } = await import('../dist/utils/cli-resolve.js');
     const savedToolPath = process.env.PATH;
@@ -1408,6 +1409,7 @@ test(
             ghVersion: run('gh --version'),
             pnpmPath: run('command -v pnpm'),
             pnpmVersion: run('pnpm --version'),
+            repositoryManifest: run(`/bin/cat '${repositoryManifest.replaceAll("'", "'\"'\"'")}'`),
           };
           return fakeChild(controlledFixture());
         },
@@ -1424,6 +1426,10 @@ test(
       assert.equal(attempts.pnpmPath.stdout.trim(), join(toolchainBin, 'pnpm'));
       assert.equal(attempts.pnpmVersion.status, 0, attempts.pnpmVersion.stderr);
       assert.equal(attempts.pnpmVersion.stdout.trim(), '10.0.0-test-fixture');
+      assert.equal(existsSync(repositoryManifest), true);
+      assert.notEqual(attempts.repositoryManifest.status, 0, 'guarded gh must not grant repository manifest access');
+      assert.equal(attempts.repositoryManifest.stdout, '');
+      assert.match(attempts.repositoryManifest.stderr, /Operation not permitted/);
     } finally {
       if (savedToolPath === undefined) delete process.env.PATH;
       else process.env.PATH = savedToolPath;
