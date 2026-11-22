@@ -17,7 +17,7 @@ import { classifyNativeTarget } from './native-effect-target-classifier.mjs';
 // covers that byte change (P1 gh canary, 2026-10-31). The ZCode lease carrier
 // gate sits before those imports for the same reason; this pin covers it too
 // (gh read carrier migration, 2026-11-22).
-const GH_WRAPPER_SHA256 = 'f5b1b59a7aab21d7cde4fac17d9984ea43b9305b6af44bd20004ade22f34b1fc';
+const GH_WRAPPER_SHA256 = '1ce0f12c90b9c4583375a1b82e63d5cd246d05f9ca60063fe4644a895d3e9769';
 const ordinary = (path) => classifyNativeTarget(path, undefined, 'unknown').kind === 'ordinary';
 const literal = (value) => typeof value === 'string' && !/[$`*?[\]{}\n\r]/.test(value);
 

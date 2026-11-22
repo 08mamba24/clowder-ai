@@ -11,6 +11,7 @@ import {
   zcodeLaunchPlan,
 } from './zcode-acp-protocol.js';
 import { createZcodeProviderConfig, zcodeProviderPaths } from './zcode-acp-provider-paths.js';
+import { zcodeGhReadLeaseFileForProviderConfig } from './zcode-github-read-lease-file.js';
 
 type PendingWaiter = {
   resolve: (msg: JsonRpc) => void;
@@ -30,12 +31,15 @@ export class NativeAppServer {
   private exited = false;
   private disposePersonal: () => void;
   readonly isolatedHome: string;
+  /** Process-scoped lease file for the guarded gh read carrier; dies with this process's runtime dir. */
+  readonly ghReadLeaseFile: string;
 
   constructor(bin: string, env: NodeJS.ProcessEnv = process.env) {
     const plan = zcodeLaunchPlan(realpathSync(bin));
     this.isolatedHome = ensureZcodeIsolatedHome(resolveZcodeIsolatedHome(env));
     const providerPaths = zcodeProviderPaths(bin);
     const personal = createZcodeProviderConfig(this.isolatedHome, env);
+    this.ghReadLeaseFile = zcodeGhReadLeaseFileForProviderConfig(personal.path);
     this.disposePersonal = () => {
       personal.dispose();
       process.removeListener('exit', this.disposePersonal);

@@ -56,6 +56,7 @@ function logRpc(msg) {
       model: msg.params?.model ?? msg.params?.runtimeModel?.model ?? null,
       runtimeModel: msg.params?.runtimeModel ?? null,
       persistAsWorkspaceLastUsed: msg.params?.persistAsWorkspaceLastUsed ?? null,
+      mcpServers: msg.params?.mcpServers ?? null,
       decision: msg.decision ?? null,
       home: isolatedHome ?? null,
     })}\n`,

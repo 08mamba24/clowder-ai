@@ -2,7 +2,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { dirname, delimiter, resolve } from 'node:path';
+import { dirname, delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
@@ -26,23 +26,26 @@ if (process.env.CAT_CAFE_GITHUB_READ_ONLY === 'true') {
 // maps the fixed read grammar onto the host-owned query endpoint, where the
 // broker still enforces the invocation binding, repository allowlist, typed
 // query schema, output bounds and timeouts, and where gh itself runs with host
-// credentials that never enter this process. Only the per-attempt lease file
-// (0600, same UID, revoked with the attempt) crosses the boundary. Like the
-// read-only branch above it must answer before the secret helpers load and
-// must not import scripts/lib.
+// credentials that never enter this process. The lease file is scoped to this
+// member process's own runtime directory (the same 0600 directory that holds
+// its generated provider input), so overlapping invocations never read each
+// other's capability; it is removed with the process. Like the read-only
+// branch above it must answer before the secret helpers load and must not
+// import scripts/lib.
 const READ_CARRIER_COMMANDS = new Map([
-  ['pr view', { op: 'pr_view', number: 'number', json: true }],
-  ['pr diff', { op: 'pr_diff', number: 'number', color: true }],
-  ['pr checks', { op: 'pr_checks', number: 'number' }],
-  ['pr list', { op: 'pr_list', list: true, json: true, state: ['open', 'closed', 'merged', 'all'] }],
-  ['issue view', { op: 'issue_view', number: 'number', json: true }],
-  ['issue list', { op: 'issue_list', list: true, json: true, state: ['open', 'closed', 'all'] }],
-  ['run view', { op: 'run_view', number: 'runId', json: true }],
+  ['pr view', { op: 'pr_view', id: 'number', json: true }],
+  ['pr diff', { op: 'pr_diff', id: 'number', color: true }],
+  ['pr checks', { op: 'pr_checks', id: 'number', json: true }],
+  ['pr list', { op: 'pr_list', list: true, json: true, states: ['open', 'closed', 'merged', 'all'] }],
+  ['issue view', { op: 'issue_view', id: 'number', json: true }],
+  ['issue list', { op: 'issue_list', list: true, json: true, states: ['open', 'closed', 'all'] }],
+  ['run view', { op: 'run_view', id: 'runId', json: true }],
   ['run list', { op: 'run_list', list: true, json: true }],
 ]);
 const READ_CARRIER_FIELDS = {
   pr_view: 'body,headRefOid,isDraft,number,state,title,updatedAt,url',
   pr_list: 'headRefOid,isDraft,number,state,title,updatedAt,url',
+  pr_checks: 'bucket,link,name,state,workflow',
   issue_view: 'body,number,state,title,updatedAt,url',
   issue_list: 'number,state,title,updatedAt,url',
   run_view: 'conclusion,databaseId,displayTitle,headSha,status,url,workflowName',
@@ -59,9 +62,14 @@ function leaseCarrierFail(code, detail) {
 }
 
 function readLeaseCarrierLease() {
+  // Bind to this member process's own runtime directory. There is
+  // deliberately no shared-HOME fallback: one global file would let
+  // overlapping invocations spend each other's lease.
+  const providerConfig = process.env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE;
   const file =
     process.env.CAT_CAFE_GH_READ_LEASE_FILE ??
-    resolve(process.env.HOME ?? '.', '.cat-cafe-gh-read-lease.json');
+    (providerConfig ? join(dirname(providerConfig), 'gh-read-lease.json') : undefined);
+  if (!file) return undefined;
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(file, 'utf8'));
@@ -141,9 +149,13 @@ function parseLeaseCarrierQuery(argv) {
     leaseCarrierFail('capability_unavailable', `unsupported repository: ${repo}`);
   query.repo = normalized;
   if (config.list) {
-    query.state = state ?? 'open';
-    if (!config.state.includes(query.state))
-      leaseCarrierFail('capability_unavailable', `unsupported --state for ${config.op}: ${query.state}`);
+    if (config.states) {
+      query.state = state ?? 'open';
+      if (!config.states.includes(query.state))
+        leaseCarrierFail('capability_unavailable', `unsupported --state for ${config.op}: ${query.state}`);
+    } else if (state !== undefined) {
+      leaseCarrierFail('capability_unavailable', `--state is not valid for ${config.op}`);
+    }
     const parsedLimit = limit === undefined ? 30 : Number(limit);
     if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 50)
       leaseCarrierFail('capability_unavailable', `unsupported --limit for ${config.op}: ${limit}`);
@@ -154,7 +166,7 @@ function parseLeaseCarrierQuery(argv) {
     const parsedId = Number(id);
     if (id === undefined || !Number.isInteger(parsedId) || parsedId < 1)
       leaseCarrierFail('capability_unavailable', `${config.op} requires a positive integer number`);
-    query[config.number] = parsedId;
+    query[config.id] = parsedId;
     if (state !== undefined) leaseCarrierFail('capability_unavailable', `--state is not valid for ${config.op}`);
     if (limit !== undefined) leaseCarrierFail('capability_unavailable', `--limit is not valid for ${config.op}`);
     if (config.color && color !== undefined && color !== 'never')

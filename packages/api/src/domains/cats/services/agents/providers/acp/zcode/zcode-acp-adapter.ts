@@ -19,6 +19,7 @@ import {
   zcodeWorkspace,
 } from './zcode-acp-protocol.js';
 import { parseZcodeReadMcp } from './zcode-github-read.js';
+import { clearZcodeGhReadLeaseFile, writeZcodeGhReadLeaseFile } from './zcode-github-read-lease-file.js';
 
 export { flattenAcpPrompt, zcodeLaunchPlan };
 
@@ -153,6 +154,26 @@ async function handleAcp(
   }
 }
 
+/**
+ * The read descriptor never reaches the native session: it is the transport
+ * that hands this attempt's GitHub read lease to the member process's own
+ * runtime directory, where the guarded gh carrier reads it. No descriptor
+ * means no lease this attempt: drop any file an earlier session on this
+ * process left behind. The native always receives an empty MCP list.
+ */
+function consumeZcodeReadLease(native: NativeAppServer, servers: ReturnType<typeof parseZcodeReadMcp>): never[] {
+  const descriptor = servers.at(0);
+  if (descriptor) {
+    writeZcodeGhReadLeaseFile(native.ghReadLeaseFile, {
+      url: descriptor.url.slice(0, -'/mcp'.length),
+      token: descriptor.headers[0].value.slice('Bearer '.length),
+    });
+  } else {
+    clearZcodeGhReadLeaseFile(native.ghReadLeaseFile);
+  }
+  return [];
+}
+
 async function handleSessionNew(
   native: NativeAppServer,
   sessions: Map<string, string>,
@@ -167,7 +188,7 @@ async function handleSessionNew(
       workspace: zcodeWorkspace(cwd),
       mode: 'yolo',
       persistence: 'immediate',
-      mcpServers: parseZcodeReadMcp(params.mcpServers),
+      mcpServers: consumeZcodeReadLease(native, parseZcodeReadMcp(params.mcpServers)),
     },
     timeoutMs,
   );
@@ -204,7 +225,7 @@ async function handleSessionLoad(
     {
       sessionId,
       workspace: zcodeWorkspace(cwd),
-      mcpServers: parseZcodeReadMcp(params.mcpServers),
+      mcpServers: consumeZcodeReadLease(native, parseZcodeReadMcp(params.mcpServers)),
     },
     timeoutMs,
   );

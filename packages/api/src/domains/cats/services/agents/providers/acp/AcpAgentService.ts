@@ -76,8 +76,7 @@ import type {
   AcpPromptCapabilities,
   AcpSessionUpdate,
 } from './types.js';
-import { resolveZcodeIsolatedHome } from './zcode/zcode-acp-protocol.js';
-import { clearZcodeGhReadLeaseFile, writeZcodeGhReadLeaseFile } from './zcode/zcode-github-read-lease-file.js';
+import { zcodeReadMcp } from './zcode/zcode-github-read.js';
 
 const log = createModuleLogger('acp-agent');
 
@@ -569,10 +568,6 @@ export class AcpAgentService implements AgentService {
         throw new Error('AGY ACP session is sealed; start a new session explicitly');
       if (this.isolatedGitHubRead && options?.openGitHubReadLease)
         githubReadLease = await options.openGitHubReadLease();
-      // Fork (ZCode): hand the attempt lease to the pooled member process via
-      // the isolated-home lease file; its guarded gh carrier reads this per
-      // invocation, so the token never needs to ride the spawn environment.
-      if (githubReadLease) writeZcodeGhReadLeaseFile(resolveZcodeIsolatedHome(), githubReadLease);
       // Read once before any session/prompt. All retries reuse the same complete image bytes.
       const imageBlocks = await readAcpImageBlocks(
         options?.contentBlocks,
@@ -678,11 +673,12 @@ export class AcpAgentService implements AgentService {
         // Fork: ZCode isolated GitHub read replaces the session MCP list with the
         // host read descriptor; DeepSeek harnesses omit session MCP entirely.
         const materialized = materializeSessionMcpServers(invokeServers, sessionCallbackEnv, Boolean(agy));
-        // Fork (ZCode): the retired repository-read MCP no longer rides the
-        // session; the isolated-home lease file carries the attempt capability
-        // to the member's guarded gh carrier instead.
+        // The descriptor is pure lease transport now: the zcode adapter
+        // consumes it into the member process's own lease file for the guarded
+        // gh carrier and strips it, so the native session never attaches the
+        // retired repository-read MCP.
         return {
-          mcpServers: githubReadLease || this.omitSessionMcpServers ? [] : materialized,
+          mcpServers: githubReadLease ? zcodeReadMcp(githubReadLease) : this.omitSessionMcpServers ? [] : materialized,
           envDiag: callbackEnvDiagnostic(sessionCallbackEnv),
         };
       };
@@ -1358,14 +1354,11 @@ export class AcpAgentService implements AgentService {
       };
       yield { type: 'done', catId: this.catId, metadata, timestamp: Date.now() };
     } finally {
-      // Fork (ZCode): the isolated GitHub read capability must be revoked first —
+      // Fork (ZCode): the isolated GitHub read descriptor must be revoked first —
       // it is the only resource that outlives a failed provider-shutdown cleanup.
-      // The lease file goes before revoke, and only if a newer attempt has not
-      // already replaced it.
-      if (githubReadLease) {
-        clearZcodeGhReadLeaseFile(resolveZcodeIsolatedHome(), githubReadLease.token);
-        githubReadLease.revoke();
-      }
+      // The member process's lease file dies with its process; the broker
+      // token dies here.
+      githubReadLease?.revoke();
       agyActive = false;
       if (this.antigravity && sessionId) client.setSessionPermissionHandler(sessionId);
       if (this.antigravity && requiresProviderShutdown()) await client.close?.();

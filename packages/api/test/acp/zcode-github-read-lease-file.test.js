@@ -1,65 +1,53 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   clearZcodeGhReadLeaseFile,
   writeZcodeGhReadLeaseFile,
-  zcodeGhReadLeaseFilePath,
+  zcodeGhReadLeaseFileForProviderConfig,
 } from '../../dist/domains/cats/services/agents/providers/acp/zcode/zcode-github-read-lease-file.js';
 
 const TOKEN = 'a'.repeat(43);
-const OTHER_TOKEN = 'b'.repeat(43);
 
-function lease(token = TOKEN) {
-  return {
-    token,
-    queryUrl: 'http://127.0.0.1:43210/api/agent-github-read',
-    mcpUrl: 'http://127.0.0.1:43210/api/agent-github-read/mcp',
-    revoke: () => {},
-  };
-}
-
-test('writeZcodeGhReadLeaseFile stores url+token at 0600 under the isolated home', () => {
-  const home = mkdtempSync(join(tmpdir(), 'zcode-lease-'));
+test('the lease file is a sibling of the process provider input, not a shared HOME file', () => {
+  const runtime = mkdtempSync(join(tmpdir(), 'zcode-lease-'));
   try {
-    const path = writeZcodeGhReadLeaseFile(home, lease());
-    assert.equal(path, zcodeGhReadLeaseFilePath(home));
+    const providerConfig = join(runtime, 'provider.json');
+    const path = zcodeGhReadLeaseFileForProviderConfig(providerConfig);
+    assert.equal(path, join(runtime, 'gh-read-lease.json'));
+  } finally {
+    rmSync(runtime, { recursive: true, force: true });
+  }
+});
+
+test('writeZcodeGhReadLeaseFile stores url+token at 0600 with no staging residue', () => {
+  const runtime = mkdtempSync(join(tmpdir(), 'zcode-lease-'));
+  try {
+    const path = join(runtime, 'gh-read-lease.json');
+    writeZcodeGhReadLeaseFile(path, { url: 'http://127.0.0.1:43210/api/agent-github-read', token: TOKEN });
     const stored = JSON.parse(readFileSync(path, 'utf8'));
     assert.deepEqual(stored, { url: 'http://127.0.0.1:43210/api/agent-github-read', token: TOKEN });
     assert.equal(statSync(path).mode & 0o777, 0o600);
     assert.ok(!existsSync(`${path}.tmp`));
+    // A rewrite replaces only this process's file.
+    writeZcodeGhReadLeaseFile(path, { url: 'http://127.0.0.1:43211/api/agent-github-read', token: 'b'.repeat(43) });
+    assert.equal(JSON.parse(readFileSync(path, 'utf8')).token, 'b'.repeat(43));
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    rmSync(runtime, { recursive: true, force: true });
   }
 });
 
-test('clearZcodeGhReadLeaseFile removes its own lease and keeps a newer attempt file', () => {
-  const home = mkdtempSync(join(tmpdir(), 'zcode-lease-'));
+test('clearZcodeGhReadLeaseFile removes the lease and tolerates a missing file', () => {
+  const runtime = mkdtempSync(join(tmpdir(), 'zcode-lease-'));
   try {
-    writeZcodeGhReadLeaseFile(home, lease(TOKEN));
-    writeZcodeGhReadLeaseFile(home, lease(OTHER_TOKEN));
-    clearZcodeGhReadLeaseFile(home, TOKEN);
-    const kept = JSON.parse(readFileSync(zcodeGhReadLeaseFilePath(home), 'utf8'));
-    assert.equal(kept.token, OTHER_TOKEN);
-    clearZcodeGhReadLeaseFile(home, OTHER_TOKEN);
-    assert.ok(!existsSync(zcodeGhReadLeaseFilePath(home)));
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-  }
-});
-
-test('clearZcodeGhReadLeaseFile tolerates a missing, malformed, or foreign-written file', () => {
-  const home = mkdtempSync(join(tmpdir(), 'zcode-lease-'));
-  try {
-    clearZcodeGhReadLeaseFile(home, TOKEN);
-    const path = zcodeGhReadLeaseFilePath(home);
-    writeFileSync(path, 'not-json', { mode: 0o600 });
-    clearZcodeGhReadLeaseFile(home, TOKEN);
-    clearZcodeGhReadLeaseFile(home);
+    const path = join(runtime, 'gh-read-lease.json');
+    clearZcodeGhReadLeaseFile(path);
+    writeZcodeGhReadLeaseFile(path, { url: 'http://127.0.0.1:43210/api/agent-github-read', token: TOKEN });
+    clearZcodeGhReadLeaseFile(path);
     assert.ok(!existsSync(path));
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    rmSync(runtime, { recursive: true, force: true });
   }
 });

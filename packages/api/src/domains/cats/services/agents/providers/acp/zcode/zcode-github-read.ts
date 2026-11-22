@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import type { GhReadLease } from '../../../../../../../infrastructure/github/agent-github-read-types.js';
+import type { AcpMcpServer } from '../types.js';
 
 function isReadEndpoint(value: string): boolean {
   try {
@@ -33,6 +35,24 @@ const servers = z
       .strict(),
   )
   .max(1);
+
+/**
+ * The descriptor no longer attaches the retired repository-read MCP inside the
+ * member. It rides session/new+load purely as the transport that hands the
+ * per-attempt lease to the zcode adapter, which consumes it (writes the
+ * process-scoped lease file for the guarded gh carrier) and strips it before
+ * the native session ever sees an MCP server.
+ */
+export function zcodeReadMcp(lease: GhReadLease): AcpMcpServer[] {
+  return [
+    {
+      name: 'clowder-repository-read',
+      type: 'http',
+      url: lease.mcpUrl,
+      headers: [{ name: 'Authorization', value: `Bearer ${lease.token}` }],
+    },
+  ];
+}
 
 /** Never forward family MCP or arbitrary credential-bearing config into this isolated provider. */
 export function parseZcodeReadMcp(value: unknown) {
