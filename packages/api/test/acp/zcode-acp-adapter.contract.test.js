@@ -1,7 +1,7 @@
 // @ts-check
 
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -481,6 +481,45 @@ describe('ZCode ACP adapter contract (fake app-server)', () => {
       );
       assert.ok(prompted.error, 'child exit after send must not hang the ACP prompt');
       assert.match(String(prompted.error.message), /native_exit|exited/);
+    } finally {
+      acp.child.kill('SIGTERM');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('consumes the read-descriptor lease transport into the process lease file and strips MCP from the native session', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zcode-acp-gh-lease-'));
+    const acp = startAdapter(dir);
+    try {
+      await acp.request('initialize', { protocolVersion: 1 });
+      const token = 'a'.repeat(43);
+      const created = await acp.request('session/new', {
+        cwd: dir,
+        mcpServers: [
+          {
+            name: 'clowder-repository-read',
+            type: 'http',
+            url: 'http://127.0.0.1:43210/api/agent-github-read/mcp',
+            headers: [{ name: 'Authorization', value: `Bearer ${token}` }],
+          },
+        ],
+      });
+      assert.equal(created.error, undefined, JSON.stringify(created.error));
+      const create = acp.rpcLog().find((row) => row.method === 'session/create');
+      assert.ok(create, 'native session/create must have been called');
+      assert.deepEqual(create.mcpServers, [], 'the read descriptor must never reach the native session');
+      const runtimeEntry = readdirSync(acp.isolatedHome).find((entry) => entry.startsWith('.provider-runtime-'));
+      assert.ok(runtimeEntry, 'adapter process must own a provider runtime directory');
+      const leasePath = join(acp.isolatedHome, runtimeEntry, 'gh-read-lease.json');
+      const lease = JSON.parse(readFileSync(leasePath, 'utf8'));
+      assert.deepEqual(lease, { url: 'http://127.0.0.1:43210/api/agent-github-read', token });
+      assert.equal(statSync(leasePath).mode & 0o777, 0o600);
+      // A later session without a descriptor drops the lease; overlapping
+      // processes each own a disjoint runtime directory, so only this
+      // process's file is affected.
+      const second = await acp.request('session/new', { cwd: dir, mcpServers: [] });
+      assert.equal(second.error, undefined, JSON.stringify(second.error));
+      assert.equal(existsSync(leasePath), false, 'no descriptor means no active lease file');
     } finally {
       acp.child.kill('SIGTERM');
       rmSync(dir, { recursive: true, force: true });

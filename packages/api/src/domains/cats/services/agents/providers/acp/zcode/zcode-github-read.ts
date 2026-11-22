@@ -36,6 +36,13 @@ const servers = z
   )
   .max(1);
 
+/**
+ * The descriptor no longer attaches the retired repository-read MCP inside the
+ * member. It rides session/new+load purely as the transport that hands the
+ * per-attempt lease to the zcode adapter, which consumes it (writes the
+ * process-scoped lease file for the guarded gh carrier) and strips it before
+ * the native session ever sees an MCP server.
+ */
 export function zcodeReadMcp(lease: GhReadLease): AcpMcpServer[] {
   return [
     {

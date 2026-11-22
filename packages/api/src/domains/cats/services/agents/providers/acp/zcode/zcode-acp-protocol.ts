@@ -261,6 +261,10 @@ export function zcodeAppServerEnv(parent: NodeJS.ProcessEnv, isolatedHome: strin
     ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: undefined,
     ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: undefined,
     ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE: undefined,
+    // Static activation flag for the guarded gh read carrier. The per-attempt
+    // lease itself lives in the isolated-home lease file written by the API;
+    // no GitHub credential ever enters this environment.
+    CAT_CAFE_GH_READ_CARRIER: 'lease',
     ...(anthropicBaseUrl ? { ANTHROPIC_BASE_URL: anthropicBaseUrl } : {}),
   };
 }

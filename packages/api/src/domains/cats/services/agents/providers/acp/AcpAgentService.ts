@@ -673,6 +673,10 @@ export class AcpAgentService implements AgentService {
         // Fork: ZCode isolated GitHub read replaces the session MCP list with the
         // host read descriptor; DeepSeek harnesses omit session MCP entirely.
         const materialized = materializeSessionMcpServers(invokeServers, sessionCallbackEnv, Boolean(agy));
+        // The descriptor is pure lease transport now: the zcode adapter
+        // consumes it into the member process's own lease file for the guarded
+        // gh carrier and strips it, so the native session never attaches the
+        // retired repository-read MCP.
         return {
           mcpServers: githubReadLease ? zcodeReadMcp(githubReadLease) : this.omitSessionMcpServers ? [] : materialized,
           envDiag: callbackEnvDiagnostic(sessionCallbackEnv),
@@ -1352,6 +1356,8 @@ export class AcpAgentService implements AgentService {
     } finally {
       // Fork (ZCode): the isolated GitHub read descriptor must be revoked first —
       // it is the only resource that outlives a failed provider-shutdown cleanup.
+      // The member process's lease file dies with its process; the broker
+      // token dies here.
       githubReadLease?.revoke();
       agyActive = false;
       if (this.antigravity && sessionId) client.setSessionPermissionHandler(sessionId);
