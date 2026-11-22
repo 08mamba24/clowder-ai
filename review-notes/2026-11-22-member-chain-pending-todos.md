@@ -11,7 +11,7 @@
 | 项目 | 当前状态 | 下一步 |
 |---|---|---|
 | 1. 点点 ACP 续聊失败 | 增量入口缺少受控重放，已定位；修复已派宪宪 | 补真实消息库入口的重放生产和回归 |
-| 2. 银闪启动 canary 失败 | PR #78 修复已获独立复审放行 | fork-compat 合入检查、非作者合入、隔离验收 |
+| 2. 银闪启动 canary 失败 | PR #78 已复审放行，受影响与全 fork 选集通过 | 非作者合入、隔离验收 |
 | 3. Pro 读取 429 | 实测复现 OpenAI MCP 隧道 SSE 探测 429 | 外部通道恢复后验证真实工具读取 |
 | 4. 谱谱 gh 凭据 | 宿主已登录，隔离 HOME 未登录 | 明确实际权限，再接受控宿主 gh CLI |
 
@@ -34,8 +34,9 @@
 - **交付**：[PR #78](https://github.com/08mamba24/clowder-ai/pull/78)，分支 `fix/member-chain-20261122`，当前代码 commit `a887ef1c34fa64ed36677c5e01f046233e1b4399`，改动 `QoderAgentService.ts` 和现有 service 回归用例。
 - **验证**：现有 `L2: macOS controlled PATH resolves guarded gh and a runnable pnpm before provider spawn` 修前以线上同一 canary 错误失败；新增根 manifest 拒读断言在初版补丁上失败，收窄后 Qoder service + 真实 Seatbelt memory policy 共 **99/99** 通过，API 构建和修后 TypeScript 编译通过。对照实验中 `.env` 与 runtime 的 `scripts/lib` 继续拒读。未调用真实模型，未改在线 runtime 或运行配置。
 - **审查**：旧 SHA `37247e5549119b68e499f1d65e07cd9763f2935e` 的 typed verdict 为 changes_requested（消息 `0001795350798827-000675-56f7dbc9`）；修后 exact SHA `a887ef1c34fa64ed36677c5e01f046233e1b4399` 已获同一非作者 reviewer 复审 APPROVED（`0001795351370906-000683-a12a4bea`），无剩余 P1/P2。
-- **合入检查**：canonical `pnpm --filter @cat-cafe/api run test:fork-compat` 已托管执行，job `managed-job-463fbf455a1815994f1027c76bc84d5b258a55c7`；尚未消费退出结果，不记为通过。
-- **状态 / owner**：砚砚61 完成收窄、定向验证和复审闭环，待 fork-compat、非作者合入与发布验收；线上尚不能登记已恢复。
+- **合入检查**：canonical `pnpm --filter @cat-cafe/api run test:fork-compat` 的 build 完成，但因基线已过期的 F306 public-test exclusion 在选集前退出 1（job `managed-job-463fbf455a1815994f1027c76bc84d5b258a55c7`），保留此失败。registry、fork config、resolver 与基线 blob 均相同；未改日期或排除项。另从唯一 fork config 派生全部 9 文件，核实存在且与所有排除正则无交集，按原 runner 参数与隔离 test HOME 实跑 **API 151/151 + MCP 6/6 = 157/157**。补充选集 hash 为 `08b0c4b4aaf63efd54aaab296a05067d1a4a51fbbec6c698666860513530f596`；这份 targeted 绿灯不改写原命令失败。
+- **合入证据**：[PR evidence](https://github.com/08mamba24/clowder-ai/pull/78#issuecomment-7079392266) 已远端逐字核对；非作者合入请求已送砚砚（`0001795351884973-000691-05893e1d`）。
+- **状态 / owner**：砚砚61 完成收窄、受影响验证和独立复审闭环，待非作者合入与发布验收；作者继续持有原 Task 的验收责任，线上尚不能登记已恢复。
 
 ### 3. Pro 429 位于云端 MCP 隧道探测层
 
