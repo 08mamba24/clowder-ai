@@ -211,6 +211,7 @@ import { validateRoutingSyntax } from './final-routing-slot.js';
 import { buildBriefingMessage } from './format-briefing.js';
 import { resolveEventBackedRoutingExit } from './guards/event-backed-routing-exit.js';
 import { isDirectOwnerDispositionOrigin } from './human-disposition-invocation-origin.js';
+import { buildIncrementalRebuildReplay } from './incremental-rebuild-replay.js';
 import { outputLayoutExtra, RoutingMessageOutputProjection } from './message-output-projection.js';
 import { persistUserFacingSystemInfoNotices } from './persist-system-info-warnings.js';
 import { appendRemoteCancellationNotice, createRemoteCancellationObserver } from './remote-cancellation.js';
@@ -1320,6 +1321,8 @@ export async function* routeSerial(
       let rebuildPromptWithBootstrap: ((bootstrap: string) => string) | undefined;
       let explicitlyExposedMessageIds: string[] = [];
       let contextPromptFactory: InvocationParams['contextPromptFactory'];
+      /** Non-deferred incremental projection result; deferred factories return it per epoch instead. */
+      let incrementalRebuildContextPrompt: string | undefined;
       let exactPromptMessageIds: string[] = [];
       const pendingContextProjectionMessages = createIdempotentPendingProjectionQueue<AgentMessage>();
       let briefingProjectionMessage: AgentMessage | undefined;
@@ -1491,8 +1494,24 @@ export async function* routeSerial(
             incrementallyExposedMessageIds,
             explicitlyExposedMessageIds,
           );
+          // Production entry carries no options.history; the ACP replacement
+          // session must still get the controlled replay of what precedes
+          // this delta, bounded by the same ack boundary and viewer.
+          const rebuildContextPrompt =
+            catConfig?.clientId === 'acp'
+              ? await buildIncrementalRebuildReplay({
+                  messageStore: deps.messageStore,
+                  userId,
+                  threadId,
+                  catId,
+                  thinkingMode,
+                  boundaryId: inc.boundaryId,
+                  promptMessageIds: [...inc.projectedMessageIds, ...explicitProjection.exposedMessageIds],
+                })
+              : undefined;
           return {
             prompt: projectedPrompt,
+            ...(rebuildContextPrompt ? { rebuildContextPrompt } : {}),
             promptMessageIds: exactPromptMessageIds,
             ...(inc.surfaceProjection ? { deltaSize: inc.surfaceProjection.deltaSize } : {}),
           };
@@ -1508,6 +1527,7 @@ export async function* routeSerial(
           const projection = await buildIncrementalProjection();
           prompt = projection.prompt;
           exactPromptMessageIds = [...(projection.promptMessageIds ?? [])];
+          incrementalRebuildContextPrompt = projection.rebuildContextPrompt;
         }
       } else {
         // Per-cat context budget (Phase 4.0): assemble context with cat-specific limits
@@ -1594,7 +1614,9 @@ export async function* routeSerial(
       // assembled history; it is injected exactly once on that rebuild, so the
       // replacement is an explicit migration, never a silent amnesiac restart.
       const rebuildContextPrompt =
-        catConfig?.clientId === 'acp' && history && history.length > 0 ? buildRebuildContextReplay(history) : undefined;
+        catConfig?.clientId === 'acp' && history && history.length > 0
+          ? buildRebuildContextReplay(history)
+          : incrementalRebuildContextPrompt;
 
       if (!incrementalMode) {
         exactPromptMessageIds = collectExactPromptMessageIds(options.persistedPromptMessageIds ?? [], [
