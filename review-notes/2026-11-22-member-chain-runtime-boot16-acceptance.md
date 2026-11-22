@@ -45,7 +45,7 @@ source=`0001795363935070-000003-10163338`，本轮新invocation=`6284fd0d-b463-4
 
 宿主独立读取当日EventAuditLog，事件 `6d3b2d8e-fbe7-4b88-a101-2ef9cddcf2d2`（timestamp1795363970660）：type=agent_github_read，catId=zcode、invocation精确匹配上述ID、threadId为本线程、repository=08mamba24/clowder-ai、operation=pr_view、outcome=read、headSha=441133702f749032c59ade2898aea0bbbcb6ad50、truncated=false。实际CLI结果、宿主能力调用与主体审计三者闭合；本次仅确认已授权八种固定读通道，没有新增GitHub写能力。
 
-#80作者工位后续已交原owner按canonical bind/finish/--check善后，分派 `0001795364068927-000008-80a53696`；真实disposition回执未到前不登记released。原#79作者/集成工位没有被代删或改owner。
+#80作者工位善后已完成：原owner回复 `0001795364069011-000009-7618f121` 报canonical finish与--check均为released/storageDisposition=removed。砚砚61独立确认目录不存在、Git worktree清单无该路径；archive manifest及canonical ledger的done记录精确匹配owner=zcode、sourceRef=pr:08mamba24/clowder-ai#80、head441133702。归档 `/Users/yuhan/cat-cafe/.worktree-release-archives/86218360-ca82-433d-8b87-81391da06f40` 保留独有原件、私有Git元数据与恢复依据。bind-pr的raw gh api尝试被固定只读载体拒绝，保留该原始边界，不扩大权限；工位已释放，无需再补绑。原#79作者/集成工位没有被代删或改owner。
 
 ## Pro仍未恢复
 

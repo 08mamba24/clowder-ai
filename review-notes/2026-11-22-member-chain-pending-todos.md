@@ -15,7 +15,7 @@
 | 1. 点点 ACP 续聊失败 | PR #79 已在boot16部署，旧session受控重建并正常回复，验收通过 | 本项关闭；详见boot16验收记录 |
 | 2. 银闪启动 canary 失败 | PR #78 已部署，隔离启动与真实回话验收通过 | 本项关闭 |
 | 3. Pro 读取 429 | boot16重启后精确读取复测一次仍报外部MCP SSE probe 429 | 唯一未恢复项；外部通道恢复后验精确消息读取，当前不承担正式review |
-| 4. 谱谱 gh 凭据 | PR #80 已在boot16部署，真实gh读取EXIT0且宿主审计归属匹配，验收通过 | 只读通道恢复，本项关闭；原owner续办工位善后 |
+| 4. 谱谱 gh 凭据 | PR #80 已在boot16部署，真实gh读取EXIT0且宿主审计归属匹配，验收通过 | 只读通道恢复，本项关闭；作者工位已归档并移除 |
 
 ### 1. 点点 ACP 续聊缺少受控重放
 
@@ -95,10 +95,10 @@
 - **合入门与远端真相**：current main `7c5de0b9e` 相对 oldBase `fb1740386` 的变更，与本 PR十三文件交集为空。#79仅补 routing/replay 历史生产，未改 read-descriptor、broker/schema 或 adapter/lease 契约；本 PR在AcpAgentService的净变更仅注释。merge-tree无冲突；原source/revision与typed APPROVED逐项对账，E1-E5通过。五轴风险已补正文；[合入证据评论](https://github.com/08mamba24/clowder-ai/pull/80#issuecomment-7081296737)与中文正文均经GitHub API逐字核对。砚砚61作为非作者执行squash merge，PR truth回读 **MERGED（2026-11-22 15:26:38 UTC）**，合入SHA **`39534073ff190b67d455269d30938e830f5429cf`** 已在origin/main；主仓ff-only同步。
 - **合入后隔离验收**：Alpha ff-only到冻结 `39534073f` 后重建API/依赖；`managed-job-bb8999637e5b7087a39d3d00c5dee626f833baa1` 终态已消费为 **succeeded / exit 0**。carrier/pin/secret-send **28/28** + adapter/service/lease **21/21**，实际双adapter无模型探针再确认同HOME各自lease、重叠与B退出后A审计仍归A、load清除/恢复、native MCP=[]与实际目录清理。探针仅替换已审脚本的checkout路径，未模拟adapter消费；不触碰真实模型、GitHub凭据或用户数据。日志SHA-256 `00e4253da3958de07e416944d758953e950b12bc8dd3834db78b1a6fc7e755e3`；Alpha与作者工位跟踪文件均干净。
 - **原父Task合并等待**：成功登记runtime `deploymentWait` **generation 3**，冻结目标 `39534073ff190b67d455269d30938e830f5429cf`；Git ancestry已证明它包含#79合入 `10dd3dc20`。该单次等待显式承接generation2的点点续聊验收，并增加#80实际gh读取验收，baseline仍boot15，autoRenew=false；未丢弃旧责任或新建镜像Task。触发后核对ready API实际加载/产物、隔离复验，再让谱谱在新invocation实跑 `gh pr view 80 --repo 08mamba24/clowder-ai`；读取成功且审计归属正确才登记恢复。`main=landed:39534073f`，`live=activated_and_accepted:boot16`，具体新代际证据见下条。
-- **工位与边界**：工位真实owner=zcode；其CLI显式 `--owner zcode` 后已通过owner检查，当前缺远端PR读取凭据，bind-pr未完成。保留原Task来源与作者工位至部署后验收，不冒充身份、改owner或代造别猫Task完成态；#79原作者与集成工位也未被代删。当前open PR库存仅见无关#74，本轮不接管。未来写能力、权限扩张、运行配置与账号动作另按现有边界处理；Pro实际读取条件未满足，未交正式review。
+- **工位与边界（合入时记录）**：工位真实owner=zcode；其CLI显式 `--owner zcode` 后已通过owner检查，当时缺远端PR读取凭据，bind-pr未完成。保留原Task来源与作者工位至部署后验收，不冒充身份、改owner或代造别猫Task完成态；#79原作者与集成工位也未被代删。当前open PR库存仅见无关#74，本轮不接管。未来写能力、权限扩张、运行配置与账号动作另按现有边界处理；Pro实际读取条件未满足，未交正式review。
 
 - **boot16真实gh验收已通过**：source `0001795363935070-000003-10163338` → invocation `6284fd0d-b463-402b-859c-18c73fa9a5f7` →完整回复 `0001795363935208-000005-208f06ca`。谱谱在该真实会话一次执行 `gh pr view 80 --repo 08mamba24/clowder-ai`，回传 **EXIT0、number80、stateMERGED、head441133702**。宿主当日EventAuditLog独立读到 `agent_github_read` 事件 `6d3b2d8e-fbe7-4b88-a101-2ef9cddcf2d2`：invocation/线程精确匹配、cat=zcode、repo=08mamba24/clowder-ai、op=pr_view、outcome=read、headSha441133702、truncated=false。CLI结果与主体审计闭合，已授权八种固定读通道恢复，不代表新增写权限。原generation3已消费，不续约。
-- **作者工位续办**：当前读取已恢复，已按原owner派发 `0001795364068927-000008-80a53696` 续办 #80 canonical bind/finish/--check；处置回执未到前不记released，不代改owner或别猫任务状态。
+- **作者工位善后已核验**：原owner按分派 `0001795364068927-000008-80a53696` 完成canonical finish及--check，回复 `0001795364069011-000009-7618f121` 报 `released/storageDisposition=removed`。砚砚61独立确认目录实际不存在、Git worktree清单已无该项；归档manifest与canonical ledger的done记录均精确匹配owner=zcode、sourceRef=pr:08mamba24/clowder-ai#80、head441133702。独有原件及私有Git元数据持久归档 `/Users/yuhan/cat-cafe/.worktree-release-archives/86218360-ca82-433d-8b87-81391da06f40`，未改owner或代造Task完成态。bind-pr尝试仍因其使用raw `gh api` 被八种固定读载体按契约拒绝，此边界不影响已验证的pr_view与canonical释放；已移除工位无需继续补绑，不新增故障项。
 
 ## Chrome 已恢复的准确边界（不另计入上述四项）
 
