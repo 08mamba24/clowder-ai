@@ -10,7 +10,7 @@
 
 | 项目 | 当前状态 | 下一步 |
 |---|---|---|
-| 1. 点点 ACP 续聊失败 | 宪宪已提交修复 PR #79 | 砚砚61 非作者审查真实入口与可见性边界 |
+| 1. 点点 ACP 续聊失败 | PR #79 独立审查需修正 2 个 P2 | 宪宪修后回新 exact SHA，砚砚61 复审 delta |
 | 2. 银闪启动 canary 失败 | PR #78 已合入，Alpha 隔离验收通过 | 等 runtime 加载目标版本后按原 Task 验收 |
 | 3. Pro 读取 429 | 实测复现 OpenAI MCP 隧道 SSE 探测 429 | 外部通道恢复后验证真实工具读取 |
 | 4. 谱谱 gh 凭据 | 宿主已登录，隔离 HOME 未登录 | 明确实际权限，再接受控宿主 gh CLI |
@@ -23,7 +23,11 @@
 - **测试缺口**：`packages/api/test/native-acp-rebuild-route.test.js` 手动注入 `routeOptions: { history }`，没有覆盖线上不传该字段的入口。
 - **修法**：从同一授权、可见性边界内的 canonical 历史生成有界重放，覆盖串行、并行与真实 Queue 入口。回归只向消息库准备历史，不手塞 `options.history`，验证前轮内容进入 replacement session、预算和可见性保持成立。
 - **不采用**：直接省略旧 sessionId、删除旧 session 或放松重放校验；这些做法会掩盖失忆或审计断链。
-- **状态**：宪宪已接责到 `task:work:0001795351395942-000685-f60ff146`，提交 [PR #79](https://github.com/08mamba24/clowder-ai/pull/79)，head `8772e134d85deb82be07c38a60727af84e571c5c`。作者报告真实 MessageStore / DeliveryCursorStore / ContextEpochOwner 增量入口回归 RED→GREEN，已交砚砚61 非作者审查；尚未登记通过或上线。来源为 operator 并行授权 `0001795351305664-000679-1174615a` 与分派 `0001795351360491-000681-8415c0d8`。
+- **状态**：宪宪已接责到 `task:work:0001795351395942-000685-f60ff146`，提交 [PR #79](https://github.com/08mamba24/clowder-ai/pull/79)，head `8772e134d85deb82be07c38a60727af84e571c5c`。来源为 operator 并行授权 `0001795351305664-000679-1174615a` 与分派 `0001795351360491-000681-8415c0d8`。
+- **独立审查**：砚砚61 用 Node 24.22.3 复跑新 3 条与旧 6 条回归，**9/9** 通过，API `tsc --noEmit` 通过；补充真实 Store / 路由 / ACP carrier 反例后给出 **CHANGES_REQUESTED，0 P1、2 P2**，typed fact 消息 `0001795353475809-000713-98b5c0fd`。作者工位源码未改、HEAD 与远端一致；未创建 reviewer 沙盒。
+- **P2-1 / 选集窗口**：先取全线程最新 200 行、再过滤 viewer/boundary/delta，会让无关行挤掉旧历史。真实两轮中追加 205 条仅给 codex 的 whisper，第二轮当前问题仍进 prompt，但 replay 为空；真实 no-resume ACP 再报原 fail-closed 错误。205 条 delta 或 boundary 后记录亦能挤掉本来存在的 2 条旧历史。
+- **P2-2 / 游标坐标**：旧 hash 无 visibilitySeq 时，cursorFor 返回 v1；与 v2 boundary 比较的 0 表示不可判定，不能按 `<=0` 放行。真实 Store 的权威 index 可证明 later 消息在 boundary 之后，但该 hash 缺字段时被 helper 放入 replay。需解析权威坐标或使用已 canonical 化的读取结果。
+- **下一步**：两项已回宪宪修复；继续保留读取和 token 预算、viewer 边界及 carrier 门，不登记已通过或上线。修后只复审相应真实 delta。
 
 ### 2. 银闪 Node 包元数据被沙箱拒绝
 
