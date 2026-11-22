@@ -11,7 +11,7 @@
 | 项目 | 当前状态 | 下一步 |
 |---|---|---|
 | 1. 点点 ACP 续聊失败 | PR #79 修正后已获独立 APPROVED | 宪宪完成合入检查，再由非作者合入；不等同线上已恢复 |
-| 2. 银闪启动 canary 失败 | PR #78 已合入，Alpha 隔离验收通过 | 等 runtime 加载目标版本后按原 Task 验收 |
+| 2. 银闪启动 canary 失败 | PR #78 已部署，隔离启动与真实回话验收通过 | 本项关闭；其余三项继续按各自条件处理 |
 | 3. Pro 读取 429 | 实测复现 OpenAI MCP 隧道 SSE 探测 429 | 外部通道恢复后验证真实工具读取 |
 | 4. 谱谱 gh 凭据 | 宿主已登录，隔离 HOME 未登录 | 明确实际权限，再接受控宿主 gh CLI |
 
@@ -47,8 +47,10 @@
 - **合入证据**：[PR evidence](https://github.com/08mamba24/clowder-ai/pull/78#issuecomment-7079392266) 已远端逐字核对；非作者合入回执为 `0001795352108766-000698-19b676af`，作者另行回读 PR truth 和同步 main。
 - **隔离验收**：Alpha 以 ff-only 同步到 `79d03e16b9f39ee0fa50f3f60c4a008c0a134fd3` 后重建 API 及依赖；真实 Seatbelt 的 controlled-PATH 与 missing/redirected HOME 两项均通过（**2/2**），job `managed-job-f0b00ee75c999915e6c7a0628d7326cb5679a2ad`、exit 0。Alpha 无运行服务；验收使用临时 HOME 和隔离数据。
 - **工位收尾**：作者工位 `/Users/yuhan/cat-cafe/cat-cafe-member-chain-20261122` 已由 canonical finish 移除，`--check` 复验为 `released/storageDisposition=removed`。独有原件与 Git metadata 归档在 `/Users/yuhan/cat-cafe/.worktree-release-archives/2ef0dc57-e927-4339-8a71-3c0c90310f9f`，分支源码保留；PR 库存复查不代清其他 owner。
-- **部署续办**：原 Task `0001795349706232-000671-8fce4bcd` 已成功登记 `deploymentWait` generation 1，subject 为 `deployment:380f50e6414ee4ba1c352c3c50511ff1f9faa09045f65cd02f452cd4fe6bc7bf:runtime`；条件为 runtime 包含冻结合入 SHA `79d03e16b9f39ee0fa50f3f60c4a008c0a134fd3` 且 API ready。满足后由原 owner 新 invocation 验证实际加载与银闪入口，不轮询或自行重启。
-- **状态 / owner**：`main=landed:79d03e16b9f39ee0fa50f3f60c4a008c0a134fd3`，Alpha 验收通过；`live=dormant`（核对时 runtime HEAD 为 `1322e30e37fd668cc268e797594ee4b12c02b6fe`，不含本修复）。原 Task 保留验收责任，线上尚不能登记已恢复。
+- **部署续办已触发**：原 Task 的 `deploymentWait` generation 1（subject `deployment:380f50e6414ee4ba1c352c3c50511ff1f9faa09045f65cd02f452cd4fe6bc7bf:runtime`）以 `matched/delivered` 回执唤醒，消息 `0001795355465110-000000-a9f5e2f9`。实际 boot 为 `b7557250-2f33-453c-bd63-413ff881578f`、sequence 15，running revision `8ae076016772625a97c87762aaecad7787ea6fb6`；Git ancestry 独立核实包含冻结目标 `79d03e16b9f39ee0fa50f3f60c4a008c0a134fd3`。未续约已消费等待，未由本猫重启服务。
+- **实际加载与部署后验收**：新 API PID 82768 的 cwd 为 `cat-cafe-runtime/packages/api`，自有端口 3004 `/health` 返回 200/ok。实际 runtime 的 `dist/.../QoderAgentService.js` SHA-256 为 `736d381f0c586091cd2132e2bcdf92323112747d2899e308bef087b0fb38d223`，与已验收 Alpha 构建相同；mtime 为 2026-11-22 13:48:58 UTC，早于本次 API 启动。在该 runtime 构建上用临时 HOME、不可连接 Redis 执行真实 Seatbelt 的 controlled-PATH 与 missing/redirected HOME 用例，**2/2** 通过：guarded gh/pnpm 可启动，仓库根 manifest 和 runtime 凭据仍拒读；runtime 源码无改动。日志 `/tmp/20261122-pr78-runtime-boot15-acceptance.log`，SHA-256 `0421b35782ae8e461d2bbb72a1d14103a8073d01170c96972136eee9f702dbb1`。
+- **真实正常回话验收**：承接用户 `0001795355220621-000758-840dfa65` 的 hi，仅派发一次当前服务上的正常回复确认，source `0001795355652994-000011-22ad7535`，invocation `53d97f74-19dd-42e9-982f-08053e7d2035`。银闪在本线程的持久回复 `0001795355653087-000012-8923609d` 已包含“收到”，且生命周期已不再 processing。未要求执行额外排查命令或改配置；这是实际回复证据，不以模型自述链路名称作为 provider 证据。
+- **状态 / owner**：`main=landed:79d03e16b9f39ee0fa50f3f60c4a008c0a134fd3`，`live=activated_and_accepted:boot15`；本项启动故障已恢复并完成原 Task 的部署后验收。13:47 的空失败发生在旧 API 启动代际，不能代替本轮结果；其余问题不因本项成功自动关闭。
 
 ### 3. Pro 429 位于云端 MCP 隧道探测层
 
@@ -76,7 +78,7 @@
 
 ## 证据入口
 
-- API PID 94213，cwd 为 `cat-cafe-runtime/packages/api`；只读复核 `packages/api/data/logs/api/api.2026-11-22.2.log` 和上述精确消息 ID。
+- 历史 API PID 94213；本轮验收为 boot 15、PID 82768，cwd 均为 `cat-cafe-runtime/packages/api`。按各自时间与精确消息 ID 只读复核 API 日志，不把旧进程结果当成新代际观测。
 - `.cat-cafe/plugin-host/personal-chrome-host/delivery-ledger.json`：仅用于核对已有发送记录。
 - PR #76 / commit `d425e40e7`：原 ACP 重放门的来源。
 - 所有实验在临时测试目录或隔离工位完成；未删除数据、重置会话或修改运行配置。
