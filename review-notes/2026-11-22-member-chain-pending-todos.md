@@ -10,10 +10,10 @@
 
 | 项目 | 当前状态 | 下一步 |
 |---|---|---|
-| 1. 点点 ACP 续聊失败 | PR #79 已获独立 APPROVED；宪宪额度中断后的剩余工作已拆分 | 银闪补集成验证、谱谱核旧失败/必要修复，砚砚61核合入门与非作者合入 |
+| 1. 点点 ACP 续聊失败 | PR #79 已合入 `10dd3dc20`，尚待部署验收 | Alpha隔离验收已托管；原父Task已登记runtime deploymentWait generation 2 |
 | 2. 银闪启动 canary 失败 | PR #78 已部署，隔离启动与真实回话验收通过 | 本项关闭；其余三项继续按各自条件处理 |
 | 3. Pro 读取 429 | 银闪已完成有界诊断，未证实本地接线缺陷；精确读取仍报外部 MCP SSE probe 429 | 保留原始错误，恢复后再验精确读取；当前不承担正式 review |
-| 4. 谱谱 gh 凭据 | 只读迁移已代发布草稿 PR #80；独立审查退回两处 P2 | 谱谱修复并发 lease 归属和 run list，按新 SHA 复审后再进合入门 |
+| 4. 谱谱 gh 凭据 | PR #80 修正为进程专属 lease，exact SHA `441133702` 已 APPROVED | 谱谱准备后续合入门；保持草稿，部署后再验实际 gh 读取 |
 
 ### 1. 点点 ACP 续聊缺少受控重放
 
@@ -36,6 +36,9 @@
 - **额度中断与用户改派**：上述续接 `0001795358937549-000153-7dd21567` 已失败，回执 `0001795358937694-000154-58e2e4a7` 为 Claude 5 小时限额，不是代码失败。用户 `0001795359058599-000165-660e72ee` 明确要求将宪宪剩余工作拆给谱谱/银闪。砚砚61已建立两项持久拆分任务并发送执行分派；原宪宪 Task 保留原作者、批准与过程证据，不伪造其完成或改写 owner。
 - **银闪 / 集成验证**：Task `0001795359172058-000171-eab2a698`，分派 `0001795359196193-000173-1a8a94bb`。负责隔离运行必要 fork/replay 缺项，回传真实退出码、选集、HEAD/base 和日志。现有干净验证工位 `worktrees/pr79-integration`，HEAD `7c343436e157c03eeceda71b2ee6fa540faea37d` 为 `8ae076016 + e276dae`、已带 #78；专用于验证，不改源码或切分支。原 `/tmp/pr79-int-fork.log` 实为 **25 pass、0 fail、6 cancelled / Interrupted**，不能当作通过或六个产品回归。若沙箱限制阻断验证，回传原始诊断，由砚砚61补宿主执行。
 - **谱谱 / 旧失败归因与必要修复**：Task `0001795359172107-000172-808f2c0b`，分派 `0001795359223427-000176-3266bc87`。先收现行 #80，再核 `/tmp/pr79-fork-selected.log` 中五条 qoder canary 失败与 #78 ancestry/blob 的关系、current main 与 approved head 的交集。基线过期 exclusion 及中断均保留，不改日期、不伪绿；没有新缺陷就交可复核证据，确需修源码才另立工位交新 exact SHA 审查，不触碰银闪验证工位。最终合入门、非作者合入及部署后验收仍由砚砚61负责。
+- **拆分交付已消费**：谱谱 `0001795359800254-000187-f6e71380` 提供 `/tmp/20261122-pr79-fork-attribution-zcode.md`，证明 approved head 不含 #78，而 main/集成树包含，五败与 #79 七文件零交集，未改源码。银闪 `0001795359196329-000174-355254ac` 从 exact 集成树导出后 build 三包通过、replay **77/77**；原 fork API **142/151、fail 9** 与 MCP **6/6** 保留，九败原始签名为 nested Seatbelt 拒绝八项及 `/tmp` mkdir EPERM 一项。其证据索引起初在 `.pr79-int-verify-logs/RUN-SUMMARY.md`；已要求原创建者移到 review-notes 的专用证据目录，核对后仅清理其自建临时导出。拆分 owner 缺 task 回调工具，未冒充其身份代改完成态，交付与合入事实写回本父责任。
+- **宿主补验与合入门**：同一集成工位用 Node 24.22.3、临时 HOME/不可连接 Redis 跑 qoder service、memory policy、origin boot smoke 三文件，**101/101、exit 0**，补足上述全部九个受限用例；日志 `/tmp/20261122-pr79-integration-host-gap-tests.log`。其余五个 API 文件50项与 MCP6项由银闪实际通过；全部唯一九文件选集均已有通过覆盖，不谎称单次157项命令绿。独立核对 current main 与 reviewed patch 的 C2 交集为空，集成树到合入前 main 仅共享 TODO 文档差异；旧 resolver 失败、旧五败和中断不改写。风险、原 accepted source、exact typed review、验证及 E1-E5 已写[合入证据评论](https://github.com/08mamba24/clowder-ai/pull/79#issuecomment-7081152712)，中文正文与评论均经 GitHub API 逐字回读。
+- **已合入、未登记线上恢复**：砚砚61作为非作者执行 squash merge，PR truth 已回读 `MERGED`（2026-11-22 15:15:30 UTC），合入 SHA `10dd3dc20ce9a734e3451250d49c665b3634bfaf` 同时为远端 main tip；主仓已 ff-only 同步。原父 Task 已成功登记 `deploymentWait` **generation 2**，subject 仍为 `deployment:380f50e6414ee4ba1c352c3c50511ff1f9faa09045f65cd02f452cd4fe6bc7bf:runtime`，等待精确合入 SHA 被 ready API 包含，baseline 为 boot15；不轮询、不自行重启。届时从隔离数据验增量/carrier，并做点点正常续聊回话确认。Alpha已ff-only到冻结合入 SHA，实际 API/依赖构建及77项 replay 验收由 `managed-job-927ec69cf4e79e8c7ed54496e6644299fa688eed` 托管，当前尚未消费终态，不能先写通过。`main=landed:10dd3dc20`，`live=dormant:awaiting-generation-2`。
 - **Pro 独立校准**：operator 授权消息 `0001795353530855-000718-e3237d6f`。首个长请求 `0001795353938185-000727-f003f5c8` 未完成审查：Pro 在 `0001795353966738-000732-9f2f1bd8` 报告材料截断、工具读写 404。代码核实云桥 `DELTA_PAYLOAD_MAX_CHARS=2000`，包含固定信封且 intent 出现两次，长源码在发送前已裁掉。随后改为 239 字符的单问题请求 `0001795354223080-000740-9dcdabe7`；Pro 在 `0001795354234451-000743-cb711790` 确认看见 END79，给出“返回可见行数不能限制底层扫描”的具体判断与反例。该判断经上述本地计数探针核实，已反馈作者；一次 advisory 校准已产出实质结果，不构成整 PR 批准，不追加常规修复轮次。
 
 ### 2. 银闪 Node 包元数据被沙箱拒绝
@@ -81,7 +84,9 @@
 - **独立审查退回**：对该 SHA 给出 typed **CHANGES_REQUESTED，0 P1、2 P2**（`0001795358801258-000145-3d96ae63`）。现有 wrapper/pin **16/16**、API carrier/lease **4/4** 由砚砚61独立执行通过，`diff --check` 通过，但补充真实入口反例复现下述故障。作者源码/工位未改，未建 reviewer sandbox；这些绿测不等于迁移已完成。
 - **P2-1 / 并发 lease 归属**：所有 zcode 调用读写同一个隔离 HOME 文件。真实 `AcpAgentService` + `AgentGitHubReadBroker`、两个可控假 provider、自有回环测试服务中，A 开始后 B 覆盖文件，A 环境的 `gh pr view` 被审计成 B 的 invocation/thread；B 先结束删除文件后，仍 active 的 A 读取报 `capability_unavailable`。只删本 token 的 cleanup 不能保证调用方始终取到自己的能力。要求按真实 attempt/进程绑定选择器，补重叠、B 先结束、A 继续正常且审计正确的回归；不能依靠当前 pool=1。`AcpServiceFactory.ts:298-312` 已给 zcode 设置 `retireAfterLease=true`，作者关于跨尝试 warm 复用的设计前提亦需纠正。
 - **P2-2 / run list**：wrapper 将 `run_list` 也按带 state 的列表处理，`scripts/guarded-bin/gh:145` 的 `config.state.includes` 必抛 TypeError，HTTP 请求尚未发出。服务端 `run_list` schema 不接受 state，不能只给 includes 加可选链；应仅构造 op/repo/limit，补默认/显式 limit 与 state 拒绝的契约用例。独立反例 `/tmp/20261122-pr80-review-probes.mjs`、日志 `/tmp/20261122-pr80-review-probes.log`；无真实模型、GitHub 凭据或 Redis 访问。
-- **下一步 / 边界**：谱谱绑定原工位并修正上述两处，按同一 PR subject、新 exact SHA 回砚砚61复审，之后才进入合入/部署及谱谱会话内实际 `gh pr view` 验收。当前仍未恢复生产接线。未来写能力、权限扩张、运行配置与账号动作另按现有边界处理；Pro 的实际读取条件未满足，正式独立 review 仍由砚砚61承担。
+- **修后复审已通过**：谱谱提交 `441133702f749032c59ade2898aea0bbbcb6ad50`，砚砚61已代推、更新 UTF-8 正文并通过 GitHub API 逐字核对。共享 HOME 文件机制已拆除：descriptor只作 ACP 传输，由实际 adapter消费为进程 provider runtime 目录中的0600文件，并在进入 native 前剥除；wrapper只读本进程路径，没有 HOME 兜底。run_list只构造 op/repo/limit、拒绝state，补齐八操作参数矩阵。typed **APPROVED**：`0001795360241643-000191-affb6fa2`，无剩余 P1/P2，保持原 source/revision。
+- **修后独立证据**：scripts carrier/pin/secret-send **28/28**，API adapter/service/lease **21/21**，API `tsc --noEmit`、diff空白检查与 wrapper byte pin匹配通过。另用真实 `AcpAgentService`/broker、两个实际 adapter 进程（native为无模型fixture、同一HOME）贯通：各自lease目录不同；A在B重叠与B先退出后始终按A/thread-A审计；退出实际清自己的目录；session/load无descriptor清除、重下发恢复；native create/resume始终MCP=[]，run_list严格schema通过。探针 `/tmp/20261122-pr80-441133-actual-adapter-probe.mjs` 及同名log；独立日志 `/tmp/20261122-pr80-441133-scripts-tests.log`、`-api-tests.log`、`-tsc.log`。原作者源码未改、未建reviewer sandbox、未调真实模型或GitHub凭据/Redis。
+- **下一步 / 边界**：已交谱谱准备后续合入门，宿主 GitHub 写操作仍由砚砚61代办；PR当前仍为草稿，尚未合入/部署。工位真实 owner=zcode；bind-pr在独立CLI缺身份时需显式owner，未为登记冒充身份、改owner或重建工位。部署后仍需谱谱会话内实际 `gh pr view`；当前不能称生产 gh 已恢复。未来写能力、权限扩张、运行配置与账号动作另按现有边界处理；Pro的实际读取条件未满足，正式独立review仍由砚砚61承担。
 
 ## Chrome 已恢复的准确边界（不另计入上述四项）
 
