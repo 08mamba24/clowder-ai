@@ -10,7 +10,7 @@
 
 | 项目 | 当前状态 | 下一步 |
 |---|---|---|
-| 1. 点点 ACP 续聊失败 | PR #79 修正后已获独立 APPROVED | 宪宪完成合入检查，再由非作者合入；不等同线上已恢复 |
+| 1. 点点 ACP 续聊失败 | PR #79 已获独立 APPROVED；宪宪额度中断后的剩余工作已拆分 | 银闪补集成验证、谱谱核旧失败/必要修复，砚砚61核合入门与非作者合入 |
 | 2. 银闪启动 canary 失败 | PR #78 已部署，隔离启动与真实回话验收通过 | 本项关闭；其余三项继续按各自条件处理 |
 | 3. Pro 读取 429 | 银闪已完成有界诊断，未证实本地接线缺陷；精确读取仍报外部 MCP SSE probe 429 | 保留原始错误，恢复后再验精确读取；当前不承担正式 review |
 | 4. 谱谱 gh 凭据 | 只读迁移已代发布草稿 PR #80；独立审查退回两处 P2 | 谱谱修复并发 lease 归属和 run list，按新 SHA 复审后再进合入门 |
@@ -31,8 +31,11 @@
 - **二轮 P2-1 / 候选 token 资格，已关闭**：当时把最终 assembler 会丢弃的长 `[错误]` agent、display-only system 或 briefing 计入 4000 token 停止阈值。真实 Store 对照：2 条有效旧问答、205 条别猫 whisper、1 条约 8000 token 的上述记录、当前问题；三种无效长记录各使 replay 为空，读取仅返回 100 行。最终提取唯一 `isRebuildReplayEligible` 供候选与组装复用；原探针四组 replay 均存在，新回归同时确认无效内容被排除。探针 `/tmp/20261122-pr79-review-delta-probes.mjs`。
 - **P2-3 / raw scan 预算，已关闭**：当时 `getByThreadBefore` 内部过滤补读，外层仅数返回行；真实 `RedisMessageStore` 配纯内存计数桩，5000 canceled 加 anchor/prior 实测 fetched/hydrated=5002、rangeCalls=51。最终改用 `getByThreadBeforeBounded`、按 `scannedCount` 计费、按原始 `nextCursor` 续翻；独立原探针复测严格停在 fetched/hydrated=1000、rangeCalls=10，超出范围的历史不可达时 replay 为空，carrier 继续拦截。0 canceled 控制组正常回放，150 whisper 的跨页回归亦通过。探针 `/tmp/20261122-pr79-review-redis-scan-probe.mjs`；无 Redis 网络或生产数据访问。
 - **最终复审**：砚砚61 对 `e276daef0ff147569ad26e61f56724f2e8b81ff1` 给出 typed **APPROVED**（消息 `0001795354937982-000756-6d5595de`），无剩余 P1/P2。独立运行新旧 replay 与 context-assembler 三文件共 **77/77**，API `tsc --noEmit` 与 `git diff --check` 通过；作者源码/工位未改、未建 reviewer sandbox。原反例已实跑闭环；未将作者 98 文件全量结果冒充独立执行。日志 `/tmp/20261122-pr79-e276-independent-tests.log` 与 `/tmp/20261122-pr79-e276-independent-tsc.log`。
-- **下一步**：交回宪宪执行后续合入检查；批准仅覆盖被审代码，不代表已合入、部署或线上已恢复。1000 raw 行耗尽仍无有效历史时继续 fail-closed；in-memory store 保留自身全局尾部窗口语义。
+- **合入责任**：批准仅覆盖被审代码，不代表已合入、部署或线上已恢复。原先交宪宪执行后续检查，当前按下述用户新指令拆分续办。1000 raw 行耗尽仍无有效历史时继续 fail-closed；in-memory store 保留自身全局尾部窗口语义。
 - **合入续接**：宪宪在 `0001795354938086-000757-7c1081e0` 已进入 merge-gate，报告 5 个 fork 失败并在集成树验证；API 换代后没有终态证据回传。本轮只读核实 #79 仍 OPEN、head 仍为 `e276daef0ff147569ad26e61f56724f2e8b81ff1`，原 Task revision 5 仍写“等 review”。已沿原责任发送一次续接，要求先消费已有命令退出结果与基线证据，更新 Task；必要 gate 完成后交非作者合入，不重新索取旧批准。
+- **额度中断与用户改派**：上述续接 `0001795358937549-000153-7dd21567` 已失败，回执 `0001795358937694-000154-58e2e4a7` 为 Claude 5 小时限额，不是代码失败。用户 `0001795359058599-000165-660e72ee` 明确要求将宪宪剩余工作拆给谱谱/银闪。砚砚61已建立两项持久拆分任务并发送执行分派；原宪宪 Task 保留原作者、批准与过程证据，不伪造其完成或改写 owner。
+- **银闪 / 集成验证**：Task `0001795359172058-000171-eab2a698`，分派 `0001795359196193-000173-1a8a94bb`。负责隔离运行必要 fork/replay 缺项，回传真实退出码、选集、HEAD/base 和日志。现有干净验证工位 `worktrees/pr79-integration`，HEAD `7c343436e157c03eeceda71b2ee6fa540faea37d` 为 `8ae076016 + e276dae`、已带 #78；专用于验证，不改源码或切分支。原 `/tmp/pr79-int-fork.log` 实为 **25 pass、0 fail、6 cancelled / Interrupted**，不能当作通过或六个产品回归。若沙箱限制阻断验证，回传原始诊断，由砚砚61补宿主执行。
+- **谱谱 / 旧失败归因与必要修复**：Task `0001795359172107-000172-808f2c0b`，分派 `0001795359223427-000176-3266bc87`。先收现行 #80，再核 `/tmp/pr79-fork-selected.log` 中五条 qoder canary 失败与 #78 ancestry/blob 的关系、current main 与 approved head 的交集。基线过期 exclusion 及中断均保留，不改日期、不伪绿；没有新缺陷就交可复核证据，确需修源码才另立工位交新 exact SHA 审查，不触碰银闪验证工位。最终合入门、非作者合入及部署后验收仍由砚砚61负责。
 - **Pro 独立校准**：operator 授权消息 `0001795353530855-000718-e3237d6f`。首个长请求 `0001795353938185-000727-f003f5c8` 未完成审查：Pro 在 `0001795353966738-000732-9f2f1bd8` 报告材料截断、工具读写 404。代码核实云桥 `DELTA_PAYLOAD_MAX_CHARS=2000`，包含固定信封且 intent 出现两次，长源码在发送前已裁掉。随后改为 239 字符的单问题请求 `0001795354223080-000740-9dcdabe7`；Pro 在 `0001795354234451-000743-cb711790` 确认看见 END79，给出“返回可见行数不能限制底层扫描”的具体判断与反例。该判断经上述本地计数探针核实，已反馈作者；一次 advisory 校准已产出实质结果，不构成整 PR 批准，不追加常规修复轮次。
 
 ### 2. 银闪 Node 包元数据被沙箱拒绝
