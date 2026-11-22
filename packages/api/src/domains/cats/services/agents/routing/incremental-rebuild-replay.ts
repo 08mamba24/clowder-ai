@@ -1,15 +1,21 @@
 import type { CatId } from '@cat-cafe/shared';
 import { estimateTokens } from '../../../../../utils/token-counter.js';
-import { buildRebuildContextReplay, REBUILD_CONTEXT_MAX_TOTAL_TOKENS } from '../../context/ContextAssembler.js';
+import {
+  buildRebuildContextReplay,
+  isRebuildReplayEligible,
+  REBUILD_CONTEXT_MAX_TOTAL_TOKENS,
+} from '../../context/ContextAssembler.js';
 import { compareCursors, cursorFor, parseCursor } from '../../stores/cursor.js';
 import type { IMessageStore, StoredMessage } from '../../stores/ports/MessageStore.js';
 import { canViewMessage, getTimelineOrderTime } from '../../stores/visibility.js';
 
 const REPLAY_PAGE_SIZE = 100;
 /**
- * Upper bound on rows read for one replay. Pages walk backwards from the
- * projection boundary, so unrelated newer rows can never consume this budget;
- * foreign whispers before the boundary can, but only up to this cap.
+ * Raw storage rows one replay may scan, charged by the store's own
+ * scannedCount (canceled, foreign-owner and filtered rows included). Pages
+ * walk backwards from the projection boundary, so rows newer than it never
+ * consume this budget. When it runs out before replayable history is found,
+ * the replay stays empty and the carrier fails closed.
  */
 export const INCREMENTAL_REBUILD_REPLAY_SCAN_LIMIT = 1000;
 /** Stop reading once candidates comfortably exceed the replay body budget. */
@@ -80,19 +86,27 @@ export async function buildIncrementalRebuildReplay(input: IncrementalRebuildRep
   const inPrompt = new Set(input.promptMessageIds);
   const selectedNewestFirst: StoredMessage[] = [];
   let candidateTokens = 0;
-  let scanned = 0;
+  let rawScanned = 0;
   // +1 with no beforeId includes every row sharing the anchor's timeline time;
   // the canonical comparison below drops the ones positioned after it.
   let pageTimestamp = getTimelineOrderTime(anchor) + 1;
   let pageBeforeId: string | undefined;
 
-  while (scanned < INCREMENTAL_REBUILD_REPLAY_SCAN_LIMIT && candidateTokens < REPLAY_CANDIDATE_TOKEN_TARGET) {
-    const requested = Math.min(REPLAY_PAGE_SIZE, INCREMENTAL_REBUILD_REPLAY_SCAN_LIMIT - scanned);
-    const page = await store.getByThreadBefore(threadId, pageTimestamp, requested, pageBeforeId, userId);
-    if (page.length === 0) break;
-    scanned += page.length;
-    const newestFirst = [...page].reverse();
-    const candidates = newestFirst.filter((message) => !inPrompt.has(message.id) && canViewMessage(message, viewer));
+  while (rawScanned < INCREMENTAL_REBUILD_REPLAY_SCAN_LIMIT && candidateTokens < REPLAY_CANDIDATE_TOKEN_TARGET) {
+    const page = await store.getByThreadBeforeBounded(
+      threadId,
+      pageTimestamp,
+      REPLAY_PAGE_SIZE,
+      pageBeforeId,
+      userId,
+      INCREMENTAL_REBUILD_REPLAY_SCAN_LIMIT - rawScanned,
+    );
+    rawScanned += page.scannedCount;
+    const candidates = [...page.messages]
+      .reverse()
+      .filter(
+        (message) => !inPrompt.has(message.id) && isRebuildReplayEligible(message) && canViewMessage(message, viewer),
+      );
     const positions = await Promise.all(candidates.map((message) => canonicalPosition(store, message, threadId)));
     candidates.forEach((message, index) => {
       const position = positions[index];
@@ -100,10 +114,12 @@ export async function buildIncrementalRebuildReplay(input: IncrementalRebuildRep
       selectedNewestFirst.push(message);
       candidateTokens += estimateTokens(message.content ?? '');
     });
-    const oldest = page[0] as StoredMessage;
-    pageTimestamp = getTimelineOrderTime(oldest);
-    pageBeforeId = oldest.id;
-    if (page.length < requested) break;
+    // Continue from the store's raw continuation, not the last visible row: a
+    // page whose rows were all filtered out is not proof the timeline ended.
+    const next = page.nextCursor;
+    if (page.exhausted || !next || (next.timestamp === pageTimestamp && next.id === pageBeforeId)) break;
+    pageTimestamp = next.timestamp;
+    pageBeforeId = next.id;
   }
   return buildRebuildContextReplay(selectedNewestFirst.reverse());
 }

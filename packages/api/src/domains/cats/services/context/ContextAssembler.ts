@@ -37,16 +37,23 @@ export const REBUILD_CONTEXT_MAX_TOTAL_TOKENS = 2000;
  * agent messages. Exported so the rebuild replay below reports truncation
  * against the same eligibility the assembler itself uses.
  */
+/**
+ * The single replay-eligibility rule: delivered, agent-readable, not a
+ * briefing and not an agent error stub. Candidate selection upstream must use
+ * this same predicate so rows the replay will drop never consume its budget.
+ */
+export function isRebuildReplayEligible(m: StoredMessage): boolean {
+  const from = messageFrom(m);
+  return (
+    isDelivered(m) &&
+    (from.kind !== 'system' || !isDisplayOnlySystemMessage(m) || isAgentReadableManagedHoldMessage(m)) &&
+    m.origin !== 'briefing' &&
+    !(from.kind === 'agent' && m.content?.startsWith('[错误]'))
+  );
+}
+
 function deliveredContextMessages(messages: StoredMessage[]): StoredMessage[] {
-  return messages.filter((m) => {
-    const from = messageFrom(m);
-    return (
-      isDelivered(m) &&
-      (from.kind !== 'system' || !isDisplayOnlySystemMessage(m) || isAgentReadableManagedHoldMessage(m)) &&
-      m.origin !== 'briefing' &&
-      !(from.kind === 'agent' && m.content?.startsWith('[错误]'))
-    );
-  });
+  return messages.filter(isRebuildReplayEligible);
 }
 
 /**

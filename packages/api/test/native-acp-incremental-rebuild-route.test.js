@@ -23,10 +23,11 @@ const { MessageStore } = await import('../dist/domains/cats/services/stores/port
 const { DeliveryCursorStore } = await import('../dist/domains/cats/services/stores/ports/DeliveryCursorStore.js');
 const { REBUILD_CONTEXT_MAX_TOTAL_TOKENS } = await import('../dist/domains/cats/services/context/ContextAssembler.js');
 const { AcpAgentService } = await import('../dist/domains/cats/services/agents/providers/acp/AcpAgentService.js');
-const { buildIncrementalRebuildReplay } = await import(
+const { buildIncrementalRebuildReplay, INCREMENTAL_REBUILD_REPLAY_SCAN_LIMIT } = await import(
   '../dist/domains/cats/services/agents/routing/incremental-rebuild-replay.js'
 );
 const { compareCursors, cursorFor } = await import('../dist/domains/cats/services/stores/cursor.js');
+const { RedisMessageStore } = await import('../dist/domains/cats/services/stores/redis/RedisMessageStore.js');
 
 const REPLAY_HEADER = /^\/rebuild-replay v1 messages=(\d+) tokens=(\d+) truncated=(true|false)\n/;
 const THREAD = 'thread-acp-incremental-rebuild';
@@ -389,5 +390,158 @@ describe('ACP incremental replay only replays rows with a provable canonical pos
     assertBoundedReplay(replay);
     assert.ok(replay.includes('resolvable prior history'));
     assert.ok(!replay.includes('UNRESOLVABLE_POSITION'));
+  });
+});
+
+describe('ACP incremental replay budgets use the replay eligibility and raw scan coordinates (review round 2)', () => {
+  for (const kind of ['agentError', 'displayOnlySystem', 'briefing']) {
+    test(`a long ${kind} row the replay drops does not exhaust the candidate budget`, async () => {
+      const threadId = `candidate-budget-${kind}`;
+      const store = new MessageStore();
+      let sequence = 0;
+      const append = (content, extra = {}) =>
+        store.append(
+          canonicalTestMessageInput({
+            threadId,
+            userId: 'user1',
+            catId: null,
+            content,
+            mentions: [],
+            timestamp: Date.now() + sequence++,
+            ...extra,
+          }),
+        );
+      append('prior user: remember blueberry');
+      append('prior assistant: blueberry remembered', { catId: 'dsh' });
+      for (let i = 0; i < 205; i++) append(`foreign whisper ${i}`, { visibility: 'whisper', whisperTo: ['codex'] });
+      const long = 'EXCLUDED_RECORD '.repeat(8000);
+      if (kind === 'agentError') append(`[错误]${long}`, { catId: 'dsh' });
+      if (kind === 'displayOnlySystem') append(long, { catId: 'system' });
+      if (kind === 'briefing') append(long, { catId: 'dsh', origin: 'briefing' });
+      const current = append('current question');
+
+      const replay = await buildIncrementalRebuildReplay({
+        messageStore: store,
+        userId: 'user1',
+        threadId,
+        catId: 'dsh',
+        thinkingMode: 'play',
+        boundaryId: cursorFor(current),
+        promptMessageIds: [current.id],
+      });
+      assertBoundedReplay(replay);
+      assert.ok(replay.includes('blueberry remembered'), 'older replayable history is still reached');
+      assert.ok(!replay.includes('EXCLUDED_RECORD'), 'the dropped row really stays out of the replay');
+    });
+  }
+
+  /**
+   * Real RedisMessageStore over an in-memory transport stub (no network, no
+   * real Redis). Counts raw rows fetched and hydrated, so the scan cap is
+   * checked in storage coordinates rather than in returned visible rows.
+   */
+  function countingRedisStore(rows) {
+    const desc = [...rows].sort((a, b) => Number(b.timestamp) - Number(a.timestamp));
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const counters = { fetched: 0, hydrated: 0 };
+    const hash = (key) => byId.get(key.split(':').at(-1)) ?? {};
+    const pairs = (page) => {
+      counters.fetched += page.length;
+      return page.flatMap((row) => [row.id, row.timestamp]);
+    };
+    const redis = {
+      options: {},
+      hgetall: async (key) => hash(key),
+      zrevrank: async (_key, id) => {
+        const rank = desc.findIndex((row) => row.id === id);
+        return rank < 0 ? null : rank;
+      },
+      zrevrange: async (_key, start, stop) => pairs(desc.slice(start, stop + 1)),
+      zrevrangebyscore: async (_key, max, _min, ...args) => {
+        const exclusive = String(max).startsWith('(');
+        const value = Number(exclusive ? String(max).slice(1) : max);
+        const eligible = desc.filter((row) =>
+          exclusive ? Number(row.timestamp) < value : Number(row.timestamp) <= value,
+        );
+        const at = args.indexOf('LIMIT');
+        return pairs(eligible.slice(Number(args[at + 1]), Number(args[at + 1]) + Number(args[at + 2])));
+      },
+      multi: () => {
+        const keys = [];
+        return {
+          hgetall(key) {
+            keys.push(key);
+            return this;
+          },
+          async exec() {
+            counters.hydrated += keys.length;
+            return keys.map((key) => [null, hash(key)]);
+          },
+        };
+      },
+    };
+    return { store: new RedisMessageStore(redis), counters };
+  }
+
+  function redisRow(threadId, id, score, extra = {}) {
+    return {
+      id,
+      threadId,
+      userId: 'user1',
+      from: JSON.stringify({ kind: 'user', userId: 'user1' }),
+      catId: '',
+      content: id === 'prior' ? 'remember blueberry' : `row ${id}`,
+      mentions: '[]',
+      timestamp: String(score),
+      timelineOrderAt: String(score),
+      visibilitySeq: String(score),
+      deliveryStatus: 'delivered',
+      ...extra,
+    };
+  }
+
+  async function redisReplay(threadId, fillerCount, filler) {
+    const anchorScore = fillerCount + 2;
+    const rows = [
+      redisRow(threadId, 'anchor', anchorScore),
+      ...Array.from({ length: fillerCount }, (_, i) => filler(`filler-${i}`, anchorScore - 1 - i)),
+      redisRow(threadId, 'prior', 1),
+    ];
+    const { store, counters } = countingRedisStore(rows);
+    const replay = await buildIncrementalRebuildReplay({
+      messageStore: store,
+      userId: 'user1',
+      threadId,
+      catId: 'dsh',
+      thinkingMode: 'play',
+      boundaryId: `v2:${String(anchorScore).padStart(16, '0')}:anchor`,
+      promptMessageIds: ['anchor'],
+    });
+    return { replay, counters };
+  }
+
+  test('redis: raw rows scanned stay within the cap even when most rows are filtered inside the store', async () => {
+    const control = await redisReplay('scan-cap-control', 0, () => undefined);
+    assertBoundedReplay(control.replay);
+    assert.ok(control.replay.includes('remember blueberry'));
+
+    const threadId = 'scan-cap-canceled';
+    const { replay, counters } = await redisReplay(threadId, 5000, (id, score) =>
+      redisRow(threadId, id, score, { deliveryStatus: 'canceled' }),
+    );
+    assert.ok(counters.fetched <= INCREMENTAL_REBUILD_REPLAY_SCAN_LIMIT, `fetched ${counters.fetched} raw rows`);
+    assert.ok(counters.hydrated <= INCREMENTAL_REBUILD_REPLAY_SCAN_LIMIT, `hydrated ${counters.hydrated} rows`);
+    assert.equal(replay, undefined, 'history beyond the raw cap is not reached; the carrier fails closed honestly');
+  });
+
+  test('redis: a page filled by rows the replay rejects continues from the raw cursor to older history', async () => {
+    const threadId = 'scan-continuation';
+    const { replay, counters } = await redisReplay(threadId, 150, (id, score) =>
+      redisRow(threadId, id, score, { visibility: 'whisper', whisperTo: JSON.stringify(['codex']) }),
+    );
+    assertBoundedReplay(replay);
+    assert.ok(replay.includes('remember blueberry'), 'second page reached through the store continuation');
+    assert.ok(!replay.includes('filler-'), 'foreign whispers stay out');
+    assert.ok(counters.fetched <= INCREMENTAL_REBUILD_REPLAY_SCAN_LIMIT);
   });
 });
