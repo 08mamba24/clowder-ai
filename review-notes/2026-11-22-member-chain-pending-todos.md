@@ -12,8 +12,8 @@
 |---|---|---|
 | 1. 点点 ACP 续聊失败 | PR #79 修正后已获独立 APPROVED | 宪宪完成合入检查，再由非作者合入；不等同线上已恢复 |
 | 2. 银闪启动 canary 失败 | PR #78 已部署，隔离启动与真实回话验收通过 | 本项关闭；其余三项继续按各自条件处理 |
-| 3. Pro 读取 429 | 精确消息读取仍报 MCP SSE probe 429 | 银闪定位读取路径；有本地缺陷才修复，恢复后再验读取 |
-| 4. 谱谱 gh 凭据 | 宿主已登录，隔离 HOME 未登录；只读传输迁移已分派 | 谱谱保留现有权限，实现受控 canonical gh CLI 接线 |
+| 3. Pro 读取 429 | 银闪已完成有界诊断，未证实本地接线缺陷；精确读取仍报外部 MCP SSE probe 429 | 保留原始错误，恢复后再验精确读取；当前不承担正式 review |
+| 4. 谱谱 gh 凭据 | 只读迁移已代发布草稿 PR #80；独立审查退回两处 P2 | 谱谱修复并发 lease 归属和 run list，按新 SHA 复审后再进合入门 |
 
 ### 1. 点点 ACP 续聊缺少受控重放
 
@@ -32,6 +32,7 @@
 - **P2-3 / raw scan 预算，已关闭**：当时 `getByThreadBefore` 内部过滤补读，外层仅数返回行；真实 `RedisMessageStore` 配纯内存计数桩，5000 canceled 加 anchor/prior 实测 fetched/hydrated=5002、rangeCalls=51。最终改用 `getByThreadBeforeBounded`、按 `scannedCount` 计费、按原始 `nextCursor` 续翻；独立原探针复测严格停在 fetched/hydrated=1000、rangeCalls=10，超出范围的历史不可达时 replay 为空，carrier 继续拦截。0 canceled 控制组正常回放，150 whisper 的跨页回归亦通过。探针 `/tmp/20261122-pr79-review-redis-scan-probe.mjs`；无 Redis 网络或生产数据访问。
 - **最终复审**：砚砚61 对 `e276daef0ff147569ad26e61f56724f2e8b81ff1` 给出 typed **APPROVED**（消息 `0001795354937982-000756-6d5595de`），无剩余 P1/P2。独立运行新旧 replay 与 context-assembler 三文件共 **77/77**，API `tsc --noEmit` 与 `git diff --check` 通过；作者源码/工位未改、未建 reviewer sandbox。原反例已实跑闭环；未将作者 98 文件全量结果冒充独立执行。日志 `/tmp/20261122-pr79-e276-independent-tests.log` 与 `/tmp/20261122-pr79-e276-independent-tsc.log`。
 - **下一步**：交回宪宪执行后续合入检查；批准仅覆盖被审代码，不代表已合入、部署或线上已恢复。1000 raw 行耗尽仍无有效历史时继续 fail-closed；in-memory store 保留自身全局尾部窗口语义。
+- **合入续接**：宪宪在 `0001795354938086-000757-7c1081e0` 已进入 merge-gate，报告 5 个 fork 失败并在集成树验证；API 换代后没有终态证据回传。本轮只读核实 #79 仍 OPEN、head 仍为 `e276daef0ff147569ad26e61f56724f2e8b81ff1`，原 Task revision 5 仍写“等 review”。已沿原责任发送一次续接，要求先消费已有命令退出结果与基线证据，更新 Task；必要 gate 完成后交非作者合入，不重新索取旧批准。
 - **Pro 独立校准**：operator 授权消息 `0001795353530855-000718-e3237d6f`。首个长请求 `0001795353938185-000727-f003f5c8` 未完成审查：Pro 在 `0001795353966738-000732-9f2f1bd8` 报告材料截断、工具读写 404。代码核实云桥 `DELTA_PAYLOAD_MAX_CHARS=2000`，包含固定信封且 intent 出现两次，长源码在发送前已裁掉。随后改为 239 字符的单问题请求 `0001795354223080-000740-9dcdabe7`；Pro 在 `0001795354234451-000743-cb711790` 确认看见 END79，给出“返回可见行数不能限制底层扫描”的具体判断与反例。该判断经上述本地计数探针核实，已反馈作者；一次 advisory 校准已产出实质结果，不构成整 PR 批准，不追加常规修复轮次。
 
 ### 2. 银闪 Node 包元数据被沙箱拒绝
@@ -63,6 +64,9 @@
 - **本轮读取验实**：operator 在 `0001795355952214-000030-04b0ae6a` 要求先确认 Pro 能收消息并读取上下文，才交正式 review。精简请求 `0001795356122804-000047-a8168142` 要求按该精确用户消息 ID、full、agentKeyCatId=gpt-pro 实际读取，未附预期正文；Pro 在 `0001795356142830-000050-0b2d59aa` 返回无 messageId/正文，错误为 `UNAVAILABLE / MCP SSE probe returned 429 from openai.org`。读取条件未满足，本轮不分派正式 review；保留先前单问题离线 advisory 的独立记录。
 - **并行实施 / 银闪**：按上述用户授权，分派 `0001795356198261-000052-531ba656`，生命周期已进入 processing。目标核清当前工具、Remote MCP、callback 读入口、主体/thread scope 的真实路径；仅对有证据的本地接线缺陷交最小修复和红绿回归，外部故障则回传失败层证据。保留既有鉴权、越权 404 与 2000 字符契约，不重试轰炸 Pro。父 Task、共享 TODO 与收口仍由砚砚61负责。
 - **银闪执行异常与续接**：上述首轮分派已 failed，返回 `0001795356198355-000054-22d6bccd`。原 invocation `1030c930-ea7a-4751-a3e1-96e47099a3fa` 在 14:04:18 已绑定会话并执行多轮只读工具；14:11:29 的原始 CLI 诊断为 exit=1、signal=null、reasonCode=null、stderrEmpty=true、streamErrorCount=1，可见输出提示连接中断，具体网络/服务层未确认。这发生于 CLI 启动之后，不改写 #78 的验收结论。已保留部分诊断，仅以新 source `0001795356858902-000072-ae9c20d7` 从最后的 AuthHeaders/bound-identity 检查处续接一次；若再出现同类退出，停止重复派发，由砚砚61接续。不读取队友原始会话、不重启服务或修改网络配置。
+- **银闪诊断已完成**：续接结果 `0001795356859034-000073-8590992c` 确认 cloud-pro-phase0 含 `get_message`；spike 无 invocation scope 时走绑定 agent-key，错猫选择器拒绝，API 保留 principal standing 与 owner/visibility 校验。银闪报告 agent-key / bound-identity 两文件 **21/21**，此数为作者实跑回执，未冒充砚砚61独立运行。本地路径已核出的失败形式是 401/403/404 或工具层错误；当前原始 OpenAI SSE probe 429 无法由这些接线证据解释，故不制造本地补丁。13:26 无原始回执的 404 自述仍不追认同因。
+- **健康探针的适用性**：本轮宿主只读检查未发现默认 3098 监听或 cloudflared 进程；但 fork 的根 `package.json` 已无 `cloud:status` / `cloud:doctor` 注册，`scripts/port-drift/exported-scripts.mjs` 明确将该 supporting-service helper 标为 home-only。旧 F247 runbook 不能证明当前连接器仍采用该部署路径，因此没有访问未知端口、启动服务或据此把外部 429 改判成本地服务离线。后续恢复仍以实际连接器成功读取指定消息为准。
+- **当前连接器复测**：砚砚61通过独立云端猫咖连接只调用一次 `get_message(messageId=0001795355952214-000030-04b0ae6a, mode=full, contextCount=0, agentKeyCatId=gpt-pro)`，仍返回 `McpServerError: MCP SSE probe returned 429 from openai.org`，未取得目标正文。该证据是本轮连接器实测，不是 Pro 成功读上下文；不追加高频重试或正式 review。
 
 ### 4. 谱谱 gh：隔离事实与新授权分开
 
@@ -70,8 +74,11 @@
 - **代码**：`zcodeAppServerEnv()` 重定向 HOME 与 XDG 目录；`agy-native-launch-env.ts` 有宿主 GH_CONFIG_DIR 接线先例，但别的 carrier 的实现不自动授予 zcode 同等权限。
 - **现行边界**：本实例仓库操作走 canonical `gh` CLI。历史 GitHub read MCP 代码不构成继续使用已退役 GitHub MCP 的依据。保留 ZCode 自己的 HOME，按允许的仓库/读写操作接受控宿主 gh 调用，避免把原始凭据散发到模型环境。
 - **纠正旧建议**：细粒度 PAT 可以缩小 token 的仓库/权限范围，但仍绑定生成它的 GitHub 用户，不会自动形成独立猫身份。参见 [GitHub 官方 PAT 说明](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)。无需在聊天里发送 token。
-- **下一步 / 谱谱**：按 operator 并行开发授权 `0001795355952214-000030-04b0ae6a`，分派 `0001795356198305-000053-67fa8832`，生命周期已进入 processing。在已有指定仓库只读权限内，将调用面迁到 canonical gh CLI，复用 invocation binding、仓库/参数白名单、输出界限和取消/超时；不新增写权限，不将 GH_CONFIG_DIR 或 token 复制给模型环境。独立工位交 commit/PR、红绿证据；若发布受限，交 UTF-8 正文由砚砚61代发及远端回读，开发不以先搬凭据为前提。
-- **状态 / 边界**：环境差异已验证，只读传输迁移开发已分派，代码与生产接线均未登记完成。宿主凭据仍在宿主保管；未来写能力、权限扩张、运行配置与账号动作另按现有边界处理。银闪的 cloud 读接线、宪宪的 ACP #79 与本项分工隔离；Pro 只有在实证能读取上下文后才安排正式 review，当前由砚砚61负责独立审查与收口。
+- **谱谱实施与代发布**：按 operator 并行授权 `0001795355952214-000030-04b0ae6a` 与分派 `0001795356198305-000053-67fa8832`，谱谱交付分支 `feat/zcode-gh-canonical-read`、commit `2c9dc8a7fe21077dfa56110f4dc64405f325d7e9`，工位 `/Users/yuhan/cat-cafe/cat-cafe-zcode-gh-canonical`；正式传球为 `0001795357836564-000106-8aff12b3`。砚砚61已代推送、创建[草稿 PR #80](https://github.com/08mamba24/clowder-ai/pull/80)，通过 GitHub API 核实远端 exact HEAD、draft=true，正文与 `/tmp/20261122-zcode-gh-carrier-pr-body.md` 逐字一致。保留现有 host broker → reader → canonical gh，不复制宿主凭据、不增加写权限。
+- **独立审查退回**：对该 SHA 给出 typed **CHANGES_REQUESTED，0 P1、2 P2**（`0001795358801258-000145-3d96ae63`）。现有 wrapper/pin **16/16**、API carrier/lease **4/4** 由砚砚61独立执行通过，`diff --check` 通过，但补充真实入口反例复现下述故障。作者源码/工位未改，未建 reviewer sandbox；这些绿测不等于迁移已完成。
+- **P2-1 / 并发 lease 归属**：所有 zcode 调用读写同一个隔离 HOME 文件。真实 `AcpAgentService` + `AgentGitHubReadBroker`、两个可控假 provider、自有回环测试服务中，A 开始后 B 覆盖文件，A 环境的 `gh pr view` 被审计成 B 的 invocation/thread；B 先结束删除文件后，仍 active 的 A 读取报 `capability_unavailable`。只删本 token 的 cleanup 不能保证调用方始终取到自己的能力。要求按真实 attempt/进程绑定选择器，补重叠、B 先结束、A 继续正常且审计正确的回归；不能依靠当前 pool=1。`AcpServiceFactory.ts:298-312` 已给 zcode 设置 `retireAfterLease=true`，作者关于跨尝试 warm 复用的设计前提亦需纠正。
+- **P2-2 / run list**：wrapper 将 `run_list` 也按带 state 的列表处理，`scripts/guarded-bin/gh:145` 的 `config.state.includes` 必抛 TypeError，HTTP 请求尚未发出。服务端 `run_list` schema 不接受 state，不能只给 includes 加可选链；应仅构造 op/repo/limit，补默认/显式 limit 与 state 拒绝的契约用例。独立反例 `/tmp/20261122-pr80-review-probes.mjs`、日志 `/tmp/20261122-pr80-review-probes.log`；无真实模型、GitHub 凭据或 Redis 访问。
+- **下一步 / 边界**：谱谱绑定原工位并修正上述两处，按同一 PR subject、新 exact SHA 回砚砚61复审，之后才进入合入/部署及谱谱会话内实际 `gh pr view` 验收。当前仍未恢复生产接线。未来写能力、权限扩张、运行配置与账号动作另按现有边界处理；Pro 的实际读取条件未满足，正式独立 review 仍由砚砚61承担。
 
 ## Chrome 已恢复的准确边界（不另计入上述四项）
 
