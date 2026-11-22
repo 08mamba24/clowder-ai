@@ -23,6 +23,10 @@ const { MessageStore } = await import('../dist/domains/cats/services/stores/port
 const { DeliveryCursorStore } = await import('../dist/domains/cats/services/stores/ports/DeliveryCursorStore.js');
 const { REBUILD_CONTEXT_MAX_TOTAL_TOKENS } = await import('../dist/domains/cats/services/context/ContextAssembler.js');
 const { AcpAgentService } = await import('../dist/domains/cats/services/agents/providers/acp/AcpAgentService.js');
+const { buildIncrementalRebuildReplay } = await import(
+  '../dist/domains/cats/services/agents/routing/incremental-rebuild-replay.js'
+);
+const { compareCursors, cursorFor } = await import('../dist/domains/cats/services/stores/cursor.js');
 
 const REPLAY_HEADER = /^\/rebuild-replay v1 messages=(\d+) tokens=(\d+) truncated=(true|false)\n/;
 const THREAD = 'thread-acp-incremental-rebuild';
@@ -222,5 +226,168 @@ describe('ACP rebuild replay on the production incremental entry', () => {
       codex.invocations.every((invocation) => invocation.options?.rebuildContextPrompt === undefined),
       true,
     );
+  });
+});
+
+async function invokeReplacement(catId, invocation) {
+  const carrier = realAcpCarrierWithoutResume(catId);
+  const emitted = [];
+  for await (const message of carrier.service.invoke(invocation.prompt, {
+    ...invocation.options,
+    sessionId: `cli-session-${catId}`,
+  })) {
+    emitted.push(message);
+  }
+  return { carrier, errors: emitted.filter((message) => message.type === 'error') };
+}
+
+describe('ACP incremental replay window is anchored to the projection boundary (review P2-1)', () => {
+  test('route: 205 foreign whispers between turns cannot crowd out the replayable history', async () => {
+    const { routeSerial } = await import('../dist/domains/cats/services/agents/routing/route-serial.js');
+    const stores = freshStores();
+    const dsh = capturingAcpService('dsh');
+    const first = await appendUser(stores.messageStore, '@dsh 第一轮：请记住暗号 蓝莓', { mentions: ['dsh'] });
+    await turn(routeSerial, { dsh }, stores, first.id, ['dsh']);
+    for (let i = 0; i < 205; i++) {
+      await appendUser(stores.messageStore, `只给 codex 的悄悄话 ${i}`, {
+        visibility: 'whisper',
+        whisperTo: ['codex'],
+        mentions: ['codex'],
+      });
+    }
+    const second = await appendUser(stores.messageStore, '@dsh 第二轮：暗号是什么？', { mentions: ['dsh'] });
+    await turn(routeSerial, { dsh }, stores, second.id, ['dsh']);
+
+    const replay = dsh.invocations[1].options?.rebuildContextPrompt;
+    assertBoundedReplay(replay);
+    assert.ok(replay.includes('请记住暗号 蓝莓'));
+    assert.ok(replay.includes('dsh 第1轮回答'));
+    assert.ok(!replay.includes('悄悄话'), 'foreign whispers stay out of the replay');
+    const { carrier, errors } = await invokeReplacement('dsh', dsh.invocations[1]);
+    assert.deepEqual(errors, [], 'replacement session runs instead of failing closed');
+    assert.ok(JSON.stringify(carrier.prompted[0]).includes('请记住暗号 蓝莓'));
+  });
+
+  function seededHelperThread(threadId, { deltaCount, futureCount }) {
+    const store = new MessageStore();
+    let sequence = 0;
+    const append = (content, catId = null) =>
+      store.append(
+        canonicalTestMessageInput({
+          threadId,
+          userId: 'user1',
+          catId,
+          content,
+          mentions: [],
+          timestamp: Date.now() + sequence++,
+        }),
+      );
+    append('prior user: remember blueberry');
+    append('prior assistant: blueberry remembered', 'dsh');
+    const delta = Array.from({ length: deltaCount }, (_, i) => append(`current delta ${i}`));
+    const future = Array.from({ length: futureCount }, (_, i) => append(`future outside boundary ${i}`));
+    return { store, delta, future, boundaryId: cursorFor(delta.at(-1)) };
+  }
+
+  for (const [name, deltaCount, futureCount] of [
+    ['205 rows already in the prompt', 205, 0],
+    ['205 rows after the boundary', 1, 205],
+  ]) {
+    test(`helper: ${name} do not consume the replay window`, async () => {
+      const threadId = `window-${deltaCount}-${futureCount}`;
+      const { store, delta, boundaryId } = seededHelperThread(threadId, { deltaCount, futureCount });
+      const replay = await buildIncrementalRebuildReplay({
+        messageStore: store,
+        userId: 'user1',
+        threadId,
+        catId: 'dsh',
+        thinkingMode: 'play',
+        boundaryId,
+        promptMessageIds: delta.map((message) => message.id),
+      });
+      assertBoundedReplay(replay);
+      assert.ok(replay.includes('remember blueberry'));
+      assert.ok(replay.includes('blueberry remembered'));
+      assert.ok(!replay.includes('current delta'), 'prompt rows are not duplicated');
+      assert.ok(!replay.includes('future outside boundary'), 'rows after the boundary are never replayed');
+    });
+  }
+});
+
+describe('ACP incremental replay only replays rows with a provable canonical position (review P2-2)', () => {
+  test('legacy hash without visibilitySeq is resolved through the visibility index, never assumed', async () => {
+    const threadId = 'legacy-hash-index-coordinate';
+    const store = new MessageStore();
+    let sequence = 0;
+    const append = (content) =>
+      store.append(
+        canonicalTestMessageInput({
+          threadId,
+          userId: 'user1',
+          catId: null,
+          content,
+          mentions: [],
+          timestamp: Date.now() + sequence++,
+        }),
+      );
+    const prior = append('prior visible history');
+    const current = append('current boundary');
+    const boundaryId = cursorFor(current);
+    const later = append('FUTURE_AFTER_BOUNDARY_MUST_NOT_REPLAY');
+    assert.ok(compareCursors(store.canonicalizeCursor(later.id, threadId), boundaryId) > 0);
+    // Legacy hashes omit the field while the visibility index still holds the position.
+    delete later.visibilitySeq;
+    delete prior.visibilitySeq;
+    assert.equal(compareCursors(cursorFor(later), boundaryId), 0, 'mixed-format comparison is undecidable');
+
+    const replay = await buildIncrementalRebuildReplay({
+      messageStore: store,
+      userId: 'user1',
+      threadId,
+      catId: 'dsh',
+      thinkingMode: 'play',
+      boundaryId,
+      promptMessageIds: [current.id],
+    });
+    assertBoundedReplay(replay);
+    assert.ok(replay.includes('prior visible history'), 'legacy row before the boundary resolves and replays');
+    assert.ok(!replay.includes('FUTURE_AFTER_BOUNDARY_MUST_NOT_REPLAY'), 'legacy row after the boundary stays out');
+  });
+
+  test('a row whose position cannot be resolved is excluded rather than treated as before the boundary', async () => {
+    const threadId = 'legacy-hash-unresolvable';
+    const store = new MessageStore();
+    let sequence = 0;
+    const append = (content) =>
+      store.append(
+        canonicalTestMessageInput({
+          threadId,
+          userId: 'user1',
+          catId: null,
+          content,
+          mentions: [],
+          timestamp: Date.now() + sequence++,
+        }),
+      );
+    append('resolvable prior history');
+    const unresolvable = append('UNRESOLVABLE_POSITION');
+    const current = append('current boundary');
+    delete unresolvable.visibilitySeq;
+    const canonicalize = store.canonicalizeCursor.bind(store);
+    store.canonicalizeCursor = (messageId, thread) =>
+      messageId === unresolvable.id ? messageId : canonicalize(messageId, thread);
+
+    const replay = await buildIncrementalRebuildReplay({
+      messageStore: store,
+      userId: 'user1',
+      threadId,
+      catId: 'dsh',
+      thinkingMode: 'play',
+      boundaryId: cursorFor(current),
+      promptMessageIds: [current.id],
+    });
+    assertBoundedReplay(replay);
+    assert.ok(replay.includes('resolvable prior history'));
+    assert.ok(!replay.includes('UNRESOLVABLE_POSITION'));
   });
 });
