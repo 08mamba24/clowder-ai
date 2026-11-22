@@ -8,12 +8,14 @@
 
 ## 四项问题
 
+当前三项已恢复并验收，只剩Pro外部429。[boot16部署后验收记录](2026-11-22-member-chain-runtime-boot16-acceptance.md)包含实际加载、98项隔离回归、点点续聊和谱谱真实gh审计证据。
+
 | 项目 | 当前状态 | 下一步 |
 |---|---|---|
-| 1. 点点 ACP 续聊失败 | PR #79 已合入 `10dd3dc20`，Alpha 构建及77项回归通过，待线上验收 | 原父Task generation 3 合并等待 #79/#80，加载后验点点正常续聊 |
-| 2. 银闪启动 canary 失败 | PR #78 已部署，隔离启动与真实回话验收通过 | 本项关闭；其余三项继续按各自条件处理 |
-| 3. Pro 读取 429 | 银闪已完成有界诊断，未证实本地接线缺陷；精确读取仍报外部 MCP SSE probe 429 | 保留原始错误，恢复后再验精确读取；当前不承担正式 review |
-| 4. 谱谱 gh 凭据 | PR #80 已合入 `39534073f`，Alpha 49项及实际双adapter探针通过，待线上验收 | 原父Task generation 3 等待实际加载；谱谱新invocation内 gh 读取成功后关闭 |
+| 1. 点点 ACP 续聊失败 | PR #79 已在boot16部署，旧session受控重建并正常回复，验收通过 | 本项关闭；详见boot16验收记录 |
+| 2. 银闪启动 canary 失败 | PR #78 已部署，隔离启动与真实回话验收通过 | 本项关闭 |
+| 3. Pro 读取 429 | boot16重启后精确读取复测一次仍报外部MCP SSE probe 429 | 唯一未恢复项；外部通道恢复后验精确消息读取，当前不承担正式review |
+| 4. 谱谱 gh 凭据 | PR #80 已在boot16部署，真实gh读取EXIT0且宿主审计归属匹配，验收通过 | 只读通道恢复，本项关闭；原owner续办工位善后 |
 
 ### 1. 点点 ACP 续聊缺少受控重放
 
@@ -38,7 +40,8 @@
 - **谱谱 / 旧失败归因与必要修复**：Task `0001795359172107-000172-808f2c0b`，分派 `0001795359223427-000176-3266bc87`。先收现行 #80，再核 `/tmp/pr79-fork-selected.log` 中五条 qoder canary 失败与 #78 ancestry/blob 的关系、current main 与 approved head 的交集。基线过期 exclusion 及中断均保留，不改日期、不伪绿；没有新缺陷就交可复核证据，确需修源码才另立工位交新 exact SHA 审查，不触碰银闪验证工位。最终合入门、非作者合入及部署后验收仍由砚砚61负责。
 - **拆分交付已消费**：谱谱 `0001795359800254-000187-f6e71380` 提供 `/tmp/20261122-pr79-fork-attribution-zcode.md`，证明 approved head 不含 #78，而 main/集成树包含，五败与 #79 七文件零交集，未改源码。银闪 `0001795359196329-000174-355254ac` 从 exact 集成树导出后 build 三包通过、replay **77/77**；原 fork API **142/151、fail 9** 与 MCP **6/6** 保留，九败原始签名为 nested Seatbelt 拒绝八项及 `/tmp` mkdir EPERM 一项。其证据已由原创建者迁至 [集成验收索引](2026-11-22-pr79-integration-evidence/README.md)，原25份文件 hash 逐项匹配；自建1.8GB导出及原根目录日志空壳已收走，真正工位未动。拆分 owner 缺 task 回调工具，未冒充其身份代改完成态，交付与合入事实写回本父责任。
 - **宿主补验与合入门**：同一集成工位用 Node 24.22.3、临时 HOME/不可连接 Redis 跑 qoder service、memory policy、origin boot smoke 三文件，**101/101、exit 0**，补足上述全部九个受限用例；日志 `/tmp/20261122-pr79-integration-host-gap-tests.log`。其余五个 API 文件50项与 MCP6项由银闪实际通过；全部唯一九文件选集均已有通过覆盖，不谎称单次157项命令绿。独立核对 current main 与 reviewed patch 的 C2 交集为空，集成树到合入前 main 仅共享 TODO 文档差异；旧 resolver 失败、旧五败和中断不改写。风险、原 accepted source、exact typed review、验证及 E1-E5 已写[合入证据评论](https://github.com/08mamba24/clowder-ai/pull/79#issuecomment-7081152712)，中文正文与评论均经 GitHub API 逐字回读。
-- **已合入、未登记线上恢复**：砚砚61作为非作者执行 squash merge，PR truth 已回读 `MERGED`（2026-11-22 15:15:30 UTC），合入 SHA `10dd3dc20ce9a734e3451250d49c665b3634bfaf` 同时为远端 main tip；主仓已 ff-only 同步。原父 Task 最初登记 `deploymentWait` **generation 2**；#80合入后已由下述 generation 3 合并承接两项验收，subject 仍为 `deployment:380f50e6414ee4ba1c352c3c50511ff1f9faa09045f65cd02f452cd4fe6bc7bf:runtime`，等待精确合入 SHA 被 ready API 包含，baseline 为 boot15；不轮询、不自行重启。届时从隔离数据验增量/carrier，并做点点正常续聊回话确认。Alpha已ff-only到冻结合入 SHA并重建实际API/依赖；`managed-job-927ec69cf4e79e8c7ed54496e6644299fa688eed` 托管终态已消费为 `succeeded/exit 0`，新旧 replay/context-assembler **77/77、0 fail/cancel**。日志 SHA-256 `9ad90255b63dc3df1bb05a949370ba611864b399f2a00a97c0f09f8e135d5a50`。这只证明隔离验收；`main=landed:10dd3dc20`，`live=dormant:awaiting-generation-3-combined`。
+- **已合入、未登记线上恢复**：砚砚61作为非作者执行 squash merge，PR truth 已回读 `MERGED`（2026-11-22 15:15:30 UTC），合入 SHA `10dd3dc20ce9a734e3451250d49c665b3634bfaf` 同时为远端 main tip；主仓已 ff-only 同步。原父 Task 最初登记 `deploymentWait` **generation 2**；#80合入后已由下述 generation 3 合并承接两项验收，subject 仍为 `deployment:380f50e6414ee4ba1c352c3c50511ff1f9faa09045f65cd02f452cd4fe6bc7bf:runtime`，等待精确合入 SHA 被 ready API 包含，baseline 为 boot15；不轮询、不自行重启。届时从隔离数据验增量/carrier，并做点点正常续聊回话确认。Alpha已ff-only到冻结合入 SHA并重建实际API/依赖；`managed-job-927ec69cf4e79e8c7ed54496e6644299fa688eed` 托管终态已消费为 `succeeded/exit 0`，新旧 replay/context-assembler **77/77、0 fail/cancel**。日志 SHA-256 `9ad90255b63dc3df1bb05a949370ba611864b399f2a00a97c0f09f8e135d5a50`。这只证明隔离验收；`main=landed:10dd3dc20`，`live=activated_and_accepted:boot16`，具体新代际证据见下条。
+- **boot16真实入口验收已通过**：原generation3以matched/delivered唤醒，消息 `0001795363785384-000000-6b339a19`。health/PID16180/cwd/实际构建共同确认运行revision `61f95378fe805ec0d15b338190b6282fada324c1`，boot=`90313d9d-963a-4b19-bc92-3497a61e729f`/sequence16。该runtime实际dist在临时HOME/隔离数据下 **98/98、exit0**，双实际adapter无模型探针亦通过。只派一次点点正常续聊（source `0001795363935027-000002-20eda3b8`），持久回复 `0001795363935129-000004-1dd38bb6` 精确replyTo、正文“收到”。API日志确认 invocation `606e010b-f59b-4d43-af38-e38df987a8f2` 使用原旧session `d5923e1e-de35-4071-853f-cec634d000f2` 进入受控replacement，生成新session `24be81ee-7910-42f1-bd6d-f0624a954395`，promptStream完成且eventCount1。未重置历史或放松门；本项已恢复并关闭。
 - **Pro 独立校准**：operator 授权消息 `0001795353530855-000718-e3237d6f`。首个长请求 `0001795353938185-000727-f003f5c8` 未完成审查：Pro 在 `0001795353966738-000732-9f2f1bd8` 报告材料截断、工具读写 404。代码核实云桥 `DELTA_PAYLOAD_MAX_CHARS=2000`，包含固定信封且 intent 出现两次，长源码在发送前已裁掉。随后改为 239 字符的单问题请求 `0001795354223080-000740-9dcdabe7`；Pro 在 `0001795354234451-000743-cb711790` 确认看见 END79，给出“返回可见行数不能限制底层扫描”的具体判断与反例。该判断经上述本地计数探针核实，已反馈作者；一次 advisory 校准已产出实质结果，不构成整 PR 批准，不追加常规修复轮次。
 
 ### 2. 银闪 Node 包元数据被沙箱拒绝
@@ -74,6 +77,8 @@
 - **健康探针的适用性**：本轮宿主只读检查未发现默认 3098 监听或 cloudflared 进程；但 fork 的根 `package.json` 已无 `cloud:status` / `cloud:doctor` 注册，`scripts/port-drift/exported-scripts.mjs` 明确将该 supporting-service helper 标为 home-only。旧 F247 runbook 不能证明当前连接器仍采用该部署路径，因此没有访问未知端口、启动服务或据此把外部 429 改判成本地服务离线。后续恢复仍以实际连接器成功读取指定消息为准。
 - **当前连接器复测**：砚砚61通过独立云端猫咖连接只调用一次 `get_message(messageId=0001795355952214-000030-04b0ae6a, mode=full, contextCount=0, agentKeyCatId=gpt-pro)`，仍返回 `McpServerError: MCP SSE probe returned 429 from openai.org`，未取得目标正文。该证据是本轮连接器实测，不是 Pro 成功读上下文；不追加高频重试或正式 review。
 
+- **boot16后复测**：新runtime就绪后通过独立云端连接器仅复测一次上述精确消息读取，仍 `isError=true / UNAVAILABLE / invalid_mcp_response / status_code=429`，原始错误仍为 `MCP SSE probe returned 429 from openai.org`；没有拿到正文。重启没有恢复此通道；四项中仅本项未恢复，不追加高频重试或正式review。
+
 ### 4. 谱谱 gh：隔离事实与新授权分开
 
 - **本轮复测**：宿主 `gh api user` 成功，login 为 `08mamba24`；仅切到 zcode 隔离 HOME / XDG_CONFIG_HOME、无 GH 覆盖的子进程中，`gh auth status` 返回未登录。未执行登录、复制凭据或冒烟写操作。
@@ -89,8 +94,11 @@
 - **作者合入门交付已消费**：`0001795360241726-000192-b2f402be` 与 `/tmp/20261122-pr80-merge-gate-evidence.md`；在被审 exact SHA `441133702` 上，唯一 fork 配置的 API八文件 **152/152**、MCP一文件 **6/6**，合计 **158/158、0 fail/cancel/skip**。砚砚61读取原始输出，未把作者执行写为独立重跑。原 canonical resolver 仍因既有 F306 exclusion 于2026-11-13过期 exit 1，保留失败、未改日期或排除策略。
 - **合入门与远端真相**：current main `7c5de0b9e` 相对 oldBase `fb1740386` 的变更，与本 PR十三文件交集为空。#79仅补 routing/replay 历史生产，未改 read-descriptor、broker/schema 或 adapter/lease 契约；本 PR在AcpAgentService的净变更仅注释。merge-tree无冲突；原source/revision与typed APPROVED逐项对账，E1-E5通过。五轴风险已补正文；[合入证据评论](https://github.com/08mamba24/clowder-ai/pull/80#issuecomment-7081296737)与中文正文均经GitHub API逐字核对。砚砚61作为非作者执行squash merge，PR truth回读 **MERGED（2026-11-22 15:26:38 UTC）**，合入SHA **`39534073ff190b67d455269d30938e830f5429cf`** 已在origin/main；主仓ff-only同步。
 - **合入后隔离验收**：Alpha ff-only到冻结 `39534073f` 后重建API/依赖；`managed-job-bb8999637e5b7087a39d3d00c5dee626f833baa1` 终态已消费为 **succeeded / exit 0**。carrier/pin/secret-send **28/28** + adapter/service/lease **21/21**，实际双adapter无模型探针再确认同HOME各自lease、重叠与B退出后A审计仍归A、load清除/恢复、native MCP=[]与实际目录清理。探针仅替换已审脚本的checkout路径，未模拟adapter消费；不触碰真实模型、GitHub凭据或用户数据。日志SHA-256 `00e4253da3958de07e416944d758953e950b12bc8dd3834db78b1a6fc7e755e3`；Alpha与作者工位跟踪文件均干净。
-- **原父Task合并等待**：成功登记runtime `deploymentWait` **generation 3**，冻结目标 `39534073ff190b67d455269d30938e830f5429cf`；Git ancestry已证明它包含#79合入 `10dd3dc20`。该单次等待显式承接generation2的点点续聊验收，并增加#80实际gh读取验收，baseline仍boot15，autoRenew=false；未丢弃旧责任或新建镜像Task。触发后核对ready API实际加载/产物、隔离复验，再让谱谱在新invocation实跑 `gh pr view 80 --repo 08mamba24/clowder-ai`；读取成功且审计归属正确才登记恢复。`main=landed:39534073f`，`live=dormant:awaiting-generation-3`。
+- **原父Task合并等待**：成功登记runtime `deploymentWait` **generation 3**，冻结目标 `39534073ff190b67d455269d30938e830f5429cf`；Git ancestry已证明它包含#79合入 `10dd3dc20`。该单次等待显式承接generation2的点点续聊验收，并增加#80实际gh读取验收，baseline仍boot15，autoRenew=false；未丢弃旧责任或新建镜像Task。触发后核对ready API实际加载/产物、隔离复验，再让谱谱在新invocation实跑 `gh pr view 80 --repo 08mamba24/clowder-ai`；读取成功且审计归属正确才登记恢复。`main=landed:39534073f`，`live=activated_and_accepted:boot16`，具体新代际证据见下条。
 - **工位与边界**：工位真实owner=zcode；其CLI显式 `--owner zcode` 后已通过owner检查，当前缺远端PR读取凭据，bind-pr未完成。保留原Task来源与作者工位至部署后验收，不冒充身份、改owner或代造别猫Task完成态；#79原作者与集成工位也未被代删。当前open PR库存仅见无关#74，本轮不接管。未来写能力、权限扩张、运行配置与账号动作另按现有边界处理；Pro实际读取条件未满足，未交正式review。
+
+- **boot16真实gh验收已通过**：source `0001795363935070-000003-10163338` → invocation `6284fd0d-b463-402b-859c-18c73fa9a5f7` →完整回复 `0001795363935208-000005-208f06ca`。谱谱在该真实会话一次执行 `gh pr view 80 --repo 08mamba24/clowder-ai`，回传 **EXIT0、number80、stateMERGED、head441133702**。宿主当日EventAuditLog独立读到 `agent_github_read` 事件 `6d3b2d8e-fbe7-4b88-a101-2ef9cddcf2d2`：invocation/线程精确匹配、cat=zcode、repo=08mamba24/clowder-ai、op=pr_view、outcome=read、headSha441133702、truncated=false。CLI结果与主体审计闭合，已授权八种固定读通道恢复，不代表新增写权限。原generation3已消费，不续约。
+- **作者工位续办**：当前读取已恢复，已按原owner派发 `0001795364068927-000008-80a53696` 续办 #80 canonical bind/finish/--check；处置回执未到前不记released，不代改owner或别猫任务状态。
 
 ## Chrome 已恢复的准确边界（不另计入上述四项）
 
@@ -100,7 +108,7 @@
 
 ## 证据入口
 
-- 历史 API PID 94213；本轮验收为 boot 15、PID 82768，cwd 均为 `cat-cafe-runtime/packages/api`。按各自时间与精确消息 ID 只读复核 API 日志，不把旧进程结果当成新代际观测。
+- 历史 API PID94213；银闪启动验收为boot15/PID82768，点点及谱谱gh部署后验收为boot16/PID16180，cwd均为 `cat-cafe-runtime/packages/api`。按各自时间与精确消息 ID 只读复核 API 日志，不把旧进程结果当成新代际观测。
 - `.cat-cafe/plugin-host/personal-chrome-host/delivery-ledger.json`：仅用于核对已有发送记录。
 - PR #76 / commit `d425e40e7`：原 ACP 重放门的来源。
 - 所有实验在临时测试目录或隔离工位完成；未删除数据、重置会话或修改运行配置。
