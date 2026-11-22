@@ -10,8 +10,8 @@
 
 | 项目 | 当前状态 | 下一步 |
 |---|---|---|
-| 1. 点点 ACP 续聊失败 | 增量入口缺少受控重放，已定位；未修 | 补真实消息库入口的重放生产和回归 |
-| 2. 银闪启动 canary 失败 | 已复现并完成分支修复 | PR #78 独立审查、合入、隔离验收 |
+| 1. 点点 ACP 续聊失败 | 增量入口缺少受控重放，已定位；修复已派宪宪 | 补真实消息库入口的重放生产和回归 |
+| 2. 银闪启动 canary 失败 | PR #78 修复已获独立复审放行 | fork-compat 合入检查、非作者合入、隔离验收 |
 | 3. Pro 读取 429 | 实测复现 OpenAI MCP 隧道 SSE 探测 429 | 外部通道恢复后验证真实工具读取 |
 | 4. 谱谱 gh 凭据 | 宿主已登录，隔离 HOME 未登录 | 明确实际权限，再接受控宿主 gh CLI |
 
@@ -23,7 +23,7 @@
 - **测试缺口**：`packages/api/test/native-acp-rebuild-route.test.js` 手动注入 `routeOptions: { history }`，没有覆盖线上不传该字段的入口。
 - **修法**：从同一授权、可见性边界内的 canonical 历史生成有界重放，覆盖串行、并行与真实 Queue 入口。回归只向消息库准备历史，不手塞 `options.history`，验证前轮内容进入 replacement session、预算和可见性保持成立。
 - **不采用**：直接省略旧 sessionId、删除旧 session 或放松重放校验；这些做法会掩盖失忆或审计断链。
-- **状态**：根因已定位，代码未修改。原修复作者为谱谱，后续修复须非作者独立审查。
+- **状态**：根因已定位；12:41 operator 授权并行分工（消息 `0001795351305664-000679-1174615a`），修复请求已送宪宪（`0001795351360491-000681-8415c0d8`），待其接责回执和代码交付。砚砚61 保留四项总收口与后续非作者审查，不并改同一链路。
 
 ### 2. 银闪 Node 包元数据被沙箱拒绝
 
@@ -33,8 +33,9 @@
 - **修复**：只把包装器实际所属 `@cat-cafe/mcp-server/package.json` 加入 workspace policy 的 literal read allowlist；根 manifest 保持拒读，不开放整个 runtime，不移除 canary。初版额外放行根 manifest，经砚砚独立 review 提出最小权限 P2 后，作者补齐对照并收窄。
 - **交付**：[PR #78](https://github.com/08mamba24/clowder-ai/pull/78)，分支 `fix/member-chain-20261122`，当前代码 commit `a887ef1c34fa64ed36677c5e01f046233e1b4399`，改动 `QoderAgentService.ts` 和现有 service 回归用例。
 - **验证**：现有 `L2: macOS controlled PATH resolves guarded gh and a runnable pnpm before provider spawn` 修前以线上同一 canary 错误失败；新增根 manifest 拒读断言在初版补丁上失败，收窄后 Qoder service + 真实 Seatbelt memory policy 共 **99/99** 通过，API 构建和修后 TypeScript 编译通过。对照实验中 `.env` 与 runtime 的 `scripts/lib` 继续拒读。未调用真实模型，未改在线 runtime 或运行配置。
-- **审查**：旧 SHA `37247e5549119b68e499f1d65e07cd9763f2935e` 的 typed verdict 为 changes_requested（消息 `0001795350798827-000675-56f7dbc9`）；修后 SHA 已回同一 reviewer 复审（请求 `0001795351232915-000677-327762f8`）。
-- **状态 / owner**：砚砚61 完成收窄和验证，待新 exact HEAD 的独立复审与发布验收；线上尚不能登记已恢复。
+- **审查**：旧 SHA `37247e5549119b68e499f1d65e07cd9763f2935e` 的 typed verdict 为 changes_requested（消息 `0001795350798827-000675-56f7dbc9`）；修后 exact SHA `a887ef1c34fa64ed36677c5e01f046233e1b4399` 已获同一非作者 reviewer 复审 APPROVED（`0001795351370906-000683-a12a4bea`），无剩余 P1/P2。
+- **合入检查**：canonical `pnpm --filter @cat-cafe/api run test:fork-compat` 已托管执行，job `managed-job-463fbf455a1815994f1027c76bc84d5b258a55c7`；尚未消费退出结果，不记为通过。
+- **状态 / owner**：砚砚61 完成收窄、定向验证和复审闭环，待 fork-compat、非作者合入与发布验收；线上尚不能登记已恢复。
 
 ### 3. Pro 429 位于云端 MCP 隧道探测层
 
