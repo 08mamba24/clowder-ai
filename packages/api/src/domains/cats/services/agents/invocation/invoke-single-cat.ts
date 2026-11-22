@@ -1283,6 +1283,8 @@ export interface InvocationParams {
     readonly promptMessageIds?: readonly string[];
     /** Existing F296 surface shape; telemetry forwards it without recomputing delta size. */
     readonly deltaSize?: import('../../session/context/context-surface-projection.js').ContextSurfaceProjection['deltaSize'];
+    /** ACP rebuild replay bound to this same projection boundary (see rebuildContextPrompt). */
+    readonly rebuildContextPrompt?: string;
   }>;
   /** Rebuild route-owned context when a late native binding turns a resume into a fresh session. */
   readonly rebuildPromptAfterSessionSeal?: () => Promise<string>;
@@ -3436,6 +3438,9 @@ async function* invokePreparedSingleCat(deps: InvocationDeps, params: Invocation
       };
     };
     let nativeAuthContinuation: NativeAuthContinuation | undefined;
+    // The factory owns the incremental projection, so it also owns the replay
+    // of what precedes that delta; a route-time value covers legacy history.
+    let projectedRebuildContextPrompt: string | undefined;
     const applyContextPromptFactory = async (): Promise<boolean> => {
       if (!params.contextPromptFactory) return false;
       if (!contextContinuityHandshake || !contextEpochDecision) {
@@ -3448,6 +3453,7 @@ async function* invokePreparedSingleCat(deps: InvocationDeps, params: Invocation
       prompt = projection.prompt;
       promptMessageIds = [...new Set(projection.promptMessageIds ?? [])];
       projectionDeltaSize = projection.deltaSize;
+      projectedRebuildContextPrompt = projection.rebuildContextPrompt;
       syncAnchorPromptMessageIds();
       if (deps.turnExecutionStore && promptMessageIds.length > 0) {
         const bound = await deps.turnExecutionStore.bindCoveredMessageIds(invocationId, promptMessageIds);
@@ -3983,7 +3989,9 @@ async function* invokePreparedSingleCat(deps: InvocationDeps, params: Invocation
       ...(isResume && !injectSystemPrompt && params.systemPrompt
         ? { resumeFallbackSystemPrompt: params.systemPrompt }
         : {}),
-      ...(isResume && params.rebuildContextPrompt ? { rebuildContextPrompt: params.rebuildContextPrompt } : {}),
+      ...(isResume && (projectedRebuildContextPrompt ?? params.rebuildContextPrompt)
+        ? { rebuildContextPrompt: projectedRebuildContextPrompt ?? params.rebuildContextPrompt }
+        : {}),
       // F118: Keep liveness warnings visible, but leave termination to explicit user cancel.
       livenessProbe: { stallAutoKill: false, stallWarningMs: CAT_INVOCATION_STALL_WARNING_MS },
       ...(catConfig?.cliConfigArgs?.length ? { cliConfigArgs: catConfig.cliConfigArgs } : {}),

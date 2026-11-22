@@ -134,7 +134,7 @@ export function createProjectionService({ state, closeDecisions }) {
 function createMockDeps(
   services,
   appended,
-  { turnCustodyProjectionService, sessionChainStore, sessionSealer, transcriptReader, sessionManager } = {},
+  { turnCustodyProjectionService, sessionChainStore, sessionSealer, transcriptReader, sessionManager, stores } = {},
 ) {
   let sequence = 0;
   return {
@@ -194,6 +194,10 @@ function createMockDeps(
     },
     socketManager: { broadcastToRoom: () => {} },
     turnCustodyProjectionService,
+    // Real-store suites replace the stub message store and enable the
+    // production incremental path (currentUserMessageId + delivery cursor).
+    ...(stores?.messageStore ? { messageStore: stores.messageStore } : {}),
+    ...(stores?.deliveryCursorStore ? { deliveryCursorStore: stores.deliveryCursorStore } : {}),
   };
 }
 
@@ -201,7 +205,7 @@ export async function runRoute(
   route,
   services,
   threadId,
-  { targetCats = ['codex'], projectionService, routeOptions = {}, sessionChainStore, mcpSupportOverrides } = {},
+  { targetCats = ['codex'], projectionService, routeOptions = {}, sessionChainStore, mcpSupportOverrides, stores } = {},
 ) {
   return withCatRegistryLock(async () => {
     const original = catRegistry.getAllConfigs();
@@ -231,6 +235,7 @@ export async function runRoute(
           async finalize() {},
         },
         transcriptReader: { readDigest: async () => null },
+        stores,
       });
       const yielded = [];
       for await (const message of route(deps, targetCats, 'cold rebuild probe', 'user1', threadId, {
