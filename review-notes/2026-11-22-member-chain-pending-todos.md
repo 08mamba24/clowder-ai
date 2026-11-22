@@ -10,7 +10,7 @@
 
 | 项目 | 当前状态 | 下一步 |
 |---|---|---|
-| 1. 点点 ACP 续聊失败 | PR #79 独立审查需修正 2 个 P2 | 宪宪修后回新 exact SHA，砚砚61 复审 delta |
+| 1. 点点 ACP 续聊失败 | PR #79 首轮反例已转绿，复审仍有 2 个预算 P2 | 宪宪修正候选资格与 raw scan 计费后回新 SHA |
 | 2. 银闪启动 canary 失败 | PR #78 已合入，Alpha 隔离验收通过 | 等 runtime 加载目标版本后按原 Task 验收 |
 | 3. Pro 读取 429 | 实测复现 OpenAI MCP 隧道 SSE 探测 429 | 外部通道恢复后验证真实工具读取 |
 | 4. 谱谱 gh 凭据 | 宿主已登录，隔离 HOME 未登录 | 明确实际权限，再接受控宿主 gh CLI |
@@ -23,12 +23,15 @@
 - **测试缺口**：`packages/api/test/native-acp-rebuild-route.test.js` 手动注入 `routeOptions: { history }`，没有覆盖线上不传该字段的入口。
 - **修法**：从同一授权、可见性边界内的 canonical 历史生成有界重放，覆盖串行、并行与真实 Queue 入口。回归只向消息库准备历史，不手塞 `options.history`，验证前轮内容进入 replacement session、预算和可见性保持成立。
 - **不采用**：直接省略旧 sessionId、删除旧 session 或放松重放校验；这些做法会掩盖失忆或审计断链。
-- **状态**：宪宪已接责到 `task:work:0001795351395942-000685-f60ff146`，提交 [PR #79](https://github.com/08mamba24/clowder-ai/pull/79)，head `8772e134d85deb82be07c38a60727af84e571c5c`。来源为 operator 并行授权 `0001795351305664-000679-1174615a` 与分派 `0001795351360491-000681-8415c0d8`。
+- **状态**：宪宪已接责到 `task:work:0001795351395942-000685-f60ff146`，提交 [PR #79](https://github.com/08mamba24/clowder-ai/pull/79)，首轮 head `8772e134d85deb82be07c38a60727af84e571c5c`，修后 head `b15a563144df40ea34efc62c0fb12b2ab9ecd8f6`。来源为 operator 并行授权 `0001795351305664-000679-1174615a` 与分派 `0001795351360491-000681-8415c0d8`。
 - **独立审查**：砚砚61 用 Node 24.22.3 复跑新 3 条与旧 6 条回归，**9/9** 通过，API `tsc --noEmit` 通过；补充真实 Store / 路由 / ACP carrier 反例后给出 **CHANGES_REQUESTED，0 P1、2 P2**，typed fact 消息 `0001795353475809-000713-98b5c0fd`。作者工位源码未改、HEAD 与远端一致；未创建 reviewer 沙盒。
 - **P2-1 / 选集窗口**：先取全线程最新 200 行、再过滤 viewer/boundary/delta，会让无关行挤掉旧历史。真实两轮中追加 205 条仅给 codex 的 whisper，第二轮当前问题仍进 prompt，但 replay 为空；真实 no-resume ACP 再报原 fail-closed 错误。205 条 delta 或 boundary 后记录亦能挤掉本来存在的 2 条旧历史。
 - **P2-2 / 游标坐标**：旧 hash 无 visibilitySeq 时，cursorFor 返回 v1；与 v2 boundary 比较的 0 表示不可判定，不能按 `<=0` 放行。真实 Store 的权威 index 可证明 later 消息在 boundary 之后，但该 hash 缺字段时被 helper 放入 replay。需解析权威坐标或使用已 canonical 化的读取结果。
-- **下一步**：两项已回宪宪修复；继续保留读取和 token 预算、viewer 边界及 carrier 门，不登记已通过或上线。修后只复审相应真实 delta。
-- **Pro 独立校准**：operator 在 `0001795353530855-000718-e3237d6f` 授权尝试 Pro review 后，砚砚61 已把上述冻结 SHA 的源码、接线 diff、既有验证与两个反例直接附在请求 `0001795353938185-000727-f003f5c8`，路由给 `gpt-pro`。本轮为一次只读 advisory，重点找遗漏边界；停止于一次建议返回，已有 P2 仍由宪宪修复、砚砚61 验证。当前仅确认路由，尚无 Pro 审查结论，不构成合入批准。
+- **修后复审**：`b15a563144df40ea34efc62c0fb12b2ab9ecd8f6` 独立回归 **14/14**、API `tsc --noEmit` 通过；原两支探针确认 205 条 whisper/delta/future 不再挤掉 replay，legacy 未来行不再泄漏，首轮 P2-2 已关闭。但新增预算逻辑仍有两个 P2，typed changes_requested 为 `0001795354407490-000752-b168f797`，不是批准。
+- **仍需修正的 P2-1 / 候选 token 资格**：候选阶段只过滤 viewer、prompt ID 和 canonical 位置，却把最终 assembler 会丢弃的长 `[错误]` agent、display-only system 或 briefing 计入 4000 token 停止阈值。真实 Store 对照：2 条有效旧问答、205 条别猫 whisper、1 条约 8000 token 的上述记录、当前问题；控制组有 replay，三种无效长记录各使 replay 为空，读取仅返回 100 行，远未达到 1000 上限。需复用同一可重放资格，防止无效内容提前耗尽预算。探针 `/tmp/20261122-pr79-review-delta-probes.mjs`。
+- **P2-3 / raw scan 预算**：`getByThreadBefore` 内部会过滤并补读；外层 `scanned += page.length` 仅数可见返回行。真实 `RedisMessageStore` 配纯内存计数传输桩，5000 条 canceled 加 anchor/prior 的对照实测 fetched=5002、hydrated=5002、rangeCalls=51，突破声明的 1000 raw 行上限。需采用真实扫描数与原始 continuation；过滤后空页不能冒充底层耗尽。探针 `/tmp/20261122-pr79-review-redis-scan-probe.mjs`；无 Redis 网络或生产数据访问。
+- **下一步**：两个预算问题已回宪宪修复；保留 viewer、canonical boundary、token 上限与 carrier 门，修后只复审真实 delta，不登记已通过或上线。
+- **Pro 独立校准**：operator 授权消息 `0001795353530855-000718-e3237d6f`。首个长请求 `0001795353938185-000727-f003f5c8` 未完成审查：Pro 在 `0001795353966738-000732-9f2f1bd8` 报告材料截断、工具读写 404。代码核实云桥 `DELTA_PAYLOAD_MAX_CHARS=2000`，包含固定信封且 intent 出现两次，长源码在发送前已裁掉。随后改为 239 字符的单问题请求 `0001795354223080-000740-9dcdabe7`；Pro 在 `0001795354234451-000743-cb711790` 确认看见 END79，给出“返回可见行数不能限制底层扫描”的具体判断与反例。该判断经上述本地计数探针核实，已反馈作者；一次 advisory 校准已产出实质结果，不构成整 PR 批准，不追加常规修复轮次。
 
 ### 2. 银闪 Node 包元数据被沙箱拒绝
 
@@ -53,7 +56,7 @@
 - **本地对照**：实际 API 日志在 09:06—09:24 UTC 的 HTTP 完成记录没有 HTTP 429；此结论仅覆盖已检查窗口与该 API 进程。
 - **处理**：当前证据不支持调整本地 gateway per-token 或 API 全局限流。外部通道恢复后，验证“读出指定消息并核对 ID”，而非只发 hi。持续失败时保留时间与结构化错误，用于连接器恢复或服务支持排查；不做高频重试。
 - **状态**：外部传输问题已复现，未恢复。原始 09:19 请求是否与本轮完全同因，缺少原始工具回执，不能追认。
-- **后续实测**：上述 Pro 审查请求同时要求仅尝试一次读取精确用户消息 `0001795353530855-000718-e3237d6f`，按真实工具回执报告结果；读取失败仍可审附带源码。尚未收到该工具结果，不用审查请求已送达代替读取恢复证据。
+- **后续观测**：首次 Pro 审查请求要求一次读取精确用户消息 `0001795353530855-000718-e3237d6f`；Pro 返回正文自述读写工具 404，尚无原始工具回执可核实失败层。短材料审查已有实质回传，但没有成功工具读取证据，不据此关闭 MCP 故障或把原 429 改判为 404 同因。
 
 ### 4. 谱谱 gh：隔离事实与新授权分开
 
