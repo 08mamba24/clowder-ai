@@ -360,6 +360,10 @@ async function handleSessionPrompt(
       afterMessageId = zcodeImageMessageCursor(before.result);
     }
   } catch (err) {
+    if (cancelledSinceStart()) {
+      acpResult(msg.id, { stopReason: 'cancelled' });
+      return;
+    }
     acpError(msg.id, -32602, formatZcodeTurnFailure(extractZcodeFailure(err)));
     return;
   }
@@ -419,15 +423,19 @@ async function handleSessionPrompt(
         { sessionId, limit: 10, direction: 'forward', ...(afterMessageId ? { afterMessageId } : {}) },
         timeoutMs,
       );
-      assertZcodeImagesMaterialized(snapshot.result, input.attachments);
       if (cancelledSinceStart()) {
         acpResult(msg.id, { stopReason: 'cancelled' });
         return;
       }
+      assertZcodeImagesMaterialized(snapshot.result, input.attachments);
       if (buffered.length) emitText(buffered.join(''));
     }
     acpResult(msg.id, { stopReason: outcome.terminal === 'cancelled' ? 'cancelled' : 'end_turn' });
   } catch (err) {
+    if (input.attachments.length > 0 && cancelledSinceStart()) {
+      acpResult(msg.id, { stopReason: 'cancelled' });
+      return;
+    }
     acpError(msg.id, -32603, formatZcodeTurnFailure(extractZcodeFailure(err)));
   } finally {
     waiter.dispose();

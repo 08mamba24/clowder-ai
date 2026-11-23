@@ -63,6 +63,31 @@ it('mixed text and multiple images preserve text order and all image bytes', asy
   });
 });
 
+it('native image transcoding does not discard a successfully materialized answer', async () => {
+  await withAdapter(async (acp, sessionId) => {
+    const out = await acp.request('session/prompt', {
+      sessionId,
+      prompt: [{ type: 'text', text: 'TRANSCODE_IMAGE' }, IMAGE],
+    });
+    assert.equal(out.error, undefined);
+    assert.equal(assistantText(acp.updates, sessionId), 'PONG');
+  });
+});
+
+it('model-unavailable recovery resends the same image attachment exactly once', async () => {
+  await withAdapter(async (acp, sessionId) => {
+    const out = await acp.request('session/prompt', {
+      sessionId,
+      prompt: [{ type: 'text', text: 'FAIL_MODEL_UNAVAILABLE' }, IMAGE],
+    });
+    assert.equal(out.error, undefined);
+    const sends = acp.rpcLog().filter((row) => row.method === 'session/send');
+    assert.equal(sends.length, 2);
+    assert.deepEqual(sends[0].attachments, sends[1].attachments);
+    assert.equal(assistantText(acp.updates, sessionId), 'PONG');
+  });
+});
+
 it('image proof stays bound to the new turn across history and a long tool exchange', async () => {
   await withAdapter(async (acp, sessionId) => {
     await acp.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'prior turn' }] });
@@ -113,6 +138,25 @@ it('cancellation during image preprocessing never starts a native turn', async (
       acp.rpcLog().some((row) => row.method === 'session/send'),
       false,
     );
+  });
+});
+
+it('cancellation during the post-turn image check wins over an unavailable cursor', async () => {
+  await withAdapter(async (acp, sessionId) => {
+    const prompt = acp.request('session/prompt', {
+      sessionId,
+      prompt: [{ type: 'text', text: 'SLOW_IMAGE_AUDIT' }, IMAGE],
+    });
+    const deadline = Date.now() + 4000;
+    while (!acp.rpcLog().some((row) => row.direction === 'forward')) {
+      assert.ok(Date.now() < deadline, 'native image check was not reached');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    acp.notify('session/cancel', { sessionId });
+    const out = await prompt;
+    assert.equal(out.error, undefined);
+    assert.equal(out.result?.stopReason, 'cancelled');
+    assert.equal(assistantText(acp.updates, sessionId), '');
   });
 });
 

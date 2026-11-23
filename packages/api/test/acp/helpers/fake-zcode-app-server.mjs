@@ -58,6 +58,7 @@ function logRpc(msg) {
       persistAsWorkspaceLastUsed: msg.params?.persistAsWorkspaceLastUsed ?? null,
       mcpServers: msg.params?.mcpServers ?? null,
       attachments: msg.params?.attachments ?? null,
+      direction: msg.params?.direction ?? null,
       decision: msg.decision ?? null,
       home: isolatedHome ?? null,
     })}\n`,
@@ -108,12 +109,17 @@ async function handle(msg) {
   }
   if (method === 'session/messages') {
     const rec = sessions.get(params.sessionId);
+    if (params.direction === 'forward' && rec?.history.some((row) => row.text.includes('SLOW_IMAGE_AUDIT'))) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      write({ id, error: { code: -32602, message: 'Message cursor is no longer available' } });
+      return;
+    }
     const rows = (rec?.history ?? []).map((row, index) => ({
       info: { role: row.role, messageId: `msg_${index}` },
       parts: (row.attachments ?? []).map((attachment) => ({
         type: 'file',
         filename: attachment.filename,
-        mime: attachment.mimeType,
+        mime: row.text.includes('TRANSCODE_IMAGE') ? 'image/jpeg' : attachment.mimeType,
         metadata: row.text.includes('DROP_IMAGE')
           ? { errorCode: 'attachment_image_resize_failed', recoverability: 'metadata_only' }
           : { recoverability: 'provider_ready', storageKind: 'artifact' },
@@ -195,7 +201,8 @@ async function handle(msg) {
       write({ id, error: { code: -32004, message: `Session not found: ${params.sessionId}` } });
       return;
     }
-    if (isUnsupportedExplicitModel(params.model)) {
+    const registeredEnvModel = params.model?.providerId === 'anthropic' && params.model?.modelId === rec.envModel;
+    if (!registeredEnvModel && isUnsupportedExplicitModel(params.model)) {
       write({
         id,
         error: {

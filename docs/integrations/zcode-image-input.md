@@ -18,7 +18,8 @@ tips_exempt: "Connects the existing chat image attachment flow for one carrier; 
 
 本补丁只为 GLM-5.4 启用图片，保留其它模型原有能力。
 上限沿用每次 5 张、每张 10 MiB；桥的解码验证另限每张 4000 万像素，防止高压缩图片占用过多资源。
-PNG 校验块 CRC，再用已有 sharp 验证解码；保留原始图片字节。
+PNG 校验块 CRC，再用已有 sharp 验证解码；桥保留交给原生的原始图片字节。
+ZCode 0.18.0 会对超过 2000px 或自身字节预算的图片压缩、转码，因此上游收到的 MIME 和字节可以变化。
 
 ## 实现与边界
 
@@ -27,6 +28,8 @@ PNG 校验块 CRC，再用已有 sharp 验证解码；保留原始图片字节�
 - 图片只来自 Hub 快照的 base64 字节，不接收任意 native 路径或远程 URL；文件名由桥生成。
 - 图片提示词发送前验证完整性；取消发生在解码期间时不启动模型。
 - 有图片的回答暂存至回合结束，沿发送前的消息游标检查本回合图片已为 `provider_ready` artifact，再显示回答。游标防止长工具链把原始用户消息挤出最近窗口。
+- 该状态只证明原生摄取已物化；它不能证明每一轮图片都进入 provider 请求。模型能力规则另由真实原生回环抓包验证，真实识图由绑定账号盲读验证。
+- 接受原生的合法图片转码，不要求处理后的 MIME 等于上传 MIME。图片回合取消会丢弃尚未确认的缓冲回答；取消优先于后置快照错误。原生压缩导致游标失效时明确失败。
 - 原生处理检查发生在回答显示之前，不能声称它会撤销原生已经执行的工具副作用。已知损坏和超限输入在发送前拒绝。
 - 不改变个人 HOME 隔离、历史存储、MCP/skills、GitHub read lease 或在线成员配置。
 
@@ -45,7 +48,7 @@ rg -n 'zcodeModelSupportsImages|prepareZcodePrompt|assertZcodeImagesMaterialized
 
 The model declaration has two consumers (handshake and generated provider rule); the prompt mapper and materialization check are consumed only by the ZCode carrier. The shared image-count constant retains the existing upload reader ceiling.
 
-Claim guard: chat images reach the provider as images → fake-carrier regression plus real-native loopback check → fails when capability is false, attachments are omitted, bytes differ, or native materialization becomes a placeholder.
+Claim guard: chat images reach the provider as images → real-native loopback inspects actual provider image blocks. Small images retain their bytes; large images may be transcoded. The post-turn check proves ingestion only, and must not be described as provider-delivery proof.
 
 ## 本轮验证
 
@@ -56,6 +59,7 @@ Claim guard: chat images reach the provider as images → fake-carrier regressio
 - 续接实测曾发现内部 `info.id` 被接口序列化为 `info.messageId`；保留原始失败并修正桥及假载体，长工具链与连续图片回合复验通过。
 - 实际绑定账号、隔离的新原生会话：随机数字图片盲读，期望 `357882`，模型回答 `357882`，通过。答案没有写入提示词。生成的临时凭证输入在退出后为 0 个。
 - 直接 API 探针曾返回 HTTP 529；第一张红色色块在真实载体中被答为 Brown。这些结果保留，不能把单次识图通过理解为模型准确率保证。
+- 非作者复审复现了 2600×1400 截图合法转码被误拒；已移除错误的 MIME 相等判断，新增大尺寸及超过 5MiB base64 的真实原生回归。取消落在后置检查期间与图片模型恢复也纳入回归，结果沿 PR 原始输出记录。
 - 正式非作者审查与线上激活另需实际回执；不以本文代替。
 
 完整聊天旅程尚未走通：当前运行态尚未包含补丁。合入后由同一 Task owner 砚砚61继续在隔离验收环境验证现有聊天入口，再按运行态授权激活；本地载体与识图证据不等同于线上解封。

@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { it } from 'node:test';
+import sharp from 'sharp';
 import { readAcpImageBlocks } from '../../dist/domains/cats/services/agents/providers/acp/acp-image-input.js';
 import { assistantText, ZCODE_TEST_PNG as PNG, startAdapter } from './helpers/zcode-acp-test-harness.mjs';
 
@@ -23,7 +25,7 @@ it(
       const images = (body.messages ?? [])
         .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
         .filter((block) => block.type === 'image');
-      captures.push(images.map((image) => image.source?.data));
+      captures.push(images.map((image) => ({ data: image.source?.data, mimeType: image.source?.media_type })));
       const message = {
         id: 'msg_fake',
         type: 'message',
@@ -78,7 +80,7 @@ it(
         25000,
       );
       assert.equal(out.error, undefined, JSON.stringify(out.error));
-      assert.ok(captures.some((images) => images.length === 1 && images[0] === PNG));
+      assert.ok(captures.some((images) => images.length === 1 && images[0].data === PNG));
       assert.equal(assistantText(acp.updates, session.result.sessionId), 'PONG');
       const loaded = await acp.request(
         'session/load',
@@ -100,8 +102,44 @@ it(
         25000,
       );
       assert.equal(resumed.error, undefined, `${JSON.stringify(resumed.error)} ${acp.stderr()}`);
-      assert.ok(captures.some((images) => images.length === 2 && images.every((data) => data === PNG)));
+      assert.ok(captures.some((images) => images.length === 2 && images.every((image) => image.data === PNG)));
       assert.equal(assistantText(acp.updates.slice(before), session.result.sessionId), 'PONG');
+
+      const wide = await sharp({ create: { width: 2600, height: 1400, channels: 3, background: '#e05a29' } })
+        .png()
+        .toBuffer();
+      const dense = await sharp(randomBytes(1200 * 1200 * 3), { raw: { width: 1200, height: 1200, channels: 3 } })
+        .png({ compressionLevel: 0 })
+        .toBuffer();
+      assert.ok(dense.toString('base64').length > 5 * 1024 * 1024, 'exercise the native base64 budget below 2000px');
+      let imageCount = 2;
+      for (const [name, bytes] of [
+        ['wide', wide],
+        ['dense', dense],
+      ]) {
+        writeFileSync(join(dir, `${name}.png`), bytes);
+        const images = await readAcpImageBlocks(
+          [{ type: 'image', url: `/uploads/${name}.png` }],
+          init.result.agentCapabilities.promptCapabilities,
+          undefined,
+          dir,
+        );
+        const start = acp.updates.length;
+        const response = await acp.request(
+          'session/prompt',
+          {
+            sessionId: session.result.sessionId,
+            prompt: [{ type: 'text', text: 'Reply PONG. Do not use tools.' }, ...images],
+          },
+          25000,
+        );
+        assert.equal(response.error, undefined, `${name}: ${JSON.stringify(response.error)}`);
+        const projected = captures.at(-1);
+        assert.equal(projected.length, ++imageCount);
+        assert.equal(projected.at(-1).mimeType, 'image/jpeg', `${name} should be valid native transcoding`);
+        assert.ok(projected.at(-1).data.length > 0);
+        assert.equal(assistantText(acp.updates.slice(start), session.result.sessionId), 'PONG');
+      }
     } finally {
       acp.child.kill('SIGTERM');
       await Promise.race([

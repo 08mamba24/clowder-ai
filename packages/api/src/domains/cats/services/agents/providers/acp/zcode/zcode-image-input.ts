@@ -90,10 +90,10 @@ export function assertZcodeImagesMaterialized(result: unknown, attachments: read
     ? user.parts.filter((part: Part) => part.type === 'file' && part.mime?.startsWith('image/'))
     : [];
   if (parts.length !== attachments.length) throw new Error('image_input_unavailable: 图片未能完整处理，请重试。');
-  for (const [index, image] of attachments.entries()) {
-    const part = parts[index];
+  // Native may resize/re-encode a valid PNG as JPEG. This proves ingestion,
+  // not byte identity after native processing or delivery to the model.
+  for (const part of parts) {
     if (
-      part?.mime !== image.mimeType ||
       part.metadata?.errorCode ||
       part.metadata?.recoverability !== 'provider_ready' ||
       part.metadata?.storageKind !== 'artifact'
