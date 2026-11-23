@@ -25,7 +25,6 @@ const RECONCILED_EXCLUSIONS = [
   'f188-harness-consistency\\.test',
   'f236-cc-anchor-hook\\.test',
   'harness-eval/merge-gate-provenance-contract\\.test',
-  '^test/f306-native-home-provider-hooks\\.test\\.js$',
 ];
 
 async function listTestFiles(rootDir, relDir = '') {
@@ -96,6 +95,7 @@ test('registry retains only audited exclusions and drops re-admitted cases', asy
     'orphan-chrome-cleaner',
     'f203-phase-i-opencode-l0',
     'github-schedule-factories',
+    'f306-native-home-provider-hooks',
   ]) {
     assert.equal(
       registry.entries.some((entry) => entry.id === id),
@@ -158,7 +158,11 @@ test('resource-only SOP coverage stays excluded while portable Codex contracts a
 test('resolver re-admits the exported Claude hooks and F296 composition coverage', async () => {
   const { resolvePublicTestFiles } = await import(resolverModuleUrl);
   const resolved = await resolvePublicTestFiles({ packageRoot, configPath: registryPath });
-  for (const portableTest of ['test/f296-b3b3-post-compact-hook.test.js', 'test/f333-cli-hook-credentials.test.js']) {
+  for (const portableTest of [
+    'test/f296-b3b3-post-compact-hook.test.js',
+    'test/f333-cli-hook-credentials.test.js',
+    'test/f306-native-home-provider-hooks.test.js',
+  ]) {
     assert.ok(resolved.selectedFiles.includes(portableTest));
   }
   assert.ok(resolved.selectedFiles.includes('test/f296-session-hook-auth.test.js'));
