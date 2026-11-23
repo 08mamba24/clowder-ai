@@ -2,19 +2,19 @@
 
 - 会话：`thread_owned_5df7c329505b2cd48350dbb88294ebc6ef96de23`
 - 原记录：谱谱 / glm-5.3；证据复核：砚砚61 / gpt-6.1-sol
-- 更新：2026-11-22；下文时间均为 UTC。
+- 更新：2026-11-23；下文时间均为 UTC。
 - 接续来源：用户消息 `0001795349271656-000669-42e7567e`。
 - Task：`task:work:0001795349706232-000671-8fce4bcd`。
 
 ## 四项问题
 
-当前三项已恢复并验收，只剩Pro外部429。[boot16部署后验收记录](2026-11-22-member-chain-runtime-boot16-acceptance.md)包含实际加载、98项隔离回归、点点续聊和谱谱真实gh审计证据。
+当前三项已恢复并验收，只剩Pro的MCP连接故障。连接器曾报429，旧公网入口当前另有530/1033观测；两者的因果及当前目标绑定尚未核实，不能只登记为“等OpenAI恢复”。[boot16部署后验收记录](2026-11-22-member-chain-runtime-boot16-acceptance.md)包含实际加载、98项隔离回归、点点续聊和谱谱真实gh审计证据。
 
 | 项目 | 当前状态 | 下一步 |
 |---|---|---|
 | 1. 点点 ACP 续聊失败 | PR #79 已在boot16部署，旧session受控重建并正常回复，验收通过 | 本项关闭；详见boot16验收记录 |
 | 2. 银闪启动 canary 失败 | PR #78 已部署，隔离启动与真实回话验收通过 | 本项关闭 |
-| 3. Pro 读取 429 | boot16重启后精确读取复测一次仍报外部MCP SSE probe 429 | 唯一未恢复项；外部通道恢复后验精确消息读取，当前不承担正式review |
+| 3. Pro MCP 读取与连接失败 | 连接器曾报SSE probe 429；11月23日03:41旧公网入口530/1033已独立复现，两者关系待核 | 唯一未恢复项；先核当前连接器目标及隧道归属，再验精确消息读取，当前不承担正式review |
 | 4. 谱谱 gh 凭据 | PR #80 已在boot16部署，真实gh读取EXIT0且宿主审计归属匹配，验收通过 | 只读通道恢复，本项关闭；作者工位已归档并移除 |
 
 ### 1. 点点 ACP 续聊缺少受控重放
@@ -62,7 +62,9 @@
 - **真实正常回话验收**：承接用户 `0001795355220621-000758-840dfa65` 的 hi，仅派发一次当前服务上的正常回复确认，source `0001795355652994-000011-22ad7535`，invocation `53d97f74-19dd-42e9-982f-08053e7d2035`。银闪在本线程的持久回复 `0001795355653087-000012-8923609d` 已包含“收到”，且生命周期已不再 processing。未要求执行额外排查命令或改配置；这是实际回复证据，不以模型自述链路名称作为 provider 证据。
 - **状态 / owner**：`main=landed:79d03e16b9f39ee0fa50f3f60c4a008c0a134fd3`，`live=activated_and_accepted:boot15`；本项启动故障已恢复并完成原 Task 的部署后验收。13:47 的空失败发生在旧 API 启动代际，不能代替本轮结果；其余问题不因本项成功自动关闭。
 
-### 3. Pro 429 位于云端 MCP 隧道探测层
+### 3. Pro MCP 读取失败：连接器429与公网1033
+
+以下保留各时段的原始观测；归因范围以本节末尾2026-11-23的独立复审为准。
 
 - **原始线索**：消息 `0001795339167201-000636-4e7063ae` 是 Pro 对读取失败的描述；callback 只能证明回复回传，不能单凭正文认定限流层。
 - **本轮实测**：通过独立的云端猫咖连接调用只读 `cat_cafe_get_thread_context`（本线程、`limit=1`），返回 `isError=true`：`McpServerError: MCP SSE probe returned 429 from openai.org`。结构化错误为 `error_code=UNAVAILABLE`、`type=invalid_mcp_response`、`status_code=429`，URL 属于 OpenAI 内部 MCP tunnel service。本记录不复制隧道标识或凭据。
@@ -78,6 +80,23 @@
 - **当前连接器复测**：砚砚61通过独立云端猫咖连接只调用一次 `get_message(messageId=0001795355952214-000030-04b0ae6a, mode=full, contextCount=0, agentKeyCatId=gpt-pro)`，仍返回 `McpServerError: MCP SSE probe returned 429 from openai.org`，未取得目标正文。该证据是本轮连接器实测，不是 Pro 成功读上下文；不追加高频重试或正式 review。
 
 - **boot16后复测**：新runtime就绪后通过独立云端连接器仅复测一次上述精确消息读取，仍 `isError=true / UNAVAILABLE / invalid_mcp_response / status_code=429`，原始错误仍为 `MCP SSE probe returned 429 from openai.org`；没有拿到正文。重启没有恢复此通道；四项中仅本项未恢复，不追加高频重试或正式review。
+
+#### 公开upstream核对（2026-11-22）
+
+- 用户来源 `0001795364824715-000014-df977133`，点点交付 `0001795364824844-000015-d293dfe5`。砚砚61独立用远端 `ls-remote` 核实公开仓两个分支，并在冻结本仓 `737912167d09128cb8f9287a055289c87ae9f195` 上预演；未执行实际merge或cherry-pick。
+- `upstream/main=42017e0cea07e3e259e7fb183be70433f05e131c` 已是本仓祖先，冻结比较为本仓ahead334/behind0；merge-tree退出0，结果树与本仓相同。准确含义是没有新内容可合，不是把本仓快进到一个旧提交。
+- `upstream/next=266714d41b3f444fd5f16faa276ea3db0b320ad8` 与冻结本仓比较为ahead336/behind132。merge-tree退出1、112个冲突文件，包含invoke-single-cat、AcpAgentService、serial/parallel路由及guarded gh。两份独立预演原始输出在 `/tmp/20261122-yanyan61-upstream-{main,next}-merge-preview.log`；本轮不整体合入next。
+- 独立回读[公开PR #2012](https://github.com/zts212653/clowder-ai/pull/2012)及合入commit `8e3462f60ee306925f956bed4e4f96e6f87210fd` 的两文件diff：它将uvx等包运行器的本地MCP探测超时从2500ms改为7000ms。当前没有这类慢启动故障证据，本次不引入该补丁，不把它当作SSE probe 429的修复。
+- 在已查公开next新增提交的相关MCP修复及上述精确diff中，未找到能直接解释当前Pro错误的修复；未核实的私有仓、分支或部署不在这个否定结论内。公开仓没有合适补丁也不能反推根因必在OpenAI。
+
+#### 归因报告独立复审（2026-11-23）
+
+- 用户要求定位后review：`0001795405046970-000038-c3d65d1e`；谱谱送审 `0001795405121016-000039-fa8eb85f`。实际材料为 `review-notes/2026-11-23-pro-429-attribution-zcode.md`，送审路径的423为笔误。被审本地文件SHA256=`4a42e12c3ef87a26b60bdffb5641e450b1d8c369f99bc373fc329ab6bc7743b6`；它尚未提交，不冒充exact Git HEAD批准。
+- **结论：CHANGES_REQUESTED，0 P1、3 P2，已沿原诊断退回作者**，消息 `0001795405404786-000041-958c9f83`。这些是报告证据与推论问题，不是新增三个线上故障。作者原件未由reviewer改写；未改配置、启停进程、轮换token或重试Pro工具。
+- **P2-1 / 状态码枚举不完整**：`remote-spike.ts:376-379` 将 `sharedDotRpc` 返回的status直接写回；`remote-shared-dot.ts:51-64,134-136` 对events/list、subscribe、unsubscribe透传Host HTTP状态。SDK另有406/409/415路径。独立探针用合成凭据和fetch桩让Host分别返回200/429，实际 `handleMcpRequest` 分别返回200/429，退出0、真实网络调用0。故“spike物理发不出429”被反例推翻；该反例不证明历史Pro请求走了Dot或本地实际限流。探针及日志为 `/tmp/20261123-yanyan61-shared-429-review-probe.mjs`、同名`.log`，SHA256分别为 `d8db5928bd3b44bbe11c389548a05a11e26d8be0118eac7e3eb7161556f5df99`、`d2c7d2a0c5e15bab70c61accd5cf4954ad2410d0ce11acf4e73534f3167645a7`。
+- **P2-2 / 报错层不等于根因**：错误串未在本仓找到、错误显示openai.org，均不足以排除下游响应被连接器包装；普通聊天或Chrome回程成功也不排除独立MCP源站故障。[OpenAI官方MCP文档](https://developers.openai.com/api/docs/guides/tools-connectors-mcp)说明error可以承载协议、工具或连接问题，没有为这个内部错误串提供根因保证。需同一请求的当前目标绑定、标识/headers和相关端点日志，才能缩小429的起因。砚砚61此前“根因确定为OpenAI内部限流、只等外部恢复”的表述一并收窄；“两项独立根因并存”尚未证实。
+- **P2-3 / 机器归属与端点绑定未证**：砚砚61在 **03:41:01 UTC** 对 `https://mcp.clowder-ai.com/mcp` 单次无凭据POST `{}`，独立得到 **HTTP530、body=`error code: 1033`、server=cloudflare、cf-ray=`a5ed27e51fa1d2c4-ICN`**。原始过滤回执 `/tmp/20261123-yanyan61-pro-public-endpoint-review.json`，SHA256=`962f22db597deb6fb76f6f7a3c2ff7409fbfb413f1d4a2fa905f0d60ac2acef1`。[Cloudflare官方定义](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1033/)只确认该域名的Tunnel没有可用健康connector，并要求核对DNS指向；不能由此认定spike进程已停、源站在另一台机器。本机此刻无旧端口/进程/目录，加上历史401鉴权返回，也不能证明历史机器归属、后端API/MCP工具成功，或这个公网入口就是当前Pro已安装连接器的目标。
+- **下一步与当前责任**：谱谱续办原诊断，修正文档并整理已有原始回执；能只读确认当前connector去凭据目标、域名/Tunnel绑定与实际部署归属就补证据，不能读取的标为未知，不凭猜测要求operator去另一台机器重启。原父Task继续持责；未恢复项仍为Pro MCP可用性，三项已验收修复保持关闭。归因及通道恢复后，仍以一次成功读取指定消息并核对ID/正文为验收条件。
 
 ### 4. 谱谱 gh：隔离事实与新授权分开
 
