@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { normalizeZcodeAnthropicBaseUrl, readZcodeEnvModel } from './zcode-acp-protocol.js';
+import { normalizeZcodeAnthropicBaseUrl, readZcodeEnvModel, zcodeModelSupportsImages } from './zcode-acp-protocol.js';
 
 /** Resolve the selected installation, never a different App's provider catalog. */
 export function zcodeProviderPaths(bin: string): Record<string, string> {
@@ -29,6 +29,7 @@ export function createZcodeProviderConfig(home: string, env: NodeJS.ProcessEnv):
   removeAbandonedProviderInputs(home);
   const modelId = readZcodeEnvModel(env.ZCODE_MODEL);
   const providerId = 'anthropic';
+  const images = zcodeModelSupportsImages(modelId);
   const config = {
     providerConfigRules: {
       providerRules: modelId
@@ -50,8 +51,17 @@ export function createZcodeProviderConfig(home: string, env: NodeJS.ProcessEnv):
           ]
         : [],
     },
-    modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] },
-    ...(modelId ? { defaultModelSelection: { providerId, modelId } } : {}),
+    modelConfigRules: {
+      providerModelRules: images
+        ? [{ providerId, modelId, config: { properties: { inputFormat: { supportsImage: true } } } }]
+        : [],
+      manualProviderModelRules: [],
+    },
+    ...(modelId
+      ? {
+          defaultModelSelection: { providerId, modelId, ...(images ? { options: { reasoningLevel: 'enabled' } } : {}) },
+        }
+      : {}),
   };
   const dir = mkdtempSync(join(home, `.provider-runtime-${process.pid}-`));
   const path = join(dir, 'provider.json');

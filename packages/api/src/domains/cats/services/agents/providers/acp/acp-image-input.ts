@@ -15,7 +15,7 @@ const MIME_TYPES: Record<string, string> = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
 };
-const MAX_IMAGES = 5; // Same image-count ceiling as multipart message admission.
+export const MAX_ACP_IMAGES = 5; // Same image-count ceiling as multipart message admission.
 const invalid = () =>
   new AcpImageInputError('image_input_invalid', '图片附件路径或格式无效，请重新上传 PNG/JPEG/GIF/WebP 图片。');
 const tooLarge = () =>
@@ -36,7 +36,7 @@ export async function readAcpImageBlocks(
   const images = content?.filter((block) => block.type === 'image') ?? [];
   if (images.length === 0) return [];
   requireAcpImageCapability(capabilities);
-  if (images.length > MAX_IMAGES) throw tooLarge();
+  if (images.length > MAX_ACP_IMAGES) throw tooLarge();
   const blocks: AcpContentBlock[] = [];
   for (const image of images) {
     signal?.throwIfAborted();

@@ -16,10 +16,12 @@ import {
   sanitizeZcodeFailureText,
   type TurnEvent,
   zcodeLaunchPlan,
+  zcodeModelSupportsImages,
   zcodeWorkspace,
 } from './zcode-acp-protocol.js';
 import { parseZcodeReadMcp } from './zcode-github-read.js';
 import { clearZcodeGhReadLeaseFile, writeZcodeGhReadLeaseFile } from './zcode-github-read-lease-file.js';
+import { assertZcodeImagesMaterialized, prepareZcodePrompt, zcodeImageMessageCursor } from './zcode-image-input.js';
 
 export { flattenAcpPrompt, zcodeLaunchPlan };
 
@@ -130,7 +132,11 @@ async function handleAcp(
         agentCapabilities: {
           loadSession: true,
           mcpCapabilities: { http: true },
-          promptCapabilities: { image: false, audio: false, embeddedContext: false },
+          promptCapabilities: {
+            image: zcodeModelSupportsImages(env.ZCODE_MODEL),
+            audio: false,
+            embeddedContext: false,
+          },
         },
       });
       return;
@@ -345,7 +351,24 @@ async function handleSessionPrompt(
   }
   const cancelGenerationAtStart = cancelGenerations.get(sessionId) ?? 0;
   const cancelledSinceStart = (): boolean => (cancelGenerations.get(sessionId) ?? 0) !== cancelGenerationAtStart;
-  const waiter = waitForTurn(native, sessionId, (delta) => {
+  let input: Awaited<ReturnType<typeof prepareZcodePrompt>>;
+  let afterMessageId: string | undefined;
+  try {
+    input = await prepareZcodePrompt(params.prompt, env.ZCODE_MODEL);
+    if (input.attachments.length) {
+      const before = await native.request('session/messages', { sessionId, limit: 1 }, timeoutMs);
+      afterMessageId = zcodeImageMessageCursor(before.result);
+    }
+  } catch (err) {
+    acpError(msg.id, -32602, formatZcodeTurnFailure(extractZcodeFailure(err)));
+    return;
+  }
+  if (cancelledSinceStart()) {
+    acpResult(msg.id, { stopReason: 'cancelled' });
+    return;
+  }
+  const buffered: string[] = [];
+  const emitText = (delta: string) => {
     acpWrite({
       jsonrpc: '2.0',
       method: 'session/update',
@@ -354,9 +377,18 @@ async function handleSessionPrompt(
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: delta } },
       },
     });
+  };
+  const waiter = waitForTurn(native, sessionId, (delta) => {
+    if (input.attachments.length > 0) buffered.push(delta);
+    else emitText(delta);
   });
   try {
-    let sent = await native.request('session/send', { sessionId, content: flattenAcpPrompt(params.prompt) }, timeoutMs);
+    const sendParams = {
+      sessionId,
+      content: input.content,
+      ...(input.attachments.length ? { attachments: input.attachments } : {}),
+    };
+    let sent = await native.request('session/send', sendParams, timeoutMs);
     if (sent.error && isRuntimeModelUnavailable(sent.error)) {
       // A cancel that landed while the first send was in flight (or during
       // recovery) settles as cancelled, never as a surfaced -32031 failure.
@@ -365,7 +397,7 @@ async function handleSessionPrompt(
         (await recoverRuntimeModel(native, sessionId, env, timeoutMs)) &&
         !cancelledSinceStart()
       ) {
-        sent = await native.request('session/send', { sessionId, content: flattenAcpPrompt(params.prompt) }, timeoutMs);
+        sent = await native.request('session/send', sendParams, timeoutMs);
       }
       if (cancelledSinceStart()) {
         acpResult(msg.id, { stopReason: 'cancelled' });
@@ -380,6 +412,19 @@ async function handleSessionPrompt(
     if (outcome.terminal === 'failed') {
       acpError(msg.id, -32603, formatZcodeTurnFailure(outcome.failure));
       return;
+    }
+    if (input.attachments.length > 0 && outcome.terminal !== 'cancelled') {
+      const snapshot = await native.request(
+        'session/messages',
+        { sessionId, limit: 10, direction: 'forward', ...(afterMessageId ? { afterMessageId } : {}) },
+        timeoutMs,
+      );
+      assertZcodeImagesMaterialized(snapshot.result, input.attachments);
+      if (cancelledSinceStart()) {
+        acpResult(msg.id, { stopReason: 'cancelled' });
+        return;
+      }
+      if (buffered.length) emitText(buffered.join(''));
     }
     acpResult(msg.id, { stopReason: outcome.terminal === 'cancelled' ? 'cancelled' : 'end_turn' });
   } catch (err) {

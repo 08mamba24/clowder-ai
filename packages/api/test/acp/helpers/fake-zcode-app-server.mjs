@@ -57,6 +57,7 @@ function logRpc(msg) {
       runtimeModel: msg.params?.runtimeModel ?? null,
       persistAsWorkspaceLastUsed: msg.params?.persistAsWorkspaceLastUsed ?? null,
       mcpServers: msg.params?.mcpServers ?? null,
+      attachments: msg.params?.attachments ?? null,
       decision: msg.decision ?? null,
       home: isolatedHome ?? null,
     })}\n`,
@@ -103,6 +104,30 @@ async function handle(msg) {
   }
   if (method === 'session/read') {
     write({ id, result: sessionSnapshot(params.sessionId, sessions.get(params.sessionId)) });
+    return;
+  }
+  if (method === 'session/messages') {
+    const rec = sessions.get(params.sessionId);
+    const rows = (rec?.history ?? []).map((row, index) => ({
+      info: { role: row.role, messageId: `msg_${index}` },
+      parts: (row.attachments ?? []).map((attachment) => ({
+        type: 'file',
+        filename: attachment.filename,
+        mime: attachment.mimeType,
+        metadata: row.text.includes('DROP_IMAGE')
+          ? { errorCode: 'attachment_image_resize_failed', recoverability: 'metadata_only' }
+          : { recoverability: 'provider_ready', storageKind: 'artifact' },
+      })),
+    }));
+    const after = params.afterMessageId ? rows.findIndex((row) => row.info.messageId === params.afterMessageId) : -1;
+    const since = rows.slice(after + 1);
+    write({
+      id,
+      result: {
+        messages:
+          params.direction === 'forward' ? since.slice(0, params.limit) : since.slice(-(params.limit ?? since.length)),
+      },
+    });
     return;
   }
   if (method === 'session/create') {
@@ -261,7 +286,7 @@ async function handle(msg) {
     if (content.includes('HANG_SEND')) {
       return;
     }
-    rec.history.push({ role: 'user', text: content });
+    rec.history.push({ role: 'user', text: content, attachments: params.attachments });
     rec.stateRevision = (rec.stateRevision ?? 0) + 1;
     persist();
     write({ id, result: sendAccepted(params.sessionId, rec.stateRevision) });
@@ -332,6 +357,9 @@ async function handle(msg) {
       }
     }
     let reply = 'PONG';
+    if (content.includes('LONG_TOOL_CHAIN')) {
+      for (let index = 0; index < 30; index++) rec.history.push({ role: 'assistant', text: 'tool step' });
+    }
     if (historyText(rec).includes('TOKEN_A') && /what was the token/i.test(content)) {
       reply = 'TOKEN_A';
     } else if (content.includes('TOKEN_A')) {
