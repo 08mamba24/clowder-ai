@@ -67,7 +67,7 @@
       },
       "admitted": {
         "accepted": true,
-        "sessionId": "sess_5a38c2ad-fd27-49d8-a02d-474b8cb4a7dc",
+        "sessionId": "sess_08af2af2-b078-4510-a577-abd8a93b6952",
         "stateRevision": 3
       },
       "captures": [
@@ -106,7 +106,7 @@
             "recoverability": "provider_ready",
             "sizeBytes": 298,
             "storageKind": "artifact",
-            "artifactUri": "zcode-artifact://sess_5a38c2ad-fd27-49d8-a02d-474b8cb4a7dc/tool-result-d6f0d48e-6415-4197-a6cd-db6d35c0cc09"
+            "artifactUri": "zcode-artifact://sess_08af2af2-b078-4510-a577-abd8a93b6952/tool-result-b3dfa7af-71d7-4b4b-8129-79d53af5ea7a"
           }
         },
         {
@@ -117,7 +117,7 @@
               "environment": {
                 "full": true,
                 "snapshot": {
-                  "cwd": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/real-base64-on/workspace",
+                  "cwd": "/tmp/dsh-zcode-rerun-1795420708/real-base64-on/workspace",
                   "platform": "darwin",
                   "shell": "zsh",
                   "osVersion": "darwin 27.2.0 arm64",
@@ -191,25 +191,25 @@
                   "zcode-site:site-deploy"
                 ],
                 "fingerprints": [
-                  "5740c04d055f2980",
-                  "5cf6b4817b4f387c",
-                  "7c75a00046de41cd",
-                  "50583ec2afc5962f",
-                  "d26784ebff86671f",
-                  "512ac48a1101fc57",
-                  "e8f470099fb0060f",
-                  "d2ff9a048547a328",
-                  "f8a798e86a453ac9",
-                  "ae139deb3cb1393b",
-                  "f1a121e36d14151d",
-                  "fce6f37bfafc74c9",
-                  "ec9c5692b7d182b5",
-                  "23ff0e87377ca0d9",
-                  "e472840175e512ac",
-                  "9c814b1497960d53",
-                  "ec0b8a6af0037d85",
-                  "82dc75a0c9c1a222",
-                  "0428d4d58f2b63bf"
+                  "3bb313fe8288735e",
+                  "462b044a381d61fb",
+                  "071d69c31f67a011",
+                  "25aeee61403626d6",
+                  "96dd0a6fdb720372",
+                  "a45051c7bfe89c02",
+                  "27be0c8caf3d7391",
+                  "a9650ed589e2c149",
+                  "cc958e189c9fc779",
+                  "b1debbd89c13a6db",
+                  "deddddaad56c1874",
+                  "8c875351df728966",
+                  "acec06255ca8902b",
+                  "37bcc15cb339994d",
+                  "2cb54973de5965d4",
+                  "9092a889e4d1b899",
+                  "1a5cd947ac184440",
+                  "001cba33aa5dcded",
+                  "31698e7487284107"
                 ]
               }
             },
@@ -247,7 +247,7 @@
       },
       "admitted": {
         "accepted": true,
-        "sessionId": "sess_88bf3ce0-62e0-4d9d-ad44-4b69e12114d8",
+        "sessionId": "sess_037c0186-96ae-40c8-8e52-9f895ba064c9",
         "stateRevision": 3
       },
       "captures": [
@@ -284,7 +284,7 @@
             "recoverability": "provider_ready",
             "sizeBytes": 298,
             "storageKind": "artifact",
-            "artifactUri": "zcode-artifact://sess_88bf3ce0-62e0-4d9d-ad44-4b69e12114d8/tool-result-92475542-350c-467a-a031-f1c3bda6ac56"
+            "artifactUri": "zcode-artifact://sess_037c0186-96ae-40c8-8e52-9f895ba064c9/tool-result-e5d16f25-bdf8-42c7-b61e-89aec33cec37"
           }
         },
         {
@@ -295,7 +295,7 @@
               "environment": {
                 "full": true,
                 "snapshot": {
-                  "cwd": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/real-base64-off/workspace",
+                  "cwd": "/tmp/dsh-zcode-rerun-1795420708/real-base64-off/workspace",
                   "platform": "darwin",
                   "shell": "zsh",
                   "osVersion": "darwin 27.2.0 arm64",
@@ -369,25 +369,25 @@
                   "zcode-site:site-deploy"
                 ],
                 "fingerprints": [
-                  "c9645f93ba438544",
-                  "a7ee6f9478240458",
-                  "94940ee9f3d88294",
-                  "57b1d0296502bc5c",
-                  "2836c6564ce4b3e1",
-                  "5e9a642d6805cf46",
-                  "07b47437f5780ef9",
-                  "f3525bd3db1fc9b7",
-                  "f60b626ea878ee7c",
-                  "cf47ae22cfcedb11",
-                  "3e579f93ee0f241a",
-                  "6208af7b55243bc0",
-                  "8a35999fb5ab27cc",
-                  "09c5297dab7e7289",
-                  "2e1223be218fe26a",
-                  "8d52086042c6fee0",
-                  "57d1c0c6263388b6",
-                  "be303fd1da28167a",
-                  "77ed3a753cc7b165"
+                  "a48b75a7cac7b321",
+                  "9f393fb54d767a90",
+                  "7fdb0d083de2cd1e",
+                  "f65fa1eb0ac9d94e",
+                  "a6d863a2575ffb17",
+                  "d2712ab0731aad27",
+                  "81388a0a4423220c",
+                  "fdd76e6785584264",
+                  "a6f7ff0c038883ef",
+                  "940ba620cdc20cbf",
+                  "1e9d84983ffbd973",
+                  "61725263f30dba38",
+                  "e722d395f53678b3",
+                  "704a97f8989ba0b5",
+                  "26c282ceb7edb17f",
+                  "a424d672e2e8b390",
+                  "6759ded9389f2c1d",
+                  "86c0a9988f60b050",
+                  "1f919546538274e0"
                 ]
               }
             },
@@ -425,7 +425,7 @@
       },
       "admitted": {
         "accepted": true,
-        "sessionId": "sess_2931eaa8-d2c5-40ae-81f7-7dd76b35aa3e",
+        "sessionId": "sess_a294de39-c8dc-4b73-8968-da877a2527b7",
         "stateRevision": 3
       },
       "captures": [
@@ -461,12 +461,12 @@
               "transformedSizeBytes": 205,
               "width": 64
             },
-            "originalUrl": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/real-localpath-on/workspace/probe.png",
+            "originalUrl": "/tmp/dsh-zcode-rerun-1795420708/real-localpath-on/workspace/probe.png",
             "recoverability": "provider_ready",
             "sha256": "sha256:8d4f60f3a909a12a555c095c8d7baa30f465c4b07fbf79ba82f686fbb96f3f20",
             "sizeBytes": 205,
             "storageKind": "artifact",
-            "artifactUri": "zcode-artifact://sess_2931eaa8-d2c5-40ae-81f7-7dd76b35aa3e/tool-result-f884359a-a8c4-4ca0-831a-2e787f16e20f"
+            "artifactUri": "zcode-artifact://sess_a294de39-c8dc-4b73-8968-da877a2527b7/tool-result-1ed44ea5-4072-4350-a2c2-da0b419fa834"
           },
           "filename": "probe.png"
         },
@@ -478,7 +478,7 @@
               "environment": {
                 "full": true,
                 "snapshot": {
-                  "cwd": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/real-localpath-on/workspace",
+                  "cwd": "/tmp/dsh-zcode-rerun-1795420708/real-localpath-on/workspace",
                   "platform": "darwin",
                   "shell": "zsh",
                   "osVersion": "darwin 27.2.0 arm64",
@@ -552,25 +552,25 @@
                   "zcode-site:site-deploy"
                 ],
                 "fingerprints": [
-                  "bca30c85f6937ce3",
-                  "3e3e6fe0087bbb81",
-                  "8ef3bd96aa46bc69",
-                  "00a5233061af7deb",
-                  "8a8c14b568cb4f8b",
-                  "fa3b25e7c4e317f7",
-                  "f527af3e1119a07d",
-                  "a2e32041efe1738b",
-                  "0b6b376ec3c5bb81",
-                  "db0fa3706cbfdd67",
-                  "9cde8d876627f7a9",
-                  "69ff5d83dd7b8ccc",
-                  "3856fda76149eb1a",
-                  "9af00ad8bcf5d159",
-                  "8f19c32286aa2138",
-                  "efdd6960c21405a4",
-                  "765506149e1c1cb7",
-                  "1c63bc6c9dc19698",
-                  "dadcf95378923bbf"
+                  "b10d391d4ae2a285",
+                  "ce4dcebd2e3f8cb8",
+                  "a314b307ee7cdec3",
+                  "ec7d5a9d28c93974",
+                  "4dacc9ebfd641a2d",
+                  "72f8d6d2e55269e7",
+                  "f1da117e471138bc",
+                  "7fac14f1cf79beeb",
+                  "c25b7a276346912b",
+                  "9b7ac5b511ec2786",
+                  "fc0dfa31ccbcc025",
+                  "efda3d7f349ff1b8",
+                  "c6feb27631facde1",
+                  "84f328b25e4434d1",
+                  "c95c474135ac389b",
+                  "1a332e779dd10fda",
+                  "60014e7f4fa42508",
+                  "75ad90bc84582409",
+                  "a91e87852e02e894"
                 ]
               }
             },
@@ -608,7 +608,7 @@
       },
       "admitted": {
         "accepted": true,
-        "sessionId": "sess_2fb7a027-30ae-42ea-90e7-bdbed069af54",
+        "sessionId": "sess_ecf39d60-6bd1-46a5-9799-298a244cdca1",
         "stateRevision": 3
       },
       "captures": [
@@ -620,7 +620,7 @@
           "exactFixtureBytes": false,
           "userTail": [
             [
-              "[Attached image/png: /var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/real-localpath-off/workspace/probe.png]\n[Media omitted from provider request because the selected model does not support image input.]"
+              "[Attached image/png: /tmp/dsh-zcode-rerun-1795420708/real-localpath-off/workspace/probe.png]\n[Media omitted from provider request because the selected model does not support image input.]"
             ]
           ]
         }
@@ -642,12 +642,12 @@
               "transformedSizeBytes": 205,
               "width": 64
             },
-            "originalUrl": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/real-localpath-off/workspace/probe.png",
+            "originalUrl": "/tmp/dsh-zcode-rerun-1795420708/real-localpath-off/workspace/probe.png",
             "recoverability": "provider_ready",
             "sha256": "sha256:8d4f60f3a909a12a555c095c8d7baa30f465c4b07fbf79ba82f686fbb96f3f20",
             "sizeBytes": 205,
             "storageKind": "artifact",
-            "artifactUri": "zcode-artifact://sess_2fb7a027-30ae-42ea-90e7-bdbed069af54/tool-result-6a235af7-c08e-4c58-bba6-5796ae5ffda0"
+            "artifactUri": "zcode-artifact://sess_ecf39d60-6bd1-46a5-9799-298a244cdca1/tool-result-f043ed4d-6dde-4806-bf85-f3ce02ec96d2"
           },
           "filename": "probe.png"
         },
@@ -659,7 +659,7 @@
               "environment": {
                 "full": true,
                 "snapshot": {
-                  "cwd": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/real-localpath-off/workspace",
+                  "cwd": "/tmp/dsh-zcode-rerun-1795420708/real-localpath-off/workspace",
                   "platform": "darwin",
                   "shell": "zsh",
                   "osVersion": "darwin 27.2.0 arm64",
@@ -733,25 +733,25 @@
                   "zcode-site:site-deploy"
                 ],
                 "fingerprints": [
-                  "6ea7c0267e54fb4e",
-                  "d3f005c85cada5af",
-                  "f5a7f1b89b47e168",
-                  "e1f50bbd533165e5",
-                  "fe819787e6d11b52",
-                  "7eeaaa79fbcfb8b7",
-                  "feea685271240157",
-                  "687ab377e889fdc0",
-                  "f7287ea47fff97fe",
-                  "37996dc83342b1d6",
-                  "229811db74d32ca8",
-                  "9a33daab8ccd80e5",
-                  "250559192a89fc6b",
-                  "9816090bf4f730f7",
-                  "25e447e9820b629d",
-                  "0a297fc606097f5c",
-                  "8667b0beed27be11",
-                  "4e3f359d64f5883a",
-                  "e9e3ddc9fef04996"
+                  "7d8d78b405ec61bd",
+                  "b9041bf686f8c49a",
+                  "015cb2a0cfd5a585",
+                  "a7fe8300fe500d02",
+                  "884396d839d9f65a",
+                  "9ff2c77220d260ef",
+                  "f24b47243a67f4f2",
+                  "9f737bd5b2f39617",
+                  "30618e14337afe8a",
+                  "345b20ae58e6d35b",
+                  "85890be6dbdebf83",
+                  "c61cc82179950f3a",
+                  "ce930c2989be0b08",
+                  "7cc2a0fd27993e6d",
+                  "228399d8578805ee",
+                  "c8c9292fd9bc7f10",
+                  "9047a05fd39cf1cf",
+                  "e4f96aff6777f8f7",
+                  "2127116148061ff9"
                 ]
               }
             },

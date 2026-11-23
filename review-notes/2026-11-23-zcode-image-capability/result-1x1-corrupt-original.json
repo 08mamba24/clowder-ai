@@ -1,0 +1,741 @@
+{
+  "bundleSha256": "0de95ddd65d7712a3beeccc8ee6de53ea0ce96338eb427e52b2717ba2f3afe19",
+  "nodeVersion": "v24.22.3",
+  "fixtureKind": "1x1",
+  "fixtureBytes": 68,
+  "scope": "isolated fake credentials and own loopback model endpoint",
+  "checks": [
+    {
+      "name": "session created base64-on",
+      "pass": true
+    },
+    {
+      "name": "model request observed base64-on",
+      "pass": true
+    },
+    {
+      "name": "image capability gate base64-on",
+      "pass": false
+    },
+    {
+      "name": "session created base64-off",
+      "pass": true
+    },
+    {
+      "name": "model request observed base64-off",
+      "pass": true
+    },
+    {
+      "name": "image capability gate base64-off",
+      "pass": true
+    },
+    {
+      "name": "session created localpath-on",
+      "pass": true
+    },
+    {
+      "name": "model request observed localpath-on",
+      "pass": true
+    },
+    {
+      "name": "image capability gate localpath-on",
+      "pass": false
+    },
+    {
+      "name": "session created localpath-off",
+      "pass": true
+    },
+    {
+      "name": "model request observed localpath-off",
+      "pass": true
+    },
+    {
+      "name": "image capability gate localpath-off",
+      "pass": true
+    }
+  ],
+  "cases": [
+    {
+      "name": "base64-on",
+      "supportsImage": true,
+      "attachment": {
+        "kind": "image",
+        "hasLocalPath": false,
+        "hasDataBase64": true,
+        "mimeType": "image/png",
+        "sizeBytes": 68
+      },
+      "admitted": {
+        "accepted": true,
+        "sessionId": "sess_57c501f1-c782-460a-b2fb-fb65650c7ccc",
+        "stateRevision": 3
+      },
+      "captures": [
+        {
+          "model": "glm-5.4",
+          "path": "/v1/messages",
+          "imageCount": 0,
+          "imageMediaTypes": [],
+          "exactFixtureBytes": false,
+          "userTail": [
+            [
+              "[Attached image/*: probe.png]"
+            ]
+          ]
+        }
+      ],
+      "userParts": [
+        {
+          "type": "text"
+        },
+        {
+          "type": "file",
+          "mime": "image/*",
+          "metadata": {
+            "errorCode": "attachment_image_resize_failed",
+            "originalUrl": "probe.png",
+            "recoverability": "metadata_only",
+            "storageKind": "local_ref"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "environment",
+              "environment": {
+                "full": true,
+                "snapshot": {
+                  "cwd": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-base64-on/workspace",
+                  "platform": "darwin",
+                  "shell": "zsh",
+                  "osVersion": "darwin 27.2.0 arm64",
+                  "isGitRepository": false,
+                  "additionalWorkingDirectories": []
+                }
+              }
+            },
+            "source": "environment",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "model"
+            },
+            "source": "model",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "agent_listing_delta",
+              "agentListingDelta": {
+                "addedTypes": [
+                  "Explore",
+                  "general-purpose"
+                ],
+                "addedLines": [
+                  "- Explore: Read-only search agent for broad fan-out searches — when answering means sweeping many files, directories, or naming conventions and you only need the conclusion, not the file dumps. It reads excerpts rather than whole files, so it locates code; it doesn't review or audit it. Specify search breadth: \"medium\" for moderate exploration, \"very thorough\" for multiple locations and naming conventions. (Tools: Read, Bash, WebFetch, WebSearch, TodoWrite)",
+                  "- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. (Tools: *)"
+                ],
+                "removedTypes": [],
+                "isInitial": true,
+                "showConcurrencyNote": true
+              }
+            },
+            "source": "agent_listing_delta",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "skills_listing",
+              "skillsListingDelta": {
+                "names": [
+                  "browser-use:control-browser",
+                  "browser-use:web-gui-tester",
+                  "documents:docx",
+                  "documents:docx-viewer",
+                  "pdf:pdf",
+                  "pdf:pdf-viewer",
+                  "plugin-creator:plugin-creator",
+                  "presentations:pptx",
+                  "presentations:pptx-viewer",
+                  "skill-creator:skill-creator",
+                  "spreadsheets:xlsx",
+                  "spreadsheets:xlsx-viewer",
+                  "zcode-guide:diagnosing-commands",
+                  "zcode-guide:diagnosing-hooks",
+                  "zcode-guide:diagnosing-mcp",
+                  "zcode-guide:diagnosing-plugins",
+                  "zcode-guide:diagnosing-skills",
+                  "zcode-guide:zcode-configuration-guide",
+                  "zcode-site:site-deploy"
+                ],
+                "fingerprints": [
+                  "432349e8e8f83738",
+                  "07b142fbce1efc9f",
+                  "d38636128fff5ea2",
+                  "79b3b72209db0bce",
+                  "0a5450669597f446",
+                  "ca15735ca4cbdaf6",
+                  "6a4913f21854e09e",
+                  "8600bca665fdd7ca",
+                  "0fc47716eb5c9266",
+                  "35fcb1be44c2098c",
+                  "cacc9ac09d1191ec",
+                  "6b6f229ea6d9213b",
+                  "de09b16961f235e1",
+                  "5f912726a4316dfa",
+                  "98c30331ddef97c2",
+                  "ab663403c9307810",
+                  "affe5276cd7be094",
+                  "857a19fac952f11d",
+                  "e1b31eb1adc502c2"
+                ]
+              }
+            },
+            "source": "skills_listing",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "date"
+            },
+            "source": "date",
+            "visibility": "model-only"
+          }
+        }
+      ],
+      "terminalEvents": [
+        {
+          "type": "turn.completed",
+          "response": "OK"
+        }
+      ]
+    },
+    {
+      "name": "base64-off",
+      "supportsImage": false,
+      "attachment": {
+        "kind": "image",
+        "hasLocalPath": false,
+        "hasDataBase64": true,
+        "mimeType": "image/png",
+        "sizeBytes": 68
+      },
+      "admitted": {
+        "accepted": true,
+        "sessionId": "sess_f1f22b6c-3723-4c74-a9c2-f65268dae42a",
+        "stateRevision": 3
+      },
+      "captures": [
+        {
+          "model": "glm-5.4",
+          "path": "/v1/messages",
+          "imageCount": 0,
+          "imageMediaTypes": [],
+          "exactFixtureBytes": false,
+          "userTail": [
+            [
+              "[Attached image/*: probe.png]"
+            ]
+          ]
+        }
+      ],
+      "userParts": [
+        {
+          "type": "text"
+        },
+        {
+          "type": "file",
+          "mime": "image/*",
+          "metadata": {
+            "errorCode": "attachment_image_resize_failed",
+            "originalUrl": "probe.png",
+            "recoverability": "metadata_only",
+            "storageKind": "local_ref"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "environment",
+              "environment": {
+                "full": true,
+                "snapshot": {
+                  "cwd": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-base64-off/workspace",
+                  "platform": "darwin",
+                  "shell": "zsh",
+                  "osVersion": "darwin 27.2.0 arm64",
+                  "isGitRepository": false,
+                  "additionalWorkingDirectories": []
+                }
+              }
+            },
+            "source": "environment",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "model"
+            },
+            "source": "model",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "agent_listing_delta",
+              "agentListingDelta": {
+                "addedTypes": [
+                  "Explore",
+                  "general-purpose"
+                ],
+                "addedLines": [
+                  "- Explore: Read-only search agent for broad fan-out searches — when answering means sweeping many files, directories, or naming conventions and you only need the conclusion, not the file dumps. It reads excerpts rather than whole files, so it locates code; it doesn't review or audit it. Specify search breadth: \"medium\" for moderate exploration, \"very thorough\" for multiple locations and naming conventions. (Tools: Read, Bash, WebFetch, WebSearch, TodoWrite)",
+                  "- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. (Tools: *)"
+                ],
+                "removedTypes": [],
+                "isInitial": true,
+                "showConcurrencyNote": true
+              }
+            },
+            "source": "agent_listing_delta",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "skills_listing",
+              "skillsListingDelta": {
+                "names": [
+                  "browser-use:control-browser",
+                  "browser-use:web-gui-tester",
+                  "documents:docx",
+                  "documents:docx-viewer",
+                  "pdf:pdf",
+                  "pdf:pdf-viewer",
+                  "plugin-creator:plugin-creator",
+                  "presentations:pptx",
+                  "presentations:pptx-viewer",
+                  "skill-creator:skill-creator",
+                  "spreadsheets:xlsx",
+                  "spreadsheets:xlsx-viewer",
+                  "zcode-guide:diagnosing-commands",
+                  "zcode-guide:diagnosing-hooks",
+                  "zcode-guide:diagnosing-mcp",
+                  "zcode-guide:diagnosing-plugins",
+                  "zcode-guide:diagnosing-skills",
+                  "zcode-guide:zcode-configuration-guide",
+                  "zcode-site:site-deploy"
+                ],
+                "fingerprints": [
+                  "e6996768afb9ab62",
+                  "3bfc9d300a771625",
+                  "ecd02e356f4de89f",
+                  "3bfca29e3ee41308",
+                  "c36b3a7638452f7b",
+                  "1d2dae06e9fd626e",
+                  "96e49d0e4b247cdf",
+                  "75aedba7857378ca",
+                  "7f2b48cfe46374fc",
+                  "20b72b6ade619623",
+                  "8e0fe0ca7ea1d226",
+                  "c7524889db73e27c",
+                  "dd49306de9b28020",
+                  "d1910a3286e9115f",
+                  "95d4565922db5ddb",
+                  "b87d16e4e2812d2f",
+                  "e13cef9cffdf4b57",
+                  "5dddeb222b9bcedb",
+                  "46fb619467f397e7"
+                ]
+              }
+            },
+            "source": "skills_listing",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "date"
+            },
+            "source": "date",
+            "visibility": "model-only"
+          }
+        }
+      ],
+      "terminalEvents": [
+        {
+          "type": "turn.completed",
+          "response": "OK"
+        }
+      ]
+    },
+    {
+      "name": "localpath-on",
+      "supportsImage": true,
+      "attachment": {
+        "kind": "image",
+        "hasLocalPath": true,
+        "hasDataBase64": false,
+        "mimeType": "image/png",
+        "sizeBytes": 68
+      },
+      "admitted": {
+        "accepted": true,
+        "sessionId": "sess_465cd8bf-20c5-4fe6-bca9-33a839c7aad1",
+        "stateRevision": 3
+      },
+      "captures": [
+        {
+          "model": "glm-5.4",
+          "path": "/v1/messages",
+          "imageCount": 0,
+          "imageMediaTypes": [],
+          "exactFixtureBytes": false,
+          "userTail": [
+            [
+              "[Attached image/png: /var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-localpath-on/workspace/probe.png]"
+            ]
+          ]
+        }
+      ],
+      "userParts": [
+        {
+          "type": "text"
+        },
+        {
+          "type": "file",
+          "mime": "image/png",
+          "metadata": {
+            "errorCode": "attachment_image_resize_failed",
+            "originalUrl": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-localpath-on/workspace/probe.png",
+            "recoverability": "metadata_only",
+            "sizeBytes": 68,
+            "storageKind": "local_ref"
+          },
+          "filename": "probe.png"
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "environment",
+              "environment": {
+                "full": true,
+                "snapshot": {
+                  "cwd": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-localpath-on/workspace",
+                  "platform": "darwin",
+                  "shell": "zsh",
+                  "osVersion": "darwin 27.2.0 arm64",
+                  "isGitRepository": false,
+                  "additionalWorkingDirectories": []
+                }
+              }
+            },
+            "source": "environment",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "model"
+            },
+            "source": "model",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "agent_listing_delta",
+              "agentListingDelta": {
+                "addedTypes": [
+                  "Explore",
+                  "general-purpose"
+                ],
+                "addedLines": [
+                  "- Explore: Read-only search agent for broad fan-out searches — when answering means sweeping many files, directories, or naming conventions and you only need the conclusion, not the file dumps. It reads excerpts rather than whole files, so it locates code; it doesn't review or audit it. Specify search breadth: \"medium\" for moderate exploration, \"very thorough\" for multiple locations and naming conventions. (Tools: Read, Bash, WebFetch, WebSearch, TodoWrite)",
+                  "- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. (Tools: *)"
+                ],
+                "removedTypes": [],
+                "isInitial": true,
+                "showConcurrencyNote": true
+              }
+            },
+            "source": "agent_listing_delta",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "skills_listing",
+              "skillsListingDelta": {
+                "names": [
+                  "browser-use:control-browser",
+                  "browser-use:web-gui-tester",
+                  "documents:docx",
+                  "documents:docx-viewer",
+                  "pdf:pdf",
+                  "pdf:pdf-viewer",
+                  "plugin-creator:plugin-creator",
+                  "presentations:pptx",
+                  "presentations:pptx-viewer",
+                  "skill-creator:skill-creator",
+                  "spreadsheets:xlsx",
+                  "spreadsheets:xlsx-viewer",
+                  "zcode-guide:diagnosing-commands",
+                  "zcode-guide:diagnosing-hooks",
+                  "zcode-guide:diagnosing-mcp",
+                  "zcode-guide:diagnosing-plugins",
+                  "zcode-guide:diagnosing-skills",
+                  "zcode-guide:zcode-configuration-guide",
+                  "zcode-site:site-deploy"
+                ],
+                "fingerprints": [
+                  "79d0da4c0ef93296",
+                  "e65fcd03b4e71716",
+                  "54a6b429f6e773b2",
+                  "314caaeed9e611a4",
+                  "8aa42dbf9337ee69",
+                  "95fd09a96ea2a31a",
+                  "dea73540e63be64a",
+                  "6b6ba03ee3e30fa6",
+                  "c17254847a0d73a4",
+                  "4819e66c3d0266b6",
+                  "f915fb8cd78398a3",
+                  "008e166e3052386f",
+                  "a12fcc14efe63fe9",
+                  "aabb66637167c9ea",
+                  "fabc82886de50966",
+                  "b4bd326f4ac96aab",
+                  "f6cf923cd4f4f810",
+                  "4231bf1f25b963e5",
+                  "1234b83c07ad691c"
+                ]
+              }
+            },
+            "source": "skills_listing",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "date"
+            },
+            "source": "date",
+            "visibility": "model-only"
+          }
+        }
+      ],
+      "terminalEvents": [
+        {
+          "type": "turn.completed",
+          "response": "OK"
+        }
+      ]
+    },
+    {
+      "name": "localpath-off",
+      "supportsImage": false,
+      "attachment": {
+        "kind": "image",
+        "hasLocalPath": true,
+        "hasDataBase64": false,
+        "mimeType": "image/png",
+        "sizeBytes": 68
+      },
+      "admitted": {
+        "accepted": true,
+        "sessionId": "sess_87549aa6-ecca-41e9-8650-235410d87f30",
+        "stateRevision": 3
+      },
+      "captures": [
+        {
+          "model": "glm-5.4",
+          "path": "/v1/messages",
+          "imageCount": 0,
+          "imageMediaTypes": [],
+          "exactFixtureBytes": false,
+          "userTail": [
+            [
+              "[Attached image/png: /var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-localpath-off/workspace/probe.png]"
+            ]
+          ]
+        }
+      ],
+      "userParts": [
+        {
+          "type": "text"
+        },
+        {
+          "type": "file",
+          "mime": "image/png",
+          "metadata": {
+            "errorCode": "attachment_image_resize_failed",
+            "originalUrl": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-localpath-off/workspace/probe.png",
+            "recoverability": "metadata_only",
+            "sizeBytes": 68,
+            "storageKind": "local_ref"
+          },
+          "filename": "probe.png"
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "environment",
+              "environment": {
+                "full": true,
+                "snapshot": {
+                  "cwd": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-localpath-off/workspace",
+                  "platform": "darwin",
+                  "shell": "zsh",
+                  "osVersion": "darwin 27.2.0 arm64",
+                  "isGitRepository": false,
+                  "additionalWorkingDirectories": []
+                }
+              }
+            },
+            "source": "environment",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "model"
+            },
+            "source": "model",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "agent_listing_delta",
+              "agentListingDelta": {
+                "addedTypes": [
+                  "Explore",
+                  "general-purpose"
+                ],
+                "addedLines": [
+                  "- Explore: Read-only search agent for broad fan-out searches — when answering means sweeping many files, directories, or naming conventions and you only need the conclusion, not the file dumps. It reads excerpts rather than whole files, so it locates code; it doesn't review or audit it. Specify search breadth: \"medium\" for moderate exploration, \"very thorough\" for multiple locations and naming conventions. (Tools: Read, Bash, WebFetch, WebSearch, TodoWrite)",
+                  "- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. (Tools: *)"
+                ],
+                "removedTypes": [],
+                "isInitial": true,
+                "showConcurrencyNote": true
+              }
+            },
+            "source": "agent_listing_delta",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "skills_listing",
+              "skillsListingDelta": {
+                "names": [
+                  "browser-use:control-browser",
+                  "browser-use:web-gui-tester",
+                  "documents:docx",
+                  "documents:docx-viewer",
+                  "pdf:pdf",
+                  "pdf:pdf-viewer",
+                  "plugin-creator:plugin-creator",
+                  "presentations:pptx",
+                  "presentations:pptx-viewer",
+                  "skill-creator:skill-creator",
+                  "spreadsheets:xlsx",
+                  "spreadsheets:xlsx-viewer",
+                  "zcode-guide:diagnosing-commands",
+                  "zcode-guide:diagnosing-hooks",
+                  "zcode-guide:diagnosing-mcp",
+                  "zcode-guide:diagnosing-plugins",
+                  "zcode-guide:diagnosing-skills",
+                  "zcode-guide:zcode-configuration-guide",
+                  "zcode-site:site-deploy"
+                ],
+                "fingerprints": [
+                  "f7b4c9cbb7cdd87a",
+                  "b55fcc86337c4eda",
+                  "6ee349fbfa0cefc0",
+                  "f399d661525cf8cf",
+                  "c5e45d6d266c6129",
+                  "097136aa7f529d27",
+                  "b23ac5710d6b6fde",
+                  "c1d74a17350598cd",
+                  "aaac64f7f4990580",
+                  "b1db17818511ce37",
+                  "8bf4dffc3964754d",
+                  "9602ebf9fac1d770",
+                  "c46d042b9fa3584c",
+                  "36678fc939b72b2e",
+                  "2641fb90431f190b",
+                  "cdb67dc11437ac79",
+                  "2965c0d73100ca58",
+                  "ea4b398bc3c579c1",
+                  "3ed6ebb2225759cb"
+                ]
+              }
+            },
+            "source": "skills_listing",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "date"
+            },
+            "source": "date",
+            "visibility": "model-only"
+          }
+        }
+      ],
+      "terminalEvents": [
+        {
+          "type": "turn.completed",
+          "response": "OK"
+        }
+      ]
+    }
+  ],
+  "cliVersion": "0.18.0",
+  "pass": false
+}

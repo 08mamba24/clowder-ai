@@ -5,8 +5,9 @@
 // Nothing touches the operator's ~/.zcode, the real provider, or production.
 //
 // Usage:
-//   node probe.mjs            # real 64x64 PNG fixture (expected: exit 0)
-//   FIXTURE_KIND=1x1 node probe.mjs   # 1x1 PNG fixture (expected: exit 1)
+//   node probe.mjs                      # valid 64x64 PNG fixture (expected: exit 0)
+//   FIXTURE_KIND=1x1 node probe.mjs     # original 1x1 fixture with a corrupt IDAT CRC (expected: exit 1)
+//   FIXTURE_KIND=1x1-valid node probe.mjs  # same 1x1 pixels, only the CRC corrected (expected: exit 0)
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -24,14 +25,24 @@ const node = '/opt/homebrew/opt/node@24/bin/node';
 // Case workspaces (session data) go to the system temp dir, never the repo.
 const runRoot = process.env.PROBE_RUN_ROOT ?? join(tmpdir(), 'dsh-zcode-image-probe-runs');
 
-// 1x1 PNG: reproduces the reviewer's fixture. It fails image processing.
+// Original 1x1 fixture, preserved verbatim as the failing negative control.
+// Its IDAT CRC is wrong: stored 0xefa3322a, actual 0xefa2a75b. IHDR and IEND are valid,
+// so this is a genuine 1x1 PNG except for that one CRC field.
 const PNG_1X1 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jMioAAAAASUVORK5CYII=';
+// Same 1x1 image with only the IDAT CRC field corrected; dimensions and compressed pixel
+// data are byte-identical to PNG_1X1. This separates "1x1 size" from "bad CRC".
+const PNG_1X1_VALID_CRC =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
 // 64x64 solid-red RGBA PNG: a normal image that survives resize.
 const PNG_64X64 =
   'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAlElEQVR4nO3QMREAMBDDsPAn/YWhoR60+7zb7mfTAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA9DiOHSbdjxEgAAAABJRU5ErkJggg==';
-const fixtureKind = process.env.FIXTURE_KIND === '1x1' ? '1x1' : 'real';
-const png = fixtureKind === '1x1' ? PNG_1X1 : PNG_64X64;
+const FIXTURES = { real: PNG_64X64, '1x1': PNG_1X1, '1x1-valid': PNG_1X1_VALID_CRC };
+const fixtureKind = process.env.FIXTURE_KIND ?? 'real';
+if (!(fixtureKind in FIXTURES)) {
+  throw new Error(`unknown FIXTURE_KIND=${fixtureKind}; expected one of ${Object.keys(FIXTURES).join(', ')}`);
+}
+const png = FIXTURES[fixtureKind];
 const pngBytes = Buffer.from(png, 'base64');
 
 const result = {

@@ -90,7 +90,7 @@
               "environment": {
                 "full": true,
                 "snapshot": {
-                  "cwd": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-base64-on/workspace",
+                  "cwd": "/tmp/dsh-zcode-rerun-1795420708/1x1-base64-on/workspace",
                   "platform": "darwin",
                   "shell": "zsh",
                   "osVersion": "darwin 27.2.0 arm64",
@@ -164,25 +164,25 @@
                   "zcode-site:site-deploy"
                 ],
                 "fingerprints": [
-                  "432349e8e8f83738",
-                  "07b142fbce1efc9f",
-                  "d38636128fff5ea2",
-                  "79b3b72209db0bce",
-                  "0a5450669597f446",
-                  "ca15735ca4cbdaf6",
-                  "6a4913f21854e09e",
-                  "8600bca665fdd7ca",
-                  "0fc47716eb5c9266",
-                  "35fcb1be44c2098c",
-                  "cacc9ac09d1191ec",
-                  "6b6f229ea6d9213b",
-                  "de09b16961f235e1",
-                  "5f912726a4316dfa",
-                  "98c30331ddef97c2",
-                  "ab663403c9307810",
-                  "affe5276cd7be094",
-                  "857a19fac952f11d",
-                  "e1b31eb1adc502c2"
+                  "320487bbd464b49b",
+                  "93c0b918292c73f3",
+                  "ac5988c98667f4bb",
+                  "2c5f46c43a057f17",
+                  "d569930418179c19",
+                  "934191078086438f",
+                  "8f472c7647f6e2fb",
+                  "ca6eefd1b5f2234e",
+                  "9f2657df55cfef18",
+                  "5a7a55a52b872f04",
+                  "81b516255209ce06",
+                  "a8fdbdd98b9fb0c3",
+                  "746f109d915eecb6",
+                  "b8cb02778e49d2cd",
+                  "c192593108b381e5",
+                  "a52f955448b30d9f",
+                  "e508c90010b676f5",
+                  "22fa06486e685d7f",
+                  "4017db31fda1699f"
                 ]
               }
             },
@@ -238,7 +238,7 @@
               "environment": {
                 "full": true,
                 "snapshot": {
-                  "cwd": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-base64-off/workspace",
+                  "cwd": "/tmp/dsh-zcode-rerun-1795420708/1x1-base64-off/workspace",
                   "platform": "darwin",
                   "shell": "zsh",
                   "osVersion": "darwin 27.2.0 arm64",
@@ -312,25 +312,25 @@
                   "zcode-site:site-deploy"
                 ],
                 "fingerprints": [
-                  "e6996768afb9ab62",
-                  "3bfc9d300a771625",
-                  "ecd02e356f4de89f",
-                  "3bfca29e3ee41308",
-                  "c36b3a7638452f7b",
-                  "1d2dae06e9fd626e",
-                  "96e49d0e4b247cdf",
-                  "75aedba7857378ca",
-                  "7f2b48cfe46374fc",
-                  "20b72b6ade619623",
-                  "8e0fe0ca7ea1d226",
-                  "c7524889db73e27c",
-                  "dd49306de9b28020",
-                  "d1910a3286e9115f",
-                  "95d4565922db5ddb",
-                  "b87d16e4e2812d2f",
-                  "e13cef9cffdf4b57",
-                  "5dddeb222b9bcedb",
-                  "46fb619467f397e7"
+                  "0ecc78395365c2b9",
+                  "647f9d2d9e465864",
+                  "b6a50b0885fcd2f1",
+                  "a135cd68d2c11793",
+                  "1398978770956876",
+                  "54ad1a7bf1dea9ac",
+                  "eb2c41b1f8b3bb58",
+                  "d06607e8f492920d",
+                  "0d0fb471bd5534f8",
+                  "7225fac44a533f4d",
+                  "07ec2cb56cd5f098",
+                  "b28c05f04b586aa6",
+                  "562a7bdbb61663c6",
+                  "494888eff9c179f7",
+                  "da6fe080f9d2d0dc",
+                  "5ad62c846635ace2",
+                  "27aae4faff55682a",
+                  "e05b99555ac078e7",
+                  "579d82cab2b883bd"
                 ]
               }
             },
@@ -359,7 +359,7 @@
           "exactFixtureBytes": false,
           "userTail": [
             [
-              "[Attached image/png: /var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-localpath-on/workspace/probe.png]"
+              "[Attached image/png: /tmp/dsh-zcode-rerun-1795420708/1x1-localpath-on/workspace/probe.png]"
             ]
           ]
         }
@@ -373,7 +373,7 @@
           "mime": "image/png",
           "metadata": {
             "errorCode": "attachment_image_resize_failed",
-            "originalUrl": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-localpath-on/workspace/probe.png",
+            "originalUrl": "/tmp/dsh-zcode-rerun-1795420708/1x1-localpath-on/workspace/probe.png",
             "recoverability": "metadata_only",
             "sizeBytes": 68,
             "storageKind": "local_ref"
@@ -388,7 +388,7 @@
               "environment": {
                 "full": true,
                 "snapshot": {
-                  "cwd": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-localpath-on/workspace",
+                  "cwd": "/tmp/dsh-zcode-rerun-1795420708/1x1-localpath-on/workspace",
                   "platform": "darwin",
                   "shell": "zsh",
                   "osVersion": "darwin 27.2.0 arm64",
@@ -462,25 +462,25 @@
                   "zcode-site:site-deploy"
                 ],
                 "fingerprints": [
-                  "79d0da4c0ef93296",
-                  "e65fcd03b4e71716",
-                  "54a6b429f6e773b2",
-                  "314caaeed9e611a4",
-                  "8aa42dbf9337ee69",
-                  "95fd09a96ea2a31a",
-                  "dea73540e63be64a",
-                  "6b6ba03ee3e30fa6",
-                  "c17254847a0d73a4",
-                  "4819e66c3d0266b6",
-                  "f915fb8cd78398a3",
-                  "008e166e3052386f",
-                  "a12fcc14efe63fe9",
-                  "aabb66637167c9ea",
-                  "fabc82886de50966",
-                  "b4bd326f4ac96aab",
-                  "f6cf923cd4f4f810",
-                  "4231bf1f25b963e5",
-                  "1234b83c07ad691c"
+                  "741fe82cbc827604",
+                  "df024ad24814bcd4",
+                  "20091d8fe76857ec",
+                  "55da5faf332df112",
+                  "65c0c1bd75e18c5a",
+                  "8618aeca8af8e480",
+                  "c13af8370016dd15",
+                  "225328634235c18c",
+                  "8a41af6c2ce2cef8",
+                  "c3d558505a82d528",
+                  "38d2ccce16d61a3a",
+                  "0ec17d5f457d195b",
+                  "ebf6a77cd975618f",
+                  "1bace1f3a1318d24",
+                  "f10e246e9309339d",
+                  "341dc98185a2a257",
+                  "8a2ce82915ae114b",
+                  "e53ce66f9c8fc6f0",
+                  "baea03d012e9dec9"
                 ]
               }
             },
@@ -509,7 +509,7 @@
           "exactFixtureBytes": false,
           "userTail": [
             [
-              "[Attached image/png: /var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-localpath-off/workspace/probe.png]"
+              "[Attached image/png: /tmp/dsh-zcode-rerun-1795420708/1x1-localpath-off/workspace/probe.png]"
             ]
           ]
         }
@@ -523,7 +523,7 @@
           "mime": "image/png",
           "metadata": {
             "errorCode": "attachment_image_resize_failed",
-            "originalUrl": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-localpath-off/workspace/probe.png",
+            "originalUrl": "/tmp/dsh-zcode-rerun-1795420708/1x1-localpath-off/workspace/probe.png",
             "recoverability": "metadata_only",
             "sizeBytes": 68,
             "storageKind": "local_ref"
@@ -538,7 +538,7 @@
               "environment": {
                 "full": true,
                 "snapshot": {
-                  "cwd": "/var/folders/_v/yv2vvhm50n96kbkz0n_wyn3h0000gn/T/dsh-zcode-image-probe-runs/1x1-localpath-off/workspace",
+                  "cwd": "/tmp/dsh-zcode-rerun-1795420708/1x1-localpath-off/workspace",
                   "platform": "darwin",
                   "shell": "zsh",
                   "osVersion": "darwin 27.2.0 arm64",
@@ -612,25 +612,25 @@
                   "zcode-site:site-deploy"
                 ],
                 "fingerprints": [
-                  "f7b4c9cbb7cdd87a",
-                  "b55fcc86337c4eda",
-                  "6ee349fbfa0cefc0",
-                  "f399d661525cf8cf",
-                  "c5e45d6d266c6129",
-                  "097136aa7f529d27",
-                  "b23ac5710d6b6fde",
-                  "c1d74a17350598cd",
-                  "aaac64f7f4990580",
-                  "b1db17818511ce37",
-                  "8bf4dffc3964754d",
-                  "9602ebf9fac1d770",
-                  "c46d042b9fa3584c",
-                  "36678fc939b72b2e",
-                  "2641fb90431f190b",
-                  "cdb67dc11437ac79",
-                  "2965c0d73100ca58",
-                  "ea4b398bc3c579c1",
-                  "3ed6ebb2225759cb"
+                  "7f8ad9573a0bcb8f",
+                  "6fdee677861bf423",
+                  "f7b8d1d46b975cf7",
+                  "99134562e6a6e90c",
+                  "7dfc8c10e1df5b85",
+                  "af4fd137049416b5",
+                  "e4413a0db242ce01",
+                  "8fd25fe958b875d3",
+                  "7c98efa664a05333",
+                  "c8e832c7262aac9b",
+                  "86c1146d02523916",
+                  "103eb9c2ded37702",
+                  "0d84bc4bd402b2a7",
+                  "b212ef9f46673a75",
+                  "3e9c2263e170065d",
+                  "d139e4800492a327",
+                  "6aad2560d3fab85d",
+                  "2e87d77eae739641",
+                  "a40a6f0f1dcada57"
                 ]
               }
             },

@@ -1,0 +1,696 @@
+{
+  "fixtureKind": "1x1-valid",
+  "pass": true,
+  "cliVersion": "0.18.0",
+  "bundleSha256": "0de95ddd65d7712a3beeccc8ee6de53ea0ce96338eb427e52b2717ba2f3afe19",
+  "checks": [
+    {
+      "name": "session created base64-on",
+      "pass": true
+    },
+    {
+      "name": "model request observed base64-on",
+      "pass": true
+    },
+    {
+      "name": "image capability gate base64-on",
+      "pass": true
+    },
+    {
+      "name": "session created base64-off",
+      "pass": true
+    },
+    {
+      "name": "model request observed base64-off",
+      "pass": true
+    },
+    {
+      "name": "image capability gate base64-off",
+      "pass": true
+    },
+    {
+      "name": "session created localpath-on",
+      "pass": true
+    },
+    {
+      "name": "model request observed localpath-on",
+      "pass": true
+    },
+    {
+      "name": "image capability gate localpath-on",
+      "pass": true
+    },
+    {
+      "name": "session created localpath-off",
+      "pass": true
+    },
+    {
+      "name": "model request observed localpath-off",
+      "pass": true
+    },
+    {
+      "name": "image capability gate localpath-off",
+      "pass": true
+    }
+  ],
+  "cases": [
+    {
+      "name": "base64-on",
+      "captured": [
+        {
+          "imageCount": 1,
+          "imageMediaTypes": [
+            "image/png"
+          ],
+          "exactFixtureBytes": true,
+          "userTail": [
+            [
+              "[image]"
+            ]
+          ]
+        }
+      ],
+      "storedUserParts": [
+        {
+          "type": "text"
+        },
+        {
+          "type": "file",
+          "mime": "image/png",
+          "metadata": {
+            "image": {
+              "height": 1,
+              "maxDimension": 2000,
+              "originalHeight": 1,
+              "originalWidth": 1,
+              "resized": false,
+              "transformedSizeBytes": 68,
+              "width": 1
+            },
+            "recoverability": "provider_ready",
+            "sizeBytes": 114,
+            "storageKind": "artifact",
+            "artifactUri": "zcode-artifact://sess_62b99364-1e2d-4ee4-9b96-8a5d18be23db/tool-result-e85f861f-6acd-48f8-ab22-2ec7551b9384"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "environment",
+              "environment": {
+                "full": true,
+                "snapshot": {
+                  "cwd": "/tmp/dsh-zcode-rerun-1795420708/1x1-valid-base64-on/workspace",
+                  "platform": "darwin",
+                  "shell": "zsh",
+                  "osVersion": "darwin 27.2.0 arm64",
+                  "isGitRepository": false,
+                  "additionalWorkingDirectories": []
+                }
+              }
+            },
+            "source": "environment",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "model"
+            },
+            "source": "model",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "agent_listing_delta",
+              "agentListingDelta": {
+                "addedTypes": [
+                  "Explore",
+                  "general-purpose"
+                ],
+                "addedLines": [
+                  "- Explore: Read-only search agent for broad fan-out searches — when answering means sweeping many files, directories, or naming conventions and you only need the conclusion, not the file dumps. It reads excerpts rather than whole files, so it locates code; it doesn't review or audit it. Specify search breadth: \"medium\" for moderate exploration, \"very thorough\" for multiple locations and naming conventions. (Tools: Read, Bash, WebFetch, WebSearch, TodoWrite)",
+                  "- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. (Tools: *)"
+                ],
+                "removedTypes": [],
+                "isInitial": true,
+                "showConcurrencyNote": true
+              }
+            },
+            "source": "agent_listing_delta",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "skills_listing",
+              "skillsListingDelta": {
+                "names": [
+                  "browser-use:control-browser",
+                  "browser-use:web-gui-tester",
+                  "documents:docx",
+                  "documents:docx-viewer",
+                  "pdf:pdf",
+                  "pdf:pdf-viewer",
+                  "plugin-creator:plugin-creator",
+                  "presentations:pptx",
+                  "presentations:pptx-viewer",
+                  "skill-creator:skill-creator",
+                  "spreadsheets:xlsx",
+                  "spreadsheets:xlsx-viewer",
+                  "zcode-guide:diagnosing-commands",
+                  "zcode-guide:diagnosing-hooks",
+                  "zcode-guide:diagnosing-mcp",
+                  "zcode-guide:diagnosing-plugins",
+                  "zcode-guide:diagnosing-skills",
+                  "zcode-guide:zcode-configuration-guide",
+                  "zcode-site:site-deploy"
+                ],
+                "fingerprints": [
+                  "abf96c3af7469cb0",
+                  "a0c8a740ed6a6425",
+                  "2710377616374fac",
+                  "608a663bf16a1200",
+                  "e2681599dfa8e452",
+                  "c267f3692b4e91bd",
+                  "ee7eccc86d2fcc81",
+                  "9567ddbac3fbd693",
+                  "48dd16a68a54c114",
+                  "99ffbe8c50ab40a6",
+                  "c36ecdc0359857d7",
+                  "225e76ff3cb00233",
+                  "8c6405ec03e4cbb9",
+                  "4061f6ad6f64f71e",
+                  "355c32870ad52a2c",
+                  "0cd367db0b047ad9",
+                  "fd74f849a260458e",
+                  "9b98fc5819224454",
+                  "1ccedd71524fd484"
+                ]
+              }
+            },
+            "source": "skills_listing",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "date"
+            },
+            "source": "date",
+            "visibility": "model-only"
+          }
+        }
+      ]
+    },
+    {
+      "name": "base64-off",
+      "captured": [
+        {
+          "imageCount": 0,
+          "imageMediaTypes": [],
+          "exactFixtureBytes": false,
+          "userTail": [
+            [
+              "[Attached image/png: probe.png]\n[Media omitted from provider request because the selected model does not support image input.]"
+            ]
+          ]
+        }
+      ],
+      "storedUserParts": [
+        {
+          "type": "text"
+        },
+        {
+          "type": "file",
+          "mime": "image/png",
+          "metadata": {
+            "image": {
+              "height": 1,
+              "maxDimension": 2000,
+              "originalHeight": 1,
+              "originalWidth": 1,
+              "resized": false,
+              "transformedSizeBytes": 68,
+              "width": 1
+            },
+            "recoverability": "provider_ready",
+            "sizeBytes": 114,
+            "storageKind": "artifact",
+            "artifactUri": "zcode-artifact://sess_2bce4859-14f5-4281-807e-6217286a931e/tool-result-6d71b369-4cfc-48fb-ae75-0f2bfde5d8de"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "environment",
+              "environment": {
+                "full": true,
+                "snapshot": {
+                  "cwd": "/tmp/dsh-zcode-rerun-1795420708/1x1-valid-base64-off/workspace",
+                  "platform": "darwin",
+                  "shell": "zsh",
+                  "osVersion": "darwin 27.2.0 arm64",
+                  "isGitRepository": false,
+                  "additionalWorkingDirectories": []
+                }
+              }
+            },
+            "source": "environment",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "model"
+            },
+            "source": "model",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "agent_listing_delta",
+              "agentListingDelta": {
+                "addedTypes": [
+                  "Explore",
+                  "general-purpose"
+                ],
+                "addedLines": [
+                  "- Explore: Read-only search agent for broad fan-out searches — when answering means sweeping many files, directories, or naming conventions and you only need the conclusion, not the file dumps. It reads excerpts rather than whole files, so it locates code; it doesn't review or audit it. Specify search breadth: \"medium\" for moderate exploration, \"very thorough\" for multiple locations and naming conventions. (Tools: Read, Bash, WebFetch, WebSearch, TodoWrite)",
+                  "- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. (Tools: *)"
+                ],
+                "removedTypes": [],
+                "isInitial": true,
+                "showConcurrencyNote": true
+              }
+            },
+            "source": "agent_listing_delta",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "skills_listing",
+              "skillsListingDelta": {
+                "names": [
+                  "browser-use:control-browser",
+                  "browser-use:web-gui-tester",
+                  "documents:docx",
+                  "documents:docx-viewer",
+                  "pdf:pdf",
+                  "pdf:pdf-viewer",
+                  "plugin-creator:plugin-creator",
+                  "presentations:pptx",
+                  "presentations:pptx-viewer",
+                  "skill-creator:skill-creator",
+                  "spreadsheets:xlsx",
+                  "spreadsheets:xlsx-viewer",
+                  "zcode-guide:diagnosing-commands",
+                  "zcode-guide:diagnosing-hooks",
+                  "zcode-guide:diagnosing-mcp",
+                  "zcode-guide:diagnosing-plugins",
+                  "zcode-guide:diagnosing-skills",
+                  "zcode-guide:zcode-configuration-guide",
+                  "zcode-site:site-deploy"
+                ],
+                "fingerprints": [
+                  "e8f17745d0505e7a",
+                  "99576501e84d9b8f",
+                  "0c367aee90416095",
+                  "08fb9ec4405003e3",
+                  "5090b0e595774a3b",
+                  "3123ff7c248c0d83",
+                  "82e0bfe28c8fa4c2",
+                  "18a4112d6fd2ade5",
+                  "070a812a0089c26c",
+                  "f1b65da6e77346d5",
+                  "83607f0979db7ba0",
+                  "7e05df2ef0d389cf",
+                  "c3f18c7a867ab6d6",
+                  "9d7419ff02010dc3",
+                  "3145a58041b4c2e8",
+                  "b1cab9a0eedd6be6",
+                  "b4284db9632958c6",
+                  "3795b43e94c4bf7e",
+                  "7637175645dc20cc"
+                ]
+              }
+            },
+            "source": "skills_listing",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "date"
+            },
+            "source": "date",
+            "visibility": "model-only"
+          }
+        }
+      ]
+    },
+    {
+      "name": "localpath-on",
+      "captured": [
+        {
+          "imageCount": 1,
+          "imageMediaTypes": [
+            "image/png"
+          ],
+          "exactFixtureBytes": true,
+          "userTail": [
+            [
+              "[image]"
+            ]
+          ]
+        }
+      ],
+      "storedUserParts": [
+        {
+          "type": "text"
+        },
+        {
+          "type": "file",
+          "mime": "image/png",
+          "metadata": {
+            "image": {
+              "height": 1,
+              "maxDimension": 2000,
+              "originalHeight": 1,
+              "originalWidth": 1,
+              "resized": false,
+              "transformedSizeBytes": 68,
+              "width": 1
+            },
+            "originalUrl": "/tmp/dsh-zcode-rerun-1795420708/1x1-valid-localpath-on/workspace/probe.png",
+            "recoverability": "provider_ready",
+            "sha256": "sha256:5e3d382db4dd83d59aa5742793ad6b7903409e865c83bcbc54835049f043bc15",
+            "sizeBytes": 68,
+            "storageKind": "artifact",
+            "artifactUri": "zcode-artifact://sess_283e10a4-7c51-437d-be3b-a4d24bd01821/tool-result-f1afa84b-6c4b-418e-83c7-a63b74814987"
+          },
+          "filename": "probe.png"
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "environment",
+              "environment": {
+                "full": true,
+                "snapshot": {
+                  "cwd": "/tmp/dsh-zcode-rerun-1795420708/1x1-valid-localpath-on/workspace",
+                  "platform": "darwin",
+                  "shell": "zsh",
+                  "osVersion": "darwin 27.2.0 arm64",
+                  "isGitRepository": false,
+                  "additionalWorkingDirectories": []
+                }
+              }
+            },
+            "source": "environment",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "model"
+            },
+            "source": "model",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "agent_listing_delta",
+              "agentListingDelta": {
+                "addedTypes": [
+                  "Explore",
+                  "general-purpose"
+                ],
+                "addedLines": [
+                  "- Explore: Read-only search agent for broad fan-out searches — when answering means sweeping many files, directories, or naming conventions and you only need the conclusion, not the file dumps. It reads excerpts rather than whole files, so it locates code; it doesn't review or audit it. Specify search breadth: \"medium\" for moderate exploration, \"very thorough\" for multiple locations and naming conventions. (Tools: Read, Bash, WebFetch, WebSearch, TodoWrite)",
+                  "- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. (Tools: *)"
+                ],
+                "removedTypes": [],
+                "isInitial": true,
+                "showConcurrencyNote": true
+              }
+            },
+            "source": "agent_listing_delta",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "skills_listing",
+              "skillsListingDelta": {
+                "names": [
+                  "browser-use:control-browser",
+                  "browser-use:web-gui-tester",
+                  "documents:docx",
+                  "documents:docx-viewer",
+                  "pdf:pdf",
+                  "pdf:pdf-viewer",
+                  "plugin-creator:plugin-creator",
+                  "presentations:pptx",
+                  "presentations:pptx-viewer",
+                  "skill-creator:skill-creator",
+                  "spreadsheets:xlsx",
+                  "spreadsheets:xlsx-viewer",
+                  "zcode-guide:diagnosing-commands",
+                  "zcode-guide:diagnosing-hooks",
+                  "zcode-guide:diagnosing-mcp",
+                  "zcode-guide:diagnosing-plugins",
+                  "zcode-guide:diagnosing-skills",
+                  "zcode-guide:zcode-configuration-guide",
+                  "zcode-site:site-deploy"
+                ],
+                "fingerprints": [
+                  "c4e38ba3f0afb681",
+                  "fcb64ad87f76af3e",
+                  "1ae8dbc567c8acf4",
+                  "f99483249d7206f5",
+                  "79a9a9bf72c9f642",
+                  "661b154d3bec8e2a",
+                  "0a32339585e4f621",
+                  "a92f7364bbe6eb45",
+                  "ff862b8e6f66b1a7",
+                  "1a06151f4959bf85",
+                  "b8e36ed7c9c16637",
+                  "94237e48371bbf61",
+                  "2fea8d962812b17a",
+                  "a2bed1fe498f4f7a",
+                  "6706290d1bf3f840",
+                  "6548ea3e62f64a36",
+                  "7082e91b4fb120f4",
+                  "e91fe2b0ce6776aa",
+                  "c0507db9bdb27573"
+                ]
+              }
+            },
+            "source": "skills_listing",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "date"
+            },
+            "source": "date",
+            "visibility": "model-only"
+          }
+        }
+      ]
+    },
+    {
+      "name": "localpath-off",
+      "captured": [
+        {
+          "imageCount": 0,
+          "imageMediaTypes": [],
+          "exactFixtureBytes": false,
+          "userTail": [
+            [
+              "[Attached image/png: /tmp/dsh-zcode-rerun-1795420708/1x1-valid-localpath-off/workspace/probe.png]\n[Media omitted from provider request because the selected model does not support image input.]"
+            ]
+          ]
+        }
+      ],
+      "storedUserParts": [
+        {
+          "type": "text"
+        },
+        {
+          "type": "file",
+          "mime": "image/png",
+          "metadata": {
+            "image": {
+              "height": 1,
+              "maxDimension": 2000,
+              "originalHeight": 1,
+              "originalWidth": 1,
+              "resized": false,
+              "transformedSizeBytes": 68,
+              "width": 1
+            },
+            "originalUrl": "/tmp/dsh-zcode-rerun-1795420708/1x1-valid-localpath-off/workspace/probe.png",
+            "recoverability": "provider_ready",
+            "sha256": "sha256:5e3d382db4dd83d59aa5742793ad6b7903409e865c83bcbc54835049f043bc15",
+            "sizeBytes": 68,
+            "storageKind": "artifact",
+            "artifactUri": "zcode-artifact://sess_96ac8a16-58d8-4bfc-9001-dd76e9c0d30d/tool-result-9d72c30a-681f-467e-882f-23c84029a29f"
+          },
+          "filename": "probe.png"
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "environment",
+              "environment": {
+                "full": true,
+                "snapshot": {
+                  "cwd": "/tmp/dsh-zcode-rerun-1795420708/1x1-valid-localpath-off/workspace",
+                  "platform": "darwin",
+                  "shell": "zsh",
+                  "osVersion": "darwin 27.2.0 arm64",
+                  "isGitRepository": false,
+                  "additionalWorkingDirectories": []
+                }
+              }
+            },
+            "source": "environment",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "model"
+            },
+            "source": "model",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "agent_listing_delta",
+              "agentListingDelta": {
+                "addedTypes": [
+                  "Explore",
+                  "general-purpose"
+                ],
+                "addedLines": [
+                  "- Explore: Read-only search agent for broad fan-out searches — when answering means sweeping many files, directories, or naming conventions and you only need the conclusion, not the file dumps. It reads excerpts rather than whole files, so it locates code; it doesn't review or audit it. Specify search breadth: \"medium\" for moderate exploration, \"very thorough\" for multiple locations and naming conventions. (Tools: Read, Bash, WebFetch, WebSearch, TodoWrite)",
+                  "- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. (Tools: *)"
+                ],
+                "removedTypes": [],
+                "isInitial": true,
+                "showConcurrencyNote": true
+              }
+            },
+            "source": "agent_listing_delta",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "skills_listing",
+              "skillsListingDelta": {
+                "names": [
+                  "browser-use:control-browser",
+                  "browser-use:web-gui-tester",
+                  "documents:docx",
+                  "documents:docx-viewer",
+                  "pdf:pdf",
+                  "pdf:pdf-viewer",
+                  "plugin-creator:plugin-creator",
+                  "presentations:pptx",
+                  "presentations:pptx-viewer",
+                  "skill-creator:skill-creator",
+                  "spreadsheets:xlsx",
+                  "spreadsheets:xlsx-viewer",
+                  "zcode-guide:diagnosing-commands",
+                  "zcode-guide:diagnosing-hooks",
+                  "zcode-guide:diagnosing-mcp",
+                  "zcode-guide:diagnosing-plugins",
+                  "zcode-guide:diagnosing-skills",
+                  "zcode-guide:zcode-configuration-guide",
+                  "zcode-site:site-deploy"
+                ],
+                "fingerprints": [
+                  "9233ef9ce08d254c",
+                  "4b1b0830f87dd404",
+                  "9606b5206d39034f",
+                  "c30604a7c4f8080f",
+                  "4a59cf4d35624066",
+                  "7e7a7cf6e54ba7ef",
+                  "4afa5b157ea2a43a",
+                  "b69cb513f0f6b258",
+                  "85b70cef814be92f",
+                  "8de1b459db301ccf",
+                  "9c64a8eae7d4c13c",
+                  "9813ce8eb0822b74",
+                  "d83dda8806dcb465",
+                  "0de83102fc6efe01",
+                  "4cf42061d30a7aa5",
+                  "9e0dfca48d5a7ea0",
+                  "409fd837749f482c",
+                  "ce5a28ece8275468",
+                  "f7feab8dd6cfda1b"
+                ]
+              }
+            },
+            "source": "skills_listing",
+            "visibility": "model-only"
+          }
+        },
+        {
+          "type": "text",
+          "metadata": {
+            "runtimeMessage": {
+              "source": "date"
+            },
+            "source": "date",
+            "visibility": "model-only"
+          }
+        }
+      ]
+    }
+  ]
+}
