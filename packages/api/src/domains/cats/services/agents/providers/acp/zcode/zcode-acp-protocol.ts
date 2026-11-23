@@ -21,6 +21,11 @@ export type TurnEvent = {
   failure?: TurnFailure;
 };
 
+/** Explicit image support for GLM-5.4. Unknown models retain their native defaults. */
+export function zcodeModelSupportsImages(modelId: string | undefined): boolean {
+  return modelId?.trim().toLowerCase() === 'glm-5.4';
+}
+
 export function flattenAcpPrompt(prompt: unknown): string {
   if (typeof prompt === 'string') return prompt;
   if (!Array.isArray(prompt)) return '';
