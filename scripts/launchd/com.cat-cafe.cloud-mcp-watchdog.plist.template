@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- F247 cloud MCP health watchdog LaunchAgent template.
+     Periodic (not KeepAlive) one-shot probe: health-checks origin/tunnel, may
+     issue rate-limited `launchctl kickstart -k` for the supervised labels,
+     rotates service logs, and writes a single status TSV. It is never itself
+     a daemon, so it cannot race KeepAlive for double spawns.
+     DO NOT bootstrap directly; see INSTALL-cloud-mcp.md. No credentials here. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cat-cafe.cloud-mcp-watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE_BIN__</string>
+    <string>__WRAPPER_DIR__/cloud-mcp-watchdog.mjs</string>
+    <string>--state-dir</string>
+    <string>__STATE_DIR__</string>
+    <string>--log-dir</string>
+    <string>__LOG_DIR__</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <!-- Deterministic non-credential environment only (verdict P2: launchd gives
+       no interactive-shell env). NO secret names/values may appear here; the
+       candidate test enforces an allowlist of key names. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/yuhan</string>
+    <key>LANG</key>
+    <string>en_US.UTF-8</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>/Users/yuhan</string>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/watchdog.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/watchdog.err.log</string>
+</dict>
+</plist>
