@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- F247 cloud MCP tunnel-client LaunchAgent template. Single foreground owner:
+     `tunnel-client run` directly under launchd. connect-tunnel.py is NOT used
+     (it embeds the token in a child-process URL argument and layers tmux).
+     DO NOT bootstrap this file directly; see INSTALL-cloud-mcp.md. No
+     credential values may appear in this plist. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cat-cafe.cloud-mcp-tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__WRAPPER_DIR__/cloud-mcp-tunnel-wrapper.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/tunnel.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/tunnel.err.log</string>
+</dict>
+</plist>

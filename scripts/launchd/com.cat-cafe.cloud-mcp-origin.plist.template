@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- F247 cloud MCP origin (remote-spike 3098) LaunchAgent template.
+     DO NOT bootstrap this file directly. Replace every placeholder token (the
+     double-underscore form) via the operator runbook (INSTALL-cloud-mcp.md);
+     install must refuse to proceed while any such token remains. No credential
+     values may ever appear here. (v2.1.7 P1-1: this comment itself used to
+     carry a double-underscore token, which made the rendered-file scan refuse
+     the first plist every install — prose must never spell the token form.) -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cat-cafe.cloud-mcp-origin</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__WRAPPER_DIR__/cloud-mcp-origin-wrapper.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>WorkingDirectory</key>
+  <string>/Users/yuhan/cat-cafe/cat-cafe-runtime</string>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/origin.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/origin.err.log</string>
+</dict>
+</plist>
